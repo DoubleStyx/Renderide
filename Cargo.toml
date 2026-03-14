@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/renderide",
+    "crates/interprocess",
+    "crates/bootstrapper",
+]

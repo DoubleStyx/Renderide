@@ -1,0 +1,25 @@
+[package]
+name = "renderide"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "renderide"
+path = "src/lib.rs"
+
+[[bin]]
+name = "renderide"
+path = "src/main.rs"
+
+[[bin]]
+name = "roundtrip"
+path = "src/shared/bin/roundtrip.rs"
+
+[dependencies]
+interprocess = { path = "../interprocess" }
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.4.0"
+wgpu = "28.0.0"
+winit = "0.30.12"
+memmap2 = "0.9"
+nalgebra = { version = "0.34.1", features = ["convert-bytemuck"] }
