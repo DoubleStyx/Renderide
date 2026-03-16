@@ -11,7 +11,7 @@ use crate::scene::SceneGraph;
 use crate::session::init::send_renderer_init_result;
 use crate::session::state::ViewState;
 use crate::shared::{
-    FrameSubmitData, MeshUploadResult, RendererCommand,
+    FrameSubmitData, MeshUploadResult, RendererCommand, ShaderUploadResult,
 };
 
 /// Result of handling a command.
@@ -78,6 +78,7 @@ impl CommandDispatcher {
                 Box::new(ShutdownCommandHandler),
                 Box::new(FrameSubmitCommandHandler),
                 Box::new(MeshCommandHandler),
+                Box::new(ShaderCommandHandler),
                 Box::new(DesktopConfigCommandHandler),
                 Box::new(FreeSharedMemoryCommandHandler),
                 Box::new(NoopCommandHandler),
@@ -206,6 +207,31 @@ impl CommandHandler for MeshCommandHandler {
     }
 }
 
+/// Handles `shader_upload`. Stores shader in asset registry and sends result on success.
+struct ShaderCommandHandler;
+
+impl CommandHandler for ShaderCommandHandler {
+    fn handle(&mut self, cmd: RendererCommand, ctx: &mut CommandContext<'_>) -> CommandResult {
+        match cmd {
+            RendererCommand::shader_upload(data) => {
+                let asset_id = data.asset_id;
+                let (success, existed_before) = ctx.asset_registry.handle_shader_upload(data);
+                if success {
+                    ctx.receiver
+                        .send_background(RendererCommand::shader_upload_result(
+                            ShaderUploadResult {
+                                asset_id,
+                                instance_changed: !existed_before,
+                            },
+                        ));
+                }
+                CommandResult::Handled
+            }
+            _ => CommandResult::Ignored,
+        }
+    }
+}
+
 /// Handles `free_shared_memory_view`. Releases cached mmap views to avoid leaking shared memory.
 /// Mirrors SharedMemoryAccessor.ReleaseView in the C# host.
 struct FreeSharedMemoryCommandHandler;
@@ -282,6 +308,7 @@ impl CommandHandler for ExhaustiveStubCommandHandler {
             | RendererCommand::frame_submit_data(_)
             | RendererCommand::mesh_upload_data(_)
             | RendererCommand::mesh_unload(_)
+            | RendererCommand::shader_upload(_)
             | RendererCommand::desktop_config(_)
             | RendererCommand::free_shared_memory_view(_)
             | RendererCommand::keep_alive(_)
@@ -337,10 +364,6 @@ impl CommandHandler for ExhaustiveStubCommandHandler {
             }
 
             // --- Shaders ---
-            RendererCommand::shader_upload(_) => {
-                // TODO: implement shader upload
-                CommandResult::Handled
-            }
             RendererCommand::shader_unload(_) => {
                 // TODO: implement shader unload
                 CommandResult::Handled

@@ -3,6 +3,7 @@
 pub mod manager;
 pub mod mesh;
 pub mod registry;
+pub mod shader;
 pub mod texture;
 
 /// Handle used to identify assets across the registry.
@@ -19,3 +20,4 @@ pub use mesh::{
     MeshAsset, attribute_offset_and_size, attribute_offset_size_format, compute_vertex_stride,
 };
 pub use registry::AssetRegistry;
+pub use shader::ShaderAsset;

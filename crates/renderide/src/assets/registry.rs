@@ -1,10 +1,11 @@
-//! Asset registry: stores mesh, texture, and other assets by handle.
+//! Asset registry: stores mesh, texture, shader, and other assets by handle.
 
 use crate::ipc::shared_memory::SharedMemoryAccessor;
-use crate::shared::MeshUploadData;
+use crate::shared::{MeshUploadData, ShaderUpload};
 
 use super::manager::AssetManager;
 use super::mesh::{self, MeshAsset};
+use super::shader::ShaderAsset;
 use super::texture::TextureAsset;
 
 /// Stores assets by handle using generic per-type managers.
@@ -12,6 +13,7 @@ use super::texture::TextureAsset;
 pub struct AssetRegistry {
     meshes: AssetManager<MeshAsset>,
     textures: AssetManager<TextureAsset>,
+    shaders: AssetManager<ShaderAsset>,
     upload_count: u64,
     unload_count: u64,
 }
@@ -22,6 +24,7 @@ impl AssetRegistry {
         Self {
             meshes: AssetManager::new(),
             textures: AssetManager::new(),
+            shaders: AssetManager::new(),
             upload_count: 0,
             unload_count: 0,
         }
@@ -30,6 +33,11 @@ impl AssetRegistry {
     /// Returns a mesh by handle.
     pub fn get_mesh(&self, handle: i32) -> Option<&MeshAsset> {
         self.meshes.get(handle)
+    }
+
+    /// Returns a shader by handle.
+    pub fn get_shader(&self, handle: i32) -> Option<&ShaderAsset> {
+        self.shaders.get(handle)
     }
 
     /// Number of mesh assets in the registry.
@@ -121,6 +129,19 @@ impl AssetRegistry {
     /// Stub: does nothing yet. Returns `(false, false)`.
     pub fn handle_texture_upload(&mut self, _shm: &mut SharedMemoryAccessor) -> (bool, bool) {
         (false, false)
+    }
+
+    /// Handles a shader upload. Stub: stores id and optional WGSL source from ShaderUpload.file.
+    /// Returns `(success, existed_before)`.
+    pub fn handle_shader_upload(&mut self, data: ShaderUpload) -> (bool, bool) {
+        let existed_before = self.shaders.contains_key(data.asset_id);
+        let asset = ShaderAsset {
+            id: data.asset_id,
+            wgsl_source: data.file,
+        };
+        self.shaders.insert(asset);
+        self.upload_count += 1;
+        (true, existed_before)
     }
 
     /// Handles a mesh unload.

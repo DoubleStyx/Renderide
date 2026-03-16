@@ -782,33 +782,3 @@ impl RenderPipeline for PbrPipeline {
     }
 }
 
-/// Manages all render pipelines.
-pub struct PipelineManager {
-    pub normal_debug: NormalDebugPipeline,
-    pub uv_debug: UvDebugPipeline,
-    pub skinned: SkinnedPipeline,
-    pub material: MaterialPipeline,
-    pub pbr: PbrPipeline,
-    frame_index: u64,
-}
-
-impl PipelineManager {
-    /// Creates all pipelines for the given device and surface configuration.
-    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
-        Self {
-            normal_debug: NormalDebugPipeline::new(device, config),
-            uv_debug: UvDebugPipeline::new(device, config),
-            skinned: SkinnedPipeline::new(device, config),
-            material: MaterialPipeline::new(device, config),
-            pbr: PbrPipeline::new(device, config),
-            frame_index: 0,
-        }
-    }
-
-    /// Advances frame index for ring buffer and returns the value to use this frame.
-    pub fn advance_frame(&mut self) -> u64 {
-        let idx = self.frame_index;
-        self.frame_index = self.frame_index.wrapping_add(1);
-        idx
-    }
-}

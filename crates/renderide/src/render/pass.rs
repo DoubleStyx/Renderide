@@ -5,7 +5,9 @@
 use nalgebra::{Matrix4, Vector3};
 
 use super::SpaceDrawBatch;
-use crate::gpu::{GpuMeshBuffers, GpuState, PipelineManager, RenderPipeline, UniformData};
+use crate::gpu::{
+    GpuMeshBuffers, GpuState, PipelineKey, PipelineManager, PipelineVariant, UniformData,
+};
 use crate::scene::render_transform_to_matrix;
 use crate::session::Session;
 
@@ -274,17 +276,18 @@ impl RenderPass for MeshRenderPass {
                     let Some(_) = buffers_ref.vertex_buffer_skinned.as_ref() else {
                         continue;
                     };
+                    let Some(skinned) = ctx.pipeline_manager.get_pipeline(
+                        PipelineKey(None, PipelineVariant::Skinned),
+                        &ctx.gpu.device,
+                        &ctx.gpu.config,
+                    ) else {
+                        continue;
+                    };
                     let bone_matrices =
                         scene_graph.compute_bone_matrices(batch.space_id, ids, bind_poses);
-                    ctx.pipeline_manager.skinned.upload_skinned(
-                        &ctx.gpu.queue,
-                        skinned_mvp,
-                        &bone_matrices,
-                    );
-                    ctx.pipeline_manager
-                        .skinned
-                        .bind(&mut pass, None, frame_index);
-                    ctx.pipeline_manager.skinned.draw_skinned(
+                    skinned.upload_skinned(&ctx.gpu.queue, skinned_mvp, &bone_matrices);
+                    skinned.bind(&mut pass, None, frame_index);
+                    skinned.draw_skinned(
                         &mut pass,
                         buffers_ref,
                         &UniformData::Skinned {
@@ -313,18 +316,27 @@ impl RenderPass for MeshRenderPass {
         let mvp_models_normal: Vec<_> = normal_draws.iter().map(|d| (d.mvp, d.model)).collect();
         let mvp_models_uv: Vec<_> = uv_draws.iter().map(|d| (d.mvp, d.model)).collect();
 
-        ctx.pipeline_manager
-            .normal_debug
-            .upload_batch(&ctx.gpu.queue, &mvp_models_normal, frame_index);
-        ctx.pipeline_manager
-            .uv_debug
-            .upload_batch(&ctx.gpu.queue, &mvp_models_uv, frame_index);
+        let Some(normal_debug) = ctx.pipeline_manager.get_pipeline(
+            PipelineKey(None, PipelineVariant::NormalDebug),
+            &ctx.gpu.device,
+            &ctx.gpu.config,
+        ) else {
+            return Ok(());
+        };
+        let Some(uv_debug) = ctx.pipeline_manager.get_pipeline(
+            PipelineKey(None, PipelineVariant::UvDebug),
+            &ctx.gpu.device,
+            &ctx.gpu.config,
+        ) else {
+            return Ok(());
+        };
+
+        normal_debug.upload_batch(&ctx.gpu.queue, &mvp_models_normal, frame_index);
+        uv_debug.upload_batch(&ctx.gpu.queue, &mvp_models_uv, frame_index);
 
         for (i, d) in normal_draws.iter().enumerate() {
-            ctx.pipeline_manager
-                .normal_debug
-                .bind(&mut pass, Some(i as u32), frame_index);
-            ctx.pipeline_manager.normal_debug.draw_mesh(
+            normal_debug.bind(&mut pass, Some(i as u32), frame_index);
+            normal_debug.draw_mesh(
                 &mut pass,
                 d.buffers,
                 &UniformData::Simple {
@@ -334,10 +346,8 @@ impl RenderPass for MeshRenderPass {
             );
         }
         for (i, d) in uv_draws.iter().enumerate() {
-            ctx.pipeline_manager
-                .uv_debug
-                .bind(&mut pass, Some(i as u32), frame_index);
-            ctx.pipeline_manager.uv_debug.draw_mesh(
+            uv_debug.bind(&mut pass, Some(i as u32), frame_index);
+            uv_debug.draw_mesh(
                 &mut pass,
                 d.buffers,
                 &UniformData::Simple {
