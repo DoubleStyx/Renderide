@@ -26,37 +26,6 @@ flowchart TB
     Host <-->|IPC queues| Bootstrapper
     Renderide <-->|IPC queues| Host
 ```
- 
-## Project Status
-
-Early development.
-
-### Critical
-
-1. Improve performance.
-2. Fix skinned mesh renderers.
-
-### Low-Priority
-
-1. Add mirror support.
-2. Add camera support.
-3. Upload textures for meshes.
-4. Use correct shaders for meshes.
-5. Remove useless logging.
-6. Make the logging tiered.
-7. Add reflection probes.
-8. Add post-processing.
-9. Add light probes.
-10. Add RTAO.
-11. Add RT reflections.
-12. Add path tracing.
-13. Add skyboxes.
-14. Implement a UI renderer.
-15. Add video player support.
-16. Refactor code to remove dead modules and improve organization.
-17. Make code more robust and safe.
-18. Abstract out original IPC commands more.
-19. Add VR support.
 
 ## Architecture
 
@@ -106,11 +75,10 @@ All logs under `logs/` (relative to bootstrapper CWD or repo root). Truncated at
 **Rust:**
 
 ```bash
-cargo build
-cargo build --release
+cargo build && cargo run --bin bootstrapper
 ```
 
-**Generator:**
+**Generator (optional):**
 
 ```bash
 dotnet run --project SharedTypeGenerator -- -i /path/to/Renderite.Shared.dll
