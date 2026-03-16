@@ -99,3 +99,22 @@ static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 pub fn take_singleton_init() -> bool {
     !INITIALIZED.swap(true, Ordering::SeqCst)
 }
+
+/// Sends the renderer init result to the host. Called by InitCommandHandler.
+pub fn send_renderer_init_result(receiver: &mut crate::ipc::receiver::CommandReceiver) {
+    use crate::shared::{
+        HeadOutputDevice, RendererCommand, RendererInitResult, TextureFormat,
+    };
+
+    let result = RendererInitResult {
+        actual_output_device: HeadOutputDevice::screen,
+        renderer_identifier: Some("Renderide 0.1.0 (wgpu)".to_string()),
+        main_window_handle_ptr: 0,
+        stereo_rendering_mode: Some("None".to_string()),
+        max_texture_size: 8192,
+        is_gpu_texture_pot_byte_aligned: true,
+        supported_texture_formats: vec![TextureFormat::rgba32],
+        ..Default::default()
+    };
+    receiver.send(RendererCommand::renderer_init_result(result));
+}

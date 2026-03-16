@@ -7,13 +7,11 @@ use crate::config::RenderConfig;
 use crate::ipc::receiver::CommandReceiver;
 use crate::ipc::shared_memory::SharedMemoryAccessor;
 use crate::render::batch::SpaceDrawBatch;
-use crate::scene::{SceneGraph, render_transform_to_matrix};
-use crate::session::init::{InitError, get_connection_parameters, take_singleton_init};
+use crate::scene::{render_transform_to_matrix, SceneGraph};
+use crate::session::commands::{CommandContext, CommandDispatcher, CommandResult};
+use crate::session::init::{get_connection_parameters, InitError, take_singleton_init};
 use crate::session::state::ViewState;
-use crate::shared::{
-    FrameStartData, FrameSubmitData, HeadOutputDevice, InputState, MeshUploadResult,
-    RendererCommand, RendererInitResult, TextureFormat,
-};
+use crate::shared::{FrameStartData, FrameSubmitData, InputState, RendererCommand};
 
 /// Main session: coordinates command ingest, scene, and assets.
 pub struct Session {
@@ -22,6 +20,7 @@ pub struct Session {
     asset_registry: AssetRegistry,
     view_state: ViewState,
     shared_memory: Option<SharedMemoryAccessor>,
+    dispatcher: CommandDispatcher,
     init_received: bool,
     init_finalized: bool,
     is_standalone: bool,
@@ -55,6 +54,7 @@ impl Session {
             asset_registry: AssetRegistry::new(),
             view_state: ViewState::default(),
             shared_memory: None,
+            dispatcher: CommandDispatcher::new(),
             init_received: false,
             init_finalized: false,
             is_standalone: false,
@@ -146,112 +146,38 @@ impl Session {
     }
 
     fn apply_command(&mut self, cmd: RendererCommand) {
-        if !self.init_received {
-            match cmd {
-                RendererCommand::renderer_init_data(x) => {
-                    if let Some(prefix) = x.shared_memory_prefix {
-                        self.shared_memory = Some(SharedMemoryAccessor::new(prefix));
-                    }
-                    self.send_renderer_init_result();
-                    self.init_received = true;
-                }
-                _ => self.fatal_error = true,
-            }
+        let mut ctx = CommandContext {
+            shared_memory: &mut self.shared_memory,
+            asset_registry: &mut self.asset_registry,
+            scene_graph: &mut self.scene_graph,
+            view_state: &mut self.view_state,
+            receiver: &mut self.receiver,
+            init_received: &mut self.init_received,
+            init_finalized: &mut self.init_finalized,
+            shutdown: &mut self.shutdown,
+            fatal_error: &mut self.fatal_error,
+            last_frame_data_processed: &mut self.last_frame_data_processed,
+            pending_mesh_unloads: &mut self.pending_mesh_unloads,
+            render_config: &mut self.render_config,
+            lock_cursor: &mut self.lock_cursor,
+            pending_frame_data: None,
+        };
+
+        let result = self.dispatcher.dispatch(cmd, &mut ctx);
+
+        if result == CommandResult::FatalError {
+            self.fatal_error = true;
             return;
         }
 
-        if !self.init_finalized {
-            match cmd {
-                RendererCommand::renderer_init_finalize_data(_) => {
-                    self.init_finalized = true;
-                }
-                RendererCommand::mesh_upload_data(data) => {
-                    let asset_id = data.asset_id;
-                    let (success, existed_before) = match &mut self.shared_memory {
-                        Some(shm) => self.asset_registry.handle_mesh_upload(shm, data),
-                        None => (false, false),
-                    };
-                    if success {
-                        self.receiver
-                            .send_background(RendererCommand::mesh_upload_result(
-                                MeshUploadResult {
-                                    asset_id,
-                                    instance_changed: !existed_before,
-                                },
-                            ));
-                    }
-                }
-                RendererCommand::mesh_unload(x) => {
-                    self.asset_registry.handle_mesh_unload(x.asset_id);
-                    self.pending_mesh_unloads.push(x.asset_id);
-                }
-                RendererCommand::frame_submit_data(data) => {
-                    if self.shared_memory.is_some()
-                        && let Err(_e) =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                self.process_frame_data(data);
-                            }))
-                        {
-                            self.fatal_error = true;
-                        }
-                }
-                _ => {}
+        if let Some(data) = ctx.pending_frame_data {
+            if let Err(_e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.process_frame_data(data);
+            })) {
+                self.fatal_error = true;
+            } else if self.init_finalized {
+                self.last_frame_data_processed = true;
             }
-            return;
-        }
-
-        match cmd {
-            RendererCommand::renderer_shutdown(_)
-            | RendererCommand::renderer_shutdown_request(_) => {
-                self.shutdown = true;
-            }
-            RendererCommand::renderer_init_finalize_data(_) => {
-                self.init_finalized = true;
-            }
-            RendererCommand::frame_submit_data(data) => {
-                if let Err(_e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    self.process_frame_data(data);
-                })) {
-                    self.fatal_error = true;
-                } else {
-                    self.last_frame_data_processed = true;
-                }
-            }
-            RendererCommand::mesh_upload_data(data) => {
-                let asset_id = data.asset_id;
-                let (success, existed_before) = match &mut self.shared_memory {
-                    Some(shm) => self.asset_registry.handle_mesh_upload(shm, data),
-                    None => (false, false),
-                };
-                if success {
-                    self.receiver
-                        .send_background(RendererCommand::mesh_upload_result(MeshUploadResult {
-                            asset_id,
-                            instance_changed: !existed_before,
-                        }));
-                }
-            }
-            RendererCommand::mesh_unload(x) => {
-                self.asset_registry.handle_mesh_unload(x.asset_id);
-                self.pending_mesh_unloads.push(x.asset_id);
-            }
-            RendererCommand::desktop_config(x) => {
-                self.view_state.near_clip = 0.01;
-                self.view_state.far_clip = 1024.0;
-                self.view_state.desktop_fov = 75.0;
-                self.render_config = RenderConfig {
-                    near_clip: 0.01,
-                    far_clip: 1024.0,
-                    desktop_fov: 75.0,
-                    vsync: x.v_sync,
-                };
-            }
-            RendererCommand::keep_alive(_)
-            | RendererCommand::renderer_init_progress_update(_)
-            | RendererCommand::renderer_engine_ready(_)
-            | RendererCommand::renderer_init_result(_)
-            | RendererCommand::frame_start_data(_) => {}
-            _ => {}
         }
     }
 
@@ -309,21 +235,6 @@ impl Session {
 
         self.pending_render_tasks = data.render_tasks;
         self.primary_camera_task = self.pending_render_tasks.first().cloned();
-    }
-
-    fn send_renderer_init_result(&mut self) {
-        let result = RendererInitResult {
-            actual_output_device: HeadOutputDevice::screen,
-            renderer_identifier: Some("Renderide 0.1.0 (wgpu)".to_string()),
-            main_window_handle_ptr: 0,
-            stereo_rendering_mode: Some("None".to_string()),
-            max_texture_size: 8192,
-            is_gpu_texture_pot_byte_aligned: true,
-            supported_texture_formats: vec![TextureFormat::rgba32],
-            ..Default::default()
-        };
-        self.receiver
-            .send(RendererCommand::renderer_init_result(result));
     }
 
     fn send_begin_frame(&mut self) {
