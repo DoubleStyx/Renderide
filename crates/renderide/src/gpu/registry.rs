@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::pipeline::{
-    MaterialPipeline, NormalDebugPipeline, PbrPipeline, RenderPipeline, SkinnedPipeline,
-    UvDebugPipeline,
+    MaterialPipeline, NormalDebugPipeline, OverlayStencilPipeline, OverlayStencilSkinnedPipeline,
+    PbrPipeline, RenderPipeline, SkinnedPipeline, UvDebugPipeline,
 };
 
 /// Key for pipeline lookup: shader_id (None = builtin) and variant.
@@ -23,6 +23,10 @@ pub enum PipelineVariant {
     UvDebug,
     /// Skinned mesh: transforms vertices by weighted bone matrices.
     Skinned,
+    /// Overlay with stencil for GraphicsChunk masking (Content: Equal compare, Keep op).
+    OverlayStencilContent,
+    /// Skinned overlay with stencil for GraphicsChunk masking.
+    OverlayStencilSkinned,
     /// Material-based pipeline for a specific material.
     Material { material_id: i32 },
     /// PBR pipeline.
@@ -58,7 +62,15 @@ impl PipelineRegistry {
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::Skinned),
-            Arc::new(SkinnedPipeline::new(device, config)),
+            Arc::new(SkinnedPipeline::new(device, config, false)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::OverlayStencilContent),
+            Arc::new(OverlayStencilPipeline::new(device, config)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::OverlayStencilSkinned),
+            Arc::new(OverlayStencilSkinnedPipeline::new(device, config)),
         );
     }
 

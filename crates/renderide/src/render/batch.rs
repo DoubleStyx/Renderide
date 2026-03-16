@@ -7,6 +7,8 @@ use nalgebra::Matrix4;
 use crate::gpu::PipelineVariant;
 use crate::shared::RenderTransform;
 
+use crate::stencil::StencilState;
+
 /// Single draw within a batch.
 ///
 /// Sorted by (is_overlay, -sort_key, pipeline_variant, material_id, mesh_asset_id).
@@ -33,6 +35,10 @@ pub struct DrawEntry {
     pub blendshape_weights: Option<Vec<f32>>,
     /// Pipeline variant derived from is_skinned, use_debug_uv, and mesh has_uvs.
     pub pipeline_variant: PipelineVariant,
+    /// Per-draw stencil state for GraphicsChunk masking. When `Some`, overlay pass uses
+    /// stencil pipeline and `set_stencil_reference`. Populated from material property blocks
+    /// when host exports IUIX_Material stencil props.
+    pub stencil_state: Option<StencilState>,
 }
 
 /// Per-space draw batch for rendering.

@@ -539,8 +539,12 @@ fn filter_and_collect_drawables(
                 render_transform_to_matrix(&scene.nodes[idx])
             }
         };
-        let pipeline_variant = if is_skinned {
+        let pipeline_variant = if is_skinned && scene.is_overlay && entry.stencil_state.is_some() {
+            PipelineVariant::OverlayStencilSkinned
+        } else if is_skinned {
             PipelineVariant::Skinned
+        } else if scene.is_overlay && entry.stencil_state.is_some() {
+            PipelineVariant::OverlayStencilContent
         } else {
             compute_pipeline_variant(false, entry.mesh_handle, use_debug_uv, asset_registry)
         };
@@ -585,6 +589,7 @@ fn build_draw_entries(filtered: Vec<FilteredDrawable>) -> Vec<DrawEntry> {
                     None
                 },
                 pipeline_variant: f.pipeline_variant,
+                stencil_state: f.drawable.stencil_state,
             }
         })
         .collect()

@@ -64,13 +64,16 @@ pub async fn init_gpu(
     })
 }
 
-/// Creates a depth texture for the given surface configuration.
+/// Creates a depth-stencil texture for the given surface configuration.
+///
+/// Uses [`Depth24PlusStencil8`] to support GraphicsChunk masking (scroll rects, clipping)
+/// in the overlay pass. Stencil is cleared at the start of the mesh pass.
 pub fn create_depth_texture(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
 ) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("depth texture"),
+        label: Some("depth-stencil texture"),
         size: wgpu::Extent3d {
             width: config.width,
             height: config.height,
@@ -79,7 +82,7 @@ pub fn create_depth_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Depth24Plus,
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     })

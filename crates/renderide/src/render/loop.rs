@@ -107,6 +107,21 @@ impl RenderLoop {
         let view_params = ViewParams::perspective_from_session(session, aspect);
         let proj = view_params.to_projection_matrix();
 
+        let overlay_projection_override = session
+            .primary_camera_task()
+            .and_then(|t| t.parameters.as_ref())
+            .filter(|p| p.projection == crate::shared::CameraProjection::orthographic)
+            .map(|p| {
+                ViewParams {
+                    projection: super::view::ViewProjection::Orthographic {
+                        half_size: p.orthographic_size,
+                        aspect,
+                    },
+                    near_clip: p.near_clip.max(0.01),
+                    far_clip: p.far_clip,
+                }
+            });
+
         let mut ctx = RenderGraphContext {
             gpu,
             session,
@@ -116,7 +131,7 @@ impl RenderLoop {
             depth_view_override: depth_view.as_ref(),
             viewport: (width, height),
             proj,
-            overlay_projection_override: None,
+            overlay_projection_override,
             timestamp_query_set: Some(&self.timestamp_query_set),
             timestamp_resolve_buffer: Some(&self.timestamp_resolve_buffer),
             timestamp_staging_buffer: Some(&self.timestamp_staging_buffer),

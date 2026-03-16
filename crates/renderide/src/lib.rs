@@ -26,6 +26,9 @@ pub mod render;
 /// Scene graph and scene management.
 pub mod scene;
 
+/// Stencil state for GraphicsChunk masking (UI scroll rects, clipping).
+pub mod stencil;
+
 /// Session: orchestrates IPC, scene, assets, and frame flow.
 pub mod session;
 

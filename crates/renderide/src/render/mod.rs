@@ -44,6 +44,7 @@ pub mod target;
 pub mod view;
 
 pub use batch::{DrawEntry, SpaceDrawBatch};
+pub use crate::stencil::{ClipRect, StencilComparison, StencilOperation, StencilState};
 pub use context::{current_context, set_context, with_context, FramePhase};
 pub use crate::shared::RenderingContext;
 pub use pass::{

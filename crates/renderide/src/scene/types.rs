@@ -127,6 +127,9 @@ pub struct Drawable {
     /// `blendshape_update_batches` and `blendshape_updates`. Resized as needed when applying updates.
     /// Passed to the skinned pipeline for vertex deformation before bone skinning.
     pub blend_shape_weights: Option<Vec<f32>>,
+    /// Per-draw stencil state for GraphicsChunk masking (scroll rects, clipping).
+    /// Populated from material property blocks when host exports IUIX_Material stencil props.
+    pub stencil_state: Option<crate::stencil::StencilState>,
 }
 
 impl Default for Drawable {
@@ -141,6 +144,7 @@ impl Default for Drawable {
             bone_transform_ids: None,
             root_bone_transform_id: None,
             blend_shape_weights: None,
+            stencil_state: None,
         }
     }
 }

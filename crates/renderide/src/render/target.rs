@@ -66,7 +66,7 @@ impl RenderTarget {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("offscreen depth texture"),
+            label: Some("offscreen depth-stencil texture"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -75,7 +75,7 @@ impl RenderTarget {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth24Plus,
+            format: wgpu::TextureFormat::Depth24PlusStencil8,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });

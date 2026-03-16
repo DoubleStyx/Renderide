@@ -178,6 +178,8 @@ struct BatchedDraw {
     model: Matrix4<f32>,
     pipeline_variant: PipelineVariant,
     is_overlay: bool,
+    /// Per-draw stencil for GraphicsChunk masking. When `Some`, overlay uses stencil pipeline.
+    stencil_state: Option<crate::stencil::StencilState>,
 }
 
 /// Collected skinned draw for batch upload.
@@ -189,6 +191,10 @@ struct SkinnedBatchedDraw {
     blendshape_weights: Option<Vec<f32>>,
     num_vertices: u32,
     is_overlay: bool,
+    /// Pipeline variant (Skinned or OverlayStencilSkinned).
+    pipeline_variant: crate::gpu::PipelineVariant,
+    /// Per-draw stencil for GraphicsChunk masking. When `Some`, overlay uses stencil pipeline.
+    stencil_state: Option<crate::stencil::StencilState>,
 }
 
 /// Ensures all meshes referenced by draw batches are in the GPU mesh buffer cache.
@@ -375,6 +381,8 @@ fn collect_mesh_draws(ctx: &RenderPassContext) -> (
                     blendshape_weights: d.blendshape_weights.clone(),
                     num_vertices: mesh.vertex_count.max(0) as u32,
                     is_overlay: batch.is_overlay,
+                    pipeline_variant: d.pipeline_variant.clone(),
+                    stencil_state: d.stencil_state,
                 });
                 continue;
             }
@@ -385,6 +393,7 @@ fn collect_mesh_draws(ctx: &RenderPassContext) -> (
                 model: d.model_matrix,
                 pipeline_variant: d.pipeline_variant.clone(),
                 is_overlay: batch.is_overlay,
+                stencil_state: d.stencil_state,
             });
         }
     }
@@ -417,14 +426,24 @@ fn record_skinned_draws(
     if draws.is_empty() {
         return;
     }
-    let Some(skinned) = params.pipeline_manager.get_pipeline(
-        PipelineKey(None, PipelineVariant::Skinned),
-        params.device,
-        params.config,
-    ) else {
-        return;
-    };
-    let items: Vec<_> = draws
+    let mut i = 0;
+    while i < draws.len() {
+        let variant = draws[i].pipeline_variant.clone();
+        let group_end = draws[i..]
+            .iter()
+            .take_while(|d| d.pipeline_variant == variant)
+            .count();
+        let group = &draws[i..i + group_end];
+
+        let Some(skinned) = params.pipeline_manager.get_pipeline(
+            PipelineKey(None, variant),
+            params.device,
+            params.config,
+        ) else {
+            i += group_end;
+            continue;
+        };
+    let items: Vec<_> = group
         .iter()
         .map(|d| {
             (
@@ -436,8 +455,8 @@ fn record_skinned_draws(
         })
         .collect();
     if debug_blendshapes {
-        let count = draws.len();
-        let first_with_weights = draws
+        let count = group.len();
+        let first_with_weights = group
             .iter()
             .find(|d| d.blendshape_weights.as_ref().is_some_and(|w| !w.is_empty()));
         if let Some(d) = first_with_weights {
@@ -452,24 +471,29 @@ fn record_skinned_draws(
         } else {
             logger::debug!("blendshape batch_count={} first_draw_weights_len=0", count);
         }
-    }
-    skinned.upload_skinned_batch(params.queue, &items, params.frame_index);
-    for (j, d) in draws.iter().enumerate() {
-        let Some(buffers) = params.mesh_buffer_cache.get(&d.mesh_asset_id) else {
-            continue;
-        };
-        let draw_bind_group = skinned
-            .create_skinned_draw_bind_group(params.device, buffers)
-            .expect("skinned pipeline must create draw bind groups");
-        skinned.bind(pass, Some(j as u32), params.frame_index, Some(&draw_bind_group));
-        skinned.draw_skinned(
-            pass,
-            buffers,
-            &UniformData::Skinned {
-                mvp: d.mvp,
-                bone_matrices: &d.bone_matrices,
-            },
-        );
+        }
+        skinned.upload_skinned_batch(params.queue, &items, params.frame_index);
+        for (j, d) in group.iter().enumerate() {
+            let Some(buffers) = params.mesh_buffer_cache.get(&d.mesh_asset_id) else {
+                continue;
+            };
+            let draw_bind_group = skinned
+                .create_skinned_draw_bind_group(params.device, buffers)
+                .expect("skinned pipeline must create draw bind groups");
+            skinned.bind(pass, Some(j as u32), params.frame_index, Some(&draw_bind_group));
+            if let Some(ref stencil) = d.stencil_state {
+                pass.set_stencil_reference(stencil.reference as u32);
+            }
+            skinned.draw_skinned(
+                pass,
+                buffers,
+                &UniformData::Skinned {
+                    mvp: d.mvp,
+                    bone_matrices: &d.bone_matrices,
+                },
+            );
+        }
+        i += group_end;
     }
 }
 
@@ -488,7 +512,7 @@ fn record_non_skinned_draws(
             .count();
         let group = &draws[i..i + group_end];
 
-        let pipeline_key = PipelineKey(None, variant);
+        let pipeline_key = PipelineKey(None, variant.clone());
         let Some(pipeline) = params.pipeline_manager.get_pipeline(
             pipeline_key,
             params.device,
@@ -498,14 +522,34 @@ fn record_non_skinned_draws(
             continue;
         };
 
-        let mvp_models: Vec<_> = group.iter().map(|d| (d.mvp, d.model)).collect();
-        pipeline.upload_batch(params.queue, &mvp_models, params.frame_index);
+        let use_overlay_upload = matches!(
+            variant,
+            crate::gpu::PipelineVariant::OverlayStencilContent
+        );
+        if use_overlay_upload {
+            let items: Vec<_> = group
+                .iter()
+                .map(|d| {
+                    let clip = d.stencil_state.and_then(|s| s.clip_rect).map(|r| {
+                        [r.x, r.y, r.width, r.height]
+                    });
+                    (d.mvp, d.model, clip)
+                })
+                .collect();
+            pipeline.upload_batch_overlay(params.queue, &items, params.frame_index);
+        } else {
+            let mvp_models: Vec<_> = group.iter().map(|d| (d.mvp, d.model)).collect();
+            pipeline.upload_batch(params.queue, &mvp_models, params.frame_index);
+        }
 
         for (j, d) in group.iter().enumerate() {
             let Some(buffers) = params.mesh_buffer_cache.get(&d.mesh_asset_id) else {
                 continue;
             };
             pipeline.bind(pass, Some(j as u32), params.frame_index, None);
+            if let Some(ref stencil) = d.stencil_state {
+                pass.set_stencil_reference(stencil.reference as u32);
+            }
             pipeline.draw_mesh(
                 pass,
                 buffers,
@@ -591,7 +635,10 @@ impl RenderPass for MeshRenderPass {
                             load: wgpu::LoadOp::Clear(0.0),
                             store: wgpu::StoreOp::Store,
                         }),
-                        stencil_ops: None,
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0),
+                            store: wgpu::StoreOp::Store,
+                        }),
                     }
                 }),
                 occlusion_query_set: None,
@@ -677,7 +724,10 @@ impl RenderPass for OverlayRenderPass {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     }),
-                    stencil_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
                 }
             }),
             occlusion_query_set: None,

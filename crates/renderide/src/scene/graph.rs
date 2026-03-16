@@ -587,6 +587,7 @@ impl SceneGraph {
                     bone_transform_ids: None,
                     root_bone_transform_id: None,
                     blend_shape_weights: None,
+                    stencil_state: None,
                 });
             }
         }
@@ -675,6 +676,7 @@ impl SceneGraph {
                     bone_transform_ids: None,
                     root_bone_transform_id: None,
                     blend_shape_weights: Some(vec![]),
+                    stencil_state: None,
                 });
             }
         }
