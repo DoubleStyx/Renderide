@@ -120,12 +120,18 @@ impl std::fmt::Display for SceneError {
 
 impl std::error::Error for SceneError {}
 
+/// Per-scene cache for world matrices and computed flags.
+struct SceneCache {
+    world_matrices: Vec<Matrix4<f32>>,
+    computed: Vec<bool>,
+}
+
 /// Manages scenes (render spaces) and applies incremental updates from the host.
 pub struct SceneGraph {
     scenes: HashMap<SceneId, Scene>,
-    /// Cached world matrices per scene. Key: (scene_id, transform_index).
-    world_matrices: HashMap<SceneId, Vec<Matrix4<f32>>>,
-    /// Scene IDs whose transforms changed this frame; cache must be recomputed.
+    /// Per-scene cache: world matrices and computed flags.
+    scene_caches: HashMap<SceneId, SceneCache>,
+    /// Scene IDs that need at least one transform recomputed.
     world_matrices_dirty: HashSet<SceneId>,
     spaces_to_remove: Vec<SceneId>,
 }
@@ -135,7 +141,7 @@ impl SceneGraph {
     pub fn new() -> Self {
         Self {
             scenes: HashMap::new(),
-            world_matrices: HashMap::new(),
+            scene_caches: HashMap::new(),
             world_matrices_dirty: HashSet::new(),
             spaces_to_remove: Vec::new(),
         }
@@ -156,11 +162,28 @@ impl SceneGraph {
         &self.scenes
     }
 
+    /// Test-only: marks a transform and its descendants uncomputed to exercise incremental recompute.
+    #[cfg(test)]
+    pub fn test_invalidate_transform(&mut self, scene_id: SceneId, transform_id: usize) {
+        if let Some(cache) = self.scene_caches.get_mut(&scene_id) {
+            if transform_id < cache.computed.len() {
+                cache.computed[transform_id] = false;
+                if let Some(scene) = self.scenes.get(&scene_id) {
+                    Self::mark_descendants_uncomputed(
+                        &scene.node_parents,
+                        &mut cache.computed,
+                    );
+                }
+                self.world_matrices_dirty.insert(scene_id);
+            }
+        }
+    }
+
     /// Returns the cached world matrix for a transform in a scene.
     pub fn get_world_matrix(&self, scene_id: SceneId, transform_id: usize) -> Option<Matrix4<f32>> {
-        self.world_matrices
+        self.scene_caches
             .get(&scene_id)
-            .and_then(|mats| mats.get(transform_id).copied())
+            .and_then(|c| c.world_matrices.get(transform_id).copied())
     }
 
     /// Computes bone matrices for skinned mesh rendering.
@@ -227,28 +250,27 @@ impl SceneGraph {
         }
 
         for update in &data.render_spaces {
-            let scene = self.scenes.entry(update.id).or_default();
-
-            scene.id = update.id;
-            scene.is_active = update.is_active;
-            scene.is_overlay = update.is_overlay;
-            scene.root_transform = update.root_transform;
-            scene.view_transform = if update.override_view_position {
-                update.overriden_view_transform
-            } else {
-                update.root_transform
-            };
+            {
+                let scene = self.scenes.entry(update.id).or_default();
+                scene.id = update.id;
+                scene.is_active = update.is_active;
+                scene.is_overlay = update.is_overlay;
+                scene.root_transform = update.root_transform;
+                scene.view_transform = if update.override_view_position {
+                    update.overriden_view_transform
+                } else {
+                    update.root_transform
+                };
+            }
 
             let frame_index = data.frame_index;
             let transform_removals = if let Some(ref transforms_update) = update.transforms_update {
-                let removals =
-                    Self::apply_transforms_update(scene, shm, transforms_update, frame_index)?;
-                self.world_matrices.remove(&update.id);
-                self.world_matrices_dirty.insert(update.id);
-                removals
+                Self::apply_transforms_update(self, update.id, shm, transforms_update, frame_index)?
             } else {
                 Vec::new()
             };
+
+            let scene = self.scenes.get_mut(&update.id).expect("scene exists after entry");
             if let Some(ref mesh_update) = update.mesh_renderers_update {
                 Self::apply_mesh_renderables_update(scene, shm, mesh_update, frame_index)?;
             }
@@ -270,7 +292,7 @@ impl SceneGraph {
         }
         for id in &self.spaces_to_remove {
             self.scenes.remove(id);
-            self.world_matrices.remove(id);
+            self.scene_caches.remove(id);
             self.world_matrices_dirty.remove(id);
         }
         self.spaces_to_remove.clear();
@@ -307,12 +329,30 @@ impl SceneGraph {
     }
 
     fn apply_transforms_update(
-        scene: &mut Scene,
+        &mut self,
+        scene_id: SceneId,
         shm: &mut SharedMemoryAccessor,
         update: &TransformsUpdate,
         frame_index: i32,
     ) -> Result<Vec<(i32, usize)>, SceneError> {
+        let scene = self
+            .scenes
+            .get_mut(&scene_id)
+            .expect("scene exists when applying transforms update");
+        let cache = self
+            .scene_caches
+            .entry(scene_id)
+            .or_insert_with(|| SceneCache {
+                world_matrices: Vec::new(),
+                computed: Vec::new(),
+            });
         let mut transform_removals = Vec::new();
+
+        if cache.world_matrices.len() != scene.nodes.len() {
+            cache.world_matrices.resize(scene.nodes.len(), Matrix4::identity());
+            cache.computed.resize(scene.nodes.len(), false);
+        }
+
         if update.removals.length > 0 {
             let removals = shm
                 .access_copy_diagnostic::<i32>(&update.removals)
@@ -330,9 +370,12 @@ impl SceneGraph {
                 let removed_id = idx as i32;
                 let last_index = scene.nodes.len() - 1;
 
-                for parent in scene.node_parents.iter_mut() {
+                for (i, parent) in scene.node_parents.iter_mut().enumerate() {
                     if *parent == removed_id {
                         *parent = -1;
+                        if i < cache.computed.len() {
+                            cache.computed[i] = false;
+                        }
                     } else if *parent == last_index as i32 {
                         *parent = removed_id;
                     }
@@ -344,13 +387,22 @@ impl SceneGraph {
 
                 scene.nodes.swap_remove(idx);
                 scene.node_parents.swap_remove(idx);
+                if idx < cache.world_matrices.len() {
+                    cache.world_matrices.swap_remove(idx);
+                    cache.computed.swap_remove(idx);
+                }
             }
         }
 
         while (scene.nodes.len() as i32) < update.target_transform_count {
             scene.nodes.push(render_transform_identity());
             scene.node_parents.push(-1);
+            cache.world_matrices.push(Matrix4::identity());
+            cache.computed.push(false);
         }
+
+        let mut changed_indices = std::collections::HashSet::new();
+
         if update.parent_updates.length > 0 {
             let parents = shm
                 .access_copy_diagnostic::<TransformParentUpdate>(&update.parent_updates)
@@ -361,6 +413,7 @@ impl SceneGraph {
                 }
                 if (pu.transform_id as usize) < scene.node_parents.len() {
                     scene.node_parents[pu.transform_id as usize] = pu.new_parent_id;
+                    changed_indices.insert(pu.transform_id as usize);
                 }
             }
         }
@@ -391,9 +444,18 @@ impl SceneGraph {
                         );
                         scene.nodes[pu.transform_id as usize] = render_transform_identity();
                     }
+                    changed_indices.insert(pu.transform_id as usize);
                 }
             }
         }
+
+        for i in &changed_indices {
+            if *i < cache.computed.len() {
+                cache.computed[*i] = false;
+            }
+        }
+        Self::mark_descendants_uncomputed(&scene.node_parents, &mut cache.computed);
+        self.world_matrices_dirty.insert(scene_id);
 
         Ok(transform_removals)
     }
@@ -570,25 +632,177 @@ impl SceneGraph {
         Ok(())
     }
 
-    /// Computes and caches world matrices for a scene when cache is missing or dirty.
+    /// Marks descendants of uncomputed transforms as uncomputed.
+    /// Walks each node's parent chain to find the uppermost uncomputed ancestor;
+    /// if found, marks all nodes in that chain as uncomputed.
+    fn mark_descendants_uncomputed(node_parents: &[i32], computed: &mut [bool]) {
+        let n = computed.len();
+        if n == 0 {
+            return;
+        }
+        let mut checked = vec![false; n];
+        for transform_index in (0..n).rev() {
+            if checked[transform_index] {
+                continue;
+            }
+            let mut maybe_last_non_computed: Option<usize> = None;
+            let mut id = transform_index;
+            let mut steps = 0;
+            while id < n && steps < n {
+                steps += 1;
+                if !computed[id] {
+                    maybe_last_non_computed = Some(id);
+                }
+                if checked[id] {
+                    break;
+                }
+                let p = node_parents.get(id).copied().unwrap_or(-1);
+                if p < 0 || (p as usize) >= n || p == id as i32 {
+                    break;
+                }
+                id = p as usize;
+            }
+            if let Some(last_non_computed) = maybe_last_non_computed {
+                let mut id = transform_index;
+                let mut steps = 0;
+                while id != last_non_computed && id < n && steps < n {
+                    steps += 1;
+                    computed[id] = false;
+                    checked[id] = true;
+                    let p = node_parents.get(id).copied().unwrap_or(-1);
+                    if p < 0 || (p as usize) >= n || p == id as i32 {
+                        break;
+                    }
+                    id = p as usize;
+                }
+            } else {
+                let mut id = transform_index;
+                let mut steps = 0;
+                while id < n && steps < n {
+                    steps += 1;
+                    checked[id] = true;
+                    let p = node_parents.get(id).copied().unwrap_or(-1);
+                    if p < 0 || (p as usize) >= n || p == id as i32 {
+                        break;
+                    }
+                    id = p as usize;
+                }
+            }
+            checked[transform_index] = true;
+        }
+    }
+
+    /// Computes and caches world matrices for a scene. Uses incremental recomputation:
+    /// only transforms with `computed[i] == false` are recomputed.
     pub fn compute_world_matrices(&mut self, scene_id: SceneId) -> Result<(), SceneError> {
-        let needs_recompute = !self.world_matrices.contains_key(&scene_id)
-            || self.world_matrices_dirty.contains(&scene_id);
-        if !needs_recompute {
+        let n = self
+            .scenes
+            .get(&scene_id)
+            .map(|s| s.nodes.len())
+            .unwrap_or(0);
+        if n == 0 {
+            self.scene_caches.remove(&scene_id);
+            self.world_matrices_dirty.remove(&scene_id);
             return Ok(());
         }
-        let matrices = match self.scenes.get(&scene_id) {
-            Some(scene) => Self::compute_world_matrices_from_scene(scene),
-            None => return Ok(()),
-        };
-        self.world_matrices.insert(scene_id, matrices);
+
+        let cache = self
+            .scene_caches
+            .entry(scene_id)
+            .or_insert_with(|| SceneCache {
+                world_matrices: Vec::new(),
+                computed: Vec::new(),
+            });
+
+        let needs_resize = cache.world_matrices.len() != n;
+        if needs_resize {
+            cache.world_matrices.resize(n, Matrix4::identity());
+            cache.computed.resize(n, false);
+            for c in cache.computed.iter_mut() {
+                *c = false;
+            }
+        }
+
+        if !self.world_matrices_dirty.contains(&scene_id)
+            && !needs_resize
+            && cache.computed.iter().all(|&c| c)
+        {
+            return Ok(());
+        }
+
+        let scene = self.scenes.get(&scene_id).expect("scene exists");
+        Self::compute_world_matrices_incremental(
+            scene,
+            &mut cache.world_matrices,
+            &mut cache.computed,
+        )?;
         self.world_matrices_dirty.remove(&scene_id);
         Ok(())
     }
 
-    /// Iterative DFS world matrix computation with cycle detection.
-    /// Uses visited + in_stack for cycle detection; on cycle, logs warning and treats node as root.
-    /// Root-level nodes (parent < 0 or invalid) use identity as parent.
+    /// Incremental world matrix computation: only recomputes nodes with `computed[i] == false`.
+    /// Walks up from each uncomputed node to find the first computed ancestor, then multiplies down.
+    fn compute_world_matrices_incremental(
+        scene: &Scene,
+        world_matrices: &mut [Matrix4<f32>],
+        computed: &mut [bool],
+    ) -> Result<(), SceneError> {
+        let n = scene.nodes.len();
+        let node_parents = &scene.node_parents;
+        let nodes = &scene.nodes;
+        let mut stack = Vec::with_capacity(64.min(n));
+
+        for transform_index in (0..n).rev() {
+            if computed[transform_index] {
+                continue;
+            }
+
+            let mut maybe_uppermost_matrix: Option<Matrix4<f32>> = None;
+            let mut id = transform_index;
+            let mut steps = 0;
+            while id < n && steps < n {
+                steps += 1;
+                if computed[id] {
+                    maybe_uppermost_matrix = Some(world_matrices[id]);
+                    break;
+                }
+                stack.push(id);
+                let p = node_parents.get(id).copied().unwrap_or(-1);
+                if p < 0 || (p as usize) >= n || p == id as i32 {
+                    break;
+                }
+                id = p as usize;
+            }
+
+            let mut parent_matrix = match maybe_uppermost_matrix {
+                Some(m) => m,
+                None => {
+                    let top = match stack.pop() {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    let local = super::render_transform_to_matrix(&nodes[top]);
+                    let uppermost = Matrix4::<f32>::identity() * local;
+                    world_matrices[top] = uppermost;
+                    computed[top] = true;
+                    uppermost
+                }
+            };
+
+            while let Some(child_id) = stack.pop() {
+                let local = super::render_transform_to_matrix(&nodes[child_id]);
+                parent_matrix = parent_matrix * local;
+                world_matrices[child_id] = parent_matrix;
+                computed[child_id] = true;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Full iterative DFS world matrix computation with cycle detection.
+    /// Used by tests; root-level nodes use identity as parent.
+    #[cfg(test)]
     fn compute_world_matrices_from_scene(scene: &Scene) -> Vec<Matrix4<f32>> {
         let n = scene.nodes.len();
         if n == 0 {
@@ -807,6 +1021,38 @@ mod tests {
         assert_eq!(world.len(), 2);
         assert!(!world[0].column(3).x.is_nan());
         assert!(!world[1].column(3).x.is_nan());
+    }
+
+    #[test]
+    fn test_compute_world_matrices_incremental_after_pose_change() {
+        let mut graph = SceneGraph::new();
+        let mut scene = Scene::default();
+        scene.id = 0;
+        scene.nodes = vec![
+            make_transform((1.0, 0.0, 0.0)),
+            make_transform((0.0, 2.0, 0.0)),
+            make_transform((0.0, 0.0, 3.0)),
+        ];
+        scene.node_parents = vec![-1, 0, 1];
+        graph.scenes.insert(0, scene);
+
+        graph.compute_world_matrices(0).unwrap();
+        let mat_before = graph.get_world_matrix(0, 2).unwrap();
+        let pos2_before = mat_before.column(3);
+        assert!((pos2_before.x - 1.0).abs() < 1e-5);
+        assert!((pos2_before.y - 2.0).abs() < 1e-5);
+        assert!((pos2_before.z - 3.0).abs() < 1e-5);
+
+        graph.get_scene_mut(0).unwrap().nodes[0] =
+            make_transform((10.0, 0.0, 0.0));
+        graph.test_invalidate_transform(0, 0);
+
+        graph.compute_world_matrices(0).unwrap();
+        let mat_after = graph.get_world_matrix(0, 2).unwrap();
+        let pos2_after = mat_after.column(3);
+        assert!((pos2_after.x - 10.0).abs() < 1e-5);
+        assert!((pos2_after.y - 2.0).abs() < 1e-5);
+        assert!((pos2_after.z - 3.0).abs() < 1e-5);
     }
 }
 
