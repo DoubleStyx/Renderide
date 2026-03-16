@@ -15,6 +15,12 @@ use crate::input::{WindowInputState, winit_key_to_renderite_key};
 use crate::render::RenderLoop;
 use crate::session::Session;
 
+/// Target frame interval when focused (240 Hz). Used with WaitUntil if not using Poll.
+#[allow(dead_code)]
+const FOCUSED_TARGET_INTERVAL: Duration = Duration::from_micros(1_000_000 / 240);
+/// Target frame interval when unfocused (60 Hz).
+const UNFOCUSED_TARGET_INTERVAL: Duration = Duration::from_micros(1_000_000 / 60);
+
 /// Runs the Renderide application: initializes logging, panic hook, session, and event loop.
 /// Returns the exit code if the session requested one, otherwise runs until the window is closed.
 pub fn run() -> Option<i32> {
@@ -225,22 +231,20 @@ impl ApplicationHandler for RenderideApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let unfocused_redraw_interval = Duration::from_secs_f32(1.0 / 60.0);
-
         if let Some(ref window) = self.window {
             if self.input.window_focused {
                 self.last_unfocused_redraw = None;
                 window.request_redraw();
-                event_loop.set_control_flow(ControlFlow::Wait);
+                event_loop.set_control_flow(ControlFlow::Poll);
             } else {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + unfocused_redraw_interval,
+                    Instant::now() + UNFOCUSED_TARGET_INTERVAL,
                 ));
 
                 let now = Instant::now();
                 let should_redraw = self
                     .last_unfocused_redraw
-                    .map(|t| now.duration_since(t) >= unfocused_redraw_interval)
+                    .map(|t| now.duration_since(t) >= UNFOCUSED_TARGET_INTERVAL)
                     .unwrap_or(true);
                 if should_redraw {
                     self.last_unfocused_redraw = Some(now);
