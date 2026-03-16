@@ -88,16 +88,30 @@ pub struct MeshAsset {
     pub vertex_attributes: Vec<VertexAttributeDescriptor>,
     /// Bounding box (center + extents).
     pub bounds: RenderBoundingBox,
-    /// Number of bones in the skeleton. Zero for non-skinned meshes.
-    pub bone_count: i32,
-    /// Number of bone weights across all vertices.
-    pub bone_weight_count: i32,
-    /// Bind poses (inverse bind matrices), one per bone. Only present when bone_count > 0.
+    /// Bind poses (inverse bind matrices), one per bone. Only present for skinned meshes.
     pub bind_poses: Option<Vec<[[f32; 4]; 4]>>,
-    /// Per-vertex bone count (1 byte each). Only present when bone_count > 0.
+    /// Per-vertex bone count (1 byte each). Only present for skinned meshes.
     pub bone_counts: Option<Vec<u8>>,
-    /// Flat bone weights (weight f32, bone_index i32 per entry). Only present when bone_count > 0.
+    /// Flat bone weights (weight f32, bone_index i32 per entry). Only present for skinned meshes.
     pub bone_weights: Option<Vec<u8>>,
+}
+
+impl MeshAsset {
+    /// Number of bones in the skeleton. Zero for non-skinned meshes.
+    pub fn bone_count(&self) -> i32 {
+        self.bind_poses
+            .as_ref()
+            .map(|v| v.len() as i32)
+            .unwrap_or(0)
+    }
+
+    /// Number of bone weights across all vertices (BoneWeight entries, each 8 bytes).
+    pub fn bone_weight_count(&self) -> i32 {
+        self.bone_weights
+            .as_ref()
+            .map(|v| (v.len() / 8) as i32)
+            .unwrap_or(0)
+    }
 }
 
 impl Asset for MeshAsset {

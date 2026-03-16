@@ -383,7 +383,11 @@ pub fn create_mesh_buffers(
         }
     };
 
-    let vertex_buffer_skinned = if mesh.bone_count > 0 {
+    let vertex_buffer_skinned = if mesh
+        .bind_poses
+        .as_ref()
+        .map_or(false, |v| !v.is_empty())
+    {
         build_skinned_vertices(device, mesh, vertex_stride, &vertices).map(Arc::new)
     } else {
         None

@@ -108,8 +108,6 @@ impl AssetRegistry {
             submeshes: data.submeshes,
             vertex_attributes: data.vertex_attributes,
             bounds: data.bounds,
-            bone_count: data.bone_count,
-            bone_weight_count: data.bone_weight_count,
             bind_poses,
             bone_counts,
             bone_weights,

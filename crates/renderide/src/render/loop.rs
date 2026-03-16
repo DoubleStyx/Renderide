@@ -3,7 +3,7 @@
 use nalgebra::{Matrix4, Vector3};
 
 use crate::gpu::{GpuMeshBuffers, GpuState, RenderPipeline, UniformData};
-use crate::scene::{render_transform_to_matrix, SceneGraph};
+use crate::scene::render_transform_to_matrix;
 use crate::session::Session;
 
 /// Encapsulates the render frame logic.
@@ -111,7 +111,6 @@ impl RenderLoop {
             }
             let mut normal_draws: Vec<BatchedDraw<'_>> = Vec::new();
             let mut uv_draws: Vec<BatchedDraw<'_>> = Vec::new();
-            let mut skinned_draws: Vec<(GpuMeshBuffers, Matrix4<f32>, Vec<[[f32; 4]; 4]>)> = Vec::new();
             let scene_graph = session.scene_graph();
 
             for batch in &draw_batches {
@@ -143,25 +142,31 @@ impl RenderLoop {
                     let skinned_mvp = view_proj;
 
                     if *is_skinned {
-                        let has_vb = buffers_ref.vertex_buffer_skinned.is_some();
-                        let has_bind_poses = mesh.bind_poses.is_some();
-                        let has_bone_ids = bone_transform_ids.is_some();
-                        if has_vb && has_bind_poses && has_bone_ids {
-                            let bind_poses = mesh.bind_poses.as_ref().unwrap();
-                            let ids = bone_transform_ids.as_ref().unwrap();
-                            let bone_matrices = compute_bone_matrices(
-                                scene_graph,
-                                batch.space_id,
-                                ids,
-                                bind_poses,
-                            );
-                            skinned_draws.push((
-                                buffers_ref.clone(),
-                                skinned_mvp,
-                                bone_matrices,
-                            ));
+                        let Some(bind_poses) = mesh.bind_poses.as_ref() else {
                             continue;
-                        }
+                        };
+                        let Some(ids) = bone_transform_ids.as_ref() else {
+                            continue;
+                        };
+                        let Some(_) = buffers_ref.vertex_buffer_skinned.as_ref() else {
+                            continue;
+                        };
+                        let bone_matrices =
+                            scene_graph.compute_bone_matrices(batch.space_id, ids, bind_poses);
+                        gpu.pipeline_manager.skinned.upload_skinned(
+                            &gpu.queue,
+                            skinned_mvp,
+                            &bone_matrices,
+                        );
+                        gpu.pipeline_manager.skinned.bind(&mut pass, None);
+                        gpu.pipeline_manager.skinned.draw_skinned(
+                            &mut pass,
+                            buffers_ref,
+                            &UniformData::Skinned {
+                                mvp: skinned_mvp,
+                                bone_matrices: &bone_matrices,
+                            },
+                        );
                         continue;
                     }
 
@@ -202,15 +207,6 @@ impl RenderLoop {
                     &UniformData::Simple { mvp: d.mvp, model: d.model },
                 );
             }
-            for (buffers, mvp, bone_matrices) in &skinned_draws {
-                gpu.pipeline_manager.skinned.upload_skinned(&gpu.queue, *mvp, bone_matrices);
-                gpu.pipeline_manager.skinned.bind(&mut pass, None);
-                gpu.pipeline_manager.skinned.draw_skinned(
-                    &mut pass,
-                    buffers,
-                    &UniformData::Skinned { mvp: *mvp, bone_matrices },
-                );
-            }
         }
 
         gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -223,29 +219,6 @@ fn clamp_near_far(near: f32, far: f32) -> (f32, f32) {
     let near = near.max(0.001);
     let far = if far > near { far } else { near + 1.0 };
     (near, far)
-}
-
-fn compute_bone_matrices(
-    scene_graph: &SceneGraph,
-    space_id: i32,
-    bone_transform_ids: &[i32],
-    bind_poses: &[[[f32; 4]; 4]],
-) -> Vec<[[f32; 4]; 4]> {
-    let mut out = Vec::with_capacity(bone_transform_ids.len().min(bind_poses.len()));
-    for (i, &tid) in bone_transform_ids.iter().enumerate() {
-        let bind = bind_poses.get(i).copied().unwrap_or(nalgebra::Matrix4::identity().into());
-        let bind_mat = Matrix4::from_fn(|r, c| bind[r][c]);
-        let world = if tid >= 0 {
-            scene_graph
-                .get_world_matrix(space_id, tid as usize)
-                .unwrap_or_else(Matrix4::identity)
-        } else {
-            Matrix4::identity()
-        };
-        let combined: [[f32; 4]; 4] = (world * bind_mat).into();
-        out.push(combined);
-    }
-    out
 }
 
 fn reverse_z_projection(aspect: f32, vertical_fov: f32, near: f32, far: f32) -> Matrix4<f32> {

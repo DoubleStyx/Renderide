@@ -154,6 +154,30 @@ impl SceneGraph {
             .and_then(|mats| mats.get(transform_id).copied())
     }
 
+    /// Computes bone matrices for skinned mesh rendering.
+    /// Each output matrix is `world_matrix(bone_id) * bind_pose[i]`.
+    pub fn compute_bone_matrices(
+        &self,
+        space_id: i32,
+        bone_transform_ids: &[i32],
+        bind_poses: &[[[f32; 4]; 4]],
+    ) -> Vec<[[f32; 4]; 4]> {
+        let mut out = Vec::with_capacity(bone_transform_ids.len().min(bind_poses.len()));
+        for (i, &tid) in bone_transform_ids.iter().enumerate() {
+            let bind = bind_poses.get(i).copied().unwrap_or(Matrix4::identity().into());
+            let bind_mat = Matrix4::from_fn(|r, c| bind[r][c]);
+            let world = if tid >= 0 {
+                self.get_world_matrix(space_id, tid as usize)
+                    .unwrap_or_else(Matrix4::identity)
+            } else {
+                Matrix4::identity()
+            };
+            let combined: [[f32; 4]; 4] = (world * bind_mat).into();
+            out.push(combined);
+        }
+        out
+    }
+
     /// Applies a frame's render space updates.
     pub fn apply_frame_update(
         &mut self,
