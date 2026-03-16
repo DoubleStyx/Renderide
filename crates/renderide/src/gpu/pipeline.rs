@@ -715,10 +715,9 @@ impl RenderPipeline for SkinnedPipeline {
         buffers: &GpuMeshBuffers,
         _uniforms: &UniformData<'_>,
     ) {
-        let vb = buffers
-            .vertex_buffer_skinned
-            .as_ref()
-            .expect("skinned pipeline requires vertex_buffer_skinned");
+        let Some(vb) = buffers.vertex_buffer_skinned.as_ref() else {
+            return;
+        };
         pass.set_vertex_buffer(0, vb.slice(..));
         pass.set_index_buffer(buffers.index_buffer.slice(..), buffers.index_format);
         for &(index_start, index_count) in &buffers.submeshes {

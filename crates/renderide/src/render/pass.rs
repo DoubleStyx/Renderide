@@ -259,13 +259,33 @@ impl RenderPass for MeshRenderPass {
                 let skinned_mvp = view_proj;
 
                 if d.is_skinned {
+                    // Future: batch skinned draws that share mesh and material into single bind + multiple draw calls.
                     let Some(bind_poses) = mesh.bind_poses.as_ref() else {
+                        crate::warn!(
+                            "Skinned draw skipped: mesh missing bind_poses (mesh={})",
+                            d.mesh_asset_id
+                        );
                         continue;
                     };
                     let Some(ids) = d.bone_transform_ids.as_deref() else {
+                        crate::warn!(
+                            "Skinned draw skipped: bone_transform_ids missing or empty (mesh={})",
+                            d.mesh_asset_id
+                        );
                         continue;
                     };
+                    if ids.is_empty() {
+                        crate::warn!(
+                            "Skinned draw skipped: bone_transform_ids missing or empty (mesh={})",
+                            d.mesh_asset_id
+                        );
+                        continue;
+                    }
                     let Some(_) = buffers_ref.vertex_buffer_skinned.as_ref() else {
+                        crate::warn!(
+                            "Skinned draw skipped: vertex_buffer_skinned missing (mesh={})",
+                            d.mesh_asset_id
+                        );
                         continue;
                     };
                     let Some(skinned) = ctx.pipeline_manager.get_pipeline(

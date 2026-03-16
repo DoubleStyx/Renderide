@@ -507,10 +507,23 @@ pub fn create_mesh_buffers(
         }
     };
 
-    let vertex_buffer_skinned = if mesh.bind_poses.as_ref().is_some_and(|v| !v.is_empty()) {
-        build_skinned_vertices(device, mesh, vertex_stride, &vertices).map(Arc::new)
-    } else {
-        None
+    let vertex_buffer_skinned = {
+        let has_bind_poses =
+            mesh.bind_poses.as_ref().is_some_and(|v| !v.is_empty());
+        let has_bone_counts =
+            mesh.bone_counts.as_ref().is_some_and(|v| !v.is_empty());
+        let has_bone_weights =
+            mesh.bone_weights.as_ref().is_some_and(|v| !v.is_empty());
+        let bone_counts_match = mesh
+            .bone_counts
+            .as_ref()
+            .map(|c| c.len())
+            .is_some_and(|len| len == vc);
+        if has_bind_poses && has_bone_counts && has_bone_weights && bone_counts_match {
+            build_skinned_vertices(device, mesh, vertex_stride, &vertices).map(Arc::new)
+        } else {
+            None
+        }
     };
 
     Some(GpuMeshBuffers {

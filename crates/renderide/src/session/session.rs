@@ -358,9 +358,31 @@ impl Session {
             let mut samples = Vec::new();
             let use_debug_uv = self.render_config.use_debug_uv;
             let _frame_index = self.last_frame_index;
-            for entry in &scene.drawables {
+            let combined = scene.drawables.iter().map(|d| (d, false)).chain(
+                scene.skinned_drawables.iter().map(|d| (d, true)),
+            );
+            for (entry, is_skinned) in combined {
                 if entry.node_id < 0 {
                     continue;
+                }
+                if is_skinned {
+                    if entry.bone_transform_ids.as_ref().map_or(true, |b| b.is_empty()) {
+                        crate::warn!(
+                            "Skinned draw skipped: bone_transform_ids missing or empty (node_id={})",
+                            entry.node_id
+                        );
+                        continue;
+                    }
+                    if let Some(mesh) = self.asset_registry.get_mesh(entry.mesh_handle) {
+                        if mesh.bind_poses.as_ref().map_or(true, |b| b.is_empty()) {
+                            crate::warn!(
+                                "Skinned draw skipped: mesh missing bind_poses (mesh={}, node_id={})",
+                                entry.mesh_handle,
+                                entry.node_id
+                            );
+                            continue;
+                        }
+                    }
                 }
                 let idx = entry.node_id as usize;
                 let world_matrix = match self.scene_graph.get_world_matrix(space_id, idx) {
@@ -378,48 +400,27 @@ impl Session {
                     let t = world_matrix.column(3);
                     samples.push((entry.node_id, format!("({:.2},{:.2},{:.2})", t.x, t.y, t.z)));
                 }
-                let pipeline_variant = compute_pipeline_variant(
-                    false,
-                    entry.mesh_handle,
-                    use_debug_uv,
-                    &self.asset_registry,
-                );
+                let pipeline_variant = if is_skinned {
+                    PipelineVariant::Skinned
+                } else {
+                    compute_pipeline_variant(
+                        false,
+                        entry.mesh_handle,
+                        use_debug_uv,
+                        &self.asset_registry,
+                    )
+                };
                 draws.push(DrawEntry {
                     model_matrix: world_matrix,
                     mesh_asset_id: entry.mesh_handle,
-                    is_skinned: false,
+                    is_skinned,
                     material_id,
-                    bone_transform_ids: None,
+                    bone_transform_ids: if is_skinned {
+                        entry.bone_transform_ids.clone()
+                    } else {
+                        None
+                    },
                     pipeline_variant,
-                });
-            }
-            for entry in &scene.skinned_drawables {
-                if entry.node_id < 0 {
-                    continue;
-                }
-                let idx = entry.node_id as usize;
-                let world_matrix = match self.scene_graph.get_world_matrix(space_id, idx) {
-                    Some(m) => m,
-                    None => {
-                        if idx >= scene.nodes.len() {
-                            continue;
-                        }
-
-                        render_transform_to_matrix(&scene.nodes[idx])
-                    }
-                };
-                let material_id = entry.material_handle.unwrap_or(-1);
-                if samples.len() < 3 {
-                    let t = world_matrix.column(3);
-                    samples.push((entry.node_id, format!("({:.2},{:.2},{:.2})", t.x, t.y, t.z)));
-                }
-                draws.push(DrawEntry {
-                    model_matrix: world_matrix,
-                    mesh_asset_id: entry.mesh_handle,
-                    is_skinned: true,
-                    material_id,
-                    bone_transform_ids: entry.bone_transform_ids.clone(),
-                    pipeline_variant: PipelineVariant::Skinned,
                 });
             }
 

@@ -436,6 +436,9 @@ impl SceneGraph {
         Ok(())
     }
 
+    /// Applies skinned mesh renderable updates. Bone transform IDs are fixup'd when transforms
+    /// are removed via swap_remove: references to the removed ID become -1; references to the
+    /// last index (now swapped into the removed slot) become the removed ID.
     fn apply_skinned_mesh_renderables_update(
         scene: &mut Scene,
         shm: &mut SharedMemoryAccessor,
