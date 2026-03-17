@@ -4,6 +4,7 @@ use crate::ipc::shared_memory::SharedMemoryAccessor;
 use crate::shared::{MeshUploadData, ShaderUpload};
 
 use super::manager::AssetManager;
+use super::material_properties::MaterialPropertyStore;
 use super::mesh::{self, MeshAsset};
 use super::shader::ShaderAsset;
 use super::texture::TextureAsset;
@@ -15,6 +16,8 @@ pub struct AssetRegistry {
     #[allow(dead_code)]
     textures: AssetManager<TextureAsset>,
     shaders: AssetManager<ShaderAsset>,
+    /// Material property values per block (from MaterialsUpdateBatch).
+    pub material_property_store: MaterialPropertyStore,
     upload_count: u64,
     unload_count: u64,
 }
@@ -26,6 +29,7 @@ impl AssetRegistry {
             meshes: AssetManager::new(),
             textures: AssetManager::new(),
             shaders: AssetManager::new(),
+            material_property_store: MaterialPropertyStore::new(),
             upload_count: 0,
             unload_count: 0,
         }

@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use nalgebra::Matrix4;
 
 use crate::assets::{self, AssetRegistry};
+use crate::stencil::{StencilOperation, StencilState};
 use crate::config::RenderConfig;
 use crate::gpu::{GpuState, PipelineVariant};
 use crate::ipc::receiver::CommandReceiver;
@@ -365,6 +366,9 @@ impl Session {
     /// For non-overlay spaces: include. For overlay spaces: include only when `!is_private`
     /// (main view never shows private overlays; matches CameraRenderer culling mask when
     /// renderPrivateUI is false). Skips draws where layer is Hidden.
+    ///
+    /// **Overlay view**: Overlay spaces use `primary_view_transform()` as view override
+    /// (UpdateOverlayPositioning); overlay batches follow the head/camera.
     pub fn collect_draw_batches(&mut self) -> Vec<SpaceDrawBatch> {
         let space_ids: Vec<i32> = self
             .scene_graph
@@ -396,6 +400,8 @@ impl Session {
             ));
         }
         batches.sort_by_key(|b| b.is_overlay);
+        let overlay_count = batches.iter().filter(|b| b.is_overlay).count();
+        logger::trace!("collected {} overlay batches", overlay_count);
         batches
     }
 
@@ -545,17 +551,57 @@ fn filter_and_collect_drawables(
                 render_transform_to_matrix(&scene.nodes[idx])
             }
         };
-        let pipeline_variant = if is_skinned && scene.is_overlay && entry.stencil_state.is_some() {
-            PipelineVariant::OverlayStencilSkinned
+
+        let stencil_state = if scene.is_overlay {
+            if let Some(block_id) = entry.material_override_block_id {
+                StencilState::from_property_store(&asset_registry.material_property_store, block_id)
+                    .or(entry.stencil_state)
+            } else {
+                entry.stencil_state
+            }
+        } else {
+            None
+        };
+
+        let mut drawable = entry.clone();
+        drawable.stencil_state = stencil_state;
+
+        let pipeline_variant = if scene.is_overlay {
+            if let Some(ref stencil) = drawable.stencil_state {
+                let stencil_variant = if stencil.pass_op == StencilOperation::Replace
+                    && stencil.write_mask != 0
+                {
+                    if is_skinned {
+                        PipelineVariant::OverlayStencilMaskWriteSkinned
+                    } else {
+                        PipelineVariant::OverlayStencilMaskWrite
+                    }
+                } else if stencil.pass_op == StencilOperation::Zero {
+                    if is_skinned {
+                        PipelineVariant::OverlayStencilMaskClearSkinned
+                    } else {
+                        PipelineVariant::OverlayStencilMaskClear
+                    }
+                } else {
+                    if is_skinned {
+                        PipelineVariant::OverlayStencilSkinned
+                    } else {
+                        PipelineVariant::OverlayStencilContent
+                    }
+                };
+                stencil_variant
+            } else if is_skinned {
+                PipelineVariant::Skinned
+            } else {
+                compute_pipeline_variant(false, entry.mesh_handle, use_debug_uv, asset_registry)
+            }
         } else if is_skinned {
             PipelineVariant::Skinned
-        } else if scene.is_overlay && entry.stencil_state.is_some() {
-            PipelineVariant::OverlayStencilContent
         } else {
             compute_pipeline_variant(false, entry.mesh_handle, use_debug_uv, asset_registry)
         };
         out.push(FilteredDrawable {
-            drawable: entry.clone(),
+            drawable,
             world_matrix,
             pipeline_variant,
         });

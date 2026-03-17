@@ -130,6 +130,9 @@ pub struct Drawable {
     /// Per-draw stencil state for GraphicsChunk masking (scroll rects, clipping).
     /// Populated from material property blocks when host exports IUIX_Material stencil props.
     pub stencil_state: Option<crate::stencil::StencilState>,
+    /// Material override block ID for stencil lookup. Set from RenderMaterialOverridesUpdate when
+    /// the host sends material override states; used for later stencil/property block binding.
+    pub material_override_block_id: Option<i32>,
 }
 
 impl Default for Drawable {
@@ -145,6 +148,7 @@ impl Default for Drawable {
             root_bone_transform_id: None,
             blend_shape_weights: None,
             stencil_state: None,
+            material_override_block_id: None,
         }
     }
 }

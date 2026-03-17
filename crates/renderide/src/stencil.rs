@@ -4,6 +4,12 @@
 //! StencilID, StencilReadMask, StencilWriteMask. Used when the host exports
 //! stencil material properties via material property blocks.
 //!
+//! ## Property IDs
+//!
+//! Stencil property IDs are host-defined. The constants below match typical
+//! IUIX_Material / Renderite.Shared conventions. Override via MaterialPropertyIdResult
+//! when the host sends a different mapping.
+//!
 //! ## GraphicsChunk RenderType
 //!
 //! UIX GraphicsChunk uses a three-phase stencil pattern:
@@ -13,6 +19,29 @@
 //!
 //! Draw order must be MaskWrite → Content → MaskClear. The host exports per-draw
 //! [`StencilState`] via material property blocks; sort_key controls draw order.
+
+/// Known stencil property IDs for IUIX_Material. Host-defined; these match typical
+/// Renderite.Shared / FrooxEngine conventions. Override via MaterialPropertyIdResult.
+pub mod property_ids {
+    /// StencilComparison (set_float, 0–7).
+    pub const STENCIL_COMPARISON: i32 = 0;
+    /// StencilPassOp (set_float, 0–7).
+    pub const STENCIL_PASS_OP: i32 = 1;
+    /// StencilFailOp (set_float, 0–7).
+    pub const STENCIL_FAIL_OP: i32 = 2;
+    /// StencilDepthFailOp (set_float, 0–7).
+    pub const STENCIL_DEPTH_FAIL_OP: i32 = 3;
+    /// StencilID / reference (set_float, 0–255).
+    pub const STENCIL_ID: i32 = 4;
+    /// StencilReadMask (set_float, 0–255).
+    pub const STENCIL_READ_MASK: i32 = 5;
+    /// StencilWriteMask (set_float, 0–255).
+    pub const STENCIL_WRITE_MASK: i32 = 6;
+    /// RectClip (set_float, 0/1). When 1, use RECT for clip_rect.
+    pub const RECT_CLIP: i32 = 7;
+    /// Rect (set_float4: x, y, width, height) when RectClip is true.
+    pub const RECT: i32 = 8;
+}
 
 /// Stencil comparison function. Matches Unity/GraphicsChunk StencilComparison.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -116,6 +145,140 @@ pub struct StencilState {
 impl StencilState {
     /// No stencil test (default for regular meshes).
     pub const NONE: Option<Self> = None;
+
+    /// Builds StencilState from material property store for a block.
+    ///
+    /// Returns `Some` when stencil-related properties exist (e.g. StencilID/reference non-zero,
+    /// or StencilComparison set). Maps set_float (0–7) to StencilComparison/StencilOperation;
+    /// set_float4 to ClipRect when RectClip is true.
+    pub fn from_property_store(
+        store: &crate::assets::MaterialPropertyStore,
+        block_id: i32,
+    ) -> Option<Self> {
+        use crate::assets::MaterialPropertyValue;
+        use property_ids::*;
+
+        let float_to_u8 = |v: f32| v.clamp(0.0, 255.0) as u8;
+        let float_to_op = |v: f32| {
+            let i = v.round() as i32;
+            match i.clamp(0, 7) {
+                0 => StencilOperation::Keep,
+                1 => StencilOperation::Replace,
+                2 => StencilOperation::Zero,
+                3 => StencilOperation::IncrementSaturate,
+                4 => StencilOperation::DecrementSaturate,
+                5 => StencilOperation::Invert,
+                6 => StencilOperation::IncrementWrap,
+                _ => StencilOperation::DecrementWrap,
+            }
+        };
+        let float_to_comp = |v: f32| {
+            let i = v.round() as i32;
+            match i.clamp(0, 7) {
+                0 => StencilComparison::Always,
+                1 => StencilComparison::Equal,
+                2 => StencilComparison::NotEqual,
+                3 => StencilComparison::Less,
+                4 => StencilComparison::LessEqual,
+                5 => StencilComparison::Greater,
+                6 => StencilComparison::GreaterEqual,
+                _ => StencilComparison::Never,
+            }
+        };
+
+        let comparison = store
+            .get(block_id, STENCIL_COMPARISON)
+            .and_then(|v| match v {
+                MaterialPropertyValue::Float(f) => Some(float_to_comp(*f)),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let pass_op = store
+            .get(block_id, STENCIL_PASS_OP)
+            .and_then(|v| match v {
+                MaterialPropertyValue::Float(f) => Some(float_to_op(*f)),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let fail_op = store
+            .get(block_id, STENCIL_FAIL_OP)
+            .and_then(|v| match v {
+                MaterialPropertyValue::Float(f) => Some(float_to_op(*f)),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let depth_fail_op = store
+            .get(block_id, STENCIL_DEPTH_FAIL_OP)
+            .and_then(|v| match v {
+                MaterialPropertyValue::Float(f) => Some(float_to_op(*f)),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let reference = store
+            .get(block_id, STENCIL_ID)
+            .and_then(|v| match v {
+                MaterialPropertyValue::Float(f) => Some(float_to_u8(*f)),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let read_mask = store
+            .get(block_id, STENCIL_READ_MASK)
+            .and_then(|v| match v {
+                MaterialPropertyValue::Float(f) => Some(float_to_u8(*f)),
+                _ => None,
+            })
+            .unwrap_or(0xFF);
+        let write_mask = store
+            .get(block_id, STENCIL_WRITE_MASK)
+            .and_then(|v| match v {
+                MaterialPropertyValue::Float(f) => Some(float_to_u8(*f)),
+                _ => None,
+            })
+            .unwrap_or(0);
+
+        let rect_clip = store
+            .get(block_id, RECT_CLIP)
+            .and_then(|v| match v {
+                MaterialPropertyValue::Float(f) => Some(*f >= 0.5),
+                _ => None,
+            })
+            .unwrap_or(false);
+        let clip_rect = if rect_clip {
+            store.get(block_id, RECT).and_then(|v| match v {
+                MaterialPropertyValue::Float4(arr) => Some(ClipRect {
+                    x: arr[0],
+                    y: arr[1],
+                    width: arr[2],
+                    height: arr[3],
+                }),
+                _ => None,
+            })
+        } else {
+            None
+        };
+
+        let has_stencil = reference != 0
+            || comparison != StencilComparison::Always
+            || pass_op != StencilOperation::Keep
+            || fail_op != StencilOperation::Keep
+            || depth_fail_op != StencilOperation::Keep
+            || write_mask != 0;
+
+        if has_stencil {
+            Some(Self {
+                comparison,
+                pass_op,
+                fail_op,
+                depth_fail_op,
+                reference,
+                read_mask,
+                write_mask,
+                clip_rect,
+            })
+        } else {
+            None
+        }
+    }
 
     /// Converts to wgpu stencil state for the front face.
     pub fn to_wgpu_stencil_face(&self) -> wgpu::StencilFaceState {

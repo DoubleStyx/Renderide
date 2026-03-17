@@ -230,6 +230,7 @@ pub(super) fn collect_mesh_draws(ctx: &RenderPassContext) -> (
 
 /// Maps overlay pipeline variant to no-depth variant when orthographic overlay is used.
 /// Orthographic screen-space UI should not be occluded by scene depth.
+/// MaskWrite/MaskClear variants are not mapped to no-depth since they need stencil.
 pub(super) fn overlay_pipeline_variant_for_orthographic(
     variant: &PipelineVariant,
     overlay_orthographic: bool,
@@ -241,6 +242,10 @@ pub(super) fn overlay_pipeline_variant_for_orthographic(
         PipelineVariant::NormalDebug => PipelineVariant::OverlayNoDepthNormalDebug,
         PipelineVariant::UvDebug => PipelineVariant::OverlayNoDepthUvDebug,
         PipelineVariant::Skinned => PipelineVariant::OverlayNoDepthSkinned,
+        PipelineVariant::OverlayStencilMaskWrite
+        | PipelineVariant::OverlayStencilMaskClear
+        | PipelineVariant::OverlayStencilMaskWriteSkinned
+        | PipelineVariant::OverlayStencilMaskClearSkinned => variant.clone(),
         _ => variant.clone(),
     }
 }
@@ -309,6 +314,8 @@ pub(super) fn record_skinned_draws(
         let is_stencil_pipeline = matches!(
             pipeline_variant,
             crate::gpu::PipelineVariant::OverlayStencilSkinned
+                | crate::gpu::PipelineVariant::OverlayStencilMaskWriteSkinned
+                | crate::gpu::PipelineVariant::OverlayStencilMaskClearSkinned
         );
         for (j, d) in group.iter().enumerate() {
             let Some(buffers) = params.mesh_buffer_cache.get(&d.mesh_asset_id) else {
@@ -371,6 +378,8 @@ pub(super) fn record_non_skinned_draws(
         let use_overlay_upload = matches!(
             variant,
             crate::gpu::PipelineVariant::OverlayStencilContent
+                | crate::gpu::PipelineVariant::OverlayStencilMaskWrite
+                | crate::gpu::PipelineVariant::OverlayStencilMaskClear
         );
         if use_overlay_upload {
             let items: Vec<_> = group
@@ -391,7 +400,11 @@ pub(super) fn record_non_skinned_draws(
         let is_stencil_pipeline = matches!(
             pipeline_variant,
             crate::gpu::PipelineVariant::OverlayStencilContent
+                | crate::gpu::PipelineVariant::OverlayStencilMaskWrite
+                | crate::gpu::PipelineVariant::OverlayStencilMaskClear
                 | crate::gpu::PipelineVariant::OverlayStencilSkinned
+                | crate::gpu::PipelineVariant::OverlayStencilMaskWriteSkinned
+                | crate::gpu::PipelineVariant::OverlayStencilMaskClearSkinned
         );
         for (j, d) in group.iter().enumerate() {
             let Some(buffers) = params.mesh_buffer_cache.get(&d.mesh_asset_id) else {
@@ -403,7 +416,7 @@ pub(super) fn record_non_skinned_draws(
             } else if is_stencil_pipeline {
                 debug_assert!(
                     d.stencil_state.is_some(),
-                    "OverlayStencilContent/OverlayStencilSkinned draws must have stencil_state"
+                    "Overlay stencil draws must have stencil_state"
                 );
             }
             pipeline.draw_mesh(

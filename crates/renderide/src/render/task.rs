@@ -76,6 +76,8 @@ impl RenderTaskExecutor {
 
             let aspect = w as f32 / h.max(1) as f32;
             let proj = projection_for_params(params, aspect);
+            // Task proj is passed as ctx.proj; overlay batches use it when overlay_projection_override
+            // is None. For orthographic tasks, overlay batches correctly use the task's orthographic proj.
 
             if let Err(e) = render_loop.render_to_target(
                 gpu,

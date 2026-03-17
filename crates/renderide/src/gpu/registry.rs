@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::pipeline::{
-    MaterialPipeline, NormalDebugPipeline, OverlayStencilPipeline, OverlayStencilSkinnedPipeline,
+    MaterialPipeline, NormalDebugPipeline, OverlayStencilMaskClearPipeline,
+    OverlayStencilMaskClearSkinnedPipeline, OverlayStencilMaskWritePipeline,
+    OverlayStencilMaskWriteSkinnedPipeline, OverlayStencilPipeline, OverlayStencilSkinnedPipeline,
     PbrPipeline, RenderPipeline, SkinnedPipeline, UvDebugPipeline,
 };
 
@@ -15,6 +17,8 @@ use super::pipeline::{
 pub struct PipelineKey(pub Option<i32>, pub PipelineVariant);
 
 /// Variant of render pipeline (debug, skinned, material, PBR).
+///
+/// Ord is used for draw batching: MaskWrite < Content < MaskClear for GraphicsChunk flow.
 #[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
 pub enum PipelineVariant {
     /// Normal debug: colors surfaces by smooth normal.
@@ -23,11 +27,18 @@ pub enum PipelineVariant {
     UvDebug,
     /// Skinned mesh: transforms vertices by weighted bone matrices.
     Skinned,
-    /// Overlay with stencil for GraphicsChunk masking (Content phase: Equal compare, Keep op).
-    /// See [`crate::stencil`] for MaskWrite/Content/MaskClear RenderType flow.
+    /// Overlay stencil MaskWrite: compare=Always, pass_op=Replace, write_mask=0xFF.
+    OverlayStencilMaskWrite,
+    /// Overlay stencil Content: compare=Equal, pass_op=Keep, write_mask=0.
     OverlayStencilContent,
-    /// Skinned overlay with stencil for GraphicsChunk masking (Content phase).
+    /// Overlay stencil MaskClear: compare=Always, pass_op=Zero, write_mask=0xFF.
+    OverlayStencilMaskClear,
+    /// Skinned overlay stencil MaskWrite.
+    OverlayStencilMaskWriteSkinned,
+    /// Skinned overlay stencil Content.
     OverlayStencilSkinned,
+    /// Skinned overlay stencil MaskClear.
+    OverlayStencilMaskClearSkinned,
     /// Normal debug with depth test disabled for orthographic screen-space overlay.
     OverlayNoDepthNormalDebug,
     /// UV debug with depth test disabled for orthographic screen-space overlay.
@@ -69,15 +80,31 @@ impl PipelineRegistry {
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::Skinned),
-            Arc::new(SkinnedPipeline::new(device, config, false, false)),
+            Arc::new(SkinnedPipeline::new(device, config, None, false)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::OverlayStencilMaskWrite),
+            Arc::new(OverlayStencilMaskWritePipeline::new(device, config)),
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::OverlayStencilContent),
             Arc::new(OverlayStencilPipeline::new(device, config)),
         );
         self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::OverlayStencilMaskClear),
+            Arc::new(OverlayStencilMaskClearPipeline::new(device, config)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::OverlayStencilMaskWriteSkinned),
+            Arc::new(OverlayStencilMaskWriteSkinnedPipeline::new(device, config)),
+        );
+        self.pipelines.insert(
             PipelineKey(None, PipelineVariant::OverlayStencilSkinned),
             Arc::new(OverlayStencilSkinnedPipeline::new(device, config)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::OverlayStencilMaskClearSkinned),
+            Arc::new(OverlayStencilMaskClearSkinnedPipeline::new(device, config)),
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::OverlayNoDepthNormalDebug),
@@ -89,7 +116,7 @@ impl PipelineRegistry {
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::OverlayNoDepthSkinned),
-            Arc::new(SkinnedPipeline::new(device, config, false, true)),
+            Arc::new(SkinnedPipeline::new(device, config, None, true)),
         );
     }
 

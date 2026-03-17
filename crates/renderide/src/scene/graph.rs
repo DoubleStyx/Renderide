@@ -12,7 +12,8 @@ use crate::scene::{Drawable, Scene, SceneId};
 use crate::shared::packing::enum_repr::EnumRepr;
 use crate::shared::{
     BlendshapeUpdate, BlendshapeUpdateBatch, BoneAssignment, LayerType, LayerUpdate,
-    MeshRenderablesUpdate, ReflectionProbeSH2Task, RenderTransform, SkinnedMeshRenderablesUpdate,
+    MeshRenderablesUpdate, ReflectionProbeSH2Task, RenderMaterialOverridesUpdate,
+    RenderMaterialOverrideState, RenderTransform, SkinnedMeshRenderablesUpdate,
     TransformParentUpdate, TransformPoseUpdate, TransformsUpdate,
 };
 
@@ -23,6 +24,14 @@ struct LayerAssignmentPod {
     transform_id: i32,
     layer_type: u8,
     _pad: [u8; 3],
+}
+
+/// Layout-compatible with MaterialOverrideState for shared memory access.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Pod, Zeroable)]
+struct MaterialOverrideStatePod {
+    material_slot_index: i32,
+    material_asset_id: i32,
 }
 
 /// Layout-compatible with MeshRendererState for shared memory access.
@@ -297,6 +306,9 @@ impl SceneGraph {
                     frame_index,
                     &transform_removals,
                 )?;
+            }
+            if let Some(ref mat_override_update) = update.render_material_overrides_update {
+                Self::apply_render_material_overrides_update(scene, shm, mat_override_update)?;
             }
             Self::sync_drawable_layers(scene);
         }
@@ -588,6 +600,7 @@ impl SceneGraph {
                     root_bone_transform_id: None,
                     blend_shape_weights: None,
                     stencil_state: None,
+                    material_override_block_id: None,
                 });
             }
         }
@@ -677,6 +690,7 @@ impl SceneGraph {
                     root_bone_transform_id: None,
                     blend_shape_weights: Some(vec![]),
                     stencil_state: None,
+                    material_override_block_id: None,
                 });
             }
         }
@@ -770,6 +784,59 @@ impl SceneGraph {
             }
         }
 
+        Ok(())
+    }
+
+    /// Applies render material overrides from host. Maps each renderable to its first material
+    /// override's material_asset_id for later stencil lookup. Uses material_override_states and
+    /// states buffers; states are laid out contiguously per renderable (materrial_override_count
+    /// entries each).
+    fn apply_render_material_overrides_update(
+        scene: &mut Scene,
+        shm: &mut SharedMemoryAccessor,
+        update: &RenderMaterialOverridesUpdate,
+    ) -> Result<(), SceneError> {
+        if update.material_override_states.length <= 0 || update.states.length <= 0 {
+            return Ok(());
+        }
+        let override_states = shm
+            .access_copy_diagnostic::<RenderMaterialOverrideState>(&update.material_override_states)
+            .map_err(SceneError::SharedMemoryAccess)?;
+        let states = shm
+            .access_copy_diagnostic::<MaterialOverrideStatePod>(&update.states)
+            .map_err(SceneError::SharedMemoryAccess)?;
+
+        let mesh_count = scene.drawables.len();
+        let skinned_count = scene.skinned_drawables.len();
+        let total_renderables = mesh_count + skinned_count;
+
+        let mut state_offset = 0;
+        for ov in &override_states {
+            if ov.renderable_index < 0 {
+                break;
+            }
+            let count = ov.materrial_override_count.max(0) as usize;
+            if state_offset + count > states.len() {
+                break;
+            }
+            let material_asset_id = if count > 0 {
+                Some(states[state_offset].material_asset_id)
+            } else {
+                None
+            };
+            state_offset += count;
+
+            let idx = ov.renderable_index as usize;
+            if idx >= total_renderables {
+                continue;
+            }
+            if idx < mesh_count {
+                scene.drawables[idx].material_override_block_id = material_asset_id;
+            } else {
+                scene.skinned_drawables[idx - mesh_count].material_override_block_id =
+                    material_asset_id;
+            }
+        }
         Ok(())
     }
 
