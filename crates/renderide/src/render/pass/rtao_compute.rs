@@ -76,9 +76,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
     let t_min = 0.01;
     var occluded = 0u;
     let pixel_seed = f32(global_id.y * dims.x + global_id.x);
+    let seed_frac = fract(pixel_seed * 0.0001) * 10000.0;
     for (var i = 0u; i < 8u; i++) {
-        let u1 = hash21(vec2f(pixel_seed, f32(i) * 0.6180339887));
-        let u2 = hash21(vec2f(pixel_seed + 1.0, f32(i) * 0.6180339887));
+        let u1 = hash21(vec2f(seed_frac, f32(i) * 0.6180339887));
+        let u2 = hash21(vec2f(seed_frac + 1.0, f32(i) * 0.6180339887));
         let dir = cosine_hemisphere_sample(u1, u2, normal);
         var rq: ray_query;
         rayQueryInitialize(&rq, acc_struct, RayDesc(0u, 0xFFu, t_min, uniforms.ao_radius, origin, dir));
