@@ -544,6 +544,208 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 }
 "#;
 
+/// Normal debug MRT shader: outputs color, world position, world normal for RTAO.
+const NORMAL_DEBUG_MRT_SHADER_SRC: &str = r#"
+struct VertexInput {
+    @location(0) position: vec3f,
+    @location(1) normal: vec3f,
+}
+struct VertexOutput {
+    @builtin(position) clip_position: vec4f,
+    @location(0) world_normal: vec3f,
+    @location(1) world_position: vec3f,
+}
+struct Uniforms {
+    mvp: mat4x4f,
+    model: mat4x4f,
+}
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let world_pos = uniforms.model * vec4f(in.position, 1.0);
+    out.clip_position = uniforms.mvp * vec4f(in.position, 1.0);
+    out.world_normal = (uniforms.model * vec4f(in.normal, 0.0)).xyz;
+    out.world_position = world_pos.xyz;
+    return out;
+}
+struct FragmentOutput {
+    @location(0) color: vec4f,
+    @location(1) position: vec4f,
+    @location(2) normal: vec4f,
+}
+@fragment
+fn fs_main(in: VertexOutput) -> FragmentOutput {
+    let n = normalize(in.world_normal);
+    return FragmentOutput(
+        vec4f(n * 0.5 + 0.5, 1.0),
+        vec4f(in.world_position, 1.0),
+        vec4f(n, 0.0),
+    );
+}
+"#;
+
+/// UV debug MRT shader: outputs color, world position, world normal for RTAO.
+const UV_DEBUG_MRT_SHADER_SRC: &str = r#"
+struct VertexInput {
+    @location(0) position: vec3f,
+    @location(1) uv: vec2f,
+}
+struct VertexOutput {
+    @builtin(position) clip_position: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) world_position: vec3f,
+    @location(2) world_normal: vec3f,
+}
+struct Uniforms {
+    mvp: mat4x4f,
+    model: mat4x4f,
+}
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let world_pos = uniforms.model * vec4f(in.position, 1.0);
+    out.clip_position = uniforms.mvp * vec4f(in.position, 1.0);
+    out.uv = in.uv;
+    out.world_position = world_pos.xyz;
+    out.world_normal = (uniforms.model * vec4f(0.0, 1.0, 0.0, 0.0)).xyz;
+    return out;
+}
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> vec3f {
+    let c = v * s;
+    let h6 = h * 6.0;
+    let h2 = h6 - 2.0 * floor(h6 / 2.0);
+    let x = c * (1.0 - abs(h2 - 1.0));
+    let m = v - c;
+    var r = 0.0;
+    var g = 0.0;
+    var b = 0.0;
+    if h6 < 1.0 {
+        r = c; g = x; b = 0.0;
+    } else if h6 < 2.0 {
+        r = x; g = c; b = 0.0;
+    } else if h6 < 3.0 {
+        r = 0.0; g = c; b = x;
+    } else if h6 < 4.0 {
+        r = 0.0; g = x; b = c;
+    } else if h6 < 5.0 {
+        r = x; g = 0.0; b = c;
+    } else {
+        r = c; g = 0.0; b = x;
+    }
+    return vec3f(r + m, g + m, b + m);
+}
+struct UvFragmentOutput {
+    @location(0) color: vec4f,
+    @location(1) position: vec4f,
+    @location(2) normal: vec4f,
+}
+@fragment
+fn fs_main(in: VertexOutput) -> UvFragmentOutput {
+    let u = clamp(in.uv.x, 0.0, 1.0);
+    let v = clamp(in.uv.y, 0.0, 1.0);
+    let hue = u * (300.0 / 360.0);
+    let sat = 1.0 - v;
+    let rgb = hsv_to_rgb(hue, sat, 1.0);
+    let n = normalize(in.world_normal);
+    return UvFragmentOutput(
+        vec4f(rgb, 1.0),
+        vec4f(in.world_position, 1.0),
+        vec4f(n, 0.0),
+    );
+}
+"#;
+
+/// Skinned MRT shader: outputs color, world position, world normal for RTAO.
+const SKINNED_MRT_SHADER_SRC: &str = r#"
+struct VertexInput {
+    @location(0) position: vec3f,
+    @location(1) normal: vec3f,
+    @location(2) tangent: vec3f,
+    @location(3) bone_indices: vec4i,
+    @location(4) bone_weights: vec4f,
+}
+struct VertexOutput {
+    @builtin(position) clip_position: vec4f,
+    @location(0) world_normal: vec3f,
+    @location(1) world_position: vec3f,
+}
+struct SkinnedUniforms {
+    mvp: mat4x4f,
+    bone_matrices: array<mat4x4f, 256>,
+    num_blendshapes: u32,
+    num_vertices: u32,
+    blendshape_weights: array<vec4f, 32>,
+}
+struct BlendshapeOffset {
+    position_offset: vec3f,
+    normal_offset: vec3f,
+    tangent_offset: vec3f,
+}
+@group(0) @binding(0) var<uniform> uniforms: SkinnedUniforms;
+@group(0) @binding(1) var<storage, read> blendshape_offsets: array<BlendshapeOffset>;
+@vertex
+fn vs_main(
+    in: VertexInput,
+    @builtin(vertex_index) vertex_index: u32,
+) -> VertexOutput {
+    var out: VertexOutput;
+    var pos = in.position;
+    var norm = in.normal;
+    var tang = in.tangent;
+    for (var i = 0u; i < uniforms.num_blendshapes; i++) {
+        let q = i / 4u;
+        let r = i % 4u;
+        let v = uniforms.blendshape_weights[q];
+        let weight = select(select(select(v.x, v.y, r == 1u), select(v.z, v.w, r == 3u), r >= 2u), v.x, r == 0u);
+        if weight > 0.0 {
+            let offset_idx = i * uniforms.num_vertices + vertex_index;
+            let offset = blendshape_offsets[offset_idx];
+            pos += offset.position_offset * weight;
+            norm += offset.normal_offset * weight;
+            tang += offset.tangent_offset * weight;
+        }
+    }
+    var world_pos = vec4f(0.0, 0.0, 0.0, 0.0);
+    var world_normal = vec4f(0.0, 0.0, 0.0, 0.0);
+    var world_tangent = vec4f(0.0, 0.0, 0.0, 0.0);
+    let total_weight = in.bone_weights[0] + in.bone_weights[1] + in.bone_weights[2] + in.bone_weights[3];
+    let inv_total = select(1.0, 1.0 / total_weight, total_weight > 1e-6);
+    for (var i = 0; i < 4; i++) {
+        let idx = clamp(in.bone_indices[i], 0, 255);
+        let w = in.bone_weights[i] * inv_total;
+        if w > 0.0 {
+            let bone = uniforms.bone_matrices[idx];
+            world_pos += w * bone * vec4f(pos, 1.0);
+            world_normal += w * bone * vec4f(norm, 0.0);
+            world_tangent += w * bone * vec4f(tang, 0.0);
+        }
+    }
+    _ = world_tangent;
+    out.clip_position = uniforms.mvp * world_pos;
+    let n = world_normal.xyz;
+    let len = length(n);
+    out.world_normal = select(vec3f(0.0, 1.0, 0.0), n / len, len > 1e-6);
+    out.world_position = world_pos.xyz;
+    return out;
+}
+struct SkinnedFragmentOutput {
+    @location(0) color: vec4f,
+    @location(1) position: vec4f,
+    @location(2) normal: vec4f,
+}
+@fragment
+fn fs_main(in: VertexOutput) -> SkinnedFragmentOutput {
+    let n = normalize(in.world_normal);
+    return SkinnedFragmentOutput(
+        vec4f(n * 0.5 + 0.5, 1.0),
+        vec4f(in.world_position, 1.0),
+        vec4f(n, 0.0),
+    );
+}
+"#;
+
 /// Normal debug pipeline: colors surfaces by smooth normal.
 pub struct NormalDebugPipeline {
     pipeline: wgpu::RenderPipeline,
@@ -1520,6 +1722,576 @@ impl RenderPipeline for SkinnedPipeline {
             .map(|i| self.uniform_ring.dynamic_offset(i, frame_index))
             .unwrap_or(0);
         let bind_group = draw_bind_group.expect("skinned pipeline requires draw_bind_group");
+        pass.set_bind_group(0, bind_group, &[dynamic_offset]);
+    }
+
+    fn create_skinned_draw_bind_group(
+        &self,
+        device: &wgpu::Device,
+        buffers: &GpuMeshBuffers,
+    ) -> Option<wgpu::BindGroup> {
+        Some(self.create_draw_bind_group(device, buffers))
+    }
+
+    fn draw_skinned(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        buffers: &GpuMeshBuffers,
+        _uniforms: &UniformData<'_>,
+    ) {
+        let Some(vb) = buffers.vertex_buffer_skinned.as_ref() else {
+            return;
+        };
+        pass.set_vertex_buffer(0, vb.slice(..));
+        pass.set_index_buffer(buffers.index_buffer.slice(..), buffers.index_format);
+        for &(index_start, index_count) in &buffers.submeshes {
+            pass.draw_indexed(index_start..index_start + index_count, 0, 0..1);
+        }
+    }
+
+    fn upload_skinned_batch(
+        &self,
+        queue: &wgpu::Queue,
+        items: &[(Matrix4<f32>, &[[[f32; 4]; 4]], Option<&[f32]>, u32)],
+        frame_index: u64,
+    ) {
+        self.uniform_ring.upload(queue, items, frame_index);
+    }
+}
+
+/// MRT position/normal target format for RTAO (vec3 packed in vec4).
+/// Uses Rgba16Float (8 bytes) to stay under the 32-byte color attachment limit.
+const MRT_POSITION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const MRT_NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Normal debug MRT pipeline: outputs color, world position, world normal for RTAO.
+///
+/// Used when [`RenderConfig::rtao_enabled`](crate::config::RenderConfig) is true and ray tracing
+/// is available. Writes to three color attachments in a single forward pass.
+pub struct NormalDebugMRTPipeline {
+    pipeline: wgpu::RenderPipeline,
+    uniform_ring: UniformRingBuffer,
+    bind_group: wgpu::BindGroup,
+}
+
+impl NormalDebugMRTPipeline {
+    /// Creates an MRT normal debug pipeline with three color attachments.
+    /// Uses `config.format` for the color target to match the surface for copy-back.
+    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("normal debug MRT shader"),
+            source: wgpu::ShaderSource::Wgsl(NORMAL_DEBUG_MRT_SHADER_SRC.into()),
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("normal debug MRT bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: std::num::NonZeroU64::new(
+                        std::mem::size_of::<Uniforms>() as u64,
+                    ),
+                },
+                count: None,
+            }],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("normal debug MRT pipeline layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("normal debug MRT pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<VertexPosNormal>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 12,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: MRT_POSITION_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: MRT_NORMAL_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24PlusStencil8,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let uniform_ring =
+            UniformRingBuffer::new(device, "normal debug MRT uniform ring buffer");
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("normal debug MRT bind group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform_ring.buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<Uniforms>() as u64),
+                }),
+            }],
+        });
+        Self {
+            pipeline,
+            uniform_ring,
+            bind_group,
+        }
+    }
+}
+
+impl RenderPipeline for NormalDebugMRTPipeline {
+    fn bind(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        batch_index: Option<u32>,
+        frame_index: u64,
+        _draw_bind_group: Option<&wgpu::BindGroup>,
+    ) {
+        pass.set_pipeline(&self.pipeline);
+        let dynamic_offset = batch_index
+            .map(|i| self.uniform_ring.dynamic_offset(i, frame_index))
+            .unwrap_or(0);
+        pass.set_bind_group(0, &self.bind_group, &[dynamic_offset]);
+    }
+
+    fn draw_mesh(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        buffers: &GpuMeshBuffers,
+        _uniforms: &UniformData<'_>,
+    ) {
+        pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
+        pass.set_index_buffer(buffers.index_buffer.slice(..), buffers.index_format);
+        for &(index_start, index_count) in &buffers.submeshes {
+            pass.draw_indexed(index_start..index_start + index_count, 0, 0..1);
+        }
+    }
+
+    fn upload_batch(
+        &self,
+        queue: &wgpu::Queue,
+        mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
+        frame_index: u64,
+    ) {
+        self.uniform_ring.upload(queue, mvp_models, frame_index);
+    }
+}
+
+/// UV debug MRT pipeline: outputs color, world position, world normal for RTAO.
+///
+/// Used when RTAO is enabled. UV meshes lack per-vertex normals; uses model +Y as fallback.
+pub struct UvDebugMRTPipeline {
+    pipeline: wgpu::RenderPipeline,
+    uniform_ring: UniformRingBuffer,
+    bind_group: wgpu::BindGroup,
+}
+
+impl UvDebugMRTPipeline {
+    /// Creates an MRT UV debug pipeline with three color attachments.
+    /// Uses `config.format` for the color target to match the surface for copy-back.
+    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("UV debug MRT shader"),
+            source: wgpu::ShaderSource::Wgsl(UV_DEBUG_MRT_SHADER_SRC.into()),
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("UV debug MRT bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: std::num::NonZeroU64::new(
+                        std::mem::size_of::<Uniforms>() as u64,
+                    ),
+                },
+                count: None,
+            }],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("UV debug MRT pipeline layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("UV debug MRT pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<VertexWithUv>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 12,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x2,
+                        },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: MRT_POSITION_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: MRT_NORMAL_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24PlusStencil8,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let uniform_ring = UniformRingBuffer::new(device, "UV debug MRT uniform ring buffer");
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("UV debug MRT bind group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform_ring.buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(std::mem::size_of::<Uniforms>() as u64),
+                }),
+            }],
+        });
+        Self {
+            pipeline,
+            uniform_ring,
+            bind_group,
+        }
+    }
+}
+
+impl RenderPipeline for UvDebugMRTPipeline {
+    fn bind(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        batch_index: Option<u32>,
+        frame_index: u64,
+        _draw_bind_group: Option<&wgpu::BindGroup>,
+    ) {
+        pass.set_pipeline(&self.pipeline);
+        let dynamic_offset = batch_index
+            .map(|i| self.uniform_ring.dynamic_offset(i, frame_index))
+            .unwrap_or(0);
+        pass.set_bind_group(0, &self.bind_group, &[dynamic_offset]);
+    }
+
+    fn draw_mesh(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        buffers: &GpuMeshBuffers,
+        _uniforms: &UniformData<'_>,
+    ) {
+        let vb = buffers
+            .vertex_buffer_uv
+            .as_ref()
+            .map(|b| b.as_ref())
+            .unwrap_or(buffers.vertex_buffer.as_ref());
+        pass.set_vertex_buffer(0, vb.slice(..));
+        pass.set_index_buffer(buffers.index_buffer.slice(..), buffers.index_format);
+        for &(index_start, index_count) in &buffers.submeshes {
+            pass.draw_indexed(index_start..index_start + index_count, 0, 0..1);
+        }
+    }
+
+    fn upload_batch(
+        &self,
+        queue: &wgpu::Queue,
+        mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
+        frame_index: u64,
+    ) {
+        self.uniform_ring.upload(queue, mvp_models, frame_index);
+    }
+}
+
+/// Skinned MRT pipeline: outputs color, world position, world normal for RTAO.
+///
+/// Used when RTAO is enabled. Same bone skinning as [`SkinnedPipeline`] but writes to MRT.
+pub struct SkinnedMRTPipeline {
+    pipeline: wgpu::RenderPipeline,
+    uniform_ring: SkinnedUniformRingBuffer,
+    bind_group_layout: wgpu::BindGroupLayout,
+    dummy_blendshape_buffer: wgpu::Buffer,
+}
+
+impl SkinnedMRTPipeline {
+    /// Creates an MRT skinned pipeline with three color attachments.
+    /// Uses `config.format` for the color target to match the surface for copy-back.
+    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("skinned MRT shader"),
+            source: wgpu::ShaderSource::Wgsl(SKINNED_MRT_SHADER_SRC.into()),
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("skinned MRT bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: std::num::NonZeroU64::new(
+                            std::mem::size_of::<SkinnedUniforms>() as u64,
+                        ),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage {
+                            read_only: true,
+                        },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("skinned MRT pipeline layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            immediate_size: 0,
+        });
+        let uniform_ring =
+            SkinnedUniformRingBuffer::new(device, "skinned MRT uniform ring buffer");
+        let dummy_blendshape_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("skinned MRT dummy blendshape buffer"),
+            size: 1,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("skinned MRT pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<VertexSkinned>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 12,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 24,
+                            shader_location: 2,
+                            format: wgpu::VertexFormat::Float32x3,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 36,
+                            shader_location: 3,
+                            format: wgpu::VertexFormat::Sint32x4,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 52,
+                            shader_location: 4,
+                            format: wgpu::VertexFormat::Float32x4,
+                        },
+                    ],
+                }],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: MRT_POSITION_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: MRT_NORMAL_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24PlusStencil8,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self {
+            pipeline,
+            uniform_ring,
+            bind_group_layout,
+            dummy_blendshape_buffer,
+        }
+    }
+
+    fn create_draw_bind_group(
+        &self,
+        device: &wgpu::Device,
+        buffers: &GpuMeshBuffers,
+    ) -> wgpu::BindGroup {
+        let blendshape_buffer = buffers
+            .blendshape_buffer
+            .as_ref()
+            .map(|b| b.as_ref())
+            .unwrap_or(&self.dummy_blendshape_buffer);
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("skinned MRT draw bind group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.uniform_ring.buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(std::mem::size_of::<SkinnedUniforms>() as u64),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: blendshape_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        })
+    }
+}
+
+impl RenderPipeline for SkinnedMRTPipeline {
+    fn bind(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        batch_index: Option<u32>,
+        frame_index: u64,
+        draw_bind_group: Option<&wgpu::BindGroup>,
+    ) {
+        pass.set_pipeline(&self.pipeline);
+        let dynamic_offset = batch_index
+            .map(|i| self.uniform_ring.dynamic_offset(i, frame_index))
+            .unwrap_or(0);
+        let bind_group = draw_bind_group.expect("skinned MRT pipeline requires draw_bind_group");
         pass.set_bind_group(0, bind_group, &[dynamic_offset]);
     }
 

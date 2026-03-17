@@ -6,10 +6,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::pipeline::{
-    MaterialPipeline, NormalDebugPipeline, OverlayStencilMaskClearPipeline,
+    MaterialPipeline, NormalDebugMRTPipeline, NormalDebugPipeline, OverlayStencilMaskClearPipeline,
     OverlayStencilMaskClearSkinnedPipeline, OverlayStencilMaskWritePipeline,
     OverlayStencilMaskWriteSkinnedPipeline, OverlayStencilPipeline, OverlayStencilSkinnedPipeline,
-    PbrPipeline, RenderPipeline, SkinnedPipeline, UvDebugPipeline,
+    PbrPipeline, RenderPipeline, SkinnedMRTPipeline, SkinnedPipeline, UvDebugMRTPipeline,
+    UvDebugPipeline,
 };
 
 /// Key for pipeline lookup: shader_id (None = builtin) and variant.
@@ -27,6 +28,12 @@ pub enum PipelineVariant {
     UvDebug,
     /// Skinned mesh: transforms vertices by weighted bone matrices.
     Skinned,
+    /// Normal debug MRT: color, position, normal for RTAO.
+    NormalDebugMRT,
+    /// UV debug MRT: color, position, normal for RTAO.
+    UvDebugMRT,
+    /// Skinned MRT: color, position, normal for RTAO.
+    SkinnedMRT,
     /// Overlay stencil MaskWrite: compare=Always, pass_op=Replace, write_mask=0xFF.
     OverlayStencilMaskWrite,
     /// Overlay stencil Content: compare=Equal, pass_op=Keep, write_mask=0.
@@ -81,6 +88,18 @@ impl PipelineRegistry {
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::Skinned),
             Arc::new(SkinnedPipeline::new(device, config, None, false)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::NormalDebugMRT),
+            Arc::new(NormalDebugMRTPipeline::new(device, config)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::UvDebugMRT),
+            Arc::new(UvDebugMRTPipeline::new(device, config)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::SkinnedMRT),
+            Arc::new(SkinnedMRTPipeline::new(device, config)),
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::OverlayStencilMaskWrite),

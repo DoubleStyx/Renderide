@@ -364,10 +364,14 @@ pub struct GpuMeshBuffers {
 }
 
 /// Creates GPU buffers for a mesh. Extracts position and smooth normal for normal debug shader.
+///
+/// When `ray_tracing_available` is true, the index buffer is created with
+/// [`wgpu::BufferUsages::BLAS_INPUT`] so it can be used for BLAS builds.
 pub fn create_mesh_buffers(
     device: &wgpu::Device,
     mesh: &MeshAsset,
     vertex_stride: usize,
+    ray_tracing_available: bool,
 ) -> Option<GpuMeshBuffers> {
     if mesh.vertex_data.len() < 12 {
         return None;
@@ -506,11 +510,16 @@ pub fn create_mesh_buffers(
         }
     };
 
+    let index_usage = if ray_tracing_available {
+        wgpu::BufferUsages::INDEX | wgpu::BufferUsages::BLAS_INPUT
+    } else {
+        wgpu::BufferUsages::INDEX
+    };
     let index_buffer = Arc::new(
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh index buffer"),
             contents: &index_data,
-            usage: wgpu::BufferUsages::INDEX,
+            usage: index_usage,
         }),
     );
 

@@ -138,4 +138,12 @@ impl RenderTarget {
             Self::Offscreen { texture, .. } => Some(texture),
         }
     }
+
+    /// Returns the color texture for the target. Surface uses the swapchain texture.
+    pub fn texture(&self) -> &wgpu::Texture {
+        match self {
+            Self::Surface { surface_texture, .. } => &surface_texture.texture,
+            Self::Offscreen { texture, .. } => texture,
+        }
+    }
 }

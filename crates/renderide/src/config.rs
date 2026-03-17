@@ -31,6 +31,15 @@ pub struct RenderConfig {
     /// When true, apply an extra Z flip to skinned MVP for handedness correction.
     /// Use when skinned meshes appear mirrored vs non-skinned. Default false.
     pub skinned_flip_handedness: bool,
+    /// When true and ray tracing is available, RTAO (Ray-Traced Ambient Occlusion) may be used.
+    /// Toggle for A/B testing. Default true.
+    pub rtao_enabled: bool,
+    /// RTAO strength: how much occlusion darkens the scene. 0 = no effect, 1 = full darkening.
+    /// Default 0.5.
+    pub rtao_strength: f32,
+    /// RTAO ray max distance in world units. Rays beyond this are not considered occluded.
+    /// Default 1.0.
+    pub ao_radius: f32,
 }
 
 impl Default for RenderConfig {
@@ -46,6 +55,9 @@ impl Default for RenderConfig {
             debug_skinned: false,
             debug_blendshapes: std::env::var("RENDERIDE_DEBUG_BLENDSHAPES").as_deref() == Ok("1"),
             skinned_flip_handedness: false,
+            rtao_enabled: true,
+            rtao_strength: 0.5,
+            ao_radius: 1.0,
         }
     }
 }

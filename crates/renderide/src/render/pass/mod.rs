@@ -2,8 +2,10 @@
 //!
 //! Extension point for shadows, post-processing, UI, probes.
 
+mod composite;
 mod mesh_draw;
 mod projection;
+mod rtao_compute;
 
 use nalgebra::Matrix4;
 
@@ -13,9 +15,11 @@ use super::SpaceDrawBatch;
 use crate::session::Session;
 use mesh_draw::{collect_mesh_draws, record_non_skinned_draws, record_skinned_draws, MeshDrawParams};
 
+pub use composite::CompositePass;
 pub use projection::{
     orthographic_projection_reverse_z, projection_for_params, reverse_z_projection,
 };
+pub use rtao_compute::RtaoComputePass;
 
 /// Errors that can occur during render pass execution.
 #[derive(Debug)]
@@ -32,10 +36,18 @@ impl From<wgpu::SurfaceError> for RenderPassError {
 
 /// Color and optional depth texture views for the current render pass.
 pub struct RenderTargetViews<'a> {
-    /// Color attachment view.
+    /// Color attachment view (output for this pass).
     pub color_view: &'a wgpu::TextureView,
     /// Optional depth attachment view.
     pub depth_view: Option<&'a wgpu::TextureView>,
+    /// When RTAO is enabled, position G-buffer view for MRT mesh pass.
+    pub mrt_position_view: Option<&'a wgpu::TextureView>,
+    /// When RTAO is enabled, normal G-buffer view for MRT mesh pass.
+    pub mrt_normal_view: Option<&'a wgpu::TextureView>,
+    /// When RTAO is enabled, AO texture view for RTAO compute and composite.
+    pub mrt_ao_view: Option<&'a wgpu::TextureView>,
+    /// When RTAO is enabled, mesh color input for composite pass (MRT color texture).
+    pub mrt_color_input_view: Option<&'a wgpu::TextureView>,
 }
 
 /// Per-pass context passed to `RenderPass::execute`.
@@ -65,6 +77,22 @@ pub struct RenderPassContext<'a> {
     pub timestamp_query_set: Option<&'a wgpu::QuerySet>,
 }
 
+/// MRT (Multiple Render Target) views for RTAO pass.
+///
+/// When RTAO is enabled, the mesh pass renders to these instead of the surface.
+pub struct MrtViews<'a> {
+    /// Color attachment view (matches surface format for copy-back).
+    pub color_view: &'a wgpu::TextureView,
+    /// Color texture for copy to surface (same as color_view's texture).
+    pub color_texture: &'a wgpu::Texture,
+    /// Position G-buffer view (Rgba16Float).
+    pub position_view: &'a wgpu::TextureView,
+    /// Normal G-buffer view (Rgba16Float).
+    pub normal_view: &'a wgpu::TextureView,
+    /// AO output view (Rgba8Unorm). Written by RTAO compute, read by composite.
+    pub ao_view: &'a wgpu::TextureView,
+}
+
 /// Frame-level context created at the start of `render_frame`.
 pub struct RenderGraphContext<'a> {
     /// GPU state.
@@ -91,6 +119,8 @@ pub struct RenderGraphContext<'a> {
     pub timestamp_resolve_buffer: Option<&'a wgpu::Buffer>,
     /// Optional staging buffer for timestamp readback.
     pub timestamp_staging_buffer: Option<&'a wgpu::Buffer>,
+    /// When RTAO is enabled and ray tracing is available, MRT views for mesh pass.
+    pub mrt_views: Option<MrtViews<'a>>,
 }
 
 /// Trait for render passes that can be executed by the render graph.
@@ -127,12 +157,39 @@ impl RenderGraph {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
-        let color_view = ctx.target.color_view();
+        let (color_view, mrt_position_view, mrt_normal_view, mrt_ao_view, mrt_color_input_view) =
+            match &ctx.mrt_views {
+                Some(mrt) => (
+                    mrt.color_view,
+                    Some(mrt.position_view),
+                    Some(mrt.normal_view),
+                    Some(mrt.ao_view),
+                    Some(mrt.color_view),
+                ),
+                None => (ctx.target.color_view(), None, None, None, None),
+            };
         let depth_view = ctx.target.depth_view().or(ctx.depth_view_override);
         let render_target = RenderTargetViews {
             color_view,
             depth_view,
+            mrt_position_view,
+            mrt_normal_view,
+            mrt_ao_view,
+            mrt_color_input_view,
         };
+
+        ensure_mesh_buffers(ctx.gpu, ctx.session, ctx.draw_batches);
+
+        if let Some(ref mut ray_tracing) = ctx.gpu.ray_tracing_state {
+            if let Some(ref accel) = ctx.gpu.accel_cache {
+                ray_tracing.tlas = crate::gpu::build_tlas(
+                    &ctx.gpu.device,
+                    &mut encoder,
+                    accel,
+                    ctx.draw_batches,
+                );
+            }
+        }
 
         let frame_index = ctx.pipeline_manager.advance_frame();
         let mut pass_ctx = RenderPassContext {
@@ -150,6 +207,16 @@ impl RenderGraph {
         };
 
         for pass in &mut self.passes {
+            if pass.name() == "composite" || pass.name() == "overlay" {
+                pass_ctx.render_target = RenderTargetViews {
+                    color_view: ctx.target.color_view(),
+                    depth_view: pass_ctx.render_target.depth_view,
+                    mrt_position_view: pass_ctx.render_target.mrt_position_view,
+                    mrt_normal_view: pass_ctx.render_target.mrt_normal_view,
+                    mrt_ao_view: pass_ctx.render_target.mrt_ao_view,
+                    mrt_color_input_view: pass_ctx.render_target.mrt_color_input_view,
+                };
+            }
             pass.execute(&mut pass_ctx)?;
         }
 
@@ -160,6 +227,35 @@ impl RenderGraph {
         ) {
             encoder.resolve_query_set(query_set, 0..2, resolve_buffer, 0);
             encoder.copy_buffer_to_buffer(resolve_buffer, 0, staging_buffer, 0, resolve_buffer.size());
+        }
+
+        if let Some(mrt) = &ctx.mrt_views {
+            let (width, height) = ctx.viewport;
+            let has_composite = self
+                .passes
+                .iter()
+                .any(|p| p.name() == "composite");
+            if !has_composite {
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: mrt.color_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: ctx.target.texture(),
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
         }
 
         ctx.gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -174,9 +270,13 @@ impl Default for RenderGraph {
 }
 
 /// Ensures all meshes referenced by draw batches are in the GPU mesh buffer cache.
-fn ensure_mesh_buffers(ctx: &mut RenderPassContext) {
-    let mesh_assets = ctx.session.asset_registry();
-    for batch in ctx.draw_batches {
+fn ensure_mesh_buffers(
+    gpu: &mut crate::gpu::GpuState,
+    session: &crate::session::Session,
+    draw_batches: &[SpaceDrawBatch],
+) {
+    let mesh_assets = session.asset_registry();
+    for batch in draw_batches {
         for d in &batch.draws {
             if d.mesh_asset_id < 0 {
                 continue;
@@ -187,7 +287,7 @@ fn ensure_mesh_buffers(ctx: &mut RenderPassContext) {
             if mesh.vertex_count <= 0 || mesh.index_count <= 0 {
                 continue;
             }
-            if !ctx.gpu.mesh_buffer_cache.contains_key(&d.mesh_asset_id) {
+            if !gpu.mesh_buffer_cache.contains_key(&d.mesh_asset_id) {
                 let stride =
                     crate::assets::compute_vertex_stride(&mesh.vertex_attributes) as usize;
                 let stride = if stride > 0 {
@@ -195,8 +295,21 @@ fn ensure_mesh_buffers(ctx: &mut RenderPassContext) {
                 } else {
                     crate::gpu::compute_vertex_stride_from_mesh(mesh)
                 };
-                if let Some(b) = crate::gpu::create_mesh_buffers(&ctx.gpu.device, mesh, stride) {
-                    ctx.gpu.mesh_buffer_cache.insert(d.mesh_asset_id, b);
+                let ray_tracing = gpu.ray_tracing_available;
+                if let Some(b) =
+                    crate::gpu::create_mesh_buffers(&gpu.device, mesh, stride, ray_tracing)
+                {
+                    gpu.mesh_buffer_cache.insert(d.mesh_asset_id, b.clone());
+                    if let Some(ref mut accel) = gpu.accel_cache {
+                        if let Some(blas) = crate::gpu::build_blas_for_mesh(
+                            &gpu.device,
+                            &gpu.queue,
+                            mesh,
+                            &b,
+                        ) {
+                            accel.insert(d.mesh_asset_id, blas);
+                        }
+                    }
                 }
             }
         }
@@ -228,9 +341,10 @@ impl RenderPass for MeshRenderPass {
     }
 
     fn execute(&mut self, ctx: &mut RenderPassContext) -> Result<(), RenderPassError> {
-        ensure_mesh_buffers(ctx);
         let (non_overlay_skinned, _, non_overlay_non_skinned, _) = collect_mesh_draws(ctx);
 
+        let use_mrt = ctx.render_target.mrt_position_view.is_some()
+            && ctx.render_target.mrt_normal_view.is_some();
         let mut draw_params = MeshDrawParams {
             pipeline_manager: &mut ctx.pipeline_manager,
             device: &ctx.gpu.device,
@@ -239,6 +353,7 @@ impl RenderPass for MeshRenderPass {
             frame_index: ctx.frame_index,
             mesh_buffer_cache: &ctx.gpu.mesh_buffer_cache,
             overlay_orthographic: false,
+            use_mrt,
         };
 
         let timestamp_writes = ctx.timestamp_query_set.map(|query_set| {
@@ -249,12 +364,11 @@ impl RenderPass for MeshRenderPass {
             }
         });
 
-        // Non-overlay pass: Clear framebuffer, draw all non-overlay batches.
-        {
-            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("mesh pass (non-overlay)"),
-                timestamp_writes: timestamp_writes.clone(),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        let color_attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = if use_mrt {
+            let pos_view = ctx.render_target.mrt_position_view.unwrap();
+            let norm_view = ctx.render_target.mrt_normal_view.unwrap();
+            vec![
+                Some(wgpu::RenderPassColorAttachment {
                     view: ctx.render_target.color_view,
                     depth_slice: None,
                     resolve_target: None,
@@ -267,7 +381,59 @@ impl RenderPass for MeshRenderPass {
                         }),
                         store: wgpu::StoreOp::Store,
                     },
-                })],
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: pos_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: norm_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ]
+        } else {
+            vec![Some(wgpu::RenderPassColorAttachment {
+                view: ctx.render_target.color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.8,
+                        b: 0.0,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })]
+        };
+
+        // Non-overlay pass: Clear framebuffer, draw all non-overlay batches.
+        {
+            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mesh pass (non-overlay)"),
+                timestamp_writes: timestamp_writes.clone(),
+                color_attachments: &color_attachments,
                 depth_stencil_attachment: ctx.render_target.depth_view.map(|dv| {
                     wgpu::RenderPassDepthStencilAttachment {
                         view: dv,
@@ -355,6 +521,7 @@ impl RenderPass for OverlayRenderPass {
             frame_index: ctx.frame_index,
             mesh_buffer_cache: &ctx.gpu.mesh_buffer_cache,
             overlay_orthographic,
+            use_mrt: false,
         };
 
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

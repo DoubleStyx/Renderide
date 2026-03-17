@@ -47,6 +47,8 @@ pub(super) struct MeshDrawParams<'a> {
     pub(super) mesh_buffer_cache: &'a std::collections::HashMap<i32, GpuMeshBuffers>,
     /// When true, overlay draws use depth-disabled pipelines for screen-space UI.
     pub(super) overlay_orthographic: bool,
+    /// When true, non-overlay mesh pass uses MRT pipelines (NormalDebugMRT, UvDebugMRT, SkinnedMRT).
+    pub(super) use_mrt: bool,
 }
 
 /// Collects mesh draws from batches and partitions by overlay flag.
@@ -250,6 +252,23 @@ pub(super) fn overlay_pipeline_variant_for_orthographic(
     }
 }
 
+/// Maps non-overlay pipeline variant to MRT variant when RTAO is enabled.
+/// Used by mesh pass to output color, position, and normal for RTAO.
+pub(super) fn mesh_pipeline_variant_for_mrt(
+    variant: &PipelineVariant,
+    use_mrt: bool,
+) -> PipelineVariant {
+    if !use_mrt {
+        return variant.clone();
+    }
+    match variant {
+        PipelineVariant::NormalDebug => PipelineVariant::NormalDebugMRT,
+        PipelineVariant::UvDebug => PipelineVariant::UvDebugMRT,
+        PipelineVariant::Skinned => PipelineVariant::SkinnedMRT,
+        _ => variant.clone(),
+    }
+}
+
 /// Records skinned mesh draws into the render pass.
 pub(super) fn record_skinned_draws(
     pass: &mut wgpu::RenderPass,
@@ -270,7 +289,7 @@ pub(super) fn record_skinned_draws(
         let group = &draws[i..i + group_end];
 
         let pipeline_variant = overlay_pipeline_variant_for_orthographic(
-            &variant,
+            &mesh_pipeline_variant_for_mrt(&variant, params.use_mrt),
             params.overlay_orthographic && group.iter().any(|d| d.is_overlay),
         );
         let Some(skinned) = params.pipeline_manager.get_pipeline(
@@ -362,7 +381,7 @@ pub(super) fn record_non_skinned_draws(
         let group = &draws[i..i + group_end];
 
         let pipeline_variant = overlay_pipeline_variant_for_orthographic(
-            &variant,
+            &mesh_pipeline_variant_for_mrt(&variant, params.use_mrt),
             params.overlay_orthographic && group.iter().any(|d| d.is_overlay),
         );
         let pipeline_key = PipelineKey(None, pipeline_variant.clone());

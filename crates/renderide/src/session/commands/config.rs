@@ -26,6 +26,9 @@ impl CommandHandler for ConfigCommandHandler {
                     debug_skinned: ctx.render_config.debug_skinned,
                     debug_blendshapes: ctx.render_config.debug_blendshapes,
                     skinned_flip_handedness: ctx.render_config.skinned_flip_handedness,
+                    rtao_enabled: ctx.render_config.rtao_enabled,
+                    rtao_strength: ctx.render_config.rtao_strength,
+                    ao_radius: ctx.render_config.ao_radius,
                 };
                 CommandResult::Handled
             }
