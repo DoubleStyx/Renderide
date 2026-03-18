@@ -5,7 +5,6 @@ use crate::shared::RendererCommand;
 use super::{CommandContext, CommandHandler, CommandResult};
 
 /// Handles `free_shared_memory_view`. Releases cached mmap views to avoid leaking shared memory.
-/// Mirrors SharedMemoryAccessor.ReleaseView in the C# host.
 pub struct FreeSharedMemoryCommandHandler;
 
 impl CommandHandler for FreeSharedMemoryCommandHandler {

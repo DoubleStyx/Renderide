@@ -1,6 +1,6 @@
 //! Shared types and utilities for IPC between the host and renderer.
 //!
-//! Includes memory packing/unpacking (mirrors Renderite.Shared) and shared memory buffer
+//! Includes memory packing/unpacking and shared memory buffer
 //! descriptors. The shared memory accessor lives in ipc::shared_memory.
 
 pub mod buffer;

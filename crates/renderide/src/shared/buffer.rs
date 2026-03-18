@@ -1,6 +1,6 @@
 //! Shared memory buffer descriptor for IPC.
 //!
-//! Mirrors `Renderite.Shared.SharedMemoryBufferDescriptor`—identifies a region
+//! Identifies a region
 //! within a shared memory file by buffer ID, offset, and length.
 
 use bytemuck::{Pod, Zeroable};

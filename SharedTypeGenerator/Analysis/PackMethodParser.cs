@@ -120,6 +120,13 @@ public class PackMethodParser
                 break;
             }
 
+            case "WriteObjectRequired":
+            {
+                string name = PopLastField(fieldNameStack);
+                steps.Add(new WriteField(name.HumanizeField(), FieldKind.ObjectRequired));
+                break;
+            }
+
             case "WriteValueList":
             {
                 string name = PopLastField(fieldNameStack);
@@ -326,6 +333,13 @@ public class PackMethodParser
             {
                 string name = PopLastField(fieldNameStack);
                 steps.Add(new WriteField(name.HumanizeField(), FieldKind.Object));
+                break;
+            }
+
+            case "WriteObjectRequired":
+            {
+                string name = PopLastField(fieldNameStack);
+                steps.Add(new WriteField(name.HumanizeField(), FieldKind.ObjectRequired));
                 break;
             }
 

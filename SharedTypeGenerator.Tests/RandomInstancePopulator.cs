@@ -49,7 +49,7 @@ public static class RandomInstancePopulator
             else if (fieldType.IsValueType && !fieldType.IsPrimitive && fieldType != typeof(Guid))
                 value = PopulateValueType(fieldType, rng, assembly, seen);
             else if (IsMemoryPackableClass(fieldType))
-                value = rng.Next(4) == 0 ? null : CreateAndPopulate(fieldType, rng, assembly, seen);
+                value = CreateAndPopulate(fieldType, rng, assembly, seen);
             else if (IsListOfT(fieldType, out var elementType) && elementType != null)
                 value = CreateRandomList(elementType, rng, assembly, seen);
             else
@@ -112,7 +112,7 @@ public static class RandomInstancePopulator
             if (elementType.IsValueType && !elementType.IsPrimitive && elementType != typeof(Guid))
                 elem = PopulateValueType(elementType, rng, assembly, seen);
             else if (IsMemoryPackableClass(elementType))
-                elem = rng.Next(3) == 0 ? null : CreateAndPopulate(elementType, rng, assembly, seen);
+                elem = CreateAndPopulate(elementType, rng, assembly, seen);
             else if (elementType == typeof(int) || elementType == typeof(long))
                 elem = rng.Next();
             else if (elementType == typeof(float) || elementType == typeof(double))

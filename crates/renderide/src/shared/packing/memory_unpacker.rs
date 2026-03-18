@@ -7,7 +7,7 @@ use super::memory_packable::MemoryPackable;
 use super::memory_packer_entity_pool::MemoryPackerEntityPool;
 use super::packed_bools::PackedBools;
 
-/// Unpacks data from a byte buffer for IPC. Mirrors C# `Renderite.Shared.MemoryUnpacker`.
+/// Unpacks data from a byte buffer for IPC.
 pub struct MemoryUnpacker<'a, 'pool, P: MemoryPackerEntityPool> {
     buffer: &'a [u8],
     pool: &'pool mut P,

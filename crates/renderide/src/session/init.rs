@@ -1,6 +1,5 @@
 //! Awake-equivalent initialization: connection parameters and singleton.
 //!
-//! Mirrors RenderingManager.Awake / GetConnectionParameters from the decompiled C#.
 //! The host passes `-QueueName <name> -QueueCapacity <capacity>` when launching the renderer.
 //!
 //! Extension point for connection params, IPC init.

@@ -1,6 +1,4 @@
 //! Render task executor: runs CameraRenderTask offscreen renders and copies to shared memory.
-//!
-//! Mirrors CameraRenderer.cs flow: create offscreen target, collect batches, render, copy pixels.
 
 use nalgebra::Vector3;
 

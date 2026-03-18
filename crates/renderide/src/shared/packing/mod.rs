@@ -1,6 +1,5 @@
 //! Memory packing and unpacking for IPC serialization.
 //!
-//! Mirrors Renderite.Shared: MemoryPacker, MemoryUnpacker, IMemoryPackable,
 //! IMemoryPackerEntityPool, and related types.
 
 pub mod default_entity_pool;

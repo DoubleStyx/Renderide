@@ -1,6 +1,5 @@
 //! Shared memory accessor for reading and writing host-rendered data.
 //!
-//! Mirrors Renderite.Unity.SharedMemoryAccessor:
 //! - Unix: file-based mmap at /dev/shm/.cloudtoid/interprocess/mmf/{prefix}_{buffer_id:X}.qu
 //! - Windows: named memory-mapped file CT_IP_{prefix}_{buffer_id:X} (matches Cloudtoid MemoryFileWindows)
 

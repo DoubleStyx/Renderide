@@ -3,7 +3,6 @@ use super::memory_packer_entity_pool::MemoryPackerEntityPool;
 use super::memory_unpacker::MemoryUnpacker;
 
 /// Trait for types that can be packed and unpacked for IPC.
-/// Mirrors C# `Renderite.Shared.IMemoryPackable`.
 pub trait MemoryPackable {
     /// Packs this value into the packer.
     fn pack(&mut self, packer: &mut MemoryPacker<'_>);

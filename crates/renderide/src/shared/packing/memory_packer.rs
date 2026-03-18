@@ -7,7 +7,7 @@ use super::enum_repr::EnumRepr;
 use super::memory_packable::MemoryPackable;
 use super::polymorphic_memory_packable_entity::PolymorphicEncode;
 
-/// Packs data into a byte buffer for IPC. Mirrors C# `Renderite.Shared.MemoryPacker`.
+/// Packs data into a byte buffer for IPC.
 pub struct MemoryPacker<'a> {
     buffer: &'a mut [u8],
 }
