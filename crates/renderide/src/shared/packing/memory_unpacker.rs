@@ -100,8 +100,10 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     }
 
     /// Reads a list of `MemoryPackable` objects.
+    /// Treats negative count (C# null list convention) as empty.
     pub fn read_object_list<T: MemoryPackable + Default>(&mut self) -> Vec<T> {
-        let count = self.read::<i32>() as usize;
+        let count = self.read::<i32>();
+        let count = if count < 0 { 0 } else { count as usize };
         let mut list = Vec::with_capacity(count);
         for _ in 0..count {
             let mut obj = self.pool.borrow::<T>();
@@ -112,11 +114,13 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     }
 
     /// Reads a polymorphic list using the given decode callback for each element.
+    /// Treats negative count (C# null list convention) as empty.
     pub fn read_polymorphic_list<F, T>(&mut self, mut decode: F) -> Vec<T>
     where
         F: FnMut(&mut MemoryUnpacker<'a, 'pool, P>) -> T,
     {
-        let count = self.read::<i32>() as usize;
+        let count = self.read::<i32>();
+        let count = if count < 0 { 0 } else { count as usize };
         let mut list = Vec::with_capacity(count);
         for _ in 0..count {
             list.push(decode(self));
@@ -125,14 +129,18 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     }
 
     /// Reads a list of `Pod` values.
+    /// Treats negative count (C# null list convention) as empty.
     pub fn read_value_list<T: Pod>(&mut self) -> Vec<T> {
-        let count = self.read::<i32>() as usize;
+        let count = self.read::<i32>();
+        let count = if count < 0 { 0 } else { count as usize };
         self.access::<T>(count)
     }
 
     /// Reads a list of enum values from their underlying i32 representation.
+    /// Treats negative count (C# null list convention) as empty.
     pub fn read_enum_value_list<E: EnumRepr>(&mut self) -> Vec<E> {
-        let count = self.read::<i32>() as usize;
+        let count = self.read::<i32>();
+        let count = if count < 0 { 0 } else { count as usize };
         let mut list = Vec::with_capacity(count);
         for _ in 0..count {
             list.push(E::from_i32(self.read::<i32>()));
@@ -141,8 +149,10 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     }
 
     /// Reads a list of strings (each element can be `None` for null).
+    /// Treats negative count (C# null list convention) as empty.
     pub fn read_string_list(&mut self) -> Vec<Option<String>> {
-        let count = self.read::<i32>() as usize;
+        let count = self.read::<i32>();
+        let count = if count < 0 { 0 } else { count as usize };
         let mut list = Vec::with_capacity(count);
         for _ in 0..count {
             list.push(self.read_str());
@@ -156,11 +166,13 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     }
 
     /// Reads a nested list using a custom reader for each sublist.
+    /// Treats negative count (C# null list convention) as empty.
     pub fn read_nested_list<F, T>(&mut self, mut sublist_reader: F) -> Vec<T>
     where
         F: FnMut(&mut MemoryUnpacker<'a, 'pool, P>) -> T,
     {
-        let count = self.read::<i32>() as usize;
+        let count = self.read::<i32>();
+        let count = if count < 0 { 0 } else { count as usize };
         let mut list = Vec::with_capacity(count);
         for _ in 0..count {
             list.push(sublist_reader(self));

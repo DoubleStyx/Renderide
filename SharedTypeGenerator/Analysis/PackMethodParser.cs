@@ -128,6 +128,7 @@ public class PackMethodParser
             }
 
             case "WriteValueList":
+            case "WriteEnumValueList":
             {
                 string name = PopLastField(fieldNameStack);
                 string rustName = name.HumanizeField();
@@ -178,6 +179,7 @@ public class PackMethodParser
             case "Read" when callRef.Parameters.Count == 1:
             case "ReadObject":
             case "ReadValueList":
+            case "ReadEnumValueList":
             case "ReadObjectList":
             case "ReadPolymorphicList":
             case "ReadStringList":
@@ -344,6 +346,7 @@ public class PackMethodParser
             }
 
             case "WriteValueList":
+            case "WriteEnumValueList":
             {
                 string name = PopLastField(fieldNameStack);
                 string rustName = name.HumanizeField();

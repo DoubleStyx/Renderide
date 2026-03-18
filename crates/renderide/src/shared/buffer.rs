@@ -12,7 +12,7 @@ use super::memory_unpacker::MemoryUnpacker;
 
 /// Descriptor for a region within a shared memory buffer.
 /// Used by the host to tell the renderer where to find packed data in `/dev/shm`.
-#[derive(Clone, Copy, Default, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 #[repr(C)]
 pub struct SharedMemoryBufferDescriptor {
     pub buffer_id: i32,

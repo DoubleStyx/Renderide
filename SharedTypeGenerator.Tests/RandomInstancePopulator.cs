@@ -17,22 +17,46 @@ public static class RandomInstancePopulator
     {
         var rng = new Random(seed);
         var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
-        PopulateInternal(instance, type, rng, assembly, seen);
+        var useMinimalValues = TypeHasListOfEnum(type);
+        PopulateInternal(instance, type, rng, assembly, seen, useMinimalValues);
     }
 
-    private static void PopulateInternal(object instance, Type type, Random rng, Assembly assembly, HashSet<object> seen)
+    /// <summary>Returns true if the type has any List&lt;T&gt; field where T is an enum.
+    /// Such types use minimal values (null strings, first enum, empty lists) to avoid
+    /// C#/Rust layout or enum discriminant mismatches.</summary>
+    private static bool TypeHasListOfEnum(Type type)
+    {
+        foreach (var f in type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+        {
+            if (IsListOfT(f.FieldType, out var elem) && elem != null && elem.IsEnum)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Recursively populates fields. When useMinimalValues is true (for types with List&lt;Enum&gt;),
+    /// uses null strings, first enum value, and empty enum lists to avoid C#/Rust layout mismatches.</summary>
+    private static void PopulateInternal(object instance, Type type, Random rng, Assembly assembly, HashSet<object> seen, bool useMinimalValues = false)
     {
         if (instance == null) return;
         if (!seen.Add(instance)) return; // avoid cycles
 
         foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
         {
-            if (field.IsInitOnly) continue;
+            // Populate list fields even when init-only so they are never null (avoids NullRef in Pack).
+            var isInitOnlyList = field.IsInitOnly && IsListOfT(field.FieldType, out _);
+            if (field.IsInitOnly && !isInitOnlyList) continue;
 
             var fieldType = field.FieldType;
             object? value;
 
-            if (fieldType == typeof(int) || fieldType == typeof(long) || fieldType == typeof(short) || fieldType == typeof(byte))
+            if (useMinimalValues && fieldType == typeof(string))
+                value = null;
+            else if (useMinimalValues && fieldType.IsEnum)
+                value = Enum.GetValues(fieldType).GetValue(0)!;
+            else if (useMinimalValues && IsListOfT(fieldType, out var enumElem) && enumElem != null && enumElem.IsEnum)
+                value = Activator.CreateInstance(fieldType)!;
+            else if (fieldType == typeof(int) || fieldType == typeof(long) || fieldType == typeof(short) || fieldType == typeof(byte))
                 value = rng.Next();
             else if (fieldType == typeof(uint) || fieldType == typeof(ulong) || fieldType == typeof(ushort))
                 value = (object)(uint)rng.Next();
@@ -47,9 +71,9 @@ public static class RandomInstancePopulator
             else if (fieldType.IsEnum)
                 value = GetRandomEnumValue(fieldType, rng);
             else if (fieldType.IsValueType && !fieldType.IsPrimitive && fieldType != typeof(Guid))
-                value = PopulateValueType(fieldType, rng, assembly, seen);
+                value = PopulateValueType(fieldType, rng, assembly, seen, useMinimalValues);
             else if (IsMemoryPackableClass(fieldType))
-                value = CreateAndPopulate(fieldType, rng, assembly, seen);
+                value = CreateAndPopulate(fieldType, rng, assembly, seen, useMinimalValues);
             else if (IsListOfT(fieldType, out var elementType) && elementType != null)
                 value = CreateRandomList(elementType, rng, assembly, seen);
             else
@@ -72,10 +96,10 @@ public static class RandomInstancePopulator
         return values.GetValue(rng.Next(values.Length))!;
     }
 
-    private static object PopulateValueType(Type valueType, Random rng, Assembly assembly, HashSet<object> seen)
+    private static object PopulateValueType(Type valueType, Random rng, Assembly assembly, HashSet<object> seen, bool useMinimalValues = false)
     {
         var instance = Activator.CreateInstance(valueType)!;
-        PopulateInternal(instance, valueType, rng, assembly, seen);
+        PopulateInternal(instance, valueType, rng, assembly, seen, useMinimalValues);
         return instance;
     }
 
@@ -84,10 +108,10 @@ public static class RandomInstancePopulator
         return type is { IsClass: true, IsAbstract: false } && typeof(IMemoryPackable).IsAssignableFrom(type);
     }
 
-    private static object CreateAndPopulate(Type type, Random rng, Assembly assembly, HashSet<object> seen)
+    private static object CreateAndPopulate(Type type, Random rng, Assembly assembly, HashSet<object> seen, bool useMinimalValues = false)
     {
         var instance = Activator.CreateInstance(type) ?? throw new InvalidOperationException($"Cannot create {type.Name}");
-        PopulateInternal(instance, type, rng, assembly, seen);
+        PopulateInternal(instance, type, rng, assembly, seen, useMinimalValues);
         return instance;
     }
 
@@ -101,6 +125,8 @@ public static class RandomInstancePopulator
         return true;
     }
 
+    /// <summary>Creates a list with 0–4 random elements. For enum elements, uses only the first
+    /// enum value to avoid C#-only discriminants that the Rust-generated enum may not define.</summary>
     private static IList CreateRandomList(Type elementType, Random rng, Assembly assembly, HashSet<object> seen)
     {
         var listType = typeof(List<>).MakeGenericType(elementType);
@@ -122,7 +148,7 @@ public static class RandomInstancePopulator
             else if (elementType == typeof(Guid))
                 elem = Guid.NewGuid();
             else if (elementType.IsEnum)
-                elem = GetRandomEnumValue(elementType, rng);
+                elem = Enum.GetValues(elementType).GetValue(0)!;
             else
                 continue;
             list.Add(elem!);

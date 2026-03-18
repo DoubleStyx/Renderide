@@ -26,7 +26,7 @@ public class FieldClassifier
         return packMethodName switch
         {
             "WriteObject" or "ReadObject" => FieldKind.Object,
-            "WriteValueList" or "ReadValueList" => ClassifyValueListElement(fieldType),
+            "WriteValueList" or "ReadValueList" or "WriteEnumValueList" or "ReadEnumValueList" => ClassifyValueListElement(fieldType),
             "WriteObjectList" or "ReadObjectList" => FieldKind.ObjectList,
             "WritePolymorphicList" or "ReadPolymorphicList" => FieldKind.PolymorphicList,
             "WriteStringList" or "ReadStringList" => FieldKind.StringList,

@@ -48,8 +48,8 @@ public class RustWriter : IDisposable
     public Block BeginEnum(string name, string reprType, params string[] extraDerives)
     {
         string derives = extraDerives.Length > 0
-            ? $"Clone, Copy, Default, {string.Join(", ", extraDerives)}"
-            : "Clone, Copy, Default";
+            ? $"Clone, Copy, Debug, Default, {string.Join(", ", extraDerives)}"
+            : "Clone, Copy, Debug, Default";
         WriteIndent(); _writer.WriteLine($"#[derive({derives})]");
         WriteIndent(); _writer.WriteLine($"#[repr({reprType.HumanizeType()})]");
         WriteIndent(); _writer.Write("pub enum "); _writer.Write(name.HumanizeType()); _writer.WriteLine(" {");
@@ -58,11 +58,10 @@ public class RustWriter : IDisposable
 
     public Block BeginUnion(string name, params string[] extraDerives)
     {
-        if (extraDerives.Length > 0)
-        {
-            string derives = string.Join(", ", extraDerives);
-            WriteIndent(); _writer.WriteLine($"#[derive({derives})]");
-        }
+        string derives = extraDerives.Length > 0
+            ? $"Debug, {string.Join(", ", extraDerives)}"
+            : "Debug";
+        WriteIndent(); _writer.WriteLine($"#[derive({derives})]");
         WriteIndent(); _writer.Write("pub enum "); _writer.Write(name.HumanizeType()); _writer.WriteLine(" {");
         return new Block(this, false);
     }
@@ -70,8 +69,8 @@ public class RustWriter : IDisposable
     public Block BeginStruct(string name, params string[] extraDerives)
     {
         string derives = extraDerives.Length > 0
-            ? $"Default, {string.Join(", ", extraDerives)}"
-            : "Default";
+            ? $"Debug, Default, {string.Join(", ", extraDerives)}"
+            : "Debug, Default";
         WriteIndent(); _writer.WriteLine($"#[derive({derives})]");
         WriteIndent(); _writer.Write("pub struct "); _writer.Write(name.HumanizeType()); _writer.WriteLine(" {");
         return new Block(this, false);
@@ -80,8 +79,8 @@ public class RustWriter : IDisposable
     public Block BeginExternStruct(string name, params string[] extraDerives)
     {
         string derives = extraDerives.Length > 0
-            ? $"Default, {string.Join(", ", extraDerives)}"
-            : "Default";
+            ? $"Debug, Default, {string.Join(", ", extraDerives)}"
+            : "Debug, Default";
         WriteIndent(); _writer.WriteLine($"#[derive({derives})]");
         WriteIndent(); _writer.WriteLine("#[repr(C)]");
         WriteIndent(); _writer.Write("pub struct "); _writer.Write(name.HumanizeType()); _writer.WriteLine(" {");
@@ -90,7 +89,7 @@ public class RustWriter : IDisposable
 
     public void TransparentStruct(string name, string innerType)
     {
-        WriteIndent(); _writer.WriteLine("#[derive(Clone, Copy, Default, Pod, Zeroable)]");
+        WriteIndent(); _writer.WriteLine("#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]");
         WriteIndent(); _writer.WriteLine("#[repr(transparent)]");
         WriteIndent(); _writer.Write("pub struct "); _writer.Write(name.HumanizeType());
         _writer.Write("(pub "); _writer.Write(innerType.HumanizeType()); _writer.WriteLine(");");
