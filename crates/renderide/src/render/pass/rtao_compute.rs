@@ -77,7 +77,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
     var occluded = 0u;
     let pixel_seed = f32(global_id.y * dims.x + global_id.x);
     let seed_frac = fract(pixel_seed * 0.0001) * 10000.0;
-    for (var i = 0u; i < 8u; i++) {
+    for (var i = 0u; i < 16u; i++) {
         let u1 = hash21(vec2f(seed_frac, f32(i) * 0.6180339887));
         let u2 = hash21(vec2f(seed_frac + 1.0, f32(i) * 0.6180339887));
         let dir = cosine_hemisphere_sample(u1, u2, normal);
@@ -89,7 +89,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
             occluded += 1u;
         }
     }
-    let visibility = 1.0 - f32(occluded) / 8.0;
+    let visibility = 1.0 - f32(occluded) / 16.0;
     textureStore(ao_output, vec2i(global_id.xy), vec4f(visibility, 0.0, 0.0, 1.0));
 }
 "#;
@@ -97,7 +97,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
 /// RTAO compute pass: traces rays per pixel, writes visibility (1 - occlusion) to AO texture.
 ///
 /// Dispatches (width/8, height/8, 1) workgroups. Each invocation reads position/normal,
-/// traces 8 rays in cosine-weighted hemisphere, accumulates occlusion, writes Rgba8Unorm.
+/// traces 16 rays in cosine-weighted hemisphere, accumulates occlusion, writes Rgba8Unorm.
 /// When skipping (TLAS None, pipeline failure), clears AO to full visibility.
 pub struct RtaoComputePass {
     pipeline: Option<wgpu::ComputePipeline>,
