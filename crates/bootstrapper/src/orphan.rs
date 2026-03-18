@@ -1,15 +1,29 @@
 //! Orphan process cleanup from previous crashed runs.
 //! Uses the PID file written by the bootstrapper.
+//! On Windows, also kills processes by name (renderide.exe, bootstrapper.exe, Renderite.Host.exe)
+//! in case the PID file was lost or never written.
 
 use std::fs;
 use std::io::Write;
+use std::process::Command;
 
 use crate::paths;
 
+/// Process names to kill on Windows when cleaning orphans (exact image names).
+/// Excludes bootstrapper.exe since that would kill the current process.
+#[cfg(windows)]
+const ORPHAN_PROCESS_NAMES: &[&str] = &[
+    "renderide.exe",       // Renderide renderer
+    "Renderite.Host.exe",  // Host when run as self-contained exe
+];
+
 /// Kills orphaned Host/renderer processes from a previous crashed run.
 /// Call before spawning anything. Reads PIDs from the PID file; on Unix uses SIGTERM,
-/// on Windows uses TerminateProcess.
+/// on Windows uses TerminateProcess. On Windows, also kills by process name.
 pub fn kill_orphans() {
+    #[cfg(windows)]
+    kill_orphans_by_name();
+
     let path = paths::pid_file_path();
     let Ok(contents) = fs::read_to_string(&path) else {
         return;
@@ -68,6 +82,22 @@ fn kill_process(pid: u32) {
         unsafe {
             TerminateProcess(handle, 1);
             CloseHandle(handle);
+        }
+    }
+}
+
+/// On Windows, kills known orphan process names via taskkill.
+/// Used when the PID file was lost or never written (e.g. crash before spawn).
+#[cfg(windows)]
+fn kill_orphans_by_name() {
+    for name in ORPHAN_PROCESS_NAMES {
+        if let Ok(output) = Command::new("taskkill")
+            .args(["/IM", name, "/F"])
+            .output()
+        {
+            if output.status.success() {
+                logger::info!("Killed orphan process(es) by name: {}", name);
+            }
         }
     }
 }
