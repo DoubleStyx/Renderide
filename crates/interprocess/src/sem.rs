@@ -11,7 +11,9 @@ mod imp {
     /// Opens or creates a named semaphore. Returns an error on failure (e.g. permissions, stale semaphores).
     pub fn open(name: &str) -> io::Result<Handle> {
         let full_name = format!("/ct.ip.{}", name);
-        let c_name = CString::new(full_name).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "semaphore name contains null"))?;
+        let c_name = CString::new(full_name).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "semaphore name contains null")
+        })?;
         let handle = unsafe { libc::sem_open(c_name.as_ptr(), libc::O_CREAT, 0o777, 0) };
         if handle == libc::SEM_FAILED {
             return Err(io::Error::last_os_error());

@@ -2,6 +2,7 @@
 //!
 //! Extension point for shadows, post-processing, UI, probes.
 
+mod clustered_light;
 mod composite;
 mod mesh_draw;
 mod projection;
@@ -19,6 +20,7 @@ use mesh_draw::{
     record_skinned_draws,
 };
 
+pub use clustered_light::ClusteredLightPass;
 pub use composite::CompositePass;
 pub use projection::{
     orthographic_projection_reverse_z, projection_for_params, reverse_z_projection,
@@ -229,6 +231,10 @@ impl RenderGraph {
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+
+        ctx.gpu.cluster_count_x = 0;
+        ctx.gpu.cluster_count_y = 0;
+        ctx.gpu.light_count = 0;
 
         let (
             color_view,
@@ -453,6 +459,41 @@ impl RenderPass for MeshRenderPass {
 
         let use_mrt = ctx.render_target.mrt_position_view.is_some()
             && ctx.render_target.mrt_normal_view.is_some();
+
+        let light_buffer_version = ctx.gpu.light_buffer_cache.version;
+        let cluster_buffer_version = ctx.gpu.cluster_buffer_cache.version;
+
+        let pbr_scene = match (
+            ctx.gpu.cluster_buffer_cache.get_buffers(ctx.viewport),
+            ctx.gpu
+                .light_buffer_cache
+                .ensure_buffer(&ctx.gpu.device, ctx.gpu.light_count.max(1) as usize),
+        ) {
+            (Some(crefs), Some(lb))
+                if ctx.gpu.cluster_count_x > 0 && ctx.gpu.cluster_count_y > 0 =>
+            {
+                let view_position = ctx
+                    .draw_batches
+                    .iter()
+                    .find(|b| !b.is_overlay)
+                    .map(|b| {
+                        let m = crate::scene::render_transform_to_matrix(&b.view_transform);
+                        [m.w_axis.x, m.w_axis.y, m.w_axis.z]
+                    })
+                    .unwrap_or([0.0, 0.0, 0.0]);
+                Some(mesh_draw::PbrSceneParams {
+                    view_position,
+                    cluster_count_x: ctx.gpu.cluster_count_x,
+                    cluster_count_y: ctx.gpu.cluster_count_y,
+                    light_count: ctx.gpu.light_count,
+                    light_buffer: lb,
+                    cluster_light_counts: crefs.cluster_light_counts,
+                    cluster_light_indices: crefs.cluster_light_indices,
+                })
+            }
+            _ => None,
+        };
+
         let mut draw_params = MeshDrawParams {
             pipeline_manager: ctx.pipeline_manager,
             device: &ctx.gpu.device,
@@ -463,6 +504,13 @@ impl RenderPass for MeshRenderPass {
             skinned_bind_group_cache: &mut ctx.gpu.skinned_bind_group_cache,
             overlay_orthographic: false,
             use_mrt,
+            use_pbr: ctx.session.render_config().use_pbr,
+            pbr_scene,
+            pbr_scene_bind_group_cache: &mut ctx.gpu.pbr_scene_bind_group_cache,
+            last_pbr_scene_cache_light_version: &mut ctx.gpu.last_pbr_scene_cache_light_version,
+            last_pbr_scene_cache_cluster_version: &mut ctx.gpu.last_pbr_scene_cache_cluster_version,
+            light_buffer_version,
+            cluster_buffer_version,
         };
 
         let timestamp_writes =
@@ -631,6 +679,8 @@ impl RenderPass for OverlayRenderPass {
         }
 
         let overlay_orthographic = ctx.overlay_projection_override.is_some();
+        let light_buffer_version = ctx.gpu.light_buffer_cache.version;
+        let cluster_buffer_version = ctx.gpu.cluster_buffer_cache.version;
         let mut draw_params = MeshDrawParams {
             pipeline_manager: ctx.pipeline_manager,
             device: &ctx.gpu.device,
@@ -641,6 +691,13 @@ impl RenderPass for OverlayRenderPass {
             skinned_bind_group_cache: &mut ctx.gpu.skinned_bind_group_cache,
             overlay_orthographic,
             use_mrt: false,
+            use_pbr: false,
+            pbr_scene: None,
+            pbr_scene_bind_group_cache: &mut ctx.gpu.pbr_scene_bind_group_cache,
+            last_pbr_scene_cache_light_version: &mut ctx.gpu.last_pbr_scene_cache_light_version,
+            last_pbr_scene_cache_cluster_version: &mut ctx.gpu.last_pbr_scene_cache_cluster_version,
+            light_buffer_version,
+            cluster_buffer_version,
         };
 
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

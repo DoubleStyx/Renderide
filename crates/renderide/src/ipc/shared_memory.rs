@@ -357,12 +357,23 @@ impl SharedMemoryAccessor {
         }
         // Copy to aligned buffer: mmap slices at arbitrary offsets may be unaligned for T
         // (e.g. i32 needs 4-byte alignment), causing bytemuck::try_cast_slice to fail.
+        let type_size = std::mem::size_of::<T>();
+        let length = descriptor.length as usize;
+        let remainder = length % type_size;
         let mut aligned = vec![0u8; bytes.len()];
         aligned.copy_from_slice(bytes);
-        let slice =
-            bytemuck::try_cast_slice::<u8, T>(&aligned).map_err(|_| prefix_err("try_cast_slice failed"))?;
+        let slice = bytemuck::try_cast_slice::<u8, T>(&aligned).map_err(|_| {
+            prefix_err(&format!(
+                "try_cast_slice failed: length={} bytes, type_size={}, length%type_size={}",
+                length, type_size, remainder
+            ))
+        })?;
         if slice.len() < count {
-            return Err(prefix_err(&format!("slice.len()<count {}<{}", slice.len(), count)));
+            return Err(prefix_err(&format!(
+                "slice.len()<count {}<{}",
+                slice.len(),
+                count
+            )));
         }
         Ok(slice[..count].to_vec())
     }

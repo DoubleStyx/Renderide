@@ -3,9 +3,10 @@
 use crate::scene::View;
 
 /// Init lifecycle state. Replaces `init_received`/`init_finalized` booleans to prevent invalid combinations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InitState {
     /// No renderer_init_data received; only InitCommandHandler accepts commands.
+    #[default]
     Uninitialized,
     /// renderer_init_data received; waiting for renderer_init_finalize_data.
     InitReceived,
@@ -24,14 +25,6 @@ impl InitState {
         matches!(self, InitState::Finalized)
     }
 }
-
-impl Default for InitState {
-    fn default() -> Self {
-        Self::Uninitialized
-    }
-}
-
-/// Holds current view configuration from the host.
 
 /// Holds current view configuration from the host.
 pub struct ViewState {

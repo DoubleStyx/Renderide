@@ -3,11 +3,12 @@
 //! Extension point for RenderGraph passes (mirrors, post, UI, probes).
 
 use std::mem::size_of;
+use std::time::Duration;
 
 use super::SpaceDrawBatch;
 use super::pass::{
-    CompositePass, MeshRenderPass, OverlayRenderPass, PreCollectedFrameData, RenderGraph,
-    RenderGraphContext, RtaoBlurPass, RtaoComputePass,
+    ClusteredLightPass, CompositePass, MeshRenderPass, OverlayRenderPass, PreCollectedFrameData,
+    RenderGraph, RenderGraphContext, RtaoBlurPass, RtaoComputePass,
 };
 use super::target::RenderTarget;
 use super::view::ViewParams;
@@ -45,6 +46,7 @@ impl RenderLoop {
     /// Creates a new render loop with pipelines for the given device and config.
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
         let mut graph = RenderGraph::new();
+        graph.add_pass(Box::new(ClusteredLightPass::new()));
         graph.add_pass(Box::new(MeshRenderPass::new()));
         graph.add_pass(Box::new(RtaoComputePass::new()));
         graph.add_pass(Box::new(RtaoBlurPass::new()));
@@ -250,7 +252,10 @@ impl RenderLoop {
         staging: &wgpu::Buffer,
     ) -> Option<f64> {
         staging.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        let poll_result = device.poll(wgpu::PollType::wait_indefinitely());
+        let poll_result = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(5)),
+        });
         if poll_result.is_err() {
             return None;
         }

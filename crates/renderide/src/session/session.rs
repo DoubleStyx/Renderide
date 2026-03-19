@@ -14,8 +14,12 @@ use crate::ipc::shared_memory::SharedMemoryAccessor;
 use crate::render::batch::{DrawEntry, SpaceDrawBatch};
 use crate::render::{RenderLoop, RenderTaskExecutor};
 use crate::scene::{Drawable, ResolvedLight, Scene, SceneGraph, render_transform_to_matrix};
-use crate::session::commands::{AssetContext, CommandContext, CommandDispatcher, CommandResult, FrameContext, SessionFlags};
-use crate::session::frame_data::{apply_clip_and_output_state, select_primary_view, validate_active_non_overlay};
+use crate::session::commands::{
+    AssetContext, CommandContext, CommandDispatcher, CommandResult, FrameContext, SessionFlags,
+};
+use crate::session::frame_data::{
+    apply_clip_and_output_state, select_primary_view, validate_active_non_overlay,
+};
 use crate::session::init::{InitError, get_connection_parameters, take_singleton_init};
 use crate::session::state::{InitState, ViewState};
 use crate::shared::VertexAttributeType;
@@ -395,10 +399,33 @@ impl Session {
                 true,
                 overlay_view_override,
             ));
-            let resolved = self.scene_graph.light_cache.resolve_lights(space_id, |tid| {
-                self.scene_graph.get_world_matrix(space_id, tid)
-            });
-            if !resolved.is_empty() {
+            let resolved = self
+                .scene_graph
+                .light_cache
+                .resolve_lights_with_fallback(space_id, |tid| {
+                    self.scene_graph.get_world_matrix(space_id, tid)
+                });
+            if resolved.is_empty() {
+                logger::trace!(
+                    "resolved lights space_id={} count=0 (no lights in scene)",
+                    space_id
+                );
+            } else {
+                logger::trace!(
+                    "resolved lights space_id={} count={} lights=[{}]",
+                    space_id,
+                    resolved.len(),
+                    resolved
+                        .iter()
+                        .map(|l| format!(
+                            "pos=({:.2},{:.2},{:.2}) dir=({:.2},{:.2},{:.2}) type={:?} intensity={:.2}",
+                            l.world_position.x, l.world_position.y, l.world_position.z,
+                            l.world_direction.x, l.world_direction.y, l.world_direction.z,
+                            l.light_type, l.intensity
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
                 self.resolved_lights.insert(space_id, resolved);
             }
         }
@@ -419,11 +446,12 @@ impl Session {
         for lights in self.resolved_lights.values() {
             for light in lights {
                 if light.global_unique_id >= 0 {
-                    self.receiver.send(RendererCommand::lights_buffer_renderer_consumed(
-                        LightsBufferRendererConsumed {
-                            global_unique_id: light.global_unique_id,
-                        },
-                    ));
+                    self.receiver
+                        .send(RendererCommand::lights_buffer_renderer_consumed(
+                            LightsBufferRendererConsumed {
+                                global_unique_id: light.global_unique_id,
+                            },
+                        ));
                 }
             }
         }
@@ -473,6 +501,7 @@ impl Session {
             space_id,
             this.asset_registry(),
             this.render_config.use_debug_uv,
+            this.render_config.use_pbr,
         );
         let mut draws = build_draw_entries(filtered);
         draws.sort_by_key(|d| {
@@ -512,6 +541,7 @@ struct FilteredDrawable {
 ///
 /// Skips Hidden layer, applies only/exclude lists, validates bone_transform_ids and bind_poses
 /// for skinned draws. Returns (Drawable, world_matrix, pipeline_variant) for each valid draw.
+#[allow(clippy::too_many_arguments)]
 fn filter_and_collect_drawables(
     scene: &Scene,
     only_render_list: &[i32],
@@ -520,6 +550,7 @@ fn filter_and_collect_drawables(
     space_id: i32,
     asset_registry: &AssetRegistry,
     use_debug_uv: bool,
+    use_pbr: bool,
 ) -> Vec<FilteredDrawable> {
     let only_set: HashSet<i32> = only_render_list.iter().copied().collect();
     let exclude_set: HashSet<i32> = exclude_render_list.iter().copied().collect();
@@ -580,8 +611,7 @@ fn filter_and_collect_drawables(
             }
         };
 
-        let stencil_state =
-            resolve_overlay_stencil_state(scene.is_overlay, entry, asset_registry);
+        let stencil_state = resolve_overlay_stencil_state(scene.is_overlay, entry, asset_registry);
         let mut drawable = entry.clone();
         drawable.stencil_state = stencil_state;
 
@@ -591,6 +621,7 @@ fn filter_and_collect_drawables(
             &drawable,
             entry.mesh_handle,
             use_debug_uv,
+            use_pbr,
             asset_registry,
         );
         out.push(FilteredDrawable {
@@ -691,6 +722,7 @@ fn compute_pipeline_variant_for_drawable(
     drawable: &Drawable,
     mesh_asset_id: i32,
     use_debug_uv: bool,
+    use_pbr: bool,
     asset_registry: &AssetRegistry,
 ) -> PipelineVariant {
     if is_overlay {
@@ -715,20 +747,25 @@ fn compute_pipeline_variant_for_drawable(
         } else if is_skinned {
             PipelineVariant::Skinned
         } else {
-            compute_pipeline_variant(false, mesh_asset_id, use_debug_uv, asset_registry)
+            compute_pipeline_variant(false, mesh_asset_id, use_debug_uv, false, asset_registry)
         }
     } else if is_skinned {
-        PipelineVariant::Skinned
+        if use_pbr {
+            PipelineVariant::SkinnedPbr
+        } else {
+            PipelineVariant::Skinned
+        }
     } else {
-        compute_pipeline_variant(false, mesh_asset_id, use_debug_uv, asset_registry)
+        compute_pipeline_variant(false, mesh_asset_id, use_debug_uv, use_pbr, asset_registry)
     }
 }
 
-/// Computes pipeline variant from is_skinned, mesh UVs, and use_debug_uv.
+/// Computes pipeline variant from is_skinned, mesh UVs, use_debug_uv, and use_pbr.
 fn compute_pipeline_variant(
     is_skinned: bool,
     mesh_asset_id: i32,
     use_debug_uv: bool,
+    use_pbr: bool,
     asset_registry: &AssetRegistry,
 ) -> PipelineVariant {
     if is_skinned {
@@ -743,6 +780,8 @@ fn compute_pipeline_variant(
         .unwrap_or(false);
     if use_debug_uv && has_uvs {
         PipelineVariant::UvDebug
+    } else if use_pbr {
+        PipelineVariant::Pbr
     } else {
         PipelineVariant::NormalDebug
     }

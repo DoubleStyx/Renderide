@@ -12,8 +12,8 @@ use super::uniforms::SkinnedUniforms;
 
 /// MRT position/normal target format for RTAO (vec3 packed in vec4).
 /// Uses Rgba16Float (8 bytes) to stay under the 32-byte color attachment limit.
-const MRT_POSITION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-const MRT_NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub(crate) const MRT_POSITION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub(crate) const MRT_NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Normal debug MRT pipeline: outputs color, world position, world normal for RTAO.
 ///

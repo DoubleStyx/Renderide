@@ -19,6 +19,18 @@ pub(crate) struct OverlayStencilUniforms {
     pub _pad: [f32; 16],
 }
 
+/// Scene uniforms for PBR pipeline: view position, cluster counts, light count.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SceneUniforms {
+    pub view_position: [f32; 3],
+    pub _pad0: f32,
+    pub cluster_count_x: u32,
+    pub cluster_count_y: u32,
+    pub light_count: u32,
+    pub _pad1: u32,
+}
+
 /// MVP + 256 bone matrices + blendshape weights for skinned pipeline.
 ///
 /// Blendshape weights are applied in the vertex shader before bone skinning.

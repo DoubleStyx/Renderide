@@ -13,7 +13,10 @@ impl CommandHandler for MeshCommandHandler {
             RendererCommand::mesh_upload_data(data) => {
                 let asset_id = data.asset_id;
                 let (success, existed_before) = match ctx.assets.shared_memory {
-                    Some(shm) => ctx.assets.asset_registry.handle_mesh_upload(shm, data.clone()),
+                    Some(shm) => ctx
+                        .assets
+                        .asset_registry
+                        .handle_mesh_upload(shm, data.clone()),
                     None => (false, false),
                 };
                 if success {

@@ -23,6 +23,8 @@ pub struct RenderConfig {
     pub vsync: bool,
     /// When true, use UV debug pipeline for meshes that have UVs.
     pub use_debug_uv: bool,
+    /// When true, main scene meshes use PBR pipeline instead of NormalDebug. Default true.
+    pub use_pbr: bool,
     /// When true, apply the mesh root (drawable's model_matrix) to skinned MVP.
     /// Matches Unity SkinnedMeshRenderer: vertices are in mesh root local space.
     pub skinned_apply_mesh_root_transform: bool,
@@ -69,6 +71,7 @@ impl Default for RenderConfig {
             desktop_fov: 75.0,
             vsync: false,
             use_debug_uv: false,
+            use_pbr: true,
             skinned_apply_mesh_root_transform: true,
             skinned_use_root_bone: false,
             debug_skinned: false,

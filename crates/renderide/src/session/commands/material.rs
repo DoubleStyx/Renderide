@@ -26,7 +26,7 @@ impl CommandHandler for MaterialCommandHandler {
                 if let Some(shm) = ctx.assets.shared_memory.as_mut() {
                     parse_and_store_materials_batch(
                         shm,
-                        &batch,
+                        batch,
                         &mut ctx.assets.asset_registry.material_property_store,
                     );
                     ctx.receiver
@@ -39,7 +39,8 @@ impl CommandHandler for MaterialCommandHandler {
                 CommandResult::Handled
             }
             RendererCommand::unload_material_property_block(cmd) => {
-                ctx.assets.asset_registry
+                ctx.assets
+                    .asset_registry
                     .material_property_store
                     .remove_block(cmd.asset_id);
                 CommandResult::Handled

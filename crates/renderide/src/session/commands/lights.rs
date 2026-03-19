@@ -3,9 +3,14 @@
 //! Parses LightsBufferRendererSubmission, reads LightData array from shared memory,
 //! and stores in the scene graph's light cache.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::shared::{LightData, RendererCommand};
 
 use super::{CommandContext, CommandHandler, CommandResult};
+
+/// Whether we have logged the first LightsBufferRendererSubmission (diagnostic).
+static LIGHTS_BUFFER_SUBMISSION_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Handles `lights_buffer_renderer_submission`. Reads light data from shared memory
 /// and stores it in the scene graph's light cache.
@@ -18,7 +23,9 @@ impl CommandHandler for LightsBufferCommandHandler {
         };
 
         if data.lights.is_empty() || data.lights_count <= 0 {
-            ctx.scene_graph.light_cache.store_full(data.lights_buffer_unique_id, Vec::new());
+            ctx.scene_graph
+                .light_cache
+                .store_full(data.lights_buffer_unique_id, Vec::new());
             return CommandResult::Handled;
         }
 
@@ -35,6 +42,30 @@ impl CommandHandler for LightsBufferCommandHandler {
             Some("LightsBufferRendererSubmission"),
         ) {
             Ok(lights) => {
+                if !lights.is_empty()
+                    && !LIGHTS_BUFFER_SUBMISSION_LOGGED.swap(true, Ordering::Relaxed)
+                {
+                    logger::info!(
+                        "First LightsBufferRendererSubmission received: buffer_id={} count={}",
+                        data.lights_buffer_unique_id,
+                        lights.len()
+                    );
+                }
+                logger::trace!(
+                    "LightsBufferRendererSubmission: buffer_id={} count={} lights=[{}]",
+                    data.lights_buffer_unique_id,
+                    lights.len(),
+                    lights
+                        .iter()
+                        .map(|l| format!(
+                            "pos=({:.2},{:.2},{:.2}) color=({:.2},{:.2},{:.2}) intensity={:.2} range={:.2}",
+                            l.point.x, l.point.y, l.point.z,
+                            l.color.x, l.color.y, l.color.z,
+                            l.intensity, l.range
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
                 ctx.scene_graph
                     .light_cache
                     .store_full(data.lights_buffer_unique_id, lights);

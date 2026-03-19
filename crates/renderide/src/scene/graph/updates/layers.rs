@@ -16,16 +16,18 @@ pub(crate) fn apply_layers_update(
     update: &LayerUpdate,
 ) -> Result<(), SceneError> {
     if update.removals.length > 0 {
+        let ctx = format!("layers removals scene_id={}", scene.id);
         let removals = shm
-            .access_copy_diagnostic::<i32>(&update.removals)
+            .access_copy_diagnostic_with_context::<i32>(&update.removals, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
         for &tid in removals.iter().take_while(|&&i| i >= 0) {
             scene.layer_assignments.remove(&tid);
         }
     }
     if update.additions.length > 0 {
+        let ctx = format!("layers additions scene_id={}", scene.id);
         let additions = shm
-            .access_copy_diagnostic::<i32>(&update.additions)
+            .access_copy_diagnostic_with_context::<i32>(&update.additions, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
         for &tid in additions.iter().take_while(|&&i| i >= 0) {
             scene
@@ -35,8 +37,12 @@ pub(crate) fn apply_layers_update(
         }
     }
     if update.layer_assignments.length > 0 {
+        let ctx = format!("layers layer_assignments scene_id={}", scene.id);
         let assignments = shm
-            .access_copy_diagnostic::<LayerAssignmentPod>(&update.layer_assignments)
+            .access_copy_diagnostic_with_context::<LayerAssignmentPod>(
+                &update.layer_assignments,
+                Some(&ctx),
+            )
             .map_err(SceneError::SharedMemoryAccess)?;
         for pod in assignments {
             if pod.transform_id < 0 {

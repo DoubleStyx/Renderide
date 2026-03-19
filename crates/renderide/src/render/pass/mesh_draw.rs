@@ -6,7 +6,8 @@
 use glam::Mat4;
 use nalgebra::{Matrix4, Vector3};
 
-use crate::gpu::{GpuMeshBuffers, PipelineKey, PipelineManager, PipelineVariant};
+use crate::gpu::pipeline::SceneUniforms;
+use crate::gpu::{GpuMeshBuffers, PipelineKey, PipelineManager, PipelineVariant, RenderPipeline};
 use crate::scene::render_transform_to_matrix;
 use std::collections::HashMap;
 
@@ -95,6 +96,84 @@ pub(super) struct MeshDrawParams<'a> {
     pub(super) overlay_orthographic: bool,
     /// When true, non-overlay mesh pass uses MRT pipelines (NormalDebugMRT, UvDebugMRT, SkinnedMRT).
     pub(super) use_mrt: bool,
+    /// When true, main scene non-skinned draws use PBR pipeline instead of NormalDebug.
+    pub(super) use_pbr: bool,
+    /// Cluster buffers and light data for PBR. None when PBR cannot be used.
+    pub(super) pbr_scene: Option<PbrSceneParams<'a>>,
+    /// Cache for PBR scene bind groups. Invalidated when light or cluster buffers change.
+    pub(super) pbr_scene_bind_group_cache:
+        &'a mut HashMap<crate::gpu::PipelineVariant, wgpu::BindGroup>,
+    /// Last light buffer version when cache was valid.
+    pub(super) last_pbr_scene_cache_light_version: &'a mut u64,
+    /// Last cluster buffer version when cache was valid.
+    pub(super) last_pbr_scene_cache_cluster_version: &'a mut u64,
+    /// Current light buffer version (for cache invalidation).
+    pub(super) light_buffer_version: u64,
+    /// Current cluster buffer version (for cache invalidation).
+    pub(super) cluster_buffer_version: u64,
+}
+
+/// Parameters for PBR scene bind group creation.
+pub(super) struct PbrSceneParams<'a> {
+    pub(super) view_position: [f32; 3],
+    pub(super) cluster_count_x: u32,
+    pub(super) cluster_count_y: u32,
+    pub(super) light_count: u32,
+    pub(super) light_buffer: &'a wgpu::Buffer,
+    pub(super) cluster_light_counts: &'a wgpu::Buffer,
+    pub(super) cluster_light_indices: &'a wgpu::Buffer,
+}
+
+/// Gets or creates a PBR scene bind group from the cache.
+/// Invalidates cache when light or cluster buffer versions change.
+#[allow(clippy::too_many_arguments)]
+fn get_or_create_pbr_scene_bind_group<'a>(
+    params: &'a mut MeshDrawParams,
+    pipeline: &dyn RenderPipeline,
+    variant: PipelineVariant,
+    view_position: [f32; 3],
+    cluster_count_x: u32,
+    cluster_count_y: u32,
+    light_count: u32,
+    light_buffer: &wgpu::Buffer,
+    cluster_light_counts: &wgpu::Buffer,
+    cluster_light_indices: &wgpu::Buffer,
+) -> Option<&'a wgpu::BindGroup> {
+    if *params.last_pbr_scene_cache_light_version != params.light_buffer_version
+        || *params.last_pbr_scene_cache_cluster_version != params.cluster_buffer_version
+    {
+        params.pbr_scene_bind_group_cache.clear();
+        *params.last_pbr_scene_cache_light_version = params.light_buffer_version;
+        *params.last_pbr_scene_cache_cluster_version = params.cluster_buffer_version;
+    }
+    let scene = SceneUniforms {
+        view_position,
+        _pad0: 0.0,
+        cluster_count_x,
+        cluster_count_y,
+        light_count,
+        _pad1: 0,
+    };
+    pipeline.write_scene_uniform(params.queue, bytemuck::bytes_of(&scene));
+    let bg = params
+        .pbr_scene_bind_group_cache
+        .entry(variant.clone())
+        .or_insert_with(|| {
+            pipeline
+                .create_scene_bind_group(
+                    params.device,
+                    params.queue,
+                    view_position,
+                    cluster_count_x,
+                    cluster_count_y,
+                    light_count,
+                    light_buffer,
+                    cluster_light_counts,
+                    cluster_light_indices,
+                )
+                .expect("PBR pipeline must create scene bind group")
+        });
+    Some(bg)
 }
 
 /// Collects mesh draws from batches and partitions by overlay flag.
@@ -305,25 +384,58 @@ pub(super) fn overlay_pipeline_variant_for_orthographic(
         | PipelineVariant::OverlayStencilMaskClear
         | PipelineVariant::OverlayStencilMaskWriteSkinned
         | PipelineVariant::OverlayStencilMaskClearSkinned => variant.clone(),
+        PipelineVariant::Pbr
+        | PipelineVariant::PbrMRT
+        | PipelineVariant::SkinnedPbr
+        | PipelineVariant::SkinnedPbrMRT => variant.clone(),
         _ => variant.clone(),
     }
 }
 
-/// Maps non-overlay pipeline variant to MRT variant when RTAO is enabled.
-/// Used by mesh pass to output color, position, and normal for RTAO.
+/// Maps non-overlay pipeline variant to MRT or PBR variant.
+/// When use_mrt, outputs color/position/normal for RTAO. When use_pbr && !use_mrt, uses PBR.
+/// Falls back to debug variants when cluster buffers are unavailable.
 pub(super) fn mesh_pipeline_variant_for_mrt(
     variant: &PipelineVariant,
     use_mrt: bool,
+    use_pbr: bool,
+    has_pbr_scene: bool,
 ) -> PipelineVariant {
-    if !use_mrt {
-        return variant.clone();
+    if !has_pbr_scene {
+        return match variant {
+            PipelineVariant::Pbr => PipelineVariant::NormalDebug,
+            PipelineVariant::SkinnedPbr => PipelineVariant::Skinned,
+            PipelineVariant::PbrMRT => PipelineVariant::NormalDebugMRT,
+            PipelineVariant::SkinnedPbrMRT => PipelineVariant::SkinnedMRT,
+            _ => variant.clone(),
+        };
     }
-    match variant {
-        PipelineVariant::NormalDebug => PipelineVariant::NormalDebugMRT,
-        PipelineVariant::UvDebug => PipelineVariant::UvDebugMRT,
-        PipelineVariant::Skinned => PipelineVariant::SkinnedMRT,
-        _ => variant.clone(),
+    if use_mrt && use_pbr && has_pbr_scene {
+        return match variant {
+            PipelineVariant::NormalDebug => PipelineVariant::PbrMRT,
+            PipelineVariant::UvDebug => PipelineVariant::UvDebugMRT,
+            PipelineVariant::Skinned => PipelineVariant::SkinnedPbrMRT,
+            PipelineVariant::Pbr => PipelineVariant::PbrMRT,
+            PipelineVariant::SkinnedPbr => PipelineVariant::SkinnedPbrMRT,
+            _ => variant.clone(),
+        };
     }
+    if use_mrt {
+        return match variant {
+            PipelineVariant::NormalDebug => PipelineVariant::NormalDebugMRT,
+            PipelineVariant::UvDebug => PipelineVariant::UvDebugMRT,
+            PipelineVariant::Skinned => PipelineVariant::SkinnedMRT,
+            _ => variant.clone(),
+        };
+    }
+    if use_pbr && has_pbr_scene {
+        return match variant {
+            PipelineVariant::NormalDebug => PipelineVariant::Pbr,
+            PipelineVariant::Skinned => PipelineVariant::SkinnedPbr,
+            _ => variant.clone(),
+        };
+    }
+    variant.clone()
 }
 
 /// Records skinned mesh draws into the render pass.
@@ -346,7 +458,12 @@ pub(super) fn record_skinned_draws(
         let group = &draws[i..i + group_end];
 
         let pipeline_variant = overlay_pipeline_variant_for_orthographic(
-            &mesh_pipeline_variant_for_mrt(&variant, params.use_mrt),
+            &mesh_pipeline_variant_for_mrt(
+                &variant,
+                params.use_mrt,
+                params.use_pbr,
+                params.pbr_scene.is_some(),
+            ),
             params.overlay_orthographic && group.iter().any(|d| d.is_overlay),
         );
         let Some(skinned) = params.pipeline_manager.get_pipeline(
@@ -394,6 +511,28 @@ pub(super) fn record_skinned_draws(
                 | crate::gpu::PipelineVariant::OverlayStencilMaskClearSkinned
         );
         skinned.bind_pipeline(pass);
+        // Nested if required: pbr must be destructured before passing params mutably to avoid borrow conflict.
+        #[allow(clippy::collapsible_if)]
+        if matches!(
+            pipeline_variant,
+            crate::gpu::PipelineVariant::SkinnedPbr | crate::gpu::PipelineVariant::SkinnedPbrMRT
+        ) && let Some(ref pbr) = params.pbr_scene
+        {
+            if let Some(scene_bg) = get_or_create_pbr_scene_bind_group(
+                params,
+                skinned.as_ref(),
+                pipeline_variant.clone(),
+                pbr.view_position,
+                pbr.cluster_count_x,
+                pbr.cluster_count_y,
+                pbr.light_count,
+                pbr.light_buffer,
+                pbr.cluster_light_counts,
+                pbr.cluster_light_indices,
+            ) {
+                skinned.bind_scene(pass, Some(scene_bg));
+            }
+        }
         let mut order: Vec<usize> = (0..group.len()).collect();
         order.sort_by_key(|&idx| group[idx].mesh_asset_id);
         let mut last_mesh_asset_id: Option<i32> = None;
@@ -450,7 +589,12 @@ pub(super) fn record_non_skinned_draws(
         let group = &draws[i..i + group_end];
 
         let pipeline_variant = overlay_pipeline_variant_for_orthographic(
-            &mesh_pipeline_variant_for_mrt(&variant, params.use_mrt),
+            &mesh_pipeline_variant_for_mrt(
+                &variant,
+                params.use_mrt,
+                params.use_pbr,
+                params.pbr_scene.is_some(),
+            ),
             params.overlay_orthographic && group.iter().any(|d| d.is_overlay),
         );
         let pipeline_key = PipelineKey(None, pipeline_variant.clone());
@@ -496,6 +640,28 @@ pub(super) fn record_non_skinned_draws(
                 | crate::gpu::PipelineVariant::OverlayStencilMaskClearSkinned
         );
         pipeline.bind_pipeline(pass);
+        // Nested if required: pbr must be destructured before passing params mutably to avoid borrow conflict.
+        #[allow(clippy::collapsible_if)]
+        if matches!(
+            pipeline_variant,
+            crate::gpu::PipelineVariant::Pbr | crate::gpu::PipelineVariant::PbrMRT
+        ) && let Some(ref pbr) = params.pbr_scene
+        {
+            if let Some(scene_bg) = get_or_create_pbr_scene_bind_group(
+                params,
+                pipeline.as_ref(),
+                pipeline_variant.clone(),
+                pbr.view_position,
+                pbr.cluster_count_x,
+                pbr.cluster_count_y,
+                pbr.light_count,
+                pbr.light_buffer,
+                pbr.cluster_light_counts,
+                pbr.cluster_light_indices,
+            ) {
+                pipeline.bind_scene(pass, Some(scene_bg));
+            }
+        }
         let mut order: Vec<usize> = (0..group.len()).collect();
         order.sort_by_key(|&idx| group[idx].mesh_asset_id);
         let mut last_mesh_asset_id: Option<i32> = None;

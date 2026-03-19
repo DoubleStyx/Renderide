@@ -8,18 +8,18 @@
     clippy::unnecessary_cast,
     unused_parens,
     clippy::large_enum_variant,
-    clippy::option_as_ref_deref,
+    clippy::option_as_ref_deref
 )]
 
-use nalgebra::{Vector2, Vector3, Vector4, Quaternion, Matrix4};
-use super::memory_packable::MemoryPackable;
-use super::memory_packer::MemoryPacker;
-use super::memory_unpacker::MemoryUnpacker;
-use super::memory_packer_entity_pool::MemoryPackerEntityPool;
-use super::polymorphic_memory_packable_entity::PolymorphicEncode;
 use super::buffer::SharedMemoryBufferDescriptor;
 use super::enum_repr::EnumRepr;
+use super::memory_packable::MemoryPackable;
+use super::memory_packer::MemoryPacker;
+use super::memory_packer_entity_pool::MemoryPackerEntityPool;
+use super::memory_unpacker::MemoryUnpacker;
+use super::polymorphic_memory_packable_entity::PolymorphicEncode;
 use bytemuck::{Pod, Zeroable};
+use nalgebra::{Matrix4, Quaternion, Vector2, Vector3, Vector4};
 
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(i32)]
@@ -181,161 +181,681 @@ pub enum RendererCommand {
 impl PolymorphicEncode for RendererCommand {
     fn encode(&mut self, packer: &mut MemoryPacker<'_>) {
         match self {
-            RendererCommand::renderer_init_data(x) => { packer.write(&0i32); x.pack(packer); }
-            RendererCommand::renderer_init_result(x) => { packer.write(&1i32); x.pack(packer); }
-            RendererCommand::renderer_init_progress_update(x) => { packer.write(&2i32); x.pack(packer); }
-            RendererCommand::renderer_init_finalize_data(x) => { packer.write(&3i32); x.pack(packer); }
-            RendererCommand::renderer_engine_ready(x) => { packer.write(&4i32); x.pack(packer); }
-            RendererCommand::renderer_shutdown_request(x) => { packer.write(&5i32); x.pack(packer); }
-            RendererCommand::renderer_shutdown(x) => { packer.write(&6i32); x.pack(packer); }
-            RendererCommand::keep_alive(x) => { packer.write(&7i32); x.pack(packer); }
-            RendererCommand::renderer_parent_window(x) => { packer.write(&8i32); x.pack(packer); }
-            RendererCommand::free_shared_memory_view(x) => { packer.write(&9i32); x.pack(packer); }
-            RendererCommand::set_window_icon(x) => { packer.write(&10i32); x.pack(packer); }
-            RendererCommand::set_window_icon_result(x) => { packer.write(&11i32); x.pack(packer); }
-            RendererCommand::set_taskbar_progress(x) => { packer.write(&12i32); x.pack(packer); }
-            RendererCommand::frame_start_data(x) => { packer.write(&13i32); x.pack(packer); }
-            RendererCommand::frame_submit_data(x) => { packer.write(&14i32); x.pack(packer); }
-            RendererCommand::post_processing_config(x) => { packer.write(&15i32); x.pack(packer); }
-            RendererCommand::quality_config(x) => { packer.write(&16i32); x.pack(packer); }
-            RendererCommand::resolution_config(x) => { packer.write(&17i32); x.pack(packer); }
-            RendererCommand::desktop_config(x) => { packer.write(&18i32); x.pack(packer); }
-            RendererCommand::gaussian_splat_config(x) => { packer.write(&19i32); x.pack(packer); }
-            RendererCommand::render_decoupling_config(x) => { packer.write(&20i32); x.pack(packer); }
-            RendererCommand::mesh_upload_data(x) => { packer.write(&21i32); x.pack(packer); }
-            RendererCommand::mesh_unload(x) => { packer.write(&22i32); x.pack(packer); }
-            RendererCommand::mesh_upload_result(x) => { packer.write(&23i32); x.pack(packer); }
-            RendererCommand::shader_upload(x) => { packer.write(&24i32); x.pack(packer); }
-            RendererCommand::shader_unload(x) => { packer.write(&25i32); x.pack(packer); }
-            RendererCommand::shader_upload_result(x) => { packer.write(&26i32); x.pack(packer); }
-            RendererCommand::material_property_id_request(x) => { packer.write(&27i32); x.pack(packer); }
-            RendererCommand::material_property_id_result(x) => { packer.write(&28i32); x.pack(packer); }
-            RendererCommand::materials_update_batch(x) => { packer.write(&29i32); x.pack(packer); }
-            RendererCommand::materials_update_batch_result(x) => { packer.write(&30i32); x.pack(packer); }
-            RendererCommand::unload_material(x) => { packer.write(&31i32); x.pack(packer); }
-            RendererCommand::unload_material_property_block(x) => { packer.write(&32i32); x.pack(packer); }
-            RendererCommand::set_texture_2d_format(x) => { packer.write(&33i32); x.pack(packer); }
-            RendererCommand::set_texture_2d_properties(x) => { packer.write(&34i32); x.pack(packer); }
-            RendererCommand::set_texture_2d_data(x) => { packer.write(&35i32); x.pack(packer); }
-            RendererCommand::set_texture_2d_result(x) => { packer.write(&36i32); x.pack(packer); }
-            RendererCommand::unload_texture_2d(x) => { packer.write(&37i32); x.pack(packer); }
-            RendererCommand::set_texture_3d_format(x) => { packer.write(&38i32); x.pack(packer); }
-            RendererCommand::set_texture_3d_properties(x) => { packer.write(&39i32); x.pack(packer); }
-            RendererCommand::set_texture_3d_data(x) => { packer.write(&40i32); x.pack(packer); }
-            RendererCommand::set_texture_3d_result(x) => { packer.write(&41i32); x.pack(packer); }
-            RendererCommand::unload_texture_3d(x) => { packer.write(&42i32); x.pack(packer); }
-            RendererCommand::set_cubemap_format(x) => { packer.write(&43i32); x.pack(packer); }
-            RendererCommand::set_cubemap_properties(x) => { packer.write(&44i32); x.pack(packer); }
-            RendererCommand::set_cubemap_data(x) => { packer.write(&45i32); x.pack(packer); }
-            RendererCommand::set_cubemap_result(x) => { packer.write(&46i32); x.pack(packer); }
-            RendererCommand::unload_cubemap(x) => { packer.write(&47i32); x.pack(packer); }
-            RendererCommand::set_render_texture_format(x) => { packer.write(&48i32); x.pack(packer); }
-            RendererCommand::render_texture_result(x) => { packer.write(&49i32); x.pack(packer); }
-            RendererCommand::unload_render_texture(x) => { packer.write(&50i32); x.pack(packer); }
-            RendererCommand::set_desktop_texture_properties(x) => { packer.write(&51i32); x.pack(packer); }
-            RendererCommand::desktop_texture_properties_update(x) => { packer.write(&52i32); x.pack(packer); }
-            RendererCommand::unload_desktop_texture(x) => { packer.write(&53i32); x.pack(packer); }
-            RendererCommand::point_render_buffer_upload(x) => { packer.write(&54i32); x.pack(packer); }
-            RendererCommand::point_render_buffer_consumed(x) => { packer.write(&55i32); x.pack(packer); }
-            RendererCommand::point_render_buffer_unload(x) => { packer.write(&56i32); x.pack(packer); }
-            RendererCommand::trail_render_buffer_upload(x) => { packer.write(&57i32); x.pack(packer); }
-            RendererCommand::trail_render_buffer_consumed(x) => { packer.write(&58i32); x.pack(packer); }
-            RendererCommand::trail_render_buffer_unload(x) => { packer.write(&59i32); x.pack(packer); }
-            RendererCommand::gaussian_splat_upload_raw(x) => { packer.write(&60i32); x.pack(packer); }
-            RendererCommand::gaussian_splat_upload_encoded(x) => { packer.write(&61i32); x.pack(packer); }
-            RendererCommand::gaussian_splat_result(x) => { packer.write(&62i32); x.pack(packer); }
-            RendererCommand::unload_gaussian_splat(x) => { packer.write(&63i32); x.pack(packer); }
-            RendererCommand::lights_buffer_renderer_submission(x) => { packer.write(&64i32); x.pack(packer); }
-            RendererCommand::lights_buffer_renderer_consumed(x) => { packer.write(&65i32); x.pack(packer); }
-            RendererCommand::reflection_probe_render_result(x) => { packer.write(&66i32); x.pack(packer); }
-            RendererCommand::video_texture_load(x) => { packer.write(&67i32); x.pack(packer); }
-            RendererCommand::video_texture_update(x) => { packer.write(&68i32); x.pack(packer); }
-            RendererCommand::video_texture_ready(x) => { packer.write(&69i32); x.pack(packer); }
-            RendererCommand::video_texture_changed(x) => { packer.write(&70i32); x.pack(packer); }
-            RendererCommand::video_texture_properties(x) => { packer.write(&71i32); x.pack(packer); }
-            RendererCommand::video_texture_start_audio_track(x) => { packer.write(&72i32); x.pack(packer); }
-            RendererCommand::unload_video_texture(x) => { packer.write(&73i32); x.pack(packer); }
+            RendererCommand::renderer_init_data(x) => {
+                packer.write(&0i32);
+                x.pack(packer);
+            }
+            RendererCommand::renderer_init_result(x) => {
+                packer.write(&1i32);
+                x.pack(packer);
+            }
+            RendererCommand::renderer_init_progress_update(x) => {
+                packer.write(&2i32);
+                x.pack(packer);
+            }
+            RendererCommand::renderer_init_finalize_data(x) => {
+                packer.write(&3i32);
+                x.pack(packer);
+            }
+            RendererCommand::renderer_engine_ready(x) => {
+                packer.write(&4i32);
+                x.pack(packer);
+            }
+            RendererCommand::renderer_shutdown_request(x) => {
+                packer.write(&5i32);
+                x.pack(packer);
+            }
+            RendererCommand::renderer_shutdown(x) => {
+                packer.write(&6i32);
+                x.pack(packer);
+            }
+            RendererCommand::keep_alive(x) => {
+                packer.write(&7i32);
+                x.pack(packer);
+            }
+            RendererCommand::renderer_parent_window(x) => {
+                packer.write(&8i32);
+                x.pack(packer);
+            }
+            RendererCommand::free_shared_memory_view(x) => {
+                packer.write(&9i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_window_icon(x) => {
+                packer.write(&10i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_window_icon_result(x) => {
+                packer.write(&11i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_taskbar_progress(x) => {
+                packer.write(&12i32);
+                x.pack(packer);
+            }
+            RendererCommand::frame_start_data(x) => {
+                packer.write(&13i32);
+                x.pack(packer);
+            }
+            RendererCommand::frame_submit_data(x) => {
+                packer.write(&14i32);
+                x.pack(packer);
+            }
+            RendererCommand::post_processing_config(x) => {
+                packer.write(&15i32);
+                x.pack(packer);
+            }
+            RendererCommand::quality_config(x) => {
+                packer.write(&16i32);
+                x.pack(packer);
+            }
+            RendererCommand::resolution_config(x) => {
+                packer.write(&17i32);
+                x.pack(packer);
+            }
+            RendererCommand::desktop_config(x) => {
+                packer.write(&18i32);
+                x.pack(packer);
+            }
+            RendererCommand::gaussian_splat_config(x) => {
+                packer.write(&19i32);
+                x.pack(packer);
+            }
+            RendererCommand::render_decoupling_config(x) => {
+                packer.write(&20i32);
+                x.pack(packer);
+            }
+            RendererCommand::mesh_upload_data(x) => {
+                packer.write(&21i32);
+                x.pack(packer);
+            }
+            RendererCommand::mesh_unload(x) => {
+                packer.write(&22i32);
+                x.pack(packer);
+            }
+            RendererCommand::mesh_upload_result(x) => {
+                packer.write(&23i32);
+                x.pack(packer);
+            }
+            RendererCommand::shader_upload(x) => {
+                packer.write(&24i32);
+                x.pack(packer);
+            }
+            RendererCommand::shader_unload(x) => {
+                packer.write(&25i32);
+                x.pack(packer);
+            }
+            RendererCommand::shader_upload_result(x) => {
+                packer.write(&26i32);
+                x.pack(packer);
+            }
+            RendererCommand::material_property_id_request(x) => {
+                packer.write(&27i32);
+                x.pack(packer);
+            }
+            RendererCommand::material_property_id_result(x) => {
+                packer.write(&28i32);
+                x.pack(packer);
+            }
+            RendererCommand::materials_update_batch(x) => {
+                packer.write(&29i32);
+                x.pack(packer);
+            }
+            RendererCommand::materials_update_batch_result(x) => {
+                packer.write(&30i32);
+                x.pack(packer);
+            }
+            RendererCommand::unload_material(x) => {
+                packer.write(&31i32);
+                x.pack(packer);
+            }
+            RendererCommand::unload_material_property_block(x) => {
+                packer.write(&32i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_texture_2d_format(x) => {
+                packer.write(&33i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_texture_2d_properties(x) => {
+                packer.write(&34i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_texture_2d_data(x) => {
+                packer.write(&35i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_texture_2d_result(x) => {
+                packer.write(&36i32);
+                x.pack(packer);
+            }
+            RendererCommand::unload_texture_2d(x) => {
+                packer.write(&37i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_texture_3d_format(x) => {
+                packer.write(&38i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_texture_3d_properties(x) => {
+                packer.write(&39i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_texture_3d_data(x) => {
+                packer.write(&40i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_texture_3d_result(x) => {
+                packer.write(&41i32);
+                x.pack(packer);
+            }
+            RendererCommand::unload_texture_3d(x) => {
+                packer.write(&42i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_cubemap_format(x) => {
+                packer.write(&43i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_cubemap_properties(x) => {
+                packer.write(&44i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_cubemap_data(x) => {
+                packer.write(&45i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_cubemap_result(x) => {
+                packer.write(&46i32);
+                x.pack(packer);
+            }
+            RendererCommand::unload_cubemap(x) => {
+                packer.write(&47i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_render_texture_format(x) => {
+                packer.write(&48i32);
+                x.pack(packer);
+            }
+            RendererCommand::render_texture_result(x) => {
+                packer.write(&49i32);
+                x.pack(packer);
+            }
+            RendererCommand::unload_render_texture(x) => {
+                packer.write(&50i32);
+                x.pack(packer);
+            }
+            RendererCommand::set_desktop_texture_properties(x) => {
+                packer.write(&51i32);
+                x.pack(packer);
+            }
+            RendererCommand::desktop_texture_properties_update(x) => {
+                packer.write(&52i32);
+                x.pack(packer);
+            }
+            RendererCommand::unload_desktop_texture(x) => {
+                packer.write(&53i32);
+                x.pack(packer);
+            }
+            RendererCommand::point_render_buffer_upload(x) => {
+                packer.write(&54i32);
+                x.pack(packer);
+            }
+            RendererCommand::point_render_buffer_consumed(x) => {
+                packer.write(&55i32);
+                x.pack(packer);
+            }
+            RendererCommand::point_render_buffer_unload(x) => {
+                packer.write(&56i32);
+                x.pack(packer);
+            }
+            RendererCommand::trail_render_buffer_upload(x) => {
+                packer.write(&57i32);
+                x.pack(packer);
+            }
+            RendererCommand::trail_render_buffer_consumed(x) => {
+                packer.write(&58i32);
+                x.pack(packer);
+            }
+            RendererCommand::trail_render_buffer_unload(x) => {
+                packer.write(&59i32);
+                x.pack(packer);
+            }
+            RendererCommand::gaussian_splat_upload_raw(x) => {
+                packer.write(&60i32);
+                x.pack(packer);
+            }
+            RendererCommand::gaussian_splat_upload_encoded(x) => {
+                packer.write(&61i32);
+                x.pack(packer);
+            }
+            RendererCommand::gaussian_splat_result(x) => {
+                packer.write(&62i32);
+                x.pack(packer);
+            }
+            RendererCommand::unload_gaussian_splat(x) => {
+                packer.write(&63i32);
+                x.pack(packer);
+            }
+            RendererCommand::lights_buffer_renderer_submission(x) => {
+                packer.write(&64i32);
+                x.pack(packer);
+            }
+            RendererCommand::lights_buffer_renderer_consumed(x) => {
+                packer.write(&65i32);
+                x.pack(packer);
+            }
+            RendererCommand::reflection_probe_render_result(x) => {
+                packer.write(&66i32);
+                x.pack(packer);
+            }
+            RendererCommand::video_texture_load(x) => {
+                packer.write(&67i32);
+                x.pack(packer);
+            }
+            RendererCommand::video_texture_update(x) => {
+                packer.write(&68i32);
+                x.pack(packer);
+            }
+            RendererCommand::video_texture_ready(x) => {
+                packer.write(&69i32);
+                x.pack(packer);
+            }
+            RendererCommand::video_texture_changed(x) => {
+                packer.write(&70i32);
+                x.pack(packer);
+            }
+            RendererCommand::video_texture_properties(x) => {
+                packer.write(&71i32);
+                x.pack(packer);
+            }
+            RendererCommand::video_texture_start_audio_track(x) => {
+                packer.write(&72i32);
+                x.pack(packer);
+            }
+            RendererCommand::unload_video_texture(x) => {
+                packer.write(&73i32);
+                x.pack(packer);
+            }
         }
     }
 }
 
-pub fn decode_renderer_command<P: MemoryPackerEntityPool>(unpacker: &mut MemoryUnpacker<'_, '_, P>) -> RendererCommand {
+pub fn decode_renderer_command<P: MemoryPackerEntityPool>(
+    unpacker: &mut MemoryUnpacker<'_, '_, P>,
+) -> RendererCommand {
     let tag = unpacker.read::<i32>();
     match tag {
-        0 => RendererCommand::renderer_init_data({ let mut x = RendererInitData::default(); x.unpack(unpacker); x }),
-        1 => RendererCommand::renderer_init_result({ let mut x = RendererInitResult::default(); x.unpack(unpacker); x }),
-        2 => RendererCommand::renderer_init_progress_update({ let mut x = RendererInitProgressUpdate::default(); x.unpack(unpacker); x }),
-        3 => RendererCommand::renderer_init_finalize_data({ let mut x = RendererInitFinalizeData::default(); x.unpack(unpacker); x }),
-        4 => RendererCommand::renderer_engine_ready({ let mut x = RendererEngineReady::default(); x.unpack(unpacker); x }),
-        5 => RendererCommand::renderer_shutdown_request({ let mut x = RendererShutdownRequest::default(); x.unpack(unpacker); x }),
-        6 => RendererCommand::renderer_shutdown({ let mut x = RendererShutdown::default(); x.unpack(unpacker); x }),
-        7 => RendererCommand::keep_alive({ let mut x = KeepAlive::default(); x.unpack(unpacker); x }),
-        8 => RendererCommand::renderer_parent_window({ let mut x = RendererParentWindow::default(); x.unpack(unpacker); x }),
-        9 => RendererCommand::free_shared_memory_view({ let mut x = FreeSharedMemoryView::default(); x.unpack(unpacker); x }),
-        10 => RendererCommand::set_window_icon({ let mut x = SetWindowIcon::default(); x.unpack(unpacker); x }),
-        11 => RendererCommand::set_window_icon_result({ let mut x = SetWindowIconResult::default(); x.unpack(unpacker); x }),
-        12 => RendererCommand::set_taskbar_progress({ let mut x = SetTaskbarProgress::default(); x.unpack(unpacker); x }),
-        13 => RendererCommand::frame_start_data({ let mut x = FrameStartData::default(); x.unpack(unpacker); x }),
-        14 => RendererCommand::frame_submit_data({ let mut x = FrameSubmitData::default(); x.unpack(unpacker); x }),
-        15 => RendererCommand::post_processing_config({ let mut x = PostProcessingConfig::default(); x.unpack(unpacker); x }),
-        16 => RendererCommand::quality_config({ let mut x = QualityConfig::default(); x.unpack(unpacker); x }),
-        17 => RendererCommand::resolution_config({ let mut x = ResolutionConfig::default(); x.unpack(unpacker); x }),
-        18 => RendererCommand::desktop_config({ let mut x = DesktopConfig::default(); x.unpack(unpacker); x }),
-        19 => RendererCommand::gaussian_splat_config({ let mut x = GaussianSplatConfig::default(); x.unpack(unpacker); x }),
-        20 => RendererCommand::render_decoupling_config({ let mut x = RenderDecouplingConfig::default(); x.unpack(unpacker); x }),
-        21 => RendererCommand::mesh_upload_data({ let mut x = MeshUploadData::default(); x.unpack(unpacker); x }),
-        22 => RendererCommand::mesh_unload({ let mut x = MeshUnload::default(); x.unpack(unpacker); x }),
-        23 => RendererCommand::mesh_upload_result({ let mut x = MeshUploadResult::default(); x.unpack(unpacker); x }),
-        24 => RendererCommand::shader_upload({ let mut x = ShaderUpload::default(); x.unpack(unpacker); x }),
-        25 => RendererCommand::shader_unload({ let mut x = ShaderUnload::default(); x.unpack(unpacker); x }),
-        26 => RendererCommand::shader_upload_result({ let mut x = ShaderUploadResult::default(); x.unpack(unpacker); x }),
-        27 => RendererCommand::material_property_id_request({ let mut x = MaterialPropertyIdRequest::default(); x.unpack(unpacker); x }),
-        28 => RendererCommand::material_property_id_result({ let mut x = MaterialPropertyIdResult::default(); x.unpack(unpacker); x }),
-        29 => RendererCommand::materials_update_batch({ let mut x = MaterialsUpdateBatch::default(); x.unpack(unpacker); x }),
-        30 => RendererCommand::materials_update_batch_result({ let mut x = MaterialsUpdateBatchResult::default(); x.unpack(unpacker); x }),
-        31 => RendererCommand::unload_material({ let mut x = UnloadMaterial::default(); x.unpack(unpacker); x }),
-        32 => RendererCommand::unload_material_property_block({ let mut x = UnloadMaterialPropertyBlock::default(); x.unpack(unpacker); x }),
-        33 => RendererCommand::set_texture_2d_format({ let mut x = SetTexture2DFormat::default(); x.unpack(unpacker); x }),
-        34 => RendererCommand::set_texture_2d_properties({ let mut x = SetTexture2DProperties::default(); x.unpack(unpacker); x }),
-        35 => RendererCommand::set_texture_2d_data({ let mut x = SetTexture2DData::default(); x.unpack(unpacker); x }),
-        36 => RendererCommand::set_texture_2d_result({ let mut x = SetTexture2DResult::default(); x.unpack(unpacker); x }),
-        37 => RendererCommand::unload_texture_2d({ let mut x = UnloadTexture2D::default(); x.unpack(unpacker); x }),
-        38 => RendererCommand::set_texture_3d_format({ let mut x = SetTexture3DFormat::default(); x.unpack(unpacker); x }),
-        39 => RendererCommand::set_texture_3d_properties({ let mut x = SetTexture3DProperties::default(); x.unpack(unpacker); x }),
-        40 => RendererCommand::set_texture_3d_data({ let mut x = SetTexture3DData::default(); x.unpack(unpacker); x }),
-        41 => RendererCommand::set_texture_3d_result({ let mut x = SetTexture3DResult::default(); x.unpack(unpacker); x }),
-        42 => RendererCommand::unload_texture_3d({ let mut x = UnloadTexture3D::default(); x.unpack(unpacker); x }),
-        43 => RendererCommand::set_cubemap_format({ let mut x = SetCubemapFormat::default(); x.unpack(unpacker); x }),
-        44 => RendererCommand::set_cubemap_properties({ let mut x = SetCubemapProperties::default(); x.unpack(unpacker); x }),
-        45 => RendererCommand::set_cubemap_data({ let mut x = SetCubemapData::default(); x.unpack(unpacker); x }),
-        46 => RendererCommand::set_cubemap_result({ let mut x = SetCubemapResult::default(); x.unpack(unpacker); x }),
-        47 => RendererCommand::unload_cubemap({ let mut x = UnloadCubemap::default(); x.unpack(unpacker); x }),
-        48 => RendererCommand::set_render_texture_format({ let mut x = SetRenderTextureFormat::default(); x.unpack(unpacker); x }),
-        49 => RendererCommand::render_texture_result({ let mut x = RenderTextureResult::default(); x.unpack(unpacker); x }),
-        50 => RendererCommand::unload_render_texture({ let mut x = UnloadRenderTexture::default(); x.unpack(unpacker); x }),
-        51 => RendererCommand::set_desktop_texture_properties({ let mut x = SetDesktopTextureProperties::default(); x.unpack(unpacker); x }),
-        52 => RendererCommand::desktop_texture_properties_update({ let mut x = DesktopTexturePropertiesUpdate::default(); x.unpack(unpacker); x }),
-        53 => RendererCommand::unload_desktop_texture({ let mut x = UnloadDesktopTexture::default(); x.unpack(unpacker); x }),
-        54 => RendererCommand::point_render_buffer_upload({ let mut x = PointRenderBufferUpload::default(); x.unpack(unpacker); x }),
-        55 => RendererCommand::point_render_buffer_consumed({ let mut x = PointRenderBufferConsumed::default(); x.unpack(unpacker); x }),
-        56 => RendererCommand::point_render_buffer_unload({ let mut x = PointRenderBufferUnload::default(); x.unpack(unpacker); x }),
-        57 => RendererCommand::trail_render_buffer_upload({ let mut x = TrailRenderBufferUpload::default(); x.unpack(unpacker); x }),
-        58 => RendererCommand::trail_render_buffer_consumed({ let mut x = TrailRenderBufferConsumed::default(); x.unpack(unpacker); x }),
-        59 => RendererCommand::trail_render_buffer_unload({ let mut x = TrailRenderBufferUnload::default(); x.unpack(unpacker); x }),
-        60 => RendererCommand::gaussian_splat_upload_raw({ let mut x = GaussianSplatUploadRaw::default(); x.unpack(unpacker); x }),
-        61 => RendererCommand::gaussian_splat_upload_encoded({ let mut x = GaussianSplatUploadEncoded::default(); x.unpack(unpacker); x }),
-        62 => RendererCommand::gaussian_splat_result({ let mut x = GaussianSplatResult::default(); x.unpack(unpacker); x }),
-        63 => RendererCommand::unload_gaussian_splat({ let mut x = UnloadGaussianSplat::default(); x.unpack(unpacker); x }),
-        64 => RendererCommand::lights_buffer_renderer_submission({ let mut x = LightsBufferRendererSubmission::default(); x.unpack(unpacker); x }),
-        65 => RendererCommand::lights_buffer_renderer_consumed({ let mut x = LightsBufferRendererConsumed::default(); x.unpack(unpacker); x }),
-        66 => RendererCommand::reflection_probe_render_result({ let mut x = ReflectionProbeRenderResult::default(); x.unpack(unpacker); x }),
-        67 => RendererCommand::video_texture_load({ let mut x = VideoTextureLoad::default(); x.unpack(unpacker); x }),
-        68 => RendererCommand::video_texture_update({ let mut x = VideoTextureUpdate::default(); x.unpack(unpacker); x }),
-        69 => RendererCommand::video_texture_ready({ let mut x = VideoTextureReady::default(); x.unpack(unpacker); x }),
-        70 => RendererCommand::video_texture_changed({ let mut x = VideoTextureChanged::default(); x.unpack(unpacker); x }),
-        71 => RendererCommand::video_texture_properties({ let mut x = VideoTextureProperties::default(); x.unpack(unpacker); x }),
-        72 => RendererCommand::video_texture_start_audio_track({ let mut x = VideoTextureStartAudioTrack::default(); x.unpack(unpacker); x }),
-        73 => RendererCommand::unload_video_texture({ let mut x = UnloadVideoTexture::default(); x.unpack(unpacker); x }),
+        0 => RendererCommand::renderer_init_data({
+            let mut x = RendererInitData::default();
+            x.unpack(unpacker);
+            x
+        }),
+        1 => RendererCommand::renderer_init_result({
+            let mut x = RendererInitResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        2 => RendererCommand::renderer_init_progress_update({
+            let mut x = RendererInitProgressUpdate::default();
+            x.unpack(unpacker);
+            x
+        }),
+        3 => RendererCommand::renderer_init_finalize_data({
+            let mut x = RendererInitFinalizeData::default();
+            x.unpack(unpacker);
+            x
+        }),
+        4 => RendererCommand::renderer_engine_ready({
+            let mut x = RendererEngineReady::default();
+            x.unpack(unpacker);
+            x
+        }),
+        5 => RendererCommand::renderer_shutdown_request({
+            let mut x = RendererShutdownRequest::default();
+            x.unpack(unpacker);
+            x
+        }),
+        6 => RendererCommand::renderer_shutdown({
+            let mut x = RendererShutdown::default();
+            x.unpack(unpacker);
+            x
+        }),
+        7 => RendererCommand::keep_alive({
+            let mut x = KeepAlive::default();
+            x.unpack(unpacker);
+            x
+        }),
+        8 => RendererCommand::renderer_parent_window({
+            let mut x = RendererParentWindow::default();
+            x.unpack(unpacker);
+            x
+        }),
+        9 => RendererCommand::free_shared_memory_view({
+            let mut x = FreeSharedMemoryView::default();
+            x.unpack(unpacker);
+            x
+        }),
+        10 => RendererCommand::set_window_icon({
+            let mut x = SetWindowIcon::default();
+            x.unpack(unpacker);
+            x
+        }),
+        11 => RendererCommand::set_window_icon_result({
+            let mut x = SetWindowIconResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        12 => RendererCommand::set_taskbar_progress({
+            let mut x = SetTaskbarProgress::default();
+            x.unpack(unpacker);
+            x
+        }),
+        13 => RendererCommand::frame_start_data({
+            let mut x = FrameStartData::default();
+            x.unpack(unpacker);
+            x
+        }),
+        14 => RendererCommand::frame_submit_data({
+            let mut x = FrameSubmitData::default();
+            x.unpack(unpacker);
+            x
+        }),
+        15 => RendererCommand::post_processing_config({
+            let mut x = PostProcessingConfig::default();
+            x.unpack(unpacker);
+            x
+        }),
+        16 => RendererCommand::quality_config({
+            let mut x = QualityConfig::default();
+            x.unpack(unpacker);
+            x
+        }),
+        17 => RendererCommand::resolution_config({
+            let mut x = ResolutionConfig::default();
+            x.unpack(unpacker);
+            x
+        }),
+        18 => RendererCommand::desktop_config({
+            let mut x = DesktopConfig::default();
+            x.unpack(unpacker);
+            x
+        }),
+        19 => RendererCommand::gaussian_splat_config({
+            let mut x = GaussianSplatConfig::default();
+            x.unpack(unpacker);
+            x
+        }),
+        20 => RendererCommand::render_decoupling_config({
+            let mut x = RenderDecouplingConfig::default();
+            x.unpack(unpacker);
+            x
+        }),
+        21 => RendererCommand::mesh_upload_data({
+            let mut x = MeshUploadData::default();
+            x.unpack(unpacker);
+            x
+        }),
+        22 => RendererCommand::mesh_unload({
+            let mut x = MeshUnload::default();
+            x.unpack(unpacker);
+            x
+        }),
+        23 => RendererCommand::mesh_upload_result({
+            let mut x = MeshUploadResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        24 => RendererCommand::shader_upload({
+            let mut x = ShaderUpload::default();
+            x.unpack(unpacker);
+            x
+        }),
+        25 => RendererCommand::shader_unload({
+            let mut x = ShaderUnload::default();
+            x.unpack(unpacker);
+            x
+        }),
+        26 => RendererCommand::shader_upload_result({
+            let mut x = ShaderUploadResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        27 => RendererCommand::material_property_id_request({
+            let mut x = MaterialPropertyIdRequest::default();
+            x.unpack(unpacker);
+            x
+        }),
+        28 => RendererCommand::material_property_id_result({
+            let mut x = MaterialPropertyIdResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        29 => RendererCommand::materials_update_batch({
+            let mut x = MaterialsUpdateBatch::default();
+            x.unpack(unpacker);
+            x
+        }),
+        30 => RendererCommand::materials_update_batch_result({
+            let mut x = MaterialsUpdateBatchResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        31 => RendererCommand::unload_material({
+            let mut x = UnloadMaterial::default();
+            x.unpack(unpacker);
+            x
+        }),
+        32 => RendererCommand::unload_material_property_block({
+            let mut x = UnloadMaterialPropertyBlock::default();
+            x.unpack(unpacker);
+            x
+        }),
+        33 => RendererCommand::set_texture_2d_format({
+            let mut x = SetTexture2DFormat::default();
+            x.unpack(unpacker);
+            x
+        }),
+        34 => RendererCommand::set_texture_2d_properties({
+            let mut x = SetTexture2DProperties::default();
+            x.unpack(unpacker);
+            x
+        }),
+        35 => RendererCommand::set_texture_2d_data({
+            let mut x = SetTexture2DData::default();
+            x.unpack(unpacker);
+            x
+        }),
+        36 => RendererCommand::set_texture_2d_result({
+            let mut x = SetTexture2DResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        37 => RendererCommand::unload_texture_2d({
+            let mut x = UnloadTexture2D::default();
+            x.unpack(unpacker);
+            x
+        }),
+        38 => RendererCommand::set_texture_3d_format({
+            let mut x = SetTexture3DFormat::default();
+            x.unpack(unpacker);
+            x
+        }),
+        39 => RendererCommand::set_texture_3d_properties({
+            let mut x = SetTexture3DProperties::default();
+            x.unpack(unpacker);
+            x
+        }),
+        40 => RendererCommand::set_texture_3d_data({
+            let mut x = SetTexture3DData::default();
+            x.unpack(unpacker);
+            x
+        }),
+        41 => RendererCommand::set_texture_3d_result({
+            let mut x = SetTexture3DResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        42 => RendererCommand::unload_texture_3d({
+            let mut x = UnloadTexture3D::default();
+            x.unpack(unpacker);
+            x
+        }),
+        43 => RendererCommand::set_cubemap_format({
+            let mut x = SetCubemapFormat::default();
+            x.unpack(unpacker);
+            x
+        }),
+        44 => RendererCommand::set_cubemap_properties({
+            let mut x = SetCubemapProperties::default();
+            x.unpack(unpacker);
+            x
+        }),
+        45 => RendererCommand::set_cubemap_data({
+            let mut x = SetCubemapData::default();
+            x.unpack(unpacker);
+            x
+        }),
+        46 => RendererCommand::set_cubemap_result({
+            let mut x = SetCubemapResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        47 => RendererCommand::unload_cubemap({
+            let mut x = UnloadCubemap::default();
+            x.unpack(unpacker);
+            x
+        }),
+        48 => RendererCommand::set_render_texture_format({
+            let mut x = SetRenderTextureFormat::default();
+            x.unpack(unpacker);
+            x
+        }),
+        49 => RendererCommand::render_texture_result({
+            let mut x = RenderTextureResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        50 => RendererCommand::unload_render_texture({
+            let mut x = UnloadRenderTexture::default();
+            x.unpack(unpacker);
+            x
+        }),
+        51 => RendererCommand::set_desktop_texture_properties({
+            let mut x = SetDesktopTextureProperties::default();
+            x.unpack(unpacker);
+            x
+        }),
+        52 => RendererCommand::desktop_texture_properties_update({
+            let mut x = DesktopTexturePropertiesUpdate::default();
+            x.unpack(unpacker);
+            x
+        }),
+        53 => RendererCommand::unload_desktop_texture({
+            let mut x = UnloadDesktopTexture::default();
+            x.unpack(unpacker);
+            x
+        }),
+        54 => RendererCommand::point_render_buffer_upload({
+            let mut x = PointRenderBufferUpload::default();
+            x.unpack(unpacker);
+            x
+        }),
+        55 => RendererCommand::point_render_buffer_consumed({
+            let mut x = PointRenderBufferConsumed::default();
+            x.unpack(unpacker);
+            x
+        }),
+        56 => RendererCommand::point_render_buffer_unload({
+            let mut x = PointRenderBufferUnload::default();
+            x.unpack(unpacker);
+            x
+        }),
+        57 => RendererCommand::trail_render_buffer_upload({
+            let mut x = TrailRenderBufferUpload::default();
+            x.unpack(unpacker);
+            x
+        }),
+        58 => RendererCommand::trail_render_buffer_consumed({
+            let mut x = TrailRenderBufferConsumed::default();
+            x.unpack(unpacker);
+            x
+        }),
+        59 => RendererCommand::trail_render_buffer_unload({
+            let mut x = TrailRenderBufferUnload::default();
+            x.unpack(unpacker);
+            x
+        }),
+        60 => RendererCommand::gaussian_splat_upload_raw({
+            let mut x = GaussianSplatUploadRaw::default();
+            x.unpack(unpacker);
+            x
+        }),
+        61 => RendererCommand::gaussian_splat_upload_encoded({
+            let mut x = GaussianSplatUploadEncoded::default();
+            x.unpack(unpacker);
+            x
+        }),
+        62 => RendererCommand::gaussian_splat_result({
+            let mut x = GaussianSplatResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        63 => RendererCommand::unload_gaussian_splat({
+            let mut x = UnloadGaussianSplat::default();
+            x.unpack(unpacker);
+            x
+        }),
+        64 => RendererCommand::lights_buffer_renderer_submission({
+            let mut x = LightsBufferRendererSubmission::default();
+            x.unpack(unpacker);
+            x
+        }),
+        65 => RendererCommand::lights_buffer_renderer_consumed({
+            let mut x = LightsBufferRendererConsumed::default();
+            x.unpack(unpacker);
+            x
+        }),
+        66 => RendererCommand::reflection_probe_render_result({
+            let mut x = ReflectionProbeRenderResult::default();
+            x.unpack(unpacker);
+            x
+        }),
+        67 => RendererCommand::video_texture_load({
+            let mut x = VideoTextureLoad::default();
+            x.unpack(unpacker);
+            x
+        }),
+        68 => RendererCommand::video_texture_update({
+            let mut x = VideoTextureUpdate::default();
+            x.unpack(unpacker);
+            x
+        }),
+        69 => RendererCommand::video_texture_ready({
+            let mut x = VideoTextureReady::default();
+            x.unpack(unpacker);
+            x
+        }),
+        70 => RendererCommand::video_texture_changed({
+            let mut x = VideoTextureChanged::default();
+            x.unpack(unpacker);
+            x
+        }),
+        71 => RendererCommand::video_texture_properties({
+            let mut x = VideoTextureProperties::default();
+            x.unpack(unpacker);
+            x
+        }),
+        72 => RendererCommand::video_texture_start_audio_track({
+            let mut x = VideoTextureStartAudioTrack::default();
+            x.unpack(unpacker);
+            x
+        }),
+        73 => RendererCommand::unload_video_texture({
+            let mut x = UnloadVideoTexture::default();
+            x.unpack(unpacker);
+            x
+        }),
         _ => panic!("Invalid polymorphic tag: {:?}", tag),
     }
 }
@@ -431,8 +951,7 @@ impl MemoryPackable for RendererInitProgressUpdate {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct RendererInitFinalizeData {
-}
+pub struct RendererInitFinalizeData {}
 
 impl MemoryPackable for RendererInitFinalizeData {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
@@ -446,8 +965,7 @@ impl MemoryPackable for RendererInitFinalizeData {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct RendererEngineReady {
-}
+pub struct RendererEngineReady {}
 
 impl MemoryPackable for RendererEngineReady {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
@@ -461,8 +979,7 @@ impl MemoryPackable for RendererEngineReady {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct RendererShutdownRequest {
-}
+pub struct RendererShutdownRequest {}
 
 impl MemoryPackable for RendererShutdownRequest {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
@@ -476,8 +993,7 @@ impl MemoryPackable for RendererShutdownRequest {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct RendererShutdown {
-}
+pub struct RendererShutdown {}
 
 impl MemoryPackable for RendererShutdown {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
@@ -491,8 +1007,7 @@ impl MemoryPackable for RendererShutdown {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct KeepAlive {
-}
+pub struct KeepAlive {}
 
 impl MemoryPackable for KeepAlive {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
@@ -1862,7 +2377,16 @@ impl MemoryPackable for VideoTextureUpdate {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
         packer.write(&self.asset_id);
         packer.write(&self.position);
-        packer.write_packed_bools(self.play, self.r#loop, false, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.play,
+            self.r#loop,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         self.asset_id = unpacker.read();
@@ -1870,7 +2394,10 @@ impl MemoryPackable for VideoTextureUpdate {
         let __p = unpacker.read_packed_bools();
         self.play = __p.bit0;
         self.r#loop = __p.bit1;
-        self.decoded_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as i128;
+        self.decoded_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i128;
     }
 }
 
@@ -2050,7 +2577,12 @@ impl MemoryPackable for HeadOutputDevice {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2133,7 +2665,12 @@ impl MemoryPackable for TextureFormat {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2165,7 +2702,12 @@ impl MemoryPackable for TaskbarProgressBarMode {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2438,11 +2980,14 @@ impl MemoryPackable for RenderSpaceUpdate {
         self.mesh_render_buffers_update = unpacker.read_object::<MeshRenderBufferUpdate>();
         self.trail_renderers_update = unpacker.read_object::<TrailsRendererUpdate>();
         self.lights_buffer_renderers_update = unpacker.read_object::<LightsBufferRendererUpdate>();
-        self.render_transform_overrides_update = unpacker.read_object::<RenderTransformOverridesUpdate>();
-        self.render_material_overrides_update = unpacker.read_object::<RenderMaterialOverridesUpdate>();
+        self.render_transform_overrides_update =
+            unpacker.read_object::<RenderTransformOverridesUpdate>();
+        self.render_material_overrides_update =
+            unpacker.read_object::<RenderMaterialOverridesUpdate>();
         self.blit_to_displays_update = unpacker.read_object::<BlitToDisplayRenderablesUpdate>();
         self.lod_group_update = unpacker.read_object::<LODGroupRenderablesUpdate>();
-        self.gaussian_splat_renderers_update = unpacker.read_object::<GaussianSplatRenderablesUpdate>();
+        self.gaussian_splat_renderers_update =
+            unpacker.read_object::<GaussianSplatRenderablesUpdate>();
         self.reflection_probe_render_tasks = unpacker.read_object_list();
     }
 }
@@ -2495,7 +3040,12 @@ impl MemoryPackable for AntiAliasingMethod {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2525,7 +3075,12 @@ impl MemoryPackable for ShadowCascadeMode {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2556,7 +3111,12 @@ impl MemoryPackable for ShadowResolutionMode {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2587,7 +3147,12 @@ impl MemoryPackable for SkinWeightMode {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2616,7 +3181,12 @@ impl MemoryPackable for IndexBufferFormat {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2647,8 +3217,16 @@ impl MemoryPackable for VertexAttributeDescriptor {
         packer.write(&self.dimensions);
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        self.attribute = { let mut x = VertexAttributeType::default(); unpacker.read_object_required(&mut x); x };
-        self.format = { let mut x = VertexAttributeFormat::default(); unpacker.read_object_required(&mut x); x };
+        self.attribute = {
+            let mut x = VertexAttributeType::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
+        self.format = {
+            let mut x = VertexAttributeFormat::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self.dimensions = unpacker.read();
     }
 }
@@ -2670,7 +3248,11 @@ impl MemoryPackable for SubmeshBufferDescriptor {
         packer.write(&self.bounds);
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        self.topology = { let mut x = SubmeshTopology::default(); unpacker.read_object_required(&mut x); x };
+        self.topology = {
+            let mut x = SubmeshTopology::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self.index_start = unpacker.read();
         self.index_count = unpacker.read();
         self.bounds = unpacker.read();
@@ -2697,7 +3279,11 @@ impl MemoryPackable for BlendshapeBufferDescriptor {
         self.blendshape_index = unpacker.read();
         self.frame_index = unpacker.read();
         self.frame_weight = unpacker.read();
-        self.data_flags = { let mut x = BlendshapeDataFlags::default(); unpacker.read_object_required(&mut x); x };
+        self.data_flags = {
+            let mut x = BlendshapeDataFlags::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
     }
 }
 
@@ -2712,7 +3298,11 @@ impl MemoryPackable for MeshUploadHint {
         packer.write_object_required(&mut self.flags);
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        self.flags = { let mut x = MeshUploadHintFlag::default(); unpacker.read_object_required(&mut x); x };
+        self.flags = {
+            let mut x = MeshUploadHintFlag::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
     }
 }
 
@@ -2750,7 +3340,11 @@ impl MemoryPackable for MaterialPropertyUpdate {
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         self.property_id = unpacker.read();
-        self.update_type = { let mut x = MaterialPropertyUpdateType::default(); unpacker.read_object_required(&mut x); x };
+        self.update_type = {
+            let mut x = MaterialPropertyUpdateType::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self._padding = unpacker.read();
     }
 }
@@ -2769,7 +3363,12 @@ impl MemoryPackable for ColorProfile {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2800,7 +3399,12 @@ impl MemoryPackable for TextureFilterMode {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2831,7 +3435,12 @@ impl MemoryPackable for TextureWrapMode {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2879,9 +3488,15 @@ impl TextureUpdateResultType {
     pub const FORMAT_SET: i32 = 1;
     pub const PROPERTIES_SET: i32 = 2;
     pub const DATA_UPLOAD: i32 = 4;
-    pub fn format_set(&self) -> bool { self.0 & Self::FORMAT_SET != 0 }
-    pub fn properties_set(&self) -> bool { self.0 & Self::PROPERTIES_SET != 0 }
-    pub fn data_upload(&self) -> bool { self.0 & Self::DATA_UPLOAD != 0 }
+    pub fn format_set(&self) -> bool {
+        self.0 & Self::FORMAT_SET != 0
+    }
+    pub fn properties_set(&self) -> bool {
+        self.0 & Self::PROPERTIES_SET != 0
+    }
+    pub fn data_upload(&self) -> bool {
+        self.0 & Self::DATA_UPLOAD != 0
+    }
 }
 
 impl MemoryPackable for TextureUpdateResultType {
@@ -2923,7 +3538,12 @@ impl MemoryPackable for GaussianVectorFormat {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2951,7 +3571,12 @@ impl MemoryPackable for GaussianRotationFormat {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -2982,7 +3607,12 @@ impl MemoryPackable for GaussianColorFormat {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -3017,7 +3647,12 @@ impl MemoryPackable for GaussianSHFormat {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -3105,7 +3740,16 @@ pub struct MouseState {
 
 impl MemoryPackable for MouseState {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
-        packer.write_packed_bools(self.is_active, self.left_button_state, self.right_button_state, self.middle_button_state, self.button4_state, self.button5_state, false, false);
+        packer.write_packed_bools(
+            self.is_active,
+            self.left_button_state,
+            self.right_button_state,
+            self.middle_button_state,
+            self.button4_state,
+            self.button5_state,
+            false,
+            false,
+        );
         packer.write(&self.desktop_position);
         packer.write(&self.window_position);
         packer.write(&self.direct_delta);
@@ -3183,7 +3827,16 @@ pub struct VRInputsState {
 
 impl MemoryPackable for VRInputsState {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
-        packer.write_packed_bools(self.user_present_in_headset, self.dashboard_open, false, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.user_present_in_headset,
+            self.dashboard_open,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         packer.write_object(self.headset_state.as_mut());
         packer.write_polymorphic_list(Some(&mut self.controllers[..]));
         packer.write_object_list(Some(&mut self.trackers[..]));
@@ -3240,9 +3893,29 @@ impl MemoryPackable for GamepadState {
         packer.write(&self.d_pad);
         packer.write(&self.left_trigger);
         packer.write(&self.right_trigger);
-        packer.write_packed_bools(self.left_thumbstick_click, self.right_thumbstick_click, self.d_pad_up, self.d_pad_right, self.d_pad_down, self.d_pad_left, self.left_bumper, self.right_bumper);
-        packer.write_packed_bools(self.start, self.menu, false, false, false, false, false, false);
-        packer.write_packed_bools(self.a, self.b, self.x, self.y, self.paddle0, self.paddle1, self.paddle2, self.paddle3);
+        packer.write_packed_bools(
+            self.left_thumbstick_click,
+            self.right_thumbstick_click,
+            self.d_pad_up,
+            self.d_pad_right,
+            self.d_pad_down,
+            self.d_pad_left,
+            self.left_bumper,
+            self.right_bumper,
+        );
+        packer.write_packed_bools(
+            self.start, self.menu, false, false, false, false, false, false,
+        );
+        packer.write_packed_bools(
+            self.a,
+            self.b,
+            self.x,
+            self.y,
+            self.paddle0,
+            self.paddle1,
+            self.paddle2,
+            self.paddle3,
+        );
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         self.display_name = unpacker.read_str();
@@ -3919,7 +4592,12 @@ impl MemoryPackable for VertexAttributeType {
         packer.write(&(*self as i16));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i16, Self>(unpacker.read::<i16>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i16, Self>(unpacker.read::<i16>()),
+            )
+        };
     }
 }
 
@@ -3956,7 +4634,12 @@ impl MemoryPackable for VertexAttributeFormat {
         packer.write(&(*self as i16));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i16, Self>(unpacker.read::<i16>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i16, Self>(unpacker.read::<i16>()),
+            )
+        };
     }
 }
 
@@ -3985,7 +4668,12 @@ impl MemoryPackable for SubmeshTopology {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -4009,9 +4697,15 @@ impl BlendshapeDataFlags {
     pub const POSITIONS: i32 = 1;
     pub const NORMALS: i32 = 2;
     pub const TANGETS: i32 = 4;
-    pub fn positions(&self) -> bool { self.0 & Self::POSITIONS != 0 }
-    pub fn normals(&self) -> bool { self.0 & Self::NORMALS != 0 }
-    pub fn tangets(&self) -> bool { self.0 & Self::TANGETS != 0 }
+    pub fn positions(&self) -> bool {
+        self.0 & Self::POSITIONS != 0
+    }
+    pub fn normals(&self) -> bool {
+        self.0 & Self::NORMALS != 0
+    }
+    pub fn tangets(&self) -> bool {
+        self.0 & Self::TANGETS != 0
+    }
 }
 
 impl MemoryPackable for BlendshapeDataFlags {
@@ -4049,27 +4743,69 @@ impl MeshUploadHintFlag {
     pub const DYNAMIC: i32 = 262144;
     pub const READABLE: i32 = 524288;
     pub const DEBUG: i32 = 1048576;
-    pub fn vertex_layout(&self) -> bool { self.0 & Self::VERTEX_LAYOUT != 0 }
-    pub fn submesh_layout(&self) -> bool { self.0 & Self::SUBMESH_LAYOUT != 0 }
-    pub fn geometry(&self) -> bool { self.0 & Self::GEOMETRY != 0 }
-    pub fn positions(&self) -> bool { self.0 & Self::POSITIONS != 0 }
-    pub fn normals(&self) -> bool { self.0 & Self::NORMALS != 0 }
-    pub fn tangents(&self) -> bool { self.0 & Self::TANGENTS != 0 }
-    pub fn colors(&self) -> bool { self.0 & Self::COLORS != 0 }
-    pub fn uv0s(&self) -> bool { self.0 & Self::UV0S != 0 }
-    pub fn uv1s(&self) -> bool { self.0 & Self::UV1S != 0 }
-    pub fn uv2s(&self) -> bool { self.0 & Self::UV2S != 0 }
-    pub fn uv3s(&self) -> bool { self.0 & Self::UV3S != 0 }
-    pub fn uv4s(&self) -> bool { self.0 & Self::UV4S != 0 }
-    pub fn uv5s(&self) -> bool { self.0 & Self::UV5S != 0 }
-    pub fn uv6s(&self) -> bool { self.0 & Self::UV6S != 0 }
-    pub fn uv7s(&self) -> bool { self.0 & Self::UV7S != 0 }
-    pub fn bind_poses(&self) -> bool { self.0 & Self::BIND_POSES != 0 }
-    pub fn bone_weights(&self) -> bool { self.0 & Self::BONE_WEIGHTS != 0 }
-    pub fn blendshapes(&self) -> bool { self.0 & Self::BLENDSHAPES != 0 }
-    pub fn dynamic(&self) -> bool { self.0 & Self::DYNAMIC != 0 }
-    pub fn readable(&self) -> bool { self.0 & Self::READABLE != 0 }
-    pub fn debug(&self) -> bool { self.0 & Self::DEBUG != 0 }
+    pub fn vertex_layout(&self) -> bool {
+        self.0 & Self::VERTEX_LAYOUT != 0
+    }
+    pub fn submesh_layout(&self) -> bool {
+        self.0 & Self::SUBMESH_LAYOUT != 0
+    }
+    pub fn geometry(&self) -> bool {
+        self.0 & Self::GEOMETRY != 0
+    }
+    pub fn positions(&self) -> bool {
+        self.0 & Self::POSITIONS != 0
+    }
+    pub fn normals(&self) -> bool {
+        self.0 & Self::NORMALS != 0
+    }
+    pub fn tangents(&self) -> bool {
+        self.0 & Self::TANGENTS != 0
+    }
+    pub fn colors(&self) -> bool {
+        self.0 & Self::COLORS != 0
+    }
+    pub fn uv0s(&self) -> bool {
+        self.0 & Self::UV0S != 0
+    }
+    pub fn uv1s(&self) -> bool {
+        self.0 & Self::UV1S != 0
+    }
+    pub fn uv2s(&self) -> bool {
+        self.0 & Self::UV2S != 0
+    }
+    pub fn uv3s(&self) -> bool {
+        self.0 & Self::UV3S != 0
+    }
+    pub fn uv4s(&self) -> bool {
+        self.0 & Self::UV4S != 0
+    }
+    pub fn uv5s(&self) -> bool {
+        self.0 & Self::UV5S != 0
+    }
+    pub fn uv6s(&self) -> bool {
+        self.0 & Self::UV6S != 0
+    }
+    pub fn uv7s(&self) -> bool {
+        self.0 & Self::UV7S != 0
+    }
+    pub fn bind_poses(&self) -> bool {
+        self.0 & Self::BIND_POSES != 0
+    }
+    pub fn bone_weights(&self) -> bool {
+        self.0 & Self::BONE_WEIGHTS != 0
+    }
+    pub fn blendshapes(&self) -> bool {
+        self.0 & Self::BLENDSHAPES != 0
+    }
+    pub fn dynamic(&self) -> bool {
+        self.0 & Self::DYNAMIC != 0
+    }
+    pub fn readable(&self) -> bool {
+        self.0 & Self::READABLE != 0
+    }
+    pub fn debug(&self) -> bool {
+        self.0 & Self::DEBUG != 0
+    }
 }
 
 impl MemoryPackable for MeshUploadHintFlag {
@@ -4104,7 +4840,12 @@ impl MemoryPackable for MaterialPropertyUpdateType {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -4296,7 +5037,12 @@ impl MemoryPackable for Key {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -4344,7 +5090,16 @@ pub struct HeadsetState {
 
 impl MemoryPackable for HeadsetState {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
-        packer.write_packed_bools(self.is_tracking, self.battery_charging, false, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_tracking,
+            self.battery_charging,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -4397,29 +5152,87 @@ pub enum VRControllerState {
 impl PolymorphicEncode for VRControllerState {
     fn encode(&mut self, packer: &mut MemoryPacker<'_>) {
         match self {
-            VRControllerState::cosmos_controller_state(x) => { packer.write(&0i32); x.pack(packer); }
-            VRControllerState::generic_controller_state(x) => { packer.write(&1i32); x.pack(packer); }
-            VRControllerState::hp_reverb_controller_state(x) => { packer.write(&2i32); x.pack(packer); }
-            VRControllerState::index_controller_state(x) => { packer.write(&3i32); x.pack(packer); }
-            VRControllerState::pico_neo2_controller_state(x) => { packer.write(&4i32); x.pack(packer); }
-            VRControllerState::touch_controller_state(x) => { packer.write(&5i32); x.pack(packer); }
-            VRControllerState::vive_controller_state(x) => { packer.write(&6i32); x.pack(packer); }
-            VRControllerState::windows_mr_controller_state(x) => { packer.write(&7i32); x.pack(packer); }
+            VRControllerState::cosmos_controller_state(x) => {
+                packer.write(&0i32);
+                x.pack(packer);
+            }
+            VRControllerState::generic_controller_state(x) => {
+                packer.write(&1i32);
+                x.pack(packer);
+            }
+            VRControllerState::hp_reverb_controller_state(x) => {
+                packer.write(&2i32);
+                x.pack(packer);
+            }
+            VRControllerState::index_controller_state(x) => {
+                packer.write(&3i32);
+                x.pack(packer);
+            }
+            VRControllerState::pico_neo2_controller_state(x) => {
+                packer.write(&4i32);
+                x.pack(packer);
+            }
+            VRControllerState::touch_controller_state(x) => {
+                packer.write(&5i32);
+                x.pack(packer);
+            }
+            VRControllerState::vive_controller_state(x) => {
+                packer.write(&6i32);
+                x.pack(packer);
+            }
+            VRControllerState::windows_mr_controller_state(x) => {
+                packer.write(&7i32);
+                x.pack(packer);
+            }
         }
     }
 }
 
-pub fn decode_vr_controller_state<P: MemoryPackerEntityPool>(unpacker: &mut MemoryUnpacker<'_, '_, P>) -> VRControllerState {
+pub fn decode_vr_controller_state<P: MemoryPackerEntityPool>(
+    unpacker: &mut MemoryUnpacker<'_, '_, P>,
+) -> VRControllerState {
     let tag = unpacker.read::<i32>();
     match tag {
-        0 => VRControllerState::cosmos_controller_state({ let mut x = CosmosControllerState::default(); x.unpack(unpacker); x }),
-        1 => VRControllerState::generic_controller_state({ let mut x = GenericControllerState::default(); x.unpack(unpacker); x }),
-        2 => VRControllerState::hp_reverb_controller_state({ let mut x = HPReverbControllerState::default(); x.unpack(unpacker); x }),
-        3 => VRControllerState::index_controller_state({ let mut x = IndexControllerState::default(); x.unpack(unpacker); x }),
-        4 => VRControllerState::pico_neo2_controller_state({ let mut x = PicoNeo2ControllerState::default(); x.unpack(unpacker); x }),
-        5 => VRControllerState::touch_controller_state({ let mut x = TouchControllerState::default(); x.unpack(unpacker); x }),
-        6 => VRControllerState::vive_controller_state({ let mut x = ViveControllerState::default(); x.unpack(unpacker); x }),
-        7 => VRControllerState::windows_mr_controller_state({ let mut x = WindowsMRControllerState::default(); x.unpack(unpacker); x }),
+        0 => VRControllerState::cosmos_controller_state({
+            let mut x = CosmosControllerState::default();
+            x.unpack(unpacker);
+            x
+        }),
+        1 => VRControllerState::generic_controller_state({
+            let mut x = GenericControllerState::default();
+            x.unpack(unpacker);
+            x
+        }),
+        2 => VRControllerState::hp_reverb_controller_state({
+            let mut x = HPReverbControllerState::default();
+            x.unpack(unpacker);
+            x
+        }),
+        3 => VRControllerState::index_controller_state({
+            let mut x = IndexControllerState::default();
+            x.unpack(unpacker);
+            x
+        }),
+        4 => VRControllerState::pico_neo2_controller_state({
+            let mut x = PicoNeo2ControllerState::default();
+            x.unpack(unpacker);
+            x
+        }),
+        5 => VRControllerState::touch_controller_state({
+            let mut x = TouchControllerState::default();
+            x.unpack(unpacker);
+            x
+        }),
+        6 => VRControllerState::vive_controller_state({
+            let mut x = ViveControllerState::default();
+            x.unpack(unpacker);
+            x
+        }),
+        7 => VRControllerState::windows_mr_controller_state({
+            let mut x = WindowsMRControllerState::default();
+            x.unpack(unpacker);
+            x
+        }),
         _ => panic!("Invalid polymorphic tag: {:?}", tag),
     }
 }
@@ -4437,7 +5250,16 @@ pub struct TrackerState {
 impl MemoryPackable for TrackerState {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
         packer.write_str(self.unique_id.as_ref().map(|s| s.as_str()));
-        packer.write_packed_bools(self.is_tracking, self.battery_charging, false, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_tracking,
+            self.battery_charging,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -4504,7 +5326,16 @@ impl MemoryPackable for HandState {
         packer.write_str(self.unique_id.as_ref().map(|s| s.as_str()));
         packer.write(&self.priority);
         packer.write_object_required(&mut self.chirality);
-        packer.write_packed_bools(self.is_device_active, self.is_tracking, self.tracks_metacarpals, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_device_active,
+            self.is_tracking,
+            self.tracks_metacarpals,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         packer.write(&self.confidence);
         if self.is_tracking {
             packer.write(&self.wrist_position);
@@ -4570,7 +5401,12 @@ impl MemoryPackable for RectOrientation {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -4672,8 +5508,16 @@ impl MemoryPackable for MeshRendererState {
         self.material_count = unpacker.read();
         self.material_property_block_count = unpacker.read();
         self.sorting_order = unpacker.read();
-        self.shadow_cast_mode = { let mut x = ShadowCastMode::default(); unpacker.read_object_required(&mut x); x };
-        self.motion_vector_mode = { let mut x = MotionVectorMode::default(); unpacker.read_object_required(&mut x); x };
+        self.shadow_cast_mode = {
+            let mut x = ShadowCastMode::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
+        self.motion_vector_mode = {
+            let mut x = MotionVectorMode::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self._padding = unpacker.read();
     }
 }
@@ -4797,8 +5641,16 @@ impl MemoryPackable for LightState {
         self.shadow_bias = unpacker.read();
         self.shadow_normal_bias = unpacker.read();
         self.cookie_texture_asset_id = unpacker.read();
-        self.r#type = { let mut x = LightType::default(); unpacker.read_object_required(&mut x); x };
-        self.shadow_type = { let mut x = ShadowType::default(); unpacker.read_object_required(&mut x); x };
+        self.r#type = {
+            let mut x = LightType::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
+        self.shadow_type = {
+            let mut x = ShadowType::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self._padding = unpacker.read();
     }
 }
@@ -4851,8 +5703,16 @@ impl MemoryPackable for CameraState {
         self.render_texture_asset_id = unpacker.read();
         self.selective_render_count = unpacker.read();
         self.exclude_render_count = unpacker.read();
-        self.clear_mode = { let mut x = CameraClearMode::default(); unpacker.read_object_required(&mut x); x };
-        self.projection = { let mut x = CameraProjection::default(); unpacker.read_object_required(&mut x); x };
+        self.clear_mode = {
+            let mut x = CameraClearMode::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
+        self.projection = {
+            let mut x = CameraProjection::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self.flags = unpacker.read();
     }
 }
@@ -4899,7 +5759,11 @@ impl MemoryPackable for CameraPortalState {
         self.portal_plane_position = unpacker.read();
         self.portal_plane_normal = unpacker.read();
         self.override_far_clip_value = unpacker.read();
-        self.override_clear_flag_value = { let mut x = CameraClearMode::default(); unpacker.read_object_required(&mut x); x };
+        self.override_clear_flag_value = {
+            let mut x = CameraClearMode::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self._padding = unpacker.read();
         self.flags = unpacker.read();
     }
@@ -4973,9 +5837,21 @@ impl MemoryPackable for ReflectionProbeState {
         self.background_color = unpacker.read();
         self.near_clip = unpacker.read();
         self.far_clip = unpacker.read();
-        self.r#type = { let mut x = ReflectionProbeType::default(); unpacker.read_object_required(&mut x); x };
-        self.clear_flags = { let mut x = ReflectionProbeClear::default(); unpacker.read_object_required(&mut x); x };
-        self.time_slicing_mode = { let mut x = ReflectionProbeTimeSlicingMode::default(); unpacker.read_object_required(&mut x); x };
+        self.r#type = {
+            let mut x = ReflectionProbeType::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
+        self.clear_flags = {
+            let mut x = ReflectionProbeClear::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
+        self.time_slicing_mode = {
+            let mut x = ReflectionProbeTimeSlicingMode::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self.flags = unpacker.read();
     }
 }
@@ -5002,7 +5878,12 @@ impl MemoryPackable for LayerType {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -5048,8 +5929,16 @@ impl MemoryPackable for BillboardRenderBufferState {
         self.material_asset_id = unpacker.read();
         self.min_billboard_screen_size = unpacker.read();
         self.max_billboard_screen_size = unpacker.read();
-        self.alignment = { let mut x = BillboardAlignment::default(); unpacker.read_object_required(&mut x); x };
-        self.motion_vector_mode = { let mut x = MotionVectorMode::default(); unpacker.read_object_required(&mut x); x };
+        self.alignment = {
+            let mut x = BillboardAlignment::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
+        self.motion_vector_mode = {
+            let mut x = MotionVectorMode::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self._padding = unpacker.read();
     }
 }
@@ -5079,7 +5968,11 @@ impl MemoryPackable for MeshRenderBufferState {
         self.point_render_buffer_asset_id = unpacker.read();
         self.material_asset_id = unpacker.read();
         self.mesh_asset_id = unpacker.read();
-        self.alignment = { let mut x = MeshAlignment::default(); unpacker.read_object_required(&mut x); x };
+        self.alignment = {
+            let mut x = MeshAlignment::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self._padding = unpacker.read();
     }
 }
@@ -5110,8 +6003,16 @@ impl MemoryPackable for TrailsRendererState {
         self.renderable_index = unpacker.read();
         self.trails_render_buffer_asset_id = unpacker.read();
         self.material_asset_id = unpacker.read();
-        self.texture_mode = { let mut x = TrailTextureMode::default(); unpacker.read_object_required(&mut x); x };
-        self.motion_vector_mode = { let mut x = MotionVectorMode::default(); unpacker.read_object_required(&mut x); x };
+        self.texture_mode = {
+            let mut x = TrailTextureMode::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
+        self.motion_vector_mode = {
+            let mut x = MotionVectorMode::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self.generate_lighting_data = unpacker.read_bool() as u8;
         self._padding = unpacker.read();
     }
@@ -5156,8 +6057,16 @@ impl MemoryPackable for LightsBufferRendererState {
         self.shadow_bias = unpacker.read();
         self.shadow_normal_bias = unpacker.read();
         self.cookie_texture_asset_id = unpacker.read();
-        self.light_type = { let mut x = LightType::default(); unpacker.read_object_required(&mut x); x };
-        self.shadow_type = { let mut x = ShadowType::default(); unpacker.read_object_required(&mut x); x };
+        self.light_type = {
+            let mut x = LightType::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
+        self.shadow_type = {
+            let mut x = ShadowType::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self._padding = unpacker.read();
     }
 }
@@ -5195,7 +6104,11 @@ impl MemoryPackable for RenderTransformOverrideState {
         self.rotation_override = unpacker.read();
         self.scale_override = unpacker.read();
         self.skinned_mesh_renderer_count = unpacker.read();
-        self.context = { let mut x = RenderingContext::default(); unpacker.read_object_required(&mut x); x };
+        self.context = {
+            let mut x = RenderingContext::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self.override_flags = unpacker.read();
         self._padding_1 = unpacker.read();
     }
@@ -5230,7 +6143,11 @@ impl MemoryPackable for RenderMaterialOverrideState {
         self.renderable_index = unpacker.read();
         self.packed_mesh_renderer_index = unpacker.read();
         self.materrial_override_count = unpacker.read();
-        self.context = { let mut x = RenderingContext::default(); unpacker.read_object_required(&mut x); x };
+        self.context = {
+            let mut x = RenderingContext::default();
+            unpacker.read_object_required(&mut x);
+            x
+        };
         self._padding = unpacker.read();
     }
 }
@@ -5307,7 +6224,12 @@ impl MemoryPackable for CameraProjection {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -5338,7 +6260,12 @@ impl MemoryPackable for CameraClearMode {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -5368,7 +6295,12 @@ impl MemoryPackable for HeadsetConnection {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -5418,7 +6350,16 @@ impl MemoryPackable for CosmosControllerState {
         packer.write_str(self.device_model.as_ref().map(|s| s.as_str()));
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(self.is_device_active, self.is_tracking, self.has_bound_hand, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_device_active,
+            self.is_tracking,
+            self.has_bound_hand,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -5429,7 +6370,16 @@ impl MemoryPackable for CosmosControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(self.joystick_touch, self.joystick_click, self.trigger_touch, self.trigger_click, self.grip_click, self.vive, self.button_ax, self.button_by);
+        packer.write_packed_bools(
+            self.joystick_touch,
+            self.joystick_click,
+            self.trigger_touch,
+            self.trigger_click,
+            self.grip_click,
+            self.vive,
+            self.button_ax,
+            self.button_by,
+        );
         packer.write(&self.joystick_raw);
         packer.write(&self.trigger);
         packer.write_bool(self.bumper);
@@ -5499,7 +6449,16 @@ impl MemoryPackable for GenericControllerState {
         packer.write_str(self.device_model.as_ref().map(|s| s.as_str()));
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(self.is_device_active, self.is_tracking, self.has_bound_hand, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_device_active,
+            self.is_tracking,
+            self.has_bound_hand,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -5512,7 +6471,16 @@ impl MemoryPackable for GenericControllerState {
         }
         packer.write(&self.strength);
         packer.write(&self.axis);
-        packer.write_packed_bools(self.touching_strength, self.touching_axis, self.primary, self.menu, self.grab, self.secondary, false, false);
+        packer.write_packed_bools(
+            self.touching_strength,
+            self.touching_axis,
+            self.primary,
+            self.menu,
+            self.grab,
+            self.secondary,
+            false,
+            false,
+        );
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         self.device_id = unpacker.read_str();
@@ -5579,7 +6547,16 @@ impl MemoryPackable for HPReverbControllerState {
         packer.write_str(self.device_model.as_ref().map(|s| s.as_str()));
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(self.is_device_active, self.is_tracking, self.has_bound_hand, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_device_active,
+            self.is_tracking,
+            self.has_bound_hand,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -5590,7 +6567,16 @@ impl MemoryPackable for HPReverbControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(self.app_menu, self.button_yb, self.button_xa, self.grip_touch, self.grip_click, self.joystick_click, self.trigger_hair, self.trigger_click);
+        packer.write_packed_bools(
+            self.app_menu,
+            self.button_yb,
+            self.button_xa,
+            self.grip_touch,
+            self.grip_click,
+            self.joystick_click,
+            self.trigger_hair,
+            self.trigger_click,
+        );
         packer.write(&self.grip);
         packer.write(&self.joystick_raw);
         packer.write(&self.trigger);
@@ -5669,7 +6655,16 @@ impl MemoryPackable for IndexControllerState {
         packer.write_str(self.device_model.as_ref().map(|s| s.as_str()));
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(self.is_device_active, self.is_tracking, self.has_bound_hand, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_device_active,
+            self.is_tracking,
+            self.has_bound_hand,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -5680,10 +6675,28 @@ impl MemoryPackable for IndexControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(self.grip_touch, self.grip_click, self.button_a, self.button_b, self.button_atouch, self.button_btouch, self.trigger_touch, self.trigger_click);
+        packer.write_packed_bools(
+            self.grip_touch,
+            self.grip_click,
+            self.button_a,
+            self.button_b,
+            self.button_atouch,
+            self.button_btouch,
+            self.trigger_touch,
+            self.trigger_click,
+        );
         packer.write(&self.grip);
         packer.write(&self.trigger);
-        packer.write_packed_bools(self.joystick_touch, self.joystick_click, self.touchpad_touch, self.touchpad_press, false, false, false, false);
+        packer.write_packed_bools(
+            self.joystick_touch,
+            self.joystick_click,
+            self.touchpad_touch,
+            self.touchpad_press,
+            false,
+            false,
+            false,
+            false,
+        );
         packer.write(&self.joystick_raw);
         packer.write(&self.touchpad);
         packer.write(&self.touchpad_force);
@@ -5762,7 +6775,16 @@ impl MemoryPackable for PicoNeo2ControllerState {
         packer.write_str(self.device_model.as_ref().map(|s| s.as_str()));
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(self.is_device_active, self.is_tracking, self.has_bound_hand, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_device_active,
+            self.is_tracking,
+            self.has_bound_hand,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -5773,7 +6795,16 @@ impl MemoryPackable for PicoNeo2ControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(self.app, self.pico, self.button_yb, self.button_xa, self.grip_click, self.joystick_touch, self.joystick_click, self.trigger_click);
+        packer.write_packed_bools(
+            self.app,
+            self.pico,
+            self.button_yb,
+            self.button_xa,
+            self.grip_click,
+            self.joystick_touch,
+            self.joystick_click,
+            self.trigger_click,
+        );
         packer.write(&self.joystick);
         packer.write(&self.trigger);
     }
@@ -5848,7 +6879,16 @@ impl MemoryPackable for TouchControllerState {
         packer.write_str(self.device_model.as_ref().map(|s| s.as_str()));
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(self.is_device_active, self.is_tracking, self.has_bound_hand, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_device_active,
+            self.is_tracking,
+            self.has_bound_hand,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -5860,8 +6900,26 @@ impl MemoryPackable for TouchControllerState {
             packer.write_bool(self.battery_charging);
         }
         packer.write_object_required(&mut self.model);
-        packer.write_packed_bools(self.start, self.button_yb, self.button_xa, self.button_yb_touch, self.button_xa_touch, self.thumbrest_touch, false, false);
-        packer.write_packed_bools(self.grip_click, self.joystick_touch, self.joystick_click, self.trigger_touch, self.trigger_click, false, false, false);
+        packer.write_packed_bools(
+            self.start,
+            self.button_yb,
+            self.button_xa,
+            self.button_yb_touch,
+            self.button_xa_touch,
+            self.thumbrest_touch,
+            false,
+            false,
+        );
+        packer.write_packed_bools(
+            self.grip_click,
+            self.joystick_touch,
+            self.joystick_click,
+            self.trigger_touch,
+            self.trigger_click,
+            false,
+            false,
+            false,
+        );
         packer.write(&self.grip);
         packer.write(&self.joystick_raw);
         packer.write(&self.trigger);
@@ -5936,7 +6994,16 @@ impl MemoryPackable for ViveControllerState {
         packer.write_str(self.device_model.as_ref().map(|s| s.as_str()));
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(self.is_device_active, self.is_tracking, self.has_bound_hand, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_device_active,
+            self.is_tracking,
+            self.has_bound_hand,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -5947,7 +7014,16 @@ impl MemoryPackable for ViveControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(self.grip, self.app, self.trigger_hair, self.trigger_click, self.touchpad_touch, self.touchpad_click, false, false);
+        packer.write_packed_bools(
+            self.grip,
+            self.app,
+            self.trigger_hair,
+            self.trigger_click,
+            self.touchpad_touch,
+            self.touchpad_click,
+            false,
+            false,
+        );
         packer.write(&self.trigger);
         packer.write(&self.touchpad);
     }
@@ -6015,7 +7091,16 @@ impl MemoryPackable for WindowsMRControllerState {
         packer.write_str(self.device_model.as_ref().map(|s| s.as_str()));
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(self.is_device_active, self.is_tracking, self.has_bound_hand, false, false, false, false, false);
+        packer.write_packed_bools(
+            self.is_device_active,
+            self.is_tracking,
+            self.has_bound_hand,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -6026,7 +7111,16 @@ impl MemoryPackable for WindowsMRControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(self.grip, self.app, self.trigger_hair, self.trigger_click, self.touchpad_touch, self.touchpad_click, self.joystick_click, false);
+        packer.write_packed_bools(
+            self.grip,
+            self.app,
+            self.trigger_hair,
+            self.trigger_click,
+            self.touchpad_touch,
+            self.touchpad_click,
+            self.joystick_click,
+            false,
+        );
         packer.write(&self.trigger);
         packer.write(&self.touchpad);
         packer.write(&self.joystick_raw);
@@ -6077,7 +7171,12 @@ impl MemoryPackable for Chirality {
         packer.write(&(*self as i8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i8, Self>(unpacker.read::<i8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i8, Self>(unpacker.read::<i8>()),
+            )
+        };
     }
 }
 
@@ -6158,7 +7257,12 @@ impl MemoryPackable for ShadowCastMode {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6188,7 +7292,12 @@ impl MemoryPackable for MotionVectorMode {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6218,7 +7327,12 @@ impl MemoryPackable for LightType {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6248,7 +7362,12 @@ impl MemoryPackable for ShadowType {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6302,7 +7421,12 @@ impl MemoryPackable for ReflectionProbeType {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6331,7 +7455,12 @@ impl MemoryPackable for ReflectionProbeClear {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6361,7 +7490,12 @@ impl MemoryPackable for ReflectionProbeTimeSlicingMode {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6392,7 +7526,12 @@ impl MemoryPackable for ComputeResult {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -6424,7 +7563,12 @@ impl MemoryPackable for BillboardAlignment {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6455,7 +7599,12 @@ impl MemoryPackable for MeshAlignment {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6486,7 +7635,12 @@ impl MemoryPackable for TrailTextureMode {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6519,7 +7673,12 @@ impl MemoryPackable for RenderingContext {
         packer.write(&(*self as u8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<u8, Self>(unpacker.read::<u8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<u8, Self>(unpacker.read::<u8>()),
+            )
+        };
     }
 }
 
@@ -6627,7 +7786,12 @@ impl MemoryPackable for BodyNode {
         packer.write(&(*self as i32));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i32, Self>(unpacker.read::<i32>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i32, Self>(unpacker.read::<i32>()),
+            )
+        };
     }
 }
 
@@ -6656,7 +7820,12 @@ impl MemoryPackable for TouchControllerModel {
         packer.write(&(*self as i8));
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
-        unsafe { std::ptr::write(self as *mut Self, std::mem::transmute::<i8, Self>(unpacker.read::<i8>())) };
+        unsafe {
+            std::ptr::write(
+                self as *mut Self,
+                std::mem::transmute::<i8, Self>(unpacker.read::<i8>()),
+            )
+        };
     }
 }
 
@@ -6672,7 +7841,6 @@ impl EnumRepr for TouchControllerModel {
 unsafe impl Pod for TouchControllerModel {}
 unsafe impl Zeroable for TouchControllerModel {}
 
-
 // Roundtrip dispatch for C#–Rust serialization tests. Called by the roundtrip binary.
 pub fn roundtrip_dispatch(type_name: &str, input: &[u8]) -> std::io::Result<Vec<u8>> {
     use super::default_entity_pool::DefaultEntityPool;
@@ -6683,133 +7851,642 @@ pub fn roundtrip_dispatch(type_name: &str, input: &[u8]) -> std::io::Result<Vec<
     let mut packer = MemoryPacker::new(&mut output[..]);
 
     match type_name {
-        "RendererInitData" => { let mut x = RendererInitData::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RendererInitResult" => { let mut x = RendererInitResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RendererInitProgressUpdate" => { let mut x = RendererInitProgressUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RendererInitFinalizeData" => { let mut x = RendererInitFinalizeData::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RendererEngineReady" => { let mut x = RendererEngineReady::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RendererShutdownRequest" => { let mut x = RendererShutdownRequest::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RendererShutdown" => { let mut x = RendererShutdown::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "KeepAlive" => { let mut x = KeepAlive::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RendererParentWindow" => { let mut x = RendererParentWindow::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "FreeSharedMemoryView" => { let mut x = FreeSharedMemoryView::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetWindowIcon" => { let mut x = SetWindowIcon::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetWindowIconResult" => { let mut x = SetWindowIconResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetTaskbarProgress" => { let mut x = SetTaskbarProgress::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "FrameStartData" => { let mut x = FrameStartData::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "FrameSubmitData" => { let mut x = FrameSubmitData::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "PostProcessingConfig" => { let mut x = PostProcessingConfig::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "QualityConfig" => { let mut x = QualityConfig::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ResolutionConfig" => { let mut x = ResolutionConfig::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "DesktopConfig" => { let mut x = DesktopConfig::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "GaussianSplatConfig" => { let mut x = GaussianSplatConfig::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RenderDecouplingConfig" => { let mut x = RenderDecouplingConfig::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MeshUploadData" => { let mut x = MeshUploadData::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MeshUnload" => { let mut x = MeshUnload::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MeshUploadResult" => { let mut x = MeshUploadResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ShaderUpload" => { let mut x = ShaderUpload::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ShaderUnload" => { let mut x = ShaderUnload::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ShaderUploadResult" => { let mut x = ShaderUploadResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MaterialPropertyIdRequest" => { let mut x = MaterialPropertyIdRequest::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MaterialPropertyIdResult" => { let mut x = MaterialPropertyIdResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MaterialsUpdateBatch" => { let mut x = MaterialsUpdateBatch::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MaterialsUpdateBatchResult" => { let mut x = MaterialsUpdateBatchResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "UnloadMaterial" => { let mut x = UnloadMaterial::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "UnloadMaterialPropertyBlock" => { let mut x = UnloadMaterialPropertyBlock::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetTexture2DFormat" => { let mut x = SetTexture2DFormat::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetTexture2DProperties" => { let mut x = SetTexture2DProperties::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetTexture2DData" => { let mut x = SetTexture2DData::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetTexture2DResult" => { let mut x = SetTexture2DResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "UnloadTexture2D" => { let mut x = UnloadTexture2D::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetTexture3DFormat" => { let mut x = SetTexture3DFormat::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetTexture3DProperties" => { let mut x = SetTexture3DProperties::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetTexture3DData" => { let mut x = SetTexture3DData::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetTexture3DResult" => { let mut x = SetTexture3DResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "UnloadTexture3D" => { let mut x = UnloadTexture3D::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetCubemapFormat" => { let mut x = SetCubemapFormat::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetCubemapProperties" => { let mut x = SetCubemapProperties::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetCubemapData" => { let mut x = SetCubemapData::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetCubemapResult" => { let mut x = SetCubemapResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "UnloadCubemap" => { let mut x = UnloadCubemap::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetRenderTextureFormat" => { let mut x = SetRenderTextureFormat::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RenderTextureResult" => { let mut x = RenderTextureResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "UnloadRenderTexture" => { let mut x = UnloadRenderTexture::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SetDesktopTextureProperties" => { let mut x = SetDesktopTextureProperties::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "DesktopTexturePropertiesUpdate" => { let mut x = DesktopTexturePropertiesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "UnloadDesktopTexture" => { let mut x = UnloadDesktopTexture::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "PointRenderBufferUpload" => { let mut x = PointRenderBufferUpload::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "PointRenderBufferConsumed" => { let mut x = PointRenderBufferConsumed::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "PointRenderBufferUnload" => { let mut x = PointRenderBufferUnload::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "TrailRenderBufferUpload" => { let mut x = TrailRenderBufferUpload::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "TrailRenderBufferConsumed" => { let mut x = TrailRenderBufferConsumed::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "TrailRenderBufferUnload" => { let mut x = TrailRenderBufferUnload::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "GaussianSplatUploadRaw" => { let mut x = GaussianSplatUploadRaw::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "GaussianSplatUploadEncoded" => { let mut x = GaussianSplatUploadEncoded::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "GaussianSplatResult" => { let mut x = GaussianSplatResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "UnloadGaussianSplat" => { let mut x = UnloadGaussianSplat::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "LightsBufferRendererSubmission" => { let mut x = LightsBufferRendererSubmission::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "LightsBufferRendererConsumed" => { let mut x = LightsBufferRendererConsumed::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ReflectionProbeRenderResult" => { let mut x = ReflectionProbeRenderResult::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VideoTextureLoad" => { let mut x = VideoTextureLoad::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VideoTextureUpdate" => { let mut x = VideoTextureUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VideoTextureReady" => { let mut x = VideoTextureReady::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VideoTextureChanged" => { let mut x = VideoTextureChanged::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VideoTextureProperties" => { let mut x = VideoTextureProperties::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VideoTextureStartAudioTrack" => { let mut x = VideoTextureStartAudioTrack::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "UnloadVideoTexture" => { let mut x = UnloadVideoTexture::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "Guid" => { let mut x = Guid::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RendererSplashScreenOverride" => { let mut x = RendererSplashScreenOverride::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "PerformanceState" => { let mut x = PerformanceState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "InputState" => { let mut x = InputState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "OutputState" => { let mut x = OutputState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RenderSpaceUpdate" => { let mut x = RenderSpaceUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "CameraRenderTask" => { let mut x = CameraRenderTask::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VideoAudioTrack" => { let mut x = VideoAudioTrack::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MouseState" => { let mut x = MouseState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "KeyboardState" => { let mut x = KeyboardState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "WindowState" => { let mut x = WindowState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VR_InputsState" => { let mut x = VRInputsState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "GamepadState" => { let mut x = GamepadState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "TouchState" => { let mut x = TouchState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "DisplayState" => { let mut x = DisplayState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VR_OutputState" => { let mut x = VROutputState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "TransformsUpdate" => { let mut x = TransformsUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MeshRenderablesUpdate" => { let mut x = MeshRenderablesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "SkinnedMeshRenderablesUpdate" => { let mut x = SkinnedMeshRenderablesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "LightRenderablesUpdate" => { let mut x = LightRenderablesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "CameraRenderablesUpdate" => { let mut x = CameraRenderablesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "CameraPortalsRenderablesUpdate" => { let mut x = CameraPortalsRenderablesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ReflectionProbeRenderablesUpdate" => { let mut x = ReflectionProbeRenderablesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ReflectionProbeSH2Tasks" => { let mut x = ReflectionProbeSH2Tasks::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "LayerUpdate" => { let mut x = LayerUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "BillboardRenderBufferUpdate" => { let mut x = BillboardRenderBufferUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "MeshRenderBufferUpdate" => { let mut x = MeshRenderBufferUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "TrailsRendererUpdate" => { let mut x = TrailsRendererUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "LightsBufferRendererUpdate" => { let mut x = LightsBufferRendererUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RenderTransformOverridesUpdate" => { let mut x = RenderTransformOverridesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "RenderMaterialOverridesUpdate" => { let mut x = RenderMaterialOverridesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "BlitToDisplayRenderablesUpdate" => { let mut x = BlitToDisplayRenderablesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "LODGroupRenderablesUpdate" => { let mut x = LODGroupRenderablesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "GaussianSplatRenderablesUpdate" => { let mut x = GaussianSplatRenderablesUpdate::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ReflectionProbeRenderTask" => { let mut x = ReflectionProbeRenderTask::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "CameraRenderParameters" => { let mut x = CameraRenderParameters::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "DragAndDropEvent" => { let mut x = DragAndDropEvent::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "HeadsetState" => { let mut x = HeadsetState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "TrackerState" => { let mut x = TrackerState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "TrackingReferenceState" => { let mut x = TrackingReferenceState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "HandState" => { let mut x = HandState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ViveHandTrackingInputState" => { let mut x = ViveHandTrackingInputState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "VR_ControllerOutputState" => { let mut x = VRControllerOutputState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "CosmosControllerState" => { let mut x = CosmosControllerState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "GenericControllerState" => { let mut x = GenericControllerState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "HP_ReverbControllerState" => { let mut x = HPReverbControllerState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "IndexControllerState" => { let mut x = IndexControllerState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "PicoNeo2ControllerState" => { let mut x = PicoNeo2ControllerState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "TouchControllerState" => { let mut x = TouchControllerState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ViveControllerState" => { let mut x = ViveControllerState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "WindowsMR_ControllerState" => { let mut x = WindowsMRControllerState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        "ViveHandState" => { let mut x = ViveHandState::default(); x.unpack(&mut unpacker); x.pack(&mut packer); }
-        _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("Unknown type: {}", type_name))),
+        "RendererInitData" => {
+            let mut x = RendererInitData::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RendererInitResult" => {
+            let mut x = RendererInitResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RendererInitProgressUpdate" => {
+            let mut x = RendererInitProgressUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RendererInitFinalizeData" => {
+            let mut x = RendererInitFinalizeData::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RendererEngineReady" => {
+            let mut x = RendererEngineReady::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RendererShutdownRequest" => {
+            let mut x = RendererShutdownRequest::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RendererShutdown" => {
+            let mut x = RendererShutdown::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "KeepAlive" => {
+            let mut x = KeepAlive::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RendererParentWindow" => {
+            let mut x = RendererParentWindow::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "FreeSharedMemoryView" => {
+            let mut x = FreeSharedMemoryView::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetWindowIcon" => {
+            let mut x = SetWindowIcon::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetWindowIconResult" => {
+            let mut x = SetWindowIconResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetTaskbarProgress" => {
+            let mut x = SetTaskbarProgress::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "FrameStartData" => {
+            let mut x = FrameStartData::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "FrameSubmitData" => {
+            let mut x = FrameSubmitData::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "PostProcessingConfig" => {
+            let mut x = PostProcessingConfig::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "QualityConfig" => {
+            let mut x = QualityConfig::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ResolutionConfig" => {
+            let mut x = ResolutionConfig::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "DesktopConfig" => {
+            let mut x = DesktopConfig::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "GaussianSplatConfig" => {
+            let mut x = GaussianSplatConfig::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RenderDecouplingConfig" => {
+            let mut x = RenderDecouplingConfig::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MeshUploadData" => {
+            let mut x = MeshUploadData::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MeshUnload" => {
+            let mut x = MeshUnload::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MeshUploadResult" => {
+            let mut x = MeshUploadResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ShaderUpload" => {
+            let mut x = ShaderUpload::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ShaderUnload" => {
+            let mut x = ShaderUnload::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ShaderUploadResult" => {
+            let mut x = ShaderUploadResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MaterialPropertyIdRequest" => {
+            let mut x = MaterialPropertyIdRequest::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MaterialPropertyIdResult" => {
+            let mut x = MaterialPropertyIdResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MaterialsUpdateBatch" => {
+            let mut x = MaterialsUpdateBatch::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MaterialsUpdateBatchResult" => {
+            let mut x = MaterialsUpdateBatchResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "UnloadMaterial" => {
+            let mut x = UnloadMaterial::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "UnloadMaterialPropertyBlock" => {
+            let mut x = UnloadMaterialPropertyBlock::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetTexture2DFormat" => {
+            let mut x = SetTexture2DFormat::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetTexture2DProperties" => {
+            let mut x = SetTexture2DProperties::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetTexture2DData" => {
+            let mut x = SetTexture2DData::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetTexture2DResult" => {
+            let mut x = SetTexture2DResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "UnloadTexture2D" => {
+            let mut x = UnloadTexture2D::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetTexture3DFormat" => {
+            let mut x = SetTexture3DFormat::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetTexture3DProperties" => {
+            let mut x = SetTexture3DProperties::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetTexture3DData" => {
+            let mut x = SetTexture3DData::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetTexture3DResult" => {
+            let mut x = SetTexture3DResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "UnloadTexture3D" => {
+            let mut x = UnloadTexture3D::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetCubemapFormat" => {
+            let mut x = SetCubemapFormat::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetCubemapProperties" => {
+            let mut x = SetCubemapProperties::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetCubemapData" => {
+            let mut x = SetCubemapData::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetCubemapResult" => {
+            let mut x = SetCubemapResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "UnloadCubemap" => {
+            let mut x = UnloadCubemap::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetRenderTextureFormat" => {
+            let mut x = SetRenderTextureFormat::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RenderTextureResult" => {
+            let mut x = RenderTextureResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "UnloadRenderTexture" => {
+            let mut x = UnloadRenderTexture::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SetDesktopTextureProperties" => {
+            let mut x = SetDesktopTextureProperties::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "DesktopTexturePropertiesUpdate" => {
+            let mut x = DesktopTexturePropertiesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "UnloadDesktopTexture" => {
+            let mut x = UnloadDesktopTexture::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "PointRenderBufferUpload" => {
+            let mut x = PointRenderBufferUpload::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "PointRenderBufferConsumed" => {
+            let mut x = PointRenderBufferConsumed::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "PointRenderBufferUnload" => {
+            let mut x = PointRenderBufferUnload::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "TrailRenderBufferUpload" => {
+            let mut x = TrailRenderBufferUpload::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "TrailRenderBufferConsumed" => {
+            let mut x = TrailRenderBufferConsumed::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "TrailRenderBufferUnload" => {
+            let mut x = TrailRenderBufferUnload::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "GaussianSplatUploadRaw" => {
+            let mut x = GaussianSplatUploadRaw::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "GaussianSplatUploadEncoded" => {
+            let mut x = GaussianSplatUploadEncoded::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "GaussianSplatResult" => {
+            let mut x = GaussianSplatResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "UnloadGaussianSplat" => {
+            let mut x = UnloadGaussianSplat::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "LightsBufferRendererSubmission" => {
+            let mut x = LightsBufferRendererSubmission::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "LightsBufferRendererConsumed" => {
+            let mut x = LightsBufferRendererConsumed::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ReflectionProbeRenderResult" => {
+            let mut x = ReflectionProbeRenderResult::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VideoTextureLoad" => {
+            let mut x = VideoTextureLoad::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VideoTextureUpdate" => {
+            let mut x = VideoTextureUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VideoTextureReady" => {
+            let mut x = VideoTextureReady::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VideoTextureChanged" => {
+            let mut x = VideoTextureChanged::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VideoTextureProperties" => {
+            let mut x = VideoTextureProperties::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VideoTextureStartAudioTrack" => {
+            let mut x = VideoTextureStartAudioTrack::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "UnloadVideoTexture" => {
+            let mut x = UnloadVideoTexture::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "Guid" => {
+            let mut x = Guid::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RendererSplashScreenOverride" => {
+            let mut x = RendererSplashScreenOverride::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "PerformanceState" => {
+            let mut x = PerformanceState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "InputState" => {
+            let mut x = InputState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "OutputState" => {
+            let mut x = OutputState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RenderSpaceUpdate" => {
+            let mut x = RenderSpaceUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "CameraRenderTask" => {
+            let mut x = CameraRenderTask::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VideoAudioTrack" => {
+            let mut x = VideoAudioTrack::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MouseState" => {
+            let mut x = MouseState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "KeyboardState" => {
+            let mut x = KeyboardState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "WindowState" => {
+            let mut x = WindowState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VR_InputsState" => {
+            let mut x = VRInputsState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "GamepadState" => {
+            let mut x = GamepadState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "TouchState" => {
+            let mut x = TouchState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "DisplayState" => {
+            let mut x = DisplayState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VR_OutputState" => {
+            let mut x = VROutputState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "TransformsUpdate" => {
+            let mut x = TransformsUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MeshRenderablesUpdate" => {
+            let mut x = MeshRenderablesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "SkinnedMeshRenderablesUpdate" => {
+            let mut x = SkinnedMeshRenderablesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "LightRenderablesUpdate" => {
+            let mut x = LightRenderablesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "CameraRenderablesUpdate" => {
+            let mut x = CameraRenderablesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "CameraPortalsRenderablesUpdate" => {
+            let mut x = CameraPortalsRenderablesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ReflectionProbeRenderablesUpdate" => {
+            let mut x = ReflectionProbeRenderablesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ReflectionProbeSH2Tasks" => {
+            let mut x = ReflectionProbeSH2Tasks::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "LayerUpdate" => {
+            let mut x = LayerUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "BillboardRenderBufferUpdate" => {
+            let mut x = BillboardRenderBufferUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "MeshRenderBufferUpdate" => {
+            let mut x = MeshRenderBufferUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "TrailsRendererUpdate" => {
+            let mut x = TrailsRendererUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "LightsBufferRendererUpdate" => {
+            let mut x = LightsBufferRendererUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RenderTransformOverridesUpdate" => {
+            let mut x = RenderTransformOverridesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "RenderMaterialOverridesUpdate" => {
+            let mut x = RenderMaterialOverridesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "BlitToDisplayRenderablesUpdate" => {
+            let mut x = BlitToDisplayRenderablesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "LODGroupRenderablesUpdate" => {
+            let mut x = LODGroupRenderablesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "GaussianSplatRenderablesUpdate" => {
+            let mut x = GaussianSplatRenderablesUpdate::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ReflectionProbeRenderTask" => {
+            let mut x = ReflectionProbeRenderTask::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "CameraRenderParameters" => {
+            let mut x = CameraRenderParameters::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "DragAndDropEvent" => {
+            let mut x = DragAndDropEvent::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "HeadsetState" => {
+            let mut x = HeadsetState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "TrackerState" => {
+            let mut x = TrackerState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "TrackingReferenceState" => {
+            let mut x = TrackingReferenceState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "HandState" => {
+            let mut x = HandState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ViveHandTrackingInputState" => {
+            let mut x = ViveHandTrackingInputState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "VR_ControllerOutputState" => {
+            let mut x = VRControllerOutputState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "CosmosControllerState" => {
+            let mut x = CosmosControllerState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "GenericControllerState" => {
+            let mut x = GenericControllerState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "HP_ReverbControllerState" => {
+            let mut x = HPReverbControllerState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "IndexControllerState" => {
+            let mut x = IndexControllerState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "PicoNeo2ControllerState" => {
+            let mut x = PicoNeo2ControllerState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "TouchControllerState" => {
+            let mut x = TouchControllerState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ViveControllerState" => {
+            let mut x = ViveControllerState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "WindowsMR_ControllerState" => {
+            let mut x = WindowsMRControllerState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        "ViveHandState" => {
+            let mut x = ViveHandState::default();
+            x.unpack(&mut unpacker);
+            x.pack(&mut packer);
+        }
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Unknown type: {}", type_name),
+            ));
+        }
     }
 
     let written = original_len - packer.remaining_len();

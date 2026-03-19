@@ -21,7 +21,10 @@ fn main() {
         log_level.unwrap_or(LogLevel::Trace),
         false,
     ) {
-        eprintln!("Failed to initialize logging to {}: {}", BOOTSTRAPPER_LOG, e);
+        eprintln!(
+            "Failed to initialize logging to {}: {}",
+            BOOTSTRAPPER_LOG, e
+        );
         std::process::exit(1);
     }
 

@@ -132,7 +132,9 @@ pub(super) fn open_queue_backing(
 }
 
 #[cfg(unix)]
-fn open_queue_backing_unix(options: &QueueOptions) -> Result<(MemoryBacking, SemHandle), BackingError> {
+fn open_queue_backing_unix(
+    options: &QueueOptions,
+) -> Result<(MemoryBacking, SemHandle), BackingError> {
     use std::fs::{self, OpenOptions};
 
     let path = options.file_path();
@@ -152,10 +154,8 @@ fn open_queue_backing_unix(options: &QueueOptions) -> Result<(MemoryBacking, Sem
     file.set_len(storage_size).map_err(BackingError)?;
 
     let mmap = unsafe {
-        memmap2::MmapMut::map_mut(&file).map_err(|e| BackingError(io::Error::new(
-            io::ErrorKind::Other,
-            format!("mmap failed: {}", e),
-        )))?
+        memmap2::MmapMut::map_mut(&file)
+            .map_err(|e| BackingError(io::Error::other(format!("mmap failed: {}", e))))?
     };
 
     let sem_handle = sem::open(&options.memory_view_name).map_err(BackingError)?;
@@ -197,7 +197,10 @@ fn open_queue_backing_windows(
         unsafe { windows_sys::Win32::Foundation::CloseHandle(map_handle) };
         return Err(BackingError(io::Error::new(
             io::ErrorKind::Other,
-            format!("MapViewOfFile failed for queue: {}", options.memory_view_name),
+            format!(
+                "MapViewOfFile failed for queue: {}",
+                options.memory_view_name
+            ),
         )));
     }
 
@@ -256,7 +259,7 @@ fn create_or_open_file_mapping(
                 return Err(BackingError(io::Error::new(
                     io::ErrorKind::Other,
                     "Failed to create or open file mapping after retries",
-                )))
+                )));
             }
         };
 

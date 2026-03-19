@@ -15,8 +15,9 @@ pub(crate) fn apply_mesh_renderables_update(
     _frame_index: i32,
 ) -> Result<(), SceneError> {
     if update.removals.length > 0 {
+        let ctx = format!("mesh removals scene_id={}", scene.id);
         let removals = shm
-            .access_copy_diagnostic::<i32>(&update.removals)
+            .access_copy_diagnostic_with_context::<i32>(&update.removals, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
         let mut indices: Vec<usize> = removals
             .iter()
@@ -31,8 +32,9 @@ pub(crate) fn apply_mesh_renderables_update(
         }
     }
     if update.additions.length > 0 {
+        let ctx = format!("mesh additions scene_id={}", scene.id);
         let additions = shm
-            .access_copy_diagnostic::<i32>(&update.additions)
+            .access_copy_diagnostic_with_context::<i32>(&update.additions, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
         let added_node_ids: Vec<i32> = additions.iter().take_while(|&&i| i >= 0).copied().collect();
         for &node_id in &added_node_ids {
@@ -58,8 +60,12 @@ pub(crate) fn apply_mesh_renderables_update(
         }
     }
     if update.mesh_states.length > 0 {
+        let ctx = format!("mesh mesh_states scene_id={}", scene.id);
         let states = shm
-            .access_copy_diagnostic::<MeshRendererStatePod>(&update.mesh_states)
+            .access_copy_diagnostic_with_context::<MeshRendererStatePod>(
+                &update.mesh_states,
+                Some(&ctx),
+            )
             .map_err(SceneError::SharedMemoryAccess)?;
         for state in states {
             if state.renderable_index < 0 {

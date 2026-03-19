@@ -9,8 +9,8 @@ use super::pipeline::{
     MaterialPipeline, NormalDebugMRTPipeline, NormalDebugPipeline, OverlayStencilMaskClearPipeline,
     OverlayStencilMaskClearSkinnedPipeline, OverlayStencilMaskWritePipeline,
     OverlayStencilMaskWriteSkinnedPipeline, OverlayStencilPipeline, OverlayStencilSkinnedPipeline,
-    PbrPipeline, RenderPipeline, SkinnedMRTPipeline, SkinnedPipeline, UvDebugMRTPipeline,
-    UvDebugPipeline,
+    PbrMRTPipeline, PbrPipeline, RenderPipeline, SkinnedMRTPipeline, SkinnedPbrMRTPipeline,
+    SkinnedPbrPipeline, SkinnedPipeline, UvDebugMRTPipeline, UvDebugPipeline,
 };
 
 /// Key for pipeline lookup: shader_id (None = builtin) and variant.
@@ -56,6 +56,12 @@ pub enum PipelineVariant {
     Material { material_id: i32 },
     /// PBR pipeline.
     Pbr,
+    /// PBR MRT: PBR with G-buffer output for RTAO.
+    PbrMRT,
+    /// Skinned PBR: bone skinning with PBS lighting.
+    SkinnedPbr,
+    /// Skinned PBR MRT: PBR with G-buffer output for RTAO.
+    SkinnedPbrMRT,
 }
 
 /// Maps pipeline keys to render pipelines. Supports builtin registration and lazy creation.
@@ -134,10 +140,23 @@ impl PipelineRegistry {
             PipelineKey(None, PipelineVariant::OverlayNoDepthSkinned),
             Arc::new(SkinnedPipeline::new(device, config, None, true)),
         );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::PbrMRT),
+            Arc::new(PbrMRTPipeline::new(device, config)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::SkinnedPbr),
+            Arc::new(SkinnedPbrPipeline::new(device, config)),
+        );
+        self.pipelines.insert(
+            PipelineKey(None, PipelineVariant::SkinnedPbrMRT),
+            Arc::new(SkinnedPbrMRTPipeline::new(device, config)),
+        );
     }
 
     /// Returns the pipeline for the key, or lazily creates it for Material/Pbr.
     /// Builtins must be registered via `register_builtin` before use.
+    #[allow(clippy::arc_with_non_send_sync)]
     pub fn get_or_create(
         &mut self,
         key: PipelineKey,

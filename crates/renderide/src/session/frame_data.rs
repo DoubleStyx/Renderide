@@ -48,7 +48,9 @@ impl std::fmt::Display for MultipleActiveNonOverlaySpaces {
 impl std::error::Error for MultipleActiveNonOverlaySpaces {}
 
 /// Validates that at most one active non-overlay space exists.
-pub fn validate_active_non_overlay(data: &FrameSubmitData) -> Result<(), MultipleActiveNonOverlaySpaces> {
+pub fn validate_active_non_overlay(
+    data: &FrameSubmitData,
+) -> Result<(), MultipleActiveNonOverlaySpaces> {
     let active_non_overlay: Vec<_> = data
         .render_spaces
         .iter()
@@ -88,11 +90,13 @@ pub fn select_primary_view(data: &FrameSubmitData) -> Option<PrimaryViewSelectio
         });
     }
 
-    data.render_spaces.first().map(|first| PrimaryViewSelection {
-        space_id: first.id,
-        override_view_position: first.override_view_position,
-        view_position_is_external: first.view_position_is_external,
-        root_transform: first.root_transform,
-        view_transform: first.root_transform,
-    })
+    data.render_spaces
+        .first()
+        .map(|first| PrimaryViewSelection {
+            space_id: first.id,
+            override_view_position: first.override_view_position,
+            view_position_is_external: first.view_position_is_external,
+            root_transform: first.root_transform,
+            view_transform: first.root_transform,
+        })
 }

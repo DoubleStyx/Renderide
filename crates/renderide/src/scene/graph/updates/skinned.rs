@@ -37,8 +37,9 @@ pub(crate) fn apply_skinned_mesh_renderables_update(
     }
 
     if update.removals.length > 0 {
+        let ctx = format!("skinned removals scene_id={}", scene.id);
         let removals = shm
-            .access_copy_diagnostic::<i32>(&update.removals)
+            .access_copy_diagnostic_with_context::<i32>(&update.removals, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
         let mut indices: Vec<usize> = removals
             .iter()
@@ -53,8 +54,9 @@ pub(crate) fn apply_skinned_mesh_renderables_update(
         }
     }
     if update.additions.length > 0 {
+        let ctx = format!("skinned additions scene_id={}", scene.id);
         let additions = shm
-            .access_copy_diagnostic::<i32>(&update.additions)
+            .access_copy_diagnostic_with_context::<i32>(&update.additions, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
         let added_node_ids: Vec<i32> = additions.iter().take_while(|&&i| i >= 0).copied().collect();
         for &node_id in &added_node_ids {
@@ -80,8 +82,12 @@ pub(crate) fn apply_skinned_mesh_renderables_update(
         }
     }
     if update.mesh_states.length > 0 {
+        let ctx = format!("skinned mesh_states scene_id={}", scene.id);
         let states = shm
-            .access_copy_diagnostic::<MeshRendererStatePod>(&update.mesh_states)
+            .access_copy_diagnostic_with_context::<MeshRendererStatePod>(
+                &update.mesh_states,
+                Some(&ctx),
+            )
             .map_err(SceneError::SharedMemoryAccess)?;
         for state in states {
             if state.renderable_index < 0 {
@@ -100,11 +106,19 @@ pub(crate) fn apply_skinned_mesh_renderables_update(
         }
     }
     if update.bone_assignments.length > 0 {
+        let ctx_assign = format!("skinned bone_assignments scene_id={}", scene.id);
         let assignments = shm
-            .access_copy_diagnostic::<BoneAssignment>(&update.bone_assignments)
+            .access_copy_diagnostic_with_context::<BoneAssignment>(
+                &update.bone_assignments,
+                Some(&ctx_assign),
+            )
             .map_err(SceneError::SharedMemoryAccess)?;
+        let ctx_idx = format!("skinned bone_transform_indexes scene_id={}", scene.id);
         let indexes = shm
-            .access_copy_diagnostic::<i32>(&update.bone_transform_indexes)
+            .access_copy_diagnostic_with_context::<i32>(
+                &update.bone_transform_indexes,
+                Some(&ctx_idx),
+            )
             .map_err(SceneError::SharedMemoryAccess)?;
         let mut index_offset = 0;
         for assignment in &assignments {
@@ -133,11 +147,19 @@ pub(crate) fn apply_skinned_mesh_renderables_update(
     // drawables retain their previous blend_shape_weights. Never call access_copy_diagnostic
     // with length-0 descriptors.
     if !update.blendshape_update_batches.is_empty() && !update.blendshape_updates.is_empty() {
+        let ctx_batch = format!("skinned blendshape_update_batches scene_id={}", scene.id);
         let batches = shm
-            .access_copy_diagnostic::<BlendshapeUpdateBatch>(&update.blendshape_update_batches)
+            .access_copy_diagnostic_with_context::<BlendshapeUpdateBatch>(
+                &update.blendshape_update_batches,
+                Some(&ctx_batch),
+            )
             .map_err(SceneError::SharedMemoryAccess)?;
+        let ctx_upd = format!("skinned blendshape_updates scene_id={}", scene.id);
         let updates = shm
-            .access_copy_diagnostic::<BlendshapeUpdate>(&update.blendshape_updates)
+            .access_copy_diagnostic_with_context::<BlendshapeUpdate>(
+                &update.blendshape_updates,
+                Some(&ctx_upd),
+            )
             .map_err(SceneError::SharedMemoryAccess)?;
         let mut update_offset = 0;
         for batch in &batches {

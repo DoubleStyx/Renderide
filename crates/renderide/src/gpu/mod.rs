@@ -1,6 +1,7 @@
 //! GPU state, pipelines, and mesh rendering.
 
 pub mod accel;
+pub mod cluster_buffer;
 pub mod mesh;
 pub mod pipeline;
 pub mod registry;

@@ -243,13 +243,39 @@ impl SceneGraph {
             if let Some(ref mat_override_update) = update.render_material_overrides_update {
                 updates::apply_render_material_overrides_update(scene, shm, mat_override_update)?;
             }
-            if let Some(ref lights_update) = update.lights_buffer_renderers_update {
-                updates::apply_lights_buffer_renderers_update(
+            if let Some(ref lights_buffer_update) = update.lights_buffer_renderers_update {
+                if let Err(e) = updates::apply_lights_buffer_renderers_update(
+                    &mut self.light_cache,
+                    shm,
+                    lights_buffer_update,
+                    update.id,
+                ) {
+                    logger::error!(
+                        "Lights buffer update failed for space_id={} (continuing): {}",
+                        update.id,
+                        e
+                    );
+                }
+            } else if self.light_cache.buffer_count() > 0 {
+                logger::trace!(
+                    "lights_buffer_renderers_update is None for space_id={} but {} buffer(s) exist (host may not send light state)",
+                    update.id,
+                    self.light_cache.buffer_count()
+                );
+            }
+            if let Some(ref lights_update) = update.lights_update
+                && let Err(e) = updates::apply_lights_update(
                     &mut self.light_cache,
                     shm,
                     lights_update,
                     update.id,
-                )?;
+                )
+            {
+                logger::error!(
+                    "Regular lights update failed for space_id={} (continuing): {}",
+                    update.id,
+                    e
+                );
             }
             updates::sync_drawable_layers(scene);
         }

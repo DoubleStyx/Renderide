@@ -66,6 +66,16 @@ pub trait RenderPipeline {
         self.bind_draw(pass, batch_index, frame_index, draw_bind_group);
     }
 
+    /// Binds per-frame scene bind group (e.g. view position, lights, cluster buffers).
+    /// Called once per pipeline group before bind_draw. Default no-op.
+    fn bind_scene(
+        &self,
+        _pass: &mut wgpu::RenderPass,
+        _scene_bind_group: Option<&wgpu::BindGroup>,
+    ) {
+        // Default: no-op for pipelines that don't use scene bind group.
+    }
+
     /// Draws a non-skinned mesh. No-op for pipelines that only support skinned.
     fn draw_mesh(
         &self,
@@ -186,6 +196,28 @@ pub trait RenderPipeline {
         &self,
         _device: &wgpu::Device,
         _buffers: &GpuMeshBuffers,
+    ) -> Option<wgpu::BindGroup> {
+        None
+    }
+
+    /// Writes scene uniforms to the pipeline's scene uniform buffer.
+    /// Call before using a cached scene bind group. No-op for pipelines without scene bind group.
+    fn write_scene_uniform(&self, _queue: &wgpu::Queue, _scene: &[u8]) {}
+
+    /// Creates the per-frame scene bind group for pipelines that use it (e.g. PBR).
+    /// Returns None for pipelines that don't use a scene bind group.
+    #[allow(clippy::too_many_arguments)]
+    fn create_scene_bind_group(
+        &self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _view_position: [f32; 3],
+        _cluster_count_x: u32,
+        _cluster_count_y: u32,
+        _light_count: u32,
+        _light_buffer: &wgpu::Buffer,
+        _cluster_light_counts: &wgpu::Buffer,
+        _cluster_light_indices: &wgpu::Buffer,
     ) -> Option<wgpu::BindGroup> {
         None
     }

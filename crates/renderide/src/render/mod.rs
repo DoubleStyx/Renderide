@@ -40,6 +40,7 @@
 
 pub mod batch;
 pub mod context;
+pub mod lights;
 pub mod r#loop;
 pub mod pass;
 pub mod target;

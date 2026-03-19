@@ -37,8 +37,9 @@ pub(crate) fn apply_transforms_update(
     }
 
     if update.removals.length > 0 {
+        let ctx = format!("transforms removals scene_id={}", scene_id);
         let removals = shm
-            .access_copy_diagnostic::<i32>(&update.removals)
+            .access_copy_diagnostic_with_context::<i32>(&update.removals, Some(&ctx))
             .map_err(|e| SceneError::SharedMemoryAccess(e.to_string()))?;
         let mut indices: Vec<usize> = removals
             .iter()
@@ -97,8 +98,12 @@ pub(crate) fn apply_transforms_update(
     let mut changed_indices = std::collections::HashSet::new();
 
     if update.parent_updates.length > 0 {
+        let ctx = format!("transforms parent_updates scene_id={}", scene_id);
         let parents = shm
-            .access_copy_diagnostic::<TransformParentUpdate>(&update.parent_updates)
+            .access_copy_diagnostic_with_context::<TransformParentUpdate>(
+                &update.parent_updates,
+                Some(&ctx),
+            )
             .map_err(|e| SceneError::SharedMemoryAccess(e.to_string()))?;
         for pu in parents {
             if pu.transform_id < 0 {
@@ -112,8 +117,12 @@ pub(crate) fn apply_transforms_update(
     }
 
     if update.pose_updates.length > 0 {
+        let ctx = format!("transforms pose_updates scene_id={}", scene_id);
         let poses = shm
-            .access_copy_diagnostic::<TransformPoseUpdate>(&update.pose_updates)
+            .access_copy_diagnostic_with_context::<TransformPoseUpdate>(
+                &update.pose_updates,
+                Some(&ctx),
+            )
             .map_err(|e| SceneError::SharedMemoryAccess(e.to_string()))?;
         for pu in &poses {
             if pu.transform_id < 0 {

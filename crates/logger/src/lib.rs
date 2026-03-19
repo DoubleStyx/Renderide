@@ -154,11 +154,16 @@ pub fn log_panic_payload(payload: Box<dyn std::any::Any + Send>, context: &str) 
 
 /// Writes panic info and backtrace to the log file. Flushes immediately so the panic
 /// is visible on disk. Does not acquire the logger mutex (safe from panic handler).
+/// Uses `force_capture()` so backtraces are always recorded, regardless of `RUST_BACKTRACE`.
 pub fn log_panic(path: impl AsRef<Path>, info: &dyn std::fmt::Display) {
     let path = path.as_ref();
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "PANIC: {}", info);
-        let _ = writeln!(f, "Backtrace:\n{:?}", std::backtrace::Backtrace::capture());
+        let _ = writeln!(
+            f,
+            "Backtrace:\n{:#?}",
+            std::backtrace::Backtrace::force_capture()
+        );
         let _ = f.flush();
         let _ = f.sync_all();
     }

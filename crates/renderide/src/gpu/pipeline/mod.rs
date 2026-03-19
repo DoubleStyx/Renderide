@@ -7,10 +7,13 @@ mod mrt;
 mod normal_debug;
 mod overlay_stencil;
 mod overlay_stencil_skinned;
+mod pbr;
+mod pbr_mrt;
 mod placeholders;
 mod ring_buffer;
 mod shaders;
 mod skinned;
+mod skinned_pbr;
 mod uniforms;
 mod uv_debug;
 
@@ -27,6 +30,10 @@ pub use overlay_stencil_skinned::{
     OverlayStencilMaskClearSkinnedPipeline, OverlayStencilMaskWriteSkinnedPipeline,
     OverlayStencilSkinnedPipeline,
 };
-pub use placeholders::{MaterialPipeline, PbrPipeline};
+pub use pbr::PbrPipeline;
+pub use pbr_mrt::PbrMRTPipeline;
+pub use placeholders::MaterialPipeline;
 pub use skinned::SkinnedPipeline;
+pub use skinned_pbr::{SkinnedPbrMRTPipeline, SkinnedPbrPipeline};
+pub use uniforms::SceneUniforms;
 pub use uv_debug::UvDebugPipeline;

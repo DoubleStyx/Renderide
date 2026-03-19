@@ -8,8 +8,10 @@
 use winit::window::Window;
 
 use super::accel::{AccelCache, RayTracingState};
+use super::cluster_buffer::ClusterBufferCache;
 use super::mesh::GpuMeshBuffers;
 use super::registry::PipelineVariant;
+use crate::render::lights::LightBufferCache;
 
 /// Cache key for skinned bind groups: (pipeline variant, mesh asset id).
 type SkinnedBindGroupCacheKey = (PipelineVariant, i32);
@@ -39,6 +41,21 @@ pub struct GpuState {
     pub rtao_uniform_buffer: Option<wgpu::Buffer>,
     /// Persistent 16-byte uniform buffer for composite pass. Created on first use; written each frame via write_buffer.
     pub composite_uniform_buffer: Option<wgpu::Buffer>,
+    /// Light storage buffer cache for clustered light pass. Recreated when light count exceeds capacity.
+    pub light_buffer_cache: LightBufferCache,
+    /// Cluster buffer cache. Recreates only when viewport (tile count) changes.
+    pub cluster_buffer_cache: ClusterBufferCache,
+    /// Cluster grid dimensions. Zero when cluster buffers are not available.
+    pub cluster_count_x: u32,
+    pub cluster_count_y: u32,
+    /// Light count from ClusteredLightPass.
+    pub light_count: u32,
+    /// Cached PBR scene bind groups. Invalidated when light or cluster buffers change.
+    pub pbr_scene_bind_group_cache: std::collections::HashMap<PipelineVariant, wgpu::BindGroup>,
+    /// Last light buffer version when cache was valid. Used to invalidate on reallocate.
+    pub last_pbr_scene_cache_light_version: u64,
+    /// Last cluster buffer version when cache was valid. Used to invalidate on resize.
+    pub last_pbr_scene_cache_cluster_version: u64,
 }
 
 /// Initializes wgpu surface, device, queue, and mesh pipeline.
@@ -199,6 +216,14 @@ pub async fn init_gpu(
         },
         rtao_uniform_buffer: None,
         composite_uniform_buffer: None,
+        light_buffer_cache: LightBufferCache::new(),
+        cluster_buffer_cache: ClusterBufferCache::new(),
+        cluster_count_x: 0,
+        cluster_count_y: 0,
+        light_count: 0,
+        pbr_scene_bind_group_cache: std::collections::HashMap::new(),
+        last_pbr_scene_cache_light_version: 0,
+        last_pbr_scene_cache_cluster_version: 0,
     })
 }
 

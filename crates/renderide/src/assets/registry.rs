@@ -5,7 +5,7 @@ use crate::shared::{MeshUploadData, ShaderUpload};
 
 use super::manager::AssetManager;
 use super::material_properties::MaterialPropertyStore;
-use super::mesh::{self, index_bytes_per_element, compute_index_count, MeshAsset};
+use super::mesh::{self, MeshAsset, compute_index_count, index_bytes_per_element};
 use super::shader::ShaderAsset;
 use super::texture::TextureAsset;
 

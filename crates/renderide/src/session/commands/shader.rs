@@ -12,7 +12,8 @@ impl CommandHandler for ShaderCommandHandler {
         match cmd {
             RendererCommand::shader_upload(data) => {
                 let asset_id = data.asset_id;
-                let (success, existed_before) = ctx.assets.asset_registry.handle_shader_upload(data.clone());
+                let (success, existed_before) =
+                    ctx.assets.asset_registry.handle_shader_upload(data.clone());
                 if success {
                     ctx.receiver
                         .send_background(RendererCommand::shader_upload_result(

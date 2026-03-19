@@ -24,8 +24,9 @@ pub(crate) fn apply_render_transform_overrides_update(
     let state_size = std::mem::size_of::<RenderTransformOverrideState>() as i32;
 
     if update.removals.length >= i32_size {
+        let ctx = format!("render_transform_overrides removals scene_id={}", scene.id);
         let removals = shm
-            .access_copy_diagnostic::<i32>(&update.removals)
+            .access_copy_diagnostic_with_context::<i32>(&update.removals, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
         for &idx in removals.iter().take_while(|&&i| i >= 0) {
             let idx = idx as usize;
@@ -36,8 +37,12 @@ pub(crate) fn apply_render_transform_overrides_update(
     }
 
     if update.states.length >= state_size {
+        let ctx = format!("render_transform_overrides states scene_id={}", scene.id);
         let states = shm
-            .access_copy_diagnostic::<RenderTransformOverrideState>(&update.states)
+            .access_copy_diagnostic_with_context::<RenderTransformOverrideState>(
+                &update.states,
+                Some(&ctx),
+            )
             .map_err(SceneError::SharedMemoryAccess)?;
         for state in &states {
             if state.renderable_index < 0 {
