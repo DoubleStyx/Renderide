@@ -235,7 +235,9 @@ pub const MAX_INSTANCE_RUN: u32 = 64;
 /// Alignment for dynamic uniform buffer offsets (wgpu/Vulkan minimum).
 pub(crate) const UNIFORM_ALIGNMENT: u64 = 256;
 /// Number of frame regions in the ring buffer (avoids overwriting in-flight data).
-pub(crate) const NUM_FRAMES_IN_FLIGHT: usize = 3;
+///
+/// [`crate::gpu::GpuFrameScheduler`] caps concurrent uniform-ring submissions using this value.
+pub const NUM_FRAMES_IN_FLIGHT: usize = 3;
 /// Slots per frame region. Draws exceeding this are split into multiple chunks.
 pub(crate) const SLOTS_PER_FRAME: usize = 16_384;
 

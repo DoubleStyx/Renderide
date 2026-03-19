@@ -23,8 +23,12 @@
 //! **Overlay pass**: [`OverlayRenderPass`] renders overlays after meshes with `LoadOp::Load`
 //! (preserve framebuffer) and alpha blend so UI composites over the scene.
 //!
-//! **RenderTaskExecutor**: Runs [`CameraRenderTask`](crate::shared::CameraRenderTask)s offscreen
-//! and copies pixels to shared memory for the host.
+//! **RenderTaskExecutor**: Runs [`CameraRenderTask`](crate::shared::CameraRenderTask)s offscreen.
+//! Each task records render plus texture→readback copy in **one** queue submit via
+//! [`RenderLoop::render_to_target`](r#loop::RenderLoop::render_to_target); [`GpuFrameScheduler`](crate::gpu::GpuFrameScheduler)
+//! (inside [`PipelineManager`](crate::gpu::PipelineManager)) caps concurrent ring-buffer users.
+//! [`RenderLoop::drain_pending_camera_task_readbacks`](r#loop::RenderLoop::drain_pending_camera_task_readbacks)
+//! completes `map_async` and writes pixels to shared memory (called each tick from the app and session).
 //!
 //! **Subgraphs**: [`GraphBuilder::add_subgraph`](pass::GraphBuilder::add_subgraph) nests a full
 //! [`RenderGraph`](pass::RenderGraph) as one node; [`GraphBuilder::add_edge`](pass::GraphBuilder::add_edge)
@@ -36,8 +40,9 @@
 //! [`RenderGraphContext::enable_rtao_mrt`](pass::RenderGraphContext::enable_rtao_mrt) is true
 //! (main window with RTAO enabled and ray tracing available). The main loop rebuilds the graph
 //! when that effective flag changes (see [`pass::build_main_render_graph`]) so RTAO passes are
-//! omitted when disabled. [`RenderLoop::render_to_target`](r#loop::RenderLoop::render_to_target)
-//! sets `enable_rtao_mrt` false so offscreen paths skip RTAO allocation.
+//! omitted when disabled. [`RenderLoop::render_to_target`](r#loop::RenderLoop::render_to_target) sets
+//! `enable_rtao_mrt` false so offscreen paths skip RTAO allocation. The main window and each camera
+//! task each invoke [`RenderGraph::execute`](pass::RenderGraph::execute) in the same tick when tasks run.
 //!
 //! ## UI extension point
 //!
@@ -67,7 +72,7 @@ pub use crate::shared::RenderingContext;
 pub use crate::stencil::{ClipRect, StencilComparison, StencilOperation, StencilState};
 pub use batch::{DrawEntry, SpaceDrawBatch};
 pub use context::{FramePhase, current_context, set_context, with_context};
-pub use r#loop::RenderLoop;
+pub use r#loop::{PendingCameraTaskReadback, RenderLoop};
 pub use pass::{
     ExecutionUnit, GraphBuilder, GraphNodeId, LabeledSubgraph, MeshRenderPass, OverlayRenderPass,
     PassId, PreCollectedFrameData, RenderGraph, RenderGraphContext, RenderPass, RenderPassContext,

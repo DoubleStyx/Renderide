@@ -1,9 +1,13 @@
-//! Render task executor: runs CameraRenderTask offscreen renders and copies to shared memory.
+//! Render task executor: runs [`CameraRenderTask`] offscreen renders and copies to shared memory.
+//!
+//! Render and texture→buffer copy share one queue submit via [`RenderLoop::render_to_target`]. Mapping
+//! and shared-memory writes are deferred to [`RenderLoop::drain_pending_camera_task_readbacks`] so
+//! multiple tasks can pipeline on the GPU without draining the full queue per task.
 
 use nalgebra::Vector3;
 
 use super::SpaceDrawBatch;
-use super::r#loop::RenderLoop;
+use super::r#loop::{PendingCameraTaskReadback, RenderLoop};
 use super::pass::projection_for_params;
 use super::target::RenderTarget;
 use crate::gpu::GpuState;
@@ -24,6 +28,9 @@ pub struct RenderTaskExecutor;
 
 impl RenderTaskExecutor {
     /// Executes each task with valid parameters. Skips tasks without parameters or invalid resolution.
+    ///
+    /// Completed readbacks are flushed by [`RenderLoop::drain_pending_camera_task_readbacks`]; the
+    /// caller should invoke that after this returns (and earlier in the tick for stale completions).
     pub fn execute(
         gpu: &mut GpuState,
         render_loop: &mut RenderLoop,
@@ -51,6 +58,22 @@ impl RenderTaskExecutor {
             }
 
             let target = RenderTarget::create_offscreen(&gpu.device, w, h, wgpu_format);
+            let Some(texture) = target.color_texture() else {
+                continue;
+            };
+
+            let bytes_per_pixel = 4u32;
+            let row_bytes = w * bytes_per_pixel;
+            let bytes_per_row = row_bytes.div_ceil(256) * 256;
+            let buffer_size = bytes_per_row * h;
+
+            let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("camera render task readback"),
+                size: buffer_size as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+
             let batches = session.collect_draw_batches_for_task(
                 task.render_space_id,
                 &task.only_render_list,
@@ -74,34 +97,7 @@ impl RenderTaskExecutor {
 
             let aspect = w as f32 / h.max(1) as f32;
             let proj = projection_for_params(params, aspect);
-            // Task proj is passed as ctx.proj; overlay batches use it when overlay_projection_override
-            // is None. For orthographic tasks, overlay batches correctly use the task's orthographic proj.
 
-            if let Err(e) =
-                render_loop.render_to_target(gpu, session, &batches_with_view, &target, proj)
-            {
-                logger::error!("Render task render_to_target failed: {:?}", e);
-                continue;
-            }
-
-            let Some(texture) = target.color_texture() else {
-                continue;
-            };
-            let bytes_per_pixel = 4u32;
-            let row_bytes = w * bytes_per_pixel;
-            let bytes_per_row = row_bytes.div_ceil(256) * 256;
-            let buffer_size = bytes_per_row * h;
-
-            let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("camera render task readback"),
-                size: buffer_size as u64,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-
-            let mut encoder = gpu
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             let source = texture.as_image_copy();
             let destination = wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
@@ -111,59 +107,43 @@ impl RenderTaskExecutor {
                     rows_per_image: Some(h),
                 },
             };
-            encoder.copy_texture_to_buffer(
-                source,
-                destination,
-                wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
-            );
-            gpu.queue.submit(std::iter::once(encoder.finish()));
+            let extent = wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            };
+
+            let mut copy_to_readback = move |encoder: &mut wgpu::CommandEncoder| {
+                encoder.copy_texture_to_buffer(source, destination, extent);
+            };
+
+            if let Err(e) = render_loop.render_to_target(
+                gpu,
+                session,
+                &batches_with_view,
+                &target,
+                proj,
+                Some(&mut copy_to_readback),
+            ) {
+                logger::error!("Render task render_to_target failed: {:?}", e);
+                continue;
+            }
 
             let slice = buffer.slice(..);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| {
                 let _ = tx.send(r);
             });
-            if gpu
-                .device
-                .poll(wgpu::PollType::wait_indefinitely())
-                .is_err()
-            {
-                continue;
-            }
-            if rx.recv().ok().and_then(|r| r.ok()).is_none() {
-                continue;
-            }
 
-            let mapped = slice.get_mapped_range();
-            let Some(ref mut shm) = session.shared_memory_mut() else {
-                continue;
-            };
-            let dest_len = task.result_data.length as usize;
-            let row_len = (w as usize) * 4;
-            let bytes_per_row_u64 = bytes_per_row as u64;
-            if bytes_per_row_u64 == row_bytes as u64 {
-                shm.access_mut_bytes(&task.result_data, |dest: &mut [u8]| {
-                    let copy_len = dest_len.min(mapped.len());
-                    dest[..copy_len].copy_from_slice(&mapped[..copy_len]);
-                });
-            } else {
-                shm.access_mut_bytes(&task.result_data, |dest: &mut [u8]| {
-                    let rows = (dest_len / row_len).min(h as usize);
-                    for row in 0..rows {
-                        let src_start = (row as u64 * bytes_per_row_u64) as usize;
-                        let dst_start = row * row_len;
-                        let copy_len = row_len.min(dest_len.saturating_sub(dst_start));
-                        dest[dst_start..dst_start + copy_len]
-                            .copy_from_slice(&mapped[src_start..src_start + copy_len]);
-                    }
-                });
-            }
-            drop(mapped);
-            buffer.unmap();
+            render_loop.enqueue_pending_camera_task_readback(PendingCameraTaskReadback {
+                buffer,
+                rx,
+                task,
+                width: w,
+                height: h,
+                bytes_per_row,
+                row_bytes,
+            });
         }
     }
 }

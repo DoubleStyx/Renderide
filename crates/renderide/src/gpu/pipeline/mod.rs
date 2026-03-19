@@ -18,7 +18,7 @@ mod uniforms;
 mod uv_debug;
 
 pub use core::{
-    MAX_BLENDSHAPE_WEIGHTS, MAX_INSTANCE_RUN, RenderPipeline, UniformData,
+    MAX_BLENDSHAPE_WEIGHTS, MAX_INSTANCE_RUN, NUM_FRAMES_IN_FLIGHT, RenderPipeline, UniformData,
     matrix4_to_wgsl_column_major,
 };
 pub use mrt::{NormalDebugMRTPipeline, SkinnedMRTPipeline, UvDebugMRTPipeline};

@@ -300,6 +300,7 @@ impl RenderideApp {
         if let (Some(ref mut gpu), Some(ref mut render_loop)) =
             (self.gpu.as_mut(), self.render_loop.as_mut())
         {
+            render_loop.drain_pending_camera_task_readbacks(&gpu.device, &mut self.session);
             // Phase 2: RenderToScreen — user view (main window).
             set_context(RenderingContext::user_view);
             for asset_id in self.session.drain_pending_mesh_unloads() {

@@ -1,8 +1,14 @@
 //! Render loop: executes one frame via the render graph.
 //!
 //! Extension point for RenderGraph passes (mirrors, post, UI, probes).
+//!
+//! Offscreen camera tasks may enqueue [`PendingCameraTaskReadback`] entries; call
+//! [`RenderLoop::drain_pending_camera_task_readbacks`] each tick so completed GPU copies are written
+//! to shared memory without blocking the full queue between tasks.
 
+use std::collections::VecDeque;
 use std::mem::size_of;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use super::SpaceDrawBatch;
@@ -13,12 +19,27 @@ use super::target::RenderTarget;
 use super::view::ViewParams;
 use crate::gpu::{GpuState, PipelineManager};
 use crate::session::Session;
+use crate::shared::CameraRenderTask;
 
 /// Number of timestamp slots (beginning and end of mesh pass).
 const TIMESTAMP_QUERY_COUNT: u32 = 2;
 
 /// Interval (frames) between GPU timestamp readbacks for bottleneck diagnosis.
 const GPU_READBACK_INTERVAL: u32 = 60;
+
+/// A camera render task whose readback buffer is mapping asynchronously.
+pub struct PendingCameraTaskReadback {
+    /// Staging buffer filled by `copy_texture_to_buffer` in the same submit as the render graph.
+    pub buffer: wgpu::Buffer,
+    /// Completes when host mapping is ready (after [`wgpu::Device::poll`]).
+    pub rx: Receiver<Result<(), wgpu::BufferAsyncError>>,
+    /// Host task descriptor for the shared-memory write.
+    pub task: CameraRenderTask,
+    pub width: u32,
+    pub height: u32,
+    pub bytes_per_row: u32,
+    pub row_bytes: u32,
+}
 
 /// Encapsulates the render frame logic.
 pub struct RenderLoop {
@@ -38,6 +59,8 @@ pub struct RenderLoop {
     rtao_diagnostic_logged: bool,
     /// Last built main-graph RTAO variant; rebuild [`Self::graph`] when this differs from the frame's value.
     cached_rtao_mrt_graph: Option<bool>,
+    /// Camera tasks awaiting `map_async` completion before writing [`CameraRenderTask::result_data`].
+    pending_camera_task_readbacks: VecDeque<PendingCameraTaskReadback>,
 }
 
 impl RenderLoop {
@@ -73,6 +96,83 @@ impl RenderLoop {
             last_gpu_mesh_pass_ms: None,
             rtao_diagnostic_logged: false,
             cached_rtao_mrt_graph: Some(false),
+            pending_camera_task_readbacks: VecDeque::new(),
+        }
+    }
+
+    /// Enqueues a camera task readback to be finalized after the GPU copy and map complete.
+    pub fn enqueue_pending_camera_task_readback(&mut self, pending: PendingCameraTaskReadback) {
+        self.pending_camera_task_readbacks.push_back(pending);
+    }
+
+    /// Polls the device and writes any ready readbacks into shared memory.
+    ///
+    /// Call once per application tick (e.g. before the main view render and after submitting camera
+    /// tasks) so completions are flushed without indefinite blocking.
+    pub fn drain_pending_camera_task_readbacks(
+        &mut self,
+        device: &wgpu::Device,
+        session: &mut Session,
+    ) {
+        let Some(shm) = session.shared_memory_mut() else {
+            self.pending_camera_task_readbacks.clear();
+            return;
+        };
+
+        loop {
+            let _ = device.poll(wgpu::PollType::Poll);
+            let before_len = self.pending_camera_task_readbacks.len();
+            let mut still_pending = VecDeque::with_capacity(before_len);
+            let mut progressed = false;
+            for p in self.pending_camera_task_readbacks.drain(..) {
+                match p.rx.try_recv() {
+                    Ok(Ok(())) => {
+                        progressed = true;
+                        let slice = p.buffer.slice(..);
+                        let mapped = slice.get_mapped_range();
+                        let dest_len = p.task.result_data.length as usize;
+                        let row_len = (p.width as usize) * 4;
+                        let bytes_per_row_u64 = p.bytes_per_row as u64;
+                        if bytes_per_row_u64 == p.row_bytes as u64 {
+                            shm.access_mut_bytes(&p.task.result_data, |dest: &mut [u8]| {
+                                let copy_len = dest_len.min(mapped.len());
+                                dest[..copy_len].copy_from_slice(&mapped[..copy_len]);
+                            });
+                        } else {
+                            shm.access_mut_bytes(&p.task.result_data, |dest: &mut [u8]| {
+                                let rows = (dest_len / row_len).min(p.height as usize);
+                                for row in 0..rows {
+                                    let src_start = (row as u64 * bytes_per_row_u64) as usize;
+                                    let dst_start = row * row_len;
+                                    let copy_len = row_len.min(dest_len.saturating_sub(dst_start));
+                                    dest[dst_start..dst_start + copy_len]
+                                        .copy_from_slice(&mapped[src_start..src_start + copy_len]);
+                                }
+                            });
+                        }
+                        drop(mapped);
+                        p.buffer.unmap();
+                    }
+                    Ok(Err(e)) => {
+                        logger::error!("Camera task readback map failed: {}", e);
+                        progressed = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        logger::error!("Camera task readback channel disconnected");
+                        progressed = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        still_pending.push_back(p);
+                    }
+                }
+            }
+            self.pending_camera_task_readbacks = still_pending;
+            if self.pending_camera_task_readbacks.is_empty() {
+                break;
+            }
+            if !progressed {
+                break;
+            }
         }
     }
 
@@ -162,6 +262,7 @@ impl RenderLoop {
             timestamp_staging_buffer: Some(&self.timestamp_staging_buffer),
             enable_rtao_mrt: rtao_mrt_graph,
             pre_collected: pre_collected.map(|pc| &pc.cached_mesh_draws),
+            before_submit: None,
         };
 
         self.graph.execute(&mut ctx).map_err(|e| match e {
@@ -190,15 +291,18 @@ impl RenderLoop {
 
     /// Renders to an offscreen target (e.g. CameraRenderTask).
     ///
-    /// Uses the target's own depth texture. No timestamp queries. Caller must copy
-    /// texture to shared memory after this returns.
-    pub fn render_to_target(
-        &mut self,
-        gpu: &mut GpuState,
-        session: &Session,
-        draw_batches: &[SpaceDrawBatch],
-        target: &RenderTarget,
+    /// Uses the target's own depth texture. No timestamp queries.
+    ///
+    /// When `before_submit` is `Some`, extra commands are recorded on the same encoder before the
+    /// single queue submit (e.g. texture → readback buffer copy for camera tasks).
+    pub fn render_to_target<'a>(
+        &'a mut self,
+        gpu: &'a mut GpuState,
+        session: &'a Session,
+        draw_batches: &'a [SpaceDrawBatch],
+        target: &'a RenderTarget,
         proj: nalgebra::Matrix4<f32>,
+        before_submit: Option<&'a mut dyn FnMut(&mut wgpu::CommandEncoder)>,
     ) -> Result<(), super::pass::RenderPassError> {
         let (width, height) = target.dimensions();
         let mut ctx = super::pass::RenderGraphContext {
@@ -216,6 +320,7 @@ impl RenderLoop {
             timestamp_staging_buffer: None,
             enable_rtao_mrt: false,
             pre_collected: None,
+            before_submit,
         };
         self.graph.execute(&mut ctx)
     }

@@ -188,10 +188,10 @@ impl Default for PipelineRegistry {
     }
 }
 
-/// Manages render pipelines via a registry and frame advancement for ring buffers.
+/// Manages render pipelines and [`super::GpuFrameScheduler`] state for batched uniform ring buffers.
 pub struct PipelineManager {
     registry: PipelineRegistry,
-    frame_index: u64,
+    frame_scheduler: super::frame_scheduler::GpuFrameScheduler,
 }
 
 impl PipelineManager {
@@ -201,15 +201,19 @@ impl PipelineManager {
         registry.register_builtin(device, config);
         Self {
             registry,
-            frame_index: 0,
+            frame_scheduler: super::frame_scheduler::GpuFrameScheduler::new(),
         }
     }
 
-    /// Advances frame index for ring buffer and returns the value to use this frame.
-    pub fn advance_frame(&mut self) -> u64 {
-        let idx = self.frame_index;
-        self.frame_index = self.frame_index.wrapping_add(1);
-        idx
+    /// Acquires the next ring-buffer frame index, waiting if too many submits are still in flight.
+    pub fn acquire_frame_index(&mut self, device: &wgpu::Device) -> u64 {
+        self.frame_scheduler.acquire_frame_index(device)
+    }
+
+    /// Records a queue submission that used `frame_index` from [`Self::acquire_frame_index`].
+    pub fn record_submission(&mut self, submission: wgpu::SubmissionIndex, frame_index: u64) {
+        self.frame_scheduler
+            .record_submission(submission, frame_index);
     }
 
     /// Returns the pipeline for the key, creating it lazily for Material/Pbr if needed.

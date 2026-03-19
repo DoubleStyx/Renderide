@@ -260,7 +260,9 @@ impl Session {
 
     /// Processes render tasks (camera renders to buffers). Runs in the RenderToAsset frame phase
     /// after the main window has been rendered. Requires GPU and render loop to be initialized;
-    /// otherwise clears pending tasks without executing.
+    /// otherwise clears pending tasks without executing. Always drains
+    /// [`crate::render::RenderLoop::drain_pending_camera_task_readbacks`] when GPU is active so async
+    /// readbacks from prior ticks complete.
     pub fn process_render_tasks(
         &mut self,
         gpu: Option<&mut GpuState>,
@@ -268,7 +270,10 @@ impl Session {
     ) {
         if let (Some(gpu), Some(render_loop)) = (gpu, render_loop) {
             let tasks = std::mem::take(&mut self.pending_render_tasks);
-            RenderTaskExecutor::execute(gpu, render_loop, self, tasks);
+            if !tasks.is_empty() {
+                RenderTaskExecutor::execute(gpu, render_loop, self, tasks);
+            }
+            render_loop.drain_pending_camera_task_readbacks(&gpu.device, self);
         } else {
             self.pending_render_tasks.clear();
         }

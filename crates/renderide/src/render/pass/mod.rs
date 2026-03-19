@@ -37,8 +37,9 @@
 //!
 //! # Execution order
 //!
-//! [`RenderGraph::execute`] creates one [`wgpu::CommandEncoder`] per frame, prepares mesh draws and
-//! TLAS as needed, advances the pipeline frame index, then runs the internal schedule walker, which
+//! [`RenderGraph::execute`] creates one [`wgpu::CommandEncoder`] per graph invocation, prepares mesh
+//! draws and TLAS as needed, acquires a ring-buffer frame index via [`PipelineManager::acquire_frame_index`],
+//! then runs the internal schedule walker, which
 //! walks [`ExecutionUnit`] in order: each [`ExecutionUnit::Pass`] runs [`RenderPass::execute`]; each
 //! [`ExecutionUnit::Subgraph`] recurses into the nested [`LabeledSubgraph::graph`] on the **same**
 //! encoder.
@@ -51,7 +52,7 @@
 //! # Subgraphs
 //!
 //! See [`GraphBuilder::add_subgraph`]. Nested graphs keep their own passes, slot declarations, and
-//! RTAO cache; root execution stays a single submit per frame.
+//! RTAO cache; each root [`RenderGraph::execute`] still performs a single queue submit for that graph.
 //!
 //! # Resource barriers between passes
 //!
@@ -512,6 +513,9 @@ pub struct RenderGraphContext<'a> {
     pub enable_rtao_mrt: bool,
     /// Pre-collected mesh draws from the collect phase. When `Some`, skips collect in execute.
     pub(crate) pre_collected: Option<&'a CachedMeshDraws>,
+    /// When set, invoked on the graph encoder after passes (and optional timestamp resolve) and before
+    /// [`wgpu::Queue::submit`], so extra commands share the same submission (e.g. camera-task readback copy).
+    pub before_submit: Option<&'a mut dyn FnMut(&mut wgpu::CommandEncoder)>,
 }
 
 /// Trait for render passes that can be executed by the render graph.
@@ -1033,7 +1037,7 @@ impl RenderGraph {
             );
         }
 
-        let frame_index = ctx.pipeline_manager.advance_frame();
+        let frame_index = ctx.pipeline_manager.acquire_frame_index(&ctx.gpu.device);
 
         self.execute_scheduled_units(ctx, &mut encoder, frame_index, cached_mesh_draws)?;
 
@@ -1052,7 +1056,13 @@ impl RenderGraph {
             );
         }
 
-        ctx.gpu.queue.submit(std::iter::once(encoder.finish()));
+        if let Some(hook) = ctx.before_submit.as_mut() {
+            hook(&mut encoder);
+        }
+
+        let submission = ctx.gpu.queue.submit(std::iter::once(encoder.finish()));
+        ctx.pipeline_manager
+            .record_submission(submission, frame_index);
         Ok(())
     }
 }
