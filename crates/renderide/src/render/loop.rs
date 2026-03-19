@@ -86,23 +86,24 @@ impl RenderLoop {
         self.pipeline_manager.evict_material(material_id);
     }
 
-    /// Renders one frame: clear, draw batches. Caller must present the returned texture.
+    /// Renders one frame: clear, draw batches. Caller must acquire the swapchain with
+    /// [`wgpu::Surface::get_current_texture`], wrap it in [`RenderTarget::from_surface_texture`],
+    /// and present the inner [`wgpu::SurfaceTexture`] after a successful return.
     ///
-    /// Uses [`RenderTarget::Surface`] for the main window. Depth texture dimensions
-    /// must match the target; the caller ensures this via resize handling.
+    /// Depth texture dimensions are updated from [`RenderTarget::dimensions`] when they differ
+    /// from the last frame.
     ///
-    /// When `pre_collected` is `Some`, uses pre-computed mesh draws and view params
-    /// from the collect phase to avoid CPU work in the render phase.
+    /// When `pre_collected` is `Some`, mesh draws and projection were built for the same
+    /// target extent the caller passes here (typically by acquiring once, then running
+    /// [`super::pass::prepare_mesh_draws_for_view`] with [`RenderTarget::dimensions`]).
     pub fn render_frame(
         &mut self,
         gpu: &mut GpuState,
         session: &Session,
         draw_batches: &[SpaceDrawBatch],
+        target: RenderTarget,
         pre_collected: Option<&PreCollectedFrameData>,
     ) -> Result<RenderTarget, wgpu::SurfaceError> {
-        let output = gpu.surface.get_current_texture()?;
-        let target = RenderTarget::from_surface_texture(output);
-
         let (width, height) = target.dimensions();
         gpu.config.width = width;
         gpu.config.height = height;

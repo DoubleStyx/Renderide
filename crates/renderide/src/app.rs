@@ -1,6 +1,8 @@
 //! Application entry point: event loop, window lifecycle, and winit integration.
 //!
 //! Owns the RenderideApp handler that bridges winit events to the session, GPU, and render loop.
+//! Swapchain recovery ([`wgpu::SurfaceError`], suboptimal acquire) is handled in [`recover_from_surface_error`]
+//! and [`acquire_surface_texture_with_recovery`], with resize delegating to [`crate::gpu::reconfigure_surface_for_window`].
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -14,7 +16,7 @@ use winit::window::{CursorGrabMode, Window, WindowAttributes};
 
 use crate::gpu::GpuState;
 use crate::input::{WindowInputState, winit_key_to_renderite_key};
-use crate::render::{RenderLoop, RenderingContext, set_context};
+use crate::render::{RenderLoop, RenderTarget, RenderingContext, set_context};
 use crate::session::Session;
 
 /// Target frame interval when focused (240 Hz). Throttles redraws when using WaitUntil.
@@ -76,6 +78,76 @@ pub fn run() -> Option<i32> {
 
 /// Interval (frames) between CPU/GPU bottleneck diagnostic logs.
 const DIAGNOSTIC_LOG_INTERVAL: u32 = 60;
+
+/// Applies a consistent policy to [`wgpu::SurfaceError`]: reconfigure the swapchain when the
+/// platform indicates it is stale or unknown, request another redraw to retry, or only log for
+/// transient errors such as [`wgpu::SurfaceError::Timeout`].
+fn recover_from_surface_error(
+    gpu: &mut GpuState,
+    window: Option<&Window>,
+    err: &wgpu::SurfaceError,
+    context: &str,
+) {
+    let Some(window) = window else {
+        logger::warn!("{}: {} (no window to reconfigure)", context, err);
+        return;
+    };
+    match err {
+        wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => {
+            logger::info!("{}: {} — reconfiguring swapchain", context, err);
+            crate::gpu::reconfigure_surface_for_window(gpu, window, None);
+            window.request_redraw();
+        }
+        wgpu::SurfaceError::Timeout => {
+            logger::debug!("{}: {}", context, err);
+        }
+        wgpu::SurfaceError::OutOfMemory => {
+            logger::error!("{}: {} — reconfiguring swapchain", context, err);
+            crate::gpu::reconfigure_surface_for_window(gpu, window, None);
+            window.request_redraw();
+        }
+        wgpu::SurfaceError::Other => {
+            logger::warn!("{}: {} — reconfiguring swapchain", context, err);
+            crate::gpu::reconfigure_surface_for_window(gpu, window, None);
+            window.request_redraw();
+        }
+    }
+}
+
+/// Acquires the next swapchain texture. On [`wgpu::SurfaceError::Lost`] or
+/// [`wgpu::SurfaceError::Outdated`], reconfigures once then retries acquire; other errors are
+/// handled by [`recover_from_surface_error`] without a second acquire attempt.
+fn acquire_surface_texture_with_recovery(
+    gpu: &mut GpuState,
+    window: &Window,
+) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
+    match gpu.surface.get_current_texture() {
+        Ok(texture) => Ok(texture),
+        Err(e @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
+            logger::info!(
+                "Surface acquire: {} — reconfiguring swapchain and retrying once",
+                e
+            );
+            crate::gpu::reconfigure_surface_for_window(gpu, window, None);
+            match gpu.surface.get_current_texture() {
+                Ok(texture) => Ok(texture),
+                Err(e2) => {
+                    recover_from_surface_error(
+                        gpu,
+                        Some(window),
+                        &e2,
+                        "Surface acquire (after retry)",
+                    );
+                    Err(e2)
+                }
+            }
+        }
+        Err(e) => {
+            recover_from_surface_error(gpu, Some(window), &e, "Surface acquire");
+            Err(e)
+        }
+    }
+}
 
 /// Accumulates frame timings for CPU/GPU bottleneck diagnosis.
 ///
@@ -241,28 +313,60 @@ impl RenderideApp {
             for material_id in self.session.drain_pending_material_unloads() {
                 render_loop.evict_material(material_id);
             }
-            let t1 = Instant::now();
             let draw_batches = self.session.collect_draw_batches();
-            let (width, height) = self.input.window_resolution;
-            let viewport = (width, height);
-            let pre_collected = crate::render::prepare_mesh_draws_for_view(
-                gpu,
-                &self.session,
-                &draw_batches,
-                viewport,
-            );
-            let collect_us = t1.elapsed().as_micros() as u64;
-
-            let t2 = Instant::now();
-            let render_result =
-                render_loop.render_frame(gpu, &self.session, &draw_batches, Some(&pre_collected));
-            let render_us = t2.elapsed().as_micros() as u64;
+            let window = self.window.as_ref();
+            let t1 = Instant::now();
+            let (render_result, collect_us, render_us) = match window {
+                None => {
+                    logger::warn!("GPU active without window; skipping main view render");
+                    let collect_us = t1.elapsed().as_micros() as u64;
+                    (Err(wgpu::SurfaceError::Other), collect_us, 0u64)
+                }
+                Some(w) => match acquire_surface_texture_with_recovery(gpu, w) {
+                    Err(e) => {
+                        let collect_us = t1.elapsed().as_micros() as u64;
+                        (Err(e), collect_us, 0u64)
+                    }
+                    Ok(output) => {
+                        let target = RenderTarget::from_surface_texture(output);
+                        let viewport = target.dimensions();
+                        let pre_collected = crate::render::prepare_mesh_draws_for_view(
+                            gpu,
+                            &self.session,
+                            &draw_batches,
+                            viewport,
+                        );
+                        let collect_us = t1.elapsed().as_micros() as u64;
+                        let t2 = Instant::now();
+                        let rendered = render_loop.render_frame(
+                            gpu,
+                            &self.session,
+                            &draw_batches,
+                            target,
+                            Some(&pre_collected),
+                        );
+                        let render_us = t2.elapsed().as_micros() as u64;
+                        if let Err(ref e) = rendered {
+                            recover_from_surface_error(gpu, window, e, "Main view render");
+                        }
+                        (rendered, collect_us, render_us)
+                    }
+                },
+            };
 
             let t3 = Instant::now();
             if let Ok(target) = render_result
                 && let Some(surface_texture) = target.into_surface_texture()
             {
+                let suboptimal = surface_texture.suboptimal;
                 surface_texture.present();
+                if suboptimal && let Some(w) = window {
+                    logger::debug!(
+                        "Swapchain suboptimal after present; reconfiguring for next frame"
+                    );
+                    crate::gpu::reconfigure_surface_for_window(gpu, w, None);
+                    w.request_redraw();
+                }
             }
             let present_us = t3.elapsed().as_micros() as u64;
 
@@ -357,16 +461,13 @@ impl ApplicationHandler for RenderideApp {
             }
             WindowEvent::Resized(size) => {
                 self.input.window_resolution = (size.width, size.height);
-                if let Some(ref mut gpu) = self.gpu {
-                    gpu.config.width = size.width;
-                    gpu.config.height = size.height;
-                    gpu.surface.configure(&gpu.device, &gpu.config);
-                    if let Some(new_depth) =
-                        crate::gpu::ensure_depth_texture(&gpu.device, &gpu.config, gpu.depth_size)
-                    {
-                        gpu.depth_texture = Some(new_depth);
-                        gpu.depth_size = (gpu.config.width, gpu.config.height);
-                    }
+                if let (Some(ref mut gpu), Some(window)) = (self.gpu.as_mut(), self.window.as_ref())
+                {
+                    crate::gpu::reconfigure_surface_for_window(
+                        gpu,
+                        window,
+                        Some((size.width, size.height)),
+                    );
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {

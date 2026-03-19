@@ -116,8 +116,9 @@ pub(crate) type CachedMeshDrawsRef<'a> = (
 
 /// Pre-collected mesh draws and view parameters for the main view.
 ///
-/// Produced by [`prepare_mesh_draws_for_view`] during the collect phase.
-/// Passed to [`RenderLoop::render_frame`] to avoid CPU work in the render phase.
+/// Produced by [`prepare_mesh_draws_for_view`] during the collect phase for the same
+/// render extent as the [`crate::render::RenderTarget`] passed into [`RenderLoop::render_frame`]
+/// (typically the acquired swapchain texture size, not window client area alone).
 pub struct PreCollectedFrameData {
     /// Primary projection matrix for the main view.
     pub proj: Matrix4<f32>,
@@ -128,6 +129,10 @@ pub struct PreCollectedFrameData {
 }
 
 /// Prepares mesh draws for the main view during the collect phase.
+///
+/// `viewport` must match the width and height of the swapchain (or other color target)
+/// that will be rendered to in the same frame, so projection and cached draws agree
+/// with the GPU viewport.
 ///
 /// Runs [`ensure_mesh_buffers`] and [`collect_mesh_draws`] so this CPU work
 /// is measured in the collect phase rather than the render phase.
@@ -475,7 +480,7 @@ pub struct MrtViews<'a> {
     pub ao_texture: &'a wgpu::Texture,
 }
 
-/// Frame-level context created at the start of `render_frame`.
+/// Frame-level context created when executing the main-view render graph.
 pub struct RenderGraphContext<'a> {
     /// GPU state.
     pub gpu: &'a mut crate::gpu::GpuState,

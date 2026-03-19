@@ -269,3 +269,49 @@ pub fn ensure_depth_texture(
         Some(create_depth_texture(device, config))
     }
 }
+
+/// Clamps surface extent so [`Surface::configure`] never receives zero width or height (which panics).
+#[must_use]
+pub fn clamp_surface_extent(width: u32, height: u32) -> (u32, u32) {
+    (width.max(1), height.max(1))
+}
+
+/// Re-applies [`Surface::configure`] from the window and resizes the depth buffer when needed.
+///
+/// Call after [`wgpu::SurfaceError::Lost`], [`wgpu::SurfaceError::Outdated`], when
+/// [`wgpu::SurfaceTexture::suboptimal`] was true, or from a window resize so `gpu.config` matches
+/// the swapchain the surface will produce.
+///
+/// If `explicit_size` is `Some`, uses that pair (e.g. from [`winit::event::WindowEvent::Resized`]);
+/// otherwise uses [`Window::inner_size`]. Both paths apply [`clamp_surface_extent`].
+pub fn reconfigure_surface_for_window(
+    gpu: &mut GpuState,
+    window: &Window,
+    explicit_size: Option<(u32, u32)>,
+) {
+    let (raw_w, raw_h) = explicit_size.unwrap_or_else(|| {
+        let s = window.inner_size();
+        (s.width, s.height)
+    });
+    let (w, h) = clamp_surface_extent(raw_w, raw_h);
+    gpu.config.width = w;
+    gpu.config.height = h;
+    gpu.surface.configure(&gpu.device, &gpu.config);
+    if let Some(new_depth) = ensure_depth_texture(&gpu.device, &gpu.config, gpu.depth_size) {
+        gpu.depth_texture = Some(new_depth);
+        gpu.depth_size = (gpu.config.width, gpu.config.height);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_surface_extent;
+
+    #[test]
+    fn clamp_surface_extent_nonzero() {
+        assert_eq!(clamp_surface_extent(800, 600), (800, 600));
+        assert_eq!(clamp_surface_extent(0, 0), (1, 1));
+        assert_eq!(clamp_surface_extent(0, 720), (1, 720));
+        assert_eq!(clamp_surface_extent(1280, 0), (1280, 1));
+    }
+}

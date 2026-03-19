@@ -3,7 +3,9 @@
 //! ## Overview
 //!
 //! **Render loop** ([`RenderLoop`]): drives one frame via the graph. Main window uses
-//! [`RenderTarget::Surface`]; offscreen camera tasks use [`RenderTarget::Offscreen`].
+//! [`RenderTarget::Surface`] (caller acquires the swapchain texture once per frame; mesh
+//! preparation uses that target's dimensions so aspect and viewport stay consistent).
+//! Offscreen camera tasks use [`RenderTarget::Offscreen`].
 //!
 //! **Draw batching** ([`SpaceDrawBatch`]): per-space batches with `view_transform`, sorted by
 //! `sort_key` (higher renders on top; matches Unity `sortingOrder`). Draws are ordered by
