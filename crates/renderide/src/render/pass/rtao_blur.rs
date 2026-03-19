@@ -3,7 +3,7 @@
 //! Blurs the raw RTAO output while respecting depth and normal edges.
 //! Uses a 5×5 kernel with depth and normal similarity weights to avoid bleeding across geometry.
 
-use super::{RenderPass, RenderPassError};
+use super::{PassResources, RenderPass, RenderPassError, ResourceSlot};
 
 const TILE_SIZE: u32 = 8;
 
@@ -152,6 +152,13 @@ impl RtaoBlurPass {
 impl RenderPass for RtaoBlurPass {
     fn name(&self) -> &str {
         "rtao_blur"
+    }
+
+    fn resources(&self) -> PassResources {
+        PassResources {
+            reads: vec![ResourceSlot::AoRaw, ResourceSlot::Depth],
+            writes: vec![ResourceSlot::Ao],
+        }
     }
 
     fn execute(&mut self, ctx: &mut super::RenderPassContext) -> Result<(), RenderPassError> {

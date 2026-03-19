@@ -21,7 +21,7 @@
 //! [`crate::stencil`] for GraphicsChunk RenderType (MaskWrite, Content, MaskClear).
 
 use super::mesh_draw::{MeshDrawParams, record_non_skinned_draws, record_skinned_draws};
-use super::{RenderPass, RenderPassContext, RenderPassError};
+use super::{PassResources, RenderPass, RenderPassContext, RenderPassError, ResourceSlot};
 
 /// Overlay render pass: draws overlay meshes on top of the main scene.
 pub struct OverlayRenderPass;
@@ -42,6 +42,13 @@ impl Default for OverlayRenderPass {
 impl RenderPass for OverlayRenderPass {
     fn name(&self) -> &str {
         "overlay"
+    }
+
+    fn resources(&self) -> PassResources {
+        PassResources {
+            reads: vec![ResourceSlot::Depth],
+            writes: vec![ResourceSlot::Surface],
+        }
     }
 
     fn execute(&mut self, ctx: &mut RenderPassContext) -> Result<(), RenderPassError> {

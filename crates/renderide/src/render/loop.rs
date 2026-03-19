@@ -7,8 +7,7 @@ use std::time::Duration;
 
 use super::SpaceDrawBatch;
 use super::pass::{
-    ClusteredLightPass, CompositePass, MeshRenderPass, OverlayRenderPass, PreCollectedFrameData,
-    RenderGraph, RenderGraphContext, RtaoBlurPass, RtaoComputePass,
+    PreCollectedFrameData, RenderGraph, RenderGraphContext, build_main_render_graph,
 };
 use super::target::RenderTarget;
 use super::view::ViewParams;
@@ -37,21 +36,14 @@ pub struct RenderLoop {
     last_gpu_mesh_pass_ms: Option<f64>,
     /// Whether RTAO diagnostic has been logged once at startup.
     rtao_diagnostic_logged: bool,
-    /// Cached RTAO MRT textures. Recreated only when viewport dimensions change.
-    /// Stored in RenderLoop to avoid borrow conflicts with GpuState in render graph context.
-    rtao_textures: Option<crate::gpu::rtao_textures::RtaoTextureCache>,
+    /// Last built main-graph RTAO variant; rebuild [`Self::graph`] when this differs from the frame's value.
+    cached_rtao_mrt_graph: Option<bool>,
 }
 
 impl RenderLoop {
     /// Creates a new render loop with pipelines for the given device and config.
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
-        let mut graph = RenderGraph::new();
-        graph.add_pass(Box::new(ClusteredLightPass::new()));
-        graph.add_pass(Box::new(MeshRenderPass::new()));
-        graph.add_pass(Box::new(RtaoComputePass::new()));
-        graph.add_pass(Box::new(RtaoBlurPass::new()));
-        graph.add_pass(Box::new(CompositePass::new()));
-        graph.add_pass(Box::new(OverlayRenderPass::new()));
+        let graph = build_main_render_graph(false).expect("default render graph has no cycles");
 
         let timestamp_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
             label: Some("mesh pass timestamp query set"),
@@ -80,7 +72,7 @@ impl RenderLoop {
             frame_count: 0,
             last_gpu_mesh_pass_ms: None,
             rtao_diagnostic_logged: false,
-            rtao_textures: None,
+            cached_rtao_mrt_graph: Some(false),
         }
     }
 
@@ -137,45 +129,22 @@ impl RenderLoop {
             }
         };
 
-        let rtao_enabled = session.render_config().rtao_enabled && gpu.ray_tracing_available;
+        let rtao_mrt_graph = session.render_config().rtao_enabled && gpu.ray_tracing_available;
         if !self.rtao_diagnostic_logged {
             logger::info!(
                 "RTAO diagnostic: rtao_enabled={} (config={} ray_tracing_available={})",
-                rtao_enabled,
+                rtao_mrt_graph,
                 session.render_config().rtao_enabled,
                 gpu.ray_tracing_available
             );
             self.rtao_diagnostic_logged = true;
         }
 
-        if rtao_enabled {
-            let needs_create = self
-                .rtao_textures
-                .as_ref()
-                .is_none_or(|c| !c.matches_viewport(width, height));
-            if needs_create {
-                self.rtao_textures = Some(crate::gpu::rtao_textures::RtaoTextureCache::create(
-                    &gpu.device,
-                    width,
-                    height,
-                    gpu.config.format,
-                ));
-            }
-        } else {
-            self.rtao_textures = None;
+        if self.cached_rtao_mrt_graph != Some(rtao_mrt_graph) {
+            self.graph = build_main_render_graph(rtao_mrt_graph)
+                .expect("main render graph rebuild has no cycles");
+            self.cached_rtao_mrt_graph = Some(rtao_mrt_graph);
         }
-
-        let mrt_views = self
-            .rtao_textures
-            .as_ref()
-            .map(|cache| super::pass::MrtViews {
-                color_view: &cache.color_view,
-                color_texture: &cache.color_texture,
-                position_view: &cache.position_view,
-                normal_view: &cache.normal_view,
-                ao_raw_view: &cache.ao_raw_view,
-                ao_view: &cache.ao_view,
-            });
 
         let mut ctx = RenderGraphContext {
             gpu,
@@ -190,7 +159,7 @@ impl RenderLoop {
             timestamp_query_set: Some(&self.timestamp_query_set),
             timestamp_resolve_buffer: Some(&self.timestamp_resolve_buffer),
             timestamp_staging_buffer: Some(&self.timestamp_staging_buffer),
-            mrt_views,
+            enable_rtao_mrt: rtao_mrt_graph,
             pre_collected: pre_collected.map(|pc| &pc.cached_mesh_draws),
         };
 
@@ -244,7 +213,7 @@ impl RenderLoop {
             timestamp_query_set: None,
             timestamp_resolve_buffer: None,
             timestamp_staging_buffer: None,
-            mrt_views: None,
+            enable_rtao_mrt: false,
             pre_collected: None,
         };
         self.graph.execute(&mut ctx)

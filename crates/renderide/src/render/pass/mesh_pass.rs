@@ -4,7 +4,7 @@
 //! non-skinned). Batches are pre-sorted (non-overlay first, then overlay) by the session.
 
 use super::mesh_draw::{self, MeshDrawParams, record_non_skinned_draws, record_skinned_draws};
-use super::{RenderPass, RenderPassContext, RenderPassError};
+use super::{PassResources, RenderPass, RenderPassContext, RenderPassError, ResourceSlot};
 use crate::render::batch::SpaceDrawBatch;
 use crate::session::Session;
 
@@ -34,12 +34,28 @@ fn pbr_view_position_for_space(draw_batches: &[SpaceDrawBatch], session: &Sessio
 }
 
 /// Mesh render pass: draws non-overlay meshes from draw batches.
-pub struct MeshRenderPass;
+///
+/// [`Self::with_rtao_mrt_graph`] selects the **graph variant**: when true, resource declarations
+/// include MRT g-buffer slots ([`ResourceSlot::Position`], [`ResourceSlot::Normal`],
+/// [`ResourceSlot::AoRaw`]) used by the RTAO pipeline. When false, only [`ResourceSlot::Color`]
+/// and [`ResourceSlot::Depth`] are declared so the mesh writes the main color target and depth;
+/// [`ResourceSlot::Depth`] is required because [`super::OverlayRenderPass`] reads depth after mesh.
+pub struct MeshRenderPass {
+    rtao_mrt_graph: bool,
+}
 
 impl MeshRenderPass {
-    /// Creates a new mesh render pass.
+    /// Creates a mesh pass for the non-RTAO graph variant (color + depth to the surface).
     pub fn new() -> Self {
-        Self
+        Self::with_rtao_mrt_graph(false)
+    }
+
+    /// Creates a mesh pass aligned with the main render graph variant.
+    ///
+    /// Pass `true` when the graph includes RTAO compute, blur, and composite; `false` when mesh
+    /// connects directly to overlay.
+    pub fn with_rtao_mrt_graph(rtao_mrt_graph: bool) -> Self {
+        Self { rtao_mrt_graph }
     }
 }
 
@@ -52,6 +68,24 @@ impl Default for MeshRenderPass {
 impl RenderPass for MeshRenderPass {
     fn name(&self) -> &str {
         "mesh"
+    }
+
+    fn resources(&self) -> PassResources {
+        let writes = if self.rtao_mrt_graph {
+            vec![
+                ResourceSlot::Color,
+                ResourceSlot::Position,
+                ResourceSlot::Normal,
+                ResourceSlot::AoRaw,
+                ResourceSlot::Depth,
+            ]
+        } else {
+            vec![ResourceSlot::Color, ResourceSlot::Depth]
+        };
+        PassResources {
+            reads: vec![ResourceSlot::ClusterBuffers, ResourceSlot::LightBuffer],
+            writes,
+        }
     }
 
     fn execute(&mut self, ctx: &mut RenderPassContext) -> Result<(), RenderPassError> {

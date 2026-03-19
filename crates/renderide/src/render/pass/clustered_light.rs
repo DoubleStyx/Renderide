@@ -9,7 +9,7 @@ use std::mem::size_of;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
 
-use super::{RenderPass, RenderPassError};
+use super::{PassResources, RenderPass, RenderPassError, ResourceSlot};
 use crate::gpu::cluster_buffer::ClusterBufferRefs;
 use crate::render::SpaceDrawBatch;
 use crate::render::lights::MAX_LIGHTS;
@@ -340,6 +340,13 @@ impl ClusteredLightPass {
 impl RenderPass for ClusteredLightPass {
     fn name(&self) -> &str {
         "clustered_light"
+    }
+
+    fn resources(&self) -> PassResources {
+        PassResources {
+            reads: vec![],
+            writes: vec![ResourceSlot::ClusterBuffers, ResourceSlot::LightBuffer],
+        }
     }
 
     fn execute(&mut self, ctx: &mut super::RenderPassContext) -> Result<(), RenderPassError> {

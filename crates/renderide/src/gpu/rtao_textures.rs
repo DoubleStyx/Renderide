@@ -1,17 +1,19 @@
 //! Cached RTAO (Ray-Traced Ambient Occlusion) MRT textures.
 //!
-//! Reuses textures across frames; recreates only when viewport dimensions change.
+//! Reuses textures across frames; recreates when viewport or color format changes.
 //! Avoids per-frame texture allocation which is one of the most expensive GPU operations.
 
 /// Cached RTAO MRT textures and views.
 ///
-/// Stored in [`GpuState`](super::state::GpuState) when RTAO is enabled.
-/// Recreated only when viewport (width, height) changes.
+/// Owned by [`crate::render::pass::RenderGraph`] and recreated when
+/// `(width, height, color_format)` no longer matches.
 pub struct RtaoTextureCache {
-    /// Viewport dimensions these textures were created for.
+    /// Viewport width these textures were created for.
     pub width: u32,
     /// Viewport height.
     pub height: u32,
+    /// Color target format (e.g. swapchain format for the MRT color attachment).
+    pub color_format: wgpu::TextureFormat,
     /// Color texture (matches surface format). Mesh pass renders to this.
     pub color_texture: wgpu::Texture,
     /// Color texture view.
@@ -126,6 +128,7 @@ impl RtaoTextureCache {
         Self {
             width,
             height,
+            color_format,
             color_texture: color_tex,
             color_view,
             position_texture: position_tex,
@@ -139,8 +142,8 @@ impl RtaoTextureCache {
         }
     }
 
-    /// Returns true if this cache matches the given viewport dimensions.
-    pub fn matches_viewport(&self, width: u32, height: u32) -> bool {
-        self.width == width && self.height == height
+    /// Returns true if this cache matches the given viewport and color format.
+    pub fn matches_key(&self, width: u32, height: u32, color_format: wgpu::TextureFormat) -> bool {
+        self.width == width && self.height == height && self.color_format == color_format
     }
 }

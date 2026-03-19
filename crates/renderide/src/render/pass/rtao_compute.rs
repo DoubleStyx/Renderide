@@ -5,7 +5,7 @@
 //! When RTAO skips (e.g. TLAS None), clears AO texture to full visibility so composite
 //! does not sample uninitialized data.
 
-use super::{RenderPass, RenderPassError};
+use super::{PassResources, RenderPass, RenderPassError, ResourceSlot};
 
 const TILE_SIZE: u32 = 8;
 
@@ -279,6 +279,13 @@ impl RenderPass for RtaoComputePass {
         "rtao_compute"
     }
 
+    fn resources(&self) -> PassResources {
+        PassResources {
+            reads: vec![ResourceSlot::Position, ResourceSlot::Normal],
+            writes: vec![ResourceSlot::AoRaw],
+        }
+    }
+
     fn execute(&mut self, ctx: &mut super::RenderPassContext) -> Result<(), RenderPassError> {
         let pos_view = match ctx.render_target.mrt_position_view {
             Some(v) => v,
@@ -298,13 +305,6 @@ impl RenderPass for RtaoComputePass {
                 return Ok(());
             }
         };
-        let ao_view = match ctx.render_target.mrt_ao_view {
-            Some(v) => v,
-            None => {
-                logger::trace!("RTAO compute skipped: mrt_ao_view is None");
-                return Ok(());
-            }
-        };
         let tlas = match &ctx.gpu.ray_tracing_state {
             Some(rt) => match &rt.tlas {
                 Some(t) => t,
@@ -315,7 +315,7 @@ impl RenderPass for RtaoComputePass {
                     self.clear_ao_to_visibility(
                         &ctx.gpu.device,
                         ctx.encoder,
-                        ao_view,
+                        ao_raw_view,
                         ctx.viewport,
                     );
                     return Ok(());
@@ -323,7 +323,12 @@ impl RenderPass for RtaoComputePass {
             },
             None => {
                 logger::trace!("RTAO compute skipped: ray_tracing_state is None");
-                self.clear_ao_to_visibility(&ctx.gpu.device, ctx.encoder, ao_view, ctx.viewport);
+                self.clear_ao_to_visibility(
+                    &ctx.gpu.device,
+                    ctx.encoder,
+                    ao_raw_view,
+                    ctx.viewport,
+                );
                 return Ok(());
             }
         };
@@ -332,7 +337,12 @@ impl RenderPass for RtaoComputePass {
             Some((p, b)) => (p, b),
             None => {
                 logger::trace!("RTAO compute skipped: pipeline creation failed (shader compile?)");
-                self.clear_ao_to_visibility(&ctx.gpu.device, ctx.encoder, ao_view, ctx.viewport);
+                self.clear_ao_to_visibility(
+                    &ctx.gpu.device,
+                    ctx.encoder,
+                    ao_raw_view,
+                    ctx.viewport,
+                );
                 return Ok(());
             }
         };

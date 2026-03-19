@@ -3,7 +3,7 @@
 //! Fullscreen pass that reads mesh color and AO texture, outputs
 //! `color * (1 - ao_strength * (1 - ao))` to darken based on occlusion.
 
-use super::{RenderPass, RenderPassContext, RenderPassError};
+use super::{PassResources, RenderPass, RenderPassContext, RenderPassError, ResourceSlot};
 
 const COMPOSITE_SHADER_SRC: &str = r#"
 struct VertexOutput {
@@ -183,6 +183,13 @@ impl CompositePass {
 impl RenderPass for CompositePass {
     fn name(&self) -> &str {
         "composite"
+    }
+
+    fn resources(&self) -> PassResources {
+        PassResources {
+            reads: vec![ResourceSlot::Color, ResourceSlot::Ao],
+            writes: vec![ResourceSlot::Surface],
+        }
     }
 
     fn execute(&mut self, ctx: &mut RenderPassContext) -> Result<(), RenderPassError> {

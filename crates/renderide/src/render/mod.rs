@@ -24,6 +24,19 @@
 //! **RenderTaskExecutor**: Runs [`CameraRenderTask`](crate::shared::CameraRenderTask)s offscreen
 //! and copies pixels to shared memory for the host.
 //!
+//! **Subgraphs**: [`GraphBuilder::add_subgraph`](pass::GraphBuilder::add_subgraph) nests a full
+//! [`RenderGraph`](pass::RenderGraph) as one node; [`GraphBuilder::add_edge`](pass::GraphBuilder::add_edge)
+//! accepts [`GraphNodeId`](pass::GraphNodeId) (pass or subgraph). The main window still uses a flat
+//! graph from [`build_main_render_graph`](pass::build_main_render_graph); this is scaffolding for
+//! multi-viewport / mirror / probe passes later.
+//!
+//! **RTAO MRT**: [`RenderGraph`](pass::RenderGraph) owns lazily created MRT textures when
+//! [`RenderGraphContext::enable_rtao_mrt`](pass::RenderGraphContext::enable_rtao_mrt) is true
+//! (main window with RTAO enabled and ray tracing available). The main loop rebuilds the graph
+//! when that effective flag changes (see [`pass::build_main_render_graph`]) so RTAO passes are
+//! omitted when disabled. [`RenderLoop::render_to_target`](r#loop::RenderLoop::render_to_target)
+//! sets `enable_rtao_mrt` false so offscreen paths skip RTAO allocation.
+//!
 //! ## UI extension point
 //!
 //! [`OverlayRenderPass`] is the single extension point for UI rendering. Future UI work should
@@ -53,8 +66,10 @@ pub use batch::{DrawEntry, SpaceDrawBatch};
 pub use context::{FramePhase, current_context, set_context, with_context};
 pub use r#loop::RenderLoop;
 pub use pass::{
-    MeshRenderPass, OverlayRenderPass, PreCollectedFrameData, RenderGraph, RenderGraphContext,
-    RenderPass, RenderPassContext, RenderPassError, RenderTargetViews, prepare_mesh_draws_for_view,
+    ExecutionUnit, GraphBuilder, GraphNodeId, LabeledSubgraph, MeshRenderPass, OverlayRenderPass,
+    PassId, PreCollectedFrameData, RenderGraph, RenderGraphContext, RenderPass, RenderPassContext,
+    RenderPassError, RenderTargetViews, SubgraphId, SubgraphLabel, build_main_render_graph,
+    prepare_mesh_draws_for_view,
 };
 pub use target::RenderTarget;
 pub use task::RenderTaskExecutor;

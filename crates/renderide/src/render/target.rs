@@ -109,6 +109,17 @@ impl RenderTarget {
         }
     }
 
+    /// Returns the depth texture, if this target owns one.
+    ///
+    /// [`Surface`](Self::Surface) uses a separate depth texture on [`crate::gpu::GpuState`];
+    /// returns `None` here.
+    pub fn depth_texture(&self) -> Option<&wgpu::Texture> {
+        match self {
+            Self::Surface { .. } => None,
+            Self::Offscreen { depth_texture, .. } => Some(depth_texture),
+        }
+    }
+
     /// Returns the viewport dimensions (width, height).
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
