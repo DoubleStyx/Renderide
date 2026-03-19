@@ -18,7 +18,7 @@ pub struct RtaoTextureCache {
     pub color_texture: wgpu::Texture,
     /// Color texture view.
     pub color_view: wgpu::TextureView,
-    /// Position G-buffer (Rgba16Float).
+    /// Position G-buffer (Rgba16Float, camera-relative positions for RTAO precision).
     pub position_texture: wgpu::Texture,
     /// Position texture view.
     pub position_view: wgpu::TextureView,

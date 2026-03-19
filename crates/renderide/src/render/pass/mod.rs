@@ -484,7 +484,7 @@ pub struct MrtViews<'a> {
     pub color_view: &'a wgpu::TextureView,
     /// Color texture for copy to surface (same as color_view's texture).
     pub color_texture: &'a wgpu::Texture,
-    /// Position G-buffer view (Rgba16Float).
+    /// Position G-buffer view (Rgba16Float, camera-relative `world - view_position`).
     pub position_view: &'a wgpu::TextureView,
     /// Position G-buffer texture (for [`wgpu::CommandEncoder::transition_resources`]).
     pub position_texture: &'a wgpu::Texture,

@@ -10,8 +10,52 @@ use super::shaders::{
 };
 use super::uniforms::SkinnedUniforms;
 
+/// Host layout for [`create_mrt_gbuffer_origin_bind_group_layout`]: primary view world position
+/// subtracted before writing the MRT position target so RTAO reconstructs world space in `f32`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct MrtGbufferOriginUniform {
+    /// Same translation as [`super::uniforms::SceneUniforms::view_position`] for the primary view batch.
+    pub view_position: [f32; 3],
+    pub _pad: f32,
+}
+
+#[cfg(test)]
+mod mrt_gbuffer_origin_uniform_tests {
+    use super::MrtGbufferOriginUniform;
+    use std::mem::size_of;
+
+    #[test]
+    fn mrt_gbuffer_origin_uniform_is_16_bytes() {
+        assert_eq!(size_of::<MrtGbufferOriginUniform>(), 16);
+        assert_eq!(size_of::<MrtGbufferOriginUniform>() % 16, 0);
+    }
+}
+
+/// Shared bind group layout (group 1) for debug MRT pipelines: [`MrtGbufferOriginUniform`] in a uniform buffer.
+pub fn create_mrt_gbuffer_origin_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("MRT g-buffer origin bind group layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
+                    MrtGbufferOriginUniform,
+                >() as u64),
+            },
+            count: None,
+        }],
+    })
+}
+
 /// MRT position/normal target format for RTAO (vec3 packed in vec4).
-/// Uses Rgba16Float (8 bytes) to stay under the 32-byte color attachment limit.
+///
+/// Position attachment stores **camera-relative** `world - view_position` (see RTAO pass) so
+/// `Rgba16Float` retains precision far from the world origin. Uses Rgba16Float (8 bytes) to stay
+/// under the 32-byte color attachment limit.
 pub(crate) const MRT_POSITION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub(crate) const MRT_NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
@@ -28,7 +72,14 @@ pub struct NormalDebugMRTPipeline {
 impl NormalDebugMRTPipeline {
     /// Creates an MRT normal debug pipeline with three color attachments.
     /// Uses `config.format` for the color target to match the surface for copy-back.
-    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+    ///
+    /// `mrt_gbuffer_origin_layout` must be the same object used to build [`crate::gpu::GpuState`]'s
+    /// MRT origin bind group so group 1 matches at draw time.
+    pub fn new(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        mrt_gbuffer_origin_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("normal debug MRT shader"),
             source: wgpu::ShaderSource::Wgsl(NORMAL_DEBUG_MRT_SHADER_SRC.into()),
@@ -50,7 +101,7 @@ impl NormalDebugMRTPipeline {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("normal debug MRT pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&bind_group_layout, mrt_gbuffer_origin_layout],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -217,7 +268,13 @@ pub struct UvDebugMRTPipeline {
 impl UvDebugMRTPipeline {
     /// Creates an MRT UV debug pipeline with three color attachments.
     /// Uses `config.format` for the color target to match the surface for copy-back.
-    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+    ///
+    /// `mrt_gbuffer_origin_layout` must match [`crate::gpu::GpuState`]'s MRT origin bind group layout.
+    pub fn new(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        mrt_gbuffer_origin_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("UV debug MRT shader"),
             source: wgpu::ShaderSource::Wgsl(UV_DEBUG_MRT_SHADER_SRC.into()),
@@ -239,7 +296,7 @@ impl UvDebugMRTPipeline {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("UV debug MRT pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&bind_group_layout, mrt_gbuffer_origin_layout],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -407,7 +464,13 @@ pub struct SkinnedMRTPipeline {
 impl SkinnedMRTPipeline {
     /// Creates an MRT skinned pipeline with three color attachments.
     /// Uses `config.format` for the color target to match the surface for copy-back.
-    pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+    ///
+    /// `mrt_gbuffer_origin_layout` must match [`crate::gpu::GpuState`]'s MRT origin bind group layout.
+    pub fn new(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        mrt_gbuffer_origin_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("skinned MRT shader"),
             source: wgpu::ShaderSource::Wgsl(SKINNED_MRT_SHADER_SRC.into()),
@@ -442,7 +505,7 @@ impl SkinnedMRTPipeline {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("skinned MRT pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&bind_group_layout, mrt_gbuffer_origin_layout],
             immediate_size: 0,
         });
         let uniform_ring = SkinnedUniformRingBuffer::new(device, "skinned MRT uniform ring buffer");

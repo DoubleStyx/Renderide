@@ -3,7 +3,7 @@
 //! Extension point for pipelines, materials, PBR.
 
 mod core;
-mod mrt;
+pub(crate) mod mrt;
 mod normal_debug;
 mod overlay_stencil;
 mod overlay_stencil_skinned;

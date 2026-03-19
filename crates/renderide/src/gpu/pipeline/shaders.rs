@@ -248,7 +248,12 @@ struct UniformsSlot {
     model: mat4x4f,
     _pad: array<vec4f, 8>,
 }
+struct MrtGbufferFrame {
+    view_position: vec3f,
+    _pad: f32,
+}
 @group(0) @binding(0) var<uniform> uniforms: array<UniformsSlot, 64>;
+@group(1) @binding(0) var<uniform> mrt_frame: MrtGbufferFrame;
 @vertex
 fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> VertexOutput {
     let u = uniforms[instance_index];
@@ -267,9 +272,10 @@ struct FragmentOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> FragmentOutput {
     let n = normalize(in.world_normal);
+    let rel = in.world_position - mrt_frame.view_position;
     return FragmentOutput(
         vec4f(n * 0.5 + 0.5, 1.0),
-        vec4f(in.world_position, 1.0),
+        vec4f(rel, 1.0),
         vec4f(n, 0.0),
     );
 }
@@ -292,7 +298,12 @@ struct UniformsSlot {
     model: mat4x4f,
     _pad: array<vec4f, 8>,
 }
+struct MrtGbufferFrame {
+    view_position: vec3f,
+    _pad: f32,
+}
 @group(0) @binding(0) var<uniform> uniforms: array<UniformsSlot, 64>;
+@group(1) @binding(0) var<uniform> mrt_frame: MrtGbufferFrame;
 @vertex
 fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> VertexOutput {
     let u = uniforms[instance_index];
@@ -341,9 +352,10 @@ fn fs_main(in: VertexOutput) -> UvFragmentOutput {
     let sat = 1.0 - v;
     let rgb = hsv_to_rgb(hue, sat, 1.0);
     let n = normalize(in.world_normal);
+    let rel = in.world_position - mrt_frame.view_position;
     return UvFragmentOutput(
         vec4f(rgb, 1.0),
-        vec4f(in.world_position, 1.0),
+        vec4f(rel, 1.0),
         vec4f(n, 0.0),
     );
 }
@@ -375,8 +387,13 @@ struct BlendshapeOffset {
     normal_offset: vec3f,
     tangent_offset: vec3f,
 }
+struct MrtGbufferFrame {
+    view_position: vec3f,
+    _pad: f32,
+}
 @group(0) @binding(0) var<uniform> uniforms: SkinnedUniforms;
 @group(0) @binding(1) var<storage, read> blendshape_offsets: array<BlendshapeOffset>;
+@group(1) @binding(0) var<uniform> mrt_frame: MrtGbufferFrame;
 @vertex
 fn vs_main(
     in: VertexInput,
@@ -430,9 +447,10 @@ struct SkinnedFragmentOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> SkinnedFragmentOutput {
     let n = normalize(in.world_normal);
+    let rel = in.world_position - mrt_frame.view_position;
     return SkinnedFragmentOutput(
         vec4f(n * 0.5 + 0.5, 1.0),
-        vec4f(in.world_position, 1.0),
+        vec4f(rel, 1.0),
         vec4f(n, 0.0),
     );
 }
@@ -828,9 +846,10 @@ fn fs_main(in: VertexOutput) -> PbrFragmentOutput {
 
     let ambient = vec3f(0.03, 0.03, 0.03) * base_color;
     let color = ambient + lo;
+    let rel = in.world_position - scene.view_position;
     return PbrFragmentOutput(
         vec4f(color, 1.0),
-        vec4f(in.world_position, 1.0),
+        vec4f(rel, 1.0),
         vec4f(n, 0.0),
     );
 }
@@ -1315,9 +1334,10 @@ fn fs_main(in: VertexOutput) -> SkinnedPbrFragmentOutput {
 
     let ambient = vec3f(0.03, 0.03, 0.03) * base_color;
     let color = ambient + lo;
+    let rel = in.world_position - scene.view_position;
     return SkinnedPbrFragmentOutput(
         vec4f(color, 1.0),
-        vec4f(in.world_position, 1.0),
+        vec4f(rel, 1.0),
         vec4f(n, 0.0),
     );
 }

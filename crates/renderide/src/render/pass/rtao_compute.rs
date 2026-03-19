@@ -4,7 +4,11 @@
 //! Reads position/normal from G-buffer, traces rays in cosine-weighted hemisphere, writes AO.
 //! When RTAO skips (e.g. TLAS None), clears AO texture to full visibility so composite
 //! does not sample uninitialized data.
+//!
+//! The position G-buffer stores **camera-relative** positions; this pass adds
+//! [`super::mesh_pass::mrt_gbuffer_world_origin`] back to reconstruct world-space ray origins.
 
+use super::mesh_pass::mrt_gbuffer_world_origin;
 use super::{PassResources, RenderPass, RenderPassError, ResourceSlot};
 
 const TILE_SIZE: u32 = 8;
@@ -31,6 +35,8 @@ struct Uniforms {
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
+    gbuffer_origin: vec3f,
+    _pad_origin: f32,
 }
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var position_tex: texture_2d<f32>;
@@ -69,7 +75,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
     let uv = (vec2f(global_id.xy) + 0.5) / vec2f(dims);
     let pos = textureLoad(position_tex, vec2i(global_id.xy), 0);
     let n = textureLoad(normal_tex, vec2i(global_id.xy), 0);
-    let world_pos = pos.xyz;
+    let world_pos = pos.xyz + uniforms.gbuffer_origin;
     let normal = normalize(n.xyz);
     let bias = 0.01;
     let origin = world_pos + normal * bias;
@@ -93,6 +99,30 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
     textureStore(ao_output, vec2i(global_id.xy), vec4f(visibility, 0.0, 0.0, 1.0));
 }
 "#;
+
+/// Host layout for [`RtaoComputePass`] WGSL `Uniforms` (32 bytes, 16-byte aligned).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct RtaoComputeUniforms {
+    ao_radius: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+    gbuffer_origin: [f32; 3],
+    _pad_origin: f32,
+}
+
+#[cfg(test)]
+mod rtao_uniform_tests {
+    use super::RtaoComputeUniforms;
+    use std::mem::size_of;
+
+    #[test]
+    fn rtao_compute_uniforms_is_32_bytes() {
+        assert_eq!(size_of::<RtaoComputeUniforms>(), 32);
+        assert_eq!(size_of::<RtaoComputeUniforms>() % 16, 0);
+    }
+}
 
 /// RTAO compute pass: traces rays per pixel, writes visibility (1 - occlusion) to AO texture.
 ///
@@ -209,7 +239,7 @@ impl RtaoComputePass {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: std::num::NonZeroU64::new(16),
+                            min_binding_size: std::num::NonZeroU64::new(32),
                         },
                         count: None,
                     },
@@ -347,19 +377,31 @@ impl RenderPass for RtaoComputePass {
             }
         };
 
-        let uniform_buffer = ctx.gpu.rtao_uniform_buffer.get_or_insert_with(|| {
-            ctx.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        const RTAO_UNIFORM_SIZE: u64 = 32;
+        let device = &ctx.gpu.device;
+        let rtao_uniform_buffer = match ctx.gpu.rtao_uniform_buffer.take() {
+            Some(b) if b.size() >= RTAO_UNIFORM_SIZE => b,
+            _ => device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("RTAO uniforms"),
-                size: 16,
+                size: RTAO_UNIFORM_SIZE,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            })
-        });
+            }),
+        };
+
         let ao_radius = ctx.session.render_config().ao_radius;
-        let uniform_data = [ao_radius, 0.0f32, 0.0f32, 0.0f32];
+        let origin = mrt_gbuffer_world_origin(ctx.draw_batches, ctx.session);
+        let uniform_data = RtaoComputeUniforms {
+            ao_radius,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
+            gbuffer_origin: origin,
+            _pad_origin: 0.0,
+        };
         ctx.gpu
             .queue
-            .write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniform_data));
+            .write_buffer(&rtao_uniform_buffer, 0, bytemuck::bytes_of(&uniform_data));
 
         let bind_group = ctx
             .gpu
@@ -370,7 +412,7 @@ impl RenderPass for RtaoComputePass {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
+                        resource: rtao_uniform_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -390,6 +432,8 @@ impl RenderPass for RtaoComputePass {
                     },
                 ],
             });
+
+        ctx.gpu.rtao_uniform_buffer = Some(rtao_uniform_buffer);
 
         let (width, height) = ctx.viewport;
         let mut pass = ctx

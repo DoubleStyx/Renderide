@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::pipeline::mrt::create_mrt_gbuffer_origin_bind_group_layout;
 use super::pipeline::{
     MaterialPipeline, NormalDebugMRTPipeline, NormalDebugPipeline, OverlayStencilMaskClearPipeline,
     OverlayStencilMaskClearSkinnedPipeline, OverlayStencilMaskWritePipeline,
@@ -78,8 +79,15 @@ impl PipelineRegistry {
     }
 
     /// Registers builtin pipelines for the given device and surface configuration.
+    ///
+    /// `mrt_gbuffer_origin_layout` must match [`PipelineManager::mrt_gbuffer_origin_layout`].
     #[allow(clippy::arc_with_non_send_sync)]
-    pub fn register_builtin(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
+    pub fn register_builtin(
+        &mut self,
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        mrt_gbuffer_origin_layout: &wgpu::BindGroupLayout,
+    ) {
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::NormalDebug),
             Arc::new(NormalDebugPipeline::new(device, config, false)),
@@ -94,15 +102,27 @@ impl PipelineRegistry {
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::NormalDebugMRT),
-            Arc::new(NormalDebugMRTPipeline::new(device, config)),
+            Arc::new(NormalDebugMRTPipeline::new(
+                device,
+                config,
+                mrt_gbuffer_origin_layout,
+            )),
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::UvDebugMRT),
-            Arc::new(UvDebugMRTPipeline::new(device, config)),
+            Arc::new(UvDebugMRTPipeline::new(
+                device,
+                config,
+                mrt_gbuffer_origin_layout,
+            )),
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::SkinnedMRT),
-            Arc::new(SkinnedMRTPipeline::new(device, config)),
+            Arc::new(SkinnedMRTPipeline::new(
+                device,
+                config,
+                mrt_gbuffer_origin_layout,
+            )),
         );
         self.pipelines.insert(
             PipelineKey(None, PipelineVariant::OverlayStencilMaskWrite),
@@ -192,17 +212,26 @@ impl Default for PipelineRegistry {
 pub struct PipelineManager {
     registry: PipelineRegistry,
     frame_scheduler: super::frame_scheduler::GpuFrameScheduler,
+    /// Shared layout for MRT debug pipelines' group 1 (g-buffer world origin). Also used by [`super::GpuState::ensure_mrt_gbuffer_origin_resources`].
+    mrt_gbuffer_origin_bgl: wgpu::BindGroupLayout,
 }
 
 impl PipelineManager {
     /// Creates the pipeline manager and registers builtin pipelines.
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        let mrt_gbuffer_origin_bgl = create_mrt_gbuffer_origin_bind_group_layout(device);
         let mut registry = PipelineRegistry::new();
-        registry.register_builtin(device, config);
+        registry.register_builtin(device, config, &mrt_gbuffer_origin_bgl);
         Self {
             registry,
             frame_scheduler: super::frame_scheduler::GpuFrameScheduler::new(),
+            mrt_gbuffer_origin_bgl,
         }
+    }
+
+    /// Bind group layout for [`super::pipeline::mrt::MrtGbufferOriginUniform`] (MRT debug fragment group 1).
+    pub fn mrt_gbuffer_origin_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.mrt_gbuffer_origin_bgl
     }
 
     /// Acquires the next ring-buffer frame index, waiting if too many submits are still in flight.

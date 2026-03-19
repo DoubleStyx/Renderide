@@ -8,6 +8,7 @@ use winit::window::Window;
 use super::accel::{AccelCache, RayTracingState};
 use super::cluster_buffer::ClusterBufferCache;
 use super::mesh::GpuMeshBuffers;
+use super::pipeline::mrt::MrtGbufferOriginUniform;
 use super::registry::PipelineVariant;
 use crate::render::lights::LightBufferCache;
 
@@ -35,8 +36,13 @@ pub struct GpuState {
     pub accel_cache: Option<AccelCache>,
     /// Ray tracing state holding the current frame's TLAS. Rebuilt each frame when ray tracing available.
     pub ray_tracing_state: Option<RayTracingState>,
-    /// Persistent 16-byte uniform buffer for RTAO compute pass. Created on first use; written each frame via write_buffer.
+    /// Persistent uniform buffer for RTAO compute pass (32 bytes: radius + g-buffer world origin).
+    /// Created on first use; recreated if an older 16-byte buffer is present. Written each frame.
     pub rtao_uniform_buffer: Option<wgpu::Buffer>,
+    /// Uniform buffer for MRT debug pipelines: primary view translation subtracted from position G-buffer.
+    pub mrt_gbuffer_origin_buffer: Option<wgpu::Buffer>,
+    /// Bind group (group 1) for [`super::pipeline::NormalDebugMRTPipeline`], [`super::pipeline::UvDebugMRTPipeline`], [`super::pipeline::SkinnedMRTPipeline`].
+    pub mrt_gbuffer_origin_bind_group: Option<wgpu::BindGroup>,
     /// Persistent 16-byte uniform buffer for composite pass. Created on first use; written each frame via write_buffer.
     pub composite_uniform_buffer: Option<wgpu::Buffer>,
     /// Light storage buffer cache for clustered light pass. Recreated when light count exceeds capacity.
@@ -219,6 +225,8 @@ pub async fn init_gpu(
             None
         },
         rtao_uniform_buffer: None,
+        mrt_gbuffer_origin_buffer: None,
+        mrt_gbuffer_origin_bind_group: None,
         composite_uniform_buffer: None,
         light_buffer_cache: LightBufferCache::new(),
         cluster_buffer_cache: ClusterBufferCache::new(),
@@ -230,6 +238,46 @@ pub async fn init_gpu(
         last_pbr_scene_cache_light_version: 0,
         last_pbr_scene_cache_cluster_version: 0,
     })
+}
+
+impl GpuState {
+    /// Allocates the MRT g-buffer origin uniform buffer and bind group once; `layout` must be
+    /// [`super::pipeline::mrt::create_mrt_gbuffer_origin_bind_group_layout`] from the same
+    /// [`super::PipelineManager`] used to create debug MRT pipelines.
+    pub fn ensure_mrt_gbuffer_origin_resources(&mut self, layout: &wgpu::BindGroupLayout) {
+        if self.mrt_gbuffer_origin_bind_group.is_some() {
+            return;
+        }
+        let size = std::mem::size_of::<MrtGbufferOriginUniform>() as u64;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("MRT g-buffer origin uniform"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("MRT g-buffer origin bind group"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        self.mrt_gbuffer_origin_buffer = Some(buffer);
+        self.mrt_gbuffer_origin_bind_group = Some(bind_group);
+    }
+
+    /// Uploads the world-space translation that was subtracted when filling the MRT position target.
+    pub fn write_mrt_gbuffer_origin(&self, queue: &wgpu::Queue, origin: [f32; 3]) {
+        let Some(ref buf) = self.mrt_gbuffer_origin_buffer else {
+            return;
+        };
+        let u = MrtGbufferOriginUniform {
+            view_position: origin,
+            _pad: 0.0,
+        };
+        queue.write_buffer(buf, 0, bytemuck::bytes_of(&u));
+    }
 }
 
 /// Creates a depth-stencil texture for the given surface configuration.

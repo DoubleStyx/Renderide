@@ -34,6 +34,23 @@ fn pbr_view_space_z_coeffs_for_batch(batch: &SpaceDrawBatch) -> [f32; 4] {
     [view.x_axis.z, view.y_axis.z, view.z_axis.z, view.w_axis.z]
 }
 
+/// World-space translation subtracted from fragment world position before writing the MRT position target.
+///
+/// The mesh pass uploads this to the MRT origin uniform (debug MRT) or it is implied by
+/// `SceneUniforms::view_position` (PBR MRT). RTAO adds the same vector back when tracing.
+pub(crate) fn mrt_gbuffer_world_origin(
+    draw_batches: &[SpaceDrawBatch],
+    session: &Session,
+) -> [f32; 3] {
+    let batch = pbr_primary_view_batch(draw_batches, session);
+    batch
+        .map(|b| {
+            let m = crate::scene::render_transform_to_matrix(&b.view_transform);
+            [m.w_axis.x, m.w_axis.y, m.w_axis.z]
+        })
+        .unwrap_or([0.0, 0.0, 0.0])
+}
+
 /// Mesh render pass: draws non-overlay meshes from draw batches.
 ///
 /// [`Self::with_rtao_mrt_graph`] selects the **graph variant**: when true, resource declarations
@@ -98,6 +115,21 @@ impl RenderPass for MeshRenderPass {
         let use_mrt = ctx.render_target.mrt_position_view.is_some()
             && ctx.render_target.mrt_normal_view.is_some();
 
+        let mrt_world_origin = mrt_gbuffer_world_origin(ctx.draw_batches, ctx.session);
+        if use_mrt {
+            ctx.gpu.ensure_mrt_gbuffer_origin_resources(
+                ctx.pipeline_manager.mrt_gbuffer_origin_layout(),
+            );
+            ctx.gpu
+                .write_mrt_gbuffer_origin(&ctx.gpu.queue, mrt_world_origin);
+        }
+
+        let mrt_gbuffer_origin_bind_group = if use_mrt {
+            ctx.gpu.mrt_gbuffer_origin_bind_group.as_ref()
+        } else {
+            None
+        };
+
         let light_buffer_version = ctx.gpu.light_buffer_cache.version;
         let cluster_buffer_version = ctx.gpu.cluster_buffer_cache.version;
 
@@ -119,17 +151,11 @@ impl RenderPass for MeshRenderPass {
         let pbr_scene = match (cluster_buffers, light_buffer, cluster_counts_ok) {
             (Some(crefs), Some(lb), true) => {
                 let batch = pbr_primary_view_batch(ctx.draw_batches, ctx.session);
-                let view_position = batch
-                    .map(|b| {
-                        let m = crate::scene::render_transform_to_matrix(&b.view_transform);
-                        [m.w_axis.x, m.w_axis.y, m.w_axis.z]
-                    })
-                    .unwrap_or([0.0, 0.0, 0.0]);
                 let view_space_z_coeffs = batch
                     .map(pbr_view_space_z_coeffs_for_batch)
                     .unwrap_or([0.0, 0.0, 0.0, 0.0]);
                 Some(mesh_draw::PbrSceneParams {
-                    view_position,
+                    view_position: mrt_world_origin,
                     view_space_z_coeffs,
                     cluster_count_x: ctx.gpu.cluster_count_x,
                     cluster_count_y: ctx.gpu.cluster_count_y,
@@ -184,6 +210,7 @@ impl RenderPass for MeshRenderPass {
             last_pbr_scene_cache_cluster_version: &mut ctx.gpu.last_pbr_scene_cache_cluster_version,
             light_buffer_version,
             cluster_buffer_version,
+            mrt_gbuffer_origin_bind_group,
         };
 
         let timestamp_writes =
