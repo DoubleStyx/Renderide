@@ -1,5 +1,8 @@
 //! Application entry point: event loop, window lifecycle, and winit integration.
 //!
+//! The main window is created maximized via [`winit::window::WindowAttributes::with_maximized`], which winit maps
+//! to the appropriate Win32, X11, and Wayland behavior.
+//!
 //! Owns the RenderideApp handler that bridges winit events to the session, GPU, and render loop.
 //! Swapchain recovery ([`wgpu::SurfaceError`], suboptimal acquire) is handled in [`recover_from_surface_error`]
 //! and [`acquire_surface_texture_with_recovery`], with resize delegating to [`crate::gpu::reconfigure_surface_for_window`].
@@ -407,7 +410,9 @@ impl ApplicationHandler for RenderideApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.listen_device_events(DeviceEvents::Always);
         if self.window.is_none() {
-            let attrs = WindowAttributes::default().with_title("Renderide");
+            let attrs = WindowAttributes::default()
+                .with_title("Renderide")
+                .with_maximized(true);
             match event_loop.create_window(attrs) {
                 Ok(w) => self.window = Some(w),
                 Err(e) => logger::error!("Failed to create window: {}", e),
