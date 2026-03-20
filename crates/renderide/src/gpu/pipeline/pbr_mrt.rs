@@ -1,20 +1,22 @@
-//! PBR MRT pipeline: PBR shader with G-buffer output (color, position, normal) for RTAO.
+//! PBR MRT pipeline: PBR lighting with G-buffer output for RTAO.
 //!
-//! Same bind groups and vertex layout as [`super::pbr::PbrPipeline`], but fragment outputs
-//! to three color attachments matching [`super::mrt::NormalDebugMRTPipeline`].
+//! Same bind groups and vertex layout as [`super::pbr::PbrPipeline`]; the only difference
+//! is the fragment outputs three color attachments (color, position, normal) instead of one.
+//! Scene bind group layout is shared via [`PbrPipeline::create_scene_bind_group_layout`].
 
 use std::mem::size_of;
 
 use nalgebra::Matrix4;
 
 use super::super::mesh::{GpuMeshBuffers, VertexPosNormal};
-use super::core::{MAX_INSTANCE_RUN, RenderPipeline, UNIFORM_ALIGNMENT, UniformData};
-use super::mrt::{MRT_NORMAL_FORMAT, MRT_POSITION_FORMAT};
+use super::builder;
+use super::core::{RenderPipeline, UniformData};
+use super::pbr::PbrPipeline;
 use super::ring_buffer::UniformRingBuffer;
 use super::shaders::PBR_MRT_SHADER_SRC;
 use super::uniforms::SceneUniforms;
 
-/// PBR MRT pipeline: PBR lighting with G-buffer output for RTAO.
+/// PBR MRT pipeline: PBR lighting with three-target G-buffer output for RTAO.
 pub struct PbrMRTPipeline {
     pipeline: wgpu::RenderPipeline,
     uniform_ring: UniformRingBuffer,
@@ -31,77 +33,15 @@ impl PbrMRTPipeline {
             source: wgpu::ShaderSource::Wgsl(PBR_MRT_SHADER_SRC.into()),
         });
 
-        let bind_group_layout_0 =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("PBR MRT bind group 0 layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: std::num::NonZeroU64::new(
-                            (MAX_INSTANCE_RUN as u64) * UNIFORM_ALIGNMENT,
-                        ),
-                    },
-                    count: None,
-                }],
-            });
-
-        let scene_uniform_size = size_of::<SceneUniforms>() as u64;
-        let scene_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("PBR MRT bind group 1 layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: std::num::NonZeroU64::new(scene_uniform_size),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
+        let bgl0 = builder::uniform_ring_bind_group_layout(device, "PBR MRT BGL 0");
+        let (scene_bgl, scene_uniform_size) = PbrPipeline::create_scene_bind_group_layout(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("PBR MRT pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout_0, &scene_bind_group_layout],
+            bind_group_layouts: &[&bgl0, &scene_bgl],
             immediate_size: 0,
         });
 
+        let mrt_targets = builder::mrt_color_targets(config.format);
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("PBR MRT pipeline"),
             layout: Some(&pipeline_layout),
@@ -109,80 +49,28 @@ impl PbrMRTPipeline {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<VertexPosNormal>() as u64,
+                    array_stride: size_of::<VertexPosNormal>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                    ],
+                    attributes: &builder::POS_NORMAL_ATTRIBS,
                 }],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format: config.format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        format: MRT_POSITION_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        format: MRT_NORMAL_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                ],
+                targets: &mrt_targets,
                 compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            primitive: builder::standard_primitive_state(),
+            depth_stencil: Some(builder::depth_stencil_opaque()),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
 
         let uniform_ring = UniformRingBuffer::new(device, "PBR MRT uniform ring buffer");
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("PBR MRT bind group 0"),
-            layout: &bind_group_layout_0,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniform_ring.buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new((MAX_INSTANCE_RUN as u64) * UNIFORM_ALIGNMENT),
-                }),
-            }],
-        });
-
+        let bind_group =
+            builder::uniform_ring_bind_group(device, "PBR MRT BG 0", &bgl0, &uniform_ring.buffer);
         let scene_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("PBR MRT scene uniform buffer"),
             size: scene_uniform_size,
@@ -194,7 +82,7 @@ impl PbrMRTPipeline {
             pipeline,
             uniform_ring,
             bind_group,
-            scene_bind_group_layout,
+            scene_bind_group_layout: scene_bgl,
             scene_uniform_buffer,
         }
     }
@@ -210,7 +98,7 @@ impl PbrMRTPipeline {
     ) -> wgpu::BindGroup {
         queue.write_buffer(&self.scene_uniform_buffer, 0, bytemuck::bytes_of(scene));
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("PBR MRT scene bind group"),
+            label: Some("PBR MRT scene BG"),
             layout: &self.scene_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {

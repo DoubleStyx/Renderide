@@ -1,20 +1,178 @@
-//! Skinned PBR pipelines: bone skinning vertex stage with PBS fragment lighting.
+//! Skinned PBR pipelines: bone-skinning vertex stage with PBS fragment lighting.
 //!
-//! Reuses skinned vertex format and bind group layout from [`super::skinned::SkinnedPipeline`],
-//! adds scene bind group (group 1) for clustered lighting like [`super::pbr::PbrPipeline`].
+//! [`SkinnedPbrPipeline`] and [`SkinnedPbrMRTPipeline`] differ only in their fragment outputs:
+//! single color target vs three-target G-buffer for RTAO. Both share the same bind group
+//! layouts via [`SkinnedPbrPipeline::create_bind_group_layouts`].
 
 use std::mem::size_of;
 
 use nalgebra::Matrix4;
 
 use super::super::mesh::{GpuMeshBuffers, VertexSkinned};
+use super::builder;
 use super::core::{RenderPipeline, UniformData};
-use super::mrt::{MRT_NORMAL_FORMAT, MRT_POSITION_FORMAT};
 use super::ring_buffer::SkinnedUniformRingBuffer;
 use super::shaders::{SKINNED_PBR_MRT_SHADER_SRC, SKINNED_PBR_SHADER_SRC};
 use super::uniforms::{SceneUniforms, SkinnedUniforms};
 
-/// Skinned PBR pipeline: bone skinning vertex stage, PBS fragment lighting.
+// ─── Shared bind group layouts ────────────────────────────────────────────────
+
+/// Creates the two bind group layouts shared by both skinned PBR pipeline variants.
+///
+/// Returns `(draw_bgl, scene_bgl, scene_uniform_size_bytes)`.
+/// - Group 0 (`draw_bgl`): skinned uniform buffer (dynamic offset) + blendshape storage.
+/// - Group 1 (`scene_bgl`): scene uniform + lights storage + two cluster storages.
+fn create_skinned_pbr_bind_group_layouts(
+    device: &wgpu::Device,
+) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout, u64) {
+    let draw_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("skinned PBR draw BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: std::num::NonZeroU64::new(
+                        size_of::<SkinnedUniforms>() as u64,
+                    ),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let scene_uniform_size = size_of::<SceneUniforms>() as u64;
+    let scene_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("skinned PBR scene BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(scene_uniform_size),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    (draw_bgl, scene_bgl, scene_uniform_size)
+}
+
+// ─── Helper: per-draw and scene bind groups ───────────────────────────────────
+
+fn create_skinned_draw_bg(
+    device: &wgpu::Device,
+    label: &str,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buffer: &wgpu::Buffer,
+    blendshape_buffer: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: uniform_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(size_of::<SkinnedUniforms>() as u64),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: blendshape_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+        ],
+    })
+}
+
+fn create_scene_bg(
+    device: &wgpu::Device,
+    label: &str,
+    layout: &wgpu::BindGroupLayout,
+    scene_uniform_buffer: &wgpu::Buffer,
+    scene: &SceneUniforms,
+    queue: &wgpu::Queue,
+    light_buffer: &wgpu::Buffer,
+    cluster_light_counts: &wgpu::Buffer,
+    cluster_light_indices: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    queue.write_buffer(scene_uniform_buffer, 0, bytemuck::bytes_of(scene));
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: scene_uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: light_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: cluster_light_counts.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: cluster_light_indices.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+// ─── SkinnedPbrPipeline ───────────────────────────────────────────────────────
+
+/// Skinned PBR pipeline: bone skinning vertex stage with PBS fragment lighting (single target).
 pub struct SkinnedPbrPipeline {
     pipeline: wgpu::RenderPipeline,
     uniform_ring: SkinnedUniformRingBuffer,
@@ -31,11 +189,11 @@ impl SkinnedPbrPipeline {
             label: Some("skinned PBR shader"),
             source: wgpu::ShaderSource::Wgsl(SKINNED_PBR_SHADER_SRC.into()),
         });
-        let (bind_group_layout, scene_bind_group_layout, scene_uniform_size) =
-            Self::create_bind_group_layouts(device);
+        let (draw_bgl, scene_bgl, scene_uniform_size) =
+            create_skinned_pbr_bind_group_layouts(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("skinned PBR pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout, &scene_bind_group_layout],
+            bind_group_layouts: &[&draw_bgl, &scene_bgl],
             immediate_size: 0,
         });
         let uniform_ring = SkinnedUniformRingBuffer::new(device, "skinned PBR uniform ring buffer");
@@ -58,64 +216,20 @@ impl SkinnedPbrPipeline {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<VertexSkinned>() as u64,
+                    array_stride: size_of::<VertexSkinned>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 24,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 36,
-                            shader_location: 3,
-                            format: wgpu::VertexFormat::Sint32x4,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 52,
-                            shader_location: 4,
-                            format: wgpu::VertexFormat::Float32x4,
-                        },
-                    ],
+                    attributes: &builder::SKINNED_ATTRIBS,
                 }],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(builder::standard_color_target(config.format))],
                 compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            primitive: builder::standard_primitive_state(),
+            depth_stencil: Some(builder::depth_stencil_opaque()),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
@@ -123,165 +237,20 @@ impl SkinnedPbrPipeline {
         Self {
             pipeline,
             uniform_ring,
-            bind_group_layout,
+            bind_group_layout: draw_bgl,
             dummy_blendshape_buffer,
-            scene_bind_group_layout,
+            scene_bind_group_layout: scene_bgl,
             scene_uniform_buffer,
         }
     }
 
-    /// Creates bind group layouts shared by SkinnedPbrPipeline and SkinnedPbrMRTPipeline.
+    /// Shared bind group layouts for code that needs to reconstruct them (e.g. SkinnedPbrMRTPipeline).
+    ///
+    /// Returns `(draw_bgl, scene_bgl, scene_uniform_size_bytes)`.
     pub(crate) fn create_bind_group_layouts(
         device: &wgpu::Device,
     ) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout, u64) {
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("skinned PBR bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
-                            SkinnedUniforms,
-                        >()
-                            as u64),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-        let scene_uniform_size = size_of::<SceneUniforms>() as u64;
-        let scene_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("skinned PBR scene bind group layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: std::num::NonZeroU64::new(scene_uniform_size),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-        (
-            bind_group_layout,
-            scene_bind_group_layout,
-            scene_uniform_size,
-        )
-    }
-
-    fn create_draw_bind_group(
-        &self,
-        device: &wgpu::Device,
-        buffers: &GpuMeshBuffers,
-    ) -> wgpu::BindGroup {
-        let blendshape_buffer = buffers
-            .blendshape_buffer
-            .as_ref()
-            .map(|b| b.as_ref())
-            .unwrap_or(&self.dummy_blendshape_buffer);
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("skinned PBR draw bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.uniform_ring.buffer,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(std::mem::size_of::<SkinnedUniforms>() as u64),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: blendshape_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-            ],
-        })
-    }
-
-    fn create_scene_bind_group_inner(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        scene: &SceneUniforms,
-        light_buffer: &wgpu::Buffer,
-        cluster_light_counts: &wgpu::Buffer,
-        cluster_light_indices: &wgpu::Buffer,
-    ) -> wgpu::BindGroup {
-        queue.write_buffer(&self.scene_uniform_buffer, 0, bytemuck::bytes_of(scene));
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("skinned PBR scene bind group"),
-            layout: &self.scene_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.scene_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: light_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: cluster_light_counts.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: cluster_light_indices.as_entire_binding(),
-                },
-            ],
-        })
+        create_skinned_pbr_bind_group_layouts(device)
     }
 }
 
@@ -300,8 +269,8 @@ impl RenderPipeline for SkinnedPbrPipeline {
         let dynamic_offset = batch_index
             .map(|i| self.uniform_ring.dynamic_offset(i, frame_index))
             .unwrap_or(0);
-        let bind_group = draw_bind_group.expect("skinned PBR pipeline requires draw_bind_group");
-        pass.set_bind_group(0, bind_group, &[dynamic_offset]);
+        let bg = draw_bind_group.expect("skinned PBR pipeline requires draw_bind_group");
+        pass.set_bind_group(0, bg, &[dynamic_offset]);
     }
 
     fn bind_scene(&self, pass: &mut wgpu::RenderPass, scene_bind_group: Option<&wgpu::BindGroup>) {
@@ -315,7 +284,18 @@ impl RenderPipeline for SkinnedPbrPipeline {
         device: &wgpu::Device,
         buffers: &GpuMeshBuffers,
     ) -> Option<wgpu::BindGroup> {
-        Some(self.create_draw_bind_group(device, buffers))
+        let blendshape = buffers
+            .blendshape_buffer
+            .as_ref()
+            .map(|b| b.as_ref())
+            .unwrap_or(&self.dummy_blendshape_buffer);
+        Some(create_skinned_draw_bg(
+            device,
+            "skinned PBR draw BG",
+            &self.bind_group_layout,
+            &self.uniform_ring.buffer,
+            blendshape,
+        ))
     }
 
     fn draw_skinned(
@@ -386,10 +366,13 @@ impl RenderPipeline for SkinnedPbrPipeline {
             viewport_width,
             viewport_height,
         };
-        Some(self.create_scene_bind_group_inner(
+        Some(create_scene_bg(
             device,
-            queue,
+            "skinned PBR scene BG",
+            &self.scene_bind_group_layout,
+            &self.scene_uniform_buffer,
             &scene,
+            queue,
             light_buffer,
             cluster_light_counts,
             cluster_light_indices,
@@ -397,7 +380,9 @@ impl RenderPipeline for SkinnedPbrPipeline {
     }
 }
 
-/// Skinned PBR MRT pipeline: same as SkinnedPbrPipeline but outputs G-buffer for RTAO.
+// ─── SkinnedPbrMRTPipeline ────────────────────────────────────────────────────
+
+/// Skinned PBR MRT pipeline: same as [`SkinnedPbrPipeline`] with three-target G-buffer for RTAO.
 pub struct SkinnedPbrMRTPipeline {
     pipeline: wgpu::RenderPipeline,
     uniform_ring: SkinnedUniformRingBuffer,
@@ -414,11 +399,11 @@ impl SkinnedPbrMRTPipeline {
             label: Some("skinned PBR MRT shader"),
             source: wgpu::ShaderSource::Wgsl(SKINNED_PBR_MRT_SHADER_SRC.into()),
         });
-        let (bind_group_layout, scene_bind_group_layout, scene_uniform_size) =
+        let (draw_bgl, scene_bgl, scene_uniform_size) =
             SkinnedPbrPipeline::create_bind_group_layouts(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("skinned PBR MRT pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout, &scene_bind_group_layout],
+            bind_group_layouts: &[&draw_bgl, &scene_bgl],
             immediate_size: 0,
         });
         let uniform_ring =
@@ -435,6 +420,7 @@ impl SkinnedPbrMRTPipeline {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let mrt_targets = builder::mrt_color_targets(config.format);
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("skinned PBR MRT pipeline"),
             layout: Some(&pipeline_layout),
@@ -442,76 +428,20 @@ impl SkinnedPbrMRTPipeline {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<VertexSkinned>() as u64,
+                    array_stride: size_of::<VertexSkinned>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 24,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 36,
-                            shader_location: 3,
-                            format: wgpu::VertexFormat::Sint32x4,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 52,
-                            shader_location: 4,
-                            format: wgpu::VertexFormat::Float32x4,
-                        },
-                    ],
+                    attributes: &builder::SKINNED_ATTRIBS,
                 }],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format: config.format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        format: MRT_POSITION_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        format: MRT_NORMAL_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                ],
+                targets: &mrt_targets,
                 compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            primitive: builder::standard_primitive_state(),
+            depth_stencil: Some(builder::depth_stencil_opaque()),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
@@ -519,79 +449,11 @@ impl SkinnedPbrMRTPipeline {
         Self {
             pipeline,
             uniform_ring,
-            bind_group_layout,
+            bind_group_layout: draw_bgl,
             dummy_blendshape_buffer,
-            scene_bind_group_layout,
+            scene_bind_group_layout: scene_bgl,
             scene_uniform_buffer,
         }
-    }
-
-    fn create_draw_bind_group(
-        &self,
-        device: &wgpu::Device,
-        buffers: &GpuMeshBuffers,
-    ) -> wgpu::BindGroup {
-        let blendshape_buffer = buffers
-            .blendshape_buffer
-            .as_ref()
-            .map(|b| b.as_ref())
-            .unwrap_or(&self.dummy_blendshape_buffer);
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("skinned PBR MRT draw bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.uniform_ring.buffer,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(std::mem::size_of::<SkinnedUniforms>() as u64),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: blendshape_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-            ],
-        })
-    }
-
-    fn create_scene_bind_group_inner(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        scene: &SceneUniforms,
-        light_buffer: &wgpu::Buffer,
-        cluster_light_counts: &wgpu::Buffer,
-        cluster_light_indices: &wgpu::Buffer,
-    ) -> wgpu::BindGroup {
-        queue.write_buffer(&self.scene_uniform_buffer, 0, bytemuck::bytes_of(scene));
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("skinned PBR MRT scene bind group"),
-            layout: &self.scene_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.scene_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: light_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: cluster_light_counts.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: cluster_light_indices.as_entire_binding(),
-                },
-            ],
-        })
     }
 }
 
@@ -610,9 +472,8 @@ impl RenderPipeline for SkinnedPbrMRTPipeline {
         let dynamic_offset = batch_index
             .map(|i| self.uniform_ring.dynamic_offset(i, frame_index))
             .unwrap_or(0);
-        let bind_group =
-            draw_bind_group.expect("skinned PBR MRT pipeline requires draw_bind_group");
-        pass.set_bind_group(0, bind_group, &[dynamic_offset]);
+        let bg = draw_bind_group.expect("skinned PBR MRT pipeline requires draw_bind_group");
+        pass.set_bind_group(0, bg, &[dynamic_offset]);
     }
 
     fn bind_scene(&self, pass: &mut wgpu::RenderPass, scene_bind_group: Option<&wgpu::BindGroup>) {
@@ -626,7 +487,18 @@ impl RenderPipeline for SkinnedPbrMRTPipeline {
         device: &wgpu::Device,
         buffers: &GpuMeshBuffers,
     ) -> Option<wgpu::BindGroup> {
-        Some(self.create_draw_bind_group(device, buffers))
+        let blendshape = buffers
+            .blendshape_buffer
+            .as_ref()
+            .map(|b| b.as_ref())
+            .unwrap_or(&self.dummy_blendshape_buffer);
+        Some(create_skinned_draw_bg(
+            device,
+            "skinned PBR MRT draw BG",
+            &self.bind_group_layout,
+            &self.uniform_ring.buffer,
+            blendshape,
+        ))
     }
 
     fn draw_skinned(
@@ -697,10 +569,13 @@ impl RenderPipeline for SkinnedPbrMRTPipeline {
             viewport_width,
             viewport_height,
         };
-        Some(self.create_scene_bind_group_inner(
+        Some(create_scene_bg(
             device,
-            queue,
+            "skinned PBR MRT scene BG",
+            &self.scene_bind_group_layout,
+            &self.scene_uniform_buffer,
             &scene,
+            queue,
             light_buffer,
             cluster_light_counts,
             cluster_light_indices,

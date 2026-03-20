@@ -1,13 +1,14 @@
-//! Normal debug pipeline: colors surfaces by smooth normal.
+//! Normal debug pipeline: colors surfaces by smooth world normal.
 
 use nalgebra::Matrix4;
 
 use super::super::mesh::{GpuMeshBuffers, VertexPosNormal};
-use super::core::{MAX_INSTANCE_RUN, RenderPipeline, UNIFORM_ALIGNMENT, UniformData};
+use super::builder;
+use super::core::{RenderPipeline, UniformData};
 use super::ring_buffer::UniformRingBuffer;
 use super::shaders::NORMAL_SHADER_SRC;
 
-/// Normal debug pipeline: colors surfaces by smooth normal.
+/// Normal debug pipeline: colors surfaces by smooth world normal.
 pub struct NormalDebugPipeline {
     pipeline: wgpu::RenderPipeline,
     uniform_ring: UniformRingBuffer,
@@ -26,24 +27,10 @@ impl NormalDebugPipeline {
             label: Some("normal debug shader"),
             source: wgpu::ShaderSource::Wgsl(NORMAL_SHADER_SRC.into()),
         });
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("normal debug bind group layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: std::num::NonZeroU64::new(
-                        (MAX_INSTANCE_RUN as u64) * UNIFORM_ALIGNMENT,
-                    ),
-                },
-                count: None,
-            }],
-        });
+        let bgl = builder::uniform_ring_bind_group_layout(device, "normal debug BGL");
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("normal debug pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&bgl],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -55,73 +42,26 @@ impl NormalDebugPipeline {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<VertexPosNormal>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                    ],
+                    attributes: &builder::POS_NORMAL_ATTRIBS,
                 }],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(builder::standard_color_target(config.format))],
                 compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: !disable_depth_test,
-                depth_compare: if disable_depth_test {
-                    wgpu::CompareFunction::Always
-                } else {
-                    wgpu::CompareFunction::GreaterEqual
-                },
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            primitive: builder::standard_primitive_state(),
+            depth_stencil: Some(builder::depth_stencil_debug(disable_depth_test)),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
         let uniform_ring = UniformRingBuffer::new(device, "normal debug uniform ring buffer");
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("normal debug bind group"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniform_ring.buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new((MAX_INSTANCE_RUN as u64) * UNIFORM_ALIGNMENT),
-                }),
-            }],
-        });
-        Self {
-            pipeline,
-            uniform_ring,
-            bind_group,
-        }
+        let bind_group =
+            builder::uniform_ring_bind_group(device, "normal debug BG", &bgl, &uniform_ring.buffer);
+        Self { pipeline, uniform_ring, bind_group }
     }
 }
 
