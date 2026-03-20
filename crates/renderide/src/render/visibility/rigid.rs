@@ -95,7 +95,14 @@ mod tests {
         matrix_na_to_glam(&(proj * view))
     }
 
-    fn make_bounds(cx: f32, cy: f32, cz: f32, ex: f32, ey: f32, ez: f32) -> crate::shared::RenderBoundingBox {
+    fn make_bounds(
+        cx: f32,
+        cy: f32,
+        cz: f32,
+        ex: f32,
+        ey: f32,
+        ez: f32,
+    ) -> crate::shared::RenderBoundingBox {
         crate::shared::RenderBoundingBox {
             center: NaVec3::new(cx, cy, cz),
             extents: NaVec3::new(ex, ey, ez),
@@ -131,7 +138,11 @@ mod tests {
         assert!(!rigid_mesh_potentially_visible(&tight, Mat4::IDENTITY, vp));
         // Same position but zero extents is NOT culled (degenerate = conservative).
         let degenerate = make_bounds(50.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        assert!(rigid_mesh_potentially_visible(&degenerate, Mat4::IDENTITY, vp));
+        assert!(rigid_mesh_potentially_visible(
+            &degenerate,
+            Mat4::IDENTITY,
+            vp
+        ));
     }
 
     #[test]

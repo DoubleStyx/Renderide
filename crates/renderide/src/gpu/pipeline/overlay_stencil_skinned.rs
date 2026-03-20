@@ -33,7 +33,8 @@ macro_rules! impl_overlay_stencil_skinned {
                 frame_index: u64,
                 draw_bind_group: Option<&wgpu::BindGroup>,
             ) {
-                self.inner.bind_draw(pass, batch_index, frame_index, draw_bind_group);
+                self.inner
+                    .bind_draw(pass, batch_index, frame_index, draw_bind_group);
             }
 
             fn create_skinned_draw_bind_group(
@@ -53,19 +54,11 @@ macro_rules! impl_overlay_stencil_skinned {
                 self.inner.draw_skinned(pass, buffers, uniforms);
             }
 
-            fn set_skinned_buffers(
-                &self,
-                pass: &mut wgpu::RenderPass,
-                buffers: &GpuMeshBuffers,
-            ) {
+            fn set_skinned_buffers(&self, pass: &mut wgpu::RenderPass, buffers: &GpuMeshBuffers) {
                 self.inner.set_skinned_buffers(pass, buffers);
             }
 
-            fn draw_skinned_indexed(
-                &self,
-                pass: &mut wgpu::RenderPass,
-                buffers: &GpuMeshBuffers,
-            ) {
+            fn draw_skinned_indexed(&self, pass: &mut wgpu::RenderPass, buffers: &GpuMeshBuffers) {
                 self.inner.draw_skinned_indexed(pass, buffers);
             }
 

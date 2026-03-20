@@ -56,9 +56,9 @@ pub fn create_mrt_gbuffer_origin_bind_group_layout(device: &wgpu::Device) -> wgp
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
-                min_binding_size: std::num::NonZeroU64::new(
-                    std::mem::size_of::<MrtGbufferOriginUniform>() as u64,
-                ),
+                min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
+                    MrtGbufferOriginUniform,
+                >() as u64),
             },
             count: None,
         }],
@@ -130,11 +130,7 @@ macro_rules! impl_non_skinned_mrt_pipeline {
                 instance_count: u32,
             ) {
                 for &(index_start, index_count) in &buffers.draw_ranges() {
-                    pass.draw_indexed(
-                        index_start..index_start + index_count,
-                        0,
-                        0..instance_count,
-                    );
+                    pass.draw_indexed(index_start..index_start + index_count, 0, 0..instance_count);
                 }
             }
 
@@ -207,9 +203,17 @@ impl NormalDebugMRTPipeline {
             cache: None,
         });
         let uniform_ring = UniformRingBuffer::new(device, "normal debug MRT uniform ring buffer");
-        let bind_group =
-            builder::uniform_ring_bind_group(device, "normal debug MRT BG", &bgl, &uniform_ring.buffer);
-        Self { pipeline, uniform_ring, bind_group }
+        let bind_group = builder::uniform_ring_bind_group(
+            device,
+            "normal debug MRT BG",
+            &bgl,
+            &uniform_ring.buffer,
+        );
+        Self {
+            pipeline,
+            uniform_ring,
+            bind_group,
+        }
     }
 }
 
@@ -273,7 +277,11 @@ impl UvDebugMRTPipeline {
         let uniform_ring = UniformRingBuffer::new(device, "UV debug MRT uniform ring buffer");
         let bind_group =
             builder::uniform_ring_bind_group(device, "UV debug MRT BG", &bgl, &uniform_ring.buffer);
-        Self { pipeline, uniform_ring, bind_group }
+        Self {
+            pipeline,
+            uniform_ring,
+            bind_group,
+        }
     }
 }
 
@@ -303,34 +311,34 @@ impl SkinnedMRTPipeline {
             label: Some("skinned MRT shader"),
             source: wgpu::ShaderSource::Wgsl(SKINNED_MRT_SHADER_SRC.into()),
         });
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("skinned MRT BGL"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: true,
-                            min_binding_size: std::num::NonZeroU64::new(
-                                std::mem::size_of::<SkinnedUniforms>() as u64,
-                            ),
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("skinned MRT BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
+                            SkinnedUniforms,
+                        >()
+                            as u64),
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                ],
-            });
+                    count: None,
+                },
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("skinned MRT pipeline layout"),
             bind_group_layouts: &[&bind_group_layout, mrt_gbuffer_origin_layout],
@@ -396,9 +404,7 @@ impl SkinnedMRTPipeline {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &self.uniform_ring.buffer,
                         offset: 0,
-                        size: wgpu::BufferSize::new(
-                            std::mem::size_of::<SkinnedUniforms>() as u64,
-                        ),
+                        size: wgpu::BufferSize::new(std::mem::size_of::<SkinnedUniforms>() as u64),
                     }),
                 },
                 wgpu::BindGroupEntry {

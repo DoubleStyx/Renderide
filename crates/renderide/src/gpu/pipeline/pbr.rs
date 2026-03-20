@@ -67,7 +67,8 @@ impl PbrPipeline {
         });
 
         let uniform_ring = UniformRingBuffer::new(device, "PBR uniform ring buffer");
-        let bind_group = builder::uniform_ring_bind_group(device, "PBR BG 0", &bgl0, &uniform_ring.buffer);
+        let bind_group =
+            builder::uniform_ring_bind_group(device, "PBR BG 0", &bgl0, &uniform_ring.buffer);
         let scene_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("PBR scene uniform buffer"),
             size: scene_uniform_size,

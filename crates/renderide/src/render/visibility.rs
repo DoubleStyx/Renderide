@@ -13,6 +13,7 @@
 //!
 //! # Using the culling functions
 //!
+<<<<<<< HEAD
 //! ```rust,ignore
 //! // Rigid draw: cull before submitting.
 //! if !visibility::rigid_mesh_potentially_visible(&bounds, model_matrix, view_proj) {
@@ -22,6 +23,13 @@
 //! if !visibility::skinned_mesh_potentially_visible(&bounds, &bone_matrices, view_proj) {
 //!     continue;
 //! }
+=======
+//! ```text
+//! Rigid: call rigid_mesh_potentially_visible(bounds, model_matrix, view_proj) before submitting.
+//! Skinned: prefer bone_world_origins_for_frustum_cull plus
+//! skinned_mesh_potentially_visible_from_bone_origins before full compute_bone_matrices;
+//! tests may use skinned_mesh_potentially_visible with full bone matrices.
+>>>>>>> e74444e9383cfedea521f96f71daf00929de321b
 //! ```
 
 pub mod rigid;
@@ -40,7 +48,9 @@ use super::view::ViewParams;
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
 pub use rigid::rigid_mesh_potentially_visible;
-pub use skinned::skinned_mesh_potentially_visible;
+pub use skinned::{
+    skinned_mesh_potentially_visible, skinned_mesh_potentially_visible_from_bone_origins,
+};
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 

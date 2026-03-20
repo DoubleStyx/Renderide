@@ -10,7 +10,7 @@ mod world_matrices;
 
 use std::collections::{HashMap, HashSet};
 
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 
 use crate::ipc::shared_memory::SharedMemoryAccessor;
 use crate::scene::{LightCache, Scene, SceneId};
@@ -52,7 +52,9 @@ fn identity_4x4() -> [[f32; 4]; 4] {
 pub use pose::PoseValidation;
 
 #[allow(unused_imports)]
-use world_matrices::{SceneCache, compute_world_matrices_incremental, mark_descendants_uncomputed, rebuild_children};
+use world_matrices::{
+    SceneCache, compute_world_matrices_incremental, mark_descendants_uncomputed, rebuild_children,
+};
 
 /// Manages scenes (render spaces) and applies incremental updates from the host.
 pub struct SceneGraph {
@@ -171,6 +173,62 @@ impl SceneGraph {
                 }
             };
             out.push(glam_mat4_to_bind_pose(combined));
+        }
+        out
+    }
+
+    /// World-space positions of each bone's bind-space origin after the same transform chain as
+    /// [`Self::compute_bone_matrices`], computed with `transform_point3` chains instead of full
+    /// `Mat4 * Mat4` products.
+    ///
+    /// For affine bind and world matrices this matches the translation column of each output bone
+    /// matrix, so it can drive [`crate::render::visibility::skinned_mesh_potentially_visible_from_bone_origins`]
+    /// before paying the cost of full matrix assembly for draws that fail the frustum test.
+    pub fn bone_world_origins_for_frustum_cull(
+        &self,
+        space_id: i32,
+        bone_transform_ids: &[i32],
+        bind_poses: &[[[f32; 4]; 4]],
+        root_bone_transform_id: Option<i32>,
+        smr_world: Mat4,
+    ) -> Vec<Vec3> {
+        if bone_transform_ids.len() > bind_poses.len() {
+            logger::trace!(
+                "Bone count mismatch: bone_transform_ids.len()={} > bind_poses.len()={}",
+                bone_transform_ids.len(),
+                bind_poses.len()
+            );
+        }
+        let inv_root = root_bone_transform_id
+            .filter(|&id| id >= 0)
+            .and_then(|id| self.get_world_matrix(space_id, id as usize))
+            .map(|m| m.inverse())
+            .unwrap_or(Mat4::IDENTITY);
+        let use_root = root_bone_transform_id.is_some_and(|id| id >= 0);
+
+        let mut out = Vec::with_capacity(bone_transform_ids.len().min(bind_poses.len()));
+        let smr_origin = smr_world.transform_point3(Vec3::ZERO);
+
+        for (i, &tid) in bone_transform_ids.iter().enumerate() {
+            let bind = bind_poses.get(i).copied().unwrap_or_else(identity_4x4);
+            let bind_mat = glam_mat4_from_bind_pose(&bind);
+            let local_origin = bind_mat.transform_point3(Vec3::ZERO);
+
+            let p = if tid < 0 {
+                smr_origin
+            } else {
+                match self.get_world_matrix(space_id, tid as usize) {
+                    Some(world) => {
+                        if use_root {
+                            world.transform_point3(inv_root.transform_point3(local_origin))
+                        } else {
+                            world.transform_point3(local_origin)
+                        }
+                    }
+                    None => smr_origin,
+                }
+            };
+            out.push(p);
         }
         out
     }

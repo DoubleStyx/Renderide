@@ -367,6 +367,27 @@ fn collect_mesh_draws_for_batch(
             } else {
                 None
             };
+            // Frustum cull using cheap bone origins first; full matrices only if the draw survives.
+            // Overlays are excluded from culling (they render in a different space).
+            // See `crate::render::visibility::skinned` for the strategy.
+            if frustum_culling && !batch.is_overlay {
+                let bone_origins = scene_graph.bone_world_origins_for_frustum_cull(
+                    batch.space_id,
+                    ids,
+                    bind_poses,
+                    root_bone,
+                    d.model_matrix,
+                );
+                if !crate::render::visibility::skinned_mesh_potentially_visible_from_bone_origins(
+                    &mesh.bounds,
+                    &bone_origins,
+                    view_proj_glam,
+                ) {
+                    stats.frustum_culled_skinned_draws += 1;
+                    continue;
+                }
+            }
+
             let bone_matrices = scene_graph.compute_bone_matrices(
                 batch.space_id,
                 ids,
@@ -374,20 +395,6 @@ fn collect_mesh_draws_for_batch(
                 root_bone,
                 d.model_matrix,
             );
-
-            // Frustum cull skinned meshes using bone world positions.
-            // Overlays are excluded from culling (they render in a different space).
-            // See `crate::render::visibility::skinned` for the strategy.
-            if frustum_culling && !batch.is_overlay {
-                if !crate::render::visibility::skinned_mesh_potentially_visible(
-                    &mesh.bounds,
-                    &bone_matrices,
-                    view_proj_glam,
-                ) {
-                    stats.frustum_culled_skinned_draws += 1;
-                    continue;
-                }
-            }
 
             skinned_draws.push(SkinnedBatchedDraw {
                 mesh_asset_id: d.mesh_asset_id,
@@ -459,11 +466,8 @@ pub(super) fn collect_mesh_draws(
     let mut stats = MeshDrawPrepStats::default();
 
     for batch in ctx.draw_batches {
-        let (mut s, mut n, batch_stats) = collect_mesh_draws_for_batch(
-            ctx,
-            batch,
-            &mut first_skinned_logged,
-        );
+        let (mut s, mut n, batch_stats) =
+            collect_mesh_draws_for_batch(ctx, batch, &mut first_skinned_logged);
         skinned_draws.append(&mut s);
         non_skinned_draws.append(&mut n);
         stats.accumulate(&batch_stats);

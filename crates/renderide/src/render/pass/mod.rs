@@ -197,13 +197,8 @@ fn run_collect_mesh_draws(
         proj,
         overlay_projection_override,
     };
-    let (
-        non_overlay_skinned,
-        overlay_skinned,
-        non_overlay_non_skinned,
-        overlay_non_skinned,
-        stats,
-    ) = collect_mesh_draws(&collect_ctx);
+    let (non_overlay_skinned, overlay_skinned, non_overlay_non_skinned, overlay_non_skinned, stats) =
+        collect_mesh_draws(&collect_ctx);
     (
         (
             non_overlay_skinned,

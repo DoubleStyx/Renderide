@@ -50,38 +50,52 @@ use super::{mesh_bounds_max_half_extent, world_aabb_visible_in_homogeneous_clip}
 
 /// Returns `true` if the skinned mesh draw is potentially visible and should be submitted.
 ///
-/// See the [module documentation](self) for the full culling strategy.
+/// Same as [`skinned_mesh_potentially_visible_from_bone_origins`] after reading each bone matrix's
+/// translation column (`mat[3]`). Prefer [`skinned_mesh_potentially_visible_from_bone_origins`] with
+/// [`crate::scene::graph::SceneGraph::bone_world_origins_for_frustum_cull`] on hot paths so culled
+/// draws avoid full `Mat4 * Mat4` bone work.
 ///
-/// # Arguments
-/// - `bounds`: local-space bounding box from the mesh asset (bind-pose bounds).
-///   Used only to compute the expansion radius; degenerate bounds (near-zero extents)
-///   result in no expansion, which is still safe (the bone-position AABB is still tested).
-/// - `bone_matrices`: final bone matrices in column-major `mat[col][row]` format.
-///   Translation column is `mat[3]` = `[tx, ty, tz, 1.0]`.
-/// - `view_proj`: the same view-projection matrix used by the mesh pass for this batch.
+/// See the [module documentation](self) for the full culling strategy.
 pub fn skinned_mesh_potentially_visible(
     bounds: &RenderBoundingBox,
     bone_matrices: &[[[f32; 4]; 4]],
     view_proj: Mat4,
 ) -> bool {
     if bone_matrices.is_empty() {
+        return true;
+    }
+    let origins: Vec<Vec3> = bone_matrices
+        .iter()
+        .map(|bone| Vec3::new(bone[3][0], bone[3][1], bone[3][2]))
+        .collect();
+    skinned_mesh_potentially_visible_from_bone_origins(bounds, &origins, view_proj)
+}
+
+/// Returns `true` if the skinned mesh draw is potentially visible and should be submitted.
+///
+/// `bone_world_origins` must match the translation column of each final bone matrix (where a
+/// vertex at bind-space origin would land in world space). For affine transforms this equals
+/// `combined.transform_point3(Vec3::ZERO)` for each bone's `combined` matrix, matching
+/// [`crate::scene::graph::SceneGraph::compute_bone_matrices`].
+///
+/// See the [module documentation](self) for the full culling strategy.
+pub fn skinned_mesh_potentially_visible_from_bone_origins(
+    bounds: &RenderBoundingBox,
+    bone_world_origins: &[Vec3],
+    view_proj: Mat4,
+) -> bool {
+    if bone_world_origins.is_empty() {
         // No bones: cannot derive a world AABB; conservatively keep the draw.
         return true;
     }
 
-    // Step 1: build AABB from bone world-space origin positions.
-    // Column-major: bone[col][row], so col 3 = [tx, ty, tz, tw].
     let mut world_min = Vec3::splat(f32::INFINITY);
     let mut world_max = Vec3::splat(f32::NEG_INFINITY);
 
-    for bone in bone_matrices {
-        let tx = bone[3][0];
-        let ty = bone[3][1];
-        let tz = bone[3][2];
-        if tx.is_finite() && ty.is_finite() && tz.is_finite() {
-            let p = Vec3::new(tx, ty, tz);
-            world_min = world_min.min(p);
-            world_max = world_max.max(p);
+    for p in bone_world_origins {
+        if p.x.is_finite() && p.y.is_finite() && p.z.is_finite() {
+            world_min = world_min.min(*p);
+            world_max = world_max.max(*p);
         }
     }
 
@@ -90,15 +104,12 @@ pub fn skinned_mesh_potentially_visible(
         return true;
     }
 
-    // Step 2: expand AABB by the mesh's largest local half-extent.
-    // Skipped when extents are degenerate to avoid inflating with unreliable metadata.
     let expand = mesh_bounds_max_half_extent(bounds);
     if expand > 0.0 {
         world_min -= Vec3::splat(expand);
         world_max += Vec3::splat(expand);
     }
 
-    // Step 3: test the expanded AABB against the frustum.
     world_aabb_visible_in_homogeneous_clip(view_proj, world_min, world_max)
 }
 
@@ -107,7 +118,7 @@ mod tests {
     use super::*;
     use crate::render::pass::reverse_z_projection;
     use crate::scene::math::matrix_na_to_glam;
-    use glam::Mat4;
+    use glam::{Mat4, Vec3};
     use nalgebra::{Matrix4 as NaMat4, Point3, Vector3 as NaVec3};
 
     fn look_vp_naive() -> Mat4 {
@@ -150,17 +161,46 @@ mod tests {
     fn all_nonfinite_bones_conservative() {
         let vp = look_vp_naive();
         let bad = [[f32::NAN; 4]; 4];
-        assert!(skinned_mesh_potentially_visible(&make_bounds(0.5), &[bad], vp));
+        assert!(skinned_mesh_potentially_visible(
+            &make_bounds(0.5),
+            &[bad],
+            vp
+        ));
     }
 
     // ─── Visibility ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn bone_origins_path_matches_full_matrix_path() {
+        let vp = look_vp_naive();
+        let bounds = make_bounds(0.5);
+        let bones = [bone_at(0.0, 0.0, 0.0), bone_at(2.0, 0.0, 0.0)];
+        let origins: Vec<Vec3> = bones
+            .iter()
+            .map(|b| Vec3::new(b[3][0], b[3][1], b[3][2]))
+            .collect();
+        assert_eq!(
+            skinned_mesh_potentially_visible(&bounds, &bones, vp),
+            skinned_mesh_potentially_visible_from_bone_origins(&bounds, &origins, vp)
+        );
+        let culled = [bone_at(100.0, 0.0, 0.0)];
+        let culled_origins = [Vec3::new(100.0, 0.0, 0.0)];
+        assert_eq!(
+            skinned_mesh_potentially_visible(&bounds, &culled, vp),
+            skinned_mesh_potentially_visible_from_bone_origins(&bounds, &culled_origins, vp)
+        );
+    }
 
     #[test]
     fn bone_at_origin_visible() {
         let vp = look_vp_naive();
         // Camera at (0,0,5) looking at origin. Bone at (0,0,0) with small mesh = visible.
         let bone = bone_at(0.0, 0.0, 0.0);
-        assert!(skinned_mesh_potentially_visible(&make_bounds(0.5), &[bone], vp));
+        assert!(skinned_mesh_potentially_visible(
+            &make_bounds(0.5),
+            &[bone],
+            vp
+        ));
     }
 
     #[test]
@@ -177,7 +217,11 @@ mod tests {
         let vp = look_vp_naive();
         // Bone 100 units to the left, mesh extents 0.5 → expanded AABB is still off-screen.
         let bone = bone_at(100.0, 0.0, 0.0);
-        assert!(!skinned_mesh_potentially_visible(&make_bounds(0.5), &[bone], vp));
+        assert!(!skinned_mesh_potentially_visible(
+            &make_bounds(0.5),
+            &[bone],
+            vp
+        ));
     }
 
     #[test]
@@ -209,6 +253,10 @@ mod tests {
         let vp = look_vp_naive();
         // Bone 100 units right, tiny mesh → cannot rescue.
         let bone = bone_at(100.0, 0.0, 0.0);
-        assert!(!skinned_mesh_potentially_visible(&make_bounds(0.01), &[bone], vp));
+        assert!(!skinned_mesh_potentially_visible(
+            &make_bounds(0.01),
+            &[bone],
+            vp
+        ));
     }
 }

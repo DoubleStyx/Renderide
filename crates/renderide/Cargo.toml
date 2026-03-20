@@ -3,6 +3,10 @@ name = "renderide"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["debug-hud"]
+debug-hud = ["dep:imgui", "dep:imgui-wgpu"]
+
 [lib]
 name = "renderide"
 path = "src/lib.rs"
@@ -26,8 +30,8 @@ winit = "0.30.12"
 memmap2 = "0.9"
 nalgebra = { version = "0.34.1", features = ["convert-bytemuck"] }
 glam = "0.29"
-imgui = "0.12"
-imgui-wgpu = "0.27"
+imgui = { version = "0.12", optional = true }
+imgui-wgpu = { version = "0.27", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Memory"] }

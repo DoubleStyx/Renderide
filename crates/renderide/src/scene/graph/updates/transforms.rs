@@ -10,7 +10,9 @@ use crate::shared::{TransformParentUpdate, TransformPoseUpdate, TransformsUpdate
 
 use super::super::error::SceneError;
 use super::super::pose::{PoseValidation, render_transform_identity};
-use super::super::world_matrices::{SceneCache, fixup_transform_id, mark_descendants_uncomputed, rebuild_children};
+use super::super::world_matrices::{
+    SceneCache, fixup_transform_id, mark_descendants_uncomputed, rebuild_children,
+};
 
 /// Applies transform updates: removals, parent changes, pose updates.
 /// Returns transform removals (removed_id, last_index) for skinned mesh fixup.

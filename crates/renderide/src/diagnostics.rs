@@ -1,16 +1,24 @@
-//! On-screen debug HUD rendered with ImGui, and diagnostic helpers.
+//! Diagnostic helpers and optional ImGui on-screen HUD.
+//!
+//! The HUD is enabled by the `debug-hud` Cargo feature (on by default). Disable default features
+//! (`cargo build -p renderide --no-default-features`) for lean builds without `imgui` / `imgui-wgpu`.
 
 use std::time::{Duration, Instant};
 
-use imgui::{Condition, Context, FontConfig, FontSource, WindowFlags};
-use imgui_wgpu::{Renderer, RendererConfig};
-
-use crate::render::RenderTarget;
 use crate::render::pass::MeshDrawPrepStats;
+
+#[cfg(feature = "debug-hud")]
+use crate::render::RenderTarget;
+
+#[cfg(feature = "debug-hud")]
+use imgui::{Condition, Context, FontConfig, FontSource, WindowFlags};
+#[cfg(feature = "debug-hud")]
+use imgui_wgpu::{Renderer, RendererConfig};
 
 // ── ImGui HUD ────────────────────────────────────────────────────────────────
 
 /// Per-frame diagnostics sample shown in the debug HUD.
+#[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub struct LiveFrameDiagnostics {
     pub frame_index: i32,
@@ -66,6 +74,7 @@ pub struct LiveFrameDiagnostics {
     pub ray_tracing_available: bool,
 }
 
+#[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
 impl LiveFrameDiagnostics {
     fn frame_time_ms(&self) -> f64 {
         self.total_us as f64 / 1000.0
@@ -102,7 +111,9 @@ impl LiveFrameDiagnostics {
     }
 }
 
-/// ImGui-backed on-screen diagnostics panel.
+/// ImGui-backed on-screen diagnostics panel when the `debug-hud` feature is enabled; otherwise a
+/// zero-cost stub (see [`Self::new`], [`Self::render`], [`Self::update`]).
+#[cfg(feature = "debug-hud")]
 pub struct DebugHud {
     imgui: Context,
     renderer: Renderer,
@@ -110,6 +121,7 @@ pub struct DebugHud {
     latest: Option<LiveFrameDiagnostics>,
 }
 
+#[cfg(feature = "debug-hud")]
 impl DebugHud {
     pub fn new(
         device: &wgpu::Device,
@@ -323,6 +335,35 @@ impl DebugHud {
                 .map_err(|e| format!("imgui render failed: {e}"))?;
         }
         queue.submit(std::iter::once(encoder.finish()));
+        Ok(())
+    }
+}
+
+#[cfg(not(feature = "debug-hud"))]
+/// Stub type when the `debug-hud` feature is disabled.
+pub struct DebugHud;
+
+#[cfg(not(feature = "debug-hud"))]
+impl DebugHud {
+    /// Returns an empty HUD (no ImGui initialization).
+    pub fn new(
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _surface_format: wgpu::TextureFormat,
+    ) -> Result<Self, String> {
+        Ok(Self)
+    }
+
+    /// No-op without ImGui.
+    pub fn update(&mut self, _sample: LiveFrameDiagnostics) {}
+
+    /// No-op without ImGui.
+    pub fn render(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _target: &crate::render::RenderTarget,
+    ) -> Result<(), String> {
         Ok(())
     }
 }

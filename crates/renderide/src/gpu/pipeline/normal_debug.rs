@@ -61,7 +61,11 @@ impl NormalDebugPipeline {
         let uniform_ring = UniformRingBuffer::new(device, "normal debug uniform ring buffer");
         let bind_group =
             builder::uniform_ring_bind_group(device, "normal debug BG", &bgl, &uniform_ring.buffer);
-        Self { pipeline, uniform_ring, bind_group }
+        Self {
+            pipeline,
+            uniform_ring,
+            bind_group,
+        }
     }
 }
 

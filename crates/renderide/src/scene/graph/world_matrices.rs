@@ -148,7 +148,8 @@ pub(super) fn compute_world_matrices_incremental(
                 cycle_detected = true;
                 logger::trace!(
                     "Parent cycle detected in scene {} at transform {} — treating cycled nodes as roots",
-                    scene.id, id
+                    scene.id,
+                    id
                 );
                 break;
             }
