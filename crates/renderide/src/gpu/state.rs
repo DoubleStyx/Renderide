@@ -203,6 +203,11 @@ pub async fn init_gpu(
     } else {
         wgpu::PresentMode::AutoNoVsync
     };
+    logger::info!(
+        "GPU init: present_mode={:?} (vsync={})",
+        config.present_mode,
+        vsync
+    );
     surface.configure(&device, &config);
     let depth_texture = create_depth_texture(&device, &config);
     let depth_size = (config.width, config.height);
@@ -246,6 +251,21 @@ pub async fn init_gpu(
 }
 
 impl GpuState {
+    /// Sets swapchain present mode from the renderer vsync flag and reapplies
+    /// [`Surface::configure`](wgpu::Surface::configure) when it changes.
+    pub fn set_present_mode_for_vsync(&mut self, vsync: bool) {
+        let mode = if vsync {
+            wgpu::PresentMode::AutoVsync
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        if self.config.present_mode != mode {
+            self.config.present_mode = mode;
+            self.surface.configure(&self.device, &self.config);
+            logger::info!("Swapchain present mode set to {:?} (vsync={})", mode, vsync);
+        }
+    }
+
     /// Allocates the MRT g-buffer origin uniform buffer and bind group once; `layout` must be
     /// [`super::pipeline::mrt::create_mrt_gbuffer_origin_bind_group_layout`] from the same
     /// [`super::PipelineManager`] used to create debug MRT pipelines.

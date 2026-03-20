@@ -6,7 +6,7 @@
 //!
 //! Use [`RenderConfig::load()`] as the single source of truth. Precedence:
 //! 1. **Defaults** — hardcoded values below
-//! 2. **Env vars** — override defaults (e.g. `RENDERIDE_DEBUG_BLENDSHAPES=1`)
+//! 2. **Env vars** — override defaults (e.g. `RENDERIDE_DEBUG_BLENDSHAPES=1`, `RENDERIDE_VSYNC=1`)
 //!
 //! Extension point for config, feature flags.
 
@@ -19,7 +19,11 @@ pub struct RenderConfig {
     pub far_clip: f32,
     /// Desktop field of view in degrees.
     pub desktop_fov: f32,
-    /// Whether vertical sync is enabled.
+    /// When true, the swapchain uses a vsync-aligned present mode ([`wgpu::PresentMode::AutoVsync`])
+    /// to avoid tearing. When false (default), the swapchain uses [`wgpu::PresentMode::AutoNoVsync`]
+    /// and the winit loop still paces redraws to the current monitor refresh rate (see
+    /// [`crate::app`] `about_to_wait`), which limits CPU/GPU load without guaranteeing tear-free
+    /// presentation.
     pub vsync: bool,
     /// When true, use UV debug pipeline for meshes that have UVs.
     pub use_debug_uv: bool,
@@ -68,6 +72,8 @@ impl RenderConfig {
     /// `RENDERIDE_PARALLEL_MESH_PREP=0` disables parallel per-batch mesh-draw collection.
     ///
     /// `RENDERIDE_NO_RTAO=1` disables RTAO even when ray tracing is available.
+    ///
+    /// `RENDERIDE_VSYNC=1` enables hardware vsync ([`Self::vsync`]); `RENDERIDE_VSYNC=0` forces it off.
     pub fn load() -> Self {
         let mut config = Self::default();
         if std::env::var("RENDERIDE_DEBUG_BLENDSHAPES").as_deref() == Ok("1") {
@@ -81,6 +87,11 @@ impl RenderConfig {
         }
         if std::env::var("RENDERIDE_NO_RTAO").as_deref() == Ok("1") {
             config.rtao_enabled = false;
+        }
+        match std::env::var("RENDERIDE_VSYNC").as_deref() {
+            Ok("1") | Ok("true") | Ok("yes") => config.vsync = true,
+            Ok("0") | Ok("false") | Ok("no") => config.vsync = false,
+            _ => {}
         }
         config
     }

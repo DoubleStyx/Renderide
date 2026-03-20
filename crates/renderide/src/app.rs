@@ -3,6 +3,12 @@
 //! The main window is created maximized via [`winit::window::WindowAttributes::with_maximized`], which winit maps
 //! to the appropriate Win32, X11, and Wayland behavior.
 //!
+//! While focused, [`ApplicationHandler::about_to_wait`] requests redraws and uses
+//! [`ControlFlow::WaitUntil`] with an interval derived from the window monitor's
+//! [`MonitorHandle::refresh_rate_millihertz`], so frame submission is paced to the display refresh
+//! rate. [`crate::config::RenderConfig::vsync`] selects tear-reducing swapchain presentation vs
+//! [`wgpu::PresentMode::AutoNoVsync`] without changing that pacing.
+//!
 //! Owns the RenderideApp handler that bridges winit events to the session, GPU, and render loop.
 //! Swapchain recovery ([`wgpu::SurfaceError`], suboptimal acquire) is handled in [`recover_from_surface_error`]
 //! and [`acquire_surface_texture_with_recovery`], with resize delegating to [`crate::gpu::reconfigure_surface_for_window`].
@@ -23,12 +29,39 @@ use crate::input::{WindowInputState, winit_key_to_renderite_key};
 use crate::render::{MainViewFrameInput, RenderLoop, RenderTarget, RenderingContext, set_context};
 use crate::session::Session;
 
-/// Target frame interval when focused (240 Hz). Throttles redraws when using WaitUntil.
-const FOCUSED_TARGET_INTERVAL: Duration = Duration::from_micros(1_000_000 / 240);
+/// Fallback display refresh in millihertz when the platform does not report a rate (60 Hz).
+const FALLBACK_REFRESH_MILLIHERTZ: u32 = 60_000;
+/// Minimum refresh treated as valid when clamping winit-reported millihertz (10 Hz).
+const MIN_REFRESH_MILLIHERTZ: u32 = 10_000;
+/// Maximum refresh treated as valid when clamping winit-reported millihertz (480 Hz).
+const MAX_REFRESH_MILLIHERTZ: u32 = 480_000;
 /// Target frame interval when unfocused (60 Hz).
 const UNFOCUSED_TARGET_INTERVAL: Duration = Duration::from_micros(1_000_000 / 60);
 /// Interval between log flushes.
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Returns the target interval between focused redraws from a winit refresh rate in millihertz
+/// (e.g. 60 Hz → `60_000`). Used with [`ControlFlow::WaitUntil`] to pace the loop to the display.
+fn focused_frame_interval_from_refresh_millihertz(millihertz: Option<u32>) -> Duration {
+    let mhz = millihertz
+        .unwrap_or(FALLBACK_REFRESH_MILLIHERTZ)
+        .clamp(MIN_REFRESH_MILLIHERTZ, MAX_REFRESH_MILLIHERTZ);
+    let nanos = 1_000_000_000_000u64 / u64::from(mhz);
+    Duration::from_nanos(nanos.max(1))
+}
+
+/// Reads the window's current (or primary) monitor refresh and returns the matching frame interval.
+fn focused_frame_interval_for_window(window: &Window) -> Duration {
+    let mhz = window
+        .current_monitor()
+        .and_then(|m| m.refresh_rate_millihertz())
+        .or_else(|| {
+            window
+                .primary_monitor()
+                .and_then(|m| m.refresh_rate_millihertz())
+        });
+    focused_frame_interval_from_refresh_millihertz(mhz)
+}
 
 /// Path to Renderide.log in the logs folder at repo root (two levels up from crates/renderide).
 fn renderide_log_path() -> std::path::PathBuf {
@@ -296,6 +329,10 @@ impl RenderideApp {
             return Some(code);
         }
         let session_us = frame_start.elapsed().as_micros() as u64;
+
+        if let Some(ref mut gpu) = self.gpu {
+            gpu.set_present_mode_for_vsync(self.session.render_config().vsync);
+        }
 
         if let (Some(window), None) = (&self.window, &self.gpu) {
             match pollster::block_on(crate::gpu::init_gpu(
@@ -613,10 +650,9 @@ impl ApplicationHandler for RenderideApp {
         if let Some(ref window) = self.window {
             if self.input.window_focused {
                 self.last_unfocused_redraw = None;
+                let interval = focused_frame_interval_for_window(window);
                 window.request_redraw();
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + FOCUSED_TARGET_INTERVAL,
-                ));
+                event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + interval));
             } else {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(
                     Instant::now() + UNFOCUSED_TARGET_INTERVAL,
@@ -640,5 +676,24 @@ impl ApplicationHandler for RenderideApp {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_interval_tests {
+    use super::focused_frame_interval_from_refresh_millihertz;
+
+    #[test]
+    fn sixty_hz_interval_matches_period() {
+        let d = focused_frame_interval_from_refresh_millihertz(Some(60_000));
+        let expected_ns = 1_000_000_000_000u64 / 60_000;
+        assert_eq!(d.as_nanos(), expected_ns as u128);
+    }
+
+    #[test]
+    fn none_uses_fallback_sixty_hz() {
+        let d = focused_frame_interval_from_refresh_millihertz(None);
+        let expected_ns = 1_000_000_000_000u64 / 60_000;
+        assert_eq!(d.as_nanos(), expected_ns as u128);
     }
 }
