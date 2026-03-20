@@ -14,6 +14,9 @@ use glam::{Mat4, Quat, Vec3};
 
 use crate::shared::{LightData, LightState, LightType, LightsBufferRendererState};
 
+/// Local axis for light propagation before world transform: host **`transform.forward`** (+Z).
+const LOCAL_LIGHT_PROPAGATION: Vec3 = Vec3::new(0.0, 0.0, 1.0);
+
 /// Cached light entry combining pose data from submission with state from updates.
 #[derive(Clone, Debug)]
 pub struct CachedLight {
@@ -41,7 +44,9 @@ impl CachedLight {
 pub struct ResolvedLight {
     /// World-space position.
     pub world_position: Vec3,
-    /// World-space direction (normalized; -Z for spot/directional).
+    /// World-space propagation direction (normalized): local **+Z** (host `transform.forward`)
+    /// rotated by [`LightData::orientation`] and the light’s world matrix. PBR shaders use
+    /// `normalize(-world_direction)` for directional **to-light** and the same axis for spot cones.
     pub world_direction: Vec3,
     /// RGB color.
     pub color: Vec3,
@@ -315,8 +320,6 @@ impl LightCache {
             return Vec::new();
         };
 
-        const FORWARD: Vec3 = Vec3::new(0.0, 0.0, -1.0);
-
         let mut resolved = Vec::with_capacity(lights.len());
         for cached in lights {
             let world = get_world_matrix(cached.transform_id).unwrap_or(Mat4::IDENTITY);
@@ -327,11 +330,11 @@ impl LightCache {
 
             let ori = cached.data.orientation;
             let q = Quat::from_xyzw(ori.i, ori.j, ori.k, ori.w);
-            let world_dir = (world.to_scale_rotation_translation().1 * q) * FORWARD;
+            let world_dir = (world.to_scale_rotation_translation().1 * q) * LOCAL_LIGHT_PROPAGATION;
             let world_dir = if world_dir.length_squared() > 1e-10 {
                 world_dir.normalize()
             } else {
-                Vec3::NEG_Z
+                LOCAL_LIGHT_PROPAGATION
             };
 
             let color = cached.data.color;
@@ -393,8 +396,6 @@ impl LightCache {
             return Vec::new();
         }
 
-        const FORWARD: Vec3 = Vec3::new(0.0, 0.0, -1.0);
-
         let mut resolved = Vec::with_capacity(light_data.len());
         for data in light_data {
             let p = Vec3::new(data.point.x, data.point.y, data.point.z);
@@ -404,11 +405,11 @@ impl LightCache {
                 data.orientation.k,
                 data.orientation.w,
             );
-            let world_dir = q * FORWARD;
+            let world_dir = q * LOCAL_LIGHT_PROPAGATION;
             let world_dir = if world_dir.length_squared() > 1e-10 {
                 world_dir.normalize()
             } else {
-                Vec3::NEG_Z
+                LOCAL_LIGHT_PROPAGATION
             };
 
             resolved.push(ResolvedLight {
@@ -553,6 +554,40 @@ mod tests {
         assert!((resolved[0].world_position.x - 11.0).abs() < 1e-5);
         assert!((resolved[0].world_position.y - 0.0).abs() < 1e-5);
         assert!((resolved[0].world_position.z - 0.0).abs() < 1e-5);
+    }
+
+    /// Host local forward is +Z; world propagation must match `R * local_z` (not −Z).
+    #[test]
+    fn resolve_lights_propagation_uses_local_pos_z() {
+        let mut cache = LightCache::new();
+        let space_id = 0;
+        cache.store_full(100, vec![make_light_data((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))]);
+        cache.apply_update(
+            space_id,
+            &[],
+            &[0],
+            &[make_state(0, 100, LightType::directional)],
+        );
+
+        let world_rot_y = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let resolved =
+            cache.resolve_lights(
+                space_id,
+                |tid| {
+                    if tid == 0 { Some(world_rot_y) } else { None }
+                },
+            );
+        assert_eq!(resolved.len(), 1);
+        let expected = world_rot_y
+            .transform_vector3(Vec3::new(0.0, 0.0, 1.0))
+            .normalize();
+        let d = resolved[0].world_direction;
+        assert!(
+            (d - expected).length() < 1e-4,
+            "expected {:?}, got {:?}",
+            expected,
+            d
+        );
     }
 
     #[test]

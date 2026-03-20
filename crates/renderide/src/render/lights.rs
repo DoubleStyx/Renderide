@@ -13,6 +13,11 @@
 //!
 //! Must match [`crate::shared::LightType`] `repr(u8)` and host wire values: `point = 0`,
 //! `directional = 1`, `spot = 2`.
+//!
+//! ## `direction` field
+//!
+//! World-space **propagation** direction (local +Z / host `transform.forward` after resolve).
+//! Directional shading uses `normalize(-direction)` for the **to-light** vector in WGSL.
 
 use std::mem::size_of;
 
@@ -51,7 +56,7 @@ impl Default for GpuLight {
         Self {
             position: [0.0; 3],
             _pad0: 0.0,
-            direction: [0.0, 0.0, -1.0],
+            direction: [0.0, 0.0, 1.0],
             _pad1: 0.0,
             color: [1.0; 3],
             intensity: 1.0,
@@ -211,7 +216,7 @@ mod tests {
         assert_eq!(light_type_u32(LightType::spot), 2);
         let p = ResolvedLight {
             world_position: Vec3::ZERO,
-            world_direction: Vec3::NEG_Z,
+            world_direction: Vec3::Z,
             color: Vec3::ONE,
             intensity: 1.0,
             range: 1.0,
@@ -229,7 +234,7 @@ mod tests {
         fn dummy(idx: u8, ty: LightType) -> ResolvedLight {
             ResolvedLight {
                 world_position: Vec3::splat(idx as f32),
-                world_direction: Vec3::NEG_Z,
+                world_direction: Vec3::Z,
                 color: Vec3::ONE,
                 intensity: 1.0,
                 range: 10.0,

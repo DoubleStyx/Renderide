@@ -205,7 +205,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
             // Forward axis = PBR `light_dir`; avoid normalize(0) → NaN on some drivers.
             let dir_len_sq = dot(dir_view, dir_view);
             let axis = select(
-                vec3f(0.0, 0.0, -1.0),
+                vec3f(0.0, 0.0, 1.0),
                 dir_view * inverseSqrt(dir_len_sq),
                 dir_len_sq > 1e-16
             );
