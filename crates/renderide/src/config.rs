@@ -48,8 +48,10 @@ pub struct RenderConfig {
     /// RTAO ray max distance in world units. Rays beyond this are not considered occluded.
     /// Default 1.0.
     pub ao_radius: f32,
-    /// When true, rigid mesh draws outside the view frustum are skipped (CPU), using mesh local
-    /// bounds. Skinned draws are not culled. Default true.
+    /// When true, mesh draws outside the view frustum are skipped on the CPU: rigid meshes use
+    /// local bounds transformed by the model matrix; non-overlay skinned meshes use a conservative
+    /// world AABB derived from bone world origins (see [`crate::render::visibility::skinned`]).
+    /// Default true.
     pub frustum_culling: bool,
     /// Reserved for future per-batch mesh-draw worker threads. Not active while [`crate::session::Session`]
     /// is not [`Sync`] (IPC). Disable with `RENDERIDE_PARALLEL_MESH_PREP=0` to match future defaults.
@@ -61,9 +63,11 @@ impl RenderConfig {
     ///
     /// Env vars: `RENDERIDE_DEBUG_BLENDSHAPES=1` enables blendshape debug logging.
     ///
-    /// `RENDERIDE_NO_FRUSTUM_CULL=1` disables frustum culling for rigid meshes.
+    /// `RENDERIDE_NO_FRUSTUM_CULL=1` disables CPU frustum culling for rigid and skinned meshes.
     ///
     /// `RENDERIDE_PARALLEL_MESH_PREP=0` disables parallel per-batch mesh-draw collection.
+    ///
+    /// `RENDERIDE_NO_RTAO=1` disables RTAO even when ray tracing is available.
     pub fn load() -> Self {
         let mut config = Self::default();
         if std::env::var("RENDERIDE_DEBUG_BLENDSHAPES").as_deref() == Ok("1") {
@@ -74,6 +78,9 @@ impl RenderConfig {
         }
         if std::env::var("RENDERIDE_PARALLEL_MESH_PREP").as_deref() == Ok("0") {
             config.parallel_mesh_draw_prep_batches = false;
+        }
+        if std::env::var("RENDERIDE_NO_RTAO").as_deref() == Ok("1") {
+            config.rtao_enabled = false;
         }
         config
     }

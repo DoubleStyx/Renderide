@@ -1,6 +1,8 @@
 //! Bootstrapper binary - starts Renderite.Host and the Renderide renderer.
 //! Communicates with the Resonite host via IPC queues.
 
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod config;
 mod host_spawner;
 mod paths;

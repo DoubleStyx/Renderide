@@ -18,6 +18,15 @@ pub(super) struct SceneCache {
     pub local_matrices: Vec<Mat4>,
     /// Whether each node's local matrix cache is stale (pose changed).
     pub local_dirty: Vec<bool>,
+    /// Per-node epoch stamp for O(1) cycle detection during upward walks.
+    /// A node is "visited in the current walk" when `visit_epoch[i] == walk_epoch`.
+    pub(super) visit_epoch: Vec<u32>,
+    /// Current walk epoch counter; incremented before each upward walk.
+    pub(super) walk_epoch: u32,
+    /// Cached parent→children adjacency list. Rebuilt only when `children_dirty` is true.
+    pub(super) children: Vec<Vec<usize>>,
+    /// Whether `children` needs to be rebuilt (structure changed: removals or parent updates).
+    pub(super) children_dirty: bool,
 }
 
 /// Fixes transform ID references after swap_remove: removed ID becomes -1,
@@ -32,36 +41,39 @@ pub(super) fn fixup_transform_id(old: i32, removed_id: i32, last_index: usize) -
     }
 }
 
-/// Builds a parent→children index from `node_parents`. Root nodes (parent < 0) have no parent.
-fn build_node_children(node_parents: &[i32], n: usize) -> Vec<Vec<usize>> {
-    let mut children: Vec<Vec<usize>> = (0..n).map(|_| Vec::new()).collect();
+/// Rebuilds the parent→children adjacency list into `children`, resizing as needed.
+pub(super) fn rebuild_children(node_parents: &[i32], n: usize, children: &mut Vec<Vec<usize>>) {
+    children.resize_with(n, Vec::new);
+    for c in children.iter_mut() {
+        c.clear();
+    }
     for (i, &p) in node_parents.iter().take(n).enumerate() {
         if p >= 0 && (p as usize) < n && p != i as i32 {
             children[p as usize].push(i);
         }
     }
-    children
 }
 
 /// Marks descendants of uncomputed transforms as uncomputed.
-/// Uses a parent→children index to traverse down from each uncomputed node (O(n) total)
-/// instead of walking up from every node (O(n²) for deep chains).
-pub(super) fn mark_descendants_uncomputed(node_parents: &[i32], computed: &mut [bool]) {
+/// Uses the cached parent→children index (already built in `cache.children`).
+/// Caller must ensure `cache.children` is up to date before calling.
+pub(super) fn mark_descendants_uncomputed(children: &[Vec<usize>], computed: &mut [bool]) {
     let n = computed.len();
     if n == 0 {
         return;
     }
-    let children = build_node_children(node_parents, n);
-    let mut stack = Vec::with_capacity(64.min(n));
+    let mut stack: Vec<usize> = Vec::with_capacity(64.min(n));
     for i in 0..n {
         if computed[i] {
             continue;
         }
         stack.clear();
-        stack.extend(children[i].iter().copied());
+        let child_list = children.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        stack.extend_from_slice(child_list);
         while let Some(child) = stack.pop() {
             computed[child] = false;
-            stack.extend(children[child].iter().copied());
+            let child_list = children.get(child).map(Vec::as_slice).unwrap_or(&[]);
+            stack.extend_from_slice(child_list);
         }
     }
 }
@@ -89,38 +101,77 @@ fn get_local_matrix(
 /// Incremental world matrix computation: only recomputes nodes with `computed[i] == false`.
 /// Walks up from each uncomputed node to find the first computed ancestor, then multiplies down.
 /// Uses glam for SIMD-optimized matrix multiply and local matrix cache to avoid redundant TRS conversion.
+/// Detects cycles with O(1) epoch stamps (no linear search).
 pub(super) fn compute_world_matrices_incremental(
     scene: &Scene,
     world_matrices: &mut [Mat4],
     computed: &mut [bool],
     local_matrices: &mut [Mat4],
     local_dirty: &mut [bool],
+    visit_epoch: &mut Vec<u32>,
+    walk_epoch: &mut u32,
 ) -> Result<(), SceneError> {
     let n = scene.nodes.len();
     let node_parents = &scene.node_parents;
     let nodes = &scene.nodes;
     let mut stack = Vec::with_capacity(64.min(n));
 
+    // Ensure epoch stamps cover all nodes.
+    if visit_epoch.len() < n {
+        visit_epoch.resize(n, 0);
+    }
+
     for transform_index in (0..n).rev() {
         if computed[transform_index] {
             continue;
         }
 
+        stack.clear();
+        // Advance epoch so any stamp from a previous walk is stale.
+        *walk_epoch = walk_epoch.wrapping_add(1);
+        let epoch = *walk_epoch;
+
         let mut maybe_uppermost_matrix: Option<Mat4> = None;
         let mut id = transform_index;
-        let mut steps = 0;
-        while id < n && steps < n {
-            steps += 1;
+        let mut cycle_detected = false;
+
+        loop {
+            if id >= n {
+                break;
+            }
             if computed[id] {
                 maybe_uppermost_matrix = Some(world_matrices[id]);
                 break;
             }
+            // O(1) cycle check via epoch stamp.
+            if visit_epoch[id] == epoch {
+                cycle_detected = true;
+                logger::trace!(
+                    "Parent cycle detected in scene {} at transform {} — treating cycled nodes as roots",
+                    scene.id,
+                    id
+                );
+                break;
+            }
+            visit_epoch[id] = epoch;
             stack.push(id);
             let p = node_parents.get(id).copied().unwrap_or(-1);
             if p < 0 || (p as usize) >= n || p == id as i32 {
-                break;
+                break; // reached a root
             }
             id = p as usize;
+        }
+
+        if cycle_detected {
+            // Treat every node collected in this walk as a root: world = local only.
+            for &cid in &stack {
+                if !computed[cid] {
+                    let local = get_local_matrix(nodes, local_matrices, local_dirty, cid);
+                    world_matrices[cid] = local;
+                    computed[cid] = true;
+                }
+            }
+            continue;
         }
 
         let mut parent_matrix = match maybe_uppermost_matrix {

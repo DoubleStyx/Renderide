@@ -1,19 +1,21 @@
 //! PBR pipeline: PBS metallic shader with Cook-Torrance BRDF and clustered lighting.
 //!
-//! Uses VertexPosNormal (same as NormalDebug), bind group 0 for MVP/model uniforms,
-//! and bind group 1 for scene uniforms, light buffer, and cluster buffers.
+//! Uses `VertexPosNormal` vertex format (same as NormalDebug). Bind group 0 is the standard
+//! dynamic uniform ring (MVP/model per draw); bind group 1 holds scene uniforms, the light
+//! storage buffer, and the two cluster buffers.
 
 use std::mem::size_of;
 
 use nalgebra::Matrix4;
 
 use super::super::mesh::{GpuMeshBuffers, VertexPosNormal};
+use super::builder;
 use super::core::{MAX_INSTANCE_RUN, RenderPipeline, UNIFORM_ALIGNMENT, UniformData};
 use super::ring_buffer::UniformRingBuffer;
 use super::shaders::PBR_SHADER_SRC;
 use super::uniforms::SceneUniforms;
 
-/// PBR pipeline with Cook-Torrance BRDF and clustered lighting.
+/// PBR pipeline with Cook-Torrance BRDF and clustered lighting (single color target).
 pub struct PbrPipeline {
     pipeline: wgpu::RenderPipeline,
     uniform_ring: UniformRingBuffer,
@@ -30,74 +32,11 @@ impl PbrPipeline {
             source: wgpu::ShaderSource::Wgsl(PBR_SHADER_SRC.into()),
         });
 
-        let bind_group_layout_0 =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("PBR bind group 0 layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: std::num::NonZeroU64::new(
-                            (MAX_INSTANCE_RUN as u64) * UNIFORM_ALIGNMENT,
-                        ),
-                    },
-                    count: None,
-                }],
-            });
-
-        let scene_uniform_size = size_of::<SceneUniforms>() as u64;
-        let scene_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("PBR bind group 1 layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: std::num::NonZeroU64::new(scene_uniform_size),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
+        let bgl0 = builder::uniform_ring_bind_group_layout(device, "PBR BGL 0");
+        let (scene_bgl, scene_uniform_size) = Self::create_scene_bind_group_layout(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("PBR pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout_0, &scene_bind_group_layout],
+            bind_group_layouts: &[&bgl0, &scene_bgl],
             immediate_size: 0,
         });
 
@@ -108,68 +47,28 @@ impl PbrPipeline {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<VertexPosNormal>() as u64,
+                    array_stride: size_of::<VertexPosNormal>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                    ],
+                    attributes: &builder::POS_NORMAL_ATTRIBS,
                 }],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(builder::standard_color_target(config.format))],
                 compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            primitive: builder::standard_primitive_state(),
+            depth_stencil: Some(builder::depth_stencil_opaque()),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
 
         let uniform_ring = UniformRingBuffer::new(device, "PBR uniform ring buffer");
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("PBR bind group 0"),
-            layout: &bind_group_layout_0,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniform_ring.buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new((MAX_INSTANCE_RUN as u64) * UNIFORM_ALIGNMENT),
-                }),
-            }],
-        });
-
+        let bind_group =
+            builder::uniform_ring_bind_group(device, "PBR BG 0", &bgl0, &uniform_ring.buffer);
         let scene_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("PBR scene uniform buffer"),
             size: scene_uniform_size,
@@ -181,9 +80,64 @@ impl PbrPipeline {
             pipeline,
             uniform_ring,
             bind_group,
-            scene_bind_group_layout,
+            scene_bind_group_layout: scene_bgl,
             scene_uniform_buffer,
         }
+    }
+
+    /// Creates the scene bind group layout (group 1) shared by PBR and PBR-MRT.
+    ///
+    /// Returns `(layout, scene_uniform_size_bytes)`.
+    pub(crate) fn create_scene_bind_group_layout(
+        device: &wgpu::Device,
+    ) -> (wgpu::BindGroupLayout, u64) {
+        let scene_uniform_size = size_of::<SceneUniforms>() as u64;
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("PBR scene BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: std::num::NonZeroU64::new(scene_uniform_size),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        (layout, scene_uniform_size)
     }
 
     fn create_scene_bind_group_inner(
@@ -197,7 +151,7 @@ impl PbrPipeline {
     ) -> wgpu::BindGroup {
         queue.write_buffer(&self.scene_uniform_buffer, 0, bytemuck::bytes_of(scene));
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("PBR scene bind group"),
+            label: Some("PBR scene BG"),
             layout: &self.scene_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -336,3 +290,9 @@ impl RenderPipeline for PbrPipeline {
         ))
     }
 }
+
+// Ensure UNIFORM_ALIGNMENT / MAX_INSTANCE_RUN remain used via builder helpers.
+const _: () = {
+    let _ = MAX_INSTANCE_RUN;
+    let _ = UNIFORM_ALIGNMENT;
+};

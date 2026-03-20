@@ -32,7 +32,7 @@ impl MainViewFrameInput {
 pub struct MeshDrawPrepReadSnapshot {
     /// When true, log diagnostic info for the first skinned draw each frame.
     pub debug_skinned: bool,
-    /// When true, rigid meshes may be frustum culled on the CPU.
+    /// When true, rigid and non-overlay skinned meshes may be frustum culled on the CPU.
     pub frustum_culling: bool,
     /// When true, skinned MVP uses root bone world matrix.
     pub skinned_use_root_bone: bool,

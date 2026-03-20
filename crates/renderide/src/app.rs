@@ -17,6 +17,7 @@ use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, Win
 use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::window::{CursorGrabMode, Window, WindowAttributes};
 
+use crate::diagnostics::{DebugHud, LiveFrameDiagnostics};
 use crate::gpu::GpuState;
 use crate::input::{WindowInputState, winit_key_to_renderite_key};
 use crate::render::{MainViewFrameInput, RenderLoop, RenderTarget, RenderingContext, set_context};
@@ -220,7 +221,7 @@ impl FrameDiagnostic {
             None => "CPU (GPU timing unavailable)",
         };
         logger::debug!(
-            "[frame diag] frames={} CPU: session={:.2}ms collect={:.2}ms render={:.2}ms present={:.2}ms total={:.2}ms | GPU mesh_pass={:.2}ms | Bottleneck: {}",
+            "[frame diag] frames={} CPU: session={:.2}ms collect+prep={:.2}ms render={:.2}ms present={:.2}ms total={:.2}ms | GPU mesh_pass={:.2}ms | Bottleneck: {}",
             self.frame_count,
             cpu_session_ms,
             cpu_collect_ms,
@@ -245,6 +246,7 @@ struct RenderideApp {
     last_unfocused_redraw: Option<Instant>,
     last_log_flush: Option<Instant>,
     frame_diagnostic: FrameDiagnostic,
+    debug_hud: Option<DebugHud>,
 }
 
 impl RenderideApp {
@@ -259,6 +261,7 @@ impl RenderideApp {
             last_unfocused_redraw: None,
             last_log_flush: None,
             frame_diagnostic: FrameDiagnostic::new(),
+            debug_hud: None,
         }
     }
 
@@ -295,12 +298,22 @@ impl RenderideApp {
         let session_us = frame_start.elapsed().as_micros() as u64;
 
         if let (Some(window), None) = (&self.window, &self.gpu) {
-            match pollster::block_on(crate::gpu::init_gpu(window)) {
+            match pollster::block_on(crate::gpu::init_gpu(
+                window,
+                self.session.render_config().vsync,
+            )) {
                 Ok(g) => {
                     logger::info!(
                         "GPU initialized: ray_tracing_available={}",
                         g.ray_tracing_available
                     );
+                    self.debug_hud = match DebugHud::new(&g.device, &g.queue, g.config.format) {
+                        Ok(hud) => Some(hud),
+                        Err(e) => {
+                            logger::warn!("Debug HUD init failed: {}", e);
+                            None
+                        }
+                    };
                     self.render_loop = Some(RenderLoop::new(&g.device, &g.config));
                     self.gpu = Some(g);
                 }
@@ -328,19 +341,29 @@ impl RenderideApp {
             for material_id in self.session.drain_pending_material_unloads() {
                 render_loop.evict_material(material_id);
             }
+            let t1 = Instant::now();
             let main_view_input = MainViewFrameInput::from_session(&mut self.session);
             let window = self.window.as_ref();
-            let t1 = Instant::now();
-            let (render_result, collect_us, render_us) = match window {
+            let (render_result, collect_us, render_us, prep_stats) = match window {
                 None => {
                     logger::warn!("GPU active without window; skipping main view render");
                     let collect_us = t1.elapsed().as_micros() as u64;
-                    (Err(wgpu::SurfaceError::Other), collect_us, 0u64)
+                    (
+                        Err(wgpu::SurfaceError::Other),
+                        collect_us,
+                        0u64,
+                        crate::render::pass::MeshDrawPrepStats::default(),
+                    )
                 }
                 Some(w) => match acquire_surface_texture_with_recovery(gpu, w) {
                     Err(e) => {
                         let collect_us = t1.elapsed().as_micros() as u64;
-                        (Err(e), collect_us, 0u64)
+                        (
+                            Err(e),
+                            collect_us,
+                            0u64,
+                            crate::render::pass::MeshDrawPrepStats::default(),
+                        )
                     }
                     Ok(output) => {
                         let target = RenderTarget::from_surface_texture(output);
@@ -364,23 +387,28 @@ impl RenderideApp {
                         if let Err(ref e) = rendered {
                             recover_from_surface_error(gpu, window, e, "Main view render");
                         }
-                        (rendered, collect_us, render_us)
+                        (rendered, collect_us, render_us, pre_collected.prep_stats)
                     }
                 },
             };
 
             let t3 = Instant::now();
-            if let Ok(target) = render_result
-                && let Some(surface_texture) = target.into_surface_texture()
-            {
-                let suboptimal = surface_texture.suboptimal;
-                surface_texture.present();
-                if suboptimal && let Some(w) = window {
-                    logger::debug!(
-                        "Swapchain suboptimal after present; reconfiguring for next frame"
-                    );
-                    crate::gpu::reconfigure_surface_for_window(gpu, w, None);
-                    w.request_redraw();
+            if let Ok(target) = render_result {
+                if let Some(debug_hud) = self.debug_hud.as_mut()
+                    && let Err(e) = debug_hud.render(&gpu.device, &gpu.queue, &target)
+                {
+                    logger::warn!("Debug HUD render failed: {}", e);
+                }
+                if let Some(surface_texture) = target.into_surface_texture() {
+                    let suboptimal = surface_texture.suboptimal;
+                    surface_texture.present();
+                    if suboptimal && let Some(w) = window {
+                        logger::debug!(
+                            "Swapchain suboptimal after present; reconfiguring for next frame"
+                        );
+                        crate::gpu::reconfigure_surface_for_window(gpu, w, None);
+                        w.request_redraw();
+                    }
                 }
             }
             let present_us = t3.elapsed().as_micros() as u64;
@@ -393,6 +421,48 @@ impl RenderideApp {
             if self.frame_diagnostic.frame_count >= DIAGNOSTIC_LOG_INTERVAL {
                 let gpu_ms = render_loop.last_gpu_mesh_pass_ms();
                 self.frame_diagnostic.log_and_reset(gpu_ms);
+            }
+
+            let batch_count = main_view_input.draw_batches.len();
+            let overlay_batch_count = main_view_input
+                .draw_batches
+                .iter()
+                .filter(|b| b.is_overlay)
+                .count();
+            let total_draws_in_batches: usize = main_view_input
+                .draw_batches
+                .iter()
+                .map(|b| b.draws.len())
+                .sum();
+            let overlay_draws_in_batches: usize = main_view_input
+                .draw_batches
+                .iter()
+                .filter(|b| b.is_overlay)
+                .map(|b| b.draws.len())
+                .sum();
+            let live_sample = LiveFrameDiagnostics {
+                frame_index: self.session.last_frame_index(),
+                viewport: (gpu.config.width.max(1), gpu.config.height.max(1)),
+                session_update_us: session_us,
+                collect_us,
+                render_us,
+                present_us,
+                total_us,
+                gpu_mesh_pass_ms: render_loop.last_gpu_mesh_pass_ms(),
+                batch_count,
+                overlay_batch_count,
+                total_draws_in_batches,
+                overlay_draws_in_batches,
+                prep_stats,
+                mesh_cache_count: gpu.mesh_buffer_cache.len(),
+                pending_render_tasks: self.session.pending_render_task_count(),
+                pending_camera_task_readbacks: render_loop.pending_camera_task_readback_count(),
+                frustum_culling_enabled: self.session.render_config().frustum_culling,
+                rtao_enabled: self.session.render_config().rtao_enabled,
+                ray_tracing_available: gpu.ray_tracing_available,
+            };
+            if let Some(debug_hud) = self.debug_hud.as_mut() {
+                debug_hud.update(live_sample);
             }
         }
 

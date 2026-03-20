@@ -73,6 +73,7 @@ pub struct GpuState {
 /// are disabled in release; use `WGPU_VALIDATION=0` when profiling debug builds.
 pub async fn init_gpu(
     window: &Window,
+    vsync: bool,
 ) -> Result<GpuState, Box<dyn std::error::Error + Send + Sync>> {
     let enabled_backends = wgpu::Instance::enabled_backend_features();
     let use_vulkan_only = enabled_backends.contains(wgpu::Backends::VULKAN);
@@ -197,7 +198,11 @@ pub async fn init_gpu(
                 "surface get_default_config returned None (adapter may not support surface format)",
             )
         })?;
-    config.present_mode = wgpu::PresentMode::Fifo;
+    config.present_mode = if vsync {
+        wgpu::PresentMode::AutoVsync
+    } else {
+        wgpu::PresentMode::AutoNoVsync
+    };
     surface.configure(&device, &config);
     let depth_texture = create_depth_texture(&device, &config);
     let depth_size = (config.width, config.height);

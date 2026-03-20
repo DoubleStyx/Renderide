@@ -324,6 +324,11 @@ impl Session {
         self.primary_camera_task.as_ref()
     }
 
+    /// Number of offscreen render tasks queued for the current tick.
+    pub fn pending_render_task_count(&self) -> usize {
+        self.pending_render_tasks.len()
+    }
+
     /// Returns the space ID for the primary view (diagnostic).
     pub fn primary_view_space_id(&self) -> Option<i32> {
         self.primary_view_space_id

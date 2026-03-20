@@ -10,7 +10,9 @@ use crate::shared::{TransformParentUpdate, TransformPoseUpdate, TransformsUpdate
 
 use super::super::error::SceneError;
 use super::super::pose::{PoseValidation, render_transform_identity};
-use super::super::world_matrices::{SceneCache, fixup_transform_id, mark_descendants_uncomputed};
+use super::super::world_matrices::{
+    SceneCache, fixup_transform_id, mark_descendants_uncomputed, rebuild_children,
+};
 
 /// Applies transform updates: removals, parent changes, pose updates.
 /// Returns transform removals (removed_id, last_index) for skinned mesh fixup.
@@ -47,6 +49,7 @@ pub(crate) fn apply_transforms_update(
             .map(|&i| i as usize)
             .collect();
         indices.sort_by(|a, b| b.cmp(a));
+        indices.dedup(); // Resonite sometimes sends duplicate IDs; removing twice corrupts the scene
         for &idx in &indices {
             if idx >= scene.nodes.len() {
                 continue;
@@ -84,6 +87,8 @@ pub(crate) fn apply_transforms_update(
                 cache.local_dirty.swap_remove(idx);
             }
         }
+        // Structure changed: children cache needs rebuild before next mark_descendants call.
+        cache.children_dirty = true;
     }
 
     while (scene.nodes.len() as i32) < update.target_transform_count {
@@ -102,6 +107,7 @@ pub(crate) fn apply_transforms_update(
         let parents = shm
             .access_with_context::<TransformParentUpdate>(&update.parent_updates, &ctx)
             .map_err(|e| SceneError::SharedMemoryAccess(e.to_string()))?;
+        let mut had_parent_update = false;
         for pu in parents {
             if pu.transform_id < 0 {
                 break;
@@ -109,7 +115,11 @@ pub(crate) fn apply_transforms_update(
             if (pu.transform_id as usize) < scene.node_parents.len() {
                 scene.node_parents[pu.transform_id as usize] = pu.new_parent_id;
                 changed_indices.insert(pu.transform_id as usize);
+                had_parent_update = true;
             }
+        }
+        if had_parent_update {
+            cache.children_dirty = true;
         }
     }
 
@@ -153,7 +163,12 @@ pub(crate) fn apply_transforms_update(
             cache.local_dirty[*i] = true;
         }
     }
-    mark_descendants_uncomputed(&scene.node_parents, &mut cache.computed);
+    // Rebuild children index if structure changed, then propagate dirty flags down.
+    if cache.children_dirty {
+        rebuild_children(&scene.node_parents, scene.nodes.len(), &mut cache.children);
+        cache.children_dirty = false;
+    }
+    mark_descendants_uncomputed(&cache.children, &mut cache.computed);
     world_matrices_dirty.insert(scene_id);
 
     Ok(transform_removals)

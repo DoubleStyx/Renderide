@@ -32,6 +32,10 @@ impl GpuFrameScheduler {
     /// On WebGPU, [`wgpu::Device::poll`] may not block; the host should still call
     /// [`Self::record_submission`] after each matching submit to keep bookkeeping consistent.
     pub fn acquire_frame_index(&mut self, device: &wgpu::Device) -> u64 {
+        // Drain any already-completed submissions with a non-blocking poll first.
+        // This avoids a blocking Wait when the GPU has already finished the oldest frames.
+        let _ = device.poll(wgpu::PollType::Poll);
+
         while self.in_flight.len() >= NUM_FRAMES_IN_FLIGHT {
             let Some((oldest, _)) = self.in_flight.front() else {
                 break;

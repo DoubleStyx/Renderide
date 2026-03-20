@@ -176,6 +176,14 @@ pub fn log_panic(path: impl AsRef<Path>, info: &dyn std::fmt::Display) {
     }
 }
 
+/// Returns true if messages at `level` would be written. Used by macros to skip
+/// argument evaluation when the level is disabled.
+#[doc(hidden)]
+#[inline(always)]
+pub fn is_level_enabled(level: LogLevel) -> bool {
+    LOGGER.get().is_some_and(|l| level <= l.max_level)
+}
+
 /// Internal log writer. Called by the log macros.
 #[doc(hidden)]
 pub fn log(level: LogLevel, args: std::fmt::Arguments<'_>) {
@@ -214,7 +222,9 @@ fn format_timestamp() -> String {
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {
-        $crate::log($crate::LogLevel::Error, format_args!($($arg)*))
+        if $crate::is_level_enabled($crate::LogLevel::Error) {
+            $crate::log($crate::LogLevel::Error, format_args!($($arg)*))
+        }
     };
 }
 
@@ -222,7 +232,9 @@ macro_rules! error {
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)*) => {
-        $crate::log($crate::LogLevel::Warn, format_args!($($arg)*))
+        if $crate::is_level_enabled($crate::LogLevel::Warn) {
+            $crate::log($crate::LogLevel::Warn, format_args!($($arg)*))
+        }
     };
 }
 
@@ -230,7 +242,9 @@ macro_rules! warn {
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {
-        $crate::log($crate::LogLevel::Info, format_args!($($arg)*))
+        if $crate::is_level_enabled($crate::LogLevel::Info) {
+            $crate::log($crate::LogLevel::Info, format_args!($($arg)*))
+        }
     };
 }
 
@@ -238,7 +252,9 @@ macro_rules! info {
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {
-        $crate::log($crate::LogLevel::Debug, format_args!($($arg)*))
+        if $crate::is_level_enabled($crate::LogLevel::Debug) {
+            $crate::log($crate::LogLevel::Debug, format_args!($($arg)*))
+        }
     };
 }
 
@@ -246,6 +262,8 @@ macro_rules! debug {
 #[macro_export]
 macro_rules! trace {
     ($($arg:tt)*) => {
-        $crate::log($crate::LogLevel::Trace, format_args!($($arg)*))
+        if $crate::is_level_enabled($crate::LogLevel::Trace) {
+            $crate::log($crate::LogLevel::Trace, format_args!($($arg)*))
+        }
     };
 }

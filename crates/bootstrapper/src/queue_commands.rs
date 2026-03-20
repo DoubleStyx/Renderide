@@ -1,6 +1,5 @@
 //! IPC queue command handling for Host-to-bootstrapper protocol.
 
-use std::fs;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -9,6 +8,9 @@ use interprocess::{Publisher, Subscriber};
 
 use crate::config::ResoBootConfig;
 use crate::process_lifetime::ChildLifetimeGroup;
+
+#[cfg(target_os = "linux")]
+use std::fs;
 
 /// Parsed host command from the IPC queue.
 #[derive(Debug)]

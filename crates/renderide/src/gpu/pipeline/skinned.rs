@@ -3,6 +3,7 @@
 use nalgebra::Matrix4;
 
 use super::super::mesh::{GpuMeshBuffers, VertexSkinned};
+use super::builder;
 use super::core::{RenderPipeline, UniformData};
 use super::overlay_stencil::OverlayStencilPhase;
 use super::ring_buffer::SkinnedUniformRingBuffer;
@@ -81,55 +82,17 @@ impl SkinnedPipeline {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<VertexSkinned>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 24,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 36,
-                            shader_location: 3,
-                            format: wgpu::VertexFormat::Sint32x4,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 52,
-                            shader_location: 4,
-                            format: wgpu::VertexFormat::Float32x4,
-                        },
-                    ],
+                    attributes: &builder::SKINNED_ATTRIBS,
                 }],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(builder::standard_color_target(config.format))],
                 compilation_options: Default::default(),
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
+            primitive: builder::standard_primitive_state(),
             depth_stencil: Some({
                 let use_stencil = stencil_phase.is_some();
                 let stencil = if let Some(phase) = stencil_phase {

@@ -15,13 +15,13 @@ use super::pipeline::{
 };
 
 /// Key for pipeline lookup: shader_id (None = builtin) and variant.
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
 pub struct PipelineKey(pub Option<i32>, pub PipelineVariant);
 
 /// Variant of render pipeline (debug, skinned, material, PBR).
 ///
 /// Ord is used for draw batching: MaskWrite < Content < MaskClear for GraphicsChunk flow.
-#[derive(Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
 pub enum PipelineVariant {
     /// Normal debug: colors surfaces by smooth normal.
     NormalDebug,

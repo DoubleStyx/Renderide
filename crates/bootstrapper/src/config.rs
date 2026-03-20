@@ -64,8 +64,14 @@ impl ResoBootConfig {
     pub fn new(renderide_log_level: Option<LogLevel>) -> Self {
         let current_directory = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let runtime_config = current_directory.join("Renderite.Host.runtimeconfig.json");
-        let renderite_directory = current_directory.join("target").join("debug");
-        let renderite_executable = renderite_directory.join(if cfg!(windows) {
+        // Derive renderide location from the bootstrapper exe itself — not current_dir(),
+        // which may be the Resonite installation dir when launched by the host.
+        let exe_dir = env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(PathBuf::from))
+            .unwrap_or_else(|| current_directory.clone());
+        let renderite_directory = exe_dir.clone();
+        let renderite_executable = exe_dir.join(if cfg!(windows) {
             "renderide.exe"
         } else {
             "Renderite.Renderer"

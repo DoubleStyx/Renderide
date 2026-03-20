@@ -1,8 +1,27 @@
-//! CPU frustum visibility for rigid meshes using local [`RenderBoundingBox`] and the same
-//! view–projection as [`super::pass::mesh_draw::collect_mesh_draws`].
+//! CPU frustum visibility: rigid and skinned mesh culling.
 //!
-//! Skinned draws are not culled here: bind-pose bounds do not bound deformed vertices, and the
-//! skinned MVP path differs from `view_proj * model_matrix`.
+//! # Module structure
+//!
+//! - [`rigid`]: frustum culling for non-skinned meshes.  Uses the local
+//!   [`RenderBoundingBox`] transformed by the draw's model matrix.
+//! - [`skinned`]: frustum culling for bone-deformed meshes (new).  Builds a world-space
+//!   AABB from the final bone matrices' translation columns and expands it by the mesh's
+//!   largest local half-extent.
+//!
+//! Shared primitives (view-matrix helpers, homogeneous-clip AABB test, bound helpers)
+//! live in this root module and are used by both submodules.
+//!
+//! # Using the culling functions
+//!
+//! ```text
+//! Rigid: call rigid_mesh_potentially_visible(bounds, model_matrix, view_proj) before submitting.
+//! Skinned: prefer bone_world_origins_for_frustum_cull plus
+//! skinned_mesh_potentially_visible_from_bone_origins before full compute_bone_matrices;
+//! tests may use skinned_mesh_potentially_visible with full bone matrices.
+//! ```
+
+pub mod rigid;
+pub mod skinned;
 
 use glam::{Mat4, Vec3, Vec4};
 use nalgebra::{Matrix4, Vector3};
@@ -14,24 +33,32 @@ use crate::shared::RenderBoundingBox;
 use super::batch::SpaceDrawBatch;
 use super::view::ViewParams;
 
-/// Epsilon for homogeneous clip comparisons and behind-camera checks.
-const CLIP_EPS: f32 = 1e-5;
+// ─── Public re-exports ────────────────────────────────────────────────────────
 
-/// Maximum absolute half-extent below which uploaded mesh bounds are treated as **untrusted** for
-/// frustum culling.
+pub use rigid::rigid_mesh_potentially_visible;
+pub use skinned::{
+    skinned_mesh_potentially_visible, skinned_mesh_potentially_visible_from_bone_origins,
+};
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+/// Epsilon for homogeneous clip comparisons and behind-camera checks.
+pub(crate) const CLIP_EPS: f32 = 1e-5;
+
+/// Maximum absolute half-extent below which uploaded mesh bounds are treated as **untrusted**
+/// for frustum culling.
 ///
-/// Hosts may send zero extents when metadata is invalid (see FrooxEngine `Mesh` invalid-bounds
-/// handling), which collapses the culled volume to a single point at local origin and causes false
-/// negatives when vertices extend away from that pivot.
+/// Hosts may send zero extents when metadata is invalid (FrooxEngine `Mesh` invalid-bounds
+/// handling), which collapses the culled volume to a single point at local origin.
 pub(crate) const DEGENERATE_MESH_BOUNDS_EXTENT_EPS: f32 = 1e-8;
 
-/// Below this max half-extent (world-upload units), a successful frustum cull is logged at trace
-/// level as potentially suspicious metadata.
+/// Below this max half-extent (world-upload units), a successful frustum cull is logged at
+/// trace level as potentially suspicious metadata.
 pub(crate) const SUSPICIOUS_MESH_BOUNDS_MAX_EXTENT: f32 = 1e-3;
 
+// ─── View matrix helpers ──────────────────────────────────────────────────────
+
 /// Clamps scale components to avoid degenerate view matrices.
-///
-/// Matches [`super::pass::mesh_draw`] batch view setup.
 fn filter_scale(scale: Vector3<f32>) -> Vector3<f32> {
     const MIN_SCALE: f32 = 1e-8;
     if scale.x.abs() < MIN_SCALE || scale.y.abs() < MIN_SCALE || scale.z.abs() < MIN_SCALE {
@@ -41,25 +68,26 @@ fn filter_scale(scale: Vector3<f32>) -> Vector3<f32> {
     }
 }
 
-/// Applies handedness fix to the view matrix for coordinate system alignment.
+/// Applies the Z-flip for coordinate system alignment (RH engine → Vulkan/WebGPU NDC).
 fn apply_view_handedness_fix(view: Mat4) -> Mat4 {
     let z_flip = Mat4::from_scale(Vec3::new(1.0, 1.0, -1.0));
     z_flip * view
 }
 
-/// World-to-view matrix (`glam`) for a [`SpaceDrawBatch`], matching the view factor in
-/// [`view_proj_glam_for_batch`] (scale filter + handedness fix). Use for clustered light culling
-/// so lights are transformed into the same eye space as rasterized geometry.
+/// World-to-view matrix (`glam`) for a [`SpaceDrawBatch`], matching the mesh pass MVP setup.
+///
+/// Applies scale clamping and handedness fix. Use this for clustered light eye-space transforms
+/// so they are consistent with rasterized geometry.
 pub fn view_matrix_glam_for_batch(batch: &SpaceDrawBatch) -> Mat4 {
     let mut vt = batch.view_transform;
     vt.scale = filter_scale(vt.scale);
     apply_view_handedness_fix(render_transform_to_matrix(&vt).inverse())
 }
 
-/// View–projection matrix (`glam`) for a [`SpaceDrawBatch`], matching mesh pass MVP setup.
+/// View–projection matrix (`glam`) for a [`SpaceDrawBatch`], matching the mesh pass MVP setup.
 ///
-/// Uses the batch’s [`SpaceDrawBatch::view_transform`], optional orthographic overlay override,
-/// and the primary `proj` matrix for non-overlay or when no override is present.
+/// Uses the batch's `view_transform`, and for overlay batches optionally the
+/// `overlay_projection_override` instead of the primary `proj`.
 pub fn view_proj_glam_for_batch(
     batch: &SpaceDrawBatch,
     proj: &Matrix4<f32>,
@@ -75,51 +103,14 @@ pub fn view_proj_glam_for_batch(
     matrix_na_to_glam(&proj_na) * view_mat
 }
 
-/// World-space axis-aligned bounds from a local center/extents box and model matrix.
-fn world_aabb_from_local_bounds(
-    bounds: &RenderBoundingBox,
-    model_matrix: Mat4,
-) -> Option<(Vec3, Vec3)> {
-    let c = bounds.center;
-    let e = bounds.extents;
-    if !(c.x.is_finite()
-        && c.y.is_finite()
-        && c.z.is_finite()
-        && e.x.is_finite()
-        && e.y.is_finite()
-        && e.z.is_finite())
-    {
-        return None;
-    }
-    let ex = e.x.abs();
-    let ey = e.y.abs();
-    let ez = e.z.abs();
-    let min_l = Vec3::new(c.x - ex, c.y - ey, c.z - ez);
-    let max_l = Vec3::new(c.x + ex, c.y + ey, c.z + ez);
-
-    let mut wmin = Vec3::splat(f32::INFINITY);
-    let mut wmax = Vec3::splat(f32::NEG_INFINITY);
-    for x in [min_l.x, max_l.x] {
-        for y in [min_l.y, max_l.y] {
-            for z in [min_l.z, max_l.z] {
-                let p = model_matrix.transform_point3(Vec3::new(x, y, z));
-                if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
-                    return None;
-                }
-                wmin = wmin.min(p);
-                wmax = wmax.max(p);
-            }
-        }
-    }
-    Some((wmin, wmax))
-}
+// ─── Shared homogeneous-clip AABB test ────────────────────────────────────────
 
 /// Returns `true` if the world AABB may intersect the view frustum (homogeneous clip volume).
 ///
 /// Uses WebGPU / Vulkan clip rules before perspective divide: `|x| ≤ w`, `|y| ≤ w`, `0 ≤ z ≤ w`.
-/// The AABB is culled only when it lies entirely outside one of those half-spaces (tested on all
-/// eight corners). Matches reverse-Z projection: visible depth still lies in `[0, w]` in clip space.
-fn world_aabb_visible_in_homogeneous_clip(
+/// The AABB is culled only when it lies entirely outside one of those half-spaces (tested on
+/// all eight corners). Matches reverse-Z projection (visible depth still in `[0, w]` in clip).
+pub(crate) fn world_aabb_visible_in_homogeneous_clip(
     view_proj: Mat4,
     world_min: Vec3,
     world_max: Vec3,
@@ -128,50 +119,40 @@ fn world_aabb_visible_in_homogeneous_clip(
     let ys = [world_min.y, world_max.y];
     let zs = [world_min.z, world_max.z];
 
-    // Behind: all corners have non-positive w (entire box behind or on eye plane).
+    // Behind: all corners have non-positive w (entire box is on or behind the eye plane).
     let mut all_w_nonpositive = true;
-    for &x in &xs {
+    'behind: for &x in &xs {
         for &y in &ys {
             for &z in &zs {
                 let clip = view_proj * Vec4::new(x, y, z, 1.0);
                 if clip.w > CLIP_EPS {
                     all_w_nonpositive = false;
-                    break;
+                    break 'behind;
                 }
             }
-            if !all_w_nonpositive {
-                break;
-            }
-        }
-        if !all_w_nonpositive {
-            break;
         }
     }
     if all_w_nonpositive {
         return false;
     }
 
-    // Left: inside iff x + w >= 0
+    // Left  (x + w >= 0), Right (w - x >= 0), Bottom (y + w >= 0),
+    // Top   (w - y >= 0), Near  (z >= 0),      Far    (z <= w).
     if all_corners_satisfy(&xs, &ys, &zs, view_proj, |p| p.x + p.w < -CLIP_EPS) {
         return false;
     }
-    // Right: inside iff w - x >= 0
     if all_corners_satisfy(&xs, &ys, &zs, view_proj, |p| p.w - p.x < -CLIP_EPS) {
         return false;
     }
-    // Bottom: y + w >= 0
     if all_corners_satisfy(&xs, &ys, &zs, view_proj, |p| p.y + p.w < -CLIP_EPS) {
         return false;
     }
-    // Top: w - y >= 0
     if all_corners_satisfy(&xs, &ys, &zs, view_proj, |p| p.w - p.y < -CLIP_EPS) {
         return false;
     }
-    // Near (Vulkan depth): z >= 0
     if all_corners_satisfy(&xs, &ys, &zs, view_proj, |p| p.z < -CLIP_EPS) {
         return false;
     }
-    // Far: z <= w
     if all_corners_satisfy(&xs, &ys, &zs, view_proj, |p| p.z - p.w > CLIP_EPS) {
         return false;
     }
@@ -179,7 +160,7 @@ fn world_aabb_visible_in_homogeneous_clip(
     true
 }
 
-/// Returns true if `predicate` holds for every world-space corner of the AABB after `view_proj`.
+/// Returns true when `predicate` holds for every world-space corner of the AABB after `view_proj`.
 fn all_corners_satisfy(
     xs: &[f32; 2],
     ys: &[f32; 2],
@@ -200,9 +181,13 @@ fn all_corners_satisfy(
     true
 }
 
-/// Returns `true` when uploaded center/extents are non-finite or all half-extents are below
-/// [`DEGENERATE_MESH_BOUNDS_EXTENT_EPS`]. In those cases frustum culling must not run: the volume
-/// collapses to a point (or is undefined) and is not a reliable proxy for triangle coverage.
+// ─── Bound helpers ────────────────────────────────────────────────────────────
+
+/// Returns `true` when bounds are degenerate: non-finite extents or all half-extents below
+/// [`DEGENERATE_MESH_BOUNDS_EXTENT_EPS`].
+///
+/// In those cases frustum culling must not run: the volume collapses to a point (or is
+/// undefined) and is not a reliable proxy for triangle coverage.
 pub(crate) fn mesh_bounds_degenerate_for_cull(bounds: &RenderBoundingBox) -> bool {
     let e = bounds.extents;
     if !(e.x.is_finite() && e.y.is_finite() && e.z.is_finite()) {
@@ -212,7 +197,7 @@ pub(crate) fn mesh_bounds_degenerate_for_cull(bounds: &RenderBoundingBox) -> boo
     m < DEGENERATE_MESH_BOUNDS_EXTENT_EPS
 }
 
-/// Largest absolute half-extent along any axis (finite components only); `0` if extents are bad.
+/// Largest absolute half-extent along any axis; `0` if extents are non-finite.
 pub(crate) fn mesh_bounds_max_half_extent(bounds: &RenderBoundingBox) -> f32 {
     let e = bounds.extents;
     if !(e.x.is_finite() && e.y.is_finite() && e.z.is_finite()) {
@@ -221,25 +206,7 @@ pub(crate) fn mesh_bounds_max_half_extent(bounds: &RenderBoundingBox) -> f32 {
     e.x.abs().max(e.y.abs()).max(e.z.abs())
 }
 
-/// Whether a rigid mesh draw should be submitted: local bounds transformed by `model_matrix`,
-/// tested against `view_proj`.
-///
-/// Returns `true` if the draw should be kept (visible or indeterminate). Returns `true` when bounds
-/// are **non-finite** in world space, or when local half-extents are degenerate per
-/// [`mesh_bounds_degenerate_for_cull`] (conservative: do not cull).
-pub fn rigid_mesh_potentially_visible(
-    bounds: &RenderBoundingBox,
-    model_matrix: Mat4,
-    view_proj: Mat4,
-) -> bool {
-    if mesh_bounds_degenerate_for_cull(bounds) {
-        return true;
-    }
-    let Some((wmin, wmax)) = world_aabb_from_local_bounds(bounds, model_matrix) else {
-        return true;
-    };
-    world_aabb_visible_in_homogeneous_clip(view_proj, wmin, wmax)
-}
+// ─── Tests: view-matrix helpers ───────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -252,85 +219,6 @@ mod tests {
 
     fn perspective_proj(aspect: f32) -> Matrix4<f32> {
         reverse_z_projection(aspect, 60f32.to_radians(), 0.1, 100.0)
-    }
-
-    fn look_vp_naive() -> (Matrix4<f32>, Mat4) {
-        let view = NaMatrix4::look_at_rh(
-            &Point3::new(0.0, 0.0, 5.0),
-            &Point3::new(0.0, 0.0, 0.0),
-            &NaVector3::new(0.0, 1.0, 0.0),
-        );
-        let proj = perspective_proj(1.0);
-        let vp = matrix_na_to_glam(&(proj * view));
-        (proj, vp)
-    }
-
-    #[test]
-    fn box_in_front_of_camera_visible() {
-        let (_proj, vp) = look_vp_naive();
-        let bounds = RenderBoundingBox {
-            center: nalgebra::Vector3::new(0.0, 0.0, 0.0),
-            extents: nalgebra::Vector3::new(0.5, 0.5, 0.5),
-        };
-        let model = Mat4::IDENTITY;
-        assert!(rigid_mesh_potentially_visible(&bounds, model, vp));
-    }
-
-    #[test]
-    fn box_behind_camera_culled() {
-        let (_proj, vp) = look_vp_naive();
-        let bounds = RenderBoundingBox {
-            center: nalgebra::Vector3::new(0.0, 0.0, 20.0),
-            extents: nalgebra::Vector3::new(0.5, 0.5, 0.5),
-        };
-        let model = Mat4::IDENTITY;
-        assert!(!rigid_mesh_potentially_visible(&bounds, model, vp));
-    }
-
-    #[test]
-    fn box_far_left_outside_frustum_culled() {
-        let (_proj, vp) = look_vp_naive();
-        let bounds = RenderBoundingBox {
-            center: nalgebra::Vector3::new(50.0, 0.0, 0.0),
-            extents: nalgebra::Vector3::new(0.5, 0.5, 0.5),
-        };
-        let model = Mat4::IDENTITY;
-        assert!(!rigid_mesh_potentially_visible(&bounds, model, vp));
-    }
-
-    #[test]
-    fn mesh_bounds_degenerate_for_cull_detects_zero_extents() {
-        let b = RenderBoundingBox {
-            center: NaVector3::zeros(),
-            extents: NaVector3::zeros(),
-        };
-        assert!(mesh_bounds_degenerate_for_cull(&b));
-        let b2 = RenderBoundingBox {
-            center: NaVector3::zeros(),
-            extents: NaVector3::new(1.0, 1.0, 1.0),
-        };
-        assert!(!mesh_bounds_degenerate_for_cull(&b2));
-    }
-
-    /// Regression: host invalid bounds → zero extents at local origin would collapse to one world
-    /// point; a tight box at the same center is culled, but degenerate bounds must stay visible.
-    #[test]
-    fn degenerate_zero_extents_conservative_not_culled() {
-        let (_proj, vp) = look_vp_naive();
-        let tight = RenderBoundingBox {
-            center: NaVector3::new(50.0, 0.0, 0.0),
-            extents: NaVector3::new(0.5, 0.5, 0.5),
-        };
-        assert!(!rigid_mesh_potentially_visible(&tight, Mat4::IDENTITY, vp));
-        let degenerate = RenderBoundingBox {
-            center: NaVector3::new(50.0, 0.0, 0.0),
-            extents: NaVector3::zeros(),
-        };
-        assert!(rigid_mesh_potentially_visible(
-            &degenerate,
-            Mat4::IDENTITY,
-            vp
-        ));
     }
 
     /// [`view_proj_glam_for_batch`] must match `P * z_flip * V` for the same camera pose.

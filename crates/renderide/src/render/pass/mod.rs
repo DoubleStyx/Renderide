@@ -107,6 +107,69 @@ pub(crate) type CachedMeshDraws = (
     Vec<mesh_draw::BatchedDraw>,
 );
 
+/// CPU mesh-draw prep counters for one frame.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MeshDrawPrepStats {
+    /// Total draws visited across all batches before mesh/GPU validation.
+    pub total_input_draws: usize,
+    /// Total non-skinned draws visited.
+    pub rigid_input_draws: usize,
+    /// Total skinned draws visited.
+    pub skinned_input_draws: usize,
+    /// Submitted rigid draws after CPU culling/validation.
+    pub submitted_rigid_draws: usize,
+    /// Submitted skinned draws after validation.
+    pub submitted_skinned_draws: usize,
+    /// Rigid draws rejected by CPU frustum culling.
+    pub frustum_culled_rigid_draws: usize,
+    /// Skinned draws rejected by CPU frustum culling (bone-position AABB test).
+    pub frustum_culled_skinned_draws: usize,
+    /// Rigid draws kept because upload bounds were degenerate, so culling was skipped.
+    pub skipped_cull_degenerate_bounds: usize,
+    /// Draws skipped because `mesh_asset_id < 0`.
+    pub skipped_invalid_mesh_asset_id: usize,
+    /// Draws skipped because the mesh asset was not found.
+    pub skipped_missing_mesh_asset: usize,
+    /// Draws skipped because the mesh had no vertices or indices.
+    pub skipped_empty_mesh: usize,
+    /// Draws skipped because GPU buffers were not resident.
+    pub skipped_missing_gpu_buffers: usize,
+    /// Skinned draws skipped because bind poses were missing.
+    pub skipped_skinned_missing_bind_poses: usize,
+    /// Skinned draws skipped because bone IDs were missing or empty.
+    pub skipped_skinned_missing_bone_ids: usize,
+    /// Skinned draws skipped because bone ID count exceeded bind pose count.
+    pub skipped_skinned_id_count_mismatch: usize,
+    /// Skinned draws skipped because the skinned vertex buffer was missing.
+    pub skipped_skinned_missing_vertex_buffer: usize,
+}
+
+impl MeshDrawPrepStats {
+    /// Total draws submitted after prep.
+    pub fn submitted_draws(&self) -> usize {
+        self.submitted_rigid_draws + self.submitted_skinned_draws
+    }
+
+    fn accumulate(&mut self, other: &Self) {
+        self.total_input_draws += other.total_input_draws;
+        self.rigid_input_draws += other.rigid_input_draws;
+        self.skinned_input_draws += other.skinned_input_draws;
+        self.submitted_rigid_draws += other.submitted_rigid_draws;
+        self.submitted_skinned_draws += other.submitted_skinned_draws;
+        self.frustum_culled_rigid_draws += other.frustum_culled_rigid_draws;
+        self.frustum_culled_skinned_draws += other.frustum_culled_skinned_draws;
+        self.skipped_cull_degenerate_bounds += other.skipped_cull_degenerate_bounds;
+        self.skipped_invalid_mesh_asset_id += other.skipped_invalid_mesh_asset_id;
+        self.skipped_missing_mesh_asset += other.skipped_missing_mesh_asset;
+        self.skipped_empty_mesh += other.skipped_empty_mesh;
+        self.skipped_missing_gpu_buffers += other.skipped_missing_gpu_buffers;
+        self.skipped_skinned_missing_bind_poses += other.skipped_skinned_missing_bind_poses;
+        self.skipped_skinned_missing_bone_ids += other.skipped_skinned_missing_bone_ids;
+        self.skipped_skinned_id_count_mismatch += other.skipped_skinned_id_count_mismatch;
+        self.skipped_skinned_missing_vertex_buffer += other.skipped_skinned_missing_vertex_buffer;
+    }
+}
+
 /// Reference to cached mesh draws for render pass context.
 pub(crate) type CachedMeshDrawsRef<'a> = (
     &'a [mesh_draw::SkinnedBatchedDraw],
@@ -126,7 +189,7 @@ fn run_collect_mesh_draws(
     gpu: &crate::gpu::GpuState,
     proj: Matrix4<f32>,
     overlay_projection_override: Option<ViewParams>,
-) -> CachedMeshDraws {
+) -> (CachedMeshDraws, MeshDrawPrepStats) {
     let collect_ctx = CollectMeshDrawsContext {
         session,
         draw_batches,
@@ -134,7 +197,17 @@ fn run_collect_mesh_draws(
         proj,
         overlay_projection_override,
     };
-    collect_mesh_draws(&collect_ctx)
+    let (non_overlay_skinned, overlay_skinned, non_overlay_non_skinned, overlay_non_skinned, stats) =
+        collect_mesh_draws(&collect_ctx);
+    (
+        (
+            non_overlay_skinned,
+            overlay_skinned,
+            non_overlay_non_skinned,
+            overlay_non_skinned,
+        ),
+        stats,
+    )
 }
 
 /// Pre-collected mesh draws and view parameters for the main view.
@@ -149,6 +222,8 @@ pub struct PreCollectedFrameData {
     pub overlay_projection_override: Option<ViewParams>,
     /// Cached mesh draws for mesh and overlay passes.
     pub(crate) cached_mesh_draws: CachedMeshDraws,
+    /// CPU-side mesh draw preparation counters for diagnostics.
+    pub prep_stats: MeshDrawPrepStats,
 }
 
 /// Prepares mesh draws for the main view during the collect phase.
@@ -172,7 +247,7 @@ pub fn prepare_mesh_draws_for_view(
     let proj = view_params.to_projection_matrix();
     let overlay_projection_override =
         ViewParams::overlay_projection_for_frame(session, draw_batches, aspect);
-    let cached_mesh_draws = run_collect_mesh_draws(
+    let (cached_mesh_draws, prep_stats) = run_collect_mesh_draws(
         session,
         draw_batches,
         gpu,
@@ -183,6 +258,7 @@ pub fn prepare_mesh_draws_for_view(
         proj,
         overlay_projection_override,
         cached_mesh_draws,
+        prep_stats,
     }
 }
 
@@ -1032,12 +1108,8 @@ impl RenderGraph {
                     ctx.proj,
                     ctx.overlay_projection_override.clone(),
                 );
-                Some((
-                    &computed.0[..],
-                    &computed.1[..],
-                    &computed.2[..],
-                    &computed.3[..],
-                ))
+                let cached = &computed.0;
+                Some((&cached.0[..], &cached.1[..], &cached.2[..], &cached.3[..]))
             }
         };
 
@@ -1125,12 +1197,17 @@ impl RenderGraph {
 }
 
 /// Ensures all meshes referenced by draw batches are in the GPU mesh buffer cache.
+///
+/// When ray tracing is available, BLAS builds are submitted as separate queue submissions
+/// (one per new mesh). After all builds, waits for those submissions to complete so the
+/// TLAS build in the same frame (`update_tlas`) can safely reference the BLASes.
 fn ensure_mesh_buffers(
     gpu: &mut crate::gpu::GpuState,
     session: &crate::session::Session,
     draw_batches: &[SpaceDrawBatch],
 ) {
     let mesh_assets = session.asset_registry();
+    let mut built_any_blas = false;
     for batch in draw_batches {
         for d in &batch.draws {
             if d.mesh_asset_id < 0 {
@@ -1159,10 +1236,22 @@ fn ensure_mesh_buffers(
                             crate::gpu::build_blas_for_mesh(&gpu.device, &gpu.queue, mesh, &b)
                     {
                         accel.insert(d.mesh_asset_id, blas);
+                        built_any_blas = true;
                     }
                 }
             }
         }
+    }
+
+    // Each build_blas_for_mesh call submits a separate queue submission. The TLAS build
+    // (update_tlas) in the same frame records into the main encoder and references these
+    // BLASes. Without waiting, the GPU may still be executing the BLAS build submissions
+    // when the TLAS build tries to read them, causing a GPU fault / TDR crash on large scenes.
+    if built_any_blas {
+        let _ = gpu.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
     }
 }
 

@@ -701,16 +701,29 @@ fn build_skinned_vertices(
             DEFAULT_TANGENT
         };
 
-        let n = bone_counts.get(i).copied().unwrap_or(0) as usize;
-        let n = n.min(4);
+        let n_raw = bone_counts.get(i).copied().unwrap_or(0) as usize;
+        let n = n_raw.min(4);
         let mut indices = [0i32; 4];
         let mut weights = [0.0f32; 4];
         for j in 0..n {
             if weight_offset + 8 <= bone_weights.len() {
                 let w: BoneWeightPod =
                     bytemuck::pod_read_unaligned(&bone_weights[weight_offset..weight_offset + 8]);
-                indices[j] = w.bone_index.clamp(0, 255);
-                weights[j] = w.weight;
+                if w.bone_index < 0 {
+                    // Invalid/unmapped bone: zero the weight so it has no effect.
+                    indices[j] = 0;
+                    weights[j] = 0.0;
+                } else {
+                    indices[j] = w.bone_index.clamp(0, 255);
+                    weights[j] = w.weight;
+                }
+                weight_offset += 8;
+            }
+        }
+        // Consume any excess entries (beyond the 4-influence GPU limit) to keep
+        // weight_offset aligned for subsequent vertices.
+        for _ in n..n_raw {
+            if weight_offset + 8 <= bone_weights.len() {
                 weight_offset += 8;
             }
         }

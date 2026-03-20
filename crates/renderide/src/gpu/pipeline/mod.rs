@@ -1,7 +1,15 @@
 //! Pipeline abstraction: RenderPipeline trait, PipelineManager, and concrete implementations.
 //!
-//! Extension point for pipelines, materials, PBR.
+//! # Structure
+//! - [`core`]: `RenderPipeline` trait, `UniformData`, and shared ring-buffer constants.
+//! - [`builder`]: shared construction helpers (primitive state, depth-stencil, color targets,
+//!   bind group layouts). Reduces per-pipeline boilerplate until runtime pipeline assembly lands.
+//! - [`shaders`]: WGSL source strings, split by pipeline family into a `shaders/` subdirectory.
+//! - [`uniforms`]: GPU-side uniform struct layouts (`Uniforms`, `SkinnedUniforms`, `SceneUniforms`).
+//! - [`ring_buffer`]: `UniformRingBuffer` and `SkinnedUniformRingBuffer` for batched uniform upload.
+//! - One file per concrete pipeline type; MRT variants share `mrt.rs`.
 
+pub(crate) mod builder;
 mod core;
 pub(crate) mod mrt;
 mod normal_debug;

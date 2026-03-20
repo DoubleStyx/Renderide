@@ -181,6 +181,11 @@ impl RenderLoop {
         self.last_gpu_mesh_pass_ms
     }
 
+    /// Number of offscreen camera readbacks waiting for GPU mapping completion.
+    pub fn pending_camera_task_readback_count(&self) -> usize {
+        self.pending_camera_task_readbacks.len()
+    }
+
     /// Evicts pipelines for the given material. Call when a material is unloaded to avoid unbounded registry growth.
     pub fn evict_material(&mut self, material_id: i32) {
         self.pipeline_manager.evict_material(material_id);
