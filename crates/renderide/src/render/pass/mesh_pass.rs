@@ -5,11 +5,12 @@
 
 use super::mesh_draw::{self, MeshDrawParams, record_non_skinned_draws, record_skinned_draws};
 use super::{PassResources, RenderPass, RenderPassContext, RenderPassError, ResourceSlot};
+use crate::gpu::pipeline::{RT_SHADOW_MODE_ATLAS, RT_SHADOW_MODE_TRACE};
 use crate::render::batch::SpaceDrawBatch;
 use crate::session::Session;
 
 /// Non-overlay batch used for PBR and clustered lighting: same selection as [`super::ClusteredLightPass`].
-fn pbr_primary_view_batch<'a>(
+pub(crate) fn pbr_primary_view_batch<'a>(
     draw_batches: &'a [SpaceDrawBatch],
     session: &'a Session,
 ) -> Option<&'a SpaceDrawBatch> {
@@ -29,7 +30,7 @@ fn pbr_primary_view_batch<'a>(
 }
 
 /// Third column of world-to-view (Z row for column vectors): `view_z = dot(xyz, world_pos) + w`.
-fn pbr_view_space_z_coeffs_for_batch(batch: &SpaceDrawBatch) -> [f32; 4] {
+pub(crate) fn pbr_view_space_z_coeffs_for_batch(batch: &SpaceDrawBatch) -> [f32; 4] {
     let view = crate::render::visibility::view_matrix_glam_for_batch(batch);
     [view.x_axis.z, view.y_axis.z, view.z_axis.z, view.w_axis.z]
 }
@@ -124,6 +125,16 @@ impl RenderPass for MeshRenderPass {
                 .write_mrt_gbuffer_origin(&ctx.gpu.queue, mrt_world_origin);
         }
 
+        let use_ray_tracing_scene_early = {
+            let rt = ctx.gpu.ray_tracing_state.as_ref();
+            ctx.session.render_config().ray_traced_shadows_enabled
+                && ctx.gpu.ray_tracing_available
+                && rt.is_some_and(|r| r.tlas.is_some())
+        };
+        if use_ray_tracing_scene_early {
+            ctx.gpu.ensure_rt_shadow_bind_resources();
+        }
+
         let mrt_gbuffer_origin_bind_group = if use_mrt {
             ctx.gpu.mrt_gbuffer_origin_bind_group.as_ref()
         } else {
@@ -132,6 +143,8 @@ impl RenderPass for MeshRenderPass {
 
         let light_buffer_version = ctx.gpu.light_buffer_cache.version;
         let cluster_buffer_version = ctx.gpu.cluster_buffer_cache.version;
+
+        let rt_state = ctx.gpu.ray_tracing_state.as_ref();
 
         let cluster_buffers = ctx
             .gpu
@@ -147,6 +160,69 @@ impl RenderPass for MeshRenderPass {
             && ctx.gpu.cluster_count_z > 0;
         let cluster_buffers_is_none = cluster_buffers.is_none();
         let light_buffer_is_none = light_buffer.is_none();
+
+        let pbr_tlas_generation = rt_state.map(|r| r.tlas_generation).unwrap_or(0);
+        let use_ray_tracing_scene = use_ray_tracing_scene_early;
+        let pbr_tlas_ptr = if use_ray_tracing_scene {
+            rt_state.and_then(|r| {
+                r.tlas.as_ref().map(|t| {
+                    std::ptr::NonNull::new(t as *const wgpu::Tlas as *mut wgpu::Tlas)
+                        .expect("TLAS reference must be non-null")
+                })
+            })
+        } else {
+            None
+        };
+
+        let rc = ctx.session.render_config();
+        let shadow_mode = if self.rtao_mrt_graph
+            && rc.ray_traced_shadows_use_compute
+            && rc.ray_traced_shadows_enabled
+            && ctx.gpu.ray_tracing_available
+            && ctx.gpu.rt_shadow_atlas_main_view.is_some()
+        {
+            RT_SHADOW_MODE_ATLAS
+        } else {
+            RT_SHADOW_MODE_TRACE
+        };
+        let rt_shadow_bind = if use_ray_tracing_scene {
+            let uniform_buffer = ctx
+                .gpu
+                .rt_shadow_uniform_buffer
+                .as_ref()
+                .expect("ensure_rt_shadow_bind_resources creates rt shadow uniform buffer");
+            let fallback_atlas = ctx
+                .gpu
+                .rt_shadow_fallback_atlas_view
+                .as_ref()
+                .expect("ensure_rt_shadow_bind_resources creates fallback atlas");
+            let atlas_view = ctx
+                .gpu
+                .rt_shadow_atlas_main_view
+                .as_ref()
+                .unwrap_or(fallback_atlas);
+            let sampler = ctx
+                .gpu
+                .rt_shadow_sampler
+                .as_ref()
+                .expect("ensure_rt_shadow_bind_resources creates rt shadow sampler");
+            let (atlas_width, atlas_height) = ctx.gpu.rt_shadow_atlas_extent.unwrap_or((1, 1));
+            Some(mesh_draw::RtShadowBindParams {
+                uniform_buffer,
+                atlas_view,
+                sampler,
+                soft_samples: rc.rt_soft_shadow_samples,
+                cone_scale: rc.rt_soft_shadow_cone_scale,
+                shadow_mode,
+                full_viewport_width: viewport_width,
+                full_viewport_height: viewport_height,
+                atlas_width,
+                atlas_height,
+                gbuffer_origin: mrt_world_origin,
+            })
+        } else {
+            None
+        };
 
         let pbr_scene = match (cluster_buffers, light_buffer, cluster_counts_ok) {
             (Some(crefs), Some(lb), true) => {
@@ -168,6 +244,7 @@ impl RenderPass for MeshRenderPass {
                     light_buffer: lb,
                     cluster_light_counts: crefs.cluster_light_counts,
                     cluster_light_indices: crefs.cluster_light_indices,
+                    use_ray_tracing_scene,
                 })
             }
             _ => {
@@ -208,9 +285,17 @@ impl RenderPass for MeshRenderPass {
             pbr_scene_bind_group_cache: &mut ctx.gpu.pbr_scene_bind_group_cache,
             last_pbr_scene_cache_light_version: &mut ctx.gpu.last_pbr_scene_cache_light_version,
             last_pbr_scene_cache_cluster_version: &mut ctx.gpu.last_pbr_scene_cache_cluster_version,
+            last_pbr_scene_cache_tlas_generation: &mut ctx.gpu.last_pbr_scene_cache_tlas_generation,
             light_buffer_version,
             cluster_buffer_version,
+            pbr_tlas_generation,
+            pbr_tlas_ptr,
             mrt_gbuffer_origin_bind_group,
+            rt_shadow_atlas_generation: ctx.gpu.rt_shadow_atlas_generation,
+            last_pbr_scene_cache_rt_shadow_atlas_generation: &mut ctx
+                .gpu
+                .last_pbr_scene_cache_rt_shadow_atlas_generation,
+            rt_shadow_bind,
         };
 
         let timestamp_writes =

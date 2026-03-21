@@ -7,7 +7,7 @@ use glam::Mat4;
 use nalgebra::Matrix4;
 
 use super::mesh_prep::MeshDrawPrepStats;
-use crate::gpu::pipeline::SceneUniforms;
+use crate::gpu::pipeline::{RtShadowSceneBind, RtShadowUniforms, SceneUniforms};
 use crate::gpu::{GpuMeshBuffers, PipelineKey, PipelineManager, PipelineVariant, RenderPipeline};
 use crate::render::SpaceDrawBatch;
 use crate::render::visibility::view_proj_glam_for_batch;
@@ -100,12 +100,43 @@ pub(super) struct MeshDrawParams<'a> {
     pub(super) last_pbr_scene_cache_light_version: &'a mut u64,
     /// Last cluster buffer version when cache was valid.
     pub(super) last_pbr_scene_cache_cluster_version: &'a mut u64,
+    /// Last TLAS generation when PBR scene bind groups were cached.
+    pub(super) last_pbr_scene_cache_tlas_generation: &'a mut u64,
     /// Current light buffer version (for cache invalidation).
     pub(super) light_buffer_version: u64,
     /// Current cluster buffer version (for cache invalidation).
     pub(super) cluster_buffer_version: u64,
+    /// Current [`crate::gpu::RayTracingState::tlas_generation`] for PBR scene cache invalidation.
+    pub(super) pbr_tlas_generation: u64,
+    /// TLAS for PBR ray-query scene bind group; points at [`crate::gpu::RayTracingState::tlas`].
+    ///
+    /// Valid only for this render pass encode: the mesh pass runs before the next frame replaces
+    /// the TLAS. Used to avoid overlapping `&mut GpuState` with a `&Tlas` into the same state.
+    pub(super) pbr_tlas_ptr: Option<std::ptr::NonNull<wgpu::Tlas>>,
     /// Bind group 1 for [`crate::gpu::PipelineVariant::NormalDebugMRT`], [`crate::gpu::PipelineVariant::UvDebugMRT`], [`crate::gpu::PipelineVariant::SkinnedMRT`].
     pub(super) mrt_gbuffer_origin_bind_group: Option<&'a wgpu::BindGroup>,
+    /// Current [`crate::gpu::GpuState::rt_shadow_atlas_generation`] for PBR ray-query cache invalidation.
+    pub(super) rt_shadow_atlas_generation: u64,
+    /// Last shadow-atlas generation applied to [`Self::pbr_scene_bind_group_cache`].
+    pub(super) last_pbr_scene_cache_rt_shadow_atlas_generation: &'a mut u64,
+    /// When set with ray-query PBR, uploads [`RtShadowUniforms`] and binds group 1 slots 5–7.
+    pub(super) rt_shadow_bind: Option<RtShadowBindParams<'a>>,
+}
+
+/// Resources and per-frame tuning for PBR ray-query shadow bindings (scene group 1, bindings 5–7).
+pub(super) struct RtShadowBindParams<'a> {
+    /// Uniform buffer for [`RtShadowUniforms`]; written each time a ray-query scene bind group is created.
+    pub uniform_buffer: &'a wgpu::Buffer,
+    pub atlas_view: &'a wgpu::TextureView,
+    pub sampler: &'a wgpu::Sampler,
+    pub soft_samples: u32,
+    pub cone_scale: f32,
+    pub shadow_mode: u32,
+    pub full_viewport_width: u32,
+    pub full_viewport_height: u32,
+    pub atlas_width: u32,
+    pub atlas_height: u32,
+    pub gbuffer_origin: [f32; 3],
 }
 
 /// Parameters for PBR scene bind group creation.
@@ -124,6 +155,18 @@ pub(super) struct PbrSceneParams<'a> {
     pub(super) light_buffer: &'a wgpu::Buffer,
     pub(super) cluster_light_counts: &'a wgpu::Buffer,
     pub(super) cluster_light_indices: &'a wgpu::Buffer,
+    /// When true, mesh pass selects `*RayQuery` pipeline variants and binds the TLAS.
+    pub(super) use_ray_tracing_scene: bool,
+}
+
+fn pbr_variant_is_ray_query(variant: PipelineVariant) -> bool {
+    matches!(
+        variant,
+        PipelineVariant::PbrRayQuery
+            | PipelineVariant::PbrMRTRayQuery
+            | PipelineVariant::SkinnedPbrRayQuery
+            | PipelineVariant::SkinnedPbrMRTRayQuery
+    )
 }
 
 /// Gets or creates a PBR scene bind group from the cache.
@@ -146,13 +189,19 @@ fn get_or_create_pbr_scene_bind_group<'a>(
     light_buffer: &wgpu::Buffer,
     cluster_light_counts: &wgpu::Buffer,
     cluster_light_indices: &wgpu::Buffer,
+    scene_tlas: Option<std::ptr::NonNull<wgpu::Tlas>>,
 ) -> Option<&'a wgpu::BindGroup> {
     if *params.last_pbr_scene_cache_light_version != params.light_buffer_version
         || *params.last_pbr_scene_cache_cluster_version != params.cluster_buffer_version
+        || *params.last_pbr_scene_cache_tlas_generation != params.pbr_tlas_generation
+        || *params.last_pbr_scene_cache_rt_shadow_atlas_generation
+            != params.rt_shadow_atlas_generation
     {
         params.pbr_scene_bind_group_cache.clear();
         *params.last_pbr_scene_cache_light_version = params.light_buffer_version;
         *params.last_pbr_scene_cache_cluster_version = params.cluster_buffer_version;
+        *params.last_pbr_scene_cache_tlas_generation = params.pbr_tlas_generation;
+        *params.last_pbr_scene_cache_rt_shadow_atlas_generation = params.rt_shadow_atlas_generation;
     }
     let scene = SceneUniforms {
         view_position,
@@ -168,10 +217,45 @@ fn get_or_create_pbr_scene_bind_group<'a>(
         viewport_height,
     };
     pipeline.write_scene_uniform(params.queue, bytemuck::bytes_of(&scene));
+    let tlas_ref = scene_tlas.map(|p| {
+        // SAFETY: `p` comes from `RayTracingState::tlas` for this frame; mesh pass does not drop
+        // or replace TLAS until after this encode (see `RenderGraph::execute`).
+        unsafe { p.as_ref() }
+    });
+    if pbr_variant_is_ray_query(variant) {
+        let rb = params.rt_shadow_bind.as_ref()?;
+        let u = RtShadowUniforms {
+            soft_shadow_sample_count: rb.soft_samples.clamp(1, 16),
+            soft_cone_scale: rb.cone_scale,
+            frame_counter: params.frame_index as u32,
+            shadow_mode: rb.shadow_mode,
+            full_viewport_width: rb.full_viewport_width,
+            full_viewport_height: rb.full_viewport_height,
+            shadow_atlas_width: rb.atlas_width.max(1),
+            shadow_atlas_height: rb.atlas_height.max(1),
+            gbuffer_origin: rb.gbuffer_origin,
+            _pad0: 0.0,
+        };
+        params
+            .queue
+            .write_buffer(rb.uniform_buffer, 0, bytemuck::bytes_of(&u));
+    }
     let bg = params
         .pbr_scene_bind_group_cache
         .entry(variant)
         .or_insert_with(|| {
+            let rt_shadow = if pbr_variant_is_ray_query(variant) {
+                let rb = params.rt_shadow_bind.as_ref().expect(
+                    "ray-query PBR scene bind group requires MeshDrawParams::rt_shadow_bind",
+                );
+                Some(RtShadowSceneBind {
+                    uniform_buffer: rb.uniform_buffer,
+                    atlas_view: rb.atlas_view,
+                    sampler: rb.sampler,
+                })
+            } else {
+                None
+            };
             pipeline
                 .create_scene_bind_group(
                     params.device,
@@ -189,6 +273,8 @@ fn get_or_create_pbr_scene_bind_group<'a>(
                     light_buffer,
                     cluster_light_counts,
                     cluster_light_indices,
+                    tlas_ref,
+                    rt_shadow,
                 )
                 .expect("PBR pipeline must create scene bind group")
         });
@@ -499,12 +585,17 @@ fn resolve_pipeline_for_group(
     params: &MeshDrawParams,
     is_overlay_group: bool,
 ) -> PipelineVariant {
+    let pbr_ray_query = params
+        .pbr_scene
+        .as_ref()
+        .is_some_and(|p| p.use_ray_tracing_scene);
     overlay_pipeline_variant_for_orthographic(
         &mesh_pipeline_variant_for_mrt(
             variant,
             params.use_mrt,
             params.use_pbr,
             params.pbr_scene.is_some(),
+            pbr_ray_query,
         ),
         params.overlay_orthographic && is_overlay_group,
     )
@@ -530,8 +621,12 @@ pub(super) fn overlay_pipeline_variant_for_orthographic(
         | PipelineVariant::OverlayStencilMaskClearSkinned => *variant,
         PipelineVariant::Pbr
         | PipelineVariant::PbrMRT
+        | PipelineVariant::PbrRayQuery
+        | PipelineVariant::PbrMRTRayQuery
         | PipelineVariant::SkinnedPbr
-        | PipelineVariant::SkinnedPbrMRT => *variant,
+        | PipelineVariant::SkinnedPbrMRT
+        | PipelineVariant::SkinnedPbrRayQuery
+        | PipelineVariant::SkinnedPbrMRTRayQuery => *variant,
         _ => *variant,
     }
 }
@@ -544,23 +639,54 @@ pub(super) fn mesh_pipeline_variant_for_mrt(
     use_mrt: bool,
     use_pbr: bool,
     has_pbr_scene: bool,
+    pbr_ray_query: bool,
 ) -> PipelineVariant {
     if !has_pbr_scene {
         return match variant {
-            PipelineVariant::Pbr => PipelineVariant::NormalDebug,
-            PipelineVariant::SkinnedPbr => PipelineVariant::Skinned,
-            PipelineVariant::PbrMRT => PipelineVariant::NormalDebugMRT,
-            PipelineVariant::SkinnedPbrMRT => PipelineVariant::SkinnedMRT,
+            PipelineVariant::Pbr | PipelineVariant::PbrRayQuery => PipelineVariant::NormalDebug,
+            PipelineVariant::SkinnedPbr | PipelineVariant::SkinnedPbrRayQuery => {
+                PipelineVariant::Skinned
+            }
+            PipelineVariant::PbrMRT | PipelineVariant::PbrMRTRayQuery => {
+                PipelineVariant::NormalDebugMRT
+            }
+            PipelineVariant::SkinnedPbrMRT | PipelineVariant::SkinnedPbrMRTRayQuery => {
+                PipelineVariant::SkinnedMRT
+            }
             _ => *variant,
         };
     }
     if use_mrt && use_pbr && has_pbr_scene {
         return match variant {
-            PipelineVariant::NormalDebug => PipelineVariant::PbrMRT,
+            PipelineVariant::NormalDebug => {
+                if pbr_ray_query {
+                    PipelineVariant::PbrMRTRayQuery
+                } else {
+                    PipelineVariant::PbrMRT
+                }
+            }
             PipelineVariant::UvDebug => PipelineVariant::UvDebugMRT,
-            PipelineVariant::Skinned => PipelineVariant::SkinnedPbrMRT,
-            PipelineVariant::Pbr => PipelineVariant::PbrMRT,
-            PipelineVariant::SkinnedPbr => PipelineVariant::SkinnedPbrMRT,
+            PipelineVariant::Skinned => {
+                if pbr_ray_query {
+                    PipelineVariant::SkinnedPbrMRTRayQuery
+                } else {
+                    PipelineVariant::SkinnedPbrMRT
+                }
+            }
+            PipelineVariant::Pbr | PipelineVariant::PbrRayQuery => {
+                if pbr_ray_query {
+                    PipelineVariant::PbrMRTRayQuery
+                } else {
+                    PipelineVariant::PbrMRT
+                }
+            }
+            PipelineVariant::SkinnedPbr | PipelineVariant::SkinnedPbrRayQuery => {
+                if pbr_ray_query {
+                    PipelineVariant::SkinnedPbrMRTRayQuery
+                } else {
+                    PipelineVariant::SkinnedPbrMRT
+                }
+            }
             _ => *variant,
         };
     }
@@ -574,8 +700,34 @@ pub(super) fn mesh_pipeline_variant_for_mrt(
     }
     if use_pbr && has_pbr_scene {
         return match variant {
-            PipelineVariant::NormalDebug => PipelineVariant::Pbr,
-            PipelineVariant::Skinned => PipelineVariant::SkinnedPbr,
+            PipelineVariant::NormalDebug => {
+                if pbr_ray_query {
+                    PipelineVariant::PbrRayQuery
+                } else {
+                    PipelineVariant::Pbr
+                }
+            }
+            PipelineVariant::Skinned => {
+                if pbr_ray_query {
+                    PipelineVariant::SkinnedPbrRayQuery
+                } else {
+                    PipelineVariant::SkinnedPbr
+                }
+            }
+            PipelineVariant::Pbr | PipelineVariant::PbrRayQuery => {
+                if pbr_ray_query {
+                    PipelineVariant::PbrRayQuery
+                } else {
+                    PipelineVariant::Pbr
+                }
+            }
+            PipelineVariant::SkinnedPbr | PipelineVariant::SkinnedPbrRayQuery => {
+                if pbr_ray_query {
+                    PipelineVariant::SkinnedPbrRayQuery
+                } else {
+                    PipelineVariant::SkinnedPbr
+                }
+            }
             _ => *variant,
         };
     }
@@ -659,7 +811,10 @@ pub(super) fn record_skinned_draws(
         #[allow(clippy::collapsible_if)]
         if matches!(
             pipeline_variant,
-            crate::gpu::PipelineVariant::SkinnedPbr | crate::gpu::PipelineVariant::SkinnedPbrMRT
+            crate::gpu::PipelineVariant::SkinnedPbr
+                | crate::gpu::PipelineVariant::SkinnedPbrMRT
+                | crate::gpu::PipelineVariant::SkinnedPbrRayQuery
+                | crate::gpu::PipelineVariant::SkinnedPbrMRTRayQuery
         ) && let Some(ref pbr) = params.pbr_scene
         {
             if let Some(scene_bg) = get_or_create_pbr_scene_bind_group(
@@ -679,6 +834,7 @@ pub(super) fn record_skinned_draws(
                 pbr.light_buffer,
                 pbr.cluster_light_counts,
                 pbr.cluster_light_indices,
+                params.pbr_tlas_ptr,
             ) {
                 skinned.bind_scene(pass, Some(scene_bg));
             }
@@ -793,7 +949,10 @@ pub(super) fn record_non_skinned_draws(
         #[allow(clippy::collapsible_if)]
         if matches!(
             pipeline_variant,
-            crate::gpu::PipelineVariant::Pbr | crate::gpu::PipelineVariant::PbrMRT
+            crate::gpu::PipelineVariant::Pbr
+                | crate::gpu::PipelineVariant::PbrMRT
+                | crate::gpu::PipelineVariant::PbrRayQuery
+                | crate::gpu::PipelineVariant::PbrMRTRayQuery
         ) && let Some(ref pbr) = params.pbr_scene
         {
             if let Some(scene_bg) = get_or_create_pbr_scene_bind_group(
@@ -813,6 +972,7 @@ pub(super) fn record_non_skinned_draws(
                 pbr.light_buffer,
                 pbr.cluster_light_counts,
                 pbr.cluster_light_indices,
+                params.pbr_tlas_ptr,
             ) {
                 pipeline.bind_scene(pass, Some(scene_bg));
             }
@@ -900,19 +1060,31 @@ mod tests {
 
     #[test]
     fn mesh_pipeline_variant_mrt_upgrades_when_use_mrt() {
-        let v = mesh_pipeline_variant_for_mrt(&PipelineVariant::NormalDebug, true, false, true);
+        let v =
+            mesh_pipeline_variant_for_mrt(&PipelineVariant::NormalDebug, true, false, true, false);
         assert_eq!(v, PipelineVariant::NormalDebugMRT);
     }
 
     #[test]
     fn mesh_pipeline_variant_pbr_upgrades_when_use_pbr() {
-        let v = mesh_pipeline_variant_for_mrt(&PipelineVariant::NormalDebug, false, true, true);
+        let v =
+            mesh_pipeline_variant_for_mrt(&PipelineVariant::NormalDebug, false, true, true, false);
         assert_eq!(v, PipelineVariant::Pbr);
     }
 
     #[test]
+    fn mesh_pipeline_variant_pbr_ray_query_when_flag_set() {
+        let v =
+            mesh_pipeline_variant_for_mrt(&PipelineVariant::NormalDebug, false, true, true, true);
+        assert_eq!(v, PipelineVariant::PbrRayQuery);
+        let mrt =
+            mesh_pipeline_variant_for_mrt(&PipelineVariant::NormalDebug, true, true, true, true);
+        assert_eq!(mrt, PipelineVariant::PbrMRTRayQuery);
+    }
+
+    #[test]
     fn mesh_pipeline_variant_fallback_when_no_pbr_scene() {
-        let v = mesh_pipeline_variant_for_mrt(&PipelineVariant::Pbr, false, true, false);
+        let v = mesh_pipeline_variant_for_mrt(&PipelineVariant::Pbr, false, true, false, false);
         assert_eq!(v, PipelineVariant::NormalDebug);
     }
 }

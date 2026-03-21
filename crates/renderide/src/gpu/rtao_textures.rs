@@ -6,12 +6,16 @@
 /// Cached RTAO MRT textures and views.
 ///
 /// Owned by [`crate::render::pass::RenderGraph`] and recreated when
-/// `(width, height, color_format)` no longer matches.
+/// `(width, height, color_format, with_shadow_atlas)` no longer matches.
 pub struct RtaoTextureCache {
     /// Viewport width these textures were created for.
     pub width: u32,
     /// Viewport height.
     pub height: u32,
+    /// When true, [`Self::shadow_atlas_view`] is populated for [`crate::render::pass::RtShadowComputePass`].
+    pub with_shadow_atlas: bool,
+    /// When true, shadow atlas dimensions are half the viewport; when false, atlas matches viewport size.
+    pub shadow_atlas_half_resolution: bool,
     /// Color target format (e.g. swapchain format for the MRT color attachment).
     pub color_format: wgpu::TextureFormat,
     /// Color texture (matches surface format). Mesh pass renders to this.
@@ -34,6 +38,9 @@ pub struct RtaoTextureCache {
     pub ao_texture: wgpu::Texture,
     /// AO texture view.
     pub ao_view: wgpu::TextureView,
+    /// Half-resolution per-cluster-slot shadow visibility (`R16Float`, 32 layers).
+    pub shadow_atlas_texture: Option<wgpu::Texture>,
+    pub shadow_atlas_view: Option<wgpu::TextureView>,
 }
 
 impl RtaoTextureCache {
@@ -45,6 +52,8 @@ impl RtaoTextureCache {
         width: u32,
         height: u32,
         color_format: wgpu::TextureFormat,
+        with_shadow_atlas: bool,
+        shadow_atlas_half_resolution: bool,
     ) -> Self {
         let color_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("RTAO MRT color texture"),
@@ -125,9 +134,42 @@ impl RtaoTextureCache {
         let ao_raw_view = ao_raw_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let ao_view = ao_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let (shadow_atlas_texture, shadow_atlas_view) = if with_shadow_atlas {
+            let (aw, ah) = if shadow_atlas_half_resolution {
+                (width.div_ceil(2).max(1), height.div_ceil(2).max(1))
+            } else {
+                (width.max(1), height.max(1))
+            };
+            let sat = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("RT shadow atlas"),
+                size: wgpu::Extent3d {
+                    width: aw,
+                    height: ah,
+                    depth_or_array_layers: 32,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R16Float,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let sav = sat.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("RT shadow atlas view"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                array_layer_count: Some(32),
+                ..Default::default()
+            });
+            (Some(sat), Some(sav))
+        } else {
+            (None, None)
+        };
+
         Self {
             width,
             height,
+            with_shadow_atlas,
+            shadow_atlas_half_resolution,
             color_format,
             color_texture: color_tex,
             color_view,
@@ -139,11 +181,24 @@ impl RtaoTextureCache {
             ao_raw_view,
             ao_texture: ao_tex,
             ao_view,
+            shadow_atlas_texture,
+            shadow_atlas_view,
         }
     }
 
-    /// Returns true if this cache matches the given viewport and color format.
-    pub fn matches_key(&self, width: u32, height: u32, color_format: wgpu::TextureFormat) -> bool {
-        self.width == width && self.height == height && self.color_format == color_format
+    /// Returns true if this cache matches the given viewport, color format, and shadow-atlas options.
+    pub fn matches_key(
+        &self,
+        width: u32,
+        height: u32,
+        color_format: wgpu::TextureFormat,
+        with_shadow_atlas: bool,
+        shadow_atlas_half_resolution: bool,
+    ) -> bool {
+        self.width == width
+            && self.height == height
+            && self.color_format == color_format
+            && self.with_shadow_atlas == with_shadow_atlas
+            && self.shadow_atlas_half_resolution == shadow_atlas_half_resolution
     }
 }

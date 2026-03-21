@@ -104,7 +104,7 @@ fn create_skinned_pbr_bind_group_layouts(
 
 // ─── Helper: per-draw and scene bind groups ───────────────────────────────────
 
-fn create_skinned_draw_bg(
+pub(crate) fn create_skinned_draw_bg(
     device: &wgpu::Device,
     label: &str,
     layout: &wgpu::BindGroupLayout,
@@ -355,6 +355,8 @@ impl RenderPipeline for SkinnedPbrPipeline {
         light_buffer: &wgpu::Buffer,
         cluster_light_counts: &wgpu::Buffer,
         cluster_light_indices: &wgpu::Buffer,
+        _acceleration_structure: Option<&wgpu::Tlas>,
+        _rt_shadow: Option<super::rt_shadow_uniforms::RtShadowSceneBind<'_>>,
     ) -> Option<wgpu::BindGroup> {
         let scene = SceneUniforms {
             view_position,
@@ -558,6 +560,8 @@ impl RenderPipeline for SkinnedPbrMRTPipeline {
         light_buffer: &wgpu::Buffer,
         cluster_light_counts: &wgpu::Buffer,
         cluster_light_indices: &wgpu::Buffer,
+        _acceleration_structure: Option<&wgpu::Tlas>,
+        _rt_shadow: Option<super::rt_shadow_uniforms::RtShadowSceneBind<'_>>,
     ) -> Option<wgpu::BindGroup> {
         let scene = SceneUniforms {
             view_position,

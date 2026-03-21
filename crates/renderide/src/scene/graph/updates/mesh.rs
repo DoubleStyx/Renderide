@@ -2,7 +2,8 @@
 
 use crate::ipc::shared_memory::SharedMemoryAccessor;
 use crate::scene::{Drawable, Scene};
-use crate::shared::{LayerType, MeshRenderablesUpdate};
+use crate::shared::enum_repr::EnumRepr;
+use crate::shared::{LayerType, MeshRenderablesUpdate, ShadowCastMode};
 
 use super::super::error::SceneError;
 use super::super::pods::MeshRendererStatePod;
@@ -56,6 +57,7 @@ pub(crate) fn apply_mesh_renderables_update(
                 stencil_state: None,
                 material_override_block_id: None,
                 render_transform_override: None,
+                shadow_cast_mode: ShadowCastMode::on,
             });
         }
     }
@@ -77,6 +79,8 @@ pub(crate) fn apply_mesh_renderables_update(
                 } else {
                     None
                 };
+                scene.drawables[idx].shadow_cast_mode =
+                    ShadowCastMode::from_i32(state.shadow_cast_mode as i32);
             }
         }
     }

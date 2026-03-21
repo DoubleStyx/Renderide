@@ -27,6 +27,7 @@
 //! | `[display]` | `unfocused_fps`  | 60      | Max FPS when window is unfocused (0 = uncapped). |
 //! | `[display]` | `vsync`          | false   | Swapchain vsync (also in [`RenderConfig`]).      |
 //! | `[camera]`  | `near_clip`, `far_clip`, `desktop_fov` | per `RenderConfig` | Host overwrites when connected. |
+//! | `[rendering]` | `ray_traced_shadows_enabled` | false | PBR ray-query / TLAS shadows (opt-in; needs RT GPU). |
 //! | `[hud]`     | `show_hud`       | true    | Show/hide the debug HUD overlay.                 |
 
 use std::path::Path;
@@ -618,6 +619,7 @@ impl RenderideApp {
                 // Feature flags
                 frustum_culling_enabled: rc.frustum_culling,
                 rtao_enabled: rc.rtao_enabled,
+                ray_traced_shadows_enabled: rc.ray_traced_shadows_enabled,
                 ray_tracing_available: gpu.ray_tracing_available,
                 adapter_info: gpu.adapter_info.clone(),
                 gpu_allocator,

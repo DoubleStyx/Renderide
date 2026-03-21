@@ -5,6 +5,11 @@
 //! When RTAO skips (e.g. TLAS None), clears AO texture to full visibility so composite
 //! does not sample uninitialized data.
 //!
+//! **TLAS sharing**: Uses [`crate::gpu::RayTracingState::tlas`] (same as PBR shadow ray query).
+//! Instances exclude draws where [`crate::gpu::shadow_cast_mode_in_scene_tlas`] is false
+//! ([`crate::shared::ShadowCastMode::off`]); those meshes do not occlude RTAO. For occlusion
+//! that ignores shadow cast mode, a separate acceleration structure would be needed later.
+//!
 //! The position G-buffer stores **camera-relative** positions; this pass adds
 //! [`super::mesh_pass::mrt_gbuffer_world_origin`] back to reconstruct world-space ray origins.
 //!

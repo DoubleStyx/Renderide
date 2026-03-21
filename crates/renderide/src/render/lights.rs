@@ -14,6 +14,22 @@
 //! Must match [`crate::shared::LightType`] `repr(u8)` and host wire values: `point = 0`,
 //! `directional = 1`, `spot = 2`.
 //!
+//! ## `shadow_type` in WGSL
+//!
+//! Must match [`crate::shared::ShadowType`] `repr(u8)`: `none = 0`, `hard = 1`, `soft = 2`.
+//! Clustered compute reads the same layout; the forward PBR **ray-query** variants consume shadow
+//! fields for RT shadows. Non-ray-query PBR shaders keep the struct in sync but do not trace.
+//!
+//! ## Ray-traced shadows vs shadow maps
+//!
+//! When [`crate::config::RenderConfig::ray_traced_shadows_enabled`] is on and the GPU builds a
+//! TLAS, PBR uses [`crate::gpu::pipeline::pbr_ray_query`] WGSL: **hard** is a single shadow ray;
+//! **soft** is multi-tap cone sampling in world space (not PCF on a shadow map). Host fields such as
+//! shadow map resolution overrides on the host light state apply to
+//! projected shadow maps and are **not** consumed by the RT shadow path. Optional compute
+//! pre-pass ([`crate::render::pass::RtShadowComputePass`]) fills a per-cluster-slot atlas using the
+//! same visibility rules, with one-frame latency when G-buffer ping-pong is active.
+//!
 //! ## `direction` field
 //!
 //! World-space **propagation** direction (local +Z / host `transform.forward` after resolve).
@@ -24,13 +40,13 @@ use std::mem::size_of;
 use bytemuck::{Pod, Zeroable};
 
 use crate::scene::ResolvedLight;
-use crate::shared::LightType;
+use crate::shared::{LightType, ShadowType};
 
 /// Maximum number of lights in the GPU buffer.
 pub const MAX_LIGHTS: usize = 256;
 
 /// GPU-friendly light struct for shader upload.
-/// Aligned for WGSL (vec3 = 16 bytes). Total size 80 to match WGSL storage buffer stride.
+/// Aligned for WGSL (vec3 = 16 bytes). Total size 96 to match WGSL storage buffer stride.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct GpuLight {
@@ -43,9 +59,20 @@ pub struct GpuLight {
     pub range: f32,
     pub spot_cos_half_angle: f32,
     pub light_type: u32,
-    /// Padding for WGSL std430: vec4u requires 16-byte alignment after light_type (offset 60).
-    pub _pad_before_vec4: [u32; 1],
-    pub _pad2: [u32; 4],
+    /// Padding so `shadow_strength` begins at offset 64 (WGSL `vec4f` alignment).
+    pub _pad_before_shadow_params: u32,
+    pub shadow_strength: f32,
+    /// Minimum ray parameter along the shadow ray. For directional lights this is in world units
+    /// along the light direction. For point/spot lights, PBR ray-query WGSL clamps this so it
+    /// never exceeds the path length to the light (large host defaults would otherwise break
+    /// shadows on nearby surfaces).
+    pub shadow_near_plane: f32,
+    pub shadow_bias: f32,
+    pub shadow_normal_bias: f32,
+    /// Encoded [`ShadowType`] for WGSL (`0` = none, `1` = hard, `2` = soft); same as `repr(u8)`.
+    pub shadow_type: u32,
+    /// Trailing padding so the struct size is a multiple of 16 bytes (storage array stride).
+    pub _pad_trailing: [u32; 3],
 }
 
 unsafe impl Pod for GpuLight {}
@@ -63,8 +90,13 @@ impl Default for GpuLight {
             range: 10.0,
             spot_cos_half_angle: 1.0,
             light_type: 0,
-            _pad_before_vec4: [0; 1],
-            _pad2: [0; 4],
+            _pad_before_shadow_params: 0,
+            shadow_strength: 0.0,
+            shadow_near_plane: 0.0,
+            shadow_bias: 0.0,
+            shadow_normal_bias: 0.0,
+            shadow_type: 0,
+            _pad_trailing: [0; 3],
         }
     }
 }
@@ -81,6 +113,7 @@ impl GpuLight {
             1.0
         };
         let light_type = light_type_u32(light.light_type);
+        let shadow_type = shadow_type_u32(light.shadow_type);
         Self {
             position: [
                 light.world_position.x,
@@ -99,8 +132,13 @@ impl GpuLight {
             range: light.range.max(0.001),
             spot_cos_half_angle,
             light_type,
-            _pad_before_vec4: [0; 1],
-            _pad2: [0; 4],
+            _pad_before_shadow_params: 0,
+            shadow_strength: light.shadow_strength,
+            shadow_near_plane: light.shadow_near_plane,
+            shadow_bias: light.shadow_bias,
+            shadow_normal_bias: light.shadow_normal_bias,
+            shadow_type,
+            _pad_trailing: [0; 3],
         }
     }
 }
@@ -111,6 +149,15 @@ pub fn light_type_u32(ty: LightType) -> u32 {
         LightType::point => 0,
         LightType::directional => 1,
         LightType::spot => 2,
+    }
+}
+
+/// Returns the `shadow_type` field stored in [`GpuLight`] / WGSL (0 = none, 1 = hard, 2 = soft).
+pub fn shadow_type_u32(ty: ShadowType) -> u32 {
+    match ty {
+        ShadowType::none => 0,
+        ShadowType::hard => 1,
+        ShadowType::soft => 2,
     }
 }
 
@@ -196,14 +243,16 @@ impl Default for LightBufferCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::ShadowType;
+    use glam::Vec3;
 
-    /// Verifies GpuLight matches WGSL std430 layout (80 bytes).
+    /// Verifies [`GpuLight`] matches WGSL storage buffer layout (96-byte stride).
     #[test]
     fn gpu_light_size_matches_wgsl() {
         assert_eq!(
             size_of::<GpuLight>(),
-            80,
-            "GpuLight must be 80 bytes to match WGSL storage buffer stride"
+            96,
+            "GpuLight must be 96 bytes to match WGSL storage buffer stride"
         );
     }
 
@@ -223,8 +272,41 @@ mod tests {
             spot_angle: 0.0,
             light_type: LightType::directional,
             global_unique_id: 0,
+            shadow_type: ShadowType::none,
+            shadow_strength: 0.0,
+            shadow_near_plane: 0.0,
+            shadow_bias: 0.0,
+            shadow_normal_bias: 0.0,
         };
         assert_eq!(GpuLight::from_resolved(&p).light_type, 1);
+    }
+
+    #[test]
+    fn shadow_type_u32_matches_wgsl_and_shared_repr() {
+        assert_eq!(shadow_type_u32(ShadowType::none), 0);
+        assert_eq!(shadow_type_u32(ShadowType::hard), 1);
+        assert_eq!(shadow_type_u32(ShadowType::soft), 2);
+        let p = ResolvedLight {
+            world_position: Vec3::ZERO,
+            world_direction: Vec3::Z,
+            color: Vec3::ONE,
+            intensity: 1.0,
+            range: 1.0,
+            spot_angle: 0.0,
+            light_type: LightType::point,
+            global_unique_id: 0,
+            shadow_type: ShadowType::soft,
+            shadow_strength: 0.5,
+            shadow_near_plane: 0.1,
+            shadow_bias: 0.01,
+            shadow_normal_bias: 0.02,
+        };
+        let g = GpuLight::from_resolved(&p);
+        assert_eq!(g.shadow_type, 2);
+        assert!((g.shadow_strength - 0.5).abs() < 1e-6);
+        assert!((g.shadow_near_plane - 0.1).abs() < 1e-6);
+        assert!((g.shadow_bias - 0.01).abs() < 1e-6);
+        assert!((g.shadow_normal_bias - 0.02).abs() < 1e-6);
     }
 
     #[test]
@@ -241,6 +323,11 @@ mod tests {
                 spot_angle: 45.0,
                 light_type: ty,
                 global_unique_id: idx as i32,
+                shadow_type: ShadowType::none,
+                shadow_strength: 0.0,
+                shadow_near_plane: 0.0,
+                shadow_bias: 0.0,
+                shadow_normal_bias: 0.0,
             }
         }
 

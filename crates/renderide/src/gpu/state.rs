@@ -1,13 +1,15 @@
 //! GPU state: surface, device, queue, and mesh buffer cache.
 //!
 //! Frustum culling for rigid meshes lives in [`crate::render::visibility`] (CPU), applied in
-//! [`crate::render::pass::mesh_draw::collect_mesh_draws`] and [`crate::gpu::accel::build_tlas`].
+//! [`crate::render::pass::mesh_draw::collect_mesh_draws`] and [`crate::gpu::accel::update_tlas`]
+//! (TLAS instances respect [`crate::gpu::accel::shadow_cast_mode_in_scene_tlas`]).
 
 use winit::window::Window;
 
 use super::accel::{AccelCache, RayTracingState};
 use super::cluster_buffer::ClusterBufferCache;
 use super::mesh::GpuMeshBuffers;
+use super::pipeline::RtShadowUniforms;
 use super::pipeline::mrt::MrtGbufferOriginUniform;
 use super::registry::PipelineVariant;
 use crate::render::lights::LightBufferCache;
@@ -63,6 +65,26 @@ pub struct GpuState {
     pub last_pbr_scene_cache_light_version: u64,
     /// Last cluster buffer version when cache was valid. Used to invalidate on resize.
     pub last_pbr_scene_cache_cluster_version: u64,
+    /// Last [`crate::gpu::RayTracingState::tlas_generation`] when PBR scene bind groups were cached.
+    pub last_pbr_scene_cache_tlas_generation: u64,
+    /// Bumps when the RT shadow atlas texture is recreated (invalidates PBR ray-query scene bind groups).
+    pub rt_shadow_atlas_generation: u64,
+    /// Last [`Self::rt_shadow_atlas_generation`] mirrored into mesh-draw PBR bind group cache invalidation.
+    pub last_pbr_scene_cache_rt_shadow_atlas_generation: u64,
+    /// Uniform buffer for [`RtShadowUniforms`] (PBR ray-query group 1 binding 5).
+    pub rt_shadow_uniform_buffer: Option<wgpu::Buffer>,
+    /// 1×1×32 `R16Float` atlas cleared to 1.0 when no real atlas exists yet.
+    pub rt_shadow_fallback_atlas_view: Option<wgpu::TextureView>,
+    /// Linear clamp sampler for [`Self::rt_shadow_fallback_atlas_view`] and the real atlas.
+    pub rt_shadow_sampler: Option<wgpu::Sampler>,
+    /// Main shadow atlas view when the RTAO MRT cache allocates one; in-place updated by [`crate::render::pass::RtShadowComputePass`].
+    pub rt_shadow_atlas_main_view: Option<wgpu::TextureView>,
+    /// Half-resolution atlas dimensions when [`Self::rt_shadow_atlas_main_view`] is set; `(1, 1)` for the fallback atlas only.
+    pub rt_shadow_atlas_extent: Option<(u32, u32)>,
+    /// 64-byte scratch buffer for [`crate::render::pass::RtShadowComputePass`] scene uniforms (matches PBR `SceneUniforms`).
+    pub rt_shadow_compute_scene_buffer: Option<wgpu::Buffer>,
+    /// 32-byte scratch buffer for [`crate::render::pass::RtShadowComputePass`] tuning + g-buffer origin.
+    pub rt_shadow_compute_extra_buffer: Option<wgpu::Buffer>,
     /// Reuses world-space AABBs for rigid frustum culling when model matrices are unchanged.
     pub rigid_frustum_cull_cache: crate::render::visibility::RigidFrustumCullCache,
 }
@@ -273,6 +295,16 @@ pub async fn init_gpu(
         pbr_scene_bind_group_cache: std::collections::HashMap::new(),
         last_pbr_scene_cache_light_version: 0,
         last_pbr_scene_cache_cluster_version: 0,
+        last_pbr_scene_cache_tlas_generation: 0,
+        rt_shadow_atlas_generation: 0,
+        last_pbr_scene_cache_rt_shadow_atlas_generation: 0,
+        rt_shadow_uniform_buffer: None,
+        rt_shadow_fallback_atlas_view: None,
+        rt_shadow_sampler: None,
+        rt_shadow_atlas_main_view: None,
+        rt_shadow_atlas_extent: None,
+        rt_shadow_compute_scene_buffer: None,
+        rt_shadow_compute_extra_buffer: None,
         rigid_frustum_cull_cache: crate::render::visibility::RigidFrustumCullCache::default(),
     })
 }
@@ -329,6 +361,79 @@ impl GpuState {
             _pad: 0.0,
         };
         queue.write_buffer(buf, 0, bytemuck::bytes_of(&u));
+    }
+
+    /// Allocates [`RtShadowUniforms`], a 1×1×32 `R16Float` fallback atlas (cleared to full visibility), and a clamped linear sampler.
+    ///
+    /// Used by PBR ray-query scene bind groups (bindings 5–7). Safe to call every frame; resources are created once.
+    pub fn ensure_rt_shadow_bind_resources(&mut self) {
+        if self.rt_shadow_uniform_buffer.is_some()
+            && self.rt_shadow_fallback_atlas_view.is_some()
+            && self.rt_shadow_sampler.is_some()
+        {
+            return;
+        }
+        let ub = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("RT shadow uniform buffer"),
+            size: std::mem::size_of::<RtShadowUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("RT shadow fallback atlas"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("RT shadow fallback atlas view"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            array_layer_count: Some(32),
+            ..Default::default()
+        });
+        let mut px = Vec::with_capacity(64);
+        for _ in 0..32 {
+            px.extend_from_slice(&[0x00, 0x3c]);
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &px,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(2),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 32,
+            },
+        );
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("RT shadow sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        self.rt_shadow_uniform_buffer = Some(ub);
+        self.rt_shadow_fallback_atlas_view = Some(view);
+        self.rt_shadow_sampler = Some(sampler);
     }
 }
 

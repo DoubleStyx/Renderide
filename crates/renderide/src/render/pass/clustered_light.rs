@@ -66,7 +66,13 @@ struct GpuLight {
     range: f32,
     spot_cos_half_angle: f32,
     light_type: u32,
-    _pad2: vec4u,
+    _pad_before_shadow_params: u32,
+    shadow_strength: f32,
+    shadow_near_plane: f32,
+    shadow_bias: f32,
+    shadow_normal_bias: f32,
+    shadow_type: u32,
+    _pad_trailing: array<u32, 3>,
 }
 
 struct ClusterParams {

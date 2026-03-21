@@ -2,8 +2,13 @@
 //! for ray tracing.
 //!
 //! Builds and caches BLASes for non-skinned meshes when EXPERIMENTAL_RAY_QUERY is available.
-//! TLAS is rebuilt each frame from non-overlay, non-skinned draw instances.
-//! Used for future RTAO (Ray-Traced Ambient Occlusion) support.
+//! TLAS is rebuilt each frame from non-overlay, non-skinned draw instances that participate in
+//! shadow casting ([`shadow_cast_mode_in_scene_tlas`]).
+//!
+//! **Single TLAS**: The same [`RayTracingState::tlas`] is bound for RTAO and PBR shadow ray
+//! queries. Meshes with [`crate::shared::ShadowCastMode::off`] are omitted from the TLAS, so they
+//! neither block shadow rays nor RTAO occlusion. If occlusion should follow full geometry while
+//! shadows follow cast mode, a second acceleration structure would be required later.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
@@ -19,9 +24,33 @@ use crate::render::visibility::{
     RigidFrustumCullCache, RigidFrustumCullCacheKey, rigid_mesh_potentially_visible,
     rigid_mesh_potentially_visible_cached, view_proj_glam_for_batch,
 };
-use crate::shared::{VertexAttributeFormat, VertexAttributeType};
+use crate::shared::{ShadowCastMode, VertexAttributeFormat, VertexAttributeType};
 
 use super::mesh::GpuMeshBuffers;
+
+/// Returns true when BLAS/TLAS maintenance should run: RTAO and/or ray-traced shadows may trace rays.
+///
+/// When false (and [`crate::gpu::GpuState::ray_tracing_available`] is still true), callers may skip
+/// [`update_tlas`] and defer [`build_blas_for_mesh`] until this becomes true again; mesh prep warms
+/// any missing BLAS when tracing is re-enabled.
+pub fn needs_scene_ray_tracing_accel(
+    ray_tracing_available: bool,
+    rtao_enabled: bool,
+    ray_traced_shadows_enabled: bool,
+) -> bool {
+    ray_tracing_available && (rtao_enabled || ray_traced_shadows_enabled)
+}
+
+/// Returns whether a mesh with this [`ShadowCastMode`] should appear as an instance in the scene TLAS.
+///
+/// [`ShadowCastMode::off`] excludes the instance (no shadow casting). All other modes are included:
+/// [`ShadowCastMode::on`], [`ShadowCastMode::shadow_only`] (casts shadows without regular rendering),
+/// and [`ShadowCastMode::double_sided`] (two-sided shadow intent; see module docs for BLAS limits).
+///
+/// This is pure policy used when building [`RayTracingState::tlas`]; GPU validation is unchanged.
+pub fn shadow_cast_mode_in_scene_tlas(mode: ShadowCastMode) -> bool {
+    mode != ShadowCastMode::off
+}
 
 /// Mesh asset IDs for which a BLAS-missing TLAS warning was already logged.
 static BLAS_MISSING_WARNED: LazyLock<Mutex<HashSet<i32>>> =
@@ -275,10 +304,13 @@ pub fn remove_blas(cache: &mut AccelCache, mesh_asset_id: i32) {
 
 /// Holds the current frame's TLAS, rebuilt each frame when ray tracing is available.
 ///
-/// Stored in [`GpuState`] when [`GpuState::ray_tracing_available`]. Used by future RTAO pass.
+/// Stored in [`GpuState`] when [`GpuState::ray_tracing_available`]. Bound for RTAO and PBR
+/// ray-query shadows.
 pub struct RayTracingState {
     /// Current TLAS built from non-overlay, non-skinned draws. `None` when no instances.
     pub tlas: Option<wgpu::Tlas>,
+    /// Bumped when [`Self::tlas`] is cleared or rebuilt so cached PBR scene bind groups invalidate.
+    pub tlas_generation: u64,
     /// Reusable scratch buffer for TLAS instance data. Avoids per-frame Vec allocation.
     pub(crate) instance_scratch: Vec<(i32, [f32; 12])>,
     /// Snapshot of the instance list from the last frame a TLAS was built.
@@ -291,6 +323,7 @@ impl RayTracingState {
     pub fn new() -> Self {
         Self {
             tlas: None,
+            tlas_generation: 0,
             instance_scratch: Vec::new(),
             last_instance_snapshot: Vec::new(),
         }
@@ -313,8 +346,9 @@ fn matrix4_to_affine_3x4(m: &Mat4) -> [f32; 12] {
 
 /// Builds a TLAS from non-overlay, non-skinned draw instances.
 ///
-/// Iterates `draw_batches`; for each non-overlay draw that is non-skinned and has a BLAS in
-/// `accel_cache`, adds an instance with the draw's model matrix and BLAS reference.
+/// Iterates `draw_batches`; for each non-overlay draw that is non-skinned, has a BLAS in
+/// `accel_cache`, and [`shadow_cast_mode_in_scene_tlas`], adds an instance with the draw's model
+/// matrix and BLAS reference.
 /// Records the build into `encoder`. Caller must submit the encoder.
 ///
 /// Uses `instance_scratch` to avoid per-frame Vec allocation. Caller should pass a reusable
@@ -351,6 +385,9 @@ pub fn build_tlas(
                 continue;
             }
             if accel_cache.get(d.mesh_asset_id).is_none() {
+                continue;
+            }
+            if !shadow_cast_mode_in_scene_tlas(d.shadow_cast_mode) {
                 continue;
             }
             if frustum_culling && let Some(mesh) = asset_registry.get_mesh(d.mesh_asset_id) {
@@ -444,6 +481,9 @@ pub fn update_tlas(
             if accel_cache.get(d.mesh_asset_id).is_none() {
                 continue;
             }
+            if !shadow_cast_mode_in_scene_tlas(d.shadow_cast_mode) {
+                continue;
+            }
             if frustum_culling && let Some(mesh) = asset_registry.get_mesh(d.mesh_asset_id) {
                 if crate::render::visibility::mesh_bounds_degenerate_for_cull(&mesh.bounds) {
                     logger::trace!(
@@ -484,6 +524,9 @@ pub fn update_tlas(
     }
 
     if state.instance_scratch.is_empty() {
+        if state.tlas.is_some() {
+            state.tlas_generation = state.tlas_generation.wrapping_add(1);
+        }
         state.tlas = None;
         state.last_instance_snapshot.clear();
         return;
@@ -514,7 +557,44 @@ pub fn update_tlas(
     state
         .last_instance_snapshot
         .clone_from(&state.instance_scratch);
+    state.tlas_generation = state.tlas_generation.wrapping_add(1);
     state.tlas = Some(tlas);
+}
+
+#[cfg(test)]
+mod needs_scene_ray_tracing_accel_tests {
+    use super::needs_scene_ray_tracing_accel;
+
+    #[test]
+    fn false_without_adapter_rt_or_without_any_rt_feature() {
+        assert!(!needs_scene_ray_tracing_accel(false, true, true));
+        assert!(!needs_scene_ray_tracing_accel(true, false, false));
+    }
+
+    #[test]
+    fn true_when_adapter_rt_and_rtao_or_rt_shadows() {
+        assert!(needs_scene_ray_tracing_accel(true, true, false));
+        assert!(needs_scene_ray_tracing_accel(true, false, true));
+        assert!(needs_scene_ray_tracing_accel(true, true, true));
+    }
+}
+
+#[cfg(test)]
+mod shadow_cast_mode_in_scene_tlas_tests {
+    use super::shadow_cast_mode_in_scene_tlas;
+    use crate::shared::ShadowCastMode;
+
+    #[test]
+    fn off_excluded() {
+        assert!(!shadow_cast_mode_in_scene_tlas(ShadowCastMode::off));
+    }
+
+    #[test]
+    fn on_shadow_only_double_sided_included() {
+        assert!(shadow_cast_mode_in_scene_tlas(ShadowCastMode::on));
+        assert!(shadow_cast_mode_in_scene_tlas(ShadowCastMode::shadow_only));
+        assert!(shadow_cast_mode_in_scene_tlas(ShadowCastMode::double_sided));
+    }
 }
 
 #[cfg(test)]

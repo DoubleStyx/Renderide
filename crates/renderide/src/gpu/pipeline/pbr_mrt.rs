@@ -95,6 +95,7 @@ impl PbrMRTPipeline {
         light_buffer: &wgpu::Buffer,
         cluster_light_counts: &wgpu::Buffer,
         cluster_light_indices: &wgpu::Buffer,
+        _acceleration_structure: Option<&wgpu::Tlas>,
     ) -> wgpu::BindGroup {
         queue.write_buffer(&self.scene_uniform_buffer, 0, bytemuck::bytes_of(scene));
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -213,6 +214,8 @@ impl RenderPipeline for PbrMRTPipeline {
         light_buffer: &wgpu::Buffer,
         cluster_light_counts: &wgpu::Buffer,
         cluster_light_indices: &wgpu::Buffer,
+        acceleration_structure: Option<&wgpu::Tlas>,
+        _rt_shadow: Option<super::rt_shadow_uniforms::RtShadowSceneBind<'_>>,
     ) -> Option<wgpu::BindGroup> {
         let scene = SceneUniforms {
             view_position,
@@ -234,6 +237,7 @@ impl RenderPipeline for PbrMRTPipeline {
             light_buffer,
             cluster_light_counts,
             cluster_light_indices,
+            acceleration_structure,
         ))
     }
 }

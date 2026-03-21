@@ -30,7 +30,8 @@ pub(super) struct MeshRendererStatePod {
     pub material_count: i32,
     pub material_property_block_count: i32,
     pub sorting_order: i32,
-    pub _shadow_cast_mode: u8,
+    /// Host [`crate::shared::ShadowCastMode`] as `u8` (IPC layout).
+    pub shadow_cast_mode: u8,
     pub _motion_vector_mode: u8,
     pub _pad: [u8; 2],
 }

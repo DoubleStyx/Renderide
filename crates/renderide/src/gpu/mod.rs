@@ -10,7 +10,8 @@ pub mod rtao_textures;
 pub mod state;
 
 pub use accel::{
-    AccelCache, RayTracingState, build_blas_for_mesh, build_tlas, remove_blas, update_tlas,
+    AccelCache, RayTracingState, build_blas_for_mesh, build_tlas, needs_scene_ray_tracing_accel,
+    remove_blas, shadow_cast_mode_in_scene_tlas, update_tlas,
 };
 pub use frame_scheduler::GpuFrameScheduler;
 pub use mesh::{GpuMeshBuffers, compute_vertex_stride_from_mesh, create_mesh_buffers};

@@ -13,6 +13,7 @@ use super::mesh_prep::{
     CachedMeshDraws, CachedMeshDrawsRef, ensure_mesh_buffers, run_collect_mesh_draws,
 };
 use super::overlay_pass::OverlayRenderPass;
+use super::rt_shadow_compute::RtShadowComputePass;
 use super::rtao_blur::RtaoBlurPass;
 use super::rtao_compute::RtaoComputePass;
 use crate::render::batch::SpaceDrawBatch;
@@ -659,9 +660,16 @@ impl Default for GraphBuilder {
 /// with `true`. When false, the mesh pass uses `false` and writes color and depth to the
 /// surface and edges mesh directly to overlay; RTAO passes are omitted.
 ///
+/// When `rt_shadow_compute` is true (requires `rtao_mrt_graph`), inserts [`RtShadowComputePass`]
+/// after the mesh pass and before RTAO compute so the atlas is filled from the current frame’s
+/// G-buffer; PBR samples that atlas on the **following** frame when atlas mode is active.
+///
 /// [`RenderGraphContext::enable_rtao_mrt`] must be set to match this variant at execute time so
 /// MRT textures are allocated only when the graph expects them.
-pub fn build_main_render_graph(rtao_mrt_graph: bool) -> Result<RenderGraph, GraphBuildError> {
+pub fn build_main_render_graph(
+    rtao_mrt_graph: bool,
+    rt_shadow_compute: bool,
+) -> Result<RenderGraph, GraphBuildError> {
     let mut builder = GraphBuilder::new();
     let clustered = builder.add_pass(Box::new(ClusteredLightPass::new()));
     let mesh = builder.add_pass(Box::new(MeshRenderPass::with_rtao_mrt_graph(
@@ -671,10 +679,17 @@ pub fn build_main_render_graph(rtao_mrt_graph: bool) -> Result<RenderGraph, Grap
     builder.add_edge(clustered, mesh);
 
     if rtao_mrt_graph {
+        let after_mesh = if rt_shadow_compute {
+            let rt_shadow = builder.add_pass(Box::new(RtShadowComputePass::new()));
+            builder.add_edge(mesh, rt_shadow);
+            rt_shadow
+        } else {
+            mesh
+        };
         let rtao = builder.add_pass(Box::new(RtaoComputePass::new()));
         let rtao_blur = builder.add_pass(Box::new(RtaoBlurPass::new()));
         let composite = builder.add_pass(Box::new(CompositePass::new()));
-        builder.add_edge(mesh, rtao);
+        builder.add_edge(after_mesh, rtao);
         builder.add_edge(rtao, rtao_blur);
         builder.add_edge(rtao_blur, composite);
         builder.add_edge(composite, overlay);
@@ -724,20 +739,55 @@ impl RenderGraph {
         let (width, height) = ctx.viewport;
         let color_format = ctx.gpu.config.format;
         if ctx.enable_rtao_mrt {
-            let recreate = self
-                .rtao_mrt_cache
-                .as_ref()
-                .is_none_or(|c| !c.matches_key(width, height, color_format));
+            let with_shadow_atlas = ctx.session.render_config().ray_traced_shadows_use_compute
+                && ctx.session.render_config().ray_traced_shadows_enabled
+                && ctx.gpu.ray_tracing_available;
+            let shadow_atlas_half_resolution =
+                ctx.session.render_config().rt_shadow_atlas_half_resolution;
+            let recreate = self.rtao_mrt_cache.as_ref().is_none_or(|c| {
+                !c.matches_key(
+                    width,
+                    height,
+                    color_format,
+                    with_shadow_atlas,
+                    shadow_atlas_half_resolution,
+                )
+            });
             if recreate {
                 self.rtao_mrt_cache = Some(crate::gpu::rtao_textures::RtaoTextureCache::create(
                     &ctx.gpu.device,
                     width,
                     height,
                     color_format,
+                    with_shadow_atlas,
+                    shadow_atlas_half_resolution,
                 ));
+                ctx.gpu.rt_shadow_atlas_generation =
+                    ctx.gpu.rt_shadow_atlas_generation.wrapping_add(1);
+            }
+            if let Some(ref c) = self.rtao_mrt_cache {
+                if let Some(ref v) = c.shadow_atlas_view {
+                    ctx.gpu.rt_shadow_atlas_main_view = Some(v.clone());
+                    let (aw, ah) = if c.shadow_atlas_half_resolution {
+                        (width.div_ceil(2).max(1), height.div_ceil(2).max(1))
+                    } else {
+                        (width.max(1), height.max(1))
+                    };
+                    ctx.gpu.rt_shadow_atlas_extent = Some((aw, ah));
+                } else {
+                    ctx.gpu.rt_shadow_atlas_main_view = None;
+                    ctx.gpu.rt_shadow_atlas_extent = None;
+                }
             }
         } else {
+            let had_atlas = ctx.gpu.rt_shadow_atlas_main_view.is_some();
             self.rtao_mrt_cache = None;
+            ctx.gpu.rt_shadow_atlas_main_view = None;
+            ctx.gpu.rt_shadow_atlas_extent = None;
+            if had_atlas {
+                ctx.gpu.rt_shadow_atlas_generation =
+                    ctx.gpu.rt_shadow_atlas_generation.wrapping_add(1);
+            }
         }
 
         let mrt_views = self.rtao_mrt_cache.as_ref().map(|c| MrtViews {
@@ -854,21 +904,29 @@ impl RenderGraph {
             }
         };
 
-        if let Some(ref mut ray_tracing) = ctx.gpu.ray_tracing_state
-            && let Some(ref accel) = ctx.gpu.accel_cache
-        {
-            crate::gpu::update_tlas(
-                &ctx.gpu.device,
-                &mut encoder,
-                ray_tracing,
-                accel,
-                ctx.draw_batches,
-                &ctx.proj,
-                ctx.overlay_projection_override.as_ref(),
-                ctx.session.asset_registry(),
-                ctx.session.render_config().frustum_culling,
-                &mut ctx.gpu.rigid_frustum_cull_cache,
-            );
+        let rc = ctx.session.render_config();
+        if crate::gpu::needs_scene_ray_tracing_accel(
+            ctx.gpu.ray_tracing_available,
+            rc.rtao_enabled,
+            rc.ray_traced_shadows_enabled,
+        ) {
+            if let (Some(ref mut ray_tracing), Some(ref accel)) = (
+                ctx.gpu.ray_tracing_state.as_mut(),
+                ctx.gpu.accel_cache.as_ref(),
+            ) {
+                crate::gpu::update_tlas(
+                    &ctx.gpu.device,
+                    &mut encoder,
+                    ray_tracing,
+                    accel,
+                    ctx.draw_batches,
+                    &ctx.proj,
+                    ctx.overlay_projection_override.as_ref(),
+                    ctx.session.asset_registry(),
+                    rc.frustum_culling,
+                    &mut ctx.gpu.rigid_frustum_cull_cache,
+                );
+            }
         }
 
         let frame_index = ctx.pipeline_manager.acquire_frame_index(&ctx.gpu.device);
@@ -994,7 +1052,7 @@ mod tests {
 
     #[test]
     fn main_render_graph_no_rtao_mesh_writes_color_depth() {
-        let graph = build_main_render_graph(false).expect("graph");
+        let graph = build_main_render_graph(false, false).expect("graph");
         assert_eq!(graph.pass_names(), &["clustered_light", "mesh", "overlay"]);
         let (comp, overlay) = graph.special_pass_ids();
         assert!(comp.is_none());
@@ -1007,7 +1065,7 @@ mod tests {
 
     #[test]
     fn main_render_graph_rtao_includes_compute_blur_composite() {
-        let graph = build_main_render_graph(true).expect("graph");
+        let graph = build_main_render_graph(true, false).expect("graph");
         let names = graph.pass_names();
         assert_eq!(names.len(), 6);
         assert!(names.iter().any(|n| n == "rtao_compute"));
@@ -1018,6 +1076,24 @@ mod tests {
         assert!(overlay.is_some());
         let res = graph.pass_resources();
         assert!(res[1].writes.contains(&ResourceSlot::Position));
+    }
+
+    #[test]
+    fn main_render_graph_rt_shadow_compute_between_mesh_and_rtao() {
+        let graph = build_main_render_graph(true, true).expect("graph");
+        let names = graph.pass_names();
+        assert_eq!(names.len(), 7);
+        let mesh_i = names.iter().position(|n| *n == "mesh").expect("mesh");
+        let shadow_i = names
+            .iter()
+            .position(|n| *n == "rt_shadow_compute")
+            .expect("rt_shadow_compute");
+        let rtao_i = names
+            .iter()
+            .position(|n| *n == "rtao_compute")
+            .expect("rtao_compute");
+        assert!(mesh_i < shadow_i);
+        assert!(shadow_i < rtao_i);
     }
 
     /// [`RtaoBlurPass`] samples the normal G-buffer; its [`RenderPass::resources`] must declare
@@ -1035,7 +1111,7 @@ mod tests {
 
     #[test]
     fn graph_builder_subgraph_wraps_main_view_flat_graph() {
-        let inner = build_main_render_graph(false).expect("inner");
+        let inner = build_main_render_graph(false, false).expect("inner");
         let mut builder = GraphBuilder::new();
         let _main = builder.add_subgraph("main_view", inner);
         let graph = builder.build().expect("single subgraph");
@@ -1047,7 +1123,7 @@ mod tests {
 
     #[test]
     fn graph_builder_edge_pass_to_subgraph() {
-        let inner = build_main_render_graph(false).expect("inner");
+        let inner = build_main_render_graph(false, false).expect("inner");
         let mut builder = GraphBuilder::new();
         let pre = builder.add_pass(Box::new(TestPass {
             name: "pre".to_string(),

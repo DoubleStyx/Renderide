@@ -31,6 +31,15 @@ impl CommandHandler for ConfigCommandHandler {
                     debug_blendshapes: ctx.render_config.debug_blendshapes,
                     skinned_flip_handedness: ctx.render_config.skinned_flip_handedness,
                     rtao_enabled: ctx.render_config.rtao_enabled,
+                    ray_traced_shadows_enabled: ctx.render_config.ray_traced_shadows_enabled,
+                    ray_traced_shadows_use_compute: ctx
+                        .render_config
+                        .ray_traced_shadows_use_compute,
+                    rt_soft_shadow_samples: ctx.render_config.rt_soft_shadow_samples,
+                    rt_soft_shadow_cone_scale: ctx.render_config.rt_soft_shadow_cone_scale,
+                    rt_shadow_atlas_half_resolution: ctx
+                        .render_config
+                        .rt_shadow_atlas_half_resolution,
                     rtao_strength: ctx.render_config.rtao_strength,
                     ao_radius: ctx.render_config.ao_radius,
                     frustum_culling: ctx.render_config.frustum_culling,

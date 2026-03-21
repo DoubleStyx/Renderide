@@ -57,8 +57,8 @@ pub struct RenderLoop {
     last_gpu_mesh_pass_ms: Option<f64>,
     /// Whether RTAO diagnostic has been logged once at startup.
     rtao_diagnostic_logged: bool,
-    /// Last built main-graph RTAO variant; rebuild [`Self::graph`] when this differs from the frame's value.
-    cached_rtao_mrt_graph: Option<bool>,
+    /// Last built main graph (`RTAO MRT`, `RT shadow compute`); rebuild [`Self::graph`] when either changes.
+    cached_main_graph_key: Option<(bool, bool)>,
     /// Camera tasks awaiting `map_async` completion before writing [`CameraRenderTask::result_data`].
     pending_camera_task_readbacks: VecDeque<PendingCameraTaskReadback>,
 }
@@ -66,7 +66,8 @@ pub struct RenderLoop {
 impl RenderLoop {
     /// Creates a new render loop with pipelines for the given device and config.
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
-        let graph = build_main_render_graph(false).expect("default render graph has no cycles");
+        let graph =
+            build_main_render_graph(false, false).expect("default render graph has no cycles");
 
         let timestamp_query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
             label: Some("mesh pass timestamp query set"),
@@ -95,7 +96,7 @@ impl RenderLoop {
             frame_count: 0,
             last_gpu_mesh_pass_ms: None,
             rtao_diagnostic_logged: false,
-            cached_rtao_mrt_graph: Some(false),
+            cached_main_graph_key: Some((false, false)),
             pending_camera_task_readbacks: VecDeque::new(),
         }
     }
@@ -236,6 +237,10 @@ impl RenderLoop {
         };
 
         let rtao_mrt_graph = session.render_config().rtao_enabled && gpu.ray_tracing_available;
+        let rt_shadow_compute = rtao_mrt_graph
+            && session.render_config().ray_traced_shadows_use_compute
+            && session.render_config().ray_traced_shadows_enabled
+            && gpu.ray_tracing_available;
         if !self.rtao_diagnostic_logged {
             logger::info!(
                 "RTAO diagnostic: rtao_enabled={} (config={} ray_tracing_available={})",
@@ -246,10 +251,11 @@ impl RenderLoop {
             self.rtao_diagnostic_logged = true;
         }
 
-        if self.cached_rtao_mrt_graph != Some(rtao_mrt_graph) {
-            self.graph = build_main_render_graph(rtao_mrt_graph)
+        let graph_key = (rtao_mrt_graph, rt_shadow_compute);
+        if self.cached_main_graph_key != Some(graph_key) {
+            self.graph = build_main_render_graph(rtao_mrt_graph, rt_shadow_compute)
                 .expect("main render graph rebuild has no cycles");
-            self.cached_rtao_mrt_graph = Some(rtao_mrt_graph);
+            self.cached_main_graph_key = Some(graph_key);
         }
 
         let mut ctx = RenderGraphContext {

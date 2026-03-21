@@ -1,6 +1,7 @@
 //! Core pipeline abstractions: RenderPipeline trait, UniformData, and shared constants.
 
 use super::super::mesh::GpuMeshBuffers;
+use super::rt_shadow_uniforms::RtShadowSceneBind;
 use nalgebra::Matrix4;
 
 /// Converts a nalgebra Matrix4 to WGSL column-major layout.
@@ -224,6 +225,8 @@ pub trait RenderPipeline {
         _light_buffer: &wgpu::Buffer,
         _cluster_light_counts: &wgpu::Buffer,
         _cluster_light_indices: &wgpu::Buffer,
+        _acceleration_structure: Option<&wgpu::Tlas>,
+        _rt_shadow: Option<RtShadowSceneBind<'_>>,
     ) -> Option<wgpu::BindGroup> {
         None
     }

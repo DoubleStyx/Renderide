@@ -3,6 +3,8 @@
 //! Used from the collect phase ([`prepare_mesh_draws_for_view`]) and from [`super::graph::RenderGraph::execute`]
 //! when pre-collected draws are not supplied.
 
+use std::collections::HashSet;
+
 use nalgebra::Matrix4;
 
 use super::mesh_draw::{CollectMeshDrawsContext, collect_mesh_draws};
@@ -177,15 +179,26 @@ pub fn prepare_mesh_draws_for_view(
 
 /// Ensures all meshes referenced by draw batches are in the GPU mesh buffer cache.
 ///
-/// When ray tracing is available, BLAS builds are submitted as separate queue submissions
-/// (one per new mesh). After all builds, waits for those submissions to complete so the
-/// TLAS build in the same frame (`update_tlas`) can safely reference the BLASes.
+/// When ray tracing is available, index buffers use [`wgpu::BufferUsages::BLAS_INPUT`]. BLAS objects
+/// are built only while [`crate::gpu::needs_scene_ray_tracing_accel`] is true; when RTAO and RT
+/// shadows are both off, BLAS builds are skipped. When tracing is re-enabled, a pass fills any
+/// missing BLAS entries for meshes referenced this frame so [`crate::gpu::update_tlas`] can run.
+///
+/// BLAS builds are submitted as separate queue submissions (one per new mesh). After all builds,
+/// waits for those submissions to complete so the TLAS build in the same frame (`update_tlas`)
+/// can safely reference the BLASes.
 pub(super) fn ensure_mesh_buffers(
     gpu: &mut crate::gpu::GpuState,
     session: &crate::session::Session,
     draw_batches: &[SpaceDrawBatch],
 ) {
     let mesh_assets = session.asset_registry();
+    let rc = session.render_config();
+    let need_accel = crate::gpu::needs_scene_ray_tracing_accel(
+        gpu.ray_tracing_available,
+        rc.rtao_enabled,
+        rc.ray_traced_shadows_enabled,
+    );
     let mut built_any_blas = false;
     for batch in draw_batches {
         for d in &batch.draws {
@@ -210,13 +223,54 @@ pub(super) fn ensure_mesh_buffers(
                     crate::gpu::create_mesh_buffers(&gpu.device, mesh, stride, ray_tracing)
                 {
                     gpu.mesh_buffer_cache.insert(d.mesh_asset_id, b.clone());
-                    if let Some(ref mut accel) = gpu.accel_cache
-                        && let Some(blas) =
-                            crate::gpu::build_blas_for_mesh(&gpu.device, &gpu.queue, mesh, &b)
-                    {
-                        accel.insert(d.mesh_asset_id, blas);
-                        built_any_blas = true;
+                    if need_accel {
+                        if let Some(ref mut accel) = gpu.accel_cache
+                            && let Some(blas) =
+                                crate::gpu::build_blas_for_mesh(&gpu.device, &gpu.queue, mesh, &b)
+                        {
+                            accel.insert(d.mesh_asset_id, blas);
+                            built_any_blas = true;
+                        }
                     }
+                }
+            }
+        }
+    }
+
+    if need_accel {
+        let Some(ref mut accel) = gpu.accel_cache else {
+            // No accel cache: poll only if we already built BLAS above (defensive).
+            if built_any_blas {
+                let _ = gpu.device.poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                });
+            }
+            return;
+        };
+        let mut seen = HashSet::new();
+        for batch in draw_batches {
+            for d in &batch.draws {
+                if d.mesh_asset_id < 0 || !seen.insert(d.mesh_asset_id) {
+                    continue;
+                }
+                if accel.get(d.mesh_asset_id).is_some() {
+                    continue;
+                }
+                let Some(buffers) = gpu.mesh_buffer_cache.get(&d.mesh_asset_id) else {
+                    continue;
+                };
+                let Some(mesh) = mesh_assets.get_mesh(d.mesh_asset_id) else {
+                    continue;
+                };
+                if mesh.vertex_count <= 0 || mesh.index_count <= 0 {
+                    continue;
+                }
+                if let Some(blas) =
+                    crate::gpu::build_blas_for_mesh(&gpu.device, &gpu.queue, mesh, buffers)
+                {
+                    accel.insert(d.mesh_asset_id, blas);
+                    built_any_blas = true;
                 }
             }
         }

@@ -7,7 +7,7 @@ use std::fmt;
 
 use nalgebra::Vector2;
 
-use crate::shared::{LayerType, RenderTransform};
+use crate::shared::{LayerType, RenderTransform, ShadowCastMode};
 
 /// Opaque handle for a mesh asset. Maps to host asset_id.
 pub type MeshHandle = i32;
@@ -136,6 +136,9 @@ pub struct Drawable {
     /// Per-skinned-mesh-renderer transform override (e.g. cloud-spawned avatars). When set,
     /// replaces the node's world matrix when rendering. From RenderTransformOverridesUpdate.
     pub render_transform_override: Option<RenderTransform>,
+    /// Shadow casting mode from mesh renderer state (shared memory). Drives TLAS instance
+    /// inclusion for ray-traced shadows and RTAO (same acceleration structure).
+    pub shadow_cast_mode: ShadowCastMode,
 }
 
 impl Default for Drawable {
@@ -153,6 +156,7 @@ impl Default for Drawable {
             stencil_state: None,
             material_override_block_id: None,
             render_transform_override: None,
+            shadow_cast_mode: ShadowCastMode::on,
         }
     }
 }

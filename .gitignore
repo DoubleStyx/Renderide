@@ -456,9 +456,6 @@ target
 #.idea/
 
 #### Other .gitignore rules
-.cursor/
 .vscode/
 *.log
-references_external/
 profile.json.gz
-.cursorignore

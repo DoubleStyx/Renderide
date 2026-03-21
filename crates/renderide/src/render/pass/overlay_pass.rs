@@ -79,9 +79,17 @@ impl RenderPass for OverlayRenderPass {
             pbr_scene_bind_group_cache: &mut ctx.gpu.pbr_scene_bind_group_cache,
             last_pbr_scene_cache_light_version: &mut ctx.gpu.last_pbr_scene_cache_light_version,
             last_pbr_scene_cache_cluster_version: &mut ctx.gpu.last_pbr_scene_cache_cluster_version,
+            last_pbr_scene_cache_tlas_generation: &mut ctx.gpu.last_pbr_scene_cache_tlas_generation,
             light_buffer_version,
             cluster_buffer_version,
+            pbr_tlas_generation: 0,
+            pbr_tlas_ptr: None,
             mrt_gbuffer_origin_bind_group: None,
+            rt_shadow_atlas_generation: ctx.gpu.rt_shadow_atlas_generation,
+            last_pbr_scene_cache_rt_shadow_atlas_generation: &mut ctx
+                .gpu
+                .last_pbr_scene_cache_rt_shadow_atlas_generation,
+            rt_shadow_bind: None,
         };
 
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

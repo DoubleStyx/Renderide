@@ -10,8 +10,9 @@ use super::pipeline::{
     MaterialPipeline, NormalDebugMRTPipeline, NormalDebugPipeline, OverlayStencilMaskClearPipeline,
     OverlayStencilMaskClearSkinnedPipeline, OverlayStencilMaskWritePipeline,
     OverlayStencilMaskWriteSkinnedPipeline, OverlayStencilPipeline, OverlayStencilSkinnedPipeline,
-    PbrMRTPipeline, PbrPipeline, RenderPipeline, SkinnedMRTPipeline, SkinnedPbrMRTPipeline,
-    SkinnedPbrPipeline, SkinnedPipeline, UvDebugMRTPipeline, UvDebugPipeline,
+    PbrMRTPipeline, PbrMrtRayQueryPipeline, PbrPipeline, PbrRayQueryPipeline, RenderPipeline,
+    SkinnedMRTPipeline, SkinnedPbrMRTPipeline, SkinnedPbrMrtRayQueryPipeline, SkinnedPbrPipeline,
+    SkinnedPbrRayQueryPipeline, SkinnedPipeline, UvDebugMRTPipeline, UvDebugPipeline,
 };
 
 /// Key for pipeline lookup: shader_id (None = builtin) and variant.
@@ -63,6 +64,14 @@ pub enum PipelineVariant {
     SkinnedPbr,
     /// Skinned PBR MRT: PBR with G-buffer output for RTAO.
     SkinnedPbrMRT,
+    /// PBR with fragment ray queries and TLAS shadow rays (requires ray tracing).
+    PbrRayQuery,
+    /// PBR MRT with fragment ray queries.
+    PbrMRTRayQuery,
+    /// Skinned PBR with fragment ray queries.
+    SkinnedPbrRayQuery,
+    /// Skinned PBR MRT with fragment ray queries.
+    SkinnedPbrMRTRayQuery,
 }
 
 /// Maps pipeline keys to render pipelines. Supports builtin registration and lazy creation.
@@ -189,6 +198,42 @@ impl PipelineRegistry {
         let pipeline: Arc<dyn RenderPipeline> = match &key.1 {
             PipelineVariant::Material { .. } => Arc::new(MaterialPipeline::new(device, config)),
             PipelineVariant::Pbr => Arc::new(PbrPipeline::new(device, config)),
+            PipelineVariant::PbrRayQuery => {
+                if !device
+                    .features()
+                    .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+                {
+                    return None;
+                }
+                Arc::new(PbrRayQueryPipeline::new(device, config))
+            }
+            PipelineVariant::PbrMRTRayQuery => {
+                if !device
+                    .features()
+                    .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+                {
+                    return None;
+                }
+                Arc::new(PbrMrtRayQueryPipeline::new(device, config))
+            }
+            PipelineVariant::SkinnedPbrRayQuery => {
+                if !device
+                    .features()
+                    .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+                {
+                    return None;
+                }
+                Arc::new(SkinnedPbrRayQueryPipeline::new(device, config))
+            }
+            PipelineVariant::SkinnedPbrMRTRayQuery => {
+                if !device
+                    .features()
+                    .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+                {
+                    return None;
+                }
+                Arc::new(SkinnedPbrMrtRayQueryPipeline::new(device, config))
+            }
             _ => return None,
         };
         self.pipelines.insert(key, Arc::clone(&pipeline));

@@ -104,6 +104,8 @@ pub struct LiveFrameDiagnostics {
     // ── Feature flags ────────────────────────────────────────────────────────
     pub frustum_culling_enabled: bool,
     pub rtao_enabled: bool,
+    /// [`crate::config::RenderConfig::ray_traced_shadows_enabled`]: request PBR ray-query shadows.
+    pub ray_traced_shadows_enabled: bool,
     pub ray_tracing_available: bool,
     /// GPU adapter metadata from wgpu (name, device class, driver, backend).
     #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
@@ -471,11 +473,22 @@ impl DebugHud {
                         "RTAO {}  radius {:.2}  strength {:.2}  samples {}",
                         rtao_state, sample.ao_radius, sample.ao_strength, sample.ao_sample_count
                     ));
+                    let rt_shadows_state = if sample.ray_traced_shadows_enabled {
+                        "ON"
+                    } else {
+                        "OFF"
+                    };
+                    ui.text(format!(
+                        "RT shadows {}  (PBR ray query; needs TLAS)",
+                        rt_shadows_state
+                    ));
 
                     ui.separator();
                     ui.text(format!(
-                        "Flags  cull={}  rtao={}",
-                        sample.frustum_culling_enabled, sample.rtao_enabled
+                        "Flags  cull={}  rtao={}  rt_shadows={}",
+                        sample.frustum_culling_enabled,
+                        sample.rtao_enabled,
+                        sample.ray_traced_shadows_enabled
                     ));
                 } else {
                     ui.text("Waiting for frame diagnostics...");
@@ -688,6 +701,7 @@ mod tests {
             ao_sample_count: 8,
             frustum_culling_enabled: true,
             rtao_enabled: true,
+            ray_traced_shadows_enabled: false,
             ray_tracing_available: true,
             adapter_info: test_adapter_info(),
             gpu_allocator: GpuAllocatorSnapshot::default(),

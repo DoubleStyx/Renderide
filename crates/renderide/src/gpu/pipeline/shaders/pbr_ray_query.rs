@@ -1,27 +1,30 @@
-//! WGSL shader sources for PBR (Physically Based Rendering) pipelines.
+//! Cook-Torrance PBR WGSL with `enable wgpu_ray_query` and TLAS-bound shadow traces.
 //!
-//! All four variants share the same Cook-Torrance BRDF and clustered-light loop:
-//! - [`PBR_SHADER_SRC`]: non-skinned, single color target.
-//! - [`PBR_MRT_SHADER_SRC`]: non-skinned, three-target G-buffer for RTAO.
-//! - [`SKINNED_PBR_SHADER_SRC`]: bone-skinned, single color target.
-//! - [`SKINNED_PBR_MRT_SHADER_SRC`]: bone-skinned, three-target G-buffer for RTAO.
+//! Non-skinned and skinned variants; single color target and MRT (G-buffer) variants.
+//! Matches bind layouts in [`crate::gpu::pipeline::pbr_ray_query`].
 //!
-//! # Note on duplication
-//! The lighting functions (`distribution_ggx`, `geometry_smith`, `fresnel_schlick`, etc.) and
-//! the fragment body are repeated across all four shaders because there is currently no offline
-//! shader compilation or runtime WGSL module composition step. When a shader preprocessor or
-//! wgsl-import mechanism is added, the shared BRDF code should be extracted into a common include.
+//! Shared shadow helpers (`hash11`, `trace_shadow_ray`, `light_shadow_visibility`) and
+//! [`RtShadowUniforms`] live in [`pbr_ray_query_shadow_lib.wgsl`] and are concatenated into each
+//! shader via [`include_str`] to avoid four-way drift.
+//!
+//! Some drivers may reject fragment-stage ray queries; see the header comment on
+//! [`PBR_RAY_QUERY_SHADER_SRC`] for Prompt 4 (compute fallback).
 
-/// PBR shader: PBS metallic BRDF with clustered lighting (single color target).
-///
-/// Bind group 0: per-draw MVP/model uniforms (dynamic offset ring).
-/// Bind group 1: scene uniforms + lights storage + cluster light counts/indices.
-pub(crate) const PBR_SHADER_SRC: &str = r#"
+/// Non-skinned PBR, single color target, fragment ray queries + TLAS.
+pub(crate) const PBR_RAY_QUERY_SHADER_SRC: &str = concat!(
+    r#"
+// PBR forward fragment path with `wgpu_ray_query` for ray-traced shadows.
+//
+// Some drivers or backends may reject ray queries in the fragment stage at pipeline creation or
+// validation time. If that happens, use a compute-pass shadow mask (see Prompt 4) instead of
+// fragment-stage traces.
+
+enable wgpu_ray_query;
+
 struct VertexInput {
     @location(0) position: vec3f,
     @location(1) normal: vec3f,
 }
-/// VS: `clip_position` is clip space. FS: same field is `@builtin(position)` (framebuffer pixel coordinates).
 struct VertexOutput {
     @builtin(position) clip_position: vec4f,
     @location(0) world_normal: vec3f,
@@ -68,7 +71,10 @@ struct SceneUniforms {
 @group(1) @binding(1) var<storage, read> lights: array<GpuLight>;
 @group(1) @binding(2) var<storage, read> cluster_light_counts: array<u32>;
 @group(1) @binding(3) var<storage, read> cluster_light_indices: array<u32>;
-
+@group(1) @binding(4) var acc_struct: acceleration_structure;
+"#,
+    include_str!("pbr_ray_query_shadow_lib.wgsl"),
+    r#"
 const TILE_SIZE: u32 = 16u;
 const MAX_LIGHTS_PER_TILE: u32 = 32u;
 
@@ -153,28 +159,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
             let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + 0.1, spot_cos);
             attenuation = select(0.0, light.intensity * spot_atten * (1.0 - smoothstep(light.range * 0.9, light.range, dist)) / max(dist * dist, 0.0001), light.range > 0.0);
         }
+        let shadow_vis = light_shadow_visibility(light, in.world_position, n, l, attenuation, in.clip_position.xy, light_idx, i);
         let h = normalize(v + l);
         let n_dot_l = max(dot(n, l), 0.0);
         let n_dot_v = max(dot(n, v), 0.0001);
         let n_dot_h = max(dot(n, h), 0.0);
-        let radiance = light_color * attenuation * n_dot_l;
+        let radiance = light_color * attenuation * n_dot_l * shadow_vis;
         let f = fresnel_schlick(max(dot(h, v), 0.0), f0);
         let spec = (distribution_ggx(n_dot_h, roughness) * geometry_smith(n_dot_v, n_dot_l, roughness) * f) / max(4.0 * n_dot_v * n_dot_l, 0.0001);
         lo += ((1.0 - f) * (1.0 - metallic) * base_color / 3.14159265 + spec) * radiance;
     }
     return vec4f(vec3f(0.03) * base_color + lo, 1.0);
 }
-"#;
+"#,
+);
 
-/// PBR MRT shader: same as [`PBR_SHADER_SRC`] but outputs three-target G-buffer for RTAO.
-///
-/// MRT layout: `@location(0)` = color, `@location(1)` = position (camera-relative), `@location(2)` = normal.
-pub(crate) const PBR_MRT_SHADER_SRC: &str = r#"
+/// Non-skinned PBR MRT (G-buffer), fragment ray queries + TLAS.
+pub(crate) const PBR_MRT_RAY_QUERY_SHADER_SRC: &str = concat!(
+    r#"
+// PBR forward fragment path with `wgpu_ray_query` for ray-traced shadows.
+//
+// Some drivers or backends may reject ray queries in the fragment stage at pipeline creation or
+// validation time. If that happens, use a compute-pass shadow mask (see Prompt 4) instead of
+// fragment-stage traces.
+
+enable wgpu_ray_query;
+
 struct VertexInput {
     @location(0) position: vec3f,
     @location(1) normal: vec3f,
 }
-/// VS: `clip_position` is clip space. FS: same field is `@builtin(position)` (framebuffer pixel coordinates).
 struct VertexOutput {
     @builtin(position) clip_position: vec4f,
     @location(0) world_normal: vec3f,
@@ -221,7 +235,10 @@ struct SceneUniforms {
 @group(1) @binding(1) var<storage, read> lights: array<GpuLight>;
 @group(1) @binding(2) var<storage, read> cluster_light_counts: array<u32>;
 @group(1) @binding(3) var<storage, read> cluster_light_indices: array<u32>;
-
+@group(1) @binding(4) var acc_struct: acceleration_structure;
+"#,
+    include_str!("pbr_ray_query_shadow_lib.wgsl"),
+    r#"
 const TILE_SIZE: u32 = 16u;
 const MAX_LIGHTS_PER_TILE: u32 = 32u;
 
@@ -311,11 +328,12 @@ fn fs_main(in: VertexOutput) -> PbrFragmentOutput {
             let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + 0.1, spot_cos);
             attenuation = select(0.0, light.intensity * spot_atten * (1.0 - smoothstep(light.range * 0.9, light.range, dist)) / max(dist * dist, 0.0001), light.range > 0.0);
         }
+        let shadow_vis = light_shadow_visibility(light, in.world_position, n, l, attenuation, in.clip_position.xy, light_idx, i);
         let h = normalize(v + l);
         let n_dot_l = max(dot(n, l), 0.0);
         let n_dot_v = max(dot(n, v), 0.0001);
         let n_dot_h = max(dot(n, h), 0.0);
-        let radiance = light_color * attenuation * n_dot_l;
+        let radiance = light_color * attenuation * n_dot_l * shadow_vis;
         let f = fresnel_schlick(max(dot(h, v), 0.0), f0);
         let spec = (distribution_ggx(n_dot_h, roughness) * geometry_smith(n_dot_v, n_dot_l, roughness) * f) / max(4.0 * n_dot_v * n_dot_l, 0.0001);
         lo += ((1.0 - f) * (1.0 - metallic) * base_color / 3.14159265 + spec) * radiance;
@@ -324,13 +342,17 @@ fn fs_main(in: VertexOutput) -> PbrFragmentOutput {
     let rel = in.world_position - scene.view_position;
     return PbrFragmentOutput(vec4f(color, 1.0), vec4f(rel, 1.0), vec4f(n, 0.0));
 }
-"#;
+"#,
+);
 
-/// Skinned PBR shader: bone-weighted vertex transform with PBS fragment lighting (single color target).
-///
-/// Bind group 0: skinned uniform (dynamic offset) + blendshape storage buffer.
-/// Bind group 1: scene uniforms + lights + cluster buffers (same as non-skinned PBR group 1).
-pub(crate) const SKINNED_PBR_SHADER_SRC: &str = r#"
+/// Skinned PBR, single color target, fragment ray queries + TLAS.
+pub(crate) const SKINNED_PBR_RAY_QUERY_SHADER_SRC: &str = concat!(
+    r#"
+// Skinned PBR with fragment `wgpu_ray_query` shadows. See non-skinned ray-query shaders in
+// this module for fragment-stage validation notes (Prompt 4 compute fallback).
+
+enable wgpu_ray_query;
+
 struct VertexInput {
     @location(0) position: vec3f,
     @location(1) normal: vec3f,
@@ -338,7 +360,6 @@ struct VertexInput {
     @location(3) bone_indices: vec4i,
     @location(4) bone_weights: vec4f,
 }
-/// VS: `clip_position` is clip space. FS: same field is `@builtin(position)` (framebuffer pixel coordinates).
 struct VertexOutput {
     @builtin(position) clip_position: vec4f,
     @location(0) world_normal: vec3f,
@@ -393,7 +414,10 @@ struct SceneUniforms {
 @group(1) @binding(1) var<storage, read> lights: array<GpuLight>;
 @group(1) @binding(2) var<storage, read> cluster_light_counts: array<u32>;
 @group(1) @binding(3) var<storage, read> cluster_light_indices: array<u32>;
-
+@group(1) @binding(4) var acc_struct: acceleration_structure;
+"#,
+    include_str!("pbr_ray_query_shadow_lib.wgsl"),
+    r#"
 const TILE_SIZE: u32 = 16u;
 const MAX_LIGHTS_PER_TILE: u32 = 32u;
 
@@ -500,20 +524,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
             let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + 0.1, dot(-l, normalize(light.direction.xyz)));
             attenuation = select(0.0, light.intensity * spot_atten * (1.0 - smoothstep(light.range * 0.9, light.range, dist)) / max(dist * dist, 0.0001), light.range > 0.0);
         }
+        let shadow_vis = light_shadow_visibility(light, in.world_position, n, l, attenuation, in.clip_position.xy, light_idx, i);
         let h = normalize(v + l);
         let n_dot_l = max(dot(n, l), 0.0); let n_dot_v = max(dot(n, v), 0.0001); let n_dot_h = max(dot(n, h), 0.0);
         let f = fresnel_schlick(max(dot(h, v), 0.0), f0);
         let spec = (distribution_ggx(n_dot_h, roughness) * geometry_smith(n_dot_v, n_dot_l, roughness) * f) / max(4.0 * n_dot_v * n_dot_l, 0.0001);
-        lo += ((1.0 - f) * (1.0 - metallic) * base_color / 3.14159265 + spec) * light.color.xyz * attenuation * n_dot_l;
+        lo += ((1.0 - f) * (1.0 - metallic) * base_color / 3.14159265 + spec) * light.color.xyz * attenuation * n_dot_l * shadow_vis;
     }
     return vec4f(vec3f(0.03) * base_color + lo, 1.0);
 }
-"#;
+"#,
+);
 
-/// Skinned PBR MRT shader: same as [`SKINNED_PBR_SHADER_SRC`] with three-target G-buffer for RTAO.
-///
-/// MRT layout: `@location(0)` = color, `@location(1)` = position (camera-relative), `@location(2)` = normal.
-pub(crate) const SKINNED_PBR_MRT_SHADER_SRC: &str = r#"
+/// Skinned PBR MRT (G-buffer), fragment ray queries + TLAS.
+pub(crate) const SKINNED_PBR_MRT_RAY_QUERY_SHADER_SRC: &str = concat!(
+    r#"
+// Skinned PBR with fragment `wgpu_ray_query` shadows. See non-skinned ray-query shaders in
+// this module for fragment-stage validation notes (Prompt 4 compute fallback).
+
+enable wgpu_ray_query;
+
 struct VertexInput {
     @location(0) position: vec3f,
     @location(1) normal: vec3f,
@@ -521,7 +551,6 @@ struct VertexInput {
     @location(3) bone_indices: vec4i,
     @location(4) bone_weights: vec4f,
 }
-/// VS: `clip_position` is clip space. FS: same field is `@builtin(position)` (framebuffer pixel coordinates).
 struct VertexOutput {
     @builtin(position) clip_position: vec4f,
     @location(0) world_normal: vec3f,
@@ -576,7 +605,10 @@ struct SceneUniforms {
 @group(1) @binding(1) var<storage, read> lights: array<GpuLight>;
 @group(1) @binding(2) var<storage, read> cluster_light_counts: array<u32>;
 @group(1) @binding(3) var<storage, read> cluster_light_indices: array<u32>;
-
+@group(1) @binding(4) var acc_struct: acceleration_structure;
+"#,
+    include_str!("pbr_ray_query_shadow_lib.wgsl"),
+    r#"
 const TILE_SIZE: u32 = 16u;
 const MAX_LIGHTS_PER_TILE: u32 = 32u;
 
@@ -610,7 +642,9 @@ fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
 ) -> VertexOutput {
     var out: VertexOutput;
-    var pos = in.position; var norm = in.normal; var tang = in.tangent;
+    var pos = in.position;
+    var norm = in.normal;
+    var tang = in.tangent;
     for (var i = 0u; i < uniforms.num_blendshapes; i++) {
         let q = i / 4u; let r = i % 4u;
         let v = uniforms.blendshape_weights[q];
@@ -626,7 +660,8 @@ fn vs_main(
     let total_weight = in.bone_weights[0] + in.bone_weights[1] + in.bone_weights[2] + in.bone_weights[3];
     let inv_total = select(1.0, 1.0 / total_weight, total_weight > 1e-6);
     for (var i = 0; i < 4; i++) {
-        let idx = clamp(in.bone_indices[i], 0, 255); let w = in.bone_weights[i] * inv_total;
+        let idx = clamp(in.bone_indices[i], 0, 255);
+        let w = in.bone_weights[i] * inv_total;
         if w > 0.0 {
             let bone = uniforms.bone_matrices[idx];
             world_pos += w * bone * vec4f(pos, 1.0);
@@ -685,14 +720,16 @@ fn fs_main(in: VertexOutput) -> SkinnedPbrFragmentOutput {
             let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + 0.1, dot(-l, normalize(light.direction.xyz)));
             attenuation = select(0.0, light.intensity * spot_atten * (1.0 - smoothstep(light.range * 0.9, light.range, dist)) / max(dist * dist, 0.0001), light.range > 0.0);
         }
+        let shadow_vis = light_shadow_visibility(light, in.world_position, n, l, attenuation, in.clip_position.xy, light_idx, i);
         let h = normalize(v + l);
         let n_dot_l = max(dot(n, l), 0.0); let n_dot_v = max(dot(n, v), 0.0001); let n_dot_h = max(dot(n, h), 0.0);
         let f = fresnel_schlick(max(dot(h, v), 0.0), f0);
         let spec = (distribution_ggx(n_dot_h, roughness) * geometry_smith(n_dot_v, n_dot_l, roughness) * f) / max(4.0 * n_dot_v * n_dot_l, 0.0001);
-        lo += ((1.0 - f) * (1.0 - metallic) * base_color / 3.14159265 + spec) * light.color.xyz * attenuation * n_dot_l;
+        lo += ((1.0 - f) * (1.0 - metallic) * base_color / 3.14159265 + spec) * light.color.xyz * attenuation * n_dot_l * shadow_vis;
     }
     let color = vec3f(0.03) * base_color + lo;
     let rel = in.world_position - scene.view_position;
     return SkinnedPbrFragmentOutput(vec4f(color, 1.0), vec4f(rel, 1.0), vec4f(n, 0.0));
 }
-"#;
+"#,
+);

@@ -78,6 +78,7 @@ mod composite;
 mod mesh_pass;
 mod overlay_pass;
 mod projection;
+mod rt_shadow_compute;
 mod rtao_blur;
 mod rtao_compute;
 
@@ -98,5 +99,6 @@ pub use overlay_pass::OverlayRenderPass;
 pub use projection::{
     orthographic_projection_reverse_z, projection_for_params, reverse_z_projection,
 };
+pub use rt_shadow_compute::RtShadowComputePass;
 pub use rtao_blur::RtaoBlurPass;
 pub use rtao_compute::RtaoComputePass;

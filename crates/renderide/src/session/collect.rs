@@ -151,6 +151,7 @@ pub(super) fn build_draw_entries(filtered: Vec<FilteredDrawable>) -> Vec<DrawEnt
                 },
                 pipeline_variant: f.pipeline_variant,
                 stencil_state: f.drawable.stencil_state,
+                shadow_cast_mode: f.drawable.shadow_cast_mode,
             }
         })
         .collect()
@@ -278,6 +279,7 @@ mod tests {
     use crate::gpu::PipelineVariant;
     use crate::render::batch::DrawEntry;
     use crate::scene::{Drawable, Scene};
+    use crate::shared::ShadowCastMode;
     use glam::Mat4;
 
     fn make_scene(space_id: i32, is_overlay: bool) -> Scene {
@@ -311,6 +313,7 @@ mod tests {
             blendshape_weights: None,
             pipeline_variant: PipelineVariant::NormalDebug,
             stencil_state: None,
+            shadow_cast_mode: crate::shared::ShadowCastMode::on,
         };
         let batch = create_space_batch(5, &scene, vec![draw], None);
         let batch = batch.expect("should have batch");
@@ -337,5 +340,22 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].material_id, 10);
         assert_eq!(entries[0].sort_key, 5);
+    }
+
+    #[test]
+    fn build_draw_entries_propagates_shadow_cast_mode() {
+        let filtered = vec![FilteredDrawable {
+            drawable: Drawable {
+                node_id: 0,
+                mesh_handle: 1,
+                shadow_cast_mode: ShadowCastMode::off,
+                ..Default::default()
+            },
+            world_matrix: Mat4::IDENTITY,
+            pipeline_variant: PipelineVariant::NormalDebug,
+        }];
+        let entries = build_draw_entries(filtered);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].shadow_cast_mode, ShadowCastMode::off);
     }
 }

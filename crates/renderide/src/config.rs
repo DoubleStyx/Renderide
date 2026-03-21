@@ -9,8 +9,9 @@
 //!    directory (see [`find_config_ini`]).
 //! 3. **Environment variables** — highest priority; override INI and defaults where applicable.
 //!
-//! [`AppConfig`] (FPS caps, HUD toggle) and [`RenderConfig`] (vsync, camera, RTAO, culling, GPU
-//! validation, etc.) each load their own keys from that stack; see their respective `load` docs and
+//! [`AppConfig`] (FPS caps, HUD toggle) and [`RenderConfig`] (vsync, camera, RTAO, ray-traced PBR
+//! shadows, culling, GPU validation, etc.) each load their own keys from that stack; see their
+//! respective `load` docs and
 //! the table in `app.rs` for `[display]` / `[hud]` / `[camera]` vs `[rendering]`.
 //!
 //! Two separate structs are exposed:
@@ -307,6 +308,18 @@ pub struct RenderConfig {
     /// When true and ray tracing is available, RTAO (Ray-Traced Ambient Occlusion) may be used.
     /// Toggle for A/B testing. Default false.
     pub rtao_enabled: bool,
+    /// When true and ray tracing is available with a built TLAS, PBR uses ray-query pipelines for
+    /// ray-traced shadows. Independent of [`Self::rtao_enabled`]. Default false (opt-in).
+    pub ray_traced_shadows_enabled: bool,
+    /// When true with RTAO MRT, [`crate::render::pass::RtShadowComputePass`] fills a half-res atlas
+    /// after the mesh pass; PBR samples it (one-frame latency). Requires [`Self::rtao_enabled`].
+    pub ray_traced_shadows_use_compute: bool,
+    /// Soft shadow ray count for RT PBR (1–16). Default 8.
+    pub rt_soft_shadow_samples: u32,
+    /// Scales the soft-shadow cone width in RT PBR. Default 1.0.
+    pub rt_soft_shadow_cone_scale: f32,
+    /// When true, the shadow atlas is half the viewport resolution (fewer compute threads).
+    pub rt_shadow_atlas_half_resolution: bool,
     /// RTAO strength: how much occlusion darkens the scene. 0 = no effect, 1 = full darkening.
     /// Default 1.0.
     pub rtao_strength: f32,
@@ -497,6 +510,70 @@ fn apply_render_config_ini_entry(config: &mut RenderConfig, section: &str, key: 
                 );
             }
         }
+        ("rendering", "ray_traced_shadows_enabled") => {
+            if let Some(v) = parse_bool(value) {
+                config.ray_traced_shadows_enabled = v;
+                eprintln!("[renderide] ini: ray_traced_shadows_enabled = {}", v);
+                logger::info!("ini: ray_traced_shadows_enabled = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: ray_traced_shadows_enabled parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "ray_traced_shadows_use_compute") => {
+            if let Some(v) = parse_bool(value) {
+                config.ray_traced_shadows_use_compute = v;
+                eprintln!("[renderide] ini: ray_traced_shadows_use_compute = {}", v);
+                logger::info!("ini: ray_traced_shadows_use_compute = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: ray_traced_shadows_use_compute parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "rt_soft_shadow_samples") => match value.parse::<u32>() {
+            Ok(v) => {
+                config.rt_soft_shadow_samples = v.clamp(1, 16);
+                eprintln!(
+                    "[renderide] ini: rt_soft_shadow_samples = {}",
+                    config.rt_soft_shadow_samples
+                );
+                logger::info!(
+                    "ini: rt_soft_shadow_samples = {}",
+                    config.rt_soft_shadow_samples
+                );
+            }
+            Err(_) => eprintln!(
+                "[renderide] ini: rt_soft_shadow_samples parse error (raw = {:?})",
+                value
+            ),
+        },
+        ("rendering", "rt_soft_shadow_cone_scale") => match value.parse::<f32>() {
+            Ok(v) => {
+                config.rt_soft_shadow_cone_scale = v;
+                eprintln!("[renderide] ini: rt_soft_shadow_cone_scale = {}", v);
+                logger::info!("ini: rt_soft_shadow_cone_scale = {}", v);
+            }
+            Err(_) => eprintln!(
+                "[renderide] ini: rt_soft_shadow_cone_scale parse error (raw = {:?})",
+                value
+            ),
+        },
+        ("rendering", "rt_shadow_atlas_half_resolution") => {
+            if let Some(v) = parse_bool(value) {
+                config.rt_shadow_atlas_half_resolution = v;
+                eprintln!("[renderide] ini: rt_shadow_atlas_half_resolution = {}", v);
+                logger::info!("ini: rt_shadow_atlas_half_resolution = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: rt_shadow_atlas_half_resolution parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
         ("rendering", "rtao_strength") => match value.parse::<f32>() {
             Ok(v) => {
                 config.rtao_strength = v;
@@ -544,14 +621,16 @@ impl RenderConfig {
     /// - **`[rendering]`** — `use_debug_uv`, `use_pbr`, `skinned_apply_mesh_root_transform`,
     ///   `skinned_use_root_bone`, `gpu_validation_layers`, `debug_skinned`, `debug_blendshapes`,
     ///   `skinned_flip_handedness`, `parallel_mesh_draw_prep_batches`,
-    ///   `log_collect_draw_batches_timing` (bools); `rtao_enabled` (bool); `rtao_strength`, `ao_radius`
-    ///   (floats); `frustum_culling` (bool).
+    ///   `log_collect_draw_batches_timing` (bools); `rtao_enabled`, `ray_traced_shadows_enabled`
+    ///   (bools); `rtao_strength`, `ao_radius` (floats); `frustum_culling` (bool).
     ///
     /// **Env vars** (highest priority; override INI and defaults):
     /// - `RENDERIDE_DEBUG_BLENDSHAPES=1` — blendshape debug logging.
     /// - `RENDERIDE_NO_FRUSTUM_CULL=1` — disables CPU frustum culling for rigid and skinned meshes.
     /// - `RENDERIDE_PARALLEL_MESH_PREP=0` — disables parallel per-batch mesh-draw collection.
     /// - `RENDERIDE_NO_RTAO=1` — disables RTAO even when ray tracing is available.
+    /// - `RENDERIDE_RAY_TRACED_SHADOWS=1` — enables PBR ray-traced shadows when the GPU supports them.
+    /// - `RENDERIDE_NO_RAY_TRACED_SHADOWS=1` — disables PBR ray-traced shadows (overrides the enable var).
     /// - `RENDERIDE_GPU_VALIDATION=1` — enables wgpu validation layers at GPU init ([`Self::gpu_validation_layers`]).
     /// - `RENDERIDE_VSYNC=1` enables hardware vsync ([`Self::vsync`]); `RENDERIDE_VSYNC=0` forces it off.
     /// - `RENDERIDE_LOG_COLLECT_TIMING=1` — enables [`Self::log_collect_draw_batches_timing`].
@@ -572,7 +651,7 @@ impl RenderConfig {
             );
             let display = format!("RenderConfig (INI): display vsync={}", config.vsync);
             let rendering = format!(
-                "RenderConfig (INI): rendering debug_uv={} pbr={} skin_root={} skin_root_bone={} gpu_val={} dbg_skin={} dbg_blend={} flip_h={} parallel_prep={} log_collect={} rtao={} rtao_str={} ao_r={} frustum={}",
+                "RenderConfig (INI): rendering debug_uv={} pbr={} skin_root={} skin_root_bone={} gpu_val={} dbg_skin={} dbg_blend={} flip_h={} parallel_prep={} log_collect={} rtao={} rt_shadows={} rtao_str={} ao_r={} frustum={}",
                 config.use_debug_uv,
                 config.use_pbr,
                 config.skinned_apply_mesh_root_transform,
@@ -584,6 +663,7 @@ impl RenderConfig {
                 config.parallel_mesh_draw_prep_batches,
                 config.log_collect_draw_batches_timing,
                 config.rtao_enabled,
+                config.ray_traced_shadows_enabled,
                 config.rtao_strength,
                 config.ao_radius,
                 config.frustum_culling
@@ -608,6 +688,13 @@ impl RenderConfig {
         }
         if std::env::var("RENDERIDE_NO_RTAO").as_deref() == Ok("1") {
             config.rtao_enabled = false;
+        }
+        match std::env::var("RENDERIDE_RAY_TRACED_SHADOWS").as_deref() {
+            Ok("1") | Ok("true") | Ok("yes") => config.ray_traced_shadows_enabled = true,
+            _ => {}
+        }
+        if std::env::var("RENDERIDE_NO_RAY_TRACED_SHADOWS").as_deref() == Ok("1") {
+            config.ray_traced_shadows_enabled = false;
         }
         match std::env::var("RENDERIDE_GPU_VALIDATION").as_deref() {
             Ok("1") | Ok("true") | Ok("yes") => config.gpu_validation_layers = true,
@@ -642,6 +729,11 @@ impl Default for RenderConfig {
             debug_blendshapes: false,
             skinned_flip_handedness: false,
             rtao_enabled: false,
+            ray_traced_shadows_enabled: false,
+            ray_traced_shadows_use_compute: false,
+            rt_soft_shadow_samples: 8,
+            rt_soft_shadow_cone_scale: 1.0,
+            rt_shadow_atlas_half_resolution: true,
             rtao_strength: 1.0,
             ao_radius: 1.0,
             frustum_culling: true,
@@ -668,6 +760,7 @@ vsync = true
 use_pbr = false
 use_debug_uv = true
 rtao_strength = 0.25
+ray_traced_shadows_enabled = true
 "#;
         let mut c = RenderConfig::default();
         for (section, key, value) in parse_ini(ini) {
@@ -680,5 +773,6 @@ rtao_strength = 0.25
         assert!(!c.use_pbr);
         assert!(c.use_debug_uv);
         assert!((c.rtao_strength - 0.25).abs() < f32::EPSILON);
+        assert!(c.ray_traced_shadows_enabled);
     }
 }

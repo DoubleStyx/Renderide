@@ -5,7 +5,7 @@
 use glam::Mat4;
 
 use crate::gpu::PipelineVariant;
-use crate::shared::RenderTransform;
+use crate::shared::{RenderTransform, ShadowCastMode};
 
 use crate::stencil::StencilState;
 
@@ -39,6 +39,8 @@ pub struct DrawEntry {
     /// stencil pipeline and `set_stencil_reference`. Populated from material property blocks
     /// when host exports IUIX_Material stencil props.
     pub stencil_state: Option<StencilState>,
+    /// From mesh renderer state; [`ShadowCastMode::off`] instances are omitted from the scene TLAS.
+    pub shadow_cast_mode: ShadowCastMode,
 }
 
 /// Per-space draw batch for rendering.

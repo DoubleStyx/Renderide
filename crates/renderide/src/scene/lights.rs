@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use glam::{Mat4, Quat, Vec3};
 
-use crate::shared::{LightData, LightState, LightType, LightsBufferRendererState};
+use crate::shared::{LightData, LightState, LightType, LightsBufferRendererState, ShadowType};
 
 /// Local axis for light propagation before world transform: host **`transform.forward`** (+Z).
 const LOCAL_LIGHT_PROPAGATION: Vec3 = Vec3::new(0.0, 0.0, 1.0);
@@ -60,6 +60,25 @@ pub struct ResolvedLight {
     pub light_type: LightType,
     /// Global unique ID for consumed feedback.
     pub global_unique_id: i32,
+    /// Shadow mode from the host (`LightsBufferRendererState` / [`LightState`]).
+    pub shadow_type: ShadowType,
+    /// Shadow strength multiplier (0 = no shadow contribution).
+    pub shadow_strength: f32,
+    /// Near plane for shadow projection volumes (host units).
+    pub shadow_near_plane: f32,
+    /// Depth bias applied when sampling shadow maps (host value; unused until map shadows).
+    pub shadow_bias: f32,
+    /// Normal bias for shadow receivers (host value; unused until map shadows).
+    pub shadow_normal_bias: f32,
+}
+
+/// Returns whether `resolved` should participate in shadow casting for RT (and matches the
+/// per-light guard used in PBR ray-query WGSL).
+///
+/// Aligns with Renderite-style rules: [`ShadowType::none`] or non-positive
+/// [`ResolvedLight::shadow_strength`] means no shadow rays for that light.
+pub fn light_casts_shadows(resolved: &ResolvedLight) -> bool {
+    resolved.shadow_type != ShadowType::none && resolved.shadow_strength > 0.0
 }
 
 /// Cache of lights per lights buffer (keyed by GlobalUniqueId) and per space.
@@ -357,6 +376,11 @@ impl LightCache {
                 spot_angle: cached.data.angle,
                 light_type: cached.state.light_type,
                 global_unique_id: cached.state.global_unique_id,
+                shadow_type: cached.state.shadow_type,
+                shadow_strength: cached.state.shadow_strength,
+                shadow_near_plane: cached.state.shadow_near_plane,
+                shadow_bias: cached.state.shadow_bias,
+                shadow_normal_bias: cached.state.shadow_normal_bias,
             });
         }
         resolved
@@ -421,6 +445,11 @@ impl LightCache {
                 spot_angle: data.angle,
                 light_type: LightType::point,
                 global_unique_id: -1,
+                shadow_type: ShadowType::none,
+                shadow_strength: 0.0,
+                shadow_near_plane: 0.0,
+                shadow_bias: 0.0,
+                shadow_normal_bias: 0.0,
             });
         }
         resolved
@@ -909,5 +938,76 @@ mod tests {
             .unwrap();
         assert!((regular.data.intensity - 2.0).abs() < 1e-5);
         assert_eq!(regular.transform_id, 99);
+    }
+
+    #[test]
+    fn light_casts_shadows_matches_shadow_type_and_strength() {
+        let r = ResolvedLight {
+            world_position: Vec3::ZERO,
+            world_direction: Vec3::Z,
+            color: Vec3::ONE,
+            intensity: 1.0,
+            range: 10.0,
+            spot_angle: 45.0,
+            light_type: LightType::point,
+            global_unique_id: 0,
+            shadow_type: ShadowType::none,
+            shadow_strength: 1.0,
+            shadow_near_plane: 0.0,
+            shadow_bias: 0.0,
+            shadow_normal_bias: 0.0,
+        };
+        assert!(!light_casts_shadows(&r));
+        let mut hard = r;
+        hard.shadow_type = ShadowType::hard;
+        assert!(light_casts_shadows(&hard));
+        hard.shadow_strength = 0.0;
+        assert!(!light_casts_shadows(&hard));
+    }
+
+    #[test]
+    fn resolve_lights_copies_shadow_fields_from_buffer_state() {
+        let mut cache = LightCache::new();
+        let space_id = 0;
+        cache.store_full(100, vec![make_light_data((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))]);
+        let mut st = make_state(0, 100, LightType::spot);
+        st.shadow_type = ShadowType::soft;
+        st.shadow_strength = 0.75;
+        st.shadow_near_plane = 0.05;
+        st.shadow_bias = 0.02;
+        st.shadow_normal_bias = 0.03;
+        cache.apply_update(space_id, &[], &[0], &[st]);
+
+        let resolved =
+            cache.resolve_lights(
+                space_id,
+                |tid| {
+                    if tid == 0 { Some(Mat4::IDENTITY) } else { None }
+                },
+            );
+        assert_eq!(resolved.len(), 1);
+        let l = &resolved[0];
+        assert_eq!(l.shadow_type, ShadowType::soft);
+        assert!((l.shadow_strength - 0.75).abs() < 1e-5);
+        assert!((l.shadow_near_plane - 0.05).abs() < 1e-5);
+        assert!((l.shadow_bias - 0.02).abs() < 1e-5);
+        assert!((l.shadow_normal_bias - 0.03).abs() < 1e-5);
+    }
+
+    #[test]
+    fn resolve_lights_with_fallback_uses_default_shadow_fields() {
+        let mut cache = LightCache::new();
+        let space_id = 0;
+        cache.store_full(
+            space_id,
+            vec![make_light_data((1.0, 0.0, 0.0), (1.0, 0.0, 0.0))],
+        );
+        let resolved = cache.resolve_lights_with_fallback(space_id, |_| None);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].shadow_type, ShadowType::none);
+        assert_eq!(resolved[0].shadow_strength, 0.0);
+        assert_eq!(resolved[0].shadow_near_plane, 0.0);
+        assert_eq!(resolved[0].shadow_bias, 0.0);
+        assert_eq!(resolved[0].shadow_normal_bias, 0.0);
     }
 }
