@@ -345,7 +345,9 @@ impl RenderideApp {
     /// Runs one frame on the winit event-loop thread.
     ///
     /// Phases:
-    /// 1. **Update** — [`Session::update`] (IPC / commands).
+    /// 1. **Update** — [`Session::update`](crate::session::Session::update) with
+    ///    [`WindowInputState`](crate::input::WindowInputState) (IPC / commands; input sampled only when
+    ///    `frame_start_data` is sent).
     /// 2. **Main view** — [`MainViewFrameInput::from_session`] (draw batches), swapchain acquire,
     ///    [`crate::render::prepare_mesh_draws_for_view`], [`RenderLoop::render_frame`], present.
     /// 3. **Render-to-asset** — [`Session::process_render_tasks`] (offscreen camera tasks).
@@ -360,7 +362,7 @@ impl RenderideApp {
         self.last_frame_wall_start = Some(frame_start);
 
         // Phase 1: Update — session update and command processing.
-        if let Some(code) = self.session.update() {
+        if let Some(code) = self.session.update(&mut self.input) {
             self.exit_code = Some(code);
             return Some(code);
         }
@@ -726,11 +728,6 @@ impl ApplicationHandler for RenderideApp {
                     }
                 }
 
-                let mut input = self.input.take_input_state();
-                if let Some(ref mut m) = input.mouse {
-                    m.is_active = m.is_active || self.session.cursor_lock_requested();
-                }
-                self.session.set_pending_input(input);
                 if self.run_frame().is_some() {
                     event_loop.exit();
                 }

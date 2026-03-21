@@ -5,7 +5,11 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::shared::{InputState, Key, KeyboardState, MouseState, WindowState};
 
-/// Accumulated window input for gaze/mouse (sent to host via FrameStartData).
+/// Accumulated window input for gaze/mouse (packed into host IPC via [`FrameStartData`](crate::shared::FrameStartData)).
+///
+/// Mouse and scroll deltas accumulate across winit events. [`Session::update`](crate::session::Session::update)
+/// calls [`WindowInputState::take_input_state`] only when it actually sends `frame_start_data`, so movement
+/// is not cleared on redraws that wait for the host.
 pub struct WindowInputState {
     pub mouse_delta: Vector2<f32>,
     pub scroll_delta: Vector2<f32>,
@@ -41,7 +45,10 @@ impl Default for WindowInputState {
 }
 
 impl WindowInputState {
-    /// Consumes accumulated input and returns an InputState for the host.
+    /// Consumes accumulated mouse and scroll deltas and returns an [`InputState`] for the host.
+    ///
+    /// Clears `mouse_delta` and `scroll_delta`. The session invokes this only when it sends
+    /// `frame_start_data`, not on every redraw.
     pub fn take_input_state(&mut self) -> InputState {
         let mouse = MouseState {
             is_active: self.mouse_active,
@@ -198,4 +205,37 @@ pub fn winit_key_to_renderite_key(physical_key: PhysicalKey) -> Option<Key> {
         KeyCode::ContextMenu => Key::menu,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WindowInputState;
+    use nalgebra::Vector2;
+
+    /// Regression: mouse deltas must survive multiple logical "redraw" ticks until a single
+    /// `take_input_state` (which happens when `frame_start_data` is sent).
+    #[test]
+    fn mouse_delta_accumulates_until_take_input_state() {
+        let mut w = WindowInputState::default();
+        w.mouse_delta += Vector2::new(1.0, 2.0);
+        w.mouse_delta += Vector2::new(3.0, 4.0);
+        let first = w.take_input_state();
+        let mouse = first.mouse.expect("mouse state");
+        assert_eq!(mouse.direct_delta.x, 4.0);
+        assert_eq!(mouse.direct_delta.y, 6.0);
+        let second = w.take_input_state();
+        let mouse2 = second.mouse.expect("mouse state");
+        assert_eq!(mouse2.direct_delta.x, 0.0);
+        assert_eq!(mouse2.direct_delta.y, 0.0);
+    }
+
+    #[test]
+    fn scroll_delta_accumulates_until_take_input_state() {
+        let mut w = WindowInputState::default();
+        w.scroll_delta += Vector2::new(0.0, 120.0);
+        w.scroll_delta += Vector2::new(0.0, 60.0);
+        let taken = w.take_input_state();
+        let mouse = taken.mouse.expect("mouse state");
+        assert_eq!(mouse.scroll_wheel_delta.y, 180.0);
+    }
 }

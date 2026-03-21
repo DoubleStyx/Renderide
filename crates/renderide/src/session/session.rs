@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crate::assets::AssetRegistry;
 use crate::config::RenderConfig;
 use crate::gpu::GpuState;
+use crate::input::WindowInputState;
 use crate::ipc::receiver::CommandReceiver;
 use crate::ipc::shared_memory::SharedMemoryAccessor;
 use crate::render::batch::SpaceDrawBatch;
@@ -22,7 +23,7 @@ use crate::session::frame_data::{
 use crate::session::init::{InitError, get_connection_parameters, take_singleton_init};
 use crate::session::state::{InitState, ViewState};
 use crate::shared::{
-    FrameStartData, FrameSubmitData, InputState, LightsBufferRendererConsumed, RendererCommand,
+    FrameStartData, FrameSubmitData, LightsBufferRendererConsumed, RendererCommand,
 };
 
 /// Accumulates phase times inside [`Session::collect_draw_batches_for_task`] when diagnostics are enabled.
@@ -49,7 +50,6 @@ pub struct Session {
     last_frame_index: i32,
     last_frame_data_processed: bool,
     sent_bootstrap_frame_start: bool,
-    pending_input: Option<InputState>,
     pending_mesh_unloads: Vec<i32>,
     pending_material_unloads: Vec<i32>,
     lock_cursor: bool,
@@ -85,7 +85,6 @@ impl Session {
             last_frame_index: -1,
             last_frame_data_processed: false,
             sent_bootstrap_frame_start: false,
-            pending_input: None,
             pending_mesh_unloads: Vec::new(),
             pending_material_unloads: Vec::new(),
             lock_cursor: false,
@@ -122,11 +121,17 @@ impl Session {
     }
 
     /// Per-frame update. Returns Some(exit_code) to request exit.
-    pub fn update(&mut self) -> Option<i32> {
+    ///
+    /// When a [`FrameStartData`](crate::shared::FrameStartData) is sent, input is sampled from
+    /// `window_input` at that moment via [`WindowInputState::take_input_state`], so accumulated
+    /// mouse and scroll deltas are not cleared on redraws that do not send frame start.
+    pub fn update(&mut self, window_input: &mut WindowInputState) -> Option<i32> {
         if self.shutdown {
             return Some(0);
         }
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.handle_update())) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.handle_update(window_input);
+        })) {
             Ok(()) => None,
             Err(e) => {
                 logger::log_panic_payload(e, "Session update panic");
@@ -136,14 +141,14 @@ impl Session {
         }
     }
 
-    fn handle_update(&mut self) {
+    fn handle_update(&mut self, window_input: &mut WindowInputState) {
         self.process_commands();
 
         if self.init_state.is_finalized() && !self.fatal_error {
             let bootstrap = self.last_frame_index < 0 && !self.sent_bootstrap_frame_start;
             let should_send = self.last_frame_data_processed || bootstrap;
             if should_send && self.receiver.is_connected() {
-                self.send_begin_frame();
+                self.send_begin_frame(window_input);
                 self.last_frame_data_processed = false;
                 if bootstrap {
                     self.sent_bootstrap_frame_start = true;
@@ -256,11 +261,17 @@ impl Session {
         self.primary_camera_task = self.pending_render_tasks.first().cloned();
     }
 
-    fn send_begin_frame(&mut self) {
+    /// Sends [`RendererCommand::frame_start_data`] with [`FrameStartData::inputs`] taken from
+    /// `window_input` at send time (see [`WindowInputState::take_input_state`]).
+    fn send_begin_frame(&mut self, window_input: &mut WindowInputState) {
+        let mut input = window_input.take_input_state();
+        if let Some(ref mut m) = input.mouse {
+            m.is_active = m.is_active || self.lock_cursor;
+        }
         let frame_start = FrameStartData {
             last_frame_index: self.last_frame_index,
             performance: None,
-            inputs: self.pending_input.take(),
+            inputs: Some(input),
             rendered_reflection_probes: Vec::new(),
             video_clock_errors: Vec::new(),
         };
@@ -297,11 +308,6 @@ impl Session {
     /// Drains material IDs to unload. Caller should evict pipelines for these IDs.
     pub fn drain_pending_material_unloads(&mut self) -> Vec<i32> {
         std::mem::take(&mut self.pending_material_unloads)
-    }
-
-    /// Sets input for next FrameStartData.
-    pub fn set_pending_input(&mut self, input: InputState) {
-        self.pending_input = Some(input);
     }
 
     /// Whether cursor lock was requested.
