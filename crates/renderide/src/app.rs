@@ -3,15 +3,28 @@
 //! The main window is created maximized via [`winit::window::WindowAttributes::with_maximized`], which winit maps
 //! to the appropriate Win32, X11, and Wayland behavior.
 //!
-//! While focused, [`ApplicationHandler::about_to_wait`] requests redraws and uses
-//! [`ControlFlow::WaitUntil`] with an interval derived from the window monitor's
-//! [`MonitorHandle::refresh_rate_millihertz`], so frame submission is paced to the display refresh
-//! rate. [`crate::config::RenderConfig::vsync`] selects tear-reducing swapchain presentation vs
-//! [`wgpu::PresentMode::AutoNoVsync`] without changing that pacing.
+//! [`ApplicationHandler::about_to_wait`] schedules redraws using caps from `configuration.ini`
+//! (`[display]` `focused_fps` / `unfocused_fps` via [`crate::config::AppConfig`]): it uses
+//! [`ControlFlow::WaitUntil`] with the matching frame interval, or [`ControlFlow::Poll`] when
+//! `focused_fps = 0` (fully uncapped while focused). The `RedrawRequested` event applies the
+//! same caps using a shared `last_redraw` timestamp so Windows `WM_PAINT` storms cannot bypass the
+//! throttle. [`crate::config::RenderConfig::vsync`] selects tear-reducing swapchain presentation
+//! vs `wgpu::PresentMode::AutoNoVsync` without changing that FPS pacing.
 //!
 //! Owns the RenderideApp handler that bridges winit events to the session, GPU, and render loop.
 //! Swapchain recovery ([`wgpu::SurfaceError`], suboptimal acquire) is handled in [`recover_from_surface_error`]
 //! and [`acquire_surface_texture_with_recovery`], with resize delegating to [`crate::gpu::reconfigure_surface_for_window`].
+//!
+//! ## Frame-rate and HUD configuration
+//!
+//! At startup the app reads `configuration.ini` (next to the exe or in the cwd) via
+//! [`crate::config::AppConfig::load`].  The following keys are honoured:
+//!
+//! | Section     | Key              | Default | Description                                      |
+//! |-------------|------------------|---------|--------------------------------------------------|
+//! | `[display]` | `focused_fps`    | 240     | Max FPS when window is focused (0 = uncapped).   |
+//! | `[display]` | `unfocused_fps`  | 60      | Max FPS when window is unfocused (0 = uncapped). |
+//! | `[hud]`     | `show_hud`       | true    | Show/hide the debug HUD overlay.                 |
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -23,6 +36,7 @@ use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, Win
 use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::window::{CursorGrabMode, Window, WindowAttributes};
 
+use crate::config::AppConfig;
 use crate::diagnostics::{
     DebugHud, GpuAllocatorSnapshot, HostCpuMemorySnapshot, LiveFrameDiagnostics,
 };
@@ -32,39 +46,8 @@ use crate::render::{MainViewFrameInput, RenderLoop, RenderTarget, RenderingConte
 use crate::session::Session;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
-/// Fallback display refresh in millihertz when the platform does not report a rate (60 Hz).
-const FALLBACK_REFRESH_MILLIHERTZ: u32 = 60_000;
-/// Minimum refresh treated as valid when clamping winit-reported millihertz (10 Hz).
-const MIN_REFRESH_MILLIHERTZ: u32 = 10_000;
-/// Maximum refresh treated as valid when clamping winit-reported millihertz (480 Hz).
-const MAX_REFRESH_MILLIHERTZ: u32 = 480_000;
-/// Target frame interval when unfocused (60 Hz).
-const UNFOCUSED_TARGET_INTERVAL: Duration = Duration::from_micros(1_000_000 / 60);
 /// Interval between log flushes.
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Returns the target interval between focused redraws from a winit refresh rate in millihertz
-/// (e.g. 60 Hz → `60_000`). Used with [`ControlFlow::WaitUntil`] to pace the loop to the display.
-fn focused_frame_interval_from_refresh_millihertz(millihertz: Option<u32>) -> Duration {
-    let mhz = millihertz
-        .unwrap_or(FALLBACK_REFRESH_MILLIHERTZ)
-        .clamp(MIN_REFRESH_MILLIHERTZ, MAX_REFRESH_MILLIHERTZ);
-    let nanos = 1_000_000_000_000u64 / u64::from(mhz);
-    Duration::from_nanos(nanos.max(1))
-}
-
-/// Reads the window's current (or primary) monitor refresh and returns the matching frame interval.
-fn focused_frame_interval_for_window(window: &Window) -> Duration {
-    let mhz = window
-        .current_monitor()
-        .and_then(|m| m.refresh_rate_millihertz())
-        .or_else(|| {
-            window
-                .primary_monitor()
-                .and_then(|m| m.refresh_rate_millihertz())
-        });
-    focused_frame_interval_from_refresh_millihertz(mhz)
-}
 
 /// Path to Renderide.log in the logs folder at repo root (two levels up from crates/renderide).
 fn renderide_log_path() -> std::path::PathBuf {
@@ -279,16 +262,28 @@ struct RenderideApp {
     render_loop: Option<RenderLoop>,
     exit_code: Option<i32>,
     input: WindowInputState,
-    last_unfocused_redraw: Option<Instant>,
+    /// Timestamp of the last rendered frame, shared by both focused and unfocused throttle paths.
+    last_redraw: Option<Instant>,
+    /// Wall-clock start of the previous `run_frame()` call, used for actual FPS tracking.
+    last_frame_wall_start: Option<Instant>,
     last_log_flush: Option<Instant>,
     frame_diagnostic: FrameDiagnostic,
     debug_hud: Option<DebugHud>,
+    /// Settings loaded from `configuration.ini` at startup.
+    app_config: AppConfig,
     /// Lazily created host metrics source for the debug HUD (`sysinfo`).
     sysinfo_system: Option<System>,
 }
 
 impl RenderideApp {
     fn new() -> Self {
+        let app_config = AppConfig::load();
+        logger::info!(
+            "AppConfig: focused_fps={} unfocused_fps={} show_hud={}",
+            app_config.focused_fps,
+            app_config.unfocused_fps,
+            app_config.show_hud,
+        );
         Self {
             session: Session::new(),
             window: None,
@@ -296,11 +291,37 @@ impl RenderideApp {
             render_loop: None,
             exit_code: None,
             input: WindowInputState::default(),
-            last_unfocused_redraw: None,
+            last_redraw: None,
+            last_frame_wall_start: None,
             last_log_flush: None,
             frame_diagnostic: FrameDiagnostic::new(),
             debug_hud: None,
+            app_config,
             sysinfo_system: None,
+        }
+    }
+
+    /// Returns the target frame interval for the **focused** state.
+    ///
+    /// `focused_fps = 0` → [`Duration::ZERO`] which is used to set [`ControlFlow::Poll`]
+    /// (fully uncapped).
+    fn focused_interval(&self) -> Duration {
+        if self.app_config.focused_fps == 0 {
+            Duration::ZERO
+        } else {
+            Duration::from_micros(1_000_000 / self.app_config.focused_fps as u64)
+        }
+    }
+
+    /// Returns the target frame interval for the **unfocused** (tabbed-out) state.
+    ///
+    /// `unfocused_fps = 0` → 1 ms (effectively uncapped but still uses `WaitUntil` to
+    /// avoid a pure spin loop draining the CPU).
+    fn unfocused_interval(&self) -> Duration {
+        if self.app_config.unfocused_fps == 0 {
+            Duration::from_millis(1)
+        } else {
+            Duration::from_micros(1_000_000 / self.app_config.unfocused_fps as u64)
         }
     }
 
@@ -328,6 +349,11 @@ impl RenderideApp {
     /// Returns `Some(exit_code)` if the session requested exit, otherwise `None`.
     fn run_frame(&mut self) -> Option<i32> {
         let frame_start = Instant::now();
+        let wall_interval_us = self
+            .last_frame_wall_start
+            .map(|t| frame_start.duration_since(t).as_micros() as u64)
+            .unwrap_or(0);
+        self.last_frame_wall_start = Some(frame_start);
 
         // Phase 1: Update — session update and command processing.
         if let Some(code) = self.session.update() {
@@ -351,12 +377,20 @@ impl RenderideApp {
                         "GPU initialized: ray_tracing_available={}",
                         g.ray_tracing_available
                     );
-                    self.debug_hud = match DebugHud::new(&g.device, &g.queue, g.config.format) {
-                        Ok(hud) => Some(hud),
-                        Err(e) => {
-                            logger::warn!("Debug HUD init failed: {}", e);
-                            None
+                    // Only create the HUD if show_hud = true in configuration.ini.
+                    self.debug_hud = if self.app_config.show_hud {
+                        match DebugHud::new(&g.device, &g.queue, g.config.format) {
+                            Ok(hud) => Some(hud),
+                            Err(e) => {
+                                logger::warn!("Debug HUD init failed: {}", e);
+                                None
+                            }
                         }
+                    } else {
+                        logger::info!(
+                            "Debug HUD disabled via configuration.ini (show_hud = false)"
+                        );
+                        None
                     };
                     self.render_loop = Some(RenderLoop::new(&g.device, &g.config));
                     self.gpu = Some(g);
@@ -387,57 +421,75 @@ impl RenderideApp {
             }
             let t1 = Instant::now();
             let main_view_input = MainViewFrameInput::from_session(&mut self.session);
+            // Time IPC batch collection separately from mesh culling/GPU upload.
+            let ipc_us = t1.elapsed().as_micros() as u64;
+
             let window = self.window.as_ref();
-            let (render_result, collect_us, render_us, prep_stats) = match window {
-                None => {
-                    logger::warn!("GPU active without window; skipping main view render");
-                    let collect_us = t1.elapsed().as_micros() as u64;
-                    (
-                        Err(wgpu::SurfaceError::Other),
-                        collect_us,
-                        0u64,
-                        crate::render::pass::MeshDrawPrepStats::default(),
-                    )
-                }
-                Some(w) => match acquire_surface_texture_with_recovery(gpu, w) {
-                    Err(e) => {
+            let (render_result, collect_us, ipc_collect_us, mesh_prep_us, render_us, prep_stats) =
+                match window {
+                    None => {
+                        logger::warn!("GPU active without window; skipping main view render");
                         let collect_us = t1.elapsed().as_micros() as u64;
                         (
-                            Err(e),
+                            Err(wgpu::SurfaceError::Other),
                             collect_us,
+                            ipc_us,
+                            0u64,
                             0u64,
                             crate::render::pass::MeshDrawPrepStats::default(),
                         )
                     }
-                    Ok(output) => {
-                        let target = RenderTarget::from_surface_texture(output);
-                        let viewport = target.dimensions();
-                        let pre_collected = crate::render::prepare_mesh_draws_for_view(
-                            gpu,
-                            &self.session,
-                            &main_view_input.draw_batches,
-                            viewport,
-                        );
-                        let collect_us = t1.elapsed().as_micros() as u64;
-                        let t2 = Instant::now();
-                        let rendered = render_loop.render_frame(
-                            gpu,
-                            &self.session,
-                            &main_view_input.draw_batches,
-                            target,
-                            Some(&pre_collected),
-                        );
-                        let render_us = t2.elapsed().as_micros() as u64;
-                        if let Err(ref e) = rendered {
-                            recover_from_surface_error(gpu, window, e, "Main view render");
+                    Some(w) => match acquire_surface_texture_with_recovery(gpu, w) {
+                        Err(e) => {
+                            let collect_us = t1.elapsed().as_micros() as u64;
+                            (
+                                Err(e),
+                                collect_us,
+                                ipc_us,
+                                collect_us.saturating_sub(ipc_us),
+                                0u64,
+                                crate::render::pass::MeshDrawPrepStats::default(),
+                            )
                         }
-                        (rendered, collect_us, render_us, pre_collected.prep_stats)
-                    }
-                },
-            };
+                        Ok(output) => {
+                            let target = RenderTarget::from_surface_texture(output);
+                            let viewport = target.dimensions();
+                            let t_prep = Instant::now();
+                            let pre_collected = crate::render::prepare_mesh_draws_for_view(
+                                gpu,
+                                &self.session,
+                                &main_view_input.draw_batches,
+                                viewport,
+                            );
+                            let mesh_prep_us = t_prep.elapsed().as_micros() as u64;
+                            let collect_us = t1.elapsed().as_micros() as u64;
+                            let t2 = Instant::now();
+                            let rendered = render_loop.render_frame(
+                                gpu,
+                                &self.session,
+                                &main_view_input.draw_batches,
+                                target,
+                                Some(&pre_collected),
+                            );
+                            let render_us = t2.elapsed().as_micros() as u64;
+                            if let Err(ref e) = rendered {
+                                recover_from_surface_error(gpu, window, e, "Main view render");
+                            }
+                            (
+                                rendered,
+                                collect_us,
+                                ipc_us,
+                                mesh_prep_us,
+                                render_us,
+                                pre_collected.prep_stats,
+                            )
+                        }
+                    },
+                };
 
             let t3 = Instant::now();
             if let Ok(target) = render_result {
+                // HUD rendering is skipped when show_hud = false (debug_hud will be None).
                 if let Some(debug_hud) = self.debug_hud.as_mut()
                     && let Err(e) = debug_hud.render(&gpu.device, &gpu.queue, &target, &self.input)
                 {
@@ -524,15 +576,22 @@ impl RenderideApp {
                     reserved_bytes: Some(r.total_reserved_bytes),
                 })
                 .unwrap_or_default();
+            let rc = self.session.render_config();
             let live_sample = LiveFrameDiagnostics {
                 frame_index: self.session.last_frame_index(),
                 viewport: (gpu.config.width.max(1), gpu.config.height.max(1)),
+                // CPU phase timings
                 session_update_us: session_us,
+                ipc_collect_us,
+                mesh_prep_us,
                 collect_us,
                 render_us,
                 present_us,
                 total_us,
+                wall_interval_us,
+                // GPU timing
                 gpu_mesh_pass_ms: render_loop.last_gpu_mesh_pass_ms(),
+                // Draw stats
                 batch_count,
                 overlay_batch_count,
                 total_draws_in_batches,
@@ -541,8 +600,21 @@ impl RenderideApp {
                 mesh_cache_count: gpu.mesh_buffer_cache.len(),
                 pending_render_tasks: self.session.pending_render_task_count(),
                 pending_camera_task_readbacks: render_loop.pending_camera_task_readback_count(),
-                frustum_culling_enabled: self.session.render_config().frustum_culling,
-                rtao_enabled: self.session.render_config().rtao_enabled,
+                // Lights
+                gpu_light_count: gpu.light_count,
+                // RT / RTAO
+                blas_count: gpu.accel_cache.as_ref().map(|a| a.len()).unwrap_or(0),
+                tlas_available: gpu
+                    .ray_tracing_state
+                    .as_ref()
+                    .and_then(|rt| rt.tlas.as_ref())
+                    .is_some(),
+                ao_radius: rc.ao_radius,
+                ao_strength: rc.rtao_strength,
+                ao_sample_count: 4,
+                // Feature flags
+                frustum_culling_enabled: rc.frustum_culling,
+                rtao_enabled: rc.rtao_enabled,
                 ray_tracing_available: gpu.ray_tracing_available,
                 adapter_info: gpu.adapter_info.clone(),
                 gpu_allocator,
@@ -600,6 +672,31 @@ impl ApplicationHandler for RenderideApp {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                // ── Frame-rate throttle ──────────────────────────────────────────────
+                // On Windows the OS generates continuous WM_PAINT messages that become
+                // RedrawRequested events, completely bypassing about_to_wait throttling.
+                // Both focused and unfocused paths are gated here using their respective
+                // last-redraw timestamps.  about_to_wait only controls WaitUntil timing
+                // and calls request_redraw() — it never calls run_frame() directly.
+                // Pick the cap for the current focus state.
+                let interval = if self.input.window_focused {
+                    self.focused_interval()
+                } else {
+                    self.unfocused_interval()
+                };
+                if !interval.is_zero() {
+                    let now = Instant::now();
+                    let elapsed = self
+                        .last_redraw
+                        .map(|t| now.duration_since(t))
+                        .unwrap_or(interval); // first frame: always render
+                    if elapsed < interval {
+                        return;
+                    }
+                    // Record BEFORE GPU work so the deadline is stable.
+                    self.last_redraw = Some(now);
+                }
+                // ────────────────────────────────────────────────────────────────────
                 if let Some(ref window) = self.window {
                     let size = window.inner_size();
                     self.input.window_resolution = (size.width, size.height);
@@ -698,32 +795,31 @@ impl ApplicationHandler for RenderideApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(ref window) = self.window {
-            if self.input.window_focused {
-                self.last_unfocused_redraw = None;
-                let interval = focused_frame_interval_for_window(window);
-                window.request_redraw();
-                event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + interval));
+            // Both focused and unfocused use the same pattern:
+            //   - request_redraw() only when the target interval has elapsed
+            //   - WaitUntil the next deadline so the OS can sleep the thread
+            // RedrawRequested does the actual throttle gate via last_redraw.
+            // Using a single shared timestamp avoids resets when focus changes.
+            let interval = if self.input.window_focused {
+                self.focused_interval()
             } else {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + UNFOCUSED_TARGET_INTERVAL,
-                ));
-
+                self.unfocused_interval()
+            };
+            if interval.is_zero() {
+                // focused_fps = 0: fully uncapped.
+                window.request_redraw();
+                event_loop.set_control_flow(ControlFlow::Poll);
+            } else {
                 let now = Instant::now();
-                let should_redraw = self
-                    .last_unfocused_redraw
-                    .map(|t| now.duration_since(t) >= UNFOCUSED_TARGET_INTERVAL)
-                    .unwrap_or(true);
-                if should_redraw {
-                    self.last_unfocused_redraw = Some(now);
-                    let mut input = self.input.take_input_state();
-                    if let Some(ref mut m) = input.mouse {
-                        m.is_active = m.is_active || self.session.cursor_lock_requested();
-                    }
-                    self.session.set_pending_input(input);
-                    if self.run_frame().is_some() {
-                        event_loop.exit();
-                    }
+                let elapsed = self
+                    .last_redraw
+                    .map(|t| now.duration_since(t))
+                    .unwrap_or(interval);
+                if elapsed >= interval {
+                    window.request_redraw();
                 }
+                let next_frame = self.last_redraw.map(|t| t + interval).unwrap_or(now);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame));
             }
         }
     }
@@ -731,18 +827,34 @@ impl ApplicationHandler for RenderideApp {
 
 #[cfg(test)]
 mod frame_interval_tests {
-    use super::focused_frame_interval_from_refresh_millihertz;
+    use std::time::Duration;
+
+    /// Fallback display refresh in millihertz when the platform does not report a rate (60 Hz).
+    const FALLBACK_REFRESH_MILLIHERTZ: u32 = 60_000;
+    /// Minimum refresh treated as valid when clamping winit-reported millihertz (10 Hz).
+    const MIN_REFRESH_MILLIHERTZ: u32 = 10_000;
+    /// Maximum refresh treated as valid when clamping winit-reported millihertz (480 Hz).
+    const MAX_REFRESH_MILLIHERTZ: u32 = 480_000;
+
+    /// Converts a display refresh rate in millihertz to a frame interval (e.g. 60 Hz → `60_000`).
+    fn interval_from_refresh_millihertz(millihertz: Option<u32>) -> Duration {
+        let mhz = millihertz
+            .unwrap_or(FALLBACK_REFRESH_MILLIHERTZ)
+            .clamp(MIN_REFRESH_MILLIHERTZ, MAX_REFRESH_MILLIHERTZ);
+        let nanos = 1_000_000_000_000u64 / u64::from(mhz);
+        Duration::from_nanos(nanos.max(1))
+    }
 
     #[test]
     fn sixty_hz_interval_matches_period() {
-        let d = focused_frame_interval_from_refresh_millihertz(Some(60_000));
+        let d = interval_from_refresh_millihertz(Some(60_000));
         let expected_ns = 1_000_000_000_000u64 / 60_000;
         assert_eq!(d.as_nanos(), expected_ns as u128);
     }
 
     #[test]
     fn none_uses_fallback_sixty_hz() {
-        let d = focused_frame_interval_from_refresh_millihertz(None);
+        let d = interval_from_refresh_millihertz(None);
         let expected_ns = 1_000_000_000_000u64 / 60_000;
         assert_eq!(d.as_nanos(), expected_ns as u128);
     }

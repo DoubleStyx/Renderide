@@ -70,6 +70,16 @@ impl AccelCache {
     pub fn remove(&mut self, mesh_asset_id: i32) -> Option<wgpu::Blas> {
         self.blas_map.remove(&mesh_asset_id)
     }
+
+    /// Returns the number of BLASes currently cached.
+    pub fn len(&self) -> usize {
+        self.blas_map.len()
+    }
+
+    /// Returns `true` if no BLASes are cached.
+    pub fn is_empty(&self) -> bool {
+        self.blas_map.is_empty()
+    }
 }
 
 impl Default for AccelCache {

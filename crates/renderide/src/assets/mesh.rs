@@ -266,12 +266,23 @@ pub fn extract_blendshape_offsets(
         return None;
     }
     let vertex_count = vertex_count as usize;
+    // Clamp each index to ≥0 before adding 1 so a negative i32 can't wrap to
+    // a giant usize.  Also cap the result at a sanity limit — blendshape counts
+    // in the thousands would require gigabytes and are clearly bad data.
+    const MAX_BLENDSHAPES: usize = 4096;
     let num_blendshapes = blendshape_buffers
         .iter()
-        .map(|d| d.blendshape_index + 1)
+        .map(|d| d.blendshape_index.max(0) + 1)
         .max()
         .unwrap_or(0) as usize;
     if num_blendshapes == 0 {
+        return None;
+    }
+    if num_blendshapes > MAX_BLENDSHAPES {
+        logger::warn!(
+            "extract_blendshape_offsets: num_blendshapes={} exceeds sanity cap {}; rejecting mesh",
+            num_blendshapes, MAX_BLENDSHAPES
+        );
         return None;
     }
 
@@ -280,7 +291,17 @@ pub fn extract_blendshape_offsets(
         return None;
     }
 
-    let mut out = vec![0u8; num_blendshapes * vertex_count * BLENDSHAPE_OFFSET_GPU_STRIDE];
+    let alloc_size = num_blendshapes
+        .checked_mul(vertex_count)
+        .and_then(|n| n.checked_mul(BLENDSHAPE_OFFSET_GPU_STRIDE));
+    let Some(alloc_size) = alloc_size else {
+        logger::warn!(
+            "extract_blendshape_offsets: allocation overflow (num_blendshapes={} vertex_count={} stride={})",
+            num_blendshapes, vertex_count, BLENDSHAPE_OFFSET_GPU_STRIDE
+        );
+        return None;
+    };
+    let mut out = vec![0u8; alloc_size];
     const VECTOR3_BYTES: usize = 12;
     const POSITION_OFFSET: usize = 0;
     const NORMAL_OFFSET: usize = 16;

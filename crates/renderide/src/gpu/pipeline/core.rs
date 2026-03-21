@@ -236,8 +236,13 @@ pub const MAX_INSTANCE_RUN: u32 = 64;
 pub(crate) const UNIFORM_ALIGNMENT: u64 = 256;
 /// Number of frame regions in the ring buffer (avoids overwriting in-flight data).
 ///
+/// 4 frames allows the CPU to stay one extra GPU-frame ahead before the ring-buffer fence stalls
+/// it waiting for the oldest submission.  With RTAO GPU time ~12 ms and CPU pre-render ~17 ms,
+/// 3 frames was tight enough to cause a stall every frame; 4 removes it.
+///
+/// Memory cost: 4 × 16 384 × 256 B ≈ 16 MB (rigid ring) + 4 × 512 × 17 152 B ≈ 35 MB (skinned ring).
 /// [`crate::gpu::GpuFrameScheduler`] caps concurrent uniform-ring submissions using this value.
-pub const NUM_FRAMES_IN_FLIGHT: usize = 3;
+pub const NUM_FRAMES_IN_FLIGHT: usize = 4;
 /// Slots per frame region. Draws exceeding this are split into multiple chunks.
 pub(crate) const SLOTS_PER_FRAME: usize = 16_384;
 

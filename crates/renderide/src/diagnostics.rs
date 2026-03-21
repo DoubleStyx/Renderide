@@ -53,12 +53,29 @@ pub struct HostCpuMemorySnapshot {
 pub struct LiveFrameDiagnostics {
     pub frame_index: i32,
     pub viewport: (u32, u32),
+
+    // ── CPU phase timings ────────────────────────────────────────────────────
     pub session_update_us: u64,
+    /// IPC batch collection: `MainViewFrameInput::from_session`.
+    pub ipc_collect_us: u64,
+    /// Mesh-draw culling + GPU buffer upload: `prepare_mesh_draws_for_view`.
+    pub mesh_prep_us: u64,
+    /// `ipc_collect_us + mesh_prep_us` (sum retained for external consumers and log diagnostics).
+    #[allow(dead_code)]
     pub collect_us: u64,
+    /// `render_loop.render_frame` wall time (TLAS build + all pass recording + submit).
     pub render_us: u64,
     pub present_us: u64,
     pub total_us: u64,
+    /// Wall-clock microseconds since the previous `run_frame()` call (includes sleep time).
+    /// Use this for actual FPS; `total_us` only measures active work per call.
+    pub wall_interval_us: u64,
+
+    // ── GPU timing ───────────────────────────────────────────────────────────
+    /// GPU mesh rasterisation pass time (timestamp query, updated every 60 frames).
     pub gpu_mesh_pass_ms: Option<f64>,
+
+    // ── Draw stats ───────────────────────────────────────────────────────────
     pub batch_count: usize,
     pub overlay_batch_count: usize,
     pub total_draws_in_batches: usize,
@@ -67,6 +84,24 @@ pub struct LiveFrameDiagnostics {
     pub mesh_cache_count: usize,
     pub pending_render_tasks: usize,
     pub pending_camera_task_readbacks: usize,
+
+    // ── Lights ───────────────────────────────────────────────────────────────
+    /// Active light count uploaded to the GPU by the clustered light pass.
+    pub gpu_light_count: u32,
+
+    // ── Ray tracing / RTAO ───────────────────────────────────────────────────
+    /// Number of meshes with a built BLAS (acceleration structure).
+    pub blas_count: usize,
+    /// Whether a TLAS was successfully built for this frame.
+    pub tlas_available: bool,
+    /// `ao_radius` from render config (world-space AO ray length).
+    pub ao_radius: f32,
+    /// `rtao_strength` from render config (AO multiplier applied in composite).
+    pub ao_strength: f32,
+    /// Fixed sample count used by the RTAO compute shader this build.
+    pub ao_sample_count: u32,
+
+    // ── Feature flags ────────────────────────────────────────────────────────
     pub frustum_culling_enabled: bool,
     pub rtao_enabled: bool,
     pub ray_tracing_available: bool,
@@ -88,10 +123,10 @@ impl LiveFrameDiagnostics {
     }
 
     fn fps(&self) -> f64 {
-        if self.total_us == 0 {
+        if self.wall_interval_us == 0 {
             0.0
         } else {
-            1_000_000.0 / self.total_us as f64
+            1_000_000.0 / self.wall_interval_us as f64
         }
     }
 
@@ -272,6 +307,7 @@ impl DebugHud {
                         "Frame {:>7}  |  {:>5}x{:>5}",
                         sample.frame_index, sample.viewport.0, sample.viewport.1
                     ));
+
                     ui.separator();
                     ui.text("GPU (wgpu adapter)");
                     ui.text_wrapped(format!("Name: {}", ai.name));
@@ -318,20 +354,43 @@ impl DebugHud {
                         hud_fmt::gib_value(7, 2, sample.host.ram_total_bytes),
                         hud_fmt::f64_field(5, 1, ram_pct)
                     ));
+
                     ui.separator();
                     ui.text("Frame timing (ms)");
                     ui.text(format!(
-                        "session {}  collect {}  render {}  present {}",
+                        "update {}  ipc {}  mesh-prep {}  render {}  present {}",
                         hud_fmt::ms_from_us(8, 3, sample.session_update_us),
-                        hud_fmt::ms_from_us(8, 3, sample.collect_us),
+                        hud_fmt::ms_from_us(8, 3, sample.ipc_collect_us),
+                        hud_fmt::ms_from_us(8, 3, sample.mesh_prep_us),
                         hud_fmt::ms_from_us(8, 3, sample.render_us),
-                        hud_fmt::ms_from_us(8, 3, sample.present_us)
+                        hud_fmt::ms_from_us(8, 3, sample.present_us),
+                    ));
+                    let phases: [(&str, u64); 5] = [
+                        ("update", sample.session_update_us),
+                        ("ipc", sample.ipc_collect_us),
+                        ("mesh-prep", sample.mesh_prep_us),
+                        ("render", sample.render_us),
+                        ("present", sample.present_us),
+                    ];
+                    let worst = phases
+                        .iter()
+                        .max_by_key(|p| p.1)
+                        .map(|p| p.0)
+                        .unwrap_or("?");
+                    ui.text(format!(
+                        "  ↳ dominant CPU phase: {}  (total {} ms)",
+                        worst,
+                        hud_fmt::f64_field(8, 3, sample.frame_time_ms())
                     ));
                     let gpu_mesh = match sample.gpu_mesh_pass_ms {
-                        Some(ms) => hud_fmt::f64_field(8, 3, ms),
-                        None => format!("{:>8}", "—"),
+                        Some(ms) => format!(
+                            "{} ms  (timestamp, ~60-frame lag)",
+                            hud_fmt::f64_field(8, 3, ms)
+                        ),
+                        None => "waiting for timestamp readback...".to_string(),
                     };
-                    ui.text(format!("GPU mesh pass: {} ms", gpu_mesh));
+                    ui.text(format!("GPU mesh pass: {}", gpu_mesh));
+
                     ui.separator();
                     ui.text(format!(
                         "Batches {:>5} total  |  {:>5} main  |  {:>5} overlay",
@@ -355,6 +414,7 @@ impl DebugHud {
                         sample.submitted_main_draws(),
                         sample.submitted_overlay_draws()
                     ));
+
                     ui.separator();
                     ui.text(format!(
                         "Prep rigid {:>5}  skinned {:>5}",
@@ -381,6 +441,13 @@ impl DebugHud {
                         sample.prep_stats.skipped_skinned_id_count_mismatch,
                         sample.prep_stats.skipped_skinned_missing_vertex_buffer
                     ));
+
+                    ui.separator();
+                    ui.text(format!(
+                        "Lights: {}  active  (GPU clustered buffer)",
+                        sample.gpu_light_count
+                    ));
+
                     ui.separator();
                     ui.text(format!(
                         "Mesh cache {:>5}  |  tasks {:>5}  |  readbacks {:>5}",
@@ -388,11 +455,27 @@ impl DebugHud {
                         sample.pending_render_tasks,
                         sample.pending_camera_task_readbacks
                     ));
+
+                    ui.separator();
+                    let tlas_str = if sample.tlas_available {
+                        "built"
+                    } else {
+                        "NONE"
+                    };
                     ui.text(format!(
-                        "Flags cull={}  rtao={}  raytracing={}",
-                        sample.frustum_culling_enabled,
-                        sample.rtao_enabled,
-                        sample.ray_tracing_available
+                        "RT  BLASes {}  |  TLAS {}  |  raytracing={}",
+                        sample.blas_count, tlas_str, sample.ray_tracing_available
+                    ));
+                    let rtao_state = if sample.rtao_enabled { "ON" } else { "OFF" };
+                    ui.text(format!(
+                        "RTAO {}  radius {:.2}  strength {:.2}  samples {}",
+                        rtao_state, sample.ao_radius, sample.ao_strength, sample.ao_sample_count
+                    ));
+
+                    ui.separator();
+                    ui.text(format!(
+                        "Flags  cull={}  rtao={}",
+                        sample.frustum_culling_enabled, sample.rtao_enabled
                     ));
                 } else {
                     ui.text("Waiting for frame diagnostics...");
@@ -575,10 +658,13 @@ mod tests {
             frame_index: 12,
             viewport: (1280, 720),
             session_update_us: 1_000,
+            ipc_collect_us: 500,
+            mesh_prep_us: 1_500,
             collect_us: 2_000,
             render_us: 3_000,
             present_us: 500,
             total_us,
+            wall_interval_us: total_us,
             gpu_mesh_pass_ms: gpu_ms,
             batch_count: 4,
             overlay_batch_count: 1,
@@ -594,6 +680,12 @@ mod tests {
             mesh_cache_count: 10,
             pending_render_tasks: 0,
             pending_camera_task_readbacks: 0,
+            gpu_light_count: 4,
+            blas_count: 10,
+            tlas_available: true,
+            ao_radius: 1.5,
+            ao_strength: 0.85,
+            ao_sample_count: 8,
             frustum_culling_enabled: true,
             rtao_enabled: true,
             ray_tracing_available: true,
