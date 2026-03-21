@@ -28,8 +28,9 @@ public static class PackEmitter
     {
         if (steps.Count == 0 && (unpackOnlySteps == null || unpackOnlySteps.Count == 0))
         {
+            // Marker / empty payload types: no fields on the wire; silence unused `self` / `unpacker`.
             w.Line("let _ = self;");
-            w.Line("let _ = unpacker; // FIXME: Type not generating any members");
+            w.Line("let _ = unpacker;");
             return;
         }
 
@@ -203,6 +204,13 @@ public static class PackEmitter
     /// <summary>Emits pack body for ExplicitLayout structs (field-by-field with offsets).</summary>
     public static void EmitExplicitPack(RustWriter w, List<FieldDescriptor> fields, int paddingBytes)
     {
+        if (fields.Count == 0 && paddingBytes == 0)
+        {
+            w.Line("let _ = self;");
+            w.Line("let _ = packer;");
+            return;
+        }
+
         foreach (FieldDescriptor field in fields)
         {
             if (field.Kind == FieldKind.Bool)
@@ -220,6 +228,13 @@ public static class PackEmitter
     /// <summary>Emits unpack body for ExplicitLayout structs.</summary>
     public static void EmitExplicitUnpack(RustWriter w, List<FieldDescriptor> fields, int paddingBytes)
     {
+        if (fields.Count == 0 && paddingBytes == 0)
+        {
+            w.Line("let _ = self;");
+            w.Line("let _ = unpacker;");
+            return;
+        }
+
         foreach (FieldDescriptor field in fields)
         {
             if (field.Kind == FieldKind.Bool)

@@ -6,7 +6,7 @@
 use glam::Mat4;
 use nalgebra::Matrix4;
 
-use super::MeshDrawPrepStats;
+use super::mesh_prep::MeshDrawPrepStats;
 use crate::gpu::pipeline::SceneUniforms;
 use crate::gpu::{GpuMeshBuffers, PipelineKey, PipelineManager, PipelineVariant, RenderPipeline};
 use crate::render::SpaceDrawBatch;

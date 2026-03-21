@@ -960,7 +960,7 @@ impl MemoryPackable for RendererInitFinalizeData {
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         let _ = self;
-        let _ = unpacker; // FIXME: Type not generating any members
+        let _ = unpacker;
     }
 }
 
@@ -974,7 +974,7 @@ impl MemoryPackable for RendererEngineReady {
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         let _ = self;
-        let _ = unpacker; // FIXME: Type not generating any members
+        let _ = unpacker;
     }
 }
 
@@ -988,7 +988,7 @@ impl MemoryPackable for RendererShutdownRequest {
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         let _ = self;
-        let _ = unpacker; // FIXME: Type not generating any members
+        let _ = unpacker;
     }
 }
 
@@ -1002,7 +1002,7 @@ impl MemoryPackable for RendererShutdown {
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         let _ = self;
-        let _ = unpacker; // FIXME: Type not generating any members
+        let _ = unpacker;
     }
 }
 
@@ -1016,7 +1016,7 @@ impl MemoryPackable for KeepAlive {
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         let _ = self;
-        let _ = unpacker; // FIXME: Type not generating any members
+        let _ = unpacker;
     }
 }
 
