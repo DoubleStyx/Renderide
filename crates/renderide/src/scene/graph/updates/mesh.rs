@@ -1,4 +1,7 @@
 //! Mesh renderable updates from host.
+//!
+//! Removal indices are processed in **buffer order** (like Unity `RenderableManager.HandleUpdate`),
+//! using swap-with-last per entry. Do not sort removals descending.
 
 use crate::ipc::shared_memory::SharedMemoryAccessor;
 use crate::scene::{Drawable, Scene};
@@ -20,13 +23,8 @@ pub(crate) fn apply_mesh_renderables_update(
         let removals = shm
             .access_with_context::<i32>(&update.removals, &ctx)
             .map_err(SceneError::SharedMemoryAccess)?;
-        let mut indices: Vec<usize> = removals
-            .iter()
-            .take_while(|&&i| i >= 0)
-            .map(|&i| i as usize)
-            .collect();
-        indices.sort_by(|a, b| b.cmp(a));
-        for idx in indices {
+        for &raw in removals.iter().take_while(|&&i| i >= 0) {
+            let idx = raw as usize;
             if idx < scene.drawables.len() {
                 scene.drawables.swap_remove(idx);
             }

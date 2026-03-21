@@ -5,10 +5,18 @@
 //! depth and normal edge-stopping weights, ping-ponging between the raw-AO and
 //! final-AO textures so no extra GPU allocation is needed.
 //!
+//! ## Bypass for experiments
+//!
+//! [`RTAO_ATROUS_BLUR_ENABLED`] gates the À-Trous passes.  When `false`, this pass
+//! only copies [`ResourceSlot::AoRaw`] into [`ResourceSlot::Ao`] so
+//! [`super::composite::CompositePass`] sees sparse per-pixel RTAO with no spatial
+//! smoothing (useful for A/B testing or when evaluating a separate denoiser path).
+//!
 //! ## Why À-Trous?
 //!
 //! A single 5×5 kernel can only smooth noise within a 5-pixel radius.  The RTAO
-//! compute pass uses 32 rays per pixel so the raw signal is still noisy; a small
+//! compute pass uses a small fixed ray count per pixel so the raw signal is still
+//! noisy; a small
 //! kernel leaves visible grain, and a large kernel blurs detail.  À-Trous doubles
 //! the effective radius each pass (1 → 2 → 4 pixel strides) reaching an 8-pixel
 //! support with only three passes, while the Gaussian weights and edge-stopping
@@ -38,6 +46,28 @@
 use super::{PassResources, RenderPass, RenderPassError, ResourceSlot};
 
 const TILE_SIZE: u32 = 8;
+
+/// When `true`, runs the three-pass À-Trous bilateral filter from raw AO into `ao`.
+///
+/// When `false`, copies raw AO into `ao` unchanged so composite uses unfiltered RTAO.
+pub const RTAO_ATROUS_BLUR_ENABLED: bool = false;
+
+/// WGSL compute shader that copies `ao_raw` into `ao` (same format, no filtering).
+const RTAO_AO_RAW_COPY_SHADER_SRC: &str = r#"
+@group(0) @binding(0) var ao_input:  texture_2d<f32>;
+@group(0) @binding(1) var ao_output: texture_storage_2d<rgba8unorm, write>;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+    let dims = textureDimensions(ao_input);
+    if id.x >= dims.x || id.y >= dims.y {
+        return;
+    }
+    let p = vec2i(id.xy);
+    let v = textureLoad(ao_input, p, 0);
+    textureStore(ao_output, p, v);
+}
+"#;
 
 /// WGSL shader for one À-Trous pass.
 ///
@@ -161,17 +191,22 @@ fn create_step_buffer(device: &wgpu::Device, step: i32) -> wgpu::Buffer {
 
 /// RTAO À-Trous denoiser pass.
 ///
-/// Executes three compute dispatches (step = 1, 2, 4) on a single shader, each
-/// one reading from one AO texture and writing to the other.  The final result
-/// always lands in `ao` (the texture read by [`super::composite::CompositePass`]).
+/// When [`RTAO_ATROUS_BLUR_ENABLED`] is `true`, runs three compute dispatches
+/// (step = 1, 2, 4) on the À-Trous shader, each reading from one AO texture and
+/// writing to the other.  When `false`, copies [`ResourceSlot::AoRaw`] into
+/// [`ResourceSlot::Ao`] with a single dispatch.
 ///
-/// Pipelines and per-step uniform buffers are created once on first use and
-/// reused every frame.  Skips cleanly when MRT or depth views are unavailable.
+/// The result always lands in `ao` (the texture read by
+/// [`super::composite::CompositePass`]).  Pipelines are created lazily on first
+/// use and reused every frame.  Skips cleanly when MRT views are unavailable.
 pub struct RtaoBlurPass {
     pipeline: Option<wgpu::ComputePipeline>,
     bind_group_layout: Option<wgpu::BindGroupLayout>,
     /// Pre-initialised uniform buffers for step sizes [1, 2, 4].
     step_buffers: Option<[wgpu::Buffer; 3]>,
+    /// Raw-AO copy path when [`RTAO_ATROUS_BLUR_ENABLED`] is `false`.
+    raw_copy_pipeline: Option<wgpu::ComputePipeline>,
+    raw_copy_bind_group_layout: Option<wgpu::BindGroupLayout>,
 }
 
 impl RtaoBlurPass {
@@ -181,6 +216,68 @@ impl RtaoBlurPass {
             pipeline: None,
             bind_group_layout: None,
             step_buffers: None,
+            raw_copy_pipeline: None,
+            raw_copy_bind_group_layout: None,
+        }
+    }
+
+    fn ensure_raw_copy_pipeline(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> Option<(&wgpu::ComputePipeline, &wgpu::BindGroupLayout)> {
+        if self.raw_copy_pipeline.is_none() {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("RTAO ao_raw copy shader"),
+                source: wgpu::ShaderSource::Wgsl(RTAO_AO_RAW_COPY_SHADER_SRC.into()),
+            });
+            let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("RTAO ao_raw copy BGL"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("RTAO ao_raw copy pipeline layout"),
+                bind_group_layouts: &[&bgl],
+                immediate_size: 0,
+            });
+            self.raw_copy_pipeline = Some(device.create_compute_pipeline(
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("RTAO ao_raw copy pipeline"),
+                    layout: Some(&layout),
+                    module: &shader,
+                    entry_point: None,
+                    compilation_options: Default::default(),
+                    cache: None,
+                },
+            ));
+            self.raw_copy_bind_group_layout = Some(bgl);
+        }
+        match (
+            self.raw_copy_pipeline.as_ref(),
+            self.raw_copy_bind_group_layout.as_ref(),
+        ) {
+            (Some(p), Some(b)) => Some((p, b)),
+            _ => None,
         }
     }
 
@@ -301,7 +398,11 @@ impl RenderPass for RtaoBlurPass {
         "rtao_blur"
     }
 
-    /// Declares G-buffer inputs used by the blur shader.
+    /// Declares G-buffer inputs used by the À-Trous shader.
+    ///
+    /// When [`RTAO_ATROUS_BLUR_ENABLED`] is `false`, [`Self::execute`] only copies
+    /// raw AO and does not sample depth or normals; those slots stay declared so
+    /// render-target wiring and pass ordering match the filtered path.
     ///
     /// [`ResourceSlot::Normal`] is required so per-pass [`super::RenderTargetViews`]
     /// wiring fills [`super::RenderTargetViews::mrt_normal_view`].
@@ -330,6 +431,44 @@ impl RenderPass for RtaoBlurPass {
             Some(v) => v,
             None => return Ok(()),
         };
+
+        if !RTAO_ATROUS_BLUR_ENABLED {
+            let (copy_pipeline, copy_bgl) = match self.ensure_raw_copy_pipeline(&ctx.gpu.device) {
+                Some(x) => x,
+                None => return Ok(()),
+            };
+            let bind_group = ctx
+                .gpu
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("RTAO ao_raw copy bind group"),
+                    layout: copy_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(ao_raw_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(ao_view),
+                        },
+                    ],
+                });
+            let (width, height) = ctx.viewport;
+            let wg_x = width.div_ceil(TILE_SIZE);
+            let wg_y = height.div_ceil(TILE_SIZE);
+            let mut pass = ctx
+                .encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("RTAO ao_raw copy pass"),
+                    timestamp_writes: None,
+                });
+            pass.set_pipeline(copy_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(wg_x, wg_y, 1);
+            return Ok(());
+        }
+
         let norm_view = match ctx.render_target.mrt_normal_view {
             Some(v) => v,
             None => return Ok(()),

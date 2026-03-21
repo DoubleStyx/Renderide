@@ -100,5 +100,5 @@ pub use projection::{
     orthographic_projection_reverse_z, projection_for_params, reverse_z_projection,
 };
 pub use rt_shadow_compute::RtShadowComputePass;
-pub use rtao_blur::RtaoBlurPass;
+pub use rtao_blur::{RTAO_ATROUS_BLUR_ENABLED, RtaoBlurPass};
 pub use rtao_compute::RtaoComputePass;

@@ -1,5 +1,11 @@
 //! Transform hierarchy updates from host.
 //!
+//! Removal indices are applied in **shared-memory buffer order** (first entry first, `-1`
+//! terminates), matching FrooxEngine `RenderTransformManager.FillUpdate` and Unity
+//! `TransformManager.HandleUpdate` swap-with-last semantics. Do not reorder removals (for example
+//! descending sort): the host records each id after prior removals have already been applied on
+//! its side.
+//!
 //! When a [`TransformsUpdate`] carries no structural or pose changes (no cache resize, no
 //! removals, no growth to `target_transform_count`, no parent or pose entries applied), the
 //! world-matrix cache is left undisturbed: [`mark_descendants_uncomputed`] is skipped and the
@@ -19,6 +25,60 @@ use super::super::pose::{PoseValidation, render_transform_identity};
 use super::super::world_matrices::{
     SceneCache, fixup_transform_id, mark_descendants_uncomputed, rebuild_children,
 };
+
+/// Applies swap-with-last transform removals in **host buffer order** (iterate until `id < 0`).
+///
+/// Each entry is an index valid for the scene **at the moment that removal is applied**, matching
+/// FrooxEngine and Unity. Returns `(removal_log, had_any_removal)` for skinned-mesh fixup and
+/// cache invalidation; caller should set `cache.children_dirty` when `had_any_removal` is true.
+fn apply_transform_removals_ordered(
+    scene: &mut Scene,
+    cache: &mut SceneCache,
+    removals: &[i32],
+) -> (Vec<(i32, usize)>, bool) {
+    let mut transform_removals = Vec::new();
+    let mut had_removal = false;
+    for &raw in removals.iter().take_while(|&&i| i >= 0) {
+        let idx = raw as usize;
+        if idx >= scene.nodes.len() {
+            continue;
+        }
+        let removed_id = raw;
+        let last_index = scene.nodes.len() - 1;
+
+        for (i, parent) in scene.node_parents.iter_mut().enumerate() {
+            if *parent == removed_id {
+                *parent = -1;
+                if i < cache.computed.len() {
+                    cache.computed[i] = false;
+                }
+            } else if *parent == last_index as i32 {
+                *parent = removed_id;
+            }
+        }
+        for entry in &mut scene.drawables {
+            entry.node_id = fixup_transform_id(entry.node_id, removed_id, last_index);
+        }
+        if idx != last_index
+            && let Some(layer) = scene.layer_assignments.remove(&(last_index as i32))
+        {
+            scene.layer_assignments.insert(removed_id, layer);
+        }
+        scene.layer_assignments.remove(&removed_id);
+        transform_removals.push((removed_id, last_index));
+
+        scene.nodes.swap_remove(idx);
+        scene.node_parents.swap_remove(idx);
+        if idx < cache.world_matrices.len() {
+            cache.world_matrices.swap_remove(idx);
+            cache.computed.swap_remove(idx);
+            cache.local_matrices.swap_remove(idx);
+            cache.local_dirty.swap_remove(idx);
+        }
+        had_removal = true;
+    }
+    (transform_removals, had_removal)
+}
 
 /// Applies transform updates: removals, parent changes, pose updates.
 /// Returns transform removals (removed_id, last_index) for skinned mesh fixup.
@@ -52,52 +112,9 @@ pub(crate) fn apply_transforms_update(
         let removals = shm
             .access_with_context::<i32>(&update.removals, &ctx)
             .map_err(|e| SceneError::SharedMemoryAccess(e.to_string()))?;
-        let mut indices: Vec<usize> = removals
-            .iter()
-            .take_while(|&&i| i >= 0)
-            .map(|&i| i as usize)
-            .collect();
-        indices.sort_by(|a, b| b.cmp(a));
-        indices.dedup(); // Resonite sometimes sends duplicate IDs; removing twice corrupts the scene
-        let mut had_removal = false;
-        for &idx in &indices {
-            if idx >= scene.nodes.len() {
-                continue;
-            }
-            let removed_id = idx as i32;
-            let last_index = scene.nodes.len() - 1;
-
-            for (i, parent) in scene.node_parents.iter_mut().enumerate() {
-                if *parent == removed_id {
-                    *parent = -1;
-                    if i < cache.computed.len() {
-                        cache.computed[i] = false;
-                    }
-                } else if *parent == last_index as i32 {
-                    *parent = removed_id;
-                }
-            }
-            for entry in &mut scene.drawables {
-                entry.node_id = fixup_transform_id(entry.node_id, removed_id, last_index);
-            }
-            if idx != last_index
-                && let Some(layer) = scene.layer_assignments.remove(&(last_index as i32))
-            {
-                scene.layer_assignments.insert(removed_id, layer);
-            }
-            scene.layer_assignments.remove(&removed_id);
-            transform_removals.push((removed_id, last_index));
-
-            scene.nodes.swap_remove(idx);
-            scene.node_parents.swap_remove(idx);
-            if idx < cache.world_matrices.len() {
-                cache.world_matrices.swap_remove(idx);
-                cache.computed.swap_remove(idx);
-                cache.local_matrices.swap_remove(idx);
-                cache.local_dirty.swap_remove(idx);
-            }
-            had_removal = true;
-        }
+        let (removal_pairs, had_removal) =
+            apply_transform_removals_ordered(scene, cache, removals.as_slice());
+        transform_removals.extend(removal_pairs);
         if had_removal {
             // Structure changed: children cache needs rebuild before next mark_descendants call.
             cache.children_dirty = true;
@@ -197,4 +214,74 @@ pub(crate) fn apply_transforms_update(
     }
 
     Ok(transform_removals)
+}
+
+#[cfg(test)]
+mod tests {
+    use nalgebra::{Quaternion, Vector3};
+
+    use super::*;
+    use crate::scene::Scene;
+    use crate::shared::RenderTransform;
+
+    fn node_tagged(i: f32) -> RenderTransform {
+        RenderTransform {
+            position: Vector3::new(i, 0.0, 0.0),
+            scale: Vector3::new(1.0, 1.0, 1.0),
+            rotation: Quaternion::identity(),
+        }
+    }
+
+    fn cache_matching(nodes_len: usize) -> SceneCache {
+        SceneCache {
+            world_matrices: vec![Mat4::IDENTITY; nodes_len],
+            computed: vec![false; nodes_len],
+            local_matrices: vec![Mat4::IDENTITY; nodes_len],
+            local_dirty: vec![true; nodes_len],
+            visit_epoch: vec![0; nodes_len],
+            walk_epoch: 0,
+            children: vec![],
+            children_dirty: true,
+        }
+    }
+
+    /// Two removal orders must yield different surviving nodes; descending sort would collapse them.
+    #[test]
+    fn transform_removals_buffer_order_zero_then_one_vs_one_then_zero() {
+        let mut scene_a = Scene::default();
+        for i in 0..4 {
+            scene_a.nodes.push(node_tagged(i as f32));
+            scene_a.node_parents.push(-1);
+        }
+        let mut cache_a = cache_matching(4);
+        let (_log, _) = apply_transform_removals_ordered(&mut scene_a, &mut cache_a, &[0, 1, -1]);
+        assert_eq!(scene_a.nodes.len(), 2);
+        assert!((scene_a.nodes[0].position.x - 3.0).abs() < 1e-5);
+        assert!((scene_a.nodes[1].position.x - 2.0).abs() < 1e-5);
+
+        let mut scene_b = Scene::default();
+        for i in 0..4 {
+            scene_b.nodes.push(node_tagged(i as f32));
+            scene_b.node_parents.push(-1);
+        }
+        let mut cache_b = cache_matching(4);
+        let (_log, _) = apply_transform_removals_ordered(&mut scene_b, &mut cache_b, &[1, 0, -1]);
+        assert_eq!(scene_b.nodes.len(), 2);
+        assert!((scene_b.nodes[0].position.x - 2.0).abs() < 1e-5);
+        assert!((scene_b.nodes[1].position.x - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn transform_removals_negative_terminates() {
+        let mut scene = Scene::default();
+        for i in 0..3 {
+            scene.nodes.push(node_tagged(i as f32));
+            scene.node_parents.push(-1);
+        }
+        let mut cache = cache_matching(3);
+        let (_log, _) = apply_transform_removals_ordered(&mut scene, &mut cache, &[0, -1, 1]);
+        assert_eq!(scene.nodes.len(), 2);
+        assert!((scene.nodes[0].position.x - 2.0).abs() < 1e-5);
+        assert!((scene.nodes[1].position.x - 1.0).abs() < 1e-5);
+    }
 }

@@ -1,4 +1,6 @@
 //! Skinned mesh renderable updates from host.
+//!
+//! Renderable removals use **buffer order** and swap-with-last, matching Unity `RenderableManager`.
 
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
@@ -49,13 +51,8 @@ pub(crate) fn apply_skinned_mesh_renderables_update(
         let removals = shm
             .access_with_context::<i32>(&update.removals, &ctx)
             .map_err(SceneError::SharedMemoryAccess)?;
-        let mut indices: Vec<usize> = removals
-            .iter()
-            .take_while(|&&i| i >= 0)
-            .map(|&i| i as usize)
-            .collect();
-        indices.sort_by(|a, b| b.cmp(a));
-        for idx in indices {
+        for &raw in removals.iter().take_while(|&&i| i >= 0) {
+            let idx = raw as usize;
             if idx < scene.skinned_drawables.len() {
                 scene.skinned_drawables.swap_remove(idx);
             }

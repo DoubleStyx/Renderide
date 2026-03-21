@@ -234,6 +234,10 @@ impl SceneGraph {
     }
 
     /// Applies a frame's render space updates.
+    ///
+    /// Per render space, update order matches Unity `RenderSpace.HandleUpdate`: reflection-probe
+    /// SH2 tasks first (global pass), then per-space `transforms_update` before layers, mesh/skinned
+    /// renderables, overrides, lights, and `sync_drawable_layers`.
     pub fn apply_frame_update(
         &mut self,
         shm: &mut SharedMemoryAccessor,

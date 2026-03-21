@@ -141,13 +141,24 @@ impl Session {
         }
     }
 
+    /// Drains IPC commands, applies frame data, then may send `BeginFrame` for host lock-step.
+    ///
+    /// At log level **trace**, emits `FrameSubmitData` space ids and each `BeginFrame` send reason
+    /// (`last_frame_data_processed` vs bootstrap) for debugging desync with the host.
     fn handle_update(&mut self, window_input: &mut WindowInputState) {
         self.process_commands();
 
         if self.init_state.is_finalized() && !self.fatal_error {
             let bootstrap = self.last_frame_index < 0 && !self.sent_bootstrap_frame_start;
-            let should_send = self.last_frame_data_processed || bootstrap;
+            let processed_prev = self.last_frame_data_processed;
+            let should_send = processed_prev || bootstrap;
             if should_send && self.receiver.is_connected() {
+                logger::trace!(
+                    "IPC lockstep: sending BeginFrame last_frame_index={} reason_processed_prev_frame={} bootstrap={}",
+                    self.last_frame_index,
+                    processed_prev,
+                    bootstrap
+                );
                 self.send_begin_frame(window_input);
                 self.last_frame_data_processed = false;
                 if bootstrap {
@@ -217,8 +228,18 @@ impl Session {
         }
     }
 
+    /// Applies host [`FrameSubmitData`](crate::shared::FrameSubmitData): scene graph, validation, primary view, render tasks.
+    ///
+    /// At log level **trace**, logs `frame_index` and render space ids (Unity tears down spaces
+    /// omitted from this list in a given frame).
     fn process_frame_data(&mut self, data: FrameSubmitData) {
         self.last_frame_index = data.frame_index;
+        let space_ids: Vec<i32> = data.render_spaces.iter().map(|u| u.id).collect();
+        logger::trace!(
+            "FrameSubmitData: frame_index={} render_space_ids={:?}",
+            data.frame_index,
+            space_ids
+        );
 
         apply_clip_and_output_state(
             &data,
