@@ -1,0 +1,12 @@
+[package]
+name = "renderide_shaders"
+version = "0.1.0"
+edition = "2024"
+description = "Build-time converted Unity/Resonite shaders and generated material stubs."
+
+[dependencies]
+glam = "0.29"
+wgpu = "28.0.0"
+
+[dev-dependencies]
+naga = { version = "28.0.0", features = ["wgsl-in"] }

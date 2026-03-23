@@ -43,6 +43,22 @@ Bootstrapper creates IPC queues, spawns Renderite.Host, and runs the queue loop.
 | **logger** | `crates/logger/` | Shared logging helpers used by bootstrapper and renderide (files, levels, panic hook). |
 | **bootstrapper** | `crates/bootstrapper/` | Orchestrator: creates `bootstrapper_in`/`bootstrapper_out` queues, spawns Renderite.Host from Resonite install, runs queue loop (`HEARTBEAT`, `SHUTDOWN`, `GETTEXT`, `SETTEXT…`, plus renderer spawn args as above). Supports Wine on Linux. |
 | **renderide** | `crates/renderide/` | Main renderer: wgpu, winit, session/IPC receiver, shared types + packing, scene graph, assets, GPU meshes. Binaries: `renderide`, `roundtrip`. |
+| **renderide_shaders** | `crates/shaders/` | Build-time converted Unity `.shader` assets: generated WGSL/Slang under `src/generated/`, material stubs, and `wgpu` helpers. Populated by **UnityShaderConverter**. |
+
+## Third-party folders
+
+These are **git submodules** under [`third_party/`](third_party/):
+
+| Folder | Role |
+|--------|------|
+| **UnityShaderParser** | [`third_party/UnityShaderParser/`](third_party/UnityShaderParser/) — Parses Unity ShaderLab and embedded HLSL. **UnityShaderConverter** references this project to read `.shader` files. |
+| **Resonite.UnityShaders** | [`third_party/Resonite.UnityShaders/`](third_party/Resonite.UnityShaders/) — Upstream Resonite public shaders (e.g. under `Assets/Shaders/`). Included in the converter’s **default** scan roots alongside `UnityShaderConverter/SampleShaders/`. |
+
+Initialize or update submodules from the repo root when cloning:
+
+```bash
+git submodule update --init --recursive
+```
 
 ## SharedTypeGenerator
 
@@ -56,6 +72,59 @@ dotnet run --project SharedTypeGenerator -- -i /path/to/Renderite.Shared.dll [-o
 
 Default output: `crates/renderide/src/shared/shared.rs`
 
+## UnityShaderConverter
+
+**Location:** `UnityShaderConverter/` (C# .NET 10)
+
+Walks Unity `ShaderLab` sources, parses them with **UnityShaderParser** (see [Third-party folders](#third-party-folders) above), emits `.slang` (with `UnityShaderConverter/runtime_slang/UnityCompat.slang`), optionally runs **`slangc`** to produce WGSL, and generates Rust modules plus `mod.rs` under **`crates/shaders/src/generated/`**.
+
+### Install Slang
+
+**You need the [Slang](https://shader-slang.com/) toolchain installed** if you want the converter to generate or refresh **WGSL** via `slangc`. Without it, you can still run the tool with **`--skip-slang`** to emit `.slang` and Rust only, as long as the matching `.wgsl` files already exist under `crates/shaders/src/generated/wgsl/` (or you add them by hand).
+
+After installing Slang:
+
+- Put **`slangc`** on your **`PATH`**, or  
+- Set the **`SLANGC`** environment variable to the full path of the `slangc` executable, or  
+- Pass **`--slangc /path/to/slangc`** on the command line.
+
+Only shader paths matched by **`DefaultCompilerConfig.json`** (next to the built executable, or overridden with **`--compiler-config`**) invoke `slangc`; this avoids compiling the entire Resonite tree until you widen the globs.
+
+### Prerequisites
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- **Slang** — required for WGSL generation (see above); optional if you use `--skip-slang` and keep committed WGSL
+
+### How to use the shader converter
+
+Always run commands from the **`Renderide/`** directory (or pass absolute paths for `--input` / `--output`).
+
+1. **Regenerate everything except calling `slangc`** (fast; keeps existing WGSL on disk):
+
+   ```bash
+   cd Renderide
+   dotnet run --project UnityShaderConverter -- --skip-slang
+   ```
+
+2. **Run `slangc` for eligible shaders** (needs Slang installed; uses `PATH` / `SLANGC` / `--slangc`):
+
+   ```bash
+   cd Renderide
+   dotnet run --project UnityShaderConverter --
+   ```
+
+3. **Limit what is scanned** — repeatable **`--input <dir>`** (only those roots; omit to use defaults: `UnityShaderConverter/SampleShaders` and `third_party/Resonite.UnityShaders/Assets/Shaders`).
+
+4. **Change output location** — **`--output <dir>`** (default: `crates/shaders/src/generated`).
+
+5. **Compiler / variant JSON** — **`--compiler-config`** merges over built-in defaults (slang eligibility glob patterns, `maxVariantCombinationsPerShader`). **`--variant-config`** supplies per-shader define lists instead of expanding `#pragma multi_compile` automatically.
+
+6. **Rust emission rule** — a shader gets a generated `.rs` module only when **every** pass×variant has a non-empty WGSL file. If `slangc` fails or is skipped for that shader, fix WGSL or adjust eligibility before `cargo build -p renderide_shaders` will see complete modules.
+
+**Verbose logs:** add **`-v`** / **`--verbose`**.
+
+**Tests:** `dotnet test UnityShaderConverter.Tests/`
+
 ## Tests
 
 **SharedTypeGenerator.Tests/** — xUnit C# tests. Cross-language round-trip: C# packs a random instance -> bytes A; Rust `roundtrip` binary unpacks and packs -> bytes B; assert A == B.
@@ -65,6 +134,8 @@ Default output: `crates/renderide/src/shared/shared.rs`
 ```bash
 cargo build --bin roundtrip
 dotnet test SharedTypeGenerator.Tests/
+dotnet test UnityShaderConverter.Tests/
+cargo test -p renderide_shaders
 ```
 
 ## Logging

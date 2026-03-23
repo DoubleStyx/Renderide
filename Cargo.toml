@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/renderide",
+    "crates/shaders",
     "crates/interprocess",
     "crates/bootstrapper",
     "crates/logger",
