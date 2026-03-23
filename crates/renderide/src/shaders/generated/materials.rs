@@ -2,7 +2,7 @@
 //! Material structs and wgpu helpers derived from Unity ShaderLab Properties.
 
 /// Unity shader: `Converter/MinimalUnlit`
-/// Source: `UnityShaderConverter/SampleShaders/MinimalUnlit.shader`
+/// Source: `generators/UnityShaderConverter/SampleShaders/MinimalUnlit.shader`
 pub mod converter_minimal_unlit {
     use glam::Vec4;
 
@@ -25,7 +25,10 @@ pub mod converter_minimal_unlit {
     }
 
     /// Creates an empty material bind group layout (until textures/uniforms are wired).
-    pub fn create_material_bind_group_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
+    pub fn create_material_bind_group_layout(
+        device: &wgpu::Device,
+        label: &str,
+    ) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some(label),
             entries: material_bind_group_layout_entries(),
@@ -45,4 +48,3 @@ pub mod converter_minimal_unlit {
     pub const VERTEX_ENTRY_PASS0: &str = "vert";
     pub const FRAGMENT_ENTRY_PASS0: &str = "frag";
 }
-

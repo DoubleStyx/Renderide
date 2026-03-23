@@ -40,7 +40,7 @@ public static class ConverterRunner
         if (!Directory.Exists(runtimeSlangDir))
         {
             logger.LogInfo(LogCategory.Startup, $"runtime_slang not next to executable ({runtimeSlangDir}); using source tree path.");
-            runtimeSlangDir = Path.GetFullPath(Path.Combine(renderideRoot, "UnityShaderConverter", "runtime_slang"));
+            runtimeSlangDir = Path.GetFullPath(Path.Combine(renderideRoot, "generators", "UnityShaderConverter", "runtime_slang"));
         }
 
         IReadOnlyList<string> inputRootsFull = (options.InputDirectories ?? Array.Empty<string>())

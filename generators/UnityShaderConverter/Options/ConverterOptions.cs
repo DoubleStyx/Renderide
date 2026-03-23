@@ -46,7 +46,7 @@ public sealed class ConverterOptions
         {
             InputDirectories = new[]
             {
-                Path.Combine(renderideRoot, "UnityShaderConverter", "SampleShaders"),
+                Path.Combine(renderideRoot, "generators", "UnityShaderConverter", "SampleShaders"),
                 Path.Combine(renderideRoot, "third_party", "Resonite.UnityShaders", "Assets", "Shaders"),
             };
         }

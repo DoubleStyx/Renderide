@@ -51,7 +51,7 @@ These are **git submodules** under [`third_party/`](third_party/):
 | Folder | Role |
 |--------|------|
 | **UnityShaderParser** | [`third_party/UnityShaderParser/`](third_party/UnityShaderParser/) — Parses Unity ShaderLab and embedded HLSL. **UnityShaderConverter** references this project to read `.shader` files. |
-| **Resonite.UnityShaders** | [`third_party/Resonite.UnityShaders/`](third_party/Resonite.UnityShaders/) — Upstream Resonite public shaders (e.g. under `Assets/Shaders/`). Included in the converter’s **default** scan roots alongside `UnityShaderConverter/SampleShaders/`. |
+| **Resonite.UnityShaders** | [`third_party/Resonite.UnityShaders/`](third_party/Resonite.UnityShaders/) — Upstream Resonite public shaders (e.g. under `Assets/Shaders/`). Included in the converter’s **default** scan roots alongside `generators/UnityShaderConverter/SampleShaders/`. |
 
 Initialize or update submodules from the repo root when cloning:
 
@@ -61,23 +61,23 @@ git submodule update --init --recursive
 
 ## SharedTypeGenerator
 
-**Location:** `SharedTypeGenerator/` (C# .NET 10)
+**Location:** `generators/SharedTypeGenerator/` (C# .NET 10)
 
 Converts `Renderite.Shared.dll` into `crates/renderide/src/shared/shared.rs`. Pipeline: TypeAnalyzer (Mono.Cecil) -> PackMethodParser (IL -> SerializationStep) -> RustTypeMapper -> RustEmitter + PackEmitter. Outputs Rust types (POD structs, packable structs, polymorphic entities, enums) with `MemoryPackable` impls matching the C# wire format.
 
 ```bash
-dotnet run --project SharedTypeGenerator -- -i /path/to/Renderite.Shared.dll [-o output.rs]
+dotnet run --project generators/SharedTypeGenerator -- -i /path/to/Renderite.Shared.dll [-o output.rs]
 ```
 
 Default output: `crates/renderide/src/shared/shared.rs`
 
 ## UnityShaderConverter
 
-**Location:** `UnityShaderConverter/` (C# .NET 10)
+**Location:** `generators/UnityShaderConverter/` (C# .NET 10)
 
 **Generated Rust (materials):** The converter writes **`generated/wgsl_sources.rs`** (one `pub mod` per fully successful shader, each holding `PASSx_Vy` string constants via `include_str!`) and **`generated/materials.rs`** (matching submodules with `Material`, defaults, and `wgpu` helpers), plus a small **`generated/mod.rs`**. WGSL files live under **`generated/wgsl/`**, using **nested directories** that mirror each `.shader` file’s path under its scan root so names stay unique across the Resonite tree.
 
-Walks Unity `ShaderLab` sources, parses them with **UnityShaderParser** (see [Third-party folders](#third-party-folders) above), builds **transient** `.slang` in the system temp directory (with `UnityShaderConverter/runtime_slang/UnityCompat.slang` on the include path), runs **`slangc`** when eligible, writes WGSL under **`crates/renderide/src/shaders/generated/wgsl/`**, then deletes the temp Slang inputs (success or failure). Nothing under **`generated/slang/`** is kept.
+Walks Unity `ShaderLab` sources, parses them with **UnityShaderParser** (see [Third-party folders](#third-party-folders) above), builds **transient** `.slang` in the system temp directory (with `generators/UnityShaderConverter/runtime_slang/UnityCompat.slang` on the include path), runs **`slangc`** when eligible, writes WGSL under **`crates/renderide/src/shaders/generated/wgsl/`**, then deletes the temp Slang inputs (success or failure). Nothing under **`generated/slang/`** is kept.
 
 ### Install Slang
 
@@ -104,17 +104,17 @@ Always run commands from the **`Renderide/`** directory (or pass absolute paths 
 
    ```bash
    cd Renderide
-   dotnet run --project UnityShaderConverter -- --skip-slang
+   dotnet run --project generators/UnityShaderConverter -- --skip-slang
    ```
 
 2. **Run `slangc` for eligible shaders** (needs Slang installed; uses `PATH` / `SLANGC` / `--slangc`):
 
    ```bash
    cd Renderide
-   dotnet run --project UnityShaderConverter --
+   dotnet run --project generators/UnityShaderConverter --
    ```
 
-3. **Limit what is scanned** — repeatable **`--input <dir>`** (only those roots; omit to use defaults: `UnityShaderConverter/SampleShaders` and `third_party/Resonite.UnityShaders/Assets/Shaders`).
+3. **Limit what is scanned** — repeatable **`--input <dir>`** (only those roots; omit to use defaults: `generators/UnityShaderConverter/SampleShaders` and `third_party/Resonite.UnityShaders/Assets/Shaders`).
 
 4. **Change output location** — **`--output <dir>`** (default: `crates/renderide/src/shaders/generated`).
 
@@ -124,18 +124,18 @@ Always run commands from the **`Renderide/`** directory (or pass absolute paths 
 
 **Verbose logs:** add **`-v`** / **`--verbose`**.
 
-**Tests:** `dotnet test UnityShaderConverter.Tests/`
+**Tests:** `dotnet test generators/UnityShaderConverter.Tests/`
 
 ## Tests
 
-**SharedTypeGenerator.Tests/** — xUnit C# tests. Cross-language round-trip: C# packs a random instance -> bytes A; Rust `roundtrip` binary unpacks and packs -> bytes B; assert A == B.
+**generators/SharedTypeGenerator.Tests/** — xUnit C# tests. Cross-language round-trip: C# packs a random instance -> bytes A; Rust `roundtrip` binary unpacks and packs -> bytes B; assert A == B.
 
-**Prerequisite:** `Renderite.Shared.dll` in `SharedTypeGenerator.Tests/lib/` or set `RENDERITE_SHARED_DLL`.
+**Prerequisite:** `Renderite.Shared.dll` in `generators/SharedTypeGenerator.Tests/lib/` or set `RENDERITE_SHARED_DLL`.
 
 ```bash
 cargo build --bin roundtrip
-dotnet test SharedTypeGenerator.Tests/
-dotnet test UnityShaderConverter.Tests/
+dotnet test generators/SharedTypeGenerator.Tests/
+dotnet test generators/UnityShaderConverter.Tests/
 cargo test -p renderide minimal_unlit_sample_wgsl_parses
 ```
 
@@ -175,7 +175,7 @@ cargo build --release && ./target/release/bootstrapper
 **Generator (optional):**
 
 ```bash
-dotnet run --project SharedTypeGenerator -- -i /path/to/Renderite.Shared.dll
+dotnet run --project generators/SharedTypeGenerator -- -i /path/to/Renderite.Shared.dll
 ```
 
 **Resonite discovery:** `RESONITE_DIR` or Steam (`~/.steam/steam/steamapps/common/Resonite`, `~/.local/share/Steam`, libraryfolders.vdf).

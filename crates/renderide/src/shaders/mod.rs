@@ -3,7 +3,7 @@
 //! Output is produced by **UnityShaderConverter** into [`generated`](generated/).
 //!
 //! Regenerate from the `Renderide/` directory:
-//! `dotnet run --project UnityShaderConverter --` (with `slangc` on `PATH` / `SLANGC`), or `--skip-slang` if WGSL is already on disk.
+//! `dotnet run --project generators/UnityShaderConverter --` (with `slangc` on `PATH` / `SLANGC`), or `--skip-slang` if WGSL is already on disk.
 
 pub mod generated;
 

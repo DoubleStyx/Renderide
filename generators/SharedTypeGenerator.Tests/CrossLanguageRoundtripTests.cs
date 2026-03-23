@@ -32,7 +32,7 @@ public sealed class CrossLanguageRoundtripTests : RoundtripTestBase
         var dir = AppContext.BaseDirectory;
         while (!string.IsNullOrEmpty(dir))
         {
-            if (Directory.Exists(Path.Combine(dir, "SharedTypeGenerator")) &&
+            if (Directory.Exists(Path.Combine(dir, "generators", "SharedTypeGenerator")) &&
                 Directory.Exists(Path.Combine(dir, "crates", "renderide")))
                 return dir;
             dir = Path.GetDirectoryName(dir);

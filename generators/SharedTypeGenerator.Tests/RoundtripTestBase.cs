@@ -22,13 +22,13 @@ public abstract class RoundtripTestBase
         if (File.Exists(steamPath))
             return steamPath;
 
-        var libPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "SharedTypeGenerator.Tests", "lib", "Renderite.Shared.dll");
+        var libPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "lib", "Renderite.Shared.dll");
         var fullLib = Path.GetFullPath(libPath);
         if (File.Exists(fullLib))
             return fullLib;
 
         throw new InvalidOperationException(
-            "Renderite.Shared.dll not found. Set RENDERITE_SHARED_DLL or copy the DLL to SharedTypeGenerator.Tests/lib/");
+            "Renderite.Shared.dll not found. Set RENDERITE_SHARED_DLL or copy the DLL to generators/SharedTypeGenerator.Tests/lib/");
     }
 
     protected static (Assembly Assembly, List<TypeDescriptor> Types) LoadAssemblyAndTypes()

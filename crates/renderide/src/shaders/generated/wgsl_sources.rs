@@ -2,10 +2,8 @@
 //! WGSL sources as `include_str!` (nested paths under `wgsl/`).
 
 /// Unity shader: `Converter/MinimalUnlit`
-/// Source: `UnityShaderConverter/SampleShaders/MinimalUnlit.shader`
+/// Source: `generators/UnityShaderConverter/SampleShaders/MinimalUnlit.shader`
 pub mod converter_minimal_unlit {
     /// WGSL for pass 0, variant 0.
     pub const PASS0_V0: &str = include_str!("wgsl/converter_minimal_unlit_pass0_v0.wgsl");
-
 }
-

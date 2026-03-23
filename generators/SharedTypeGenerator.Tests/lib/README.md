@@ -4,7 +4,7 @@ Copy `Renderite.Shared.dll` from your Resonite installation here for roundtrip t
 
 Example (Linux):
 ```bash
-cp ~/.steam/steam/steamapps/common/Resonite/Renderite.Shared.dll SharedTypeGenerator.Tests/lib/
+cp ~/.steam/steam/steamapps/common/Resonite/Renderite.Shared.dll generators/SharedTypeGenerator.Tests/lib/
 ```
 
 Override the path via `RENDERITE_SHARED_DLL` or `RenderiteSharedDllPath` when building.
