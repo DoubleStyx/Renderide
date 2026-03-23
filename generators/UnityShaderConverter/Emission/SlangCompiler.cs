@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Linq;
+using System.Runtime.InteropServices;
 using NotEnoughLogs;
 using UnityShaderConverter.Logging;
 
@@ -17,7 +19,10 @@ public sealed class SlangCompiler
         _logger = logger;
     }
 
-    /// <summary>Resolves <c>slangc</c> from options or <c>SLANGC</c> environment variable.</summary>
+    /// <summary>
+    /// Resolves <c>slangc</c> from <c>--slangc</c>, <c>SLANGC</c>, a <c>Slang.Sdk</c> layout under the app directory
+    /// (<c>runtimes/&lt;rid&gt;/native/slangc</c> when published), then <c>PATH</c>.
+    /// </summary>
     public static string ResolveExecutable(string? optionPath)
     {
         if (!string.IsNullOrWhiteSpace(optionPath))
@@ -25,7 +30,30 @@ public sealed class SlangCompiler
         string? env = Environment.GetEnvironmentVariable("SLANGC");
         if (!string.IsNullOrWhiteSpace(env))
             return env;
+        string? bundled = TryResolveBundledSlangc();
+        if (!string.IsNullOrWhiteSpace(bundled))
+            return bundled;
         return "slangc";
+    }
+
+    private static string? TryResolveBundledSlangc()
+    {
+        string rid = GetRuntimeRid();
+        string exe = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "slangc.exe" : "slangc";
+        string baseDir = AppContext.BaseDirectory;
+        string candidate = Path.Combine(baseDir, "runtimes", rid, "native", exe);
+        return File.Exists(candidate) ? candidate : null;
+    }
+
+    private static string GetRuntimeRid()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "win-arm64" : "win-x64";
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "osx-arm64" : "osx-x64";
+        if (RuntimeInformation.OSArchitecture == Architecture.Arm64)
+            return "linux-arm64";
+        return "linux-x64";
     }
 
     /// <summary>Compiles Slang to WGSL (single module when <c>slangc</c> supports it; otherwise merged stages).</summary>
@@ -56,17 +84,17 @@ public sealed class SlangCompiler
         {
             TryDelete(wgslOutPath);
             if (TryCompileToWgslCore(
-                slangPath,
-                wgslOutPath,
-                runtimeSlangIncludeDir,
-                shaderSourceIncludeDir,
-                vertexEntry,
-                fragmentEntry,
-                variantDefines,
-                useMatrixLayout: false,
-                out stderr))
+                    slangPath,
+                    wgslOutPath,
+                    runtimeSlangIncludeDir,
+                    shaderSourceIncludeDir,
+                    vertexEntry,
+                    fragmentEntry,
+                    variantDefines,
+                    useMatrixLayout: false,
+                    out stderr))
             {
-                _logger.LogInfo(LogCategory.SlangCompile, "slangc succeeded without -matrix-layout (toolchain lacks that flag).");
+                _logger.LogDebug(LogCategory.SlangCompile, "slangc succeeded without -matrix-layout (toolchain lacks that flag).");
                 return true;
             }
         }
@@ -100,7 +128,7 @@ public sealed class SlangCompiler
 
         if (RunProcess(singleArgs, out string errSingle) && File.Exists(wgslOutPath) && new FileInfo(wgslOutPath).Length > 0)
         {
-            _logger.LogInfo(LogCategory.SlangCompile, $"Wrote combined WGSL for {Path.GetFileName(slangPath)}");
+            _logger.LogDebug(LogCategory.SlangCompile, $"Wrote combined WGSL for {Path.GetFileName(slangPath)}");
             return true;
         }
 

@@ -26,6 +26,19 @@ public static class ShaderNaming
     /// <summary>Rust module name (snake_case, safe ident).</summary>
     public static string ModuleName(string shaderName) => FileStem(shaderName);
 
+    /// <summary>Snake_case stem for a pass WGSL file from <c>Name "ForwardBase"</c> or <c>pass{index}</c>.</summary>
+    public static string WgslPassStem(string? passName, int fallbackIndex)
+    {
+        if (string.IsNullOrWhiteSpace(passName))
+            return $"pass{fallbackIndex}";
+        string snake = PascalOrMixedToSnake(passName.Trim());
+        foreach (char c in Path.GetInvalidFileNameChars())
+            snake = snake.Replace(c, '_');
+        if (snake.Length == 0)
+            return $"pass{fallbackIndex}";
+        return RustSafeIdent(snake);
+    }
+
     private static string PascalOrMixedToSnake(string s)
     {
         if (s.Length == 0)

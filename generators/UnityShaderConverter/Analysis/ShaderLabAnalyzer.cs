@@ -33,16 +33,22 @@ public static class ShaderLabAnalyzer
         }
 
         SubShaderNode sub0 = root.SubShaders[0];
-        var tags = ExtractSubShaderTags(sub0);
         var properties = ExtractProperties(root.Properties ?? new List<ShaderPropertyNode>());
         var passes = new List<ShaderPassDocument>();
         var multiCompiles = new List<string>();
+        var subShaderTags = ExtractSubShaderTags(sub0);
         int codePassIndex = 0;
         foreach (ShaderPassNode pass in sub0.Passes ?? new List<ShaderPassNode>())
         {
             if (pass is ShaderCodePassNode codePass)
             {
-                if (!TryExtractPass(codePass, codePassIndex, programSource => ExtractPragmaLines(programSource), out ShaderPassDocument? passDoc, out string? passErr))
+                if (!TryExtractPass(
+                        codePass,
+                        codePassIndex,
+                        subShaderTags,
+                        programSource => ExtractPragmaLines(programSource),
+                        out ShaderPassDocument? passDoc,
+                        out string? passErr))
                 {
                     if (passErr is not null)
                         errors.Add(passErr);
@@ -68,7 +74,7 @@ public static class ShaderLabAnalyzer
             SourcePath = Path.GetFullPath(shaderPath),
             ShaderName = root.Name ?? Path.GetFileNameWithoutExtension(shaderPath),
             Properties = properties,
-            SubShaderTags = tags,
+            SubShaderTags = subShaderTags,
             Passes = passes,
             MultiCompilePragmas = DeduplicateSorted(multiCompiles),
         };
@@ -94,6 +100,7 @@ public static class ShaderLabAnalyzer
     private static bool TryExtractPass(
         ShaderCodePassNode codePass,
         int passIndex,
+        IReadOnlyDictionary<string, string> subShaderTags,
         Func<string, IReadOnlyList<string>> extractPragmas,
         out ShaderPassDocument? passDoc,
         out string? error)
@@ -137,6 +144,7 @@ public static class ShaderLabAnalyzer
             }
         }
 
+        List<ShaderLabCommandNode> cmdList = codePass.Commands ?? new List<ShaderLabCommandNode>();
         passDoc = new ShaderPassDocument
         {
             PassName = passName,
@@ -145,7 +153,8 @@ public static class ShaderLabAnalyzer
             Pragmas = extractPragmas(program),
             VertexEntry = vert,
             FragmentEntry = frag,
-            RenderStateSummary = RenderStateFormatter.Summarize(codePass.Commands ?? new List<ShaderLabCommandNode>()),
+            RenderStateSummary = RenderStateFormatter.Summarize(cmdList),
+            FixedFunctionState = RenderStateExtractor.Extract(cmdList, subShaderTags),
         };
         return true;
     }

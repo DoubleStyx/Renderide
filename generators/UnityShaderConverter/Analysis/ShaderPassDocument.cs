@@ -23,4 +23,7 @@ public sealed class ShaderPassDocument
 
     /// <summary>Serialized render-state snapshot for Rust comments / future pipeline mapping.</summary>
     public required string RenderStateSummary { get; init; }
+
+    /// <summary>Structured fixed-function state and merged tags for Rust <c>wgpu</c> emission.</summary>
+    public required PassFixedFunctionState FixedFunctionState { get; init; }
 }

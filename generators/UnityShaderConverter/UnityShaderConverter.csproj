@@ -11,6 +11,7 @@
   <ItemGroup>
     <PackageReference Include="CommandLineParser" Version="2.9.2-ci-210" />
     <PackageReference Include="NotEnoughLogs" Version="2.0.3" />
+    <PackageReference Include="Slang.Sdk" Version="0.5.1" />
   </ItemGroup>
 
   <ItemGroup>

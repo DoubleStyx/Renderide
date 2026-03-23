@@ -1,6 +1,7 @@
 using UnityShaderConverter.Analysis;
 using UnityShaderConverter.Emission;
 using UnityShaderConverter.Variants;
+using UnityShaderParser.ShaderLab;
 
 namespace UnityShaderConverter.Tests;
 
@@ -20,6 +21,7 @@ public sealed class SlangEmitterTests
             VertexEntry = "vert",
             FragmentEntry = "frag",
             RenderStateSummary = "",
+            FixedFunctionState = RenderStateExtractor.Extract(Array.Empty<ShaderLabCommandNode>(), new Dictionary<string, string>()),
         };
         string slang = SlangEmitter.EmitPassSlang(pass, Array.Empty<string>(), Array.Empty<SpecializationAxis>());
         Assert.Contains("#include \"UnityCompat.slang\"", slang);
@@ -40,6 +42,7 @@ public sealed class SlangEmitterTests
             VertexEntry = "vert",
             FragmentEntry = "frag",
             RenderStateSummary = "",
+            FixedFunctionState = RenderStateExtractor.Extract(Array.Empty<ShaderLabCommandNode>(), new Dictionary<string, string>()),
         };
         var axes = new[]
         {
@@ -51,5 +54,26 @@ public sealed class SlangEmitterTests
         Assert.Contains("[vk::constant_id(1)]", slang);
         Assert.Contains("const bool USC_FOO", slang);
         Assert.Contains("const bool USC_BAR", slang);
+    }
+
+    /// <summary>Preprocessor maps <c>#ifdef</c> on axis keywords to <c>USC_*</c>.</summary>
+    [Fact]
+    public void EmitPassSlang_RewritesIfdefToSlangAxisName()
+    {
+        var pass = new ShaderPassDocument
+        {
+            PassName = null,
+            PassIndex = 0,
+            ProgramSource = "#pragma vertex vert\n#pragma fragment frag\n#ifdef FOO\nfloat z = 1;\n#endif\n",
+            Pragmas = Array.Empty<string>(),
+            VertexEntry = "vert",
+            FragmentEntry = "frag",
+            RenderStateSummary = "",
+            FixedFunctionState = RenderStateExtractor.Extract(Array.Empty<ShaderLabCommandNode>(), new Dictionary<string, string>()),
+        };
+        var axes = new[] { new SpecializationAxis(0, "FOO", "USC_FOO", "foo") };
+        string slang = SlangEmitter.EmitPassSlang(pass, Array.Empty<string>(), axes);
+        Assert.Contains("#ifdef USC_FOO", slang);
+        Assert.DoesNotContain("#ifdef FOO", slang);
     }
 }

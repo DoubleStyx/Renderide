@@ -14,8 +14,8 @@ public sealed class ConverterOptions
     [Option('i', "input", Required = false, HelpText = "Directory containing .shader files (repeatable). Defaults to SampleShaders + Resonite Unity shaders under the repo.")]
     public IEnumerable<string> InputDirectories { get; set; } = Array.Empty<string>();
 
-    /// <summary>Output root: <c>crates/renderide/src/shaders/</c> with one <c>&lt;mod&gt;/</c> folder per converted shader.</summary>
-    [Option('o', "output", Required = false, HelpText = "Output directory (default: crates/renderide/src/shaders).")]
+    /// <summary>Output root: <c>crates/renderide/src/shaders/generated/</c> with one <c>&lt;mod&gt;/</c> folder per converted shader.</summary>
+    [Option('o', "output", Required = false, HelpText = "Output directory (default: crates/renderide/src/shaders/generated).")]
     public string? OutputDirectory { get; set; }
 
     /// <summary>Path to <c>slangc</c>; overrides <c>SLANGC</c> environment variable.</summary>
@@ -40,7 +40,7 @@ public sealed class ConverterOptions
         string renderideRoot = ResolveRenderideRoot(TryGetGitRepositoryRoot());
 
         if (OutputDirectory is null)
-            OutputDirectory = Path.Combine(renderideRoot, "crates", "renderide", "src", "shaders");
+            OutputDirectory = Path.Combine(renderideRoot, "crates", "renderide", "src", "shaders", "generated");
 
         if (!InputDirectories.Any())
         {

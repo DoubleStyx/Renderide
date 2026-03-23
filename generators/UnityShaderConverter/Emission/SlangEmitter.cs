@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using UnityShaderConverter.Analysis;
@@ -36,21 +37,36 @@ public static class SlangEmitter
         if (baselineDefines.Any(static s => s.Length > 0))
             sb.AppendLine();
 
-        foreach (string line in StripCompilerDirectives(pass.ProgramSource))
-            sb.AppendLine(line);
+        string programBody = StripCompilerDirectivesToString(pass.ProgramSource);
+        if (specializationAxes.Count > 0)
+        {
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (SpecializationAxis ax in specializationAxes)
+                map[ax.Keyword] = ax.SlangIdentifier;
+            programBody = HlslSpecializationPreprocessor.Rewrite(programBody, map);
+        }
+
+        foreach (string line in programBody.Split('\n'))
+        {
+            string lineOut = line.TrimEnd('\r');
+            sb.AppendLine(lineOut);
+        }
 
         return sb.ToString();
     }
 
-    private static IEnumerable<string> StripCompilerDirectives(string program)
+    private static string StripCompilerDirectivesToString(string program)
     {
+        var sb = new StringBuilder();
         foreach (string rawLine in program.Split('\n'))
         {
             string line = rawLine.TrimEnd('\r');
             string t = line.TrimStart();
             if (t.StartsWith("#pragma", StringComparison.Ordinal))
                 continue;
-            yield return line;
+            sb.AppendLine(line);
         }
+
+        return sb.ToString().TrimEnd();
     }
 }

@@ -20,10 +20,74 @@ public sealed class VariantExpanderTests
             Passes = Array.Empty<ShaderPassDocument>(),
             MultiCompilePragmas = Array.Empty<string>(),
         };
-        var cfg = new CompilerConfigModel { MaxVariantCombinationsPerShader = 32 };
+        var cfg = new CompilerConfigModel { MaxVariantCombinationsPerShader = 32, EnableSlangSpecialization = false };
         var result = VariantExpander.Expand(doc, cfg, null);
         Assert.Single(result);
         Assert.Empty(result[0]);
+    }
+
+    /// <summary>With specialization on, a huge Cartesian product does not throw; a single empty baseline variant is returned.</summary>
+    [Fact]
+    public void Expand_SpecializationOn_HugeProduct_ReturnsSingleEmptyVariant()
+    {
+        string many = string.Join(' ', Enumerable.Range(0, 30).Select(i => $"K{i}"));
+        var doc = new ShaderFileDocument
+        {
+            SourcePath = "x.shader",
+            ShaderName = "Test/BigVariants",
+            Properties = Array.Empty<ShaderPropertyRecord>(),
+            SubShaderTags = new Dictionary<string, string>(),
+            Passes = Array.Empty<ShaderPassDocument>(),
+            MultiCompilePragmas = new[] { "#pragma multi_compile " + many },
+        };
+        var cfg = new CompilerConfigModel
+        {
+            MaxVariantCombinationsPerShader = 4,
+            EnableSlangSpecialization = true,
+        };
+        var result = VariantExpander.Expand(doc, cfg, null);
+        Assert.Single(result);
+        Assert.Empty(result[0]);
+    }
+
+    /// <summary>With specialization off, over-limit expansion still throws.</summary>
+    [Fact]
+    public void Expand_SpecializationOff_OverLimit_Throws()
+    {
+        string many = string.Join(' ', Enumerable.Range(0, 30).Select(i => $"K{i}"));
+        var doc = new ShaderFileDocument
+        {
+            SourcePath = "x.shader",
+            ShaderName = "Test/BigVariants",
+            Properties = Array.Empty<ShaderPropertyRecord>(),
+            SubShaderTags = new Dictionary<string, string>(),
+            Passes = Array.Empty<ShaderPassDocument>(),
+            MultiCompilePragmas = new[] { "#pragma multi_compile " + many },
+        };
+        var cfg = new CompilerConfigModel
+        {
+            MaxVariantCombinationsPerShader = 4,
+            EnableSlangSpecialization = false,
+        };
+        Assert.Throws<InvalidOperationException>(() => VariantExpander.Expand(doc, cfg, null));
+    }
+
+    /// <summary><see cref="VariantExpander.AnalyzeMultiCompileGroups"/> reports product without expanding.</summary>
+    [Fact]
+    public void AnalyzeMultiCompileGroups_ReturnsProduct()
+    {
+        var doc = new ShaderFileDocument
+        {
+            SourcePath = "x.shader",
+            ShaderName = "Test/Shader",
+            Properties = Array.Empty<ShaderPropertyRecord>(),
+            SubShaderTags = new Dictionary<string, string>(),
+            Passes = Array.Empty<ShaderPassDocument>(),
+            MultiCompilePragmas = new[] { "#pragma multi_compile A B", "#pragma multi_compile _ X" },
+        };
+        VariantExpander.MultiCompileAnalysis a = VariantExpander.AnalyzeMultiCompileGroups(doc);
+        Assert.Equal(2, a.Groups.Count);
+        Assert.Equal(4, a.Product);
     }
 
     /// <summary>JSON overrides replace automatic expansion.</summary>
@@ -39,7 +103,7 @@ public sealed class VariantExpanderTests
             Passes = Array.Empty<ShaderPassDocument>(),
             MultiCompilePragmas = new[] { "#pragma multi_compile A B" },
         };
-        var cfg = new CompilerConfigModel { MaxVariantCombinationsPerShader = 32 };
+        var cfg = new CompilerConfigModel { MaxVariantCombinationsPerShader = 32, EnableSlangSpecialization = false };
         var vcfg = new VariantConfigModel
         {
             VariantsByShaderName = new Dictionary<string, List<VariantDefines>>
