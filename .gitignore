@@ -458,3 +458,4 @@ target
 #### Other .gitignore rules
 *.log
 profile.json.gz
+!crates/renderide/src/shaders/**
