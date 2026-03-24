@@ -6,16 +6,21 @@ namespace UnityShaderConverter.Options;
 /// <summary>Command-line options for <see cref="ConverterRunner.Run"/>.</summary>
 public sealed class ConverterOptions
 {
-    /// <summary>When true, lowers the log threshold to trace.</summary>
-    [Option('v', "verbose", Required = false, HelpText = "Verbose logging.")]
+    /// <summary>When true, lowers the log threshold to trace (parser diagnostics, slang command lines, intermediate compile steps).</summary>
+    /// <remarks>
+    /// The default log file suppresses <see cref="NotEnoughLogs.LogLevel.Warning"/> lines; use <c>--verbose</c> for trace-level detail.
+    /// Hard failures (parse, <c>slangc</c>, WGSL post-process, etc.) log full messages at <see cref="NotEnoughLogs.LogLevel.Error"/> or
+    /// <see cref="NotEnoughLogs.LogLevel.Info"/> without <c>--verbose</c>.
+    /// </remarks>
+    [Option('v', "verbose", Required = false, HelpText = "Trace-level logging (parser notes, slang command lines, intermediate diagnostics).")]
     public bool Verbose { get; set; }
 
     /// <summary>One or more roots to scan recursively for *.shader files.</summary>
     [Option('i', "input", Required = false, HelpText = "Directory containing .shader files (repeatable). Defaults to SampleShaders + Resonite Unity shaders under the repo.")]
     public IEnumerable<string> InputDirectories { get; set; } = Array.Empty<string>();
 
-    /// <summary>Output root: <c>crates/renderide/src/shaders/</c> with one <c>&lt;mod&gt;/</c> folder per converted shader (e.g. <c>pbs_metallic/material.rs</c>).</summary>
-    [Option('o', "output", Required = false, HelpText = "Output directory (default: crates/renderide/src/shaders).")]
+    /// <summary>Output root: <c>crates/renderide/src/shaders/generated/</c> with one <c>&lt;mod&gt;/</c> folder per converted shader (e.g. <c>pbs_metallic/material.rs</c>).</summary>
+    [Option('o', "output", Required = false, HelpText = "Output directory (default: crates/renderide/src/shaders/generated).")]
     public string? OutputDirectory { get; set; }
 
     /// <summary>Path to <c>slangc</c>; overrides the <c>Slang.Sdk</c> binary next to the tool and <c>SLANGC</c>.</summary>
@@ -72,7 +77,7 @@ public sealed class ConverterOptions
         string renderideRoot = RenderidePathResolver.ResolveRenderideRoot(RenderidePathResolver.TryGetGitRepositoryRoot());
 
         if (OutputDirectory is null)
-            OutputDirectory = Path.Combine(renderideRoot, "crates", "renderide", "src", "shaders");
+            OutputDirectory = Path.Combine(renderideRoot, "crates", "renderide", "src", "shaders", "generated");
 
         if (!InputDirectories.Any())
         {

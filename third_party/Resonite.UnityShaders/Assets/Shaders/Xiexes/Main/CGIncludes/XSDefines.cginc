@@ -132,7 +132,8 @@ struct XSLighting
     half3 normal;
     half3 tangent;
     half3 bitangent;
-    half4 worldPos;
+    // World-space position (xyz only; Slang requires explicit half3 vs half4 separation).
+    half3 worldPos;
     half3 color;
     half alpha;
     float isOutline;

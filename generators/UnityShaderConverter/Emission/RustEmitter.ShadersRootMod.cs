@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace UnityShaderConverter.Emission;
 
-/// <summary>Root <c>shaders/mod.rs</c> merge helpers for <see cref="RustEmitter"/>.</summary>
+/// <summary>Root <c>shaders/generated/mod.rs</c> merge helpers for <see cref="RustEmitter"/>.</summary>
 public static partial class RustEmitter
 {
     /// <summary>
@@ -37,7 +37,7 @@ public static partial class RustEmitter
     [GeneratedRegex(@"^\s*pub\s+mod\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*;\s*$", RegexOptions.Multiline)]
     private static partial Regex GeneratedPubModRegex();
 
-    /// <summary>Merges sorted <c>pub mod &lt;shader_stem&gt;;</c> lines into the crate <c>shaders/mod.rs</c>, preserving the tail below the end marker.</summary>
+    /// <summary>Merges sorted <c>pub mod &lt;shader_stem&gt;;</c> lines into <c>shaders/generated/mod.rs</c>, preserving the tail below the end marker.</summary>
     /// <param name="existingRootModRs">Current file text, or <c>null</c> if missing.</param>
     /// <param name="successModNames">Rust module names written successfully this run.</param>
     /// <param name="preservedFailedModNames">Module names that failed this run but must stay declared (and protected from stale cleanup).</param>

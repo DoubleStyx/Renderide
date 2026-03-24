@@ -7,10 +7,10 @@ using UnityShaderParser.ShaderLab;
 
 namespace UnityShaderConverter.Emission;
 
-/// <summary>Emits <c>mod.rs</c> and <c>material.rs</c> under the shader output directory (default <c>src/shaders/&lt;mod&gt;/</c>).</summary>
+/// <summary>Emits <c>mod.rs</c> and <c>material.rs</c> under the shader output directory (default <c>src/shaders/generated/&lt;mod&gt;/</c>).</summary>
 public static partial class RustEmitter
 {
-    /// <summary>Marks the end of the UnityShaderConverter block in <c>src/shaders/mod.rs</c>; hand-written <c>pub mod</c> stays below.</summary>
+    /// <summary>Marks the end of the UnityShaderConverter block in <c>src/shaders/generated/mod.rs</c>; hand-written <c>pub mod</c> stays below.</summary>
     public const string ShadersRootGeneratedEndMarker = "// --- END UNITY_SHADER_CONVERTER_GENERATED ---";
 
     /// <summary>Sanitized Rust module name (snake_case).</summary>

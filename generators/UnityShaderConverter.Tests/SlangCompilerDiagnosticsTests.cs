@@ -18,9 +18,24 @@ public sealed class SlangCompilerDiagnosticsTests
         Assert.Contains("error[E30015]", filtered, StringComparison.Ordinal);
     }
 
-    /// <summary>Combined-failure digest skips <c>warning[E…]</c> lines and returns the first <c>error[E…]</c> line.</summary>
+    /// <summary>Digest skips warnings and prefers a non-<c>E00004</c> error when Slang also emits a misleading write failure.</summary>
     [Fact]
-    public void FormatSlangStderrErrorDigest_PrefersFirstErrorLine()
+    public void FormatSlangStderrErrorDigest_PrefersNonE00004WhenPresent()
+    {
+        const string stderr = """
+            warning[E15205]: implicit global
+            error[E30019]: type mismatch in expression
+            error[E00004]: cannot write output file '/tmp/out.wgsl'
+            """;
+        string digest = SlangCompiler.FormatSlangStderrErrorDigest(stderr);
+        Assert.Contains("error[E30019]", digest, StringComparison.Ordinal);
+        Assert.DoesNotContain("error[E00004]", digest, StringComparison.Ordinal);
+        Assert.DoesNotContain("warning[E15205]", digest, StringComparison.Ordinal);
+    }
+
+    /// <summary>When <c>E00004</c> is the only error line, it is still surfaced.</summary>
+    [Fact]
+    public void FormatSlangStderrErrorDigest_UsesE00004WhenSoleError()
     {
         const string stderr = """
             warning[E15205]: implicit global
@@ -78,6 +93,78 @@ public sealed class SlangCompilerDiagnosticsTests
         catch (Exception)
         {
             // No slangc on PATH in this environment — other tests still cover filtering logic.
+        }
+    }
+
+    /// <summary>
+    /// HLSL allows <c>dot(half3, half4)</c> via implicit truncation; <c>UnityCompat.slang</c> supplies a Slang overload for WGSL.
+    /// </summary>
+    [Fact]
+    public void SlangCompile_DotHalf3Half4_OverloadFromUnityCompat_Compiles()
+    {
+        string baseDir = AppContext.BaseDirectory;
+        string runtimeSlang = Path.Combine(baseDir, "runtime_slang");
+        Assert.True(Directory.Exists(runtimeSlang), "Expected runtime_slang next to test output (rebuild UnityShaderConverter.Tests).");
+
+        string temp = Path.Combine(Path.GetTempPath(), "usc_slang_dot34_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+        try
+        {
+            const string tu = """
+                #include "UnityCompat.slang"
+
+                struct vi { float4 vertex : POSITION; };
+                struct vo { float4 pos : SV_POSITION; half3 a; half4 b; };
+
+                vo vert(vi v)
+                {
+                    vo o;
+                    o.pos = float4(0.0, 0.0, 0.0, 1.0);
+                    o.a = half3(1.0, 0.0, 0.0);
+                    o.b = half4(0.0, 1.0, 0.0, 0.0);
+                    return o;
+                }
+
+                float4 frag(vo i) : SV_Target0
+                {
+                    half d = dot(i.a, i.b);
+                    return float4(float(d), 0.0, 0.0, 1.0);
+                }
+                """;
+            string slangPath = Path.Combine(temp, "dot_h3_h4.slang");
+            string wgslPath = Path.Combine(temp, "out.wgsl");
+            File.WriteAllText(slangPath, tu);
+
+            using var logger = new Logger(new LoggerConfiguration
+            {
+                Behaviour = new DirectLoggingBehaviour(),
+                MaxLevel = LogLevel.Error,
+            });
+            var compiler = new SlangCompiler(SlangCompiler.ResolveExecutable(null), logger, suppressSlangWarnings: true);
+            bool ok = compiler.TryCompileToWgsl(
+                slangPath,
+                wgslPath,
+                runtimeSlang,
+                Array.Empty<string>(),
+                temp,
+                "vert",
+                "frag",
+                Array.Empty<string>(),
+                out string? stderr);
+
+            Assert.True(ok, stderr ?? "slangc failed with no stderr");
+            Assert.True(File.Exists(wgslPath), "WGSL path missing");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(temp, recursive: true);
+            }
+            catch
+            {
+                // ignored
+            }
         }
     }
 

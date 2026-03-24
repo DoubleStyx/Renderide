@@ -26,7 +26,7 @@ half4 BRDF_XSLighting(XSLighting i)
     d.tdh = dot(i.tangent, halfVector);
     d.bdh = dot(i.bitangent, halfVector);
     d.ndh = DotClamped(i.normal, halfVector);
-    d.rdv = saturate(dot(reflLight, float4(-viewDir, 0)));
+    d.rdv = saturate(dot(reflLight, -viewDir));
     d.ldh = DotClamped(lightDir, halfVector);
     d.svdn = abs(dot(stereoViewDir, i.normal));
     
@@ -56,7 +56,7 @@ half4 BRDF_XSLighting(XSLighting i)
 
     half4 col;
     col = diffuse * shadowRim;
-    calcReflectionBlending(i, col, indirectSpecular.xyzz);
+    calcReflectionBlending(i, col, indirectSpecular);
     col += max(directSpecular.xyzz, rimLight);
     col += subsurface;
 

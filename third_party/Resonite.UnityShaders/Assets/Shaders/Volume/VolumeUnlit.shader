@@ -1,4 +1,4 @@
-﻿Shader "Volume/Unlit"
+Shader "Volume/Unlit"
 {
 	Properties {
 		_Volume ("Volume", 3D) = "" {}
@@ -179,24 +179,28 @@
 			//UNITY_SETUP_INSTANCE_ID(i);
 			UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
 
-#if	   defined(HIGHLIGHT1)
+#if defined(HIGHLIGHT1)
 			const int HIGHLIGHT_ITERATIONS = 1;
-#elif  defined(HIGHLIGHT2)
+#elif defined(HIGHLIGHT2)
 			const int HIGHLIGHT_ITERATIONS = 2;
-#elif  defined(HIGHLIGHT3)
+#elif defined(HIGHLIGHT3)
 			const int HIGHLIGHT_ITERATIONS = 3;
-#elif  defined(HIGHLIGHT4)
+#elif defined(HIGHLIGHT4)
 			const int HIGHLIGHT_ITERATIONS = 4;
+#else
+			const int HIGHLIGHT_ITERATIONS = 0;
 #endif
 
-#if    defined(SLICE1)
-		const int SLICE_ITERATIONS = 1;
-#elif  defined(SLICE2)
-		const int SLICE_ITERATIONS = 2;
-#elif  defined(SLICE3)
-		const int SLICE_ITERATIONS = 3;
-#elif  defined(SLICE4)
-		const int SLICE_ITERATIONS = 4;
+#if defined(SLICE1)
+			const int SLICE_ITERATIONS = 1;
+#elif defined(SLICE2)
+			const int SLICE_ITERATIONS = 2;
+#elif defined(SLICE3)
+			const int SLICE_ITERATIONS = 3;
+#elif defined(SLICE4)
+			const int SLICE_ITERATIONS = 4;
+#else
+			const int SLICE_ITERATIONS = 0;
 #endif
 
 			half3 pos;
@@ -211,7 +215,7 @@
 			// compute the sample origin position
 			float3 camPos = mul(unity_WorldToObject, float4(_WorldSpaceCameraPos.xyz, 1)).xyz;
 
-			ndir = normalize(i.origin - camPos);
+			ndir = normalize(i.origin.xyz - camPos);
 
 			// check if the camera position is inside of the cube
 			if (all(abs(camPos) <= 0.5))
@@ -235,7 +239,7 @@
 			//pos += ndir * zdiff;
 
 			float3 start = pos;
-			float3 end = i.origin;
+			float3 end = i.origin.xyz;
 
 			float maxDist = distance(camPos, end);
 			end = camPos + ndir * maxDist * endRatio;
@@ -291,15 +295,15 @@
 				c = pow( rescale(c), _Exp) * gain;
 
 				#if !defined(SLICE0)
-				for (int i = 0; i < SLICE_ITERATIONS; i++)
-					if (surf_distance(pos, _SlicerNormal[i], _SlicerOffset[i]) < 0)
+				for (int sliceIdx = 0; sliceIdx < SLICE_ITERATIONS; sliceIdx++)
+					if (surf_distance(pos, _SlicerNormal[sliceIdx], _SlicerOffset[sliceIdx]) < 0)
 						c *= 0;
 				#endif
 
 				#ifndef HIGHLIGHT0
-				for (int i = 0; i < HIGHLIGHT_ITERATIONS; i++)
-					if (abs(surf_distance(pos, _HighlightNormal[i], _HighlightOffset[i])) < _HighlightRange[i])
-						c *= _HighlightColor[i];
+				for (int hi = 0; hi < HIGHLIGHT_ITERATIONS; hi++)
+					if (abs(surf_distance(pos, _HighlightNormal[hi], _HighlightOffset[hi])) < _HighlightRange[hi])
+						c *= _HighlightColor[hi];
 				#endif
 
 #if defined(ADDITIVE) || defined(ADDITIVE_CUTOFF)

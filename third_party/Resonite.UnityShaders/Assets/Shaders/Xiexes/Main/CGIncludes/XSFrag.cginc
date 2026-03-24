@@ -83,7 +83,7 @@ float4 frag (
     o.normal = i.ntb[0];
     o.tangent = i.ntb[1];
     o.bitangent = i.ntb[2];
-    o.worldPos = i.worldPos;
+    o.worldPos = half3(i.worldPos.xyz);
     o.color = i.color.rgb;
     o.isOutline = i.color.a;
     o.screenUV = calcScreenUVs(i.screenPos);

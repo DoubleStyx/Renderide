@@ -16,6 +16,9 @@ Properties {
 	_Distort ("Reflection Distort", Range(0, 2)) = 0
 
 	_ZTest("ZTest", Float) = 2
+
+	_OffsetFactor ("Offset Factor", Float) = 0.0
+	_OffsetUnits("Offset Units", Float) = 0.0
 }
 
 

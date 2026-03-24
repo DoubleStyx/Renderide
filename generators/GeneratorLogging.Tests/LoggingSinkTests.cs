@@ -52,6 +52,20 @@ public sealed class LoggingSinkTests
         }
     }
 
+    /// <summary><see cref="SuppressWarningsSink"/> must not forward <see cref="LogLevel.Warning"/> to the inner sink.</summary>
+    [Fact]
+    public void SuppressWarningsSink_drops_warning_forwards_other_levels()
+    {
+        var inner = new CollectingSink();
+        using var sink = new SuppressWarningsSink(inner);
+        sink.Log(LogLevel.Warning, "Cat", "noise");
+        sink.Log(LogLevel.Info, "Cat", "progress");
+        sink.Log(LogLevel.Error, "Cat", "boom");
+        Assert.Equal(2, inner.Lines.Count);
+        Assert.Equal("progress", inner.Lines[0]);
+        Assert.Equal("boom", inner.Lines[1]);
+    }
+
     private sealed class CollectingSink : ILoggerSink
     {
         public List<string> Lines { get; } = [];

@@ -67,7 +67,7 @@ half3 getVertexLightsDir(XSLighting i, half4 vertexLightAtten)
 // Get the most intense light Dir from probes OR from a light source. Method developed by Xiexe / Merlin
 half3 calcLightDir(XSLighting i, half4 vertexLightAtten)
 {   
-    half3 lightDir = UnityWorldSpaceLightDir(i.worldPos);
+    half3 lightDir = UnityWorldSpaceLightDir(float3(i.worldPos));
 
     half3 probeLightDir = unity_SHAr.xyz + unity_SHAg.xyz + unity_SHAb.xyz;
     lightDir = (lightDir + probeLightDir); //Make light dir the average of the probe direction and the light source direction.
@@ -80,7 +80,7 @@ half3 calcLightDir(XSLighting i, half4 vertexLightAtten)
     #if !defined(POINT) && !defined(SPOT) && !defined(VERTEXLIGHT_ON) // if the average length of the light probes is null, and we don't have a directional light in the scene, fall back to our fallback lightDir
         if(length(unity_SHAr.xyz*unity_SHAr.w + unity_SHAg.xyz*unity_SHAg.w + unity_SHAb.xyz*unity_SHAb.w) == 0 && length(lightDir) < 0.1)
         {
-            lightDir = half4(1, 1, 1, 0);
+            lightDir = half3(1, 1, 1);
         }
     #endif
 
@@ -126,17 +126,17 @@ half3 get4VertexLightsColFalloff(half3 worldPos, half3 normal, inout half4 verte
     half4 colorFalloff = smoothstep(-0.7, 1.3, atten);
     vertexLightAtten = atten;
 
-    half gs0 = dot(unity_LightColor[0], grayscaleVec);
-    half gs1 = dot(unity_LightColor[1], grayscaleVec);
-    half gs2 = dot(unity_LightColor[2], grayscaleVec);
-    half gs3 = dot(unity_LightColor[3], grayscaleVec);
+    half gs0 = dot(unity_LightColor[0].xyz, grayscaleVec);
+    half gs1 = dot(unity_LightColor[1].xyz, grayscaleVec);
+    half gs2 = dot(unity_LightColor[2].xyz, grayscaleVec);
+    half gs3 = dot(unity_LightColor[3].xyz, grayscaleVec);
     //This is lerping between a white color and the actual color of the light based on the falloff, that way with our lighting model
     //we don't end up with *very* red/green/blue lights. This is a stylistic choice and can be removed for other lighting models.
     //without it, it would just be "lightColor.rgb = unity_Lightcolor[i] * atten.x/y/z/w;"
-    lightColor.rgb += unity_LightColor[0]* atten.x; 
-    lightColor.rgb += unity_LightColor[1]* atten.y; 
-    lightColor.rgb += unity_LightColor[2]* atten.z; 
-    lightColor.rgb += unity_LightColor[3]* atten.w; 
+    lightColor.rgb += unity_LightColor[0].xyz * atten.x;
+    lightColor.rgb += unity_LightColor[1].xyz * atten.y;
+    lightColor.rgb += unity_LightColor[2].xyz * atten.z;
+    lightColor.rgb += unity_LightColor[3].xyz * atten.w; 
 
     return lightColor;
 }
@@ -200,7 +200,7 @@ half3 calcDirectSpecular(XSLighting i, DotProducts d, half4 lightCol, half3 indi
         half sndl = saturate(d.ndl);
         half roughness = 1-smoothness;
         half V = SmithJointGGXVisibilityTerm(sndl, d.vdn, roughness);
-        half F = F_Schlick(half3(0.0, 0.0, 0.0), d.ldh);
+        half F = F_Schlick(half3(0.0, 0.0, 0.0), d.ldh).x;
         half D = XSGGXTerm(d.ndh, roughness*roughness);
 
         half reflection = V * D * UNITY_PI;
@@ -209,7 +209,7 @@ half3 calcDirectSpecular(XSLighting i, DotProducts d, half4 lightCol, half3 indi
         //specular = lerp(smooth, sharp, _SpecularStyle);
 		specular = smooth;
     }
-    specular *= i.attenuation * lightCol;
+    specular *= i.attenuation * lightCol.rgb;
     half3 tintedAlbedoSpecular = specular * i.diffuseColor;
     specular = lerp(specular, tintedAlbedoSpecular, _SpecularAlbedoTint /** i.specularMap.g*/); // Should specular highlight be tinted based on the albedo of the object?
     return specular;
@@ -235,7 +235,7 @@ half3 calcIndirectSpecular(XSLighting i, DotProducts d, half4 metallicSmoothness
         //if(_ReflectionMode == 0) // PBR
         {
 #if defined(UNITY_PASS_FORWARDBASE) //Indirect PBR specular should only happen in the forward base pass. Otherwise each extra light adds another indirect sample, which could mean you're getting too much light. 
-            half3 reflectionUV1 = getReflectionUV(reflDir, i.worldPos, unity_SpecCube0_ProbePosition, unity_SpecCube0_BoxMin, unity_SpecCube0_BoxMax);
+            half3 reflectionUV1 = getReflectionUV(reflDir, i.worldPos, unity_SpecCube0_ProbePosition, half3(unity_SpecCube0_BoxMin.xyz), half3(unity_SpecCube0_BoxMax.xyz));
             half4 probe0 = UNITY_SAMPLE_TEXCUBE_LOD(unity_SpecCube0, reflectionUV1, metallicSmoothness.w * UNITY_SPECCUBE_LOD_STEPS);
             half3 probe0sample = DecodeHDR(probe0, unity_SpecCube0_HDR);
 
@@ -245,7 +245,7 @@ half3 calcIndirectSpecular(XSLighting i, DotProducts d, half4 metallicSmoothness
             UNITY_BRANCH
                 if (interpolator < 0.99999)
                 {
-                    half3 reflectionUV2 = getReflectionUV(reflDir, i.worldPos, unity_SpecCube1_ProbePosition, unity_SpecCube1_BoxMin, unity_SpecCube1_BoxMax);
+                    half3 reflectionUV2 = getReflectionUV(reflDir, i.worldPos, unity_SpecCube1_ProbePosition, half3(unity_SpecCube1_BoxMin.xyz), half3(unity_SpecCube1_BoxMax.xyz));
                     half4 probe1 = UNITY_SAMPLE_TEXCUBE_SAMPLER_LOD(unity_SpecCube1, unity_SpecCube0, reflectionUV2, metallicSmoothness.w * UNITY_SPECCUBE_LOD_STEPS);
                     half3 probe1sample = DecodeHDR(probe1, unity_SpecCube1_HDR);
                     indirectSpecular = lerp(probe1sample, probe0sample, interpolator);
@@ -282,7 +282,7 @@ half3 calcIndirectSpecular(XSLighting i, DotProducts d, half4 metallicSmoothness
         //}
         
 
-    spec = lerp(spec, spec * ramp, metallicSmoothness.w); // should only not see shadows on a perfect mirror.
+    spec = lerp(spec, spec * ramp.rgb, metallicSmoothness.w); // should only not see shadows on a perfect mirror.
 
     return spec;
 }
@@ -368,7 +368,7 @@ half4 calcSubsurfaceScattering(XSLighting i, DotProducts d, half3 lightDir, half
         half attenuation = saturate(i.attenuation * (d.ndl * 0.5 + 0.5));
         half3 H = normalize(lightDir + normal * _SSDistortion);
         half VdotH = pow(saturate(dot(viewDir, -H)), _SSPower);
-        half3 I = _SSColor * (VdotH + indirectDiffuse) * attenuation * _SSScale;
+        half3 I = _SSColor.rgb * (indirectDiffuse + half3(VdotH, VdotH, VdotH)) * attenuation * _SSScale;
 
 #ifdef THICKNESS_MAP
 		I *= i.thickness;
@@ -409,7 +409,7 @@ half4 calcEmission(XSLighting i, half lightAvg)
 void calcReflectionBlending(XSLighting i, inout half4 col, half3 indirectSpecular)
 {
     //if(_ReflectionBlendMode == 0) // Additive
-        col += indirectSpecular.xyzz /* * i.reflectivityMask.r*/;
+        col += half4(indirectSpecular.xyz, indirectSpecular.z) /* * i.reflectivityMask.r*/;
     //else if(_ReflectionBlendMode == 1) //Multiplicitive
     //    col = lerp(col, col * indirectSpecular.xyzz, i.reflectivityMask.r);
     //else if(_ReflectionBlendMode == 2) //Subtractive

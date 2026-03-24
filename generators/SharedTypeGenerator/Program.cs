@@ -45,9 +45,9 @@ Parser.Default.ParseArguments<GeneratorOptions>(args)
                 : Path.Combine(RenderidePathResolver.FallbackRenderideRootFromCwd(), "logs");
             Directory.CreateDirectory(logsDirectory);
             string logFilePath = Path.Combine(logsDirectory, "SharedTypeGenerator.log");
-            using var deferSink = new DeferringIssueSink(new TruncatingFileSink(logFilePath));
+            using var logSink = new SuppressWarningsSink(new TruncatingFileSink(logFilePath));
             using var logger = new Logger(
-                new[] { deferSink },
+                new[] { logSink },
                 new LoggerConfiguration
                 {
                     Behaviour = new DirectLoggingBehaviour(),

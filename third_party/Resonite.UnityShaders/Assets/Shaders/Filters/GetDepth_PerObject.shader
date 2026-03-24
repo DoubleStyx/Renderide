@@ -102,7 +102,7 @@ Shader "Filters/Get Depth_PerObject"
 				// use UnityObjectToClipPos from UnityCG.cginc to calculate 
 				// the clip-space of the vertex
 				o.pos = UnityObjectToClipPos(v.vertex);
-				o.uv = v.texcoord;
+				o.uv = v.texcoord.xy;
 
 				// use ComputeGrabScreenPos function from UnityCG.cginc
 				// to get the correct texture coordinate

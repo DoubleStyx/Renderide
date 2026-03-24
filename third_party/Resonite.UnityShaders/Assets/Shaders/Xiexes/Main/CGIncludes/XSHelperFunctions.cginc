@@ -104,7 +104,7 @@ half calcDither(half2 screenPos)
 
 half2 calcScreenUVs(half4 screenPos)
 {
-    half2 uv = screenPos / (screenPos.w + 0.0000000001); //0.0x1 Stops division by 0 warning in console.
+    half2 uv = screenPos.xy / (screenPos.w + 0.0000000001); //0.0x1 Stops division by 0 warning in console.
     #if UNITY_SINGLE_PASS_STEREO
         uv.xy *= half2(_ScreenParams.x * 2, _ScreenParams.y);	
     #else
@@ -145,7 +145,7 @@ half3 getReflectionUV(half3 direction, half3 position, half4 cubemapPosition, ha
         if (cubemapPosition.w > 0) {
             half3 factors = ((direction > 0 ? boxMax : boxMin) - position) / direction;
             half scalar = min(min(factors.x, factors.y), factors.z);
-            direction = direction * scalar + (position - cubemapPosition);
+            direction = direction * scalar + (position - cubemapPosition.xyz);
         }
     #endif
     return direction;
@@ -156,7 +156,7 @@ half3 getEnvMap(XSLighting i, DotProducts d, float blur, half3 reflDir, half3 in
     half3 envMap = half3(0,0,0);
 
     #if defined(UNITY_PASS_FORWARDBASE) //Indirect PBR specular should only happen in the forward base pass. Otherwise each extra light adds another indirect sample, which could mean you're getting too much light. 
-        half3 reflectionUV1 = getReflectionUV(reflDir, i.worldPos, unity_SpecCube0_ProbePosition, unity_SpecCube0_BoxMin, unity_SpecCube0_BoxMax);
+        half3 reflectionUV1 = getReflectionUV(reflDir, i.worldPos, unity_SpecCube0_ProbePosition, half3(unity_SpecCube0_BoxMin.xyz), half3(unity_SpecCube0_BoxMax.xyz));
         half4 probe0 = UNITY_SAMPLE_TEXCUBE_LOD(unity_SpecCube0, reflectionUV1, blur);
         half3 probe0sample = DecodeHDR(probe0, unity_SpecCube0_HDR);
 
@@ -166,7 +166,7 @@ half3 getEnvMap(XSLighting i, DotProducts d, float blur, half3 reflDir, half3 in
         UNITY_BRANCH
         if (interpolator < 0.99999) 
         {
-            half3 reflectionUV2 = getReflectionUV(reflDir, i.worldPos, unity_SpecCube1_ProbePosition, unity_SpecCube1_BoxMin, unity_SpecCube1_BoxMax);
+            half3 reflectionUV2 = getReflectionUV(reflDir, i.worldPos, unity_SpecCube1_ProbePosition, half3(unity_SpecCube1_BoxMin.xyz), half3(unity_SpecCube1_BoxMax.xyz));
             half4 probe1 = UNITY_SAMPLE_TEXCUBE_SAMPLER_LOD(unity_SpecCube1, unity_SpecCube0, reflectionUV2, blur);
             half3 probe1sample = DecodeHDR(probe1, unity_SpecCube1_HDR);
             indirectSpecular = lerp(probe1sample, probe0sample, interpolator);

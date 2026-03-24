@@ -12,8 +12,22 @@ public sealed class CompilerConfigModel
     /// <summary>
     /// Glob patterns excluding shaders from <see cref="SlangEligibleGlobPatterns"/> even when they match (parser failures, geometry-only assets, etc.).
     /// </summary>
+    /// <remarks>
+    /// Shaders matching here still go through the rest of generation unless they also match <see cref="ShaderGenerationExcludeGlobPatterns"/>:
+    /// without <c>--skip-slang</c>, the converter expects existing WGSL on disk for each pass (see converter runner pass loop).
+    /// </remarks>
     [JsonPropertyName("slangExcludeGlobPatterns")]
     public List<string> SlangExcludeGlobPatterns { get; set; } = new();
+
+    /// <summary>
+    /// Glob patterns (relative to Renderide root) for <c>.shader</c> files that skip WGSL/Rust emission entirely (no failures, no output folder).
+    /// </summary>
+    /// <remarks>
+    /// Use for asset families that are out of scope (e.g. experimental fur stacks) without removing them from shared input trees.
+    /// This differs from <see cref="SlangExcludeGlobPatterns"/>, which only disables <c>slangc</c> while still requiring WGSL files.
+    /// </remarks>
+    [JsonPropertyName("shaderGenerationExcludeGlobPatterns")]
+    public List<string> ShaderGenerationExcludeGlobPatterns { get; set; } = new();
 
     /// <summary>Maximum Cartesian variant count per shader before the converter fails.</summary>
     [JsonPropertyName("maxVariantCombinationsPerShader")]
@@ -28,8 +42,9 @@ public sealed class CompilerConfigModel
     public int MaxSpecializationConstants { get; set; } = 8;
 
     /// <summary>
-    /// When true, passes <c>-warnings-disable</c> for common noisy Slang diagnostics (including implicit global shader parameters,
-    /// <c>39019</c>) and strips <c>warning[E…]</c> lines from logged <c>slangc</c> stderr; errors are never stripped.
+    /// When true, passes <c>-warnings-disable</c> for common noisy Slang diagnostics (including implicit global shader parameters
+    /// <c>39019</c> and unreachable-code <c>41000</c> in Unity shadow helpers) and strips <c>warning[E…]</c> lines from logged
+    /// <c>slangc</c> stderr; errors are never stripped.
     /// </summary>
     [JsonPropertyName("suppressSlangWarnings")]
     public bool SuppressSlangWarnings { get; set; } = true;

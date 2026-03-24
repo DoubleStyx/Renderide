@@ -71,4 +71,33 @@ public sealed class ConfigLoaderTests
             }
         }
     }
+
+    /// <summary><c>shaderGenerationExcludeGlobPatterns</c> in user JSON replaces the default list when provided.</summary>
+    [Fact]
+    public void MergeCompilerConfig_ShaderGenerationExcludeGlobPatterns_OverridesDefaults()
+    {
+        var defaults = new CompilerConfigModel
+        {
+            ShaderGenerationExcludeGlobPatterns = new List<string>(),
+        };
+        string tmp = Path.Combine(Path.GetTempPath(), "usc_cfg_genex_" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            File.WriteAllText(tmp, "{\"shaderGenerationExcludeGlobPatterns\":[\"**/Legacy/**/*.shader\"]}");
+            CompilerConfigModel merged = ConfigLoader.MergeCompilerConfig(defaults, tmp);
+            Assert.Single(merged.ShaderGenerationExcludeGlobPatterns);
+            Assert.Equal("**/Legacy/**/*.shader", merged.ShaderGenerationExcludeGlobPatterns[0]);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(tmp);
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+    }
 }

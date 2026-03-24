@@ -1,0 +1,17 @@
+<Project>
+  <!--
+    Slang resolves quoted includes relative to the including file before global -I paths.
+    Stock UnityStandardCore.cginc calls VertexGIForward(v, posWorld, normalWorld) with float4 posWorld;
+    Slang errors (E30019) because VertexGIForward expects float3. runtime_slang copies use posWorld.xyz.
+    Copy those patched files over the bundled UnityBuiltinCGIncludes tree after output copy.
+    Set UnityStandardCoreOverlaySourceDir in the importing project (runtime_slang root).
+  -->
+  <Target Name="OverlaySlangPatchedUnityStandardCoreIncludes" AfterTargets="CopyFilesToOutputDirectory">
+    <Copy SourceFiles="$(UnityStandardCoreOverlaySourceDir)\UnityStandardCore.cginc"
+          DestinationFiles="$(TargetDir)UnityBuiltinCGIncludes\UnityStandardCore.cginc"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(UnityStandardCoreOverlaySourceDir)\UnityStandardCoreForwardSimple.cginc"
+          DestinationFiles="$(TargetDir)UnityBuiltinCGIncludes\UnityStandardCoreForwardSimple.cginc"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>

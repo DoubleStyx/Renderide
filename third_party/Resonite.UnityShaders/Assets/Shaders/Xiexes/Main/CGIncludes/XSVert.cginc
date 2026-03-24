@@ -22,7 +22,7 @@ VertexOutput vert (VertexInput v)
     o.color = float4(v.color.rgb, 0); // store if outline in alpha channel of vertex colors | 0 = not an outline
     o.normal = v.normal;
     o.screenPos = ComputeScreenPos(o.pos);
-    o.objPos = normalize(v.vertex);
+    o.objPos = normalize(v.vertex.xyz);
     UNITY_TRANSFER_SHADOW(o, o.uv);
     UNITY_TRANSFER_FOG(o, o.pos);
     return o;

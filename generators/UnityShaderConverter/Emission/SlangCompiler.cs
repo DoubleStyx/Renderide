@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -11,8 +12,11 @@ namespace UnityShaderConverter.Emission;
 /// <remarks>
 /// Global Unity platform and sampling shims live in <c>runtime_slang/UnityCompat.slang</c> and
 /// <c>runtime_slang/UnityCompatPostUnity.slang</c> (included by <see cref="SlangEmitter"/>), not in duplicate <c>-D</c> flags here.
-    /// Slang <c>error[E00004]: cannot write output file</c> often follows unresolved diagnostics (e.g. warning <c>39019</c> when not
-    /// listed in <c>-warnings-disable</c>); it can also indicate a truly unwritable output path, read-only tree, or concurrent writers.
+/// Slang <c>error[E00004]: cannot write output file</c> often follows unresolved diagnostics (e.g. warning <c>39019</c> when not
+/// listed in <c>-warnings-disable</c>); it can also indicate a truly unwritable output path, read-only tree, or concurrent writers.
+/// When the combined WGSL compile step fails but per-stage merge succeeds, intermediate diagnostics are logged at
+/// <see cref="LogLevel.Trace"/> only. Final <c>slangc</c> failures are logged at <see cref="LogLevel.Error"/> with full stderr
+/// by the shader converter runner regardless of verbose mode.
 /// </remarks>
 public sealed class SlangCompiler
 {
@@ -21,6 +25,8 @@ public sealed class SlangCompiler
     /// 30056 covers deprecated non-short-circuiting <c>?:</c> in vendored Unity <c>.cginc</c> files.
     /// 39019 is <c>implicit global shader parameter</c> for legacy <c>half4 _Foo;</c> uniforms; when enabled as a warning, Slang
     /// fails WGSL emission with <c>error[E00004]: cannot write output file</c> even though the message suggests adding <c>uniform</c>.
+    /// 41000 is <c>unreachable-code</c> in <c>UnityShadowLibrary.cginc</c> (deferred + combined WGSL) where Unity’s preprocessor layout
+    /// leaves a final <c>return</c> Slang marks unreachable for some keyword combinations.
     /// </remarks>
     private static readonly string[] DefaultDisabledSlangWarningIds =
     {
@@ -30,6 +36,7 @@ public sealed class SlangCompiler
         "30081",
         "30056",
         "39019",
+        "41000",
     };
 
     private readonly string _slangcExecutable;
@@ -65,7 +72,7 @@ public sealed class SlangCompiler
         return sb.ToString().TrimEnd();
     }
 
-    /// <summary>Returns the first non-empty line of Slang stderr (or stdout), truncated for user-facing summaries.</summary>
+    /// <summary>Returns the first non-empty line of Slang stderr (or stdout), truncated for short digests (not for primary error reporting).</summary>
     public static string FormatSlangStderrSummary(string? stderr, int maxLength = 400)
     {
         if (string.IsNullOrWhiteSpace(stderr))
@@ -81,8 +88,9 @@ public sealed class SlangCompiler
     }
 
     /// <summary>
-    /// Produces a single line for <see cref="LogLevel.Info"/> when combined WGSL compile fails: the first Slang
-    /// <c>error[E…]</c> line after <see cref="FilterSlangDiagnosticsForErrorsOnly"/>, otherwise a short summary of the remaining text.
+    /// Produces a single line for <see cref="LogLevel.Trace"/> when combined WGSL compile fails: a Slang
+    /// <c>error[E…]</c> line after <see cref="FilterSlangDiagnosticsForErrorsOnly"/>, preferring a non-<c>E00004</c>
+    /// error when present (Slang often reports <c>error[E00004]: cannot write output file</c> after a root type error).
     /// </summary>
     public static string FormatSlangStderrErrorDigest(string? stderr, int maxLength = 320)
     {
@@ -92,17 +100,34 @@ public sealed class SlangCompiler
         string withoutWarnings = FilterSlangDiagnosticsForErrorsOnly(stderr);
         string source = string.IsNullOrWhiteSpace(withoutWarnings) ? stderr.Trim() : withoutWarnings;
 
+        var errorLines = new List<string>();
         foreach (string line in source.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
         {
             string t = line.Trim();
             if (t.Length == 0)
                 continue;
             if (t.Contains("error[", StringComparison.OrdinalIgnoreCase))
-            {
-                if (t.Length > maxLength)
-                    return string.Concat(t.AsSpan(0, maxLength), "…");
-                return t;
-            }
+                errorLines.Add(t);
+        }
+
+        static bool IsCannotWriteOutputFileError(string line) =>
+            line.Contains("error[E00004]", StringComparison.OrdinalIgnoreCase) &&
+            line.Contains("cannot write output file", StringComparison.OrdinalIgnoreCase);
+
+        foreach (string t in errorLines)
+        {
+            if (IsCannotWriteOutputFileError(t))
+                continue;
+            if (t.Length > maxLength)
+                return string.Concat(t.AsSpan(0, maxLength), "…");
+            return t;
+        }
+
+        foreach (string t in errorLines)
+        {
+            if (t.Length > maxLength)
+                return string.Concat(t.AsSpan(0, maxLength), "…");
+            return t;
         }
 
         return $"Slang: {FormatSlangStderrSummary(source, maxLength)}";
@@ -249,9 +274,9 @@ public sealed class SlangCompiler
 
         string policyStderr = ApplySlangStderrPolicy(errSingleRaw);
         string errorDigest = FormatSlangStderrErrorDigest(policyStderr);
-        _logger.LogInfo(
+        _logger.LogTrace(
             LogCategory.SlangCompile,
-            $"Combined WGSL compile failed; trying per-stage merge. {errorDigest} (full stderr at trace).");
+            $"Combined WGSL compile failed; trying per-stage merge. {errorDigest} (full stderr below).");
         _logger.LogTrace(
             LogCategory.SlangCompile,
             $"Combined WGSL compile stderr: {policyStderr}");

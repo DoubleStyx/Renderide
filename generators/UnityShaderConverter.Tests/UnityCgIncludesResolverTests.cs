@@ -41,4 +41,18 @@ public sealed class UnityCgIncludesResolverTests
             Assert.True(File.Exists(Path.Combine(d, "UnityCG.cginc")));
         }
     }
+
+    /// <summary>
+    /// Bundled <c>UnityStandardCore.cginc</c> must pass <c>posWorld.xyz</c> into <c>VertexGIForward</c>: Slang rejects implicit <c>float4</c> to <c>float3</c>, and nested quoted includes load this tree before <c>runtime_slang</c>.
+    /// </summary>
+    [Fact]
+    public void BundledUnityStandardCore_VertexGIForwardUsesFloat3WorldPosition()
+    {
+        string? bundled = UnityCgIncludesResolver.TryBundledDirectory();
+        Assert.NotNull(bundled);
+        string path = Path.Combine(bundled, "UnityStandardCore.cginc");
+        Assert.True(File.Exists(path));
+        string text = File.ReadAllText(path);
+        Assert.Contains("VertexGIForward(v, posWorld.xyz, normalWorld)", text, StringComparison.Ordinal);
+    }
 }

@@ -44,6 +44,21 @@ typedef float fixed;
 #define SV_Target SV_Target0
 
 // -----------------------------------------------------------------------------
+// HLSL math: Unity / DXC allow dot(vectorN, vectorM) when the second vector is wider (implicit .xyz).
+// Slang is stricter; these overloads match common Unity / Resonite shader patterns (e.g. FurFX).
+// -----------------------------------------------------------------------------
+
+float dot(float3 a, float4 b)
+{
+    return dot(a, b.xyz);
+}
+
+half dot(half3 a, half4 b)
+{
+    return dot(a, b.xyz);
+}
+
+// -----------------------------------------------------------------------------
 // Legacy sampler type names (Cg-era signatures in UnityCG.cginc / Resonite Common.cginc).
 // Unity’s DX11 path uses Texture2D + SamplerState; these aliases keep old parameter types valid.
 // -----------------------------------------------------------------------------

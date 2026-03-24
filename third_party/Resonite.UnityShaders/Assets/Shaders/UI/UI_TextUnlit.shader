@@ -1,4 +1,4 @@
-﻿Shader "UI/Text/Unlit"
+Shader "UI/Text/Unlit"
 {
     Properties
     {
@@ -164,6 +164,8 @@
 				//UNITY_SETUP_INSTANCE_ID(i);
 				UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
 
+				float4 c = float4(0, 0, 0, 0);
+
 #ifdef RECTCLIP
 				clip(UnityGet2DClipping(i.position, _Rect) - 0.1);
 #endif
@@ -200,12 +202,9 @@
 				fillColor = lerp(_OutlineColor * float4(1,1,1,i.color.a), fillColor, outlineLerp);
 #endif
 
-				float4 c = lerp(_BackgroundColor * i.color, fillColor, glyphLerp);
-#endif
-
-#ifdef RASTER
-				float4 c = atlasColor * i.color;
-
+				c = lerp(_BackgroundColor * i.color, fillColor, glyphLerp);
+#elif defined(RASTER)
+				c = atlasColor * i.color;
 				clip(c.a - 0.001);
 #endif
 

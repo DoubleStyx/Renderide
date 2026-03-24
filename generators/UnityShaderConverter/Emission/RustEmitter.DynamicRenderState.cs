@@ -276,7 +276,7 @@ public static partial class RustEmitter
     private static string EmitDynamicPrimitiveStateBody(PassFixedFunctionState s)
     {
         string cullFace = s.CullReferencesProperty && !string.IsNullOrEmpty(s.CullPropertyUniformName)
-            ? $"Self::unity_cull_to_face(material.{RustFieldName(s.CullPropertyUniformName)})"
+            ? $"Material::unity_cull_to_face(material.{RustFieldName(s.CullPropertyUniformName)})"
             : (s.CullMode ?? CullMode.Back) switch
             {
                 CullMode.Off => "None",
@@ -303,7 +303,7 @@ public static partial class RustEmitter
     {
         string depthCmpExpr;
         if (s.DepthTestReferencesProperty && !string.IsNullOrEmpty(s.DepthTestPropertyUniformName))
-            depthCmpExpr = $"Self::unity_compare_to_wgpu(material.{RustFieldName(s.DepthTestPropertyUniformName)})";
+            depthCmpExpr = $"Material::unity_compare_to_wgpu(material.{RustFieldName(s.DepthTestPropertyUniformName)})";
         else
         {
             ComparisonMode m = s.DepthTest ?? ComparisonMode.LEqual;
@@ -326,9 +326,9 @@ public static partial class RustEmitter
             string units = !string.IsNullOrEmpty(s.DepthBiasUnitsPropertyUniformName)
                 ? $"material.{RustFieldName(s.DepthBiasUnitsPropertyUniformName)}.round() as i32"
                 : "0";
-            string factor = !string.IsNullOrEmpty(s.DepthBiasFactorPropertyUniformName)
+            string slopeScale = !string.IsNullOrEmpty(s.DepthBiasFactorPropertyUniformName)
                 ? $"material.{RustFieldName(s.DepthBiasFactorPropertyUniformName)}"
-                : "0.0";
+                : "0.0_f32";
             return $@"    let depth_compare = {depthCmpExpr};
     let depth_write = {depthWriteExpr};
     wgpu::DepthStencilState {{
@@ -338,7 +338,7 @@ public static partial class RustEmitter
         stencil: {EmitDynamicStencilExpr(s)},
         bias: wgpu::DepthBiasState {{
             constant: {units},
-            slope_scale: {factor}f32,
+            slope_scale: {slopeScale},
             clamp: 0.0,
         }},
     }}";
@@ -391,10 +391,10 @@ public static partial class RustEmitter
             ? $"material.{RustFieldName(s.StencilWriteMaskPropertyUniformName)}.round() as u32"
             : "255u32";
         string comp = !string.IsNullOrEmpty(s.StencilCompPropertyUniformName)
-            ? $"Self::unity_compare_to_wgpu(material.{RustFieldName(s.StencilCompPropertyUniformName)})"
+            ? $"Material::unity_compare_to_wgpu(material.{RustFieldName(s.StencilCompPropertyUniformName)})"
             : "wgpu::CompareFunction::Always";
         string passOp = !string.IsNullOrEmpty(s.StencilPassPropertyUniformName)
-            ? $"Self::unity_stencil_op_to_wgpu(material.{RustFieldName(s.StencilPassPropertyUniformName)})"
+            ? $"Material::unity_stencil_op_to_wgpu(material.{RustFieldName(s.StencilPassPropertyUniformName)})"
             : "wgpu::StencilOperation::Keep";
 
         return $@"wgpu::StencilState {{
@@ -420,7 +420,7 @@ public static partial class RustEmitter
         PassBlendStateRt0? b = s.BlendRt0;
         string maskExpr;
         if (s.ColorMaskReferencesProperty && !string.IsNullOrEmpty(s.ColorMaskPropertyUniformName))
-            maskExpr = $"Self::unity_color_mask_bits(material.{RustFieldName(s.ColorMaskPropertyUniformName)})";
+            maskExpr = $"Material::unity_color_mask_bits(material.{RustFieldName(s.ColorMaskPropertyUniformName)})";
         else
             maskExpr = EmitStaticColorWritesInner(s);
 
@@ -432,16 +432,16 @@ public static partial class RustEmitter
         if (b.HasPropertyReference)
         {
             string srcRgb = !string.IsNullOrEmpty(b.SrcRgbPropertyUniformName)
-                ? $"Self::unity_blend_to_wgpu(material.{RustFieldName(b.SrcRgbPropertyUniformName)})"
+                ? $"Material::unity_blend_to_wgpu(material.{RustFieldName(b.SrcRgbPropertyUniformName)})"
                 : "wgpu::BlendFactor::SrcAlpha";
             string dstRgb = !string.IsNullOrEmpty(b.DstRgbPropertyUniformName)
-                ? $"Self::unity_blend_to_wgpu(material.{RustFieldName(b.DstRgbPropertyUniformName)})"
+                ? $"Material::unity_blend_to_wgpu(material.{RustFieldName(b.DstRgbPropertyUniformName)})"
                 : "wgpu::BlendFactor::OneMinusSrcAlpha";
             string srcA = !string.IsNullOrEmpty(b.SrcAlphaPropertyUniformName)
-                ? $"Self::unity_blend_to_wgpu(material.{RustFieldName(b.SrcAlphaPropertyUniformName)})"
+                ? $"Material::unity_blend_to_wgpu(material.{RustFieldName(b.SrcAlphaPropertyUniformName)})"
                 : "wgpu::BlendFactor::One";
             string dstA = !string.IsNullOrEmpty(b.DstAlphaPropertyUniformName)
-                ? $"Self::unity_blend_to_wgpu(material.{RustFieldName(b.DstAlphaPropertyUniformName)})"
+                ? $"Material::unity_blend_to_wgpu(material.{RustFieldName(b.DstAlphaPropertyUniformName)})"
                 : "wgpu::BlendFactor::OneMinusSrcAlpha";
             return $@"Some(wgpu::ColorTargetState {{
                 format: {surfaceFormatIdent},

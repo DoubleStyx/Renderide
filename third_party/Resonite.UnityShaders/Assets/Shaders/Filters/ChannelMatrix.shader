@@ -1,4 +1,4 @@
-﻿Shader "Filters/ChannelMatrix"
+Shader "Filters/ChannelMatrix"
 {
 	Properties
 	{
@@ -105,7 +105,7 @@
 				// use UnityObjectToClipPos from UnityCG.cginc to calculate 
 				// the clip-space of the vertex
 				o.pos = UnityObjectToClipPos(v.vertex);
-				o.uv = v.texcoord;
+				o.uv = v.texcoord.xy;
 
 				// use ComputeGrabScreenPos function from UnityCG.cginc
 				// to get the correct texture coordinate
@@ -132,8 +132,8 @@
 
 				c.rgb = mul(float3x3(_LevelsR.xyz, _LevelsG.xyz, _LevelsB.xyz), c.rgb) + float3(_LevelsR.w, _LevelsG.w, _LevelsB.w);
 
-				c.rgb = max(_ClampMin, c.rgb);
-				c.rgb = min(_ClampMax, c.rgb);
+				c.rgb = max(_ClampMin.xyz, (float3)c.rgb);
+				c.rgb = min(_ClampMax.xyz, (float3)c.rgb);
 
 				return c;
 			}

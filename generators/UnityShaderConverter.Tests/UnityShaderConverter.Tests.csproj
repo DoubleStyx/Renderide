@@ -38,4 +38,9 @@
     </None>
   </ItemGroup>
 
+  <PropertyGroup>
+    <UnityStandardCoreOverlaySourceDir>$(MSBuildProjectDirectory)\..\UnityShaderConverter\runtime_slang</UnityStandardCoreOverlaySourceDir>
+  </PropertyGroup>
+  <Import Project="..\UnityShaderConverter\UnityBuiltinIncludesOverlay.targets" />
+
 </Project>

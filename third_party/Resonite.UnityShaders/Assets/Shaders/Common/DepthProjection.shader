@@ -1,4 +1,4 @@
-﻿Shader "DepthProjection"
+Shader "DepthProjection"
 {
 	Properties
 	{
@@ -85,7 +85,7 @@
 	{
 #ifdef DEPTH_GRAYSCALE
 		return 1 - tex2Dlod(_DepthTex, float4(TRANSFORM_TEX(uv, _DepthTex), 0, 0)).x;
-#elif DEPTH_HUE
+#elif defined(DEPTH_HUE)
 		float3 c = tex2Dlod(_DepthTex, float4(TRANSFORM_TEX(uv, _DepthTex), 0, 0)).xyz;
 
 		// convert from rgb to normalized hue, assumed full saturation
@@ -100,6 +100,8 @@
 		if (cmax == c.g)
 			return ((c.b - c.r) / delta + 2) / 6.0;
 		return ((c.r - c.g) / delta + 4) / 6.0;
+#else
+		return 0.0;
 #endif
 	}
 

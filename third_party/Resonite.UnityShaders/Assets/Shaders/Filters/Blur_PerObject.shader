@@ -127,7 +127,7 @@ Shader "Filters/Blur_PerObject"
 			// use UnityObjectToClipPos from UnityCG.cginc to calculate 
 			// the clip-space of the vertex
 			o.pos = UnityObjectToClipPos(v.vertex);
-			o.uv = v.texcoord;
+			o.uv = v.texcoord.xy;
 
 #if defined(REFRACT) || defined(REFRACT_NORMALMAP)
 			o.normal = UnityObjectToWorldNormal(v.normal);

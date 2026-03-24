@@ -1,4 +1,4 @@
-﻿// Upgrade NOTE: replaced 'mul(UNITY_MATRIX_MVP,*)' with 'UnityObjectToClipPos(*)'
+// Upgrade NOTE: replaced 'mul(UNITY_MATRIX_MVP,*)' with 'UnityObjectToClipPos(*)'
 
 Shader "GradientSkybox"
 {
@@ -46,14 +46,14 @@ Shader "GradientSkybox"
 			{
 				v2f OUT;
 				OUT.pos = UnityObjectToClipPos(v.vertex);
-				OUT.vertex = v.vertex;
+				OUT.vertex = v.vertex.xyz;
 
 				return OUT;
 			}
 			
 			half4 frag (v2f IN) : SV_Target
 			{
-				half3 col = _BaseColor;
+				half3 col = _BaseColor.rgb;
 				float3 ray = normalize(mul((float3x3)unity_ObjectToWorld, IN.vertex));
 
 #if !defined(SHADER_API_D3D11_9X)

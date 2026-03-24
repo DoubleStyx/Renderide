@@ -5,6 +5,7 @@
   "slangExcludeGlobPatterns": [
     "**/Nosamplers.shader"
   ],
+  "shaderGenerationExcludeGlobPatterns": [],
   "maxVariantCombinationsPerShader": 512,
   "enableSlangSpecialization": true,
   "maxSpecializationConstants": 8,

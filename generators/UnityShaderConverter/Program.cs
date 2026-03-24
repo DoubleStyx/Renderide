@@ -27,9 +27,9 @@ internal static class Program
         string logsDirectory = Path.Combine(renderideRoot, "logs");
         Directory.CreateDirectory(logsDirectory);
         string logFilePath = Path.Combine(logsDirectory, "UnityShaderConverter.log");
-        using var deferSink = new DeferringIssueSink(new TruncatingFileSink(logFilePath));
+        using var logSink = new SuppressWarningsSink(new TruncatingFileSink(logFilePath));
         using var logger = new Logger(
-            new[] { deferSink },
+            new[] { logSink },
             new LoggerConfiguration
             {
                 Behaviour = new DirectLoggingBehaviour(),

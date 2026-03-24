@@ -6,10 +6,14 @@ using UnityShaderConverter.Variants;
 
 namespace UnityShaderConverter.Emission;
 
-/// <summary>Emits a single <c>.slang</c> translation unit for one pass.</summary>
+/// <summary>
+/// Emits a single <c>.slang</c> translation unit for one pass. Handles Unity compat includes, <c>#pragma</c> stripping,
+/// optional specialization keyword rewriting, legacy <c>sampler*</c> declaration normalization, and pass-through of program text.
+/// HLSL strictness fixes that depend on specific shader code belong in source <c>.shader</c> / <c>.cginc</c> files, not here.
+/// </summary>
 public static class SlangEmitter
 {
-    /// <summary>Name of the include inserted after the shader’s initial <c>#include</c> block to fix Slang token pasting for <c>sampler##_Tex</c> (see file comments).</summary>
+    /// <summary>Name of the include inserted after the shader’s leading <c>#include</c> block to fix Slang token pasting for <c>sampler##_Tex</c> (see file comments).</summary>
     internal const string UnityCompatPostUnityIncludeFileName = "UnityCompatPostUnity.slang";
 
     private static readonly Regex LegacySampler2DDeclRegex = new(
@@ -25,14 +29,6 @@ public static class SlangEmitter
     private static readonly Regex LegacySamplerCubeDeclRegex = new(
         @"^(?<indent>\s*)samplerCUBE\s+(?<name>_[A-Za-z0-9]+|[A-Za-z][A-Za-z0-9]*)\s*;\s*$",
         RegexOptions.Multiline | RegexOptions.CultureInvariant,
-        TimeSpan.FromSeconds(1));
-
-    /// <summary>
-    /// <c>appdata_full.texcoord</c> is often <c>float4</c> while <c>v2f.uv</c> is <c>float2</c>; Slang rejects the assignment without a swizzle.
-    /// </summary>
-    private static readonly Regex Float4TexcoordToUvRegex = new(
-        @"(\w+)\.uv\s*=\s*(\w+)\.texcoord(?!\s*\.\s*xy)\s*;",
-        RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(1));
 
     /// <summary>
@@ -71,7 +67,6 @@ public static class SlangEmitter
         programBody = RewriteLegacySampler2DDeclarations(programBody);
         programBody = RewriteLegacySampler3DDeclarations(programBody);
         programBody = RewriteLegacySamplerCubeDeclarations(programBody);
-        programBody = RewriteFloat4TexcoordUvAssignments(programBody);
 
         foreach (string line in programBody.Split('\n'))
         {
@@ -119,14 +114,6 @@ public static class SlangEmitter
         LegacySamplerCubeDeclRegex.Replace(
             programBody,
             m => $"{m.Groups["indent"].Value}UNITY_DECLARE_TEXCUBE({m.Groups["name"].Value});");
-
-    /// <summary>
-    /// Rewrites <c>o.uv = v.texcoord;</c>-style assignments so the RHS uses <c>.xy</c> when not already swizzled.
-    /// </summary>
-    internal static string RewriteFloat4TexcoordUvAssignments(string programBody) =>
-        Float4TexcoordToUvRegex.Replace(
-            programBody,
-            m => $"{m.Groups[1].Value}.uv = {m.Groups[2].Value}.texcoord.xy;");
 
     private static string StripCompilerDirectivesToString(string program)
     {

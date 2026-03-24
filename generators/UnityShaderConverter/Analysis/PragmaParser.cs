@@ -54,7 +54,8 @@ public static partial class PragmaParser
     private static partial Regex ShaderTargetRegex();
 
     /// <summary>
-    /// True when the program contains <c>#pragma surface</c>; used to skip entire shaders from conversion.
+    /// True when <paramref name="program"/> contains a line <c>#pragma surface …</c> (full shader source or a single CGPROGRAM body).
+    /// Used to skip entire shaders from conversion before expensive ShaderLab parsing.
     /// </summary>
     public static bool HasSurfacePragma(string program) => SurfacePragmaRegex().IsMatch(program);
 

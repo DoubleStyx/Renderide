@@ -109,7 +109,7 @@ Shader "Filters/Refract_PerObject"
 			// use UnityObjectToClipPos from UnityCG.cginc to calculate 
 			// the clip-space of the vertex
 			o.pos = UnityObjectToClipPos(v.vertex);
-			o.uv = v.texcoord;
+			o.uv = v.texcoord.xy;
 
 			o.normal = UnityObjectToWorldNormal(v.normal);
 #ifdef _NORMALMAP

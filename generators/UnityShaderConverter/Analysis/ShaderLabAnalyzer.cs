@@ -14,6 +14,17 @@ public static class ShaderLabAnalyzer
     /// </summary>
     public const string SurfaceShaderNotSupportedPrefix = "Surface shader not supported:";
 
+    /// <summary>
+    /// Exact analyzer message when a pass uses <c>#pragma geometry</c>. Used by <see cref="IsGeometryShaderExclusion"/>.
+    /// </summary>
+    public const string GeometryShaderNotSupportedMessage =
+        "Pass uses #pragma geometry which is not supported by UnityShaderConverter yet.";
+
+    /// <summary>Shared porting guidance appended to every surface-shader exclusion message.</summary>
+    private const string SurfaceShaderPortingGuidance =
+        "UnityShaderConverter does not expand surface shaders. In Unity, use Compile and show code, copy the HLSL for the pass you need into a shader that uses only " +
+        "`#pragma vertex` and `#pragma fragment` (remove `#pragma surface` from ShaderLab), or maintain a hand-written port.";
+
     /// <summary>Parses a single <c>.shader</c> file using auto-detected Unity <c>CGIncludes</c>.</summary>
     public static bool TryAnalyze(string shaderPath, out ShaderFileDocument? document, out List<Diagnostic> diagnostics, out List<string> errors) =>
         TryAnalyze(shaderPath, null, out document, out diagnostics, out errors);
@@ -33,6 +44,16 @@ public static class ShaderLabAnalyzer
         errors = new List<string>();
         document = null;
         string source = File.ReadAllText(shaderPath);
+
+        // Surface shaders use Unity-only syntax inside CGPROGRAM; parsing embedded HLSL produces long cascades of
+        // HLSLParsing diagnostics that are irrelevant once we know conversion is unsupported.
+        if (PragmaParser.HasSurfacePragma(source))
+        {
+            errors.Add(
+                $"{SurfaceShaderNotSupportedPrefix} shader source contains `#pragma surface`. {SurfaceShaderPortingGuidance}");
+            return false;
+        }
+
         string basePath = Path.GetDirectoryName(shaderPath) ?? ".";
         string fileName = Path.GetFileName(shaderPath);
         IPreProcessorIncludeResolver includeResolver = CreateIncludeResolver(shaderPath, unityCgIncludesDirectory);
@@ -105,8 +126,20 @@ public static class ShaderLabAnalyzer
 
         if (passes.Count == 0)
         {
-            errors.Add("No CGPROGRAM/HLSLPROGRAM passes found in first SubShader.");
-            return false;
+            if (!TryExtractImplicitSubShaderProgramPass(
+                    sub0,
+                    subShaderTags,
+                    programSource => ExtractPragmaLines(programSource),
+                    out ShaderPassDocument? implicitPass,
+                    out string? implicitErr))
+            {
+                errors.Add(implicitErr ?? "No CGPROGRAM/HLSLPROGRAM passes found in first SubShader.");
+                return false;
+            }
+
+            passes.Add(implicitPass!);
+            foreach (string line in ExtractMultiCompileLines(implicitPass!.ProgramSource))
+                multiCompiles.Add(line);
         }
 
         document = new ShaderFileDocument
@@ -127,6 +160,23 @@ public static class ShaderLabAnalyzer
     public static bool IsSurfaceShaderExclusion(IReadOnlyList<string> errors) =>
         errors.Any(static e => e.StartsWith(SurfaceShaderNotSupportedPrefix, StringComparison.Ordinal));
 
+    /// <summary>True when <paramref name="errors"/> includes the geometry-stage exclusion message.</summary>
+    public static bool IsGeometryShaderExclusion(IReadOnlyList<string> errors) =>
+        errors.Any(static e => string.Equals(e, GeometryShaderNotSupportedMessage, StringComparison.Ordinal));
+
+    /// <summary>
+    /// Surface- or geometry-shader skips are expected for many vendored Unity shaders; logs treat them as trace-only.
+    /// </summary>
+    public static bool IsExpectedUnsupportedShaderExclusion(IReadOnlyList<string> errors) =>
+        IsSurfaceShaderExclusion(errors) || IsGeometryShaderExclusion(errors);
+
+    /// <summary>
+    /// When true, the parse failure line is logged at trace instead of error (surface or geometry exclusion only).
+    /// </summary>
+    public static bool IsParseFailureLoggedAtTraceOnly(string errorLine) =>
+        errorLine.StartsWith(SurfaceShaderNotSupportedPrefix, StringComparison.Ordinal) ||
+        string.Equals(errorLine, GeometryShaderNotSupportedMessage, StringComparison.Ordinal);
+
     /// <summary>
     /// Builds an include resolver: optional override, then <c>UnityBuiltinCGIncludes</c> next to the app, then repo walk from <paramref name="shaderPath"/>.
     /// </summary>
@@ -141,8 +191,22 @@ public static class ShaderLabAnalyzer
     /// <summary>
     /// When any code pass in the first subshader contains <c>#pragma surface</c>, conversion is skipped for the whole file.
     /// </summary>
+    /// <remarks>
+    /// Unity allows <c>CGPROGRAM</c> directly under <c>SubShader</c> (no <c>Pass</c> wrapper); those blocks live in
+    /// <see cref="SubShaderNode.ProgramBlocks"/> and must be checked here too.
+    /// </remarks>
     private static bool TryBuildSurfaceShaderExclusionError(SubShaderNode sub0, out string? error)
     {
+        foreach (HLSLProgramBlock block in sub0.ProgramBlocks ?? new List<HLSLProgramBlock>())
+        {
+            if (PragmaParser.HasSurfacePragma(block.CodeWithoutIncludes))
+            {
+                error =
+                    $"{SurfaceShaderNotSupportedPrefix} subshader-level CGPROGRAM contains `#pragma surface`. {SurfaceShaderPortingGuidance}";
+                return true;
+            }
+        }
+
         int passIndex = 0;
         foreach (ShaderPassNode pass in sub0.Passes ?? new List<ShaderPassNode>())
         {
@@ -159,9 +223,7 @@ public static class ShaderLabAnalyzer
             if (PragmaParser.HasSurfacePragma(program))
             {
                 error =
-                    $"{SurfaceShaderNotSupportedPrefix} pass {passIndex} contains `#pragma surface`. " +
-                    "UnityShaderConverter does not expand surface shaders. In Unity, use Compile and show code, copy the HLSL for the pass you need into a shader that uses only " +
-                    "`#pragma vertex` and `#pragma fragment` (remove `#pragma surface` from ShaderLab), or maintain a hand-written port.";
+                    $"{SurfaceShaderNotSupportedPrefix} pass {passIndex} contains `#pragma surface`. {SurfaceShaderPortingGuidance}";
                 return true;
             }
 
@@ -170,6 +232,34 @@ public static class ShaderLabAnalyzer
 
         error = null;
         return false;
+    }
+
+    /// <summary>
+    /// Unity sometimes places <c>CGPROGRAM</c> directly under <c>SubShader</c>; the parser stores that in
+    /// <see cref="SubShaderNode.ProgramBlocks"/> instead of a <see cref="ShaderCodePassNode"/>.
+    /// </summary>
+    private static bool TryExtractImplicitSubShaderProgramPass(
+        SubShaderNode sub0,
+        IReadOnlyDictionary<string, string> subShaderTags,
+        Func<string, IReadOnlyList<string>> extractPragmas,
+        out ShaderPassDocument? passDoc,
+        out string? error)
+    {
+        passDoc = null;
+        error = null;
+        if (sub0.ProgramBlocks is null || sub0.ProgramBlocks.Count == 0)
+            return false;
+
+        HLSLProgramBlock block = sub0.ProgramBlocks[0];
+        return TryExtractPassFromProgramBlock(
+            block,
+            passIndex: 0,
+            subShaderTags,
+            sub0.Commands ?? new List<ShaderLabCommandNode>(),
+            extractPragmas,
+            passName: null,
+            out passDoc,
+            out error);
     }
 
     private static IReadOnlyList<string> DeduplicateSorted(List<string> lines)
@@ -205,12 +295,48 @@ public static class ShaderLabAnalyzer
             return false;
         }
 
-        HLSLProgramBlock block = blockNullable.Value;
+        string? passName = null;
+        foreach (ShaderLabCommandNode? cmd in codePass.Commands ?? new List<ShaderLabCommandNode>())
+        {
+            if (cmd is ShaderLabCommandNameNode nameNode && !string.IsNullOrEmpty(nameNode.Name))
+            {
+                passName = nameNode.Name;
+                break;
+            }
+        }
+
+        List<ShaderLabCommandNode> cmdList = codePass.Commands ?? new List<ShaderLabCommandNode>();
+        return TryExtractPassFromProgramBlock(
+            blockNullable.Value,
+            passIndex,
+            subShaderTags,
+            cmdList,
+            extractPragmas,
+            passName,
+            out passDoc,
+            out error);
+    }
+
+    /// <summary>
+    /// Builds a <see cref="ShaderPassDocument"/> from a parsed <see cref="HLSLProgramBlock"/> plus ShaderLab commands for fixed-function state.
+    /// </summary>
+    private static bool TryExtractPassFromProgramBlock(
+        HLSLProgramBlock block,
+        int passIndex,
+        IReadOnlyDictionary<string, string> subShaderTags,
+        IReadOnlyList<ShaderLabCommandNode> commandNodesForRenderState,
+        Func<string, IReadOnlyList<string>> extractPragmas,
+        string? passName,
+        out ShaderPassDocument? passDoc,
+        out string? error)
+    {
+        passDoc = null;
+        error = null;
         string program = block.CodeWithoutIncludes;
 
         if (PragmaParser.HasGeometryStage(program))
         {
-            error = "Pass uses #pragma geometry which is not supported by UnityShaderConverter yet.";
+            error = GeometryShaderNotSupportedMessage;
             return false;
         }
 
@@ -230,17 +356,7 @@ public static class ShaderLabAnalyzer
         if (PragmaParser.TryGetShaderTarget(program, out float tgt))
             pragmaTarget = tgt;
 
-        string? passName = null;
-        foreach (ShaderLabCommandNode? cmd in codePass.Commands ?? new List<ShaderLabCommandNode>())
-        {
-            if (cmd is ShaderLabCommandNameNode nameNode && !string.IsNullOrEmpty(nameNode.Name))
-            {
-                passName = nameNode.Name;
-                break;
-            }
-        }
-
-        List<ShaderLabCommandNode> cmdList = codePass.Commands ?? new List<ShaderLabCommandNode>();
+        var cmdList = commandNodesForRenderState as List<ShaderLabCommandNode> ?? commandNodesForRenderState.ToList();
         passDoc = new ShaderPassDocument
         {
             PassName = passName,

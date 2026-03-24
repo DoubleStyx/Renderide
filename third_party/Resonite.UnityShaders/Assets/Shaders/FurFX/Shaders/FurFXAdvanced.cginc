@@ -68,8 +68,10 @@ v2f VertexProgram (appdata v)
 	o.pos = UnityObjectToClipPos(fixed4(P,1.0));
 	//o.pos.xyz += mul(_Object2World,_ForceLocal).xyz * pow(FUR_MULTIPLIER,2) * _FurLength;
 	
-	fixed4 znormal = 1 - dot(v.normal, fixed4(0,0,1,0));
-	o.uv2.xy = mul( UNITY_MATRIX_TEXTURE1, v.texcoord + znormal * 0.0011 * FUR_MULTIPLIER );	
+	fixed dZ = dot(v.normal, fixed3(0, 0, 1));
+	fixed4 znormal = fixed4(1, 1, 1, 1) - dZ;
+	float4 uv2Proj = mul(UNITY_MATRIX_TEXTURE1, float4(v.texcoord + znormal * 0.0011 * FUR_MULTIPLIER));
+	o.uv2.xy = half2(uv2Proj.xy);	
 
 	fixed3 posWorld = mul(unity_ObjectToWorld, v.vertex).xyz;
     fixed3 normalDirection = normalize(fixed3(mul(fixed4(v.normal, 0.0), unity_WorldToObject).xyz));
@@ -88,7 +90,7 @@ v2f VertexProgram (appdata v)
         }
         else
         {
-            specularReflection = _LightColor0.xyz * _SpecColor.xyz * pow(max(0.0, dot(reflect(-lightDirection, normalDirection).xyz, viewDirection)), _Shininess);
+            specularReflection = _LightColor0.xyz * _SpecColor.xyz * pow(max(0.0, dot(reflect(-lightDirection, normalDirection), viewDirection)), _Shininess);
         }
 	
 	 fixed3 vertexLighting = fixed3(0.0, 0.0, 0.0);
@@ -122,7 +124,7 @@ v2f VertexProgram (appdata v)
     o.rim = fixed4(_RimColor.rgb * pow (rim, _RimPower),1.0);	
     
     //float4 nD = normalize(float3(mul(float4(v.normal, 0.0), _World2Object)));    
-    o.ref = reflect( -fixed4(viewDirection,0.0), fixed4(normalDirection,0.0) );
+    o.ref = fixed4(reflect(-viewDirection, normalDirection), 0.0);
 							
     o.color = fixed4((ambientLighting + diffuseReflection + specularReflection + vertexLighting), 1.0);
 	return o;
@@ -143,12 +145,13 @@ fixed4 frag (v2f i) : COLOR
 	
 	//o.a = min(noise * (1-FUR_MULTIPLIER*FUR_MULTIPLIER),1) * max(o.a,_SkinAlpha);
 	//o.a = clamp(noise * max(o.a,_SkinAlpha) - (FUR_MULTIPLIER*FUR_MULTIPLIER)*_EdgeFade,0,1);
-	o.a = clamp(noise - (FUR_MULTIPLIER*FUR_MULTIPLIER)*_EdgeFade,0,1);
+	fixed noiseAvg = dot(noise, fixed3(0.333333, 0.333333, 0.333333));
+	o.a = clamp(noiseAvg - (FUR_MULTIPLIER*FUR_MULTIPLIER)*_EdgeFade,0,1);
 		
 	float4 reflTex = texCUBE(_Cube, i.ref);	
 		
-	o.rgb*=i.color * 2;
-	o.rgb+=i.rim * 2;
+	o.rgb *= i.color.rgb * 2;
+	o.rgb += i.rim.rgb * 2;
 	
 	o.rgb += reflTex.rgb * _Reflection * o.a;
 
@@ -160,7 +163,7 @@ fixed4 fragBase (v2f i) : COLOR
 {
 	fixed4 o = tex2D(_MainTex, i.uv.xy);
     
-	o.rgb*=i.color * 2;
+	o.rgb *= i.color.rgb * 2;
 	o.a = 1.0;
 	return o;
 }

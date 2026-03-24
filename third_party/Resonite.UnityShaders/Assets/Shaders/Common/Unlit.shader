@@ -17,6 +17,9 @@ Shader "Unlit" {
 		_PolarPow("Polar Mapping Power", Float) = 1.0
 
 		_ZTest("ZTest", Float) = 2
+
+		_OffsetFactor ("Offset Factor", Float) = 0.0
+		_OffsetUnits("Offset Units", Float) = 0.0
 	}
 
 		SubShader{

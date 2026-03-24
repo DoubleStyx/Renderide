@@ -1,4 +1,4 @@
-﻿// Upgrade NOTE: replaced 'mul(UNITY_MATRIX_MVP,*)' with 'UnityObjectToClipPos(*)'
+// Upgrade NOTE: replaced 'mul(UNITY_MATRIX_MVP,*)' with 'UnityObjectToClipPos(*)'
 
 Shader "Projection360"
 {
@@ -204,7 +204,7 @@ Shader "Projection360"
 						);
 
 					// remap it to normalized UV
-					float2 maxAngle = _FOV * 0.5;
+					float2 maxAngle = _FOV.xy * 0.5;
 
 					angle += maxAngle;
 
@@ -281,12 +281,13 @@ Shader "Projection360"
 				clip(UnityGet2DClipping(i.position, _Rect) - 0.1);
 	#endif
 
+					float3 viewDir = float3(0.0, 0.0, 1.0);
 	#ifdef _VIEW
-					float3 viewDir = normalize(ObjSpaceViewDir(i.pos));
+					viewDir = normalize(ObjSpaceViewDir(i.pos));
 	#elif _WORLD_VIEW
-					float3 viewDir = normalize(WorldSpaceViewDir(i.pos));
+					viewDir = normalize(WorldSpaceViewDir(i.pos));
 	#elif _NORMAL
-					float3 viewDir = normalize(i.normal);
+					viewDir = normalize(i.normal);
 	#endif
 
 	#ifdef _PERSPECTIVE
@@ -295,7 +296,7 @@ Shader "Projection360"
 
 					float2 planeDir = tan(_PerspectiveFOV.xy * 0.5) * planePos;
 
-					float3 viewDir = normalize(float3(planeDir, 1));
+					viewDir = normalize(float3(planeDir, 1));
 
 					rotate_dir(viewDir, _PerspectiveFOV.zw);
 	#endif
