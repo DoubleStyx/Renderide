@@ -29,6 +29,7 @@ impl CommandHandler for ConfigCommandHandler {
                     gpu_validation_layers: ctx.render_config.gpu_validation_layers,
                     ray_tracing_enabled: ctx.render_config.ray_tracing_enabled,
                     use_opengl: ctx.render_config.use_opengl,
+                    use_dx12: ctx.render_config.use_dx12,
                     debug_skinned: ctx.render_config.debug_skinned,
                     debug_blendshapes: ctx.render_config.debug_blendshapes,
                     skinned_flip_handedness: ctx.render_config.skinned_flip_handedness,

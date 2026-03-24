@@ -379,6 +379,7 @@ impl RenderideApp {
                 self.session.render_config().gpu_validation_layers,
                 self.session.render_config().ray_tracing_enabled,
                 self.session.render_config().use_opengl,
+                self.session.render_config().use_dx12,
             )) {
                 Ok(g) => {
                     logger::info!(

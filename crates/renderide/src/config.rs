@@ -307,6 +307,9 @@ pub struct RenderConfig {
     /// Useful for debugging or compatibility. Default false. Like gpu_validation_layers, only
     /// applied at GPU init time.
     pub use_opengl: bool,
+    /// When true, force the DirectX 12 wgpu backend instead of Vulkan. Default false.
+    /// Takes precedence over use_opengl if both are set. Only applied at GPU init time.
+    pub use_dx12: bool,
     /// When true, log diagnostic info for the first skinned draw each frame.
     pub debug_skinned: bool,
     /// When true, log blendshape batch count and first few weights each frame.
@@ -468,6 +471,18 @@ fn apply_render_config_ini_entry(config: &mut RenderConfig, section: &str, key: 
             } else {
                 eprintln!(
                     "[renderide] ini: use_opengl parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "use_dx12") => {
+            if let Some(v) = parse_bool(value) {
+                config.use_dx12 = v;
+                eprintln!("[renderide] ini: use_dx12 = {}", v);
+                logger::info!("ini: use_dx12 = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: use_dx12 parse error (raw = {:?})",
                     value
                 );
             }
@@ -686,7 +701,7 @@ impl RenderConfig {
             );
             let display = format!("RenderConfig (INI): display vsync={}", config.vsync);
             let rendering = format!(
-                "RenderConfig (INI): rendering debug_uv={} pbr={} skin_root={} skin_root_bone={} gpu_val={} rt={} opengl={} dbg_skin={} dbg_blend={} flip_h={} parallel_prep={} log_collect={} rtao={} rt_shadows={} rtao_str={} ao_r={} frustum={}",
+                "RenderConfig (INI): rendering debug_uv={} pbr={} skin_root={} skin_root_bone={} gpu_val={} rt={} opengl={} dx12={} dbg_skin={} dbg_blend={} flip_h={} parallel_prep={} log_collect={} rtao={} rt_shadows={} rtao_str={} ao_r={} frustum={}",
                 config.use_debug_uv,
                 config.use_pbr,
                 config.skinned_apply_mesh_root_transform,
@@ -694,6 +709,7 @@ impl RenderConfig {
                 config.gpu_validation_layers,
                 config.ray_tracing_enabled,
                 config.use_opengl,
+                config.use_dx12,
                 config.debug_skinned,
                 config.debug_blendshapes,
                 config.skinned_flip_handedness,
@@ -767,6 +783,7 @@ impl Default for RenderConfig {
             gpu_validation_layers: false,
             ray_tracing_enabled: true,
             use_opengl: false,
+            use_dx12: false,
             debug_skinned: false,
             debug_blendshapes: false,
             skinned_flip_handedness: false,

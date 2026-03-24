@@ -125,26 +125,30 @@ pub async fn init_gpu(
     gpu_validation_layers: bool,
     ray_tracing_enabled: bool,
     use_opengl: bool,
+    use_dx12: bool,
 ) -> Result<GpuState, Box<dyn std::error::Error + Send + Sync>> {
     let enabled_backends = wgpu::Instance::enabled_backend_features();
     let use_vulkan_only =
-        !use_opengl && enabled_backends.contains(wgpu::Backends::VULKAN);
+        !use_opengl && !use_dx12 && enabled_backends.contains(wgpu::Backends::VULKAN);
 
-    // OpenGL mode forces GL backend and disables ray tracing.
-    let ray_tracing_enabled = ray_tracing_enabled && !use_opengl;
+    // GL and DX12 modes disable ray tracing (GL has none; DX12 RT not yet wired up).
+    let ray_tracing_enabled = ray_tracing_enabled && !use_opengl && !use_dx12;
 
     let instance_flags = instance_flags_for_init(gpu_validation_layers);
     logger::info!(
-        "GPU init: backends={:?} use_vulkan_only={} use_opengl={} gpu_validation_layers={} instance_flags={:?}",
+        "GPU init: backends={:?} use_vulkan_only={} use_opengl={} use_dx12={} gpu_validation_layers={} instance_flags={:?}",
         enabled_backends,
         use_vulkan_only,
         use_opengl,
+        use_dx12,
         gpu_validation_layers,
         instance_flags
     );
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: if use_opengl {
+        backends: if use_dx12 {
+            wgpu::Backends::DX12
+        } else if use_opengl {
             wgpu::Backends::GL
         } else if use_vulkan_only {
             wgpu::Backends::VULKAN
