@@ -303,6 +303,10 @@ pub struct RenderConfig {
     /// (attempt RT when the adapter supports it). Like [`Self::gpu_validation_layers`], this is
     /// only applied when the GPU device is first created, not on later config updates.
     pub ray_tracing_enabled: bool,
+    /// When true, force the OpenGL (GLES) wgpu backend instead of Vulkan. Disables ray tracing.
+    /// Useful for debugging or compatibility. Default false. Like gpu_validation_layers, only
+    /// applied at GPU init time.
+    pub use_opengl: bool,
     /// When true, log diagnostic info for the first skinned draw each frame.
     pub debug_skinned: bool,
     /// When true, log blendshape batch count and first few weights each frame.
@@ -452,6 +456,18 @@ fn apply_render_config_ini_entry(config: &mut RenderConfig, section: &str, key: 
             } else {
                 eprintln!(
                     "[renderide] ini: ray_tracing_enabled parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "use_opengl") => {
+            if let Some(v) = parse_bool(value) {
+                config.use_opengl = v;
+                eprintln!("[renderide] ini: use_opengl = {}", v);
+                logger::info!("ini: use_opengl = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: use_opengl parse error (raw = {:?})",
                     value
                 );
             }
@@ -670,13 +686,14 @@ impl RenderConfig {
             );
             let display = format!("RenderConfig (INI): display vsync={}", config.vsync);
             let rendering = format!(
-                "RenderConfig (INI): rendering debug_uv={} pbr={} skin_root={} skin_root_bone={} gpu_val={} rt={} dbg_skin={} dbg_blend={} flip_h={} parallel_prep={} log_collect={} rtao={} rt_shadows={} rtao_str={} ao_r={} frustum={}",
+                "RenderConfig (INI): rendering debug_uv={} pbr={} skin_root={} skin_root_bone={} gpu_val={} rt={} opengl={} dbg_skin={} dbg_blend={} flip_h={} parallel_prep={} log_collect={} rtao={} rt_shadows={} rtao_str={} ao_r={} frustum={}",
                 config.use_debug_uv,
                 config.use_pbr,
                 config.skinned_apply_mesh_root_transform,
                 config.skinned_use_root_bone,
                 config.gpu_validation_layers,
                 config.ray_tracing_enabled,
+                config.use_opengl,
                 config.debug_skinned,
                 config.debug_blendshapes,
                 config.skinned_flip_handedness,
@@ -749,6 +766,7 @@ impl Default for RenderConfig {
             skinned_use_root_bone: false,
             gpu_validation_layers: false,
             ray_tracing_enabled: true,
+            use_opengl: false,
             debug_skinned: false,
             debug_blendshapes: false,
             skinned_flip_handedness: false,

@@ -124,21 +124,29 @@ pub async fn init_gpu(
     vsync: bool,
     gpu_validation_layers: bool,
     ray_tracing_enabled: bool,
+    use_opengl: bool,
 ) -> Result<GpuState, Box<dyn std::error::Error + Send + Sync>> {
     let enabled_backends = wgpu::Instance::enabled_backend_features();
-    let use_vulkan_only = enabled_backends.contains(wgpu::Backends::VULKAN);
+    let use_vulkan_only =
+        !use_opengl && enabled_backends.contains(wgpu::Backends::VULKAN);
+
+    // OpenGL mode forces GL backend and disables ray tracing.
+    let ray_tracing_enabled = ray_tracing_enabled && !use_opengl;
 
     let instance_flags = instance_flags_for_init(gpu_validation_layers);
     logger::info!(
-        "GPU init: backends={:?} use_vulkan_only={} gpu_validation_layers={} instance_flags={:?} (Vulkan preferred for ray tracing)",
+        "GPU init: backends={:?} use_vulkan_only={} use_opengl={} gpu_validation_layers={} instance_flags={:?}",
         enabled_backends,
         use_vulkan_only,
+        use_opengl,
         gpu_validation_layers,
         instance_flags
     );
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: if use_vulkan_only {
+        backends: if use_opengl {
+            wgpu::Backends::GL
+        } else if use_vulkan_only {
             wgpu::Backends::VULKAN
         } else {
             enabled_backends
