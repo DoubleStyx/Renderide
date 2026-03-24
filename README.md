@@ -13,7 +13,7 @@ Visual bugs and missing features are expected. Not intended for general use yet.
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/yourname/Renderide.git
+git clone https://github.com/DoubleStyx/Renderide.git
 cd Renderide
 
 # 2. Build
