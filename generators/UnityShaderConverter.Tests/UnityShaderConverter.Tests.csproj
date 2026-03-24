@@ -28,4 +28,11 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\third_party\UnityShaderParser\UnityShaderParser.Tests\TestShaders\UnityBuiltinShaders\CGIncludes\**\*">
+      <Link>UnityBuiltinCGIncludes\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

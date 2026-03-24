@@ -1,6 +1,6 @@
 namespace UnityShaderConverter;
 
-/// <summary>Maps each discovered <c>.shader</c> file to its scan root and nested output paths under <c>generated/wgsl/</c>.</summary>
+/// <summary>Maps each discovered <c>.shader</c> file to its scan root and optional nested path segments (e.g. for WGSL layout beside a shader module).</summary>
 internal static class ShaderInputPaths
 {
     /// <summary>

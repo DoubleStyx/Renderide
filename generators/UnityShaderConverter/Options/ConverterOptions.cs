@@ -14,12 +14,12 @@ public sealed class ConverterOptions
     [Option('i', "input", Required = false, HelpText = "Directory containing .shader files (repeatable). Defaults to SampleShaders + Resonite Unity shaders under the repo.")]
     public IEnumerable<string> InputDirectories { get; set; } = Array.Empty<string>();
 
-    /// <summary>Output root: <c>crates/renderide/src/shaders/generated/</c> with one <c>&lt;mod&gt;/</c> folder per converted shader.</summary>
-    [Option('o', "output", Required = false, HelpText = "Output directory (default: crates/renderide/src/shaders/generated).")]
+    /// <summary>Output root: <c>crates/renderide/src/shaders/</c> with one <c>&lt;mod&gt;/</c> folder per converted shader (e.g. <c>pbs_metallic/material.rs</c>).</summary>
+    [Option('o', "output", Required = false, HelpText = "Output directory (default: crates/renderide/src/shaders).")]
     public string? OutputDirectory { get; set; }
 
-    /// <summary>Path to <c>slangc</c>; overrides <c>SLANGC</c> environment variable.</summary>
-    [Option("slangc", Required = false, HelpText = "Path to slangc executable.")]
+    /// <summary>Path to <c>slangc</c>; overrides the <c>Slang.Sdk</c> binary next to the tool and <c>SLANGC</c>.</summary>
+    [Option("slangc", Required = false, HelpText = "Path to slangc (default: Slang.Sdk under the app, then SLANGC, then PATH).")]
     public string? SlangcPath { get; set; }
 
     /// <summary>When set, skips invoking <c>slangc</c> even for eligible shaders.</summary>
@@ -34,13 +34,25 @@ public sealed class ConverterOptions
     [Option("variant-config", Required = false, HelpText = "Path to variant override JSON.")]
     public string? VariantConfigPath { get; set; }
 
+    /// <summary>Directory containing Unity <c>UnityCG.cginc</c> (Unity CGIncludes). Overrides UNITY_SHADER_CONVERTER_CG_INCLUDES.</summary>
+    [Option("cg-includes", Required = false, HelpText = "Folder with UnityCG.cginc (Unity CGIncludes). Default: bundled next to the tool, else search from shader path.")]
+    public string? UnityCgIncludesDirectory { get; set; }
+
+    /// <summary>Force <c>slangc</c> warning suppression and error-only stderr in logs (overrides compiler config).</summary>
+    [Option("suppress-slang-warnings", Required = false, HelpText = "Force slang warning suppression (-warnings-disable + error-only stderr in logs).")]
+    public bool ForceSuppressSlangWarnings { get; set; }
+
+    /// <summary>Force slang warnings visible in logs (overrides compiler config and --suppress-slang-warnings).</summary>
+    [Option("no-suppress-slang-warnings", Required = false, HelpText = "Show slang warnings in logs (overrides config and --suppress-slang-warnings).")]
+    public bool ForceNoSuppressSlangWarnings { get; set; }
+
     /// <summary>Resolves default input and output paths relative to the git repository root (Renderide parent).</summary>
     public void DetermineDefaultPaths()
     {
         string renderideRoot = ResolveRenderideRoot(TryGetGitRepositoryRoot());
 
         if (OutputDirectory is null)
-            OutputDirectory = Path.Combine(renderideRoot, "crates", "renderide", "src", "shaders", "generated");
+            OutputDirectory = Path.Combine(renderideRoot, "crates", "renderide", "src", "shaders");
 
         if (!InputDirectories.Any())
         {

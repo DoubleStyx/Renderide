@@ -18,9 +18,9 @@ public enum LogCategory
     /// <summary>Filesystem output (delete/write paths).</summary>
     Output,
 
-    /// <summary>Places where generated Rust may contain FIXME comments.</summary>
+    /// <summary>Incomplete emission, FIXME comments in Rust, or analyzer/emitter assumptions that may be wrong.</summary>
     Fixme,
 
-    /// <summary>Unexpected conditions worth investigating.</summary>
+    /// <summary>Fatal pipeline failures and uncaught exceptions (logged before exit).</summary>
     Bug,
 }

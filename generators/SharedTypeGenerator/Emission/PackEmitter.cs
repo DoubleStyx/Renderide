@@ -1,5 +1,7 @@
+using NotEnoughLogs;
 using SharedTypeGenerator.Analysis;
 using SharedTypeGenerator.IR;
+using SharedTypeGenerator.Logging;
 
 namespace SharedTypeGenerator.Emission;
 
@@ -8,7 +10,9 @@ namespace SharedTypeGenerator.Emission;
 public static class PackEmitter
 {
     /// <summary>Emits the full pack method body for a list of steps.</summary>
-    public static void EmitPack(RustWriter w, List<SerializationStep> steps, List<FieldDescriptor> fields)
+    /// <param name="csharpTypeName">C# type name (for log context).</param>
+    public static void EmitPack(RustWriter w, Logger logger, string csharpTypeName, List<SerializationStep> steps,
+        List<FieldDescriptor> fields)
     {
         if (steps.Count == 0)
         {
@@ -18,35 +22,37 @@ public static class PackEmitter
         }
 
         foreach (SerializationStep step in steps)
-            EmitPackStep(w, step, fields);
+            EmitPackStep(w, logger, csharpTypeName, step, fields);
     }
 
     /// <summary>Emits the full unpack method body for a list of steps.
     /// unpackOnlySteps (e.g. decodedTime = UtcNow) are emitted only in unpack, not in pack.</summary>
-    public static void EmitUnpack(RustWriter w, List<SerializationStep> steps, List<FieldDescriptor> fields,
+    /// <param name="csharpTypeName">C# type name (for log context).</param>
+    public static void EmitUnpack(RustWriter w, Logger logger, string csharpTypeName, List<SerializationStep> steps,
+        List<FieldDescriptor> fields,
         List<SerializationStep>? unpackOnlySteps = null)
     {
         if (steps.Count == 0 && (unpackOnlySteps == null || unpackOnlySteps.Count == 0))
         {
-            // Marker / empty payload types: no fields on the wire; silence unused `self` / `unpacker`.
             w.Line("let _ = self;");
             w.Line("let _ = unpacker;");
             return;
         }
 
         foreach (SerializationStep step in steps)
-            EmitUnpackStep(w, step, fields);
+            EmitUnpackStep(w, logger, csharpTypeName, step, fields);
 
         foreach (SerializationStep step in unpackOnlySteps ?? [])
-            EmitUnpackStep(w, step, fields);
+            EmitUnpackStep(w, logger, csharpTypeName, step, fields);
     }
 
-    private static void EmitPackStep(RustWriter w, SerializationStep step, List<FieldDescriptor> fields)
+    private static void EmitPackStep(RustWriter w, Logger logger, string csharpTypeName, SerializationStep step,
+        List<FieldDescriptor> fields)
     {
         switch (step)
         {
             case WriteField wf:
-                w.Line(PackLine(wf.FieldName, wf.Kind));
+                w.Line(PackLine(logger, csharpTypeName, wf.FieldName, wf.Kind));
                 break;
 
             case PackedBools pb:
@@ -61,13 +67,13 @@ public static class PackEmitter
                 }
 
             case CallBase:
-                // Base steps are inlined during analysis, so this shouldn't normally appear
-                // in the final step list. If it does, emit a FIXME.
+                logger.LogWarning(
+                    LogCategory.Fixme,
+                    $"[{csharpTypeName}] Pack: CallBase step was not inlined during analysis (FIXME emitted in Rust).");
                 w.Fixme("CallBase should have been inlined during analysis");
                 break;
 
             case TimestampNow:
-                // TimestampNow (e.g. decodedTime = UtcNow) runs only in unpack, not in pack.
                 break;
 
             case ConditionalBlock cb:
@@ -75,19 +81,20 @@ public static class PackEmitter
                     using (w.BeginIf($"self.{cb.ConditionField}"))
                     {
                         foreach (SerializationStep inner in cb.Steps)
-                            EmitPackStep(w, inner, fields);
+                            EmitPackStep(w, logger, csharpTypeName, inner, fields);
                     }
                     break;
                 }
         }
     }
 
-    private static void EmitUnpackStep(RustWriter w, SerializationStep step, List<FieldDescriptor> fields)
+    private static void EmitUnpackStep(RustWriter w, Logger logger, string csharpTypeName, SerializationStep step,
+        List<FieldDescriptor> fields)
     {
         switch (step)
         {
             case WriteField wf:
-                w.Line(UnpackLine(wf.FieldName, wf.Kind, fields));
+                w.Line(UnpackLine(logger, csharpTypeName, wf.FieldName, wf.Kind, fields));
                 break;
 
             case PackedBools pb:
@@ -106,6 +113,9 @@ public static class PackEmitter
                 }
 
             case CallBase:
+                logger.LogWarning(
+                    LogCategory.Fixme,
+                    $"[{csharpTypeName}] Unpack: CallBase step was not inlined during analysis (FIXME emitted in Rust).");
                 w.Fixme("CallBase should have been inlined during analysis");
                 break;
 
@@ -114,7 +124,7 @@ public static class PackEmitter
                     using (w.BeginIf($"self.{cb.ConditionField}"))
                     {
                         foreach (SerializationStep inner in cb.Steps)
-                            EmitUnpackStep(w, inner, fields);
+                            EmitUnpackStep(w, logger, csharpTypeName, inner, fields);
                     }
                     break;
                 }
@@ -125,7 +135,7 @@ public static class PackEmitter
         }
     }
 
-    private static string PackLine(string name, FieldKind kind) => kind switch
+    private static string PackLine(Logger logger, string csharpTypeName, string name, FieldKind kind) => kind switch
     {
         FieldKind.Pod => $"packer.write(&self.{name});",
         FieldKind.Bool => $"packer.write_bool(self.{name});",
@@ -141,10 +151,19 @@ public static class PackEmitter
         FieldKind.PolymorphicList => $"packer.write_polymorphic_list(Some(&mut self.{name}[..]));",
         FieldKind.StringList => WriteStringListPack(name),
         FieldKind.NestedValueList => $"packer.write_nested_value_list(Some(&self.{name}));",
-        _ => $"// FIXME: Unknown FieldKind {kind} for {name}",
+        _ => UnknownFieldKindPackLine(logger, csharpTypeName, name, kind),
     };
 
-    private static string UnpackLine(string name, FieldKind kind, List<FieldDescriptor> fields) => kind switch
+    private static string UnknownFieldKindPackLine(Logger logger, string csharpTypeName, string name, FieldKind kind)
+    {
+        logger.LogWarning(
+            LogCategory.Fixme,
+            $"[{csharpTypeName}] Pack: unhandled FieldKind {kind} for field '{name}' (FIXME comment emitted in Rust).");
+        return $"// FIXME: Unknown FieldKind {kind} for {name}";
+    }
+
+    private static string UnpackLine(Logger logger, string csharpTypeName, string name, FieldKind kind,
+        List<FieldDescriptor> fields) => kind switch
     {
         FieldKind.Pod => $"self.{name} = unpacker.read();",
         FieldKind.Bool => $"self.{name} = unpacker.read_bool();",
@@ -152,31 +171,42 @@ public static class PackEmitter
         FieldKind.Enum => $"unpacker.read_object_required(&mut self.{name});",
         FieldKind.FlagsEnum => $"unpacker.read_object_required(&mut self.{name});",
         FieldKind.Nullable => $"self.{name} = unpacker.read_option();",
-        FieldKind.Object => UnpackObjectLine(name, fields),
+        FieldKind.Object => UnpackObjectLine(logger, csharpTypeName, name, fields),
         FieldKind.ObjectRequired => $"unpacker.read_object_required(&mut self.{name});",
         FieldKind.ValueList => $"self.{name} = unpacker.read_value_list();",
         FieldKind.EnumValueList => $"self.{name} = unpacker.read_enum_value_list();",
         FieldKind.ObjectList => $"self.{name} = unpacker.read_object_list();",
-        FieldKind.PolymorphicList => UnpackPolymorphicListLine(name, fields),
+        FieldKind.PolymorphicList => UnpackPolymorphicListLine(logger, csharpTypeName, name, fields),
         FieldKind.StringList => $"self.{name} = unpacker.read_string_list();",
         FieldKind.NestedValueList => $"self.{name} = unpacker.read_nested_value_list();",
-        _ => $"// FIXME: Unknown FieldKind {kind} for {name}",
+        _ => UnknownFieldKindUnpackLine(logger, csharpTypeName, name, kind),
     };
+
+    private static string UnknownFieldKindUnpackLine(Logger logger, string csharpTypeName, string name, FieldKind kind)
+    {
+        logger.LogWarning(
+            LogCategory.Fixme,
+            $"[{csharpTypeName}] Unpack: unhandled FieldKind {kind} for field '{name}' (FIXME comment emitted in Rust).");
+        return $"// FIXME: Unknown FieldKind {kind} for {name}";
+    }
 
     private static string WriteStringListPack(string name)
     {
-        // String lists need a temporary conversion to Vec<Option<&str>>
         return $"let __strs: Vec<Option<&str>> = self.{name}.iter().map(|s| s.as_deref()).collect();\n" +
                $"        packer.write_string_list(Some(&__strs));";
     }
 
-    private static string UnpackObjectLine(string name, List<FieldDescriptor> fields)
+    private static string UnpackObjectLine(Logger logger, string csharpTypeName, string name, List<FieldDescriptor> fields)
     {
         FieldDescriptor? field = fields.FirstOrDefault(f => f.RustName == name);
         if (field == null)
+        {
+            logger.LogWarning(
+                LogCategory.Fixme,
+                $"[{csharpTypeName}] Unpack: object field '{name}' has no FieldDescriptor; emitted read_object::<_>().");
             return $"self.{name} = unpacker.read_object::<_>();";
+        }
 
-        // Extract the inner type name from Option<TypeName>
         string rustType = field.RustType;
         if (rustType.StartsWith("Option<") && rustType.EndsWith(">"))
             rustType = rustType[7..^1];
@@ -184,13 +214,18 @@ public static class PackEmitter
         return $"self.{name} = unpacker.read_object::<{rustType}>();";
     }
 
-    private static string UnpackPolymorphicListLine(string name, List<FieldDescriptor> fields)
+    private static string UnpackPolymorphicListLine(Logger logger, string csharpTypeName, string name,
+        List<FieldDescriptor> fields)
     {
         FieldDescriptor? field = fields.FirstOrDefault(f => f.RustName == name);
         if (field == null)
+        {
+            logger.LogWarning(
+                LogCategory.Fixme,
+                $"[{csharpTypeName}] Unpack: polymorphic list field '{name}' has no FieldDescriptor; emitted read_polymorphic_list(unimplemented_decode).");
             return $"self.{name} = unpacker.read_polymorphic_list(unimplemented_decode);";
+        }
 
-        // Extract the element type from Vec<TypeName>
         string rustType = field.RustType;
         if (rustType.StartsWith("Vec<") && rustType.EndsWith(">"))
             rustType = rustType[4..^1];
@@ -199,10 +234,10 @@ public static class PackEmitter
         return $"self.{name} = unpacker.read_polymorphic_list({decodeFn});";
     }
 
-    // ── ExplicitLayout (PodStruct) pack/unpack ───────────────────
-
     /// <summary>Emits pack body for ExplicitLayout structs (field-by-field with offsets).</summary>
-    public static void EmitExplicitPack(RustWriter w, List<FieldDescriptor> fields, int paddingBytes)
+    /// <param name="csharpTypeName">C# type name (for log context).</param>
+    public static void EmitExplicitPack(RustWriter w, Logger logger, string csharpTypeName, List<FieldDescriptor> fields,
+        int paddingBytes)
     {
         if (fields.Count == 0 && paddingBytes == 0)
         {
@@ -217,8 +252,15 @@ public static class PackEmitter
                 w.Line($"packer.write_bool(self.{field.RustName} != 0);");
             else if (field.Kind is FieldKind.Enum or FieldKind.FlagsEnum)
                 w.Line($"packer.write_object_required(&mut self.{field.RustName});");
-            else
+            else if (field.Kind == FieldKind.Pod)
                 w.Line($"packer.write(&self.{field.RustName});");
+            else
+            {
+                logger.LogWarning(
+                    LogCategory.Fixme,
+                    $"[{csharpTypeName}] ExplicitLayout pack: field '{field.RustName}' is FieldKind.{field.Kind}; treating as Pod (may not match C# MemoryPack).");
+                w.Line($"packer.write(&self.{field.RustName});");
+            }
         }
 
         if (paddingBytes > 0)
@@ -226,7 +268,9 @@ public static class PackEmitter
     }
 
     /// <summary>Emits unpack body for ExplicitLayout structs.</summary>
-    public static void EmitExplicitUnpack(RustWriter w, List<FieldDescriptor> fields, int paddingBytes)
+    /// <param name="csharpTypeName">C# type name (for log context).</param>
+    public static void EmitExplicitUnpack(RustWriter w, Logger logger, string csharpTypeName,
+        List<FieldDescriptor> fields, int paddingBytes)
     {
         if (fields.Count == 0 && paddingBytes == 0)
         {
@@ -244,8 +288,15 @@ public static class PackEmitter
                 string rustType = field.RustType;
                 w.Line($"self.{field.RustName} = {{ let mut x = {rustType}::default(); unpacker.read_object_required(&mut x); x }};");
             }
-            else
+            else if (field.Kind == FieldKind.Pod)
                 w.Line($"self.{field.RustName} = unpacker.read();");
+            else
+            {
+                logger.LogWarning(
+                    LogCategory.Fixme,
+                    $"[{csharpTypeName}] ExplicitLayout unpack: field '{field.RustName}' is FieldKind.{field.Kind}; treating as Pod read (may not match C# MemoryPack).");
+                w.Line($"self.{field.RustName} = unpacker.read();");
+            }
         }
 
         if (paddingBytes > 0)

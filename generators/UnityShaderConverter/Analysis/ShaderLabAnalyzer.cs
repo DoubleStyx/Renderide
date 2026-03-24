@@ -1,4 +1,6 @@
+using System.Linq;
 using UnityShaderParser.Common;
+using UnityShaderParser.HLSL.PreProcessor;
 using UnityShaderParser.ShaderLab;
 
 namespace UnityShaderConverter.Analysis;
@@ -6,8 +8,20 @@ namespace UnityShaderConverter.Analysis;
 /// <summary>Parses ShaderLab via UnityShaderParser and builds <see cref="ShaderFileDocument"/>.</summary>
 public static class ShaderLabAnalyzer
 {
+    /// <summary>Parses a single <c>.shader</c> file using auto-detected Unity <c>CGIncludes</c>.</summary>
+    public static bool TryAnalyze(string shaderPath, out ShaderFileDocument? document, out List<Diagnostic> diagnostics, out List<string> errors) =>
+        TryAnalyze(shaderPath, null, out document, out diagnostics, out errors);
+
     /// <summary>Parses a single <c>.shader</c> file.</summary>
-    public static bool TryAnalyze(string shaderPath, out ShaderFileDocument? document, out List<Diagnostic> diagnostics, out List<string> errors)
+    /// <param name="unityCgIncludesDirectory">
+    /// Optional directory that contains <c>UnityCG.cginc</c>, prepended to the include search list (CLI <c>--cg-includes</c> or <c>UNITY_SHADER_CONVERTER_CG_INCLUDES</c>).
+    /// </param>
+    public static bool TryAnalyze(
+        string shaderPath,
+        string? unityCgIncludesDirectory,
+        out ShaderFileDocument? document,
+        out List<Diagnostic> diagnostics,
+        out List<string> errors)
     {
         diagnostics = new List<Diagnostic>();
         errors = new List<string>();
@@ -15,6 +29,7 @@ public static class ShaderLabAnalyzer
         string source = File.ReadAllText(shaderPath);
         string basePath = Path.GetDirectoryName(shaderPath) ?? ".";
         string fileName = Path.GetFileName(shaderPath);
+        IPreProcessorIncludeResolver includeResolver = CreateIncludeResolver(shaderPath, unityCgIncludesDirectory);
         var config = new ShaderLabParserConfig
         {
             BasePath = basePath,
@@ -22,6 +37,12 @@ public static class ShaderLabAnalyzer
             ParseEmbeddedHLSL = true,
             IncludeProgramBlockPreamble = false,
             ThrowExceptionOnError = false,
+            IncludeResolver = includeResolver,
+            Defines = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                // Matches UnityShaderParser.Tests embedded-HLSL setup so built-in .cginc branches resolve.
+                ["SHADER_API_D3D11"] = "1",
+            },
         };
 
         ShaderNode root = ShaderParser.ParseUnityShader(source, config, out var lexerParserDiags);
@@ -79,6 +100,17 @@ public static class ShaderLabAnalyzer
             MultiCompilePragmas = DeduplicateSorted(multiCompiles),
         };
         return true;
+    }
+
+    /// <summary>
+    /// Builds an include resolver: optional override, then <c>UnityBuiltinCGIncludes</c> next to the app, then repo walk from <paramref name="shaderPath"/>.
+    /// </summary>
+    private static IPreProcessorIncludeResolver CreateIncludeResolver(string shaderPath, string? unityCgIncludesDirectory)
+    {
+        IReadOnlyList<string> paths = UnityCgIncludesResolver.GetSearchDirectories(unityCgIncludesDirectory, shaderPath);
+        if (paths.Count == 0)
+            return new DefaultPreProcessorIncludeResolver();
+        return new DefaultPreProcessorIncludeResolver(paths.ToList());
     }
 
     private static IReadOnlyList<string> DeduplicateSorted(List<string> lines)

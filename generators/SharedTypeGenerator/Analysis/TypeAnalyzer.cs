@@ -87,10 +87,7 @@ public partial class TypeAnalyzer
 
         TypeDescriptor? descriptor = AnalyzeType(type);
         if (descriptor == null)
-        {
-            _logger.LogWarning(LogCategory.Analysis, $"Could not analyze type: {type.FullName}");
             return;
-        }
 
         result.Add(descriptor);
     }
@@ -100,7 +97,7 @@ public partial class TypeAnalyzer
         TypeShape shape = ClassifyShape(type);
         _logger.LogDebug(LogCategory.Analysis, $"Analyzing {type.FullName} as {shape}");
 
-        return shape switch
+        TypeDescriptor? descriptor = shape switch
         {
             TypeShape.PolymorphicBase => AnalyzePolymorphic(type),
             TypeShape.ValueEnum => AnalyzeValueEnum(type),
@@ -110,6 +107,15 @@ public partial class TypeAnalyzer
             TypeShape.GeneralStruct => AnalyzeGeneralStruct(type),
             _ => null,
         };
+
+        if (descriptor == null)
+        {
+            _logger.LogWarning(
+                LogCategory.Analysis,
+                $"Could not analyze type: {type.FullName} (shape={shape}; unsupported classification, sub-analyzer returned null, or missing metadata)");
+        }
+
+        return descriptor;
     }
 
     private TypeShape ClassifyShape(Type type)

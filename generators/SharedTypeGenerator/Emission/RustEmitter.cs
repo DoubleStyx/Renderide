@@ -1,5 +1,7 @@
+using NotEnoughLogs;
 using SharedTypeGenerator.Analysis;
 using SharedTypeGenerator.IR;
+using SharedTypeGenerator.Logging;
 
 namespace SharedTypeGenerator.Emission;
 
@@ -9,14 +11,17 @@ namespace SharedTypeGenerator.Emission;
 public class RustEmitter
 {
     private readonly RustWriter _w;
+    private readonly Logger _logger;
     private readonly string _engineVersion;
     private readonly bool _ilVerbose;
 
     /// <summary>Creates an emitter targeting <paramref name="writer"/>.</summary>
+    /// <param name="logger">Receives warnings when emission is incomplete or emits FIXME-equivalent Rust.</param>
     /// <param name="ilVerbose">When true, emits leading comments naming each C# type before its Rust definition.</param>
-    public RustEmitter(RustWriter writer, string engineVersion, bool ilVerbose = false)
+    public RustEmitter(RustWriter writer, Logger logger, string engineVersion, bool ilVerbose = false)
     {
         _w = writer;
+        _logger = logger;
         _engineVersion = engineVersion;
         _ilVerbose = ilVerbose;
     }
@@ -93,7 +98,13 @@ public class RustEmitter
 
     private void EmitPolymorphic(TypeDescriptor type)
     {
-        if (type.Variants == null || type.Variants.Count == 0) return;
+        if (type.Variants == null || type.Variants.Count == 0)
+        {
+            _logger.LogWarning(
+                LogCategory.Fixme,
+                $"Skipping polymorphic base {type.CSharpName}: no variants in IR (check PolymorphicAnalyzer / inheritance graph).");
+            return;
+        }
 
         string unionName = type.RustName;
         var typeNames = type.Variants.Select(v => v.CSharpName).ToList();
@@ -154,7 +165,13 @@ public class RustEmitter
 
     private void EmitValueEnum(TypeDescriptor type)
     {
-        if (type.EnumMembers == null || type.RustUnderlyingType == null) return;
+        if (type.EnumMembers == null || type.RustUnderlyingType == null)
+        {
+            _logger.LogWarning(
+                LogCategory.Fixme,
+                $"Skipping value enum {type.CSharpName}: missing EnumMembers or RustUnderlyingType in IR.");
+            return;
+        }
 
         string rustType = type.RustUnderlyingType;
         string name = type.RustName;
@@ -198,7 +215,13 @@ public class RustEmitter
 
     private void EmitFlagsEnum(TypeDescriptor type)
     {
-        if (type.EnumMembers == null || type.RustUnderlyingType == null) return;
+        if (type.EnumMembers == null || type.RustUnderlyingType == null)
+        {
+            _logger.LogWarning(
+                LogCategory.Fixme,
+                $"Skipping flags enum {type.CSharpName}: missing EnumMembers or RustUnderlyingType in IR.");
+            return;
+        }
 
         string rustType = type.RustUnderlyingType;
         string name = type.RustName;
@@ -279,9 +302,9 @@ public class RustEmitter
         using (_w.BeginTraitImpl("MemoryPackable", name))
         {
             using (_w.BeginMethod("pack", "", null, ["&mut self", "packer: &mut MemoryPacker<'_>"], isPublic: false))
-                PackEmitter.EmitExplicitPack(_w, orderedFields, needsTrailingPadding ? type.PaddingBytes : 0);
+                PackEmitter.EmitExplicitPack(_w, _logger, type.CSharpName, orderedFields, needsTrailingPadding ? type.PaddingBytes : 0);
             using (_w.BeginMethod("unpack", "", ["P: MemoryPackerEntityPool"], ["&mut self", "unpacker: &mut MemoryUnpacker<'_, '_, P>"], isPublic: false))
-                PackEmitter.EmitExplicitUnpack(_w, orderedFields, needsTrailingPadding ? type.PaddingBytes : 0);
+                PackEmitter.EmitExplicitUnpack(_w, _logger, type.CSharpName, orderedFields, needsTrailingPadding ? type.PaddingBytes : 0);
         }
     }
 
@@ -303,9 +326,9 @@ public class RustEmitter
         using (_w.BeginTraitImpl("MemoryPackable", name))
         {
             using (_w.BeginMethod("pack", "", null, ["&mut self", "packer: &mut MemoryPacker<'_>"], isPublic: false))
-                PackEmitter.EmitPack(_w, type.PackSteps, type.Fields);
+                PackEmitter.EmitPack(_w, _logger, type.CSharpName, type.PackSteps, type.Fields);
             using (_w.BeginMethod("unpack", "", ["P: MemoryPackerEntityPool"], ["&mut self", "unpacker: &mut MemoryUnpacker<'_, '_, P>"], isPublic: false))
-                PackEmitter.EmitUnpack(_w, type.PackSteps, type.Fields, type.UnpackOnlySteps);
+                PackEmitter.EmitUnpack(_w, _logger, type.CSharpName, type.PackSteps, type.Fields, type.UnpackOnlySteps);
         }
     }
 
@@ -339,9 +362,9 @@ public class RustEmitter
             using (_w.BeginTraitImpl("MemoryPackable", name))
             {
                 using (_w.BeginMethod("pack", "", null, ["&mut self", "packer: &mut MemoryPacker<'_>"], isPublic: false))
-                    PackEmitter.EmitPack(_w, type.PackSteps, type.Fields);
+                    PackEmitter.EmitPack(_w, _logger, type.CSharpName, type.PackSteps, type.Fields);
                 using (_w.BeginMethod("unpack", "", ["P: MemoryPackerEntityPool"], ["&mut self", "unpacker: &mut MemoryUnpacker<'_, '_, P>"], isPublic: false))
-                    PackEmitter.EmitUnpack(_w, type.PackSteps, type.Fields, type.UnpackOnlySteps);
+                    PackEmitter.EmitUnpack(_w, _logger, type.CSharpName, type.PackSteps, type.Fields, type.UnpackOnlySteps);
             }
         }
     }

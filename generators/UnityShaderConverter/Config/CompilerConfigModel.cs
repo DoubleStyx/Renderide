@@ -9,6 +9,12 @@ public sealed class CompilerConfigModel
     [JsonPropertyName("slangEligibleGlobPatterns")]
     public List<string> SlangEligibleGlobPatterns { get; set; } = new();
 
+    /// <summary>
+    /// Glob patterns excluding shaders from <see cref="SlangEligibleGlobPatterns"/> even when they match (parser failures, geometry-only assets, etc.).
+    /// </summary>
+    [JsonPropertyName("slangExcludeGlobPatterns")]
+    public List<string> SlangExcludeGlobPatterns { get; set; } = new();
+
     /// <summary>Maximum Cartesian variant count per shader before the converter fails.</summary>
     [JsonPropertyName("maxVariantCombinationsPerShader")]
     public int MaxVariantCombinationsPerShader { get; set; } = 512;
@@ -20,4 +26,11 @@ public sealed class CompilerConfigModel
     /// <summary>Maximum <c>vk::constant_id</c> specialization bools emitted per shader.</summary>
     [JsonPropertyName("maxSpecializationConstants")]
     public int MaxSpecializationConstants { get; set; } = 8;
+
+    /// <summary>
+    /// When true, passes <c>-warnings-disable</c> for common noisy Slang diagnostics and strips <c>warning[E…]</c> lines from
+    /// logged <c>slangc</c> stderr; errors are never stripped.
+    /// </summary>
+    [JsonPropertyName("suppressSlangWarnings")]
+    public bool SuppressSlangWarnings { get; set; } = true;
 }

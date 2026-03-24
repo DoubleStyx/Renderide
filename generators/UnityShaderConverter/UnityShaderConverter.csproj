@@ -31,4 +31,12 @@
     </None>
   </ItemGroup>
 
+  <!-- Unity built-in .cginc pack (same tree UnityShaderParser.Tests uses) so parsing works without walking the repo from each shader path. -->
+  <ItemGroup>
+    <None Include="..\..\third_party\UnityShaderParser\UnityShaderParser.Tests\TestShaders\UnityBuiltinShaders\CGIncludes\**\*">
+      <Link>UnityBuiltinCGIncludes\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

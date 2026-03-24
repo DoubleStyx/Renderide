@@ -93,6 +93,35 @@ public static partial class VariantExpander
         return combo;
     }
 
+    /// <summary>
+    /// First Cartesian combination of <c>multi_compile</c> keywords without enforcing <see cref="CompilerConfigModel.MaxVariantCombinationsPerShader"/>.
+    /// Used when retrying <c>slangc</c> without specialization so shaders like Fresnel still get a sensible default keyword set.
+    /// </summary>
+    public static IReadOnlyList<string> GetFirstCartesianVariantDefinesIgnoringProductLimit(
+        ShaderFileDocument document,
+        VariantConfigModel? variantOverrides)
+    {
+        if (HasForcedVariantConfig(document, variantOverrides))
+        {
+            List<VariantDefines> forced = variantOverrides!.VariantsByShaderName![document.ShaderName];
+            return forced[0].Defines;
+        }
+
+        List<List<string>> groups = CollectGroups(document);
+        if (groups.Count == 0)
+            return Array.Empty<string>();
+
+        var combo = new List<string>();
+        foreach (List<string> g in groups)
+        {
+            string kw = g[0];
+            if (kw.Length > 0)
+                combo.Add(kw);
+        }
+
+        return combo;
+    }
+
     /// <summary>Computes variant define lists for a parsed shader document.</summary>
     public static IReadOnlyList<IReadOnlyList<string>> Expand(
         ShaderFileDocument document,

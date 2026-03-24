@@ -72,6 +72,31 @@ public sealed class VariantExpanderTests
         Assert.Throws<InvalidOperationException>(() => VariantExpander.Expand(doc, cfg, null));
     }
 
+    /// <summary>
+    /// <see cref="VariantExpander.GetFirstCartesianVariantDefinesIgnoringProductLimit"/> returns the first keyword per group even when the Cartesian product exceeds the normal cap.
+    /// </summary>
+    [Fact]
+    public void GetFirstCartesianVariantDefinesIgnoringProductLimit_ReturnsFirstKeywords()
+    {
+        string g1 = string.Join(' ', Enumerable.Range(0, 32).Select(i => $"A{i}"));
+        string g2 = string.Join(' ', Enumerable.Range(0, 32).Select(i => $"B{i}"));
+        var doc = new ShaderFileDocument
+        {
+            SourcePath = "x.shader",
+            ShaderName = "Test/HugeFallback",
+            Properties = Array.Empty<ShaderPropertyRecord>(),
+            SubShaderTags = new Dictionary<string, string>(),
+            Passes = Array.Empty<ShaderPassDocument>(),
+            MultiCompilePragmas = new[]
+            {
+                "#pragma multi_compile " + g1,
+                "#pragma multi_compile " + g2,
+            },
+        };
+        IReadOnlyList<string> combo = VariantExpander.GetFirstCartesianVariantDefinesIgnoringProductLimit(doc, null);
+        Assert.Equal(new[] { "A0", "B0" }, combo);
+    }
+
     /// <summary><see cref="VariantExpander.AnalyzeMultiCompileGroups"/> reports product without expanding.</summary>
     [Fact]
     public void AnalyzeMultiCompileGroups_ReturnsProduct()

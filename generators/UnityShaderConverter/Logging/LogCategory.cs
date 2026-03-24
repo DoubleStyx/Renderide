@@ -23,4 +23,7 @@ public enum LogCategory
 
     /// <summary>Shader variant expansion.</summary>
     Variants,
+
+    /// <summary>End-of-run summary of shaders that did not fully generate.</summary>
+    FailureReport,
 }

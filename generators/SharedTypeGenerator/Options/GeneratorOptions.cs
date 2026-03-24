@@ -15,8 +15,8 @@ public class GeneratorOptions
     public bool IlVerbose { get; set; }
 
     /// <summary>Path to Renderite.Shared.dll (and sibling managed DLLs) to analyze.</summary>
-    [Option('i', "assembly-path", Required = true, HelpText = "The absolute path to the Renderite.Shared.dll file.")]
-    public string AssemblyPath { get; set; } = null!;
+    [Option('i', "assembly-path", Required = false, HelpText = "Path to Renderite.Shared.dll. When omitted, the generator searches RENDERITE_SHARED_DLL, RESONITE_DIR, STEAM_PATH, default Steam locations, and libraryfolders.vdf (same idea as the Rust bootstrapper).")]
+    public string? AssemblyPath { get; set; }
 
     /// <summary>Optional path for generated <c>shared.rs</c>; when null, <see cref="DetermineDefaultOutputPath"/> is used.</summary>
     [Option('o', "output-rust-file", Required = false, Default = null, HelpText = "The destination .rs file to generate.")]

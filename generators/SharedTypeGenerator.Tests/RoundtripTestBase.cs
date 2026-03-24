@@ -5,6 +5,7 @@ using Renderite.Shared;
 using SharedTypeGenerator.Analysis;
 using SharedTypeGenerator.IR;
 using SharedTypeGenerator.Logging;
+using SharedTypeGenerator.Options;
 
 namespace SharedTypeGenerator.Tests;
 
@@ -13,14 +14,13 @@ public abstract class RoundtripTestBase
 {
     private static string GetAssemblyPath()
     {
-        var path = Environment.GetEnvironmentVariable("RENDERITE_SHARED_DLL");
+        var path = Environment.GetEnvironmentVariable(ResoniteAssemblyDiscovery.RenderiteSharedDllEnvVar);
         if (!string.IsNullOrEmpty(path) && File.Exists(path))
             return path;
 
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var steamPath = Path.Combine(home, ".steam", "steam", "steamapps", "common", "Resonite", "Renderite.Shared.dll");
-        if (File.Exists(steamPath))
-            return steamPath;
+        var discovered = ResoniteAssemblyDiscovery.TryFindRenderiteSharedDll();
+        if (discovered != null)
+            return discovered;
 
         var libPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "lib", "Renderite.Shared.dll");
         var fullLib = Path.GetFullPath(libPath);
@@ -28,7 +28,7 @@ public abstract class RoundtripTestBase
             return fullLib;
 
         throw new InvalidOperationException(
-            "Renderite.Shared.dll not found. Set RENDERITE_SHARED_DLL or copy the DLL to generators/SharedTypeGenerator.Tests/lib/");
+            "Renderite.Shared.dll not found. Set RENDERITE_SHARED_DLL, RESONITE_DIR, install Resonite via Steam, or copy the DLL to generators/SharedTypeGenerator.Tests/lib/");
     }
 
     protected static (Assembly Assembly, List<TypeDescriptor> Types) LoadAssemblyAndTypes()

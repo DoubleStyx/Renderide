@@ -1,8 +1,9 @@
 using System.Runtime;
 using CommandLine;
 using NotEnoughLogs;
-using SharedTypeGenerator;
 using NotEnoughLogs.Behaviour;
+using NotEnoughLogs.Sinks;
+using SharedTypeGenerator;
 using SharedTypeGenerator.Logging;
 using SharedTypeGenerator.Options;
 
@@ -11,13 +12,54 @@ GCSettings.LatencyMode = GCLatencyMode.Batch;
 Parser.Default.ParseArguments<GeneratorOptions>(args)
     .WithParsed(options =>
     {
-        LogLevel maxLevel = ResolveMaxLogLevel(options.Verbose);
-        using var logger = new Logger(new LoggerConfiguration
+        if (string.IsNullOrWhiteSpace(options.AssemblyPath))
         {
-            Behaviour = new DirectLoggingBehaviour(),
-            MaxLevel = maxLevel,
-        });
-        GeneratorRunner.Run(options, logger);
+            string? discovered = ResoniteAssemblyDiscovery.TryFindRenderiteSharedDll();
+            if (discovered == null)
+            {
+                Console.Error.WriteLine(
+                    "Could not find Renderite.Shared.dll. Set RENDERITE_SHARED_DLL or RESONITE_DIR, install Resonite via Steam, or pass -i / --assembly-path.");
+                Environment.Exit(1);
+                return;
+            }
+
+            options.AssemblyPath = discovered;
+        }
+        else
+        {
+            options.AssemblyPath = Path.GetFullPath(options.AssemblyPath.Trim());
+            if (!File.Exists(options.AssemblyPath))
+            {
+                Console.Error.WriteLine($"Assembly path does not exist: {options.AssemblyPath}");
+                Environment.Exit(1);
+                return;
+            }
+        }
+
+        LogLevel maxLevel = ResolveMaxLogLevel(options.Verbose);
+        int exitCode = 0;
+        {
+            using var deferSink = new DeferringIssueSink(new ConsoleSink());
+            using var logger = new Logger(
+                new[] { deferSink },
+                new LoggerConfiguration
+                {
+                    Behaviour = new DirectLoggingBehaviour(),
+                    MaxLevel = maxLevel,
+                });
+            try
+            {
+                GeneratorRunner.Run(options, logger);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(LogCategory.Bug, $"SharedTypeGenerator failed: {ex.Message}\n{ex}");
+                exitCode = 1;
+            }
+        }
+
+        if (exitCode != 0)
+            Environment.Exit(exitCode);
     });
 
 static LogLevel ResolveMaxLogLevel(bool verbose)
