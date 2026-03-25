@@ -102,8 +102,6 @@ Shader "Unlit" {
 
 					float _PolarPow;
 
-					float _Cutoff;
-
 					v2f vert(appdata_t v)
 					{
 						v2f o;

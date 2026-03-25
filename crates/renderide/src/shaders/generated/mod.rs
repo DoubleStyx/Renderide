@@ -77,6 +77,7 @@ pub mod unlit_test_shader;
 pub mod unlit_texture_debug;
 pub mod unlit_unlit_polar_mapping;
 pub mod unlit_uv_rect;
+pub mod volume_fog_box;
 pub mod volume_unlit;
 pub mod xiexe_toon20_xs_toon20__cutout;
 pub mod xiexe_toon20_xs_toon20__cutout_a2c;

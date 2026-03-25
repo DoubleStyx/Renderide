@@ -1,4 +1,4 @@
-﻿#ifndef EVRCOMMON
+#ifndef EVRCOMMON
 #define EVRCOMMON
 #include "UnityCG.cginc"
 #include "UnityStandardUtils.cginc"
@@ -124,13 +124,11 @@ UNITY_INSTANCING_BUFFER_END(EVR_INST_BUFFER)
 	#endif
 #endif
 
-// Normal map definitions
-#if defined(_NORMALMAP)
-	UNITY_DECLARE_TEX2D(_NormalMap);
-	float4 _NormalMap_ST; 
-	#if defined(_LERP)
-		UNITY_DECLARE_TEX2D(_NormalMap1);
-	#endif
+// Normal map definitions (primary always present for Slang specialization single-TU; optional second map stays ifdef).
+UNITY_DECLARE_TEX2D(_NormalMap);
+float4 _NormalMap_ST;
+#if defined(_NORMALMAP) && defined(_LERP)
+	UNITY_DECLARE_TEX2D(_NormalMap1);
 #endif
 
 // Packed normal map definitions
@@ -189,9 +187,7 @@ float _Distort;
 fixed _AlphaClip;
 #endif
 
-#if defined(_ALPHATEST) || defined(_MASK_TEXTURE_CLIP)
-fixed _Cutoff;
-#endif
+float _Cutoff;
 
 #ifdef VERTEX_OFFSET
 sampler2D _VertexOffsetMap;
@@ -223,7 +219,8 @@ float4 _IntersectEmissionColor;
 
 UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
 
-float _GammaCurve;
+/// Gamma curve for alpha output (<c>EVR_APPLY_ALPHA_OUTPUT</c>). Declared per-shader via Properties so the
+/// converter does not duplicate a global here (Slang rejects conflicting <c>float _GammaCurve</c>).
 
 #ifdef _SLICE
 half _EdgeTransitionStart;
@@ -278,22 +275,19 @@ float _DepthBias;
 #define _BITANGENT 1
 #endif
 
+/// Renderide/UnityShaderConverter: vertex inputs and varyings that depend on <c>multi_compile</c> axes must stay
+/// present for every axis when using Slang specialization (<c>USC_*</c> runtime <c>if</c>). Preprocessor-stripping
+/// <c>texcoord</c>/<c>vcolor</c>/<c>tangent</c> while fragment code still references them breaks <c>slangc</c>.
 struct evr_appdata_t 
 {
 	float4 vertex : POSITION;
 	float3 normal : NORMAL;
 
-	#if defined(_VERTEXCOLORS)
 	float4 vcolor : COLOR;
-	#endif
 
-	#if defined(_BITANGENT)
 	float4 tangent : TANGENT;
-	#endif
 	
-	#if defined(_TEXTURE) || defined(_NORMALMAP) || defined(_TEXTURE_NORMALMAP) || defined(_MASK_TEXTURE_MUL) || defined(_MASK_TEXTURE_CLIP) || defined(_LERPTEX) || defined(_LERPTEX_POLARUV)
 	float2 texcoord : TEXCOORD0;
-	#endif
 
 	#if defined(_SECONDARY_TEXCOORD)
 	float2 texcoord1 : TEXCOORD1;
@@ -309,24 +303,18 @@ struct evr_v2f
 	float4 vertex : SV_POSITION;
 	float3 normal : NORMAL;
 
-	#if defined(_TEXTURE) || defined(_NORMALMAP) || defined(_TEXTURE_NORMALMAP) || defined(_MASK_TEXTURE_MUL) || defined(_MASK_TEXTURE_CLIP) || defined(_LERPTEX) || defined(_LERPTEX_POLARUV)
 	half2 texcoord : TEXCOORD0;
-	#endif
 
 	#if defined(_SECONDARY_TEXCOORD)
 	half2 texcoord1 : TEXCOORD1;
 	#endif
 
-	#if defined(_BITANGENT)
 	float3 tangent : TANGENT;
 	float3 bitangent : TEXCOORD2;
-	#endif
 	
 	float4 position : TEXCOORD3;
 	
-	#if defined(_VERTEXCOLORS)
 	float4 vcolor : COLOR;
-	#endif
 	
 	UNITY_VERTEX_OUTPUT_STEREO
 
@@ -508,19 +496,14 @@ float4 ApplyVertexColor(float4 inColor)
 #define EVR_APPLY_NORMALMAP_INFO_FRAG_LERP(tc1, tc2, tex1, tex2, i, l) // no-op
 #endif
 
-#ifdef _BITANGENT
 #define EVR_APPLY_BITANGENT(v, o)	o.tangent = normalize(mul(unity_ObjectToWorld, float4(v.tangent.xyz, 0)).xyz); \
 									o.bitangent = normalize(cross(o.normal, o.tangent) * v.tangent.w);
-#else
-#define EVR_APPLY_BITANGENT(v, o) // no-op
-#endif
 
-#if defined(_TEXTURE) || defined(_NORMALMAP) || defined(_TEXTURE_NORMALMAP) || defined(_MASK_TEXTURE_MUL) || defined(_MASK_TEXTURE_CLIP) || defined(_LERPTEX) || defined(_LERPTEX_POLARUV)
 #define EVR_APPLY_TEXCOORD_INFO(n, m, v, o) o.n = v.m;
+#if defined(_TEXTURE) || defined(_NORMALMAP) || defined(_TEXTURE_NORMALMAP) || defined(_MASK_TEXTURE_MUL) || defined(_MASK_TEXTURE_CLIP) || defined(_LERPTEX) || defined(_LERPTEX_POLARUV)
 #define EVR_APPLY_TEXCOORD_INFO_TRANSFORM(n, m, v, tex, o) o.n = TRANSFORM_TEX(v.m, tex);
 #else
-#define EVR_APPLY_TEXCOORD_INFO(n, m, v, o)
-#define EVR_APPLY_TEXCOORD_INFO_TRANSFORM(n, m, v, tex, o) // no-op
+#define EVR_APPLY_TEXCOORD_INFO_TRANSFORM(n, m, v, tex, o) o.n = v.m;
 #endif
 
 #if defined(WORLD_SPACE)

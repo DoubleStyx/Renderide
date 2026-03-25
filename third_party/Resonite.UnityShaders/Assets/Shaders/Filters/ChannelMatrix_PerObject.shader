@@ -84,9 +84,7 @@ Shader "Filters/ChannelMatrix_PerObject"
 			static const float PI = 3.14159265359;
 			static const float TAU = 6.283185307;
 
-#ifdef RECTCLIP
-			float4 _Rect;
-#endif
+float4 _Rect;
 
 			struct v2f
 			{
@@ -94,9 +92,7 @@ Shader "Filters/ChannelMatrix_PerObject"
 				float4 grabPos : TEXCOORD1;
 				float4 pos : SV_POSITION;
 
-#ifdef RECTCLIP
 				float2 position : TEXCOORD2;
-#endif
 			};
 
 			v2f vert(appdata_full v)

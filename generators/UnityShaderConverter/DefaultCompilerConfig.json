@@ -8,6 +8,10 @@
   "shaderGenerationExcludeGlobPatterns": [],
   "maxVariantCombinationsPerShader": 512,
   "enableSlangSpecialization": true,
+  "slangSpecializationExcludeGlobPatterns": [
+    "**/Projection360.shader",
+    "**/Volume/VolumeUnlit.shader"
+  ],
   "maxSpecializationConstants": 8,
   "suppressSlangWarnings": true,
   "injectMaterialUniformBlockWgsl": false

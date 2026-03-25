@@ -3,7 +3,7 @@ enable f16;
 
 struct _MatrixStorage_float4x4_ColMajorstd140_0
 {
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
+    @align(16) data_0 : array<vec4<f32>, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityPerFrame_std140_0
@@ -67,7 +67,7 @@ fn vert( _S1 : vertexInput_0) -> v2f_0
 
 enable f16;
 
-@binding(30) @group(0) var _MainTex_0 : texture_2d<f32>;
+@binding(32) @group(0) var _MainTex_0 : texture_2d<f32>;
 
 @binding(3) @group(0) var unity_usc_resonite_macro_sampler_0 : sampler;
 
@@ -75,7 +75,8 @@ struct GlobalParams_std140_0
 {
     @align(16) unity_Lightmap_HDR_0 : vec4<f16>,
     @align(8) unity_DynamicLightmap_HDR_0 : vec4<f16>,
-    @align(16) _GammaCurve_0 : f32,
+    @align(16) _NormalMap_ST_0 : vec4<f32>,
+    @align(16) _Cutoff_0 : f32,
     @align(16) _MainTex_ST_0 : vec4<f32>,
     @align(16) _Pow_0 : f32,
 };

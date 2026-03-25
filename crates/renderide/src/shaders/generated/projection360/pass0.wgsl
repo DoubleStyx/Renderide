@@ -3,7 +3,7 @@ enable f16;
 
 struct _MatrixStorage_float4x4_ColMajorstd140_0
 {
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
+    @align(16) data_0 : array<vec4<f32>, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityPerFrame_std140_0
@@ -47,6 +47,7 @@ struct v2f_0
     @builtin(position) vertex_0 : vec4<f32>,
     @location(1) pos_2 : vec4<f32>,
     @location(2) dist_0 : f32,
+    @location(3) position_0 : vec2<f32>,
 };
 
 struct vertexInput_0
@@ -69,35 +70,6 @@ fn vert( _S1 : vertexInput_0) -> v2f_0
 
 enable f16;
 
-struct _MatrixStorage_float4x4_ColMajorstd140_0
-{
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
-};
-
-struct SLANG_ParameterGroup_UnityPerDraw_std140_0
-{
-    @align(16) unity_ObjectToWorld_0 : _MatrixStorage_float4x4_ColMajorstd140_0,
-    @align(16) unity_WorldToObject_0 : _MatrixStorage_float4x4_ColMajorstd140_0,
-    @align(16) unity_LODFade_0 : vec4<f32>,
-    @align(16) unity_WorldTransformParams_0 : vec4<f32>,
-    @align(16) unity_RenderingLayer_0 : vec4<f32>,
-};
-
-@binding(9) @group(0) var<uniform> UnityPerDraw_0 : SLANG_ParameterGroup_UnityPerDraw_std140_0;
-struct SLANG_ParameterGroup_UnityPerCamera_std140_0
-{
-    @align(16) _Time_0 : vec4<f32>,
-    @align(16) U_SinTime_0 : vec4<f32>,
-    @align(16) _CosTime_0 : vec4<f32>,
-    @align(16) unity_DeltaTime_0 : vec4<f32>,
-    @align(16) _WorldSpaceCameraPos_0 : vec3<f32>,
-    @align(16) _ProjectionParams_0 : vec4<f32>,
-    @align(16) U_ScreenParams_0 : vec4<f32>,
-    @align(16) _ZBufferParams_0 : vec4<f32>,
-    @align(16) unity_OrthoParams_0 : vec4<f32>,
-};
-
-@binding(4) @group(0) var<uniform> UnityPerCamera_0 : SLANG_ParameterGroup_UnityPerCamera_std140_0;
 @binding(27) @group(0) var _MainTex_0 : texture_2d<f32>;
 
 @binding(3) @group(0) var unity_usc_resonite_macro_sampler_0 : sampler;
@@ -112,14 +84,10 @@ struct GlobalParams_std140_0
     @align(16) _FOV_0 : vec4<f32>,
     @align(16) _Exposure_0 : f32,
     @align(4) _Gamma_0 : f32,
+    @align(16) _Rect_0 : vec4<f32>,
 };
 
 @binding(0) @group(0) var<uniform> globalParams_0 : GlobalParams_std140_0;
-fn ObjSpaceViewDir_0( v_0 : vec4<f32>) -> vec3<f32>
-{
-    return (((vec4<f32>(UnityPerCamera_0._WorldSpaceCameraPos_0.xyz, 1.0f)) * (mat4x4<f32>(UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(0)][i32(0)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(1)][i32(0)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(2)][i32(0)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(3)][i32(0)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(0)][i32(1)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(1)][i32(1)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(2)][i32(1)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(3)][i32(1)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(0)][i32(2)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(1)][i32(2)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(2)][i32(2)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(3)][i32(2)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(0)][i32(3)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(1)][i32(3)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(2)][i32(3)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(3)][i32(3)])))).xyz - v_0.xyz;
-}
-
 fn dir_to_uv_0( viewDir_0 : vec3<f32>) -> vec2<f32>
 {
     var i_0 : i32;
@@ -178,48 +146,18 @@ struct pixelInput_0
 {
     @location(1) pos_0 : vec4<f32>,
     @location(2) dist_0 : f32,
+    @location(3) position_0 : vec2<f32>,
 };
 
 @fragment
 fn frag( _S4 : pixelInput_0, @builtin(position) vertex_0 : vec4<f32>) -> pixelOutput_0
 {
-    var uv_0 : vec2<f32> = dir_to_uv_0(normalize(ObjSpaceViewDir_0(_S4.pos_0)));
-    var _S5 : f32 = uv_0.x;
-    var _S6 : bool;
-    if(_S5 < 0.0f)
-    {
-        _S6 = true;
-    }
-    else
-    {
-        _S6 = _S5 > 1.0f;
-    }
-    if(_S6)
-    {
-        _S6 = true;
-    }
-    else
-    {
-        _S6 = (uv_0.y) < 0.0f;
-    }
-    if(_S6)
-    {
-        _S6 = true;
-    }
-    else
-    {
-        _S6 = (uv_0.y) > 1.0f;
-    }
-    if(_S6)
-    {
-        discard;
-    }
-    var _S7 : vec4<f32> = vec4<f32>(uv_0 * globalParams_0._MainTex_ST_0.xy + globalParams_0._MainTex_ST_0.zw, 0.0f, 0.0f);
-    var c_0 : vec4<f32> = (textureSampleLevel((_MainTex_0), (unity_usc_resonite_macro_sampler_0), (_S7.xy), (_S7.w)));
+    var _S5 : vec4<f32> = vec4<f32>(saturate(dir_to_uv_0(vec3<f32>(0.0f, 0.0f, 1.0f))) * globalParams_0._MainTex_ST_0.xy + globalParams_0._MainTex_ST_0.zw, 0.0f, 0.0f);
+    var c_0 : vec4<f32> = (textureSampleLevel((_MainTex_0), (unity_usc_resonite_macro_sampler_0), (_S5.xy), (_S5.w)));
     var fade_0 : f32 = saturate(clamp(_S4.dist_0 - 0.05000000074505806f, 0.0f, 0.10000000149011612f) * 10.0f);
     var tint_0 : vec4<f16> = vec4<f16>(globalParams_0._Tint_0);
     tint_0[i32(3)] = tint_0[i32(3)] * f16(fade_0);
-    var _S8 : pixelOutput_0 = pixelOutput_0( vec4<f16>(vec4<f32>(pow(c_0.xyz, vec3<f32>(globalParams_0._Gamma_0)) * vec3<f32>(globalParams_0._Exposure_0), c_0.w) * vec4<f32>(tint_0)) );
-    return _S8;
+    var _S6 : pixelOutput_0 = pixelOutput_0( vec4<f16>(vec4<f32>(pow(c_0.xyz, vec3<f32>(globalParams_0._Gamma_0)) * vec3<f32>(globalParams_0._Exposure_0), c_0.w) * vec4<f32>(tint_0)) );
+    return _S6;
 }
 

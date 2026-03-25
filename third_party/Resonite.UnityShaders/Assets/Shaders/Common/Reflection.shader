@@ -58,10 +58,7 @@ SubShader{
 			{
 				float4 vertex : POSITION;
 				float3 normal : NORMAL;
-				
-				#ifdef _NORMALMAP
 				float2 uv : TEXCOORD0;
-				#endif
 
 				UNITY_VERTEX_INPUT_INSTANCE_ID
 			};
@@ -73,9 +70,7 @@ SubShader{
 				float4 ref : TEXCOORD0;
 				float3 viewDir : TEXCOORD1;
 
-				#ifdef _NORMALMAP
 				float2 uv : TEXCOORD2;
-				#endif
 
 				float eyeIndex : TEXCOORD3;
 
@@ -84,6 +79,7 @@ SubShader{
 			};
 
 			sampler2D _ReflectionTex;
+			float _Distort;
 
 #ifndef UNITY_SINGLE_PASS_STEREO
 			uniform float _stereoActiveEye;
@@ -100,9 +96,7 @@ SubShader{
 				o.viewDir.xzy = WorldSpaceViewDir(v.vertex);
 				o.ref = ComputeNonStereoScreenPos(o.vertex);
 
-				#ifdef _NORMALMAP
 				o.uv = TRANSFORM_TEX(v.uv, _NormalMap);
-				#endif
 
 #ifdef UNITY_SINGLE_PASS_STEREO
 				o.eyeIndex = unity_StereoEyeIndex;
@@ -133,7 +127,7 @@ SubShader{
 
 				#ifdef _NORMALMAP
 				half3 bump = UnpackNormal(UNITY_SAMPLE_TEX2D(_NormalMap, i.uv)).rgb;
-				uv.xy += bump * _Distort;
+				uv.xy += bump.xy * _Distort;
 				#endif
 
 				uv = UNITY_PROJ_COORD(uv);

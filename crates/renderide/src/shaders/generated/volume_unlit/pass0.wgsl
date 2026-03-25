@@ -3,7 +3,7 @@ enable f16;
 
 struct _MatrixStorage_float4x4_ColMajorstd140_0
 {
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
+    @align(16) data_0 : array<vec4<f32>, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityPerFrame_std140_0
@@ -145,7 +145,7 @@ struct SLANG_ParameterGroup_UnityPerCamera_std140_0
 @binding(4) @group(0) var<uniform> UnityPerCamera_0 : SLANG_ParameterGroup_UnityPerCamera_std140_0;
 struct _MatrixStorage_float4x4_ColMajorstd140_0
 {
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
+    @align(16) data_0 : array<vec4<f32>, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityPerDraw_std140_0
@@ -158,43 +158,6 @@ struct SLANG_ParameterGroup_UnityPerDraw_std140_0
 };
 
 @binding(9) @group(0) var<uniform> UnityPerDraw_0 : SLANG_ParameterGroup_UnityPerDraw_std140_0;
-@binding(29) @group(0) var _Volume_0 : texture_3d<f32>;
-
-struct _Array_std140_vectorx3Chalfx2C3x3E4_0
-{
-    @align(16) data_1 : array<vec8<f16>, i32(4)>,
-};
-
-struct _Array_std140_half4_0
-{
-    @align(16) data_2 : array<vec8<f16>, i32(4)>,
-};
-
-struct _Array_std140_vectorx3Chalfx2C4x3E4_0
-{
-    @align(16) data_3 : array<vec8<f16>, i32(4)>,
-};
-
-struct GlobalParams_std140_0
-{
-    @align(16) unity_Lightmap_HDR_0 : vec4<f16>,
-    @align(8) unity_DynamicLightmap_HDR_0 : vec4<f16>,
-    @align(16) U_StepSize_0 : f16,
-    @align(2) _Gain_0 : f16,
-    @align(4) _AccumulationCutoff_0 : f16,
-    @align(2) _HitThreshold_0 : f16,
-    @align(16) _HighlightNormal_0 : _Array_std140_vectorx3Chalfx2C3x3E4_0,
-    @align(16) _HighlightOffset_0 : _Array_std140_half4_0,
-    @align(16) _HighlightRange_0 : _Array_std140_half4_0,
-    @align(16) _HighlightColor_0 : _Array_std140_vectorx3Chalfx2C4x3E4_0,
-    @align(16) U_SlicerNormal_0 : _Array_std140_vectorx3Chalfx2C3x3E4_0,
-    @align(16) U_SlicerOffset_0 : _Array_std140_half4_0,
-    @align(16) _Exp_0 : f16,
-    @align(2) _LowClip_0 : f16,
-    @align(4) _HighClip_0 : f16,
-};
-
-@binding(0) @group(0) var<uniform> globalParams_0 : GlobalParams_std140_0;
 fn LinearEyeDepth_0( z_0 : f32) -> f32
 {
     return 1.0f / (UnityPerCamera_0._ZBufferParams_0.z * z_0 + UnityPerCamera_0._ZBufferParams_0.w);
@@ -239,30 +202,6 @@ fn IntersectUnitCube_0( linePoint_1 : vec3<f32>,  lineDirection_1 : vec3<f32>) -
     return p_0;
 }
 
-fn cut_0( v_0 : f16) -> f16
-{
-    var _S1 : bool;
-    if(v_0 < 0.0h)
-    {
-        _S1 = true;
-    }
-    else
-    {
-        _S1 = v_0 > 1.0h;
-    }
-    if(_S1)
-    {
-        return 0.0h;
-    }
-    return v_0;
-}
-
-fn rescale_0( c_0 : vec4<f16>) -> vec4<f16>
-{
-    var _S2 : vec4<f16> = (c_0 - vec4<f16>(globalParams_0._LowClip_0)) / vec4<f16>((globalParams_0._HighClip_0 - globalParams_0._LowClip_0));
-    return vec4<f16>(cut_0(_S2.x), cut_0(_S2.y), cut_0(_S2.z), cut_0(_S2.w));
-}
-
 struct pixelOutput_0
 {
     @location(0) output_0 : vec4<f16>,
@@ -277,52 +216,26 @@ struct pixelInput_0
 };
 
 @fragment
-fn frag( _S3 : pixelInput_0) -> pixelOutput_0
+fn frag( _S1 : pixelInput_0) -> pixelOutput_0
 {
-    var _S4 : f32 = min(LinearEyeDepth_0((textureSample((_CameraDepthTexture_0), (unity_usc_resonite_macro_sampler_0), (vec2<f32>(_S3.projPos_0.xy / vec2<f16>(_S3.projPos_0.w))))).x) / f32(_S3.projPos_0.z), 1.0f);
+    var _S2 : f32 = min(LinearEyeDepth_0((textureSample((_CameraDepthTexture_0), (unity_usc_resonite_macro_sampler_0), (vec2<f32>(_S1.projPos_0.xy / vec2<f16>(_S1.projPos_0.w))))).x) / f32(_S1.projPos_0.z), 1.0f);
     var camPos_0 : vec3<f32> = (((vec4<f32>(UnityPerCamera_0._WorldSpaceCameraPos_0.xyz, 1.0f)) * (mat4x4<f32>(UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(0)][i32(0)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(1)][i32(0)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(2)][i32(0)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(3)][i32(0)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(0)][i32(1)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(1)][i32(1)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(2)][i32(1)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(3)][i32(1)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(0)][i32(2)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(1)][i32(2)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(2)][i32(2)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(3)][i32(2)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(0)][i32(3)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(1)][i32(3)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(2)][i32(3)], UnityPerDraw_0.unity_WorldToObject_0.data_0[i32(3)][i32(3)])))).xyz;
-    var _S5 : vec3<f32> = vec3<f32>(_S3.origin_0.xyz);
-    var _S6 : vec3<f16> = vec3<f16>(normalize(_S5 - camPos_0));
-    var _S7 : vec3<f32> = vec3<f32>(0.5f);
+    var _S3 : vec3<f32> = vec3<f32>(_S1.origin_0.xyz);
+    var _S4 : vec3<f16> = vec3<f16>(normalize(_S3 - camPos_0));
     var pos_0 : vec3<f16>;
-    if((all(((abs(camPos_0)) <= _S7))))
+    if((all(((abs(camPos_0)) <= vec3<f32>(0.5f)))))
     {
         pos_0 = vec3<f16>(camPos_0);
     }
     else
     {
-        pos_0 = vec3<f16>(IntersectUnitCube_0(camPos_0, vec3<f32>(_S6)));
+        pos_0 = vec3<f16>(IntersectUnitCube_0(camPos_0, vec3<f32>(_S4)));
     }
-    var _S8 : vec3<f16> = _S6 * vec3<f16>(globalParams_0.U_StepSize_0);
-    var _S9 : vec3<f32> = vec3<f32>(pos_0);
-    var _S10 : vec3<f32> = vec3<f32>(_S6);
-    var end_0 : vec3<f32> = camPos_0 + _S10 * vec3<f32>(distance(camPos_0, _S5)) * vec3<f32>(_S4);
-    var dist_2 : f32 = distance(_S9, end_0);
-    if((distance(camPos_0, end_0)) < (distance(camPos_0, _S9)))
+    if((distance(camPos_0, camPos_0 + vec3<f32>(_S4) * vec3<f32>(distance(camPos_0, _S3)) * vec3<f32>(_S2))) < (distance(camPos_0, vec3<f32>(pos_0))))
     {
         discard;
     }
-    const _S11 : vec4<f16> = vec4<f16>(0.0h, 0.0h, 0.0h, 0.0h);
-    var _S12 : f16 = min(f16(dist_2 / f32(globalParams_0.U_StepSize_0)), 1024.0h);
-    var gain_0 : f16 = globalParams_0._Gain_0 * f16(length(_S10 * normalize(_S3.scale_0)) * f32(globalParams_0.U_StepSize_0));
-    var f_0 : i32 = i32(0);
-    var acc_0 : vec4<f16> = _S11;
-    for(;;)
-    {
-        if(f16(f_0) < _S12)
-        {
-        }
-        else
-        {
-            break;
-        }
-        var acc_1 : vec4<f16> = acc_0 + pow(rescale_0(vec4<f16>((textureSample((_Volume_0), (unity_usc_resonite_macro_sampler_0), (vec3<f32>(pos_0) + _S7))))), vec4<f16>(globalParams_0._Exp_0)) * vec4<f16>(gain_0);
-        var pos_1 : vec3<f16> = pos_0 + _S8;
-        f_0 = f_0 + i32(1);
-        pos_0 = pos_1;
-        acc_0 = acc_1;
-    }
-    var _S13 : pixelOutput_0 = pixelOutput_0( vec4<f16>(acc_0.xyz, 1.0h) );
-    return _S13;
+    var _S5 : pixelOutput_0 = pixelOutput_0( vec4<f16>(vec3<f16>(0.0h, 0.0h, 0.0h), 1.0h) );
+    return _S5;
 }
 

@@ -217,7 +217,18 @@ public static class ConverterRunner
                     continue;
                 }
 
-                IReadOnlyList<SpecializationAxis> axes = SpecializationExtractor.Extract(doc, compilerConfig);
+                bool specializationExcludedByGlob = compilerConfig.EnableSlangSpecialization &&
+                    compilerConfig.SlangSpecializationExcludeGlobPatterns is { Count: > 0 } specExcl &&
+                    GlobMatcher.MatchesAny(relForGlob, specExcl);
+                IReadOnlyList<SpecializationAxis> axes = specializationExcludedByGlob
+                    ? Array.Empty<SpecializationAxis>()
+                    : SpecializationExtractor.Extract(doc, compilerConfig);
+                if (specializationExcludedByGlob)
+                {
+                    logger.LogTrace(
+                        LogCategory.Variants,
+                        $"{shaderPath}: specialization disabled (matches slangSpecializationExcludeGlobPatterns).");
+                }
                 var axisKeywords = new HashSet<string>(axes.Select(a => a.Keyword), StringComparer.Ordinal);
                 List<string> firstVariantDefines = variants[0].Where(s => s.Length > 0).ToList();
                 List<string> baselineDefines = firstVariantDefines.Where(d => !axisKeywords.Contains(d)).ToList();
@@ -317,6 +328,7 @@ public static class ConverterRunner
                                     wgsl,
                                     doc.Properties,
                                     compilerConfig.MaterialBindGroupIndex);
+                            wgsl = WgslNagaCompatibilityTransforms.NormalizeHostSharableArraySizes(wgsl);
                             File.WriteAllText(wgslPath, wgsl);
                         }
                         catch (Exception ex)
@@ -585,6 +597,23 @@ public static class ConverterRunner
     {
         failureDetail = null;
         string slangSource = SlangEmitter.EmitPassSlang(pass, baselineDefines, axes);
+        if (axes.Count > 0)
+        {
+            Dictionary<string, string> axisKeywords = axes.ToDictionary(
+                static a => a.Keyword,
+                static a => a.SlangIdentifier,
+                StringComparer.Ordinal);
+            foreach (string ax in SpecializationStructAxisGuard.FindAxisKeywordsInStructConditionalBlocks(
+                         pass.ProgramSource ?? string.Empty,
+                         axisKeywords.Keys))
+            {
+                logger.LogTrace(
+                    LogCategory.SlangCompile,
+                    $"{shaderPath} pass {passIndex}: specialization axis `{ax}` is used under `#if` inside a `struct`; " +
+                    "if `slangc` reports missing members, declare those fields unconditionally (Unlit / Common.cginc pattern).");
+            }
+        }
+
         File.WriteAllText(tempSlangPath, slangSource);
         logger.LogTrace(LogCategory.Slang, $"Transient Slang → slangc ({tempSlangPath})");
         if (!string.IsNullOrWhiteSpace(dumpIntermediateDirectory))
@@ -641,6 +670,7 @@ public static class ConverterRunner
             wgsl = WgslMaterialUniformInjector.StripInjectedMaterialBlock(wgsl);
             if (injectMaterialUniformBlockWgsl)
                 wgsl = WgslMaterialUniformInjector.PrependMaterialBlock(wgsl, shaderFile.Properties, materialBindGroupIndex);
+            wgsl = WgslNagaCompatibilityTransforms.NormalizeHostSharableArraySizes(wgsl);
             if (axes.Count > 0)
             {
                 if (wgsl.Contains("override", StringComparison.Ordinal))

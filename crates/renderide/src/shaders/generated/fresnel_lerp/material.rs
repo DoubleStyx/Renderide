@@ -17,9 +17,33 @@
 use glam::Vec4;
 use crate::scene::types::TextureHandle;
 
-/// No `multi_compile` specialization axes were extracted; pipeline constants are unused.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct VariantKey;
+/// Maps to WGSL `override` / `wgpu::PipelineCompilationOptions::constants` (decimal id keys per wgpu docs).
+/// `Default` matches WGSL override initializer defaults from Slang `[vk::constant_id]` (first keyword true on exclusive `multi_compile` lines).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct VariantKey {
+    /// ShaderLab keyword `_LERPTEX_POLARUV`
+    pub lerptex_polaruv: bool,
+    /// ShaderLab keyword `_LERPTEX`
+    pub lerptex: bool,
+    /// ShaderLab keyword `_MULTI_VALUES`
+    pub multi_values: bool,
+    /// ShaderLab keyword `_NORMALMAP`
+    pub normalmap: bool,
+    /// ShaderLab keyword `_TEXTURE`
+    pub texture: bool,
+}
+
+impl Default for VariantKey {
+    fn default() -> Self {
+        Self {
+            lerptex_polaruv: false,
+            lerptex: false,
+            multi_values: false,
+            normalmap: false,
+            texture: false,
+        }
+    }
+}
 
 /// WGSL clustered scene uniforms, lights, cluster buffers (matches builtin PBR).
 pub const RENDERIDE_SCENE_BIND_GROUP: u32 = 1;
@@ -209,9 +233,12 @@ pub fn shader_source_pass0() -> wgpu::ShaderSource<'static> {
 static VERTEX_ATTRIBUTES_PASS0: &[wgpu::VertexAttribute] = &[
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 0 },
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 16, shader_location: 1 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 2 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 3 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 64, shader_location: 4 },
 ];
 static VERTEX_BUFFER_LAYOUT_PASS0: [wgpu::VertexBufferLayout; 1] = [wgpu::VertexBufferLayout {
-    array_stride: 28,
+    array_stride: 72,
     step_mode: wgpu::VertexStepMode::Vertex,
     attributes: VERTEX_ATTRIBUTES_PASS0,
 }];
@@ -239,8 +266,44 @@ pub struct MaterialUniform {
     pub _pad1: u32,
 }
 
-fn pipeline_compilation_options_vertex_inner(_variant: &VariantKey) -> wgpu::PipelineCompilationOptions<'static> {
-    wgpu::PipelineCompilationOptions::default()
+/// Maps `VariantKey` fields to pipeline constant ids (decimal strings per WebGPU).
+pub fn specialization_constants_f64(variant: &VariantKey) -> std::vec::Vec<(&'static str, f64)> {
+    let mut v = std::vec::Vec::new();
+    v.push(("0", if variant.lerptex_polaruv { 1.0 } else { 0.0 }));
+    v.push(("1", if variant.lerptex { 1.0 } else { 0.0 }));
+    v.push(("2", if variant.multi_values { 1.0 } else { 0.0 }));
+    v.push(("3", if variant.normalmap { 1.0 } else { 0.0 }));
+    v.push(("4", if variant.texture { 1.0 } else { 0.0 }));
+    v
+}
+
+static SPECIALIZATION_KEYS: &[&str] = &[
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+];
+
+fn pipeline_compilation_options_vertex_inner(variant: &VariantKey) -> wgpu::PipelineCompilationOptions<'static> {
+    let vals: [f64; 5] = [
+        if variant.lerptex_polaruv { 1.0 } else { 0.0 },
+        if variant.lerptex { 1.0 } else { 0.0 },
+        if variant.multi_values { 1.0 } else { 0.0 },
+        if variant.normalmap { 1.0 } else { 0.0 },
+        if variant.texture { 1.0 } else { 0.0 },
+    ];
+    let tuples: std::vec::Vec<(&'static str, f64)> = SPECIALIZATION_KEYS
+        .iter()
+        .copied()
+        .zip(vals)
+        .collect();
+    let boxed = tuples.into_boxed_slice();
+    let leaked = Box::leak(boxed);
+    wgpu::PipelineCompilationOptions {
+        constants: leaked,
+        ..Default::default()
+    }
 }
 
 /// Builds `PipelineCompilationOptions` for vertex/fragment stages (WGSL `override` / `@id`).

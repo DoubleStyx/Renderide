@@ -3,7 +3,7 @@ enable f16;
 
 struct _MatrixStorage_float4x4_ColMajorstd140_0
 {
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
+    @align(16) data_0 : array<vec4<f32>, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityPerFrame_std140_0
@@ -68,7 +68,7 @@ enable f16;
 
 struct _MatrixStorage_float4x4_ColMajorstd140_0
 {
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
+    @align(16) data_0 : array<vec4<f32>, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityPerDraw_std140_0
@@ -83,7 +83,7 @@ struct SLANG_ParameterGroup_UnityPerDraw_std140_0
 @binding(9) @group(0) var<uniform> UnityPerDraw_0 : SLANG_ParameterGroup_UnityPerDraw_std140_0;
 struct _Array_std140_vectorx3Chalfx2C4x3E16_0
 {
-    @align(16) data_1 : array<vec8<f16>, i32(16)>,
+    @align(16) data_1 : array<vec8<f16>, 16>,
 };
 
 struct GlobalParams_std140_0

@@ -3,7 +3,7 @@ enable f16;
 
 struct _MatrixStorage_float4x4_ColMajorstd140_0
 {
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
+    @align(16) data_0 : array<vec4<f32>, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityPerFrame_std140_0
@@ -101,7 +101,7 @@ struct RenderideGpuLight_std430_0
 
 struct SLANG_ParameterGroup_UnityPerCameraRare_std140_0
 {
-    @align(16) unity_CameraWorldClipPlanes_0 : array<vec4<f32>, i32(6)>,
+    @align(16) unity_CameraWorldClipPlanes_0 : array<vec4<f32>, 6>,
     @align(16) unity_CameraProjection_0 : _MatrixStorage_float4x4_ColMajorstd140_0,
     @align(16) unity_CameraInvProjection_0 : _MatrixStorage_float4x4_ColMajorstd140_0,
     @align(16) unity_WorldToCamera_0 : _MatrixStorage_float4x4_ColMajorstd140_0,
@@ -111,7 +111,7 @@ struct SLANG_ParameterGroup_UnityPerCameraRare_std140_0
 @binding(5) @group(0) var<uniform> UnityPerCameraRare_0 : SLANG_ParameterGroup_UnityPerCameraRare_std140_0;
 struct _Array_std140_vectorx3Chalfx2C4x3E8_0
 {
-    @align(16) data_1 : array<vec8<f16>, i32(8)>,
+    @align(16) data_1 : array<vec8<f16>, 8>,
 };
 
 struct SLANG_ParameterGroup_UnityLighting_std140_0
@@ -124,9 +124,9 @@ struct SLANG_ParameterGroup_UnityLighting_std140_0
     @align(16) unity_4LightPosZ0_0 : vec4<f32>,
     @align(16) unity_4LightAtten0_0 : vec4<f16>,
     @align(16) unity_LightColor_0 : _Array_std140_vectorx3Chalfx2C4x3E8_0,
-    @align(16) unity_LightPosition_0 : array<vec4<f32>, i32(8)>,
+    @align(16) unity_LightPosition_0 : array<vec4<f32>, 8>,
     @align(16) unity_LightAtten_0 : _Array_std140_vectorx3Chalfx2C4x3E8_0,
-    @align(16) unity_SpotDirection_0 : array<vec4<f32>, i32(8)>,
+    @align(16) unity_SpotDirection_0 : array<vec4<f32>, 8>,
     @align(16) unity_SHAr_0 : vec4<f16>,
     @align(8) unity_SHAg_0 : vec4<f16>,
     @align(16) unity_SHAb_0 : vec4<f16>,
@@ -150,12 +150,12 @@ struct SLANG_ParameterGroup_UnityLightingOld_std140_0
 @binding(7) @group(0) var<uniform> UnityLightingOld_0 : SLANG_ParameterGroup_UnityLightingOld_std140_0;
 struct _Array_std140_matrixx3Cfloatx2C4x2C4x3E4_0
 {
-    @align(16) data_2 : array<_MatrixStorage_float4x4_ColMajorstd140_0, i32(4)>,
+    @align(16) data_2 : array<_MatrixStorage_float4x4_ColMajorstd140_0, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityShadows_std140_0
 {
-    @align(16) unity_ShadowSplitSpheres_0 : array<vec4<f32>, i32(4)>,
+    @align(16) unity_ShadowSplitSpheres_0 : array<vec4<f32>, 4>,
     @align(16) unity_ShadowSplitSqRadii_0 : vec4<f32>,
     @align(16) unity_LightShadowBias_0 : vec4<f32>,
     @align(16) _LightSplitsNear_0 : vec4<f32>,
@@ -335,7 +335,7 @@ struct VertexOutput_0
     @builtin(position) pos_4 : vec4<f32>,
     @location(0) uv_0 : vec2<f32>,
     @location(1) uv1_0 : vec2<f32>,
-    @location(2) ntb_0 : array<vec3<f32>, i32(3)>,
+    @location(2) ntb_0 : array<vec3<f32>, 3>,
     @location(5) worldPos_0 : vec4<f32>,
     @location(6) color_1 : vec4<f32>,
     @location(8) normal_0 : vec3<f32>,
@@ -359,7 +359,7 @@ fn vert( _S6 : vertexInput_0) -> VertexOutput_0
     var _S7 : vec4<f32> = vec4<f32>(0.0f);
     var _S8 : vec2<f32> = vec2<f32>(0.0f);
     var _S9 : vec3<f32> = vec3<f32>(0.0f);
-    var _S10 : array<vec3<f32>, i32(3)> = array<vec3<f32>, i32(3)>(_S9, _S9, _S9);
+    var _S10 : array<vec3<f32>, 3> = array<vec3<f32>, 3>(_S9, _S9, _S9);
     var o_1 : VertexOutput_0;
     o_1.pos_4 = _S7;
     o_1.uv_0 = _S8;
@@ -410,7 +410,7 @@ struct SLANG_ParameterGroup_UnityPerCamera_std140_0
 @binding(4) @group(0) var<uniform> UnityPerCamera_0 : SLANG_ParameterGroup_UnityPerCamera_std140_0;
 struct _MatrixStorage_float4x4_ColMajorstd140_0
 {
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
+    @align(16) data_0 : array<vec4<f32>, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityPerFrame_std140_0
@@ -431,12 +431,12 @@ struct SLANG_ParameterGroup_UnityPerFrame_std140_0
 @binding(11) @group(0) var<uniform> UnityPerFrame_0 : SLANG_ParameterGroup_UnityPerFrame_std140_0;
 struct _Array_std140_matrixx3Cfloatx2C4x2C4x3E4_0
 {
-    @align(16) data_1 : array<_MatrixStorage_float4x4_ColMajorstd140_0, i32(4)>,
+    @align(16) data_1 : array<_MatrixStorage_float4x4_ColMajorstd140_0, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityShadows_std140_0
 {
-    @align(16) unity_ShadowSplitSpheres_0 : array<vec4<f32>, i32(4)>,
+    @align(16) unity_ShadowSplitSpheres_0 : array<vec4<f32>, 4>,
     @align(16) unity_ShadowSplitSqRadii_0 : vec4<f32>,
     @align(16) unity_LightShadowBias_0 : vec4<f32>,
     @align(16) _LightSplitsNear_0 : vec4<f32>,
@@ -455,7 +455,7 @@ struct SLANG_ParameterGroup_UnityShadows_std140_0
 
 struct _Array_std140_vectorx3Chalfx2C4x3E8_0
 {
-    @align(16) data_2 : array<vec8<f16>, i32(8)>,
+    @align(16) data_2 : array<vec8<f16>, 8>,
 };
 
 struct SLANG_ParameterGroup_UnityLighting_std140_0
@@ -468,9 +468,9 @@ struct SLANG_ParameterGroup_UnityLighting_std140_0
     @align(16) unity_4LightPosZ0_0 : vec4<f32>,
     @align(16) unity_4LightAtten0_0 : vec4<f16>,
     @align(16) unity_LightColor_0 : _Array_std140_vectorx3Chalfx2C4x3E8_0,
-    @align(16) unity_LightPosition_0 : array<vec4<f32>, i32(8)>,
+    @align(16) unity_LightPosition_0 : array<vec4<f32>, 8>,
     @align(16) unity_LightAtten_0 : _Array_std140_vectorx3Chalfx2C4x3E8_0,
-    @align(16) unity_SpotDirection_0 : array<vec4<f32>, i32(8)>,
+    @align(16) unity_SpotDirection_0 : array<vec4<f32>, 8>,
     @align(16) unity_SHAr_0 : vec4<f16>,
     @align(8) unity_SHAg_0 : vec4<f16>,
     @align(16) unity_SHAb_0 : vec4<f16>,
@@ -555,7 +555,7 @@ struct RenderideGpuLight_std430_0
 
 struct SLANG_ParameterGroup_UnityPerCameraRare_std140_0
 {
-    @align(16) unity_CameraWorldClipPlanes_0 : array<vec4<f32>, i32(6)>,
+    @align(16) unity_CameraWorldClipPlanes_0 : array<vec4<f32>, 6>,
     @align(16) unity_CameraProjection_0 : _MatrixStorage_float4x4_ColMajorstd140_0,
     @align(16) unity_CameraInvProjection_0 : _MatrixStorage_float4x4_ColMajorstd140_0,
     @align(16) unity_WorldToCamera_0 : _MatrixStorage_float4x4_ColMajorstd140_0,
@@ -713,7 +713,7 @@ struct VertexOutput_0
      pos_0 : vec4<f32>,
      uv_0 : vec2<f32>,
      uv1_0 : vec2<f32>,
-     ntb_0 : array<vec3<f32>, i32(3)>,
+     ntb_0 : array<vec3<f32>, 3>,
      worldPos_2 : vec4<f32>,
      color_1 : vec4<f32>,
      normal_0 : vec3<f32>,
@@ -1146,7 +1146,7 @@ fn BRDF_XSLighting_0( i_18 : XSLighting_0) -> vec4<f16>
 
 fn Dither8x8Bayer_0( x_3 : i32,  y_0 : i32) -> f16
 {
-    var dither_0 : array<f16, i32(64)> = array<f16, i32(64)>( 1.0h, 49.0h, 13.0h, 61.0h, 4.0h, 52.0h, 16.0h, 64.0h, 33.0h, 17.0h, 45.0h, 29.0h, 36.0h, 20.0h, 48.0h, 32.0h, 9.0h, 57.0h, 5.0h, 53.0h, 12.0h, 60.0h, 8.0h, 56.0h, 41.0h, 25.0h, 37.0h, 21.0h, 44.0h, 28.0h, 40.0h, 24.0h, 3.0h, 51.0h, 15.0h, 63.0h, 2.0h, 50.0h, 14.0h, 62.0h, 35.0h, 19.0h, 47.0h, 31.0h, 34.0h, 18.0h, 46.0h, 30.0h, 11.0h, 59.0h, 7.0h, 55.0h, 10.0h, 58.0h, 6.0h, 54.0h, 43.0h, 27.0h, 39.0h, 23.0h, 42.0h, 26.0h, 38.0h, 22.0h );
+    var dither_0 : array<f16, 64> = array<f16, 64>( 1.0h, 49.0h, 13.0h, 61.0h, 4.0h, 52.0h, 16.0h, 64.0h, 33.0h, 17.0h, 45.0h, 29.0h, 36.0h, 20.0h, 48.0h, 32.0h, 9.0h, 57.0h, 5.0h, 53.0h, 12.0h, 60.0h, 8.0h, 56.0h, 41.0h, 25.0h, 37.0h, 21.0h, 44.0h, 28.0h, 40.0h, 24.0h, 3.0h, 51.0h, 15.0h, 63.0h, 2.0h, 50.0h, 14.0h, 62.0h, 35.0h, 19.0h, 47.0h, 31.0h, 34.0h, 18.0h, 46.0h, 30.0h, 11.0h, 59.0h, 7.0h, 55.0h, 10.0h, 58.0h, 6.0h, 54.0h, 43.0h, 27.0h, 39.0h, 23.0h, 42.0h, 26.0h, 38.0h, 22.0h );
     return dither_0[y_0 * i32(8) + x_3] / 64.0h;
 }
 
@@ -1185,7 +1185,7 @@ struct pixelInput_0
 {
     @location(0) uv_2 : vec2<f32>,
     @location(1) uv1_2 : vec2<f32>,
-    @location(2) ntb_1 : array<vec3<f32>, i32(3)>,
+    @location(2) ntb_1 : array<vec3<f32>, 3>,
     @location(5) worldPos_7 : vec4<f32>,
     @location(6) color_3 : vec4<f32>,
     @location(8) normal_8 : vec3<f32>,

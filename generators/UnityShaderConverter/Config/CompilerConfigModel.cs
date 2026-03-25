@@ -37,6 +37,13 @@ public sealed class CompilerConfigModel
     [JsonPropertyName("enableSlangSpecialization")]
     public bool EnableSlangSpecialization { get; set; } = true;
 
+    /// <summary>
+    /// Glob patterns (relative to Renderide root) for shaders that skip specialization (no <c>USC_*</c> / runtime <c>#if</c> rewrite).
+    /// Use for ShaderLab whose <c>#if</c> nests resources or varyings in ways that break a single merged TU (e.g. cube vs 2D paths).
+    /// </summary>
+    [JsonPropertyName("slangSpecializationExcludeGlobPatterns")]
+    public List<string> SlangSpecializationExcludeGlobPatterns { get; set; } = new();
+
     /// <summary>Maximum <c>vk::constant_id</c> specialization bools emitted per shader.</summary>
     [JsonPropertyName("maxSpecializationConstants")]
     public int MaxSpecializationConstants { get; set; } = 8;

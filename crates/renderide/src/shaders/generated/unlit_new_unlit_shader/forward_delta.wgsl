@@ -3,7 +3,7 @@ enable f16;
 
 struct _MatrixStorage_float4x4_ColMajorstd140_0
 {
-    @align(16) data_0 : array<vec4<f32>, i32(4)>,
+    @align(16) data_0 : array<vec4<f32>, 4>,
 };
 
 struct SLANG_ParameterGroup_UnityPerDraw_std140_0
@@ -82,7 +82,7 @@ enable f16;
 
 struct _Array_std140_vectorx3Chalfx2C4x3E8_0
 {
-    @align(16) data_0 : array<vec8<f16>, i32(8)>,
+    @align(16) data_0 : array<vec8<f16>, 8>,
 };
 
 struct SLANG_ParameterGroup_UnityLighting_std140_0
@@ -95,9 +95,9 @@ struct SLANG_ParameterGroup_UnityLighting_std140_0
     @align(16) unity_4LightPosZ0_0 : vec4<f32>,
     @align(16) unity_4LightAtten0_0 : vec4<f16>,
     @align(16) unity_LightColor_0 : _Array_std140_vectorx3Chalfx2C4x3E8_0,
-    @align(16) unity_LightPosition_0 : array<vec4<f32>, i32(8)>,
+    @align(16) unity_LightPosition_0 : array<vec4<f32>, 8>,
     @align(16) unity_LightAtten_0 : _Array_std140_vectorx3Chalfx2C4x3E8_0,
-    @align(16) unity_SpotDirection_0 : array<vec4<f32>, i32(8)>,
+    @align(16) unity_SpotDirection_0 : array<vec4<f32>, 8>,
     @align(16) unity_SHAr_0 : vec4<f16>,
     @align(8) unity_SHAg_0 : vec4<f16>,
     @align(16) unity_SHAb_0 : vec4<f16>,

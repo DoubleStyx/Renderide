@@ -69,28 +69,24 @@ SubShader {
 			#include "UnityCG.cginc"
 			#include "UnityStandardUtils.cginc"
 			#include "../Common.cginc"
- 
+
+			float _GammaCurve;
+
 			half4 _FarColor;
 			half4 _NearColor;
 
 			float _Exp;
 
-			#ifdef _TEXTURE
 			sampler2D _FarTex;
 			float4 _FarTex_ST;
 
 			sampler2D _NearTex;
 			float4 _NearTex_ST;
-			#endif
 
-#if defined(_MASK_TEXTURE_MUL) || defined(_MASK_TEXTURE_CLIP)
 			sampler2D _MaskTex;
 			float4 _MaskTex_ST;
-#endif
 
-			#ifdef _POLARUV
 			float _PolarPow;
-			#endif
 			
 			half4 frag (evr_v2f i) : SV_Target
 			{

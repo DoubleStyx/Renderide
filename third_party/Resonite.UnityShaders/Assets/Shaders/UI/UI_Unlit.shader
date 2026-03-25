@@ -1,4 +1,4 @@
-﻿Shader "UI/Unlit"
+Shader "UI/Unlit"
 {
 	Properties
 	{
@@ -78,9 +78,7 @@
 					float4 color    : COLOR;
 					float2 texcoord : TEXCOORD0;
 
-#ifdef TEXTURE_LERPCOLOR
 					float4 lerpColor : TANGENT;
-#endif
 
 					UNITY_VERTEX_INPUT_INSTANCE_ID
 				};
@@ -91,17 +89,11 @@
 					float4 color : COLOR;
 					float2 texcoord  : TEXCOORD0;
 
-#ifdef TEXTURE_LERPCOLOR
 					float4 lerpColor : TANGENT;
-#endif
 
-#ifdef RECTCLIP
 					float2 position : TEXCOORD1;
-#endif
 
-#ifdef OVERLAY
 					float4 projPos : TEXCOORD2;
-#endif
 
 					UNITY_VERTEX_OUTPUT_STEREO
 				};
@@ -109,26 +101,17 @@
 				sampler2D _MainTex;
 				float4 _MainTex_ST;
 
-				half4 _Tint;		
+				half4 _Tint;
 
-#if defined(_MASK_TEXTURE_MUL) || defined(_MASK_TEXTURE_CLIP)
+				float _Cutoff;		
+
 				sampler2D _MaskTex;
 				float4 _MaskTex_ST;
-#endif
 
+float4 _Rect;
 
-#if defined(ALPHACLIP) || defined(_MASK_TEXTURE_MUL) || defined(_MASK_TEXTURE_CLIP)
-				fixed _Cutoff;
-#endif
-
-#ifdef RECTCLIP
-				float4 _Rect;
-#endif
-
-#ifdef OVERLAY
 				float4 _OverlayTint;
 				UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
-#endif
 
 				v2f vert(appdata_t v)
 				{
@@ -138,23 +121,17 @@
 					UNITY_INITIALIZE_OUTPUT(v2f, OUT);
 					UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(OUT);
 
-#ifdef RECTCLIP
 					OUT.position = v.vertex.xy;
-#endif
 					OUT.vertex = UnityObjectToClipPos(v.vertex);
 
 					OUT.texcoord = TRANSFORM_TEX(v.texcoord, _MainTex);
 
 					OUT.color = v.color * _Tint;
 
-#ifdef TEXTURE_LERPCOLOR
 					OUT.lerpColor = v.lerpColor * _Tint;
-#endif
 
-#ifdef OVERLAY
 					OUT.projPos = ComputeScreenPos(OUT.vertex);
 					COMPUTE_EYEDEPTH(OUT.projPos.z);
-#endif
 
 					return OUT;
 				}

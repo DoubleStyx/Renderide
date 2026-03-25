@@ -1,4 +1,4 @@
-﻿// Upgrade NOTE: replaced 'mul(UNITY_MATRIX_MVP,*)' with 'UnityObjectToClipPos(*)'
+// Upgrade NOTE: replaced 'mul(UNITY_MATRIX_MVP,*)' with 'UnityObjectToClipPos(*)'
 
 Shader "Volume/FogBox"
 {
@@ -54,20 +54,15 @@ Shader "Volume/FogBox"
 
 			float4 _BaseColor;
 			float _AccumulationRate;
+			float _GammaCurve;
 
-#ifdef COLOR_CONSTANT
 			float4 _AccumulationColor;
-#elif COLOR_VERT_GRADIENT
 			float4 _AccumulationColorBottom;
 			float4 _AccumulationColorTop;
-#endif
 
-#ifdef FOG_LINEAR
 			float _FogStart;
 			float _FogEnd;
-#else
 			float _FogDensity;
-#endif
 
 			struct a2v
 			{
@@ -180,10 +175,11 @@ Shader "Volume/FogBox"
 
 				float3 start;
 				float3 end;
+				float3 camPos;
 
 #ifdef OBJECT_SPACE
-				float3 camPos = mul(unity_WorldToObject, float4(_WorldSpaceCameraPos.xyz, 1)).xyz;
-				float3 endPos = i.origin;
+				camPos = mul(unity_WorldToObject, float4(_WorldSpaceCameraPos.xyz, 1)).xyz;
+				float3 endPos = i.origin.xyz;
 
 				ndir = normalize(endPos - camPos);
 
@@ -208,7 +204,7 @@ Shader "Volume/FogBox"
 					discard;
 
 				// compute the sample origin position
-				float3 camPos = _WorldSpaceCameraPos.xyz;
+				camPos = _WorldSpaceCameraPos.xyz;
 				float3 endPos = mul(unity_ObjectToWorld, float4(i.origin.xyz, 1)).xyz;
 
 				ndir = normalize(endPos - camPos);

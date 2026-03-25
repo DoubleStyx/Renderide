@@ -1,4 +1,4 @@
-﻿Shader "UI/CircleSegment" {
+Shader "UI/CircleSegment" {
 
 	Properties
 	{
@@ -119,25 +119,17 @@
 
 		UNITY_VERTEX_OUTPUT_STEREO
 
-#ifdef RECTCLIP
 			float2 position : TEXCOORD4;
-#endif
 
 		DATA
 
-#ifdef OVERLAY
 			float4 projPos : TEXCOORD5;
-#endif
 	};
 
-#ifdef RECTCLIP
-	float4 _Rect;
-#endif
+float4 _Rect;
 
-#ifdef OVERLAY
 	float4 _OverlayTint;
 	UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
-#endif
 
 	////////////////////////////////
 
@@ -176,16 +168,12 @@
 		o.pos = UnityObjectToClipPos(v.vertex);
 		o.uv = mul(rot, v.uv);	// apply the offset
 
-#ifdef RECTCLIP
 		o.position = v.vertex.xy;
-#endif
 
 		COPY_DATA
 
-#ifdef OVERLAY
 		o.projPos = ComputeScreenPos(o.pos);
 		COMPUTE_EYEDEPTH(o.projPos.z);
-#endif
 
 		return o;
 	}
@@ -214,9 +202,9 @@
 		//UNITY_SETUP_INSTANCE_ID(i);
 		UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
 
-		#ifdef RECTCLIP
+#ifdef RECTCLIP
 			clip(UnityGet2DClipping(i.position, _Rect) - 0.1);
-		#endif
+#endif
 
 		// compute the angle from the center
 		float angle = atan2(-i.uv.y, i.uv.x) + PI;
@@ -257,11 +245,11 @@
 		c = lerp(border_c, FILL_COLOR(i) * _FillTint, fillLerp);
 	
 #ifdef OVERLAY
-		float sceneZ = LinearEyeDepth(SAMPLE_DEPTH_TEXTURE_PROJ(_CameraDepthTexture, UNITY_PROJ_COORD(i.projPos)));
-		float partZ = i.projPos.z;
+			float sceneZ = LinearEyeDepth(SAMPLE_DEPTH_TEXTURE_PROJ(_CameraDepthTexture, UNITY_PROJ_COORD(i.projPos)));
+			float partZ = i.projPos.z;
 
-		if (partZ > sceneZ)
-			c *= _OverlayTint;
+			if (partZ > sceneZ)
+				c *= _OverlayTint;
 #endif
 
 		return c;

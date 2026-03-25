@@ -18,6 +18,7 @@ public static class ConfigLoader
         {
             SlangEligibleGlobPatterns = new List<string>(d.SlangEligibleGlobPatterns),
             SlangExcludeGlobPatterns = new List<string>(d.SlangExcludeGlobPatterns),
+            SlangSpecializationExcludeGlobPatterns = new List<string>(d.SlangSpecializationExcludeGlobPatterns),
             ShaderGenerationExcludeGlobPatterns = new List<string>(d.ShaderGenerationExcludeGlobPatterns),
             MaxVariantCombinationsPerShader = d.MaxVariantCombinationsPerShader,
             EnableSlangSpecialization = d.EnableSlangSpecialization,
@@ -105,6 +106,23 @@ public static class ConfigLoader
             specEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
         {
             merged.EnableSlangSpecialization = specEl.GetBoolean();
+        }
+
+        if (root.TryGetProperty("slangSpecializationExcludeGlobPatterns", out JsonElement specExclEl) &&
+            specExclEl.ValueKind == JsonValueKind.Array)
+        {
+            var specExcl = new List<string>();
+            foreach (JsonElement item in specExclEl.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    string? s = item.GetString();
+                    if (!string.IsNullOrWhiteSpace(s))
+                        specExcl.Add(s);
+                }
+            }
+
+            merged.SlangSpecializationExcludeGlobPatterns = specExcl;
         }
 
         if (root.TryGetProperty("maxSpecializationConstants", out JsonElement mscEl) &&
