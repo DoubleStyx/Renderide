@@ -1,19 +1,19 @@
 //! Asset registry: stores mesh, texture, shader, and other assets by handle.
 
 use crate::ipc::shared_memory::SharedMemoryAccessor;
-use crate::shared::{MeshUploadData, ShaderUpload};
+use crate::shared::{MeshUploadData, SetTexture2DData, SetTexture2DFormat, ShaderUpload};
 
 use super::manager::AssetManager;
 use super::material_properties::MaterialPropertyStore;
 use super::mesh::{self, MeshAsset, compute_index_count, index_bytes_per_element};
 use super::shader::ShaderAsset;
-use super::texture::TextureAsset;
+use super::texture::{TextureAsset, decode_texture_mip0_to_rgba8};
 
 /// Stores assets by handle using generic per-type managers.
 /// Extensible for textures, materials, video, etc.
 pub struct AssetRegistry {
     meshes: AssetManager<MeshAsset>,
-    /// Texture storage. Reserved for future texture upload support.
+    /// Host `Texture2D` assets after `SetTexture2DFormat` / `SetTexture2DData`.
     textures: AssetManager<TextureAsset>,
     shaders: AssetManager<ShaderAsset>,
     /// Material property values per block (from MaterialsUpdateBatch).
@@ -181,10 +181,85 @@ impl AssetRegistry {
         (true, existed_before)
     }
 
-    /// Handles a texture upload from shared memory.
-    /// Stub: does nothing yet. Returns `(false, false)`.
-    pub fn handle_texture_upload(&mut self, _shm: &mut SharedMemoryAccessor) -> (bool, bool) {
-        (false, false)
+    /// Applies `SetTexture2DFormat`: allocates or replaces metadata for `asset_id` (clears pixel data).
+    ///
+    /// Returns `(success, existed_before)`.
+    pub fn set_texture_2d_format(&mut self, fmt: SetTexture2DFormat) -> (bool, bool) {
+        let id = fmt.asset_id;
+        if fmt.width <= 0 || fmt.height <= 0 {
+            logger::warn!(
+                "Texture2D format rejected: non-positive size (asset_id={} {}x{})",
+                id,
+                fmt.width,
+                fmt.height
+            );
+            return (false, false);
+        }
+        let existed_before = self.textures.contains_key(id);
+        let asset = TextureAsset {
+            id,
+            width: fmt.width as u32,
+            height: fmt.height as u32,
+            format: fmt.format,
+            rgba8_mip0: Vec::new(),
+        };
+        self.textures.insert(asset);
+        self.upload_count += 1;
+        (true, existed_before)
+    }
+
+    /// Applies `SetTexture2DData`: decodes mip0 from shared memory into [`TextureAsset::rgba8_mip0`].
+    ///
+    /// Returns `(success, existed_before)` where `existed_before` refers to the texture row before insert.
+    pub fn set_texture_2d_data(
+        &mut self,
+        shm: &mut SharedMemoryAccessor,
+        data: &SetTexture2DData,
+    ) -> (bool, bool) {
+        let id = data.asset_id;
+        let Some(tex) = self.textures.get(id) else {
+            logger::warn!("Texture2D data for asset_id={} without prior format", id);
+            return (false, false);
+        };
+        if data.data.length <= 0 {
+            return (false, false);
+        }
+        let raw_u8 = match shm.access_copy::<u8>(&data.data) {
+            Some(r) => r,
+            None => return (false, false),
+        };
+        let start = data.mip_starts.first().copied().unwrap_or(0).max(0) as usize;
+        let sub = raw_u8.get(start..).unwrap_or(raw_u8.as_slice());
+        let (mw, mh) = if let Some(s) = data.mip_map_sizes.first() {
+            (s.x.max(1) as u32, s.y.max(1) as u32)
+        } else {
+            (tex.width.max(1), tex.height.max(1))
+        };
+        let fmt = tex.format;
+        let was_empty = tex.rgba8_mip0.is_empty();
+        let Some(rgba) = decode_texture_mip0_to_rgba8(fmt, mw, mh, data.flip_y, sub) else {
+            logger::warn!(
+                "Texture2D decode failed or unsupported format (asset_id={} format={:?})",
+                id,
+                fmt
+            );
+            return (false, false);
+        };
+        self.textures.insert(TextureAsset {
+            id,
+            width: mw,
+            height: mh,
+            format: fmt,
+            rgba8_mip0: rgba,
+        });
+        self.upload_count += 1;
+        (true, was_empty)
+    }
+
+    /// Removes a 2D texture. Called on `unload_texture_2d`.
+    pub fn unload_texture_2d(&mut self, asset_id: i32) {
+        self.textures.remove(asset_id);
+        self.unload_count += 1;
     }
 
     /// Removes a shader asset. Called when the host sends `shader_unload`.

@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use glam::Mat4;
 
-use crate::assets::{self, AssetRegistry};
+use crate::assets::{self, AssetRegistry, NativeUiShaderFamily, resolve_native_ui_shader_family};
 use crate::config::{RenderConfig, ShaderDebugOverride};
 use crate::gpu::{PipelineVariant, ShaderKey};
 use crate::render::batch::{DrawEntry, SpaceDrawBatch};
@@ -14,7 +14,10 @@ use crate::scene::{Drawable, Scene, SceneGraph, render_transform_to_matrix};
 use crate::shared::{LayerType, VertexAttributeType};
 use crate::stencil::{StencilOperation, StencilState};
 
-/// Returns true when the mesh has UV0 and vertex color so [`GpuMeshBuffers::ui_canvas_buffers`](crate::gpu::mesh::GpuMeshBuffers::ui_canvas_buffers) is populated.
+/// Returns true when the mesh has UV0 and vertex color (legacy strict UI canvas check).
+///
+/// Only compiled for unit tests; production routing uses [`mesh_has_native_ui_vertices`].
+#[cfg(test)]
 pub(crate) fn mesh_has_ui_canvas_vertices(
     asset_registry: &AssetRegistry,
     mesh_asset_id: i32,
@@ -29,8 +32,23 @@ pub(crate) fn mesh_has_ui_canvas_vertices(
     uv.map(|(_, s, _)| s >= 4).unwrap_or(false) && color.map(|(_, s, _)| s >= 4).unwrap_or(false)
 }
 
-/// After [`ShaderKey::effective_variant`], maps overlay non-stencil draws to native UI pipelines when allowed.
-pub(crate) fn apply_native_ui_overlay_pipeline_variant(
+/// Returns true when the mesh has UV0 so native UI routing may use [`crate::gpu::mesh::GpuMeshBuffers::ui_canvas_buffers`]
+/// (vertex color defaults to white when absent).
+pub(crate) fn mesh_has_native_ui_vertices(
+    asset_registry: &AssetRegistry,
+    mesh_asset_id: i32,
+) -> bool {
+    let Some(mesh) = asset_registry.get_mesh(mesh_asset_id) else {
+        return false;
+    };
+    let uv =
+        assets::attribute_offset_size_format(&mesh.vertex_attributes, VertexAttributeType::uv0);
+    uv.map(|(_, s, _)| s >= 4).unwrap_or(false)
+}
+
+/// After [`ShaderKey::effective_variant`], maps overlay (and optionally world) draws to native UI pipelines when allowed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_native_ui_pipeline_variant(
     is_overlay: bool,
     is_skinned: bool,
     stencil_state: Option<&StencilState>,
@@ -46,32 +64,82 @@ pub(crate) fn apply_native_ui_overlay_pipeline_variant(
             render_config.shader_debug_override,
             ShaderDebugOverride::ForceLegacyGlobalShading
         )
-        || !is_overlay
         || is_skinned
-        || stencil_state.is_some()
         || material_block_id < 0
     {
         return current;
     }
+    let allow_surface = is_overlay || render_config.native_ui_world_space;
+    if !allow_surface {
+        return current;
+    }
+    if !is_overlay && stencil_state.is_some() {
+        return current;
+    }
+    let has_stencil = stencil_state.is_some();
+    if has_stencil && !render_config.native_ui_overlay_stencil_pipelines {
+        return current;
+    }
     let Some(shader_id) = host_shader_asset_id else {
+        if render_config.log_native_ui_routing && is_overlay {
+            logger::trace!(
+                "native_ui: skip (no set_shader) material_block={} mesh={}",
+                material_block_id,
+                mesh_asset_id
+            );
+        }
         return current;
     };
-    if !mesh_has_ui_canvas_vertices(asset_registry, mesh_asset_id) {
+    if !mesh_has_native_ui_vertices(asset_registry, mesh_asset_id) {
+        if render_config.log_native_ui_routing && is_overlay {
+            logger::trace!(
+                "native_ui: skip (mesh missing uv0) shader_id={} material_block={} mesh={}",
+                shader_id,
+                material_block_id,
+                mesh_asset_id
+            );
+        }
         return current;
     }
-    let uid = render_config.native_ui_unlit_shader_id;
-    if uid >= 0 && shader_id == uid {
-        return PipelineVariant::NativeUiUnlit {
-            material_id: material_block_id,
-        };
+    let Some(family) = resolve_native_ui_shader_family(
+        shader_id,
+        render_config.native_ui_unlit_shader_id,
+        render_config.native_ui_text_unlit_shader_id,
+        asset_registry,
+    ) else {
+        if render_config.log_native_ui_routing && is_overlay {
+            logger::trace!(
+                "native_ui: skip (shader not recognized as UI) shader_id={} material_block={}",
+                shader_id,
+                material_block_id
+            );
+        }
+        return current;
+    };
+    match family {
+        NativeUiShaderFamily::UiUnlit => {
+            if has_stencil {
+                PipelineVariant::NativeUiUnlitStencil {
+                    material_id: material_block_id,
+                }
+            } else {
+                PipelineVariant::NativeUiUnlit {
+                    material_id: material_block_id,
+                }
+            }
+        }
+        NativeUiShaderFamily::UiTextUnlit => {
+            if has_stencil {
+                PipelineVariant::NativeUiTextUnlitStencil {
+                    material_id: material_block_id,
+                }
+            } else {
+                PipelineVariant::NativeUiTextUnlit {
+                    material_id: material_block_id,
+                }
+            }
+        }
     }
-    let tid = render_config.native_ui_text_unlit_shader_id;
-    if tid >= 0 && shader_id == tid {
-        return PipelineVariant::NativeUiTextUnlit {
-            material_id: material_block_id,
-        };
-    }
-    current
 }
 
 /// Filtered drawable with world matrix and pipeline variant.
@@ -193,7 +261,7 @@ pub(super) fn filter_and_collect_drawables(
             is_skinned,
             scene.is_overlay,
         );
-        let pipeline_variant = apply_native_ui_overlay_pipeline_variant(
+        let pipeline_variant = apply_native_ui_pipeline_variant(
             scene.is_overlay,
             is_skinned,
             drawable.stencil_state.as_ref(),
@@ -373,8 +441,8 @@ fn compute_pipeline_variant(
 #[cfg(test)]
 mod tests {
     use super::{
-        AssetRegistry, FilteredDrawable, apply_native_ui_overlay_pipeline_variant,
-        build_draw_entries, create_space_batch, mesh_has_ui_canvas_vertices,
+        AssetRegistry, FilteredDrawable, apply_native_ui_pipeline_variant, build_draw_entries,
+        create_space_batch, mesh_has_ui_canvas_vertices,
     };
     use crate::config::{RenderConfig, ShaderDebugOverride};
     use crate::gpu::{PipelineVariant, ShaderKey};
@@ -472,10 +540,12 @@ mod tests {
     #[test]
     fn apply_native_ui_overlay_respects_overlay_only() {
         let reg = AssetRegistry::new();
-        let mut rc = RenderConfig::default();
-        rc.use_native_ui_wgsl = true;
-        rc.native_ui_unlit_shader_id = 42;
-        let v = apply_native_ui_overlay_pipeline_variant(
+        let rc = RenderConfig {
+            use_native_ui_wgsl: true,
+            native_ui_unlit_shader_id: 42,
+            ..Default::default()
+        };
+        let v = apply_native_ui_pipeline_variant(
             false,
             false,
             None,
@@ -492,8 +562,11 @@ mod tests {
     #[test]
     fn apply_native_ui_overlay_disabled_when_config_off() {
         let reg = AssetRegistry::new();
-        let rc = RenderConfig::default();
-        let v = apply_native_ui_overlay_pipeline_variant(
+        let rc = RenderConfig {
+            use_native_ui_wgsl: false,
+            ..Default::default()
+        };
+        let v = apply_native_ui_pipeline_variant(
             true,
             false,
             None,
@@ -510,11 +583,13 @@ mod tests {
     #[test]
     fn apply_native_ui_overlay_skips_legacy_shader_override() {
         let reg = AssetRegistry::new();
-        let mut rc = RenderConfig::default();
-        rc.use_native_ui_wgsl = true;
-        rc.native_ui_unlit_shader_id = 42;
-        rc.shader_debug_override = ShaderDebugOverride::ForceLegacyGlobalShading;
-        let v = apply_native_ui_overlay_pipeline_variant(
+        let rc = RenderConfig {
+            use_native_ui_wgsl: true,
+            native_ui_unlit_shader_id: 42,
+            shader_debug_override: ShaderDebugOverride::ForceLegacyGlobalShading,
+            ..Default::default()
+        };
+        let v = apply_native_ui_pipeline_variant(
             true,
             false,
             None,

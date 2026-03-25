@@ -32,6 +32,40 @@ pub fn native_ui_family_for_shader(
     None
 }
 
+/// Infers [`NativeUiShaderFamily`] from the host shader upload string (`ShaderUpload.file`: path or label).
+///
+/// Matches path fragments such as `UI/Unlit`, `UI_Unlit`, `UI/Text/Unlit` (text is checked before unlit).
+pub fn native_ui_family_from_shader_path_hint(hint: &str) -> Option<NativeUiShaderFamily> {
+    let h = hint.to_ascii_lowercase();
+    if h.contains("ui/text") && (h.contains("unlit") || h.contains("textunlit")) {
+        return Some(NativeUiShaderFamily::UiTextUnlit);
+    }
+    if h.contains("ui/unlit") || h.contains("ui_unlit") || h.contains("uiunlit") {
+        return Some(NativeUiShaderFamily::UiUnlit);
+    }
+    None
+}
+
+/// Resolves native UI shader family using configured allowlist ids, then the shader registry path hint.
+pub fn resolve_native_ui_shader_family(
+    shader_asset_id: i32,
+    native_ui_unlit_shader_id: i32,
+    native_ui_text_unlit_shader_id: i32,
+    registry: &super::AssetRegistry,
+) -> Option<NativeUiShaderFamily> {
+    native_ui_family_for_shader(
+        shader_asset_id,
+        native_ui_unlit_shader_id,
+        native_ui_text_unlit_shader_id,
+    )
+    .or_else(|| {
+        registry
+            .get_shader(shader_asset_id)
+            .and_then(|s| s.wgsl_source.as_deref())
+            .and_then(native_ui_family_from_shader_path_hint)
+    })
+}
+
 /// Property id map for `UI_Unlit` material batches. `-1` = omit (use GPU default).
 #[derive(Clone, Debug)]
 pub struct UiUnlitPropertyIds {

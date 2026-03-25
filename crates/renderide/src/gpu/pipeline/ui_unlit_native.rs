@@ -40,6 +40,61 @@ pub(crate) fn native_ui_scene_depth_bind_group_layout(
     })
 }
 
+/// Bind group layout for native `UI_Unlit` material uniforms + two sampled textures.
+pub(crate) fn create_ui_unlit_material_bind_group_layout(
+    device: &wgpu::Device,
+) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("ui unlit material BGL"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
+                        UiUnlitMaterialUniform,
+                    >() as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
 pub(crate) fn fallback_white(device: &wgpu::Device) -> &'static wgpu::TextureView {
     &FALLBACK_WHITE
         .get_or_init(|| {
@@ -70,11 +125,37 @@ pub struct UiUnlitNativePipeline {
     ring_bind_group: wgpu::BindGroup,
     material_uniform: wgpu::Buffer,
     material_bind_group: wgpu::BindGroup,
+    material_bgl: wgpu::BindGroupLayout,
+    linear_sampler: wgpu::Sampler,
 }
 
 impl UiUnlitNativePipeline {
     /// Builds the pipeline for the swapchain format and depth-stencil attachment.
     pub fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        Self::new_with_depth_stencil(
+            device,
+            config,
+            builder::depth_stencil_no_depth(),
+            "ui unlit native RP",
+        )
+    }
+
+    /// Same as [`Self::new`] but with GraphicsChunk stencil test for masked overlay draws.
+    pub fn new_with_stencil(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        Self::new_with_depth_stencil(
+            device,
+            config,
+            builder::depth_stencil_native_ui_stencil_content(),
+            "ui unlit native stencil RP",
+        )
+    }
+
+    fn new_with_depth_stencil(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        depth_stencil: wgpu::DepthStencilState,
+        pipeline_label: &'static str,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ui_unlit native"),
             source: wgpu::ShaderSource::Wgsl(UI_UNLIT_WGSL.into()),
@@ -88,56 +169,7 @@ impl UiUnlitNativePipeline {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let material_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("ui unlit material BGL"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
-                            UiUnlitMaterialUniform,
-                        >()
-                            as u64),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+        let material_bgl = create_ui_unlit_material_bind_group_layout(device);
         let initial = UiUnlitMaterialUniform {
             tint: [1.0, 1.0, 1.0, 1.0],
             overlay_tint: [1.0, 1.0, 1.0, 0.73],
@@ -211,7 +243,7 @@ impl UiUnlitNativePipeline {
             ],
         };
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("ui unlit native RP"),
+            label: Some(pipeline_label),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -233,7 +265,7 @@ impl UiUnlitNativePipeline {
                 cull_mode: None,
                 ..builder::standard_primitive_state()
             },
-            depth_stencil: Some(builder::depth_stencil_no_depth()),
+            depth_stencil: Some(depth_stencil),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
@@ -251,7 +283,24 @@ impl UiUnlitNativePipeline {
             ring_bind_group,
             material_uniform,
             material_bind_group,
+            material_bgl,
+            linear_sampler: linear,
         }
+    }
+
+    /// Material bind group layout (group 2); must match cached bind groups built for this pipeline.
+    pub fn material_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.material_bgl
+    }
+
+    /// Linear sampler for `_MainTex` / `_MaskTex`.
+    pub fn linear_sampler(&self) -> &wgpu::Sampler {
+        &self.linear_sampler
+    }
+
+    /// Uniform buffer written each draw for material properties.
+    pub fn material_uniform_buffer(&self) -> &wgpu::Buffer {
+        &self.material_uniform
     }
 
     /// Writes material uniforms for `block_id` and binds group 2.

@@ -299,6 +299,9 @@ impl RenderPass for MeshRenderPass {
             material_property_store: &ctx.session.asset_registry().material_property_store,
             render_config: ctx.session.render_config(),
             native_ui_scene_depth_bind: None,
+            asset_registry: ctx.session.asset_registry(),
+            texture2d_gpu: &mut ctx.gpu.texture2d_gpu,
+            native_ui_material_bind_cache: &mut ctx.gpu.native_ui_material_bind_cache,
         };
 
         let timestamp_writes =

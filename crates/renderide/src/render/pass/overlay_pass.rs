@@ -71,6 +71,8 @@ impl RenderPass for OverlayRenderPass {
                     ctx.gpu.depth_texture.as_ref(),
                     ctx.gpu.ui_depth_copy_texture.as_ref(),
                 ) {
+                    // Depth24PlusStencil8 copies must use `All` aspects on source (and destination);
+                    // the bindable view for sampling is still depth-only (`ui_depth_copy_view`).
                     ctx.encoder.copy_texture_to_texture(
                         wgpu::TexelCopyTextureInfo {
                             texture: src_tex,
@@ -128,6 +130,9 @@ impl RenderPass for OverlayRenderPass {
             material_property_store: &ctx.session.asset_registry().material_property_store,
             render_config,
             native_ui_scene_depth_bind: native_ui_depth_bind,
+            asset_registry: ctx.session.asset_registry(),
+            texture2d_gpu: &mut ctx.gpu.texture2d_gpu,
+            native_ui_material_bind_cache: &mut ctx.gpu.native_ui_material_bind_cache,
         };
 
         let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

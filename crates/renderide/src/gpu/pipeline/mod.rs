@@ -56,6 +56,6 @@ pub use skinned::SkinnedPipeline;
 pub use skinned_pbr::{SkinnedPbrMRTPipeline, SkinnedPbrPipeline};
 pub use ui_text_unlit_native::UiTextUnlitNativePipeline;
 pub use ui_unlit_native::UiUnlitNativePipeline;
-pub(crate) use ui_unlit_native::native_ui_scene_depth_bind_group_layout;
+pub(crate) use ui_unlit_native::{fallback_white, native_ui_scene_depth_bind_group_layout};
 pub use uniforms::SceneUniforms;
 pub use uv_debug::UvDebugPipeline;

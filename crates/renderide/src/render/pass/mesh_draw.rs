@@ -7,13 +7,17 @@ use glam::Mat4;
 use nalgebra::Matrix4;
 
 use super::mesh_prep::MeshDrawPrepStats;
-use crate::assets::MaterialPropertyStore;
+use crate::assets::{MaterialPropertyStore, texture2d_asset_id_from_packed};
 use crate::config::RenderConfig;
 use crate::gpu::pipeline::{
     RtShadowSceneBind, RtShadowUniforms, SceneUniforms, UiTextUnlitNativePipeline,
     UiUnlitNativePipeline,
 };
-use crate::gpu::{GpuMeshBuffers, PipelineKey, PipelineManager, PipelineVariant, RenderPipeline};
+use crate::gpu::state::ensure_texture2d_gpu_view;
+use crate::gpu::{
+    GpuMeshBuffers, NativeUiMaterialBindCache, PipelineKey, PipelineManager, PipelineVariant,
+    RenderPipeline,
+};
 use crate::render::SpaceDrawBatch;
 use crate::render::visibility::view_proj_glam_for_batch;
 use crate::scene::math::matrix_glam_to_na;
@@ -132,6 +136,12 @@ pub(super) struct MeshDrawParams<'a> {
     pub(super) render_config: &'a RenderConfig,
     /// Sampled scene depth bind group for native UI `OVERLAY`; overlay pass only.
     pub(super) native_ui_scene_depth_bind: Option<&'a wgpu::BindGroup>,
+    /// Asset registry for [`crate::assets::TextureAsset`] lookup during native UI draws.
+    pub(super) asset_registry: &'a crate::assets::AssetRegistry,
+    /// Host Texture2D GPU cache; disjoint from other fields so recording avoids `&mut GpuState`.
+    pub(super) texture2d_gpu: &'a mut HashMap<i32, (wgpu::Texture, wgpu::TextureView)>,
+    /// Native UI material bind groups keyed by texture/material state.
+    pub(super) native_ui_material_bind_cache: &'a mut NativeUiMaterialBindCache,
 }
 
 /// Resources and per-frame tuning for PBR ray-query shadow bindings (scene group 1, bindings 5–7).
@@ -601,6 +611,8 @@ fn resolve_pipeline_for_group(
         PipelineVariant::Material { .. }
             | PipelineVariant::NativeUiUnlit { .. }
             | PipelineVariant::NativeUiTextUnlit { .. }
+            | PipelineVariant::NativeUiUnlitStencil { .. }
+            | PipelineVariant::NativeUiTextUnlitStencil { .. }
     ) {
         return *variant;
     }
@@ -665,6 +677,8 @@ pub(super) fn mesh_pipeline_variant_for_mrt(
         PipelineVariant::Material { .. }
             | PipelineVariant::NativeUiUnlit { .. }
             | PipelineVariant::NativeUiTextUnlit { .. }
+            | PipelineVariant::NativeUiUnlitStencil { .. }
+            | PipelineVariant::NativeUiTextUnlitStencil { .. }
     ) {
         if use_mrt {
             return PipelineVariant::NormalDebugMRT;
@@ -912,8 +926,8 @@ pub(super) fn record_skinned_draws(
 
 /// Records non-skinned mesh draws into the render pass.
 pub(super) fn record_non_skinned_draws(
-    pass: &mut wgpu::RenderPass,
-    params: &mut MeshDrawParams,
+    pass: &mut wgpu::RenderPass<'_>,
+    params: &mut MeshDrawParams<'_>,
     draws: &[BatchedDraw],
 ) {
     let mut i = 0;
@@ -973,12 +987,13 @@ pub(super) fn record_non_skinned_draws(
         pipeline.bind_pipeline(pass);
         let is_native_ui = matches!(
             pipeline_variant,
-            PipelineVariant::NativeUiUnlit { .. } | PipelineVariant::NativeUiTextUnlit { .. }
+            PipelineVariant::NativeUiUnlit { .. }
+                | PipelineVariant::NativeUiTextUnlit { .. }
+                | PipelineVariant::NativeUiUnlitStencil { .. }
+                | PipelineVariant::NativeUiTextUnlitStencil { .. }
         );
-        if is_native_ui {
-            if let Some(bg) = params.native_ui_scene_depth_bind {
-                pass.set_bind_group(1, bg, &[]);
-            }
+        if is_native_ui && let Some(bg) = params.native_ui_scene_depth_bind {
+            pass.set_bind_group(1, bg, &[]);
         }
         if params.use_mrt
             && !is_native_ui
@@ -1019,24 +1034,29 @@ pub(super) fn record_non_skinned_draws(
                 pipeline.bind_scene(pass, Some(scene_bg));
             }
         }
-        let native_ui_unlit_ref =
-            if matches!(pipeline_variant, PipelineVariant::NativeUiUnlit { .. }) {
-                pipeline
-                    .as_ref()
-                    .as_any()
-                    .downcast_ref::<UiUnlitNativePipeline>()
-            } else {
-                None
-            };
-        let native_ui_text_ref =
-            if matches!(pipeline_variant, PipelineVariant::NativeUiTextUnlit { .. }) {
-                pipeline
-                    .as_ref()
-                    .as_any()
-                    .downcast_ref::<UiTextUnlitNativePipeline>()
-            } else {
-                None
-            };
+        let native_ui_unlit_ref = if matches!(
+            pipeline_variant,
+            PipelineVariant::NativeUiUnlit { .. } | PipelineVariant::NativeUiUnlitStencil { .. }
+        ) {
+            pipeline
+                .as_ref()
+                .as_any()
+                .downcast_ref::<UiUnlitNativePipeline>()
+        } else {
+            None
+        };
+        let native_ui_text_ref = if matches!(
+            pipeline_variant,
+            PipelineVariant::NativeUiTextUnlit { .. }
+                | PipelineVariant::NativeUiTextUnlitStencil { .. }
+        ) {
+            pipeline
+                .as_ref()
+                .as_any()
+                .downcast_ref::<UiTextUnlitNativePipeline>()
+        } else {
+            None
+        };
 
         let mut order: Vec<usize> = (0..group.len()).collect();
         order.sort_by_key(|&idx| group[idx].mesh_asset_id);
@@ -1077,26 +1097,112 @@ pub(super) fn record_non_skinned_draws(
                     let d = &group[idx];
                     pipeline.bind_draw(pass, Some(idx as u32), params.frame_index, None);
                     match pipeline_variant {
-                        PipelineVariant::NativeUiUnlit { material_id } => {
+                        PipelineVariant::NativeUiUnlit { material_id }
+                        | PipelineVariant::NativeUiUnlitStencil { material_id } => {
                             if let Some(ui) = native_ui_unlit_ref {
-                                ui.write_material_bind(
-                                    params.queue,
-                                    pass,
-                                    params.material_property_store,
-                                    material_id,
-                                    &params.render_config.ui_unlit_property_ids,
-                                );
+                                let (_, main_packed, mask_packed) =
+                                    crate::assets::ui_unlit_material_uniform(
+                                        params.material_property_store,
+                                        material_id,
+                                        &params.render_config.ui_unlit_property_ids,
+                                    );
+                                let main_id = (main_packed != 0)
+                                    .then(|| texture2d_asset_id_from_packed(main_packed))
+                                    .flatten();
+                                let mask_id = (mask_packed != 0)
+                                    .then(|| texture2d_asset_id_from_packed(mask_packed))
+                                    .flatten();
+                                if let Some((id, tex)) = main_id.and_then(|id| {
+                                    params.asset_registry.get_texture(id).map(|tex| (id, tex))
+                                }) {
+                                    let _ = ensure_texture2d_gpu_view(
+                                        params.device,
+                                        params.queue,
+                                        params.texture2d_gpu,
+                                        params.native_ui_material_bind_cache,
+                                        id,
+                                        tex,
+                                    );
+                                }
+                                if let Some((id, tex)) = mask_id.and_then(|id| {
+                                    params.asset_registry.get_texture(id).map(|tex| (id, tex))
+                                }) {
+                                    let _ = ensure_texture2d_gpu_view(
+                                        params.device,
+                                        params.queue,
+                                        params.texture2d_gpu,
+                                        params.native_ui_material_bind_cache,
+                                        id,
+                                        tex,
+                                    );
+                                }
+                                let main_view = main_id
+                                    .and_then(|id| params.texture2d_gpu.get(&id).map(|(_, v)| v));
+                                let mask_view = mask_id
+                                    .and_then(|id| params.texture2d_gpu.get(&id).map(|(_, v)| v));
+                                let main_key = main_id.unwrap_or(0);
+                                let mask_key = mask_id.unwrap_or(0);
+                                params
+                                    .native_ui_material_bind_cache
+                                    .write_ui_unlit_material_bind(
+                                        params.device,
+                                        params.queue,
+                                        pass,
+                                        ui.material_bind_group_layout(),
+                                        ui.material_uniform_buffer(),
+                                        ui.linear_sampler(),
+                                        params.material_property_store,
+                                        material_id,
+                                        &params.render_config.ui_unlit_property_ids,
+                                        main_view,
+                                        mask_view,
+                                        main_key,
+                                        mask_key,
+                                    );
                             }
                         }
-                        PipelineVariant::NativeUiTextUnlit { material_id } => {
+                        PipelineVariant::NativeUiTextUnlit { material_id }
+                        | PipelineVariant::NativeUiTextUnlitStencil { material_id } => {
                             if let Some(ui) = native_ui_text_ref {
-                                ui.write_material_bind(
-                                    params.queue,
-                                    pass,
-                                    params.material_property_store,
-                                    material_id,
-                                    &params.render_config.ui_text_unlit_property_ids,
-                                );
+                                let (_, font_packed) =
+                                    crate::assets::ui_text_unlit_material_uniform(
+                                        params.material_property_store,
+                                        material_id,
+                                        &params.render_config.ui_text_unlit_property_ids,
+                                    );
+                                let font_id = (font_packed != 0)
+                                    .then(|| texture2d_asset_id_from_packed(font_packed))
+                                    .flatten();
+                                if let Some((id, tex)) = font_id.and_then(|id| {
+                                    params.asset_registry.get_texture(id).map(|tex| (id, tex))
+                                }) {
+                                    let _ = ensure_texture2d_gpu_view(
+                                        params.device,
+                                        params.queue,
+                                        params.texture2d_gpu,
+                                        params.native_ui_material_bind_cache,
+                                        id,
+                                        tex,
+                                    );
+                                }
+                                let font_view = font_id
+                                    .and_then(|id| params.texture2d_gpu.get(&id).map(|(_, v)| v));
+                                let font_key = font_id.unwrap_or(0);
+                                params
+                                    .native_ui_material_bind_cache
+                                    .write_ui_text_unlit_material_bind(
+                                        params.device,
+                                        params.queue,
+                                        pass,
+                                        ui.material_uniform_buffer(),
+                                        ui.linear_sampler(),
+                                        ui.material_bind_group_layout(),
+                                        params.material_property_store,
+                                        material_id,
+                                        &params.render_config.ui_text_unlit_property_ids,
+                                        font_view,
+                                        font_key,
+                                    );
                             }
                         }
                         _ => {}

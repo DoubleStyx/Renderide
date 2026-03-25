@@ -4,6 +4,7 @@ pub mod accel;
 pub mod cluster_buffer;
 pub mod frame_scheduler;
 pub mod mesh;
+pub mod native_ui_bind_cache;
 pub mod pipeline;
 mod pipeline_descriptor_cache;
 pub mod registry;
@@ -17,6 +18,7 @@ pub use accel::{
 };
 pub use frame_scheduler::GpuFrameScheduler;
 pub use mesh::{GpuMeshBuffers, compute_vertex_stride_from_mesh, create_mesh_buffers};
+pub use native_ui_bind_cache::NativeUiMaterialBindCache;
 pub use pipeline::{MAX_INSTANCE_RUN, RenderPipeline, UniformData};
 pub use registry::{PipelineKey, PipelineManager, PipelineRegistry, PipelineVariant};
 pub use shader_key::ShaderKey;

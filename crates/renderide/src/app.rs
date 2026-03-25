@@ -425,6 +425,9 @@ impl RenderideApp {
                     crate::gpu::remove_blas(accel, asset_id);
                 }
             }
+            for tex_id in self.session.drain_pending_texture_unloads() {
+                gpu.drop_texture2d(tex_id);
+            }
             for material_id in self.session.drain_pending_material_unloads() {
                 render_loop.evict_material(material_id);
             }

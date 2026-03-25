@@ -65,6 +65,11 @@ impl CommandHandler for ConfigCommandHandler {
                         .render_config
                         .ui_text_unlit_property_ids
                         .clone(),
+                    native_ui_world_space: ctx.render_config.native_ui_world_space,
+                    native_ui_overlay_stencil_pipelines: ctx
+                        .render_config
+                        .native_ui_overlay_stencil_pipelines,
+                    log_native_ui_routing: ctx.render_config.log_native_ui_routing,
                 };
                 CommandResult::Handled
             }

@@ -51,6 +51,11 @@ impl CommandHandler for StubCommandHandler {
             | RendererCommand::mesh_unload(_)
             | RendererCommand::shader_upload(_)
             | RendererCommand::shader_unload(_)
+            | RendererCommand::set_texture_2d_format(_)
+            | RendererCommand::set_texture_2d_properties(_)
+            | RendererCommand::set_texture_2d_data(_)
+            | RendererCommand::set_texture_2d_result(_)
+            | RendererCommand::unload_texture_2d(_)
             | RendererCommand::desktop_config(_)
             | RendererCommand::free_shared_memory_view(_)
             | RendererCommand::keep_alive(_)
@@ -118,24 +123,7 @@ impl CommandHandler for StubCommandHandler {
             }
             RendererCommand::materials_update_batch_result(_) => CommandResult::Handled,
 
-            // --- Textures 2D ---
-            RendererCommand::set_texture_2d_format(_) => {
-                self.log_once("set_texture_2d_format");
-                CommandResult::Handled
-            }
-            RendererCommand::set_texture_2d_properties(_) => {
-                self.log_once("set_texture_2d_properties");
-                CommandResult::Handled
-            }
-            RendererCommand::set_texture_2d_data(_) => {
-                self.log_once("set_texture_2d_data");
-                CommandResult::Handled
-            }
-            RendererCommand::set_texture_2d_result(_) => CommandResult::Handled,
-            RendererCommand::unload_texture_2d(_) => {
-                self.log_once("unload_texture_2d");
-                CommandResult::Handled
-            }
+            // --- Textures 2D --- (handled by TextureCommandHandler)
 
             // --- Textures 3D ---
             RendererCommand::set_texture_3d_format(_) => {

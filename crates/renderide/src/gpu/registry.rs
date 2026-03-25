@@ -67,6 +67,10 @@ pub enum PipelineVariant {
     NativeUiUnlit { material_id: i32 },
     /// Native WGSL `UI/Text/Unlit`.
     NativeUiTextUnlit { material_id: i32 },
+    /// Native `UI_Unlit` with GraphicsChunk stencil test in the overlay pass.
+    NativeUiUnlitStencil { material_id: i32 },
+    /// Native `UI_TextUnlit` with GraphicsChunk stencil test in the overlay pass.
+    NativeUiTextUnlitStencil { material_id: i32 },
     /// PBR pipeline.
     Pbr,
     /// PBR MRT: PBR with G-buffer output for RTAO.
@@ -304,6 +308,40 @@ impl PipelineRegistry {
                 self.pipelines.insert(key, Arc::clone(&pipeline));
                 Some(pipeline)
             }
+            PipelineVariant::NativeUiUnlitStencil { material_id } => {
+                let store = material_store?;
+                let shader_id = store.shader_asset_for_block(*material_id)?;
+                let dk =
+                    PipelineDescriptorCache::native_ui_unlit_stencil_key(shader_id, config.format);
+                let pipeline: Arc<dyn RenderPipeline> =
+                    if let Some(p) = self.descriptor_cache.get(dk) {
+                        p
+                    } else {
+                        let p: Arc<dyn RenderPipeline> =
+                            Arc::new(UiUnlitNativePipeline::new_with_stencil(device, config));
+                        self.descriptor_cache.insert(dk, Arc::clone(&p));
+                        p
+                    };
+                self.pipelines.insert(key, Arc::clone(&pipeline));
+                Some(pipeline)
+            }
+            PipelineVariant::NativeUiTextUnlitStencil { material_id } => {
+                let store = material_store?;
+                let shader_id = store.shader_asset_for_block(*material_id)?;
+                let dk =
+                    PipelineDescriptorCache::native_ui_text_stencil_key(shader_id, config.format);
+                let pipeline: Arc<dyn RenderPipeline> =
+                    if let Some(p) = self.descriptor_cache.get(dk) {
+                        p
+                    } else {
+                        let p: Arc<dyn RenderPipeline> =
+                            Arc::new(UiTextUnlitNativePipeline::new_with_stencil(device, config));
+                        self.descriptor_cache.insert(dk, Arc::clone(&p));
+                        p
+                    };
+                self.pipelines.insert(key, Arc::clone(&pipeline));
+                Some(pipeline)
+            }
             PipelineVariant::Pbr => {
                 let pipeline: Arc<dyn RenderPipeline> = Arc::new(PbrPipeline::new(device, config));
                 self.put_lazy(key, PipelineVariant::Pbr, config, Arc::clone(&pipeline));
@@ -388,6 +426,10 @@ impl PipelineRegistry {
             PipelineVariant::Material { material_id: m } if *m == material_id => false,
             PipelineVariant::NativeUiUnlit { material_id: m } if *m == material_id => false,
             PipelineVariant::NativeUiTextUnlit { material_id: m } if *m == material_id => false,
+            PipelineVariant::NativeUiUnlitStencil { material_id: m } if *m == material_id => false,
+            PipelineVariant::NativeUiTextUnlitStencil { material_id: m } if *m == material_id => {
+                false
+            }
             _ => true,
         });
     }

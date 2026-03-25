@@ -14,6 +14,8 @@ use super::pipeline::RenderPipeline;
 const HOST_UNLIT_CACHE_TAG: u64 = 0x48_30_53_54_55_4e_4c_54; // "H0STUNLT"
 const NATIVE_UI_UNLIT_TAG: u64 = 0x4e_55_49_55_4e_4c_54_31; // "NUIUNLT1"
 const NATIVE_UI_TEXT_TAG: u64 = 0x4e_55_49_54_45_58_54_31; // "NUITEXT1"
+const NATIVE_UI_UNLIT_STENCIL_TAG: u64 = 0x4e_55_49_55_53_54_45_4e; // "NUIUSTEN"
+const NATIVE_UI_TEXT_STENCIL_TAG: u64 = 0x4e_55_49_54_53_54_45_4e; // "NUITSTEN"
 
 /// Maps descriptor hashes to shared pipeline [`Arc`]s.
 #[derive(Default)]
@@ -58,6 +60,30 @@ impl PipelineDescriptorCache {
         h.finish()
     }
 
+    /// Native `UI_Unlit` with overlay stencil test.
+    pub(crate) fn native_ui_unlit_stencil_key(
+        shader_asset_id: i32,
+        format: wgpu::TextureFormat,
+    ) -> u64 {
+        let mut h = DefaultHasher::new();
+        NATIVE_UI_UNLIT_STENCIL_TAG.hash(&mut h);
+        shader_asset_id.hash(&mut h);
+        format.hash(&mut h);
+        h.finish()
+    }
+
+    /// Native `UI_TextUnlit` with overlay stencil test.
+    pub(crate) fn native_ui_text_stencil_key(
+        shader_asset_id: i32,
+        format: wgpu::TextureFormat,
+    ) -> u64 {
+        let mut h = DefaultHasher::new();
+        NATIVE_UI_TEXT_STENCIL_TAG.hash(&mut h);
+        shader_asset_id.hash(&mut h);
+        format.hash(&mut h);
+        h.finish()
+    }
+
     pub(crate) fn get(&self, key: u64) -> Option<Arc<dyn RenderPipeline>> {
         self.entries.get(&key).cloned()
     }
@@ -78,6 +104,10 @@ impl PipelineDescriptorCache {
             .remove(&Self::native_ui_unlit_key(shader_asset_id, format));
         self.entries
             .remove(&Self::native_ui_text_key(shader_asset_id, format));
+        self.entries
+            .remove(&Self::native_ui_unlit_stencil_key(shader_asset_id, format));
+        self.entries
+            .remove(&Self::native_ui_text_stencil_key(shader_asset_id, format));
     }
 }
 

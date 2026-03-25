@@ -601,7 +601,8 @@ pub fn create_mesh_buffers(
     } else {
         None
     };
-    let build_ui_vertices = has_uvs && color_info.map(|(_, s, _)| s >= 4).unwrap_or(false);
+    // Native UI canvas buffers when UV0 exists; vertex color defaults to white if absent.
+    let build_ui_vertices = has_uvs;
     let mut vertices_ui: Option<Vec<VertexUiCanvas>> = if build_ui_vertices {
         Some(Vec::with_capacity(mesh.vertex_count as usize))
     } else {
@@ -658,10 +659,14 @@ pub fn create_mesh_buffers(
             });
         }
 
-        if let (Some(v_ui), Some((c_off, c_size, c_fmt))) = (&mut vertices_ui, color_info) {
-            let color = if c_size > 0 {
-                read_color_float4(&mesh.vertex_data, base, c_off, c_fmt)
-                    .unwrap_or([1.0, 1.0, 1.0, 1.0])
+        if let Some(v_ui) = &mut vertices_ui {
+            let color = if let Some((c_off, c_size, c_fmt)) = color_info {
+                if c_size > 0 {
+                    read_color_float4(&mesh.vertex_data, base, c_off, c_fmt)
+                        .unwrap_or([1.0, 1.0, 1.0, 1.0])
+                } else {
+                    [1.0, 1.0, 1.0, 1.0]
+                }
             } else {
                 [1.0, 1.0, 1.0, 1.0]
             };

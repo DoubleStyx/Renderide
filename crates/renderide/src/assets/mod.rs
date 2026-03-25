@@ -6,6 +6,7 @@ pub mod mesh;
 pub mod registry;
 pub mod shader;
 pub mod texture;
+pub mod texture_unpack;
 pub mod ui_material_contract;
 
 /// Handle used to identify assets across the registry.
@@ -25,8 +26,13 @@ pub use mesh::{
 };
 pub use registry::AssetRegistry;
 pub use shader::ShaderAsset;
+pub use texture::TextureAsset;
+pub use texture_unpack::{
+    HostTextureAssetKind, texture2d_asset_id_from_packed, unpack_host_texture_packed,
+};
 pub use ui_material_contract::{
     NativeUiShaderFamily, UiTextUnlitMaterialUniform, UiTextUnlitPropertyIds, UiUnlitFlags,
     UiUnlitMaterialUniform, UiUnlitPropertyIds, native_ui_family_for_shader,
+    native_ui_family_from_shader_path_hint, resolve_native_ui_shader_family,
     ui_text_unlit_material_uniform, ui_unlit_material_uniform,
 };

@@ -60,6 +60,33 @@ pub(crate) fn depth_stencil_no_depth() -> wgpu::DepthStencilState {
     }
 }
 
+/// Stencil state for GraphicsChunk **Content** draws (compare Equal, no stencil write).
+pub(crate) fn overlay_graphics_chunk_stencil_content() -> wgpu::StencilState {
+    let face = wgpu::StencilFaceState {
+        compare: wgpu::CompareFunction::Equal,
+        fail_op: wgpu::StencilOperation::Keep,
+        depth_fail_op: wgpu::StencilOperation::Keep,
+        pass_op: wgpu::StencilOperation::Keep,
+    };
+    wgpu::StencilState {
+        front: face,
+        back: face,
+        read_mask: 0xFF,
+        write_mask: 0,
+    }
+}
+
+/// Depth-stencil for native UI draws that must respect overlay GraphicsChunk stencil masking.
+pub(crate) fn depth_stencil_native_ui_stencil_content() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: false,
+        depth_compare: wgpu::CompareFunction::Always,
+        stencil: overlay_graphics_chunk_stencil_content(),
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
 /// Depth-stencil that optionally disables depth testing.
 ///
 /// Used by debug pipelines (`NormalDebug`, `UvDebug`) which can be placed in the

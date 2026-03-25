@@ -372,6 +372,12 @@ pub struct RenderConfig {
     pub ui_unlit_property_ids: UiUnlitPropertyIds,
     /// Material property indices for native `UI_TextUnlit`.
     pub ui_text_unlit_property_ids: UiTextUnlitPropertyIds,
+    /// When true, non-overlay draws with UV0-only UI meshes may use native UI WGSL in the main pass.
+    pub native_ui_world_space: bool,
+    /// When true, overlay draws with GraphicsChunk stencil may use native UI stencil pipelines.
+    pub native_ui_overlay_stencil_pipelines: bool,
+    /// Trace logs for native UI routing decisions (can be noisy).
+    pub log_native_ui_routing: bool,
 }
 
 /// Debug override for shader resolution (replacement-shader style).
@@ -759,6 +765,106 @@ fn apply_render_config_ini_entry(config: &mut RenderConfig, section: &str, key: 
                 value
             ),
         },
+        ("rendering", "native_ui_world_space") => {
+            if let Some(v) = parse_bool(value) {
+                config.native_ui_world_space = v;
+                eprintln!("[renderide] ini: native_ui_world_space = {}", v);
+                logger::info!("ini: native_ui_world_space = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: native_ui_world_space parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "native_ui_overlay_stencil_pipelines") => {
+            if let Some(v) = parse_bool(value) {
+                config.native_ui_overlay_stencil_pipelines = v;
+                eprintln!(
+                    "[renderide] ini: native_ui_overlay_stencil_pipelines = {}",
+                    v
+                );
+                logger::info!("ini: native_ui_overlay_stencil_pipelines = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: native_ui_overlay_stencil_pipelines parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "log_native_ui_routing") => {
+            if let Some(v) = parse_bool(value) {
+                config.log_native_ui_routing = v;
+                eprintln!("[renderide] ini: log_native_ui_routing = {}", v);
+                logger::info!("ini: log_native_ui_routing = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: log_native_ui_routing parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        _ => apply_native_ui_property_ini(config, section, key, value),
+    }
+}
+
+/// Applies `[native_ui_unlit_properties]` / `[native_ui_text_unlit_properties]` keys.
+fn apply_native_ui_property_ini(config: &mut RenderConfig, section: &str, key: &str, value: &str) {
+    match section {
+        "native_ui_unlit_properties" => {
+            let Ok(v) = value.parse::<i32>() else {
+                logger::warn!("native_ui_unlit_properties: skip bad int for key {}", key);
+                return;
+            };
+            let ids = &mut config.ui_unlit_property_ids;
+            match key {
+                "tint" => ids.tint = v,
+                "overlay_tint" => ids.overlay_tint = v,
+                "cutoff" => ids.cutoff = v,
+                "rect" => ids.rect = v,
+                "main_tex_st" => ids.main_tex_st = v,
+                "mask_tex_st" => ids.mask_tex_st = v,
+                "main_tex" => ids.main_tex = v,
+                "mask_tex" => ids.mask_tex = v,
+                "alphaclip" => ids.alphaclip = v,
+                "rectclip" => ids.rectclip = v,
+                "overlay" => ids.overlay = v,
+                "texture_normalmap" => ids.texture_normalmap = v,
+                "texture_lerpcolor" => ids.texture_lerpcolor = v,
+                "mask_texture_mul" => ids.mask_texture_mul = v,
+                "mask_texture_clip" => ids.mask_texture_clip = v,
+                _ => {}
+            }
+        }
+        "native_ui_text_unlit_properties" => {
+            let Ok(v) = value.parse::<i32>() else {
+                logger::warn!(
+                    "native_ui_text_unlit_properties: skip bad int for key {}",
+                    key
+                );
+                return;
+            };
+            let ids = &mut config.ui_text_unlit_property_ids;
+            match key {
+                "tint_color" => ids.tint_color = v,
+                "overlay_tint" => ids.overlay_tint = v,
+                "outline_color" => ids.outline_color = v,
+                "background_color" => ids.background_color = v,
+                "range" => ids.range = v,
+                "face_dilate" => ids.face_dilate = v,
+                "face_softness" => ids.face_softness = v,
+                "outline_size" => ids.outline_size = v,
+                "rect" => ids.rect = v,
+                "font_atlas" => ids.font_atlas = v,
+                "raster" => ids.raster = v,
+                "sdf" => ids.sdf = v,
+                "msdf" => ids.msdf = v,
+                "outline" => ids.outline = v,
+                "rectclip" => ids.rectclip = v,
+                "overlay" => ids.overlay = v,
+                _ => {}
+            }
+        }
         _ => {}
     }
 }
@@ -896,8 +1002,19 @@ impl RenderConfig {
             }
             _ => {}
         }
-        if std::env::var("RENDERIDE_NATIVE_UI_WGSL").as_deref() == Ok("1") {
-            config.use_native_ui_wgsl = true;
+        match std::env::var("RENDERIDE_NATIVE_UI_WGSL").as_deref() {
+            Ok("1") | Ok("true") | Ok("yes") => config.use_native_ui_wgsl = true,
+            Ok("0") | Ok("false") | Ok("no") => config.use_native_ui_wgsl = false,
+            _ => {}
+        }
+        if std::env::var("RENDERIDE_NATIVE_UI_WORLD_SPACE").as_deref() == Ok("1") {
+            config.native_ui_world_space = true;
+        }
+        if std::env::var("RENDERIDE_NATIVE_UI_STENCIL_PIPELINES").as_deref() == Ok("1") {
+            config.native_ui_overlay_stencil_pipelines = true;
+        }
+        if std::env::var("RENDERIDE_LOG_NATIVE_UI_ROUTING").as_deref() == Ok("1") {
+            config.log_native_ui_routing = true;
         }
         if let Ok(s) = std::env::var("RENDERIDE_NATIVE_UI_UNLIT_SHADER_ID")
             && let Ok(v) = s.parse::<i32>()
@@ -945,11 +1062,14 @@ impl Default for RenderConfig {
             use_host_unlit_pilot: false,
             fullscreen_filter_hook: false,
             shader_debug_override: ShaderDebugOverride::None,
-            use_native_ui_wgsl: false,
+            use_native_ui_wgsl: true,
             native_ui_unlit_shader_id: -1,
             native_ui_text_unlit_shader_id: -1,
             ui_unlit_property_ids: UiUnlitPropertyIds::default(),
             ui_text_unlit_property_ids: UiTextUnlitPropertyIds::default(),
+            native_ui_world_space: false,
+            native_ui_overlay_stencil_pipelines: false,
+            log_native_ui_routing: false,
         }
     }
 }

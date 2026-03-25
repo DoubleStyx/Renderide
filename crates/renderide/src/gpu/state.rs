@@ -9,6 +9,7 @@ use winit::window::Window;
 use super::accel::{AccelCache, RayTracingState};
 use super::cluster_buffer::ClusterBufferCache;
 use super::mesh::GpuMeshBuffers;
+use super::native_ui_bind_cache::NativeUiMaterialBindCache;
 use super::pipeline::RtShadowUniforms;
 use super::pipeline::mrt::MrtGbufferOriginUniform;
 use super::registry::PipelineVariant;
@@ -95,6 +96,12 @@ pub struct GpuState {
     native_ui_scene_depth_bgl: Option<wgpu::BindGroupLayout>,
     /// Bind group 1 for native UI pipelines; invalidated when the copy texture is recreated.
     pub native_ui_scene_depth_bind_group: Option<wgpu::BindGroup>,
+    /// GPU textures for host `Texture2D` assets (mip0 RGBA8).
+    pub texture2d_gpu: std::collections::HashMap<i32, (wgpu::Texture, wgpu::TextureView)>,
+    /// Cached material bind groups for native UI draws.
+    pub native_ui_material_bind_cache: NativeUiMaterialBindCache,
+    /// Whether the device reported [`wgpu::Features::DUAL_SOURCE_BLENDING`].
+    pub dual_source_blending_available: bool,
 }
 
 /// Base instance flags from [`RenderConfig::gpu_validation_layers`](crate::config::RenderConfig::gpu_validation_layers)
@@ -293,6 +300,14 @@ pub async fn init_gpu(
     surface.configure(&device, &config);
     let depth_texture = create_depth_texture(&device, &config);
     let depth_size = (config.width, config.height);
+    let dual_source_blending_available = device
+        .features()
+        .contains(wgpu::Features::DUAL_SOURCE_BLENDING);
+    if dual_source_blending_available {
+        logger::info!("GPU: DUAL_SOURCE_BLENDING available (optional dual-output blend parity).");
+    } else {
+        logger::info!("GPU: DUAL_SOURCE_BLENDING not available.");
+    }
 
     Ok(GpuState {
         surface: unsafe {
@@ -345,7 +360,85 @@ pub async fn init_gpu(
         ui_depth_copy_view: None,
         native_ui_scene_depth_bgl: None,
         native_ui_scene_depth_bind_group: None,
+        texture2d_gpu: std::collections::HashMap::new(),
+        native_ui_material_bind_cache: NativeUiMaterialBindCache::new(),
+        dual_source_blending_available,
     })
+}
+
+/// Creates or updates the GPU texture for `asset_id` from CPU [`crate::assets::TextureAsset`] mip0.
+///
+/// Used from [`MeshDrawParams`](crate::render::pass::mesh_draw::MeshDrawParams) so mesh recording can
+/// touch [`GpuState::texture2d_gpu`] and [`GpuState::native_ui_material_bind_cache`] without holding
+/// `&mut GpuState` alongside other partial borrows of the same state.
+pub(crate) fn ensure_texture2d_gpu_view<'a>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture2d_gpu: &'a mut std::collections::HashMap<i32, (wgpu::Texture, wgpu::TextureView)>,
+    native_ui_material_bind_cache: &mut NativeUiMaterialBindCache,
+    asset_id: i32,
+    asset: &crate::assets::TextureAsset,
+) -> Option<&'a wgpu::TextureView> {
+    if !asset.ready_for_gpu() {
+        return None;
+    }
+    let size = wgpu::Extent3d {
+        width: asset.width,
+        height: asset.height,
+        depth_or_array_layers: 1,
+    };
+    let bpr = 4u32 * asset.width;
+    if let Some((t, _)) = texture2d_gpu.get(&asset_id) {
+        let s = t.size();
+        if s.width == asset.width && s.height == asset.height {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: t,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &asset.rgba8_mip0,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(asset.height),
+                },
+                size,
+            );
+            return texture2d_gpu.get(&asset_id).map(|(_, v)| v);
+        }
+        texture2d_gpu.remove(&asset_id);
+        native_ui_material_bind_cache.evict_texture(asset_id);
+    }
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("host Texture2D"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &asset.rgba8_mip0,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bpr),
+            rows_per_image: Some(asset.height),
+        },
+        size,
+    );
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    texture2d_gpu.insert(asset_id, (tex, view));
+    texture2d_gpu.get(&asset_id).map(|(_, v)| v)
 }
 
 impl GpuState {
@@ -552,6 +645,11 @@ pub fn reconfigure_surface_for_window(
 impl GpuState {
     /// Ensures a depth-stencil copy texture exists at `width`×`height` for native UI `OVERLAY` sampling.
     ///
+    /// The [`Self::ui_depth_copy_view`] is **depth-only** so it can bind to `texture_depth_2d` (wgpu
+    /// forbids combined depth+stencil aspects on that binding). Populate it with
+    /// `copy_texture_to_texture` using [`wgpu::TextureAspect::All`] on both textures—WebGPU requires
+    /// the copy source to cover the full depth-stencil format.
+    ///
     /// Recreates storage when dimensions change and drops [`Self::native_ui_scene_depth_bind_group`]
     /// so it can be rebuilt with the new view.
     pub fn ensure_ui_depth_copy_texture(&mut self, width: u32, height: u32) {
@@ -577,7 +675,12 @@ impl GpuState {
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        // `native_ui_scene_depth_bind_group_layout` uses `TextureSampleType::Depth`; wgpu rejects
+        // views that expose both depth and stencil aspects for that binding.
+        let view = tex.create_view(&wgpu::TextureViewDescriptor {
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
         self.ui_depth_copy_texture = Some(tex);
         self.ui_depth_copy_view = Some(view);
     }
@@ -603,6 +706,28 @@ impl GpuState {
             }],
         });
         self.native_ui_scene_depth_bind_group = Some(bg);
+    }
+
+    /// Drops a GPU Texture2D and evicts native UI bind cache entries referencing it.
+    pub fn drop_texture2d(&mut self, asset_id: i32) {
+        self.texture2d_gpu.remove(&asset_id);
+        self.native_ui_material_bind_cache.evict_texture(asset_id);
+    }
+
+    /// Creates or updates the GPU texture for `asset_id` from CPU [`crate::assets::TextureAsset`] mip0.
+    pub fn ensure_texture2d_gpu(
+        &mut self,
+        asset_id: i32,
+        asset: &crate::assets::TextureAsset,
+    ) -> Option<&wgpu::TextureView> {
+        ensure_texture2d_gpu_view(
+            &self.device,
+            &self.queue,
+            &mut self.texture2d_gpu,
+            &mut self.native_ui_material_bind_cache,
+            asset_id,
+            asset,
+        )
     }
 }
 

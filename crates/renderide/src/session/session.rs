@@ -51,6 +51,7 @@ pub struct Session {
     last_frame_data_processed: bool,
     sent_bootstrap_frame_start: bool,
     pending_mesh_unloads: Vec<i32>,
+    pending_texture_unloads: Vec<i32>,
     pending_material_unloads: Vec<i32>,
     lock_cursor: bool,
     render_config: RenderConfig,
@@ -86,6 +87,7 @@ impl Session {
             last_frame_data_processed: false,
             sent_bootstrap_frame_start: false,
             pending_mesh_unloads: Vec::new(),
+            pending_texture_unloads: Vec::new(),
             pending_material_unloads: Vec::new(),
             lock_cursor: false,
             render_config: RenderConfig::load(),
@@ -199,6 +201,7 @@ impl Session {
             },
             frame: FrameContext {
                 pending_mesh_unloads: &mut self.pending_mesh_unloads,
+                pending_texture_unloads: &mut self.pending_texture_unloads,
                 pending_material_unloads: &mut self.pending_material_unloads,
                 pending_frame_data: None,
             },
@@ -324,6 +327,11 @@ impl Session {
     /// Drains mesh asset IDs unloaded this frame.
     pub fn drain_pending_mesh_unloads(&mut self) -> Vec<i32> {
         std::mem::take(&mut self.pending_mesh_unloads)
+    }
+
+    /// Drains texture2D asset IDs unloaded this frame.
+    pub fn drain_pending_texture_unloads(&mut self) -> Vec<i32> {
+        std::mem::take(&mut self.pending_texture_unloads)
     }
 
     /// Drains material IDs to unload. Caller should evict pipelines for these IDs.

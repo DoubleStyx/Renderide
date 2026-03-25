@@ -23,6 +23,8 @@ pub struct UiTextUnlitNativePipeline {
     ring_bind_group: wgpu::BindGroup,
     material_uniform: wgpu::Buffer,
     material_bind_group: wgpu::BindGroup,
+    material_bgl: wgpu::BindGroupLayout,
+    linear_sampler: wgpu::Sampler,
 }
 
 impl UiTextUnlitNativePipeline {
@@ -144,8 +146,172 @@ impl UiTextUnlitNativePipeline {
                 },
             ],
         };
+        Self::finish_text_unlit_pipeline(
+            device,
+            config,
+            shader,
+            ring_bgl,
+            material_bgl,
+            linear,
+            material_uniform,
+            material_bind_group,
+            pipeline_layout,
+            vb_layout,
+            builder::depth_stencil_no_depth(),
+            "ui text unlit native RP",
+        )
+    }
+
+    /// Same as [`Self::new`] with GraphicsChunk stencil masking in the overlay pass.
+    pub fn new_with_stencil(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ui_text_unlit native stencil"),
+            source: wgpu::ShaderSource::Wgsl(UI_TEXT_UNLIT_WGSL.into()),
+        });
+        let ring_bgl = builder::uniform_ring_bind_group_layout(device, "ui text unlit ring BGL");
+        let scene_bgl = native_ui_scene_depth_bind_group_layout(device);
+        let white = fallback_white(device);
+        let linear = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ui text unlit linear stencil"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let material_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ui text unlit material BGL stencil"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<
+                            UiTextUnlitMaterialUniform,
+                        >()
+                            as u64),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let initial = UiTextUnlitMaterialUniform {
+            tint_color: [1.0, 1.0, 1.0, 1.0],
+            overlay_tint: [1.0, 1.0, 1.0, 0.73],
+            outline_color: [1.0, 1.0, 1.0, 0.0],
+            background_color: [0.0, 0.0, 0.0, 0.0],
+            range_xy: [0.001, 0.001, 0.0, 0.0],
+            face_dilate: 0.0,
+            face_softness: 0.0,
+            outline_size: 0.0,
+            pad_scalar: 0.0,
+            rect: [0.0, 0.0, 1.0, 1.0],
+            flags: 0,
+            pad_flags: 0,
+            pad_tail: [0; 2],
+        };
+        let material_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ui text unlit material uniform stencil"),
+            contents: bytemuck::bytes_of(&initial),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let material_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui text unlit material BG stencil"),
+            layout: &material_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: material_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(white),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&linear),
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ui text unlit native PL stencil"),
+            bind_group_layouts: &[&ring_bgl, &scene_bgl, &material_bgl],
+            immediate_size: 0,
+        });
+        let vb_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VertexUiCanvas>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 12,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 20,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 36,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        };
+        Self::finish_text_unlit_pipeline(
+            device,
+            config,
+            shader,
+            ring_bgl,
+            material_bgl,
+            linear,
+            material_uniform,
+            material_bind_group,
+            pipeline_layout,
+            vb_layout,
+            builder::depth_stencil_native_ui_stencil_content(),
+            "ui text unlit native stencil RP",
+        )
+    }
+
+    fn finish_text_unlit_pipeline(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        shader: wgpu::ShaderModule,
+        ring_bgl: wgpu::BindGroupLayout,
+        material_bgl: wgpu::BindGroupLayout,
+        linear: wgpu::Sampler,
+        material_uniform: wgpu::Buffer,
+        material_bind_group: wgpu::BindGroup,
+        pipeline_layout: wgpu::PipelineLayout,
+        vb_layout: wgpu::VertexBufferLayout<'_>,
+        depth_stencil: wgpu::DepthStencilState,
+        pipeline_label: &'static str,
+    ) -> Self {
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("ui text unlit native RP"),
+            label: Some(pipeline_label),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -167,7 +333,7 @@ impl UiTextUnlitNativePipeline {
                 cull_mode: None,
                 ..builder::standard_primitive_state()
             },
-            depth_stencil: Some(builder::depth_stencil_no_depth()),
+            depth_stencil: Some(depth_stencil),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
@@ -185,7 +351,24 @@ impl UiTextUnlitNativePipeline {
             ring_bind_group,
             material_uniform,
             material_bind_group,
+            material_bgl,
+            linear_sampler: linear,
         }
+    }
+
+    /// Material bind group layout for group 2.
+    pub fn material_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.material_bgl
+    }
+
+    /// Linear sampler for the font atlas.
+    pub fn linear_sampler(&self) -> &wgpu::Sampler {
+        &self.linear_sampler
+    }
+
+    /// Per-draw material uniform buffer.
+    pub fn material_uniform_buffer(&self) -> &wgpu::Buffer {
+        &self.material_uniform
     }
 
     /// Writes material uniforms for `block_id` and binds group 2.
