@@ -18,6 +18,7 @@ use glam::Vec4;
 use crate::scene::types::TextureHandle;
 
 /// Maps to WGSL `override` / `wgpu::PipelineCompilationOptions::constants` (decimal id keys per wgpu docs).
+/// `Default` matches WGSL override initializer defaults from Slang `[vk::constant_id]` (first keyword true on exclusive `multi_compile` lines).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VariantKey {
     /// ShaderLab keyword `_ALPHATEST`
@@ -230,9 +231,12 @@ pub fn shader_source_pass1() -> wgpu::ShaderSource<'static> {
 static VERTEX_ATTRIBUTES_PASS0: &[wgpu::VertexAttribute] = &[
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 0 },
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 16, shader_location: 1 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 2 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 3 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 64, shader_location: 4 },
 ];
 static VERTEX_BUFFER_LAYOUT_PASS0: [wgpu::VertexBufferLayout; 1] = [wgpu::VertexBufferLayout {
-    array_stride: 28,
+    array_stride: 72,
     step_mode: wgpu::VertexStepMode::Vertex,
     attributes: VERTEX_ATTRIBUTES_PASS0,
 }];
@@ -241,9 +245,12 @@ pub static VERTEX_BUFFER_LAYOUTS_PASS0: &[wgpu::VertexBufferLayout] = &VERTEX_BU
 static VERTEX_ATTRIBUTES_PASS1: &[wgpu::VertexAttribute] = &[
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0, shader_location: 0 },
     wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 16, shader_location: 1 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 2 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 3 },
+    wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 64, shader_location: 4 },
 ];
 static VERTEX_BUFFER_LAYOUT_PASS1: [wgpu::VertexBufferLayout; 1] = [wgpu::VertexBufferLayout {
-    array_stride: 28,
+    array_stride: 72,
     step_mode: wgpu::VertexStepMode::Vertex,
     attributes: VERTEX_ATTRIBUTES_PASS1,
 }];

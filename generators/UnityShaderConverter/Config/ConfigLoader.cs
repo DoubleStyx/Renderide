@@ -18,6 +18,7 @@ public static class ConfigLoader
         {
             SlangEligibleGlobPatterns = new List<string>(d.SlangEligibleGlobPatterns),
             SlangExcludeGlobPatterns = new List<string>(d.SlangExcludeGlobPatterns),
+            SlangSpecializationExcludeGlobPatterns = new List<string>(d.SlangSpecializationExcludeGlobPatterns),
             ShaderGenerationExcludeGlobPatterns = new List<string>(d.ShaderGenerationExcludeGlobPatterns),
             MaxVariantCombinationsPerShader = d.MaxVariantCombinationsPerShader,
             EnableSlangSpecialization = d.EnableSlangSpecialization,
@@ -26,6 +27,7 @@ public static class ConfigLoader
             ExtraSlangIncludeDirectories = new List<string>(d.ExtraSlangIncludeDirectories),
             SceneBindGroupIndex = d.SceneBindGroupIndex,
             MaterialBindGroupIndex = d.MaterialBindGroupIndex,
+            InjectMaterialUniformBlockWgsl = d.InjectMaterialUniformBlockWgsl,
         };
 
     /// <summary>Merges user compiler JSON over <paramref name="defaults"/>; only keys present in the user file override defaults.</summary>
@@ -106,6 +108,23 @@ public static class ConfigLoader
             merged.EnableSlangSpecialization = specEl.GetBoolean();
         }
 
+        if (root.TryGetProperty("slangSpecializationExcludeGlobPatterns", out JsonElement specExclEl) &&
+            specExclEl.ValueKind == JsonValueKind.Array)
+        {
+            var specExcl = new List<string>();
+            foreach (JsonElement item in specExclEl.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    string? s = item.GetString();
+                    if (!string.IsNullOrWhiteSpace(s))
+                        specExcl.Add(s);
+                }
+            }
+
+            merged.SlangSpecializationExcludeGlobPatterns = specExcl;
+        }
+
         if (root.TryGetProperty("maxSpecializationConstants", out JsonElement mscEl) &&
             mscEl.ValueKind == JsonValueKind.Number &&
             mscEl.TryGetInt32(out int msc) &&
@@ -150,6 +169,12 @@ public static class ConfigLoader
             mbEl.TryGetUInt32(out uint mbIdx))
         {
             merged.MaterialBindGroupIndex = mbIdx;
+        }
+
+        if (root.TryGetProperty("injectMaterialUniformBlockWgsl", out JsonElement injEl) &&
+            injEl.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            merged.InjectMaterialUniformBlockWgsl = injEl.GetBoolean();
         }
 
         return merged;

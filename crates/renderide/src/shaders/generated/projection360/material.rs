@@ -17,41 +17,9 @@
 use glam::Vec4;
 use crate::scene::types::TextureHandle;
 
-/// Maps to WGSL `override` / `wgpu::PipelineCompilationOptions::constants` (decimal id keys per wgpu docs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct VariantKey {
-    /// ShaderLab keyword `EQUIRECTANGULAR`
-    pub equirectangular: bool,
-    /// ShaderLab keyword `CUBEMAP`
-    pub cubemap: bool,
-    /// ShaderLab keyword `CUBEMAP_LOD`
-    pub cubemap_lod: bool,
-    /// ShaderLab keyword `OUTSIDE_CLIP`
-    pub outside_clip: bool,
-    /// ShaderLab keyword `OUTSIDE_COLOR`
-    pub outside_color: bool,
-    /// ShaderLab keyword `OUTSIDE_CLAMP`
-    pub outside_clamp: bool,
-    /// ShaderLab keyword `TINT_TEX_NONE`
-    pub tint_tex_none: bool,
-    /// ShaderLab keyword `TINT_TEX_DIRECT`
-    pub tint_tex_direct: bool,
-}
-
-impl Default for VariantKey {
-    fn default() -> Self {
-        Self {
-            equirectangular: false,
-            cubemap: false,
-            cubemap_lod: false,
-            outside_clip: false,
-            outside_color: false,
-            outside_clamp: false,
-            tint_tex_none: false,
-            tint_tex_direct: false,
-        }
-    }
-}
+/// No `multi_compile` specialization axes were extracted; pipeline constants are unused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct VariantKey;
 
 /// WGSL clustered scene uniforms, lights, cluster buffers (matches builtin PBR).
 pub const RENDERIDE_SCENE_BIND_GROUP: u32 = 1;
@@ -236,53 +204,8 @@ pub struct MaterialUniform {
     pub perspectiveFOV: Vec4,
 }
 
-/// Maps `VariantKey` fields to pipeline constant ids (decimal strings per WebGPU).
-pub fn specialization_constants_f64(variant: &VariantKey) -> std::vec::Vec<(&'static str, f64)> {
-    let mut v = std::vec::Vec::new();
-    v.push(("0", if variant.equirectangular { 1.0 } else { 0.0 }));
-    v.push(("1", if variant.cubemap { 1.0 } else { 0.0 }));
-    v.push(("2", if variant.cubemap_lod { 1.0 } else { 0.0 }));
-    v.push(("3", if variant.outside_clip { 1.0 } else { 0.0 }));
-    v.push(("4", if variant.outside_color { 1.0 } else { 0.0 }));
-    v.push(("5", if variant.outside_clamp { 1.0 } else { 0.0 }));
-    v.push(("6", if variant.tint_tex_none { 1.0 } else { 0.0 }));
-    v.push(("7", if variant.tint_tex_direct { 1.0 } else { 0.0 }));
-    v
-}
-
-static SPECIALIZATION_KEYS: &[&str] = &[
-    "0",
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-];
-
-fn pipeline_compilation_options_vertex_inner(variant: &VariantKey) -> wgpu::PipelineCompilationOptions<'static> {
-    let vals: [f64; 8] = [
-        if variant.equirectangular { 1.0 } else { 0.0 },
-        if variant.cubemap { 1.0 } else { 0.0 },
-        if variant.cubemap_lod { 1.0 } else { 0.0 },
-        if variant.outside_clip { 1.0 } else { 0.0 },
-        if variant.outside_color { 1.0 } else { 0.0 },
-        if variant.outside_clamp { 1.0 } else { 0.0 },
-        if variant.tint_tex_none { 1.0 } else { 0.0 },
-        if variant.tint_tex_direct { 1.0 } else { 0.0 },
-    ];
-    let tuples: std::vec::Vec<(&'static str, f64)> = SPECIALIZATION_KEYS
-        .iter()
-        .copied()
-        .zip(vals)
-        .collect();
-    let boxed = tuples.into_boxed_slice();
-    let leaked = Box::leak(boxed);
-    wgpu::PipelineCompilationOptions {
-        constants: leaked,
-        ..Default::default()
-    }
+fn pipeline_compilation_options_vertex_inner(_variant: &VariantKey) -> wgpu::PipelineCompilationOptions<'static> {
+    wgpu::PipelineCompilationOptions::default()
 }
 
 /// Builds `PipelineCompilationOptions` for vertex/fragment stages (WGSL `override` / `@id`).

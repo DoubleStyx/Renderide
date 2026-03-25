@@ -1,4 +1,4 @@
-﻿Shader "Filters/LUT"
+Shader "Filters/LUT"
 {
 	Properties
 	{
@@ -75,23 +75,17 @@
 
 			sampler3D _LUT;
 
-#ifdef LERP
 			float _Lerp;
 			sampler3D _SecondaryLUT;
-#endif
 
-#ifdef RECTCLIP
-			float4 _Rect;
-#endif
+float4 _Rect;
 
 			struct v2f
 			{
 				float4 pos : SV_POSITION;
 				float4 grabPos : TEXCOORD0;
 
-#ifdef RECTCLIP
 				float2 position : TEXCOORD1;
-#endif
 			};
 
 			v2f vert(appdata_full v)
@@ -133,14 +127,9 @@
 				c.rgb = pow(c.rgb, 1/2.2);
 #endif
 
-#ifdef LERP
 				float3 c0 = tex3Dlod(_LUT, half4(c.rgb, 0)).rgb;
 				float3 c1 = tex3Dlod(_SecondaryLUT, half4(c.rgb, 0)).rgb;
-
 				c.rgb = lerp(c0, c1, _Lerp);
-#else
-				c.rgb = tex3Dlod(_LUT, half4(c.rgb, 0)).rgb;
-#endif
 
 				c.rgb *= gain;
 

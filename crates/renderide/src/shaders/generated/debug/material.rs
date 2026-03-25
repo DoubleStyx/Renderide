@@ -17,6 +17,7 @@
 use glam::Vec4;
 
 /// Maps to WGSL `override` / `wgpu::PipelineCompilationOptions::constants` (decimal id keys per wgpu docs).
+/// `Default` matches WGSL override initializer defaults from Slang `[vk::constant_id]` (first keyword true on exclusive `multi_compile` lines).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VariantKey {
     /// ShaderLab keyword `_NORMALIZE`
@@ -41,7 +42,7 @@ impl Default for VariantKey {
     fn default() -> Self {
         Self {
             normalize: false,
-            position: false,
+            position: true,
             color: false,
             color_alpha: false,
             normal: false,

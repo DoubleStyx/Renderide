@@ -7,7 +7,11 @@ namespace UnityShaderConverter.Variants;
 /// <summary>Maps <c>#pragma multi_compile</c> / <c>shader_feature</c> keywords to Slang specialization constants.</summary>
 public static class SpecializationExtractor
 {
-    /// <summary>Builds specialization axes (stable order: first-seen keyword order).</summary>
+    /// <summary>
+    /// Builds specialization axes (stable order: pragma line order, then keyword order within each line).
+    /// For a <c>multi_compile</c> line with no <c>_</c> off slot, the first keyword’s Slang bool defaults to true so one branch is active;
+    /// optional lines (with <c>_</c>) keep all defaults false.
+    /// </summary>
     public static IReadOnlyList<SpecializationAxis> Extract(ShaderFileDocument document, CompilerConfigModel compilerConfig)
     {
         if (!compilerConfig.EnableSlangSpecialization)
@@ -21,8 +25,11 @@ public static class SpecializationExtractor
             if (VariantExpander.IsIgnoredMultiCompilePragmaLine(line))
                 continue;
             List<string>? opts = VariantExpander.ParseMultiCompileKeywords(line);
-            if (opts is null)
+            if (opts is null || opts.Count == 0)
                 continue;
+
+            bool hasOffSlot = opts.Exists(static o => o.Length == 0);
+            bool firstNonEmptyInExclusive = true;
             foreach (string kw in opts)
             {
                 if (kw.Length == 0 || seen.Contains(kw))
@@ -30,7 +37,10 @@ public static class SpecializationExtractor
                 seen.Add(kw);
                 string slangId = SlangIdentifierForKeyword(kw);
                 string rustField = RustFieldNameForKeyword(kw);
-                axes.Add(new SpecializationAxis(axes.Count, kw, slangId, rustField));
+                bool defaultTrue = !hasOffSlot && firstNonEmptyInExclusive;
+                if (!hasOffSlot)
+                    firstNonEmptyInExclusive = false;
+                axes.Add(new SpecializationAxis(axes.Count, kw, slangId, rustField, defaultTrue));
                 if (axes.Count >= max)
                     return axes;
             }
@@ -97,8 +107,10 @@ public static class SpecializationExtractor
 /// <param name="Keyword">Original ShaderLab keyword (e.g. from <c>multi_compile</c>).</param>
 /// <param name="SlangIdentifier">Bool const name in emitted Slang (and typically WGSL override name).</param>
 /// <param name="RustFieldName">Field on generated <c>VariantKey</c>.</param>
+/// <param name="DefaultConstantValue">Slang <c>[vk::constant_id]</c> default when this axis is the first keyword of a mutually exclusive <c>multi_compile</c> line (no <c>_</c> off slot).</param>
 public sealed record SpecializationAxis(
     int ConstantId,
     string Keyword,
     string SlangIdentifier,
-    string RustFieldName);
+    string RustFieldName,
+    bool DefaultConstantValue = false);

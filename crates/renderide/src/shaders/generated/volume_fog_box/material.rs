@@ -17,6 +17,7 @@
 use glam::Vec4;
 
 /// Maps to WGSL `override` / `wgpu::PipelineCompilationOptions::constants` (decimal id keys per wgpu docs).
+/// `Default` matches WGSL override initializer defaults from Slang `[vk::constant_id]` (first keyword true on exclusive `multi_compile` lines).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct VariantKey {
     /// ShaderLab keyword `COLOR_CONSTANT`
@@ -40,12 +41,12 @@ pub struct VariantKey {
 impl Default for VariantKey {
     fn default() -> Self {
         Self {
-            color_constant: false,
+            color_constant: true,
             color_vert_gradient: false,
-            fog_linear: false,
+            fog_linear: true,
             fog_exp: false,
             fog_exp2: false,
-            object_space: false,
+            object_space: true,
             world_space: false,
             saturate_alpha: false,
         }

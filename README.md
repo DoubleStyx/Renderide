@@ -1,13 +1,9 @@
 A modern Rust + wgpu renderer for Resonite.
 
----
-
 ## Status
 
 Experimental: Performance, stability, and platform support are still evolving.  
 Visual bugs and missing features are expected. Not intended for general use yet.
-
----
 
 ## Quick Start
 
@@ -27,34 +23,20 @@ The bootstrapper will launch the Resonite host and connect Renderide automatical
 
 Logs appear in the `logs/` folder (see [Debugging](#debugging) for details).
 
----
+## Configuration
+
+Optional `configuration.ini` can be placed next to the executable or in the working directory.  
+See `crates/renderide/src/config.rs` for available keys. For example, `rendering.use_opengl` forces the GLES backend (useful when Vulkan is unavailable), and `rendering.use_dx12` forces the DirectX 12 backend (primarily useful on Windows).
 
 ## Prerequisites
 
 ### Required
-- **Rust** stable toolchain (via [rustup](https://rustup.rs/))
-- A working **Resonite** installation
+- Rust stable toolchain (via [rustup](https://rustup.rs/))
+- A working Resonite installation
 
 ### Optional (for contributors)
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) (used for generators)
 - [Slang compiler](https://shader-slang.com/) (used by UnityShaderConverter)
-
----
-
-## Building & Running
-
-All commands are run from the repository root (`Renderide/` — the Cargo workspace).
-
-```bash
-cargo build --release
-cargo run --release -p bootstrapper
-```
-
-### Configuration
-Optional `configuration.ini` can be placed next to the executable or in the working directory.  
-See `crates/renderide/src/config.rs` for available keys. For example, `rendering.use_opengl` forces the GLES backend (useful when Vulkan is unavailable), and `rendering.use_dx12` forces the DirectX 12 backend (primarily useful on Windows).
-
----
 
 ## Architecture
 
@@ -79,14 +61,12 @@ flowchart TB
     Renderide <-->|session IPC queues| Host
 ```
 
----
-
 ## Repository Layout
 
 ### Rust Crates
 
 | Crate          | Path                              | Purpose |
-|----------------|-----------------------------------|-------|
+|----------------|-----------------------------------|---------|
 | `bootstrapper` | `crates/bootstrapper/`            | Launches Resonite host and manages IPC |
 | `renderide`    | `crates/renderide/`               | Main renderer (wgpu, shaders, scene) |
 | `interprocess` | `crates/interprocess/`            | Shared-memory IPC queues |
@@ -94,19 +74,17 @@ flowchart TB
 
 ### .NET Projects
 
-| Project          | Path                              | Purpose |
-|----------------|-----------------------------------|-------|
-| `generators/UnityShaderConverter/` — Converts Unity `.shader` files → WGSL + Rust modules |
-| `generators/SharedTypeGenerator/` — Generates Rust types from `Renderite.Shared.dll` |
+| Project               | Path                               | Purpose |
+|-----------------------|------------------------------------|---------|
+| `UnityShaderConverter` | `generators/UnityShaderConverter/` | Converts Unity `.shader` files → WGSL + Rust modules |
+| `SharedTypeGenerator` | `generators/SharedTypeGenerator/`  | Generates Rust types from `Renderite.Shared.dll` |
 
 ### Third-Party
 
-| Project          | Path                              | Purpose |
-|----------------|-----------------------------------|-------|
-| `third_party/UnityShaderParser/` — Vendored parser for ShaderLab |
-| `third_party/Resonite.UnityShaders/` — Vendored Unity shaders |
-
----
+| Project                 | Path                                 | Purpose |
+|-------------------------|--------------------------------------|---------|
+| `UnityShaderParser`     | `third_party/UnityShaderParser/`     | Vendored parser for ShaderLab |
+| `Resonite.UnityShaders` | `third_party/Resonite.UnityShaders/` | Vendored Unity shaders |
 
 ## Development
 
@@ -131,26 +109,22 @@ dotnet test generators/SharedTypeGenerator.Tests/
 dotnet test generators/UnityShaderConverter.Tests/
 ```
 
----
-
 ## Debugging
 
 All logs go to the `logs/` folder relative to the bootstrapper’s working directory.
 
-| Log File              | Created by          | Notes |
-|-----------------------|---------------------|-------|
-| `Bootstrapper.log`    | Bootstrapper        | Orchestration & IPC |
-| `HostOutput.log`      | Bootstrapper        | Resonite host stdout/stderr |
-| `Renderide.log`       | Renderide           | Main renderer logs |
-| `UnityShaderConverter.log` | Converter      | Shader conversion details |
-| `SharedTypeGenerator.log` | Generator      | Type generation details |
+| Log file                   | Created by           | Notes |
+|----------------------------|----------------------|-------|
+| `Bootstrapper.log`         | Bootstrapper         | Orchestration & IPC |
+| `HostOutput.log`           | Bootstrapper         | Resonite host stdout/stderr |
+| `Renderide.log`            | Renderide            | Main renderer logs |
+| `UnityShaderConverter.log` | UnityShaderConverter | Shader conversion details |
+| `SharedTypeGenerator.log`  | SharedTypeGenerator  | Type generation details |
 
 **Verbosity**:  
 `cargo run --release -p bootstrapper -- --log-level debug`
 
 **GPU Validation**: Set `RENDERIDE_GPU_VALIDATION=1` before starting (performance-heavy).
-
----
 
 ## Goals
 
@@ -158,8 +132,6 @@ All logs go to the `logs/` folder relative to the bootstrapper’s working direc
 - Modern clustered-forward rendering
 - Raytracing and other optional rendering features
 - Excellent VR performance and correctness
-
----
 
 ## License
 

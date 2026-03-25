@@ -97,13 +97,9 @@ Shader "UI/Text/Unlit"
 				float4 color : COLOR;
 				float3 extraData : NORMAL;
 
-#ifdef RECTCLIP
 				float2 position : TEXCOORD1;
-#endif
 
-#ifdef OVERLAY
 				float4 projPos : TEXCOORD2;
-#endif
 
 				UNITY_VERTEX_OUTPUT_STEREO
             };
@@ -120,14 +116,10 @@ Shader "UI/Text/Unlit"
 			float _FaceSoftness;
 			float _OutlineSize;
 
-#ifdef RECTCLIP
-			float4 _Rect;
-#endif
+float4 _Rect;
 
-#ifdef OVERLAY
 			float4 _OverlayTint;
 			UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
-#endif
 
 			float median(float r, float g, float b)
 			{
@@ -142,19 +134,15 @@ Shader "UI/Text/Unlit"
 				UNITY_INITIALIZE_OUTPUT(v2f, o);
 				UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
 
-#ifdef RECTCLIP
 				o.position = v.vertex.xy;
-#endif
 
                 o.vertex = UnityObjectToClipPos(v.vertex);
                 o.uv = v.uv;
 				o.color = v.color;
 				o.extraData = v.extraData;
 
-#ifdef OVERLAY
 				o.projPos = ComputeScreenPos(o.vertex);
 				COMPUTE_EYEDEPTH(o.projPos.z);
-#endif
 
                 return o;
             }
@@ -175,10 +163,11 @@ Shader "UI/Text/Unlit"
 #if defined(MSDF) || defined(SDF)
 				float2 msdfUnit = _Range;
 
+				float sigDist;
 #ifdef MSDF
-				float sigDist = median(atlasColor.r, atlasColor.g, atlasColor.b) - 0.5;
-#elif SDF
-				float sigDist = atlasColor.a - 0.5;
+				sigDist = median(atlasColor.r, atlasColor.g, atlasColor.b) - 0.5;
+#else
+				sigDist = atlasColor.a - 0.5;
 #endif
 
 				sigDist += _FaceDilate + i.extraData.x;

@@ -84,17 +84,9 @@ Shader "Filters/Blur"
 
 #pragma exclude_renderers d3d11_9x
 
-#ifdef RECTCLIP
-		float4 _Rect;
-#endif
+float4 _Rect;
 
-#if defined(REFRACT) || defined(REFRACT_NORMALMAP)
 		float _RefractionStrength;
-#endif
-#ifdef REFRACT_NORMALMAP
-		sampler2D _NormalMap;
-		float4 _NormalMap_ST;
-#endif
 
 		struct v2f
 		{
@@ -102,17 +94,11 @@ Shader "Filters/Blur"
 			float4 grabPos : TEXCOORD1;
 			float depth : TEXCOORD2;
 			float4 pos : SV_POSITION;
-#if defined(REFRACT) || defined(REFRACT_NORMALMAP)
 			float3 normal : NORMAL;
-#endif
-#ifdef REFRACT_NORMALMAP
 			float3 tangent : TANGENT;
 			float3 bitangent : TEXCOORD3;
-#endif
 
-#ifdef RECTCLIP
 			float2 position : TEXCOORD4;
-#endif
 		};
 
 		v2f vert(appdata_full v)
@@ -125,21 +111,15 @@ Shader "Filters/Blur"
 			o.pos = UnityObjectToClipPos(v.vertex);
 			o.uv = v.texcoord.xy;
 
-#if defined(REFRACT) || defined(REFRACT_NORMALMAP)
 			o.normal = UnityObjectToWorldNormal(v.normal);
-#endif
-#ifdef REFRACT_NORMALMAP
 			o.tangent = normalize(mul(unity_ObjectToWorld, float4(v.tangent.xyz, 0)).xyz);
 			o.bitangent = normalize(cross(o.normal, o.tangent) * v.tangent.w);
-#endif
 
 			// use ComputeGrabScreenPos function from UnityCG.cginc
 			// to get the correct texture coordinate
 			o.grabPos = ComputeGrabScreenPos(o.pos);
 
-#ifdef RECTCLIP
 			o.position = v.vertex.xy;
-#endif
 
 			COMPUTE_EYEDEPTH(o.depth);
 			return o;

@@ -114,10 +114,11 @@ Shader "Text/Unlit"
 #if defined(MSDF) || defined(SDF)
 				float2 msdfUnit = _Range;
 
+				float sigDist;
 #ifdef MSDF
-				float sigDist = median(atlasColor.r, atlasColor.g, atlasColor.b) - 0.5;
-#elif SDF
-				float sigDist = atlasColor.a - 0.5;
+				sigDist = median(atlasColor.r, atlasColor.g, atlasColor.b) - 0.5;
+#else
+				sigDist = atlasColor.a - 0.5;
 #endif
 
 				sigDist += _FaceDilate + i.extraData.x;

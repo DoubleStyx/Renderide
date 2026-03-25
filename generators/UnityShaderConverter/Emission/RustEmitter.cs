@@ -158,6 +158,7 @@ public static partial class RustEmitter
         }
 
         sb.AppendLine("/// Maps to WGSL `override` / `wgpu::PipelineCompilationOptions::constants` (decimal id keys per wgpu docs).");
+        sb.AppendLine("/// `Default` matches WGSL override initializer defaults from Slang `[vk::constant_id]` (first keyword true on exclusive `multi_compile` lines).");
         sb.AppendLine("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]");
         sb.AppendLine("pub struct VariantKey {");
         foreach (SpecializationAxis ax in axes)
@@ -172,7 +173,10 @@ public static partial class RustEmitter
         sb.AppendLine("    fn default() -> Self {");
         sb.AppendLine("        Self {");
         foreach (SpecializationAxis ax in axes)
-            sb.Append("            ").Append(ax.RustFieldName).AppendLine(": false,");
+        {
+            sb.Append("            ").Append(ax.RustFieldName).Append(": ");
+            sb.Append(ax.DefaultConstantValue ? "true" : "false").AppendLine(",");
+        }
 
         sb.AppendLine("        }");
         sb.AppendLine("    }");

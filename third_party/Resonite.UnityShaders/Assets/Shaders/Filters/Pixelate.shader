@@ -72,14 +72,10 @@ Shader "Filters/Pixelate"
 
 		float2 _Resolution;
 
-#ifdef RESOLUTION_TEX
 		sampler2D _ResolutionTex;
 		float4 _ResolutionTex_ST;
-#endif
 
-#ifdef RECTCLIP
-		float4 _Rect;
-#endif
+float4 _Rect;
 
 		static const float PI = 3.14159265359;
 		static const float TAU = 6.283185307;
@@ -90,9 +86,7 @@ Shader "Filters/Pixelate"
 			float4 grabPos : TEXCOORD1;
 			float4 pos : SV_POSITION;
 
-#ifdef RECTCLIP
-			float2 position : TEXCOORD2;
-#endif
+				float2 position : TEXCOORD2;
 		};
 
 		v2f vert(appdata_base v)
@@ -108,9 +102,7 @@ Shader "Filters/Pixelate"
 			// to get the correct texture coordinate
 			o.grabPos = ComputeGrabScreenPos(o.pos);
 
-#ifdef RECTCLIP
 			o.position = v.vertex.xy;
-#endif
 
 			return o;
 		}
@@ -125,10 +117,11 @@ Shader "Filters/Pixelate"
 
 			float2 grabUv = i.grabPos.xy / i.grabPos.w;
 
+			float2 size;
 #ifdef RESOLUTION_TEX
-			float2 size = _Resolution * tex2D(_ResolutionTex, TRANSFORM_TEX(i.uv, _ResolutionTex)).rg;
+			size = _Resolution * tex2D(_ResolutionTex, TRANSFORM_TEX(i.uv, _ResolutionTex)).rg;
 #else
-			float2 size = _Resolution;
+			size = _Resolution;
 #endif
 			grabUv = round(grabUv * size) / size;
 

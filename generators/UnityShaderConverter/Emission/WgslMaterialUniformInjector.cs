@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityShaderConverter.Analysis;
 using UnityShaderParser.ShaderLab;
 
@@ -11,17 +12,24 @@ public static class WgslMaterialUniformInjector
     /// <summary>Default WGSL bind group index for material uniforms when not overridden by compiler config.</summary>
     public const uint DefaultMaterialBindGroupIndex = 2u;
 
+    private static readonly Regex InjectedBlockHeaderRegex = new(
+        @"^// --- Material block \(UnityShaderConverter\) @group\(\d+\) ---\r?\n",
+        RegexOptions.CultureInvariant);
+
     /// <summary>
-    /// Removes a previously injected material block that used <c>@group(1)</c> so a new <c>@group(2)</c> block can be prepended.
+    /// Removes a leading UnityShaderConverter-injected material block (any <c>@group(N)</c>) through <c>// --- End material block ---</c>.
     /// </summary>
-    public static string StripLegacyPrependedMaterialBlock(string wgslBody)
+    public static string StripInjectedMaterialBlock(string wgslBody)
     {
-        const string legacyStart = "// --- Material block (UnityShaderConverter) @group(1) ---";
-        if (!wgslBody.StartsWith(legacyStart, StringComparison.Ordinal))
+        if (string.IsNullOrEmpty(wgslBody))
+            return wgslBody;
+
+        Match m = InjectedBlockHeaderRegex.Match(wgslBody);
+        if (!m.Success)
             return wgslBody;
 
         const string endMarker = "// --- End material block ---";
-        int endIdx = wgslBody.IndexOf(endMarker, StringComparison.Ordinal);
+        int endIdx = wgslBody.IndexOf(endMarker, m.Length, StringComparison.Ordinal);
         if (endIdx < 0)
             return wgslBody;
 
@@ -31,6 +39,9 @@ public static class WgslMaterialUniformInjector
 
         return wgslBody[after..];
     }
+
+    /// <summary>Backward-compatible name for <see cref="StripInjectedMaterialBlock"/>.</summary>
+    public static string StripLegacyPrependedMaterialBlock(string wgslBody) => StripInjectedMaterialBlock(wgslBody);
 
     /// <summary>Inserts the material block at the top of merged WGSL when there are properties.</summary>
     public static string PrependMaterialBlock(

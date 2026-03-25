@@ -124,9 +124,7 @@ Shader "Projection360"
 					float2 texcoord : TEXCOORD0;
 	#endif
 
-	#ifdef RECTCLIP
 					float2 position : TEXCOORD3;
-	#endif
 
 					UNITY_VERTEX_OUTPUT_STEREO
 				};
@@ -189,9 +187,7 @@ Shader "Projection360"
 				float4 _OffsetMagnitude;
 	#endif
 
-	#ifdef RECTCLIP
 				float4 _Rect;
-	#endif
 
 				static const float PI = 3.14159265359;
 				static const float TAU = 6.283185307;

@@ -65,6 +65,7 @@ public sealed class UnityCompatUnityCgCompileTests
                 "vert",
                 "frag",
                 Array.Empty<string>(),
+                preserveWgslPipelineOverridableConstants: false,
                 out string? stderr);
 
             Assert.True(ok, stderr ?? "slangc failed with no stderr");
@@ -148,6 +149,7 @@ public sealed class UnityCompatUnityCgCompileTests
                 "vert",
                 "frag",
                 Array.Empty<string>(),
+                preserveWgslPipelineOverridableConstants: false,
                 out string? stderr);
 
             Assert.True(ok, stderr ?? "slangc failed with no stderr");

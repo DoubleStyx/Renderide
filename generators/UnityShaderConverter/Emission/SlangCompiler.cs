@@ -17,6 +17,10 @@ namespace UnityShaderConverter.Emission;
 /// When the combined WGSL compile step fails but per-stage merge succeeds, intermediate diagnostics are logged at
 /// <see cref="LogLevel.Trace"/> only. Final <c>slangc</c> failures are logged at <see cref="LogLevel.Error"/> with full stderr
 /// by the shader converter runner regardless of verbose mode.
+/// When <see cref="TryCompileToWgsl"/> is called with <c>preserveWgslPipelineOverridableConstants</c>, passes <c>-preserve-params</c>
+/// so <c>[vk::constant_id]</c> globals are not dropped from WGSL output (pipeline <c>override</c> / <c>@id</c>).
+/// Combined whole-module <c>slangc</c> can still return success while emitting WGSL that has no <c>@vertex</c>/<c>@fragment</c> entry points
+/// (only module-scope declarations); that output is rejected and the per-stage merge path is used instead.
 /// </remarks>
 public sealed class SlangCompiler
 {
@@ -173,6 +177,7 @@ public sealed class SlangCompiler
 
     /// <summary>Compiles Slang to WGSL (single module when <c>slangc</c> supports it; otherwise merged stages).</summary>
     /// <param name="unityCgIncludesDirs">Ordered <c>-I</c> directories with Unity <c>.cginc</c> trees (may be empty).</param>
+    /// <param name="preserveWgslPipelineOverridableConstants">When true, passes <c>-preserve-params</c> so specialization constants survive WGSL emission.</param>
     public bool TryCompileToWgsl(
         string slangPath,
         string wgslOutPath,
@@ -182,6 +187,7 @@ public sealed class SlangCompiler
         string vertexEntry,
         string fragmentEntry,
         IReadOnlyList<string> variantDefines,
+        bool preserveWgslPipelineOverridableConstants,
         out string? stderr)
     {
         if (TryCompileToWgslCore(
@@ -194,6 +200,7 @@ public sealed class SlangCompiler
                 fragmentEntry,
                 variantDefines,
                 useMatrixLayout: true,
+                preserveWgslPipelineOverridableConstants,
                 out stderr))
             return true;
 
@@ -211,6 +218,7 @@ public sealed class SlangCompiler
                     fragmentEntry,
                     variantDefines,
                     useMatrixLayout: false,
+                    preserveWgslPipelineOverridableConstants,
                     out stderr))
             {
                 _logger.LogTrace(LogCategory.SlangCompile, "slangc succeeded without -matrix-layout (toolchain lacks that flag).");
@@ -232,6 +240,28 @@ public sealed class SlangCompiler
         args.Add(string.Join(",", DefaultDisabledSlangWarningIds));
     }
 
+    /// <summary>Slang may drop unused pipeline parameters; <c>-preserve-params</c> keeps <c>[vk::constant_id]</c> as WGSL <c>override</c>.</summary>
+    private static void AppendPreserveParamsForWgslOverrides(List<string> args, bool preserve)
+    {
+        if (preserve)
+            args.Add("-preserve-params");
+    }
+
+    /// <summary>
+    /// Returns whether <paramref name="wgsl"/> appears to define both a vertex and a fragment stage (WGSL <c>@vertex</c> and <c>@fragment</c>).
+    /// </summary>
+    /// <remarks>
+    /// Used after a &quot;successful&quot; combined <c>slangc</c> emit: some Slang versions with <c>-preserve-params</c> write a non-empty WGSL file
+    /// that omits stage entry points; <see cref="TryCompileToWgslCore"/> then falls back to separate vertex and fragment compiles merged into one file.
+    /// </remarks>
+    public static bool WgslContainsVertexAndFragmentStageMarkers(string wgsl)
+    {
+        if (string.IsNullOrEmpty(wgsl))
+            return false;
+        return wgsl.Contains("@vertex", StringComparison.Ordinal) &&
+               wgsl.Contains("@fragment", StringComparison.Ordinal);
+    }
+
     private bool TryCompileToWgslCore(
         string slangPath,
         string wgslOutPath,
@@ -242,6 +272,7 @@ public sealed class SlangCompiler
         string fragmentEntry,
         IReadOnlyList<string> variantDefines,
         bool useMatrixLayout,
+        bool preserveWgslPipelineOverridableConstants,
         out string? stderr)
     {
         stderr = null;
@@ -255,17 +286,34 @@ public sealed class SlangCompiler
             singleArgs.Add("column-major");
         }
 
+        AppendPreserveParamsForWgslOverrides(singleArgs, preserveWgslPipelineOverridableConstants);
+
         AddDefines(singleArgs, variantDefines);
         AppendIncludeDirectories(singleArgs, runtimeSlangIncludeDir, unityCgIncludesDirs, shaderSourceIncludeDir);
         singleArgs.AddRange(new[] { "-o", wgslOutPath });
 
-        if (RunProcess(singleArgs, out string errSingleRaw) && File.Exists(wgslOutPath) && new FileInfo(wgslOutPath).Length > 0)
+        bool ranSingle = RunProcess(singleArgs, out string errSingleRaw);
+        bool singleWroteNonEmpty =
+            ranSingle &&
+            File.Exists(wgslOutPath) &&
+            new FileInfo(wgslOutPath).Length > 0;
+
+        if (singleWroteNonEmpty)
         {
-            _logger.LogTrace(LogCategory.SlangCompile, $"Wrote combined WGSL for {Path.GetFileName(slangPath)}");
-            return true;
+            string combinedText = File.ReadAllText(wgslOutPath);
+            if (WgslContainsVertexAndFragmentStageMarkers(combinedText))
+            {
+                _logger.LogTrace(LogCategory.SlangCompile, $"Wrote combined WGSL for {Path.GetFileName(slangPath)}");
+                return true;
+            }
+
+            _logger.LogTrace(
+                LogCategory.SlangCompile,
+                $"Combined WGSL for {Path.GetFileName(slangPath)} is missing @vertex/@fragment entry points; using per-stage merge.");
         }
 
-        if (useMatrixLayout &&
+        if (!singleWroteNonEmpty &&
+            useMatrixLayout &&
             errSingleRaw.Contains("matrix-layout", StringComparison.OrdinalIgnoreCase))
         {
             stderr = ApplySlangStderrPolicy(errSingleRaw);
@@ -274,9 +322,13 @@ public sealed class SlangCompiler
 
         string policyStderr = ApplySlangStderrPolicy(errSingleRaw);
         string errorDigest = FormatSlangStderrErrorDigest(policyStderr);
-        _logger.LogTrace(
-            LogCategory.SlangCompile,
-            $"Combined WGSL compile failed; trying per-stage merge. {errorDigest} (full stderr below).");
+        if (!singleWroteNonEmpty)
+        {
+            _logger.LogTrace(
+                LogCategory.SlangCompile,
+                $"Combined WGSL compile failed; trying per-stage merge. {errorDigest} (full stderr below).");
+        }
+
         _logger.LogTrace(
             LogCategory.SlangCompile,
             $"Combined WGSL compile stderr: {policyStderr}");
@@ -288,6 +340,8 @@ public sealed class SlangCompiler
             vertArgs.Add("-matrix-layout");
             vertArgs.Add("column-major");
         }
+
+        AppendPreserveParamsForWgslOverrides(vertArgs, preserveWgslPipelineOverridableConstants);
 
         vertArgs.AddRange(new[] { "-entry", vertexEntry, "-stage", "vertex" });
         AddDefines(vertArgs, variantDefines);
@@ -307,6 +361,8 @@ public sealed class SlangCompiler
             fragArgs.Add("-matrix-layout");
             fragArgs.Add("column-major");
         }
+
+        AppendPreserveParamsForWgslOverrides(fragArgs, preserveWgslPipelineOverridableConstants);
 
         fragArgs.AddRange(new[] { "-entry", fragmentEntry, "-stage", "fragment" });
         AddDefines(fragArgs, variantDefines);

@@ -150,6 +150,7 @@ public sealed class SlangCompilerDiagnosticsTests
                 "vert",
                 "frag",
                 Array.Empty<string>(),
+                preserveWgslPipelineOverridableConstants: false,
                 out string? stderr);
 
             Assert.True(ok, stderr ?? "slangc failed with no stderr");
@@ -219,6 +220,7 @@ public sealed class SlangCompilerDiagnosticsTests
                 "vert",
                 "frag",
                 Array.Empty<string>(),
+                preserveWgslPipelineOverridableConstants: false,
                 out string? stderr);
 
             Assert.True(ok, stderr ?? "slangc failed with no stderr");
@@ -235,5 +237,124 @@ public sealed class SlangCompilerDiagnosticsTests
                 // ignored
             }
         }
+    }
+
+    /// <summary>
+    /// <c>-preserve-params</c> keeps <c>[vk::constant_id]</c> as WGSL <c>override</c> so wgpu pipeline constants apply.
+    /// </summary>
+    [Fact]
+    public void TryCompileToWgsl_PreserveParams_EmitsWgslOverrideForUnusedSpecializationConstant()
+    {
+        string baseDir = AppContext.BaseDirectory;
+        string runtimeSlang = Path.Combine(baseDir, "runtime_slang");
+        Assert.True(Directory.Exists(runtimeSlang), "Expected runtime_slang next to test output (rebuild UnityShaderConverter.Tests).");
+
+        string temp = Path.Combine(Path.GetTempPath(), "usc_slang_preserve_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+        try
+        {
+            const string tu = """
+                [vk::constant_id(0)]
+                const bool USC_FEATURE = false;
+
+                struct vi { float4 vertex : POSITION; };
+                struct vo { float4 pos : SV_POSITION; };
+
+                vo vert(vi v)
+                {
+                    vo o;
+                    o.pos = float4(0.0, 0.0, 0.0, 1.0);
+                    return o;
+                }
+
+                float4 frag(vo i) : SV_Target0
+                {
+                    return float4(1.0, 0.0, 0.0, 1.0);
+                }
+                """;
+            string slangPath = Path.Combine(temp, "spec.slang");
+            string wgslPath = Path.Combine(temp, "out.wgsl");
+            File.WriteAllText(slangPath, tu);
+
+            using var logger = new Logger(new LoggerConfiguration
+            {
+                Behaviour = new DirectLoggingBehaviour(),
+                MaxLevel = LogLevel.Error,
+            });
+            var compiler = new SlangCompiler(SlangCompiler.ResolveExecutable(null), logger, suppressSlangWarnings: true);
+
+            bool okWithout = compiler.TryCompileToWgsl(
+                slangPath,
+                wgslPath + ".a",
+                runtimeSlang,
+                Array.Empty<string>(),
+                temp,
+                "vert",
+                "frag",
+                Array.Empty<string>(),
+                preserveWgslPipelineOverridableConstants: false,
+                out string? errA);
+            Assert.True(okWithout, errA ?? "slangc failed");
+            string wgslA = File.ReadAllText(wgslPath + ".a");
+            Assert.DoesNotContain("override", wgslA, StringComparison.Ordinal);
+
+            bool okWith = compiler.TryCompileToWgsl(
+                slangPath,
+                wgslPath + ".b",
+                runtimeSlang,
+                Array.Empty<string>(),
+                temp,
+                "vert",
+                "frag",
+                Array.Empty<string>(),
+                preserveWgslPipelineOverridableConstants: true,
+                out string? errB);
+            Assert.True(okWith, errB ?? "slangc failed");
+            string wgslB = File.ReadAllText(wgslPath + ".b");
+            Assert.Contains("override", wgslB, StringComparison.Ordinal);
+            Assert.Contains("@id(0)", wgslB, StringComparison.Ordinal);
+            Assert.True(
+                SlangCompiler.WgslContainsVertexAndFragmentStageMarkers(wgslB),
+                "Expected merged or combined WGSL to include @vertex and @fragment after -preserve-params.");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(temp, recursive: true);
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+    }
+
+    /// <summary><see cref="SlangCompiler.WgslContainsVertexAndFragmentStageMarkers"/> rejects empty and globals-only WGSL.</summary>
+    [Fact]
+    public void WgslContainsVertexAndFragmentStageMarkers_EmptyOrIncomplete_False()
+    {
+        Assert.False(SlangCompiler.WgslContainsVertexAndFragmentStageMarkers(""));
+        Assert.False(SlangCompiler.WgslContainsVertexAndFragmentStageMarkers("   "));
+        const string globalsOnly = """
+            enable f16;
+            @binding(0) @group(0) var<uniform> u : vec4<f32>;
+            @id(0) override X : bool = false;
+            """;
+        Assert.False(SlangCompiler.WgslContainsVertexAndFragmentStageMarkers(globalsOnly));
+    }
+
+    /// <summary>Detects typical merged WGSL from the converter (both stage attributes present).</summary>
+    [Fact]
+    public void WgslContainsVertexAndFragmentStageMarkers_BothStages_True()
+    {
+        const string merged = """
+            @vertex
+            fn v() { }
+
+            @fragment
+            fn f() { }
+            """;
+        Assert.True(SlangCompiler.WgslContainsVertexAndFragmentStageMarkers(merged));
     }
 }

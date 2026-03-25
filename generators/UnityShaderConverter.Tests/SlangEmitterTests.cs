@@ -71,9 +71,36 @@ public sealed class SlangEmitterTests
         Assert.Contains("[vk::constant_id(1)]", slang);
         Assert.Contains("const bool USC_FOO", slang);
         Assert.Contains("const bool USC_BAR", slang);
+        Assert.Contains("USC_FOO = false", slang);
+        Assert.Contains("USC_BAR = false", slang);
     }
 
-    /// <summary>Preprocessor maps <c>#ifdef</c> on axis keywords to <c>USC_*</c>.</summary>
+    /// <summary>First keyword in an exclusive <c>multi_compile</c> group uses a true Slang default.</summary>
+    [Fact]
+    public void EmitPassSlang_ExclusiveAxis_FirstKeywordDefaultTrue()
+    {
+        var pass = new ShaderPassDocument
+        {
+            PassName = null,
+            PassIndex = 0,
+            ProgramSource = "#pragma vertex vert\n#pragma fragment frag\n#ifdef RASTER\nfloat z = 1;\n#endif\n",
+            Pragmas = Array.Empty<string>(),
+            VertexEntry = "vert",
+            FragmentEntry = "frag",
+            RenderStateSummary = "",
+            FixedFunctionState = RenderStateExtractor.Extract(Array.Empty<ShaderLabCommandNode>(), new Dictionary<string, string>()),
+        };
+        var axes = new[]
+        {
+            new SpecializationAxis(0, "RASTER", "USC_RASTER", "raster", true),
+            new SpecializationAxis(1, "SDF", "USC_SDF", "sdf"),
+        };
+        string slang = SlangEmitter.EmitPassSlang(pass, Array.Empty<string>(), axes);
+        Assert.Contains("USC_RASTER = true", slang);
+        Assert.Contains("USC_SDF = false", slang);
+    }
+
+    /// <summary>Axis <c>#ifdef</c> becomes runtime <c>if ((USC_*))</c> so specialization bools are not mistaken for macros.</summary>
     [Fact]
     public void EmitPassSlang_RewritesIfdefToSlangAxisName()
     {
@@ -81,7 +108,8 @@ public sealed class SlangEmitterTests
         {
             PassName = null,
             PassIndex = 0,
-            ProgramSource = "#pragma vertex vert\n#pragma fragment frag\n#ifdef FOO\nfloat z = 1;\n#endif\n",
+            ProgramSource =
+                "#pragma vertex vert\n#pragma fragment frag\nvoid vert() { }\nfloat4 frag() : SV_Target {\n#ifdef FOO\nfloat z = 1;\n#endif\nreturn float4(0,0,0,0);\n}\n",
             Pragmas = Array.Empty<string>(),
             VertexEntry = "vert",
             FragmentEntry = "frag",
@@ -90,8 +118,10 @@ public sealed class SlangEmitterTests
         };
         var axes = new[] { new SpecializationAxis(0, "FOO", "USC_FOO", "foo") };
         string slang = SlangEmitter.EmitPassSlang(pass, Array.Empty<string>(), axes);
-        Assert.Contains("#ifdef USC_FOO", slang);
+        Assert.Contains("if ((USC_FOO))", slang);
+        Assert.Contains("float z = 1;", slang);
         Assert.DoesNotContain("#ifdef FOO", slang);
+        Assert.DoesNotContain("defined(USC_FOO)", slang);
     }
 
     /// <summary>Legacy <c>sampler2D _Tex;</c> becomes <c>UNITY_DECLARE_TEX2D</c> after PostUnity include resolution.</summary>

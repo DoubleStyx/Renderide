@@ -74,23 +74,17 @@ Shader "Filters/LUT_PerObject"
 
 			sampler3D _LUT;
 
-#ifdef LERP
 			float _Lerp;
 			sampler3D _SecondaryLUT;
-#endif
 
-#ifdef RECTCLIP
-			float4 _Rect;
-#endif
+float4 _Rect;
 
 			struct v2f
 			{
 				float4 pos : SV_POSITION;
 				float4 grabPos : TEXCOORD0;
 
-#ifdef RECTCLIP
-				float2 position : TEXCOORD1;
-#endif
+				float2 position : TEXCOORD2;
 			};
 
 			v2f vert(appdata_full v)
@@ -123,14 +117,9 @@ Shader "Filters/LUT_PerObject"
 
 				half4 c = tex2D(_GrabTexture, grabUv);
 
-#ifdef LERP
 				float3 c0 = tex3D(_LUT, c.rgb).rgb;
 				float3 c1 = tex3D(_SecondaryLUT, c.rgb).rgb;
-
 				c.rgb = lerp(c0, c1, _Lerp);
-#else
-				c.rgb = tex3D(_LUT, c.rgb).rgb;
-#endif
 
 				return c;
 			}

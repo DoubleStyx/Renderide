@@ -37,6 +37,13 @@ public sealed class CompilerConfigModel
     [JsonPropertyName("enableSlangSpecialization")]
     public bool EnableSlangSpecialization { get; set; } = true;
 
+    /// <summary>
+    /// Glob patterns (relative to Renderide root) for shaders that skip specialization (no <c>USC_*</c> / runtime <c>#if</c> rewrite).
+    /// Use for ShaderLab whose <c>#if</c> nests resources or varyings in ways that break a single merged TU (e.g. cube vs 2D paths).
+    /// </summary>
+    [JsonPropertyName("slangSpecializationExcludeGlobPatterns")]
+    public List<string> SlangSpecializationExcludeGlobPatterns { get; set; } = new();
+
     /// <summary>Maximum <c>vk::constant_id</c> specialization bools emitted per shader.</summary>
     [JsonPropertyName("maxSpecializationConstants")]
     public int MaxSpecializationConstants { get; set; } = 8;
@@ -60,4 +67,16 @@ public sealed class CompilerConfigModel
     /// <summary>Rust constant and WGSL <c>@group</c> for <c>MaterialUniform</c> and property textures.</summary>
     [JsonPropertyName("materialBindGroupIndex")]
     public uint MaterialBindGroupIndex { get; set; } = 2;
+
+    /// <summary>
+    /// When true, prepends a generated <c>MaterialUniform</c> + texture block to merged WGSL so it matches
+    /// <see cref="MaterialBindGroupIndex"/> and Rust <c>create_material_bind_group_layout</c>. When false (default),
+    /// WGSL is left as Slang emitted it (Unity globals typically stay at <c>@group(0)</c>); re-runs still strip any prior injected block.
+    /// </summary>
+    /// <remarks>
+    /// Disabling avoids duplicate/conflicting bind groups when shaders already declare uniforms in Slang output.
+    /// Aligning host bind groups with WGSL when this is false may require runtime_slang or follow-up Rust emission changes.
+    /// </remarks>
+    [JsonPropertyName("injectMaterialUniformBlockWgsl")]
+    public bool InjectMaterialUniformBlockWgsl { get; set; }
 }

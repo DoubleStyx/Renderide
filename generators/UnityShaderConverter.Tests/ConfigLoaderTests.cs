@@ -100,4 +100,29 @@ public sealed class ConfigLoaderTests
             }
         }
     }
+
+    /// <summary><c>injectMaterialUniformBlockWgsl</c> in user JSON overrides the default.</summary>
+    [Fact]
+    public void MergeCompilerConfig_InjectMaterialUniformBlockWgsl_OverridesDefaults()
+    {
+        var defaults = new CompilerConfigModel { InjectMaterialUniformBlockWgsl = false };
+        string tmp = Path.Combine(Path.GetTempPath(), "usc_cfg_inj_" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            File.WriteAllText(tmp, "{\"injectMaterialUniformBlockWgsl\": true}");
+            CompilerConfigModel merged = ConfigLoader.MergeCompilerConfig(defaults, tmp);
+            Assert.True(merged.InjectMaterialUniformBlockWgsl);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(tmp);
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+    }
 }

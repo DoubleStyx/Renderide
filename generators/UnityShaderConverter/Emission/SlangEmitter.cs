@@ -48,7 +48,8 @@ public static class SlangEmitter
         foreach (SpecializationAxis axis in specializationAxes)
         {
             sb.Append("[vk::constant_id(").Append(axis.ConstantId).Append(")] const bool ")
-                .Append(axis.SlangIdentifier).AppendLine(" = false;");
+                .Append(axis.SlangIdentifier).Append(" = ")
+                .Append(axis.DefaultConstantValue ? "true" : "false").AppendLine(";");
         }
 
         if (specializationAxes.Count > 0)
@@ -60,7 +61,11 @@ public static class SlangEmitter
             var map = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (SpecializationAxis ax in specializationAxes)
                 map[ax.Keyword] = ax.SlangIdentifier;
-            programBody = HlslSpecializationPreprocessor.Rewrite(programBody, map);
+            programBody = HlslSpecializationPreprocessor.Rewrite(
+                programBody,
+                map,
+                pass.VertexEntry,
+                pass.FragmentEntry);
         }
 
         programBody = InsertUnityCompatPostIncludeAfterInitialIncludes(programBody);

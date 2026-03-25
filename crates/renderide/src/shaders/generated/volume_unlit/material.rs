@@ -17,41 +17,9 @@
 use glam::Vec4;
 use crate::scene::types::TextureHandle;
 
-/// Maps to WGSL `override` / `wgpu::PipelineCompilationOptions::constants` (decimal id keys per wgpu docs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct VariantKey {
-    /// ShaderLab keyword `ADDITIVE`
-    pub additive: bool,
-    /// ShaderLab keyword `ADDITIVE_CUTOFF`
-    pub additive_cutoff: bool,
-    /// ShaderLab keyword `HIT_THRESHOLD`
-    pub hit_threshold: bool,
-    /// ShaderLab keyword `HIGHLIGHT0`
-    pub highlight0: bool,
-    /// ShaderLab keyword `HIGHLIGHT1`
-    pub highlight1: bool,
-    /// ShaderLab keyword `HIGHLIGHT2`
-    pub highlight2: bool,
-    /// ShaderLab keyword `HIGHLIGHT3`
-    pub highlight3: bool,
-    /// ShaderLab keyword `HIGHLIGHT4`
-    pub highlight4: bool,
-}
-
-impl Default for VariantKey {
-    fn default() -> Self {
-        Self {
-            additive: false,
-            additive_cutoff: false,
-            hit_threshold: false,
-            highlight0: false,
-            highlight1: false,
-            highlight2: false,
-            highlight3: false,
-            highlight4: false,
-        }
-    }
-}
+/// No `multi_compile` specialization axes were extracted; pipeline constants are unused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct VariantKey;
 
 /// WGSL clustered scene uniforms, lights, cluster buffers (matches builtin PBR).
 pub const RENDERIDE_SCENE_BIND_GROUP: u32 = 1;
@@ -159,53 +127,8 @@ pub struct MaterialUniform {
     pub _pad0: u32,
 }
 
-/// Maps `VariantKey` fields to pipeline constant ids (decimal strings per WebGPU).
-pub fn specialization_constants_f64(variant: &VariantKey) -> std::vec::Vec<(&'static str, f64)> {
-    let mut v = std::vec::Vec::new();
-    v.push(("0", if variant.additive { 1.0 } else { 0.0 }));
-    v.push(("1", if variant.additive_cutoff { 1.0 } else { 0.0 }));
-    v.push(("2", if variant.hit_threshold { 1.0 } else { 0.0 }));
-    v.push(("3", if variant.highlight0 { 1.0 } else { 0.0 }));
-    v.push(("4", if variant.highlight1 { 1.0 } else { 0.0 }));
-    v.push(("5", if variant.highlight2 { 1.0 } else { 0.0 }));
-    v.push(("6", if variant.highlight3 { 1.0 } else { 0.0 }));
-    v.push(("7", if variant.highlight4 { 1.0 } else { 0.0 }));
-    v
-}
-
-static SPECIALIZATION_KEYS: &[&str] = &[
-    "0",
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-];
-
-fn pipeline_compilation_options_vertex_inner(variant: &VariantKey) -> wgpu::PipelineCompilationOptions<'static> {
-    let vals: [f64; 8] = [
-        if variant.additive { 1.0 } else { 0.0 },
-        if variant.additive_cutoff { 1.0 } else { 0.0 },
-        if variant.hit_threshold { 1.0 } else { 0.0 },
-        if variant.highlight0 { 1.0 } else { 0.0 },
-        if variant.highlight1 { 1.0 } else { 0.0 },
-        if variant.highlight2 { 1.0 } else { 0.0 },
-        if variant.highlight3 { 1.0 } else { 0.0 },
-        if variant.highlight4 { 1.0 } else { 0.0 },
-    ];
-    let tuples: std::vec::Vec<(&'static str, f64)> = SPECIALIZATION_KEYS
-        .iter()
-        .copied()
-        .zip(vals)
-        .collect();
-    let boxed = tuples.into_boxed_slice();
-    let leaked = Box::leak(boxed);
-    wgpu::PipelineCompilationOptions {
-        constants: leaked,
-        ..Default::default()
-    }
+fn pipeline_compilation_options_vertex_inner(_variant: &VariantKey) -> wgpu::PipelineCompilationOptions<'static> {
+    wgpu::PipelineCompilationOptions::default()
 }
 
 /// Builds `PipelineCompilationOptions` for vertex/fragment stages (WGSL `override` / `@id`).

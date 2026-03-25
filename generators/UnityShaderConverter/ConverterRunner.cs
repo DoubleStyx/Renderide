@@ -217,7 +217,18 @@ public static class ConverterRunner
                     continue;
                 }
 
-                IReadOnlyList<SpecializationAxis> axes = SpecializationExtractor.Extract(doc, compilerConfig);
+                bool specializationExcludedByGlob = compilerConfig.EnableSlangSpecialization &&
+                    compilerConfig.SlangSpecializationExcludeGlobPatterns is { Count: > 0 } specExcl &&
+                    GlobMatcher.MatchesAny(relForGlob, specExcl);
+                IReadOnlyList<SpecializationAxis> axes = specializationExcludedByGlob
+                    ? Array.Empty<SpecializationAxis>()
+                    : SpecializationExtractor.Extract(doc, compilerConfig);
+                if (specializationExcludedByGlob)
+                {
+                    logger.LogTrace(
+                        LogCategory.Variants,
+                        $"{shaderPath}: specialization disabled (matches slangSpecializationExcludeGlobPatterns).");
+                }
                 var axisKeywords = new HashSet<string>(axes.Select(a => a.Keyword), StringComparer.Ordinal);
                 List<string> firstVariantDefines = variants[0].Where(s => s.Length > 0).ToList();
                 List<string> baselineDefines = firstVariantDefines.Where(d => !axisKeywords.Contains(d)).ToList();
@@ -279,6 +290,7 @@ public static class ConverterRunner
                             modName,
                             options.DumpIntermediateDirectory,
                             compilerConfig.MaterialBindGroupIndex,
+                            compilerConfig.InjectMaterialUniformBlockWgsl,
                             logger,
                             out string? passFailDetail);
                         if (outcome == PassCompileOutcome.Failed)
@@ -310,12 +322,14 @@ public static class ConverterRunner
                         try
                         {
                             string wgsl = File.ReadAllText(wgslPath);
-                            if (!wgsl.Contains("Material block (UnityShaderConverter)", StringComparison.Ordinal))
-                            {
-                                wgsl = WgslMaterialUniformInjector.StripLegacyPrependedMaterialBlock(wgsl);
-                                wgsl = WgslMaterialUniformInjector.PrependMaterialBlock(wgsl, doc.Properties, compilerConfig.MaterialBindGroupIndex);
-                                File.WriteAllText(wgslPath, wgsl);
-                            }
+                            wgsl = WgslMaterialUniformInjector.StripInjectedMaterialBlock(wgsl);
+                            if (compilerConfig.InjectMaterialUniformBlockWgsl)
+                                wgsl = WgslMaterialUniformInjector.PrependMaterialBlock(
+                                    wgsl,
+                                    doc.Properties,
+                                    compilerConfig.MaterialBindGroupIndex);
+                            wgsl = WgslNagaCompatibilityTransforms.NormalizeHostSharableArraySizes(wgsl);
+                            File.WriteAllText(wgslPath, wgsl);
                         }
                         catch (Exception ex)
                         {
@@ -494,6 +508,7 @@ public static class ConverterRunner
         string modName,
         string? dumpIntermediateDirectory,
         uint materialBindGroupIndex,
+        bool injectMaterialUniformBlockWgsl,
         Logger logger,
         out string? failureDetail)
     {
@@ -517,6 +532,7 @@ public static class ConverterRunner
                     modName,
                     dumpIntermediateDirectory,
                     materialBindGroupIndex,
+                    injectMaterialUniformBlockWgsl,
                     logger,
                     out string? err0))
                 return axes.Count > 0 ? PassCompileOutcome.Ok : PassCompileOutcome.OkWithoutSpecialization;
@@ -525,7 +541,7 @@ public static class ConverterRunner
             {
                 logger.LogTrace(
                     LogCategory.SlangCompile,
-                    $"{shaderPath} pass {passIndex}: retrying without specialization injection (full first-variant defines only).");
+                    $"{shaderPath} pass {passIndex}: slangc failed with specialization (`[vk::constant_id]` / -preserve-params); retrying without specialization (full first-variant `#define`s only, single baked variant).");
                 if (TryCompileOnce(
                         shaderFile,
                         pass,
@@ -542,6 +558,7 @@ public static class ConverterRunner
                         modName,
                         dumpIntermediateDirectory,
                         materialBindGroupIndex,
+                        injectMaterialUniformBlockWgsl,
                         logger,
                         out string? err1))
                     return PassCompileOutcome.OkWithoutSpecialization;
@@ -574,11 +591,29 @@ public static class ConverterRunner
         string modName,
         string? dumpIntermediateDirectory,
         uint materialBindGroupIndex,
+        bool injectMaterialUniformBlockWgsl,
         Logger logger,
         out string? failureDetail)
     {
         failureDetail = null;
         string slangSource = SlangEmitter.EmitPassSlang(pass, baselineDefines, axes);
+        if (axes.Count > 0)
+        {
+            Dictionary<string, string> axisKeywords = axes.ToDictionary(
+                static a => a.Keyword,
+                static a => a.SlangIdentifier,
+                StringComparer.Ordinal);
+            foreach (string ax in SpecializationStructAxisGuard.FindAxisKeywordsInStructConditionalBlocks(
+                         pass.ProgramSource ?? string.Empty,
+                         axisKeywords.Keys))
+            {
+                logger.LogTrace(
+                    LogCategory.SlangCompile,
+                    $"{shaderPath} pass {passIndex}: specialization axis `{ax}` is used under `#if` inside a `struct`; " +
+                    "if `slangc` reports missing members, declare those fields unconditionally (Unlit / Common.cginc pattern).");
+            }
+        }
+
         File.WriteAllText(tempSlangPath, slangSource);
         logger.LogTrace(LogCategory.Slang, $"Transient Slang → slangc ({tempSlangPath})");
         if (!string.IsNullOrWhiteSpace(dumpIntermediateDirectory))
@@ -596,6 +631,14 @@ public static class ConverterRunner
         }
 
         List<string> slangDefines = PassLightModeFilter.MergeVariantDefines(baselineDefines, pass);
+        bool preserveWgslOverrides = axes.Count > 0;
+        if (preserveWgslOverrides)
+        {
+            logger.LogTrace(
+                LogCategory.SlangCompile,
+                $"{shaderPath} pass {passIndex}: slangc -preserve-params enabled ({axes.Count} specialization axis/axes for WGSL `override` / `@id`).");
+        }
+
         if (!slangCompiler.TryCompileToWgsl(
                 tempSlangPath,
                 wgslPath,
@@ -605,6 +648,7 @@ public static class ConverterRunner
                 pass.VertexEntry!,
                 pass.FragmentEntry!,
                 slangDefines,
+                preserveWgslOverrides,
                 out string? err))
         {
             failureDetail = string.IsNullOrWhiteSpace(err) ? "slangc failed with no stderr" : err;
@@ -623,8 +667,26 @@ public static class ConverterRunner
         try
         {
             string wgsl = File.ReadAllText(wgslPath);
-            wgsl = WgslMaterialUniformInjector.StripLegacyPrependedMaterialBlock(wgsl);
-            wgsl = WgslMaterialUniformInjector.PrependMaterialBlock(wgsl, shaderFile.Properties, materialBindGroupIndex);
+            wgsl = WgslMaterialUniformInjector.StripInjectedMaterialBlock(wgsl);
+            if (injectMaterialUniformBlockWgsl)
+                wgsl = WgslMaterialUniformInjector.PrependMaterialBlock(wgsl, shaderFile.Properties, materialBindGroupIndex);
+            wgsl = WgslNagaCompatibilityTransforms.NormalizeHostSharableArraySizes(wgsl);
+            if (axes.Count > 0)
+            {
+                if (wgsl.Contains("override", StringComparison.Ordinal))
+                {
+                    logger.LogTrace(
+                        LogCategory.SlangCompile,
+                        $"{shaderPath} pass {passIndex}: WGSL contains `override` (pipeline specialization constants).");
+                }
+                else
+                {
+                    logger.LogTrace(
+                        LogCategory.SlangCompile,
+                        $"{shaderPath} pass {passIndex}: specialization axes present but WGSL has no `override` keyword; check Slang output or keyword usage.");
+                }
+            }
+
             File.WriteAllText(wgslPath, wgsl);
         }
         catch (Exception ex)

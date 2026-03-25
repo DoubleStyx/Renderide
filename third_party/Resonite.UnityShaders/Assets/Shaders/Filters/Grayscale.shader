@@ -82,16 +82,12 @@ Shader "Filters/Grayscale"
 
 			uniform float _Lerp;
 
-#ifdef GRADIENT
 			sampler2D _Gradient;
-#endif
 
 			static const float PI = 3.14159265359;
 			static const float TAU = 6.283185307;
 
-#ifdef RECTCLIP
-			float4 _Rect;
-#endif
+float4 _Rect;
 
 			struct v2f
 			{
@@ -99,9 +95,7 @@ Shader "Filters/Grayscale"
 				float4 grabPos : TEXCOORD1;
 				float4 pos : SV_POSITION;
 
-#ifdef RECTCLIP
 				float2 position : TEXCOORD2;
-#endif
 			};
 
 			v2f vert(appdata_full v)
@@ -137,10 +131,11 @@ Shader "Filters/Grayscale"
 
 				half grayscale = c.r * _RatioR + c.g * _RatioG + c.b * _RatioB;
 
+				half3 newColor;
 #ifdef GRADIENT
-				half3 newColor = tex2Dlod(_Gradient, float4(grayscale, 0, 0, 0));
+				newColor = tex2Dlod(_Gradient, float4(grayscale, 0, 0, 0)).rgb;
 #else
-				half3 newColor = grayscale.xxx;
+				newColor = grayscale.xxx;
 #endif
 
 				c.rgb = lerp(c.rgb, newColor, _Lerp);

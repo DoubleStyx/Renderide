@@ -71,14 +71,10 @@ Shader "Filters/Get Depth_PerObject"
 			float _Multiply;
 			float _Offset;
 
-#ifdef CLIP
-			float _ClipMin;
+float _ClipMin;
 			float _ClipMax;
-#endif
 
-#ifdef RECTCLIP
-			float4 _Rect;
-#endif
+float4 _Rect;
 
 			UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
 
@@ -91,9 +87,7 @@ Shader "Filters/Get Depth_PerObject"
 				float4 projPos : TEXCOORD1;
 				float4 pos : SV_POSITION;
 
-#ifdef RECTCLIP
-				float2 position : TEXCOORD1;
-#endif
+				float2 position : TEXCOORD2;
 			};
 
 			v2f vert(appdata_full v)
