@@ -6,10 +6,23 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::assets::{MaterialPropertyStore, MaterialPropertyValue};
+use super::material_batch_wire_metrics::{MaterialBatchWireKind, record_material_batch_wire};
+use super::material_properties::{
+    MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN, MATERIAL_BATCH_MAX_FLOAT4_ARRAY_LEN, MaterialPropertyStore,
+    MaterialPropertyValue,
+};
 use crate::ipc::shared_memory::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{MaterialPropertyUpdate, MaterialPropertyUpdateType, MaterialsUpdateBatch};
+
+/// Options for [`parse_materials_update_batch_into_store`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ParseMaterialBatchOptions {
+    /// When true, persist `set_float4x4` and bounded float / float4 arrays into [`MaterialPropertyStore`].
+    pub persist_extended_payloads: bool,
+    /// When true, increment [`crate::assets::material_batch_wire_metrics`] for matrix/array opcodes.
+    pub record_wire_metrics: bool,
+}
 
 /// Copies the bytes for a material batch descriptor (production: shared-memory mmap).
 pub trait MaterialBatchBlobLoader {
@@ -31,6 +44,7 @@ pub fn parse_materials_update_batch_into_store(
     loader: &mut impl MaterialBatchBlobLoader,
     batch: &MaterialsUpdateBatch,
     store: &mut MaterialPropertyStore,
+    options: &ParseMaterialBatchOptions,
 ) {
     let mut p = BatchParser {
         loader,
@@ -79,7 +93,18 @@ pub fn parse_materials_update_batch_into_store(
                 }
             }
             MaterialPropertyUpdateType::set_float4x4 => {
-                let _ = p.next_matrix();
+                if options.record_wire_metrics {
+                    record_material_batch_wire(true, MaterialBatchWireKind::SetFloat4x4);
+                }
+                if let Some(mat) = p.next_matrix()
+                    && options.persist_extended_payloads
+                {
+                    store.set(
+                        block,
+                        update.property_id,
+                        MaterialPropertyValue::Float4x4(mat),
+                    );
+                }
             }
             MaterialPropertyUpdateType::set_texture => {
                 if let Some(packed) = p.next_int() {
@@ -91,21 +116,63 @@ pub fn parse_materials_update_batch_into_store(
                 }
             }
             MaterialPropertyUpdateType::set_float_array => {
+                if options.record_wire_metrics {
+                    record_material_batch_wire(true, MaterialBatchWireKind::SetFloatArray);
+                }
                 let Some(len) = p.next_int() else {
                     continue;
                 };
                 let len = len.max(0) as usize;
+                let mut out: Vec<f32> = Vec::new();
+                if options.persist_extended_payloads {
+                    out.reserve(len.min(MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN));
+                }
                 for _ in 0..len {
-                    let _ = p.next_float();
+                    let Some(f) = p.next_float() else {
+                        break;
+                    };
+                    if options.persist_extended_payloads
+                        && out.len() < MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN
+                    {
+                        out.push(f);
+                    }
+                }
+                if options.persist_extended_payloads && !out.is_empty() {
+                    store.set(
+                        block,
+                        update.property_id,
+                        MaterialPropertyValue::FloatArray(out),
+                    );
                 }
             }
             MaterialPropertyUpdateType::set_float4_array => {
+                if options.record_wire_metrics {
+                    record_material_batch_wire(true, MaterialBatchWireKind::SetFloat4Array);
+                }
                 let Some(len) = p.next_int() else {
                     continue;
                 };
                 let len = len.max(0) as usize;
+                let mut out: Vec<[f32; 4]> = Vec::new();
+                if options.persist_extended_payloads {
+                    out.reserve(len.min(MATERIAL_BATCH_MAX_FLOAT4_ARRAY_LEN));
+                }
                 for _ in 0..len {
-                    let _ = p.next_float4();
+                    let Some(v) = p.next_float4() else {
+                        break;
+                    };
+                    if options.persist_extended_payloads
+                        && out.len() < MATERIAL_BATCH_MAX_FLOAT4_ARRAY_LEN
+                    {
+                        out.push(v);
+                    }
+                }
+                if options.persist_extended_payloads && !out.is_empty() {
+                    store.set(
+                        block,
+                        update.property_id,
+                        MaterialPropertyValue::Float4Array(out),
+                    );
                 }
             }
             MaterialPropertyUpdateType::update_batch_end => break,
@@ -265,7 +332,12 @@ mod tests {
             ..Default::default()
         };
         let mut store = MaterialPropertyStore::new();
-        parse_materials_update_batch_into_store(&mut loader, &batch, &mut store);
+        parse_materials_update_batch_into_store(
+            &mut loader,
+            &batch,
+            &mut store,
+            &ParseMaterialBatchOptions::default(),
+        );
         assert_eq!(store.shader_asset_for_block(42), Some(7));
     }
 
@@ -296,7 +368,12 @@ mod tests {
             ..Default::default()
         };
         let mut store = MaterialPropertyStore::new();
-        parse_materials_update_batch_into_store(&mut loader, &batch, &mut store);
+        parse_materials_update_batch_into_store(
+            &mut loader,
+            &batch,
+            &mut store,
+            &ParseMaterialBatchOptions::default(),
+        );
         assert_eq!(
             store.get(99, 1),
             Some(&MaterialPropertyValue::Texture(0x00AB_CD01))
@@ -337,7 +414,12 @@ mod tests {
             ..Default::default()
         };
         let mut store = MaterialPropertyStore::new();
-        parse_materials_update_batch_into_store(&mut loader, &batch, &mut store);
+        parse_materials_update_batch_into_store(
+            &mut loader,
+            &batch,
+            &mut store,
+            &ParseMaterialBatchOptions::default(),
+        );
         assert_eq!(store.get(10, 2), Some(&MaterialPropertyValue::Float(2.5)));
         assert_eq!(
             store.get(10, 3),
@@ -359,7 +441,94 @@ mod tests {
             ..Default::default()
         };
         let mut store = MaterialPropertyStore::new();
-        parse_materials_update_batch_into_store(&mut loader, &batch, &mut store);
+        parse_materials_update_batch_into_store(
+            &mut loader,
+            &batch,
+            &mut store,
+            &ParseMaterialBatchOptions::default(),
+        );
         assert_eq!(store.shader_asset_for_block(5), Some(9));
+    }
+
+    #[test]
+    fn set_float4x4_persisted_when_option_on() {
+        let stream: Vec<u8> =
+            bytemuck::bytes_of(&write_update(20, MaterialPropertyUpdateType::select_target))
+                .iter()
+                .chain(bytemuck::bytes_of(&write_update(
+                    3,
+                    MaterialPropertyUpdateType::set_float4x4,
+                )))
+                .chain(bytemuck::bytes_of(&write_update(
+                    0,
+                    MaterialPropertyUpdateType::update_batch_end,
+                )))
+                .copied()
+                .collect();
+        let mat: [f32; 16] = std::array::from_fn(|i| i as f32 + 1.0);
+        let matrix_bytes = bytemuck::cast_slice(&mat).to_vec();
+        let mut loader = TestLoader {
+            blobs: vec![stream.clone(), matrix_bytes.clone()],
+        };
+        let batch = MaterialsUpdateBatch {
+            material_updates: vec![desc(0, &stream)],
+            matrix_buffers: vec![desc(1, &matrix_bytes)],
+            ..Default::default()
+        };
+        let mut store = MaterialPropertyStore::new();
+        let opts = ParseMaterialBatchOptions {
+            persist_extended_payloads: true,
+            ..Default::default()
+        };
+        parse_materials_update_batch_into_store(&mut loader, &batch, &mut store, &opts);
+        assert_eq!(
+            store.get(20, 3),
+            Some(&MaterialPropertyValue::Float4x4(mat))
+        );
+    }
+
+    #[test]
+    fn set_float_array_persisted_when_option_on() {
+        let stream: Vec<u8> =
+            bytemuck::bytes_of(&write_update(21, MaterialPropertyUpdateType::select_target))
+                .iter()
+                .chain(bytemuck::bytes_of(&write_update(
+                    4,
+                    MaterialPropertyUpdateType::set_float_array,
+                )))
+                .chain(bytemuck::bytes_of(&write_update(
+                    0,
+                    MaterialPropertyUpdateType::update_batch_end,
+                )))
+                .copied()
+                .collect();
+        let len: i32 = 2;
+        let f0: f32 = 0.25;
+        let f1: f32 = 0.75;
+        let int_bytes = bytemuck::bytes_of(&len).to_vec();
+        let fbytes = bytemuck::bytes_of(&f0)
+            .iter()
+            .chain(bytemuck::bytes_of(&f1))
+            .copied()
+            .collect::<Vec<u8>>();
+        let mut loader = TestLoader {
+            blobs: vec![stream.clone(), int_bytes.clone(), fbytes.clone()],
+        };
+        let batch = MaterialsUpdateBatch {
+            material_updates: vec![desc(0, &stream)],
+            int_buffers: vec![desc(1, &int_bytes)],
+            float_buffers: vec![desc(2, &fbytes)],
+            ..Default::default()
+        };
+        let mut store = MaterialPropertyStore::new();
+        let opts = ParseMaterialBatchOptions {
+            persist_extended_payloads: true,
+            ..Default::default()
+        };
+        parse_materials_update_batch_into_store(&mut loader, &batch, &mut store, &opts);
+        assert_eq!(
+            store.get(21, 4),
+            Some(&MaterialPropertyValue::FloatArray(vec![0.25, 0.75]))
+        );
     }
 }

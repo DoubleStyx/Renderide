@@ -9,7 +9,10 @@ use glam::Mat4;
 use crate::assets::mesh::{
     cpu_submesh_count_for_material_pairing, cpu_submesh_index_range_for_pairing,
 };
-use crate::assets::{self, AssetRegistry, NativeUiShaderFamily, resolve_native_ui_shader_family};
+use crate::assets::{
+    self, AssetRegistry, MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
+    NativeUiShaderFamily, resolve_native_ui_shader_family, texture2d_asset_id_from_packed,
+};
 use crate::config::{RenderConfig, ShaderDebugOverride};
 use crate::gpu::{PipelineVariant, ShaderKey};
 use crate::render::batch::{DrawEntry, SpaceDrawBatch};
@@ -309,7 +312,60 @@ fn resolve_pipeline_for_material_draw(
         use_pbr,
         fallback_variant,
     );
+    let pipeline_variant = maybe_upgrade_pbr_host_albedo(
+        pipeline_variant,
+        render_config,
+        &asset_registry.material_property_store,
+        drawable,
+        material_block_id,
+        drawable.mesh_handle,
+        asset_registry,
+    );
     (pipeline_variant, shader_key)
+}
+
+/// When forward PBR would apply and the host bound `_MainTex` with UV0 on the mesh, use [`PipelineVariant::PbrHostAlbedo`].
+fn maybe_upgrade_pbr_host_albedo(
+    pipeline_variant: PipelineVariant,
+    render_config: &RenderConfig,
+    store: &MaterialPropertyStore,
+    drawable: &Drawable,
+    material_asset_id: i32,
+    mesh_asset_id: i32,
+    asset_registry: &AssetRegistry,
+) -> PipelineVariant {
+    if pipeline_variant != PipelineVariant::Pbr {
+        return pipeline_variant;
+    }
+    if !render_config.pbr_bind_host_main_texture || render_config.pbr_host_main_tex_property_id < 0
+    {
+        return pipeline_variant;
+    }
+    let mesh_has_uv = asset_registry
+        .get_mesh(mesh_asset_id)
+        .and_then(|m| {
+            assets::attribute_offset_size_format(&m.vertex_attributes, VertexAttributeType::uv0)
+        })
+        .map(|(_, s, _)| s >= 4)
+        .unwrap_or(false);
+    if !mesh_has_uv {
+        return pipeline_variant;
+    }
+    let lookup = MaterialPropertyLookupIds {
+        material_asset_id,
+        mesh_property_block_slot0: drawable.mesh_renderer_property_block_slot0_id,
+    };
+    let has_tex = store
+        .get_merged(lookup, render_config.pbr_host_main_tex_property_id)
+        .and_then(|v| match v {
+            MaterialPropertyValue::Texture(packed) => texture2d_asset_id_from_packed(*packed),
+            _ => None,
+        })
+        .is_some();
+    if !has_tex {
+        return pipeline_variant;
+    }
+    PipelineVariant::PbrHostAlbedo
 }
 
 /// Filters drawables by layer, render lists, and skinned validity; collects world matrices.
@@ -648,8 +704,9 @@ mod tests {
     use super::{
         AssetRegistry, FilteredDrawable, apply_native_ui_pipeline_variant,
         apply_ui_mesh_pbr_fallback_for_non_native_shader, build_draw_entries, create_space_batch,
-        mesh_has_ui_canvas_vertices, resolved_material_slots,
+        maybe_upgrade_pbr_host_albedo, mesh_has_ui_canvas_vertices, resolved_material_slots,
     };
+    use crate::assets::MaterialPropertyValue;
     use crate::assets::mesh::MeshAsset;
     use crate::config::{RenderConfig, ShaderDebugOverride};
     use crate::gpu::{PipelineVariant, ShaderKey};
@@ -871,6 +928,62 @@ mod tests {
             blendshape_offsets: None,
             num_blendshapes: 0,
         }
+    }
+
+    #[test]
+    fn maybe_upgrade_pbr_host_albedo_upgrades_when_mesh_uv_and_main_tex() {
+        let mut reg = AssetRegistry::new();
+        reg.insert_mesh_for_tests(mesh_with_uv0(7));
+        let mat_id = 10;
+        let main_tex_pid = 88;
+        reg.material_property_store
+            .set(mat_id, main_tex_pid, MaterialPropertyValue::Texture(0));
+        let rc = RenderConfig {
+            pbr_bind_host_main_texture: true,
+            pbr_host_main_tex_property_id: main_tex_pid,
+            ..Default::default()
+        };
+        let drawable = Drawable {
+            mesh_handle: 7,
+            ..Default::default()
+        };
+        let v = maybe_upgrade_pbr_host_albedo(
+            PipelineVariant::Pbr,
+            &rc,
+            &reg.material_property_store,
+            &drawable,
+            mat_id,
+            7,
+            &reg,
+        );
+        assert_eq!(v, PipelineVariant::PbrHostAlbedo);
+    }
+
+    #[test]
+    fn maybe_upgrade_pbr_host_albedo_keeps_pbr_without_main_tex_texture() {
+        let mut reg = AssetRegistry::new();
+        reg.insert_mesh_for_tests(mesh_with_uv0(7));
+        let mat_id = 10;
+        let main_tex_pid = 88;
+        let rc = RenderConfig {
+            pbr_bind_host_main_texture: true,
+            pbr_host_main_tex_property_id: main_tex_pid,
+            ..Default::default()
+        };
+        let drawable = Drawable {
+            mesh_handle: 7,
+            ..Default::default()
+        };
+        let v = maybe_upgrade_pbr_host_albedo(
+            PipelineVariant::Pbr,
+            &rc,
+            &reg.material_property_store,
+            &drawable,
+            mat_id,
+            7,
+            &reg,
+        );
+        assert_eq!(v, PipelineVariant::Pbr);
     }
 
     #[test]

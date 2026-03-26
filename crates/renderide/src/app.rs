@@ -639,6 +639,9 @@ impl RenderideApp {
                 native_ui_routing_metrics: rc.native_ui_routing_metrics.then(
                     crate::session::native_ui_routing_metrics::NativeUiRoutingFrameMetrics::snapshot_and_reset,
                 ),
+                material_batch_wire_metrics: rc.material_batch_wire_metrics.then(
+                    crate::assets::material_batch_wire_metrics::MaterialBatchWireFrameMetrics::snapshot_and_reset,
+                ),
             };
             if let Some(debug_hud) = self.debug_hud.as_mut() {
                 debug_hud.update(live_sample);

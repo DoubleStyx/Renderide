@@ -17,6 +17,7 @@ mod normal_debug;
 mod overlay_stencil;
 mod overlay_stencil_skinned;
 mod pbr;
+mod pbr_host_albedo;
 pub mod pbr_host_material_plan;
 mod pbr_mrt;
 mod pbr_ray_query;
@@ -45,6 +46,7 @@ pub use overlay_stencil_skinned::{
     OverlayStencilSkinnedPipeline,
 };
 pub use pbr::PbrPipeline;
+pub use pbr_host_albedo::PbrHostAlbedoPipeline;
 pub use pbr_mrt::PbrMRTPipeline;
 pub use pbr_ray_query::{
     PbrMrtRayQueryPipeline, PbrRayQueryPipeline, SkinnedPbrMrtRayQueryPipeline,

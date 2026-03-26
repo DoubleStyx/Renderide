@@ -32,6 +32,15 @@ pub struct VertexPosNormal {
     pub normal: [f32; 3],
 }
 
+/// Position, normal, and UV0 for host-albedo forward PBR (`PipelineVariant::PbrHostAlbedo`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct VertexPosNormalUv {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
+}
+
 /// Interleaved vertex for Resonite Canvas / `UI_Unlit` and `UI_TextUnlit` (position, UV, color, aux).
 ///
 /// `aux` stores `TANGENT` (lerp color) for image UI, or `NORMAL` (SDF parameters, xyz) for text when
@@ -494,6 +503,8 @@ pub(crate) fn merge_contiguous_submesh_ranges(submeshes: &[(u32, u32)]) -> Vec<(
 #[derive(Clone)]
 pub struct GpuMeshBuffers {
     pub vertex_buffer: Arc<wgpu::Buffer>,
+    /// Interleaved position + normal + UV0 when the mesh has UV0 (for [`crate::gpu::PipelineVariant::PbrHostAlbedo`]).
+    pub vertex_buffer_pos_normal_uv: Option<Arc<wgpu::Buffer>>,
     pub vertex_buffer_uv: Option<Arc<wgpu::Buffer>>,
     /// Canvas / UI layout: position, uv0, color, aux (tangent or text normal data).
     pub vertex_buffer_ui: Option<Arc<wgpu::Buffer>>,
@@ -514,6 +525,15 @@ impl GpuMeshBuffers {
     #[inline(always)]
     pub fn normal_buffers(&self) -> (&wgpu::Buffer, &wgpu::Buffer) {
         (self.vertex_buffer.as_ref(), self.index_buffer.as_ref())
+    }
+
+    /// Returns position+normal+UV and index buffers when [`Self::vertex_buffer_pos_normal_uv`] exists.
+    #[inline(always)]
+    pub fn pos_normal_uv_buffers(&self) -> Option<(&wgpu::Buffer, &wgpu::Buffer)> {
+        Some((
+            self.vertex_buffer_pos_normal_uv.as_ref()?.as_ref(),
+            self.index_buffer.as_ref(),
+        ))
     }
 
     /// Returns references to the vertex and index buffers for UV/overlay draws.
@@ -654,6 +674,11 @@ pub fn create_mesh_buffers(
     } else {
         None
     };
+    let mut vertices_pos_normal_uv: Option<Vec<VertexPosNormalUv>> = if has_uvs {
+        Some(Vec::with_capacity(mesh.vertex_count as usize))
+    } else {
+        None
+    };
 
     for i in 0..mesh.vertex_count as usize {
         let base = i * vertex_stride;
@@ -701,6 +726,19 @@ pub fn create_mesh_buffers(
             };
             v_uv.push(VertexWithUv {
                 position: [px, py, pz],
+                uv,
+            });
+        }
+
+        if let Some(ref mut v_pnu) = vertices_pos_normal_uv {
+            let uv = if uv_size > 0 {
+                read_uv(&mesh.vertex_data, base, uv_off, uv_format).unwrap_or(default_uv)
+            } else {
+                default_uv
+            };
+            v_pnu.push(VertexPosNormalUv {
+                position: [px, py, pz],
+                normal,
                 uv,
             });
         }
@@ -765,6 +803,16 @@ pub fn create_mesh_buffers(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("mesh vertex buffer (pos+uv)"),
                 contents: bytemuck::cast_slice(&v_uv),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        )
+    });
+
+    let vertex_buffer_pos_normal_uv = vertices_pos_normal_uv.map(|v| {
+        Arc::new(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("mesh vertex buffer (pos+normal+uv)"),
+                contents: bytemuck::cast_slice(&v),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
         )
@@ -897,6 +945,7 @@ pub fn create_mesh_buffers(
 
     Some(GpuMeshBuffers {
         vertex_buffer,
+        vertex_buffer_pos_normal_uv,
         vertex_buffer_uv,
         vertex_buffer_ui,
         vertex_buffer_skinned,

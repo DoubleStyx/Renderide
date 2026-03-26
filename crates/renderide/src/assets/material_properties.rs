@@ -3,6 +3,30 @@
 //! Stores values from MaterialsUpdateBatch so stencil state (comparison, operation,
 //! reference, clip rect) can be read per override block when building draw entries.
 //!
+//! ## Parity vs FrooxEngine / Renderite `MaterialUpdateWriter`
+//!
+//! The host sends `MaterialsUpdateBatch` opcode streams (side buffers: ints, floats, float4s, matrices).
+//! Renderide’s parser is
+//! [`crate::assets::material_update_batch::parse_materials_update_batch_into_store`].
+//!
+//! | Opcode | Cursor | Persisted to store (default) | Persisted when `material_batch_persist_extended_payloads` |
+//! |--------|--------|------------------------------|-----------------------------------------------------------|
+//! | `set_float` / `set_float4` / `set_texture` | yes | yes | yes |
+//! | `set_float4x4` | yes | no (matrix discarded) | yes → [`MaterialPropertyValue::Float4x4`] |
+//! | `set_float_array` | yes | no | yes → [`MaterialPropertyValue::FloatArray`] (capped) |
+//! | `set_float4_array` | yes | no | yes → [`MaterialPropertyValue::Float4Array`] (capped) |
+//!
+//! Optional wire counters (no persistence): [`crate::assets::material_batch_wire_metrics`].
+//!
+//! ## Generic PBR WGSL vs Unity Standard
+//!
+//! Stock forward PBR shaders read host `_Color` / `_Metallic` / `_Glossiness` and optional `_MainTex`
+//! when enabled in [`crate::config::RenderConfig`]. They do **not** yet implement full Standard maps
+//! (`_BumpMap`, `_OcclusionMap`, `_EmissionMap`, detail masks, etc.).
+//!
+//! **Skinned** meshes use separate uniform paths; host `_MainTex` / [`crate::gpu::PipelineVariant::PbrHostAlbedo`]
+//! parity with non-skinned draws is not guaranteed—verify skinned layout when extending PBR host bindings.
+//!
 //! ## Buffer layout assumptions (MaterialsUpdateBatch)
 //!
 //! Each buffer in `material_updates` contains a sequence of (MaterialPropertyUpdate, value) pairs:
@@ -11,12 +35,12 @@
 //!   - `select_target`: i32 (4 bytes) — block_id for subsequent updates
 //!   - `set_float`: f32 (4 bytes)
 //!   - `set_float4`: [f32; 4] (16 bytes)
-//!   - `set_float4x4`: 64 bytes — skipped
+//!   - `set_float4x4`: 64 bytes — column-major `mat4` floats — see [`MaterialPropertyValue::Float4x4`]
 //!   - `set_shader`: i32 shader asset id (4 bytes) — see [`MaterialPropertyStore::set_shader_asset`]
 //!   - `set_texture`: i32 packed texture reference (4 bytes) — see [`MaterialPropertyValue::Texture`]
 //!   - `set_render_queue`, `set_instancing`, `set_render_type`: i32 each (4 bytes) — consumed, not stored
 //!   - `update_batch_end`: 0 bytes
-//!   - Other types: skipped (value size unknown)
+//!   - Array opcodes: length from int buffer then payload — see parser
 //!
 //! Bounds checks: we stop parsing when remaining bytes are insufficient for the next record.
 //!
@@ -31,6 +55,11 @@
 
 use std::collections::HashMap;
 
+/// Maximum `set_float_array` / `set_float4_array` elements stored when extended persistence is on.
+pub const MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN: usize = 256;
+/// Maximum `set_float4_array` vec4 elements stored when extended persistence is on.
+pub const MATERIAL_BATCH_MAX_FLOAT4_ARRAY_LEN: usize = 64;
+
 /// Single property value. Supports f32 and [f32; 4] for stencil (comparison, operation,
 /// reference, clip rect). Extensible for other types.
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +68,12 @@ pub enum MaterialPropertyValue {
     Float(f32),
     /// Four floats (e.g. clip rect x, y, width, height).
     Float4([f32; 4]),
+    /// Column-major 4×4 matrix from `set_float4x4` (64 bytes on the wire).
+    Float4x4([f32; 16]),
+    /// `set_float_array` payload after the length prefix (capped).
+    FloatArray(Vec<f32>),
+    /// `set_float4_array` payload after the length prefix (capped).
+    Float4Array(Vec<[f32; 4]>),
     /// Packed texture id from host `set_texture` (see Renderite Unity `MaterialUpdateReader.ReadInt`).
     Texture(i32),
 }

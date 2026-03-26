@@ -1,6 +1,7 @@
 //! Asset storage and management.
 
 pub mod manager;
+pub mod material_batch_wire_metrics;
 pub mod material_properties;
 pub mod material_property_host;
 pub mod material_update_batch;

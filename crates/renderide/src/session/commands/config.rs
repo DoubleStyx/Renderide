@@ -71,6 +71,10 @@ impl CommandHandler for ConfigCommandHandler {
                         .native_ui_overlay_stencil_pipelines,
                     log_native_ui_routing: ctx.render_config.log_native_ui_routing,
                     native_ui_routing_metrics: ctx.render_config.native_ui_routing_metrics,
+                    material_batch_wire_metrics: ctx.render_config.material_batch_wire_metrics,
+                    material_batch_persist_extended_payloads: ctx
+                        .render_config
+                        .material_batch_persist_extended_payloads,
                     native_ui_uivert_pbr_fallback: ctx.render_config.native_ui_uivert_pbr_fallback,
                     native_ui_force_shader_hint_registration: ctx
                         .render_config
@@ -81,11 +85,13 @@ impl CommandHandler for ConfigCommandHandler {
                     pbr_bind_host_material_properties: ctx
                         .render_config
                         .pbr_bind_host_material_properties,
+                    pbr_bind_host_main_texture: ctx.render_config.pbr_bind_host_main_texture,
                     pbr_host_color_property_id: ctx.render_config.pbr_host_color_property_id,
                     pbr_host_metallic_property_id: ctx.render_config.pbr_host_metallic_property_id,
                     pbr_host_smoothness_property_id: ctx
                         .render_config
                         .pbr_host_smoothness_property_id,
+                    pbr_host_main_tex_property_id: ctx.render_config.pbr_host_main_tex_property_id,
                     multi_material_submeshes: ctx.render_config.multi_material_submeshes,
                     log_multi_material_submesh_mismatch: ctx
                         .render_config

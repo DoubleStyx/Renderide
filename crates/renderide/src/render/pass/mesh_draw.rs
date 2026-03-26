@@ -11,8 +11,8 @@ use super::mesh_prep::MeshDrawPrepStats;
 use crate::assets::{MaterialPropertyStore, MaterialPropertyValue, texture2d_asset_id_from_packed};
 use crate::config::RenderConfig;
 use crate::gpu::pipeline::{
-    RtShadowSceneBind, RtShadowUniforms, SceneUniforms, UiTextUnlitNativePipeline,
-    UiUnlitNativePipeline,
+    PbrHostAlbedoPipeline, RtShadowSceneBind, RtShadowUniforms, SceneUniforms,
+    UiTextUnlitNativePipeline, UiUnlitNativePipeline,
 };
 use crate::gpu::state::ensure_texture2d_gpu_view;
 use crate::gpu::{
@@ -132,6 +132,14 @@ fn fill_pbr_host_uniform_extras(
     if mr_active {
         upload.host_metallic_roughness = [metallic, roughness, 1.0, 0.0];
     }
+    if rc.pbr_bind_host_main_texture
+        && rc.pbr_host_main_tex_property_id >= 0
+        && let Some(MaterialPropertyValue::Texture(packed)) =
+            store.get_merged(lookup, rc.pbr_host_main_tex_property_id)
+        && texture2d_asset_id_from_packed(*packed).is_some()
+    {
+        upload.host_metallic_roughness[3] = 1.0;
+    }
 }
 
 /// Cache key for skinned bind groups.
@@ -195,6 +203,8 @@ pub(super) struct MeshDrawParams<'a> {
     pub(super) texture2d_gpu: &'a mut HashMap<i32, (wgpu::Texture, wgpu::TextureView)>,
     /// Native UI material bind groups keyed by texture/material state.
     pub(super) native_ui_material_bind_cache: &'a mut NativeUiMaterialBindCache,
+    /// Cached group-0 bind groups for [`PipelineVariant::PbrHostAlbedo`] keyed by Texture2D asset id.
+    pub(super) pbr_host_albedo_bind_cache: &'a mut HashMap<i32, wgpu::BindGroup>,
 }
 
 /// Resources and per-frame tuning for PBR ray-query shadow bindings (scene group 1, bindings 5–7).
@@ -708,6 +718,7 @@ pub(super) fn overlay_pipeline_variant_for_orthographic(
         | PipelineVariant::OverlayStencilMaskWriteSkinned
         | PipelineVariant::OverlayStencilMaskClearSkinned => *variant,
         PipelineVariant::Pbr
+        | PipelineVariant::PbrHostAlbedo
         | PipelineVariant::PbrMRT
         | PipelineVariant::PbrRayQuery
         | PipelineVariant::PbrMRTRayQuery
@@ -744,7 +755,9 @@ pub(super) fn mesh_pipeline_variant_for_mrt(
     }
     if !has_pbr_scene {
         return match variant {
-            PipelineVariant::Pbr | PipelineVariant::PbrRayQuery => PipelineVariant::NormalDebug,
+            PipelineVariant::Pbr
+            | PipelineVariant::PbrHostAlbedo
+            | PipelineVariant::PbrRayQuery => PipelineVariant::NormalDebug,
             PipelineVariant::SkinnedPbr | PipelineVariant::SkinnedPbrRayQuery => {
                 PipelineVariant::Skinned
             }
@@ -774,7 +787,9 @@ pub(super) fn mesh_pipeline_variant_for_mrt(
                     PipelineVariant::SkinnedPbrMRT
                 }
             }
-            PipelineVariant::Pbr | PipelineVariant::PbrRayQuery => {
+            PipelineVariant::Pbr
+            | PipelineVariant::PbrHostAlbedo
+            | PipelineVariant::PbrRayQuery => {
                 if pbr_ray_query {
                     PipelineVariant::PbrMRTRayQuery
                 } else {
@@ -815,7 +830,9 @@ pub(super) fn mesh_pipeline_variant_for_mrt(
                     PipelineVariant::SkinnedPbr
                 }
             }
-            PipelineVariant::Pbr | PipelineVariant::PbrRayQuery => {
+            PipelineVariant::Pbr
+            | PipelineVariant::PbrHostAlbedo
+            | PipelineVariant::PbrRayQuery => {
                 if pbr_ray_query {
                     PipelineVariant::PbrRayQuery
                 } else {
@@ -982,6 +999,59 @@ pub(super) fn record_skinned_draws(
     }
 }
 
+/// Resolves per-draw bind group 0 for [`PipelineVariant::PbrHostAlbedo`] (host `_MainTex`).
+///
+/// Takes disjoint store/registry/cache handles instead of [`MeshDrawParams`] so the borrow
+/// checker can overlap with other `params` uses in [`record_non_skinned_draws`].
+#[allow(clippy::too_many_arguments)]
+fn pbr_host_albedo_draw_bind<'a>(
+    variant: PipelineVariant,
+    pipeline: &'a dyn RenderPipeline,
+    d: &BatchedDraw,
+    material_property_store: &'a MaterialPropertyStore,
+    render_config: &'a RenderConfig,
+    asset_registry: &'a crate::assets::AssetRegistry,
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    texture2d_gpu: &'a mut HashMap<i32, (wgpu::Texture, wgpu::TextureView)>,
+    native_ui_material_bind_cache: &'a mut NativeUiMaterialBindCache,
+    pbr_host_albedo_bind_cache: &'a mut HashMap<i32, wgpu::BindGroup>,
+) -> Option<&'a wgpu::BindGroup> {
+    if !matches!(variant, PipelineVariant::PbrHostAlbedo) {
+        return None;
+    }
+    let pbr = pipeline.as_any().downcast_ref::<PbrHostAlbedoPipeline>()?;
+    let lookup = MaterialDrawContext::for_non_skinned_draw(
+        d.material_asset_id,
+        d.mesh_renderer_property_block_slot0_id,
+    )
+    .property_lookup;
+    let pid = render_config.pbr_host_main_tex_property_id;
+    if pid < 0 {
+        return None;
+    }
+    let packed = match material_property_store.get_merged(lookup, pid)? {
+        MaterialPropertyValue::Texture(p) => *p,
+        _ => return None,
+    };
+    let tid = texture2d_asset_id_from_packed(packed)?;
+    let tex = asset_registry.get_texture(tid)?;
+    let _ = ensure_texture2d_gpu_view(
+        device,
+        queue,
+        texture2d_gpu,
+        native_ui_material_bind_cache,
+        pbr_host_albedo_bind_cache,
+        tid,
+        tex,
+    );
+    let view = texture2d_gpu.get(&tid).map(|(_, v)| v)?;
+    let bg = pbr_host_albedo_bind_cache
+        .entry(tid)
+        .or_insert_with(|| pbr.create_albedo_bind_group(device, view));
+    Some(&*bg)
+}
+
 /// Records non-skinned mesh draws into the render pass.
 pub(super) fn record_non_skinned_draws(
     pass: &mut wgpu::RenderPass<'_>,
@@ -1037,6 +1107,7 @@ pub(super) fn record_non_skinned_draws(
                     if matches!(
                         pipeline_variant,
                         PipelineVariant::Pbr
+                            | PipelineVariant::PbrHostAlbedo
                             | PipelineVariant::PbrMRT
                             | PipelineVariant::PbrRayQuery
                             | PipelineVariant::PbrMRTRayQuery
@@ -1086,6 +1157,7 @@ pub(super) fn record_non_skinned_draws(
         if matches!(
             pipeline_variant,
             crate::gpu::PipelineVariant::Pbr
+                | crate::gpu::PipelineVariant::PbrHostAlbedo
                 | crate::gpu::PipelineVariant::PbrMRT
                 | crate::gpu::PipelineVariant::PbrRayQuery
                 | crate::gpu::PipelineVariant::PbrMRTRayQuery
@@ -1160,6 +1232,7 @@ pub(super) fn record_non_skinned_draws(
                 && !is_stencil_pipeline
                 && !run_has_stencil
                 && !is_native_ui
+                && !matches!(pipeline_variant, PipelineVariant::PbrHostAlbedo)
                 && run_len as u32 <= crate::gpu::MAX_INSTANCE_RUN
                 && same_index_range;
 
@@ -1178,7 +1251,20 @@ pub(super) fn record_non_skinned_draws(
             } else {
                 for idx in order[run_start..run_end].iter().copied() {
                     let d = &group[idx];
-                    pipeline.bind_draw(pass, Some(idx as u32), params.frame_index, None);
+                    let draw_bind = pbr_host_albedo_draw_bind(
+                        pipeline_variant,
+                        pipeline.as_ref(),
+                        d,
+                        params.material_property_store,
+                        params.render_config,
+                        params.asset_registry,
+                        params.device,
+                        params.queue,
+                        params.texture2d_gpu,
+                        params.native_ui_material_bind_cache,
+                        params.pbr_host_albedo_bind_cache,
+                    );
+                    pipeline.bind_draw(pass, Some(idx as u32), params.frame_index, draw_bind);
                     match pipeline_variant {
                         PipelineVariant::NativeUiUnlit { material_id }
                         | PipelineVariant::NativeUiUnlitStencil { material_id } => {
@@ -1208,6 +1294,7 @@ pub(super) fn record_non_skinned_draws(
                                         params.queue,
                                         params.texture2d_gpu,
                                         params.native_ui_material_bind_cache,
+                                        params.pbr_host_albedo_bind_cache,
                                         id,
                                         tex,
                                     );
@@ -1220,6 +1307,7 @@ pub(super) fn record_non_skinned_draws(
                                         params.queue,
                                         params.texture2d_gpu,
                                         params.native_ui_material_bind_cache,
+                                        params.pbr_host_albedo_bind_cache,
                                         id,
                                         tex,
                                     );
@@ -1286,6 +1374,7 @@ pub(super) fn record_non_skinned_draws(
                                         params.queue,
                                         params.texture2d_gpu,
                                         params.native_ui_material_bind_cache,
+                                        params.pbr_host_albedo_bind_cache,
                                         id,
                                         tex,
                                     );
@@ -1376,6 +1465,32 @@ mod tests {
     }
 
     #[test]
+    fn fill_pbr_host_uniform_sets_albedo_flag_when_main_tex_bound() {
+        let mut store = MaterialPropertyStore::new();
+        store.set(10, 9, MaterialPropertyValue::Texture(0));
+        let rc = RenderConfig {
+            pbr_bind_host_material_properties: true,
+            pbr_bind_host_main_texture: true,
+            pbr_host_main_tex_property_id: 9,
+            ..RenderConfig::default()
+        };
+        let draw = BatchedDraw {
+            mesh_asset_id: 1,
+            mvp: Matrix4::identity(),
+            model: Matrix4::identity(),
+            material_asset_id: 10,
+            pipeline_variant: PipelineVariant::PbrHostAlbedo,
+            is_overlay: false,
+            stencil_state: None,
+            mesh_renderer_property_block_slot0_id: None,
+            submesh_index_range: None,
+        };
+        let mut u = NonSkinnedUniformUpload::new(draw.mvp, draw.model);
+        super::fill_pbr_host_uniform_extras(&mut u, &store, &rc, &draw);
+        assert!((u.host_metallic_roughness[3] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
     fn overlay_pipeline_variant_orthographic_maps_normal_debug() {
         let v = overlay_pipeline_variant_for_orthographic(&PipelineVariant::NormalDebug, true);
         assert_eq!(v, PipelineVariant::OverlayNoDepthNormalDebug);
@@ -1424,6 +1539,29 @@ mod tests {
     fn mesh_pipeline_variant_fallback_when_no_pbr_scene() {
         let v = mesh_pipeline_variant_for_mrt(&PipelineVariant::Pbr, false, true, false, false);
         assert_eq!(v, PipelineVariant::NormalDebug);
+    }
+
+    #[test]
+    fn mesh_pipeline_variant_pbr_host_albedo_tracks_pbr_paths() {
+        let mrt =
+            mesh_pipeline_variant_for_mrt(&PipelineVariant::PbrHostAlbedo, true, true, true, false);
+        assert_eq!(mrt, PipelineVariant::PbrMRT);
+        let non_mrt = mesh_pipeline_variant_for_mrt(
+            &PipelineVariant::PbrHostAlbedo,
+            false,
+            true,
+            true,
+            false,
+        );
+        assert_eq!(non_mrt, PipelineVariant::Pbr);
+        let no_scene = mesh_pipeline_variant_for_mrt(
+            &PipelineVariant::PbrHostAlbedo,
+            false,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(no_scene, PipelineVariant::NormalDebug);
     }
 
     #[test]

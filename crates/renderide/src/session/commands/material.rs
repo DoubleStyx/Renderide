@@ -9,7 +9,7 @@
 use crate::assets::{
     apply_froox_material_property_name_to_native_ui_config,
     apply_froox_material_property_name_to_pbr_host_config, intern_host_material_property_id,
-    material_update_batch::parse_materials_update_batch_into_store,
+    material_update_batch::{ParseMaterialBatchOptions, parse_materials_update_batch_into_store},
 };
 use crate::shared::{MaterialPropertyIdResult, MaterialsUpdateBatchResult, RendererCommand};
 
@@ -49,10 +49,17 @@ impl CommandHandler for MaterialCommandHandler {
             }
             RendererCommand::materials_update_batch(batch) => {
                 if let Some(shm) = ctx.assets.shared_memory.as_mut() {
+                    let opts = ParseMaterialBatchOptions {
+                        persist_extended_payloads: ctx
+                            .render_config
+                            .material_batch_persist_extended_payloads,
+                        record_wire_metrics: ctx.render_config.material_batch_wire_metrics,
+                    };
                     parse_materials_update_batch_into_store(
                         shm,
                         batch,
                         &mut ctx.assets.asset_registry.material_property_store,
+                        &opts,
                     );
                     ctx.receiver
                         .send_background(RendererCommand::materials_update_batch_result(

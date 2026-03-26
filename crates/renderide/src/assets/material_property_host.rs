@@ -117,6 +117,7 @@ pub fn apply_froox_material_property_name_to_pbr_host_config(
         "_Color" => config.pbr_host_color_property_id = id,
         "_Metallic" => config.pbr_host_metallic_property_id = id,
         "_Glossiness" | "Glossiness" => config.pbr_host_smoothness_property_id = id,
+        "_MainTex" => config.pbr_host_main_tex_property_id = id,
         _ => {}
     }
 }
@@ -217,5 +218,15 @@ mod tests {
         assert_eq!(c.pbr_host_color_property_id, color_id);
         assert_eq!(c.pbr_host_metallic_property_id, metal_id);
         assert_eq!(c.pbr_host_smoothness_property_id, gloss_id);
+    }
+
+    #[test]
+    fn apply_pbr_host_maps_main_tex() {
+        let _lock = test_lock();
+        reset_material_property_intern_table_for_tests();
+        let mut c = RenderConfig::default();
+        let main_tex_id = intern_host_material_property_id("_MainTex");
+        apply_froox_material_property_name_to_pbr_host_config(&mut c, "_MainTex", main_tex_id);
+        assert_eq!(c.pbr_host_main_tex_property_id, main_tex_id);
     }
 }

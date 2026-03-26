@@ -15,6 +15,7 @@
 mod debug;
 mod overlay;
 mod pbr;
+mod pbr_host_albedo;
 mod pbr_ray_query;
 mod skinned;
 
@@ -25,6 +26,7 @@ pub(crate) use overlay::OVERLAY_STENCIL_SHADER_SRC;
 pub(crate) use pbr::{
     PBR_MRT_SHADER_SRC, PBR_SHADER_SRC, SKINNED_PBR_MRT_SHADER_SRC, SKINNED_PBR_SHADER_SRC,
 };
+pub(crate) use pbr_host_albedo::PBR_HOST_ALBEDO_SHADER_SRC;
 pub(crate) use pbr_ray_query::{
     PBR_MRT_RAY_QUERY_SHADER_SRC, PBR_RAY_QUERY_SHADER_SRC, SKINNED_PBR_MRT_RAY_QUERY_SHADER_SRC,
     SKINNED_PBR_RAY_QUERY_SHADER_SRC,

@@ -314,6 +314,7 @@ impl RenderPass for MeshRenderPass {
             asset_registry: ctx.session.asset_registry(),
             texture2d_gpu: &mut ctx.gpu.texture2d_gpu,
             native_ui_material_bind_cache: &mut ctx.gpu.native_ui_material_bind_cache,
+            pbr_host_albedo_bind_cache: &mut ctx.gpu.pbr_host_albedo_bind_cache,
         };
 
         let timestamp_writes =

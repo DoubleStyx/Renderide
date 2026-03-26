@@ -23,17 +23,26 @@ impl CommandHandler for ShaderCommandHandler {
                 let (success, existed_before) =
                     ctx.assets.asset_registry.handle_shader_upload(data.clone());
                 if success {
-                    let family = ctx
+                    let unity_name = ctx
                         .assets
                         .asset_registry
                         .get_shader(asset_id)
-                        .and_then(|s| s.unity_shader_name.as_deref())
+                        .and_then(|s| s.unity_shader_name.clone());
+                    let family = unity_name
+                        .as_deref()
                         .and_then(native_ui_family_from_unity_shader_name)
                         .or_else(|| {
                             data.file
                                 .as_deref()
                                 .and_then(native_ui_family_from_shader_path_hint)
                         });
+                    logger::info!(
+                        "shader_upload: asset_id={} unity_shader_name={:?} wgsl_path_hint={:?} resolved_native_ui_family={:?}",
+                        asset_id,
+                        unity_name.as_deref(),
+                        data.file.as_deref(),
+                        family
+                    );
                     if let Some(family) = family {
                         let force = ctx.render_config.native_ui_force_shader_hint_registration;
                         match family {

@@ -57,6 +57,17 @@
 //! and depth offset (`_Offset*`). Those drive Unity render state, not the data-driven uniform path: native
 //! pipelines use fixed depth/stencil/rasterizer states from WGSL pipeline construction. Extend the native
 //! UI pipeline descriptors only if a Resonite workflow requires matching those toggles per material.
+//!
+//! ## IPC parity: batch opcodes vs [`crate::assets::material_properties::MaterialPropertyStore`]
+//!
+//! [`crate::assets::material_update_batch`] applies FrooxEngine `MaterialsUpdateBatch` records. Unless
+//! [`crate::config::RenderConfig::material_batch_persist_extended_payloads`] is enabled, `set_float4x4`
+//! and float / float4 array payloads are **not** stored (matrices are still consumed from the wire cursor;
+//! arrays are advanced only). Use [`crate::config::RenderConfig::material_batch_wire_metrics`] to count
+//! those opcodes in the debug HUD. Generic PBR host-factor binding (`_Color`, `_Metallic`, `_Glossiness`)
+//! and optional `_MainTex` → [`crate::gpu::PipelineVariant::PbrHostAlbedo`] are documented on
+//! [`crate::assets::material_properties`] and [`crate::config::RenderConfig`]; full Standard stacks
+//! (`_BumpMap`, `_EmissionMap`, …) are not wired into the generic PBR WGSL path yet.
 
 /// Identifies which native UI WGSL program to use for a host shader asset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

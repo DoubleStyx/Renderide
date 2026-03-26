@@ -110,6 +110,8 @@ pub struct GpuState {
     pub texture2d_gpu: std::collections::HashMap<i32, (wgpu::Texture, wgpu::TextureView)>,
     /// Cached material bind groups for native UI draws.
     pub native_ui_material_bind_cache: NativeUiMaterialBindCache,
+    /// Cached bind group 0 entries for [`crate::gpu::PipelineVariant::PbrHostAlbedo`] keyed by Texture2D asset id.
+    pub pbr_host_albedo_bind_cache: std::collections::HashMap<i32, wgpu::BindGroup>,
     /// Whether the device reported [`wgpu::Features::DUAL_SOURCE_BLENDING`].
     pub dual_source_blending_available: bool,
 }
@@ -375,6 +377,7 @@ pub async fn init_gpu(
         native_ui_depth_fallback_bind_group: None,
         texture2d_gpu: std::collections::HashMap::new(),
         native_ui_material_bind_cache: NativeUiMaterialBindCache::new(),
+        pbr_host_albedo_bind_cache: std::collections::HashMap::new(),
         dual_source_blending_available,
     })
 }
@@ -389,6 +392,7 @@ pub(crate) fn ensure_texture2d_gpu_view<'a>(
     queue: &wgpu::Queue,
     texture2d_gpu: &'a mut std::collections::HashMap<i32, (wgpu::Texture, wgpu::TextureView)>,
     native_ui_material_bind_cache: &mut NativeUiMaterialBindCache,
+    pbr_host_albedo_bind_cache: &mut std::collections::HashMap<i32, wgpu::BindGroup>,
     asset_id: i32,
     asset: &crate::assets::TextureAsset,
 ) -> Option<&'a wgpu::TextureView> {
@@ -423,6 +427,7 @@ pub(crate) fn ensure_texture2d_gpu_view<'a>(
         }
         texture2d_gpu.remove(&asset_id);
         native_ui_material_bind_cache.evict_texture(asset_id);
+        pbr_host_albedo_bind_cache.remove(&asset_id);
     }
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("host Texture2D"),
@@ -863,6 +868,7 @@ impl GpuState {
     pub fn drop_texture2d(&mut self, asset_id: i32) {
         self.texture2d_gpu.remove(&asset_id);
         self.native_ui_material_bind_cache.evict_texture(asset_id);
+        self.pbr_host_albedo_bind_cache.remove(&asset_id);
     }
 
     /// Creates or updates the GPU texture for `asset_id` from CPU [`crate::assets::TextureAsset`] mip0.
@@ -876,6 +882,7 @@ impl GpuState {
             &self.queue,
             &mut self.texture2d_gpu,
             &mut self.native_ui_material_bind_cache,
+            &mut self.pbr_host_albedo_bind_cache,
             asset_id,
             asset,
         )

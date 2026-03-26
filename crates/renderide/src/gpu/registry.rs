@@ -18,10 +18,11 @@ use super::pipeline::{
     HostUnlitPipeline, NormalDebugMRTPipeline, NormalDebugPipeline,
     OverlayStencilMaskClearPipeline, OverlayStencilMaskClearSkinnedPipeline,
     OverlayStencilMaskWritePipeline, OverlayStencilMaskWriteSkinnedPipeline,
-    OverlayStencilPipeline, OverlayStencilSkinnedPipeline, PbrMRTPipeline, PbrMrtRayQueryPipeline,
-    PbrPipeline, PbrRayQueryPipeline, RenderPipeline, SkinnedMRTPipeline, SkinnedPbrMRTPipeline,
-    SkinnedPbrMrtRayQueryPipeline, SkinnedPbrPipeline, SkinnedPbrRayQueryPipeline, SkinnedPipeline,
-    UiTextUnlitNativePipeline, UiUnlitNativePipeline, UvDebugMRTPipeline, UvDebugPipeline,
+    OverlayStencilPipeline, OverlayStencilSkinnedPipeline, PbrHostAlbedoPipeline, PbrMRTPipeline,
+    PbrMrtRayQueryPipeline, PbrPipeline, PbrRayQueryPipeline, RenderPipeline, SkinnedMRTPipeline,
+    SkinnedPbrMRTPipeline, SkinnedPbrMrtRayQueryPipeline, SkinnedPbrPipeline,
+    SkinnedPbrRayQueryPipeline, SkinnedPipeline, UiTextUnlitNativePipeline, UiUnlitNativePipeline,
+    UvDebugMRTPipeline, UvDebugPipeline,
 };
 use super::pipeline_descriptor_cache::PipelineDescriptorCache;
 
@@ -85,6 +86,8 @@ pub enum PipelineVariant {
     SkinnedPbrMRT,
     /// PBR with fragment ray queries and TLAS shadow rays (requires ray tracing).
     PbrRayQuery,
+    /// Forward PBR with host `_MainTex` albedo multiply (requires mesh UV0).
+    PbrHostAlbedo,
     /// PBR MRT with fragment ray queries.
     PbrMRTRayQuery,
     /// Skinned PBR with fragment ray queries.
@@ -384,6 +387,17 @@ impl PipelineRegistry {
             PipelineVariant::Pbr => {
                 let pipeline: Arc<dyn RenderPipeline> = Arc::new(PbrPipeline::new(device, config));
                 self.put_lazy(key, PipelineVariant::Pbr, config, Arc::clone(&pipeline));
+                Some(pipeline)
+            }
+            PipelineVariant::PbrHostAlbedo => {
+                let pipeline: Arc<dyn RenderPipeline> =
+                    Arc::new(PbrHostAlbedoPipeline::new(device, config));
+                self.put_lazy(
+                    key,
+                    PipelineVariant::PbrHostAlbedo,
+                    config,
+                    Arc::clone(&pipeline),
+                );
                 Some(pipeline)
             }
             PipelineVariant::PbrRayQuery => {

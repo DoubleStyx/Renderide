@@ -128,6 +128,10 @@ pub struct LiveFrameDiagnostics {
     #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
     pub native_ui_routing_metrics:
         Option<crate::session::native_ui_routing_metrics::NativeUiRoutingFrameMetrics>,
+    /// Material batch wire opcode counts (last frame) when [`crate::config::RenderConfig::material_batch_wire_metrics`] is on.
+    #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
+    pub material_batch_wire_metrics:
+        Option<crate::assets::material_batch_wire_metrics::MaterialBatchWireFrameMetrics>,
 }
 
 #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
@@ -478,9 +482,6 @@ impl DebugHud {
                         sample.textures_cpu_ready_for_gpu,
                         sample.textures_gpu_resident
                     ));
-                    ui.text_wrapped(
-                        "CPU registered = host Texture2D assets; mip0-ready = decoded pixels for upload; GPU resident = wgpu textures created (e.g. bound draws).",
-                    );
 
                     ui.separator();
                     let tlas_str = if sample.tlas_available {
@@ -526,6 +527,15 @@ impl DebugHud {
                             m.routed_ui_text_unlit_stencil,
                             m.skips_total(),
                             m.pbr_uivert_fallback
+                        ));
+                    }
+
+                    if let Some(m) = sample.material_batch_wire_metrics {
+                        ui.separator();
+                        ui.text("Material batch wire (last frame, counters reset each sample)");
+                        ui.text(format!(
+                            "set_float4x4={}  set_float_array={}  set_float4_array={}",
+                            m.set_float4x4, m.set_float_array, m.set_float4_array
                         ));
                     }
                 } else {
@@ -748,6 +758,7 @@ mod tests {
             gpu_allocator: GpuAllocatorSnapshot::default(),
             host: HostCpuMemorySnapshot::default(),
             native_ui_routing_metrics: None,
+            material_batch_wire_metrics: None,
         }
     }
 

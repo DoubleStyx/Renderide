@@ -382,6 +382,10 @@ pub struct RenderConfig {
     pub log_native_ui_routing: bool,
     /// When true, accumulate per-frame counts for native UI routing and PBR UI-vert fallback ([`crate::session::native_ui_routing_metrics`]).
     pub native_ui_routing_metrics: bool,
+    /// When true, count `set_float4x4` / float array opcodes on the material batch wire ([`crate::assets::material_batch_wire_metrics`]).
+    pub material_batch_wire_metrics: bool,
+    /// When true, persist `set_float4x4` and capped float / float4 arrays into [`crate::assets::MaterialPropertyStore`].
+    pub material_batch_persist_extended_payloads: bool,
     /// When true and global PBR is on, UI-capable meshes that fail native UI routing use
     /// [`crate::gpu::PipelineVariant::Pbr`]. When false (default), they keep the non-PBR fallback
     /// from [`crate::gpu::ShaderKey::fallback_variant`] (e.g. NormalDebug on overlay) so UI is not
@@ -397,6 +401,8 @@ pub struct RenderConfig {
     /// `_Metallic` / `_Glossiness` from [`crate::assets::MaterialPropertyStore`] into the uniform ring
     /// (see [`crate::gpu::pipeline::uniforms::Uniforms`]). Disable to always use stock gray / 0.5 factors.
     pub pbr_bind_host_material_properties: bool,
+    /// When true and host maps `_MainTex`, forward PBR may use [`crate::gpu::PipelineVariant::PbrHostAlbedo`] for textured draws (requires mesh UV0).
+    pub pbr_bind_host_main_texture: bool,
     /// Host property id for linear `_Color` (`set_float4`); `-1` disables. Set from
     /// [`crate::assets::material_property_host`] when the host requests shader property names.
     pub pbr_host_color_property_id: i32,
@@ -405,6 +411,8 @@ pub struct RenderConfig {
     /// Host property id for Unity-style `_Glossiness` / smoothness (`set_float`); converted to
     /// perceptual roughness as `1.0 - clamp(gloss, 0, 1)`. `-1` disables.
     pub pbr_host_smoothness_property_id: i32,
+    /// Host property id for `_MainTex` (`set_texture`); `-1` disables. Used with [`Self::pbr_bind_host_main_texture`].
+    pub pbr_host_main_tex_property_id: i32,
     /// When true, mesh renderers with multiple material slots may emit one draw per submesh with
     /// the matching material (see [`crate::session::collect::filter_and_collect_drawables`]).
     pub multi_material_submeshes: bool,
@@ -875,6 +883,33 @@ fn apply_render_config_ini_entry(config: &mut RenderConfig, section: &str, key: 
                 );
             }
         }
+        ("rendering", "material_batch_wire_metrics") => {
+            if let Some(v) = parse_bool(value) {
+                config.material_batch_wire_metrics = v;
+                eprintln!("[renderide] ini: material_batch_wire_metrics = {}", v);
+                logger::info!("ini: material_batch_wire_metrics = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: material_batch_wire_metrics parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "material_batch_persist_extended_payloads") => {
+            if let Some(v) = parse_bool(value) {
+                config.material_batch_persist_extended_payloads = v;
+                eprintln!(
+                    "[renderide] ini: material_batch_persist_extended_payloads = {}",
+                    v
+                );
+                logger::info!("ini: material_batch_persist_extended_payloads = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: material_batch_persist_extended_payloads parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
         ("rendering", "native_ui_uivert_pbr_fallback") => {
             if let Some(v) = parse_bool(value) {
                 config.native_ui_uivert_pbr_fallback = v;
@@ -922,6 +957,18 @@ fn apply_render_config_ini_entry(config: &mut RenderConfig, section: &str, key: 
             } else {
                 eprintln!(
                     "[renderide] ini: pbr_bind_host_material_properties parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "pbr_bind_host_main_texture") => {
+            if let Some(v) = parse_bool(value) {
+                config.pbr_bind_host_main_texture = v;
+                eprintln!("[renderide] ini: pbr_bind_host_main_texture = {}", v);
+                logger::info!("ini: pbr_bind_host_main_texture = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: pbr_bind_host_main_texture parse error (raw = {:?})",
                     value
                 );
             }
@@ -1232,13 +1279,17 @@ impl Default for RenderConfig {
             native_ui_overlay_stencil_pipelines: false,
             log_native_ui_routing: false,
             native_ui_routing_metrics: false,
+            material_batch_wire_metrics: false,
+            material_batch_persist_extended_payloads: false,
             native_ui_uivert_pbr_fallback: false,
             native_ui_force_shader_hint_registration: false,
             native_ui_default_surface_blend: NativeUiSurfaceBlend::Alpha,
             pbr_bind_host_material_properties: true,
+            pbr_bind_host_main_texture: false,
             pbr_host_color_property_id: -1,
             pbr_host_metallic_property_id: -1,
             pbr_host_smoothness_property_id: -1,
+            pbr_host_main_tex_property_id: -1,
             multi_material_submeshes: false,
             log_multi_material_submesh_mismatch: false,
         }
