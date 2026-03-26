@@ -77,6 +77,10 @@ impl CommandHandler for ConfigCommandHandler {
                     native_ui_default_surface_blend: ctx
                         .render_config
                         .native_ui_default_surface_blend,
+                    multi_material_submeshes: ctx.render_config.multi_material_submeshes,
+                    log_multi_material_submesh_mismatch: ctx
+                        .render_config
+                        .log_multi_material_submesh_mismatch,
                 };
                 CommandResult::Handled
             }

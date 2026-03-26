@@ -107,7 +107,13 @@ pub trait RenderPipeline: Send + Sync {
     ///
     /// Used by the recording loop after optionally calling [`set_mesh_buffers`](Self::set_mesh_buffers).
     /// No-op for pipelines that only support skinned.
-    fn draw_mesh_indexed(&self, _pass: &mut wgpu::RenderPass, _buffers: &GpuMeshBuffers) {
+    fn draw_mesh_indexed(
+        &self,
+        _pass: &mut wgpu::RenderPass,
+        _buffers: &GpuMeshBuffers,
+        _index_range_override: Option<(u32, u32)>,
+    ) {
+        let _ = (_pass, _buffers, _index_range_override);
         // Default: no-op for skinned-only pipelines.
     }
 
@@ -127,7 +133,9 @@ pub trait RenderPipeline: Send + Sync {
         _pass: &mut wgpu::RenderPass,
         _buffers: &GpuMeshBuffers,
         _instance_count: u32,
+        _index_range_override: Option<(u32, u32)>,
     ) {
+        let _ = (_pass, _buffers, _instance_count, _index_range_override);
         // Default: no-op; recording loop uses per-draw path when not supported.
     }
 
@@ -153,7 +161,13 @@ pub trait RenderPipeline: Send + Sync {
     ///
     /// Used by the recording loop after optionally calling [`set_skinned_buffers`](Self::set_skinned_buffers).
     /// No-op for pipelines that only support non-skinned.
-    fn draw_skinned_indexed(&self, _pass: &mut wgpu::RenderPass, _buffers: &GpuMeshBuffers) {
+    fn draw_skinned_indexed(
+        &self,
+        _pass: &mut wgpu::RenderPass,
+        _buffers: &GpuMeshBuffers,
+        _index_range_override: Option<(u32, u32)>,
+    ) {
+        let _ = (_pass, _buffers, _index_range_override);
         // Default: no-op for non-skinned pipelines.
     }
 

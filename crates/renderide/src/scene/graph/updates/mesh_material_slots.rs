@@ -4,8 +4,19 @@
 //! for each [`MeshRendererStatePod`](super::super::pods::MeshRendererStatePod), read `materialCount`
 //! ints (material asset ids), then when `materialPropertyBlockCount >= 0`, read that many property
 //! block ids.
+//!
+//! # Consumers (inventory)
+//!
+//! - [`crate::scene::Drawable::material_handle`] / [`crate::scene::Drawable::mesh_renderer_property_block_slot0_id`]:
+//!   legacy slot 0; kept in sync when materials are present.
+//! - [`crate::scene::Drawable::material_slots`]: full slot list for multi-material rendering.
+//! - [`crate::session::collect`] resolves shader / pipeline from material asset ids and optional
+//!   property blocks.
+//! - [`crate::render::pass::mesh_draw`] and [`crate::render::pass::material_draw_context`] bind
+//!   native UI and host-unlit paths using merged property lookup.
 
 use crate::scene::Drawable;
+use crate::scene::MeshMaterialSlot;
 use crate::shared::ShadowCastMode;
 use crate::shared::enum_repr::EnumRepr;
 
@@ -15,6 +26,9 @@ use super::super::pods::MeshRendererStatePod;
 ///
 /// When `drawable` is `None` (e.g. invalid renderable index), mesh fields are not written but
 /// packed ids are still consumed so the stream stays aligned with the host.
+///
+/// When `material_count < 0`, leaves existing material fields unchanged (host did not send a
+/// material update for this row).
 pub(super) fn apply_mesh_renderer_state_row(
     mut drawable: Option<&mut Drawable>,
     state: &MeshRendererStatePod,
@@ -34,45 +48,55 @@ pub(super) fn apply_mesh_renderer_state_row(
     let packed = packed_ids.unwrap_or(&[]);
     let mc = state.material_count.max(0) as usize;
 
-    let slot0_material = if mc > 0 {
+    let mat_ids: Vec<i32> = if mc > 0 {
         if *cursor + mc <= packed.len() {
-            let m0 = packed[*cursor];
+            let s = packed[*cursor..*cursor + mc].to_vec();
             *cursor += mc;
-            Some(m0)
+            s
         } else {
             *cursor = packed.len();
-            None
+            Vec::new()
         }
     } else {
-        None
+        Vec::new()
     };
 
-    let slot0_pb = if state.material_property_block_count >= 0 {
+    let pb_ids: Vec<i32> = if state.material_property_block_count >= 0 {
         let pbc = state.material_property_block_count.max(0) as usize;
         if pbc > 0 {
             if *cursor + pbc <= packed.len() {
-                let p0 = packed[*cursor];
+                let s = packed[*cursor..*cursor + pbc].to_vec();
                 *cursor += pbc;
-                Some(p0)
+                s
             } else {
                 *cursor = packed.len();
-                None
+                Vec::new()
             }
         } else {
-            None
+            Vec::new()
         }
     } else {
-        None
+        Vec::new()
     };
 
     if let Some(d) = drawable.as_mut() {
-        if mc > 0 {
-            d.material_handle = slot0_material;
-        } else {
+        d.material_slots = mat_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &material_asset_id)| MeshMaterialSlot {
+                material_asset_id,
+                property_block_id: pb_ids.get(i).copied(),
+            })
+            .collect();
+
+        if mat_ids.is_empty() {
             d.material_handle = None;
-        }
-        if state.material_property_block_count >= 0 {
-            d.mesh_renderer_property_block_slot0_id = slot0_pb;
+            d.mesh_renderer_property_block_slot0_id = None;
+        } else {
+            d.material_handle = Some(mat_ids[0]);
+            if state.material_property_block_count >= 0 {
+                d.mesh_renderer_property_block_slot0_id = pb_ids.first().copied();
+            }
         }
     }
 }
@@ -116,6 +140,7 @@ mod tests {
             stencil_state: None,
             material_override_block_id: None,
             mesh_renderer_property_block_slot0_id: None,
+            material_slots: Vec::new(),
             render_transform_override: None,
             shadow_cast_mode: ShadowCastMode::on,
         };
@@ -124,7 +149,67 @@ mod tests {
         assert_eq!(d.mesh_handle, 100);
         assert_eq!(d.material_handle, Some(10));
         assert_eq!(d.mesh_renderer_property_block_slot0_id, Some(30));
+        assert_eq!(
+            d.material_slots,
+            vec![
+                MeshMaterialSlot {
+                    material_asset_id: 10,
+                    property_block_id: Some(30),
+                },
+                MeshMaterialSlot {
+                    material_asset_id: 20,
+                    property_block_id: Some(40),
+                }
+            ]
+        );
         assert_eq!(c, 4);
+    }
+
+    #[test]
+    fn three_materials_partial_property_blocks() {
+        let packed = [1, 2, 3, 100, 200];
+        let mut d = Drawable::default();
+        let mut c = 0usize;
+        apply_mesh_renderer_state_row(Some(&mut d), &state(0, 0, 3, 2), Some(&packed), &mut c);
+        assert_eq!(d.material_slots.len(), 3);
+        assert_eq!(d.material_slots[0].property_block_id, Some(100));
+        assert_eq!(d.material_slots[1].property_block_id, Some(200));
+        assert_eq!(d.material_slots[2].property_block_id, None);
+        assert_eq!(c, 5);
+    }
+
+    #[test]
+    fn negative_material_count_leaves_slots_unchanged() {
+        let packed = [1, 2];
+        let mut d = Drawable {
+            material_slots: vec![MeshMaterialSlot {
+                material_asset_id: 99,
+                property_block_id: None,
+            }],
+            ..Default::default()
+        };
+        let mut c = 0usize;
+        apply_mesh_renderer_state_row(Some(&mut d), &state(0, 5, -1, -1), Some(&packed), &mut c);
+        assert_eq!(d.mesh_handle, 5);
+        assert_eq!(d.material_slots.len(), 1);
+        assert_eq!(d.material_slots[0].material_asset_id, 99);
+        assert_eq!(c, 0);
+    }
+
+    #[test]
+    fn no_property_block_stream_clears_per_slot_pb() {
+        let packed = [7, 8];
+        let mut d = Drawable::default();
+        let mut c = 0usize;
+        apply_mesh_renderer_state_row(Some(&mut d), &state(0, 0, 2, -1), Some(&packed), &mut c);
+        assert_eq!(d.material_slots.len(), 2);
+        assert!(
+            d.material_slots
+                .iter()
+                .all(|s| s.property_block_id.is_none())
+        );
+        assert_eq!(d.mesh_renderer_property_block_slot0_id, None);
+        assert_eq!(c, 2);
     }
 
     #[test]

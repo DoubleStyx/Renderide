@@ -138,6 +138,56 @@ impl MeshAsset {
     }
 }
 
+/// Submesh count for pairing host material slots with geometry (matches GPU buffer submesh list).
+pub fn cpu_submesh_count_for_material_pairing(mesh: &MeshAsset) -> usize {
+    let index_count = mesh.index_count.max(0) as u32;
+    if mesh.submeshes.is_empty() {
+        return 1;
+    }
+    let valid_len = mesh
+        .submeshes
+        .iter()
+        .filter(|s| {
+            s.index_count > 0
+                && (s.index_start as i64 + s.index_count as i64) <= mesh.index_count as i64
+        })
+        .count();
+    if valid_len == 0 {
+        if index_count > 0 { 1 } else { 0 }
+    } else {
+        valid_len
+    }
+}
+
+/// `(index_start, index_count)` for submesh `index`, using the same rules as [`crate::gpu::create_mesh_buffers`].
+pub fn cpu_submesh_index_range_for_pairing(mesh: &MeshAsset, index: usize) -> Option<(u32, u32)> {
+    let index_count_u32 = mesh.index_count.max(0) as u32;
+    if mesh.submeshes.is_empty() {
+        return if index == 0 {
+            Some((0, index_count_u32))
+        } else {
+            None
+        };
+    }
+    let valid: Vec<(u32, u32)> = mesh
+        .submeshes
+        .iter()
+        .filter(|s| {
+            s.index_count > 0
+                && (s.index_start as i64 + s.index_count as i64) <= mesh.index_count as i64
+        })
+        .map(|s| (s.index_start as u32, s.index_count as u32))
+        .collect();
+    if valid.is_empty() {
+        return if index == 0 {
+            Some((0, index_count_u32))
+        } else {
+            None
+        };
+    }
+    valid.get(index).copied()
+}
+
 impl Asset for MeshAsset {
     fn id(&self) -> AssetId {
         self.id
@@ -405,4 +455,64 @@ pub fn extract_bind_poses(raw: &[u8], bone_count: usize) -> Option<Vec<[[f32; 4]
         poses.push(mat);
     }
     Some(poses)
+}
+
+#[cfg(test)]
+mod submesh_pairing_tests {
+    use super::{
+        MeshAsset, cpu_submesh_count_for_material_pairing, cpu_submesh_index_range_for_pairing,
+    };
+    use crate::shared::{
+        IndexBufferFormat, RenderBoundingBox, SubmeshBufferDescriptor, SubmeshTopology,
+    };
+
+    fn mesh_with_submeshes(ic: i32, sub: Vec<SubmeshBufferDescriptor>) -> MeshAsset {
+        MeshAsset {
+            id: 1,
+            vertex_data: Vec::new(),
+            index_data: Vec::new(),
+            vertex_count: 0,
+            index_count: ic,
+            index_format: IndexBufferFormat::u_int16,
+            submeshes: sub,
+            vertex_attributes: Vec::new(),
+            bounds: RenderBoundingBox::default(),
+            bind_poses: None,
+            bone_counts: None,
+            bone_weights: None,
+            blendshape_offsets: None,
+            num_blendshapes: 0,
+        }
+    }
+
+    #[test]
+    fn cpu_submesh_empty_list_uses_full_mesh() {
+        let m = mesh_with_submeshes(100, Vec::new());
+        assert_eq!(cpu_submesh_count_for_material_pairing(&m), 1);
+        assert_eq!(cpu_submesh_index_range_for_pairing(&m, 0), Some((0, 100)));
+    }
+
+    #[test]
+    fn cpu_submesh_two_valid_ranges() {
+        let m = mesh_with_submeshes(
+            20,
+            vec![
+                SubmeshBufferDescriptor {
+                    topology: SubmeshTopology::default(),
+                    index_start: 0,
+                    index_count: 10,
+                    bounds: RenderBoundingBox::default(),
+                },
+                SubmeshBufferDescriptor {
+                    topology: SubmeshTopology::default(),
+                    index_start: 10,
+                    index_count: 10,
+                    bounds: RenderBoundingBox::default(),
+                },
+            ],
+        );
+        assert_eq!(cpu_submesh_count_for_material_pairing(&m), 2);
+        assert_eq!(cpu_submesh_index_range_for_pairing(&m, 0), Some((0, 10)));
+        assert_eq!(cpu_submesh_index_range_for_pairing(&m, 1), Some((10, 10)));
+    }
 }

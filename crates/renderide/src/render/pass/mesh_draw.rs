@@ -67,6 +67,8 @@ pub(crate) struct BatchedDraw {
     pub(super) stencil_state: Option<crate::stencil::StencilState>,
     /// Slot-0 mesh renderer property block for merged material property lookup.
     pub(super) mesh_renderer_property_block_slot0_id: Option<i32>,
+    /// Per-draw index range when splitting multi-material submeshes.
+    pub(super) submesh_index_range: Option<(u32, u32)>,
 }
 
 /// Collected skinned draw for batch upload.
@@ -82,6 +84,8 @@ pub(crate) struct SkinnedBatchedDraw {
     pub(super) pipeline_variant: crate::gpu::PipelineVariant,
     /// Per-draw stencil for GraphicsChunk masking. When `Some`, overlay uses stencil pipeline.
     pub(super) stencil_state: Option<crate::stencil::StencilState>,
+    /// Per-draw index range when splitting multi-material submeshes.
+    pub(super) submesh_index_range: Option<(u32, u32)>,
 }
 
 /// Cache key for skinned bind groups.
@@ -523,6 +527,7 @@ fn collect_mesh_draws_for_batch(
                 is_overlay: batch.is_overlay,
                 pipeline_variant: d.pipeline_variant,
                 stencil_state: d.stencil_state,
+                submesh_index_range: d.submesh_index_range,
             });
             stats.submitted_skinned_draws += 1;
             continue;
@@ -536,6 +541,7 @@ fn collect_mesh_draws_for_batch(
             is_overlay: batch.is_overlay,
             stencil_state: d.stencil_state,
             mesh_renderer_property_block_slot0_id: d.mesh_renderer_property_block_slot0_id,
+            submesh_index_range: d.submesh_index_range,
         });
         stats.submitted_rigid_draws += 1;
     }
@@ -923,7 +929,7 @@ pub(super) fn record_skinned_draws(
                 skinned.set_skinned_buffers(pass, buffers);
                 last_mesh_asset_id = Some(d.mesh_asset_id);
             }
-            skinned.draw_skinned_indexed(pass, buffers);
+            skinned.draw_skinned_indexed(pass, buffers, d.submesh_index_range);
         }
         i += group_end;
     }
@@ -1079,12 +1085,16 @@ pub(super) fn record_non_skinned_draws(
             let run_len = run_end - run_start;
             let run_has_stencil =
                 (run_start..run_end).any(|k| group[order[k]].stencil_state.is_some());
+            let first_range = group[first_idx].submesh_index_range;
+            let same_index_range =
+                (run_start..run_end).all(|k| group[order[k]].submesh_index_range == first_range);
             let use_instancing = run_len > 1
                 && pipeline.supports_instancing()
                 && !is_stencil_pipeline
                 && !run_has_stencil
                 && !is_native_ui
-                && run_len as u32 <= crate::gpu::MAX_INSTANCE_RUN;
+                && run_len as u32 <= crate::gpu::MAX_INSTANCE_RUN
+                && same_index_range;
 
             let Some(buffers) = params.mesh_buffer_cache.get(&mesh_id) else {
                 j = run_end;
@@ -1097,7 +1107,7 @@ pub(super) fn record_non_skinned_draws(
 
             if use_instancing {
                 pipeline.bind_draw(pass, Some(first_idx as u32), params.frame_index, None);
-                pipeline.draw_mesh_indexed_instanced(pass, buffers, run_len as u32);
+                pipeline.draw_mesh_indexed_instanced(pass, buffers, run_len as u32, first_range);
             } else {
                 for idx in order[run_start..run_end].iter().copied() {
                     let d = &group[idx];
@@ -1249,7 +1259,7 @@ pub(super) fn record_non_skinned_draws(
                             "Overlay stencil draws must have stencil_state"
                         );
                     }
-                    pipeline.draw_mesh_indexed(pass, buffers);
+                    pipeline.draw_mesh_indexed(pass, buffers, d.submesh_index_range);
                 }
             }
             j = run_end;

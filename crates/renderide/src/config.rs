@@ -391,6 +391,11 @@ pub struct RenderConfig {
     pub native_ui_force_shader_hint_registration: bool,
     /// Default native UI surface blend when `_SrcBlend` / `_DstBlend` are not mapped or missing.
     pub native_ui_default_surface_blend: NativeUiSurfaceBlend,
+    /// When true, mesh renderers with multiple material slots may emit one draw per submesh with
+    /// the matching material (see [`crate::session::collect::filter_and_collect_drawables`]).
+    pub multi_material_submeshes: bool,
+    /// Trace submesh vs material slot count mismatches when [`Self::multi_material_submeshes`] is on.
+    pub log_multi_material_submesh_mismatch: bool,
 }
 
 /// Debug override for shader resolution (replacement-shader style).
@@ -485,6 +490,33 @@ fn apply_render_config_ini_entry(config: &mut RenderConfig, section: &str, key: 
             } else {
                 eprintln!(
                     "[renderide] ini: fullscreen_filter_hook parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "multi_material_submeshes") => {
+            if let Some(v) = parse_bool(value) {
+                config.multi_material_submeshes = v;
+                eprintln!("[renderide] ini: multi_material_submeshes = {}", v);
+                logger::info!("ini: multi_material_submeshes = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: multi_material_submeshes parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "log_multi_material_submesh_mismatch") => {
+            if let Some(v) = parse_bool(value) {
+                config.log_multi_material_submesh_mismatch = v;
+                eprintln!(
+                    "[renderide] ini: log_multi_material_submesh_mismatch = {}",
+                    v
+                );
+                logger::info!("ini: log_multi_material_submesh_mismatch = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: log_multi_material_submesh_mismatch parse error (raw = {:?})",
                     value
                 );
             }
@@ -943,7 +975,8 @@ impl RenderConfig {
     ///   `use_native_ui_wgsl` (bool); `native_ui_unlit_shader_id`, `native_ui_text_unlit_shader_id` (ints, `-1` off);
     ///   `native_ui_world_space`, `native_ui_overlay_stencil_pipelines`, `log_native_ui_routing` (bools);
     ///   `native_ui_uivert_pbr_fallback`, `native_ui_force_shader_hint_registration` (bools);
-    ///   `native_ui_default_surface_blend` (`alpha` / `additive` / …).
+    ///   `native_ui_default_surface_blend` (`alpha` / `additive` / …);
+    ///   `multi_material_submeshes`, `log_multi_material_submesh_mismatch` (bools).
     /// - **`[native_ui_unlit_properties]`** / **`[native_ui_text_unlit_properties]`** — integer material
     ///   property ids for native UI WGSL (see [`crate::assets::ui_material_contract`]). Host
     ///   `material_property_id_request` can also populate these when [`RenderConfig::use_native_ui_wgsl`] is true.
@@ -961,6 +994,8 @@ impl RenderConfig {
     /// - `RENDERIDE_LOG_COLLECT_TIMING=1` — enables [`Self::log_collect_draw_batches_timing`].
     /// - `RENDERIDE_HOST_UNLIT_PILOT=1` — enables [`Self::use_host_unlit_pilot`].
     /// - `RENDERIDE_FULLSCREEN_FILTER_HOOK=1` — enables [`Self::fullscreen_filter_hook`].
+    /// - `RENDERIDE_MULTI_MATERIAL_SUBMESHES=1` — enables [`Self::multi_material_submeshes`].
+    /// - `RENDERIDE_LOG_MULTI_MATERIAL_MISMATCH=1` — enables [`Self::log_multi_material_submesh_mismatch`].
     /// - `RENDERIDE_SHADER_DEBUG_OVERRIDE=legacy` — sets [`ShaderDebugOverride::ForceLegacyGlobalShading`].
     /// - `RENDERIDE_NATIVE_UI_WGSL=1` — enables [`Self::use_native_ui_wgsl`].
     /// - `RENDERIDE_NATIVE_UI_UNLIT_SHADER_ID` / `RENDERIDE_NATIVE_UI_TEXT_UNLIT_SHADER_ID` — host shader
@@ -1058,6 +1093,12 @@ impl RenderConfig {
         if std::env::var("RENDERIDE_FULLSCREEN_FILTER_HOOK").as_deref() == Ok("1") {
             config.fullscreen_filter_hook = true;
         }
+        if std::env::var("RENDERIDE_MULTI_MATERIAL_SUBMESHES").as_deref() == Ok("1") {
+            config.multi_material_submeshes = true;
+        }
+        if std::env::var("RENDERIDE_LOG_MULTI_MATERIAL_MISMATCH").as_deref() == Ok("1") {
+            config.log_multi_material_submesh_mismatch = true;
+        }
         match std::env::var("RENDERIDE_SHADER_DEBUG_OVERRIDE").as_deref() {
             Ok("legacy") | Ok("force_legacy_global_shading") => {
                 config.shader_debug_override = ShaderDebugOverride::ForceLegacyGlobalShading;
@@ -1147,6 +1188,8 @@ impl Default for RenderConfig {
             native_ui_uivert_pbr_fallback: false,
             native_ui_force_shader_hint_registration: false,
             native_ui_default_surface_blend: NativeUiSurfaceBlend::Alpha,
+            multi_material_submeshes: false,
+            log_multi_material_submesh_mismatch: false,
         }
     }
 }

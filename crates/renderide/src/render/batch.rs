@@ -45,6 +45,8 @@ pub struct DrawEntry {
     pub shadow_cast_mode: ShadowCastMode,
     /// Slot-0 `MaterialPropertyBlock` asset id from `mesh_materials_and_property_blocks`, if any.
     pub mesh_renderer_property_block_slot0_id: Option<i32>,
+    /// When set, mesh pass draws only this index range (multi-material submeshes).
+    pub submesh_index_range: Option<(u32, u32)>,
 }
 
 /// Per-space draw batch for rendering.

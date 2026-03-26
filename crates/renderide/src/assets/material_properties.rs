@@ -24,11 +24,10 @@
 //!
 //! [`MaterialPropertyStore::shader_asset_for_block`] and property lookups use the **block id** from
 //! each batch’s `select_target` before `set_shader` / `set_texture` / etc. Drawables resolve that
-//! block id from the host material slot (typically slot 0’s material asset id). If the host sends
-//! material updates under a **different** `select_target` than the drawable’s `material_handle`,
+//! block id from the active material asset id (after multi-submesh fan-out, the submesh’s slot).
+//! If the host sends material updates under a **different** `select_target` than that material id,
 //! the store will not find the shader or textures for native UI routing; fixing that is a host /
-//! scene contract issue (align batch block id with the drawable’s material id), not something the
-//! renderer can infer safely.
+//! scene contract issue, not something the renderer can infer safely.
 
 use std::collections::HashMap;
 
@@ -44,15 +43,17 @@ pub enum MaterialPropertyValue {
     Texture(i32),
 }
 
-/// Material asset id and optional per-renderer property block for merged property reads.
+/// Material asset id and optional per-draw property block for merged property reads.
 ///
-/// Matches Unity’s base `Material` plus `MaterialPropertyBlock` on the renderer: lookups prefer
+/// Matches Unity’s base `Material` plus per-index `MaterialPropertyBlock`: lookups prefer
 /// [`Self::mesh_property_block_slot0`] when present, then fall back to [`Self::material_asset_id`].
+/// After multi-submesh fan-out, the block id is the one paired with the active submesh in
+/// [`crate::scene::Drawable::material_slots`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MaterialPropertyLookupIds {
-    /// Host material asset id (`MeshRenderer.sharedMaterials[0]`).
+    /// Host material asset id (`MeshRenderer.sharedMaterials[k]` after fan-out).
     pub material_asset_id: i32,
-    /// First slot `MaterialPropertyBlock` asset id from `mesh_materials_and_property_blocks`, if any.
+    /// Optional `MaterialPropertyBlock` asset id for this draw’s submesh (or legacy slot 0).
     pub mesh_property_block_slot0: Option<i32>,
 }
 

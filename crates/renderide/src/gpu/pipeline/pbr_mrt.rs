@@ -158,7 +158,7 @@ impl RenderPipeline for PbrMRTPipeline {
         _uniforms: &UniformData<'_>,
     ) {
         self.set_mesh_buffers(pass, buffers);
-        self.draw_mesh_indexed(pass, buffers);
+        self.draw_mesh_indexed(pass, buffers, None);
     }
 
     fn set_mesh_buffers(&self, pass: &mut wgpu::RenderPass, buffers: &GpuMeshBuffers) {
@@ -167,8 +167,13 @@ impl RenderPipeline for PbrMRTPipeline {
         pass.set_index_buffer(ib.slice(..), buffers.index_format);
     }
 
-    fn draw_mesh_indexed(&self, pass: &mut wgpu::RenderPass, buffers: &GpuMeshBuffers) {
-        for &(index_start, index_count) in &buffers.draw_ranges() {
+    fn draw_mesh_indexed(
+        &self,
+        pass: &mut wgpu::RenderPass,
+        buffers: &GpuMeshBuffers,
+        index_range_override: Option<(u32, u32)>,
+    ) {
+        for &(index_start, index_count) in &buffers.effective_draw_ranges(index_range_override) {
             pass.draw_indexed(index_start..index_start + index_count, 0, 0..1);
         }
     }
@@ -182,8 +187,9 @@ impl RenderPipeline for PbrMRTPipeline {
         pass: &mut wgpu::RenderPass,
         buffers: &GpuMeshBuffers,
         instance_count: u32,
+        index_range_override: Option<(u32, u32)>,
     ) {
-        for &(index_start, index_count) in &buffers.draw_ranges() {
+        for &(index_start, index_count) in &buffers.effective_draw_ranges(index_range_override) {
             pass.draw_indexed(index_start..index_start + index_count, 0, 0..instance_count);
         }
     }

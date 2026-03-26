@@ -610,6 +610,7 @@ impl Session {
                 d.pipeline_variant,
                 d.material_id,
                 d.mesh_asset_id,
+                d.submesh_index_range.map(|(start, _)| start).unwrap_or(0),
             )
         });
 

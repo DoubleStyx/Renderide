@@ -83,6 +83,7 @@ pub(crate) fn apply_skinned_mesh_renderables_update(
                 stencil_state: None,
                 material_override_block_id: None,
                 mesh_renderer_property_block_slot0_id: None,
+                material_slots: Vec::new(),
                 render_transform_override: None,
                 shadow_cast_mode: ShadowCastMode::on,
             });

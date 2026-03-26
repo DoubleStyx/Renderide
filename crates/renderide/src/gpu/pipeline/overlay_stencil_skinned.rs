@@ -62,8 +62,14 @@ macro_rules! impl_overlay_stencil_skinned {
                 self.inner.set_skinned_buffers(pass, buffers);
             }
 
-            fn draw_skinned_indexed(&self, pass: &mut wgpu::RenderPass, buffers: &GpuMeshBuffers) {
-                self.inner.draw_skinned_indexed(pass, buffers);
+            fn draw_skinned_indexed(
+                &self,
+                pass: &mut wgpu::RenderPass,
+                buffers: &GpuMeshBuffers,
+                index_range_override: Option<(u32, u32)>,
+            ) {
+                self.inner
+                    .draw_skinned_indexed(pass, buffers, index_range_override);
             }
 
             #[allow(clippy::type_complexity)]

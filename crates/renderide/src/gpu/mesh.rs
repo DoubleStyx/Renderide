@@ -474,6 +474,22 @@ fn fallback_cube_with_uv() -> (Vec<VertexWithUv>, Vec<u16>) {
 
 // MeshPipeline removed — see gpu::pipeline::PipelineManager and concrete pipelines.
 
+/// Merges contiguous `(index_start, index_count)` tuples for fewer draw calls; otherwise returns
+/// a copy of `submeshes`.
+pub(crate) fn merge_contiguous_submesh_ranges(submeshes: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    if submeshes.len() <= 1 {
+        return submeshes.to_vec();
+    }
+    let contiguous = submeshes.windows(2).all(|w| w[0].0 + w[0].1 == w[1].0);
+    if contiguous {
+        let first = submeshes[0].0;
+        let total_count: u32 = submeshes.iter().map(|(_, c)| c).sum();
+        vec![(first, total_count)]
+    } else {
+        submeshes.to_vec()
+    }
+}
+
 /// Cached wgpu buffers for a mesh asset.
 #[derive(Clone)]
 pub struct GpuMeshBuffers {
@@ -535,18 +551,48 @@ impl GpuMeshBuffers {
     /// When submeshes are contiguous in the index buffer, merges them into a single range
     /// to reduce draw calls. Otherwise returns per-submesh ranges.
     pub fn draw_ranges(&self) -> Vec<(u32, u32)> {
-        let sub = &self.submeshes;
-        if sub.len() <= 1 {
-            return sub.to_vec();
-        }
-        let contiguous = sub.windows(2).all(|w| w[0].0 + w[0].1 == w[1].0);
-        if contiguous {
-            let first = sub[0].0;
-            let total_count: u32 = sub.iter().map(|(_, c)| c).sum();
-            vec![(first, total_count)]
+        merge_contiguous_submesh_ranges(&self.submeshes)
+    }
+
+    /// Per-submesh index ranges as uploaded (no contiguous merge). For multi-material draws.
+    pub fn draw_ranges_per_submesh(&self) -> Vec<(u32, u32)> {
+        self.submeshes.clone()
+    }
+
+    /// Indexed draw ranges for this mesh instance.
+    ///
+    /// When `index_range_override` is `Some` and `count > 0`, returns that single range only.
+    /// Otherwise returns [`Self::draw_ranges`].
+    pub fn effective_draw_ranges(
+        &self,
+        index_range_override: Option<(u32, u32)>,
+    ) -> Vec<(u32, u32)> {
+        if let Some((start, count)) = index_range_override {
+            if count > 0 {
+                vec![(start, count)]
+            } else {
+                vec![]
+            }
         } else {
-            sub.to_vec()
+            self.draw_ranges()
         }
+    }
+}
+
+#[cfg(test)]
+mod draw_range_tests {
+    use super::merge_contiguous_submesh_ranges;
+
+    #[test]
+    fn merge_contiguous_submesh_ranges_combines() {
+        let merged = merge_contiguous_submesh_ranges(&[(0, 6), (6, 6)]);
+        assert_eq!(merged, vec![(0, 12)]);
+    }
+
+    #[test]
+    fn merge_contiguous_submesh_ranges_preserves_gap() {
+        let merged = merge_contiguous_submesh_ranges(&[(0, 6), (10, 6)]);
+        assert_eq!(merged, vec![(0, 6), (10, 6)]);
     }
 }
 

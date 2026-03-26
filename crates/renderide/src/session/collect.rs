@@ -6,11 +6,14 @@ use std::collections::HashSet;
 
 use glam::Mat4;
 
+use crate::assets::mesh::{
+    cpu_submesh_count_for_material_pairing, cpu_submesh_index_range_for_pairing,
+};
 use crate::assets::{self, AssetRegistry, NativeUiShaderFamily, resolve_native_ui_shader_family};
 use crate::config::{RenderConfig, ShaderDebugOverride};
 use crate::gpu::{PipelineVariant, ShaderKey};
 use crate::render::batch::{DrawEntry, SpaceDrawBatch};
-use crate::scene::{Drawable, Scene, SceneGraph, render_transform_to_matrix};
+use crate::scene::{Drawable, MeshMaterialSlot, Scene, SceneGraph, render_transform_to_matrix};
 use crate::shared::{LayerType, VertexAttributeType};
 use crate::stencil::{StencilOperation, StencilState};
 
@@ -186,6 +189,74 @@ pub(super) struct FilteredDrawable {
     pub(super) world_matrix: Mat4,
     pub(super) pipeline_variant: PipelineVariant,
     pub(super) shader_key: ShaderKey,
+    /// When set, mesh recording draws only this `(index_start, index_count)` slice.
+    pub(super) submesh_index_range: Option<(u32, u32)>,
+}
+
+/// Material slots from [`Drawable::material_slots`], or a single synthetic slot from legacy fields.
+pub(super) fn resolved_material_slots(drawable: &Drawable) -> Vec<MeshMaterialSlot> {
+    if !drawable.material_slots.is_empty() {
+        return drawable.material_slots.clone();
+    }
+    match drawable.material_handle {
+        Some(material_asset_id) => vec![MeshMaterialSlot {
+            material_asset_id,
+            property_block_id: drawable.mesh_renderer_property_block_slot0_id,
+        }],
+        None => Vec::new(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_pipeline_for_material_draw(
+    scene: &Scene,
+    render_config: &RenderConfig,
+    drawable: &Drawable,
+    use_pbr: bool,
+    is_skinned: bool,
+    asset_registry: &AssetRegistry,
+    material_block_id: i32,
+    fallback_variant: PipelineVariant,
+) -> (PipelineVariant, ShaderKey) {
+    let host_shader_asset_id = asset_registry
+        .material_property_store
+        .shader_asset_for_block(material_block_id);
+    let shader_key = ShaderKey {
+        host_shader_asset_id,
+        fallback_variant,
+    };
+    let force_legacy = matches!(
+        render_config.shader_debug_override,
+        ShaderDebugOverride::ForceLegacyGlobalShading
+    );
+    let pipeline_variant = shader_key.effective_variant(
+        render_config.use_host_unlit_pilot,
+        force_legacy,
+        material_block_id,
+        false,
+        is_skinned,
+        scene.is_overlay,
+    );
+    let pipeline_variant = apply_native_ui_pipeline_variant(
+        scene.is_overlay,
+        is_skinned,
+        drawable.stencil_state.as_ref(),
+        render_config,
+        host_shader_asset_id,
+        material_block_id,
+        drawable.mesh_handle,
+        pipeline_variant,
+        asset_registry,
+    );
+    let pipeline_variant = apply_ui_mesh_pbr_fallback_for_non_native_shader(
+        render_config,
+        asset_registry,
+        drawable,
+        pipeline_variant,
+        use_pbr,
+        fallback_variant,
+    );
+    (pipeline_variant, shader_key)
 }
 
 /// Filters drawables by layer, render lists, and skinned validity; collects world matrices.
@@ -277,51 +348,84 @@ pub(super) fn filter_and_collect_drawables(
             use_pbr,
             asset_registry,
         );
-        let material_block_id = drawable.material_handle.unwrap_or(-1);
-        let host_shader_asset_id = asset_registry
-            .material_property_store
-            .shader_asset_for_block(material_block_id);
-        let shader_key = ShaderKey {
-            host_shader_asset_id,
-            fallback_variant,
-        };
-        let force_legacy = matches!(
-            render_config.shader_debug_override,
-            ShaderDebugOverride::ForceLegacyGlobalShading
-        );
-        let pipeline_variant = shader_key.effective_variant(
-            render_config.use_host_unlit_pilot,
-            force_legacy,
-            material_block_id,
-            false,
-            is_skinned,
-            scene.is_overlay,
-        );
-        let pipeline_variant = apply_native_ui_pipeline_variant(
-            scene.is_overlay,
-            is_skinned,
-            drawable.stencil_state.as_ref(),
-            render_config,
-            host_shader_asset_id,
-            material_block_id,
-            drawable.mesh_handle,
-            pipeline_variant,
-            asset_registry,
-        );
-        let pipeline_variant = apply_ui_mesh_pbr_fallback_for_non_native_shader(
-            render_config,
-            asset_registry,
-            &drawable,
-            pipeline_variant,
-            use_pbr,
-            fallback_variant,
-        );
-        out.push(FilteredDrawable {
-            drawable,
-            world_matrix,
-            pipeline_variant,
-            shader_key,
-        });
+
+        let slots = resolved_material_slots(&drawable);
+        let mesh = asset_registry.get_mesh(drawable.mesh_handle);
+        let submesh_count = mesh
+            .map(cpu_submesh_count_for_material_pairing)
+            .unwrap_or(1)
+            .max(1);
+
+        let use_split =
+            render_config.multi_material_submeshes && submesh_count > 1 && slots.len() > 1;
+
+        if render_config.multi_material_submeshes
+            && render_config.log_multi_material_submesh_mismatch
+            && mesh.is_some()
+            && !slots.is_empty()
+            && slots.len() != submesh_count
+        {
+            logger::trace!(
+                "multi_material: material_slots_len={} submesh_count={} mesh_asset_id={} node_id={}",
+                slots.len(),
+                submesh_count,
+                drawable.mesh_handle,
+                drawable.node_id
+            );
+        }
+
+        if !use_split {
+            let material_block_id = drawable.material_handle.unwrap_or(-1);
+            let (pipeline_variant, shader_key) = resolve_pipeline_for_material_draw(
+                scene,
+                render_config,
+                &drawable,
+                use_pbr,
+                is_skinned,
+                asset_registry,
+                material_block_id,
+                fallback_variant,
+            );
+            out.push(FilteredDrawable {
+                drawable,
+                world_matrix,
+                pipeline_variant,
+                shader_key,
+                submesh_index_range: None,
+            });
+            continue;
+        }
+
+        for i in 0..submesh_count {
+            let Some(slot) = slots.get(i).or_else(|| slots.last()) else {
+                break;
+            };
+            let Some(range) = mesh.and_then(|m| cpu_submesh_index_range_for_pairing(m, i)) else {
+                continue;
+            };
+            let mut d_slot = drawable.clone();
+            d_slot.material_handle = Some(slot.material_asset_id);
+            d_slot.mesh_renderer_property_block_slot0_id = slot.property_block_id;
+            d_slot.material_slots = vec![*slot];
+            let material_block_id = slot.material_asset_id;
+            let (pipeline_variant, shader_key) = resolve_pipeline_for_material_draw(
+                scene,
+                render_config,
+                &d_slot,
+                use_pbr,
+                is_skinned,
+                asset_registry,
+                material_block_id,
+                fallback_variant,
+            );
+            out.push(FilteredDrawable {
+                drawable: d_slot,
+                world_matrix,
+                pipeline_variant,
+                shader_key,
+                submesh_index_range: Some(range),
+            });
+        }
     }
 
     out
@@ -364,6 +468,7 @@ pub(super) fn build_draw_entries(filtered: Vec<FilteredDrawable>) -> Vec<DrawEnt
                 mesh_renderer_property_block_slot0_id: f
                     .drawable
                     .mesh_renderer_property_block_slot0_id,
+                submesh_index_range: f.submesh_index_range,
             }
         })
         .collect()
@@ -490,12 +595,13 @@ mod tests {
     use super::{
         AssetRegistry, FilteredDrawable, apply_native_ui_pipeline_variant,
         apply_ui_mesh_pbr_fallback_for_non_native_shader, build_draw_entries, create_space_batch,
-        mesh_has_ui_canvas_vertices,
+        mesh_has_ui_canvas_vertices, resolved_material_slots,
     };
     use crate::assets::mesh::MeshAsset;
     use crate::config::{RenderConfig, ShaderDebugOverride};
     use crate::gpu::{PipelineVariant, ShaderKey};
     use crate::render::batch::DrawEntry;
+    use crate::scene::MeshMaterialSlot;
     use crate::scene::{Drawable, Scene};
     use crate::shared::{
         IndexBufferFormat, RenderBoundingBox, ShadowCastMode, VertexAttributeDescriptor,
@@ -537,6 +643,7 @@ mod tests {
             stencil_state: None,
             shadow_cast_mode: crate::shared::ShadowCastMode::on,
             mesh_renderer_property_block_slot0_id: None,
+            submesh_index_range: None,
         };
         let batch = create_space_batch(5, &scene, vec![draw], None);
         let batch = batch.expect("should have batch");
@@ -559,11 +666,13 @@ mod tests {
             world_matrix: Mat4::IDENTITY,
             pipeline_variant: PipelineVariant::NormalDebug,
             shader_key: ShaderKey::builtin_only(PipelineVariant::NormalDebug),
+            submesh_index_range: Some((12, 30)),
         }];
         let entries = build_draw_entries(filtered);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].material_id, 10);
         assert_eq!(entries[0].sort_key, 5);
+        assert_eq!(entries[0].submesh_index_range, Some((12, 30)));
     }
 
     #[test]
@@ -578,6 +687,7 @@ mod tests {
             world_matrix: Mat4::IDENTITY,
             pipeline_variant: PipelineVariant::NormalDebug,
             shader_key: ShaderKey::builtin_only(PipelineVariant::NormalDebug),
+            submesh_index_range: None,
         }];
         let entries = build_draw_entries(filtered);
         assert_eq!(entries.len(), 1);
@@ -588,6 +698,35 @@ mod tests {
     fn mesh_has_ui_canvas_vertices_false_without_mesh() {
         let reg = AssetRegistry::new();
         assert!(!mesh_has_ui_canvas_vertices(&reg, 1));
+    }
+
+    #[test]
+    fn resolved_material_slots_uses_vec_when_non_empty() {
+        let d = Drawable {
+            material_slots: vec![MeshMaterialSlot {
+                material_asset_id: 1,
+                property_block_id: Some(2),
+            }],
+            material_handle: Some(99),
+            ..Default::default()
+        };
+        let s = resolved_material_slots(&d);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].material_asset_id, 1);
+        assert_eq!(s[0].property_block_id, Some(2));
+    }
+
+    #[test]
+    fn resolved_material_slots_falls_back_to_legacy_handle() {
+        let d = Drawable {
+            material_handle: Some(5),
+            mesh_renderer_property_block_slot0_id: Some(6),
+            ..Default::default()
+        };
+        let s = resolved_material_slots(&d);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].material_asset_id, 5);
+        assert_eq!(s[0].property_block_id, Some(6));
     }
 
     #[test]
