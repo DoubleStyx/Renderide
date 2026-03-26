@@ -21,6 +21,35 @@ pub fn matrix4_to_wgsl_column_major(mat: &Matrix4<f32>) -> [[f32; 4]; 4] {
     out
 }
 
+/// CPU-side payload for one non-skinned draw uploaded into [`super::uniforms::Uniforms`] ring slots.
+///
+/// Most pipelines only use [`Self::mvp`] and [`Self::model`]; PBR family shaders additionally read
+/// [`Self::host_base_color`] and [`Self::host_metallic_roughness`] when the corresponding `.w` / `.z`
+/// markers are set (see WGSL `UniformsSlot` in `uniform_ring.wgsl` and PBR sources).
+#[derive(Clone, Copy, Debug)]
+pub struct NonSkinnedUniformUpload {
+    /// Model-view-projection matrix for the draw.
+    pub mvp: Matrix4<f32>,
+    /// Model-to-world matrix.
+    pub model: Matrix4<f32>,
+    /// Packed base color: RGB used when `w >= 0.5`.
+    pub host_base_color: [f32; 4],
+    /// `.x` metallic, `.y` roughness when `.z >= 0.5`.
+    pub host_metallic_roughness: [f32; 4],
+}
+
+impl NonSkinnedUniformUpload {
+    /// Builds upload data with host PBR channels cleared (default gray / 0.5 in the shader).
+    pub fn new(mvp: Matrix4<f32>, model: Matrix4<f32>) -> Self {
+        Self {
+            mvp,
+            model,
+            host_base_color: [0.0; 4],
+            host_metallic_roughness: [0.0; 4],
+        }
+    }
+}
+
 /// Per-draw uniform data; pipelines extract what they need.
 #[derive(Clone, Copy)]
 pub enum UniformData<'a> {
@@ -176,13 +205,13 @@ pub trait RenderPipeline: Send + Sync {
     fn upload_batch(
         &self,
         _queue: &wgpu::Queue,
-        _mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
+        _draws: &[NonSkinnedUniformUpload],
         _frame_index: u64,
     ) {
     }
 
     /// Uploads batched uniforms for overlay stencil draws (includes clip_rect).
-    /// Default calls `upload_batch` with mvp_models only.
+    /// Default maps overlay items to [`NonSkinnedUniformUpload`] and calls [`Self::upload_batch`].
     #[allow(clippy::type_complexity)]
     fn upload_batch_overlay(
         &self,
@@ -190,8 +219,11 @@ pub trait RenderPipeline: Send + Sync {
         items: &[(Matrix4<f32>, Matrix4<f32>, Option<[f32; 4]>)],
         frame_index: u64,
     ) {
-        let mvp_models: Vec<_> = items.iter().map(|(m, p, _)| (*m, *p)).collect();
-        self.upload_batch(queue, &mvp_models, frame_index);
+        let draws: Vec<_> = items
+            .iter()
+            .map(|(m, p, _)| NonSkinnedUniformUpload::new(*m, *p))
+            .collect();
+        self.upload_batch(queue, &draws, frame_index);
     }
 
     /// Uploads skinned uniforms for a single draw. No-op for non-skinned pipelines.

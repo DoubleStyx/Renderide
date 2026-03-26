@@ -4,6 +4,9 @@
 //! `configuration.ini` (see [`crate::config::RenderConfig`]) or via environment variables so the
 //! renderer maps `set_shader` batches to [`NativeUiShaderFamily`].
 //!
+//! Logical Unity names (`Shader "UI/Unlit"`) are resolved from ShaderLab/WGSL upload payloads, path hints,
+//! or a host-provided hint — see [`super::shader_logical_name`] and [`crate::shared::shader_upload_extras`].
+//!
 //! ## Material property IDs
 //!
 //! Batches use numeric `property_id` values. When a field in [`UiUnlitPropertyIds`] or
@@ -47,6 +50,13 @@
 //!
 //! Resonite’s `UI_TextUnlit` shader packs glyph extras in the **NORMAL** slot (`extraData`); the mesh
 //! path copies that into [`VertexUiCanvas`](crate::gpu::mesh::VertexUiCanvas) `aux` for WGSL.
+//!
+//! ## Render/state properties not mapped into native UI WGSL
+//!
+//! `UI_Unlit.shader` also exposes `_ZWrite`, `_ZTest`, `_Cull`, `_ColorMask`, stencil comparison/ref/mask,
+//! and depth offset (`_Offset*`). Those drive Unity render state, not the data-driven uniform path: native
+//! pipelines use fixed depth/stencil/rasterizer states from WGSL pipeline construction. Extend the native
+//! UI pipeline descriptors only if a Resonite workflow requires matching those toggles per material.
 
 /// Identifies which native UI WGSL program to use for a host shader asset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -86,7 +96,41 @@ pub fn native_ui_family_from_shader_path_hint(hint: &str) -> Option<NativeUiShad
     None
 }
 
-/// Resolves native UI shader family using configured allowlist ids, then the shader registry path hint.
+fn compact_alnum_lower(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Maps Unity ShaderLab `Shader "…"` strings (and common aliases) to [`NativeUiShaderFamily`].
+///
+/// Accepts exact Resonite names [`super::shader_logical_name::CANONICAL_UNITY_UI_UNLIT`] and
+/// [`super::shader_logical_name::CANONICAL_UNITY_UI_TEXT_UNLIT`], case-insensitive equality, a
+/// compact alphanumeric form (e.g. `uiunlit`), and the same path-style heuristics as
+/// [`native_ui_family_from_shader_path_hint`].
+pub fn native_ui_family_from_unity_shader_name(name: &str) -> Option<NativeUiShaderFamily> {
+    let t = name.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let lower = t.to_ascii_lowercase();
+    if lower == super::shader_logical_name::CANONICAL_UNITY_UI_UNLIT.to_ascii_lowercase()
+        || compact_alnum_lower(t)
+            == compact_alnum_lower(super::shader_logical_name::CANONICAL_UNITY_UI_UNLIT)
+    {
+        return Some(NativeUiShaderFamily::UiUnlit);
+    }
+    if lower == super::shader_logical_name::CANONICAL_UNITY_UI_TEXT_UNLIT.to_ascii_lowercase()
+        || compact_alnum_lower(t)
+            == compact_alnum_lower(super::shader_logical_name::CANONICAL_UNITY_UI_TEXT_UNLIT)
+    {
+        return Some(NativeUiShaderFamily::UiTextUnlit);
+    }
+    native_ui_family_from_shader_path_hint(t)
+}
+
+/// Resolves native UI shader family using configured allowlist ids, stored Unity shader name, then path hint.
 pub fn resolve_native_ui_shader_family(
     shader_asset_id: i32,
     native_ui_unlit_shader_id: i32,
@@ -98,6 +142,12 @@ pub fn resolve_native_ui_shader_family(
         native_ui_unlit_shader_id,
         native_ui_text_unlit_shader_id,
     )
+    .or_else(|| {
+        registry
+            .get_shader(shader_asset_id)
+            .and_then(|s| s.unity_shader_name.as_deref())
+            .and_then(native_ui_family_from_unity_shader_name)
+    })
     .or_else(|| {
         registry
             .get_shader(shader_asset_id)
@@ -445,8 +495,14 @@ mod tests {
     use crate::assets::material_properties::{
         MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
     };
+    use crate::assets::shader_logical_name::{
+        CANONICAL_UNITY_UI_TEXT_UNLIT, CANONICAL_UNITY_UI_UNLIT,
+    };
 
-    use super::{UiUnlitFlags, UiUnlitPropertyIds, ui_unlit_material_uniform};
+    use super::{
+        NativeUiShaderFamily, UiUnlitFlags, UiUnlitPropertyIds,
+        native_ui_family_from_unity_shader_name, ui_unlit_material_uniform,
+    };
 
     #[test]
     fn ui_unlit_flags_bit_positions_match_wgsl() {
@@ -460,6 +516,26 @@ mod tests {
             mask_texture_clip: true,
         };
         assert_eq!(f.to_bits(), 1 | 2 | 4 | 8 | 16 | 32 | 64);
+    }
+
+    #[test]
+    fn native_ui_family_maps_canonical_unity_names() {
+        assert_eq!(
+            native_ui_family_from_unity_shader_name(CANONICAL_UNITY_UI_UNLIT),
+            Some(NativeUiShaderFamily::UiUnlit)
+        );
+        assert_eq!(
+            native_ui_family_from_unity_shader_name(CANONICAL_UNITY_UI_TEXT_UNLIT),
+            Some(NativeUiShaderFamily::UiTextUnlit)
+        );
+    }
+
+    #[test]
+    fn native_ui_family_compact_alnum_ui_unlit() {
+        assert_eq!(
+            native_ui_family_from_unity_shader_name("uiunlit"),
+            Some(NativeUiShaderFamily::UiUnlit)
+        );
     }
 
     #[test]

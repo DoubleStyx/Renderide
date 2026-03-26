@@ -7,7 +7,8 @@
 //! [`MaterialPropertyStore`](crate::assets::MaterialPropertyStore) for draw-time uniform and texture lookup.
 
 use crate::assets::{
-    apply_froox_material_property_name_to_native_ui_config, intern_host_material_property_id,
+    apply_froox_material_property_name_to_native_ui_config,
+    apply_froox_material_property_name_to_pbr_host_config, intern_host_material_property_id,
     material_update_batch::parse_materials_update_batch_into_store,
 };
 use crate::shared::{MaterialPropertyIdResult, MaterialsUpdateBatchResult, RendererCommand};
@@ -26,6 +27,11 @@ impl CommandHandler for MaterialCommandHandler {
                     let name = name_opt.as_deref().unwrap_or("");
                     let id = intern_host_material_property_id(name);
                     apply_froox_material_property_name_to_native_ui_config(
+                        ctx.render_config,
+                        name,
+                        id,
+                    );
+                    apply_froox_material_property_name_to_pbr_host_config(
                         ctx.render_config,
                         name,
                         id,

@@ -124,6 +124,10 @@ pub struct LiveFrameDiagnostics {
     /// Host CPU/RAM snapshot for the HUD.
     #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
     pub host: HostCpuMemorySnapshot,
+    /// Native UI strangler routing counters (last frame) when the feature is enabled in config.
+    #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
+    pub native_ui_routing_metrics:
+        Option<crate::session::native_ui_routing_metrics::NativeUiRoutingFrameMetrics>,
 }
 
 #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
@@ -510,6 +514,20 @@ impl DebugHud {
                         sample.rtao_enabled,
                         sample.ray_traced_shadows_enabled
                     ));
+
+                    if let Some(m) = sample.native_ui_routing_metrics {
+                        ui.separator();
+                        ui.text("Native UI routing (last frame, counters reset each sample)");
+                        ui.text(format!(
+                            "Routed  unlit={}  unlit_st={}  text={}  text_st={}  |  total_skip≈{}  pbr_uivert_fb={}",
+                            m.routed_ui_unlit,
+                            m.routed_ui_unlit_stencil,
+                            m.routed_ui_text_unlit,
+                            m.routed_ui_text_unlit_stencil,
+                            m.skips_total(),
+                            m.pbr_uivert_fallback
+                        ));
+                    }
                 } else {
                     ui.text("Waiting for frame diagnostics...");
                 }
@@ -729,6 +747,7 @@ mod tests {
             adapter_info: test_adapter_info(),
             gpu_allocator: GpuAllocatorSnapshot::default(),
             host: HostCpuMemorySnapshot::default(),
+            native_ui_routing_metrics: None,
         }
     }
 

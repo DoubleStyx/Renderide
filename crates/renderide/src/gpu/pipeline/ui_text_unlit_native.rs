@@ -1,6 +1,5 @@
 //! Native WGSL `UI_TextUnlit` pipeline (`ui_text_unlit.wgsl`).
 
-use nalgebra::Matrix4;
 use wgpu::util::DeviceExt;
 
 use crate::assets::{
@@ -10,7 +9,7 @@ use crate::assets::{
 
 use super::super::mesh::{GpuMeshBuffers, VertexUiCanvas};
 use super::builder;
-use super::core::RenderPipeline;
+use super::core::{NonSkinnedUniformUpload, RenderPipeline};
 use super::ring_buffer::UniformRingBuffer;
 use super::ui_unlit_native::{fallback_white, native_ui_scene_depth_bind_group_layout};
 
@@ -460,9 +459,9 @@ impl RenderPipeline for UiTextUnlitNativePipeline {
     fn upload_batch(
         &self,
         queue: &wgpu::Queue,
-        mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
+        draws: &[NonSkinnedUniformUpload],
         frame_index: u64,
     ) {
-        self.uniform_ring.upload(queue, mvp_models, frame_index);
+        self.uniform_ring.upload(queue, draws, frame_index);
     }
 }

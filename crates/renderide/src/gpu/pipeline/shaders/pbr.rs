@@ -26,11 +26,14 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4f,
     @location(0) world_normal: vec3f,
     @location(1) world_position: vec3f,
+    @location(2) @interpolate(flat) uniform_slot: u32,
 }
 struct UniformsSlot {
     mvp: mat4x4f,
     model: mat4x4f,
-    _pad: array<vec4f, 8>,
+    host_base_color: vec4f,
+    host_metallic_roughness: vec4f,
+    _pad: array<vec4f, 6>,
 }
 struct GpuLight {
     position: vec3f,
@@ -104,14 +107,19 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
     out.clip_position = u.mvp * vec4f(in.position, 1.0);
     out.world_normal = (u.model * vec4f(in.normal, 0.0)).xyz;
     out.world_position = world_pos.xyz;
+    out.uniform_slot = instance_index;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    let base_color = vec3f(0.8, 0.8, 0.8);
-    let metallic = 0.5;
-    let roughness = 0.5;
+    let slot = in.uniform_slot;
+    let hbc = uniforms[slot].host_base_color;
+    let base_color = select(vec3f(0.8, 0.8, 0.8), hbc.xyz, hbc.w >= 0.5);
+    let hmr = uniforms[slot].host_metallic_roughness;
+    let mr = select(vec2f(0.5, 0.5), hmr.xy, hmr.z >= 0.5);
+    let metallic = mr.x;
+    let roughness = mr.y;
     let n = normalize(in.world_normal);
     let v = normalize(scene.view_position - in.world_position);
     let f0 = mix(vec3f(0.04, 0.04, 0.04), base_color, metallic);
@@ -179,11 +187,14 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4f,
     @location(0) world_normal: vec3f,
     @location(1) world_position: vec3f,
+    @location(2) @interpolate(flat) uniform_slot: u32,
 }
 struct UniformsSlot {
     mvp: mat4x4f,
     model: mat4x4f,
-    _pad: array<vec4f, 8>,
+    host_base_color: vec4f,
+    host_metallic_roughness: vec4f,
+    _pad: array<vec4f, 6>,
 }
 struct GpuLight {
     position: vec3f,
@@ -257,6 +268,7 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
     out.clip_position = u.mvp * vec4f(in.position, 1.0);
     out.world_normal = (u.model * vec4f(in.normal, 0.0)).xyz;
     out.world_position = world_pos.xyz;
+    out.uniform_slot = instance_index;
     return out;
 }
 
@@ -267,9 +279,13 @@ struct PbrFragmentOutput {
 }
 @fragment
 fn fs_main(in: VertexOutput) -> PbrFragmentOutput {
-    let base_color = vec3f(0.8, 0.8, 0.8);
-    let metallic = 0.5;
-    let roughness = 0.5;
+    let slot = in.uniform_slot;
+    let hbc = uniforms[slot].host_base_color;
+    let base_color = select(vec3f(0.8, 0.8, 0.8), hbc.xyz, hbc.w >= 0.5);
+    let hmr = uniforms[slot].host_metallic_roughness;
+    let mr = select(vec2f(0.5, 0.5), hmr.xy, hmr.z >= 0.5);
+    let metallic = mr.x;
+    let roughness = mr.y;
     let n = normalize(in.world_normal);
     let v = normalize(scene.view_position - in.world_position);
     let f0 = mix(vec3f(0.04, 0.04, 0.04), base_color, metallic);

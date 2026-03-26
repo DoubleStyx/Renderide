@@ -9,8 +9,11 @@ use super::AssetId;
 pub struct ShaderAsset {
     /// Unique identifier for this shader.
     pub id: AssetId,
-    /// Optional WGSL source. Populated when shader_upload provides it.
+    /// Optional path or inline source string from the host `ShaderUpload.file` field.
     pub wgsl_source: Option<String>,
+    /// Unity ShaderLab logical name (`Shader "UI/Unlit"`) from parsed ShaderLab/WGSL text, file contents,
+    /// or an optional host hint when your IPC layer supplies one (see [`crate::shared::shader_upload_extras`]).
+    pub unity_shader_name: Option<String>,
 }
 
 impl Asset for ShaderAsset {

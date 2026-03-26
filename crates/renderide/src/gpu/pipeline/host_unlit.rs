@@ -4,12 +4,11 @@
 //! and [`RenderConfig::use_host_unlit_pilot`](crate::config::RenderConfig::use_host_unlit_pilot) is enabled.
 
 use bytemuck::{Pod, Zeroable};
-use nalgebra::Matrix4;
 use wgpu::util::DeviceExt;
 
 use super::super::mesh::{GpuMeshBuffers, VertexPosNormal};
 use super::builder;
-use super::core::{RenderPipeline, UniformData};
+use super::core::{NonSkinnedUniformUpload, RenderPipeline, UniformData};
 use super::ring_buffer::UniformRingBuffer;
 
 const HOST_UNLIT_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/host_unlit.wgsl"));
@@ -186,9 +185,9 @@ impl RenderPipeline for HostUnlitPipeline {
     fn upload_batch(
         &self,
         queue: &wgpu::Queue,
-        mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
+        draws: &[NonSkinnedUniformUpload],
         frame_index: u64,
     ) {
-        self.uniform_ring.upload(queue, mvp_models, frame_index);
+        self.uniform_ring.upload(queue, draws, frame_index);
     }
 }

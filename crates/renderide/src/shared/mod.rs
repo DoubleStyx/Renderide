@@ -7,7 +7,10 @@
 
 pub mod buffer;
 pub mod packing;
+pub mod shader_upload_extras;
 pub mod shared;
+
+pub use shader_upload_extras::unpack_appended_shader_logical_name;
 
 pub use packing::{
     default_entity_pool, enum_repr, memory_packable, memory_packer, memory_packer_entity_pool,

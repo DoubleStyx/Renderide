@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod scene_uniforms_tests {
-    use super::SceneUniforms;
+    use super::{SceneUniforms, Uniforms};
     use std::mem::size_of;
 
     /// WGSL `SceneUniforms` must stay byte-compatible with the PBR family shaders.
@@ -15,14 +15,32 @@ mod scene_uniforms_tests {
         );
         assert_eq!(size_of::<SceneUniforms>() % 16, 0);
     }
+
+    /// Non-skinned ring slot must match WGSL `UniformsSlot` / `uniform_ring.wgsl` (256 bytes).
+    #[test]
+    fn uniforms_slot_stride_is_256_bytes() {
+        assert_eq!(size_of::<Uniforms>(), 256);
+        assert_eq!(
+            size_of::<Uniforms>() as u64,
+            super::super::core::UNIFORM_ALIGNMENT
+        );
+    }
 }
 
-/// MVP + model matrix for non-skinned pipelines.
+/// MVP + model matrix for non-skinned pipelines, with optional host-driven PBR factors in the uniform ring.
+///
+/// Byte layout matches [`uniform_ring::UniformsSlot`](../../../../wgsl_modules/uniform_ring.wgsl) and all WGSL
+/// `UniformsSlot` copies in debug MRT and PBR sources (256 bytes per dynamic slot).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Uniforms {
     pub mvp: [[f32; 4]; 4],
     pub model: [[f32; 4]; 4],
+    /// RGB when `.w >= 0.5`; else fragment shaders use built-in `(0.8, 0.8, 0.8)`.
+    pub host_base_color: [f32; 4],
+    /// Metallic (`.x`) and roughness (`.y`) when `.z >= 0.5`.
+    pub host_metallic_roughness: [f32; 4],
+    pub _pad: [f32; 24],
 }
 
 /// Overlay stencil uniforms: MVP, model, and clip rect (x, y, width, height).

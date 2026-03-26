@@ -9,7 +9,7 @@ use nalgebra::Matrix4;
 
 use super::super::mesh::{GpuMeshBuffers, VertexPosNormal, VertexSkinned, VertexWithUv};
 use super::builder;
-use super::core::{RenderPipeline, UNIFORM_ALIGNMENT, UniformData};
+use super::core::{NonSkinnedUniformUpload, RenderPipeline, UNIFORM_ALIGNMENT, UniformData};
 use super::ring_buffer::{SkinnedUniformRingBuffer, UniformRingBuffer};
 use super::shaders::{
     NORMAL_DEBUG_MRT_SHADER_SRC, SKINNED_MRT_SHADER_SRC, UV_DEBUG_MRT_SHADER_SRC,
@@ -151,10 +151,10 @@ macro_rules! impl_non_skinned_mrt_pipeline {
             fn upload_batch(
                 &self,
                 queue: &wgpu::Queue,
-                mvp_models: &[(nalgebra::Matrix4<f32>, nalgebra::Matrix4<f32>)],
+                draws: &[NonSkinnedUniformUpload],
                 frame_index: u64,
             ) {
-                self.uniform_ring.upload(queue, mvp_models, frame_index);
+                self.uniform_ring.upload(queue, draws, frame_index);
             }
         }
     };

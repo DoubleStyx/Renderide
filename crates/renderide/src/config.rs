@@ -380,6 +380,8 @@ pub struct RenderConfig {
     pub native_ui_overlay_stencil_pipelines: bool,
     /// Trace logs for native UI routing decisions (can be noisy).
     pub log_native_ui_routing: bool,
+    /// When true, accumulate per-frame counts for native UI routing and PBR UI-vert fallback ([`crate::session::native_ui_routing_metrics`]).
+    pub native_ui_routing_metrics: bool,
     /// When true and global PBR is on, UI-capable meshes that fail native UI routing use
     /// [`crate::gpu::PipelineVariant::Pbr`]. When false (default), they keep the non-PBR fallback
     /// from [`crate::gpu::ShaderKey::fallback_variant`] (e.g. NormalDebug on overlay) so UI is not
@@ -391,6 +393,18 @@ pub struct RenderConfig {
     pub native_ui_force_shader_hint_registration: bool,
     /// Default native UI surface blend when `_SrcBlend` / `_DstBlend` are not mapped or missing.
     pub native_ui_default_surface_blend: NativeUiSurfaceBlend,
+    /// When true, non-skinned [`crate::gpu::PipelineVariant::Pbr`] family shaders read `_Color` /
+    /// `_Metallic` / `_Glossiness` from [`crate::assets::MaterialPropertyStore`] into the uniform ring
+    /// (see [`crate::gpu::pipeline::uniforms::Uniforms`]). Disable to always use stock gray / 0.5 factors.
+    pub pbr_bind_host_material_properties: bool,
+    /// Host property id for linear `_Color` (`set_float4`); `-1` disables. Set from
+    /// [`crate::assets::material_property_host`] when the host requests shader property names.
+    pub pbr_host_color_property_id: i32,
+    /// Host property id for `_Metallic` (`set_float`); `-1` disables.
+    pub pbr_host_metallic_property_id: i32,
+    /// Host property id for Unity-style `_Glossiness` / smoothness (`set_float`); converted to
+    /// perceptual roughness as `1.0 - clamp(gloss, 0, 1)`. `-1` disables.
+    pub pbr_host_smoothness_property_id: i32,
     /// When true, mesh renderers with multiple material slots may emit one draw per submesh with
     /// the matching material (see [`crate::session::collect::filter_and_collect_drawables`]).
     pub multi_material_submeshes: bool,
@@ -849,6 +863,18 @@ fn apply_render_config_ini_entry(config: &mut RenderConfig, section: &str, key: 
                 );
             }
         }
+        ("rendering", "native_ui_routing_metrics") => {
+            if let Some(v) = parse_bool(value) {
+                config.native_ui_routing_metrics = v;
+                eprintln!("[renderide] ini: native_ui_routing_metrics = {}", v);
+                logger::info!("ini: native_ui_routing_metrics = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: native_ui_routing_metrics parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
         ("rendering", "native_ui_uivert_pbr_fallback") => {
             if let Some(v) = parse_bool(value) {
                 config.native_ui_uivert_pbr_fallback = v;
@@ -884,6 +910,18 @@ fn apply_render_config_ini_entry(config: &mut RenderConfig, section: &str, key: 
             } else {
                 eprintln!(
                     "[renderide] ini: native_ui_default_surface_blend parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
+        ("rendering", "pbr_bind_host_material_properties") => {
+            if let Some(v) = parse_bool(value) {
+                config.pbr_bind_host_material_properties = v;
+                eprintln!("[renderide] ini: pbr_bind_host_material_properties = {}", v);
+                logger::info!("ini: pbr_bind_host_material_properties = {}", v);
+            } else {
+                eprintln!(
+                    "[renderide] ini: pbr_bind_host_material_properties parse error (raw = {:?})",
                     value
                 );
             }
@@ -973,9 +1011,11 @@ impl RenderConfig {
     ///   `parallel_mesh_draw_prep_batches`, `log_collect_draw_batches_timing` (bools); `rtao_enabled`,
     ///   `ray_traced_shadows_enabled` (bools); `rtao_strength`, `ao_radius` (floats); `frustum_culling` (bool);
     ///   `use_native_ui_wgsl` (bool); `native_ui_unlit_shader_id`, `native_ui_text_unlit_shader_id` (ints, `-1` off);
-    ///   `native_ui_world_space`, `native_ui_overlay_stencil_pipelines`, `log_native_ui_routing` (bools);
+    ///   `native_ui_world_space`, `native_ui_overlay_stencil_pipelines`, `log_native_ui_routing`,
+    ///   `native_ui_routing_metrics` (bools);
     ///   `native_ui_uivert_pbr_fallback`, `native_ui_force_shader_hint_registration` (bools);
     ///   `native_ui_default_surface_blend` (`alpha` / `additive` / …);
+    ///   `pbr_bind_host_material_properties` (bool);
     ///   `multi_material_submeshes`, `log_multi_material_submesh_mismatch` (bools).
     /// - **`[native_ui_unlit_properties]`** / **`[native_ui_text_unlit_properties]`** — integer material
     ///   property ids for native UI WGSL (see [`crate::assets::ui_material_contract`]). Host
@@ -1122,6 +1162,9 @@ impl RenderConfig {
         if std::env::var("RENDERIDE_LOG_NATIVE_UI_ROUTING").as_deref() == Ok("1") {
             config.log_native_ui_routing = true;
         }
+        if std::env::var("RENDERIDE_NATIVE_UI_ROUTING_METRICS").as_deref() == Ok("1") {
+            config.native_ui_routing_metrics = true;
+        }
         if let Ok(s) = std::env::var("RENDERIDE_NATIVE_UI_UNLIT_SHADER_ID")
             && let Ok(v) = s.parse::<i32>()
         {
@@ -1140,6 +1183,9 @@ impl RenderConfig {
         if std::env::var("RENDERIDE_NATIVE_UI_FORCE_SHADER_HINT_REGISTRATION").as_deref() == Ok("1")
         {
             config.native_ui_force_shader_hint_registration = true;
+        }
+        if std::env::var("RENDERIDE_PBR_BIND_HOST_MATERIAL").as_deref() == Ok("0") {
+            config.pbr_bind_host_material_properties = false;
         }
         config
     }
@@ -1185,9 +1231,14 @@ impl Default for RenderConfig {
             native_ui_world_space: false,
             native_ui_overlay_stencil_pipelines: false,
             log_native_ui_routing: false,
+            native_ui_routing_metrics: false,
             native_ui_uivert_pbr_fallback: false,
             native_ui_force_shader_hint_registration: false,
             native_ui_default_surface_blend: NativeUiSurfaceBlend::Alpha,
+            pbr_bind_host_material_properties: true,
+            pbr_host_color_property_id: -1,
+            pbr_host_metallic_property_id: -1,
+            pbr_host_smoothness_property_id: -1,
             multi_material_submeshes: false,
             log_multi_material_submesh_mismatch: false,
         }

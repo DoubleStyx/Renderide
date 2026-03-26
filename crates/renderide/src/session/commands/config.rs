@@ -70,6 +70,7 @@ impl CommandHandler for ConfigCommandHandler {
                         .render_config
                         .native_ui_overlay_stencil_pipelines,
                     log_native_ui_routing: ctx.render_config.log_native_ui_routing,
+                    native_ui_routing_metrics: ctx.render_config.native_ui_routing_metrics,
                     native_ui_uivert_pbr_fallback: ctx.render_config.native_ui_uivert_pbr_fallback,
                     native_ui_force_shader_hint_registration: ctx
                         .render_config
@@ -77,6 +78,14 @@ impl CommandHandler for ConfigCommandHandler {
                     native_ui_default_surface_blend: ctx
                         .render_config
                         .native_ui_default_surface_blend,
+                    pbr_bind_host_material_properties: ctx
+                        .render_config
+                        .pbr_bind_host_material_properties,
+                    pbr_host_color_property_id: ctx.render_config.pbr_host_color_property_id,
+                    pbr_host_metallic_property_id: ctx.render_config.pbr_host_metallic_property_id,
+                    pbr_host_smoothness_property_id: ctx
+                        .render_config
+                        .pbr_host_smoothness_property_id,
                     multi_material_submeshes: ctx.render_config.multi_material_submeshes,
                     log_multi_material_submesh_mismatch: ctx
                         .render_config

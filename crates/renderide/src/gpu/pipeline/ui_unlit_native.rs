@@ -15,7 +15,7 @@ use crate::assets::{
 
 use super::super::mesh::{GpuMeshBuffers, VertexUiCanvas};
 use super::builder;
-use super::core::RenderPipeline;
+use super::core::{NonSkinnedUniformUpload, RenderPipeline};
 use super::ring_buffer::UniformRingBuffer;
 
 const UI_UNLIT_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/ui_unlit.wgsl"));
@@ -425,10 +425,10 @@ impl RenderPipeline for UiUnlitNativePipeline {
     fn upload_batch(
         &self,
         queue: &wgpu::Queue,
-        mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
+        draws: &[NonSkinnedUniformUpload],
         frame_index: u64,
     ) {
-        self.uniform_ring.upload(queue, mvp_models, frame_index);
+        self.uniform_ring.upload(queue, draws, frame_index);
     }
 }
 

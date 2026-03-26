@@ -17,6 +17,16 @@ use crate::scene::{Drawable, MeshMaterialSlot, Scene, SceneGraph, render_transfo
 use crate::shared::{LayerType, VertexAttributeType};
 use crate::stencil::{StencilOperation, StencilState};
 
+use super::native_ui_routing_metrics::{
+    NativeUiRoutedFamily, NativeUiSkipKind, record_native_ui_routed, record_native_ui_skip,
+    record_pbr_uivert_fallback,
+};
+
+/// When true with [`RenderConfig::log_native_ui_routing`], emit trace lines from this module.
+fn should_log_native_ui_routing(rc: &RenderConfig, is_overlay: bool) -> bool {
+    rc.log_native_ui_routing && (is_overlay || rc.native_ui_world_space)
+}
+
 /// Returns true when the mesh has UV0 and vertex color (legacy strict UI canvas check).
 ///
 /// Only compiled for unit tests; production routing uses [`mesh_has_native_ui_vertices`].
@@ -49,7 +59,23 @@ pub(crate) fn mesh_has_native_ui_vertices(
     uv.map(|(_, s, _)| s >= 4).unwrap_or(false)
 }
 
-/// After [`ShaderKey::effective_variant`], maps overlay (and optionally world) draws to native UI pipelines when allowed.
+/// Strangler Fig routing: after [`ShaderKey::effective_variant`], maps draws to native WGSL `UI_Unlit` / `UI_TextUnlit` when allowed.
+///
+/// # Routing contract (all must pass for native UI)
+///
+/// 1. [`RenderConfig::use_native_ui_wgsl`] is true.
+/// 2. [`RenderConfig::shader_debug_override`] is not [`ShaderDebugOverride::ForceLegacyGlobalShading`].
+/// 3. Drawable is not skinned (`is_skinned == false`).
+/// 4. `material_block_id >= 0` (material property block selected).
+/// 5. Surface is allowed: `is_overlay` **or** [`RenderConfig::native_ui_world_space`].
+/// 6. World-space rule: if not overlay, stencil state must be absent (stencil + world is not routed here).
+/// 7. If stencil is present, [`RenderConfig::native_ui_overlay_stencil_pipelines`] must be true.
+/// 8. Host material store exposes `set_shader` for this block (`host_shader_asset_id`).
+/// 9. [`mesh_has_native_ui_vertices`]: mesh declares UV0 (4+ bytes).
+/// 10. [`resolve_native_ui_shader_family`] yields [`NativeUiShaderFamily::UiUnlit`] or [`NativeUiShaderFamily::UiTextUnlit`]
+///     (INI shader ids, [`crate::assets::ShaderAsset::unity_shader_name`], or upload path hint).
+///
+/// Counters: [`crate::session::native_ui_routing_metrics`] when [`RenderConfig::native_ui_routing_metrics`] is on.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_native_ui_pipeline_variant(
     is_overlay: bool,
@@ -62,29 +88,43 @@ pub(crate) fn apply_native_ui_pipeline_variant(
     current: PipelineVariant,
     asset_registry: &AssetRegistry,
 ) -> PipelineVariant {
-    if !render_config.use_native_ui_wgsl
-        || matches!(
-            render_config.shader_debug_override,
-            ShaderDebugOverride::ForceLegacyGlobalShading
-        )
-        || is_skinned
-        || material_block_id < 0
-    {
+    let m = render_config.native_ui_routing_metrics;
+    if !render_config.use_native_ui_wgsl {
+        record_native_ui_skip(m, NativeUiSkipKind::NativeUiWgslOff);
+        return current;
+    }
+    if matches!(
+        render_config.shader_debug_override,
+        ShaderDebugOverride::ForceLegacyGlobalShading
+    ) {
+        record_native_ui_skip(m, NativeUiSkipKind::ShaderDebugForceLegacy);
+        return current;
+    }
+    if is_skinned {
+        record_native_ui_skip(m, NativeUiSkipKind::Skinned);
+        return current;
+    }
+    if material_block_id < 0 {
+        record_native_ui_skip(m, NativeUiSkipKind::BadMaterialBlock);
         return current;
     }
     let allow_surface = is_overlay || render_config.native_ui_world_space;
     if !allow_surface {
+        record_native_ui_skip(m, NativeUiSkipKind::NoSurface);
         return current;
     }
     if !is_overlay && stencil_state.is_some() {
+        record_native_ui_skip(m, NativeUiSkipKind::StencilOnWorldMesh);
         return current;
     }
     let has_stencil = stencil_state.is_some();
     if has_stencil && !render_config.native_ui_overlay_stencil_pipelines {
+        record_native_ui_skip(m, NativeUiSkipKind::StencilPipelinesOff);
         return current;
     }
     let Some(shader_id) = host_shader_asset_id else {
-        if render_config.log_native_ui_routing && is_overlay {
+        record_native_ui_skip(m, NativeUiSkipKind::NoHostShader);
+        if should_log_native_ui_routing(render_config, is_overlay) {
             logger::trace!(
                 "native_ui: skip (no set_shader) material_block={} mesh={}",
                 material_block_id,
@@ -94,7 +134,8 @@ pub(crate) fn apply_native_ui_pipeline_variant(
         return current;
     };
     if !mesh_has_native_ui_vertices(asset_registry, mesh_asset_id) {
-        if render_config.log_native_ui_routing && is_overlay {
+        record_native_ui_skip(m, NativeUiSkipKind::MeshNoUv0);
+        if should_log_native_ui_routing(render_config, is_overlay) {
             logger::trace!(
                 "native_ui: skip (mesh missing uv0) shader_id={} material_block={} mesh={}",
                 shader_id,
@@ -110,7 +151,8 @@ pub(crate) fn apply_native_ui_pipeline_variant(
         render_config.native_ui_text_unlit_shader_id,
         asset_registry,
     ) else {
-        if render_config.log_native_ui_routing && is_overlay {
+        record_native_ui_skip(m, NativeUiSkipKind::UnrecognizedShader);
+        if should_log_native_ui_routing(render_config, is_overlay) {
             logger::trace!(
                 "native_ui: skip (shader not recognized as UI) shader_id={} material_block={}",
                 shader_id,
@@ -122,10 +164,12 @@ pub(crate) fn apply_native_ui_pipeline_variant(
     match family {
         NativeUiShaderFamily::UiUnlit => {
             if has_stencil {
+                record_native_ui_routed(m, NativeUiRoutedFamily::UiUnlitStencil);
                 PipelineVariant::NativeUiUnlitStencil {
                     material_id: material_block_id,
                 }
             } else {
+                record_native_ui_routed(m, NativeUiRoutedFamily::UiUnlit);
                 PipelineVariant::NativeUiUnlit {
                     material_id: material_block_id,
                 }
@@ -133,10 +177,12 @@ pub(crate) fn apply_native_ui_pipeline_variant(
         }
         NativeUiShaderFamily::UiTextUnlit => {
             if has_stencil {
+                record_native_ui_routed(m, NativeUiRoutedFamily::UiTextUnlitStencil);
                 PipelineVariant::NativeUiTextUnlitStencil {
                     material_id: material_block_id,
                 }
             } else {
+                record_native_ui_routed(m, NativeUiRoutedFamily::UiTextUnlit);
                 PipelineVariant::NativeUiTextUnlit {
                     material_id: material_block_id,
                 }
@@ -145,9 +191,15 @@ pub(crate) fn apply_native_ui_pipeline_variant(
     }
 }
 
-/// When native UI WGSL is on and the mesh has UI-capable vertices but the shader is not mapped to
-/// native UI, optionally force [`PipelineVariant::Pbr`] (legacy). By default keeps
-/// `fallback_variant` so overlay UI stays on unlit debug-style paths instead of untextured PBR.
+/// Coexistence branch: when native UI WGSL is on, the mesh has UI-capable vertices (UV0), but routing did not
+/// select a native UI variant, optionally replace with [`PipelineVariant::Pbr`].
+///
+/// Requires [`RenderConfig::native_ui_uivert_pbr_fallback`], global PBR, non-skinned, and no stencil. Otherwise
+/// keeps `fallback_variant` (e.g. overlay debug unlit) so canvases are not forced through untextured PBR.
+///
+/// Stock PBR may still read host `_Color` / `_Metallic` / `_Glossiness` into the uniform ring when
+/// [`RenderConfig::pbr_bind_host_material_properties`] is on (no arbitrary albedo texture bind yet).
+/// See [`crate::gpu::pipeline::pbr_host_material_plan::GpuPbrHostMaterialPlan`].
 pub(crate) fn apply_ui_mesh_pbr_fallback_for_non_native_shader(
     render_config: &RenderConfig,
     asset_registry: &AssetRegistry,
@@ -175,6 +227,7 @@ pub(crate) fn apply_ui_mesh_pbr_fallback_for_non_native_shader(
         return pipeline_variant;
     }
     if render_config.native_ui_uivert_pbr_fallback {
+        record_pbr_uivert_fallback(render_config.native_ui_routing_metrics);
         PipelineVariant::Pbr
     } else {
         fallback_variant
@@ -603,10 +656,12 @@ mod tests {
     use crate::render::batch::DrawEntry;
     use crate::scene::MeshMaterialSlot;
     use crate::scene::{Drawable, Scene};
+    use crate::session::native_ui_routing_metrics::NativeUiRoutingFrameMetrics;
     use crate::shared::{
         IndexBufferFormat, RenderBoundingBox, ShadowCastMode, VertexAttributeDescriptor,
         VertexAttributeFormat, VertexAttributeType,
     };
+    use crate::stencil::StencilState;
     use glam::Mat4;
 
     fn make_scene(space_id: i32, is_overlay: bool) -> Scene {
@@ -866,5 +921,101 @@ mod tests {
             PipelineVariant::NormalDebug,
         );
         assert_eq!(v, PipelineVariant::Pbr);
+    }
+
+    #[test]
+    fn native_ui_routing_metrics_count_skip_when_wgsl_off() {
+        let reg = AssetRegistry::new();
+        let rc = RenderConfig {
+            use_native_ui_wgsl: false,
+            native_ui_routing_metrics: true,
+            ..Default::default()
+        };
+        let _ = apply_native_ui_pipeline_variant(
+            true,
+            false,
+            None,
+            &rc,
+            Some(1),
+            1,
+            1,
+            PipelineVariant::NormalDebug,
+            &reg,
+        );
+        let m = NativeUiRoutingFrameMetrics::snapshot_and_reset();
+        assert_eq!(m.skip_native_ui_wgsl_off, 1);
+    }
+
+    #[test]
+    fn apply_native_ui_overlay_stencil_selects_stencil_variant() {
+        let mut reg = AssetRegistry::new();
+        reg.insert_mesh_for_tests(mesh_with_uv0(5));
+        let rc = RenderConfig {
+            use_native_ui_wgsl: true,
+            native_ui_unlit_shader_id: 42,
+            native_ui_overlay_stencil_pipelines: true,
+            ..Default::default()
+        };
+        let st = StencilState::default();
+        let v = apply_native_ui_pipeline_variant(
+            true,
+            false,
+            Some(&st),
+            &rc,
+            Some(42),
+            3,
+            5,
+            PipelineVariant::NormalDebug,
+            &reg,
+        );
+        assert_eq!(v, PipelineVariant::NativeUiUnlitStencil { material_id: 3 });
+    }
+
+    #[test]
+    fn apply_native_ui_world_space_routes_main_pass_canvas() {
+        let mut reg = AssetRegistry::new();
+        reg.insert_mesh_for_tests(mesh_with_uv0(5));
+        let rc = RenderConfig {
+            use_native_ui_wgsl: true,
+            native_ui_unlit_shader_id: 42,
+            native_ui_world_space: true,
+            ..Default::default()
+        };
+        let v = apply_native_ui_pipeline_variant(
+            false,
+            false,
+            None,
+            &rc,
+            Some(42),
+            3,
+            5,
+            PipelineVariant::NormalDebug,
+            &reg,
+        );
+        assert_eq!(v, PipelineVariant::NativeUiUnlit { material_id: 3 });
+    }
+
+    #[test]
+    fn apply_native_ui_unrecognized_host_shader_keeps_variant() {
+        let mut reg = AssetRegistry::new();
+        reg.insert_mesh_for_tests(mesh_with_uv0(5));
+        let rc = RenderConfig {
+            use_native_ui_wgsl: true,
+            native_ui_unlit_shader_id: 42,
+            native_ui_world_space: true,
+            ..Default::default()
+        };
+        let v = apply_native_ui_pipeline_variant(
+            false,
+            false,
+            None,
+            &rc,
+            Some(99),
+            3,
+            5,
+            PipelineVariant::NormalDebug,
+            &reg,
+        );
+        assert_eq!(v, PipelineVariant::NormalDebug);
     }
 }

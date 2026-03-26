@@ -5,8 +5,8 @@ use std::sync::Mutex;
 use nalgebra::Matrix4;
 
 use super::core::{
-    MAX_BLENDSHAPE_WEIGHTS, NUM_FRAMES_IN_FLIGHT, SKINNED_SLOT_STRIDE, SKINNED_SLOTS_PER_FRAME,
-    SLOTS_PER_FRAME, UNIFORM_ALIGNMENT, matrix4_to_wgsl_column_major,
+    MAX_BLENDSHAPE_WEIGHTS, NUM_FRAMES_IN_FLIGHT, NonSkinnedUniformUpload, SKINNED_SLOT_STRIDE,
+    SKINNED_SLOTS_PER_FRAME, SLOTS_PER_FRAME, UNIFORM_ALIGNMENT, matrix4_to_wgsl_column_major,
 };
 use super::uniforms::{OverlayStencilUniforms, SkinnedUniforms, Uniforms};
 
@@ -37,28 +37,26 @@ impl UniformRingBuffer {
     }
 
     /// Uploads uniforms to the ring buffer, chunking if needed. No limit panic.
-    pub fn upload(
-        &self,
-        queue: &wgpu::Queue,
-        mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
-        frame_index: u64,
-    ) {
-        if mvp_models.is_empty() {
+    pub fn upload(&self, queue: &wgpu::Queue, draws: &[NonSkinnedUniformUpload], frame_index: u64) {
+        if draws.is_empty() {
             return;
         }
         let uniform_size = std::mem::size_of::<Uniforms>();
         let region_base = (frame_index as usize % NUM_FRAMES_IN_FLIGHT) * SLOTS_PER_FRAME;
         let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
-        for (chunk_idx, chunk) in mvp_models.chunks(SLOTS_PER_FRAME).enumerate() {
+        for (chunk_idx, chunk) in draws.chunks(SLOTS_PER_FRAME).enumerate() {
             let region = (region_base + chunk_idx) % NUM_FRAMES_IN_FLIGHT;
             let buffer_offset = (region * SLOTS_PER_FRAME) as u64 * UNIFORM_ALIGNMENT;
             let need_len = (chunk.len() as u64 * UNIFORM_ALIGNMENT) as usize;
             scratch.resize(need_len, 0);
             let aligned = &mut scratch[..need_len];
-            for (i, (mvp, model)) in chunk.iter().enumerate() {
+            for (i, d) in chunk.iter().enumerate() {
                 let u = Uniforms {
-                    mvp: matrix4_to_wgsl_column_major(mvp),
-                    model: matrix4_to_wgsl_column_major(model),
+                    mvp: matrix4_to_wgsl_column_major(&d.mvp),
+                    model: matrix4_to_wgsl_column_major(&d.model),
+                    host_base_color: d.host_base_color,
+                    host_metallic_roughness: d.host_metallic_roughness,
+                    _pad: [0.0f32; 24],
                 };
                 let offset = (i as u64 * UNIFORM_ALIGNMENT) as usize;
                 let bytes: &[u8] = bytemuck::bytes_of(&u);

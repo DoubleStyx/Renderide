@@ -19,7 +19,7 @@ pub use accel::{
 pub use frame_scheduler::GpuFrameScheduler;
 pub use mesh::{GpuMeshBuffers, compute_vertex_stride_from_mesh, create_mesh_buffers};
 pub use native_ui_bind_cache::NativeUiMaterialBindCache;
-pub use pipeline::{MAX_INSTANCE_RUN, RenderPipeline, UniformData};
+pub use pipeline::{MAX_INSTANCE_RUN, NonSkinnedUniformUpload, RenderPipeline, UniformData};
 pub use registry::{PipelineKey, PipelineManager, PipelineRegistry, PipelineVariant};
 pub use shader_key::ShaderKey;
 pub use state::{

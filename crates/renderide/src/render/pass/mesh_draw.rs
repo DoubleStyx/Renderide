@@ -8,7 +8,7 @@ use nalgebra::Matrix4;
 
 use super::material_draw_context::MaterialDrawContext;
 use super::mesh_prep::MeshDrawPrepStats;
-use crate::assets::{MaterialPropertyStore, texture2d_asset_id_from_packed};
+use crate::assets::{MaterialPropertyStore, MaterialPropertyValue, texture2d_asset_id_from_packed};
 use crate::config::RenderConfig;
 use crate::gpu::pipeline::{
     RtShadowSceneBind, RtShadowUniforms, SceneUniforms, UiTextUnlitNativePipeline,
@@ -16,8 +16,8 @@ use crate::gpu::pipeline::{
 };
 use crate::gpu::state::ensure_texture2d_gpu_view;
 use crate::gpu::{
-    GpuMeshBuffers, NativeUiMaterialBindCache, PipelineKey, PipelineManager, PipelineVariant,
-    RenderPipeline,
+    GpuMeshBuffers, NativeUiMaterialBindCache, NonSkinnedUniformUpload, PipelineKey,
+    PipelineManager, PipelineVariant, RenderPipeline,
 };
 use crate::render::SpaceDrawBatch;
 use crate::render::visibility::view_proj_glam_for_batch;
@@ -61,6 +61,8 @@ pub(crate) struct BatchedDraw {
     pub(super) mesh_asset_id: i32,
     pub(super) mvp: Matrix4<f32>,
     pub(super) model: Matrix4<f32>,
+    /// Host material asset id (submesh pairing after multi-material fan-out).
+    pub(super) material_asset_id: i32,
     pub(super) pipeline_variant: PipelineVariant,
     pub(super) is_overlay: bool,
     /// Per-draw stencil for GraphicsChunk masking. When `Some`, overlay uses stencil pipeline.
@@ -86,6 +88,50 @@ pub(crate) struct SkinnedBatchedDraw {
     pub(super) stencil_state: Option<crate::stencil::StencilState>,
     /// Per-draw index range when splitting multi-material submeshes.
     pub(super) submesh_index_range: Option<(u32, u32)>,
+}
+
+/// Writes host [`MaterialPropertyStore`] channels into a non-skinned uniform ring slot for PBR draws.
+fn fill_pbr_host_uniform_extras(
+    upload: &mut NonSkinnedUniformUpload,
+    store: &MaterialPropertyStore,
+    rc: &RenderConfig,
+    draw: &BatchedDraw,
+) {
+    if !rc.pbr_bind_host_material_properties {
+        return;
+    }
+    let lookup = MaterialDrawContext::for_non_skinned_draw(
+        draw.material_asset_id,
+        draw.mesh_renderer_property_block_slot0_id,
+    )
+    .property_lookup;
+    if rc.pbr_host_color_property_id >= 0
+        && let Some(MaterialPropertyValue::Float4(c)) =
+            store.get_merged(lookup, rc.pbr_host_color_property_id)
+    {
+        upload.host_base_color = [c[0], c[1], c[2], 1.0];
+    }
+    let mut mr_active = false;
+    let mut metallic = 0.5_f32;
+    let mut roughness = 0.5_f32;
+    if rc.pbr_host_metallic_property_id >= 0
+        && let Some(MaterialPropertyValue::Float(m)) =
+            store.get_merged(lookup, rc.pbr_host_metallic_property_id)
+    {
+        metallic = m.clamp(0.0, 1.0);
+        mr_active = true;
+    }
+    if rc.pbr_host_smoothness_property_id >= 0
+        && let Some(MaterialPropertyValue::Float(g)) =
+            store.get_merged(lookup, rc.pbr_host_smoothness_property_id)
+    {
+        let g = g.clamp(0.0, 1.0);
+        roughness = 1.0 - g;
+        mr_active = true;
+    }
+    if mr_active {
+        upload.host_metallic_roughness = [metallic, roughness, 1.0, 0.0];
+    }
 }
 
 /// Cache key for skinned bind groups.
@@ -537,6 +583,7 @@ fn collect_mesh_draws_for_batch(
             mesh_asset_id: d.mesh_asset_id,
             mvp: model_mvp,
             model: matrix_glam_to_na(d.model_matrix),
+            material_asset_id: d.material_id,
             pipeline_variant: d.pipeline_variant,
             is_overlay: batch.is_overlay,
             stencil_state: d.stencil_state,
@@ -983,8 +1030,28 @@ pub(super) fn record_non_skinned_draws(
                 .collect();
             pipeline.upload_batch_overlay(params.queue, &items, params.frame_index);
         } else {
-            let mvp_models: Vec<_> = group.iter().map(|d| (d.mvp, d.model)).collect();
-            pipeline.upload_batch(params.queue, &mvp_models, params.frame_index);
+            let draws_upload: Vec<NonSkinnedUniformUpload> = group
+                .iter()
+                .map(|d| {
+                    let mut u = NonSkinnedUniformUpload::new(d.mvp, d.model);
+                    if matches!(
+                        pipeline_variant,
+                        PipelineVariant::Pbr
+                            | PipelineVariant::PbrMRT
+                            | PipelineVariant::PbrRayQuery
+                            | PipelineVariant::PbrMRTRayQuery
+                    ) {
+                        fill_pbr_host_uniform_extras(
+                            &mut u,
+                            params.material_property_store,
+                            params.render_config,
+                            d,
+                        );
+                    }
+                    u
+                })
+                .collect();
+            pipeline.upload_batch(params.queue, &draws_upload, params.frame_index);
         }
 
         let is_stencil_pipeline = matches!(
@@ -1163,7 +1230,9 @@ pub(super) fn record_non_skinned_draws(
                                     .and_then(|id| params.texture2d_gpu.get(&id).map(|(_, v)| v));
                                 let main_key = main_id.unwrap_or(0);
                                 let mask_key = mask_id.unwrap_or(0);
-                                if params.render_config.log_native_ui_routing {
+                                if params.render_config.log_native_ui_routing
+                                    && !params.render_config.native_ui_routing_metrics
+                                {
                                     logger::trace!(
                                         "native_ui: ui_unlit bind material_block={} main_tex_id={:?} mask_tex_id={:?} main_view_ok={} mask_view_ok={}",
                                         material_id,
@@ -1224,7 +1293,9 @@ pub(super) fn record_non_skinned_draws(
                                 let font_view = font_id
                                     .and_then(|id| params.texture2d_gpu.get(&id).map(|(_, v)| v));
                                 let font_key = font_id.unwrap_or(0);
-                                if params.render_config.log_native_ui_routing {
+                                if params.render_config.log_native_ui_routing
+                                    && !params.render_config.native_ui_routing_metrics
+                                {
                                     logger::trace!(
                                         "native_ui: ui_text_unlit bind material_block={} font_atlas_id={:?} font_view_ok={}",
                                         material_id,
@@ -1271,8 +1342,38 @@ pub(super) fn record_non_skinned_draws(
 
 #[cfg(test)]
 mod tests {
-    use super::{mesh_pipeline_variant_for_mrt, overlay_pipeline_variant_for_orthographic};
-    use crate::gpu::PipelineVariant;
+    use super::{
+        BatchedDraw, mesh_pipeline_variant_for_mrt, overlay_pipeline_variant_for_orthographic,
+    };
+    use crate::assets::{MaterialPropertyStore, MaterialPropertyValue};
+    use crate::config::RenderConfig;
+    use crate::gpu::{NonSkinnedUniformUpload, PipelineVariant};
+    use nalgebra::Matrix4;
+
+    #[test]
+    fn fill_pbr_host_uniform_reads_merged_color() {
+        let mut store = MaterialPropertyStore::new();
+        store.set(10, 5, MaterialPropertyValue::Float4([0.2, 0.4, 0.6, 1.0]));
+        let rc = RenderConfig {
+            pbr_host_color_property_id: 5,
+            ..RenderConfig::default()
+        };
+        let draw = BatchedDraw {
+            mesh_asset_id: 1,
+            mvp: Matrix4::identity(),
+            model: Matrix4::identity(),
+            material_asset_id: 10,
+            pipeline_variant: PipelineVariant::Pbr,
+            is_overlay: false,
+            stencil_state: None,
+            mesh_renderer_property_block_slot0_id: None,
+            submesh_index_range: None,
+        };
+        let mut u = NonSkinnedUniformUpload::new(draw.mvp, draw.model);
+        super::fill_pbr_host_uniform_extras(&mut u, &store, &rc, &draw);
+        assert!((u.host_base_color[0] - 0.2).abs() < 1e-5);
+        assert!((u.host_base_color[3] - 1.0).abs() < 1e-5);
+    }
 
     #[test]
     fn overlay_pipeline_variant_orthographic_maps_normal_debug() {

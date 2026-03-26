@@ -6,11 +6,9 @@
 
 use std::mem::size_of;
 
-use nalgebra::Matrix4;
-
 use super::super::mesh::{GpuMeshBuffers, VertexPosNormal};
 use super::builder;
-use super::core::{RenderPipeline, UniformData};
+use super::core::{NonSkinnedUniformUpload, RenderPipeline, UniformData};
 use super::pbr::PbrPipeline;
 use super::ring_buffer::UniformRingBuffer;
 use super::shaders::PBR_MRT_SHADER_SRC;
@@ -197,10 +195,10 @@ impl RenderPipeline for PbrMRTPipeline {
     fn upload_batch(
         &self,
         queue: &wgpu::Queue,
-        mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
+        draws: &[NonSkinnedUniformUpload],
         frame_index: u64,
     ) {
-        self.uniform_ring.upload(queue, mvp_models, frame_index);
+        self.uniform_ring.upload(queue, draws, frame_index);
     }
 
     fn write_scene_uniform(&self, queue: &wgpu::Queue, scene: &[u8]) {

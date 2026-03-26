@@ -636,6 +636,9 @@ impl RenderideApp {
                 adapter_info: gpu.adapter_info.clone(),
                 gpu_allocator,
                 host,
+                native_ui_routing_metrics: rc.native_ui_routing_metrics.then(
+                    crate::session::native_ui_routing_metrics::NativeUiRoutingFrameMetrics::snapshot_and_reset,
+                ),
             };
             if let Some(debug_hud) = self.debug_hud.as_mut() {
                 debug_hud.update(live_sample);

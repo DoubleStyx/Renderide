@@ -7,6 +7,7 @@ use super::manager::AssetManager;
 use super::material_properties::MaterialPropertyStore;
 use super::mesh::{self, MeshAsset, compute_index_count, index_bytes_per_element};
 use super::shader::ShaderAsset;
+use super::shader_logical_name::resolve_logical_shader_name_from_upload;
 use super::texture::{TextureAsset, decode_texture_mip0_to_rgba8};
 
 /// Stores assets by handle using generic per-type managers.
@@ -278,13 +279,15 @@ impl AssetRegistry {
         self.unload_count += 1;
     }
 
-    /// Handles a shader upload. Stores id and optional WGSL source from [`ShaderUpload::file`](crate::shared::ShaderUpload::file).
+    /// Handles a shader upload. Stores id, optional `file` path or source, and resolved Unity shader name.
     /// Returns `(success, existed_before)`.
     pub fn handle_shader_upload(&mut self, data: ShaderUpload) -> (bool, bool) {
         let existed_before = self.shaders.contains_key(data.asset_id);
+        let unity_shader_name = resolve_logical_shader_name_from_upload(&data);
         let asset = ShaderAsset {
             id: data.asset_id,
             wgsl_source: data.file,
+            unity_shader_name,
         };
         self.shaders.insert(asset);
         self.upload_count += 1;

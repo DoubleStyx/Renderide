@@ -31,7 +31,9 @@ struct VertexOutput {
 struct UniformsSlot {
     mvp: mat4x4f,
     model: mat4x4f,
-    _pad: array<vec4f, 8>,
+    host_base_color: vec4f,
+    host_metallic_roughness: vec4f,
+    _pad: array<vec4f, 6>,
 }
 struct MrtGbufferFrame {
     view_position: vec3f,
@@ -84,7 +86,9 @@ struct VertexOutput {
 struct UniformsSlot {
     mvp: mat4x4f,
     model: mat4x4f,
-    _pad: array<vec4f, 8>,
+    host_base_color: vec4f,
+    host_metallic_roughness: vec4f,
+    _pad: array<vec4f, 6>,
 }
 struct MrtGbufferFrame {
     view_position: vec3f,

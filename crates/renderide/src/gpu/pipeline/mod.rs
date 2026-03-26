@@ -17,6 +17,7 @@ mod normal_debug;
 mod overlay_stencil;
 mod overlay_stencil_skinned;
 mod pbr;
+pub mod pbr_host_material_plan;
 mod pbr_mrt;
 mod pbr_ray_query;
 mod ring_buffer;
@@ -30,8 +31,8 @@ mod uniforms;
 mod uv_debug;
 
 pub use core::{
-    MAX_BLENDSHAPE_WEIGHTS, MAX_INSTANCE_RUN, NUM_FRAMES_IN_FLIGHT, RenderPipeline, UniformData,
-    matrix4_to_wgsl_column_major,
+    MAX_BLENDSHAPE_WEIGHTS, MAX_INSTANCE_RUN, NUM_FRAMES_IN_FLIGHT, NonSkinnedUniformUpload,
+    RenderPipeline, UniformData, matrix4_to_wgsl_column_major,
 };
 pub use host_unlit::HostUnlitPipeline;
 pub use mrt::{NormalDebugMRTPipeline, SkinnedMRTPipeline, UvDebugMRTPipeline};

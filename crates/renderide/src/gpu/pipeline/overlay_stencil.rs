@@ -418,7 +418,7 @@ impl RenderPipeline for OverlayStencilPipeline {
     fn upload_batch(
         &self,
         _queue: &wgpu::Queue,
-        _mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
+        _draws: &[super::core::NonSkinnedUniformUpload],
         _frame_index: u64,
     ) {
     }

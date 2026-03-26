@@ -101,6 +101,26 @@ pub fn apply_froox_material_property_name_to_native_ui_config(
     }
 }
 
+/// Records Unity Standard / FrooxEngine property names used by generic PBR for host-driven factors.
+///
+/// Independent of [`RenderConfig::use_native_ui_wgsl`]; PBR reads these ids when
+/// [`RenderConfig::pbr_bind_host_material_properties`](crate::config::RenderConfig::pbr_bind_host_material_properties) is on.
+pub fn apply_froox_material_property_name_to_pbr_host_config(
+    config: &mut RenderConfig,
+    name: &str,
+    id: i32,
+) {
+    if name.is_empty() {
+        return;
+    }
+    match name {
+        "_Color" => config.pbr_host_color_property_id = id,
+        "_Metallic" => config.pbr_host_metallic_property_id = id,
+        "_Glossiness" | "Glossiness" => config.pbr_host_smoothness_property_id = id,
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn reset_material_property_intern_table_for_tests() {
     NEXT_PROPERTY_ID.store(1, Ordering::Relaxed);
@@ -110,16 +130,30 @@ pub(crate) fn reset_material_property_intern_table_for_tests() {
     map.clear();
 }
 
+/// Serializes tests that mutate the process-global property name table (parallel `cargo test` safe).
+#[cfg(test)]
+static MATERIAL_PROPERTY_HOST_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
+    use std::sync::MutexGuard;
+
     use super::{
-        apply_froox_material_property_name_to_native_ui_config, intern_host_material_property_id,
+        MATERIAL_PROPERTY_HOST_TEST_MUTEX, apply_froox_material_property_name_to_native_ui_config,
+        apply_froox_material_property_name_to_pbr_host_config, intern_host_material_property_id,
         reset_material_property_intern_table_for_tests,
     };
     use crate::config::RenderConfig;
 
+    fn test_lock() -> MutexGuard<'static, ()> {
+        MATERIAL_PROPERTY_HOST_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn intern_returns_same_id_for_same_name() {
+        let _lock = test_lock();
         reset_material_property_intern_table_for_tests();
         let a = intern_host_material_property_id("_MainTex");
         let b = intern_host_material_property_id("_MainTex");
@@ -129,6 +163,7 @@ mod tests {
 
     #[test]
     fn apply_maps_froox_names_to_ui_unlit_and_text_ids() {
+        let _lock = test_lock();
         reset_material_property_intern_table_for_tests();
         let mut c = RenderConfig {
             use_native_ui_wgsl: true,
@@ -144,6 +179,7 @@ mod tests {
 
     #[test]
     fn apply_skips_when_native_ui_wgsl_disabled() {
+        let _lock = test_lock();
         reset_material_property_intern_table_for_tests();
         let mut c = RenderConfig {
             use_native_ui_wgsl: false,
@@ -156,6 +192,7 @@ mod tests {
 
     #[test]
     fn apply_maps_shader_keyword_alphaclip() {
+        let _lock = test_lock();
         reset_material_property_intern_table_for_tests();
         let mut c = RenderConfig {
             use_native_ui_wgsl: true,
@@ -164,5 +201,21 @@ mod tests {
         let id = intern_host_material_property_id("ALPHACLIP");
         apply_froox_material_property_name_to_native_ui_config(&mut c, "ALPHACLIP", id);
         assert_eq!(c.ui_unlit_property_ids.alphaclip, id);
+    }
+
+    #[test]
+    fn apply_pbr_host_maps_color_metallic_glossiness() {
+        let _lock = test_lock();
+        reset_material_property_intern_table_for_tests();
+        let mut c = RenderConfig::default();
+        let color_id = intern_host_material_property_id("_Color");
+        let metal_id = intern_host_material_property_id("_Metallic");
+        let gloss_id = intern_host_material_property_id("_Glossiness");
+        apply_froox_material_property_name_to_pbr_host_config(&mut c, "_Color", color_id);
+        apply_froox_material_property_name_to_pbr_host_config(&mut c, "_Metallic", metal_id);
+        apply_froox_material_property_name_to_pbr_host_config(&mut c, "_Glossiness", gloss_id);
+        assert_eq!(c.pbr_host_color_property_id, color_id);
+        assert_eq!(c.pbr_host_metallic_property_id, metal_id);
+        assert_eq!(c.pbr_host_smoothness_property_id, gloss_id);
     }
 }

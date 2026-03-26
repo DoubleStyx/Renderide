@@ -1,10 +1,8 @@
 //! UV debug pipeline: colors surfaces by UV coordinates using HSV color mapping.
 
-use nalgebra::Matrix4;
-
 use super::super::mesh::{GpuMeshBuffers, VertexWithUv};
 use super::builder;
-use super::core::{RenderPipeline, UniformData};
+use super::core::{NonSkinnedUniformUpload, RenderPipeline, UniformData};
 use super::ring_buffer::UniformRingBuffer;
 use super::shaders::UV_DEBUG_SHADER_SRC;
 
@@ -137,9 +135,9 @@ impl RenderPipeline for UvDebugPipeline {
     fn upload_batch(
         &self,
         queue: &wgpu::Queue,
-        mvp_models: &[(Matrix4<f32>, Matrix4<f32>)],
+        draws: &[NonSkinnedUniformUpload],
         frame_index: u64,
     ) {
-        self.uniform_ring.upload(queue, mvp_models, frame_index);
+        self.uniform_ring.upload(queue, draws, frame_index);
     }
 }
