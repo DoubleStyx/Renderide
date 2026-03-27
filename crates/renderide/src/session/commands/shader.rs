@@ -5,8 +5,7 @@
 //! ids on every matching upload (stale positive INI ids otherwise block auto-reg).
 
 use crate::assets::{
-    NativeUiShaderFamily, native_ui_family_from_shader_path_hint,
-    native_ui_family_from_unity_shader_name,
+    NativeUiShaderFamily, native_ui_family_from_unity_shader_name,
 };
 use crate::shared::{RendererCommand, ShaderUploadResult};
 
@@ -34,10 +33,10 @@ impl CommandHandler for ShaderCommandHandler {
                         .or_else(|| {
                             data.file
                                 .as_deref()
-                                .and_then(native_ui_family_from_shader_path_hint)
+                                .and_then(native_ui_family_from_unity_shader_name)
                         });
                     logger::info!(
-                        "shader_upload: asset_id={} unity_shader_name={:?} wgsl_path_hint={:?} resolved_native_ui_family={:?}",
+                        "shader_upload: asset_id={} unity_shader_name={:?} upload_file_label={:?} resolved_native_ui_family={:?}",
                         asset_id,
                         unity_name.as_deref(),
                         data.file.as_deref(),

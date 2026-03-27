@@ -1,10 +1,14 @@
-//! Unity ShaderLab logical names (`Shader "…"`) and WGSL `unity-shader-name` banners for shader uploads.
+//! Unity ShaderLab logical names (`Shader "…"`), WGSL `unity-shader-name` banners, and plain logical stems
+//! for shader uploads (e.g. from a host mod that sets [`ShaderUpload::file`](ShaderUpload::file) to `UI_Unlit`).
 //!
 //! FrooxEngine sends a sequential [`crate::shared::ShaderUpload::asset_id`] and a `file` path. For an optional
 //! host-appended logical name after the stock payload, see [`crate::shared::unpack_appended_shader_logical_name`]
 //! and [`resolve_logical_shader_name_from_upload_with_host_hint`].
 
 use crate::shared::ShaderUpload;
+
+/// Maximum length for a single logical stem or first-token label from [`try_resolve_plain_shader_label`].
+const PLAIN_SHADER_LABEL_MAX_LEN: usize = 256;
 
 /// Canonical name from Resonite `UI_Unlit.shader`: line `Shader "UI/Unlit"`.
 pub const CANONICAL_UNITY_UI_UNLIT: &str = "UI/Unlit";
@@ -56,6 +60,50 @@ fn looks_like_wgsl_with_banner(s: &str) -> bool {
         .any(|line| line.trim().starts_with("// unity-shader-name:"))
 }
 
+/// Returns a logical Unity-style shader name when `file_field` is a short host-provided stem (e.g. `UI_Unlit`)
+/// or `stem kw1` (first token only), not ShaderLab source or a filesystem path.
+///
+/// Multi-line payloads with non-empty lines after the first are rejected so full ShaderLab/WGSL resolution can run.
+pub fn try_resolve_plain_shader_label(file_field: &str) -> Option<String> {
+    let trimmed = file_field.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut lines = trimmed.lines();
+    let first_line = lines.next()?;
+    if lines.any(|l| !l.trim().is_empty()) {
+        return None;
+    }
+    let mut token = first_line.split_whitespace().next()?;
+    if let Some(rest) = token.strip_prefix("renderide:") {
+        token = rest.trim();
+    }
+    if token.is_empty() {
+        return None;
+    }
+    if token == "." || token == ".." {
+        return None;
+    }
+    if token.len() > PLAIN_SHADER_LABEL_MAX_LEN {
+        return None;
+    }
+    if token.starts_with("\\\\") || token.starts_with('\\') {
+        return None;
+    }
+    if token.contains(":\\") {
+        return None;
+    }
+    if token.starts_with('/') {
+        return None;
+    }
+    if !token.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '-' || c == '.'
+    }) {
+        return None;
+    }
+    Some(token.to_string())
+}
+
 const UPLOAD_SOURCE_READ_CAP_BYTES: usize = 262_144;
 
 /// Resolves the logical Unity shader name from [`ShaderUpload::file`](ShaderUpload::file): path, inline text, or disk read.
@@ -82,6 +130,9 @@ pub fn resolve_logical_shader_name_from_upload_with_host_hint(
     }
     if looks_like_wgsl_with_banner(file_field) {
         return parse_wgsl_unity_shader_name_banner(file_field);
+    }
+    if let Some(stem) = try_resolve_plain_shader_label(file_field) {
+        return Some(stem);
     }
     if file_field.len() < UPLOAD_SOURCE_READ_CAP_BYTES {
         if let Some(from_lab) = parse_shader_lab_quoted_name(file_field) {
@@ -153,6 +204,56 @@ mod tests {
         assert_eq!(
             resolve_logical_shader_name_from_upload(&u).as_deref(),
             Some(CANONICAL_UNITY_UI_UNLIT)
+        );
+    }
+
+    #[test]
+    fn resolve_from_plain_stem_ui_unlit() {
+        let u = ShaderUpload {
+            file: Some("UI_Unlit".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_logical_shader_name_from_upload(&u).as_deref(),
+            Some("UI_Unlit")
+        );
+    }
+
+    #[test]
+    fn resolve_from_plain_stem_ui_text_unlit() {
+        let u = ShaderUpload {
+            file: Some("UI_TextUnlit".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_logical_shader_name_from_upload(&u).as_deref(),
+            Some("UI_TextUnlit")
+        );
+    }
+
+    #[test]
+    fn resolve_plain_label_first_token_only() {
+        let u = ShaderUpload {
+            file: Some("UI_Unlit ALPHACLIP".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_logical_shader_name_from_upload(&u).as_deref(),
+            Some("UI_Unlit")
+        );
+    }
+
+    #[test]
+    fn try_resolve_plain_rejects_absolute_path_like() {
+        assert_eq!(try_resolve_plain_shader_label("/etc/shaders/x.shader"), None);
+        assert_eq!(try_resolve_plain_shader_label("C:\\a\\b.shader"), None);
+    }
+
+    #[test]
+    fn try_resolve_plain_strips_renderide_prefix() {
+        assert_eq!(
+            try_resolve_plain_shader_label("renderide:UI_Unlit").as_deref(),
+            Some("UI_Unlit")
         );
     }
 }

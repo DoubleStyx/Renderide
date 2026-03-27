@@ -90,6 +90,8 @@ pub fn run(host_args_from_cli: &[String], log_level: Option<logger::LogLevel>) {
     args.push("-Invisible".to_string());
     args.push("-shmprefix".to_string());
     args.push(config.shared_memory_prefix.clone());
+    args.push("-LoadAssembly".to_string());
+    args.push("Libraries/ResoniteModLoader.dll".to_string());
     logger::info!("Host args: {:?}", args);
 
     let mut p = match host_spawner::spawn_host(&config, &args, &lifetime) {

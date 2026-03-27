@@ -1,9 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
-    Harmony from rml_libs; set ResonitePath or RESONITE_PATH to the game root. See README.md.
+    ResonitePath defaults to common Steam install roots (below). Override with -p:ResonitePath=... or optional RESONITE_PATH.
     Outputs use the default SDK layout (bin/$(Configuration)/$(TargetFramework)/) so BaseIntermediateOutputPath does not need Directory.Build.props.
   -->
   <PropertyGroup>
+    <!-- HOME for Linux Exists() checks (always use env; $(HOME) is not always defined as an MSBuild property). -->
+    <_LinuxHome>$([System.Environment]::GetEnvironmentVariable('HOME'))</_LinuxHome>
+    <!-- Windows — Steam default library (Unity layout: Resonite_Data/Managed, or Linux-native root DLLs). -->
+    <ResonitePath Condition="'$(ResonitePath)'=='' AND (Exists('C:\Program Files (x86)\Steam\steamapps\common\Resonite\Resonite_Data\Managed\FrooxEngine.dll') OR Exists('C:\Program Files (x86)\Steam\steamapps\common\Resonite\FrooxEngine.dll'))">C:\Program Files (x86)\Steam\steamapps\common\Resonite</ResonitePath>
+    <!-- Linux — Steam default (~/.steam/...) -->
+    <ResonitePath Condition="'$(ResonitePath)'=='' AND '$(_LinuxHome)'!='' AND (Exists('$(_LinuxHome)/.steam/steam/steamapps/common/Resonite/Resonite_Data/Managed/FrooxEngine.dll') OR Exists('$(_LinuxHome)/.steam/steam/steamapps/common/Resonite/FrooxEngine.dll'))">$(_LinuxHome)/.steam/steam/steamapps/common/Resonite</ResonitePath>
+    <!-- Linux — ~/.local/share/Steam (common) -->
+    <ResonitePath Condition="'$(ResonitePath)'=='' AND '$(_LinuxHome)'!='' AND (Exists('$(_LinuxHome)/.local/share/Steam/steamapps/common/Resonite/Resonite_Data/Managed/FrooxEngine.dll') OR Exists('$(_LinuxHome)/.local/share/Steam/steamapps/common/Resonite/FrooxEngine.dll'))">$(_LinuxHome)/.local/share/Steam/steamapps/common/Resonite</ResonitePath>
     <ResonitePath Condition="'$(ResonitePath)'==''">$([System.Environment]::GetEnvironmentVariable('RESONITE_PATH'))</ResonitePath>
     <StartAction>Program</StartAction>
     <StartArguments>-Screen -LoadAssembly Libraries/ResoniteModLoader.dll</StartArguments>
@@ -55,7 +63,7 @@
   <Target Name="EnsureResonitePath" BeforeTargets="ResolveAssemblyReferences">
     <Error
       Condition="'$(ResonitePath)'=='' OR !Exists('$(ResoniteManaged)/FrooxEngine.dll')"
-      Text="Set ResonitePath (or RESONITE_PATH) to your Resonite install root so FrooxEngine.dll resolves (game root on Linux, or Resonite_Data/Managed on Windows). Example: dotnet build -p:ResonitePath=$HOME/.local/share/Steam/steamapps/common/Resonite" />
+      Text="Could not find Resonite. Install via Steam in a default library, or pass -p:ResonitePath=&lt;game root&gt; (folder containing Resonite_Data). Optional: RESONITE_PATH for non-standard locations." />
     <Error
       Condition="!Exists('$(ResoniteRmlLibs)/0Harmony.dll')"
       Text="Expected 0Harmony.dll at $(ResoniteRmlLibs)/0Harmony.dll (ResoniteModLoader rml_libs). Install/update RML or copy Harmony there." />

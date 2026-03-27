@@ -1,18 +1,19 @@
-using Elements.Assets;
 using FrooxEngine;
 
 namespace RenderidePatches;
 
 /// <summary>
-/// Builds a single stable string for <see cref="Renderite.Shared.ShaderUpload.file" /> from shader metadata and variant state.
+/// Builds a single stable logical name for <see cref="Renderite.Shared.ShaderUpload.file" /> from shader metadata.
+/// The value is the base shader stem only (no shader keywords / variants) so the native renderer can map it to WGSL.
 /// </summary>
 internal static class ShaderLabelBuilder
 {
     /// <summary>
-    /// Produces a label of the form <c>Stem kw1 kw2 ...</c> where keywords are those enabled in the current variant bitmask.
+    /// Produces a label from the source file leaf name (e.g. <c>UI_Unlit</c> from <c>UI_Unlit.shader</c>).
+    /// This replaces the host bundle path in <see cref="Renderite.Shared.ShaderUpload.file" />; Renderide matches the stem to native shaders.
     /// </summary>
-    /// <param name="shader">The shader whose metadata and variant index are read.</param>
-    /// <returns>A non-empty label, or <see langword="null" /> to keep the original bundle path.</returns>
+    /// <param name="shader">The shader whose metadata is read.</param>
+    /// <returns>A non-empty stem, or <see langword="null" /> to keep the original bundle path.</returns>
     internal static string? TryBuildShaderLabel(Shader shader)
     {
         if (shader == null)
@@ -26,44 +27,13 @@ internal static class ShaderLabelBuilder
             return null;
         }
 
-        var stem = StemFromShaderFileName(metadata.SourceFile.FileName);
-        var keywords = metadata.UniqueKeywords;
-        if (keywords == null || keywords.Count == 0)
-        {
-            return stem;
-        }
-
-        var variantBits = shader.VariantIndex;
-        if (variantBits == null)
-        {
-            return null;
-        }
-
-        var active = new List<string>();
-        var index = 0;
-        foreach (var keyword in keywords)
-        {
-            var mask = 1u << index;
-            if ((variantBits.Value & mask) != 0)
-            {
-                active.Add(keyword);
-            }
-
-            index++;
-        }
-
-        if (active.Count == 0)
-        {
-            return stem;
-        }
-
-        return $"{stem} {string.Join(" ", active)}";
+        return StemFromShaderFileName(metadata.SourceFile.FileName);
     }
 
     /// <summary>
     /// Strips directory segments and a trailing <c>.shader</c> extension when present.
     /// </summary>
-    /// <param name="fileName">File name or path from <see cref="ShaderSourceFile.FileName" />.</param>
+    /// <param name="fileName">File name or path from shader source metadata.</param>
     /// <returns>A stem suitable for matching converted shader assets.</returns>
     private static string StemFromShaderFileName(string fileName)
     {

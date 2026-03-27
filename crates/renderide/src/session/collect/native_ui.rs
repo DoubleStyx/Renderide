@@ -63,7 +63,7 @@ pub(crate) fn mesh_has_native_ui_vertices(
 /// 8. Host material store exposes `set_shader` for this block (`host_shader_asset_id`).
 /// 9. [`mesh_has_native_ui_vertices`]: mesh declares UV0 (4+ bytes).
 /// 10. [`resolve_native_ui_shader_family`] yields [`NativeUiShaderFamily::UiUnlit`] or [`NativeUiShaderFamily::UiTextUnlit`]
-///     (INI shader ids, [`crate::assets::ShaderAsset::unity_shader_name`], or upload path hint).
+///     (INI shader ids, [`crate::assets::ShaderAsset::unity_shader_name`], or upload label / path hint).
 ///
 /// Counters: [`crate::session::native_ui_routing_metrics`] when [`RenderConfig::native_ui_routing_metrics`] is on.
 #[allow(clippy::too_many_arguments)]

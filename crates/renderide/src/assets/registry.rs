@@ -286,7 +286,7 @@ impl AssetRegistry {
         self.unload_count += 1;
     }
 
-    /// Handles a shader upload. Stores id, optional `file` path or source, and resolved Unity shader name.
+    /// Handles a shader upload. Stores id, optional `file` (path, logical stem label, or inline source), and resolved Unity shader name.
     /// Returns `(success, existed_before)`.
     pub fn handle_shader_upload(&mut self, data: ShaderUpload) -> (bool, bool) {
         let existed_before = self.shaders.contains_key(data.asset_id);

@@ -7,7 +7,7 @@ namespace RenderidePatches;
 
 /// <summary>
 /// Patches <c>RenderSystem.SendAssetUpdate</c> (internal; resolved via reflection) so <see cref="ShaderUpload" /> commands
-/// sent to Renderide use a source-derived label in <see cref="ShaderUpload.file" /> instead of a local bundle path.
+/// sent to Renderide use a source-derived logical stem in <see cref="ShaderUpload.file" /> instead of a local bundle path.
 /// </summary>
 [HarmonyPatch]
 public static class ShaderUploadLabelPatch
