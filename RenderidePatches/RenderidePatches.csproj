@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Harmony from rml_libs; set ResonitePath or RESONITE_PATH to the game root. See README.md.
+    Outputs use the default SDK layout (bin/$(Configuration)/$(TargetFramework)/) so BaseIntermediateOutputPath does not need Directory.Build.props.
+  -->
+  <PropertyGroup>
+    <ResonitePath Condition="'$(ResonitePath)'==''">$([System.Environment]::GetEnvironmentVariable('RESONITE_PATH'))</ResonitePath>
+    <StartAction>Program</StartAction>
+    <StartArguments>-Screen -LoadAssembly Libraries/ResoniteModLoader.dll</StartArguments>
+    <VariantSuffix>ResoniteModLoader</VariantSuffix>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RenderidePatches</RootNamespace>
+    <AssemblyName>RenderidePatches</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ResoniteManaged Condition="Exists('$(ResonitePath)/Resonite_Data/Managed/FrooxEngine.dll')">$(ResonitePath)/Resonite_Data/Managed</ResoniteManaged>
+    <ResoniteManaged Condition="'$(ResoniteManaged)'==''">$(ResonitePath)</ResoniteManaged>
+    <ResoniteLibraries>$(ResonitePath)/Libraries</ResoniteLibraries>
+    <ResoniteRmlLibs>$(ResonitePath)/rml_libs</ResoniteRmlLibs>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Harmony">
+      <HintPath>$(ResoniteRmlLibs)/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ResoniteModLoader">
+      <HintPath>$(ResoniteLibraries)/ResoniteModLoader.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FrooxEngine">
+      <HintPath>$(ResoniteManaged)/FrooxEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Renderite.Shared">
+      <HintPath>$(ResoniteManaged)/Renderite.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Elements.Assets">
+      <HintPath>$(ResoniteManaged)/Elements.Assets.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Elements.Core">
+      <HintPath>$(ResoniteManaged)/Elements.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="EnsureResonitePath" BeforeTargets="ResolveAssemblyReferences">
+    <Error
+      Condition="'$(ResonitePath)'=='' OR !Exists('$(ResoniteManaged)/FrooxEngine.dll')"
+      Text="Set ResonitePath (or RESONITE_PATH) to your Resonite install root so FrooxEngine.dll resolves (game root on Linux, or Resonite_Data/Managed on Windows). Example: dotnet build -p:ResonitePath=$HOME/.local/share/Steam/steamapps/common/Resonite" />
+    <Error
+      Condition="!Exists('$(ResoniteRmlLibs)/0Harmony.dll')"
+      Text="Expected 0Harmony.dll at $(ResoniteRmlLibs)/0Harmony.dll (ResoniteModLoader rml_libs). Install/update RML or copy Harmony there." />
+  </Target>
+
+  <Target Name="CopyToRmlMods" AfterTargets="Build" Condition="'$(ResonitePath)'!='' And Exists('$(ResonitePath)')">
+    <MakeDir Directories="$(ResonitePath)/rml_mods" Condition="!Exists('$(ResonitePath)/rml_mods')" />
+    <Copy
+      SourceFiles="$(TargetPath)"
+      DestinationFiles="$(ResonitePath)/rml_mods/$(AssemblyName).dll"
+      SkipUnchangedFiles="true" />
+  </Target>
+</Project>
