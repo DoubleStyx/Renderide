@@ -1,9 +1,10 @@
 //! Resolve Unity shader logical names from filesystem paths using the `unity-asset` stack.
 //!
-//! [`crate::shared::ShaderUpload::file`] may be a cache directory, a Unity YAML asset, an AssetBundle,
-//! or a serialized `.assets` file. For binary serialized data, Shader objects (class id 48) are read
-//! via TypeTree `m_Name` when possible (matching Unity inspector **Name**): `peek_name`, full
-//! `ObjectHandle::read` / `UnityObject::name`, then a ShaderLab substring scan of raw object bytes.
+//! [`crate::shared::ShaderUpload::file`] may point at cache bundles (UnityFS), YAML assets, or raw
+//! serialized files. For **AssetBundles** loaded from disk, the usual cache case is a name from
+//! [`unity_asset::environment::Environment::bundle_container_entries`] (`AssetBundle.m_Container`
+//! path stem, e.g. `.../ui_unlit.shader` → `ui_unlit`). If that fails, TypeTree `peek_name` / full
+//! [`unity_asset_binary::object::ObjectHandle::read`] / ShaderLab substring fallbacks apply.
 
 use std::fmt::Display;
 use std::path::Path;
@@ -35,12 +36,23 @@ const SHADER_CLASS: &str = "Shader";
 /// Maximum characters from parse errors included in logs.
 const MAX_ERR_LOG_CHARS: usize = 240;
 
+/// Hex prefix length for short probe lines.
+const PROBE_HEX_SHORT: usize = 8;
+
+/// How a shader logical name was obtained (for [`log_resolution_debug`] only).
+#[derive(Clone, Copy)]
+enum ResolutionSource {
+    MNamePeek,
+    UnityObjectTypetree,
+    ShaderLabBytes,
+    Container,
+}
+
 /// Attempts to extract a ShaderLab logical name when `file_field` is a path to a file or directory
 /// containing Unity-serialized shader data.
 ///
-/// Logs [`logger::info!`] when a name is found (including serialized `m_Name` vs ShaderLab fallback).
-/// On failure, logs a structured [`logger::warn!`] with probe details (YAML/binary attempts, parse
-/// counts, magic bytes) so logs show whether `unity-asset` successfully parsed each file.
+/// Logs [`logger::info!`] on success (`resolved … from path`). Failures use one concise [`logger::warn!`]
+/// per file or directory; detailed probe output is [`logger::debug!`].
 pub(crate) fn try_resolve_shader_name_from_path_hint(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok()?;
     let name = if meta.is_file() {
@@ -65,7 +77,10 @@ fn try_from_file(path: &Path) -> Option<String> {
 }
 
 /// When `log_failure` is `false` (directory scan), probe data is returned without per-file [`logger::warn!`].
-fn try_from_file_inner(path: &Path, log_failure: bool) -> (Option<String>, Option<FileBinaryProbe>) {
+fn try_from_file_inner(
+    path: &Path,
+    log_failure: bool,
+) -> (Option<String>, Option<FileBinaryProbe>) {
     let mut yaml_loaded = false;
     if let Ok(doc) = YamlDocument::load_yaml(path, false) {
         yaml_loaded = true;
@@ -98,51 +113,52 @@ fn try_from_file_inner(path: &Path, log_failure: bool) -> (Option<String>, Optio
     let mut probe = FileBinaryProbe::new(yaml_loaded, &bytes);
     if bytes.is_empty() {
         if log_failure {
-            probe.warn_failure(path, "empty file");
+            probe.warn_short(path, "empty file");
         }
         return (None, Some(probe));
     }
     if bytes.len() > MAX_READ_BYTES {
         if log_failure {
-            probe.warn_failure(
-                path,
-                &format!("file too large for probe ({} > MAX_READ_BYTES)", bytes.len()),
-            );
+            probe.warn_short(path, "file too large");
         }
         return (None, Some(probe));
     }
 
-    match load_bundle_from_memory(bytes.clone()) {
-        Ok(bundle) => {
-            probe.bundle_parse_ok = true;
-            probe.bundle_assets = bundle.assets.len();
-            logger::info!(
-                "shader_unity_asset: parsed AssetBundle from {:?}: {} embedded SerializedFile(s)",
-                path.display(),
-                bundle.assets.len()
-            );
-            for (i, asset) in bundle.assets.iter().enumerate() {
-                log_serialized_file_stats(path, asset, Some(i));
-            }
-            if let Some(name) = shader_name_from_bundle(path, &bundle) {
-                return (Some(name), None);
-            }
-            if log_failure {
-                probe.warn_failure(
-                    path,
-                    "AssetBundle parsed but no Shader object yielded a name (see per-asset INFO above)",
+    let mut env = Environment::new();
+    let _ = env.load_file(path);
+    let source = BinarySource::path(path);
+
+    let mut memory_bundle: Option<AssetBundle> = None;
+    if env.bundles().get(&source).is_none() {
+        match load_bundle_from_memory(bytes.clone()) {
+            Ok(b) => memory_bundle = Some(b),
+            Err(e) => {
+                probe.bundle_err = Some(truncate_display(&e, MAX_ERR_LOG_CHARS));
+                logger::debug!(
+                    "shader_unity_asset: {:?} not an AssetBundle: {}",
+                    path.display(),
+                    probe.bundle_err.as_deref().unwrap_or("")
                 );
             }
-            return (None, Some(probe));
         }
-        Err(e) => {
-            probe.bundle_err = Some(truncate_display(&e, MAX_ERR_LOG_CHARS));
-            logger::debug!(
-                "shader_unity_asset: {:?} not an AssetBundle: {}",
-                path.display(),
-                probe.bundle_err.as_deref().unwrap_or("")
-            );
+    }
+    let bundle_ref: Option<&AssetBundle> = env.bundles().get(&source).or(memory_bundle.as_ref());
+
+    if let Some(bundle) = bundle_ref {
+        probe.bundle_parse_ok = true;
+        probe.bundle_assets = bundle.assets.len();
+        log_bundle_parse_debug(path, bundle);
+        for (i, asset) in bundle.assets.iter().enumerate() {
+            log_serialized_file_debug(path, asset, Some(i));
         }
+        if let Some(name) = shader_name_from_bundle(path, bundle) {
+            return (Some(name), None);
+        }
+        if log_failure {
+            probe.warn_short(path, "AssetBundle: no shader name");
+            probe.log_debug_detail();
+        }
+        return (None, Some(probe));
     }
 
     match SerializedFileParser::from_bytes(bytes) {
@@ -153,15 +169,13 @@ fn try_from_file_inner(path: &Path, log_failure: bool) -> (Option<String>, Optio
             probe.serialized_unity_version = Some(sf.unity_version.clone());
             probe.serialized_format_version = Some(sf.header.version);
             probe.serialized_enable_type_tree = Some(sf.enable_type_tree);
-            log_serialized_file_stats(path, &sf, None);
+            log_serialized_file_debug(path, &sf, None);
             if let Some(name) = shader_name_from_serialized_file(&sf) {
                 return (Some(name), None);
             }
             if log_failure {
-                probe.warn_failure(
-                    path,
-                    "SerializedFile parsed but no Shader name extracted (shader_objects>0 means objects exist but peek_name/ShaderLab failed)",
-                );
+                probe.warn_short(path, "SerializedFile: no shader name");
+                probe.log_debug_detail();
             }
             (None, Some(probe))
         }
@@ -173,9 +187,72 @@ fn try_from_file_inner(path: &Path, log_failure: bool) -> (Option<String>, Optio
                 probe.serialized_err.as_deref().unwrap_or("")
             );
             if log_failure {
-                probe.warn_failure(path, "neither AssetBundle nor SerializedFile parsed");
+                probe.warn_short(path, "not AssetBundle or SerializedFile");
+                probe.log_debug_detail();
             }
             (None, Some(probe))
+        }
+    }
+}
+
+fn log_bundle_parse_debug(path: &Path, bundle: &AssetBundle) {
+    logger::debug!(
+        "shader_unity_asset: parsed AssetBundle {:?}: {} SerializedFile(s)",
+        path.display(),
+        bundle.assets.len()
+    );
+}
+
+fn log_serialized_file_debug(path: &Path, sf: &SerializedFile, bundle_index: Option<usize>) {
+    let n = shader_object_count(sf);
+    let label = match bundle_index {
+        Some(i) => format!("bundle[{i}]"),
+        None => "standalone".to_string(),
+    };
+    logger::debug!(
+        "shader_unity_asset: SerializedFile {:?} ({}): objects={} unity={} fmt={} type_tree={} shaders={}",
+        path.display(),
+        label,
+        sf.object_count(),
+        sf.unity_version,
+        sf.header.version,
+        sf.enable_type_tree,
+        n
+    );
+}
+
+fn log_resolution_debug(
+    path_id: i64,
+    class_id: i32,
+    source: ResolutionSource,
+    name: &str,
+    container_asset_path: Option<&str>,
+) {
+    let src = match source {
+        ResolutionSource::MNamePeek => "m_Name_peek",
+        ResolutionSource::UnityObjectTypetree => "typetree",
+        ResolutionSource::ShaderLabBytes => "ShaderLab_bytes",
+        ResolutionSource::Container => "m_Container",
+    };
+    match (source, container_asset_path) {
+        (ResolutionSource::Container, Some(ap)) => {
+            logger::debug!(
+                "shader_unity_asset: Shader path_id={} class_id={} source={} asset_path={:?} name={:?}",
+                path_id,
+                class_id,
+                src,
+                ap,
+                name
+            );
+        }
+        _ => {
+            logger::debug!(
+                "shader_unity_asset: Shader path_id={} class_id={} source={} name={:?}",
+                path_id,
+                class_id,
+                src,
+                name
+            );
         }
     }
 }
@@ -218,11 +295,25 @@ impl FileBinaryProbe {
         }
     }
 
-    fn warn_failure(&self, path: &Path, reason: &str) {
+    /// One short [`logger::warn!`] line; full fields via [`Self::log_debug_detail`].
+    fn warn_short(&self, path: &Path, reason: &str) {
         logger::warn!(
-            "shader_unity_asset: probe {:?} — {} | yaml_loaded={} bytes={} prefix_hex={} prefix_ascii={:?} | bundle_ok={} bundle_assets={} bundle_err={:?} | serialized_ok={} objects={} shader_objects={} unity_ver={:?} format_ver={:?} type_tree={:?} serialized_err={:?}",
+            "shader_unity_asset: {:?} — {} | yaml={} bytes={} hex8={} | bundle_ok={} ser_ok={} | err {:?} / {:?}",
             path.display(),
             reason,
+            self.yaml_loaded,
+            self.bytes_len,
+            short_hex_prefix(&self.prefix_hex, PROBE_HEX_SHORT),
+            self.bundle_parse_ok,
+            self.serialized_parse_ok,
+            self.bundle_err.as_deref().unwrap_or(""),
+            self.serialized_err.as_deref().unwrap_or("")
+        );
+    }
+
+    fn log_debug_detail(&self) {
+        logger::debug!(
+            "shader_unity_asset: probe detail yaml_loaded={} bytes={} prefix_hex={} prefix_ascii={:?} bundle_ok={} bundle_assets={} bundle_err={:?} serialized_ok={} objects={} shader_objects={} unity_ver={:?} format_ver={:?} type_tree={:?} serialized_err={:?}",
             self.yaml_loaded,
             self.bytes_len,
             self.prefix_hex,
@@ -241,6 +332,14 @@ impl FileBinaryProbe {
     }
 }
 
+fn short_hex_prefix(space_separated_hex: &str, max_bytes: usize) -> String {
+    space_separated_hex
+        .split_whitespace()
+        .take(max_bytes)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn format_hex_prefix(bytes: &[u8], max: usize) -> String {
     bytes
         .iter()
@@ -255,9 +354,10 @@ fn ascii_prefix_hint(bytes: &[u8], max: usize) -> String {
     if take.is_empty() {
         return String::new();
     }
-    if take.iter().all(|b| {
-        b.is_ascii_graphic() || matches!(b, b' ' | b'\t' | b'\n' | b'\r')
-    }) {
+    if take
+        .iter()
+        .all(|b| b.is_ascii_graphic() || matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+    {
         String::from_utf8_lossy(&take).chars().take(40).collect()
     } else {
         String::new()
@@ -276,24 +376,6 @@ fn shader_object_count(sf: &SerializedFile) -> usize {
     sf.object_handles()
         .filter(|h| h.class_id() == SHADER)
         .count()
-}
-
-fn log_serialized_file_stats(path: &Path, sf: &SerializedFile, bundle_index: Option<usize>) {
-    let n = shader_object_count(sf);
-    let label = match bundle_index {
-        Some(i) => format!("bundle asset {i}"),
-        None => "standalone SerializedFile".to_string(),
-    };
-    logger::info!(
-        "shader_unity_asset: SerializedFile {:?} ({}): objects={} unity_version={} format_version={} type_tree={} shader_objects={}",
-        path.display(),
-        label,
-        sf.object_count(),
-        sf.unity_version,
-        sf.header.version,
-        sf.enable_type_tree,
-        n
-    );
 }
 
 fn try_from_directory(dir: &Path) -> Option<String> {
@@ -340,7 +422,7 @@ fn try_from_directory(dir: &Path) -> Option<String> {
     let mut bundle_parse_hits = 0usize;
     let mut serialized_parse_hits = 0usize;
     let mut shader_objects_sum = 0usize;
-    let mut probes: Vec<FileBinaryProbe> = Vec::new();
+    let mut first_probe: Option<FileBinaryProbe> = None;
 
     for (idx, p) in paths.into_iter().enumerate() {
         if idx >= MAX_DIR_FILES {
@@ -366,12 +448,14 @@ fn try_from_directory(dir: &Path) -> Option<String> {
                 serialized_parse_hits += 1;
                 shader_objects_sum += probe.serialized_shader_count;
             }
-            probes.push(probe);
+            if first_probe.is_none() {
+                first_probe = Some(probe);
+            }
         }
     }
 
     logger::warn!(
-        "shader_unity_asset: directory {:?} — no shader name: files_total={} files_examined={} (cap {}) | files_where_bundle_parsed={} files_where_serialized_parsed={} shader_objects_summed={}",
+        "shader_unity_asset: directory {:?} — no shader name (files_total={} examined={} cap={} bundle_hits={} ser_hits={} shader_objs_sum={})",
         dir.display(),
         files_total,
         examined,
@@ -380,24 +464,9 @@ fn try_from_directory(dir: &Path) -> Option<String> {
         serialized_parse_hits,
         shader_objects_sum
     );
-    if let Some(fp) = probes.first() {
-        logger::warn!(
-            "shader_unity_asset: first examined file sample (same fields as single-file probe) | yaml_loaded={} bytes={} prefix_hex={} prefix_ascii={:?} | bundle_ok={} bundle_assets={} bundle_err={:?} | serialized_ok={} objects={} shader_objects={} unity_ver={:?} format_ver={:?} type_tree={:?} serialized_err={:?}",
-            fp.yaml_loaded,
-            fp.bytes_len,
-            fp.prefix_hex,
-            fp.prefix_ascii,
-            fp.bundle_parse_ok,
-            fp.bundle_assets,
-            fp.bundle_err,
-            fp.serialized_parse_ok,
-            fp.serialized_object_count,
-            fp.serialized_shader_count,
-            fp.serialized_unity_version,
-            fp.serialized_format_version,
-            fp.serialized_enable_type_tree,
-            fp.serialized_err
-        );
+    if let Some(ref fp) = first_probe {
+        logger::debug!("shader_unity_asset: first failed file probe sample");
+        fp.log_debug_detail();
     }
 
     None
@@ -487,14 +556,17 @@ fn shader_name_from_loaded_unity_object(obj: &UnityObject) -> Option<String> {
 }
 
 /// Best-effort name from [`Environment::bundle_container_entries`] by matching Shader `path_id` to
-/// `AssetBundle.m_Container` (see `unity_asset` `environment` module and `BundleContainerEntry`).
-fn shader_name_from_bundle_container_fallback(bundle_path: &Path, bundle: &AssetBundle) -> Option<String> {
+/// `AssetBundle.m_Container`.
+fn shader_name_from_bundle_container_fallback(
+    bundle_path: &Path,
+    bundle: &AssetBundle,
+) -> Option<String> {
     let mut env = Environment::new();
     let _ = env.load_file(bundle_path);
     let source = BinarySource::path(bundle_path);
     if env.bundles().get(&source).is_none() {
         logger::debug!(
-            "shader_unity_asset: Environment did not register bundle {:?} (load may have skipped binary)",
+            "shader_unity_asset: Environment has no bundle for {:?} (m_Container unavailable)",
             bundle_path.display()
         );
         return None;
@@ -519,16 +591,17 @@ fn shader_name_from_bundle_container_fallback(bundle_path: &Path, bundle: &Asset
         .collect();
 
     for pid in shader_path_ids {
-        if let Some(entry) = entries.iter().find(|e| e.path_id == pid) {
-            if let Some(name) = shader_logical_name_from_container_asset_path(&entry.asset_path) {
-                logger::info!(
-                    "shader_unity_asset: Shader path_id={} source=m_Container asset_path={:?} name={:?}",
-                    pid,
-                    entry.asset_path,
-                    name
-                );
-                return Some(name);
-            }
+        if let Some(entry) = entries.iter().find(|e| e.path_id == pid)
+            && let Some(name) = shader_logical_name_from_container_asset_path(&entry.asset_path)
+        {
+            log_resolution_debug(
+                pid,
+                SHADER,
+                ResolutionSource::Container,
+                &name,
+                Some(&entry.asset_path),
+            );
+            return Some(name);
         }
     }
     None
@@ -558,35 +631,30 @@ fn shader_logical_name_from_container_asset_path(asset_path: &str) -> Option<Str
     Some(base.to_string())
 }
 
-/// Reads [`unity_asset_binary::object::ObjectHandle::peek_name`] (`m_Name`) first, then a full
-/// [`unity_asset_binary::object::ObjectHandle::read`] TypeTree parse (often succeeds when peek
-/// stops short), then scans raw object bytes for `Shader "…"`.
+/// [`ObjectHandle::peek_name`], full [`ObjectHandle::read`], then ShaderLab bytes scan.
 fn shader_name_from_serialized_file(sf: &SerializedFile) -> Option<String> {
     for handle in sf.object_handles() {
         if handle.class_id() != SHADER {
             continue;
         }
+        let pid = handle.path_id();
+        let cid = handle.class_id();
         match handle.peek_name() {
             Ok(Some(name)) if !name.trim().is_empty() => {
-                logger::info!(
-                    "shader_unity_asset: Shader path_id={} class_id={} source=m_Name name={:?}",
-                    handle.path_id(),
-                    handle.class_id(),
-                    name
-                );
+                log_resolution_debug(pid, cid, ResolutionSource::MNamePeek, &name, None);
                 return Some(name);
             }
             Ok(Some(_)) => {}
             Ok(None) => {
                 logger::debug!(
-                    "shader_unity_asset: Shader path_id={} peek_name returned None; trying full TypeTree read",
-                    handle.path_id()
+                    "shader_unity_asset: Shader path_id={} peek_name None; typetree read",
+                    pid
                 );
             }
             Err(e) => {
                 logger::debug!(
-                    "shader_unity_asset: Shader path_id={} peek_name failed: {}; trying full TypeTree read",
-                    handle.path_id(),
+                    "shader_unity_asset: Shader path_id={} peek_name err {}; typetree read",
+                    pid,
                     e
                 );
             }
@@ -595,24 +663,25 @@ fn shader_name_from_serialized_file(sf: &SerializedFile) -> Option<String> {
         match handle.read() {
             Ok(obj) => {
                 if let Some(name) = shader_name_from_loaded_unity_object(&obj) {
-                    logger::info!(
-                        "shader_unity_asset: Shader path_id={} class_id={} source=UnityObject_typetree name={:?}",
-                        handle.path_id(),
-                        handle.class_id(),
-                        name
+                    log_resolution_debug(
+                        pid,
+                        cid,
+                        ResolutionSource::UnityObjectTypetree,
+                        &name,
+                        None,
                     );
                     return Some(name);
                 }
                 logger::debug!(
-                    "shader_unity_asset: Shader path_id={} typetree read ok but no m_Name/name; keys_sample={:?}",
-                    handle.path_id(),
+                    "shader_unity_asset: Shader path_id={} typetree ok; keys_sample={:?}",
+                    pid,
                     obj.property_names().iter().take(24).collect::<Vec<_>>()
                 );
             }
             Err(e) => {
                 logger::debug!(
                     "shader_unity_asset: Shader path_id={} ObjectHandle::read failed: {}",
-                    handle.path_id(),
+                    pid,
                     e
                 );
             }
@@ -623,32 +692,31 @@ fn shader_name_from_serialized_file(sf: &SerializedFile) -> Option<String> {
             Err(e) => {
                 logger::debug!(
                     "shader_unity_asset: Shader path_id={} raw_data failed: {}",
-                    handle.path_id(),
+                    pid,
                     e
                 );
                 continue;
             }
         };
         if let Some(name) = find_shader_lab_name_in_bytes(bytes) {
-            logger::info!(
-                "shader_unity_asset: Shader path_id={} class_id={} source=ShaderLab_bytes name={:?}",
-                handle.path_id(),
-                handle.class_id(),
-                name
-            );
+            log_resolution_debug(pid, cid, ResolutionSource::ShaderLabBytes, &name, None);
             return Some(name);
         }
     }
     None
 }
 
+/// Prefer `m_Container` path stems (typical for UnityFS cache), then TypeTree / ShaderLab per asset.
 fn shader_name_from_bundle(bundle_path: &Path, bundle: &AssetBundle) -> Option<String> {
+    if let Some(name) = shader_name_from_bundle_container_fallback(bundle_path, bundle) {
+        return Some(name);
+    }
     for asset in &bundle.assets {
         if let Some(name) = shader_name_from_serialized_file(asset) {
             return Some(name);
         }
     }
-    shader_name_from_bundle_container_fallback(bundle_path, bundle)
+    None
 }
 
 #[cfg(test)]

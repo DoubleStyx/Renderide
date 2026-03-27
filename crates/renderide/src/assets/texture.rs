@@ -42,6 +42,8 @@ impl Asset for TextureAsset {
 /// Converts raw mip0 bytes from the host into tight RGBA8 (row-major, top row first after optional flip).
 ///
 /// `rgb565` uses `RRRRR GGGGGG BBBBB` in the 16-bit word; `bgr565` uses `BBBBB GGGGGG RRRRR`.
+///
+/// `bc1` (DXT1) and `bc3` (DXT5) decode 4×4 blocks to RGBA8 on the CPU (same layout as D3D11 BC formats).
 pub fn decode_texture_mip0_to_rgba8(
     format: TextureFormat,
     width: u32,
@@ -166,8 +168,191 @@ pub fn decode_texture_mip0_to_rgba8(
             }
             Some(out)
         }
+        TextureFormat::bc1 => {
+            decode_bc1_to_rgba8(w, h, raw).map(|mut out| {
+                if flip_y {
+                    flip_rgba_image_rows(&mut out, w, h);
+                }
+                out
+            })
+        }
+        TextureFormat::bc3 => {
+            decode_bc3_to_rgba8(w, h, raw).map(|mut out| {
+                if flip_y {
+                    flip_rgba_image_rows(&mut out, w, h);
+                }
+                out
+            })
+        }
         _ => None,
     }
+}
+
+/// Expands a 16-bit RGB565 value to 8-bit sRGB-ish components (matches other formats in this module).
+fn rgb565_to_rgb8(c: u16) -> (u8, u8, u8) {
+    let r5 = (c >> 11) & 0x1f;
+    let g6 = (c >> 5) & 0x3f;
+    let b5 = c & 0x1f;
+    let r = ((u32::from(r5) * 255 + 15) / 31) as u8;
+    let g = ((u32::from(g6) * 255 + 31) / 63) as u8;
+    let b = ((u32::from(b5) * 255 + 15) / 31) as u8;
+    (r, g, b)
+}
+
+/// Decodes one BC1 (DXT1) 8-byte block into 16 RGBA8 pixels (row-major within the 4×4 tile).
+fn decode_bc1_block(block: &[u8; 8], tile_rgba: &mut [u8; 64]) {
+    let c0 = u16::from_le_bytes([block[0], block[1]]);
+    let c1 = u16::from_le_bytes([block[2], block[3]]);
+    let bits = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
+    let (r0, g0, b0) = rgb565_to_rgb8(c0);
+    let (r1, g1, b1) = rgb565_to_rgb8(c1);
+    let colors: [[u8; 4]; 4] = if c0 > c1 {
+        [
+            [r0, g0, b0, 255],
+            [r1, g1, b1, 255],
+            [
+                ((2 * u32::from(r0) + u32::from(r1)) / 3) as u8,
+                ((2 * u32::from(g0) + u32::from(g1)) / 3) as u8,
+                ((2 * u32::from(b0) + u32::from(b1)) / 3) as u8,
+                255,
+            ],
+            [
+                ((u32::from(r0) + 2 * u32::from(r1)) / 3) as u8,
+                ((u32::from(g0) + 2 * u32::from(g1)) / 3) as u8,
+                ((u32::from(b0) + 2 * u32::from(b1)) / 3) as u8,
+                255,
+            ],
+        ]
+    } else {
+        [
+            [r0, g0, b0, 255],
+            [r1, g1, b1, 255],
+            [
+                ((u32::from(r0) + u32::from(r1)) / 2) as u8,
+                ((u32::from(g0) + u32::from(g1)) / 2) as u8,
+                ((u32::from(b0) + u32::from(b1)) / 2) as u8,
+                255,
+            ],
+            [0, 0, 0, 0],
+        ]
+    };
+    for i in 0..16 {
+        let code = ((bits >> (i * 2)) & 3) as usize;
+        let px = colors[code];
+        tile_rgba[i * 4..(i + 1) * 4].copy_from_slice(&px);
+    }
+}
+
+/// Decodes the first 8 bytes of a BC3 block as DXT5-style alpha (16× 8-bit alpha values).
+fn decode_bc3_alpha_block(block_alpha: &[u8; 8], out_alpha: &mut [u8; 16]) {
+    let a0 = u32::from(block_alpha[0]);
+    let a1 = u32::from(block_alpha[1]);
+    let mut bits = 0u64;
+    for i in 0..6 {
+        bits |= u64::from(block_alpha[2 + i]) << (8 * i);
+    }
+    let lut: [u8; 8] = if a0 > a1 {
+        [
+            a0 as u8,
+            a1 as u8,
+            ((6 * a0 + a1) / 7) as u8,
+            ((5 * a0 + 2 * a1) / 7) as u8,
+            ((4 * a0 + 3 * a1) / 7) as u8,
+            ((3 * a0 + 4 * a1) / 7) as u8,
+            ((2 * a0 + 5 * a1) / 7) as u8,
+            ((a0 + 6 * a1) / 7) as u8,
+        ]
+    } else {
+        [
+            a0 as u8,
+            a1 as u8,
+            ((4 * a0 + a1) / 5) as u8,
+            ((3 * a0 + 2 * a1) / 5) as u8,
+            ((2 * a0 + 3 * a1) / 5) as u8,
+            ((a0 + 4 * a1) / 5) as u8,
+            0,
+            255,
+        ]
+    };
+    for (i, slot) in out_alpha.iter_mut().enumerate().take(16) {
+        let code = ((bits >> (i * 3)) & 7) as usize;
+        *slot = lut[code];
+    }
+}
+
+/// Decodes mip0 BC1 (DXT1) to tight RGBA8. Expects `ceil(w/4)*ceil(h/4)*8` bytes.
+fn decode_bc1_to_rgba8(width: usize, height: usize, raw: &[u8]) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let bx = width.div_ceil(4);
+    let by = height.div_ceil(4);
+    let need = bx.checked_mul(by)?.checked_mul(8)?;
+    if raw.len() < need {
+        return None;
+    }
+    let mut out = vec![0u8; width.checked_mul(height)?.checked_mul(4)?];
+    for byi in 0..by {
+        for bxi in 0..bx {
+            let off = (byi * bx + bxi) * 8;
+            let block: &[u8; 8] = raw.get(off..off + 8)?.try_into().ok()?;
+            let mut tile = [0u8; 64];
+            decode_bc1_block(block, &mut tile);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let gx = bxi * 4 + x;
+                    let gy = byi * 4 + y;
+                    if gx < width && gy < height {
+                        let ti = (y * 4 + x) * 4;
+                        let dst = (gy * width + gx) * 4;
+                        out[dst..dst + 4].copy_from_slice(&tile[ti..ti + 4]);
+                    }
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Decodes mip0 BC3 (DXT5) to tight RGBA8. Expects `ceil(w/4)*ceil(h/4)*16` bytes.
+fn decode_bc3_to_rgba8(width: usize, height: usize, raw: &[u8]) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let bx = width.div_ceil(4);
+    let by = height.div_ceil(4);
+    let need = bx.checked_mul(by)?.checked_mul(16)?;
+    if raw.len() < need {
+        return None;
+    }
+    let mut out = vec![0u8; width.checked_mul(height)?.checked_mul(4)?];
+    for byi in 0..by {
+        for bxi in 0..bx {
+            let off = (byi * bx + bxi) * 16;
+            let chunk = raw.get(off..off + 16)?;
+            let alpha: &[u8; 8] = chunk.get(0..8)?.try_into().ok()?;
+            let color: &[u8; 8] = chunk.get(8..16)?.try_into().ok()?;
+            let mut tile = [0u8; 64];
+            decode_bc1_block(color, &mut tile);
+            let mut alphas = [0u8; 16];
+            decode_bc3_alpha_block(alpha, &mut alphas);
+            for i in 0..16 {
+                tile[i * 4 + 3] = alphas[i];
+            }
+            for y in 0..4 {
+                for x in 0..4 {
+                    let gx = bxi * 4 + x;
+                    let gy = byi * 4 + y;
+                    if gx < width && gy < height {
+                        let ti = (y * 4 + x) * 4;
+                        let dst = (gy * width + gx) * 4;
+                        out[dst..dst + 4].copy_from_slice(&tile[ti..ti + 4]);
+                    }
+                }
+            }
+        }
+    }
+    Some(out)
 }
 
 fn flip_rgba_image_rows(buf: &mut [u8], width: usize, height: usize) {
@@ -246,5 +431,28 @@ mod tests {
             decode_texture_mip0_to_rgba8(TextureFormat::bgr565, 1, 1, false, &raw).expect("ok");
         assert_eq!(out.len(), 4);
         assert!(out[2] >= 250 && out[1] < 5 && out[0] < 5 && out[3] == 255);
+    }
+
+    /// Solid red DXT1 block: color0 red (`0xF800`), color1 black, all indices 0.
+    #[test]
+    fn bc1_decodes_red_1x1() {
+        let raw = vec![0x00u8, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let out =
+            decode_texture_mip0_to_rgba8(TextureFormat::bc1, 1, 1, false, &raw).expect("ok");
+        assert_eq!(out.len(), 4);
+        assert!(out[0] >= 250 && out[1] < 5 && out[2] < 5 && out[3] == 255);
+    }
+
+    /// DXT5: alpha `a0=255`, `a1=254` (so `a0 > a1`), indices 0 → opaque; color block same as [`bc1_decodes_red_1x1`].
+    #[test]
+    fn bc3_decodes_red_opaque_1x1() {
+        let raw = vec![
+            255, 254, 0, 0, 0, 0, 0, 0, //
+            0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let out =
+            decode_texture_mip0_to_rgba8(TextureFormat::bc3, 1, 1, false, &raw).expect("ok");
+        assert_eq!(out.len(), 4);
+        assert!(out[0] >= 250 && out[1] < 5 && out[2] < 5 && out[3] >= 250);
     }
 }
