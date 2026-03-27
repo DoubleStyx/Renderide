@@ -1,5 +1,8 @@
 //! Host contract for native WGSL UI materials (`UI_Unlit`, `UI_TextUnlit`).
 //!
+//! For Resonite world `Shader "Unlit"` (mesh [`VertexPosNormalUv`](crate::gpu::mesh::VertexPosNormalUv)),
+//! see [`super::world_unlit_material_contract`].
+//!
 //! Shader asset IDs are assigned by the host at runtime. Configure them under `[rendering]` in
 //! `configuration.ini` (see [`crate::config::RenderConfig`]) or via environment variables so the
 //! renderer maps `set_shader` batches to [`NativeUiShaderFamily`].
@@ -82,13 +85,6 @@
 //! and optional `_MainTex` → [`crate::gpu::PipelineVariant::PbrHostAlbedo`] are documented on
 //! [`crate::assets::material_properties`] and [`crate::config::RenderConfig`]; full Standard stacks
 //! (`_BumpMap`, `_EmissionMap`, …) are not wired into the generic PBR WGSL path yet.
-
-use std::collections::HashMap;
-
-use crate::config::RenderConfig;
-
-use super::MaterialPropertyLookupIds;
-use super::texture2d_asset_id_from_packed;
 
 /// Identifies which native UI WGSL program to use for a host shader asset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -185,54 +181,6 @@ pub fn resolve_native_ui_shader_family(
             .and_then(|s| s.wgsl_source.as_deref())
             .and_then(native_ui_family_from_unity_shader_name)
     })
-}
-
-/// When [`RenderConfig::use_native_ui_wgsl`] and [`RenderConfig::log_ui_unlit_material_inventory`]
-/// are true, logs one line per material asset whose `set_shader` resolves to
-/// [`NativeUiShaderFamily::UiUnlit`].
-///
-/// Uses material-only [`MaterialPropertyLookupIds`] (no per-renderer property-block merge). For
-/// per-draw overrides, use draw-path logging when [`RenderConfig::log_native_ui_routing`] is enabled.
-pub fn log_ui_unlit_material_inventory_if_enabled(
-    store: &super::MaterialPropertyStore,
-    registry: &super::AssetRegistry,
-    rc: &RenderConfig,
-    texture2d_gpu: &HashMap<i32, (wgpu::Texture, wgpu::TextureView)>,
-) {
-    if !rc.use_native_ui_wgsl || !rc.log_ui_unlit_material_inventory {
-        return;
-    }
-    for (material_id, shader_id) in store.iter_material_shader_bindings() {
-        let Some(family) = resolve_native_ui_shader_family(
-            shader_id,
-            rc.native_ui_unlit_shader_id,
-            rc.native_ui_text_unlit_shader_id,
-            registry,
-        ) else {
-            continue;
-        };
-        if family != NativeUiShaderFamily::UiUnlit {
-            continue;
-        }
-        let lookup = MaterialPropertyLookupIds {
-            material_asset_id: material_id,
-            mesh_property_block_slot0: None,
-        };
-        let (_, main_packed, _) =
-            ui_unlit_material_uniform(store, lookup, &rc.ui_unlit_property_ids);
-        let tex_id = texture2d_asset_id_from_packed(main_packed);
-        let has_color_texture_property = main_packed != 0 && tex_id.is_some();
-        let gpu_texture_resident = tex_id.is_some_and(|id| texture2d_gpu.contains_key(&id));
-        logger::info!(
-            "ui_unlit_material_inventory: material_id={} shader_id={} main_tex_packed={} has_color_texture_property={} texture2d_asset_id={:?} gpu_texture_resident={}",
-            material_id,
-            shader_id,
-            main_packed,
-            has_color_texture_property,
-            tex_id,
-            gpu_texture_resident,
-        );
-    }
 }
 
 /// Property id map for `UI_Unlit` material batches. `-1` = omit (use GPU default).

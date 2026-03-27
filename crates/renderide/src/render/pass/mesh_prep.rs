@@ -22,7 +22,7 @@ use super::material_draw_context::MaterialDrawContext;
 use super::mesh_draw::{CollectMeshDrawsContext, collect_mesh_draws};
 use crate::assets::texture2d_asset_id_from_packed;
 use crate::assets::{
-    MaterialPropertyLookupIds, NativeUiShaderFamily, log_ui_unlit_material_inventory_if_enabled,
+    MaterialPropertyLookupIds, NativeUiShaderFamily, log_world_unlit_material_inventory_if_enabled,
     resolve_native_ui_shader_family, ui_text_unlit_material_uniform, ui_unlit_material_uniform,
 };
 use crate::gpu::GpuState;
@@ -177,7 +177,7 @@ pub fn prepare_mesh_draws_for_view(
     ensure_mesh_buffers(gpu, session, draw_batches);
     prefetch_native_ui_texture2d_gpu(session, gpu, draw_batches);
     let reg = session.asset_registry();
-    log_ui_unlit_material_inventory_if_enabled(
+    log_world_unlit_material_inventory_if_enabled(
         &reg.material_property_store,
         reg,
         session.render_config(),
@@ -208,7 +208,9 @@ pub fn prepare_mesh_draws_for_view(
 ///
 /// Walks this frame’s draw batches (merged material + property-block lookup) and then
 /// **every** `set_shader` material in the store resolved as [`NativeUiShaderFamily::UiUnlit`]
-/// using material-only lookup (same basis as [`log_ui_unlit_material_inventory_if_enabled`](crate::assets::log_ui_unlit_material_inventory_if_enabled))
+/// using material-only lookup (same material store walk as
+/// [`log_world_unlit_material_inventory_if_enabled`](crate::assets::log_world_unlit_material_inventory_if_enabled),
+/// which logs world `Shader "Unlit"` rows instead when that diagnostic is enabled)
 /// so textures are GPU-resident even when a material is not drawn this frame.
 fn prefetch_native_ui_texture2d_gpu(
     session: &Session,

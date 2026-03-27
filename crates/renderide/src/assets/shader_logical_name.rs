@@ -19,6 +19,11 @@ pub const CANONICAL_UNITY_UI_UNLIT: &str = "UI/Unlit";
 /// Canonical name: `UI_TextUnlit.shader` → `Shader "UI/Text/Unlit"`.
 pub const CANONICAL_UNITY_UI_TEXT_UNLIT: &str = "UI/Text/Unlit";
 
+/// Canonical name from Resonite `Common/Unlit.shader`: line `Shader "Unlit"`.
+///
+/// Distinct from [`CANONICAL_UNITY_UI_UNLIT`] (`UI/Unlit`); the world-mesh unlit WGSL path keys on this.
+pub const CANONICAL_UNITY_WORLD_UNLIT: &str = "Unlit";
+
 /// Parses the quoted name from a ShaderLab `Shader "Name"` opening line or small file prelude.
 pub fn parse_shader_lab_quoted_name(source: &str) -> Option<String> {
     let s = source.trim_start_matches('\u{feff}').trim_start();
@@ -268,6 +273,15 @@ mod tests {
         assert_eq!(
             try_resolve_plain_shader_label("renderide:UI_Unlit").as_deref(),
             Some("UI_Unlit")
+        );
+    }
+
+    #[test]
+    fn parse_world_unlit_shader_line() {
+        let src = "Shader \"Unlit\"\n{\n";
+        assert_eq!(
+            parse_shader_lab_quoted_name(src).as_deref(),
+            Some(CANONICAL_UNITY_WORLD_UNLIT)
         );
     }
 }

@@ -21,6 +21,7 @@ fn main() {
     println!("cargo:rerun-if-changed=wgsl_modules/normal_debug.wgsl");
     println!("cargo:rerun-if-changed=wgsl_modules/uv_debug.wgsl");
     println!("cargo:rerun-if-changed=wgsl_modules/host_unlit.wgsl");
+    println!("cargo:rerun-if-changed=wgsl_modules/world_unlit.wgsl");
     println!("cargo:rerun-if-changed=wgsl_modules/ui_common.wgsl");
     println!("cargo:rerun-if-changed=wgsl_modules/ui_unlit.wgsl");
     println!("cargo:rerun-if-changed=wgsl_modules/ui_text_unlit.wgsl");
@@ -30,6 +31,7 @@ fn main() {
         "normal_debug",
         "uv_debug",
         "host_unlit",
+        "world_unlit",
         "ui_unlit",
         "ui_text_unlit",
     ] {

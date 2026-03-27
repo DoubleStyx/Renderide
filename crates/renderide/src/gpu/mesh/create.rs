@@ -72,11 +72,8 @@ pub fn create_mesh_buffers(
     } else {
         None
     };
-    let mut vertices_pos_normal_uv: Option<Vec<VertexPosNormalUv>> = if has_uvs {
-        Some(Vec::with_capacity(mesh.vertex_count as usize))
-    } else {
-        None
-    };
+    let mut vertices_pos_normal_uv: Vec<VertexPosNormalUv> =
+        Vec::with_capacity(mesh.vertex_count as usize);
 
     for i in 0..mesh.vertex_count as usize {
         let base = i * vertex_stride;
@@ -128,18 +125,16 @@ pub fn create_mesh_buffers(
             });
         }
 
-        if let Some(ref mut v_pnu) = vertices_pos_normal_uv {
-            let uv = if uv_size > 0 {
-                read_uv(&mesh.vertex_data, base, uv_off, uv_format).unwrap_or(default_uv)
-            } else {
-                default_uv
-            };
-            v_pnu.push(VertexPosNormalUv {
-                position: [px, py, pz],
-                normal,
-                uv,
-            });
-        }
+        let uv = if uv_size > 0 {
+            read_uv(&mesh.vertex_data, base, uv_off, uv_format).unwrap_or(default_uv)
+        } else {
+            default_uv
+        };
+        vertices_pos_normal_uv.push(VertexPosNormalUv {
+            position: [px, py, pz],
+            normal,
+            uv,
+        });
 
         if let Some(v_ui) = &mut vertices_ui {
             let color = if let Some((c_off, c_size, c_fmt)) = color_info {
@@ -206,15 +201,13 @@ pub fn create_mesh_buffers(
         )
     });
 
-    let vertex_buffer_pos_normal_uv = vertices_pos_normal_uv.map(|v| {
-        Arc::new(
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("mesh vertex buffer (pos+normal+uv)"),
-                contents: bytemuck::cast_slice(&v),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
-        )
-    });
+    let vertex_buffer_pos_normal_uv = Some(Arc::new(device.create_buffer_init(
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("mesh vertex buffer (pos+normal+uv)"),
+            contents: bytemuck::cast_slice(&vertices_pos_normal_uv),
+            usage: wgpu::BufferUsages::VERTEX,
+        },
+    )));
 
     let vertex_buffer_ui = vertices_ui.and_then(|v_ui| {
         if v_ui.len() < 3 {

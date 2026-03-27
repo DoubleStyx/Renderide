@@ -30,6 +30,7 @@ mod ui_text_unlit_native;
 pub(crate) mod ui_unlit_native;
 mod uniforms;
 mod uv_debug;
+mod world_unlit;
 
 pub use core::{
     MAX_BLENDSHAPE_WEIGHTS, MAX_INSTANCE_RUN, NUM_FRAMES_IN_FLIGHT, NonSkinnedUniformUpload,
@@ -62,3 +63,4 @@ pub use ui_unlit_native::UiUnlitNativePipeline;
 pub(crate) use ui_unlit_native::{fallback_white, native_ui_scene_depth_bind_group_layout};
 pub use uniforms::SceneUniforms;
 pub use uv_debug::UvDebugPipeline;
+pub use world_unlit::WorldUnlitPipeline;

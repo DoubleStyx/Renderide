@@ -8,8 +8,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::assets::{
-    MaterialPropertyStore, resolve_native_ui_surface_blend_text,
-    resolve_native_ui_surface_blend_unlit,
+    AssetRegistry, MaterialPropertyStore, resolve_native_ui_surface_blend_text,
+    resolve_native_ui_surface_blend_unlit, resolve_world_unlit_shader_family,
+    world_unlit_family_for_shader,
 };
 use crate::config::RenderConfig;
 
@@ -22,7 +23,7 @@ use super::pipeline::{
     PbrMrtRayQueryPipeline, PbrPipeline, PbrRayQueryPipeline, RenderPipeline, SkinnedMRTPipeline,
     SkinnedPbrMRTPipeline, SkinnedPbrMrtRayQueryPipeline, SkinnedPbrPipeline,
     SkinnedPbrRayQueryPipeline, SkinnedPipeline, UiTextUnlitNativePipeline, UiUnlitNativePipeline,
-    UvDebugMRTPipeline, UvDebugPipeline,
+    UvDebugMRTPipeline, UvDebugPipeline, WorldUnlitPipeline,
 };
 use super::pipeline_descriptor_cache::PipelineDescriptorCache;
 
@@ -65,8 +66,8 @@ pub enum PipelineVariant {
     OverlayNoDepthUvDebug,
     /// Skinned with depth test disabled for orthographic screen-space overlay.
     OverlayNoDepthSkinned,
-    /// Host-resolved material: uses [`HostUnlitPipeline`] when the property store lists a shader
-    /// for `material_id` (material / property block id from the draw).
+    /// Host-resolved material: uses [`super::pipeline::WorldUnlitPipeline`] for Resonite `Shader "Unlit"`
+    /// when the shader asset resolves as world unlit; otherwise [`HostUnlitPipeline`].
     Material { material_id: i32 },
     /// Native WGSL Resonite `UI/Unlit` (orthographic overlay, canvas vertices).
     NativeUiUnlit { material_id: i32 },
@@ -263,6 +264,7 @@ impl PipelineRegistry {
         config: &wgpu::SurfaceConfiguration,
         material_store: Option<&MaterialPropertyStore>,
         render_config: &RenderConfig,
+        asset_registry: Option<&AssetRegistry>,
     ) -> Option<Arc<dyn RenderPipeline>> {
         if let Some(p) = self.pipelines.get(&key) {
             return Some(Arc::clone(p));
@@ -271,18 +273,49 @@ impl PipelineRegistry {
             PipelineVariant::Material { material_id } => {
                 let store = material_store?;
                 let shader_id = store.shader_asset_for_material(*material_id)?;
-                let dk = PipelineDescriptorCache::host_unlit_key(shader_id, config.format);
-                let pipeline: Arc<dyn RenderPipeline> =
-                    if let Some(p) = self.descriptor_cache.get(dk) {
-                        p
-                    } else {
-                        let p: Arc<dyn RenderPipeline> =
-                            Arc::new(HostUnlitPipeline::new(device, config));
-                        self.descriptor_cache.insert(dk, Arc::clone(&p));
-                        p
-                    };
-                self.pipelines.insert(key, Arc::clone(&pipeline));
-                Some(pipeline)
+                let use_world_unlit = asset_registry
+                    .map(|reg| {
+                        resolve_world_unlit_shader_family(
+                            shader_id,
+                            render_config.native_world_unlit_shader_id,
+                            reg,
+                        )
+                        .is_some()
+                    })
+                    .unwrap_or_else(|| {
+                        world_unlit_family_for_shader(
+                            shader_id,
+                            render_config.native_world_unlit_shader_id,
+                        )
+                        .is_some()
+                    });
+                if use_world_unlit {
+                    let dk = PipelineDescriptorCache::world_unlit_key(shader_id, config.format);
+                    let pipeline: Arc<dyn RenderPipeline> =
+                        if let Some(p) = self.descriptor_cache.get(dk) {
+                            p
+                        } else {
+                            let p: Arc<dyn RenderPipeline> =
+                                Arc::new(WorldUnlitPipeline::new(device, config));
+                            self.descriptor_cache.insert(dk, Arc::clone(&p));
+                            p
+                        };
+                    self.pipelines.insert(key, Arc::clone(&pipeline));
+                    Some(pipeline)
+                } else {
+                    let dk = PipelineDescriptorCache::host_unlit_key(shader_id, config.format);
+                    let pipeline: Arc<dyn RenderPipeline> =
+                        if let Some(p) = self.descriptor_cache.get(dk) {
+                            p
+                        } else {
+                            let p: Arc<dyn RenderPipeline> =
+                                Arc::new(HostUnlitPipeline::new(device, config));
+                            self.descriptor_cache.insert(dk, Arc::clone(&p));
+                            p
+                        };
+                    self.pipelines.insert(key, Arc::clone(&pipeline));
+                    Some(pipeline)
+                }
             }
             PipelineVariant::NativeUiUnlit { material_id } => {
                 let store = material_store?;
@@ -495,6 +528,8 @@ impl PipelineRegistry {
         self.descriptor_cache
             .remove_host_unlit(shader_asset_id, format);
         self.descriptor_cache
+            .remove_world_unlit(shader_asset_id, format);
+        self.descriptor_cache
             .remove_native_ui(shader_asset_id, format);
     }
 }
@@ -550,9 +585,16 @@ impl PipelineManager {
         config: &wgpu::SurfaceConfiguration,
         material_store: Option<&MaterialPropertyStore>,
         render_config: &RenderConfig,
+        asset_registry: Option<&AssetRegistry>,
     ) -> Option<Arc<dyn RenderPipeline>> {
-        self.registry
-            .get_or_create(key, device, config, material_store, render_config)
+        self.registry.get_or_create(
+            key,
+            device,
+            config,
+            material_store,
+            render_config,
+            asset_registry,
+        )
     }
 
     /// Evicts pipelines for the given material. Call when a material is unloaded.

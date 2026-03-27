@@ -8,7 +8,8 @@
 
 use crate::assets::{
     apply_froox_material_property_name_to_native_ui_config,
-    apply_froox_material_property_name_to_pbr_host_config, intern_host_material_property_id,
+    apply_froox_material_property_name_to_pbr_host_config,
+    apply_froox_material_property_name_to_world_unlit_config, intern_host_material_property_id,
     material_update_batch::{ParseMaterialBatchOptions, parse_materials_update_batch_into_store},
 };
 use crate::shared::{MaterialPropertyIdResult, MaterialsUpdateBatchResult, RendererCommand};
@@ -32,6 +33,11 @@ impl CommandHandler for MaterialCommandHandler {
                         id,
                     );
                     apply_froox_material_property_name_to_pbr_host_config(
+                        ctx.render_config,
+                        name,
+                        id,
+                    );
+                    apply_froox_material_property_name_to_world_unlit_config(
                         ctx.render_config,
                         name,
                         id,

@@ -34,6 +34,7 @@ pub fn record_skinned_draws(
             params.config,
             Some(params.material_property_store),
             params.render_config,
+            Some(params.asset_registry),
         ) else {
             i += group_end;
             continue;

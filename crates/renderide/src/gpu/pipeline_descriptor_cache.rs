@@ -18,6 +18,7 @@ const NATIVE_UI_UNLIT_TAG: u64 = 0x4e_55_49_55_4e_4c_54_31; // "NUIUNLT1"
 const NATIVE_UI_TEXT_TAG: u64 = 0x4e_55_49_54_45_58_54_31; // "NUITEXT1"
 const NATIVE_UI_UNLIT_STENCIL_TAG: u64 = 0x4e_55_49_55_53_54_45_4e; // "NUIUSTEN"
 const NATIVE_UI_TEXT_STENCIL_TAG: u64 = 0x4e_55_49_54_53_54_45_4e; // "NUITSTEN"
+const WORLD_UNLIT_TAG: u64 = 0x57_52_4c_44_55_4e_4c_54; // "WRLDUNLT"
 
 /// Maps descriptor hashes to shared pipeline [`Arc`]s.
 #[derive(Default)]
@@ -39,6 +40,15 @@ impl PipelineDescriptorCache {
     pub(crate) fn host_unlit_key(shader_asset_id: i32, format: wgpu::TextureFormat) -> u64 {
         let mut h = DefaultHasher::new();
         HOST_UNLIT_CACHE_TAG.hash(&mut h);
+        shader_asset_id.hash(&mut h);
+        format.hash(&mut h);
+        h.finish()
+    }
+
+    /// Hash for [`crate::gpu::pipeline::WorldUnlitPipeline`] keyed by shader asset id.
+    pub(crate) fn world_unlit_key(shader_asset_id: i32, format: wgpu::TextureFormat) -> u64 {
+        let mut h = DefaultHasher::new();
+        WORLD_UNLIT_TAG.hash(&mut h);
         shader_asset_id.hash(&mut h);
         format.hash(&mut h);
         h.finish()
@@ -114,6 +124,12 @@ impl PipelineDescriptorCache {
             .remove(&Self::host_unlit_key(shader_asset_id, format));
     }
 
+    /// Drops cached world-unlit pipelines for `shader_asset_id` (e.g. shader unload).
+    pub(crate) fn remove_world_unlit(&mut self, shader_asset_id: i32, format: wgpu::TextureFormat) {
+        self.entries
+            .remove(&Self::world_unlit_key(shader_asset_id, format));
+    }
+
     /// Drops cached native UI pipelines for `shader_asset_id` (e.g. shader unload).
     pub(crate) fn remove_native_ui(&mut self, shader_asset_id: i32, format: wgpu::TextureFormat) {
         for b in NativeUiSurfaceBlend::ALL {
@@ -149,9 +165,12 @@ mod tests {
         let u = PipelineDescriptorCache::native_ui_unlit_key(sid, fmt, b);
         let t = PipelineDescriptorCache::native_ui_text_key(sid, fmt, b);
         let h = PipelineDescriptorCache::host_unlit_key(sid, fmt);
+        let w = PipelineDescriptorCache::world_unlit_key(sid, fmt);
         assert_ne!(u, t);
         assert_ne!(u, h);
         assert_ne!(t, h);
+        assert_ne!(w, h);
+        assert_ne!(w, u);
     }
 
     #[test]

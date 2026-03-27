@@ -9,7 +9,10 @@
 //! [`crate::session::Session::drain_pending_shader_unloads`]), so host-unlit and native UI pipeline
 //! descriptor cache entries for that shader are dropped.
 
-use crate::assets::{NativeUiShaderFamily, native_ui_family_from_unity_shader_name};
+use crate::assets::{
+    NativeUiShaderFamily, WorldUnlitShaderFamily, native_ui_family_from_unity_shader_name,
+    world_unlit_family_from_unity_shader_name,
+};
 use crate::shared::{RendererCommand, ShaderUploadResult};
 
 use super::{CommandContext, CommandHandler, CommandResult};
@@ -38,12 +41,21 @@ impl CommandHandler for ShaderCommandHandler {
                                 .as_deref()
                                 .and_then(native_ui_family_from_unity_shader_name)
                         });
+                    let world_family = unity_name
+                        .as_deref()
+                        .and_then(world_unlit_family_from_unity_shader_name)
+                        .or_else(|| {
+                            data.file
+                                .as_deref()
+                                .and_then(world_unlit_family_from_unity_shader_name)
+                        });
                     logger::info!(
-                        "shader_upload: asset_id={} unity_shader_name={:?} upload_file_label={:?} resolved_native_ui_family={:?}",
+                        "shader_upload: asset_id={} unity_shader_name={:?} upload_file_label={:?} resolved_native_ui_family={:?} resolved_world_unlit_family={:?}",
                         asset_id,
                         unity_name.as_deref(),
                         data.file.as_deref(),
-                        family
+                        family,
+                        world_family
                     );
                     if let Some(family) = family {
                         let force = ctx.render_config.native_ui_force_shader_hint_registration;
@@ -82,6 +94,27 @@ impl CommandHandler for ShaderCommandHandler {
                                 }
                             }
                             _ => {}
+                        }
+                    }
+                    if let Some(wf) = world_family {
+                        let force = ctx
+                            .render_config
+                            .native_world_unlit_force_shader_hint_registration;
+                        if matches!(wf, WorldUnlitShaderFamily::StandardUnlit)
+                            && (force || ctx.render_config.native_world_unlit_shader_id < 0)
+                        {
+                            ctx.render_config.native_world_unlit_shader_id = asset_id;
+                            if force {
+                                logger::info!(
+                                    "world_unlit: force-registered Shader \"Unlit\" shader_id={} from upload hint",
+                                    asset_id
+                                );
+                            } else {
+                                logger::info!(
+                                    "world_unlit: auto-registered Shader \"Unlit\" shader_id={} from upload hint",
+                                    asset_id
+                                );
+                            }
                         }
                     }
                     ctx.receiver

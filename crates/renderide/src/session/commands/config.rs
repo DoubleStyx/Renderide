@@ -82,6 +82,11 @@ impl CommandHandler for ConfigCommandHandler {
                     native_ui_force_shader_hint_registration: ctx
                         .render_config
                         .native_ui_force_shader_hint_registration,
+                    native_world_unlit_shader_id: ctx.render_config.native_world_unlit_shader_id,
+                    native_world_unlit_force_shader_hint_registration: ctx
+                        .render_config
+                        .native_world_unlit_force_shader_hint_registration,
+                    world_unlit_property_ids: ctx.render_config.world_unlit_property_ids,
                     native_ui_default_surface_blend: ctx
                         .render_config
                         .native_ui_default_surface_blend,

@@ -9,7 +9,7 @@ use super::types::{BatchedDraw, MeshDrawParams};
 use crate::assets::{MaterialPropertyStore, MaterialPropertyValue, texture2d_asset_id_from_packed};
 use crate::config::RenderConfig;
 use crate::gpu::pipeline::{
-    PbrHostAlbedoPipeline, UiTextUnlitNativePipeline, UiUnlitNativePipeline,
+    PbrHostAlbedoPipeline, UiTextUnlitNativePipeline, UiUnlitNativePipeline, WorldUnlitPipeline,
 };
 use crate::gpu::state::ensure_texture2d_gpu_view;
 use crate::gpu::{
@@ -98,6 +98,7 @@ pub fn record_non_skinned_draws(
             params.config,
             Some(params.material_property_store),
             params.render_config,
+            Some(params.asset_registry),
         ) else {
             i += group_end;
             continue;
@@ -227,6 +228,14 @@ pub fn record_non_skinned_draws(
                 .as_ref()
                 .as_any()
                 .downcast_ref::<UiTextUnlitNativePipeline>()
+        } else {
+            None
+        };
+        let world_unlit_ref = if matches!(pipeline_variant, PipelineVariant::Material { .. }) {
+            pipeline
+                .as_ref()
+                .as_any()
+                .downcast_ref::<WorldUnlitPipeline>()
         } else {
             None
         };
@@ -432,6 +441,78 @@ pub fn record_non_skinned_draws(
                                         &params.render_config.ui_text_unlit_property_ids,
                                         font_view,
                                         font_key,
+                                    );
+                            }
+                        }
+                        PipelineVariant::Material { material_id } => {
+                            if let Some(w) = world_unlit_ref {
+                                let ui_lookup = MaterialDrawContext::for_non_skinned_draw(
+                                    material_id,
+                                    d.mesh_renderer_property_block_slot0_id,
+                                )
+                                .property_lookup;
+                                let (_, main_packed, mask_packed) =
+                                    crate::assets::world_unlit_material_uniform(
+                                        params.material_property_store,
+                                        ui_lookup,
+                                        &params.render_config.world_unlit_property_ids,
+                                    );
+                                let main_id = (main_packed != 0)
+                                    .then(|| texture2d_asset_id_from_packed(main_packed))
+                                    .flatten();
+                                let mask_id = (mask_packed != 0)
+                                    .then(|| texture2d_asset_id_from_packed(mask_packed))
+                                    .flatten();
+                                if let Some((id, tex)) = main_id.and_then(|id| {
+                                    params.asset_registry.get_texture(id).map(|tex| (id, tex))
+                                }) {
+                                    let _ = ensure_texture2d_gpu_view(
+                                        params.device,
+                                        params.queue,
+                                        params.texture2d_gpu,
+                                        params.texture2d_last_uploaded_version,
+                                        params.native_ui_material_bind_cache,
+                                        params.pbr_host_albedo_bind_cache,
+                                        id,
+                                        tex,
+                                    );
+                                }
+                                if let Some((id, tex)) = mask_id.and_then(|id| {
+                                    params.asset_registry.get_texture(id).map(|tex| (id, tex))
+                                }) {
+                                    let _ = ensure_texture2d_gpu_view(
+                                        params.device,
+                                        params.queue,
+                                        params.texture2d_gpu,
+                                        params.texture2d_last_uploaded_version,
+                                        params.native_ui_material_bind_cache,
+                                        params.pbr_host_albedo_bind_cache,
+                                        id,
+                                        tex,
+                                    );
+                                }
+                                let main_view = main_id
+                                    .and_then(|id| params.texture2d_gpu.get(&id).map(|(_, v)| v));
+                                let mask_view = mask_id
+                                    .and_then(|id| params.texture2d_gpu.get(&id).map(|(_, v)| v));
+                                let main_key = main_id.unwrap_or(0);
+                                let mask_key = mask_id.unwrap_or(0);
+                                params
+                                    .native_ui_material_bind_cache
+                                    .write_world_unlit_material_bind(
+                                        params.device,
+                                        params.queue,
+                                        pass,
+                                        w.material_bind_group_layout(),
+                                        w.material_uniform_buffer(),
+                                        w.linear_sampler(),
+                                        params.material_property_store,
+                                        ui_lookup,
+                                        &params.render_config.world_unlit_property_ids,
+                                        main_view,
+                                        mask_view,
+                                        main_key,
+                                        mask_key,
                                     );
                             }
                         }

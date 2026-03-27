@@ -528,6 +528,35 @@ pub(crate) fn apply_render_config_ini_entry(
                 );
             }
         }
+        ("rendering", "native_world_unlit_shader_id") => match value.parse::<i32>() {
+            Ok(v) => {
+                config.native_world_unlit_shader_id = v;
+                eprintln!("[renderide] ini: native_world_unlit_shader_id = {}", v);
+                logger::info!("ini: native_world_unlit_shader_id = {}", v);
+            }
+            Err(_) => eprintln!(
+                "[renderide] ini: native_world_unlit_shader_id parse error (raw = {:?})",
+                value
+            ),
+        },
+        ("rendering", "native_world_unlit_force_shader_hint_registration") => {
+            if let Some(v) = parse_bool(value) {
+                config.native_world_unlit_force_shader_hint_registration = v;
+                eprintln!(
+                    "[renderide] ini: native_world_unlit_force_shader_hint_registration = {}",
+                    v
+                );
+                logger::info!(
+                    "ini: native_world_unlit_force_shader_hint_registration = {}",
+                    v
+                );
+            } else {
+                eprintln!(
+                    "[renderide] ini: native_world_unlit_force_shader_hint_registration parse error (raw = {:?})",
+                    value
+                );
+            }
+        }
         ("rendering", "native_ui_default_surface_blend") => {
             if let Some(v) = NativeUiSurfaceBlend::parse_ini(value) {
                 config.native_ui_default_surface_blend = v;
@@ -564,7 +593,10 @@ pub(crate) fn apply_render_config_ini_entry(
                 );
             }
         }
-        _ => apply_native_ui_property_ini(config, section, key, value),
+        _ => {
+            apply_native_ui_property_ini(config, section, key, value);
+            apply_world_unlit_property_ini(config, section, key, value);
+        }
     }
 }
 
@@ -629,6 +661,38 @@ fn apply_native_ui_property_ini(config: &mut RenderConfig, section: &str, key: &
                 _ => {}
             }
         }
+        _ => {}
+    }
+}
+
+/// Applies `[world_unlit_properties]` keys for world `Shader "Unlit"` WGSL.
+fn apply_world_unlit_property_ini(
+    config: &mut RenderConfig,
+    section: &str,
+    key: &str,
+    value: &str,
+) {
+    if section != "world_unlit_properties" {
+        return;
+    }
+    let Ok(v) = value.parse::<i32>() else {
+        logger::warn!("world_unlit_properties: skip bad int for key {}", key);
+        return;
+    };
+    let ids = &mut config.world_unlit_property_ids;
+    match key {
+        "tex" => ids.tex = v,
+        "tex_st" => ids.tex_st = v,
+        "color" => ids.color = v,
+        "cutoff" => ids.cutoff = v,
+        "mask_tex" => ids.mask_tex = v,
+        "mask_tex_st" => ids.mask_tex_st = v,
+        "texture_kw" => ids.texture_kw = v,
+        "color_kw" => ids.color_kw = v,
+        "texture_normalmap_kw" => ids.texture_normalmap_kw = v,
+        "alphatest_kw" => ids.alphatest_kw = v,
+        "mask_texture_mul" => ids.mask_texture_mul = v,
+        "mask_texture_clip" => ids.mask_texture_clip = v,
         _ => {}
     }
 }

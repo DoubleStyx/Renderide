@@ -19,6 +19,9 @@
 //! When [`crate::config::RenderConfig::use_native_ui_wgsl`] is enabled, [`apply_froox_material_property_name_to_native_ui_config`]
 //! maps known Froox/Unity property names (`_MainTex`, `_Tint`, …) onto [`crate::config::RenderConfig::ui_unlit_property_ids`]
 //! so batches can drive [`crate::assets::ui_unlit_material_uniform`] without manual INI mapping.
+//!
+//! When [`crate::config::RenderConfig::use_host_unlit_pilot`] is enabled, [`apply_froox_material_property_name_to_world_unlit_config`]
+//! maps `_Tex`, `_Color`, … onto [`crate::config::RenderConfig::world_unlit_property_ids`] for world `Shader "Unlit"`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -115,6 +118,36 @@ pub fn apply_froox_material_property_name_to_native_ui_config(
     }
 }
 
+/// Maps FrooxEngine / Unity property names for Resonite world [`crate::assets::CANONICAL_UNITY_WORLD_UNLIT`]
+/// into [`crate::config::RenderConfig::world_unlit_property_ids`] when [`RenderConfig::use_host_unlit_pilot`] is on.
+pub fn apply_froox_material_property_name_to_world_unlit_config(
+    config: &mut RenderConfig,
+    name: &str,
+    id: i32,
+) {
+    if !config.use_host_unlit_pilot || name.is_empty() {
+        return;
+    }
+    let w = &mut config.world_unlit_property_ids;
+    match name {
+        "_Tex" => w.tex = id,
+        "_Tex_ST" => w.tex_st = id,
+        "_Color" => w.color = id,
+        "_Cutoff" => w.cutoff = id,
+        "_MaskTex" => w.mask_tex = id,
+        "_MaskTex_ST" => w.mask_tex_st = id,
+        "_TEXTURE" | "TEXTURE" | "texture_kw" => w.texture_kw = id,
+        "_COLOR" | "COLOR" | "color_kw" => w.color_kw = id,
+        "_TEXTURE_NORMALMAP" | "TEXTURE_NORMALMAP" | "texture_normalmap_kw" => {
+            w.texture_normalmap_kw = id;
+        }
+        "_ALPHATEST" | "ALPHATEST" | "alphatest_kw" => w.alphatest_kw = id,
+        "_MASK_TEXTURE_MUL" | "mask_texture_mul" => w.mask_texture_mul = id,
+        "_MASK_TEXTURE_CLIP" | "mask_texture_clip" => w.mask_texture_clip = id,
+        _ => {}
+    }
+}
+
 /// Records Unity Standard / FrooxEngine property names used by generic PBR for host-driven factors.
 ///
 /// Independent of [`RenderConfig::use_native_ui_wgsl`]; PBR reads these ids when
@@ -155,7 +188,8 @@ mod tests {
 
     use super::{
         MATERIAL_PROPERTY_HOST_TEST_MUTEX, apply_froox_material_property_name_to_native_ui_config,
-        apply_froox_material_property_name_to_pbr_host_config, intern_host_material_property_id,
+        apply_froox_material_property_name_to_pbr_host_config,
+        apply_froox_material_property_name_to_world_unlit_config, intern_host_material_property_id,
         reset_material_property_intern_table_for_tests,
     };
     use crate::config::RenderConfig;
@@ -174,6 +208,32 @@ mod tests {
         let b = intern_host_material_property_id("_MainTex");
         assert_eq!(a, b);
         assert_ne!(a, intern_host_material_property_id("_Tint"));
+    }
+
+    #[test]
+    fn apply_maps_froox_names_to_world_unlit_when_host_unlit_pilot_on() {
+        let _lock = test_lock();
+        reset_material_property_intern_table_for_tests();
+        let mut c = RenderConfig {
+            use_host_unlit_pilot: true,
+            ..Default::default()
+        };
+        let id = intern_host_material_property_id("_Tex");
+        apply_froox_material_property_name_to_world_unlit_config(&mut c, "_Tex", id);
+        assert_eq!(c.world_unlit_property_ids.tex, id);
+    }
+
+    #[test]
+    fn apply_skips_world_unlit_when_host_unlit_pilot_off() {
+        let _lock = test_lock();
+        reset_material_property_intern_table_for_tests();
+        let mut c = RenderConfig {
+            use_host_unlit_pilot: false,
+            ..Default::default()
+        };
+        let id = intern_host_material_property_id("_Tex");
+        apply_froox_material_property_name_to_world_unlit_config(&mut c, "_Tex", id);
+        assert_eq!(c.world_unlit_property_ids.tex, -1);
     }
 
     #[test]

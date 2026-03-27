@@ -14,6 +14,7 @@ pub(crate) mod shader_unity_asset;
 pub mod texture;
 pub mod texture_unpack;
 pub mod ui_material_contract;
+pub mod world_unlit_material_contract;
 
 /// Handle used to identify assets across the registry.
 pub type AssetId = i32;
@@ -30,7 +31,8 @@ pub use material_properties::{
 };
 pub use material_property_host::{
     apply_froox_material_property_name_to_native_ui_config,
-    apply_froox_material_property_name_to_pbr_host_config, intern_host_material_property_id,
+    apply_froox_material_property_name_to_pbr_host_config,
+    apply_froox_material_property_name_to_world_unlit_config, intern_host_material_property_id,
 };
 pub use mesh::{
     BlendshapeOffset, MeshAsset, attribute_offset_and_size, attribute_offset_size_format,
@@ -43,8 +45,9 @@ pub use native_ui_blend::{
 pub use registry::AssetRegistry;
 pub use shader::ShaderAsset;
 pub use shader_logical_name::{
-    CANONICAL_UNITY_UI_TEXT_UNLIT, CANONICAL_UNITY_UI_UNLIT, parse_shader_lab_quoted_name,
-    parse_wgsl_unity_shader_name_banner, resolve_logical_shader_name_from_upload,
+    CANONICAL_UNITY_UI_TEXT_UNLIT, CANONICAL_UNITY_UI_UNLIT, CANONICAL_UNITY_WORLD_UNLIT,
+    parse_shader_lab_quoted_name, parse_wgsl_unity_shader_name_banner,
+    resolve_logical_shader_name_from_upload,
     resolve_logical_shader_name_from_upload_with_host_hint,
 };
 pub use texture::TextureAsset;
@@ -53,8 +56,14 @@ pub use texture_unpack::{
 };
 pub use ui_material_contract::{
     NativeUiShaderFamily, UiTextUnlitMaterialUniform, UiTextUnlitPropertyIds, UiUnlitFlags,
-    UiUnlitMaterialUniform, UiUnlitPropertyIds, log_ui_unlit_material_inventory_if_enabled,
-    native_ui_family_for_shader, native_ui_family_from_shader_label,
-    native_ui_family_from_shader_path_hint, native_ui_family_from_unity_shader_name,
-    resolve_native_ui_shader_family, ui_text_unlit_material_uniform, ui_unlit_material_uniform,
+    UiUnlitMaterialUniform, UiUnlitPropertyIds, native_ui_family_for_shader,
+    native_ui_family_from_shader_label, native_ui_family_from_shader_path_hint,
+    native_ui_family_from_unity_shader_name, resolve_native_ui_shader_family,
+    ui_text_unlit_material_uniform, ui_unlit_material_uniform,
+};
+pub use world_unlit_material_contract::{
+    WorldUnlitFlags, WorldUnlitMaterialUniform, WorldUnlitPropertyIds, WorldUnlitShaderFamily,
+    log_world_unlit_material_inventory_if_enabled, resolve_world_unlit_shader_family,
+    world_unlit_family_for_shader, world_unlit_family_from_unity_shader_name,
+    world_unlit_material_uniform,
 };
