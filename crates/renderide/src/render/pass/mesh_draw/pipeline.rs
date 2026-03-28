@@ -7,37 +7,56 @@ use crate::gpu::PipelineVariant;
 ///
 /// Native UI variants ([`PipelineVariant::NativeUiUnlit`] / text / stencil) are returned unchanged
 /// even when `params.use_mrt` is true, so `UI_Unlit` / `UI_TextUnlit` WGSL continues to render in
-/// MRT sessions. ([`mesh_pipeline_variant_for_mrt`] still maps those variants to
-/// [`PipelineVariant::NormalDebugMRT`] for callers that invoke it directly—e.g. unit tests—not for
-/// this entry point.)
+/// MRT sessions.
+///
+/// [`PipelineVariant::Material`] (host-unlit pilot) is only kept when **not** using MRT. When MRT is
+/// active (RTAO G-buffer), the variant must be remapped—see [`mesh_pipeline_variant_for_mrt`]—or
+/// wgpu would bind a single-target host-unlit pipeline to a three-target render pass.
 pub fn resolve_pipeline_for_group(
     variant: &PipelineVariant,
     params: &MeshDrawParams,
     is_overlay_group: bool,
 ) -> PipelineVariant {
-    if matches!(
-        variant,
-        PipelineVariant::Material { .. }
-            | PipelineVariant::NativeUiUnlit { .. }
-            | PipelineVariant::NativeUiTextUnlit { .. }
-            | PipelineVariant::NativeUiUnlitStencil { .. }
-            | PipelineVariant::NativeUiTextUnlitStencil { .. }
-    ) {
-        return *variant;
-    }
     let pbr_ray_query = params
         .pbr_scene
         .as_ref()
         .is_some_and(|p| p.use_ray_tracing_scene);
+    resolve_pipeline_variant_core(
+        *variant,
+        params.use_mrt,
+        params.use_pbr,
+        params.pbr_scene.is_some(),
+        pbr_ray_query,
+        params.overlay_orthographic,
+        is_overlay_group,
+    )
+}
+
+/// Pure routing for [`resolve_pipeline_for_group`]; unit-tested without a full [`MeshDrawParams`].
+pub(crate) fn resolve_pipeline_variant_core(
+    variant: PipelineVariant,
+    use_mrt: bool,
+    use_pbr: bool,
+    has_pbr_scene: bool,
+    pbr_ray_query: bool,
+    overlay_orthographic: bool,
+    is_overlay_group: bool,
+) -> PipelineVariant {
+    if matches!(
+        variant,
+        PipelineVariant::NativeUiUnlit { .. }
+            | PipelineVariant::NativeUiTextUnlit { .. }
+            | PipelineVariant::NativeUiUnlitStencil { .. }
+            | PipelineVariant::NativeUiTextUnlitStencil { .. }
+    ) {
+        return variant;
+    }
+    if matches!(variant, PipelineVariant::Material { .. }) && !use_mrt {
+        return variant;
+    }
     overlay_pipeline_variant_for_orthographic(
-        &mesh_pipeline_variant_for_mrt(
-            variant,
-            params.use_mrt,
-            params.use_pbr,
-            params.pbr_scene.is_some(),
-            pbr_ray_query,
-        ),
-        params.overlay_orthographic && is_overlay_group,
+        &mesh_pipeline_variant_for_mrt(&variant, use_mrt, use_pbr, has_pbr_scene, pbr_ray_query),
+        overlay_orthographic && is_overlay_group,
     )
 }
 
@@ -76,10 +95,10 @@ pub fn overlay_pipeline_variant_for_orthographic(
 /// When use_mrt, outputs color/position/normal for RTAO. When use_pbr && !use_mrt, uses PBR.
 /// Falls back to debug variants when cluster buffers are unavailable.
 ///
-/// For [`PipelineVariant::Material`] and native UI variants, when `use_mrt` is true this returns
-/// [`PipelineVariant::NormalDebugMRT`] (host-unlit and native UI are not given a dedicated MRT
-/// pipeline here). Screen recording uses [`resolve_pipeline_for_group`] instead, which **does not**
-/// apply this branch to native UI—see its documentation.
+/// For [`PipelineVariant::Material`], when `use_mrt` is true this returns
+/// [`PipelineVariant::NormalDebugMRT`] (no dedicated host-unlit MRT shader). Native UI variants map
+/// the same way here; [`resolve_pipeline_for_group`] keeps native UI unchanged at record time and
+/// relies on native UI WGSL for MRT compatibility.
 pub fn mesh_pipeline_variant_for_mrt(
     variant: &PipelineVariant,
     use_mrt: bool,
@@ -203,7 +222,21 @@ pub fn mesh_pipeline_variant_for_mrt(
 mod mesh_pipeline_variant_mrt_tests {
     use crate::gpu::PipelineVariant;
 
-    use super::mesh_pipeline_variant_for_mrt;
+    use super::{mesh_pipeline_variant_for_mrt, resolve_pipeline_variant_core};
+
+    #[test]
+    fn resolve_core_material_maps_to_normal_debug_mrt_when_use_mrt() {
+        let v = PipelineVariant::Material { material_id: 7 };
+        let out = resolve_pipeline_variant_core(v, true, false, true, false, false, false);
+        assert_eq!(out, PipelineVariant::NormalDebugMRT);
+    }
+
+    #[test]
+    fn resolve_core_material_unchanged_when_no_mrt() {
+        let v = PipelineVariant::Material { material_id: 7 };
+        let out = resolve_pipeline_variant_core(v, false, false, true, false, false, false);
+        assert_eq!(out, v);
+    }
 
     #[test]
     fn material_variant_maps_to_normal_debug_mrt_when_use_mrt() {

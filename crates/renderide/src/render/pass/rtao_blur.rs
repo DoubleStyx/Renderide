@@ -50,7 +50,7 @@ const TILE_SIZE: u32 = 8;
 /// When `true`, runs the three-pass À-Trous bilateral filter from raw AO into `ao`.
 ///
 /// When `false`, copies raw AO into `ao` unchanged so composite uses unfiltered RTAO.
-pub const RTAO_ATROUS_BLUR_ENABLED: bool = false;
+pub const RTAO_ATROUS_BLUR_ENABLED: bool = true;
 
 /// WGSL compute shader that copies `ao_raw` into `ao` (same format, no filtering).
 const RTAO_AO_RAW_COPY_SHADER_SRC: &str = r#"
