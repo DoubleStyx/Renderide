@@ -1,6 +1,11 @@
 {
   "Unlit": "world/unlit.wgsl",
+  "OverlayUnlit": "world/overlay_unlit.wgsl",
+  "Volume/Unlit": "world/volume_unlit.wgsl",
+  "Billboard/Unlit": "world/billboard_unlit.wgsl",
   "UI/Unlit": "ui/ui_unlit.wgsl",
+  "UI/CircleSegment": "ui/ui_circle_segment.wgsl",
   "UI/Text/Unlit": "ui/ui_text_unlit.wgsl",
+  "Text/Unlit": "ui/text_unlit.wgsl",
   "PBSMetallic": "pbr/pbs_metallic.wgsl"
 }

@@ -80,14 +80,16 @@ pub fn apply_froox_material_property_name_to_native_ui_config(
             u.rect = id;
             t.rect = id;
         }
-        "_FontAtlas" => t.font_atlas = id,
-        "_TintColor" => t.tint_color = id,
-        "_OutlineColor" => t.outline_color = id,
-        "_BackgroundColor" => t.background_color = id,
-        "_Range" => t.range = id,
-        "_FaceDilate" => t.face_dilate = id,
-        "_FaceSoftness" => t.face_softness = id,
-        "_OutlineSize" => t.outline_size = id,
+        "_FontAtlas" | "FontAtlas" => t.font_atlas = id,
+        "_TintColor" | "TintColor" => t.tint_color = id,
+        "_OutlineColor" | "OutlineColor" => t.outline_color = id,
+        "_BackgroundColor" | "BackgroundColor" => t.background_color = id,
+        "_Range" | "Range" | "_PixelRange" | "PixelRange" => t.range = id,
+        "_FaceDilate" | "FaceDilate" => t.face_dilate = id,
+        "_FaceSoftness" | "FaceSoftness" => t.face_softness = id,
+        "_OutlineSize" | "OutlineSize" | "_OutlineThickness" | "OutlineThickness" => {
+            t.outline_size = id;
+        }
         "_SrcBlend" => {
             u.src_blend = id;
             t.src_blend = id;
@@ -96,6 +98,17 @@ pub fn apply_froox_material_property_name_to_native_ui_config(
             u.dst_blend = id;
             t.dst_blend = id;
         }
+        "_ZWrite" => u.zwrite = id,
+        "_Cull" => u.cull = id,
+        "_ZTest" => u.ztest = id,
+        "_ColorMask" => u.color_mask = id,
+        "_StencilComp" => u.stencil_comp = id,
+        "_Stencil" => u.stencil_ref = id,
+        "_StencilOp" => u.stencil_op = id,
+        "_StencilWriteMask" => u.stencil_write_mask = id,
+        "_StencilReadMask" => u.stencil_read_mask = id,
+        "_OffsetFactor" => u.offset_factor = id,
+        "_OffsetUnits" => u.offset_units = id,
         // FrooxEngine / Unity shader keywords (see `ui_material_contract` module docs).
         "ALPHACLIP" | "alphaclip" => u.alphaclip = id,
         "RECTCLIP" | "rectclip" => {
@@ -110,10 +123,10 @@ pub fn apply_froox_material_property_name_to_native_ui_config(
         "TEXTURE_LERPCOLOR" | "texture_lerpcolor" => u.texture_lerpcolor = id,
         "_MASK_TEXTURE_MUL" | "mask_texture_mul" => u.mask_texture_mul = id,
         "_MASK_TEXTURE_CLIP" | "mask_texture_clip" => u.mask_texture_clip = id,
-        "RASTER" | "raster" => t.raster = id,
-        "SDF" | "sdf" => t.sdf = id,
-        "MSDF" | "msdf" => t.msdf = id,
-        "OUTLINE" | "outline" => t.outline = id,
+        "RASTER" | "raster" | "Raster" => t.raster = id,
+        "SDF" | "sdf" | "Sdf" => t.sdf = id,
+        "MSDF" | "msdf" | "Msdf" => t.msdf = id,
+        "OUTLINE" | "outline" | "Outline" => t.outline = id,
         _ => {}
     }
 }
@@ -161,10 +174,12 @@ pub fn apply_froox_material_property_name_to_pbr_host_config(
         return;
     }
     match name {
-        "_Color" => config.pbr_host_color_property_id = id,
-        "_Metallic" => config.pbr_host_metallic_property_id = id,
+        "_Color" | "Color" | "_TintColor" | "TintColor" => config.pbr_host_color_property_id = id,
+        "_Metallic" | "Metallic" => config.pbr_host_metallic_property_id = id,
         "_Glossiness" | "Glossiness" => config.pbr_host_smoothness_property_id = id,
-        "_MainTex" => config.pbr_host_main_tex_property_id = id,
+        "_MainTex" | "MainTex" | "_BaseMap" | "BaseMap" | "_BaseColorMap" | "BaseColorMap" => {
+            config.pbr_host_main_tex_property_id = id;
+        }
         _ => {}
     }
 }

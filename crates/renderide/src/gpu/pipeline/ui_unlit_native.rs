@@ -216,7 +216,7 @@ impl UiUnlitNativePipeline {
         let material_bgl = create_ui_unlit_material_bind_group_layout(device);
         let initial = UiUnlitMaterialUniform {
             tint: [1.0, 1.0, 1.0, 1.0],
-            overlay_tint: [1.0, 1.0, 1.0, 0.73],
+            overlay_tint: [1.0, 1.0, 1.0, 0.5],
             main_tex_st: [1.0, 1.0, 0.0, 0.0],
             mask_tex_st: [1.0, 1.0, 0.0, 0.0],
             rect: [0.0, 0.0, 1.0, 1.0],

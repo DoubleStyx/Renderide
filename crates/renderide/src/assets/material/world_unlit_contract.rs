@@ -272,7 +272,7 @@ fn texture_handle(
         return 0;
     }
     match store.get_merged(lookup, pid) {
-        Some(super::MaterialPropertyValue::Texture(h)) => *h,
+        Some(super::MaterialPropertyValue::Texture(h)) if *h > 0 => *h,
         _ => 0,
     }
 }
@@ -287,16 +287,16 @@ pub fn world_unlit_material_uniform(
     let tex_st = float4(store, lookup, ids.tex_st, [1.0, 1.0, 0.0, 0.0]);
     let mask_tex_st = float4(store, lookup, ids.mask_tex_st, [1.0, 1.0, 0.0, 0.0]);
     let cutoff = float1(store, lookup, ids.cutoff, 0.5);
-    let flags = WorldUnlitFlags {
-        texture: flag_f(store, lookup, ids.texture_kw),
-        color: flag_f(store, lookup, ids.color_kw),
-        texture_normalmap: flag_f(store, lookup, ids.texture_normalmap_kw),
-        alphatest: flag_f(store, lookup, ids.alphatest_kw),
-        mask_texture_mul: flag_f(store, lookup, ids.mask_texture_mul),
-        mask_texture_clip: flag_f(store, lookup, ids.mask_texture_clip),
-    };
     let tex = texture_handle(store, lookup, ids.tex);
     let mask_tex = texture_handle(store, lookup, ids.mask_tex);
+    let flags = WorldUnlitFlags {
+        texture: tex != 0 && flag_f(store, lookup, ids.texture_kw),
+        color: flag_f(store, lookup, ids.color_kw),
+        texture_normalmap: tex != 0 && flag_f(store, lookup, ids.texture_normalmap_kw),
+        alphatest: flag_f(store, lookup, ids.alphatest_kw),
+        mask_texture_mul: mask_tex != 0 && flag_f(store, lookup, ids.mask_texture_mul),
+        mask_texture_clip: mask_tex != 0 && flag_f(store, lookup, ids.mask_texture_clip),
+    };
     let u = WorldUnlitMaterialUniform {
         color,
         tex_st,

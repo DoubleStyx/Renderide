@@ -456,7 +456,7 @@ impl Default for RenderConfig {
             world_unlit_property_ids: WorldUnlitPropertyIds::default(),
             native_ui_default_surface_blend: NativeUiSurfaceBlend::Alpha,
             pbr_bind_host_material_properties: true,
-            pbr_bind_host_main_texture: false,
+            pbr_bind_host_main_texture: true,
             pbr_host_color_property_id: -1,
             pbr_host_metallic_property_id: -1,
             pbr_host_smoothness_property_id: -1,

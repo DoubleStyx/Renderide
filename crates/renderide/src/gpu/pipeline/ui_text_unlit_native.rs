@@ -1,4 +1,4 @@
-//! Native WGSL `UI_TextUnlit` pipeline (`ui_text_unlit.wgsl`).
+//! Native WGSL text pipelines (`ui_text_unlit.wgsl` and `text_unlit.wgsl`).
 
 use wgpu::util::DeviceExt;
 
@@ -14,6 +14,7 @@ use super::ring_buffer::UniformRingBuffer;
 use super::ui_unlit_native::{fallback_white, native_ui_scene_depth_bind_group_layout};
 
 const UI_TEXT_UNLIT_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/ui_text_unlit.wgsl"));
+const TEXT_UNLIT_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/text_unlit.wgsl"));
 
 /// Native `UI_TextUnlit` render pipeline.
 pub struct UiTextUnlitNativePipeline {
@@ -33,9 +34,43 @@ impl UiTextUnlitNativePipeline {
         config: &wgpu::SurfaceConfiguration,
         surface_blend: NativeUiSurfaceBlend,
     ) -> Self {
+        Self::new_inner(
+            device,
+            config,
+            surface_blend,
+            UI_TEXT_UNLIT_WGSL,
+            "ui_text_unlit native",
+            "ui text unlit native RP",
+        )
+    }
+
+    /// Builds the native `Text/Unlit` pipeline for the swapchain format.
+    pub fn new_text(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        surface_blend: NativeUiSurfaceBlend,
+    ) -> Self {
+        Self::new_inner(
+            device,
+            config,
+            surface_blend,
+            TEXT_UNLIT_WGSL,
+            "text_unlit native",
+            "text unlit native RP",
+        )
+    }
+
+    fn new_inner(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        surface_blend: NativeUiSurfaceBlend,
+        shader_source: &'static str,
+        shader_label: &'static str,
+        pipeline_label: &'static str,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("ui_text_unlit native"),
-            source: wgpu::ShaderSource::Wgsl(UI_TEXT_UNLIT_WGSL.into()),
+            label: Some(shader_label),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
         let ring_bgl = builder::uniform_ring_bind_group_layout(device, "ui text unlit ring BGL");
         let scene_bgl = native_ui_scene_depth_bind_group_layout(device);
@@ -82,7 +117,7 @@ impl UiTextUnlitNativePipeline {
         });
         let initial = UiTextUnlitMaterialUniform {
             tint_color: [1.0, 1.0, 1.0, 1.0],
-            overlay_tint: [1.0, 1.0, 1.0, 0.73],
+            overlay_tint: [1.0, 1.0, 1.0, 0.5],
             outline_color: [1.0, 1.0, 1.0, 0.0],
             background_color: [0.0, 0.0, 0.0, 0.0],
             range_xy: [0.001, 0.001, 0.0, 0.0],
@@ -91,7 +126,7 @@ impl UiTextUnlitNativePipeline {
             outline_size: 0.0,
             pad_scalar: 0.0,
             rect: [0.0, 0.0, 1.0, 1.0],
-            flags: 0,
+            flags: 1,
             pad_flags: 0,
             pad_tail: [0; 2],
         };
@@ -161,7 +196,7 @@ impl UiTextUnlitNativePipeline {
             pipeline_layout,
             vb_layout,
             builder::depth_stencil_no_depth(),
-            "ui text unlit native RP",
+            pipeline_label,
             surface_blend,
         )
     }
@@ -172,9 +207,43 @@ impl UiTextUnlitNativePipeline {
         config: &wgpu::SurfaceConfiguration,
         surface_blend: NativeUiSurfaceBlend,
     ) -> Self {
+        Self::new_with_stencil_inner(
+            device,
+            config,
+            surface_blend,
+            UI_TEXT_UNLIT_WGSL,
+            "ui_text_unlit native stencil",
+            "ui text unlit native stencil RP",
+        )
+    }
+
+    /// Same as [`Self::new_text`] with GraphicsChunk stencil masking in the overlay pass.
+    pub fn new_text_with_stencil(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        surface_blend: NativeUiSurfaceBlend,
+    ) -> Self {
+        Self::new_with_stencil_inner(
+            device,
+            config,
+            surface_blend,
+            TEXT_UNLIT_WGSL,
+            "text_unlit native stencil",
+            "text unlit native stencil RP",
+        )
+    }
+
+    fn new_with_stencil_inner(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        surface_blend: NativeUiSurfaceBlend,
+        shader_source: &'static str,
+        shader_label: &'static str,
+        pipeline_label: &'static str,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("ui_text_unlit native stencil"),
-            source: wgpu::ShaderSource::Wgsl(UI_TEXT_UNLIT_WGSL.into()),
+            label: Some(shader_label),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
         let ring_bgl = builder::uniform_ring_bind_group_layout(device, "ui text unlit ring BGL");
         let scene_bgl = native_ui_scene_depth_bind_group_layout(device);
@@ -221,7 +290,7 @@ impl UiTextUnlitNativePipeline {
         });
         let initial = UiTextUnlitMaterialUniform {
             tint_color: [1.0, 1.0, 1.0, 1.0],
-            overlay_tint: [1.0, 1.0, 1.0, 0.73],
+            overlay_tint: [1.0, 1.0, 1.0, 0.5],
             outline_color: [1.0, 1.0, 1.0, 0.0],
             background_color: [0.0, 0.0, 0.0, 0.0],
             range_xy: [0.001, 0.001, 0.0, 0.0],
@@ -230,7 +299,7 @@ impl UiTextUnlitNativePipeline {
             outline_size: 0.0,
             pad_scalar: 0.0,
             rect: [0.0, 0.0, 1.0, 1.0],
-            flags: 0,
+            flags: 1,
             pad_flags: 0,
             pad_tail: [0; 2],
         };
@@ -300,7 +369,7 @@ impl UiTextUnlitNativePipeline {
             pipeline_layout,
             vb_layout,
             builder::depth_stencil_native_ui_stencil_content(),
-            "ui text unlit native stencil RP",
+            pipeline_label,
             surface_blend,
         )
     }

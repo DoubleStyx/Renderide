@@ -26,7 +26,7 @@ pub fn fill_pbr_host_uniform_extras(
         && let Some(MaterialPropertyValue::Float4(c)) =
             store.get_merged(lookup, rc.pbr_host_color_property_id)
     {
-        upload.host_base_color = [c[0], c[1], c[2], 1.0];
+        upload.host_base_color = [c[0], c[1], c[2], c[3]];
     }
     let mut mr_active = false;
     let mut metallic = 0.5_f32;

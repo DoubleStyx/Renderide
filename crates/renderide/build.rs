@@ -20,16 +20,26 @@ fn main() {
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/common/color_util.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/common/ui_common.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/world/unlit.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/world/overlay_unlit.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/world/volume_unlit.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/world/billboard_unlit.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/ui/ui_unlit.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/ui/ui_circle_segment.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/ui/ui_text_unlit.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/ui/text_unlit.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/pbr/pbs_metallic.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/pbr/pbs_metallic_host_albedo.wgsl");
     println!("cargo:rerun-if-changed=build.rs");
 
     for (out_name, rel_path) in [
         ("world_unlit", "world/unlit.wgsl"),
+        ("overlay_unlit", "world/overlay_unlit.wgsl"),
+        ("volume_unlit", "world/volume_unlit.wgsl"),
+        ("billboard_unlit", "world/billboard_unlit.wgsl"),
         ("ui_unlit", "ui/ui_unlit.wgsl"),
+        ("ui_circle_segment", "ui/ui_circle_segment.wgsl"),
         ("ui_text_unlit", "ui/ui_text_unlit.wgsl"),
+        ("text_unlit", "ui/text_unlit.wgsl"),
         ("pbs_metallic", "pbr/pbs_metallic.wgsl"),
         (
             "pbs_metallic_host_albedo",

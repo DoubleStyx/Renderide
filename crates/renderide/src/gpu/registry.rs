@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use crate::assets::{
     AssetRegistry, MaterialPropertyStore, resolve_native_ui_surface_blend_text,
-    resolve_native_ui_surface_blend_unlit, resolve_native_shader_route, NativeShaderRoute,
+    resolve_native_ui_surface_blend_unlit, resolve_native_shader_route,
+    NativeShaderRoute,
 };
 use crate::config::RenderConfig;
 
@@ -369,8 +370,18 @@ impl PipelineRegistry {
                     if let Some(p) = self.descriptor_cache.get(dk) {
                         p
                     } else {
+                        let use_text_unlit = asset_registry
+                            .and_then(|reg| reg.get_shader(shader_id))
+                            .and_then(|shader| shader.renderide_shader_rel_path)
+                            == Some("ui/text_unlit.wgsl");
                         let p: Arc<dyn RenderPipeline> =
-                            Arc::new(UiTextUnlitNativePipeline::new(device, config, blend));
+                            if use_text_unlit {
+                                Arc::new(UiTextUnlitNativePipeline::new_text(
+                                    device, config, blend,
+                                ))
+                            } else {
+                                Arc::new(UiTextUnlitNativePipeline::new(device, config, blend))
+                            };
                         self.descriptor_cache.insert(dk, Arc::clone(&p));
                         p
                     };
@@ -422,8 +433,20 @@ impl PipelineRegistry {
                     if let Some(p) = self.descriptor_cache.get(dk) {
                         p
                     } else {
+                        let use_text_unlit = asset_registry
+                            .and_then(|reg| reg.get_shader(shader_id))
+                            .and_then(|shader| shader.renderide_shader_rel_path)
+                            == Some("ui/text_unlit.wgsl");
                         let p: Arc<dyn RenderPipeline> = Arc::new(
-                            UiTextUnlitNativePipeline::new_with_stencil(device, config, blend),
+                            if use_text_unlit {
+                                UiTextUnlitNativePipeline::new_text_with_stencil(
+                                    device, config, blend,
+                                )
+                            } else {
+                                UiTextUnlitNativePipeline::new_with_stencil(
+                                    device, config, blend,
+                                )
+                            },
                         );
                         self.descriptor_cache.insert(dk, Arc::clone(&p));
                         p

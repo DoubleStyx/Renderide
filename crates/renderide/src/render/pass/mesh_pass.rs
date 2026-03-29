@@ -113,8 +113,19 @@ impl RenderPass for MeshRenderPass {
                 .as_ref()
                 .ok_or(RenderPassError::MissingCachedMeshDraws)?;
 
+        let scene_has_forward_only_variants = non_overlay_non_skinned.iter().any(|d| {
+            matches!(
+                d.pipeline_variant,
+                crate::gpu::PipelineVariant::Material { .. }
+                    | crate::gpu::PipelineVariant::NativeUiUnlit { .. }
+                    | crate::gpu::PipelineVariant::NativeUiTextUnlit { .. }
+                    | crate::gpu::PipelineVariant::NativeUiUnlitStencil { .. }
+                    | crate::gpu::PipelineVariant::NativeUiTextUnlitStencil { .. }
+            )
+        });
         let use_mrt = ctx.render_target.mrt_position_view.is_some()
-            && ctx.render_target.mrt_normal_view.is_some();
+            && ctx.render_target.mrt_normal_view.is_some()
+            && !scene_has_forward_only_variants;
 
         let mrt_world_origin = mrt_gbuffer_world_origin(ctx.draw_batches, ctx.session);
         if use_mrt {

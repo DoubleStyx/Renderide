@@ -119,6 +119,9 @@ pub struct LiveFrameDiagnostics {
     /// Per-frame fallback summaries for host shaders that had no native program match.
     #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
     pub shader_fallback_lines: Vec<String>,
+    /// Per-frame material/shader binding warnings (missing property ids, missing textures, etc.).
+    #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
+    pub shader_warning_lines: Vec<String>,
 }
 
 #[cfg_attr(not(feature = "debug-hud"), allow(dead_code))]
@@ -226,6 +229,7 @@ mod tests {
             material_batch_wire_metrics: None,
             shader_route_lines: Vec::new(),
             shader_fallback_lines: Vec::new(),
+            shader_warning_lines: Vec::new(),
         }
     }
 

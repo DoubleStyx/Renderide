@@ -640,6 +640,17 @@ fn apply_native_ui_property_ini(config: &mut RenderConfig, section: &str, key: &
                 "mask_texture_clip" => ids.mask_texture_clip = v,
                 "src_blend" => ids.src_blend = v,
                 "dst_blend" => ids.dst_blend = v,
+                "zwrite" => ids.zwrite = v,
+                "cull" => ids.cull = v,
+                "ztest" => ids.ztest = v,
+                "color_mask" => ids.color_mask = v,
+                "stencil_comp" => ids.stencil_comp = v,
+                "stencil_ref" => ids.stencil_ref = v,
+                "stencil_op" => ids.stencil_op = v,
+                "stencil_write_mask" => ids.stencil_write_mask = v,
+                "stencil_read_mask" => ids.stencil_read_mask = v,
+                "offset_factor" => ids.offset_factor = v,
+                "offset_units" => ids.offset_units = v,
                 _ => {}
             }
         }

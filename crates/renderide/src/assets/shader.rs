@@ -5,6 +5,7 @@
 use super::Asset;
 use super::AssetId;
 use super::EssentialShaderProgram;
+use super::ShaderPipelineFamily;
 
 /// Stored shader data for pipeline creation.
 pub struct ShaderAsset {
@@ -19,7 +20,12 @@ pub struct ShaderAsset {
     /// Unity ShaderLab logical name (`Shader "UI/Unlit"`) from parsed ShaderLab/WGSL text, file contents,
     /// or an optional host hint when your IPC layer supplies one (see [`crate::shared::shader_upload_extras`]).
     pub unity_shader_name: Option<String>,
+    /// Canonical Renderide WGSL path resolved from the host shader name / label.
+    pub renderide_shader_rel_path: Option<&'static str>,
+    /// Coarse family that selects the owning pipeline implementation.
+    pub pipeline_family: ShaderPipelineFamily,
     /// Explicit essential WGSL program selected from the resolved Unity shader name.
+    /// Compatibility shim while the codebase migrates to generic path/family routing.
     pub program: EssentialShaderProgram,
 }
 

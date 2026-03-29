@@ -36,7 +36,7 @@ fn necessary_bits(mut value: u32) -> u32 {
 ///
 /// Returns `(asset_id, kind)` when the packed value is non-negative and the type field is valid.
 pub fn unpack_host_texture_packed(packed: i32) -> Option<(i32, HostTextureAssetKind)> {
-    if packed < 0 {
+    if packed <= 0 {
         return None;
     }
     let type_bits = necessary_bits(TEXTURE_ASSET_TYPE_COUNT);
@@ -64,13 +64,11 @@ pub fn texture2d_asset_id_from_packed(packed: i32) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HostTextureAssetKind, unpack_host_texture_packed};
+    use super::unpack_host_texture_packed;
 
     #[test]
-    fn unpack_zero_is_texture2d_id_zero() {
-        let (id, k) = unpack_host_texture_packed(0).expect("valid");
-        assert_eq!(id, 0);
-        assert_eq!(k, HostTextureAssetKind::Texture2D);
+    fn unpack_zero_is_none() {
+        assert!(unpack_host_texture_packed(0).is_none());
     }
 
     #[test]

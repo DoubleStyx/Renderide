@@ -204,6 +204,28 @@ pub struct UiUnlitPropertyIds {
     pub src_blend: i32,
     /// `_DstBlend` (float).
     pub dst_blend: i32,
+    /// `_ZWrite` (float render-state property).
+    pub zwrite: i32,
+    /// `_Cull` (float render-state property).
+    pub cull: i32,
+    /// `_ZTest` (float render-state property).
+    pub ztest: i32,
+    /// `_ColorMask` (float render-state property).
+    pub color_mask: i32,
+    /// `_StencilComp` (float render-state property).
+    pub stencil_comp: i32,
+    /// `_Stencil` (float render-state property).
+    pub stencil_ref: i32,
+    /// `_StencilOp` (float render-state property).
+    pub stencil_op: i32,
+    /// `_StencilWriteMask` (float render-state property).
+    pub stencil_write_mask: i32,
+    /// `_StencilReadMask` (float render-state property).
+    pub stencil_read_mask: i32,
+    /// `_OffsetFactor` (float render-state property).
+    pub offset_factor: i32,
+    /// `_OffsetUnits` (float render-state property).
+    pub offset_units: i32,
 }
 
 impl Default for UiUnlitPropertyIds {
@@ -226,6 +248,17 @@ impl Default for UiUnlitPropertyIds {
             mask_texture_clip: -1,
             src_blend: -1,
             dst_blend: -1,
+            zwrite: -1,
+            cull: -1,
+            ztest: -1,
+            color_mask: -1,
+            stencil_comp: -1,
+            stencil_ref: -1,
+            stencil_op: -1,
+            stencil_write_mask: -1,
+            stencil_read_mask: -1,
+            offset_factor: -1,
+            offset_units: -1,
         }
     }
 }
@@ -286,6 +319,7 @@ pub struct UiUnlitFlags {
     pub alphaclip: bool,
     pub rectclip: bool,
     pub overlay: bool,
+    pub has_main_tex: bool,
     pub texture_normalmap: bool,
     pub texture_lerpcolor: bool,
     pub mask_texture_mul: bool,
@@ -304,6 +338,9 @@ impl UiUnlitFlags {
         }
         if self.overlay {
             b |= 4;
+        }
+        if self.has_main_tex {
+            b |= 128;
         }
         if self.texture_normalmap {
             b |= 8;
@@ -371,6 +408,25 @@ fn float4(
     }
 }
 
+/// Reads either a float4 or a scalar-expanded float4. Useful for host properties that may be sent
+/// as a single float in one implementation and a vec4 in another.
+fn float4_or_scalar(
+    store: &super::MaterialPropertyStore,
+    lookup: super::MaterialPropertyLookupIds,
+    pid: i32,
+    scalar_to_vec4: impl FnOnce(f32) -> [f32; 4],
+    default: [f32; 4],
+) -> [f32; 4] {
+    if pid < 0 {
+        return default;
+    }
+    match store.get_merged(lookup, pid) {
+        Some(super::MaterialPropertyValue::Float4(v)) => *v,
+        Some(super::MaterialPropertyValue::Float(v)) => scalar_to_vec4(*v),
+        _ => default,
+    }
+}
+
 /// Reads a float property via merged lookup, or `default` when unset.
 fn float1(
     store: &super::MaterialPropertyStore,
@@ -409,22 +465,23 @@ pub fn ui_unlit_material_uniform(
     ids: &UiUnlitPropertyIds,
 ) -> (UiUnlitMaterialUniform, i32, i32) {
     let tint = float4(store, lookup, ids.tint, [1.0, 1.0, 1.0, 1.0]);
-    let overlay_tint = float4(store, lookup, ids.overlay_tint, [1.0, 1.0, 1.0, 0.73]);
+    let overlay_tint = float4(store, lookup, ids.overlay_tint, [1.0, 1.0, 1.0, 0.5]);
     let cutoff = float1(store, lookup, ids.cutoff, 0.98);
     let main_tex_st = float4(store, lookup, ids.main_tex_st, [1.0, 1.0, 0.0, 0.0]);
     let mask_tex_st = float4(store, lookup, ids.mask_tex_st, [1.0, 1.0, 0.0, 0.0]);
     let rect = float4(store, lookup, ids.rect, [0.0, 0.0, 1.0, 1.0]);
+    let main_tex = texture_handle(store, lookup, ids.main_tex);
+    let mask_tex = texture_handle(store, lookup, ids.mask_tex);
     let flags = UiUnlitFlags {
         alphaclip: flag_f(store, lookup, ids.alphaclip),
         rectclip: flag_f(store, lookup, ids.rectclip),
         overlay: flag_f(store, lookup, ids.overlay),
-        texture_normalmap: flag_f(store, lookup, ids.texture_normalmap),
-        texture_lerpcolor: flag_f(store, lookup, ids.texture_lerpcolor),
-        mask_texture_mul: flag_f(store, lookup, ids.mask_texture_mul),
-        mask_texture_clip: flag_f(store, lookup, ids.mask_texture_clip),
+        has_main_tex: main_tex != 0,
+        texture_normalmap: main_tex != 0 && flag_f(store, lookup, ids.texture_normalmap),
+        texture_lerpcolor: main_tex != 0 && flag_f(store, lookup, ids.texture_lerpcolor),
+        mask_texture_mul: mask_tex != 0 && flag_f(store, lookup, ids.mask_texture_mul),
+        mask_texture_clip: mask_tex != 0 && flag_f(store, lookup, ids.mask_texture_clip),
     };
-    let main_tex = texture_handle(store, lookup, ids.main_tex);
-    let mask_tex = texture_handle(store, lookup, ids.mask_tex);
     let u = UiUnlitMaterialUniform {
         tint,
         overlay_tint,
@@ -448,7 +505,7 @@ fn texture_handle(
         return 0;
     }
     match store.get_merged(lookup, pid) {
-        Some(super::MaterialPropertyValue::Texture(h)) => *h,
+        Some(super::MaterialPropertyValue::Texture(h)) if *h > 0 => *h,
         _ => 0,
     }
 }
@@ -460,24 +517,34 @@ pub fn ui_text_unlit_material_uniform(
     ids: &UiTextUnlitPropertyIds,
 ) -> (UiTextUnlitMaterialUniform, i32) {
     let tint_color = float4(store, lookup, ids.tint_color, [1.0, 1.0, 1.0, 1.0]);
-    let overlay_tint = float4(store, lookup, ids.overlay_tint, [1.0, 1.0, 1.0, 0.73]);
+    let overlay_tint = float4(store, lookup, ids.overlay_tint, [1.0, 1.0, 1.0, 0.5]);
     let outline_color = float4(store, lookup, ids.outline_color, [1.0, 1.0, 1.0, 0.0]);
     let background_color = float4(store, lookup, ids.background_color, [0.0, 0.0, 0.0, 0.0]);
-    let range_v = float4(store, lookup, ids.range, [0.001, 0.001, 0.0, 0.0]);
+    let range_v = float4_or_scalar(
+        store,
+        lookup,
+        ids.range,
+        |v| [v, v, 0.0, 0.0],
+        [0.001, 0.001, 0.0, 0.0],
+    );
     let face_dilate = float1(store, lookup, ids.face_dilate, 0.0);
     let face_softness = float1(store, lookup, ids.face_softness, 0.0);
     let outline_size = float1(store, lookup, ids.outline_size, 0.0);
     let rect = float4(store, lookup, ids.rect, [0.0, 0.0, 1.0, 1.0]);
-    let mut mode: u32 = 0;
-    if flag_f(store, lookup, ids.sdf) {
-        mode = 1;
-    }
-    if flag_f(store, lookup, ids.msdf) {
-        mode = 2;
-    }
-    if flag_f(store, lookup, ids.raster) {
-        mode = 0;
-    }
+    let raster = flag_f(store, lookup, ids.raster);
+    let sdf = flag_f(store, lookup, ids.sdf);
+    let msdf = flag_f(store, lookup, ids.msdf);
+    let mode: u32 = if raster {
+        0
+    } else if msdf {
+        2
+    } else if sdf {
+        1
+    } else {
+        // When the host did not expose explicit text-mode keywords, defer to shader-side atlas
+        // inspection so MSDF nametag atlases still render correctly.
+        3
+    };
     let mut flags = mode & 3;
     if flag_f(store, lookup, ids.outline) {
         flags |= 1 << 8;
@@ -532,6 +599,7 @@ mod tests {
             alphaclip: true,
             rectclip: true,
             overlay: true,
+            has_main_tex: false,
             texture_normalmap: true,
             texture_lerpcolor: true,
             mask_texture_mul: true,

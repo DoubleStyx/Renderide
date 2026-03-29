@@ -1,4 +1,4 @@
-// WGSL equivalent for third_party/Resonite.UnityShaders/Assets/Shaders/UI/UI_TextUnlit.shader
+// WGSL equivalent for third_party/Resonite.UnityShaders/Assets/Shaders/Text/TextUnlit.shader
 // Property-name parity target:
 // _FontAtlas _TintColor _OverlayTint _OutlineColor _BackgroundColor _Range _FaceDilate _FaceSoftness _OutlineSize _Rect
 

@@ -9,6 +9,7 @@ use super::mesh::{self, MeshAsset, compute_index_count, index_bytes_per_element}
 use super::shader::ShaderAsset;
 use super::shader_logical_name::resolve_logical_shader_name_from_upload;
 use super::texture::{TextureAsset, decode_texture_mip0_to_rgba8};
+use super::{ShaderPipelineFamily, resolve_renderide_shader_binding, resolve_renderide_shader_rel_path};
 
 /// Stores assets by handle using generic per-type managers.
 /// Extensible for textures, materials, video, etc.
@@ -299,9 +300,16 @@ impl AssetRegistry {
     pub fn handle_shader_upload(&mut self, data: ShaderUpload) -> (bool, bool) {
         let existed_before = self.shaders.contains_key(data.asset_id);
         let unity_shader_name = resolve_logical_shader_name_from_upload(&data);
+        let resolved_binding = resolve_renderide_shader_binding(unity_shader_name.as_deref());
         let asset = ShaderAsset {
             id: data.asset_id,
             wgsl_source: data.file,
+            renderide_shader_rel_path: resolved_binding
+                .map(|binding| binding.rel_path)
+                .or_else(|| resolve_renderide_shader_rel_path(unity_shader_name.as_deref())),
+            pipeline_family: resolved_binding
+                .map(|binding| binding.family)
+                .unwrap_or(ShaderPipelineFamily::Unsupported),
             program: super::resolve_essential_shader_program(unity_shader_name.as_deref()),
             unity_shader_name,
         };

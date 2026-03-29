@@ -1,6 +1,6 @@
 //! Canonical routing from host shader identity to the small native Renderide shader set.
 
-use super::{AssetRegistry, EssentialShaderProgram, ShaderAsset};
+use super::{AssetRegistry, ShaderAsset, ShaderPipelineFamily};
 
 /// Native Renderide shader route selected from the host-requested shader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -35,12 +35,12 @@ pub fn pbs_metallic_family_from_shader_path_hint(hint: &str) -> bool {
 }
 
 fn route_from_shader_asset(shader: &ShaderAsset) -> NativeShaderRoute {
-    match shader.program {
-        EssentialShaderProgram::PbsMetallic => return NativeShaderRoute::PbsMetallic,
-        EssentialShaderProgram::WorldUnlit => return NativeShaderRoute::WorldUnlit,
-        EssentialShaderProgram::UiUnlit => return NativeShaderRoute::UiUnlit,
-        EssentialShaderProgram::UiTextUnlit => return NativeShaderRoute::UiTextUnlit,
-        EssentialShaderProgram::Unsupported => {}
+    match shader.pipeline_family {
+        ShaderPipelineFamily::Pbr => return NativeShaderRoute::PbsMetallic,
+        ShaderPipelineFamily::WorldUnlit => return NativeShaderRoute::WorldUnlit,
+        ShaderPipelineFamily::UiUnlit => return NativeShaderRoute::UiUnlit,
+        ShaderPipelineFamily::UiTextUnlit => return NativeShaderRoute::UiTextUnlit,
+        ShaderPipelineFamily::Unsupported => {}
     }
 
     if let Some(name) = shader.unity_shader_name.as_deref() {

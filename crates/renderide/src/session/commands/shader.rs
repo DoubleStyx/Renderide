@@ -24,15 +24,24 @@ impl CommandHandler for ShaderCommandHandler {
                         .assets
                         .asset_registry
                         .get_shader(asset_id)
-                        .map(|s| (s.unity_shader_name.clone(), s.program));
-                    let (unity_name, program) = unity_name
-                        .map(|(name, program)| (name, program))
-                        .unwrap_or((None, crate::assets::EssentialShaderProgram::Unsupported));
+                        .map(|s| {
+                            (
+                                s.unity_shader_name.clone(),
+                                s.pipeline_family,
+                                s.renderide_shader_rel_path,
+                            )
+                        });
+                    let (unity_name, family, rel_path) = unity_name.unwrap_or((
+                        None,
+                        crate::assets::ShaderPipelineFamily::Unsupported,
+                        None,
+                    ));
                     logger::info!(
-                        "shader_upload: asset_id={} unity_shader_name={:?} native_program={:?} upload_file_label={:?}",
+                        "shader_upload: asset_id={} unity_shader_name={:?} pipeline_family={:?} renderide_shader={:?} upload_file_label={:?}",
                         asset_id,
                         unity_name.as_deref(),
-                        program,
+                        family,
+                        rel_path,
                         data.file.as_deref()
                     );
                     ctx.receiver

@@ -404,6 +404,14 @@ impl DebugHud {
                             ui.text_wrapped(line);
                         }
                     }
+                    if sample.shader_warning_lines.is_empty() {
+                        ui.text("Warnings: none");
+                    } else {
+                        ui.text("Warnings");
+                        for line in &sample.shader_warning_lines {
+                            ui.text_wrapped(line);
+                        }
+                    }
                 } else {
                     ui.text("Waiting for frame diagnostics...");
                 }

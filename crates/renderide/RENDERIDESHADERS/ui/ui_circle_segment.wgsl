@@ -1,4 +1,4 @@
-// WGSL equivalent for third_party/Resonite.UnityShaders/Assets/Shaders/UI/UI_Unlit.shader
+// WGSL equivalent for third_party/Resonite.UnityShaders/Assets/Shaders/UI/UI_CircleSegment.shader
 // Property-name parity target:
 // _MainTex _Tint _OverlayTint _Cutoff _Rect _SrcBlend _DstBlend _ZWrite _Cull _MaskTex
 
@@ -28,7 +28,6 @@ const FLAG_TEXTURE_NORMALMAP: u32 = 8u;
 const FLAG_TEXTURE_LERPCOLOR: u32 = 16u;
 const FLAG_MASK_TEXTURE_MUL: u32 = 32u;
 const FLAG_MASK_TEXTURE_CLIP: u32 = 64u;
-const FLAG_HAS_MAIN_TEX: u32 = 128u;
 
 @group(0) @binding(0) var<uniform> uniforms: array<renderide_uniform_ring::UniformsSlot, 64>;
 @group(1) @binding(0) var scene_depth: texture_depth_2d;
@@ -72,11 +71,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         discard;
     }
 
-    var color = vec4f(1.0, 1.0, 1.0, 1.0);
-    if ((material._Flags & FLAG_HAS_MAIN_TEX) != 0u) {
-        color = textureSample(_MainTex, _MainTex_sampler, in.uv);
-    }
-    if ((material._Flags & FLAG_TEXTURE_NORMALMAP) != 0u && (material._Flags & FLAG_HAS_MAIN_TEX) != 0u) {
+    var color = textureSample(_MainTex, _MainTex_sampler, in.uv);
+    if ((material._Flags & FLAG_TEXTURE_NORMALMAP) != 0u) {
         let n = color.xyz * 2.0 - 1.0;
         color = vec4f(n * 0.5 + 0.5, 1.0);
     }
