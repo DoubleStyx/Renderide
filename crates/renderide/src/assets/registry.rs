@@ -9,7 +9,9 @@ use super::mesh::{self, MeshAsset, compute_index_count, index_bytes_per_element}
 use super::shader::ShaderAsset;
 use super::shader_logical_name::resolve_logical_shader_name_from_upload;
 use super::texture::{TextureAsset, decode_texture_mip0_to_rgba8};
-use super::{ShaderPipelineFamily, resolve_renderide_shader_binding, resolve_renderide_shader_rel_path};
+use super::{
+    ShaderPipelineFamily, resolve_renderide_shader_binding, resolve_renderide_shader_rel_path,
+};
 
 /// Stores assets by handle using generic per-type managers.
 /// Extensible for textures, materials, video, etc.

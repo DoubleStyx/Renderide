@@ -18,11 +18,7 @@ fn main() {
     let (host_args, log_level) = config::parse_args();
     let timestamp = logger::log_filename_timestamp();
     let log_path = format!("logs/Bootstrapper_{}.log", timestamp);
-    if let Err(e) = logger::init(
-        &log_path,
-        log_level.unwrap_or(LogLevel::Trace),
-        false,
-    ) {
+    if let Err(e) = logger::init(&log_path, log_level.unwrap_or(LogLevel::Trace), false) {
         eprintln!("Failed to initialize logging to {}: {}", log_path, e);
         std::process::exit(1);
     }

@@ -3,9 +3,9 @@
 //! For Resonite world `Shader "Unlit"` (mesh [`VertexPosNormalUv`](crate::gpu::mesh::VertexPosNormalUv)),
 //! see [`super::world_unlit_material_contract`].
 //!
-//! Shader asset IDs are assigned by the host at runtime. Configure them under `[rendering]` in
-//! `configuration.ini` (see [`crate::config::RenderConfig`]) or via environment variables so the
-//! renderer maps `set_shader` batches to [`NativeUiShaderFamily`].
+//! Shader asset IDs are assigned by the host at runtime; [`crate::assets::AssetRegistry::handle_shader_upload`]
+//! resolves [`crate::assets::ShaderAsset::program`] and names so [`resolve_native_ui_shader_family`]
+//! can map `set_shader` batches to [`NativeUiShaderFamily`].
 //!
 //! Logical Unity names (`Shader "UI/Unlit"`), plain stems in [`crate::shared::ShaderUpload::file`]
 //! (e.g. `UI_Unlit` from a host mod), ShaderLab/WGSL payloads, and path hints are resolved in
@@ -86,6 +86,11 @@
 //! [`crate::assets::material_properties`] and [`crate::config::RenderConfig`]; full Standard stacks
 //! (`_BumpMap`, `_EmissionMap`, …) are not wired into the generic PBR WGSL path yet.
 
+use crate::assets::util::compact_alnum_lower;
+
+/// Default `_OverlayTint` when the host omits the property (RGBA; alpha scales overlay contribution).
+pub const DEFAULT_OVERLAY_TINT: [f32; 4] = [1.0, 1.0, 1.0, 0.5];
+
 /// Identifies which native UI WGSL program to use for a host shader asset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NativeUiShaderFamily {
@@ -107,13 +112,6 @@ pub fn native_ui_family_from_shader_path_hint(hint: &str) -> Option<NativeUiShad
         return Some(NativeUiShaderFamily::UiUnlit);
     }
     None
-}
-
-fn compact_alnum_lower(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
-        .collect()
 }
 
 /// Maps a logical shader name or stem (first whitespace-delimited token) to [`NativeUiShaderFamily`]
@@ -465,7 +463,7 @@ pub fn ui_unlit_material_uniform(
     ids: &UiUnlitPropertyIds,
 ) -> (UiUnlitMaterialUniform, i32, i32) {
     let tint = float4(store, lookup, ids.tint, [1.0, 1.0, 1.0, 1.0]);
-    let overlay_tint = float4(store, lookup, ids.overlay_tint, [1.0, 1.0, 1.0, 0.5]);
+    let overlay_tint = float4(store, lookup, ids.overlay_tint, DEFAULT_OVERLAY_TINT);
     let cutoff = float1(store, lookup, ids.cutoff, 0.98);
     let main_tex_st = float4(store, lookup, ids.main_tex_st, [1.0, 1.0, 0.0, 0.0]);
     let mask_tex_st = float4(store, lookup, ids.mask_tex_st, [1.0, 1.0, 0.0, 0.0]);
@@ -517,7 +515,7 @@ pub fn ui_text_unlit_material_uniform(
     ids: &UiTextUnlitPropertyIds,
 ) -> (UiTextUnlitMaterialUniform, i32) {
     let tint_color = float4(store, lookup, ids.tint_color, [1.0, 1.0, 1.0, 1.0]);
-    let overlay_tint = float4(store, lookup, ids.overlay_tint, [1.0, 1.0, 1.0, 0.5]);
+    let overlay_tint = float4(store, lookup, ids.overlay_tint, DEFAULT_OVERLAY_TINT);
     let outline_color = float4(store, lookup, ids.outline_color, [1.0, 1.0, 1.0, 0.0]);
     let background_color = float4(store, lookup, ids.background_color, [0.0, 0.0, 0.0, 0.0]);
     let range_v = float4_or_scalar(
@@ -586,6 +584,7 @@ mod tests {
     use crate::assets::AssetRegistry;
     use crate::assets::texture2d_asset_id_from_packed;
     use crate::config::RenderConfig;
+    use crate::shared::ShaderUpload;
 
     use super::{
         NativeUiShaderFamily, UiUnlitFlags, UiUnlitPropertyIds, native_ui_family_from_shader_label,
@@ -669,7 +668,11 @@ mod tests {
         let mut rc = RenderConfig::default();
         rc.ui_unlit_property_ids.main_tex = 7;
         store.set_material(10, 7, MaterialPropertyValue::Texture(99));
-        let reg = AssetRegistry::new();
+        let mut reg = AssetRegistry::new();
+        reg.handle_shader_upload(ShaderUpload {
+            asset_id: 42,
+            file: Some("UI_Unlit".to_string()),
+        });
         assert_eq!(
             resolve_native_ui_shader_family(42, &reg),
             Some(NativeUiShaderFamily::UiUnlit)

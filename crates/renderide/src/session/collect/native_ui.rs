@@ -139,15 +139,15 @@ pub(crate) fn apply_native_ui_pipeline_variant(
     let family = match family {
         NativeShaderRoute::UiUnlit | NativeShaderRoute::UiTextUnlit => family,
         _ => {
-        record_native_ui_skip(m, NativeUiSkipKind::UnrecognizedShader);
-        if should_log_native_ui_routing(render_config, is_overlay) {
-            logger::trace!(
-                "native_ui: skip (shader not recognized as UI) shader_id={} material_block={}",
-                shader_id,
-                material_block_id
-            );
-        }
-        return current;
+            record_native_ui_skip(m, NativeUiSkipKind::UnrecognizedShader);
+            if should_log_native_ui_routing(render_config, is_overlay) {
+                logger::trace!(
+                    "native_ui: skip (shader not recognized as UI) shader_id={} material_block={}",
+                    shader_id,
+                    material_block_id
+                );
+            }
+            return current;
         }
     };
     match family {

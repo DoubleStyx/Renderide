@@ -1,5 +1,7 @@
 //! Canonical essential WGSL shader programs resolved from uploaded Unity shader names.
 
+use crate::assets::util::compact_alnum_lower;
+
 /// Coarse pipeline family chosen after mapping a host shader name to a Renderide WGSL shader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ShaderPipelineFamily {
@@ -53,11 +55,14 @@ pub fn resolve_renderide_shader_binding(name: Option<&str>) -> Option<ResolvedRe
         "unlit" => ("world/unlit.wgsl", ShaderPipelineFamily::WorldUnlit),
         "overlayunlit" => ("world/overlay_unlit.wgsl", ShaderPipelineFamily::WorldUnlit),
         "volumeunlit" => ("world/volume_unlit.wgsl", ShaderPipelineFamily::WorldUnlit),
-        "billboardunlit" => ("world/billboard_unlit.wgsl", ShaderPipelineFamily::WorldUnlit),
+        "billboardunlit" => (
+            "world/billboard_unlit.wgsl",
+            ShaderPipelineFamily::WorldUnlit,
+        ),
         "uiunlit" => ("ui/ui_unlit.wgsl", ShaderPipelineFamily::UiUnlit),
         "uicirclesegment" => ("ui/ui_circle_segment.wgsl", ShaderPipelineFamily::UiUnlit),
         "uitextunlit" => ("ui/ui_text_unlit.wgsl", ShaderPipelineFamily::UiTextUnlit),
-        "textunlit" => ("ui/text_unlit.wgsl", ShaderPipelineFamily::UiTextUnlit),
+        "textunlit" => ("ui/ui_text_unlit.wgsl", ShaderPipelineFamily::UiTextUnlit),
         // XSToon2.0 and Xiexe family → render as flat unlit (texture * color, no PBR lighting).
         _ if is_xstoon_family(&key) => ("world/unlit.wgsl", ShaderPipelineFamily::WorldUnlit),
         _ if is_pbs_family(&key) || is_toon_lit_family(&key) => {
@@ -70,27 +75,24 @@ pub fn resolve_renderide_shader_binding(name: Option<&str>) -> Option<ResolvedRe
     Some(ResolvedRenderideShader { rel_path, family })
 }
 
-fn compact_alnum_lower(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
-        .collect()
-}
-
+/// True when the compact shader key denotes PBS / paint-PBS metallic families.
 fn is_pbs_family(key: &str) -> bool {
     key.starts_with("pbs") || key.starts_with("paintpbs")
 }
 
+/// True when the compact key denotes toon-lit families (excluding XSToon, handled separately).
 fn is_toon_lit_family(key: &str) -> bool {
     // XSToon is handled separately as WorldUnlit (textured flat, no PBR lighting).
     key.starts_with("toon")
 }
 
+/// True for Xiexe / XSToon2.0 shader name prefixes (routed as flat world unlit).
 fn is_xstoon_family(key: &str) -> bool {
     // Xiexe/XSToon2.0 family: "xstoon*" (short name) or "xiexe*" (full Unity name).
     key.starts_with("xstoon") || key.starts_with("xiexe")
 }
 
+/// Broad world-unlit heuristic beyond explicit table entries in [`resolve_renderide_shader_binding`].
 fn is_world_unlit_family(key: &str) -> bool {
     key == "unlit"
         || key.ends_with("unlit")
@@ -179,7 +181,7 @@ mod tests {
         );
         assert_eq!(
             resolve_renderide_shader_rel_path(Some("Text/Unlit")),
-            Some("ui/text_unlit.wgsl")
+            Some("ui/ui_text_unlit.wgsl")
         );
         assert_eq!(
             resolve_renderide_shader_rel_path(Some("OverlayUnlit")),

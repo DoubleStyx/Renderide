@@ -9,8 +9,8 @@ use nalgebra::Matrix4;
 use wgpu::util::DeviceExt;
 
 use crate::assets::{
-    MaterialPropertyLookupIds, MaterialPropertyStore, NativeUiSurfaceBlend, UiUnlitMaterialUniform,
-    UiUnlitPropertyIds, ui_unlit_material_uniform,
+    DEFAULT_OVERLAY_TINT, MaterialPropertyLookupIds, MaterialPropertyStore, NativeUiSurfaceBlend,
+    UiUnlitMaterialUniform, UiUnlitPropertyIds, ui_unlit_material_uniform,
 };
 
 use super::super::mesh::{GpuMeshBuffers, VertexUiCanvas};
@@ -216,7 +216,7 @@ impl UiUnlitNativePipeline {
         let material_bgl = create_ui_unlit_material_bind_group_layout(device);
         let initial = UiUnlitMaterialUniform {
             tint: [1.0, 1.0, 1.0, 1.0],
-            overlay_tint: [1.0, 1.0, 1.0, 0.5],
+            overlay_tint: DEFAULT_OVERLAY_TINT,
             main_tex_st: [1.0, 1.0, 0.0, 0.0],
             mask_tex_st: [1.0, 1.0, 0.0, 0.0],
             rect: [0.0, 0.0, 1.0, 1.0],

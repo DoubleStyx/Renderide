@@ -19,6 +19,9 @@ fn main() {
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/common/uniform_ring.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/common/color_util.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/common/ui_common.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/common/pbr_types.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/common/pbr_lighting.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/common/world_unlit_common.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/world/unlit.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/world/overlay_unlit.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/world/volume_unlit.wgsl");
@@ -26,9 +29,12 @@ fn main() {
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/ui/ui_unlit.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/ui/ui_circle_segment.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/ui/ui_text_unlit.wgsl");
-    println!("cargo:rerun-if-changed=RENDERIDESHADERS/ui/text_unlit.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/pbr/pbs_metallic.wgsl");
     println!("cargo:rerun-if-changed=RENDERIDESHADERS/pbr/pbs_metallic_host_albedo.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/pbr/pbs_metallic_mrt.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/pbr/pbs_metallic_skinned.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/pbr/pbs_metallic_skinned_mrt.wgsl");
+    println!("cargo:rerun-if-changed=RENDERIDESHADERS/overlay/overlay_stencil.wgsl");
     println!("cargo:rerun-if-changed=build.rs");
 
     for (out_name, rel_path) in [
@@ -39,12 +45,18 @@ fn main() {
         ("ui_unlit", "ui/ui_unlit.wgsl"),
         ("ui_circle_segment", "ui/ui_circle_segment.wgsl"),
         ("ui_text_unlit", "ui/ui_text_unlit.wgsl"),
-        ("text_unlit", "ui/text_unlit.wgsl"),
         ("pbs_metallic", "pbr/pbs_metallic.wgsl"),
         (
             "pbs_metallic_host_albedo",
             "pbr/pbs_metallic_host_albedo.wgsl",
         ),
+        ("pbs_metallic_mrt", "pbr/pbs_metallic_mrt.wgsl"),
+        ("pbs_metallic_skinned", "pbr/pbs_metallic_skinned.wgsl"),
+        (
+            "pbs_metallic_skinned_mrt",
+            "pbr/pbs_metallic_skinned_mrt.wgsl",
+        ),
+        ("overlay_stencil", "overlay/overlay_stencil.wgsl"),
     ] {
         let composed = compose_entry(&shader_dir, rel_path).unwrap_or_else(|e| {
             panic!("naga_oil compose failed for {rel_path}: {e:?}");
@@ -61,6 +73,9 @@ fn compose_entry(shader_dir: &Path, entry_rel_path: &str) -> Result<String, Stri
         "common/uniform_ring.wgsl",
         "common/color_util.wgsl",
         "common/ui_common.wgsl",
+        "common/pbr_types.wgsl",
+        "common/pbr_lighting.wgsl",
+        "common/world_unlit_common.wgsl",
     ] {
         let path = shader_dir.join(rel);
         let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;

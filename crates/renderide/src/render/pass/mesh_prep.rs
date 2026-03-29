@@ -334,14 +334,13 @@ pub(super) fn ensure_mesh_buffers(
                     crate::gpu::create_mesh_buffers(&gpu.device, mesh, stride, ray_tracing)
                 {
                     gpu.mesh_buffer_cache.insert(d.mesh_asset_id, b.clone());
-                    if need_accel {
-                        if let Some(ref mut accel) = gpu.accel_cache
-                            && let Some(blas) =
-                                crate::gpu::build_blas_for_mesh(&gpu.device, &gpu.queue, mesh, &b)
-                        {
-                            accel.insert(d.mesh_asset_id, blas);
-                            built_any_blas = true;
-                        }
+                    if need_accel
+                        && let Some(ref mut accel) = gpu.accel_cache
+                        && let Some(blas) =
+                            crate::gpu::build_blas_for_mesh(&gpu.device, &gpu.queue, mesh, &b)
+                    {
+                        accel.insert(d.mesh_asset_id, blas);
+                        built_any_blas = true;
                     }
                 }
             }

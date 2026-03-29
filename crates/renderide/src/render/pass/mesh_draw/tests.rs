@@ -37,7 +37,7 @@ fn fill_pbr_host_uniform_reads_merged_color() {
 #[test]
 fn fill_pbr_host_uniform_sets_albedo_flag_when_main_tex_bound() {
     let mut store = MaterialPropertyStore::new();
-    store.set_material(10, 9, MaterialPropertyValue::Texture(0));
+    store.set_material(10, 9, MaterialPropertyValue::Texture(1));
     let rc = RenderConfig {
         pbr_bind_host_material_properties: true,
         pbr_bind_host_main_texture: true,

@@ -12,7 +12,9 @@ use crate::scene::{Drawable, MeshMaterialSlot, Scene};
 use crate::shared::VertexAttributeType;
 use crate::stencil::{StencilOperation, StencilState};
 
-use super::native_ui::apply_native_ui_pipeline_variant;
+use super::native_ui::{
+    apply_native_ui_pipeline_variant, apply_ui_mesh_pbr_fallback_for_non_native_shader,
+};
 
 /// Filtered drawable with world matrix and pipeline variant.
 ///
@@ -125,6 +127,14 @@ pub(crate) fn resolve_pipeline_for_material_draw_internal(
         drawable.mesh_handle,
         pipeline_variant,
         asset_registry,
+    );
+    let pipeline_variant = apply_ui_mesh_pbr_fallback_for_non_native_shader(
+        render_config,
+        asset_registry,
+        drawable,
+        pipeline_variant,
+        use_pbr,
+        fallback_variant,
     );
     let pipeline_variant = maybe_upgrade_pbr_host_albedo(
         pipeline_variant,
@@ -249,4 +259,3 @@ fn compute_pipeline_variant(
         PipelineVariant::NormalDebug
     }
 }
-

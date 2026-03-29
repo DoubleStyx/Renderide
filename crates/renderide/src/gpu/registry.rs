@@ -11,9 +11,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::assets::{
-    AssetRegistry, MaterialPropertyStore, resolve_native_ui_surface_blend_text,
-    resolve_native_ui_surface_blend_unlit, resolve_native_shader_route,
-    NativeShaderRoute,
+    AssetRegistry, MaterialPropertyStore, NativeShaderRoute, resolve_native_shader_route,
+    resolve_native_ui_surface_blend_text, resolve_native_ui_surface_blend_unlit,
 };
 use crate::config::RenderConfig;
 
@@ -370,18 +369,8 @@ impl PipelineRegistry {
                     if let Some(p) = self.descriptor_cache.get(dk) {
                         p
                     } else {
-                        let use_text_unlit = asset_registry
-                            .and_then(|reg| reg.get_shader(shader_id))
-                            .and_then(|shader| shader.renderide_shader_rel_path)
-                            == Some("ui/text_unlit.wgsl");
                         let p: Arc<dyn RenderPipeline> =
-                            if use_text_unlit {
-                                Arc::new(UiTextUnlitNativePipeline::new_text(
-                                    device, config, blend,
-                                ))
-                            } else {
-                                Arc::new(UiTextUnlitNativePipeline::new(device, config, blend))
-                            };
+                            Arc::new(UiTextUnlitNativePipeline::new(device, config, blend));
                         self.descriptor_cache.insert(dk, Arc::clone(&p));
                         p
                     };
@@ -433,20 +422,8 @@ impl PipelineRegistry {
                     if let Some(p) = self.descriptor_cache.get(dk) {
                         p
                     } else {
-                        let use_text_unlit = asset_registry
-                            .and_then(|reg| reg.get_shader(shader_id))
-                            .and_then(|shader| shader.renderide_shader_rel_path)
-                            == Some("ui/text_unlit.wgsl");
                         let p: Arc<dyn RenderPipeline> = Arc::new(
-                            if use_text_unlit {
-                                UiTextUnlitNativePipeline::new_text_with_stencil(
-                                    device, config, blend,
-                                )
-                            } else {
-                                UiTextUnlitNativePipeline::new_with_stencil(
-                                    device, config, blend,
-                                )
-                            },
+                            UiTextUnlitNativePipeline::new_with_stencil(device, config, blend),
                         );
                         self.descriptor_cache.insert(dk, Arc::clone(&p));
                         p
@@ -639,7 +616,8 @@ impl PipelineManager {
 
     /// Evicts cached shader-family pipelines for `shader_asset_id`.
     pub fn evict_shader_pipelines(&mut self, shader_asset_id: i32, format: wgpu::TextureFormat) {
-        self.registry.evict_shader_pipelines(shader_asset_id, format);
+        self.registry
+            .evict_shader_pipelines(shader_asset_id, format);
     }
 }
 

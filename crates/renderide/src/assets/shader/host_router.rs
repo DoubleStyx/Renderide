@@ -1,24 +1,25 @@
 //! Canonical routing from host shader identity to the small native Renderide shader set.
 
+use crate::assets::util::compact_alnum_lower;
+
 use super::{AssetRegistry, ShaderAsset, ShaderPipelineFamily};
 
 /// Native Renderide shader route selected from the host-requested shader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum NativeShaderRoute {
+    /// Host shader does not map to a known native route.
     Unsupported,
+    /// Physically based metallic shading (`PBSMetallic` and related).
     PbsMetallic,
+    /// World unlit / overlay / billboard / volume unlit families.
     WorldUnlit,
+    /// UI canvas unlit (`UI/Unlit` and similar).
     UiUnlit,
+    /// UI text unlit (`UI/Text/Unlit` and similar).
     UiTextUnlit,
 }
 
-fn compact_alnum_lower(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
-        .collect()
-}
-
+/// Returns true when the first whitespace-delimited token of `name` matches the PBS metallic family.
 pub fn pbs_metallic_family_from_unity_shader_name(name: &str) -> bool {
     let Some(token) = name.split_whitespace().next() else {
         return false;
@@ -26,6 +27,7 @@ pub fn pbs_metallic_family_from_unity_shader_name(name: &str) -> bool {
     compact_alnum_lower(token) == compact_alnum_lower("PBSMetallic")
 }
 
+/// Heuristic PBS metallic detection from a shader path or upload label string.
 pub fn pbs_metallic_family_from_shader_path_hint(hint: &str) -> bool {
     let h = hint.to_ascii_lowercase();
     h.contains("pbsmetallic")
@@ -34,6 +36,7 @@ pub fn pbs_metallic_family_from_shader_path_hint(hint: &str) -> bool {
         || h.contains("pbs/specular")
 }
 
+/// Derives a route from [`ShaderAsset::pipeline_family`] and name/path fallbacks.
 fn route_from_shader_asset(shader: &ShaderAsset) -> NativeShaderRoute {
     match shader.pipeline_family {
         ShaderPipelineFamily::Pbr => return NativeShaderRoute::PbsMetallic,
@@ -76,6 +79,7 @@ fn route_from_shader_asset(shader: &ShaderAsset) -> NativeShaderRoute {
     NativeShaderRoute::Unsupported
 }
 
+/// True when the shader asset at `shader_asset_id` resolves to [`NativeShaderRoute::PbsMetallic`].
 pub fn resolve_pbs_metallic_shader_family(shader_asset_id: i32, registry: &AssetRegistry) -> bool {
     matches!(
         resolve_native_shader_route(Some(shader_asset_id), registry),
@@ -83,6 +87,7 @@ pub fn resolve_pbs_metallic_shader_family(shader_asset_id: i32, registry: &Asset
     )
 }
 
+/// Maps a host material's bound shader asset (if any) to a [`NativeShaderRoute`].
 pub fn resolve_native_shader_route(
     host_shader_asset_id: Option<i32>,
     registry: &AssetRegistry,

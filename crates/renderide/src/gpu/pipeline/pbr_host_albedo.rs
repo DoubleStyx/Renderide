@@ -141,6 +141,7 @@ impl PbrHostAlbedoPipeline {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_scene_bind_group_inner(
         &self,
         device: &wgpu::Device,

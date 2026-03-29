@@ -6,6 +6,6 @@
   "UI/Unlit": "ui/ui_unlit.wgsl",
   "UI/CircleSegment": "ui/ui_circle_segment.wgsl",
   "UI/Text/Unlit": "ui/ui_text_unlit.wgsl",
-  "Text/Unlit": "ui/text_unlit.wgsl",
+  "Text/Unlit": "ui/ui_text_unlit.wgsl",
   "PBSMetallic": "pbr/pbs_metallic.wgsl"
 }

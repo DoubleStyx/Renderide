@@ -283,7 +283,7 @@ mod tests {
         reg.material_property_store.set_material(
             mat_id,
             main_tex_pid,
-            MaterialPropertyValue::Texture(0),
+            MaterialPropertyValue::Texture(1),
         );
         let rc = RenderConfig {
             pbr_bind_host_main_texture: true,

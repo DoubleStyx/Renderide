@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 
+use crate::assets::util::compact_alnum_lower;
 use crate::config::RenderConfig;
 
 use super::MaterialPropertyLookupIds;
@@ -26,13 +27,6 @@ use super::texture2d_asset_id_from_packed;
 pub enum WorldUnlitShaderFamily {
     /// Resonite `Shader "Unlit"` ([`third_party/Resonite.UnityShaders/.../Unlit.shader`](../../../../third_party/Resonite.UnityShaders/Assets/Shaders/Common/Unlit.shader)).
     StandardUnlit,
-}
-
-fn compact_alnum_lower(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
-        .collect()
 }
 
 /// Maps a logical shader name or stem (first whitespace-delimited token) to [`WorldUnlitShaderFamily`]
@@ -398,6 +392,7 @@ mod tests {
     use crate::assets::{
         AssetRegistry, MaterialPropertyStore, MaterialPropertyValue, texture2d_asset_id_from_packed,
     };
+    use crate::shared::ShaderUpload;
 
     #[test]
     fn world_unlit_label_matches_unlit_stem() {
@@ -456,8 +451,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_world_unlit_uses_ini_id() {
-        let reg = AssetRegistry::new();
+    fn resolve_world_unlit_uses_registry_shader_program() {
+        let mut reg = AssetRegistry::new();
+        reg.handle_shader_upload(ShaderUpload {
+            asset_id: 42,
+            file: Some("Unlit".to_string()),
+        });
         assert_eq!(
             resolve_world_unlit_shader_family(42, &reg),
             Some(WorldUnlitShaderFamily::StandardUnlit)

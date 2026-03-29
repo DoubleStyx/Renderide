@@ -118,7 +118,13 @@ impl NativeUiMaterialBindCache {
         let main_has_view = main_view.is_some();
         let mask_has_view = mask_view.is_some();
         Self::trim_world_unlit(&mut self.world_unlit);
-        let key = (material_id, main_key, mask_key, main_has_view, mask_has_view);
+        let key = (
+            material_id,
+            main_key,
+            mask_key,
+            main_has_view,
+            mask_has_view,
+        );
         let entry = self.world_unlit.entry(key).or_insert_with(|| {
             // Each cache entry gets its own uniform buffer so that write_buffer calls for
             // different materials in the same frame don't overwrite each other.

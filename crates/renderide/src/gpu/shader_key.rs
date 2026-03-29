@@ -55,7 +55,7 @@ impl ShaderKey {
         match native_shader_route {
             NativeShaderRoute::WorldUnlit | NativeShaderRoute::Unsupported => {
                 PipelineVariant::Material {
-                material_id: material_block_id,
+                    material_id: material_block_id,
                 }
             }
             NativeShaderRoute::PbsMetallic
@@ -77,14 +77,7 @@ mod tests {
             host_shader_asset_id: Some(42),
             fallback_variant: PipelineVariant::Pbr,
         };
-        let v = k.effective_variant(
-            false,
-            7,
-            false,
-            false,
-            false,
-            NativeShaderRoute::WorldUnlit,
-        );
+        let v = k.effective_variant(false, 7, false, false, false, NativeShaderRoute::WorldUnlit);
         assert_eq!(v, PipelineVariant::Material { material_id: 7 });
     }
 
@@ -128,14 +121,7 @@ mod tests {
             host_shader_asset_id: Some(42),
             fallback_variant: PipelineVariant::NormalDebug,
         };
-        let v = k.effective_variant(
-            true,
-            7,
-            false,
-            false,
-            false,
-            NativeShaderRoute::Unsupported,
-        );
+        let v = k.effective_variant(true, 7, false, false, false, NativeShaderRoute::Unsupported);
         assert_eq!(v, PipelineVariant::NormalDebug);
     }
 
@@ -146,14 +132,7 @@ mod tests {
             fallback_variant: PipelineVariant::Skinned,
         };
         assert_eq!(
-            k.effective_variant(
-                false,
-                3,
-                false,
-                true,
-                false,
-                NativeShaderRoute::Unsupported,
-            ),
+            k.effective_variant(false, 3, false, true, false, NativeShaderRoute::Unsupported,),
             PipelineVariant::Skinned
         );
         let k2 = ShaderKey {
@@ -161,16 +140,8 @@ mod tests {
             fallback_variant: PipelineVariant::NormalDebug,
         };
         assert_eq!(
-            k2.effective_variant(
-                false,
-                3,
-                false,
-                false,
-                true,
-                NativeShaderRoute::Unsupported,
-            ),
+            k2.effective_variant(false, 3, false, false, true, NativeShaderRoute::Unsupported,),
             PipelineVariant::NormalDebug
         );
     }
 }
-

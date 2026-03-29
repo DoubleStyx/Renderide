@@ -93,13 +93,6 @@ pub struct RenderConfig {
     /// timings (world matrices, filter/sort/batch build, light resolve, final batch sort).
     /// Enable with `RENDERIDE_LOG_COLLECT_TIMING=1`.
     pub log_collect_draw_batches_timing: bool,
-    /// When true, after the legacy resolver runs, compare against the catalog resolver and log on mismatch.
-    /// Default false (no extra work). See [`Self::use_pipeline_catalog_resolver`].
-    pub pipeline_resolution_shadow_check: bool,
-    /// When true, [`crate::session::collect::pipeline::resolve_pipeline_for_material_draw`] uses
-    /// [`crate::session::collect::pipeline_catalog::resolve_pipeline_variant_for_material_draw`].
-    /// Default false (legacy internal resolver only).
-    pub use_pipeline_catalog_resolver: bool,
     /// When true on the non-MRT main graph, inserts a no-op fullscreen filter hook between mesh and overlay.
     pub fullscreen_filter_hook: bool,
     /// Optional override that ignores host per-draw shader resolution and uses global shading toggles only.
@@ -107,10 +100,6 @@ pub struct RenderConfig {
     /// When true, orthographic overlay draws whose host `set_shader` id matches the allowlists and
     /// whose mesh has canvas UI vertices may use native WGSL `UI_Unlit` / `UI_TextUnlit` pipelines.
     pub use_native_ui_wgsl: bool,
-    /// Host shader asset id for Resonite `UI/Unlit`. `-1` disables this arm of the allowlist.
-    pub native_ui_unlit_shader_id: i32,
-    /// Host shader asset id for `UI/Text/Unlit`. `-1` disables this arm.
-    pub native_ui_text_unlit_shader_id: i32,
     /// Material property indices for native `UI_Unlit` uniforms and textures (`-1` = default).
     pub ui_unlit_property_ids: UiUnlitPropertyIds,
     /// Material property indices for native `UI_TextUnlit`.
@@ -140,16 +129,6 @@ pub struct RenderConfig {
     /// from [`crate::gpu::ShaderKey::fallback_variant`] (e.g. NormalDebug on overlay) so UI is not
     /// forced through an untextured PBR path.
     pub native_ui_uivert_pbr_fallback: bool,
-    /// When true, each `shader_upload` whose path matches `UI_Unlit` / `UI_TextUnlit` overwrites
-    /// [`Self::native_ui_unlit_shader_id`] / [`Self::native_ui_text_unlit_shader_id`] even if
-    /// already set (e.g. fixes stale INI ids vs host).
-    pub native_ui_force_shader_hint_registration: bool,
-    /// Host shader asset id for Resonite world `Shader "Unlit"` ([`crate::assets::CANONICAL_UNITY_WORLD_UNLIT`]).
-    /// `-1` disables this arm of the allowlist for [`crate::gpu::pipeline::WorldUnlitPipeline`].
-    pub native_world_unlit_shader_id: i32,
-    /// When true, each `shader_upload` that resolves to world `Unlit` overwrites [`Self::native_world_unlit_shader_id`]
-    /// even if already set.
-    pub native_world_unlit_force_shader_hint_registration: bool,
     /// Material property indices for world `Shader "Unlit"` (`-1` = default / skip).
     pub world_unlit_property_ids: WorldUnlitPropertyIds,
     /// Default native UI surface blend when `_SrcBlend` / `_DstBlend` are not mapped or missing.
@@ -196,16 +175,16 @@ impl RenderConfig {
     ///   frame payload; INI values apply until the first frame (or when running without host data).
     /// - **`[display]`** — `vsync` (bool).
     /// - **`[rendering]`** — `use_debug_uv`, `use_pbr`,
-    ///   `pipeline_resolution_shadow_check`, `use_pipeline_catalog_resolver`, `fullscreen_filter_hook`,
+    ///   `fullscreen_filter_hook`,
     ///   `shader_debug_override` (`none` / `force_legacy_global_shading` / `legacy`),
     ///   `skinned_apply_mesh_root_transform`, `skinned_use_root_bone`, `gpu_validation_layers`,
     ///   `ray_tracing_enabled`, `debug_skinned`, `debug_blendshapes`, `skinned_flip_handedness`,
     ///   `parallel_mesh_draw_prep_batches`, `log_collect_draw_batches_timing` (bools); `rtao_enabled`,
     ///   `ray_traced_shadows_enabled` (bools); `rtao_strength`, `ao_radius` (floats); `frustum_culling` (bool);
-    ///   `use_native_ui_wgsl` (bool); `native_ui_unlit_shader_id`, `native_ui_text_unlit_shader_id` (ints, `-1` off);
+    ///   `use_native_ui_wgsl` (bool);
     ///   `native_ui_world_space`, `native_ui_overlay_stencil_pipelines`, `log_native_ui_routing`,
     ///   `log_ui_unlit_material_inventory`, `native_ui_routing_metrics` (bools);
-    ///   `native_ui_uivert_pbr_fallback`, `native_ui_force_shader_hint_registration` (bools);
+    ///   `native_ui_uivert_pbr_fallback` (bool);
     ///   `native_ui_default_surface_blend` (`alpha` / `premultiplied` / `additive`);
     ///   `pbr_bind_host_material_properties` (bool);
     ///   `multi_material_submeshes`, `log_multi_material_submesh_mismatch` (bools).
@@ -213,7 +192,6 @@ impl RenderConfig {
     ///   property ids for native UI WGSL (see [`crate::assets::ui_material_contract`]). Host
     ///   `material_property_id_request` can also populate these when [`RenderConfig::use_native_ui_wgsl`] is true.
     /// - **`[world_unlit_properties]`** — integer ids for world `Shader "Unlit"` (see [`crate::assets::world_unlit_material_contract`]).
-    /// - **`[rendering]`** — `native_world_unlit_shader_id`, `native_world_unlit_force_shader_hint_registration`.
     ///
     /// **Env vars** (highest priority; override INI and defaults):
     /// - `RENDERIDE_DEBUG_BLENDSHAPES=1` — blendshape debug logging.
@@ -226,21 +204,14 @@ impl RenderConfig {
     /// - `RENDERIDE_GPU_VALIDATION=1` — enables wgpu validation layers at GPU init ([`Self::gpu_validation_layers`]).
     /// - `RENDERIDE_VSYNC=1` enables hardware vsync ([`Self::vsync`]); `RENDERIDE_VSYNC=0` forces it off.
     /// - `RENDERIDE_LOG_COLLECT_TIMING=1` — enables [`Self::log_collect_draw_batches_timing`].
-    /// - `RENDERIDE_PIPELINE_RESOLUTION_SHADOW_CHECK=1` — enables [`Self::pipeline_resolution_shadow_check`].
-    /// - `RENDERIDE_USE_PIPELINE_CATALOG_RESOLVER=1` — enables [`Self::use_pipeline_catalog_resolver`].
     /// - `RENDERIDE_FULLSCREEN_FILTER_HOOK=1` — enables [`Self::fullscreen_filter_hook`].
     /// - `RENDERIDE_MULTI_MATERIAL_SUBMESHES=1` — enables [`Self::multi_material_submeshes`].
     /// - `RENDERIDE_LOG_MULTI_MATERIAL_MISMATCH=1` — enables [`Self::log_multi_material_submesh_mismatch`].
     /// - `RENDERIDE_SHADER_DEBUG_OVERRIDE=legacy` — sets [`ShaderDebugOverride::ForceLegacyGlobalShading`].
     /// - `RENDERIDE_NATIVE_UI_WGSL=1` — enables [`Self::use_native_ui_wgsl`].
-    /// - `RENDERIDE_NATIVE_UI_UNLIT_SHADER_ID` / `RENDERIDE_NATIVE_UI_TEXT_UNLIT_SHADER_ID` — host shader
-    ///   asset ids for the native UI allowlist (integers; unset leaves INI/default).
     /// - `RENDERIDE_NATIVE_UI_WORLD_SPACE=1` — [`Self::native_ui_world_space`].
     /// - `RENDERIDE_NATIVE_UI_UIVERT_PBR_FALLBACK=true|false` — [`Self::native_ui_uivert_pbr_fallback`].
-    /// - `RENDERIDE_NATIVE_UI_FORCE_SHADER_HINT_REGISTRATION=1` — [`Self::native_ui_force_shader_hint_registration`].
     /// - `RENDERIDE_LOG_UI_UNLIT_MATERIALS=1` — [`Self::log_ui_unlit_material_inventory`] (world `Shader "Unlit"` material inventory lines).
-    /// - `RENDERIDE_NATIVE_WORLD_UNLIT_SHADER_ID` — [`Self::native_world_unlit_shader_id`].
-    /// - `RENDERIDE_NATIVE_WORLD_UNLIT_FORCE_SHADER_HINT_REGISTRATION=1` — [`Self::native_world_unlit_force_shader_hint_registration`].
     pub fn load() -> Self {
         let mut config = Self::default();
 
@@ -324,12 +295,6 @@ impl RenderConfig {
         if std::env::var("RENDERIDE_LOG_COLLECT_TIMING").as_deref() == Ok("1") {
             config.log_collect_draw_batches_timing = true;
         }
-        if std::env::var("RENDERIDE_PIPELINE_RESOLUTION_SHADOW_CHECK").as_deref() == Ok("1") {
-            config.pipeline_resolution_shadow_check = true;
-        }
-        if std::env::var("RENDERIDE_USE_PIPELINE_CATALOG_RESOLVER").as_deref() == Ok("1") {
-            config.use_pipeline_catalog_resolver = true;
-        }
         if std::env::var("RENDERIDE_FULLSCREEN_FILTER_HOOK").as_deref() == Ok("1") {
             config.fullscreen_filter_hook = true;
         }
@@ -368,34 +333,10 @@ impl RenderConfig {
         if std::env::var("RENDERIDE_NATIVE_UI_ROUTING_METRICS").as_deref() == Ok("1") {
             config.native_ui_routing_metrics = true;
         }
-        if let Ok(s) = std::env::var("RENDERIDE_NATIVE_UI_UNLIT_SHADER_ID")
-            && let Ok(v) = s.parse::<i32>()
-        {
-            config.native_ui_unlit_shader_id = v;
-        }
-        if let Ok(s) = std::env::var("RENDERIDE_NATIVE_UI_TEXT_UNLIT_SHADER_ID")
-            && let Ok(v) = s.parse::<i32>()
-        {
-            config.native_ui_text_unlit_shader_id = v;
-        }
         if let Ok(s) = std::env::var("RENDERIDE_NATIVE_UI_UIVERT_PBR_FALLBACK")
             && let Some(v) = crate::config::ini::parse_bool(&s)
         {
             config.native_ui_uivert_pbr_fallback = v;
-        }
-        if std::env::var("RENDERIDE_NATIVE_UI_FORCE_SHADER_HINT_REGISTRATION").as_deref() == Ok("1")
-        {
-            config.native_ui_force_shader_hint_registration = true;
-        }
-        if let Ok(s) = std::env::var("RENDERIDE_NATIVE_WORLD_UNLIT_SHADER_ID")
-            && let Ok(v) = s.parse::<i32>()
-        {
-            config.native_world_unlit_shader_id = v;
-        }
-        if std::env::var("RENDERIDE_NATIVE_WORLD_UNLIT_FORCE_SHADER_HINT_REGISTRATION").as_deref()
-            == Ok("1")
-        {
-            config.native_world_unlit_force_shader_hint_registration = true;
         }
         if std::env::var("RENDERIDE_PBR_BIND_HOST_MATERIAL").as_deref() == Ok("0") {
             config.pbr_bind_host_material_properties = false;
@@ -433,13 +374,9 @@ impl Default for RenderConfig {
             frustum_culling: true,
             parallel_mesh_draw_prep_batches: true,
             log_collect_draw_batches_timing: false,
-            pipeline_resolution_shadow_check: false,
-            use_pipeline_catalog_resolver: false,
             fullscreen_filter_hook: false,
             shader_debug_override: ShaderDebugOverride::None,
             use_native_ui_wgsl: true,
-            native_ui_unlit_shader_id: -1,
-            native_ui_text_unlit_shader_id: -1,
             ui_unlit_property_ids: UiUnlitPropertyIds::default(),
             ui_text_unlit_property_ids: UiTextUnlitPropertyIds::default(),
             native_ui_world_space: true,
@@ -450,9 +387,6 @@ impl Default for RenderConfig {
             material_batch_wire_metrics: false,
             material_batch_persist_extended_payloads: false,
             native_ui_uivert_pbr_fallback: false,
-            native_ui_force_shader_hint_registration: false,
-            native_world_unlit_shader_id: -1,
-            native_world_unlit_force_shader_hint_registration: false,
             world_unlit_property_ids: WorldUnlitPropertyIds::default(),
             native_ui_default_surface_blend: NativeUiSurfaceBlend::Alpha,
             pbr_bind_host_material_properties: true,
@@ -634,16 +568,4 @@ color = 9
         assert_eq!(c.world_unlit_property_ids.color, 9);
     }
 
-    #[test]
-    fn apply_ini_native_ui_force_shader_hint_registration() {
-        let ini = r#"
-[rendering]
-native_ui_force_shader_hint_registration = true
-"#;
-        let mut c = RenderConfig::default();
-        for (section, key, value) in crate::config::ini::parse_ini(ini) {
-            ini_apply::apply_render_config_ini_entry(&mut c, &section, &key, &value);
-        }
-        assert!(c.native_ui_force_shader_hint_registration);
-    }
 }

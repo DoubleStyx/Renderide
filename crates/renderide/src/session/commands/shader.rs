@@ -20,17 +20,13 @@ impl CommandHandler for ShaderCommandHandler {
                 let (success, existed_before) =
                     ctx.assets.asset_registry.handle_shader_upload(data.clone());
                 if success {
-                    let unity_name = ctx
-                        .assets
-                        .asset_registry
-                        .get_shader(asset_id)
-                        .map(|s| {
-                            (
-                                s.unity_shader_name.clone(),
-                                s.pipeline_family,
-                                s.renderide_shader_rel_path,
-                            )
-                        });
+                    let unity_name = ctx.assets.asset_registry.get_shader(asset_id).map(|s| {
+                        (
+                            s.unity_shader_name.clone(),
+                            s.pipeline_family,
+                            s.renderide_shader_rel_path,
+                        )
+                    });
                     let (unity_name, family, rel_path) = unity_name.unwrap_or((
                         None,
                         crate::assets::ShaderPipelineFamily::Unsupported,

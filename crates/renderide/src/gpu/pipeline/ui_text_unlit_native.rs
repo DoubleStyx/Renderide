@@ -1,9 +1,9 @@
-//! Native WGSL text pipelines (`ui_text_unlit.wgsl` and `text_unlit.wgsl`).
+//! Native WGSL text pipelines (`ui_text_unlit.wgsl` for both UI and standalone Text/Unlit).
 
 use wgpu::util::DeviceExt;
 
 use crate::assets::{
-    MaterialPropertyLookupIds, MaterialPropertyStore, NativeUiSurfaceBlend,
+    DEFAULT_OVERLAY_TINT, MaterialPropertyLookupIds, MaterialPropertyStore, NativeUiSurfaceBlend,
     UiTextUnlitMaterialUniform, UiTextUnlitPropertyIds, ui_text_unlit_material_uniform,
 };
 
@@ -14,7 +14,6 @@ use super::ring_buffer::UniformRingBuffer;
 use super::ui_unlit_native::{fallback_white, native_ui_scene_depth_bind_group_layout};
 
 const UI_TEXT_UNLIT_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/ui_text_unlit.wgsl"));
-const TEXT_UNLIT_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/text_unlit.wgsl"));
 
 /// Native `UI_TextUnlit` render pipeline.
 pub struct UiTextUnlitNativePipeline {
@@ -54,7 +53,7 @@ impl UiTextUnlitNativePipeline {
             device,
             config,
             surface_blend,
-            TEXT_UNLIT_WGSL,
+            UI_TEXT_UNLIT_WGSL,
             "text_unlit native",
             "text unlit native RP",
         )
@@ -117,7 +116,7 @@ impl UiTextUnlitNativePipeline {
         });
         let initial = UiTextUnlitMaterialUniform {
             tint_color: [1.0, 1.0, 1.0, 1.0],
-            overlay_tint: [1.0, 1.0, 1.0, 0.5],
+            overlay_tint: DEFAULT_OVERLAY_TINT,
             outline_color: [1.0, 1.0, 1.0, 0.0],
             background_color: [0.0, 0.0, 0.0, 0.0],
             range_xy: [0.001, 0.001, 0.0, 0.0],
@@ -227,7 +226,7 @@ impl UiTextUnlitNativePipeline {
             device,
             config,
             surface_blend,
-            TEXT_UNLIT_WGSL,
+            UI_TEXT_UNLIT_WGSL,
             "text_unlit native stencil",
             "text unlit native stencil RP",
         )
@@ -290,7 +289,7 @@ impl UiTextUnlitNativePipeline {
         });
         let initial = UiTextUnlitMaterialUniform {
             tint_color: [1.0, 1.0, 1.0, 1.0],
-            overlay_tint: [1.0, 1.0, 1.0, 0.5],
+            overlay_tint: DEFAULT_OVERLAY_TINT,
             outline_color: [1.0, 1.0, 1.0, 0.0],
             background_color: [0.0, 0.0, 0.0, 0.0],
             range_xy: [0.001, 0.001, 0.0, 0.0],
@@ -374,6 +373,7 @@ impl UiTextUnlitNativePipeline {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_text_unlit_pipeline(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,

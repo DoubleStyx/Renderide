@@ -72,30 +72,6 @@ pub(crate) fn apply_render_config_ini_entry(
             }
         }
 
-        ("rendering", "pipeline_resolution_shadow_check") => {
-            if let Some(v) = parse_bool(value) {
-                config.pipeline_resolution_shadow_check = v;
-                eprintln!("[renderide] ini: pipeline_resolution_shadow_check = {}", v);
-                logger::info!("ini: pipeline_resolution_shadow_check = {}", v);
-            } else {
-                eprintln!(
-                    "[renderide] ini: pipeline_resolution_shadow_check parse error (raw = {:?})",
-                    value
-                );
-            }
-        }
-        ("rendering", "use_pipeline_catalog_resolver") => {
-            if let Some(v) = parse_bool(value) {
-                config.use_pipeline_catalog_resolver = v;
-                eprintln!("[renderide] ini: use_pipeline_catalog_resolver = {}", v);
-                logger::info!("ini: use_pipeline_catalog_resolver = {}", v);
-            } else {
-                eprintln!(
-                    "[renderide] ini: use_pipeline_catalog_resolver parse error (raw = {:?})",
-                    value
-                );
-            }
-        }
         ("rendering", "fullscreen_filter_hook") => {
             if let Some(v) = parse_bool(value) {
                 config.fullscreen_filter_hook = v;
@@ -402,28 +378,6 @@ pub(crate) fn apply_render_config_ini_entry(
                 );
             }
         }
-        ("rendering", "native_ui_unlit_shader_id") => match value.parse::<i32>() {
-            Ok(v) => {
-                config.native_ui_unlit_shader_id = v;
-                eprintln!("[renderide] ini: native_ui_unlit_shader_id = {}", v);
-                logger::info!("ini: native_ui_unlit_shader_id = {}", v);
-            }
-            Err(_) => eprintln!(
-                "[renderide] ini: native_ui_unlit_shader_id parse error (raw = {:?})",
-                value
-            ),
-        },
-        ("rendering", "native_ui_text_unlit_shader_id") => match value.parse::<i32>() {
-            Ok(v) => {
-                config.native_ui_text_unlit_shader_id = v;
-                eprintln!("[renderide] ini: native_ui_text_unlit_shader_id = {}", v);
-                logger::info!("ini: native_ui_text_unlit_shader_id = {}", v);
-            }
-            Err(_) => eprintln!(
-                "[renderide] ini: native_ui_text_unlit_shader_id parse error (raw = {:?})",
-                value
-            ),
-        },
         ("rendering", "native_ui_world_space") => {
             if let Some(v) = parse_bool(value) {
                 config.native_ui_world_space = v;
@@ -522,50 +476,6 @@ pub(crate) fn apply_render_config_ini_entry(
             } else {
                 eprintln!(
                     "[renderide] ini: native_ui_uivert_pbr_fallback parse error (raw = {:?})",
-                    value
-                );
-            }
-        }
-        ("rendering", "native_ui_force_shader_hint_registration") => {
-            if let Some(v) = parse_bool(value) {
-                config.native_ui_force_shader_hint_registration = v;
-                eprintln!(
-                    "[renderide] ini: native_ui_force_shader_hint_registration = {}",
-                    v
-                );
-                logger::info!("ini: native_ui_force_shader_hint_registration = {}", v);
-            } else {
-                eprintln!(
-                    "[renderide] ini: native_ui_force_shader_hint_registration parse error (raw = {:?})",
-                    value
-                );
-            }
-        }
-        ("rendering", "native_world_unlit_shader_id") => match value.parse::<i32>() {
-            Ok(v) => {
-                config.native_world_unlit_shader_id = v;
-                eprintln!("[renderide] ini: native_world_unlit_shader_id = {}", v);
-                logger::info!("ini: native_world_unlit_shader_id = {}", v);
-            }
-            Err(_) => eprintln!(
-                "[renderide] ini: native_world_unlit_shader_id parse error (raw = {:?})",
-                value
-            ),
-        },
-        ("rendering", "native_world_unlit_force_shader_hint_registration") => {
-            if let Some(v) = parse_bool(value) {
-                config.native_world_unlit_force_shader_hint_registration = v;
-                eprintln!(
-                    "[renderide] ini: native_world_unlit_force_shader_hint_registration = {}",
-                    v
-                );
-                logger::info!(
-                    "ini: native_world_unlit_force_shader_hint_registration = {}",
-                    v
-                );
-            } else {
-                eprintln!(
-                    "[renderide] ini: native_world_unlit_force_shader_hint_registration parse error (raw = {:?})",
                     value
                 );
             }

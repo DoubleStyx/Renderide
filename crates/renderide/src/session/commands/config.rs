@@ -52,17 +52,9 @@ impl CommandHandler for ConfigCommandHandler {
                     log_collect_draw_batches_timing: ctx
                         .render_config
                         .log_collect_draw_batches_timing,
-                    pipeline_resolution_shadow_check: ctx
-                        .render_config
-                        .pipeline_resolution_shadow_check,
-                    use_pipeline_catalog_resolver: ctx.render_config.use_pipeline_catalog_resolver,
                     fullscreen_filter_hook: ctx.render_config.fullscreen_filter_hook,
                     shader_debug_override: ctx.render_config.shader_debug_override,
                     use_native_ui_wgsl: ctx.render_config.use_native_ui_wgsl,
-                    native_ui_unlit_shader_id: ctx.render_config.native_ui_unlit_shader_id,
-                    native_ui_text_unlit_shader_id: ctx
-                        .render_config
-                        .native_ui_text_unlit_shader_id,
                     ui_unlit_property_ids: ctx.render_config.ui_unlit_property_ids.clone(),
                     ui_text_unlit_property_ids: ctx
                         .render_config
@@ -82,13 +74,6 @@ impl CommandHandler for ConfigCommandHandler {
                         .render_config
                         .material_batch_persist_extended_payloads,
                     native_ui_uivert_pbr_fallback: ctx.render_config.native_ui_uivert_pbr_fallback,
-                    native_ui_force_shader_hint_registration: ctx
-                        .render_config
-                        .native_ui_force_shader_hint_registration,
-                    native_world_unlit_shader_id: ctx.render_config.native_world_unlit_shader_id,
-                    native_world_unlit_force_shader_hint_registration: ctx
-                        .render_config
-                        .native_world_unlit_force_shader_hint_registration,
                     world_unlit_property_ids: ctx.render_config.world_unlit_property_ids,
                     native_ui_default_surface_blend: ctx
                         .render_config
