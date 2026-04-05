@@ -28,10 +28,18 @@
 //! [`RenderSpaceState::static_mesh_renderers`](RenderSpaceState::static_mesh_renderers) and
 //! [`RenderSpaceState::skinned_mesh_renderers`](RenderSpaceState::skinned_mesh_renderers) use dense
 //! `renderable_index` ↔ `Vec` index, with removals in buffer order (swap-with-last).
+//!
+//! ## Lights
+//!
+//! [`LightCache`](lights::LightCache) merges [`FrameSubmitData`](crate::shared::FrameSubmitData) light
+//! batches and [`LightsBufferRendererSubmission`](crate::shared::LightsBufferRendererSubmission) payloads;
+//! [`SceneCoordinator::resolve_lights_world`](SceneCoordinator::resolve_lights_world) produces
+//! [`ResolvedLight`](ResolvedLight) for [`GpuLight`](crate::backend::GpuLight) packing in the backend.
 
 mod coordinator;
 mod error;
 mod ids;
+pub mod lights;
 mod math;
 mod mesh_apply;
 mod mesh_material_row;
@@ -44,6 +52,7 @@ mod world;
 pub use coordinator::SceneCoordinator;
 pub use error::SceneError;
 pub use ids::{RenderSpaceId, TransformIndex};
+pub use lights::{light_casts_shadows, CachedLight, LightCache, ResolvedLight};
 pub use mesh_renderable::{MeshMaterialSlot, SkinnedMeshRenderer, StaticMeshRenderer};
 pub use render_space::RenderSpaceState;
 pub use transforms_apply::TransformRemovalEvent;

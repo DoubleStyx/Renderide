@@ -6,9 +6,10 @@
 //! ## Layering
 //!
 //! - **[`frontend`]** — IPC queues, shared memory accessor, init handshake, lock-step frame gating.
-//! - **[`scene`]** — Render spaces, transforms, mesh renderables (host logical state; no wgpu).
+//! - **[`scene`]** — Render spaces, transforms, mesh renderables, host light cache (no wgpu).
 //! - **[`backend`]** — GPU device usage, mesh/texture pools, material property store, uploads,
-//!   [`MeshPreprocessPipelines`](crate::gpu::MeshPreprocessPipelines).
+//!   [`MeshPreprocessPipelines`](crate::gpu::MeshPreprocessPipelines), and the compiled
+//!   [`render_graph`](crate::render_graph).
 //!
 //! [`RendererRuntime`](crate::runtime::RendererRuntime) composes these three; prefer adding new
 //! logic in the appropriate module rather than growing the façade.
@@ -25,6 +26,7 @@ pub mod ipc;
 pub mod materials;
 pub mod pipelines;
 pub mod present;
+pub mod render_graph;
 pub mod resources;
 pub mod runtime;
 /// Transforms, render spaces, mesh renderables — **scene** layer (no wgpu).
@@ -37,7 +39,7 @@ pub use assets::material::{
     MaterialPropertyLookupIds, MaterialPropertySemanticHook, MaterialPropertyStore,
     MaterialPropertyValue, ParseMaterialBatchOptions, PropertyIdRegistry,
 };
-pub use backend::RenderBackend;
+pub use backend::{order_lights_for_clustered_shading, GpuLight, RenderBackend, MAX_LIGHTS};
 pub use connection::{
     get_connection_parameters, try_claim_renderer_singleton, ConnectionParams, InitError,
     DEFAULT_QUEUE_CAPACITY,
@@ -50,14 +52,19 @@ pub use materials::{
     MaterialPipelineDesc, MaterialPipelineFamily, MaterialRegistry, MaterialRouter,
     SolidColorFamily, WgslPatch, SOLID_COLOR_FAMILY_ID,
 };
+pub use render_graph::{
+    build_default_main_graph, passes::SwapchainClearPass, CompileStats, CompiledRenderGraph,
+    GraphBuildError, GraphBuilder, GraphExecuteError, PassId, PassResources, RenderPass,
+    RenderPassContext, RenderPassError, ResourceSlot,
+};
 pub use resources::{
     GpuResource, GpuTexture2d, MeshPool, MeshResidencyMeta, NoopStreamingPolicy, ResidencyTier,
     StreamingPolicy, TexturePool, TextureResidencyMeta, VramAccounting, VramResourceKind,
 };
 pub use runtime::{InitState, RendererRuntime};
 pub use scene::{
-    MeshMaterialSlot, RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer,
-    TransformRemovalEvent,
+    light_casts_shadows, CachedLight, LightCache, MeshMaterialSlot, RenderSpaceId, ResolvedLight,
+    SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer, TransformRemovalEvent,
 };
 
 /// Runs the renderer process: logging, optional IPC, winit loop, and wgpu presentation.

@@ -9,15 +9,20 @@ use crate::assets::material::{
 };
 use crate::assets::mesh::try_upload_mesh_from_raw;
 use crate::assets::texture::write_texture2d_mips;
-use crate::gpu::MeshPreprocessPipelines;
+use crate::gpu::{GpuContext, MeshPreprocessPipelines};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::materials::MaterialFamilyId;
+use crate::render_graph::{CompiledRenderGraph, GraphExecuteError};
 use crate::resources::{GpuTexture2d, MeshPool, TexturePool};
+use crate::scene::SceneCoordinator;
+
+use super::light_gpu::{order_lights_for_clustered_shading, GpuLight};
 use crate::shared::{
     MaterialsUpdateBatch, MaterialsUpdateBatchResult, MeshUnload, MeshUploadData, MeshUploadResult,
     RendererCommand, SetTexture2DData, SetTexture2DFormat, SetTexture2DProperties,
     SetTexture2DResult, TextureUpdateResultType, UnloadTexture2D,
 };
+use winit::window::Window;
 
 /// Max queued [`MeshUploadData`] when GPU is not ready yet (host data stays in shared memory).
 pub const MAX_PENDING_MESH_UPLOADS: usize = 256;
@@ -51,6 +56,10 @@ pub struct RenderBackend {
     pending_shader_routes: HashMap<i32, MaterialFamilyId>,
     /// Optional mesh skinning / blendshape compute pipelines (after [`Self::attach`]).
     mesh_preprocess: Option<MeshPreprocessPipelines>,
+    /// Compiled DAG of render passes (after [`Self::attach`]); see [`crate::render_graph`].
+    frame_graph: Option<CompiledRenderGraph>,
+    /// Last packed lights for the frame (after [`Self::prepare_lights_from_scene`]).
+    light_scratch: Vec<GpuLight>,
 }
 
 impl Default for RenderBackend {
@@ -77,7 +86,26 @@ impl RenderBackend {
             material_registry: None,
             pending_shader_routes: HashMap::new(),
             mesh_preprocess: None,
+            frame_graph: None,
+            light_scratch: Vec::new(),
         }
+    }
+
+    /// Packed GPU lights from the last [`Self::prepare_lights_from_scene`] call.
+    pub fn frame_lights(&self) -> &[GpuLight] {
+        &self.light_scratch
+    }
+
+    /// Fills [`Self::light_scratch`] from [`SceneCoordinator`] (all spaces, clustered ordering, cap [`crate::backend::MAX_LIGHTS`]).
+    pub fn prepare_lights_from_scene(&mut self, scene: &SceneCoordinator) {
+        self.light_scratch.clear();
+        let mut all = Vec::new();
+        for id in scene.render_space_ids() {
+            all.extend(scene.resolve_lights_world(id));
+        }
+        let ordered = order_lights_for_clustered_shading(&all);
+        self.light_scratch
+            .extend(ordered.iter().map(GpuLight::from_resolved));
     }
 
     /// Mesh deformation compute pipelines when GPU init succeeded.
@@ -180,6 +208,28 @@ impl RenderBackend {
                 self.pending_mesh_uploads.push_back(data);
             }
         }
+
+        self.frame_graph = match crate::render_graph::build_default_main_graph() {
+            Ok(g) => Some(g),
+            Err(e) => {
+                logger::warn!("default render graph build failed: {e}");
+                None
+            }
+        };
+    }
+
+    /// Records and presents one frame using the compiled render graph (swapchain clear + future passes).
+    ///
+    /// Returns [`GraphExecuteError::NoFrameGraph`] if graph build failed during [`Self::attach`].
+    pub fn execute_frame_graph(
+        &mut self,
+        gpu: &mut GpuContext,
+        window: &Window,
+    ) -> Result<(), GraphExecuteError> {
+        let Some(graph) = self.frame_graph.as_mut() else {
+            return Err(GraphExecuteError::NoFrameGraph);
+        };
+        graph.execute(gpu, window)
     }
 
     /// Maps shader asset to material family, or defers until [`Self::attach`].

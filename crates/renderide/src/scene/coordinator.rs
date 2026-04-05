@@ -9,6 +9,9 @@ use crate::shared::FrameSubmitData;
 
 use super::error::SceneError;
 use super::ids::RenderSpaceId;
+use super::lights::{
+    apply_light_renderables_update, apply_lights_buffer_renderers_update, LightCache, ResolvedLight,
+};
 use super::math::multiply_root;
 use super::render_space::RenderSpaceState;
 use super::world::{compute_world_matrices_for_space, ensure_cache_shapes, WorldTransformCache};
@@ -18,6 +21,7 @@ pub struct SceneCoordinator {
     spaces: HashMap<RenderSpaceId, RenderSpaceState>,
     world_caches: HashMap<RenderSpaceId, WorldTransformCache>,
     world_dirty: HashSet<RenderSpaceId>,
+    light_cache: LightCache,
 }
 
 impl Default for SceneCoordinator {
@@ -33,7 +37,32 @@ impl SceneCoordinator {
             spaces: HashMap::new(),
             world_caches: HashMap::new(),
             world_dirty: HashSet::new(),
+            light_cache: LightCache::new(),
         }
+    }
+
+    /// Host light cache (submissions + incremental updates); CPU-side only.
+    pub fn light_cache(&self) -> &LightCache {
+        &self.light_cache
+    }
+
+    /// Mutable light cache ([`LightsBufferRendererSubmission`](crate::shared::LightsBufferRendererSubmission) store, tests).
+    pub fn light_cache_mut(&mut self) -> &mut LightCache {
+        &mut self.light_cache
+    }
+
+    /// Render space ids currently present (stable order not guaranteed).
+    pub fn render_space_ids(&self) -> impl Iterator<Item = RenderSpaceId> + '_ {
+        self.spaces.keys().copied()
+    }
+
+    /// Resolves lights in world space for `id`, including submission-only buffer fallback.
+    pub fn resolve_lights_world(&self, id: RenderSpaceId) -> Vec<ResolvedLight> {
+        let sid = id.0;
+        self.light_cache
+            .resolve_lights_with_fallback(sid, |transform_idx| {
+                self.world_matrix_with_root(id, transform_idx)
+            })
     }
 
     /// Read-only access for debugging / future systems.
@@ -79,10 +108,7 @@ impl SceneCoordinator {
         Ok(())
     }
 
-    /// Applies [`FrameSubmitData`]: transforms, static mesh renderables, skinned mesh renderables.
-    ///
-    /// Other render-space payloads (lights, cameras, layers, …) are intentionally omitted in this
-    /// phase.
+    /// Applies [`FrameSubmitData`]: transforms, meshes, skinned meshes, lights (Unity order).
     pub fn apply_frame_submit(
         &mut self,
         shm: &mut SharedMemoryAccessor,
@@ -138,6 +164,12 @@ impl SceneCoordinator {
                     &transform_removals,
                 )?;
             }
+            if let Some(ref lu) = update.lights_update {
+                apply_light_renderables_update(&mut self.light_cache, shm, lu, update.id)?;
+            }
+            if let Some(ref lbu) = update.lights_buffer_renderers_update {
+                apply_lights_buffer_renderers_update(&mut self.light_cache, shm, lbu, update.id)?;
+            }
         }
 
         let to_remove: Vec<RenderSpaceId> = self
@@ -147,6 +179,7 @@ impl SceneCoordinator {
             .filter(|id| !seen.contains(id))
             .collect();
         for id in to_remove {
+            self.light_cache.remove_space(id.0);
             self.spaces.remove(&id);
             self.world_caches.remove(&id);
             self.world_dirty.remove(&id);

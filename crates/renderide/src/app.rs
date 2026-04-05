@@ -12,6 +12,7 @@ use winit::window::{Window, WindowId};
 use crate::connection::{get_connection_parameters, try_claim_renderer_singleton};
 use crate::gpu::GpuContext;
 use crate::present::present_clear_frame;
+use crate::render_graph::GraphExecuteError;
 use crate::runtime::RendererRuntime;
 
 /// Interval between log flushes when using file logging.
@@ -170,10 +171,21 @@ impl RenderideApp {
             return;
         };
 
-        if let Err(e) = present_clear_frame(gpu, window) {
-            logger::warn!("present failed: {e:?}");
-            let s = window.inner_size();
-            gpu.reconfigure(s.width, s.height);
+        if let Err(e) = self.runtime.execute_frame_graph(gpu, window) {
+            match e {
+                GraphExecuteError::NoFrameGraph => {
+                    if let Err(pe) = present_clear_frame(gpu, window) {
+                        logger::warn!("present fallback failed: {pe:?}");
+                        let s = window.inner_size();
+                        gpu.reconfigure(s.width, s.height);
+                    }
+                }
+                _ => {
+                    logger::warn!("frame graph failed: {e:?}");
+                    let s = window.inner_size();
+                    gpu.reconfigure(s.width, s.height);
+                }
+            }
         }
     }
 }

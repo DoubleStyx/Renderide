@@ -1,0 +1,15 @@
+//! Per-frame context passed to each [`super::RenderPass`].
+
+use std::sync::{Arc, Mutex};
+
+/// Immutable GPU handles and mutable encoder for one frame’s recording.
+pub struct RenderPassContext<'a> {
+    /// WGPU device.
+    pub device: &'a wgpu::Device,
+    /// Submission queue (same mutex as [`crate::gpu::GpuContext::queue`]).
+    pub queue: &'a Arc<Mutex<wgpu::Queue>>,
+    /// Command encoder for this frame (all passes share one encoder in v1).
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// Swapchain view when this frame acquired the surface; [`None`] for offscreen-only graphs.
+    pub backbuffer: Option<&'a wgpu::TextureView>,
+}

@@ -20,15 +20,19 @@ use crate::assets::AssetSubsystem;
 use crate::backend::RenderBackend;
 use crate::connection::{ConnectionParams, InitError};
 use crate::frontend::RendererFrontend;
+use crate::gpu::GpuContext;
+use crate::render_graph::GraphExecuteError;
 
 pub use crate::frontend::InitState;
 use crate::ipc::SharedMemoryAccessor;
 use crate::scene::SceneCoordinator;
 use crate::shared::{
-    FrameSubmitData, HeadOutputDevice, MaterialPropertyIdResult, MaterialsUpdateBatch,
+    FrameSubmitData, HeadOutputDevice, LightData, LightsBufferRendererConsumed,
+    LightsBufferRendererSubmission, MaterialPropertyIdResult, MaterialsUpdateBatch,
     RendererCommand, RendererInitData, RendererInitResult, ShaderUnload, ShaderUpload,
     ShaderUploadResult,
 };
+use winit::window::Window;
 
 /// Facade: [`RendererFrontend`] + [`SceneCoordinator`] + [`RenderBackend`] + ingestion helpers.
 pub struct RendererRuntime {
@@ -148,6 +152,16 @@ impl RendererRuntime {
     pub fn attach_gpu(&mut self, device: Arc<wgpu::Device>, queue: Arc<Mutex<wgpu::Queue>>) {
         let shm = self.frontend.shared_memory_mut();
         self.backend.attach(device, queue, shm);
+    }
+
+    /// Records and presents one frame via the backend’s compiled render graph.
+    pub fn execute_frame_graph(
+        &mut self,
+        gpu: &mut GpuContext,
+        window: &Window,
+    ) -> Result<(), GraphExecuteError> {
+        self.backend.prepare_lights_from_scene(&self.scene);
+        self.backend.execute_frame_graph(gpu, window)
     }
 
     /// If connected and init is complete, sends [`FrameStartData`] when we are ready for the next host frame.
@@ -283,6 +297,12 @@ impl RendererRuntime {
                     fs.video_clock_errors.len(),
                 );
             }
+            RendererCommand::lights_buffer_renderer_submission(sub) => {
+                self.on_lights_buffer_renderer_submission(sub);
+            }
+            RendererCommand::lights_buffer_renderer_consumed(_) => {
+                logger::trace!("runtime: lights_buffer_renderer_consumed from host (ignored)");
+            }
             _ => {
                 logger::trace!("runtime: unhandled RendererCommand (expand handlers here)");
             }
@@ -329,6 +349,43 @@ impl RendererRuntime {
             return;
         };
         self.backend.apply_materials_update_batch(batch, shm, ipc);
+    }
+
+    fn on_lights_buffer_renderer_submission(&mut self, sub: LightsBufferRendererSubmission) {
+        let buffer_id = sub.lights_buffer_unique_id;
+        let Some(shm) = self.frontend.shared_memory_mut() else {
+            logger::warn!("lights_buffer_renderer_submission: no shared memory (id={buffer_id})");
+            return;
+        };
+        let ctx = format!("lights_buffer_renderer_submission id={buffer_id}");
+        let vec = match shm
+            .access_copy_diagnostic_with_context::<LightData>(&sub.lights, Some(&ctx))
+        {
+            Ok(v) => v,
+            Err(e) => {
+                logger::warn!("lights_buffer_renderer_submission id={buffer_id}: SHM failed: {e}");
+                return;
+            }
+        };
+        let count = sub.lights_count.max(0) as usize;
+        let take = count.min(vec.len());
+        if count != vec.len() && !vec.is_empty() {
+            logger::debug!(
+                "lights_buffer_renderer_submission id={buffer_id}: host count {} SHM elems {} (using {})",
+                sub.lights_count,
+                vec.len(),
+                take
+            );
+        }
+        let payload: Vec<LightData> = vec.into_iter().take(take).collect();
+        self.scene.light_cache_mut().store_full(buffer_id, payload);
+        if let Some(ref mut ipc) = self.frontend.ipc_mut() {
+            ipc.send_background(RendererCommand::lights_buffer_renderer_consumed(
+                LightsBufferRendererConsumed {
+                    global_unique_id: buffer_id,
+                },
+            ));
+        }
     }
 
     fn on_frame_submit(&mut self, data: FrameSubmitData) {
