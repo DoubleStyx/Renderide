@@ -33,7 +33,7 @@ pub fn parse_args() -> (Vec<String>, Option<LogLevel>) {
 pub fn generate_shared_memory_prefix(len: usize) -> Result<String, getrandom::Error> {
     const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let mut bytes = vec![0u8; len];
-    getrandom::getrandom(&mut bytes)?;
+    getrandom::fill(&mut bytes)?;
     Ok(bytes
         .iter()
         .map(|b| CHARS[(*b as usize) % CHARS.len()] as char)

@@ -39,7 +39,7 @@ impl MaterialPipelineFamily for SolidColorFamily {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("solid_color_material"),
             bind_group_layouts: &[],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("solid_color_material"),
@@ -68,8 +68,8 @@ impl MaterialPipelineFamily for SolidColorFamily {
                 .depth_stencil_format
                 .map(|format| wgpu::DepthStencilState {
                     format,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
@@ -78,7 +78,7 @@ impl MaterialPipelineFamily for SolidColorFamily {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         })
     }

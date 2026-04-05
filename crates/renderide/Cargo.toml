@@ -25,7 +25,7 @@ pollster = "0.4"
 thiserror = "2"
 unity-asset = "0.2.0"
 unity-asset-binary = "0.2.0"
-wgpu = "23"
+wgpu = "29.0.1"
 winit = "0.30"
 
 [dev-dependencies]

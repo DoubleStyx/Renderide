@@ -3,7 +3,6 @@
 use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
-use wgpu::SurfaceError;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
@@ -37,10 +36,9 @@ pub enum GpuError {
 impl GpuContext {
     /// Asynchronously builds GPU state for `window`.
     pub async fn new(window: Arc<Window>, vsync: bool) -> Result<Self, GpuError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
+        let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        instance_desc.backends = wgpu::Backends::all();
+        let instance = wgpu::Instance::new(instance_desc);
 
         let surface = instance
             .create_surface(window.clone())
@@ -55,7 +53,7 @@ impl GpuContext {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or_else(|| GpuError::Adapter("no adapter".into()))?;
+            .map_err(|e| GpuError::Adapter(format!("{e:?}")))?;
 
         let compression = wgpu::Features::TEXTURE_COMPRESSION_BC
             | wgpu::Features::TEXTURE_COMPRESSION_ETC2
@@ -63,14 +61,11 @@ impl GpuContext {
         let required_features = adapter.features() & compression;
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("renderide-skeleton"),
-                    required_features,
-                    ..Default::default()
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("renderide-skeleton"),
+                required_features,
+                ..Default::default()
+            })
             .await
             .map_err(|e| GpuError::Device(format!("{e:?}")))?;
 
@@ -107,7 +102,8 @@ impl GpuContext {
         PhysicalSize::new(self.config.width, self.config.height)
     }
 
-    /// Reconfigures the swapchain after resize or [`SurfaceError`].
+    /// Reconfigures the swapchain after resize or after [`wgpu::CurrentSurfaceTexture::Lost`] /
+    /// [`wgpu::CurrentSurfaceTexture::Outdated`].
     pub fn reconfigure(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
@@ -132,20 +128,26 @@ impl GpuContext {
         self.config.format
     }
 
-    /// Acquires the next frame, reconfiguring once on `Lost` / `Outdated`.
+    /// Acquires the next frame, reconfiguring once on [`wgpu::CurrentSurfaceTexture::Lost`] or
+    /// [`wgpu::CurrentSurfaceTexture::Outdated`].
     pub fn acquire_with_recovery(
         &mut self,
         window: &Window,
-    ) -> Result<wgpu::SurfaceTexture, SurfaceError> {
+    ) -> Result<wgpu::SurfaceTexture, wgpu::CurrentSurfaceTexture> {
         match self.surface.get_current_texture() {
-            Ok(t) => Ok(t),
-            Err(e @ (SurfaceError::Lost | SurfaceError::Outdated)) => {
-                logger::info!("surface {e:?} — reconfiguring");
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Ok(t),
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+                logger::info!("surface Lost or Outdated — reconfiguring");
                 let s = window.inner_size();
                 self.reconfigure(s.width, s.height);
-                self.surface.get_current_texture()
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(t)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Ok(t),
+                    other => Err(other),
+                }
             }
-            Err(e) => Err(e),
+            other => Err(other),
         }
     }
 }

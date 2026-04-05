@@ -1,4 +1,5 @@
-//! Applies [`SetTexture2DData`] into an existing [`wgpu::Texture`] using [`wgpu::Queue::write_texture`].
+//! Applies [`SetTexture2DData`] into an existing [`wgpu::Texture`] using [`wgpu::Queue::write_texture`]
+//! ([`wgpu::TexelCopyTextureInfo`] / [`wgpu::TexelCopyBufferLayout`]).
 //!
 //! The [`wgpu::TextureFormat`] must match the texture’s creation format (see [`resolve_texture2d_wgpu_format`]).
 
@@ -190,7 +191,7 @@ fn write_one_mip(
     }
 
     queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture,
             mip_level,
             origin: wgpu::Origin3d::ZERO,
@@ -207,7 +208,7 @@ fn copy_layout_for_mip(
     format: wgpu::TextureFormat,
     width: u32,
     height: u32,
-) -> Result<(wgpu::ImageDataLayout, usize), String> {
+) -> Result<(wgpu::TexelCopyBufferLayout, usize), String> {
     let (bw, bh) = format.block_dimensions();
     let block_bytes = format
         .block_copy_size(None)
@@ -222,7 +223,7 @@ fn copy_layout_for_mip(
             .ok_or("expected bytes overflow")?;
         let bpr_u32 = u32::try_from(bpr).map_err(|_| "bpr u32 overflow")?;
         return Ok((
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bpr_u32),
                 rows_per_image: Some(height),
@@ -241,7 +242,7 @@ fn copy_layout_for_mip(
         .ok_or("expected size overflow")?;
     let expected = expected_u as usize;
     Ok((
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(row_bytes_u),
             rows_per_image: Some(blocks_y),
