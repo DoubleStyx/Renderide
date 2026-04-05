@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- NUGet audit downloads a vulnerability index; sandboxed/locked-down environments may fail with NU1900. -->
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+</Project>
