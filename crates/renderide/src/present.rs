@@ -53,7 +53,10 @@ pub fn present_clear_frame(gpu: &mut GpuContext, window: &Window) -> Result<(), 
             timestamp_writes: None,
         });
     }
-    gpu.queue().submit(std::iter::once(encoder.finish()));
+    gpu.queue()
+        .lock()
+        .expect("queue mutex poisoned")
+        .submit(std::iter::once(encoder.finish()));
     frame.present();
     Ok(())
 }

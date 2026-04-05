@@ -1,6 +1,7 @@
 //! Asset ingestion and GPU resource handles (skeleton).
 
 pub mod mesh;
+pub mod texture;
 
 use std::collections::VecDeque;
 

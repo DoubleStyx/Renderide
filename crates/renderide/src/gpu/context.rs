@@ -1,6 +1,6 @@
 //! [`GpuContext`]: instance, surface, device, and swapchain state.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 use wgpu::SurfaceError;
@@ -10,7 +10,7 @@ use winit::window::Window;
 /// GPU stack for presentation and future render passes.
 pub struct GpuContext {
     device: Arc<wgpu::Device>,
-    queue: wgpu::Queue,
+    queue: Arc<Mutex<wgpu::Queue>>,
     /// Kept as `'static` so the context can move independently of the window borrow; the window
     /// must outlive this value (owned alongside it in the app handler).
     surface: wgpu::Surface<'static>,
@@ -57,10 +57,16 @@ impl GpuContext {
             .await
             .ok_or_else(|| GpuError::Adapter("no adapter".into()))?;
 
+        let compression = wgpu::Features::TEXTURE_COMPRESSION_BC
+            | wgpu::Features::TEXTURE_COMPRESSION_ETC2
+            | wgpu::Features::TEXTURE_COMPRESSION_ASTC;
+        let required_features = adapter.features() & compression;
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("renderide-skeleton"),
+                    required_features,
                     ..Default::default()
                 },
                 None,
@@ -90,7 +96,7 @@ impl GpuContext {
 
         Ok(Self {
             device,
-            queue,
+            queue: Arc::new(Mutex::new(queue)),
             surface: surface_safe,
             config,
         })
@@ -117,7 +123,8 @@ impl GpuContext {
         &self.device
     }
 
-    pub fn queue(&self) -> &wgpu::Queue {
+    /// Shared handle also passed to [`crate::runtime::RendererRuntime`] for uploads.
+    pub fn queue(&self) -> &Arc<Mutex<wgpu::Queue>> {
         &self.queue
     }
 

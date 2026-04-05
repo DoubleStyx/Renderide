@@ -21,8 +21,8 @@ pub use connection::{
 };
 pub use ipc::DualQueueIpc;
 pub use resources::{
-    GpuResource, MeshPool, MeshResidencyMeta, NoopStreamingPolicy, ResidencyTier, StreamingPolicy,
-    VramAccounting,
+    GpuResource, GpuTexture2d, MeshPool, MeshResidencyMeta, NoopStreamingPolicy, ResidencyTier,
+    StreamingPolicy, TexturePool, TextureResidencyMeta, VramAccounting, VramResourceKind,
 };
 pub use runtime::{InitState, RendererRuntime};
 

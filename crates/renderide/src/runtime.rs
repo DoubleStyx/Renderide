@@ -1,25 +1,31 @@
-//! Renderer orchestration: IPC polling, init lifecycle, lock-step frame gating, mesh ingest.
+//! Renderer orchestration: IPC polling, init lifecycle, lock-step frame gating, mesh + texture ingest.
 //!
 //! Phase order is aligned with `RenderingManager.HandleUpdate`: optionally send
 //! [`FrameStartData`](crate::shared::FrameStartData), drain integration-style work (stub here), then
 //! process incoming commands.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::assets::mesh::try_upload_mesh_from_raw;
+use crate::assets::texture::{supported_host_formats_for_init, write_texture2d_mips};
 use crate::assets::AssetSubsystem;
 use crate::connection::{ConnectionParams, InitError};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
-use crate::resources::MeshPool;
+use crate::resources::{GpuTexture2d, MeshPool, TexturePool};
 use crate::shared::{
     FrameStartData, FrameSubmitData, HeadOutputDevice, MeshUnload, MeshUploadData,
-    MeshUploadResult, RendererCommand, RendererInitData, RendererInitResult, TextureFormat,
+    MeshUploadResult, RendererCommand, RendererInitData, RendererInitResult, SetTexture2DData,
+    SetTexture2DFormat, SetTexture2DProperties, SetTexture2DResult, TextureUpdateResultType,
+    UnloadTexture2D,
 };
 
 /// Max queued [`MeshUploadData`] when GPU is not ready yet (host data stays in shared memory).
 const MAX_PENDING_MESH_UPLOADS: usize = 256;
+
+/// Max queued texture data commands when GPU or format is not ready.
+const MAX_PENDING_TEXTURE_UPLOADS: usize = 256;
 
 /// Host init sequence state (replaces paired booleans such as `init_received` / `init_finalized`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -40,7 +46,7 @@ impl InitState {
     }
 }
 
-/// Owns IPC (optional), lock-step flags, shared memory, and GPU mesh pool.
+/// Owns IPC (optional), lock-step flags, shared memory, and GPU resource pools.
 pub struct RendererRuntime {
     ipc: Option<DualQueueIpc>,
     params: Option<ConnectionParams>,
@@ -55,8 +61,15 @@ pub struct RendererRuntime {
     pending_init: Option<RendererInitData>,
     shared_memory: Option<SharedMemoryAccessor>,
     mesh_pool: MeshPool,
+    texture_pool: TexturePool,
+    /// Latest [`SetTexture2DFormat`] per asset (required before data upload).
+    texture_formats: HashMap<i32, SetTexture2DFormat>,
+    /// Latest [`SetTexture2DProperties`] per asset (sampler metadata on [`GpuTexture2d`]).
+    texture_properties: HashMap<i32, SetTexture2DProperties>,
     gpu_device: Option<Arc<wgpu::Device>>,
+    gpu_queue: Option<Arc<Mutex<wgpu::Queue>>>,
     pending_mesh_uploads: VecDeque<MeshUploadData>,
+    pending_texture_uploads: VecDeque<SetTexture2DData>,
 }
 
 impl RendererRuntime {
@@ -81,8 +94,13 @@ impl RendererRuntime {
             pending_init: None,
             shared_memory: None,
             mesh_pool: MeshPool::default_pool(),
+            texture_pool: TexturePool::default_pool(),
+            texture_formats: HashMap::new(),
+            texture_properties: HashMap::new(),
             gpu_device: None,
+            gpu_queue: None,
             pending_mesh_uploads: VecDeque::new(),
+            pending_texture_uploads: VecDeque::new(),
         }
     }
 
@@ -114,6 +132,16 @@ impl RendererRuntime {
         &mut self.mesh_pool
     }
 
+    /// Resident Texture2D table (bind-group prep).
+    pub fn texture_pool(&self) -> &TexturePool {
+        &self.texture_pool
+    }
+
+    /// Mutable texture pool.
+    pub fn texture_pool_mut(&mut self) -> &mut TexturePool {
+        &mut self.texture_pool
+    }
+
     /// Exposes asset subsystem hooks (upload queues, handle table) for future workers.
     pub fn assets_mut(&mut self) -> &mut AssetSubsystem {
         &mut self.assets
@@ -124,9 +152,15 @@ impl RendererRuntime {
         self.pending_init.take()
     }
 
-    /// Call after [`crate::gpu::GpuContext`] is created so mesh uploads can use [`wgpu::Device`].
-    pub fn attach_gpu(&mut self, device: Arc<wgpu::Device>) {
+    /// Call after [`crate::gpu::GpuContext`] is created so mesh/texture uploads can use the GPU.
+    pub fn attach_gpu(&mut self, device: Arc<wgpu::Device>, queue: Arc<Mutex<wgpu::Queue>>) {
         self.gpu_device = Some(device.clone());
+        self.gpu_queue = Some(queue);
+        self.flush_pending_texture_allocations(&device);
+        let pending_tex: Vec<SetTexture2DData> = self.pending_texture_uploads.drain(..).collect();
+        for data in pending_tex {
+            self.try_texture_upload_with_device(data);
+        }
         let pending: Vec<MeshUploadData> = self.pending_mesh_uploads.drain(..).collect();
         for data in pending {
             self.try_mesh_upload_with_device(&device, data);
@@ -226,6 +260,10 @@ impl RendererRuntime {
             RendererCommand::frame_submit_data(data) => self.on_frame_submit(data),
             RendererCommand::mesh_upload_data(d) => self.try_process_mesh_upload(d),
             RendererCommand::mesh_unload(u) => self.on_mesh_unload(u),
+            RendererCommand::set_texture_2d_format(f) => self.on_set_texture_2d_format(f),
+            RendererCommand::set_texture_2d_properties(p) => self.on_set_texture_2d_properties(p),
+            RendererCommand::set_texture_2d_data(d) => self.on_set_texture_2d_data(d),
+            RendererCommand::unload_texture_2d(u) => self.on_unload_texture_2d(u),
             RendererCommand::free_shared_memory_view(f) => {
                 if let Some(shm) = self.shared_memory.as_mut() {
                     shm.release_view(f.buffer_id);
@@ -234,6 +272,180 @@ impl RendererRuntime {
             _ => {
                 logger::trace!("runtime: unhandled RendererCommand (expand handlers here)");
             }
+        }
+    }
+
+    fn flush_pending_texture_allocations(&mut self, device: &Arc<wgpu::Device>) {
+        let ids: Vec<i32> = self.texture_formats.keys().copied().collect();
+        for id in ids {
+            if self.texture_pool.get_texture(id).is_some() {
+                continue;
+            }
+            let Some(fmt) = self.texture_formats.get(&id).cloned() else {
+                continue;
+            };
+            let props = self.texture_properties.get(&id);
+            let Some(tex) = GpuTexture2d::new_from_format(device.as_ref(), &fmt, props) else {
+                logger::warn!("texture {id}: failed to allocate GPU texture on attach");
+                continue;
+            };
+            let _ = self.texture_pool.insert_texture(tex);
+        }
+    }
+
+    fn send_texture_2d_result(&mut self, asset_id: i32, update: i32, instance_changed: bool) {
+        let Some(ref mut ipc) = self.ipc else {
+            return;
+        };
+        ipc.send_background(RendererCommand::set_texture_2d_result(SetTexture2DResult {
+            asset_id,
+            r#type: TextureUpdateResultType(update),
+            instance_changed,
+        }));
+    }
+
+    fn on_set_texture_2d_format(&mut self, f: SetTexture2DFormat) {
+        let id = f.asset_id;
+        self.texture_formats.insert(id, f.clone());
+        let props = self.texture_properties.get(&id);
+        let Some(device) = self.gpu_device.clone() else {
+            self.send_texture_2d_result(
+                id,
+                TextureUpdateResultType::FORMAT_SET,
+                self.texture_pool.get_texture(id).is_none(),
+            );
+            return;
+        };
+        let Some(tex) = GpuTexture2d::new_from_format(device.as_ref(), &f, props) else {
+            logger::warn!("texture {id}: SetTexture2DFormat rejected (bad size or device)");
+            return;
+        };
+        let existed_before = self.texture_pool.insert_texture(tex);
+        self.send_texture_2d_result(id, TextureUpdateResultType::FORMAT_SET, !existed_before);
+        logger::info!(
+            "texture {} format {:?} {}×{} mips={} (resident_bytes≈{})",
+            id,
+            f.format,
+            f.width,
+            f.height,
+            f.mipmap_count,
+            self.texture_pool.accounting().texture_resident_bytes()
+        );
+    }
+
+    fn on_set_texture_2d_properties(&mut self, p: SetTexture2DProperties) {
+        let id = p.asset_id;
+        self.texture_properties.insert(id, p.clone());
+        if let Some(t) = self.texture_pool.get_texture_mut(id) {
+            t.apply_properties(&p);
+        }
+        self.send_texture_2d_result(id, TextureUpdateResultType::PROPERTIES_SET, false);
+    }
+
+    fn on_set_texture_2d_data(&mut self, d: SetTexture2DData) {
+        if d.data.length <= 0 {
+            return;
+        }
+        if !self.texture_formats.contains_key(&d.asset_id) {
+            logger::warn!(
+                "texture {}: SetTexture2DData before format; ignored",
+                d.asset_id
+            );
+            return;
+        }
+        if self.gpu_device.is_none() || self.gpu_queue.is_none() {
+            if self.pending_texture_uploads.len() >= MAX_PENDING_TEXTURE_UPLOADS {
+                logger::warn!(
+                    "texture {}: pending texture upload queue full; dropping",
+                    d.asset_id
+                );
+                return;
+            }
+            self.pending_texture_uploads.push_back(d);
+            return;
+        }
+        let Some(ref device) = self.gpu_device.clone() else {
+            return;
+        };
+        if self.texture_pool.get_texture(d.asset_id).is_none() {
+            self.flush_pending_texture_allocations(device);
+        }
+        if self.texture_pool.get_texture(d.asset_id).is_none() {
+            if self.pending_texture_uploads.len() >= MAX_PENDING_TEXTURE_UPLOADS {
+                logger::warn!(
+                    "texture {}: no GPU texture and pending full; dropping data",
+                    d.asset_id
+                );
+                return;
+            }
+            self.pending_texture_uploads.push_back(d);
+            return;
+        }
+        self.try_texture_upload_with_device(d);
+    }
+
+    fn try_texture_upload_with_device(&mut self, data: SetTexture2DData) {
+        let id = data.asset_id;
+        let Some(fmt) = self.texture_formats.get(&id).cloned() else {
+            logger::warn!("texture {id}: missing format");
+            return;
+        };
+        let (tex_arc, wgpu_fmt) = match self.texture_pool.get_texture(id) {
+            Some(t) => (t.texture.clone(), t.wgpu_format),
+            None => {
+                logger::warn!("texture {id}: missing GPU texture");
+                return;
+            }
+        };
+        let Some(shm) = self.shared_memory.as_mut() else {
+            logger::warn!("texture {id}: no shared memory accessor");
+            return;
+        };
+        let Some(queue_arc) = self.gpu_queue.as_ref() else {
+            return;
+        };
+        let upload_out = shm.with_read_bytes(&data.data, |raw| {
+            let q = queue_arc.lock().expect("queue mutex poisoned");
+            Some(write_texture2d_mips(
+                &q,
+                tex_arc.as_ref(),
+                &fmt,
+                wgpu_fmt,
+                &data,
+                raw,
+            ))
+        });
+        match upload_out {
+            Some(Ok(())) => {
+                if let Some(t) = self.texture_pool.get_texture_mut(id) {
+                    let uploaded_mips = data.mip_map_sizes.len() as u32;
+                    let start = data.start_mip_level.max(0) as u32;
+                    let end_exclusive = start.saturating_add(uploaded_mips).min(t.mip_levels_total);
+                    t.mip_levels_resident = t.mip_levels_resident.max(end_exclusive);
+                }
+                self.send_texture_2d_result(id, TextureUpdateResultType::DATA_UPLOAD, false);
+                logger::trace!("texture {id}: data upload ok");
+            }
+            Some(Err(e)) => {
+                logger::warn!("texture {id}: upload failed: {e}");
+            }
+            None => {
+                logger::warn!("texture {id}: shared memory slice missing");
+            }
+        }
+    }
+
+    fn on_unload_texture_2d(&mut self, u: UnloadTexture2D) {
+        let id = u.asset_id;
+        self.texture_formats.remove(&id);
+        self.texture_properties.remove(&id);
+        if self.texture_pool.remove_texture(id) {
+            logger::info!(
+                "texture {id} unloaded (mesh≈{} tex≈{} total≈{})",
+                self.mesh_pool.accounting().mesh_resident_bytes(),
+                self.texture_pool.accounting().texture_resident_bytes(),
+                self.mesh_pool.accounting().total_resident_bytes()
+            );
         }
     }
 
@@ -316,7 +528,7 @@ fn send_renderer_init_result(ipc: &mut DualQueueIpc, output_device: HeadOutputDe
         stereo_rendering_mode: Some("None".to_string()),
         max_texture_size: 8192,
         is_gpu_texture_pot_byte_aligned: true,
-        supported_texture_formats: vec![TextureFormat::rgba32],
+        supported_texture_formats: supported_host_formats_for_init(),
     };
     ipc.send_primary(RendererCommand::renderer_init_result(result));
 }

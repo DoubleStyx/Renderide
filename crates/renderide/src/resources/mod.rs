@@ -1,10 +1,13 @@
-//! GPU resource pools and VRAM hooks (meshes today; textures later).
+//! GPU resource pools and VRAM hooks (meshes and Texture2D).
 
 mod budget;
+mod texture_pool;
 
 pub use budget::{
-    MeshResidencyMeta, NoopStreamingPolicy, ResidencyTier, StreamingPolicy, VramAccounting,
+    MeshResidencyMeta, NoopStreamingPolicy, ResidencyTier, StreamingPolicy, TextureResidencyMeta,
+    VramAccounting, VramResourceKind,
 };
+pub use texture_pool::{GpuTexture2d, Texture2dSamplerState, TexturePool};
 
 use std::collections::HashMap;
 
@@ -68,9 +71,11 @@ impl MeshPool {
         let existed_before = self.meshes.contains_key(&id);
         let bytes = mesh.resident_bytes;
         if let Some(old) = self.meshes.insert(id, mesh) {
-            self.accounting.on_resident_removed(old.resident_bytes);
+            self.accounting
+                .on_resident_removed(VramResourceKind::Mesh, old.resident_bytes);
         }
-        self.accounting.on_resident_added(bytes);
+        self.accounting
+            .on_resident_added(VramResourceKind::Mesh, bytes);
         self.streaming.note_mesh_access(id);
         existed_before
     }
@@ -78,7 +83,8 @@ impl MeshPool {
     /// Removes a mesh by host id; returns `true` if it was present.
     pub fn remove_mesh(&mut self, asset_id: i32) -> bool {
         if let Some(old) = self.meshes.remove(&asset_id) {
-            self.accounting.on_resident_removed(old.resident_bytes);
+            self.accounting
+                .on_resident_removed(VramResourceKind::Mesh, old.resident_bytes);
             return true;
         }
         false

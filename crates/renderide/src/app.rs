@@ -130,7 +130,8 @@ impl RenderideApp {
         match pollster::block_on(GpuContext::new(Arc::clone(&window), false)) {
             Ok(gpu) => {
                 logger::info!("GPU initialized");
-                self.runtime.attach_gpu(gpu.device().clone());
+                self.runtime
+                    .attach_gpu(gpu.device().clone(), Arc::clone(gpu.queue()));
                 self.gpu = Some(gpu);
             }
             Err(e) => {
