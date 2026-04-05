@@ -19,6 +19,8 @@ pub mod app;
 pub mod assets;
 /// GPU resource pools, material tables, mesh/texture uploads, preprocess pipelines — **backend** layer.
 pub mod backend;
+/// Optional `config.ini` loading and [`config::RendererSettings`] (process-wide defaults).
+pub mod config;
 pub mod connection;
 /// Developer overlay: Dear ImGui frame snapshot + HUD ([`diagnostics::DebugHud`], feature `debug-hud`).
 pub mod diagnostics;
@@ -43,6 +45,10 @@ pub use assets::material::{
     MaterialPropertyValue, ParseMaterialBatchOptions, PropertyIdRegistry,
 };
 pub use backend::{order_lights_for_clustered_shading, GpuLight, RenderBackend, MAX_LIGHTS};
+pub use config::{
+    load_renderer_settings, log_config_resolve_trace, ConfigLoadResult, ConfigResolveOutcome,
+    ConfigSource, IniDocument, ParseWarning, RendererSettings,
+};
 pub use connection::{
     get_connection_parameters, try_claim_renderer_singleton, ConnectionParams, InitError,
     DEFAULT_QUEUE_CAPACITY,

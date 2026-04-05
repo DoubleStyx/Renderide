@@ -13,6 +13,7 @@ use winit::event::{DeviceEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, DeviceEvents, EventLoop};
 use winit::window::{Window, WindowId};
 
+use crate::config::{load_renderer_settings, log_config_resolve_trace, RendererSettings};
 use crate::connection::{get_connection_parameters, try_claim_renderer_singleton};
 use crate::frontend::input::{
     apply_device_event, apply_output_state_to_window, apply_window_event, WindowInputAccumulator,
@@ -43,6 +44,10 @@ pub fn run() -> Option<i32> {
     };
 
     logger::info!("Logging to {}", log_path.display());
+
+    let config_load = load_renderer_settings();
+    log_config_resolve_trace(&config_load.resolve);
+    let renderer_settings = config_load.settings;
 
     let default_hook = std::panic::take_hook();
     let log_path_hook = log_path.clone();
@@ -78,6 +83,7 @@ pub fn run() -> Option<i32> {
 
     let mut app = RenderideApp {
         runtime,
+        renderer_settings,
         window: None,
         gpu: None,
         exit_code: None,
@@ -94,6 +100,9 @@ pub fn run() -> Option<i32> {
 /// Winit-owned state: [`RendererRuntime`], plus lazily created window and [`GpuContext`].
 struct RenderideApp {
     runtime: RendererRuntime,
+    /// Loaded once at startup from `config.ini` (or defaults).
+    #[allow(dead_code)]
+    renderer_settings: RendererSettings,
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
     exit_code: Option<i32>,
