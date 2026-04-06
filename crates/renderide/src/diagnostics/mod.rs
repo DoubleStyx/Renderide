@@ -44,7 +44,8 @@ impl DebugHudInput {
         } else {
             [-f32::MAX, -f32::MAX]
         };
-        let window_px = acc.window_resolution;
+        let s = window.inner_size();
+        let window_px = (s.width, s.height);
         Self {
             cursor_px,
             window_px,

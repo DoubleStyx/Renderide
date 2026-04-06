@@ -40,6 +40,8 @@ pub struct RendererFrontend {
     cursor_lock_requested: bool,
     /// Pending window policy from the last frame submit (applied in winit; consumed by the app).
     pending_output_state: Option<OutputState>,
+    /// Last non-null [`OutputState`] from the host (retained for per-frame cursor policy).
+    last_output_state: Option<OutputState>,
 }
 
 impl RendererFrontend {
@@ -64,6 +66,7 @@ impl RendererFrontend {
             fatal_error: false,
             cursor_lock_requested: false,
             pending_output_state: None,
+            last_output_state: None,
         }
     }
 
@@ -181,8 +184,14 @@ impl RendererFrontend {
     pub fn apply_frame_submit_output(&mut self, output: Option<OutputState>) {
         if let Some(ref o) = output {
             self.cursor_lock_requested = o.lock_cursor;
+            self.last_output_state = Some(o.clone());
         }
         self.pending_output_state = output;
+    }
+
+    /// Last [`OutputState`] from a frame submit (for continuous cursor lock / warp each tick).
+    pub fn last_output_state(&self) -> Option<&OutputState> {
+        self.last_output_state.as_ref()
     }
 
     /// Takes the last [`OutputState`] so the winit layer can apply it once.

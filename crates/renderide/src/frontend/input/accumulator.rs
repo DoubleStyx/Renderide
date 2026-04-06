@@ -1,7 +1,8 @@
 //! Platform-neutral input accumulation for [`FrameStartData`](crate::shared::FrameStartData).
 
 use nalgebra::Vector2;
-use winit::dpi::{LogicalPosition, PhysicalPosition};
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
+use winit::window::Window;
 
 use crate::shared::{DragAndDropEvent, InputState, Key, KeyboardState, MouseState, WindowState};
 
@@ -9,6 +10,10 @@ use crate::shared::{DragAndDropEvent, InputState, Key, KeyboardState, MouseState
 ///
 /// Mouse and scroll deltas accumulate until [`Self::take_input_state`] (called when sending
 /// `frame_start_data`), matching the historical Unity renderer begin-frame timing.
+///
+/// **Coordinate contract:** [`Self::window_position`] and [`Self::window_resolution`] are both in
+/// **logical** pixels (DPI-aware). The host computes normalized window position as position divided
+/// by resolution; both must use the same space.
 pub struct WindowInputAccumulator {
     /// Accumulated relative motion (including [`DeviceEvent::MouseMotion`](winit::event::DeviceEvent)).
     pub mouse_delta: Vector2<f32>,
@@ -16,7 +21,7 @@ pub struct WindowInputAccumulator {
     pub scroll_delta: Vector2<f32>,
     /// Pointer position in window space (logical pixels) for [`crate::shared::MouseState`].
     pub window_position: Vector2<f32>,
-    /// Last known drawable size in physical pixels.
+    /// Inner drawable size in **logical** pixels (matches [`Self::window_position`] for host UVs).
     pub window_resolution: (u32, u32),
     /// Left mouse button held.
     pub left_held: bool,
@@ -93,6 +98,26 @@ impl WindowInputAccumulator {
         self.window_position.y = logical.y as f32;
         self.last_cursor_pixel.x = position.x.round() as i32;
         self.last_cursor_pixel.y = position.y.round() as i32;
+    }
+
+    /// Refreshes [`Self::window_resolution`] from [`Window::inner_size`] in **logical** pixels.
+    pub fn sync_window_resolution_logical(&mut self, window: &Window) {
+        let physical = window.inner_size();
+        let logical: LogicalSize<f64> = physical.to_logical(window.scale_factor());
+        self.window_resolution = (
+            logical.width.round() as u32,
+            logical.height.round() as u32,
+        );
+    }
+
+    /// Sets [`Self::window_position`] from **logical** coordinates and updates [`Self::last_cursor_pixel`]
+    /// to the corresponding physical point (for drag/drop parity).
+    pub fn set_window_position_from_logical(&mut self, logical: Vector2<f32>, scale_factor: f64) {
+        self.window_position = logical;
+        let logical_pos = LogicalPosition::new(logical.x as f64, logical.y as f64);
+        let physical = logical_pos.to_physical::<f64>(scale_factor);
+        self.last_cursor_pixel.x = physical.x.round() as i32;
+        self.last_cursor_pixel.y = physical.y.round() as i32;
     }
 
     /// Consumes accumulated deltas and returns an [`InputState`] for the host.
@@ -215,5 +240,38 @@ mod tests {
         );
         let s2 = w.take_input_state(false);
         assert!(s2.keyboard.expect("kb").type_delta.is_none());
+    }
+
+    /// Normalized UV at logical center when resolution and position share logical space.
+    #[test]
+    fn normalized_center_at_logical_half_resolution() {
+        let mut w = WindowInputAccumulator::default();
+        w.window_resolution = (800, 600);
+        w.window_position = Vector2::new(400.0, 300.0);
+        let inp = w.take_input_state(false);
+        let mouse = inp.mouse.expect("mouse");
+        let win = inp.window.expect("window");
+        let nx = mouse.window_position.x / win.window_resolution.x as f32;
+        let ny = mouse.window_position.y / win.window_resolution.y as f32;
+        assert!((nx - 0.5).abs() < 1e-5);
+        assert!((ny - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn set_window_position_from_logical_updates_physical_pixel() {
+        let mut w = WindowInputAccumulator::default();
+        w.set_window_position_from_logical(Vector2::new(100.0, 200.0), 2.0);
+        assert_eq!(w.last_cursor_pixel.x, 200);
+        assert_eq!(w.last_cursor_pixel.y, 400);
+    }
+
+    #[test]
+    fn physical_inner_matches_logical_resolution_at_scale_factor() {
+        use winit::dpi::{LogicalSize, PhysicalSize};
+
+        let physical = PhysicalSize::new(1920u32, 1080u32);
+        let logical: LogicalSize<f64> = physical.to_logical(2.0);
+        assert_eq!(logical.width.round() as u32, 960);
+        assert_eq!(logical.height.round() as u32, 540);
     }
 }

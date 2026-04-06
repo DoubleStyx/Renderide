@@ -220,6 +220,11 @@ impl RendererRuntime {
         self.frontend.take_pending_output_state()
     }
 
+    /// Last [`OutputState`] from the host (for per-frame cursor lock / warp).
+    pub fn last_output_state(&self) -> Option<&OutputState> {
+        self.frontend.last_output_state()
+    }
+
     /// Placeholder for bounded asset integration between begin-frame and frame processing (Unity:
     /// `RunAssetIntegration`).
     pub fn run_asset_integration_stub(&mut self, _budget: Duration) {

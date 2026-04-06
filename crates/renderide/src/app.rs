@@ -16,7 +16,8 @@ use winit::window::{Window, WindowId};
 use crate::config::{load_renderer_settings, log_config_resolve_trace, RendererSettings};
 use crate::connection::{get_connection_parameters, try_claim_renderer_singleton};
 use crate::frontend::input::{
-    apply_device_event, apply_output_state_to_window, apply_window_event, WindowInputAccumulator,
+    apply_device_event, apply_output_state_to_window, apply_per_frame_cursor_lock_when_locked,
+    apply_window_event, CursorOutputTracking, WindowInputAccumulator,
 };
 use crate::gpu::GpuContext;
 use crate::present::present_clear_frame;
@@ -89,6 +90,7 @@ pub fn run() -> Option<i32> {
         exit_code: None,
         last_log_flush: None,
         input: WindowInputAccumulator::default(),
+        cursor_output_tracking: CursorOutputTracking::default(),
         #[cfg(feature = "debug-hud")]
         hud_frame_last: None,
     };
@@ -108,6 +110,8 @@ struct RenderideApp {
     exit_code: Option<i32>,
     last_log_flush: Option<Instant>,
     input: WindowInputAccumulator,
+    /// Host cursor lock transitions (unlock warp parity with Unity mouse driver).
+    cursor_output_tracking: CursorOutputTracking,
     /// Previous redraw instant for HUD FPS ([`diagnostics::DebugHud`]).
     #[cfg(feature = "debug-hud")]
     hud_frame_last: Option<Instant>,
@@ -169,6 +173,7 @@ impl RenderideApp {
         self.window = Some(window);
         if let Some(w) = self.window.as_ref() {
             w.set_ime_allowed(true);
+            self.input.sync_window_resolution_logical(w.as_ref());
         }
     }
 
@@ -179,8 +184,28 @@ impl RenderideApp {
             self.window.as_ref(),
             self.runtime.take_pending_output_state(),
         ) {
-            if let Err(e) = apply_output_state_to_window(window.as_ref(), &out) {
+            if let Err(e) = apply_output_state_to_window(
+                window.as_ref(),
+                &out,
+                &mut self.cursor_output_tracking,
+            ) {
                 logger::debug!("apply_output_state_to_window: {e:?}");
+            }
+        }
+
+        if let Some(window) = self.window.as_ref() {
+            if self.runtime.host_cursor_lock_requested() {
+                let lock_pos = self
+                    .runtime
+                    .last_output_state()
+                    .and_then(|s| s.lock_cursor_position);
+                if let Err(e) = apply_per_frame_cursor_lock_when_locked(
+                    window.as_ref(),
+                    &mut self.input,
+                    lock_pos,
+                ) {
+                    logger::debug!("apply_per_frame_cursor_lock_when_locked: {e:?}");
+                }
             }
         }
 
@@ -285,8 +310,7 @@ impl ApplicationHandler for RenderideApp {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(w) = self.window.as_ref() {
-                    let s = w.inner_size();
-                    self.input.window_resolution = (s.width, s.height);
+                    self.input.sync_window_resolution_logical(w.as_ref());
                 }
                 self.tick_frame(event_loop);
             }
