@@ -10,7 +10,7 @@ use super::math::render_transform_to_matrix;
 /// Per-space cache: world matrices and incremental recompute bookkeeping.
 #[derive(Debug)]
 pub struct WorldTransformCache {
-    /// World matrix per dense transform index (space-local; not multiplied by root).
+    /// World matrix per dense transform index (parent chain only; no [`RenderSpaceState::root_transform`](super::render_space::RenderSpaceState) multiply).
     pub world_matrices: Vec<Mat4>,
     /// `true` when `world_matrices[i]` is valid for the current local poses.
     pub computed: Vec<bool>,

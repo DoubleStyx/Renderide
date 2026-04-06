@@ -326,9 +326,7 @@ fn record_mesh_deform(
         let mut palette: Vec<u8> = vec![0u8; (bone_count_u as usize) * 64];
         for bi in 0..bone_count_u as usize {
             let widx = indices.get(bi).copied().unwrap_or(0).max(0) as usize;
-            let world = scene
-                .world_matrix_with_root(space_id, widx)
-                .unwrap_or(Mat4::IDENTITY);
+            let world = scene.world_matrix(space_id, widx).unwrap_or(Mat4::IDENTITY);
             let pal = world * mesh.inverse_bind_poses[bi];
             let cols = pal.to_cols_array();
             palette[bi * 64..bi * 64 + 64].copy_from_slice(bytemuck::cast_slice(&cols));

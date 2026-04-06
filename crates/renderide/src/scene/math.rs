@@ -42,10 +42,12 @@ pub fn render_transform_to_matrix(t: &RenderTransform) -> Mat4 {
     Mat4::from_scale_rotation_translation(scale, rot, pos)
 }
 
-/// Space-local hierarchy world matrix × render-space root (camera / user root).
+/// Left-multiplies a hierarchy world matrix by the render-space root TRS.
 ///
-/// Cached per-node matrices from [`super::world`] are **relative to the space root** only;
-/// multiply by this for absolute world when matching host composite conventions.
+/// [`super::coordinator::SceneCoordinator::world_matrix`] already encodes the full parent chain
+/// for objects. The host uses [`RenderSpaceState::root_transform`](super::render_space::RenderSpaceState)
+/// for the **view / rig** basis; combining it with object matrices is only for exceptional host
+/// contracts—not default mesh, light, or skinning paths.
 #[inline]
 pub fn multiply_root(world_local: Mat4, root: &RenderTransform) -> Mat4 {
     render_transform_to_matrix(root) * world_local

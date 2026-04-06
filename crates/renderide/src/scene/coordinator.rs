@@ -73,9 +73,7 @@ impl SceneCoordinator {
     pub fn resolve_lights_world(&self, id: RenderSpaceId) -> Vec<ResolvedLight> {
         let sid = id.0;
         self.light_cache
-            .resolve_lights_with_fallback(sid, |transform_idx| {
-                self.world_matrix_with_root(id, transform_idx)
-            })
+            .resolve_lights_with_fallback(sid, |transform_idx| self.world_matrix(id, transform_idx))
     }
 
     /// Read-only access for debugging / future systems.
@@ -83,8 +81,12 @@ impl SceneCoordinator {
         self.spaces.get(&id)
     }
 
-    /// Cached space-local world matrix (`world * root` via [`Self::world_matrix_with_root`]).
-    pub fn world_matrix_local(&self, id: RenderSpaceId, transform_index: usize) -> Option<Mat4> {
+    /// Cached world matrix from the host transform hierarchy (parent chain only).
+    ///
+    /// This matches object/light/bone placement: [`RenderSpaceState::root_transform`] is **not**
+    /// applied here—it drives the view basis via [`RenderSpaceState::view_transform`], not mesh
+    /// model matrices.
+    pub fn world_matrix(&self, id: RenderSpaceId, transform_index: usize) -> Option<Mat4> {
         self.world_caches
             .get(&id)?
             .world_matrices
@@ -92,14 +94,22 @@ impl SceneCoordinator {
             .copied()
     }
 
-    /// Absolute world matrix including render-space root TRS.
-    pub fn world_matrix_with_root(
+    /// Alias for [`Self::world_matrix`].
+    pub fn world_matrix_local(&self, id: RenderSpaceId, transform_index: usize) -> Option<Mat4> {
+        self.world_matrix(id, transform_index)
+    }
+
+    /// Hierarchy world matrix left-multiplied by [`RenderSpaceState::root_transform`].
+    ///
+    /// Use only when a host contract explicitly requires this composite. Default rendering uses
+    /// [`Self::world_matrix`].
+    pub fn world_matrix_including_space_root(
         &self,
         id: RenderSpaceId,
         transform_index: usize,
     ) -> Option<Mat4> {
         let space = self.spaces.get(&id)?;
-        let local = self.world_matrix_local(id, transform_index)?;
+        let local = self.world_matrix(id, transform_index)?;
         Some(multiply_root(local, &space.root_transform))
     }
 
@@ -256,5 +266,61 @@ impl SceneCoordinator {
         let _ =
             compute_world_matrices_for_space(id.0, &space.nodes, &space.node_parents, &mut cache);
         self.world_caches.insert(id, cache);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nalgebra::{Quaternion, Vector3};
+
+    use super::*;
+    use crate::scene::render_space::RenderSpaceState;
+
+    #[test]
+    fn world_matrix_excludes_render_space_root() {
+        let mut scene = SceneCoordinator::new();
+        let id = RenderSpaceId(1);
+        scene.spaces.insert(
+            id,
+            RenderSpaceState {
+                id,
+                is_active: true,
+                root_transform: crate::shared::RenderTransform {
+                    position: Vector3::new(100.0, 0.0, 0.0),
+                    scale: Vector3::new(1.0, 1.0, 1.0),
+                    rotation: Quaternion::identity(),
+                },
+                nodes: vec![crate::shared::RenderTransform {
+                    position: Vector3::new(1.0, 2.0, 3.0),
+                    scale: Vector3::new(1.0, 1.0, 1.0),
+                    rotation: Quaternion::identity(),
+                }],
+                node_parents: vec![-1],
+                ..Default::default()
+            },
+        );
+        let space = scene.spaces.get(&id).expect("space");
+        let mut cache = WorldTransformCache::default();
+        compute_world_matrices_for_space(id.0, &space.nodes, &space.node_parents, &mut cache)
+            .expect("solve");
+        scene.world_caches.insert(id, cache);
+
+        let world = scene.world_matrix(id, 0).expect("matrix");
+        let t = world.col(3);
+        assert!(
+            (t.x - 1.0).abs() < 1e-4,
+            "world_matrix must not include root_transform translation (got x={})",
+            t.x
+        );
+
+        let with_root = scene
+            .world_matrix_including_space_root(id, 0)
+            .expect("with root");
+        let t2 = with_root.col(3);
+        assert!(
+            (t2.x - 101.0).abs() < 0.1,
+            "world_matrix_including_space_root should add root translation (got x={})",
+            t2.x
+        );
     }
 }

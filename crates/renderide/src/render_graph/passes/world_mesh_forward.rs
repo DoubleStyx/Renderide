@@ -117,7 +117,7 @@ impl RenderPass for WorldMeshForwardPass {
                 let vp = proj * view;
                 let node_u = item.node_id as usize;
                 let model = scene
-                    .world_matrix_with_root(item.space_id, node_u)
+                    .world_matrix(item.space_id, node_u)
                     .unwrap_or(Mat4::IDENTITY);
                 (vp, model)
             } else {

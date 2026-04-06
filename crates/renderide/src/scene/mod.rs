@@ -13,9 +13,12 @@
 //!
 //! ## World matrices
 //!
-//! Cached [`WorldTransformCache::world_matrices`](WorldTransformCache) are **space-local** (parent
-//! chain only). To include the render-space root TRS, use
-//! [`SceneCoordinator::world_matrix_with_root`].
+//! Cached [`WorldTransformCache::world_matrices`](WorldTransformCache) are the full hierarchy
+//! result per node (parent chain). Use [`SceneCoordinator::world_matrix`] for meshes, lights, and
+//! bones. [`RenderSpaceState::root_transform`](render_space::RenderSpaceState) applies to the
+//! **view** ([`RenderSpaceState::view_transform`](render_space::RenderSpaceState)), not to object
+//! matrices; only use [`SceneCoordinator::world_matrix_including_space_root`] when a host contract
+//! explicitly requires that composite.
 //!
 //! ## IPC
 //!

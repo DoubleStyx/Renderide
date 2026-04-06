@@ -25,18 +25,18 @@ pub struct RenderSpaceTransformsSnapshot {
     pub rows: Vec<TransformRow>,
 }
 
-/// Dense transform index, parent link, and absolute world TRS (including space root) when available.
+/// Dense transform index, parent link, and hierarchy world TRS when available.
 #[derive(Clone, Debug)]
 pub struct TransformRow {
     /// Dense index in the host transform arena (`0..node_count`).
     pub transform_id: usize,
     /// Parent dense index, or `-1` for a hierarchy root under the space root.
     pub parent_id: i32,
-    /// World matrix including render-space root; `None` if the cache had no valid entry.
+    /// World matrix from the parent chain; `None` if the cache had no valid entry.
     pub world: Option<WorldTransformSample>,
 }
 
-/// Decomposed absolute world TRS from [`SceneCoordinator::world_matrix_with_root`].
+/// Decomposed world TRS from [`SceneCoordinator::world_matrix`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldTransformSample {
     /// World-space translation.
@@ -68,7 +68,7 @@ impl RenderSpaceTransformsSnapshot {
         for transform_id in 0..space.nodes.len() {
             let parent_id = space.node_parents.get(transform_id).copied().unwrap_or(-1);
             let world = scene
-                .world_matrix_with_root(id, transform_id)
+                .world_matrix(id, transform_id)
                 .and_then(world_sample_from_mat4);
             rows.push(TransformRow {
                 transform_id,
