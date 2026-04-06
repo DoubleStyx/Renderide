@@ -26,11 +26,11 @@ pub fn render_transform_to_matrix(t: &RenderTransform) -> Mat4 {
     };
     let scale = Vec3::new(sx, sy, sz);
     let rot = if t.rotation.w.abs() >= 1e-8
-        || t.rotation.i.abs() >= 1e-8
-        || t.rotation.j.abs() >= 1e-8
-        || t.rotation.k.abs() >= 1e-8
+        || t.rotation.x.abs() >= 1e-8
+        || t.rotation.y.abs() >= 1e-8
+        || t.rotation.z.abs() >= 1e-8
     {
-        Quat::from_xyzw(t.rotation.i, t.rotation.j, t.rotation.k, t.rotation.w)
+        t.rotation
     } else {
         Quat::IDENTITY
     };
@@ -55,16 +55,14 @@ pub fn multiply_root(world_local: Mat4, root: &RenderTransform) -> Mat4 {
 
 #[cfg(test)]
 mod tests {
-    use nalgebra::Quaternion;
-
     use super::*;
 
     #[test]
     fn render_transform_to_matrix_trs() {
         let t = RenderTransform {
-            position: nalgebra::Vector3::new(1.0, 2.0, 3.0),
-            scale: nalgebra::Vector3::new(2.0, 2.0, 2.0),
-            rotation: Quaternion::identity(),
+            position: Vec3::new(1.0, 2.0, 3.0),
+            scale: Vec3::new(2.0, 2.0, 2.0),
+            rotation: Quat::IDENTITY,
         };
         let m = render_transform_to_matrix(&t);
         let col3 = m.col(3);

@@ -191,13 +191,13 @@ pub fn validate_mip_upload_layout(
 mod tests {
     use super::*;
     use crate::shared::SetTexture2DData;
-    use nalgebra::Vector2;
+    use glam::IVec2;
 
     #[test]
     fn validate_mip_layout_accepts_contiguous_payload() {
         let mut d = SetTexture2DData::default();
         d.data.length = 4 * 4 * 4 + 2 * 2 * 4; // rgba32 mip0 + mip1
-        d.mip_map_sizes = vec![Vector2::new(4, 4), Vector2::new(2, 2)];
+        d.mip_map_sizes = vec![IVec2::new(4, 4), IVec2::new(2, 2)];
         d.mip_starts = vec![0, 64];
         assert!(validate_mip_upload_layout(TextureFormat::rgba32, &d).is_ok());
     }
@@ -206,7 +206,7 @@ mod tests {
     fn validate_mip_layout_rejects_overflow() {
         let mut d = SetTexture2DData::default();
         d.data.length = 10;
-        d.mip_map_sizes = vec![Vector2::new(4, 4)];
+        d.mip_map_sizes = vec![IVec2::new(4, 4)];
         d.mip_starts = vec![0];
         assert!(validate_mip_upload_layout(TextureFormat::rgba32, &d).is_err());
     }

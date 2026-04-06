@@ -1,6 +1,6 @@
 //! Pose validation and identity [`RenderTransform`](crate::shared::RenderTransform).
 
-use nalgebra::{UnitQuaternion, Vector3};
+use glam::{Quat, Vec3};
 
 use crate::shared::RenderTransform;
 
@@ -44,9 +44,9 @@ impl PoseValidation<'_> {
             return false;
         }
 
-        self.pose.rotation.i.is_finite()
-            && self.pose.rotation.j.is_finite()
-            && self.pose.rotation.k.is_finite()
+        self.pose.rotation.x.is_finite()
+            && self.pose.rotation.y.is_finite()
+            && self.pose.rotation.z.is_finite()
             && self.pose.rotation.w.is_finite()
     }
 }
@@ -54,8 +54,8 @@ impl PoseValidation<'_> {
 /// Identity local pose: origin, unit scale, identity rotation (`RenderTransform` / Unity TRS).
 pub(super) fn render_transform_identity() -> RenderTransform {
     RenderTransform {
-        position: Vector3::zeros(),
-        scale: Vector3::new(1.0, 1.0, 1.0),
-        rotation: UnitQuaternion::identity().into_inner(),
+        position: Vec3::ZERO,
+        scale: Vec3::ONE,
+        rotation: Quat::IDENTITY,
     }
 }

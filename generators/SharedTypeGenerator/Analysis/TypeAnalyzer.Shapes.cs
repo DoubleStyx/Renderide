@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -113,11 +114,14 @@ public partial class TypeAnalyzer
             if (sizeType.IsEnum) sizeType = sizeType.GetField("value__")!.FieldType;
             try { totalSize += Marshal.SizeOf(sizeType); } catch { /* skip */ }
 
-            if (!IsFieldTypePod(field.FieldType, []))
+            bool fieldRustLayoutPod = IsRustLayoutPodField(field.FieldType, new HashSet<Type>());
+            if (!fieldRustLayoutPod)
                 allFieldsPod = false;
 
             string rustType = field.FieldType == typeof(bool) ? "u8" : MapRustTypeWithQueue(field.FieldType);
             FieldKind kind = _classifier.ClassifyByType(field.FieldType);
+            if (kind == FieldKind.Pod && !fieldRustLayoutPod)
+                kind = FieldKind.ObjectRequired;
 
             fieldDescriptors.Add(new FieldDescriptor
             {
@@ -190,7 +194,13 @@ public partial class TypeAnalyzer
             /* fallback: paddingBytes stays 0 */
         }
 
-        bool isPod = allFieldsPod;
+        // Top-level fields that map to Quat/Mat4/Vec4 can force Rust-only padding when combined with other fields.
+        bool hasSimdCompositePaddingRisk = fields.Length > 1 && fields.Any(f =>
+        {
+            string rustT = f.FieldType == typeof(bool) ? "u8" : RustTypeMapper.MapType(f.FieldType, _assembly);
+            return RustTypeMapper.IsGlamRustTypeRequiringCompositeNonPod(rustT);
+        });
+        bool isPod = allFieldsPod && !hasSimdCompositePaddingRisk;
 
         return new TypeDescriptor
         {

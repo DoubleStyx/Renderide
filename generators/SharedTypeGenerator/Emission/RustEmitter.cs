@@ -54,7 +54,8 @@ public class RustEmitter
         _w.Line("    clippy::option_as_ref_deref,");
         _w.Line(")]");
         _w.BlankLine();
-        _w.Line("use nalgebra::{Vector2, Vector3, Vector4, Quaternion, Matrix4};");
+        _w.Line("#[allow(unused_imports)] // Subset used depending on emitted struct fields.");
+        _w.Line("use glam::{IVec2, IVec3, IVec4, Mat4, Quat, Vec2, Vec3, Vec4};");
         _w.Line("use super::packing::memory_packable::MemoryPackable;");
         _w.Line("use super::packing::memory_packer::MemoryPacker;");
         _w.Line("use super::packing::memory_unpacker::MemoryUnpacker;");
@@ -288,7 +289,7 @@ public class RustEmitter
         }
         else
         {
-            using (_w.BeginExternStruct(name, "Clone"))
+            using (_w.BeginExternStruct(name, "Clone", "Copy"))
             {
                 foreach (FieldDescriptor field in orderedFields)
                     _w.StructMember(field.RustName, field.RustType);

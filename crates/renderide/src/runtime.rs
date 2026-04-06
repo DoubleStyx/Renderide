@@ -29,7 +29,7 @@ use crate::diagnostics::{DebugHudInput, HostHudGatherer};
 use crate::render_graph::{GraphExecuteError, HostCameraFrame};
 
 pub use crate::frontend::InitState;
-use crate::ipc::SharedMemoryAccessor;
+use crate::ipc::{SharedMemoryAccessor, LIGHT_DATA_SHM_STRIDE_BYTES};
 use crate::scene::SceneCoordinator;
 use crate::shared::{
     CameraProjection, FrameSubmitData, HeadOutputDevice, InputState, LightData,
@@ -469,9 +469,11 @@ impl RendererRuntime {
             return;
         };
         let ctx = format!("lights_buffer_renderer_submission id={buffer_id}");
-        let vec = match shm
-            .access_copy_diagnostic_with_context::<LightData>(&sub.lights, Some(&ctx))
-        {
+        let vec = match shm.access_copy_memory_packable_rows::<LightData>(
+            &sub.lights,
+            LIGHT_DATA_SHM_STRIDE_BYTES,
+            Some(&ctx),
+        ) {
             Ok(v) => v,
             Err(e) => {
                 logger::warn!("lights_buffer_renderer_submission id={buffer_id}: SHM failed: {e}");

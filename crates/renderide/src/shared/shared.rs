@@ -19,7 +19,8 @@ use super::packing::memory_packer_entity_pool::MemoryPackerEntityPool;
 use super::packing::memory_unpacker::MemoryUnpacker;
 use super::packing::polymorphic_memory_packable_entity::PolymorphicEncode;
 use bytemuck::{Pod, Zeroable};
-use nalgebra::{Matrix4, Quaternion, Vector2, Vector3, Vector4};
+#[allow(unused_imports)] // Subset used depending on emitted struct fields.
+use glam::{IVec2, IVec3, IVec4, Mat4, Quat, Vec2, Vec3, Vec4};
 
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(i32)]
@@ -1052,7 +1053,7 @@ impl MemoryPackable for FreeSharedMemoryView {
 pub struct SetWindowIcon {
     pub request_id: i32,
     pub is_overlay: bool,
-    pub size: Vector2<i32>,
+    pub size: IVec2,
     pub icon_data: SharedMemoryBufferDescriptor,
     pub overlay_description: Option<String>,
 }
@@ -1233,7 +1234,7 @@ impl MemoryPackable for QualityConfig {
 
 #[derive(Debug, Default, Clone)]
 pub struct ResolutionConfig {
-    pub resolution: Vector2<i32>,
+    pub resolution: IVec2,
     pub fullscreen: bool,
 }
 
@@ -1606,7 +1607,7 @@ impl MemoryPackable for SetTexture2DProperties {
 pub struct SetTexture2DData {
     pub data: SharedMemoryBufferDescriptor,
     pub start_mip_level: i32,
-    pub mip_map_sizes: Vec<Vector2<i32>>,
+    pub mip_map_sizes: Vec<IVec2>,
     pub mip_starts: Vec<i32>,
     pub flip_y: bool,
     pub hint: TextureUploadHint,
@@ -1854,7 +1855,7 @@ impl MemoryPackable for SetCubemapProperties {
 pub struct SetCubemapData {
     pub data: SharedMemoryBufferDescriptor,
     pub start_mip_level: i32,
-    pub mip_map_sizes: Vec<Vector2<i32>>,
+    pub mip_map_sizes: Vec<IVec2>,
     pub mip_starts: Vec<Vec<i32>>,
     pub flip_y: bool,
     pub high_priority: bool,
@@ -1918,7 +1919,7 @@ impl MemoryPackable for UnloadCubemap {
 
 #[derive(Debug, Default, Clone)]
 pub struct SetRenderTextureFormat {
-    pub size: Vector2<i32>,
+    pub size: IVec2,
     pub depth: i32,
     pub filter_mode: TextureFilterMode,
     pub aniso_level: i32,
@@ -1998,7 +1999,7 @@ impl MemoryPackable for SetDesktopTextureProperties {
 
 #[derive(Debug, Default, Clone)]
 pub struct DesktopTexturePropertiesUpdate {
-    pub size: Vector2<i32>,
+    pub size: IVec2,
     pub asset_id: i32,
 }
 
@@ -2035,7 +2036,7 @@ pub struct PointRenderBufferUpload {
     pub sizes_offset: i32,
     pub colors_offset: i32,
     pub frame_indexes_offset: i32,
-    pub frame_grid_size: Vector2<i32>,
+    pub frame_grid_size: IVec2,
     pub buffer: SharedMemoryBufferDescriptor,
     pub asset_id: i32,
 }
@@ -2404,7 +2405,7 @@ impl MemoryPackable for VideoTextureUpdate {
 #[derive(Debug, Default, Clone)]
 pub struct VideoTextureReady {
     pub length: f64,
-    pub size: Vector2<i32>,
+    pub size: IVec2,
     pub has_alpha: bool,
     pub playback_engine: Option<String>,
     pub instance_changed: bool,
@@ -2600,9 +2601,9 @@ unsafe impl Zeroable for HeadOutputDevice {}
 
 #[derive(Debug, Default, Clone)]
 pub struct RendererSplashScreenOverride {
-    pub texture_size: Vector2<i32>,
+    pub texture_size: IVec2,
     pub texture_data: SharedMemoryBufferDescriptor,
-    pub loading_bar_offset: Vector2<f32>,
+    pub loading_bar_offset: Vec2,
     pub texture_relative_screen_size: f32,
 }
 
@@ -2871,7 +2872,7 @@ impl MemoryPackable for VideoTextureClockErrorState {
 #[derive(Debug, Default, Clone)]
 pub struct OutputState {
     pub lock_cursor: bool,
-    pub lock_cursor_position: Option<Vector2<i32>>,
+    pub lock_cursor_position: Option<IVec2>,
     pub keyboard_input_active: bool,
     pub vr: Option<VROutputState>,
 }
@@ -2930,12 +2931,12 @@ impl MemoryPackable for RenderSpaceUpdate {
         packer.write_bool(self.is_active);
         packer.write_bool(self.is_overlay);
         packer.write_bool(self.is_private);
-        packer.write(&self.root_transform);
+        packer.write_object_required(&mut self.root_transform);
         packer.write_bool(self.view_position_is_external);
         packer.write_bool(self.override_view_position);
         packer.write(&self.skybox_material_asset_id);
         packer.write(&self.ambient_light);
-        packer.write(&self.overriden_view_transform);
+        packer.write_object_required(&mut self.overriden_view_transform);
         packer.write_object(self.transforms_update.as_mut());
         packer.write_object(self.mesh_renderers_update.as_mut());
         packer.write_object(self.skinned_mesh_renderers_update.as_mut());
@@ -2961,12 +2962,12 @@ impl MemoryPackable for RenderSpaceUpdate {
         self.is_active = unpacker.read_bool();
         self.is_overlay = unpacker.read_bool();
         self.is_private = unpacker.read_bool();
-        self.root_transform = unpacker.read();
+        unpacker.read_object_required(&mut self.root_transform);
         self.view_position_is_external = unpacker.read_bool();
         self.override_view_position = unpacker.read_bool();
         self.skybox_material_asset_id = unpacker.read();
         self.ambient_light = unpacker.read();
-        self.overriden_view_transform = unpacker.read();
+        unpacker.read_object_required(&mut self.overriden_view_transform);
         self.transforms_update = unpacker.read_object::<TransformsUpdate>();
         self.mesh_renderers_update = unpacker.read_object::<MeshRenderablesUpdate>();
         self.skinned_mesh_renderers_update = unpacker.read_object::<SkinnedMeshRenderablesUpdate>();
@@ -2995,8 +2996,8 @@ impl MemoryPackable for RenderSpaceUpdate {
 #[derive(Debug, Default, Clone)]
 pub struct CameraRenderTask {
     pub render_space_id: i32,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub parameters: Option<CameraRenderParameters>,
     pub result_data: SharedMemoryBufferDescriptor,
     pub only_render_list: Vec<i32>,
@@ -3309,8 +3310,8 @@ impl MemoryPackable for MeshUploadHint {
 #[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct RenderBoundingBox {
-    pub center: Vector3<f32>,
-    pub extents: Vector3<f32>,
+    pub center: Vec3,
+    pub extents: Vec3,
 }
 
 impl MemoryPackable for RenderBoundingBox {
@@ -3668,12 +3669,12 @@ impl EnumRepr for GaussianSHFormat {
 unsafe impl Pod for GaussianSHFormat {}
 unsafe impl Zeroable for GaussianSHFormat {}
 
-#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct LightData {
-    pub point: Vector3<f32>,
-    pub orientation: Quaternion<f32>,
-    pub color: Vector3<f32>,
+    pub point: Vec3,
+    pub orientation: Quat,
+    pub color: Vec3,
     pub intensity: f32,
     pub range: f32,
     pub angle: f32,
@@ -3732,10 +3733,10 @@ pub struct MouseState {
     pub middle_button_state: bool,
     pub button4_state: bool,
     pub button5_state: bool,
-    pub desktop_position: Vector2<f32>,
-    pub window_position: Vector2<f32>,
-    pub direct_delta: Vector2<f32>,
-    pub scroll_wheel_delta: Vector2<f32>,
+    pub desktop_position: Vec2,
+    pub window_position: Vec2,
+    pub direct_delta: Vec2,
+    pub scroll_wheel_delta: Vec2,
 }
 
 impl MemoryPackable for MouseState {
@@ -3791,7 +3792,7 @@ impl MemoryPackable for KeyboardState {
 pub struct WindowState {
     pub is_window_focused: bool,
     pub is_fullscreen: bool,
-    pub window_resolution: Vector2<i32>,
+    pub window_resolution: IVec2,
     pub resolution_settings_applied: bool,
     pub drag_and_drop_event: Option<DragAndDropEvent>,
 }
@@ -3860,9 +3861,9 @@ impl MemoryPackable for VRInputsState {
 #[derive(Debug, Default, Clone)]
 pub struct GamepadState {
     pub display_name: Option<String>,
-    pub left_thumbstick: Vector2<f32>,
-    pub right_thumbstick: Vector2<f32>,
-    pub d_pad: Vector2<f32>,
+    pub left_thumbstick: Vec2,
+    pub right_thumbstick: Vec2,
+    pub d_pad: Vec2,
     pub left_trigger: f32,
     pub right_trigger: f32,
     pub left_thumbstick_click: bool,
@@ -3951,7 +3952,7 @@ impl MemoryPackable for GamepadState {
 #[derive(Debug, Default, Clone)]
 pub struct TouchState {
     pub touch_id: i32,
-    pub position: Vector2<f32>,
+    pub position: Vec2,
     pub is_pressing: bool,
     pub pressure: f32,
 }
@@ -3974,11 +3975,11 @@ impl MemoryPackable for TouchState {
 #[derive(Debug, Default, Clone)]
 pub struct DisplayState {
     pub display_index: i32,
-    pub resolution: Vector2<i32>,
-    pub offset: Vector2<i32>,
+    pub resolution: IVec2,
+    pub offset: IVec2,
     pub refresh_rate: f64,
     pub orientation: RectOrientation,
-    pub dpi: Vector2<f32>,
+    pub dpi: Vec2,
     pub is_primary: bool,
 }
 
@@ -4023,12 +4024,12 @@ impl MemoryPackable for VROutputState {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct RenderTransform {
-    pub position: Vector3<f32>,
-    pub scale: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub scale: Vec3,
+    pub rotation: Quat,
 }
 
 impl MemoryPackable for RenderTransform {
@@ -4047,15 +4048,15 @@ impl MemoryPackable for RenderTransform {
 #[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct RenderSH2 {
-    pub sh0: Vector3<f32>,
-    pub sh1: Vector3<f32>,
-    pub sh2: Vector3<f32>,
-    pub sh3: Vector3<f32>,
-    pub sh4: Vector3<f32>,
-    pub sh5: Vector3<f32>,
-    pub sh6: Vector3<f32>,
-    pub sh7: Vector3<f32>,
-    pub sh8: Vector3<f32>,
+    pub sh0: Vec3,
+    pub sh1: Vec3,
+    pub sh2: Vec3,
+    pub sh3: Vec3,
+    pub sh4: Vec3,
+    pub sh5: Vec3,
+    pub sh6: Vec3,
+    pub sh7: Vec3,
+    pub sh8: Vec3,
 }
 
 impl MemoryPackable for RenderSH2 {
@@ -4522,13 +4523,13 @@ impl MemoryPackable for ReflectionProbeRenderTask {
 
 #[derive(Debug, Default, Clone)]
 pub struct CameraRenderParameters {
-    pub resolution: Vector2<i32>,
+    pub resolution: IVec2,
     pub texture_format: TextureFormat,
     pub projection: CameraProjection,
     pub fov: f32,
     pub orthographic_size: f32,
     pub clear_mode: CameraClearMode,
-    pub clear_color: Vector4<f32>,
+    pub clear_color: Vec4,
     pub near_clip: f32,
     pub far_clip: f32,
     pub render_private_ui: bool,
@@ -5061,7 +5062,7 @@ unsafe impl Zeroable for Key {}
 #[derive(Debug, Default, Clone)]
 pub struct DragAndDropEvent {
     pub paths: Vec<Option<String>>,
-    pub drop_point: Vector2<i32>,
+    pub drop_point: IVec2,
 }
 
 impl MemoryPackable for DragAndDropEvent {
@@ -5079,8 +5080,8 @@ impl MemoryPackable for DragAndDropEvent {
 #[derive(Debug, Default, Clone)]
 pub struct HeadsetState {
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
     pub connection_type: HeadsetConnection,
@@ -5241,8 +5242,8 @@ pub fn decode_vr_controller_state<P: MemoryPackerEntityPool>(
 pub struct TrackerState {
     pub unique_id: Option<String>,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
 }
@@ -5283,8 +5284,8 @@ impl MemoryPackable for TrackerState {
 pub struct TrackingReferenceState {
     pub unique_id: Option<String>,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
 }
 
 impl MemoryPackable for TrackingReferenceState {
@@ -5315,10 +5316,10 @@ pub struct HandState {
     pub is_tracking: bool,
     pub tracks_metacarpals: bool,
     pub confidence: f32,
-    pub wrist_position: Vector3<f32>,
-    pub wrist_rotation: Quaternion<f32>,
-    pub segment_positions: Vec<Vector3<f32>>,
-    pub segment_rotations: Vec<Quaternion<f32>>,
+    pub wrist_position: Vec3,
+    pub wrist_rotation: Quat,
+    pub segment_positions: Vec<Vec3>,
+    pub segment_rotations: Vec<Quat>,
 }
 
 impl MemoryPackable for HandState {
@@ -5460,7 +5461,7 @@ impl MemoryPackable for TransformParentUpdate {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct TransformPoseUpdate {
     pub transform_id: i32,
@@ -5470,11 +5471,11 @@ pub struct TransformPoseUpdate {
 impl MemoryPackable for TransformPoseUpdate {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
         packer.write(&self.transform_id);
-        packer.write(&self.pose);
+        packer.write_object_required(&mut self.pose);
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         self.transform_id = unpacker.read();
-        self.pose = unpacker.read();
+        unpacker.read_object_required(&mut self.pose);
     }
 }
 
@@ -5593,14 +5594,14 @@ impl MemoryPackable for BlendshapeUpdate {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct LightState {
     pub renderable_index: i32,
     pub intensity: f32,
     pub range: f32,
     pub spot_angle: f32,
-    pub color: Vector4<f32>,
+    pub color: Vec4,
     pub shadow_strength: f32,
     pub shadow_near_plane: f32,
     pub shadow_map_resolution_override: i32,
@@ -5655,7 +5656,7 @@ impl MemoryPackable for LightState {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct CameraState {
     pub renderable_index: i32,
@@ -5663,7 +5664,7 @@ pub struct CameraState {
     pub orthographic_size: f32,
     pub near_clip: f32,
     pub far_clip: f32,
-    pub background_color: Vector4<f32>,
+    pub background_color: Vec4,
     pub viewport: RenderRect,
     pub depth: f32,
     pub render_texture_asset_id: i32,
@@ -5717,17 +5718,17 @@ impl MemoryPackable for CameraState {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct CameraPortalState {
     pub renderable_index: i32,
     pub mesh_renderer_index: i32,
-    pub plane_normal: Vector3<f32>,
+    pub plane_normal: Vec3,
     pub plane_offset: f32,
     pub render_texture_id: i32,
-    pub portal_transform: Matrix4<f32>,
-    pub portal_plane_position: Vector3<f32>,
-    pub portal_plane_normal: Vector3<f32>,
+    pub portal_transform: Mat4,
+    pub portal_plane_position: Vec3,
+    pub portal_plane_normal: Vec3,
     pub override_far_clip_value: f32,
     pub override_clear_flag_value: CameraClearMode,
     pub _padding: [u8; 3],
@@ -5787,18 +5788,18 @@ impl MemoryPackable for ReflectionProbeChangeRenderTask {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct ReflectionProbeState {
     pub renderable_index: i32,
     pub importance: i32,
     pub intensity: f32,
     pub blend_distance: f32,
-    pub box_size: Vector3<f32>,
+    pub box_size: Vec3,
     pub cubemap_asset_id: i32,
     pub resolution: i32,
     pub shadow_distance: f32,
-    pub background_color: Vector4<f32>,
+    pub background_color: Vec4,
     pub near_clip: f32,
     pub far_clip: f32,
     pub r#type: ReflectionProbeType,
@@ -6071,14 +6072,14 @@ impl MemoryPackable for LightsBufferRendererState {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct RenderTransformOverrideState {
     pub renderable_index: i32,
-    pub position_override: Vector3<f32>,
+    pub position_override: Vec3,
     pub _padding: [u8; 4],
-    pub rotation_override: Quaternion<f32>,
-    pub scale_override: Vector3<f32>,
+    pub rotation_override: Quat,
+    pub scale_override: Vec3,
     pub skinned_mesh_renderer_count: i32,
     pub context: RenderingContext,
     pub override_flags: u8,
@@ -6152,12 +6153,12 @@ impl MemoryPackable for RenderMaterialOverrideState {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy)]
 #[repr(C)]
 pub struct BlitToDisplayState {
     pub renderable_index: i32,
     pub texture_id: i32,
-    pub background_color: Vector4<f32>,
+    pub background_color: Vec4,
     pub display_index: i16,
     pub flags: u8,
     pub _padding: [u8; 1],
@@ -6320,7 +6321,7 @@ unsafe impl Zeroable for HeadsetConnection {}
 pub struct CosmosControllerState {
     pub joystick_touch: bool,
     pub joystick_click: bool,
-    pub joystick_raw: Vector2<f32>,
+    pub joystick_raw: Vec2,
     pub trigger_touch: bool,
     pub trigger_click: bool,
     pub trigger: f32,
@@ -6335,11 +6336,11 @@ pub struct CosmosControllerState {
     pub body_node: BodyNode,
     pub is_device_active: bool,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub has_bound_hand: bool,
-    pub hand_position: Vector3<f32>,
-    pub hand_rotation: Quaternion<f32>,
+    pub hand_position: Vec3,
+    pub hand_rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
 }
@@ -6421,7 +6422,7 @@ impl MemoryPackable for CosmosControllerState {
 #[derive(Debug, Default, Clone)]
 pub struct GenericControllerState {
     pub strength: f32,
-    pub axis: Vector2<f32>,
+    pub axis: Vec2,
     pub touching_strength: bool,
     pub touching_axis: bool,
     pub primary: bool,
@@ -6434,11 +6435,11 @@ pub struct GenericControllerState {
     pub body_node: BodyNode,
     pub is_device_active: bool,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub has_bound_hand: bool,
-    pub hand_position: Vector3<f32>,
-    pub hand_rotation: Quaternion<f32>,
+    pub hand_position: Vec3,
+    pub hand_rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
 }
@@ -6522,7 +6523,7 @@ pub struct HPReverbControllerState {
     pub grip_click: bool,
     pub grip: f32,
     pub joystick_click: bool,
-    pub joystick_raw: Vector2<f32>,
+    pub joystick_raw: Vec2,
     pub trigger_hair: bool,
     pub trigger_click: bool,
     pub trigger: f32,
@@ -6532,11 +6533,11 @@ pub struct HPReverbControllerState {
     pub body_node: BodyNode,
     pub is_device_active: bool,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub has_bound_hand: bool,
-    pub hand_position: Vector3<f32>,
-    pub hand_rotation: Quaternion<f32>,
+    pub hand_position: Vec3,
+    pub hand_rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
 }
@@ -6627,10 +6628,10 @@ pub struct IndexControllerState {
     pub trigger: f32,
     pub trigger_touch: bool,
     pub trigger_click: bool,
-    pub joystick_raw: Vector2<f32>,
+    pub joystick_raw: Vec2,
     pub joystick_touch: bool,
     pub joystick_click: bool,
-    pub touchpad: Vector2<f32>,
+    pub touchpad: Vec2,
     pub touchpad_touch: bool,
     pub touchpad_press: bool,
     pub touchpad_force: f32,
@@ -6640,11 +6641,11 @@ pub struct IndexControllerState {
     pub body_node: BodyNode,
     pub is_device_active: bool,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub has_bound_hand: bool,
-    pub hand_position: Vector3<f32>,
-    pub hand_rotation: Quaternion<f32>,
+    pub hand_position: Vec3,
+    pub hand_rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
 }
@@ -6751,7 +6752,7 @@ pub struct PicoNeo2ControllerState {
     pub grip_click: bool,
     pub joystick_touch: bool,
     pub joystick_click: bool,
-    pub joystick: Vector2<f32>,
+    pub joystick: Vec2,
     pub trigger_click: bool,
     pub trigger: f32,
     pub device_id: Option<String>,
@@ -6760,11 +6761,11 @@ pub struct PicoNeo2ControllerState {
     pub body_node: BodyNode,
     pub is_device_active: bool,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub has_bound_hand: bool,
-    pub hand_position: Vector3<f32>,
-    pub hand_rotation: Quaternion<f32>,
+    pub hand_position: Vec3,
+    pub hand_rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
 }
@@ -6852,7 +6853,7 @@ pub struct TouchControllerState {
     pub thumbrest_touch: bool,
     pub grip: f32,
     pub grip_click: bool,
-    pub joystick_raw: Vector2<f32>,
+    pub joystick_raw: Vec2,
     pub joystick_touch: bool,
     pub joystick_click: bool,
     pub trigger: f32,
@@ -6864,11 +6865,11 @@ pub struct TouchControllerState {
     pub body_node: BodyNode,
     pub is_device_active: bool,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub has_bound_hand: bool,
-    pub hand_position: Vector3<f32>,
-    pub hand_rotation: Quaternion<f32>,
+    pub hand_position: Vec3,
+    pub hand_rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
 }
@@ -6972,18 +6973,18 @@ pub struct ViveControllerState {
     pub trigger: f32,
     pub touchpad_touch: bool,
     pub touchpad_click: bool,
-    pub touchpad: Vector2<f32>,
+    pub touchpad: Vec2,
     pub device_id: Option<String>,
     pub device_model: Option<String>,
     pub side: Chirality,
     pub body_node: BodyNode,
     pub is_device_active: bool,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub has_bound_hand: bool,
-    pub hand_position: Vector3<f32>,
-    pub hand_rotation: Quaternion<f32>,
+    pub hand_position: Vec3,
+    pub hand_rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
 }
@@ -7067,20 +7068,20 @@ pub struct WindowsMRControllerState {
     pub trigger: f32,
     pub touchpad_touch: bool,
     pub touchpad_click: bool,
-    pub touchpad: Vector2<f32>,
+    pub touchpad: Vec2,
     pub joystick_click: bool,
-    pub joystick_raw: Vector2<f32>,
+    pub joystick_raw: Vec2,
     pub device_id: Option<String>,
     pub device_model: Option<String>,
     pub side: Chirality,
     pub body_node: BodyNode,
     pub is_device_active: bool,
     pub is_tracking: bool,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub has_bound_hand: bool,
-    pub hand_position: Vector3<f32>,
-    pub hand_rotation: Quaternion<f32>,
+    pub hand_position: Vec3,
+    pub hand_rotation: Quat,
     pub battery_level: f32,
     pub battery_charging: bool,
 }
@@ -7195,10 +7196,10 @@ unsafe impl Zeroable for Chirality {}
 #[derive(Debug, Default, Clone)]
 pub struct ViveHandState {
     pub confidence: f32,
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
     pub pinch_strength: f32,
-    pub points: Vec<Vector3<f32>>,
+    pub points: Vec<Vec3>,
 }
 
 impl MemoryPackable for ViveHandState {

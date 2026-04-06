@@ -176,9 +176,9 @@ impl LightCache {
             };
 
             let data = LightData {
-                point: nalgebra::Vector3::new(0.0, 0.0, 0.0),
-                orientation: nalgebra::Quaternion::identity(),
-                color: nalgebra::Vector3::new(state.color.x, state.color.y, state.color.z),
+                point: Vec3::ZERO,
+                orientation: Quat::IDENTITY,
+                color: Vec3::new(state.color.x, state.color.y, state.color.z),
                 intensity: state.intensity,
                 range: state.range,
                 angle: state.spot_angle,
@@ -247,7 +247,7 @@ impl LightCache {
             let world_pos = world.transform_point3(p);
 
             let ori = cached.data.orientation;
-            let q = Quat::from_xyzw(ori.i, ori.j, ori.k, ori.w);
+            let q = ori;
             let world_dir = (world.to_scale_rotation_translation().1 * q) * LOCAL_LIGHT_PROPAGATION;
             let world_dir = if world_dir.length_squared() > 1e-10 {
                 world_dir.normalize()
@@ -313,12 +313,7 @@ impl LightCache {
         let mut resolved = Vec::with_capacity(light_data.len());
         for data in light_data {
             let p = Vec3::new(data.point.x, data.point.y, data.point.z);
-            let q = Quat::from_xyzw(
-                data.orientation.i,
-                data.orientation.j,
-                data.orientation.k,
-                data.orientation.w,
-            );
+            let q = data.orientation;
             let world_dir = q * LOCAL_LIGHT_PROPAGATION;
             let world_dir = if world_dir.length_squared() > 1e-10 {
                 world_dir.normalize()
@@ -354,8 +349,7 @@ impl Default for LightCache {
 
 #[cfg(test)]
 mod tests {
-    use glam::{Mat4, Vec3};
-    use nalgebra::{Quaternion, Vector3};
+    use glam::{Mat4, Quat, Vec3};
 
     use crate::shared::{LightData, LightType, LightsBufferRendererState, ShadowType};
 
@@ -363,9 +357,9 @@ mod tests {
 
     fn make_light_data(pos: (f32, f32, f32), color: (f32, f32, f32)) -> LightData {
         LightData {
-            point: Vector3::new(pos.0, pos.1, pos.2),
-            orientation: Quaternion::identity(),
-            color: Vector3::new(color.0, color.1, color.2),
+            point: Vec3::new(pos.0, pos.1, pos.2),
+            orientation: Quat::IDENTITY,
+            color: Vec3::new(color.0, color.1, color.2),
             intensity: 1.0,
             range: 10.0,
             angle: 45.0,

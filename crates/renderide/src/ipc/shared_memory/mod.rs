@@ -27,6 +27,9 @@ use std::path::PathBuf;
 use bytemuck::{Pod, Zeroable};
 
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
+use crate::shared::default_entity_pool::DefaultEntityPool;
+use crate::shared::memory_packable::MemoryPackable;
+use crate::shared::memory_unpacker::MemoryUnpacker;
 
 /// Environment variable overriding the Unix directory for `.qu` MMF files (must match host /
 /// bootstrapper). Same value as `bootstrapper::ipc::RENDERIDE_INTERPROCESS_DIR_ENV`.
@@ -90,6 +93,15 @@ use unix::SharedMemoryView;
 
 #[cfg(windows)]
 use windows::SharedMemoryView;
+
+/// Wire stride (bytes) for one host [`LightData`](crate::shared::LightData) row in shared memory (C# explicit layout through `angle`).
+pub const LIGHT_DATA_SHM_STRIDE_BYTES: usize = 52;
+
+/// Wire stride (bytes) for one host [`TransformPoseUpdate`](crate::shared::TransformPoseUpdate) row.
+pub const TRANSFORM_POSE_UPDATE_SHM_STRIDE_BYTES: usize = 44;
+
+/// Wire stride (bytes) for one host [`LightState`](crate::shared::LightState) row (C# `StructLayout` size).
+pub const LIGHT_STATE_SHM_STRIDE_BYTES: usize = 60;
 
 /// Lazy mapping cache keyed by `buffer_id` for host shared buffers.
 pub struct SharedMemoryAccessor {
@@ -248,6 +260,92 @@ impl SharedMemoryAccessor {
             )));
         }
         Ok(slice[..count].to_vec())
+    }
+
+    /// Copies shared memory into host-sized rows and decodes each with [`MemoryPackable::unpack`].
+    ///
+    /// Use when `T` is not [`Pod`] but the host still blits rows of the same sequential byte layout as
+    /// [`MemoryPackable`] (e.g. SIMD-aligned composites). `element_stride` must match the host record size.
+    pub fn access_copy_memory_packable_rows<T: MemoryPackable + Default>(
+        &mut self,
+        descriptor: &SharedMemoryBufferDescriptor,
+        element_stride: usize,
+        context: Option<&str>,
+    ) -> Result<Vec<T>, String> {
+        let prefix_err = |msg: &str| {
+            if let Some(ctx) = context {
+                format!("{ctx}: {msg}")
+            } else {
+                msg.to_string()
+            }
+        };
+        if element_stride == 0 {
+            return Err(prefix_err("element_stride must be nonzero"));
+        }
+        if descriptor.length <= 0 {
+            return Err(prefix_err(&format!(
+                "length<=0 (buffer_id={} offset={} length={})",
+                descriptor.buffer_id, descriptor.offset, descriptor.length
+            )));
+        }
+        if descriptor.length > Self::MAX_ACCESS_COPY_BYTES {
+            return Err(prefix_err(&format!(
+                "length {} exceeds max {} (buffer_id={})",
+                descriptor.length,
+                Self::MAX_ACCESS_COPY_BYTES,
+                descriptor.buffer_id
+            )));
+        }
+        let buffer_id = descriptor.buffer_id;
+        let view = match self.get_view(descriptor) {
+            Some(v) => v,
+            None => {
+                return Err(prefix_err(&format!(
+                    "get_view failed buffer_id={} path/name={}",
+                    buffer_id,
+                    self.shm_path_for_buffer(buffer_id)
+                )));
+            }
+        };
+        let bytes = view
+            .slice(descriptor.offset, descriptor.length)
+            .ok_or_else(|| {
+                prefix_err(&format!(
+                    "slice failed buffer_id={} offset={} length={} view_len={}",
+                    buffer_id,
+                    descriptor.offset,
+                    descriptor.length,
+                    view.len()
+                ))
+            })?;
+        let length = descriptor.length as usize;
+        let remainder = length % element_stride;
+        if remainder != 0 {
+            return Err(prefix_err(&format!(
+                "length {length} is not a multiple of element_stride {element_stride} (remainder {remainder})"
+            )));
+        }
+        let count = length / element_stride;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let mut aligned = vec![0u8; bytes.len()];
+        aligned.copy_from_slice(bytes);
+        let mut out = Vec::with_capacity(count);
+        for chunk in aligned.chunks_exact(element_stride) {
+            let mut pool = DefaultEntityPool;
+            let mut unpacker = MemoryUnpacker::new(chunk, &mut pool);
+            let mut row = T::default();
+            row.unpack(&mut unpacker);
+            if unpacker.remaining_data() != 0 {
+                return Err(prefix_err(&format!(
+                    "unpack left {} bytes unconsumed (stride {element_stride})",
+                    unpacker.remaining_data()
+                )));
+            }
+            out.push(row);
+        }
+        Ok(out)
     }
 
     /// Mutably accesses shared memory as `T` slices: read-modify-write with flush so the host sees updates.

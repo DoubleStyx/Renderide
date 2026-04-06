@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use nalgebra::Vector2;
+use glam::{IVec2, Vec2};
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{DeviceEvent, ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::window::{CursorGrabMode, Window};
@@ -16,7 +16,7 @@ use crate::shared::OutputState;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CursorOutputTracking {
     last_lock_cursor: bool,
-    last_lock_position: Option<Vector2<i32>>,
+    last_lock_position: Option<IVec2>,
 }
 
 /// Applies a [`WindowEvent`] from winit to the accumulator.
@@ -120,10 +120,7 @@ pub fn apply_device_event(acc: &mut WindowInputAccumulator, event: &DeviceEvent)
     }
 }
 
-fn warp_cursor_logical(
-    window: &Window,
-    p: &Vector2<i32>,
-) -> Result<(), winit::error::ExternalError> {
+fn warp_cursor_logical(window: &Window, p: &IVec2) -> Result<(), winit::error::ExternalError> {
     let logical = LogicalPosition::new(p.x as f64, p.y as f64);
     let physical = logical.to_physical::<f64>(window.scale_factor());
     window.set_cursor_position(physical)
@@ -137,7 +134,7 @@ fn warp_cursor_logical(
 pub fn apply_per_frame_cursor_lock_when_locked(
     window: &Window,
     acc: &mut WindowInputAccumulator,
-    lock_cursor_position: Option<Vector2<i32>>,
+    lock_cursor_position: Option<IVec2>,
 ) -> Result<(), winit::error::ExternalError> {
     let sf = window.scale_factor();
     acc.sync_window_resolution_logical(window);
@@ -148,7 +145,7 @@ pub fn apply_per_frame_cursor_lock_when_locked(
             .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked))?;
         window.set_cursor_visible(false);
         warp_cursor_logical(window, &p)?;
-        acc.set_window_position_from_logical(Vector2::new(p.x as f32, p.y as f32), sf);
+        acc.set_window_position_from_logical(Vec2::new(p.x as f32, p.y as f32), sf);
     } else {
         window
             .set_cursor_grab(CursorGrabMode::Locked)
@@ -161,7 +158,7 @@ pub fn apply_per_frame_cursor_lock_when_locked(
         let logical_center = LogicalPosition::new(cx as f64, cy as f64);
         let phys_center = logical_center.to_physical::<f64>(sf);
         window.set_cursor_position(phys_center)?;
-        acc.set_window_position_from_logical(Vector2::new(cx, cy), sf);
+        acc.set_window_position_from_logical(Vec2::new(cx, cy), sf);
     }
     Ok(())
 }

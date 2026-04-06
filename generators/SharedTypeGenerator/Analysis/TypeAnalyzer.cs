@@ -235,4 +235,52 @@ public partial class TypeAnalyzer
         }
         return false;
     }
+
+    /// <summary>
+    /// Whether <paramref name="ft"/> can be emitted as whole-struct <c>bytemuck::Pod</c> in Rust under default SIMD glam.
+    /// Differs from <see cref="IsFieldTypePod"/> when nested composites gain SIMD alignment padding vs. C# blittable layout.
+    /// </summary>
+    private bool IsRustLayoutPodField(Type ft, HashSet<Type> visited)
+    {
+        if (ft.IsEnum) return true;
+        if (ft == typeof(bool)) return true;
+        if (ft.IsPrimitive || ft == typeof(Guid) || ft.Name?.StartsWith("SharedMemoryBufferDescriptor") == true)
+            return true;
+
+        if (ft.IsValueType && ft.Assembly == _assembly && !ft.IsEnum)
+        {
+            // Whole C# struct maps to a single glam Rust type (e.g. RenderQuaternion → Quat); that value is Pod.
+            string rustStructName = RustTypeMapper.MapType(ft, _assembly);
+            if (RustTypeMapper.IsGlamRustType(rustStructName))
+                return true;
+
+            if (visited.Contains(ft)) return false;
+            visited.Add(ft);
+            try
+            {
+                FieldInfo[] fields = ft.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                foreach (FieldInfo f in fields)
+                {
+                    string rustLeaf = RustTypeMapper.MapType(f.FieldType, _assembly);
+                    if (RustTypeMapper.IsGlamRustTypeRequiringCompositeNonPod(rustLeaf))
+                    {
+                        if (fields.Length == 1)
+                            continue;
+                        return false;
+                    }
+
+                    if (!IsRustLayoutPodField(f.FieldType, visited))
+                        return false;
+                }
+
+                return true;
+            }
+            finally
+            {
+                visited.Remove(ft);
+            }
+        }
+
+        return IsFieldTypePod(ft, visited);
+    }
 }

@@ -87,6 +87,11 @@ public class FieldClassifier
         if (fieldType.IsClass && fieldType.IsAssignableTo(_iMemoryPackable))
             return FieldKind.Object;
 
+        if (fieldType.IsValueType && !fieldType.IsPrimitive && fieldType != typeof(Guid)
+            && !fieldType.Name.StartsWith("SharedMemoryBufferDescriptor", StringComparison.Ordinal)
+            && fieldType.IsAssignableTo(_iMemoryPackable))
+            return FieldKind.ObjectRequired;
+
         return FieldKind.Pod;
     }
 

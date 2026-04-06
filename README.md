@@ -25,7 +25,7 @@ Visual bugs and missing features are expected.
 1. Run the bootstrapper:
 
    ```bash
-   cargo run --release -p bootstrapper
+   ./target/release/bootstrapper
    ```
 
 The bootstrapper will launch the Resonite host and connect Renderide automatically.

@@ -1,6 +1,6 @@
 //! Platform-neutral input accumulation for [`FrameStartData`](crate::shared::FrameStartData).
 
-use nalgebra::Vector2;
+use glam::{IVec2, Vec2};
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::window::Window;
 
@@ -16,11 +16,11 @@ use crate::shared::{DragAndDropEvent, InputState, Key, KeyboardState, MouseState
 /// by resolution; both must use the same space.
 pub struct WindowInputAccumulator {
     /// Accumulated relative motion (including [`DeviceEvent::MouseMotion`](winit::event::DeviceEvent)).
-    pub mouse_delta: Vector2<f32>,
+    pub mouse_delta: Vec2,
     /// Accumulated scroll wheel / trackpad scroll since the last [`Self::take_input_state`].
-    pub scroll_delta: Vector2<f32>,
+    pub scroll_delta: Vec2,
     /// Pointer position in window space (logical pixels) for [`crate::shared::MouseState`].
-    pub window_position: Vector2<f32>,
+    pub window_position: Vec2,
     /// Inner drawable size in **logical** pixels (matches [`Self::window_position`] for host UVs).
     pub window_resolution: (u32, u32),
     /// Left mouse button held.
@@ -46,15 +46,15 @@ pub struct WindowInputAccumulator {
     /// Paths from [`WindowEvent::DroppedFile`](winit::event::WindowEvent) coalesced until take.
     pending_drop_paths: Vec<String>,
     /// Last cursor position in physical pixels (for drop-point reporting).
-    last_cursor_pixel: Vector2<i32>,
+    last_cursor_pixel: IVec2,
 }
 
 impl Default for WindowInputAccumulator {
     fn default() -> Self {
         Self {
-            mouse_delta: Vector2::zeros(),
-            scroll_delta: Vector2::zeros(),
-            window_position: Vector2::zeros(),
+            mouse_delta: Vec2::ZERO,
+            scroll_delta: Vec2::ZERO,
+            window_position: Vec2::ZERO,
             window_resolution: (0, 0),
             left_held: false,
             right_held: false,
@@ -67,7 +67,7 @@ impl Default for WindowInputAccumulator {
             ime_commit_buffer: String::new(),
             text_typing_buffer: String::new(),
             pending_drop_paths: Vec::new(),
-            last_cursor_pixel: Vector2::zeros(),
+            last_cursor_pixel: IVec2::ZERO,
         }
     }
 }
@@ -109,7 +109,7 @@ impl WindowInputAccumulator {
 
     /// Sets [`Self::window_position`] from **logical** coordinates and updates [`Self::last_cursor_pixel`]
     /// to the corresponding physical point (for drag/drop parity).
-    pub fn set_window_position_from_logical(&mut self, logical: Vector2<f32>, scale_factor: f64) {
+    pub fn set_window_position_from_logical(&mut self, logical: Vec2, scale_factor: f64) {
         self.window_position = logical;
         let logical_pos = LogicalPosition::new(logical.x as f64, logical.y as f64);
         let physical = logical_pos.to_physical::<f64>(scale_factor);
@@ -148,7 +148,7 @@ impl WindowInputAccumulator {
         let window = WindowState {
             is_window_focused: self.window_focused,
             is_fullscreen: false,
-            window_resolution: Vector2::new(
+            window_resolution: IVec2::new(
                 self.window_resolution.0 as i32,
                 self.window_resolution.1 as i32,
             ),
@@ -188,13 +188,13 @@ impl WindowInputAccumulator {
 #[cfg(test)]
 mod tests {
     use super::WindowInputAccumulator;
-    use nalgebra::Vector2;
+    use glam::Vec2;
 
     #[test]
     fn mouse_delta_accumulates_until_take_input_state() {
         let mut w = WindowInputAccumulator::default();
-        w.mouse_delta += Vector2::new(1.0, 2.0);
-        w.mouse_delta += Vector2::new(3.0, 4.0);
+        w.mouse_delta += Vec2::new(1.0, 2.0);
+        w.mouse_delta += Vec2::new(3.0, 4.0);
         let first = w.take_input_state(false);
         let mouse = first.mouse.expect("mouse state");
         assert_eq!(mouse.direct_delta.x, 4.0);
@@ -208,8 +208,8 @@ mod tests {
     #[test]
     fn scroll_delta_accumulates_until_take_input_state() {
         let mut w = WindowInputAccumulator::default();
-        w.scroll_delta += Vector2::new(0.0, 120.0);
-        w.scroll_delta += Vector2::new(0.0, 60.0);
+        w.scroll_delta += Vec2::new(0.0, 120.0);
+        w.scroll_delta += Vec2::new(0.0, 60.0);
         let taken = w.take_input_state(false);
         let mouse = taken.mouse.expect("mouse state");
         assert_eq!(mouse.scroll_wheel_delta.y, 180.0);
@@ -242,9 +242,11 @@ mod tests {
     /// Normalized UV at logical center when resolution and position share logical space.
     #[test]
     fn normalized_center_at_logical_half_resolution() {
-        let mut w = WindowInputAccumulator::default();
-        w.window_resolution = (800, 600);
-        w.window_position = Vector2::new(400.0, 300.0);
+        let mut w = WindowInputAccumulator {
+            window_resolution: (800, 600),
+            window_position: Vec2::new(400.0, 300.0),
+            ..Default::default()
+        };
         let inp = w.take_input_state(false);
         let mouse = inp.mouse.expect("mouse");
         let win = inp.window.expect("window");
@@ -257,7 +259,7 @@ mod tests {
     #[test]
     fn set_window_position_from_logical_updates_physical_pixel() {
         let mut w = WindowInputAccumulator::default();
-        w.set_window_position_from_logical(Vector2::new(100.0, 200.0), 2.0);
+        w.set_window_position_from_logical(Vec2::new(100.0, 200.0), 2.0);
         assert_eq!(w.last_cursor_pixel.x, 200);
         assert_eq!(w.last_cursor_pixel.y, 400);
     }

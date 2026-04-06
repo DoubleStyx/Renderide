@@ -44,6 +44,7 @@ public static class GeneratorRunner
         logger.LogInfo(LogCategory.Generator, $"Generating for engine version {engineVersion}");
 
         List<TypeDescriptor> types = analyzer.Analyze();
+        PackStepNonPodPostProcessor.Apply(types);
         logger.LogInfo(LogCategory.Analysis, $"Analyzed {types.Count} types in {stopwatch.ElapsedMilliseconds}ms");
 
         stopwatch.Restart();

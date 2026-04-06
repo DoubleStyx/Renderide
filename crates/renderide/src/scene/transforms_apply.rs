@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use crate::ipc::SharedMemoryAccessor;
+use crate::ipc::{SharedMemoryAccessor, TRANSFORM_POSE_UPDATE_SHM_STRIDE_BYTES};
 use crate::shared::{TransformParentUpdate, TransformPoseUpdate, TransformsUpdate};
 
 use super::error::SceneError;
@@ -165,8 +165,9 @@ pub fn apply_transforms_update(
     if update.pose_updates.length > 0 {
         let ctx = format!("transforms pose_updates scene_id={sid}");
         let poses = shm
-            .access_copy_diagnostic_with_context::<TransformPoseUpdate>(
+            .access_copy_memory_packable_rows::<TransformPoseUpdate>(
                 &update.pose_updates,
+                TRANSFORM_POSE_UPDATE_SHM_STRIDE_BYTES,
                 Some(&ctx),
             )
             .map_err(SceneError::SharedMemoryAccess)?;
@@ -222,7 +223,7 @@ pub fn apply_transforms_update(
 
 #[cfg(test)]
 mod tests {
-    use nalgebra::{Quaternion, Vector3};
+    use glam::{Quat, Vec3};
 
     use super::*;
     use crate::scene::mesh_renderable::StaticMeshRenderer;
@@ -230,9 +231,9 @@ mod tests {
 
     fn node_tagged(i: f32) -> RenderTransform {
         RenderTransform {
-            position: Vector3::new(i, 0.0, 0.0),
-            scale: Vector3::new(1.0, 1.0, 1.0),
-            rotation: Quaternion::identity(),
+            position: Vec3::new(i, 0.0, 0.0),
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
         }
     }
 

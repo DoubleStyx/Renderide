@@ -271,7 +271,7 @@ impl SceneCoordinator {
 
 #[cfg(test)]
 mod tests {
-    use nalgebra::{Quaternion, Vector3};
+    use glam::{Quat, Vec3};
 
     use super::*;
     use crate::scene::render_space::RenderSpaceState;
@@ -286,14 +286,14 @@ mod tests {
                 id,
                 is_active: true,
                 root_transform: crate::shared::RenderTransform {
-                    position: Vector3::new(100.0, 0.0, 0.0),
-                    scale: Vector3::new(1.0, 1.0, 1.0),
-                    rotation: Quaternion::identity(),
+                    position: Vec3::new(100.0, 0.0, 0.0),
+                    scale: Vec3::ONE,
+                    rotation: Quat::IDENTITY,
                 },
                 nodes: vec![crate::shared::RenderTransform {
-                    position: Vector3::new(1.0, 2.0, 3.0),
-                    scale: Vector3::new(1.0, 1.0, 1.0),
-                    rotation: Quaternion::identity(),
+                    position: Vec3::new(1.0, 2.0, 3.0),
+                    scale: Vec3::ONE,
+                    rotation: Quat::IDENTITY,
                 }],
                 node_parents: vec![-1],
                 ..Default::default()

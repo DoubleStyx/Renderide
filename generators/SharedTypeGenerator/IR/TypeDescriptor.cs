@@ -18,11 +18,11 @@ public sealed class TypeDescriptor
 
     /// <summary>Ordered serialization operations derived from the Pack method IL.
     /// Empty for enums and types without Pack methods.</summary>
-    public List<SerializationStep> PackSteps { get; init; } = [];
+    public List<SerializationStep> PackSteps { get; set; } = [];
 
     /// <summary>Steps that run only during unpack (e.g. decodedTime = UtcNow).
     /// Emitted in unpack but not in pack.</summary>
-    public List<SerializationStep> UnpackOnlySteps { get; init; } = [];
+    public List<SerializationStep> UnpackOnlySteps { get; set; } = [];
 
     /// <summary>For PackableStruct with inheritance (e.g., AssetCommand -> RendererCommand).</summary>
     public string? BaseTypeName { get; init; }
