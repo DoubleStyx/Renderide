@@ -17,7 +17,7 @@ path = "src/bin/roundtrip.rs"
 
 [features]
 default = ["debug-hud"]
-debug-hud = ["dep:imgui", "dep:imgui-wgpu"]
+debug-hud = ["dep:imgui", "dep:imgui-wgpu", "dep:sysinfo"]
 
 [dependencies]
 bytemuck = { version = "1.14", features = ["derive"] }
@@ -34,6 +34,7 @@ wgpu = "29.0.1"
 winit = "0.30"
 imgui = { version = "0.12", optional = true, features = ["tables-api"] }
 imgui-wgpu = { version = "0.28", optional = true }
+sysinfo = { version = "0.33", default-features = false, features = ["system"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

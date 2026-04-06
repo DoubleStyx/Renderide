@@ -85,6 +85,11 @@ impl MaterialRegistry {
     pub fn device(&self) -> &Arc<wgpu::Device> {
         &self.device
     }
+
+    /// Shader routes for the debug HUD (`shader_asset_id` → [`MaterialFamilyId`], sorted).
+    pub fn shader_routes_for_hud(&self) -> Vec<(i32, MaterialFamilyId)> {
+        self.router.routes_sorted_for_hud()
+    }
 }
 
 #[cfg(test)]

@@ -32,7 +32,7 @@ pub mod passes;
 
 pub use world_mesh_draw_prep::{
     collect_and_sort_world_mesh_draws, resolved_material_slots, sort_world_mesh_draws,
-    MaterialDrawBatchKey, WorldMeshDrawItem,
+    world_mesh_draw_stats_from_sorted, MaterialDrawBatchKey, WorldMeshDrawItem, WorldMeshDrawStats,
 };
 
 pub use builder::GraphBuilder;

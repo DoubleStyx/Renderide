@@ -20,6 +20,8 @@ use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
 use crate::render_graph::pass::RenderPass;
 use crate::render_graph::resources::{PassResources, ResourceSlot};
+#[cfg(feature = "debug-hud")]
+use crate::render_graph::world_mesh_draw_stats_from_sorted;
 use crate::render_graph::MAIN_FORWARD_DEPTH_CLEAR;
 use crate::render_graph::{
     collect_and_sort_world_mesh_draws, MaterialDrawBatchKey, WorldMeshDrawItem,
@@ -71,8 +73,12 @@ impl RenderPass for WorldMeshForwardPass {
         let backend = &mut frame.backend;
         let store_ref = backend.material_property_store();
         let dict = MaterialDictionary::new(store_ref);
-        let mesh_pool = &backend.mesh_pool;
-        let draws = collect_and_sort_world_mesh_draws(frame.scene, mesh_pool, &dict);
+        let draws = collect_and_sort_world_mesh_draws(frame.scene, &backend.mesh_pool, &dict);
+        #[cfg(feature = "debug-hud")]
+        {
+            let stats = world_mesh_draw_stats_from_sorted(&draws);
+            backend.set_last_world_mesh_draw_stats(stats);
+        }
         if draws.is_empty() {
             return Ok(());
         }
@@ -199,7 +205,7 @@ impl RenderPass for WorldMeshForwardPass {
             let dynamic_offset = (draw_idx * PER_DRAW_UNIFORM_STRIDE) as u32;
             rpass.set_bind_group(0, debug_bind_group, &[dynamic_offset]);
 
-            draw_mesh_submesh(&mut rpass, item, mesh_pool);
+            draw_mesh_submesh(&mut rpass, item, &backend.mesh_pool);
         }
 
         Ok(())

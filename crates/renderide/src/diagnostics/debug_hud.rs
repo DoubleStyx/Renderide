@@ -1,5 +1,10 @@
 //! Dear ImGui overlay for developer diagnostics (feature `debug-hud`).
+//!
+//! The **Renderide debug** window uses a **Stats** tab (unified renderer + frame diagnostics) and a
+//! **Shader routes** tab for host shader → material family mappings.
 
+#[cfg(feature = "debug-hud")]
+use super::frame_diagnostics_snapshot::FrameDiagnosticsSnapshot;
 use super::renderer_info_snapshot::RendererInfoSnapshot;
 #[cfg(feature = "debug-hud")]
 use super::scene_transforms_snapshot::RenderSpaceTransformsSnapshot;
@@ -22,13 +27,29 @@ use imgui::{
 #[cfg(feature = "debug-hud")]
 use imgui_wgpu::{Renderer as ImguiWgpuRenderer, RendererConfig};
 
-/// Optional GPU debug overlay (ImGui + imgui-wgpu).
+#[cfg(feature = "debug-hud")]
+/// Right-aligned numeric [`format!`] helpers so HUD columns keep a stable width.
+mod hud_fmt {
+    /// Formats `value` as a right-aligned decimal with `decimals` places and total width `width`.
+    pub fn f64_field(width: usize, decimals: usize, value: f64) -> String {
+        format!("{value:>w$.d$}", w = width, d = decimals)
+    }
+
+    /// Human-readable gibibytes from bytes (numeric part only; caller adds `GiB` suffix).
+    pub fn gib_value(width: usize, decimals: usize, bytes: u64) -> String {
+        let g = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        f64_field(width, decimals, g)
+    }
+}
+
 #[cfg(feature = "debug-hud")]
 pub struct DebugHud {
     imgui: Context,
     renderer: ImguiWgpuRenderer,
     last_frame_at: Instant,
     latest: Option<RendererInfoSnapshot>,
+    /// Per-frame timing, draws, host metrics, and shader-route strings ([`FrameDiagnosticsSnapshot`]).
+    frame_diagnostics: Option<FrameDiagnosticsSnapshot>,
     /// Per-frame world transform listing for the **Scene transforms** window.
     scene_transforms: SceneTransformsSnapshot,
     /// Whether the **Scene transforms** window is open (independent of the stats panel).
@@ -97,6 +118,7 @@ impl DebugHud {
             renderer,
             last_frame_at: Instant::now(),
             latest: None,
+            frame_diagnostics: None,
             scene_transforms: SceneTransformsSnapshot::default(),
             scene_transforms_open: true,
             renderer_settings,
@@ -105,9 +127,14 @@ impl DebugHud {
         }
     }
 
-    /// Stores the snapshot shown under the **Renderer** tab.
+    /// Stores [`RendererInfoSnapshot`] for the **Stats** tab (IPC, adapter, scene, materials, graph).
     pub fn set_snapshot(&mut self, sample: RendererInfoSnapshot) {
         self.latest = Some(sample);
+    }
+
+    /// Stores [`FrameDiagnosticsSnapshot`] for timing, host/allocator, draws, textures, and shader routes.
+    pub fn set_frame_diagnostics(&mut self, sample: FrameDiagnosticsSnapshot) {
+        self.frame_diagnostics = Some(sample);
     }
 
     /// Stores per–render-space world transform rows for the **Scene transforms** window.
@@ -135,12 +162,12 @@ impl DebugHud {
         apply_input(io, input);
 
         let snapshot = self.latest.clone();
+        let frame_diag = self.frame_diagnostics.clone();
         let scene_transforms = self.scene_transforms.clone();
         let ui = self.imgui.frame();
-        const PANEL_WIDTH: f32 = 520.0;
+        const PANEL_WIDTH: f32 = 760.0;
         let panel_x = (width as f32 - PANEL_WIDTH - 12.0).max(12.0);
         let window_flags = WindowFlags::ALWAYS_AUTO_RESIZE
-            | WindowFlags::NO_SCROLLBAR
             | WindowFlags::NO_RESIZE
             | WindowFlags::NO_SAVED_SETTINGS
             | WindowFlags::NO_FOCUS_ON_APPEARING
@@ -153,8 +180,11 @@ impl DebugHud {
             .flags(window_flags)
             .build(|| {
                 if let Some(_tab_bar) = ui.tab_bar("debug_tabs") {
-                    if let Some(_tab) = ui.tab_item("Renderer") {
-                        Self::renderer_tab(ui, snapshot.as_ref());
+                    if let Some(_tab) = ui.tab_item("Stats") {
+                        Self::main_debug_panel(ui, snapshot.as_ref(), frame_diag.as_ref());
+                    }
+                    if let Some(_tab) = ui.tab_item("Shader routes") {
+                        Self::shader_mappings_tab(ui, frame_diag.as_ref());
                     }
                 }
             });
@@ -193,78 +223,208 @@ impl DebugHud {
         Ok(())
     }
 
-    fn renderer_tab(ui: &imgui::Ui, sample: Option<&RendererInfoSnapshot>) {
-        let Some(s) = sample else {
+    /// Unified IPC, timing, adapter, scene, draws, and resources (no shader route list).
+    fn main_debug_panel(
+        ui: &imgui::Ui,
+        renderer: Option<&RendererInfoSnapshot>,
+        frame: Option<&FrameDiagnosticsSnapshot>,
+    ) {
+        if renderer.is_none() && frame.is_none() {
             ui.text("Waiting for snapshot…");
             return;
-        };
+        }
 
-        let fps = if s.frame_time_ms > f64::EPSILON {
-            1000.0 / s.frame_time_ms
+        // Summary: FPS and time between redraws (`wall_frame_time_ms` / `frame_time_ms` — winit tick spacing).
+        if let Some(f) = frame {
+            let fps = f.fps_from_wall();
+            ui.text(format!(
+                "FPS {}  |  frame interval {} ms",
+                hud_fmt::f64_field(8, 2, fps),
+                hud_fmt::f64_field(8, 3, f.wall_frame_time_ms)
+            ));
+        } else if let Some(r) = renderer {
+            let fps = if r.frame_time_ms > f64::EPSILON {
+                1000.0 / r.frame_time_ms
+            } else {
+                0.0
+            };
+            ui.text(format!(
+                "FPS {:.1}  |  frame interval {:.2} ms",
+                fps, r.frame_time_ms
+            ));
+        }
+
+        if let Some(r) = renderer {
+            ui.text(format!(
+                "Frame index {}  |  viewport {}×{}",
+                r.last_frame_index, r.viewport_px.0, r.viewport_px.1
+            ));
+        } else if frame.is_some() {
+            ui.text_disabled("Frame index / viewport: (need renderer snapshot)");
+        }
+
+        // Wall time for `execute_frame_graph` (encode + submit). GPU mesh pass timing is omitted until
+        // timestamp queries exist (`gpu_mesh_pass_ms`).
+        if let Some(f) = frame {
+            ui.text(format!(
+                "CPU render graph: {} ms",
+                hud_fmt::f64_field(8, 3, f.unified_cpu_frame_ms),
+            ));
+            if let Some(ms) = f.gpu_mesh_pass_ms {
+                ui.text(format!(
+                    "GPU mesh pass: {} ms",
+                    hud_fmt::f64_field(8, 3, ms)
+                ));
+            }
+        }
+
+        if let Some(r) = renderer {
+            ui.separator();
+            ui.text("GPU (adapter)");
+            ui.text_wrapped(format!("Name: {}", r.adapter_name));
+            ui.text(format!(
+                "Class: {}  |  backend: {:?}",
+                device_type_label(r.adapter_device_type),
+                r.adapter_backend
+            ));
+            ui.text_wrapped(format!(
+                "Driver: {} ({})",
+                r.adapter_driver, r.adapter_driver_info
+            ));
+            ui.text(format!(
+                "Surface: {:?}  |  present: {:?}",
+                r.surface_format, r.present_mode
+            ));
+        }
+
+        if let Some(f) = frame {
+            ui.separator();
+            ui.text("Process GPU memory (wgpu allocator)");
+            match (
+                f.gpu_allocator.allocated_bytes,
+                f.gpu_allocator.reserved_bytes,
+            ) {
+                (Some(alloc), Some(resv)) => ui.text(format!(
+                    "{} / {} GiB allocated / reserved",
+                    hud_fmt::gib_value(7, 2, alloc),
+                    hud_fmt::gib_value(7, 2, resv)
+                )),
+                _ => ui.text("not reported for this backend"),
+            }
+
+            ui.separator();
+            ui.text("CPU / RAM (host)");
+            if f.host.cpu_model.is_empty() {
+                ui.text("CPU model: (unknown)");
+            } else {
+                ui.text_wrapped(format!("CPU model: {}", f.host.cpu_model));
+            }
+            ui.text(format!(
+                "Logical CPUs: {:>3}  |  usage {}%",
+                f.host.logical_cpus,
+                hud_fmt::f64_field(6, 2, f64::from(f.host.cpu_usage_percent))
+            ));
+            let ram_pct = if f.host.ram_total_bytes > 0 {
+                100.0 * f.host.ram_used_bytes as f64 / f.host.ram_total_bytes as f64
+            } else {
+                0.0
+            };
+            ui.text(format!(
+                "RAM: {} / {} GiB  ({}%)",
+                hud_fmt::gib_value(7, 2, f.host.ram_used_bytes),
+                hud_fmt::gib_value(7, 2, f.host.ram_total_bytes),
+                hud_fmt::f64_field(5, 1, ram_pct)
+            ));
+        }
+
+        if let Some(r) = renderer {
+            ui.separator();
+            ui.text("IPC / init");
+            ui.text(format!(
+                "Connected: {}  |  init: {:?}",
+                r.ipc_connected, r.init_state
+            ));
+
+            ui.separator();
+            ui.text("Scene");
+            ui.text(format!("Render spaces: {}", r.render_space_count));
+            ui.text(format!(
+                "Mesh renderables (CPU tables): {}",
+                r.mesh_renderable_count
+            ));
+        }
+
+        if let Some(f) = frame {
+            ui.separator();
+            ui.text("Batches");
+            let m = &f.mesh_draw;
+            ui.text(format!(
+                "{:>5} total  |  {:>5} main  |  {:>5} overlay",
+                m.batch_total, m.batch_main, m.batch_overlay
+            ));
+            ui.text("Draws");
+            ui.text(format!(
+                "{:>5} total  |  {:>5} main  |  {:>5} overlay",
+                m.draws_total, m.draws_main, m.draws_overlay
+            ));
+            ui.text(format!(
+                "Submitted (same as draws until frustum/discard prep exists): {:>5} total  |  {:>5} main  |  {:>5} overlay",
+                m.draws_total, m.draws_main, m.draws_overlay
+            ));
+            ui.text(format!(
+                "Prep rigid {:>5}  skinned {:>5}",
+                m.rigid_draws, m.skinned_draws
+            ));
+            ui.text(format!(
+                "Last submit render_tasks: {}  |  pending camera readbacks: not implemented",
+                f.last_submit_render_task_count
+            ));
+        }
+
+        if let Some(r) = renderer {
+            ui.separator();
+            ui.text("Resources");
+            if let Some(f) = frame {
+                ui.text(format!("Mesh pool: {}", f.mesh_pool_entry_count));
+            } else {
+                ui.text(format!("Mesh pool: {}", r.resident_mesh_count));
+            }
+            ui.text(format!("Textures (pool): {}", r.resident_texture_count));
+
+            ui.separator();
+            ui.text("Materials (property store)");
+            ui.text(format!(
+                "Material property maps: {}  |  property blocks: {}  |  shader bindings: {}",
+                r.material_property_slots, r.property_block_slots, r.material_shader_bindings
+            ));
+
+            ui.separator();
+            ui.text("Frame graph");
+            ui.text(format!(
+                "Render graph passes: {}  |  GPU lights (packed): {}",
+                r.frame_graph_pass_count, r.gpu_light_count
+            ));
+        } else if let Some(f) = frame {
+            ui.separator();
+            ui.text("Resources");
+            ui.text(format!("Mesh pool: {}", f.mesh_pool_entry_count));
+            ui.text(format!("Textures (pool): {}", f.textures_gpu_resident));
+        }
+    }
+
+    /// Host shader asset id → material family lines only (see **Shader routes** tab).
+    fn shader_mappings_tab(ui: &imgui::Ui, frame: Option<&FrameDiagnosticsSnapshot>) {
+        let Some(d) = frame else {
+            ui.text("Waiting for frame diagnostics…");
+            return;
+        };
+        if d.shader_route_lines.is_empty() {
+            ui.text("No shader route data");
         } else {
-            0.0
-        };
-        ui.text(format!(
-            "FPS {:.1}  |  frame {:.2} ms",
-            fps, s.frame_time_ms
-        ));
-        ui.text(format!(
-            "Frame index {}  |  viewport {}×{}",
-            s.last_frame_index, s.viewport_px.0, s.viewport_px.1
-        ));
-
-        ui.separator();
-        ui.text("IPC / init");
-        ui.text(format!(
-            "Connected: {}  |  init: {:?}",
-            s.ipc_connected, s.init_state
-        ));
-
-        ui.separator();
-        ui.text("GPU (adapter)");
-        ui.text_wrapped(format!("Name: {}", s.adapter_name));
-        ui.text(format!(
-            "Class: {}  |  backend: {:?}",
-            device_type_label(s.adapter_device_type),
-            s.adapter_backend
-        ));
-        ui.text_wrapped(format!(
-            "Driver: {} ({})",
-            s.adapter_driver, s.adapter_driver_info
-        ));
-        ui.text(format!(
-            "Surface: {:?}  |  present: {:?}",
-            s.surface_format, s.present_mode
-        ));
-
-        ui.separator();
-        ui.text("Scene");
-        ui.text(format!("Render spaces: {}", s.render_space_count));
-        ui.text(format!(
-            "Mesh renderables (CPU tables): {}",
-            s.mesh_renderable_count
-        ));
-
-        ui.separator();
-        ui.text("Resources");
-        ui.text(format!(
-            "GPU meshes: {}  |  GPU textures: {}",
-            s.resident_mesh_count, s.resident_texture_count
-        ));
-
-        ui.separator();
-        ui.text("Materials (property store)");
-        ui.text(format!(
-            "Material property maps: {}  |  property blocks: {}  |  shader bindings: {}",
-            s.material_property_slots, s.property_block_slots, s.material_shader_bindings
-        ));
-
-        ui.separator();
-        ui.text("Frame");
-        ui.text(format!(
-            "Render graph passes: {}  |  GPU lights (packed): {}",
-            s.frame_graph_pass_count, s.gpu_light_count
-        ));
+            for line in &d.shader_route_lines {
+                ui.text_wrapped(line);
+            }
+        }
     }
 
     /// Third overlay window: editable [`crate::config::RendererSettings`] with immediate disk sync.
@@ -453,6 +613,15 @@ impl DebugHud {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "debug-hud"))]
+mod hud_fmt_tests {
+    #[test]
+    fn hud_fmt_produces_stable_field_width() {
+        assert_eq!(super::hud_fmt::f64_field(8, 2, 1.0).len(), 8);
+        assert_eq!(super::hud_fmt::f64_field(8, 2, 123.456).len(), 8);
     }
 }
 

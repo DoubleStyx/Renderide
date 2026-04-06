@@ -14,6 +14,8 @@ use crate::config::RendererSettingsHandle;
 use crate::gpu::{GpuContext, MeshPreprocessPipelines};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::materials::MaterialFamilyId;
+#[cfg(feature = "debug-hud")]
+use crate::render_graph::WorldMeshDrawStats;
 use crate::render_graph::{CompiledRenderGraph, GraphExecuteError};
 use crate::resources::{GpuTexture2d, MeshPool, TexturePool};
 use crate::scene::SceneCoordinator;
@@ -77,6 +79,12 @@ pub struct RenderBackend {
     debug_hud_input: DebugHudInput,
     #[cfg(feature = "debug-hud")]
     debug_frame_time_ms: f64,
+    /// Last [`WorldMeshDrawStats`] from [`crate::render_graph::passes::WorldMeshForwardPass`].
+    #[cfg(feature = "debug-hud")]
+    last_world_mesh_draw_stats: WorldMeshDrawStats,
+    /// Wall time for the last [`Self::execute_frame_graph`] call (CPU-side graph recording).
+    #[cfg(feature = "debug-hud")]
+    last_frame_cpu_ms: f64,
 }
 
 impl Default for RenderBackend {
@@ -113,7 +121,25 @@ impl RenderBackend {
             debug_hud_input: DebugHudInput::default(),
             #[cfg(feature = "debug-hud")]
             debug_frame_time_ms: 0.0,
+            #[cfg(feature = "debug-hud")]
+            last_world_mesh_draw_stats: WorldMeshDrawStats::default(),
+            #[cfg(feature = "debug-hud")]
+            last_frame_cpu_ms: 0.0,
         }
+    }
+
+    /// Count of host Texture2D asset ids that have received a [`SetTexture2DFormat`] (CPU-side table).
+    pub fn texture_format_registration_count(&self) -> usize {
+        self.texture_formats.len()
+    }
+
+    /// Count of GPU-resident textures with `mip_levels_resident > 0` (at least mip0 uploaded).
+    pub fn texture_mip0_ready_count(&self) -> usize {
+        self.texture_pool
+            .textures()
+            .values()
+            .filter(|t| t.mip_levels_resident > 0)
+            .count()
     }
 
     /// Packed GPU lights from the last [`Self::prepare_lights_from_scene`] call.
@@ -306,6 +332,31 @@ impl RenderBackend {
         if let Some(hud) = self.debug_hud.as_mut() {
             hud.set_snapshot(snapshot);
         }
+    }
+
+    #[cfg(feature = "debug-hud")]
+    pub(crate) fn set_debug_hud_frame_diagnostics(
+        &mut self,
+        snapshot: crate::diagnostics::FrameDiagnosticsSnapshot,
+    ) {
+        if let Some(hud) = self.debug_hud.as_mut() {
+            hud.set_frame_diagnostics(snapshot);
+        }
+    }
+
+    #[cfg(feature = "debug-hud")]
+    pub(crate) fn set_last_world_mesh_draw_stats(&mut self, stats: WorldMeshDrawStats) {
+        self.last_world_mesh_draw_stats = stats;
+    }
+
+    #[cfg(feature = "debug-hud")]
+    pub(crate) fn last_world_mesh_draw_stats(&self) -> WorldMeshDrawStats {
+        self.last_world_mesh_draw_stats
+    }
+
+    #[cfg(feature = "debug-hud")]
+    pub(crate) fn set_debug_hud_last_frame_cpu_ms(&mut self, ms: f64) {
+        self.last_frame_cpu_ms = ms;
     }
 
     /// Updates the **Scene transforms** Dear ImGui window payload for the next composite pass.

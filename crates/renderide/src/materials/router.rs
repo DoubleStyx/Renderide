@@ -46,6 +46,17 @@ impl MaterialRouter {
     pub fn get_shader_family(&self, shader_asset_id: i32) -> Option<MaterialFamilyId> {
         self.shader_to_family.get(&shader_asset_id).copied()
     }
+
+    /// Host shader asset ids and families, sorted by id (for debug HUD).
+    pub fn routes_sorted_for_hud(&self) -> Vec<(i32, MaterialFamilyId)> {
+        let mut v: Vec<_> = self
+            .shader_to_family
+            .iter()
+            .map(|(&k, &v)| (k, v))
+            .collect();
+        v.sort_by_key(|(k, _)| *k);
+        v
+    }
 }
 
 #[cfg(test)]

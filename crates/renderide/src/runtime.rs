@@ -25,7 +25,7 @@ use crate::frontend::RendererFrontend;
 use crate::gpu::GpuContext;
 
 #[cfg(feature = "debug-hud")]
-use crate::diagnostics::DebugHudInput;
+use crate::diagnostics::{DebugHudInput, HostHudGatherer};
 use crate::render_graph::{GraphExecuteError, HostCameraFrame};
 
 pub use crate::frontend::InitState;
@@ -52,6 +52,12 @@ pub struct RendererRuntime {
     settings: RendererSettingsHandle,
     /// Target path for persisting [`Self::settings`] from the ImGui config window.
     config_save_path: PathBuf,
+    /// Throttled host CPU/RAM sampling for the debug HUD.
+    #[cfg(feature = "debug-hud")]
+    host_hud: HostHudGatherer,
+    /// [`FrameSubmitData::render_tasks`] length from the last applied frame submit (HUD).
+    #[cfg(feature = "debug-hud")]
+    last_submit_render_task_count: usize,
 }
 
 impl RendererRuntime {
@@ -69,6 +75,10 @@ impl RendererRuntime {
             host_camera: HostCameraFrame::default(),
             settings,
             config_save_path,
+            #[cfg(feature = "debug-hud")]
+            host_hud: HostHudGatherer::default(),
+            #[cfg(feature = "debug-hud")]
+            last_submit_render_task_count: 0,
         }
     }
 
@@ -204,8 +214,25 @@ impl RendererRuntime {
         window: &Window,
     ) -> Result<(), GraphExecuteError> {
         self.backend.prepare_lights_from_scene(&self.scene);
+        let scene_ref: &SceneCoordinator = &self.scene;
+        #[cfg(feature = "debug-hud")]
+        let graph_start = Instant::now();
+        let res = self
+            .backend
+            .execute_frame_graph(gpu, window, scene_ref, self.host_camera);
         #[cfg(feature = "debug-hud")]
         {
+            let unified_cpu_ms = graph_start.elapsed().as_secs_f64() * 1000.0;
+            self.backend.set_debug_hud_last_frame_cpu_ms(unified_cpu_ms);
+            let host = self.host_hud.snapshot();
+            let frame_diag = crate::diagnostics::FrameDiagnosticsSnapshot::capture(
+                gpu,
+                self.backend.debug_frame_time_ms(),
+                unified_cpu_ms,
+                host,
+                self.last_submit_render_task_count,
+                &self.backend,
+            );
             let snapshot = crate::diagnostics::RendererInfoSnapshot::capture(
                 self.is_ipc_connected(),
                 self.init_state(),
@@ -219,14 +246,13 @@ impl RendererRuntime {
                 &self.backend,
             );
             self.backend.set_debug_hud_snapshot(snapshot);
+            self.backend.set_debug_hud_frame_diagnostics(frame_diag);
             let scene_transforms =
                 crate::diagnostics::SceneTransformsSnapshot::capture(&self.scene);
             self.backend
                 .set_debug_hud_scene_transforms_snapshot(scene_transforms);
         }
-        let scene_ref: &SceneCoordinator = &self.scene;
-        self.backend
-            .execute_frame_graph(gpu, window, scene_ref, self.host_camera)
+        res
     }
 
     /// Whether the next tick should build [`InputState`] and call [`Self::pre_frame`].
@@ -477,6 +503,10 @@ impl RendererRuntime {
         self.frontend.note_frame_submit_processed(data.frame_index);
         self.frontend
             .apply_frame_submit_output(data.output_state.clone());
+        #[cfg(feature = "debug-hud")]
+        {
+            self.last_submit_render_task_count = data.render_tasks.len();
+        }
         self.host_camera.frame_index = data.frame_index;
         self.host_camera.near_clip = data.near_clip;
         self.host_camera.far_clip = data.far_clip;

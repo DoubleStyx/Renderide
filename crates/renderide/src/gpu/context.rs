@@ -170,6 +170,17 @@ impl GpuContext {
         &self.adapter_info
     }
 
+    /// Process-local GPU memory from wgpu’s allocator when the active backend supports
+    /// [`wgpu::Device::generate_allocator_report`].
+    ///
+    /// Returns `(allocated_bytes, reserved_bytes)`, or `(None, None)` when the backend does not report.
+    pub fn gpu_allocator_bytes(&self) -> (Option<u64>, Option<u64>) {
+        self.device
+            .generate_allocator_report()
+            .map(|r| (Some(r.total_allocated_bytes), Some(r.total_reserved_bytes)))
+            .unwrap_or((None, None))
+    }
+
     /// Swapchain present mode (vsync policy).
     pub fn present_mode(&self) -> wgpu::PresentMode {
         self.config.present_mode

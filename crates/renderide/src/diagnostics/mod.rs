@@ -1,13 +1,21 @@
-//! Optional Dear ImGui diagnostics overlay and frame snapshots for HUD tabs.
+//! Optional Dear ImGui diagnostics overlay and frame snapshots for the HUD (**Stats** and **Shader routes** tabs).
 //!
 //! Enable with the `debug-hud` Cargo feature (on by default). Disable with
 //! `cargo build -p renderide --no-default-features` for lean builds without `imgui`.
 
 mod debug_hud;
+#[cfg(feature = "debug-hud")]
+mod frame_diagnostics_snapshot;
+#[cfg(feature = "debug-hud")]
+mod host_hud;
 mod renderer_info_snapshot;
 mod scene_transforms_snapshot;
 
 pub use debug_hud::DebugHud;
+#[cfg(feature = "debug-hud")]
+pub use frame_diagnostics_snapshot::FrameDiagnosticsSnapshot;
+#[cfg(feature = "debug-hud")]
+pub use host_hud::HostHudGatherer;
 pub use renderer_info_snapshot::RendererInfoSnapshot;
 pub use scene_transforms_snapshot::{
     RenderSpaceTransformsSnapshot, SceneTransformsSnapshot, TransformRow, WorldTransformSample,
