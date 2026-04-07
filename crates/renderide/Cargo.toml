@@ -1,19 +1,11 @@
 [package]
 name = "renderide"
 version = "0.1.0"
-edition = "2024"
-
-[features]
-default = ["debug-hud"]
-debug-hud = ["dep:imgui", "dep:imgui-wgpu"]
+edition = "2021"
 
 [lib]
 name = "renderide"
 path = "src/lib.rs"
-
-[build-dependencies]
-naga = { version = "28.0.0", features = ["wgsl-in", "wgsl-out"] }
-naga_oil = { version = "0.21.0", default-features = false }
 
 [[bin]]
 name = "renderide"
@@ -21,28 +13,37 @@ path = "src/main.rs"
 
 [[bin]]
 name = "roundtrip"
-path = "src/shared/bin/roundtrip.rs"
+path = "src/bin/roundtrip.rs"
+
+[features]
+default = ["debug-hud"]
+debug-hud = ["dep:imgui", "dep:imgui-wgpu", "dep:sysinfo"]
 
 [dependencies]
-thiserror = "2"
+bytemuck = { version = "1.14", features = ["derive"] }
+# Default glam uses SIMD-friendly alignment; composite `shared` structs omit whole-struct `Pod` (see SharedTypeGenerator) while field types stay `Pod` for MemoryPacker.
+glam = { version = "0.32.1", features = ["bytemuck"] }
+memmap2 = "0.9"
 interprocess = { path = "../interprocess" }
 logger = { path = "../logger" }
-bytemuck = { version = "1.14", features = ["derive"] }
-pollster = "0.4.0"
-wgpu = "28.0.0"
-winit = "0.30.12"
-memmap2 = "0.9"
-nalgebra = { version = "0.34.1", features = ["convert-bytemuck"] }
-glam = "0.29"
-imgui = { version = "0.12", optional = true }
-imgui-wgpu = { version = "0.27", optional = true }
-sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+pollster = "0.4"
+thiserror = "2"
 unity-asset = "0.2.0"
 unity-asset-binary = "0.2.0"
+wgpu = "29.0.1"
+winit = "0.30"
+ash = "0.38"
+openxr = { version = "0.21", default-features = false, features = ["linked"] }
+imgui = { version = "0.12", optional = true, features = ["tables-api"] }
+imgui-wgpu = { version = "0.28", optional = true }
+sysinfo = { version = "0.33", default-features = false, features = ["system"], optional = true }
 
 [dev-dependencies]
-naga = { version = "28.0.0", features = ["wgsl-in"] }
+nalgebra = { version = "0.34.1", features = ["convert-bytemuck"] }
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Memory"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+] }

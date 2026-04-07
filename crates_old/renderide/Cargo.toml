@@ -1,0 +1,48 @@
+[package]
+name = "renderide"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["debug-hud"]
+debug-hud = ["dep:imgui", "dep:imgui-wgpu"]
+
+[lib]
+name = "renderide"
+path = "src/lib.rs"
+
+[build-dependencies]
+naga = { version = "28.0.0", features = ["wgsl-in", "wgsl-out"] }
+naga_oil = { version = "0.21.0", default-features = false }
+
+[[bin]]
+name = "renderide"
+path = "src/main.rs"
+
+[[bin]]
+name = "roundtrip"
+path = "src/shared/bin/roundtrip.rs"
+
+[dependencies]
+thiserror = "2"
+interprocess = { path = "../interprocess" }
+logger = { path = "../logger" }
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.4.0"
+wgpu = "28.0.0"
+winit = "0.30.12"
+memmap2 = "0.9"
+nalgebra = { version = "0.34.1", features = ["convert-bytemuck"] }
+glam = "0.29"
+imgui = { version = "0.12", optional = true }
+imgui-wgpu = { version = "0.27", optional = true }
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+unity-asset = "0.2.0"
+unity-asset-binary = "0.2.0"
+
+[dev-dependencies]
+naga = { version = "28.0.0", features = ["wgsl-in"] }
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Memory"] }

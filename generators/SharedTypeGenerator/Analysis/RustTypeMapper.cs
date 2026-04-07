@@ -6,8 +6,16 @@ namespace SharedTypeGenerator.Analysis;
 /// <summary>Pure function that maps a C# Type to its Rust type string.
 /// Returns both the Rust type name and any types that need to be queued for generation.
 /// No side effects -- the caller is responsible for queueing.</summary>
+/// <remarks>
+/// Host <c>RenderVector*</c> / <c>RenderQuaternion</c> / <c>RenderMatrix4x4</c> map to <c>glam</c>
+/// (<c>Vec2</c>, <c>IVec2</c>, …, <c>Quat</c>, <c>Mat4</c>). Composite explicit-layout structs may omit
+/// whole-struct <c>Pod</c> when SIMD alignment adds padding; see <see cref="IsGlamRustTypeRequiringCompositeNonPod"/>.
+/// </remarks>
 public static class RustTypeMapper
 {
+    /// <summary>Rust type string plus referenced types from the shared assembly that must be emitted.</summary>
+    /// <param name="RustType">Emitted Rust type text.</param>
+    /// <param name="ReferencedTypes">Types to enqueue for generation.</param>
     public record struct MappingResult(string RustType, List<Type> ReferencedTypes);
 
     /// <summary>Maps a C# type to its Rust equivalent, collecting any referenced
@@ -48,14 +56,14 @@ public static class RustTypeMapper
 
         switch (type.Name)
         {
-            case "RenderVector2": return "Vector2<f32>";
-            case "RenderVector2i": return "Vector2<i32>";
-            case "RenderVector3": return "Vector3<f32>";
-            case "RenderVector3i": return "Vector3<i32>";
-            case "RenderVector4": return "Vector4<f32>";
-            case "RenderVector4i": return "Vector4<i32>";
-            case "RenderQuaternion": return "Quaternion<f32>";
-            case "RenderMatrix4x4": return "Matrix4<f32>";
+            case "RenderVector2": return "Vec2";
+            case "RenderVector2i": return "IVec2";
+            case "RenderVector3": return "Vec3";
+            case "RenderVector3i": return "IVec3";
+            case "RenderVector4": return "Vec4";
+            case "RenderVector4i": return "IVec4";
+            case "RenderQuaternion": return "Quat";
+            case "RenderMatrix4x4": return "Mat4";
         }
 
         if (typeof(IEnumerable).IsAssignableFrom(type))
@@ -124,5 +132,34 @@ public static class RustTypeMapper
         if (type == typeof(long)) return "i64";
         if (type == typeof(ulong)) return "u64";
         return "i32";
+    }
+
+    /// <summary>Returns the Rust type name without surrounding <c>Option&lt;…&gt;</c> when present.</summary>
+    public static string NormalizeRustTypeName(string rustType)
+    {
+        string t = rustType.Trim();
+        if (t.StartsWith("Option<", StringComparison.Ordinal) && t.EndsWith('>'))
+            t = t[7..^1].Trim();
+
+        return t;
+    }
+
+    /// <summary>
+    /// Returns true if the emitted Rust type name is a glam vector/matrix/quaternion used in shared memory.
+    /// </summary>
+    public static bool IsGlamRustType(string rustType)
+    {
+        string t = NormalizeRustTypeName(rustType);
+        return t is "Vec2" or "Vec3" or "Vec4" or "Quat" or "Mat4" or "IVec2" or "IVec3" or "IVec4";
+    }
+
+    /// <summary>
+    /// True for default-glam types that use <c>repr(align(16))</c> and can introduce Rust-only padding
+    /// when combined with other fields in a <c>repr(C)</c> composite. Single-field wrappers remain whole-struct <c>Pod</c>.
+    /// </summary>
+    public static bool IsGlamRustTypeRequiringCompositeNonPod(string rustType)
+    {
+        string t = NormalizeRustTypeName(rustType);
+        return t is "Quat" or "Mat4" or "Vec4";
     }
 }

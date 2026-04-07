@@ -1,8 +1,7 @@
-//! Circular buffer read/write/clear helpers for the queue backing store.
-//! Handles wrap-around when the logical offset plus length exceeds capacity.
+//! Helpers for a byte ring inside a shared mapping.
 
-/// Reads `len` bytes from the circular buffer at logical `offset`.
-pub(super) fn read(buffer: *const u8, capacity: i64, offset: i64, len: usize) -> Vec<u8> {
+/// Copies `len` bytes starting at logical `offset` into a new vector.
+pub(crate) fn read(buffer: *const u8, capacity: i64, offset: i64, len: usize) -> Vec<u8> {
     if len == 0 {
         return Vec::new();
     }
@@ -25,8 +24,8 @@ pub(super) fn read(buffer: *const u8, capacity: i64, offset: i64, len: usize) ->
     result
 }
 
-/// Writes `data` to the circular buffer at logical `offset`.
-pub(super) fn write(buffer: *mut u8, capacity: i64, offset: i64, data: &[u8]) {
+/// Writes `data` at logical `offset`.
+pub(crate) fn write(buffer: *mut u8, capacity: i64, offset: i64, data: &[u8]) {
     if data.is_empty() {
         return;
     }
@@ -47,8 +46,8 @@ pub(super) fn write(buffer: *mut u8, capacity: i64, offset: i64, data: &[u8]) {
     }
 }
 
-/// Zeros `len` bytes in the circular buffer at logical `offset`.
-pub(super) fn clear(buffer: *mut u8, capacity: i64, offset: i64, len: usize) {
+/// Zero-fills `len` bytes at logical `offset`.
+pub(crate) fn clear(buffer: *mut u8, capacity: i64, offset: i64, len: usize) {
     if len == 0 {
         return;
     }
@@ -65,5 +64,22 @@ pub(super) fn clear(buffer: *mut u8, capacity: i64, offset: i64, len: usize) {
         unsafe {
             std::ptr::write_bytes(buffer, 0, len - clear_first);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_read_roundtrip_wrap() {
+        let mut buf = [0u8; 6];
+        let cap = 6i64;
+        write(buf.as_mut_ptr(), cap, 4, &[1, 2, 3]);
+        let got = read(buf.as_ptr(), cap, 4, 3);
+        assert_eq!(got, vec![1, 2, 3]);
+        assert_eq!(buf[4], 1);
+        assert_eq!(buf[5], 2);
+        assert_eq!(buf[0], 3);
     }
 }

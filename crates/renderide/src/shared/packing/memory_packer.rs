@@ -1,3 +1,5 @@
+//! [`MemoryPacker`]: host-compatible sequential writes into a byte slice.
+
 use core::mem::size_of;
 use std::ptr;
 
@@ -7,36 +9,42 @@ use super::enum_repr::EnumRepr;
 use super::memory_packable::MemoryPackable;
 use super::polymorphic_memory_packable_entity::PolymorphicEncode;
 
-/// Packs data into a byte buffer for IPC.
+/// Sequential binary writer for IPC buffers (may be unaligned; uses unaligned primitive writes).
 pub struct MemoryPacker<'a> {
     buffer: &'a mut [u8],
 }
 
 impl<'a> MemoryPacker<'a> {
-    /// Creates a new packer over the given buffer.
+    /// Wraps `buffer`; writing advances an internal cursor toward the end of the slice.
     pub fn new(buffer: &'a mut [u8]) -> Self {
         Self { buffer }
     }
 
-    /// Computes the number of bytes written to the buffer.
+    /// Returns how many bytes were written relative to the original full slice length.
     pub fn compute_length(&self, original_buffer: &[u8]) -> i32 {
         (original_buffer.len() - self.buffer.len()) as i32
     }
 
-    /// Returns the number of bytes remaining in the buffer (not yet written).
+    /// Bytes not yet consumed at the front of the backing slice.
     pub fn remaining_len(&self) -> usize {
         self.buffer.len()
     }
 
-    /// Writes a single bool as one byte (0 or 1).
+    /// Writes one byte: `1` for true, `0` for false.
     pub fn write_bool(&mut self, value: bool) {
         self.write(&(value as u8));
     }
 
-    /// Writes a single `Pod` value. Uses unaligned write for buffers that may not be aligned.
+    /// Writes a plain data value with potentially unaligned storage (safe for shared-memory views).
     pub fn write<T: Pod>(&mut self, value: &T) {
         let byte_len = size_of::<T>();
-        assert!(byte_len <= self.buffer.len());
+        assert!(
+            byte_len <= self.buffer.len(),
+            "MemoryPacker::write: need {} bytes for {}, {} remaining",
+            byte_len,
+            std::any::type_name::<T>(),
+            self.buffer.len()
+        );
         let buf_ptr = self.buffer.as_mut_ptr();
         unsafe {
             ptr::write_unaligned(buf_ptr as *mut T, *value);
@@ -47,8 +55,7 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Writes a string in C#-compatible format: length (i32) then UTF-16 code units.
-    /// `None` writes -1 as the length.
+    /// UTF‑16 code units (two-byte wchar layout): `i32` length, then each `u16`. Length `-1` means null.
     pub fn write_str(&mut self, s: Option<&str>) {
         match s {
             None => self.write(&(-1i32)),
@@ -63,7 +70,7 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Writes an optional `Pod` value: 0 byte if None, 1 byte + value if Some.
+    /// Optional POD: `0` prefix absent, `1` prefix then value.
     pub fn write_option<T: Pod>(&mut self, value: Option<&T>) {
         match value {
             None => self.write(&0u8),
@@ -74,7 +81,7 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Writes up to 8 bools packed into a single byte (bit0 = LSB).
+    /// Packs up to eight booleans into one byte (bit0 = LSB).
     #[allow(clippy::too_many_arguments)]
     pub fn write_packed_bools(
         &mut self,
@@ -98,12 +105,12 @@ impl<'a> MemoryPacker<'a> {
         self.write(&byte);
     }
 
-    /// Writes a required `MemoryPackable` object (no null byte prefix).
+    /// Inlines packing without an optional presence byte.
     pub fn write_object_required<T: MemoryPackable>(&mut self, obj: &mut T) {
         obj.pack(self);
     }
 
-    /// Writes an optional `MemoryPackable` object: 0 byte if None, 1 byte + packed object if Some.
+    /// Optional object: `0` absent, `1` then nested pack.
     pub fn write_object<T: MemoryPackable>(&mut self, obj: Option<&mut T>) {
         match obj {
             None => self.write(&0u8),
@@ -114,14 +121,14 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Writes a nested list of value lists (e.g. `Vec<Vec<T>>`).
+    /// `Vec<Vec<T>>`-style structure: outer count, then each inner value-list.
     pub fn write_nested_value_list<T: Pod>(&mut self, list: Option<&[Vec<T>]>) {
         self.write_nested_list(list, |packer, sublist| {
             packer.write_value_list(Some(sublist))
         });
     }
 
-    /// Writes a nested list using a custom writer for each sublist.
+    /// Outer list length plus custom writer per element.
     pub fn write_nested_list<T, F>(&mut self, list: Option<&[T]>, mut sublist_writer: F)
     where
         F: FnMut(&mut MemoryPacker<'a>, &T),
@@ -135,7 +142,7 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Writes a list of `MemoryPackable` objects.
+    /// Object list: count then each element packed in order.
     pub fn write_object_list<T: MemoryPackable>(&mut self, list: Option<&mut [T]>) {
         let count = list.as_deref().map(|l| l.len()).unwrap_or(0) as i32;
         self.write(&count);
@@ -146,7 +153,7 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Writes a list of polymorphic entities. Each item writes its type index then packs.
+    /// Polymorphic list: count then each element’s `encode`.
     pub fn write_polymorphic_list<T: PolymorphicEncode>(&mut self, list: Option<&mut [T]>) {
         let count = list.as_deref().map(|l| l.len()).unwrap_or(0) as i32;
         self.write(&count);
@@ -157,7 +164,7 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Writes a list of `Pod` values.
+    /// Homogeneous POD list: count then each element.
     pub fn write_value_list<T: Pod>(&mut self, list: Option<&[T]>) {
         let count = list.map(|l| l.len()).unwrap_or(0) as i32;
         self.write(&count);
@@ -168,7 +175,7 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Writes a list of enum values as their underlying i32 representation.
+    /// Like [`Self::write_value_list`] but each item is an enum stored as `i32`.
     pub fn write_enum_value_list<E: EnumRepr>(&mut self, list: Option<&[E]>) {
         let count = list.map(|l| l.len()).unwrap_or(0) as i32;
         self.write(&count);
@@ -179,7 +186,7 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Writes a list of strings (each element can be `None` for null).
+    /// List of nullable strings in host format.
     pub fn write_string_list(&mut self, list: Option<&[Option<&str>]>) {
         let count = list.map(|l| l.len()).unwrap_or(0) as i32;
         self.write(&count);

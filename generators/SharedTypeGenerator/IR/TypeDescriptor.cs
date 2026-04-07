@@ -4,18 +4,25 @@ namespace SharedTypeGenerator.IR;
 /// containing everything needed to emit its Rust definition and trait impls.</summary>
 public sealed class TypeDescriptor
 {
+    /// <summary>C# type name (simple or as analyzed).</summary>
     public required string CSharpName { get; init; }
+
+    /// <summary>Rust type name for definitions and dispatch.</summary>
     public required string RustName { get; init; }
+
+    /// <summary>Structural classification driving emission.</summary>
     public required TypeShape Shape { get; init; }
+
+    /// <summary>Fields for struct-like types.</summary>
     public required List<FieldDescriptor> Fields { get; init; }
 
     /// <summary>Ordered serialization operations derived from the Pack method IL.
     /// Empty for enums and types without Pack methods.</summary>
-    public List<SerializationStep> PackSteps { get; init; } = [];
+    public List<SerializationStep> PackSteps { get; set; } = [];
 
     /// <summary>Steps that run only during unpack (e.g. decodedTime = UtcNow).
     /// Emitted in unpack but not in pack.</summary>
-    public List<SerializationStep> UnpackOnlySteps { get; init; } = [];
+    public List<SerializationStep> UnpackOnlySteps { get; set; } = [];
 
     /// <summary>For PackableStruct with inheritance (e.g., AssetCommand -> RendererCommand).</summary>
     public string? BaseTypeName { get; init; }
@@ -37,6 +44,13 @@ public sealed class TypeDescriptor
 
     /// <summary>Computed padding bytes needed to match the declared ExplicitLayout size.</summary>
     public int PaddingBytes { get; init; }
+
+    /// <summary>
+    /// C# <see cref="System.Runtime.InteropServices.Marshal.SizeOf"/> for this struct when blitted as a contiguous
+    /// host record (e.g. shared-memory row stride). Set for explicit-layout <see cref="TypeShape.PodStruct"/> types
+    /// when <c>Marshal.SizeOf</c> succeeds; reconciles with <see cref="ExplicitSize"/> when both exist.
+    /// </summary>
+    public int? HostInteropSizeBytes { get; init; }
 
     /// <summary>The Rust type string for the enum's underlying type (e.g., "i32", "u8").</summary>
     public string? RustUnderlyingType { get; init; }

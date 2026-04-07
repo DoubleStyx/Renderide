@@ -13,6 +13,7 @@ public class PolymorphicAnalyzer
     private readonly AssemblyDefinition _assemblyDef;
     private readonly Assembly _assembly;
 
+    /// <summary>Creates an analyzer for the given Cecil + reflection assembly pair.</summary>
     public PolymorphicAnalyzer(AssemblyDefinition assemblyDef, Assembly assembly)
     {
         _assemblyDef = assemblyDef;

@@ -1,20 +1,23 @@
-//! Path discovery for Resonite installation and dotnet.
-//! Searches RESONITE_DIR, STEAM_PATH, Steam registry (Windows), and libraryfolders.vdf.
+//! Resonite installation and `dotnet` discovery (Steam, env vars, registry on Windows).
 
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-/// Steam app name for Resonite.
+/// Steam app folder name for Resonite.
 pub const RESONITE_APP_NAME: &str = "Resonite";
-/// Host executable name (Windows/native).
+/// Windows host launcher (native / Wine).
 pub const RENDERITE_HOST_EXE: &str = "Renderite.Host.exe";
-/// Host DLL for dotnet on Linux.
+/// Host assembly for `dotnet` launch.
 pub const RENDERITE_HOST_DLL: &str = "Renderite.Host.dll";
 
-/// Finds the dotnet executable to run Renderite.Host.dll.
-/// Prefers bundled dotnet-runtime in the Resonite folder (matches Linux behavior).
+/// Returns true if `dir` looks like a Resonite root (host exe or host DLL present).
+pub fn is_resonite_install_dir(dir: &Path) -> bool {
+    dir.join(RENDERITE_HOST_EXE).exists() || dir.join(RENDERITE_HOST_DLL).exists()
+}
+
+/// Prefers bundled `dotnet-runtime` under the Resonite folder, else `dotnet` on `PATH`.
 #[cfg(unix)]
 pub fn find_dotnet_for_host(resonite_dir: &Path) -> PathBuf {
     let bundled = resonite_dir.join("dotnet-runtime").join("dotnet");
@@ -25,6 +28,7 @@ pub fn find_dotnet_for_host(resonite_dir: &Path) -> PathBuf {
     }
 }
 
+/// Prefers bundled `dotnet-runtime` under the Resonite folder, else `dotnet` on `PATH`.
 #[cfg(windows)]
 pub fn find_dotnet_for_host(resonite_dir: &Path) -> PathBuf {
     let bundled_exe = resonite_dir.join("dotnet-runtime").join("dotnet.exe");
@@ -38,7 +42,6 @@ pub fn find_dotnet_for_host(resonite_dir: &Path) -> PathBuf {
     }
 }
 
-/// Paths of Steam library folders parsed from libraryfolders.vdf.
 fn parse_libraryfolders_vdf(steam_base: &Path) -> Vec<PathBuf> {
     let vdf_path = steam_base.join("steamapps").join("libraryfolders.vdf");
     let Ok(file) = fs::File::open(&vdf_path) else {
@@ -59,14 +62,14 @@ fn parse_libraryfolders_vdf(steam_base: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Finds the Resonite installation directory by searching Steam libraries.
-/// Checks: RESONITE_DIR env, STEAM_PATH env, platform-specific Steam paths, libraryfolders.vdf.
+/// Finds the Resonite installation directory.
+///
+/// Order: `RESONITE_DIR`, `STEAM_PATH` + `steamapps/common/Resonite`, platform Steam roots,
+/// then libraries from `libraryfolders.vdf`.
 pub fn find_resonite_dir() -> Option<PathBuf> {
-    let host_exe = |dir: &Path| dir.join(RENDERITE_HOST_EXE).exists();
-
     if let Ok(dir) = env::var("RESONITE_DIR") {
         let path = PathBuf::from(&dir);
-        if host_exe(&path) {
+        if is_resonite_install_dir(&path) {
             return Some(path);
         }
     }
@@ -76,30 +79,28 @@ pub fn find_resonite_dir() -> Option<PathBuf> {
             .join("steamapps")
             .join("common")
             .join(RESONITE_APP_NAME);
-        if host_exe(&path) {
+        if is_resonite_install_dir(&path) {
             return Some(path);
         }
     }
 
-    let steam_bases = steam_base_paths();
-
-    for steam_base in &steam_bases {
+    for steam_base in steam_base_paths() {
         let path = steam_base
             .join("steamapps")
             .join("common")
             .join(RESONITE_APP_NAME);
-        if host_exe(&path) {
+        if is_resonite_install_dir(&path) {
             return Some(path);
         }
     }
 
-    for steam_base in &steam_bases {
-        for lib_path in parse_libraryfolders_vdf(steam_base) {
+    for steam_base in steam_base_paths() {
+        for lib_path in parse_libraryfolders_vdf(&steam_base) {
             let resonite = lib_path
                 .join("steamapps")
                 .join("common")
                 .join(RESONITE_APP_NAME);
-            if host_exe(&resonite) {
+            if is_resonite_install_dir(&resonite) {
                 return Some(resonite);
             }
         }
@@ -108,7 +109,7 @@ pub fn find_resonite_dir() -> Option<PathBuf> {
     None
 }
 
-/// Returns Steam installation base paths to search (platform-specific).
+/// Base directories where Steam may be installed.
 fn steam_base_paths() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
@@ -138,23 +139,41 @@ fn steam_base_paths() -> Vec<PathBuf> {
         bases
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
-        let home = match env::var("HOME") {
-            Ok(h) => PathBuf::from(h),
-            Err(_) => return Vec::new(),
+        let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+            return Vec::new();
+        };
+        vec![
+            home.join("Library")
+                .join("Application Support")
+                .join("Steam"),
+            home.join(".steam").join("steam"),
+            home.join(".local").join("share").join("Steam"),
+        ]
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+            return Vec::new();
         };
         vec![
             home.join(".local").join("share").join("Steam"),
             home.join(".steam").join("steam"),
         ]
     }
+
+    #[cfg(not(any(windows, unix)))]
+    {
+        compile_error!("bootstrapper paths require unix or windows");
+    }
 }
 
 #[cfg(windows)]
 fn steam_path_from_registry() -> Result<PathBuf, std::io::Error> {
-    use winreg::RegKey;
     use winreg::enums::HKEY_LOCAL_MACHINE;
+    use winreg::RegKey;
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     for key_path in &[r"SOFTWARE\WOW6432Node\Valve\Steam", r"SOFTWARE\Valve\Steam"] {
@@ -168,4 +187,20 @@ fn steam_path_from_registry() -> Result<PathBuf, std::io::Error> {
         std::io::ErrorKind::NotFound,
         "Steam path not found in registry",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_resonite_install_dir_requires_host_artifact() {
+        let tmp = std::env::temp_dir().join(format!("bootstrapper_paths_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!is_resonite_install_dir(&tmp));
+        std::fs::write(tmp.join(RENDERITE_HOST_DLL), b"").unwrap();
+        assert!(is_resonite_install_dir(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

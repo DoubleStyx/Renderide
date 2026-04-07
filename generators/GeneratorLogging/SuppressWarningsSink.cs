@@ -14,7 +14,7 @@ public sealed class SuppressWarningsSink : ILoggerSink, IDisposable
     private readonly ILoggerSink _inner;
     private bool _disposed;
 
-    /// <summary>Wraps <paramref name="inner"/> (typically <see cref="TruncatingFileSink"/>).</summary>
+    /// <summary>Wraps <paramref name="inner"/> (typically <see cref="LogFileSink"/>).</summary>
     public SuppressWarningsSink(ILoggerSink inner)
     {
         _inner = inner;

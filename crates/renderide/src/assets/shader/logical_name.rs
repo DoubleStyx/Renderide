@@ -2,11 +2,11 @@
 //! for shader uploads (e.g. from a host mod that sets [`ShaderUpload::file`](ShaderUpload::file) to `UI_Unlit`).
 //!
 //! FrooxEngine sends a sequential [`crate::shared::ShaderUpload::asset_id`] and a `file` path. For an optional
-//! host-appended logical name after the stock payload, see [`crate::shared::unpack_appended_shader_logical_name`]
+//! host-appended logical name after the stock payload, see [`crate::shared::shader_upload_extras::unpack_appended_shader_logical_name`]
 //! and [`resolve_logical_shader_name_from_upload_with_host_hint`].
 //!
 //! When `file` is a filesystem path to a Unity YAML asset, AssetBundle, serialized file, or a directory
-//! containing such files, [`super::shader_unity_asset`] tries to extract the ShaderLab name via the `unity-asset` crate.
+//! containing such files, [`super::unity_asset`] tries to extract the ShaderLab name via the `unity-asset` crate.
 
 use crate::shared::ShaderUpload;
 
@@ -121,7 +121,7 @@ pub fn resolve_logical_shader_name_from_upload(data: &ShaderUpload) -> Option<St
 }
 
 /// Like [`resolve_logical_shader_name_from_upload`], but uses `host_hint` first when set (e.g. from
-/// [`crate::shared::unpack_appended_shader_logical_name`]).
+/// [`crate::shared::shader_upload_extras::unpack_appended_shader_logical_name`]).
 pub fn resolve_logical_shader_name_from_upload_with_host_hint(
     data: &ShaderUpload,
     host_hint: Option<&str>,
@@ -152,11 +152,12 @@ pub fn resolve_logical_shader_name_from_upload_with_host_hint(
         }
     }
     let path = std::path::Path::new(file_field);
-    if let Ok(meta) = std::fs::metadata(path)
-        && (meta.is_file() || meta.is_dir())
-        && let Some(name) = super::shader_unity_asset::try_resolve_shader_name_from_path_hint(path)
-    {
-        return Some(name);
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.is_file() || meta.is_dir() {
+            if let Some(name) = super::unity_asset::try_resolve_shader_name_from_path_hint(path) {
+                return Some(name);
+            }
+        }
     }
     if std::path::Path::new(file_field).is_file() {
         match std::fs::read_to_string(file_field) {

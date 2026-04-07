@@ -50,8 +50,8 @@ bld/
 
 # Build results on 'Bin' directories
 **/[Bb]in/*
-# Exception: Rust binary source in renderide shared (roundtrip test)
-!crates/renderide/src/shared/bin/roundtrip.rs
+# Exception: Rust roundtrip binary source (C#–Rust pack roundtrip tests)
+!crates/renderide/src/bin/roundtrip.rs
 # Uncomment if you have tasks that rely on *.refresh files to move binaries
 # (https://github.com/github/gitignore/pull/3736)
 #!**/[Bb]in/*.refresh
@@ -454,6 +454,9 @@ FodyWeavers.xsd
 #.idea/
 
 #### Other .gitignore rules
+# Local renderer settings (auto-generated at workspace root on first run)
+config.ini
 *.log
 profile.json.gz
 !crates/renderide/src/shaders/**
+!crates/renderide/src/bin/**

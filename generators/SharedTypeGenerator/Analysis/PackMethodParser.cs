@@ -7,58 +7,54 @@ using SharedTypeGenerator.IR;
 namespace SharedTypeGenerator.Analysis;
 
 /// <summary>Parses the IL of a Pack method to produce an ordered list of SerializationSteps.
-/// Only reads Pack (not Unpack) because they are symmetric -- the same step list drives both.
+/// Only reads Pack (not Unpack) for the step list because Pack and Unpack are symmetric for emission.
 /// Produces pure IR with zero Rust emission.</summary>
-public partial class PackMethodParser
+public sealed class PackMethodParser
 {
     private readonly AssemblyDefinition _assemblyDef;
-    private readonly Assembly _assembly;
     private readonly FieldClassifier _classifier;
 
-    public PackMethodParser(AssemblyDefinition assemblyDef, Assembly assembly, FieldClassifier classifier)
+    /// <summary>Creates a parser for the module described by <paramref name="assemblyDef"/>.</summary>
+    public PackMethodParser(AssemblyDefinition assemblyDef, FieldClassifier classifier)
     {
         _assemblyDef = assemblyDef;
-        _assembly = assembly;
         _classifier = classifier;
     }
 
-    /// <summary>Parses the Pack method of the given type, returning the serialization steps.
-    /// Recursively follows base.Pack() calls to include inherited serialization.</summary>
-    public List<SerializationStep> Parse(Type type, FieldInfo[] fields)
-    {
-        var steps = new List<SerializationStep>();
-        ParseMethod(type, "Pack", fields, steps);
-        return steps;
-    }
-
-    private void ParseMethod(Type type, string methodName, FieldInfo[] fields, List<SerializationStep> steps)
+    /// <summary>Parses the Pack method with <c>if</c> blocks modeled as <see cref="ConditionalBlock"/>.</summary>
+    public List<SerializationStep> ParseWithConditionals(Type type, FieldInfo[] fields)
     {
         TypeDefinition? typeDef = _assemblyDef.MainModule.GetType(type.Namespace + '.' + type.Name);
-        if (typeDef == null) return;
+        if (typeDef == null) return [];
 
-        MethodDefinition? methodDef = typeDef.GetMethods().FirstOrDefault(m => m.Name == methodName);
+        MethodDefinition? methodDef = typeDef.GetMethods().FirstOrDefault(m => m.Name == "Pack");
         if (methodDef == null)
         {
             if (type.BaseType != null)
-                ParseMethod(type.BaseType, methodName, fields, steps);
-            return;
+                return [new CallBase()];
+            return [];
         }
 
-        ParseMethodBody(type, methodDef, fields, steps);
+        return ParseBodyWithConditionals(methodDef, fields);
     }
 
-    private void ParseMethodBody(Type type, MethodDefinition methodDef, FieldInfo[] fields, List<SerializationStep> steps)
+    private List<SerializationStep> ParseBodyWithConditionals(MethodDefinition methodDef, FieldInfo[] fields)
     {
-        var fieldNameStack = new Stack<string>();
-        var instructions = methodDef.Body.Instructions;
+        var rootSteps = new List<SerializationStep>();
+        var contextStack = new Stack<(List<SerializationStep> Steps, Instruction? EndTarget)>();
+        contextStack.Push((rootSteps, null));
 
-        // Pre-scan to find conditional block boundaries (Brfalse_S targets)
-        var conditionalTargets = new Dictionary<Instruction, string>();
+        var fieldNameStack = new Stack<string>();
         bool skip = false;
 
-        foreach (Instruction instruction in instructions)
+        foreach (Instruction instruction in methodDef.Body.Instructions)
         {
             if (skip) { skip = false; continue; }
+
+            while (contextStack.Count > 1 && contextStack.Peek().EndTarget == instruction)
+                contextStack.Pop();
+
+            List<SerializationStep> currentSteps = contextStack.Peek().Steps;
 
             if (instruction.OpCode.Code is Code.Ldfld or Code.Ldflda)
             {
@@ -68,8 +64,12 @@ public partial class PackMethodParser
 
             if (instruction.OpCode.Code == Code.Brfalse_S)
             {
-                string conditionField = PopLastField(fieldNameStack).HumanizeField();
-                conditionalTargets[instruction] = conditionField;
+                string conditionField = PopLastFieldForCondition(fieldNameStack).HumanizeField();
+                var endTarget = (Instruction)instruction.Operand;
+                var innerSteps = new List<SerializationStep>();
+                var block = new ConditionalBlock(conditionField, innerSteps);
+                currentSteps.Add(block);
+                contextStack.Push((innerSteps, endTarget));
             }
 
             if (instruction.OpCode.Code is Code.Call && instruction.Operand is MethodReference callRef)
@@ -77,118 +77,21 @@ public partial class PackMethodParser
                 if (instruction.Next?.OpCode.Code is Code.Stfld)
                     fieldNameStack.Push(((FieldReference)instruction.Next.Operand).Name);
 
-                HandleCall(type, callRef, instruction, fieldNameStack, fields, steps, conditionalTargets);
+                PackIlCallInterpreter.AppendStepForCall(callRef, fieldNameStack, fields, _classifier, currentSteps);
             }
         }
+
+        return rootSteps;
     }
 
-    private void HandleCall(
-        Type type,
-        MethodReference callRef,
-        Instruction instruction,
-        Stack<string> fieldNameStack,
-        FieldInfo[] fields,
-        List<SerializationStep> steps,
-        Dictionary<Instruction, string> conditionalTargets)
+    private static string PopLastFieldForCondition(Stack<string> stack)
     {
-        switch (callRef.Name)
-        {
-            case "Write" when callRef.Parameters.Count == 1:
-                {
-                    string name = PopLastField(fieldNameStack);
-                    string rustName = name.HumanizeField();
-                    FieldInfo? field = FindField(fields, rustName);
-                    FieldKind kind = field != null
-                        ? _classifier.Classify(field.FieldType, "Write")
-                        : FieldKind.Pod;
-                    steps.Add(new WriteField(rustName, kind));
-                    break;
-                }
+        if (stack.Count == 0)
+            return "_unknown";
 
-            case "Write" when callRef.Parameters.All(p => p.ParameterType.Name == "Boolean"):
-                {
-                    var boolNames = fieldNameStack.Reverse().Select(n => n.HumanizeField()).ToList();
-                    fieldNameStack.Clear();
-                    steps.Add(new PackedBools(boolNames));
-                    break;
-                }
-
-            case "WriteObject":
-                {
-                    string name = PopLastField(fieldNameStack);
-                    steps.Add(new WriteField(name.HumanizeField(), FieldKind.Object));
-                    break;
-                }
-
-            case "WriteObjectRequired":
-                {
-                    string name = PopLastField(fieldNameStack);
-                    steps.Add(new WriteField(name.HumanizeField(), FieldKind.ObjectRequired));
-                    break;
-                }
-
-            case "WriteValueList":
-            case "WriteEnumValueList":
-                {
-                    string name = PopLastField(fieldNameStack);
-                    string rustName = name.HumanizeField();
-                    FieldInfo? field = FindField(fields, rustName);
-                    FieldKind kind = field != null
-                        ? _classifier.Classify(field.FieldType, "WriteValueList")
-                        : FieldKind.ValueList;
-                    steps.Add(new WriteField(rustName, kind));
-                    break;
-                }
-
-            case "WriteObjectList":
-                {
-                    string name = PopLastField(fieldNameStack);
-                    steps.Add(new WriteField(name.HumanizeField(), FieldKind.ObjectList));
-                    break;
-                }
-
-            case "WritePolymorphicList":
-                {
-                    string name = PopLastField(fieldNameStack);
-                    steps.Add(new WriteField(name.HumanizeField(), FieldKind.PolymorphicList));
-                    break;
-                }
-
-            case "WriteStringList":
-                {
-                    string name = PopLastField(fieldNameStack);
-                    steps.Add(new WriteField(name.HumanizeField(), FieldKind.StringList));
-                    break;
-                }
-
-            case "WriteNestedValueList":
-                {
-                    string name = PopLastField(fieldNameStack);
-                    steps.Add(new WriteField(name.HumanizeField(), FieldKind.NestedValueList));
-                    break;
-                }
-
-            case "Pack" or "Unpack":
-                {
-                    steps.Add(new CallBase());
-                    break;
-                }
-
-            // Read-side methods -- we only parse Pack, so these shouldn't appear,
-            // but handle gracefully by treating them identically to their Write counterparts.
-            case "Read" when callRef.Parameters.Count == 1:
-            case "ReadObject":
-            case "ReadValueList":
-            case "ReadEnumValueList":
-            case "ReadObjectList":
-            case "ReadPolymorphicList":
-            case "ReadStringList":
-            case "ReadNestedValueList":
-                break;
-
-            case "Read" when callRef.Parameters.All(p => p.ParameterType.Name == "Boolean&"):
-                break;
-        }
+        string last = stack.Pop();
+        stack.Clear();
+        return last;
     }
 
     /// <summary>Parses the Unpack method to find steps that run only during unpack,
@@ -212,7 +115,7 @@ public partial class PackMethodParser
         }
 
         var steps = new List<SerializationStep>();
-        var instructions = methodDef.Body.Instructions.ToList();
+        List<Instruction> instructions = methodDef.Body.Instructions.ToList();
 
         for (int i = 0; i < instructions.Count; i++)
         {

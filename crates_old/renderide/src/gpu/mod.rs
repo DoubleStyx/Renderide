@@ -1,0 +1,34 @@
+//! GPU state, pipelines, and mesh rendering.
+
+pub mod accel;
+pub mod cluster_buffer;
+pub mod frame_scheduler;
+pub mod material_gpu_resources;
+pub mod mesh;
+pub mod native_ui_bind_cache;
+pub mod pipeline;
+mod pipeline_descriptor_cache;
+pub mod pipeline_state_key;
+pub mod registry;
+pub mod rtao_textures;
+pub mod shader_key;
+pub mod state;
+
+pub use accel::{
+    AccelCache, RayTracingState, build_blas_for_mesh, build_tlas, needs_scene_ray_tracing_accel,
+    remove_blas, shadow_cast_mode_in_scene_tlas, update_tlas,
+};
+pub use frame_scheduler::GpuFrameScheduler;
+pub use material_gpu_resources::MaterialGpuResources;
+pub use mesh::{GpuMeshBuffers, compute_vertex_stride_from_mesh, create_mesh_buffers};
+pub use native_ui_bind_cache::NativeUiMaterialBindCache;
+pub use pipeline::{
+    MAX_INSTANCE_RUN, NonSkinnedUniformUpload, PbrHostAlbedoMaterialBindKey, RenderPipeline,
+    UniformData,
+};
+pub use pipeline_state_key::PipelineStateKey;
+pub use registry::{PipelineKey, PipelineManager, PipelineRegistry, PipelineVariant};
+pub use shader_key::ShaderKey;
+pub use state::{
+    GpuState, clamp_surface_extent, ensure_depth_texture, init_gpu, reconfigure_surface_for_window,
+};

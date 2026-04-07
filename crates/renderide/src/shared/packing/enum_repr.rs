@@ -1,11 +1,10 @@
-//! Trait for enums with integer representation, used for list serialization.
+//! Enumerations serialized as `i32` list elements, matching the host’s enum value lists.
 
-/// Types that can be serialized as their underlying integer representation.
-/// Used for enum value lists where each element is written as i32.
+/// Enum-like type stored on the wire as a signed 32-bit integer per entry.
 pub trait EnumRepr: Copy {
-    /// Returns the integer representation of this value.
+    /// Underlying discriminant for this variant.
     fn as_i32(self) -> i32;
 
-    /// Constructs a value from its integer representation.
+    /// Reconstructs a value from wire discriminant (caller defines invalid mapping behavior).
     fn from_i32(i: i32) -> Self;
 }

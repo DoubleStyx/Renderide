@@ -1,20 +1,12 @@
-//! Light cache and resolved light types for rendering.
+//! Host-driven lights: CPU cache from [`FrameSubmitData`](crate::shared::FrameSubmitData) and light buffer submissions.
 //!
-//! Stores light data per space, merges with scene transforms, and produces
-//! world-space resolved lights for the render loop.
-//!
-//! **LightsBufferRenderer** paths use buffer submissions plus incremental
-//! `LightsBufferRendererUpdate` batches; **regular** `Light` components use
-//! [`LightCache::apply_regular_lights_update`]. FrooxEngine sends **incremental** dirty batches,
-//! matching `ChangesHandlingRenderableComponentManager` on the host. The cache **merges** each
-//! batch into persistent per-slot storage (like Unity’s `RenderableStateChangeManager`), then
-//! flattens into [`LightCache::spaces`](LightCache::spaces) for resolve.
+//! Scene lights are **logical** state (poses, types, shadow params). GPU storage buffer allocation
+//! and [`crate::backend::light_gpu::GpuLight`] packing live in the backend.
 
+mod apply;
 mod cache;
 mod types;
 
+pub use apply::{apply_light_renderables_update, apply_lights_buffer_renderers_update};
 pub use cache::LightCache;
-pub use types::{CachedLight, ResolvedLight, light_casts_shadows};
-
-#[cfg(test)]
-mod tests;
+pub use types::{light_casts_shadows, CachedLight, ResolvedLight};

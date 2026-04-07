@@ -1,0 +1,62 @@
+//! Per–render-space mesh instances: static (`MeshRenderer`) and skinned (`SkinnedMeshRenderer`) tables.
+//!
+//! Dense **`renderable_index`** from [`crate::shared::MeshRendererState`] maps to **`Vec` index**
+//! after host removals (swap-with-last, buffer order). Static and skinned renderables use
+//! **separate** tables, mirroring [`crate::shared::MeshRenderablesUpdate`] vs
+//! [`crate::shared::SkinnedMeshRenderablesUpdate`].
+
+use crate::shared::{LayerType, MotionVectorMode, ShadowCastMode};
+
+/// One submesh slot: material asset id and optional per-slot property block.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeshMaterialSlot {
+    /// `Material.assetId` from the host.
+    pub material_asset_id: i32,
+    /// Property block asset id for this slot when present.
+    pub property_block_id: Option<i32>,
+}
+
+/// Static mesh draw instance.
+#[derive(Debug, Clone)]
+pub struct StaticMeshRenderer {
+    /// Dense transform index this renderer attaches to (`node_id`).
+    pub node_id: i32,
+    pub layer: LayerType,
+    pub mesh_asset_id: i32,
+    pub sorting_order: i32,
+    pub shadow_cast_mode: ShadowCastMode,
+    pub motion_vector_mode: MotionVectorMode,
+    /// Submesh order: one entry per material slot.
+    pub material_slots: Vec<MeshMaterialSlot>,
+    /// Legacy slot 0 material handle for single-material paths.
+    pub primary_material_asset_id: Option<i32>,
+    pub primary_property_block_id: Option<i32>,
+    /// Blendshape weights by shape index (IPD path for static is reserved; skinned uses host batches).
+    pub blend_shape_weights: Vec<f32>,
+}
+
+impl Default for StaticMeshRenderer {
+    fn default() -> Self {
+        Self {
+            node_id: -1,
+            layer: LayerType::hidden,
+            mesh_asset_id: -1,
+            sorting_order: 0,
+            shadow_cast_mode: ShadowCastMode::on,
+            motion_vector_mode: MotionVectorMode::default(),
+            material_slots: Vec::new(),
+            primary_material_asset_id: None,
+            primary_property_block_id: None,
+            blend_shape_weights: Vec::new(),
+        }
+    }
+}
+
+/// Skinned mesh instance: [`StaticMeshRenderer`]-style header plus bone palette and root bone.
+#[derive(Debug, Clone, Default)]
+pub struct SkinnedMeshRenderer {
+    /// Shared mesh/material/blendshape header.
+    pub base: StaticMeshRenderer,
+    pub bone_transform_indices: Vec<i32>,
+    pub root_bone_transform_id: Option<i32>,
+}

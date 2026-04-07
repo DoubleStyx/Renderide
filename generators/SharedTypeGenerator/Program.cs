@@ -40,12 +40,8 @@ Parser.Default.ParseArguments<GeneratorOptions>(args)
         int exitCode = 0;
         {
             string? gitRoot = RenderidePathResolver.TryGetGitRepositoryRoot();
-            string logsDirectory = gitRoot is not null
-                ? Path.Combine(gitRoot, "logs")
-                : Path.Combine(RenderidePathResolver.FallbackRenderideRootFromCwd(), "logs");
-            Directory.CreateDirectory(logsDirectory);
-            string logFilePath = Path.Combine(logsDirectory, "SharedTypeGenerator.log");
-            using var logSink = new SuppressWarningsSink(new TruncatingFileSink(logFilePath));
+            string logFilePath = LogsLayout.EnsureNewSharedTypeGeneratorLogFilePath(gitRoot);
+            using var logSink = new SuppressWarningsSink(new LogFileSink(logFilePath));
             using var logger = new Logger(
                 new[] { logSink },
                 new LoggerConfiguration
@@ -53,7 +49,7 @@ Parser.Default.ParseArguments<GeneratorOptions>(args)
                     Behaviour = new DirectLoggingBehaviour(),
                     MaxLevel = maxLevel,
                 });
-            logger.LogInfo(LogCategory.Startup, $"Log file (truncated this run): {logFilePath}");
+            logger.LogInfo(LogCategory.Startup, $"Log file (this run): {logFilePath}");
             try
             {
                 GeneratorRunner.Run(options, logger);

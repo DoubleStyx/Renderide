@@ -1,28 +1,31 @@
-//! Shared memory buffer descriptor for IPC.
+//! Shared-memory region descriptor for IPC.
 //!
-//! Identifies a region
-//! within a shared memory file by buffer ID, offset, and length.
+//! Describes a byte range inside a host-managed shared mapping (file mapping on Windows, POSIX shared memory, etc.).
+//! The renderer uses `buffer_id`, `offset`, and `length` to locate packed payloads.
 
 use bytemuck::{Pod, Zeroable};
 
-use super::memory_packable::MemoryPackable;
-use super::memory_packer::MemoryPacker;
-use super::memory_packer_entity_pool::MemoryPackerEntityPool;
-use super::memory_unpacker::MemoryUnpacker;
+use super::packing::memory_packable::MemoryPackable;
+use super::packing::memory_packer::MemoryPacker;
+use super::packing::memory_packer_entity_pool::MemoryPackerEntityPool;
+use super::packing::memory_unpacker::MemoryUnpacker;
 
-/// Descriptor for a region within a shared memory buffer.
-/// Used by the host to tell the renderer where to find packed data in `/dev/shm`.
+/// Identifies a subrange of a shared buffer: which mapping, capacity hint, start offset, and span length (all in bytes).
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 #[repr(C)]
 pub struct SharedMemoryBufferDescriptor {
+    /// Identifier for the shared memory object on the host.
     pub buffer_id: i32,
+    /// Total capacity of that buffer (bytes), as known to the host.
     pub buffer_capacity: i32,
+    /// Byte offset from the start of the mapping where this message’s data begins.
     pub offset: i32,
+    /// Length of the useful region in bytes.
     pub length: i32,
 }
 
 impl SharedMemoryBufferDescriptor {
-    /// Returns true if the descriptor has no data (length is zero).
+    /// Returns `true` when the descriptor refers to no data (`length == 0`).
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.length == 0

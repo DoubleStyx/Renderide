@@ -10,7 +10,7 @@ public class GeneratorOptions
     [Option('v', "verbose", Required = false, HelpText = "Output verbose messaging as Rust types are generated.")]
     public bool Verbose { get; set; }
 
-    /// <summary>When true, the emitter writes a comment before each type’s Rust definition (C# name and shape).</summary>
+    /// <summary>When true, the emitter writes a comment before each type's Rust definition (C# name and shape).</summary>
     [Option("il-verbose", Required = false, HelpText = "Emit a leading comment for each type in the Rust file (C# name and TypeShape).")]
     public bool IlVerbose { get; set; }
 
@@ -81,6 +81,8 @@ public class GeneratorOptions
         if (string.IsNullOrWhiteSpace(line))
             throw new InvalidOperationException("git rev-parse --show-toplevel produced no output; is this a git repository?");
 
-        OutputRustFile = Path.Combine(line.Trim(), "crates", "renderide", "src", "shared", "shared.rs");
+        string gitRoot = line.Trim();
+        string renderideRoot = Renderide.Generators.Logging.RenderidePathResolver.ResolveRenderideRoot(gitRoot);
+        OutputRustFile = Path.Combine(renderideRoot, "crates", "renderide", "src", "shared", "shared.rs");
     }
 }

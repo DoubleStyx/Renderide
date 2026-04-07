@@ -1,13 +1,14 @@
-//! Helpers for [`ShaderUpload`](crate::shared::ShaderUpload) without editing generated `shared.rs`.
+//! Helpers for [`ShaderUpload`](super::ShaderUpload) without editing generated `shared.rs`.
 //!
-//! Stock IPC encodes `ShaderUpload` as `asset_id` plus optional `file` string only. A custom host may
-//! append an extra length-prefixed UTF-16 string (same wire format as [`MemoryUnpacker::read_str`](crate::shared::memory_unpacker::MemoryUnpacker::read_str))
+//! Stock IPC encodes [`ShaderUpload`] as `asset_id` plus optional `file` string only. A custom host may
+//! append an extra length-prefixed UTF-16 string (same wire format as
+//! [`MemoryUnpacker::read_str`](crate::shared::packing::memory_unpacker::MemoryUnpacker::read_str))
 //! after those fields; use [`unpack_appended_shader_logical_name`] on the trailing bytes when you decode
-//! messages outside the generated [`decode_renderer_command`](crate::shared::decode_renderer_command) path, then pass the result to
-//! [`crate::assets::shader_logical_name::resolve_logical_shader_name_from_upload_with_host_hint`].
+//! messages outside the generated decode path, then pass the result to
+//! [`crate::assets::shader::logical_name::resolve_logical_shader_name_from_upload_with_host_hint`].
 
-use super::default_entity_pool::DefaultEntityPool;
-use super::memory_unpacker::MemoryUnpacker;
+use crate::shared::packing::default_entity_pool::DefaultEntityPool;
+use crate::shared::packing::memory_unpacker::MemoryUnpacker;
 
 /// Decodes an optional logical Unity shader name from bytes that follow a fully unpacked stock [`ShaderUpload`].
 ///
@@ -24,10 +25,10 @@ pub fn unpack_appended_shader_logical_name(trailing: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::packing::memory_packable::MemoryPackable;
+    use crate::shared::packing::memory_packer::MemoryPacker;
+    use crate::shared::packing::memory_unpacker::MemoryUnpacker;
     use crate::shared::ShaderUpload;
-    use crate::shared::memory_packable::MemoryPackable;
-    use crate::shared::memory_packer::MemoryPacker;
-    use crate::shared::memory_unpacker::MemoryUnpacker;
 
     #[test]
     fn appended_name_roundtrips_after_stock_shader_upload_pack() {

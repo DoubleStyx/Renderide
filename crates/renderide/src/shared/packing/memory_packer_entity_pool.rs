@@ -1,10 +1,14 @@
+//! Borrow/return abstraction for unpacking lists of heap-backed structs on the host.
+
 use super::memory_packable::MemoryPackable;
 
-/// Trait for pools that borrow and return `MemoryPackable` instances during unpacking.
+/// Entity pool used while unpacking optional objects and object lists.
+///
+/// The FrooxEngine host may reuse instances from a pool; the renderer typically uses [`DefaultEntityPool`](super::default_entity_pool::DefaultEntityPool).
 pub trait MemoryPackerEntityPool {
-    /// Borrows a new or pooled instance of `T`.
+    /// Obtains a value to deserialize into (new or from a pool).
     fn borrow<T: MemoryPackable + Default>(&mut self) -> T;
 
-    /// Returns an instance to the pool for reuse.
+    /// Returns `value` to the pool when a shorter list replaces a longer one (host-side pattern).
     fn r#return<T: MemoryPackable + Default>(&mut self, value: &mut T);
 }

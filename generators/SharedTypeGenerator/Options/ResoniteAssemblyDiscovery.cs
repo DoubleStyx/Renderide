@@ -5,7 +5,8 @@ namespace SharedTypeGenerator.Options;
 
 /// <summary>
 /// Locates <c>Renderite.Shared.dll</c> using the same Steam and environment heuristics as the Rust bootstrapper
-/// (<c>RESONITE_DIR</c>, <c>STEAM_PATH</c>, default Steam roots, <c>libraryfolders.vdf</c>, and the Steam registry key on Windows).
+/// (<c>RESONITE_DIR</c>, <c>STEAM_PATH</c>, default Steam roots, <c>libraryfolders.vdf</c>, the Steam registry key on Windows,
+/// and <c>~/Library/Application Support/Steam</c> on macOS).
 /// </summary>
 public static class ResoniteAssemblyDiscovery
 {
@@ -123,7 +124,10 @@ public static class ResoniteAssemblyDiscovery
         return File.Exists(dll) ? dll : null;
     }
 
-    /// <summary>Steam roots to probe: env, registry (Windows), default install dirs, and Linux home Steam locations.</summary>
+    /// <summary>
+    /// Steam roots to probe: <see cref="SteamPathEnvVar"/>, registry and common folders on Windows, standard Steam Client paths on macOS,
+    /// and typical Linux locations (<c>~/.local/share/Steam</c>, <c>~/.steam/steam</c>).
+    /// </summary>
     static IEnumerable<string> EnumerateSteamBasePaths()
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -153,6 +157,17 @@ public static class ResoniteAssemblyDiscovery
             string? local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
             if (!string.IsNullOrEmpty(local))
                 TryAdd(Path.Combine(local, "Steam"));
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrEmpty(home))
+            {
+                // Default Steam Client layout on macOS (same as Valve’s documented install).
+                TryAdd(Path.Combine(home, "Library", "Application Support", "Steam"));
+                // Some setups use a compatibility symlink similar to Linux.
+                TryAdd(Path.Combine(home, ".steam", "steam"));
+            }
         }
         else
         {

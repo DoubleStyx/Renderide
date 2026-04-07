@@ -1,49 +1,50 @@
-//! Publisher - writes messages to the queue (bootstrapper sends to host).
-//! Signals the semaphore when a message is enqueued.
+//! Producer side of the shared-memory queue.
 
 use std::fs;
 use std::sync::atomic::Ordering;
 
-use crate::backend;
 use crate::circular_buffer;
-use crate::queue::{
-    MESSAGE_BODY_OFFSET, MessageHeader, QueueOptions, STATE_READY, STATE_WRITING,
-    padded_message_length,
+use crate::layout::{
+    padded_message_length, MessageHeader, MESSAGE_BODY_OFFSET, STATE_READY, STATE_WRITING,
 };
-use crate::sem;
+use crate::memory::SharedMapping;
+use crate::options::QueueOptions;
+use crate::semaphore::Semaphore;
+use crate::QueueHeader;
 
-/// Writes messages to the queue. Use with QueueFactory.
-/// SAFETY: MemoryBacking uses shared memory; safe to Send when used from one thread at a time per instance.
-unsafe impl Send for Publisher {}
-
+/// Sends messages into the queue; signals the paired semaphore after each successful enqueue.
 pub struct Publisher {
-    backing: backend::MemoryBacking,
+    mapping: SharedMapping,
     capacity: i64,
-    sem_handle: sem::SemHandle,
+    sem: Semaphore,
     destroy_on_dispose: bool,
 }
 
 impl Publisher {
-    /// Creates a new Publisher. Returns error if the queue file or mmap cannot be opened.
-    pub fn new(options: QueueOptions) -> Result<Self, crate::BackingError> {
-        let (backing, sem_handle) = backend::open_queue_backing(&options)?;
+    /// Opens the backing mapping and semaphore.
+    pub fn new(options: QueueOptions) -> Result<Self, crate::OpenError> {
+        let (mapping, sem) = SharedMapping::open_queue(&options)?;
         Ok(Self {
-            backing,
+            mapping,
             capacity: options.capacity,
-            sem_handle,
+            sem,
             destroy_on_dispose: options.destroy_on_dispose,
         })
     }
 
-    fn header_mut(&mut self) -> *mut crate::queue::QueueHeader {
-        self.backing.as_mut_ptr() as *mut crate::queue::QueueHeader
+    fn header_mut(&mut self) -> *mut QueueHeader {
+        self.mapping.as_mut_ptr() as *mut QueueHeader
     }
 
     fn buffer_mut(&mut self) -> *mut u8 {
-        unsafe { self.backing.as_mut_ptr().add(32) }
+        unsafe {
+            self.mapping
+                .as_mut_ptr()
+                .add(crate::layout::BUFFER_BYTE_OFFSET)
+        }
     }
 
-    fn check_capacity(&self, header: &crate::queue::QueueHeader, message_len: i64) -> bool {
+    fn check_capacity(&self, header: &QueueHeader, message_len: i64) -> bool {
         if message_len > self.capacity {
             return false;
         }
@@ -53,7 +54,7 @@ impl Publisher {
         let read_phys = header.read_offset % self.capacity;
         let write_phys = header.write_offset % self.capacity;
         if read_phys == write_phys {
-            return false; // buffer full
+            return false;
         }
         let available = if read_phys < write_phys {
             self.capacity - write_phys + read_phys
@@ -63,11 +64,10 @@ impl Publisher {
         message_len <= available
     }
 
-    /// Tries to enqueue a message. Returns false if the queue is full.
+    /// Pushes one message; returns `false` when the ring has insufficient free space.
     pub fn try_enqueue(&mut self, message: &[u8]) -> bool {
         let len = message.len() as i64;
         let padded = padded_message_length(len);
-
         let header_ptr = self.header_mut();
 
         loop {
@@ -113,7 +113,7 @@ impl Publisher {
             let state_bytes = STATE_READY.to_le_bytes();
             circular_buffer::write(self.buffer_mut(), self.capacity, write_offset, &state_bytes);
 
-            sem::post(&self.sem_handle);
+            self.sem.post();
             return true;
         }
     }
@@ -121,12 +121,13 @@ impl Publisher {
 
 impl Drop for Publisher {
     fn drop(&mut self) {
-        sem::close(&self.sem_handle);
-        if self.destroy_on_dispose
-            && self.backing.has_file_to_remove()
-            && let Some(path) = self.backing.file_path()
-        {
-            let _ = fs::remove_file(&path);
+        if self.destroy_on_dispose {
+            if let Some(path) = self.mapping.backing_file_path() {
+                let _ = fs::remove_file(path);
+            }
         }
     }
 }
+
+/// Shared-memory queues are process-wide handles; treat ownership as non-`Sync` socket-style.
+unsafe impl Send for Publisher {}

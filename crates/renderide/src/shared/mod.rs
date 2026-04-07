@@ -1,21 +1,19 @@
-//! Shared types and utilities for IPC between the host and renderer.
+//! Shared types and binary IPC helpers for communication between the FrooxEngine host and the renderer.
 //!
-//! Includes memory packing/unpacking and shared memory buffer
-//! descriptors. The shared memory accessor lives in ipc::shared_memory.
+//! The submodule [`shared`] holds generated Renderite shared structs and enums (emitted by the workspace `SharedTypeGenerator` tool).
+//! [`packing`] implements the byte layout compatible with the host’s memory packer; [`buffer`] describes regions inside host-supplied shared memory; [`shader_upload_extras`] documents optional trailing payload fields.
 
 #![allow(clippy::module_inception)]
 
 pub mod buffer;
 pub mod packing;
 pub mod shader_upload_extras;
-pub mod shared;
 
-pub use shader_upload_extras::unpack_appended_shader_logical_name;
+/// Automatically generated Renderite shared types and decode helpers.
+pub mod shared;
 
 pub use packing::{
     default_entity_pool, enum_repr, memory_packable, memory_packer, memory_packer_entity_pool,
-    memory_unpacker, polymorphic_memory_packable_entity,
+    memory_unpacker, packed_bools, polymorphic_memory_packable_entity,
 };
-
-/// Re-export shared types so consumers can use `crate::shared::Type` instead of `crate::shared::shared::Type`.
 pub use shared::*;

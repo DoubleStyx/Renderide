@@ -87,6 +87,11 @@ public class FieldClassifier
         if (fieldType.IsClass && fieldType.IsAssignableTo(_iMemoryPackable))
             return FieldKind.Object;
 
+        if (fieldType.IsValueType && !fieldType.IsPrimitive && fieldType != typeof(Guid)
+            && !fieldType.Name.StartsWith("SharedMemoryBufferDescriptor", StringComparison.Ordinal)
+            && fieldType.IsAssignableTo(_iMemoryPackable))
+            return FieldKind.ObjectRequired;
+
         return FieldKind.Pod;
     }
 
@@ -130,13 +135,6 @@ public class FieldClassifier
         return FieldKind.ValueList;
     }
 
-    private bool IsIMemoryPackableValueType(Type type)
-    {
-        return type.IsValueType && !type.IsPrimitive && type != typeof(Guid)
-            && !type.Name.StartsWith("SharedMemoryBufferDescriptor")
-            && type.IsAssignableTo(_iMemoryPackable);
-    }
-
     private bool IsPolymorphicEntity(Type type)
     {
         Type? baseType = type.BaseType;
@@ -152,23 +150,5 @@ public class FieldClassifier
     private static bool HasFlagsAttribute(Type enumType)
     {
         return enumType.GetCustomAttribute<FlagsAttribute>() != null;
-    }
-
-    /// <summary>Checks whether a value type contains fields (bool, enum, or nested struct)
-    /// that prevent it from being treated as Pod in Rust.</summary>
-    private bool HasNonPodInnerFields(Type type)
-    {
-        if (!type.IsValueType || type.IsPrimitive || type.IsEnum || type == typeof(Guid))
-            return false;
-        if (type.Name.StartsWith("SharedMemoryBufferDescriptor"))
-            return false;
-
-        return type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            .Any(f => f.FieldType == typeof(bool)
-                    || f.FieldType.IsEnum
-                    || (f.FieldType.IsValueType && !f.FieldType.IsPrimitive
-                        && f.FieldType != typeof(Guid)
-                        && !f.FieldType.Name.StartsWith("SharedMemoryBufferDescriptor")
-                        && HasNonPodInnerFields(f.FieldType)));
     }
 }

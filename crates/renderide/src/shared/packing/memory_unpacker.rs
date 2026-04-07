@@ -1,3 +1,5 @@
+//! [`MemoryUnpacker`]: host-compatible reads from a byte slice with an entity pool.
+
 use core::mem::size_of;
 
 use bytemuck::Pod;
@@ -7,25 +9,24 @@ use super::memory_packable::MemoryPackable;
 use super::memory_packer_entity_pool::MemoryPackerEntityPool;
 use super::packed_bools::PackedBools;
 
-/// Unpacks data from a byte buffer for IPC.
+/// Cursor over read-only IPC bytes, using `pool` when unpacking optional heap types.
 pub struct MemoryUnpacker<'a, 'pool, P: MemoryPackerEntityPool> {
     buffer: &'a [u8],
     pool: &'pool mut P,
 }
 
 impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
-    /// Creates a new unpacker over the given buffer and entity pool.
+    /// Starts at the beginning of `buffer`.
     pub fn new(buffer: &'a [u8], pool: &'pool mut P) -> Self {
         Self { buffer, pool }
     }
 
-    /// Returns the number of bytes remaining in the buffer.
+    /// Bytes not yet read.
     pub fn remaining_data(&self) -> usize {
         self.buffer.len()
     }
 
-    /// Returns `count` elements of type `T`, advancing the internal buffer.
-    /// Uses unaligned reads so buffers from IPC/shared memory work regardless of alignment.
+    /// Consumes `count` contiguous `T` values (unaligned-safe).
     pub fn access<T: Pod>(&mut self, count: usize) -> Vec<T> {
         let byte_len = count * size_of::<T>();
         assert!(
@@ -38,25 +39,28 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         );
         let (consumed, remaining) = self.buffer.split_at(byte_len);
         self.buffer = remaining;
-        (0..count)
-            .map(|i| {
-                let start = i * size_of::<T>();
-                bytemuck::pod_read_unaligned::<T>(&consumed[start..start + size_of::<T>()])
-            })
-            .collect()
+        let elem_size = size_of::<T>();
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let start = i * elem_size;
+            out.push(bytemuck::pod_read_unaligned::<T>(
+                &consumed[start..start + elem_size],
+            ));
+        }
+        out
     }
 
-    /// Reads a single bool (one byte, 0 = false, non-zero = true).
+    /// One-byte boolean (any non-zero is true).
     pub fn read_bool(&mut self) -> bool {
         self.read::<u8>() != 0
     }
 
-    /// Reads a single `Pod` value.
+    /// Single POD value.
     pub fn read<T: Pod>(&mut self) -> T {
         self.access::<T>(1)[0]
     }
 
-    /// Reads an optional `Pod` value: 0 byte if None, 1 byte + value if Some.
+    /// Optional POD with `u8` discriminant.
     pub fn read_option<T: Pod>(&mut self) -> Option<T> {
         if self.read::<u8>() == 0 {
             None
@@ -65,8 +69,8 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         }
     }
 
-    /// Reads a string in C#-compatible format: length (i32) then UTF-16 code units.
-    /// Returns `None` if length is -1 (null).
+    /// Host string: UTF-16 LE code units with `i32` length. `-1` → [`None`]. Surrogate halves or
+    /// invalid sequences decode to the empty string (defensive; the host typically sends valid UTF-16).
     pub fn read_str(&mut self) -> Option<String> {
         let len = self.read::<i32>();
         if len < 0 {
@@ -79,17 +83,17 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         Some(String::from_utf16(&utf16).unwrap_or_default())
     }
 
-    /// Reads up to 8 bools packed into a single byte (bit0 = LSB).
+    /// Eight booleans from one byte.
     pub fn read_packed_bools(&mut self) -> PackedBools {
         PackedBools::from_byte(self.read::<u8>())
     }
 
-    /// Reads a required `MemoryPackable` object into the given mutable reference.
+    /// Fills an existing `MemoryPackable` (no presence byte).
     pub fn read_object_required<T: MemoryPackable>(&mut self, obj: &mut T) {
         obj.unpack(self);
     }
 
-    /// Reads an optional `MemoryPackable` object: 0 byte if None, 1 byte + unpacked object if Some.
+    /// Optional object with `u8` discriminant, allocated from `pool` when present.
     pub fn read_object<T: MemoryPackable + Default>(&mut self) -> Option<T> {
         if self.read::<u8>() == 0 {
             return None;
@@ -99,8 +103,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         Some(obj)
     }
 
-    /// Reads a list of `MemoryPackable` objects.
-    /// Treats negative count (C# null list convention) as empty.
+    /// Object list; negative outer count is treated as empty (defensive).
     pub fn read_object_list<T: MemoryPackable + Default>(&mut self) -> Vec<T> {
         let count = self.read::<i32>();
         let count = if count < 0 { 0 } else { count as usize };
@@ -113,8 +116,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         list
     }
 
-    /// Reads a polymorphic list using the given decode callback for each element.
-    /// Treats negative count (C# null list convention) as empty.
+    /// Polymorphic list: `decode` reads discriminator and payload per element.
     pub fn read_polymorphic_list<F, T>(&mut self, mut decode: F) -> Vec<T>
     where
         F: FnMut(&mut MemoryUnpacker<'a, 'pool, P>) -> T,
@@ -128,16 +130,14 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         list
     }
 
-    /// Reads a list of `Pod` values.
-    /// Treats negative count (C# null list convention) as empty.
+    /// POD list.
     pub fn read_value_list<T: Pod>(&mut self) -> Vec<T> {
         let count = self.read::<i32>();
         let count = if count < 0 { 0 } else { count as usize };
         self.access::<T>(count)
     }
 
-    /// Reads a list of enum values from their underlying i32 representation.
-    /// Treats negative count (C# null list convention) as empty.
+    /// Enum list stored as `i32` discriminants.
     pub fn read_enum_value_list<E: EnumRepr>(&mut self) -> Vec<E> {
         let count = self.read::<i32>();
         let count = if count < 0 { 0 } else { count as usize };
@@ -148,8 +148,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         list
     }
 
-    /// Reads a list of strings (each element can be `None` for null).
-    /// Treats negative count (C# null list convention) as empty.
+    /// List of nullable strings.
     pub fn read_string_list(&mut self) -> Vec<Option<String>> {
         let count = self.read::<i32>();
         let count = if count < 0 { 0 } else { count as usize };
@@ -160,13 +159,12 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         list
     }
 
-    /// Reads a nested list of value lists (e.g. `Vec<Vec<T>>`).
+    /// Nested value lists.
     pub fn read_nested_value_list<T: Pod>(&mut self) -> Vec<Vec<T>> {
         self.read_nested_list(|unpacker| unpacker.read_value_list())
     }
 
-    /// Reads a nested list using a custom reader for each sublist.
-    /// Treats negative count (C# null list convention) as empty.
+    /// Nested list with custom inner reader.
     pub fn read_nested_list<F, T>(&mut self, mut sublist_reader: F) -> Vec<T>
     where
         F: FnMut(&mut MemoryUnpacker<'a, 'pool, P>) -> T,

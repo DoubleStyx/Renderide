@@ -54,14 +54,15 @@ public class RustEmitter
         _w.Line("    clippy::option_as_ref_deref,");
         _w.Line(")]");
         _w.BlankLine();
-        _w.Line("use nalgebra::{Vector2, Vector3, Vector4, Quaternion, Matrix4};");
-        _w.Line("use super::memory_packable::MemoryPackable;");
-        _w.Line("use super::memory_packer::MemoryPacker;");
-        _w.Line("use super::memory_unpacker::MemoryUnpacker;");
-        _w.Line("use super::memory_packer_entity_pool::MemoryPackerEntityPool;");
-        _w.Line("use super::polymorphic_memory_packable_entity::PolymorphicEncode;");
+        _w.Line("#[allow(unused_imports)] // Subset used depending on emitted struct fields.");
+        _w.Line("use glam::{IVec2, IVec3, IVec4, Mat4, Quat, Vec2, Vec3, Vec4};");
+        _w.Line("use super::packing::memory_packable::MemoryPackable;");
+        _w.Line("use super::packing::memory_packer::MemoryPacker;");
+        _w.Line("use super::packing::memory_unpacker::MemoryUnpacker;");
+        _w.Line("use super::packing::memory_packer_entity_pool::MemoryPackerEntityPool;");
+        _w.Line("use super::packing::polymorphic_memory_packable_entity::PolymorphicEncode;");
         _w.Line("use super::buffer::SharedMemoryBufferDescriptor;");
-        _w.Line("use super::enum_repr::EnumRepr;");
+        _w.Line("use super::packing::enum_repr::EnumRepr;");
         _w.Line("use bytemuck::{Pod, Zeroable};");
         _w.BlankLine();
     }
@@ -288,13 +289,21 @@ public class RustEmitter
         }
         else
         {
-            using (_w.BeginExternStruct(name, "Clone"))
+            using (_w.BeginExternStruct(name, "Clone", "Copy"))
             {
                 foreach (FieldDescriptor field in orderedFields)
                     _w.StructMember(field.RustName, field.RustType);
                 if (needsTrailingPadding)
                     _w.StructMember("_padding", $"[u8; {type.PaddingBytes}]");
             }
+        }
+
+        if (type.HostInteropSizeBytes is int hostBytes)
+        {
+            string prefix = type.RustName.ToScreamingSnakeTypeName();
+            _w.DocLine($"Host interop size from C# `Marshal.SizeOf` for `{type.CSharpName}` (SHM row stride).");
+            _w.Line($"pub const {prefix}_HOST_ROW_BYTES: usize = {hostBytes};");
+            _w.BlankLine();
         }
 
         // MemoryPackable impl (use same field order as struct for correct wire format)
@@ -305,6 +314,24 @@ public class RustEmitter
                 PackEmitter.EmitExplicitPack(_w, _logger, type.CSharpName, orderedFields, needsTrailingPadding ? type.PaddingBytes : 0);
             using (_w.BeginMethod("unpack", "", ["P: MemoryPackerEntityPool"], ["&mut self", "unpacker: &mut MemoryUnpacker<'_, '_, P>"], isPublic: false))
                 PackEmitter.EmitExplicitUnpack(_w, _logger, type.CSharpName, orderedFields, needsTrailingPadding ? type.PaddingBytes : 0);
+        }
+
+        if (!type.IsPod && type.HostInteropSizeBytes.HasValue)
+        {
+            string prefix = type.RustName.ToScreamingSnakeTypeName();
+            string testFn = $"verify_{type.RustName.HumanizeField()}_host_row_bytes_contract";
+            _w.BlankLine();
+            _w.Line("#[cfg(test)]");
+            _w.Line("#[test]");
+            _w.Line($"fn {testFn}() {{");
+            _w.Indent();
+            _w.Line($"let mut buf = vec![0u8; {prefix}_HOST_ROW_BYTES];");
+            _w.Line("let mut packer = MemoryPacker::new(&mut buf);");
+            _w.Line($"let mut v = {name}::default();");
+            _w.Line("v.pack(&mut packer);");
+            _w.Line("assert_eq!(packer.remaining_len(), 0, \"pack must fill host row\");");
+            _w.Dedent();
+            _w.Line("}");
         }
     }
 
@@ -384,7 +411,7 @@ public class RustEmitter
         _w.Comment("Roundtrip dispatch for C#–Rust serialization tests. Called by the roundtrip binary.");
         using (_w.BeginMethod("roundtrip_dispatch", "std::io::Result<Vec<u8>>", null, ["type_name: &str", "input: &[u8]"], isPublic: true))
         {
-            _w.Line("use super::default_entity_pool::DefaultEntityPool;");
+            _w.Line("use super::packing::default_entity_pool::DefaultEntityPool;");
             _w.Line("let mut pool = DefaultEntityPool;");
             _w.Line("let mut unpacker = MemoryUnpacker::new(input, &mut pool);");
             _w.Line("let mut output = vec![0u8; 1024 * 1024];");

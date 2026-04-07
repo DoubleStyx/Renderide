@@ -1,11 +1,11 @@
-//! Default implementation of `MemoryPackerEntityPool` that creates new instances via `Default`
-//! and discards returned values. Use when object pooling is not needed.
+//! Trivial pool that always constructs with [`Default`] and drops on “return”.
 
 use super::memory_packable::MemoryPackable;
 use super::memory_packer_entity_pool::MemoryPackerEntityPool;
 
-/// A pool that creates new instances via `Default` and ignores returns.
-/// Use when object pooling is not needed (e.g. renderer-side unpacking).
+/// [`MemoryPackerEntityPool`] implementation that allocates fresh values and ignores returns.
+///
+/// Suitable for renderer-side decoding where reuse is unnecessary.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultEntityPool;
 
@@ -14,7 +14,5 @@ impl MemoryPackerEntityPool for DefaultEntityPool {
         T::default()
     }
 
-    fn r#return<T: MemoryPackable + Default>(&mut self, _value: &mut T) {
-        // Discard; no pooling
-    }
+    fn r#return<T: MemoryPackable + Default>(&mut self, _value: &mut T) {}
 }

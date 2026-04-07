@@ -1,55 +1,46 @@
-//! Parses [`crate::shared::MaterialsUpdateBatch`] using the same layout as FrooxEngine
-//! `MaterialUpdateWriter` and Renderite `MaterialUpdateReader`:
-//! `MaterialPropertyUpdate` records live in `material_updates` buffers; payload values live in
-//! separate `int_buffers`, `float_buffers`, `float4_buffers`, and `matrix_buffers`, consumed in
-//! global order across each list.
+//! Parses [`crate::shared::MaterialsUpdateBatch`] into [`super::properties::MaterialPropertyStore`].
+//!
+//! Layout matches FrooxEngine `MaterialUpdateWriter` and Renderite `MaterialUpdateReader`: opcode
+//! stream in `material_updates` buffers; typed side buffers supply payloads in global order.
 
 use bytemuck::{Pod, Zeroable};
 
-use super::material_batch_wire_metrics::{MaterialBatchWireKind, record_material_batch_wire};
-use super::material_properties::{
-    MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN, MATERIAL_BATCH_MAX_FLOAT4_ARRAY_LEN, MaterialPropertyStore,
-    MaterialPropertyValue,
+use super::properties::{
+    MaterialPropertyStore, MaterialPropertyValue, MATERIAL_BATCH_MAX_FLOAT4_ARRAY_LEN,
+    MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN,
 };
-use crate::ipc::shared_memory::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{MaterialPropertyUpdate, MaterialPropertyUpdateType, MaterialsUpdateBatch};
 
 /// Options for [`parse_materials_update_batch_into_store`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ParseMaterialBatchOptions {
-    /// When true, persist `set_float4x4` and bounded float / float4 arrays into [`MaterialPropertyStore`].
+    /// When true, persist `set_float4x4` and capped float / float4 arrays into the store.
     pub persist_extended_payloads: bool,
-    /// When true, increment [`crate::assets::material_batch_wire_metrics`] for matrix/array opcodes.
+    /// Reserved for future wire-telemetry (matrix / array opcodes).
+    #[allow(dead_code)]
     pub record_wire_metrics: bool,
 }
 
-/// Copies the bytes for a material batch descriptor (production: shared-memory mmap).
+/// Loads a blob for a [`SharedMemoryBufferDescriptor`] (production: shared-memory mmap).
 pub trait MaterialBatchBlobLoader {
     /// Returns a copy of the region described by `descriptor`, or `None` on failure / empty.
     fn load_blob(&mut self, descriptor: &SharedMemoryBufferDescriptor) -> Option<Vec<u8>>;
 }
 
-impl MaterialBatchBlobLoader for SharedMemoryAccessor {
+impl MaterialBatchBlobLoader for crate::ipc::SharedMemoryAccessor {
     fn load_blob(&mut self, descriptor: &SharedMemoryBufferDescriptor) -> Option<Vec<u8>> {
         self.access_copy::<u8>(descriptor)
     }
 }
 
-/// Host material vs `MaterialPropertyBlock` target for one `SelectTarget` header.
-///
-/// Matches Unity `MaterialAssetManager.ApplyUpdate`: the first `material_update_count` `SelectTarget`
-/// rows apply to [`MaterialBatchTarget::Material`], then remaining rows apply to
-/// [`MaterialBatchTarget::PropertyBlock`].
+/// Host material vs property-block target for one `select_target` row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MaterialBatchTarget {
-    /// Host material asset id (Unity `Materials.GetAsset`).
     Material(i32),
-    /// `MaterialPropertyBlock` asset id (Unity `PropertyBlocks.GetAsset`).
     PropertyBlock(i32),
 }
 
-/// Interprets the next `SelectTarget` using `material_update_count` (Unity `MaterialAssetManager` rules).
 fn select_target_kind(
     property_id: i32,
     select_target_index: &mut usize,
@@ -65,18 +56,13 @@ fn select_target_kind(
 }
 
 /// Applies all material updates in `batch` into `store` using `loader`.
-///
-/// Chains every `material_updates` descriptor into one logical update stream (matching Renderite’s
-/// reader). Typed side buffers are consumed in order for payloads.
-///
-/// Uses `batch.material_update_count` to route each `SelectTarget` to either material-side or
-/// property-block-side storage, matching FrooxEngine / Unity `MaterialAssetManager`.
 pub fn parse_materials_update_batch_into_store(
     loader: &mut impl MaterialBatchBlobLoader,
     batch: &MaterialsUpdateBatch,
     store: &mut MaterialPropertyStore,
     options: &ParseMaterialBatchOptions,
 ) {
+    let _ = options.record_wire_metrics;
     let mut p = BatchParser {
         loader,
         updates: ChainCursor::new(&batch.material_updates),
@@ -121,9 +107,7 @@ pub fn parse_materials_update_batch_into_store(
                 MaterialBatchTarget::Material(material_id) => {
                     store.set_shader_asset_for_material(material_id, update.property_id);
                 }
-                MaterialBatchTarget::PropertyBlock(_) => {
-                    // Unity `HandlePropertyBlockUpdate` rejects `set_shader` on property blocks.
-                }
+                MaterialBatchTarget::PropertyBlock(_) => {}
             },
             MaterialPropertyUpdateType::set_render_queue
             | MaterialPropertyUpdateType::set_instancing
@@ -169,19 +153,16 @@ pub fn parse_materials_update_batch_into_store(
                 }
             }
             MaterialPropertyUpdateType::set_float4x4 => {
-                if options.record_wire_metrics {
-                    record_material_batch_wire(true, MaterialBatchWireKind::SetFloat4x4);
-                }
-                if let Some(mat) = p.next_matrix()
-                    && options.persist_extended_payloads
-                {
-                    let v = MaterialPropertyValue::Float4x4(mat);
-                    match target {
-                        MaterialBatchTarget::Material(id) => {
-                            store.set_material(id, update.property_id, v);
-                        }
-                        MaterialBatchTarget::PropertyBlock(id) => {
-                            store.set_property_block(id, update.property_id, v);
+                if let Some(mat) = p.next_matrix() {
+                    if options.persist_extended_payloads {
+                        let v = MaterialPropertyValue::Float4x4(mat);
+                        match target {
+                            MaterialBatchTarget::Material(id) => {
+                                store.set_material(id, update.property_id, v);
+                            }
+                            MaterialBatchTarget::PropertyBlock(id) => {
+                                store.set_property_block(id, update.property_id, v);
+                            }
                         }
                     }
                 }
@@ -200,12 +181,10 @@ pub fn parse_materials_update_batch_into_store(
                 }
             }
             MaterialPropertyUpdateType::set_float_array => {
-                if options.record_wire_metrics {
-                    record_material_batch_wire(true, MaterialBatchWireKind::SetFloatArray);
-                }
                 let Some(len) = p.next_int() else {
                     continue;
                 };
+                #[allow(clippy::cast_sign_loss)]
                 let len = len.max(0) as usize;
                 let mut out: Vec<f32> = Vec::new();
                 if options.persist_extended_payloads {
@@ -234,12 +213,10 @@ pub fn parse_materials_update_batch_into_store(
                 }
             }
             MaterialPropertyUpdateType::set_float4_array => {
-                if options.record_wire_metrics {
-                    record_material_batch_wire(true, MaterialBatchWireKind::SetFloat4Array);
-                }
                 let Some(len) = p.next_int() else {
                     continue;
                 };
+                #[allow(clippy::cast_sign_loss)]
                 let len = len.max(0) as usize;
                 let mut out: Vec<[f32; 4]> = Vec::new();
                 if options.persist_extended_payloads {
@@ -376,13 +353,13 @@ mod tests {
     use super::*;
     use crate::shared::buffer::SharedMemoryBufferDescriptor;
 
-    /// Test loader: `buffer_id` indexes into `blobs`.
     struct TestLoader {
         blobs: Vec<Vec<u8>>,
     }
 
     impl MaterialBatchBlobLoader for TestLoader {
         fn load_blob(&mut self, descriptor: &SharedMemoryBufferDescriptor) -> Option<Vec<u8>> {
+            #[allow(clippy::cast_sign_loss)]
             let i = descriptor.buffer_id.max(0) as usize;
             self.blobs.get(i).cloned()
         }

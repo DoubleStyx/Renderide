@@ -1,7 +1,9 @@
 [package]
 name = "interprocess"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+description = "Cloudtoid-compatible shared-memory queue for host/renderer IPC"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 memmap2 = "0.9"
@@ -10,4 +12,9 @@ memmap2 = "0.9"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory", "Win32_System_Threading", "Win32_System_SystemServices"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }

@@ -1,30 +1,15 @@
-//! Bootstrapper configuration: paths, shared memory prefix, Wine detection.
-//!
-//! Parses `--log-level` / `-l` for bootstrapper and Renderide verbosity; remaining args are passed to the Host.
+//! CLI parsing and per-run path configuration (ResoBoot-compatible fields).
 
 use std::env;
 use std::path::PathBuf;
 
-use crate::wine_helpers;
 use logger::LogLevel;
 
-fn generate_random_string(len: usize) -> String {
-    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut rng = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    (0..len)
-        .map(|_| {
-            rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
-            let idx = (rng >> 16) as usize % CHARS.len();
-            CHARS[idx] as char
-        })
-        .collect()
-}
+use crate::runtime;
 
 /// Parses bootstrapper args, extracting `--log-level` / `-l` for bootstrapper and Renderide.
-/// Returns (args to pass to Host, optional log level).
+///
+/// Returns `(arguments to forward to Host, optional log level)`.
 pub fn parse_args() -> (Vec<String>, Option<LogLevel>) {
     let args: Vec<String> = env::args().skip(1).collect();
     let mut host_args = Vec::new();
@@ -34,9 +19,7 @@ pub fn parse_args() -> (Vec<String>, Option<LogLevel>) {
         let arg = &args[i];
         let arg_lower = arg.to_lowercase();
         if (arg_lower == "--log-level" || arg_lower == "-l") && i + 1 < args.len() {
-            if let Some(level) = LogLevel::parse(&args[i + 1]) {
-                log_level = Some(level);
-            }
+            log_level = LogLevel::parse(&args[i + 1]);
             i += 2;
             continue;
         }
@@ -46,26 +29,46 @@ pub fn parse_args() -> (Vec<String>, Option<LogLevel>) {
     (host_args, log_level)
 }
 
-/// Configuration for the bootstrapper run.
+/// Generates a ResoBoot-style alphanumeric prefix for shared-memory queue names.
+pub fn generate_shared_memory_prefix(len: usize) -> Result<String, getrandom::Error> {
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut bytes = vec![0u8; len];
+    getrandom::fill(&mut bytes)?;
+    Ok(bytes
+        .iter()
+        .map(|b| CHARS[(*b as usize) % CHARS.len()] as char)
+        .collect())
+}
+
+/// Resolved paths and flags for one bootstrapper run.
 pub struct ResoBootConfig {
+    /// Current working directory (Resonite install root when launched from there).
     pub current_directory: PathBuf,
+    /// Path to `Renderite.Host.runtimeconfig.json` under [`Self::current_directory`].
     pub runtime_config: PathBuf,
+    /// Directory containing the Renderide / renderer binary (bootstrapper exe dir).
     pub renderite_directory: PathBuf,
+    /// Renderer executable path (`renderide.exe` on Windows, `Renderite.Renderer` elsewhere).
     pub renderite_executable: PathBuf,
+    /// Random prefix for `{}.bootstrapper_in` / `{}.bootstrapper_out`.
     pub shared_memory_prefix: String,
+    /// `true` when running under Wine on Linux.
     pub is_wine: bool,
-    /// Log level to pass to Renderide when spawning. None = use default (Trace).
+    /// Passed as `-LogLevel` when spawning Renderide, if set.
     pub renderide_log_level: Option<LogLevel>,
 }
 
 impl ResoBootConfig {
-    /// Creates a new config from the current environment.
-    /// `renderide_log_level` is set from `parse_args()` when bootstrapping.
-    pub fn new(renderide_log_level: Option<LogLevel>) -> Self {
-        let current_directory = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    /// Builds configuration from the environment and generated prefix.
+    ///
+    /// `renderide_log_level` is forwarded to renderer spawns; `shared_memory_prefix` must be
+    /// pre-generated (see [`generate_shared_memory_prefix`]).
+    pub fn new(
+        shared_memory_prefix: String,
+        renderide_log_level: Option<LogLevel>,
+    ) -> Result<Self, std::io::Error> {
+        let current_directory = env::current_dir()?;
         let runtime_config = current_directory.join("Renderite.Host.runtimeconfig.json");
-        // Derive renderide location from the bootstrapper exe itself — not current_dir(),
-        // which may be the Resonite installation dir when launched by the host.
         let exe_dir = env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(PathBuf::from))
@@ -76,10 +79,9 @@ impl ResoBootConfig {
         } else {
             "Renderite.Renderer"
         });
-        let shared_memory_prefix = generate_random_string(16);
-        let is_wine = wine_helpers::is_wine();
+        let is_wine = runtime::is_wine();
 
-        Self {
+        Ok(Self {
             current_directory,
             runtime_config,
             renderite_directory,
@@ -87,6 +89,25 @@ impl ResoBootConfig {
             shared_memory_prefix,
             is_wine,
             renderide_log_level,
-        }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_memory_prefix_length_and_charset() {
+        let s = generate_shared_memory_prefix(16).expect("prefix");
+        assert_eq!(s.len(), 16);
+        assert!(s.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn shared_memory_prefix_two_calls_differ_often() {
+        let a = generate_shared_memory_prefix(16).expect("a");
+        let b = generate_shared_memory_prefix(16).expect("b");
+        assert_ne!(a, b);
     }
 }

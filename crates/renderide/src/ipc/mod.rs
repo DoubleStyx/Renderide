@@ -1,4 +1,7 @@
-//! IPC: command receiver and shared memory access.
+//! Inter-process command queues (Primary + Background) compatible with the managed host.
 
-pub mod receiver;
-pub mod shared_memory;
+mod dual_queue;
+mod shared_memory;
+
+pub use dual_queue::DualQueueIpc;
+pub use shared_memory::SharedMemoryAccessor;

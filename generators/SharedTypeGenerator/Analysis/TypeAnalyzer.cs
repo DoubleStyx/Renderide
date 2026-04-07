@@ -42,7 +42,7 @@ public partial class TypeAnalyzer
         _polymorphicBase = wellKnown.PolymorphicMemoryPackableEntityDefinition;
 
         _classifier = new FieldClassifier(wellKnown);
-        _packParser = new PackMethodParser(_assemblyDef, _assembly, _classifier);
+        _packParser = new PackMethodParser(_assemblyDef, _classifier);
         _polyAnalyzer = new PolymorphicAnalyzer(_assemblyDef, _assembly);
     }
 
@@ -179,7 +179,7 @@ public partial class TypeAnalyzer
             CustomAttribute? attr = typeDef.CustomAttributes
                 .FirstOrDefault(a => a.AttributeType.Name == "StructLayoutAttribute");
             if (attr == null) return 0;
-            foreach (var prop in attr.Properties)
+            foreach (Mono.Cecil.CustomAttributeNamedArgument prop in attr.Properties)
             {
                 if (prop.Name == "Size" && prop.Argument.Value is int size && size > 0)
                     return size;
@@ -187,7 +187,10 @@ public partial class TypeAnalyzer
             if (attr.ConstructorArguments.Count >= 2 && attr.ConstructorArguments[1].Value is int sizeArg && sizeArg > 0)
                 return sizeArg;
         }
-        catch { /* ignore */ }
+        catch
+        {
+            /* ignore */
+        }
         return 0;
     }
 
@@ -231,5 +234,53 @@ public partial class TypeAnalyzer
             finally { visited.Remove(ft); }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="ft"/> can be emitted as whole-struct <c>bytemuck::Pod</c> in Rust under default SIMD glam.
+    /// Differs from <see cref="IsFieldTypePod"/> when nested composites gain SIMD alignment padding vs. C# blittable layout.
+    /// </summary>
+    private bool IsRustLayoutPodField(Type ft, HashSet<Type> visited)
+    {
+        if (ft.IsEnum) return true;
+        if (ft == typeof(bool)) return true;
+        if (ft.IsPrimitive || ft == typeof(Guid) || ft.Name?.StartsWith("SharedMemoryBufferDescriptor") == true)
+            return true;
+
+        if (ft.IsValueType && ft.Assembly == _assembly && !ft.IsEnum)
+        {
+            // Whole C# struct maps to a single glam Rust type (e.g. RenderQuaternion → Quat); that value is Pod.
+            string rustStructName = RustTypeMapper.MapType(ft, _assembly);
+            if (RustTypeMapper.IsGlamRustType(rustStructName))
+                return true;
+
+            if (visited.Contains(ft)) return false;
+            visited.Add(ft);
+            try
+            {
+                FieldInfo[] fields = ft.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                foreach (FieldInfo f in fields)
+                {
+                    string rustLeaf = RustTypeMapper.MapType(f.FieldType, _assembly);
+                    if (RustTypeMapper.IsGlamRustTypeRequiringCompositeNonPod(rustLeaf))
+                    {
+                        if (fields.Length == 1)
+                            continue;
+                        return false;
+                    }
+
+                    if (!IsRustLayoutPodField(f.FieldType, visited))
+                        return false;
+                }
+
+                return true;
+            }
+            finally
+            {
+                visited.Remove(ft);
+            }
+        }
+
+        return IsFieldTypePod(ft, visited);
     }
 }

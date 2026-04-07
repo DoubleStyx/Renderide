@@ -252,6 +252,8 @@ public static class PackEmitter
                 w.Line($"packer.write_bool(self.{field.RustName} != 0);");
             else if (field.Kind is FieldKind.Enum or FieldKind.FlagsEnum)
                 w.Line($"packer.write_object_required(&mut self.{field.RustName});");
+            else if (field.Kind == FieldKind.ObjectRequired)
+                w.Line($"packer.write_object_required(&mut self.{field.RustName});");
             else if (field.Kind == FieldKind.Pod)
                 w.Line($"packer.write(&self.{field.RustName});");
             else
@@ -288,6 +290,8 @@ public static class PackEmitter
                 string rustType = field.RustType;
                 w.Line($"self.{field.RustName} = {{ let mut x = {rustType}::default(); unpacker.read_object_required(&mut x); x }};");
             }
+            else if (field.Kind == FieldKind.ObjectRequired)
+                w.Line($"unpacker.read_object_required(&mut self.{field.RustName});");
             else if (field.Kind == FieldKind.Pod)
                 w.Line($"self.{field.RustName} = unpacker.read();");
             else

@@ -8,37 +8,27 @@ use crate::shared::{LightData, LightState, LightType, LightsBufferRendererState,
 
 use super::types::{CachedLight, ResolvedLight};
 
-/// Local axis for light propagation before world transform: host **`transform.forward`** (+Z).
+/// Local axis for light propagation before world transform (host forward = **+Z**).
 const LOCAL_LIGHT_PROPAGATION: Vec3 = Vec3::new(0.0, 0.0, 1.0);
 
-/// Cache of lights per lights buffer (keyed by GlobalUniqueId) and per space.
+/// CPU-side cache: buffer submissions, per-render-space flattened lights, regular vs buffer paths.
 ///
-/// A RenderSpace can have multiple LightsBufferRenderer components; each has its own
-/// GlobalUniqueId and buffer of lights. We aggregate lights from all buffers in a space.
-///
-/// Buffer renderables and regular `Light` component renderables each have their own
-/// renderable-index namespace on the host; they are stored in separate maps here.
+/// Populated from [`crate::shared::FrameSubmitData`] light batches and
+/// [`crate::shared::LightsBufferRendererSubmission`]. GPU upload uses
+/// [`Self::resolve_lights_with_fallback`] after world matrices are current.
 #[derive(Clone, Debug)]
 pub struct LightCache {
-    /// Full light data per buffer ID (GlobalUniqueId). Populated from LightsBufferRendererSubmission.
     buffers: HashMap<i32, Vec<LightData>>,
-    /// Flattened per-space list of cached lights, rebuilt after each merge. Key: `space_id`.
     spaces: HashMap<i32, Vec<CachedLight>>,
-    /// Expanded buffer lights per `(space_id, global_unique_id)`. Updated only for buffers present
-    /// in a given [`LightsBufferRendererUpdate`] batch; untouched buffers keep their last contribution.
     buffer_contributions: HashMap<(i32, i32), Vec<CachedLight>>,
-    /// Maps `(space_id, buffer_renderable_index)` to that buffer’s `global_unique_id` for removals.
     buffer_by_renderable: HashMap<(i32, i32), i32>,
-    /// Regular scene lights keyed by `(space_id, light_renderable_index)`.
     regular_lights: HashMap<(i32, i32), CachedLight>,
-    /// Maps `(space_id, global_unique_id)` to transform_id for buffer parents.
     buffer_transforms: HashMap<(i32, i32), usize>,
-    /// Maps `(space_id, renderable_index)` to transform_id for regular lights.
     regular_light_transforms: HashMap<(i32, i32), usize>,
 }
 
 impl LightCache {
-    /// Creates a new empty light cache.
+    /// Empty cache.
     pub fn new() -> Self {
         Self {
             buffers: HashMap::new(),
@@ -51,18 +41,16 @@ impl LightCache {
         }
     }
 
-    /// Returns the number of light buffers stored (for diagnostics).
+    /// Number of distinct light buffers stored from submissions (diagnostics).
     pub fn buffer_count(&self) -> usize {
         self.buffers.len()
     }
 
-    /// Stores full light data from a submission. Overwrites any existing buffer.
+    /// Stores full [`LightData`] rows from a host submission (overwrites prior buffer id).
     pub fn store_full(&mut self, lights_buffer_unique_id: i32, light_data: Vec<LightData>) {
         self.buffers.insert(lights_buffer_unique_id, light_data);
     }
 
-    /// Rebuilds [`LightCache::spaces`] for `space_id` from buffer contributions and regular lights
-    /// in deterministic order (sorted buffer `global_unique_id`, then sorted regular renderable index).
     fn rebuild_space_vec(&mut self, space_id: i32) {
         let mut v = Vec::new();
         let mut guids: Vec<i32> = self
@@ -92,14 +80,7 @@ impl LightCache {
         self.spaces.insert(space_id, v);
     }
 
-    /// Applies incremental update (states, removals, additions) for a space.
-    ///
-    /// Merges each [`LightsBufferRendererState`] in `states` into
-    /// [`LightCache::buffer_contributions`]. Removals use **buffer renderable indices** (host
-    /// `RenderableIndex` values), not positions in the `states` span. Buffers not listed in
-    /// `states` keep their previous contribution. Each buffer contributes one [`CachedLight`] per
-    /// [`LightData`] row from [`LightCache::buffers`]. Additions are transform indices for newly
-    /// registered buffer components.
+    /// Applies [`LightsBufferRendererUpdate`]: removals, additions (transform indices), states.
     pub fn apply_update(
         &mut self,
         space_id: i32,
@@ -157,11 +138,7 @@ impl LightCache {
         self.rebuild_space_vec(space_id);
     }
 
-    /// Applies regular light updates (Light components) from `lights_update`.
-    ///
-    /// Each [`LightState`] in `states` patches the slot `(space_id, renderable_index)`; slots not
-    /// listed keep their previous data. Removals use **light renderable indices** from the host.
-    /// Additions supply transform indices for newly allocated light renderables.
+    /// Applies regular [`LightState`] updates (Unity `Light` components).
     pub fn apply_regular_lights_update(
         &mut self,
         space_id: i32,
@@ -199,9 +176,9 @@ impl LightCache {
             };
 
             let data = LightData {
-                point: nalgebra::Vector3::new(0.0, 0.0, 0.0),
-                orientation: nalgebra::Quaternion::identity(),
-                color: nalgebra::Vector3::new(state.color.x, state.color.y, state.color.z),
+                point: Vec3::ZERO,
+                orientation: Quat::IDENTITY,
+                color: Vec3::new(state.color.x, state.color.y, state.color.z),
                 intensity: state.intensity,
                 range: state.range,
                 angle: state.spot_angle,
@@ -232,17 +209,12 @@ impl LightCache {
         self.rebuild_space_vec(space_id);
     }
 
-    /// Returns cached lights for a space. Call after apply_update.
+    /// Cached lights for `space_id` after the last apply.
     pub fn get_lights_for_space(&self, space_id: i32) -> Option<&[CachedLight]> {
         self.spaces.get(&space_id).map(|v| v.as_slice())
     }
 
-    /// Returns mutable cached lights for a space.
-    pub fn get_lights_for_space_mut(&mut self, space_id: i32) -> Option<&mut Vec<CachedLight>> {
-        self.spaces.get_mut(&space_id)
-    }
-
-    /// Removes a space's lights (e.g. when space is removed).
+    /// Drops all light entries tied to a removed render space.
     pub fn remove_space(&mut self, space_id: i32) {
         self.spaces.remove(&space_id);
         self.buffer_contributions
@@ -256,10 +228,7 @@ impl LightCache {
             .retain(|(sid, _), _| *sid != space_id);
     }
 
-    /// Resolves cached lights to world space using scene world matrices.
-    ///
-    /// For buffer lights (LightsBufferRenderer), range is scaled by the parent transform's
-    /// average lossy scale to match Renderite.Unity's LightsBufferRenderer behavior.
+    /// Resolves cached lights using space-local transform world matrices (caller composes root).
     pub fn resolve_lights(
         &self,
         space_id: i32,
@@ -278,7 +247,7 @@ impl LightCache {
             let world_pos = world.transform_point3(p);
 
             let ori = cached.data.orientation;
-            let q = Quat::from_xyzw(ori.i, ori.j, ori.k, ori.w);
+            let q = ori;
             let world_dir = (world.to_scale_rotation_translation().1 * q) * LOCAL_LIGHT_PROPAGATION;
             let world_dir = if world_dir.length_squared() > 1e-10 {
                 world_dir.normalize()
@@ -316,16 +285,7 @@ impl LightCache {
         resolved
     }
 
-    /// Resolves lights for a space, falling back to raw buffer data when `spaces` is empty.
-    ///
-    /// When the host sends `LightsBufferRendererSubmission` but not `LightsBufferRendererUpdate`
-    /// with additions, `spaces` stays empty and `resolve_lights` returns nothing. This method
-    /// synthesizes resolved lights from `buffers` using default state (point light, identity
-    /// transform) so lights can render.
-    ///
-    /// Fallback logic: (1) If a buffer exists with key `space_id`, use it (legacy single-buffer).
-    /// (2) If exactly one buffer exists and no spaces data, use it (host may omit update for
-    /// single-buffer case). Multiple buffers without update cannot be mapped to a space.
+    /// Like [`Self::resolve_lights`], but if the flattened list is empty, synthesizes from raw buffer data.
     pub fn resolve_lights_with_fallback(
         &self,
         space_id: i32,
@@ -353,12 +313,7 @@ impl LightCache {
         let mut resolved = Vec::with_capacity(light_data.len());
         for data in light_data {
             let p = Vec3::new(data.point.x, data.point.y, data.point.z);
-            let q = Quat::from_xyzw(
-                data.orientation.i,
-                data.orientation.j,
-                data.orientation.k,
-                data.orientation.w,
-            );
+            let q = data.orientation;
             let world_dir = q * LOCAL_LIGHT_PROPAGATION;
             let world_dir = if world_dir.length_squared() > 1e-10 {
                 world_dir.normalize()
@@ -389,5 +344,164 @@ impl LightCache {
 impl Default for LightCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::{Mat4, Quat, Vec3};
+
+    use crate::shared::{LightData, LightType, LightsBufferRendererState, ShadowType};
+
+    use super::LightCache;
+
+    fn make_light_data(pos: (f32, f32, f32), color: (f32, f32, f32)) -> LightData {
+        LightData {
+            point: Vec3::new(pos.0, pos.1, pos.2),
+            orientation: Quat::IDENTITY,
+            color: Vec3::new(color.0, color.1, color.2),
+            intensity: 1.0,
+            range: 10.0,
+            angle: 45.0,
+        }
+    }
+
+    fn make_state(
+        renderable_index: i32,
+        global_unique_id: i32,
+        light_type: LightType,
+    ) -> LightsBufferRendererState {
+        LightsBufferRendererState {
+            renderable_index,
+            global_unique_id,
+            shadow_strength: 0.0,
+            shadow_near_plane: 0.0,
+            shadow_map_resolution: 0,
+            shadow_bias: 0.0,
+            shadow_normal_bias: 0.0,
+            cookie_texture_asset_id: -1,
+            light_type,
+            shadow_type: ShadowType::none,
+            _padding: [0; 2],
+        }
+    }
+
+    #[test]
+    fn light_cache_store_full_and_apply_additions() {
+        let mut cache = LightCache::new();
+        let space_id = 0;
+        let light_data = vec![
+            make_light_data((1.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            make_light_data((0.0, 2.0, 0.0), (0.0, 1.0, 0.0)),
+        ];
+        cache.store_full(100, light_data);
+
+        let additions: Vec<i32> = vec![0];
+        let states = vec![make_state(0, 100, LightType::point)];
+        cache.apply_update(space_id, &[], &additions, &states);
+
+        let lights = cache
+            .get_lights_for_space(space_id)
+            .expect("test setup: space should have lights");
+        assert_eq!(lights.len(), 2);
+        assert_eq!(lights[0].data.point.x, 1.0);
+        assert_eq!(lights[0].state.global_unique_id, 100);
+        assert_eq!(lights[1].data.point.y, 2.0);
+        assert_eq!(lights[1].state.light_type, LightType::point);
+    }
+
+    #[test]
+    fn light_cache_removals() {
+        let mut cache = LightCache::new();
+        let space_id = 0;
+        cache.store_full(100, vec![make_light_data((1.0, 0.0, 0.0), (1.0, 0.0, 0.0))]);
+        cache.store_full(101, vec![make_light_data((0.0, 2.0, 0.0), (0.0, 1.0, 0.0))]);
+        cache.store_full(102, vec![make_light_data((0.0, 0.0, 3.0), (0.0, 0.0, 1.0))]);
+
+        let additions: Vec<i32> = vec![0, 1, 2];
+        let states = vec![
+            make_state(0, 100, LightType::point),
+            make_state(1, 101, LightType::point),
+            make_state(2, 102, LightType::point),
+        ];
+        cache.apply_update(space_id, &[], &additions, &states);
+        assert_eq!(
+            cache
+                .get_lights_for_space(space_id)
+                .expect("test setup: space should have lights")
+                .len(),
+            3
+        );
+
+        cache.apply_update(space_id, &[1], &[], &[]);
+        let lights = cache
+            .get_lights_for_space(space_id)
+            .expect("test setup: space should have lights");
+        assert_eq!(lights.len(), 2);
+        assert_eq!(lights[0].state.global_unique_id, 100);
+        assert_eq!(lights[1].state.global_unique_id, 102);
+    }
+
+    #[test]
+    fn light_cache_resolve_world_space() {
+        let mut cache = LightCache::new();
+        let space_id = 0;
+        cache.store_full(100, vec![make_light_data((1.0, 0.0, 0.0), (1.0, 0.0, 0.0))]);
+
+        let additions: Vec<i32> = vec![0];
+        let states = vec![make_state(0, 100, LightType::point)];
+        cache.apply_update(space_id, &[], &additions, &states);
+
+        let world_matrix = Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0));
+        let resolved =
+            cache.resolve_lights(
+                space_id,
+                |tid| {
+                    if tid == 0 {
+                        Some(world_matrix)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+        assert_eq!(resolved.len(), 1);
+        assert!((resolved[0].world_position.x - 11.0).abs() < 1e-5);
+        assert!((resolved[0].world_position.y - 0.0).abs() < 1e-5);
+        assert!((resolved[0].world_position.z - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn resolve_lights_with_fallback_from_buffers() {
+        let mut cache = LightCache::new();
+        let space_id = 0;
+        let light_data = vec![
+            make_light_data((5.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            make_light_data((0.0, 3.0, 0.0), (0.0, 1.0, 0.0)),
+        ];
+        cache.store_full(space_id, light_data);
+
+        let resolved = cache.resolve_lights_with_fallback(space_id, |_| None);
+
+        assert_eq!(resolved.len(), 2);
+        assert!((resolved[0].world_position.x - 5.0).abs() < 1e-5);
+        assert!((resolved[0].color.x - 1.0).abs() < 1e-5);
+        assert_eq!(resolved[0].light_type, LightType::point);
+        assert_eq!(resolved[0].global_unique_id, -1);
+        assert!((resolved[1].world_position.y - 3.0).abs() < 1e-5);
+        assert!((resolved[1].color.y - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gpu_light_from_resolved_point() {
+        let mut cache = LightCache::new();
+        let space_id = 0;
+        cache.store_full(100, vec![make_light_data((1.0, 0.0, 0.0), (1.0, 0.0, 0.0))]);
+        cache.apply_update(space_id, &[], &[0], &[make_state(0, 100, LightType::point)]);
+        let resolved = cache.resolve_lights(space_id, |_| Some(Mat4::IDENTITY));
+        assert_eq!(resolved.len(), 1);
+        let gpu = crate::backend::GpuLight::from_resolved(&resolved[0]);
+        assert_eq!(gpu.light_type, 0);
+        assert!((gpu.position[0] - 1.0).abs() < 1e-5);
     }
 }

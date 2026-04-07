@@ -1,7 +1,6 @@
-//! Helper type for 8 packed bools read from a single byte (bit0 = LSB).
+//! Eight boolean flags packed into one byte for a compact wire representation.
 
-/// Eight bools packed into a single byte (bit0 = LSB, bit7 = MSB).
-/// Matches C# `MemoryUnpacker.Read(out bool bit0, ..., out bool bit7)`.
+/// Eight flags read from one byte: `bit0` is the least significant bit (same ordering as the wire format).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PackedBools {
     pub bit0: bool,
@@ -15,7 +14,7 @@ pub struct PackedBools {
 }
 
 impl PackedBools {
-    /// Creates a `PackedBools` from a byte.
+    /// Decodes a byte from the wire into eight flags.
     #[inline]
     pub fn from_byte(byte: u8) -> Self {
         Self {
@@ -30,27 +29,31 @@ impl PackedBools {
         }
     }
 
-    /// Returns the first N bools as a tuple. Useful when only a subset is needed.
+    /// First two flags.
     #[inline]
     pub fn two(self) -> (bool, bool) {
         (self.bit0, self.bit1)
     }
 
+    /// First three flags.
     #[inline]
     pub fn three(self) -> (bool, bool, bool) {
         (self.bit0, self.bit1, self.bit2)
     }
 
+    /// First four flags.
     #[inline]
     pub fn four(self) -> (bool, bool, bool, bool) {
         (self.bit0, self.bit1, self.bit2, self.bit3)
     }
 
+    /// First five flags.
     #[inline]
     pub fn five(self) -> (bool, bool, bool, bool, bool) {
         (self.bit0, self.bit1, self.bit2, self.bit3, self.bit4)
     }
 
+    /// First six flags.
     #[inline]
     pub fn six(self) -> (bool, bool, bool, bool, bool, bool) {
         (
@@ -58,6 +61,7 @@ impl PackedBools {
         )
     }
 
+    /// First seven flags.
     #[inline]
     pub fn seven(self) -> (bool, bool, bool, bool, bool, bool, bool) {
         (
@@ -65,6 +69,7 @@ impl PackedBools {
         )
     }
 
+    /// All eight flags.
     #[inline]
     pub fn eight(self) -> (bool, bool, bool, bool, bool, bool, bool, bool) {
         (

@@ -29,7 +29,7 @@ public static class RustNaming
         name = name.Replace("2D", "_2D_", StringComparison.OrdinalIgnoreCase);
         name = name.Replace("3D", "_3D_", StringComparison.OrdinalIgnoreCase);
 
-        name = name.Underscore().Trim('_').ToLower();
+        name = name.Underscore().Trim('_').ToLowerInvariant();
 
         while (name.Contains("__"))
             name = name.Replace("__", "_");
@@ -69,5 +69,11 @@ public static class RustNaming
             return $"{name[..idx]} []{name[(idx + "[]".Length)..].HumanizeType()}";
 
         return name.Replace("_", "").Pascalize();
+    }
+
+    /// <summary>SCREAMING_SNAKE for const names from a Rust PascalCase struct name (e.g. <c>LightData</c> → <c>LIGHT_DATA</c>).</summary>
+    public static string ToScreamingSnakeTypeName(this string rustPascalTypeName)
+    {
+        return rustPascalTypeName.Underscore().Replace("__", "_", StringComparison.Ordinal).ToUpperInvariant();
     }
 }

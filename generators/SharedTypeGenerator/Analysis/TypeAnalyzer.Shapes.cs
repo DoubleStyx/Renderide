@@ -1,8 +1,11 @@
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using LayoutKind = System.Runtime.InteropServices.LayoutKind;
+using NotEnoughLogs;
 using SharedTypeGenerator.IR;
+using SharedTypeGenerator.Logging;
 
 namespace SharedTypeGenerator.Analysis;
 
@@ -113,11 +116,14 @@ public partial class TypeAnalyzer
             if (sizeType.IsEnum) sizeType = sizeType.GetField("value__")!.FieldType;
             try { totalSize += Marshal.SizeOf(sizeType); } catch { /* skip */ }
 
-            if (!IsFieldTypePod(field.FieldType, []))
+            bool fieldRustLayoutPod = IsRustLayoutPodField(field.FieldType, new HashSet<Type>());
+            if (!fieldRustLayoutPod)
                 allFieldsPod = false;
 
             string rustType = field.FieldType == typeof(bool) ? "u8" : MapRustTypeWithQueue(field.FieldType);
             FieldKind kind = _classifier.ClassifyByType(field.FieldType);
+            if (kind == FieldKind.Pod && !fieldRustLayoutPod)
+                kind = FieldKind.ObjectRequired;
 
             fieldDescriptors.Add(new FieldDescriptor
             {
@@ -185,9 +191,58 @@ public partial class TypeAnalyzer
                 paddingBytes = Math.Max(0, actualSize - totalSize);
             }
         }
-        catch { /* fallback: paddingBytes stays 0 */ }
+        catch
+        {
+            /* fallback: paddingBytes stays 0 */
+        }
 
-        bool isPod = allFieldsPod;
+        // Top-level fields that map to Quat/Mat4/Vec4 can force Rust-only padding when combined with other fields.
+        bool hasSimdCompositePaddingRisk = fields.Length > 1 && fields.Any(f =>
+        {
+            string rustT = f.FieldType == typeof(bool) ? "u8" : RustTypeMapper.MapType(f.FieldType, _assembly);
+            return RustTypeMapper.IsGlamRustTypeRequiringCompositeNonPod(rustT);
+        });
+        bool isPod = allFieldsPod && !hasSimdCompositePaddingRisk;
+
+        int? hostInteropSizeBytes = null;
+        try
+        {
+            int marshalSize = Marshal.SizeOf(type);
+            hostInteropSizeBytes = marshalSize;
+            if (declaredSize > 0 && marshalSize != declaredSize)
+            {
+                _logger.LogWarning(
+                    LogCategory.Analysis,
+                    $"{type.FullName}: StructLayout.Size={declaredSize} differs from Marshal.SizeOf={marshalSize}; using Marshal.SizeOf for HostInteropSizeBytes.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(LogCategory.Analysis, $"{type.FullName}: Marshal.SizeOf failed: {ex.Message}");
+        }
+
+        if (hostInteropSizeBytes.HasValue && fields.Any(f => f.GetCustomAttribute<FieldOffsetAttribute>() != null))
+        {
+            int maxEnd = 0;
+            foreach (FieldInfo field in fields)
+            {
+                FieldOffsetAttribute? fo = field.GetCustomAttribute<FieldOffsetAttribute>();
+                if (fo == null) continue;
+
+                Type st = field.FieldType == typeof(bool) ? typeof(byte) : field.FieldType;
+                if (st.IsEnum) st = st.GetField("value__")!.FieldType;
+                int sz;
+                try { sz = Marshal.SizeOf(st); } catch { continue; }
+
+                maxEnd = Math.Max(maxEnd, fo.Value + sz);
+            }
+
+            if (maxEnd > hostInteropSizeBytes.Value)
+            {
+                throw new InvalidOperationException(
+                    $"{type.FullName}: explicit layout field extent ({maxEnd} bytes) exceeds Marshal.SizeOf={hostInteropSizeBytes.Value}.");
+            }
+        }
 
         return new TypeDescriptor
         {
@@ -198,6 +253,7 @@ public partial class TypeAnalyzer
             IsPod = isPod,
             ExplicitSize = declaredSize > 0 ? declaredSize : null,
             PaddingBytes = paddingBytes,
+            HostInteropSizeBytes = hostInteropSizeBytes,
         };
     }
 
