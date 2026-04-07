@@ -21,7 +21,9 @@ pub struct HostCameraFrame {
     /// `(orthographic_half_height, near, far)` from the first [`crate::shared::CameraRenderTask`] whose
     /// parameters use orthographic projection (overlay main-camera ortho override).
     pub primary_ortho_task: Option<(f32, f32, f32)>,
-    /// When [`Self::vr_active`] and OpenXR supplies views, per-eye view–projection (reverse-Z).
+    /// When [`Self::vr_active`] and OpenXR supplies views, per-eye view–projection (reverse-Z), mapping
+    /// **stage** space to clip. World mesh passes combine this with object transforms; the host
+    /// `view_transform` is **not** multiplied again for stereo world draws (see `world_mesh_forward`).
     pub stereo_view_proj: Option<(Mat4, Mat4)>,
 }
 

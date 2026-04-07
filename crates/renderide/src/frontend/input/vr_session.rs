@@ -14,9 +14,14 @@ use crate::shared::{
 
 /// Builds VR input for the host when the session targets a VR [`HeadOutputDevice`].
 ///
-/// `head_pose` is typically the last OpenXR view pose from the app’s pose cache, or `None` for
-/// identity pose before the first XR tick. `openxr_controllers` is filled after each OpenXR
-/// `sync_actions` (often one frame behind the matching `pre_frame`).
+/// `head_pose` is the center-eye pose from the last [`crate::xr::headset_center_pose_from_stereo_views`]
+/// update ([`crate::xr::openxr_pose_to_host_tracking`], same idea as Unity XR tracking), or `None`
+/// before the first XR tick.
+///
+/// On the FrooxEngine side, **TrackedObject.Position** may differ from **RawPosition** when a
+/// **TrackingSpace** applies position/rotation offsets; compare IPC trace logs to **RawPosition**
+/// when debugging avatar alignment.
+/// `openxr_controllers` is filled from the same XR tick’s `sync_actions` before `pre_frame` runs.
 pub fn vr_inputs_for_session(
     session_output_device: HeadOutputDevice,
     head_pose: Option<(Vec3, Quat)>,

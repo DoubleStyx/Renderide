@@ -4,6 +4,13 @@
 //! so pipeline and bind-group changes happen only when material / property-block / skinned path changes.
 //! Per-slot [`MaterialPropertyLookupIds`](crate::assets::material::MaterialPropertyLookupIds) are carried on each
 //! [`WorldMeshDrawItem`](crate::render_graph::WorldMeshDrawItem) for upcoming per-material bind groups (`get_merged`).
+//!
+//! ## VR stereo world draws
+//!
+//! OpenXR per-eye view–projection maps **stage** space to clip. For **non-overlay** draws with
+//! `stereo_view_proj`, we use **identity** instead of the host `view_transform` world-to-camera so
+//! `VP` is not `P·V_hmd·V_host`, which mixed stage with the host rig and caused playspace-relative
+//! offsets. Overlays keep `view` for orthographic / UI alignment.
 
 use std::num::NonZeroU32;
 
@@ -134,6 +141,10 @@ impl RenderPass for WorldMeshForwardPass {
         for item in &draws {
             let (vp_l, vp_r, model) = if let Some(space) = scene.space(item.space_id) {
                 let view = view_matrix_from_render_transform(&space.view_transform);
+                // OpenXR per-eye VP already includes the HMD pose; do not multiply host `view` again
+                // for world-space meshes (avoids stage vs Resonite world double transform). Overlays
+                // still use `view` for orthographic / UI alignment with the host camera rig.
+                let vr_stereo_view = Mat4::IDENTITY;
                 if let (true, Some((sl, sr))) = (hc.vr_active, hc.stereo_view_proj) {
                     if item.is_overlay {
                         let op = overlay_proj.unwrap_or(world_proj);
@@ -147,12 +158,12 @@ impl RenderPass for WorldMeshForwardPass {
                             (base_vp, base_vp, model)
                         }
                     } else if item.skinned {
-                        (sl * view, sr * view, Mat4::IDENTITY)
+                        (sl * vr_stereo_view, sr * vr_stereo_view, Mat4::IDENTITY)
                     } else {
                         let model = scene
                             .world_matrix(item.space_id, item.node_id as usize)
                             .unwrap_or(Mat4::IDENTITY);
-                        (sl * view, sr * view, model)
+                        (sl * vr_stereo_view, sr * vr_stereo_view, model)
                     }
                 } else {
                     let proj = if item.is_overlay {

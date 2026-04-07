@@ -116,7 +116,14 @@ pub fn reverse_z_perspective_openxr_fov(fov: &Fovf, near: f32, far: f32) -> Mat4
     let w = tr - tl;
     let h = tu - td;
     if !(w.is_finite() && h.is_finite()) || w.abs() < 1e-6 || h.abs() < 1e-6 {
-        let aspect = 1.0_f32;
+        logger::trace!(
+            "OpenXR FOV degenerate; using symmetric fallback (16:9, 45° vertical). raw angles rad: left={:.4} right={:.4} down={:.4} up={:.4} w={w} h={h}",
+            fov.angle_left,
+            fov.angle_right,
+            fov.angle_down,
+            fov.angle_up
+        );
+        let aspect = 16.0 / 9.0;
         let vertical_fov = std::f32::consts::FRAC_PI_2 * 0.5;
         return reverse_z_perspective(aspect, vertical_fov, near, far);
     }

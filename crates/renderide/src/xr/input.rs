@@ -11,7 +11,7 @@ use crate::shared::{
     BodyNode, Chirality, TouchControllerModel, TouchControllerState, VRControllerState,
 };
 
-use super::session::openxr_pose_to_engine;
+use super::session::openxr_pose_to_host_tracking;
 
 /// Action spaces and bindings for sampling controller poses and Touch-style controls.
 ///
@@ -219,8 +219,8 @@ impl OpenxrInput {
                 .location_flags
                 .contains(xr::SpaceLocationFlags::POSITION_VALID);
 
-        let (lp, lr) = openxr_pose_to_engine(&left_loc.pose);
-        let (rp, rr) = openxr_pose_to_engine(&right_loc.pose);
+        let (lp, lr) = openxr_pose_to_host_tracking(&left_loc.pose);
+        let (rp, rr) = openxr_pose_to_host_tracking(&right_loc.pose);
 
         let lt = self.left_trigger.state(session, xr::Path::NULL)?;
         let rt = self.right_trigger.state(session, xr::Path::NULL)?;

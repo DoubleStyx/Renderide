@@ -4,6 +4,14 @@
 //! reference frame** (e.g. view pose in stage space). The camera **view** matrix is therefore
 //! `inverse(T_ref_from_view)` after mapping the pose into engine space, not a reconstructed
 //! `look_at` from forward/up vectors.
+//!
+//! ## Stereo convention (runtime `views` order)
+//!
+//! OpenXR does not guarantee `views[0]` is left eye; some runtimes use the opposite order. For
+//! **correct parallax**, this crate maps **left** view–projection and **composition layer 0** to
+//! `views[1]` and **right** to `views[0]` (see `openxr_begin_frame_and_stereo_matrices` in `app.rs`).
+//! [`headset_center_pose_from_stereo_views`] averages **views[0]** and **views[1]** in **array** order
+//! (center eye); IPC uses [`openxr_pose_to_host_tracking`], not the rendering basis.
 
 use glam::{Mat3, Mat4, Quat, Vec3};
 use openxr as xr;
@@ -36,7 +44,12 @@ pub fn view_projection_from_xr_view(view: &xr::View, near: f32, far: f32) -> Mat
     proj * view_mat
 }
 
-/// Maps an OpenXR [`xr::Posef`] to engine translation + rotation (same basis as [`view_projection_from_xr_view`]).
+/// Maps an OpenXR [`xr::Posef`] to **rendering** translation + rotation (same basis as [`view_projection_from_xr_view`]).
+///
+/// Uses reflection `S = diag(-1, 1, -1)` on position and `R_eng = S * R_xr * S` so the rigid
+/// transform stays consistent for [`Mat4::from_rotation_translation`] (OpenXR stage vs wgpu clip
+/// handedness). **Do not** use this for [`crate::shared::HeadsetState`] / FrooxEngine IPC; use
+/// [`openxr_pose_to_host_tracking`] instead (Unity-style raw tracking components).
 pub fn openxr_pose_to_engine(pose: &xr::Posef) -> (Vec3, Quat) {
     let o = pose.orientation;
     let quat_xr = Quat::from_xyzw(o.x, o.y, o.z, o.w);
@@ -49,9 +62,43 @@ pub fn openxr_pose_to_engine(pose: &xr::Posef) -> (Vec3, Quat) {
     (p_eng, quat_eng)
 }
 
-/// Headset position and rotation in engine space (same basis as [`view_projection_from_xr_view`]).
+/// Position and orientation for **host IPC** (FrooxEngine [`crate::shared::HeadsetState`]), matching
+/// Unity’s XR tracking convention: **raw** OpenXR [`xr::Posef`] components as
+/// [`glam::Vec3`] / [`glam::Quat`] (same idea as `Vector3.ToRender` / `Quaternion.ToRender` in the
+/// Unity bridge — no reflection `S` sandwich). Use this for headset and controller poses sent to the
+/// engine; use [`openxr_pose_to_engine`] only for GPU view–projection construction.
+pub fn openxr_pose_to_host_tracking(pose: &xr::Posef) -> (Vec3, Quat) {
+    let p = Vec3::new(pose.position.x, pose.position.y, pose.position.z);
+    let o = pose.orientation;
+    let q = Quat::from_xyzw(o.x, o.y, o.z, o.w);
+    let len_sq = q.length_squared();
+    let q = if len_sq.is_finite() && len_sq >= 1e-10 {
+        q.normalize()
+    } else {
+        Quat::IDENTITY
+    };
+    (p, q)
+}
+
+/// Headset pose for IPC in host tracking space ([`openxr_pose_to_host_tracking`]).
 pub fn headset_pose_from_xr_view(view: &xr::View) -> (Vec3, Quat) {
-    openxr_pose_to_engine(&view.pose)
+    openxr_pose_to_host_tracking(&view.pose)
+}
+
+/// Approximates **center eye** (Unity `XRNode.CenterEye`): averages per-eye positions and slerps
+/// orientations from the first two stereo [`xr::View`] entries using [`openxr_pose_to_host_tracking`].
+pub fn headset_center_pose_from_stereo_views(views: &[xr::View]) -> Option<(Vec3, Quat)> {
+    match views.len() {
+        0 => None,
+        1 => Some(headset_pose_from_xr_view(&views[0])),
+        _ => {
+            let (p0, r0) = openxr_pose_to_host_tracking(&views[0].pose);
+            let (p1, r1) = openxr_pose_to_host_tracking(&views[1].pose);
+            let pos = (p0 + p1) * 0.5;
+            let rot = r0.slerp(r1, 0.5).normalize();
+            Some((pos, rot))
+        }
+    }
 }
 
 /// OpenXR requires a unit quaternion; some runtimes briefly report `(0,0,0,0)`, which makes
@@ -273,6 +320,115 @@ mod tests {
         assert!(
             q.abs_diff_eq(Quat::IDENTITY, 1e-4),
             "expected identity engine orientation, got {q:?}"
+        );
+    }
+
+    #[test]
+    fn host_tracking_pose_matches_raw_openxr_components() {
+        let pose = xr::Posef {
+            orientation: xr::Quaternionf {
+                x: 0.1,
+                y: 0.2,
+                z: 0.3,
+                w: 0.9,
+            },
+            position: xr::Vector3f {
+                x: 1.0,
+                y: 2.0,
+                z: -3.0,
+            },
+        };
+        let (p, q) = openxr_pose_to_host_tracking(&pose);
+        assert!(p.abs_diff_eq(Vec3::new(1.0, 2.0, -3.0), 1e-5));
+        let o = pose.orientation;
+        let q_raw = Quat::from_xyzw(o.x, o.y, o.z, o.w).normalize();
+        assert!(q.abs_diff_eq(q_raw, 1e-4));
+    }
+
+    #[test]
+    fn headset_center_pose_averages_positions_and_slerps_rotation() {
+        let pose_l = xr::Posef {
+            orientation: xr::Quaternionf {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+            position: xr::Vector3f {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let pose_r = xr::Posef {
+            orientation: xr::Quaternionf {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+            position: xr::Vector3f {
+                x: 0.2,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let views = [
+            xr::View {
+                pose: pose_l,
+                fov: xr::Fovf {
+                    angle_left: 0.0,
+                    angle_right: 0.0,
+                    angle_up: 0.0,
+                    angle_down: 0.0,
+                },
+            },
+            xr::View {
+                pose: pose_r,
+                fov: xr::Fovf {
+                    angle_left: 0.0,
+                    angle_right: 0.0,
+                    angle_up: 0.0,
+                    angle_down: 0.0,
+                },
+            },
+        ];
+        let (p, q) = headset_center_pose_from_stereo_views(&views).expect("center pose");
+        let (pl, _) = openxr_pose_to_host_tracking(&pose_l);
+        let (pr, _) = openxr_pose_to_host_tracking(&pose_r);
+        let expected_p = (pl + pr) * 0.5;
+        assert!(
+            p.abs_diff_eq(expected_p, 1e-4),
+            "p={p:?} expected {expected_p:?}"
+        );
+        assert!(q.abs_diff_eq(Quat::IDENTITY, 1e-4));
+    }
+
+    #[test]
+    fn small_pitch_x_rotation_preserves_consistent_forward_in_ref() {
+        let angle = 0.15_f32;
+        let q_xr = Quat::from_rotation_x(angle);
+        let pose = xr::Posef {
+            orientation: xr::Quaternionf {
+                x: q_xr.x,
+                y: q_xr.y,
+                z: q_xr.z,
+                w: q_xr.w,
+            },
+            position: xr::Vector3f {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let ref_from_view = ref_from_view_matrix(&pose);
+        let forward_ref = ref_from_view.transform_vector3(-Vec3::Z);
+        let (_p, q_eng) = openxr_pose_to_engine(&pose);
+        let r_eng = Mat3::from_quat(q_eng);
+        let expected = r_eng * (-Vec3::Z);
+        assert!(
+            forward_ref.abs_diff_eq(expected, 1e-3),
+            "forward_ref={forward_ref:?} expected={expected:?}"
         );
     }
 

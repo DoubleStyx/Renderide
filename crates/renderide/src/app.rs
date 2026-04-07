@@ -6,8 +6,9 @@
 //!
 //! When the host selects a VR [`HeadOutputDevice`](crate::shared::HeadOutputDevice), the Vulkan
 //! device may come from [`crate::xr::init_wgpu_openxr`]; the mirror window uses the same device.
-//! Each frame: OpenXR `wait_frame` / `locate_views` drive per-eye matrices; the mirror uses the
-//! normal render graph. When `vr_active` and multiview are available, the headset path renders
+//! Each frame: OpenXR `wait_frame` / `locate_views` run **before** lock-step `pre_frame` so headset
+//! pose in [`InputState::vr`](crate::shared::InputState) matches the same `locate_views` snapshot.
+//! The mirror uses the normal render graph. When `vr_active` and multiview are available, the headset path renders
 //! once to the OpenXR array swapchain and ends the frame with a projection layer; otherwise the
 //! mirror window is rendered and the frame ends empty.
 //!
@@ -180,9 +181,10 @@ struct RenderideApp {
     initial_vsync: bool,
     /// Copied from host [`RendererInitData::output_device`] when the window is created.
     session_output_device: HeadOutputDevice,
-    /// Last OpenXR view pose (engine space), used for the **next** frame’s [`InputState::vr`].
+    /// Center-eye pose for host IPC ([`crate::xr::headset_center_pose_from_stereo_views`], Unity-style
+    /// [`crate::xr::openxr_pose_to_host_tracking`]), not the GPU rendering basis.
     cached_head_pose: Option<(Vec3, Quat)>,
-    /// Controller states from the last OpenXR [`crate::xr::OpenxrInput::sync_and_sample`], for the next `pre_frame`.
+    /// Controller states from the same XR tick’s [`crate::xr::OpenxrInput::sync_and_sample`] as `cached_head_pose`.
     cached_openxr_controllers: Vec<VRControllerState>,
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
@@ -334,6 +336,44 @@ impl RenderideApp {
             }
         }
 
+        let xr_tick = self.openxr_begin_frame_and_stereo_matrices();
+
+        if let Some(ref tick) = xr_tick {
+            crate::xr::OpenxrInput::log_stereo_view_order_once(&tick.views);
+            if let Some(handles) = &self.xr_handles {
+                if let Some(ref input) = handles.openxr_input {
+                    if handles.xr_session.session_running() {
+                        match input.sync_and_sample(
+                            handles.xr_session.xr_vulkan_session(),
+                            handles.xr_session.stage_space(),
+                            tick.predicted_display_time,
+                        ) {
+                            Ok(v) => self.cached_openxr_controllers = v,
+                            Err(e) => logger::trace!("OpenXR input sync: {e:?}"),
+                        }
+                    }
+                }
+            }
+            self.cached_head_pose =
+                crate::xr::headset_center_pose_from_stereo_views(tick.views.as_slice());
+            if let (Some(v0), Some((p, q))) = (tick.views.first(), self.cached_head_pose) {
+                let r = &v0.pose.position;
+                logger::trace!(
+                    "headset IPC: raw OpenXR views[0] pos=({:.3},{:.3},{:.3}) packed center pos=({:.3},{:.3},{:.3}) quat=({:.4},{:.4},{:.4},{:.4})",
+                    r.x,
+                    r.y,
+                    r.z,
+                    p.x,
+                    p.y,
+                    p.z,
+                    q.x,
+                    q.y,
+                    q.z,
+                    q.w
+                );
+            }
+        }
+
         if self.runtime.should_send_begin_frame() {
             let lock = self.runtime.host_cursor_lock_requested();
             let mut inputs = self.input.take_input_state(lock);
@@ -364,29 +404,6 @@ impl RenderideApp {
         let Some(window) = self.window.clone() else {
             return;
         };
-
-        let xr_tick = self.openxr_begin_frame_and_stereo_matrices();
-
-        if let Some(ref tick) = xr_tick {
-            crate::xr::OpenxrInput::log_stereo_view_order_once(&tick.views);
-            if let Some(handles) = &self.xr_handles {
-                if let Some(ref input) = handles.openxr_input {
-                    if handles.xr_session.session_running() {
-                        match input.sync_and_sample(
-                            handles.xr_session.xr_vulkan_session(),
-                            handles.xr_session.stage_space(),
-                            tick.predicted_display_time,
-                        ) {
-                            Ok(v) => self.cached_openxr_controllers = v,
-                            Err(e) => logger::trace!("OpenXR input sync: {e:?}"),
-                        }
-                    }
-                }
-            }
-            if let Some(first) = tick.views.first() {
-                self.cached_head_pose = Some(crate::xr::headset_pose_from_xr_view(first));
-            }
-        }
 
         let hmd_projection_ended = if let Some(ref tick) = xr_tick {
             self.try_openxr_hmd_multiview_submit(window.as_ref(), tick)
