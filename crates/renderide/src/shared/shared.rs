@@ -6255,7 +6255,7 @@ fn verify_render_transform_override_state_host_row_bytes_contract() {
     assert_eq!(packer.remaining_len(), 0, "pack must fill host row");
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct MaterialOverrideState {
     pub material_slot_index: i32,

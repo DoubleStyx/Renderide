@@ -9,7 +9,8 @@
 //! Each frame: OpenXR `wait_frame` / `locate_views` run **before** lock-step `pre_frame` so headset
 //! pose in [`InputState::vr`](crate::shared::InputState) matches the same `locate_views` snapshot.
 //! The mirror uses the normal render graph. When `vr_active` and multiview are available, the headset path renders
-//! once to the OpenXR array swapchain and ends the frame with a projection layer; otherwise the
+//! once to the OpenXR array swapchain and ends the frame with a projection layer, and the desktop
+//! window still renders a single-view mirror using the left-eye stereo matrix. Otherwise the
 //! mirror window is rendered and the frame ends empty.
 //!
 //! VR **IPC input** (a non-empty [`InputState::vr`](crate::shared::InputState)) is sent whenever
@@ -37,11 +38,12 @@ use crate::frontend::InitState;
 use crate::gpu::GpuContext;
 use crate::output_device::head_output_device_wants_openxr;
 use crate::present::present_clear_frame;
-use crate::render_graph::ExternalFrameTargets;
-use crate::render_graph::GraphExecuteError;
+use crate::render_graph::{
+    effective_head_output_clip_planes, ExternalFrameTargets, GraphExecuteError,
+};
 use crate::runtime::RendererRuntime;
 use crate::shared::{HeadOutputDevice, RendererInitData, VRControllerState};
-use glam::{Quat, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use openxr as xr;
 
 /// Cached OpenXR frame state after a single `wait_frame` (no second wait per tick).
@@ -49,6 +51,7 @@ struct OpenxrFrameTick {
     predicted_display_time: xr::Time,
     should_render: bool,
     views: Vec<xr::View>,
+    desktop_mirror_view_proj: Option<Mat4>,
 }
 
 /// Interval between log flushes when using file logging.
@@ -359,20 +362,20 @@ impl RenderideApp {
             }
             self.cached_head_pose =
                 crate::xr::headset_center_pose_from_stereo_views(tick.views.as_slice());
-            if let (Some(v0), Some((p, q))) = (tick.views.first(), self.cached_head_pose) {
-                let r = &v0.pose.position;
-                logger::trace!(
-                    "headset IPC: raw OpenXR views[0] pos=({:.3},{:.3},{:.3}) packed center pos=({:.3},{:.3},{:.3}) quat=({:.4},{:.4},{:.4},{:.4})",
-                    r.x,
-                    r.y,
-                    r.z,
-                    p.x,
-                    p.y,
-                    p.z,
-                    q.x,
-                    q.y,
-                    q.z,
-                    q.w
+            if let (Some(v0), Some(v1), Some((ipc_p, ipc_q))) =
+                (tick.views.get(0), tick.views.get(1), self.cached_head_pose)
+            {
+                // Raw OpenXR view positions (what the renderer uses for view-projection)
+                let rp0 = &v0.pose.position;
+                let rp1 = &v1.pose.position;
+                let render_center_x = (rp0.x + rp1.x) * 0.5;
+                let render_center_y = (rp0.y + rp1.y) * 0.5;
+                let render_center_z = (rp0.z + rp1.z) * 0.5;
+                logger::debug!(
+                    "HEAD POS | render(OpenXR RH): ({:.3},{:.3},{:.3}) | ipc->host(Unity LH): ({:.3},{:.3},{:.3}) | ipc_quat: ({:.4},{:.4},{:.4},{:.4})",
+                    render_center_x, render_center_y, render_center_z,
+                    ipc_p.x, ipc_p.y, ipc_p.z,
+                    ipc_q.x, ipc_q.y, ipc_q.z, ipc_q.w,
                 );
             }
         }
@@ -422,6 +425,14 @@ impl RenderideApp {
             return;
         };
 
+        if self.runtime.host_camera.vr_active {
+            let mirror_vp = xr_tick
+                .as_ref()
+                .and_then(|tick| tick.desktop_mirror_view_proj);
+            self.runtime
+                .set_stereo_view_proj(mirror_vp.map(|vp| (vp, vp)));
+        }
+
         if let Ok(s) = self.runtime.settings().read() {
             gpu.set_vsync(s.rendering.vsync);
         }
@@ -439,10 +450,8 @@ impl RenderideApp {
             self.runtime.set_debug_hud_frame_data(hud_in, ms);
         }
 
-        if !hmd_projection_ended {
-            if let Err(e) = self.runtime.execute_frame_graph(gpu, window.as_ref()) {
-                Self::handle_frame_graph_error(gpu, window.as_ref(), e);
-            }
+        if let Err(e) = self.runtime.execute_frame_graph(gpu, window.as_ref()) {
+            Self::handle_frame_graph_error(gpu, window.as_ref(), e);
         }
 
         if let (Some(handles), Some(tick)) = (self.xr_handles.as_mut(), xr_tick) {
@@ -473,17 +482,63 @@ impl RenderideApp {
             Vec::new()
         };
         if views.len() >= 2 {
-            let near = self.runtime.host_camera.near_clip;
-            let far = self.runtime.host_camera.far_clip;
-            // Left from views[1], right from views[0]: matches `end_frame_projection` layer 0/1 order.
-            let l = crate::xr::view_projection_from_xr_view(&views[1], near, far);
-            let r = crate::xr::view_projection_from_xr_view(&views[0], near, far);
+            let (near, far) = effective_head_output_clip_planes(
+                self.runtime.host_camera.near_clip,
+                self.runtime.host_camera.far_clip,
+                self.runtime.host_camera.output_device,
+                self.runtime
+                    .scene
+                    .active_main_space()
+                    .map(|space| space.root_transform.scale),
+            );
+            let center_pose = crate::xr::headset_center_pose_from_stereo_views(&views);
+            let world_from_tracking = self
+                .runtime
+                .scene
+                .active_main_space()
+                .map(|space| {
+                    crate::xr::tracking_space_to_world_matrix(
+                        &space.root_transform,
+                        &space.view_transform,
+                        space.override_view_position,
+                        center_pose,
+                    )
+                })
+                .unwrap_or(glam::Mat4::IDENTITY);
+            self.runtime.set_head_output_transform(world_from_tracking);
+            // views[0] = left, views[1] = right per OpenXR PRIMARY_STEREO spec -- xlinka 2026-04-07
+            let l = crate::xr::view_projection_from_xr_view_aligned(
+                &views[0],
+                near,
+                far,
+                world_from_tracking,
+            );
+            let r = crate::xr::view_projection_from_xr_view_aligned(
+                &views[1],
+                near,
+                far,
+                world_from_tracking,
+            );
             self.runtime.set_stereo_view_proj(Some((l, r)));
+            let desktop_mirror_view_proj =
+                crate::xr::center_view_projection_from_stereo_views_aligned(
+                    &views,
+                    near,
+                    far,
+                    world_from_tracking,
+                );
+            return Some(OpenxrFrameTick {
+                predicted_display_time: fs.predicted_display_time,
+                should_render: fs.should_render,
+                views,
+                desktop_mirror_view_proj,
+            });
         }
         Some(OpenxrFrameTick {
             predicted_display_time: fs.predicted_display_time,
             should_render: fs.should_render,
             views,
+            desktop_mirror_view_proj: None,
         })
     }
 

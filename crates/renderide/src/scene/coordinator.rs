@@ -2,10 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::FrameSubmitData;
+use crate::shared::RenderingContext;
 
 use super::error::SceneError;
 use super::ids::RenderSpaceId;
@@ -13,7 +14,12 @@ use super::lights::{
     apply_light_renderables_update, apply_lights_buffer_renderers_update, LightCache, ResolvedLight,
 };
 use super::math::multiply_root;
+use super::render_overrides::{
+    apply_render_material_overrides_update, apply_render_transform_overrides_update,
+    MeshRendererOverrideTarget,
+};
 use super::render_space::RenderSpaceState;
+use super::render_transform_to_matrix;
 use super::world::{compute_world_matrices_for_space, ensure_cache_shapes, WorldTransformCache};
 
 /// Scene registry: one entry per host render space, Unity `RenderingManager` dictionary semantics.
@@ -81,6 +87,21 @@ impl SceneCoordinator {
         self.spaces.get(&id)
     }
 
+    /// Main non-overlay render space, matching Unity's single active main-space expectation.
+    pub fn active_main_space(&self) -> Option<&RenderSpaceState> {
+        self.spaces
+            .values()
+            .filter(|s| s.is_active && !s.is_overlay)
+            .min_by_key(|s| s.id.0)
+    }
+
+    /// Current head-output render context for the main view.
+    pub fn active_main_render_context(&self) -> RenderingContext {
+        self.active_main_space()
+            .map(RenderSpaceState::main_render_context)
+            .unwrap_or(RenderingContext::user_view)
+    }
+
     /// Cached world matrix from the host transform hierarchy (parent chain only).
     ///
     /// This matches object/light/bone placement: [`RenderSpaceState::root_transform`] is **not**
@@ -99,6 +120,71 @@ impl SceneCoordinator {
         self.world_matrix(id, transform_index)
     }
 
+    /// Hierarchy world matrix with active render-context-local transform overrides applied.
+    pub fn world_matrix_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> Option<Mat4> {
+        let space = self.spaces.get(&id)?;
+        if transform_index >= space.nodes.len() {
+            return None;
+        }
+        if !space.has_transform_overrides_in_context(context) {
+            return self.world_matrix(id, transform_index);
+        }
+
+        let mut path = Vec::with_capacity(8);
+        let mut cursor = transform_index;
+        let mut broke = false;
+        let mut any_override = false;
+        for _ in 0..space.nodes.len() {
+            path.push(cursor);
+            any_override |= space
+                .overridden_local_transform(cursor as i32, context)
+                .is_some();
+            let parent = *space.node_parents.get(cursor).unwrap_or(&-1);
+            if parent < 0 || parent as usize >= space.nodes.len() || parent == cursor as i32 {
+                broke = true;
+                break;
+            }
+            cursor = parent as usize;
+        }
+        if !broke || !any_override {
+            return self.world_matrix(id, transform_index);
+        }
+
+        let mut world = Mat4::IDENTITY;
+        while let Some(node_id) = path.pop() {
+            let local = space
+                .overridden_local_transform(node_id as i32, context)
+                .unwrap_or(space.nodes[node_id]);
+            world *= render_transform_to_matrix(&local);
+        }
+        Some(world)
+    }
+
+    /// Hierarchy world matrix prepared for actual rendering.
+    ///
+    /// Overlay spaces follow legacy Unity Renderite parity: before drawing, active overlay
+    /// render spaces are re-rooted against the current `HeadOutput.transform`
+    /// (`RenderSpace.UpdateOverlayPositioning`).
+    pub fn world_matrix_for_render_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+        head_output_transform: Mat4,
+    ) -> Option<Mat4> {
+        let local = self.world_matrix_for_context(id, transform_index, context)?;
+        let space = self.spaces.get(&id)?;
+        if !space.is_overlay {
+            return Some(local);
+        }
+        Some(overlay_space_root_matrix(space, head_output_transform) * local)
+    }
+
     /// Hierarchy world matrix left-multiplied by [`RenderSpaceState::root_transform`].
     ///
     /// Use only when a host contract explicitly requires this composite. Default rendering uses
@@ -111,6 +197,24 @@ impl SceneCoordinator {
         let space = self.spaces.get(&id)?;
         let local = self.world_matrix(id, transform_index)?;
         Some(multiply_root(local, &space.root_transform))
+    }
+
+    /// Material override for the given renderer + slot in the given render context.
+    pub fn overridden_material_asset_id(
+        &self,
+        space_id: RenderSpaceId,
+        context: RenderingContext,
+        skinned: bool,
+        renderable_index: usize,
+        slot_index: usize,
+    ) -> Option<i32> {
+        let space = self.spaces.get(&space_id)?;
+        let target = if skinned {
+            MeshRendererOverrideTarget::Skinned(renderable_index as i32)
+        } else {
+            MeshRendererOverrideTarget::Static(renderable_index as i32)
+        };
+        space.overridden_material_asset_id(context, target, slot_index)
     }
 
     /// Recomputes cached world matrices for every dirty space (no-op if caches clean).
@@ -212,6 +316,24 @@ impl SceneCoordinator {
                     &transform_removals,
                 )?;
             }
+            if let Some(ref rtu) = update.render_transform_overrides_update {
+                apply_render_transform_overrides_update(
+                    space,
+                    shm,
+                    rtu,
+                    update.id,
+                    &transform_removals,
+                )?;
+            }
+            if let Some(ref rmu) = update.render_material_overrides_update {
+                apply_render_material_overrides_update(
+                    space,
+                    shm,
+                    rmu,
+                    update.id,
+                    &transform_removals,
+                )?;
+            }
             if let Some(ref lu) = update.lights_update {
                 apply_light_renderables_update(&mut self.light_cache, shm, lu, update.id)?;
             }
@@ -234,6 +356,22 @@ impl SceneCoordinator {
         }
 
         Ok(())
+    }
+}
+
+fn overlay_space_root_matrix(space: &RenderSpaceState, head_output_transform: Mat4) -> Mat4 {
+    let (scale, rotation, position) = head_output_transform.to_scale_rotation_translation();
+    let scale = filter_overlay_scale(scale);
+    let position = position - space.root_transform.position;
+    let rotation = rotation * space.root_transform.rotation;
+    Mat4::from_scale_rotation_translation(scale, rotation, position)
+}
+
+fn filter_overlay_scale(scale: Vec3) -> Vec3 {
+    if scale.x.min(scale.y).min(scale.z) <= 1e-8 {
+        Vec3::ONE
+    } else {
+        scale
     }
 }
 
@@ -271,7 +409,7 @@ impl SceneCoordinator {
 
 #[cfg(test)]
 mod tests {
-    use glam::{Quat, Vec3};
+    use glam::{Mat4, Quat, Vec3};
 
     use super::*;
     use crate::scene::render_space::RenderSpaceState;
@@ -322,5 +460,49 @@ mod tests {
             "world_matrix_including_space_root should add root translation (got x={})",
             t2.x
         );
+    }
+
+    #[test]
+    fn overlay_render_matrix_tracks_head_output_transform() {
+        let mut scene = SceneCoordinator::new();
+        let id = RenderSpaceId(7);
+        scene.spaces.insert(
+            id,
+            RenderSpaceState {
+                id,
+                is_active: true,
+                is_overlay: true,
+                root_transform: crate::shared::RenderTransform {
+                    position: Vec3::new(2.0, 3.0, 4.0),
+                    scale: Vec3::ONE,
+                    rotation: Quat::IDENTITY,
+                },
+                nodes: vec![crate::shared::RenderTransform {
+                    position: Vec3::new(1.0, 0.0, 0.0),
+                    scale: Vec3::ONE,
+                    rotation: Quat::IDENTITY,
+                }],
+                node_parents: vec![-1],
+                ..Default::default()
+            },
+        );
+        let space = scene.spaces.get(&id).expect("space");
+        let mut cache = WorldTransformCache::default();
+        compute_world_matrices_for_space(id.0, &space.nodes, &space.node_parents, &mut cache)
+            .expect("solve");
+        scene.world_caches.insert(id, cache);
+
+        let head_output = Mat4::from_scale_rotation_translation(
+            Vec3::ONE,
+            Quat::IDENTITY,
+            Vec3::new(10.0, 0.0, 0.0),
+        );
+        let world = scene
+            .world_matrix_for_render_context(id, 0, RenderingContext::user_view, head_output)
+            .expect("render matrix");
+        let t = world.col(3);
+        assert!((t.x - 9.0).abs() < 1e-4, "overlay x should follow head output");
+        assert!((t.y + 3.0).abs() < 1e-4, "overlay y should subtract space root");
+        assert!((t.z + 4.0).abs() < 1e-4, "overlay z should subtract space root");
     }
 }

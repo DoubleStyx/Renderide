@@ -49,7 +49,7 @@ impl Drop for WindowsMapping {
                 UnmapViewOfFile(self.view);
             }
         }
-        if self.map_handle != 0 && self.map_handle != INVALID_HANDLE_VALUE {
+        if !self.map_handle.is_null() && self.map_handle != INVALID_HANDLE_VALUE {
             unsafe {
                 CloseHandle(self.map_handle);
             }
@@ -114,13 +114,13 @@ fn create_or_open_file_mapping(
             )
         };
 
-        if handle != 0 && handle != INVALID_HANDLE_VALUE {
+        if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
             return Ok(handle);
         }
 
         let handle = unsafe { OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, name.as_ptr()) };
 
-        if handle != 0 && handle != INVALID_HANDLE_VALUE {
+        if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
             return Ok(handle);
         }
 

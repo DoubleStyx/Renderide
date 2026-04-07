@@ -41,7 +41,7 @@ struct JobHandle(HANDLE);
 #[cfg(windows)]
 impl Drop for JobHandle {
     fn drop(&mut self) {
-        if self.0 != 0 && self.0 != -1_isize as HANDLE {
+        if !self.0.is_null() && self.0 != -1_isize as HANDLE {
             unsafe {
                 CloseHandle(self.0);
             }
@@ -55,7 +55,7 @@ impl ChildLifetimeGroup {
         #[cfg(windows)]
         {
             let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-            if job == 0 || job == -1_isize as HANDLE {
+            if job.is_null() || job == -1_isize as HANDLE {
                 return Err(io::Error::last_os_error());
             }
             let basic = JOBOBJECT_BASIC_LIMIT_INFORMATION {

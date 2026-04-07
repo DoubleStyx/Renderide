@@ -54,7 +54,8 @@ impl From<vk::Result> for XrBootstrapError {
 
 /// Builds a Vulkan instance through OpenXR and wraps it as wgpu [`wgpu::Instance`] / [`wgpu::Device`].
 pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
-    let xr_entry = xr::Entry::linked();
+    let xr_entry = unsafe { xr::Entry::load() }
+        .map_err(|e| XrBootstrapError::Message(format!("OpenXR loader not found: {e}")))?;
     let available_extensions = xr_entry
         .enumerate_extensions()
         .map_err(|e| XrBootstrapError::Message(format!("enumerate_extensions: {e}")))?;
@@ -248,7 +249,7 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
         )
     }
     .map_err(XrBootstrapError::OpenXr)?;
-    let stage = session
+    let stage: xr::Space = session
         .create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY)
         .map_err(XrBootstrapError::OpenXr)?;
     let openxr_input = match OpenxrInput::new(&xr_instance, &session) {

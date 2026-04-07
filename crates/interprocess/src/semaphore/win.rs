@@ -6,7 +6,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::ptr::null_mut;
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Threading::{
     CreateSemaphoreW, ReleaseSemaphore, WaitForSingleObject, INFINITE,
 };
@@ -24,7 +24,7 @@ impl WinSemaphore {
             .chain(std::iter::once(0))
             .collect();
         let handle = unsafe { CreateSemaphoreW(null_mut(), 0, i32::MAX, name_wide.as_ptr()) };
-        if handle == 0 || handle == (-1_isize as _) {
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
         Ok(Self(handle))
@@ -56,7 +56,7 @@ impl WinSemaphore {
 
 impl Drop for WinSemaphore {
     fn drop(&mut self) {
-        if self.0 != 0 && self.0 != (-1_isize as _) {
+        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
             unsafe {
                 CloseHandle(self.0);
             }

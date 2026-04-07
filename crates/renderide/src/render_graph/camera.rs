@@ -9,6 +9,7 @@ use glam::{Mat4, Vec3, Vec4};
 use openxr::Fovf;
 
 use crate::scene::render_transform_to_matrix;
+use crate::shared::HeadOutputDevice;
 use crate::shared::RenderTransform;
 
 /// Minimum desktop vertical FOV in **degrees** after clamping.
@@ -35,16 +36,33 @@ pub fn clamp_desktop_fov_degrees(degrees: f32) -> f32 {
 }
 
 /// Clamps scale for view matrix construction: if any axis is nearly zero, use unit scale (legacy `filter_scale`).
-fn filter_scale_for_view(scale: Vec3) -> Vec3 {
-    const MIN: f32 = 1e-8;
-    if scale.x.abs() < MIN || scale.y.abs() < MIN || scale.z.abs() < MIN {
+pub fn filter_scale_legacy(scale: Vec3) -> Vec3 {
+    if scale.x.min(scale.y).min(scale.z) <= 1e-8 {
         Vec3::splat(1.0)
     } else {
         scale
     }
 }
 
-/// Z-flip for RH engine space → Vulkan/WebGPU-style clip (legacy `apply_view_handedness_fix`).
+/// Old Unity `HeadOutput.UpdatePositioning` clip-plane parity.
+pub fn effective_head_output_clip_planes(
+    near_clip: f32,
+    far_clip: f32,
+    output_device: HeadOutputDevice,
+    root_scale: Option<Vec3>,
+) -> (f32, f32) {
+    let near_min = if output_device == HeadOutputDevice::screen360 {
+        0.25
+    } else {
+        0.001
+    };
+    let filtered_root_scale = filter_scale_legacy(root_scale.unwrap_or(Vec3::ONE));
+    (
+        near_clip.max(near_min) * filtered_root_scale.x,
+        far_clip.max(0.5),
+    )
+}
+
 /// Z-flip for RH engine space → Vulkan/WebGPU-style clip (legacy `apply_view_handedness_fix`).
 #[inline]
 pub fn apply_view_handedness_fix(view: Mat4) -> Mat4 {
@@ -57,7 +75,7 @@ pub fn apply_view_handedness_fix(view: Mat4) -> Mat4 {
 /// Applies legacy scale filtering and handedness fix so `view_proj * world_pos` matches the old mesh path.
 pub fn view_matrix_from_render_transform(tr: &RenderTransform) -> Mat4 {
     let mut t = *tr;
-    let fs = filter_scale_for_view(Vec3::new(tr.scale.x, tr.scale.y, tr.scale.z));
+    let fs = filter_scale_legacy(Vec3::new(tr.scale.x, tr.scale.y, tr.scale.z));
     t.scale.x = fs.x;
     t.scale.y = fs.y;
     t.scale.z = fs.z;
@@ -257,6 +275,18 @@ mod tests {
         let z_off = (100.0 + 0.05) / range;
         assert!((m.z_axis.z - z_scale).abs() < 1e-5);
         assert!((m.w_axis.z - z_off).abs() < 1e-5);
+    }
+
+    #[test]
+    fn effective_head_output_clip_planes_match_unity_rules() {
+        let (near, far) = effective_head_output_clip_planes(
+            0.0001,
+            0.25,
+            HeadOutputDevice::screen360,
+            Some(Vec3::splat(2.0)),
+        );
+        assert!((near - 0.5).abs() < 1e-6);
+        assert!((far - 0.5).abs() < 1e-6);
     }
 
     #[test]

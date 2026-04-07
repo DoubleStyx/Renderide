@@ -1,5 +1,6 @@
 //! Per–render-space state mirrored from [`crate::shared::RenderSpaceUpdate`].
 
+use super::render_overrides::{RenderMaterialOverrideEntry, RenderTransformOverrideEntry};
 use crate::shared::{RenderSpaceUpdate, RenderTransform};
 
 use super::ids::RenderSpaceId;
@@ -16,6 +17,10 @@ pub struct RenderSpaceState {
     pub is_overlay: bool,
     /// `RenderSpaceUpdate.is_private`
     pub is_private: bool,
+    /// `RenderSpaceUpdate.override_view_position`
+    pub override_view_position: bool,
+    /// `RenderSpaceUpdate.view_position_is_external`
+    pub view_position_is_external: bool,
     /// Space root TRS from host.
     pub root_transform: RenderTransform,
     /// Resolved eye / root TRS for view (`override_view_position` selects overridden view).
@@ -28,6 +33,10 @@ pub struct RenderSpaceState {
     pub static_mesh_renderers: Vec<StaticMeshRenderer>,
     /// Skinned mesh renderables; separate dense table from static.
     pub skinned_mesh_renderers: Vec<SkinnedMeshRenderer>,
+    /// Render-context-local transform substitutions from the host.
+    pub render_transform_overrides: Vec<RenderTransformOverrideEntry>,
+    /// Render-context-local material substitutions from the host.
+    pub render_material_overrides: Vec<RenderMaterialOverrideEntry>,
 }
 
 impl RenderSpaceState {
@@ -36,6 +45,8 @@ impl RenderSpaceState {
         self.is_active = update.is_active;
         self.is_overlay = update.is_overlay;
         self.is_private = update.is_private;
+        self.view_position_is_external = update.view_position_is_external;
+        self.override_view_position = update.override_view_position;
         self.root_transform = update.root_transform;
         self.view_transform = if update.override_view_position {
             update.overriden_view_transform
@@ -52,12 +63,16 @@ impl Default for RenderSpaceState {
             is_active: false,
             is_overlay: false,
             is_private: false,
+            override_view_position: false,
+            view_position_is_external: false,
             root_transform: RenderTransform::default(),
             view_transform: RenderTransform::default(),
             nodes: Vec::new(),
             node_parents: Vec::new(),
             static_mesh_renderers: Vec::new(),
             skinned_mesh_renderers: Vec::new(),
+            render_transform_overrides: Vec::new(),
+            render_material_overrides: Vec::new(),
         }
     }
 }

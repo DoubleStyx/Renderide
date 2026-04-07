@@ -100,6 +100,11 @@ impl RendererRuntime {
         self.host_camera.stereo_view_proj = vp;
     }
 
+    /// Sets the active head-output transform used for legacy overlay-space positioning.
+    pub fn set_head_output_transform(&mut self, transform: Mat4) {
+        self.host_camera.head_output_transform = transform;
+    }
+
     /// Mesh deformation compute pipelines when GPU init succeeded.
     pub fn mesh_preprocess(&self) -> Option<&crate::gpu::MeshPreprocessPipelines> {
         self.backend.mesh_preprocess()
@@ -401,6 +406,7 @@ impl RendererRuntime {
     }
 
     fn on_init_data(&mut self, d: RendererInitData) {
+        self.host_camera.output_device = d.output_device;
         if let Some(ref prefix) = d.shared_memory_prefix {
             self.frontend
                 .set_shared_memory(SharedMemoryAccessor::new(prefix.clone()));
@@ -622,6 +628,11 @@ impl RendererRuntime {
                 logger::error!("scene flush_world_caches failed: {e}");
             }
         }
+        self.host_camera.head_output_transform = self
+            .scene
+            .active_main_space()
+            .map(|space| crate::scene::render_transform_to_matrix(&space.root_transform))
+            .unwrap_or(Mat4::IDENTITY);
 
         logger::trace!(
             "frame_submit frame_index={} near_clip={} far_clip={} desktop_fov_deg={} vr_active={} stub_integration_ms={:.3}",

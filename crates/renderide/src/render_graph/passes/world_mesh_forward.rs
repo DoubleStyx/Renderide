@@ -23,8 +23,8 @@ use crate::pipelines::ShaderPermutation;
 use crate::pipelines::SHADER_PERM_MULTIVIEW_STEREO;
 use crate::present::SWAPCHAIN_CLEAR_COLOR;
 use crate::render_graph::camera::{
-    clamp_desktop_fov_degrees, reverse_z_orthographic, reverse_z_perspective,
-    view_matrix_from_render_transform,
+    clamp_desktop_fov_degrees, effective_head_output_clip_planes, reverse_z_orthographic,
+    reverse_z_perspective, view_matrix_from_render_transform,
 };
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
@@ -100,7 +100,13 @@ impl RenderPass for WorldMeshForwardPass {
         let backend = &mut frame.backend;
         let store_ref = backend.material_property_store();
         let dict = MaterialDictionary::new(store_ref);
-        let draws = collect_and_sort_world_mesh_draws(frame.scene, &backend.mesh_pool, &dict);
+        let render_context = frame.scene.active_main_render_context();
+        let draws = collect_and_sort_world_mesh_draws(
+            frame.scene,
+            &backend.mesh_pool,
+            &dict,
+            render_context,
+        );
         #[cfg(feature = "debug-hud")]
         {
             let stats = world_mesh_draw_stats_from_sorted(&draws);
@@ -118,8 +124,15 @@ impl RenderPass for WorldMeshForwardPass {
 
         let (vw, vh) = frame.viewport_px;
         let aspect = vw as f32 / vh.max(1) as f32;
-        let near = hc.near_clip.max(0.01);
-        let far = hc.far_clip;
+        let (near, far) = effective_head_output_clip_planes(
+            hc.near_clip,
+            hc.far_clip,
+            hc.output_device,
+            frame
+                .scene
+                .active_main_space()
+                .map(|space| space.root_transform.scale),
+        );
         let fov_rad = clamp_desktop_fov_degrees(hc.desktop_fov_degrees).to_radians();
         let world_proj = reverse_z_perspective(aspect, fov_rad, near, far);
 
@@ -153,7 +166,12 @@ impl RenderPass for WorldMeshForwardPass {
                             (base_vp, base_vp, Mat4::IDENTITY)
                         } else {
                             let model = scene
-                                .world_matrix(item.space_id, item.node_id as usize)
+                                .world_matrix_for_render_context(
+                                    item.space_id,
+                                    item.node_id as usize,
+                                    render_context,
+                                    hc.head_output_transform,
+                                )
                                 .unwrap_or(Mat4::IDENTITY);
                             (base_vp, base_vp, model)
                         }
@@ -161,7 +179,12 @@ impl RenderPass for WorldMeshForwardPass {
                         (sl * vr_stereo_view, sr * vr_stereo_view, Mat4::IDENTITY)
                     } else {
                         let model = scene
-                            .world_matrix(item.space_id, item.node_id as usize)
+                            .world_matrix_for_render_context(
+                                item.space_id,
+                                item.node_id as usize,
+                                render_context,
+                                hc.head_output_transform,
+                            )
                             .unwrap_or(Mat4::IDENTITY);
                         (sl * vr_stereo_view, sr * vr_stereo_view, model)
                     }
@@ -176,7 +199,12 @@ impl RenderPass for WorldMeshForwardPass {
                         (base_vp, base_vp, Mat4::IDENTITY)
                     } else {
                         let model = scene
-                            .world_matrix(item.space_id, item.node_id as usize)
+                            .world_matrix_for_render_context(
+                                item.space_id,
+                                item.node_id as usize,
+                                render_context,
+                                hc.head_output_transform,
+                            )
                             .unwrap_or(Mat4::IDENTITY);
                         (base_vp, base_vp, model)
                     }

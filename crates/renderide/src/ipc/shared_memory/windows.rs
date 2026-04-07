@@ -118,7 +118,7 @@ impl Drop for SharedMemoryView {
 }
 
 fn is_valid_handle(h: HANDLE) -> bool {
-    h != 0 && h != INVALID_HANDLE_VALUE
+    !h.is_null() && h != INVALID_HANDLE_VALUE
 }
 
 fn create_or_open_file_mapping(name: &[u16], size: usize) -> io::Result<HANDLE> {

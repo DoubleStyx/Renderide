@@ -4,6 +4,7 @@ use glam::Mat4;
 
 use crate::backend::RenderBackend;
 use crate::scene::SceneCoordinator;
+use crate::shared::HeadOutputDevice;
 
 /// Latest camera-related fields from host [`crate::shared::FrameSubmitData`], updated each `frame_submit`.
 #[derive(Clone, Copy, Debug)]
@@ -18,6 +19,8 @@ pub struct HostCameraFrame {
     pub desktop_fov_degrees: f32,
     /// Whether the host reported VR output as active for this frame.
     pub vr_active: bool,
+    /// Init-time head output device selected by the host.
+    pub output_device: HeadOutputDevice,
     /// `(orthographic_half_height, near, far)` from the first [`crate::shared::CameraRenderTask`] whose
     /// parameters use orthographic projection (overlay main-camera ortho override).
     pub primary_ortho_task: Option<(f32, f32, f32)>,
@@ -25,6 +28,11 @@ pub struct HostCameraFrame {
     /// **stage** space to clip. World mesh passes combine this with object transforms; the host
     /// `view_transform` is **not** multiplied again for stereo world draws (see `world_mesh_forward`).
     pub stereo_view_proj: Option<(Mat4, Mat4)>,
+    /// Legacy Unity `HeadOutput.transform` in renderer world space.
+    ///
+    /// Overlay render spaces are positioned relative to this transform each frame
+    /// (`RenderingManager.HandleFrameUpdate -> RenderSpace.UpdateOverlayPositioning`).
+    pub head_output_transform: Mat4,
 }
 
 impl Default for HostCameraFrame {
@@ -35,8 +43,10 @@ impl Default for HostCameraFrame {
             far_clip: 10_000.0,
             desktop_fov_degrees: 60.0,
             vr_active: false,
+            output_device: HeadOutputDevice::screen,
             primary_ortho_task: None,
             stereo_view_proj: None,
+            head_output_transform: Mat4::IDENTITY,
         }
     }
 }

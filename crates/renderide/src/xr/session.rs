@@ -1,76 +1,108 @@
 //! OpenXR session frame loop: wait, begin, locate views, end.
 //!
 //! OpenXR [`xr::Posef`] is documented as transforming **from the space’s local frame to the
-//! reference frame** (e.g. view pose in stage space). The camera **view** matrix is therefore
-//! `inverse(T_ref_from_view)` after mapping the pose into engine space, not a reconstructed
-//! `look_at` from forward/up vectors.
+//! reference frame** (e.g. view pose in stage space). Renderide scene transforms currently stay in
+//! the host/Unity-style world basis, so XR poses are converted into that same basis first and only
+//! then inverted for the camera **view** matrix.
 //!
 //! ## Stereo convention (runtime `views` order)
 //!
-//! OpenXR does not guarantee `views[0]` is left eye; some runtimes use the opposite order. For
-//! **correct parallax**, this crate maps **left** view–projection and **composition layer 0** to
-//! `views[1]` and **right** to `views[0]` (see `openxr_begin_frame_and_stereo_matrices` in `app.rs`).
-//! [`headset_center_pose_from_stereo_views`] averages **views[0]** and **views[1]** in **array** order
-//! (center eye); IPC uses [`openxr_pose_to_host_tracking`], not the rendering basis.
+//! Per spec, `PRIMARY_STEREO` guarantees `views[0]` = left eye, `views[1]` = right eye.
+//! [`headset_center_pose_from_stereo_views`] averages both for the center eye pose sent over IPC.
+//! IPC uses [`openxr_pose_to_host_tracking`] (OpenXR RH -> host/Unity LH).
 
-use glam::{Mat3, Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use openxr as xr;
 use openxr::{CompositionLayerProjection, CompositionLayerProjectionView, SwapchainSubImage};
 
 use crate::render_graph::{apply_view_handedness_fix, reverse_z_perspective_openxr_fov};
+use crate::scene::render_transform_to_matrix;
+use crate::shared::RenderTransform;
 
-/// Basis that maps OpenXR stage axes (X right, Y up, −Z forward) into engine space (X left, Y up,
-/// −Z forward): `p_eng = S * p_xr` with `S = diag(−1, 1, −1)`.
+/// `T_renderer_world_from_view`: maps view-local points into the renderer's world basis.
 ///
-/// Rotation uses the same transform: `R_eng = S * R_xr * S`, so translation and orientation stay
-/// consistent (partial X/Z flips on position alone would skew yaw vs forward).
-#[inline]
-fn openxr_to_engine_basis() -> Mat3 {
-    Mat3::from_diagonal(Vec3::new(-1.0, 1.0, -1.0))
-}
-
-/// `T_ref_from_view`: maps view-local points into the reference (stage) frame.
+/// Scene/object transforms are still expressed in the host/Unity-style LH basis, so the HMD pose
+/// must be converted into that same basis before building the legacy `z_flip * inverse(camera)`
+/// view matrix used by the mesh path.
 #[inline]
 pub(crate) fn ref_from_view_matrix(pose: &xr::Posef) -> Mat4 {
     let (translation, rotation) = openxr_pose_to_engine(pose);
     Mat4::from_rotation_translation(rotation, translation)
 }
 
-/// Per-eye view–projection from OpenXR [`xr::View`] (reverse-Z, engine handedness).
+/// Per-eye view–projection from OpenXR [`xr::View`] (reverse-Z, renderer world basis).
 pub fn view_projection_from_xr_view(view: &xr::View, near: f32, far: f32) -> Mat4 {
-    let ref_from_view = ref_from_view_matrix(&view.pose);
+    view_projection_from_xr_view_aligned(view, near, far, Mat4::IDENTITY)
+}
+
+/// Per-eye view–projection from OpenXR [`xr::View`] after applying the host render-space rig
+/// transform that maps tracking space into renderer world space.
+pub fn view_projection_from_xr_view_aligned(
+    view: &xr::View,
+    near: f32,
+    far: f32,
+    world_from_tracking: Mat4,
+) -> Mat4 {
+    let ref_from_view = world_from_tracking * ref_from_view_matrix(&view.pose);
     let view_mat = apply_view_handedness_fix(ref_from_view.inverse());
     let proj = reverse_z_perspective_openxr_fov(&view.fov, near, far);
     proj * view_mat
 }
 
-/// Maps an OpenXR [`xr::Posef`] to **rendering** translation + rotation (same basis as [`view_projection_from_xr_view`]).
-///
-/// Uses reflection `S = diag(-1, 1, -1)` on position and `R_eng = S * R_xr * S` so the rigid
-/// transform stays consistent for [`Mat4::from_rotation_translation`] (OpenXR stage vs wgpu clip
-/// handedness). **Do not** use this for [`crate::shared::HeadsetState`] / FrooxEngine IPC; use
-/// [`openxr_pose_to_host_tracking`] instead (Unity-style raw tracking components).
-pub fn openxr_pose_to_engine(pose: &xr::Posef) -> (Vec3, Quat) {
-    let o = pose.orientation;
-    let quat_xr = Quat::from_xyzw(o.x, o.y, o.z, o.w);
-    let s = openxr_to_engine_basis();
-    let r_xr = Mat3::from_quat(quat_xr);
-    let r_eng = s * r_xr * s;
-    let quat_eng = Quat::from_mat3(&r_eng).normalize();
-    let p_xr = Vec3::new(pose.position.x, pose.position.y, pose.position.z);
-    let p_eng = s * p_xr;
-    (p_eng, quat_eng)
+fn averaged_stereo_fov(views: &[xr::View]) -> Option<xr::Fovf> {
+    match views {
+        [] => None,
+        [view] => Some(view.fov),
+        [left, right, ..] => {
+            let avg_angle = |a: f32, b: f32| ((a.tan() + b.tan()) * 0.5).atan();
+            Some(xr::Fovf {
+                angle_left: avg_angle(left.fov.angle_left, right.fov.angle_left),
+                angle_right: avg_angle(left.fov.angle_right, right.fov.angle_right),
+                angle_up: avg_angle(left.fov.angle_up, right.fov.angle_up),
+                angle_down: avg_angle(left.fov.angle_down, right.fov.angle_down),
+            })
+        }
+    }
 }
 
-/// Position and orientation for **host IPC** (FrooxEngine [`crate::shared::HeadsetState`]), matching
-/// Unity’s XR tracking convention: **raw** OpenXR [`xr::Posef`] components as
-/// [`glam::Vec3`] / [`glam::Quat`] (same idea as `Vector3.ToRender` / `Quaternion.ToRender` in the
-/// Unity bridge — no reflection `S` sandwich). Use this for headset and controller poses sent to the
-/// engine; use [`openxr_pose_to_engine`] only for GPU view–projection construction.
+/// Center-eye desktop mirror projection from stereo OpenXR views after applying host tracking-space
+/// alignment. This is used for the desktop window only; headset submission still uses true left/right
+/// per-eye matrices.
+pub fn center_view_projection_from_stereo_views_aligned(
+    views: &[xr::View],
+    near: f32,
+    far: f32,
+    world_from_tracking: Mat4,
+) -> Option<Mat4> {
+    let (position, rotation) = headset_center_pose_from_stereo_views(views)?;
+    let fov = averaged_stereo_fov(views)?;
+    let world_from_view = world_from_tracking * Mat4::from_rotation_translation(rotation, position);
+    let view_mat = apply_view_handedness_fix(world_from_view.inverse());
+    let proj = reverse_z_perspective_openxr_fov(&fov, near, far);
+    Some(proj * view_mat)
+}
+
+/// Maps an OpenXR [`xr::Posef`] to the renderer's world translation + rotation.
+///
+/// The renderer currently keeps scene/object transforms in the same host/Unity-style LH basis as
+/// [`crate::shared::RenderTransform`]. Use the same conversion as host tracking here so stereo HMD
+/// views and host scene transforms live in one basis. The later `apply_view_handedness_fix`
+/// handles the clip-space-facing `Z` flip used by the render graph.
+pub fn openxr_pose_to_engine(pose: &xr::Posef) -> (Vec3, Quat) {
+    openxr_pose_to_host_tracking(pose)
+}
+
+/// Position and orientation for **host IPC** (FrooxEngine [`crate::shared::HeadsetState`]).
+///
+/// FrooxEngine/Resonite uses Unity left-handed space (+Z forward), while OpenXR is right-handed
+/// (-Z forward). Conversion: mirror Z on position and reflect the rotation basis with `S*R*S`
+/// where `S = diag(1, 1, -1)`.
+///   position:  `(x, y, -z)`
+///   rotation:  `(-qx, -qy, qz, qw)`
 pub fn openxr_pose_to_host_tracking(pose: &xr::Posef) -> (Vec3, Quat) {
-    let p = Vec3::new(pose.position.x, pose.position.y, pose.position.z);
+    let p = Vec3::new(pose.position.x, pose.position.y, -pose.position.z);
     let o = pose.orientation;
-    let q = Quat::from_xyzw(o.x, o.y, o.z, o.w);
+    let q = Quat::from_xyzw(-o.x, -o.y, o.z, o.w);
     let len_sq = q.length_squared();
     let q = if len_sq.is_finite() && len_sq >= 1e-10 {
         q.normalize()
@@ -223,9 +255,9 @@ impl XrSessionState {
 
     /// Submits a stereo projection layer referencing the acquired swapchain image (`image_rect` in pixels).
     ///
-    /// Layer 0 uses [`views`]\[1] (pose + FOV) and layer 1 uses [`views`]\[0], matching the stereo
-    /// view–projection assignment (`left` from `views[1]`, `right` from `views[0]`) so multiview
-    /// `view_index` 0/1 aligns with the submitted layers and stereo parallax matches the compositor.
+    /// spec guarantees views[0] = left, views[1] = right for PRIMARY_STEREO.
+    /// layer 0 / image_array_index 0 = left eye, layer 1 / index 1 = right eye.
+    /// multiview view_index in shader matches this ordering. -- xlinka 2026-04-07
     pub fn end_frame_projection(
         &mut self,
         predicted_display_time: xr::Time,
@@ -236,8 +268,8 @@ impl XrSessionState {
         if views.len() < 2 {
             return self.end_frame_empty(predicted_display_time);
         }
-        let v0 = &views[1];
-        let v1 = &views[0];
+        let v0 = &views[0]; // left eye
+        let v1 = &views[1]; // right eye
         let pose0 = sanitize_pose_for_end_frame(v0.pose);
         let pose1 = sanitize_pose_for_end_frame(v1.pose);
         let projection_views = [
@@ -287,6 +319,7 @@ impl XrSessionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec4;
     use openxr as xr;
 
     fn pose_identity() -> xr::Posef {
@@ -324,7 +357,10 @@ mod tests {
     }
 
     #[test]
-    fn host_tracking_pose_matches_raw_openxr_components() {
+    fn host_tracking_pose_converts_to_unity_lh() {
+        // OpenXR RH (-Z forward) -> FrooxEngine/Unity LH (+Z forward):
+        //   position: (x, y, -z)
+        //   rotation: (-qx, -qy, qz, qw)
         let pose = xr::Posef {
             orientation: xr::Quaternionf {
                 x: 0.1,
@@ -339,10 +375,10 @@ mod tests {
             },
         };
         let (p, q) = openxr_pose_to_host_tracking(&pose);
-        assert!(p.abs_diff_eq(Vec3::new(1.0, 2.0, -3.0), 1e-5));
+        assert!(p.abs_diff_eq(Vec3::new(1.0, 2.0, 3.0), 1e-5));
         let o = pose.orientation;
-        let q_raw = Quat::from_xyzw(o.x, o.y, o.z, o.w).normalize();
-        assert!(q.abs_diff_eq(q_raw, 1e-4));
+        let q_expected = Quat::from_xyzw(-o.x, -o.y, o.z, o.w).normalize();
+        assert!(q.abs_diff_eq(q_expected, 1e-4));
     }
 
     #[test]
@@ -405,58 +441,99 @@ mod tests {
     }
 
     #[test]
-    fn small_pitch_x_rotation_preserves_consistent_forward_in_ref() {
-        let angle = 0.15_f32;
+    fn pitch_up_moves_forward_point_up_in_clip_space() {
+        // OpenXR uses right-handed pose rotations with -Z forward, so physical "look up"
+        // corresponds to a negative X rotation.
+        let angle = -0.3_f32;
         let q_xr = Quat::from_rotation_x(angle);
-        let pose = xr::Posef {
-            orientation: xr::Quaternionf {
-                x: q_xr.x,
-                y: q_xr.y,
-                z: q_xr.z,
-                w: q_xr.w,
+        let view = xr::View {
+            pose: xr::Posef {
+                orientation: xr::Quaternionf {
+                    x: q_xr.x,
+                    y: q_xr.y,
+                    z: q_xr.z,
+                    w: q_xr.w,
+                },
+                position: xr::Vector3f {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
             },
-            position: xr::Vector3f {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
+            fov: xr::Fovf {
+                angle_left: -0.45,
+                angle_right: 0.45,
+                angle_up: 0.45,
+                angle_down: -0.45,
             },
         };
-        let ref_from_view = ref_from_view_matrix(&pose);
-        let forward_ref = ref_from_view.transform_vector3(-Vec3::Z);
-        let (_p, q_eng) = openxr_pose_to_engine(&pose);
-        let r_eng = Mat3::from_quat(q_eng);
-        let expected = r_eng * (-Vec3::Z);
+        let vp = view_projection_from_xr_view(&view, 0.01, 100.0);
+        // Host/scene forward is +Z (Unity LH basis). Looking up should move a forward point upward
+        // in clip space, not downward.
+        let clip = vp * Vec4::new(0.0, 0.0, 1.0, 1.0);
+        let ndc_y = clip.y / clip.w;
         assert!(
-            forward_ref.abs_diff_eq(expected, 1e-3),
-            "forward_ref={forward_ref:?} expected={expected:?}"
+            ndc_y > 0.0,
+            "pitch up should move a forward point upward in clip space, clip={clip:?}"
         );
     }
 
     #[test]
-    fn ref_from_view_forward_matches_basis_rotated_neg_z() {
-        let angle = std::f32::consts::FRAC_PI_4;
+    fn yaw_right_moves_forward_point_left_in_clip_space() {
+        // OpenXR uses right-handed pose rotations with -Z forward, so physical "look right"
+        // corresponds to a negative Y rotation.
+        let angle = -0.3_f32;
         let q_xr = Quat::from_rotation_y(angle);
-        let pose = xr::Posef {
-            orientation: xr::Quaternionf {
-                x: q_xr.x,
-                y: q_xr.y,
-                z: q_xr.z,
-                w: q_xr.w,
+        let view = xr::View {
+            pose: xr::Posef {
+                orientation: xr::Quaternionf {
+                    x: q_xr.x,
+                    y: q_xr.y,
+                    z: q_xr.z,
+                    w: q_xr.w,
+                },
+                position: xr::Vector3f {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
             },
-            position: xr::Vector3f {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
+            fov: xr::Fovf {
+                angle_left: -0.45,
+                angle_right: 0.45,
+                angle_up: 0.45,
+                angle_down: -0.45,
             },
         };
-        let ref_from_view = ref_from_view_matrix(&pose);
-        let forward_ref = ref_from_view.transform_vector3(-Vec3::Z);
-        let (_p, q_eng) = openxr_pose_to_engine(&pose);
-        let r_eng = Mat3::from_quat(q_eng);
-        let expected = r_eng * (-Vec3::Z);
+        let vp = view_projection_from_xr_view(&view, 0.01, 100.0);
+        // Host/scene forward is +Z (Unity LH basis). Looking right should move a forward point to
+        // the left in clip space, not to the right.
+        let clip = vp * Vec4::new(0.0, 0.0, 1.0, 1.0);
+        let ndc_x = clip.x / clip.w;
         assert!(
-            forward_ref.abs_diff_eq(expected, 1e-3),
-            "forward_ref={forward_ref:?} expected={expected:?}"
+            ndc_x < 0.0,
+            "yaw right should move a forward point left in clip space, clip={clip:?}"
         );
     }
+}
+
+/// Reconstructs the same tracking-space -> world-space rig alignment used by Unity's
+/// `HeadOutput.UpdatePositioning` / `UpdateOverridenView`.
+///
+/// - Without override-view, the tracking origin is simply rooted at `root_transform`.
+/// - With override-view, the rig is additionally shifted/rotated/scaled so the current tracked
+///   center-eye lands on `view_transform`.
+pub fn tracking_space_to_world_matrix(
+    root_transform: &RenderTransform,
+    view_transform: &RenderTransform,
+    override_view_position: bool,
+    center_pose_tracking: Option<(Vec3, Quat)>,
+) -> Mat4 {
+    if !override_view_position {
+        return render_transform_to_matrix(root_transform);
+    }
+    let center_from_tracking = center_pose_tracking
+        .map(|(position, rotation)| Mat4::from_rotation_translation(rotation, position))
+        .unwrap_or(Mat4::IDENTITY);
+    render_transform_to_matrix(view_transform) * center_from_tracking.inverse()
 }

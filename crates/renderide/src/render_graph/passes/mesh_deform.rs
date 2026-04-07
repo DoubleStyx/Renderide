@@ -135,6 +135,8 @@ impl RenderPass for MeshDeformPass {
 
         let mut bone_cursor = 0u64;
         let mut blend_weight_cursor = 0u64;
+        let render_context = frame.scene.active_main_render_context();
+        let head_output_transform = frame.host_camera.head_output_transform;
 
         for item in work {
             record_mesh_deform(
@@ -148,6 +150,8 @@ impl RenderPass for MeshDeformPass {
                 &item.mesh,
                 item.skinned.as_deref(),
                 item.smr_node_id,
+                render_context,
+                head_output_transform,
                 &item.blend_weights,
                 &mut bone_cursor,
                 &mut blend_weight_cursor,
@@ -170,6 +174,8 @@ fn record_mesh_deform(
     mesh: &MeshDeformSnapshot,
     bone_transform_indices: Option<&[i32]>,
     smr_node_id: i32,
+    render_context: crate::shared::RenderingContext,
+    head_output_transform: Mat4,
     blend_weights: &[f32],
     bone_cursor: &mut u64,
     blend_weight_cursor: &mut u64,
@@ -330,7 +336,14 @@ fn record_mesh_deform(
         let bone_count_u = mesh.skinning_bind_matrices.len() as u32;
         scratch.ensure_bone_capacity(device, bone_count_u);
         let smr_world = (smr_node_id >= 0)
-            .then(|| scene.world_matrix(space_id, smr_node_id as usize))
+            .then(|| {
+                scene.world_matrix_for_render_context(
+                    space_id,
+                    smr_node_id as usize,
+                    render_context,
+                    head_output_transform,
+                )
+            })
             .flatten()
             .unwrap_or(Mat4::IDENTITY);
 
@@ -341,7 +354,12 @@ fn record_mesh_deform(
             let pal = if tid < 0 {
                 smr_world
             } else {
-                match scene.world_matrix(space_id, tid as usize) {
+                match scene.world_matrix_for_render_context(
+                    space_id,
+                    tid as usize,
+                    render_context,
+                    head_output_transform,
+                ) {
                     Some(world) => world * bind_mat,
                     None => smr_world,
                 }

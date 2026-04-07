@@ -32,7 +32,7 @@ unity-asset-binary = "0.2.0"
 wgpu = "29.0.1"
 winit = "0.30"
 ash = "0.38"
-openxr = { version = "0.21", default-features = false, features = ["linked"] }
+openxr = { version = "0.21", default-features = false, features = ["loaded"] }
 imgui = { version = "0.12", optional = true, features = ["tables-api"] }
 imgui-wgpu = { version = "0.28", optional = true }
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"], optional = true }

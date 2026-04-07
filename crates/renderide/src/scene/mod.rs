@@ -55,6 +55,7 @@ mod mesh_material_row;
 mod mesh_renderable;
 mod pose;
 mod reflection_probe_sh2;
+mod render_overrides;
 mod render_space;
 mod transforms_apply;
 mod world;

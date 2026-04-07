@@ -10,6 +10,7 @@ use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{resolve_raster_family, MaterialFamilyId};
 use crate::resources::MeshPool;
 use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator, StaticMeshRenderer};
+use crate::shared::RenderingContext;
 
 /// Groups draws that can share the same raster pipeline and material bind data (Unity material +
 /// [`MaterialPropertyBlock`](https://docs.unity3d.com/ScriptReference/MaterialPropertyBlock.html)-style slot0).
@@ -79,11 +80,14 @@ fn batch_key_for_slot(
 
 fn push_draws_for_renderer(
     out: &mut Vec<WorldMeshDrawItem>,
+    scene: &SceneCoordinator,
     space_id: RenderSpaceId,
     renderer: &StaticMeshRenderer,
+    renderable_index: usize,
     skinned: bool,
     submeshes: &[(u32, u32)],
     dict: &MaterialDictionary<'_>,
+    context: RenderingContext,
     mismatch_warned: &mut HashSet<i32>,
 ) {
     let slots = resolved_material_slots(renderer);
@@ -110,23 +114,22 @@ fn push_draws_for_renderer(
 
     for slot_index in 0..n {
         let slot = &slots[slot_index];
+        let material_asset_id = scene
+            .overridden_material_asset_id(space_id, context, skinned, renderable_index, slot_index)
+            .unwrap_or(slot.material_asset_id);
         let (first_index, index_count) = submeshes[slot_index];
         if index_count == 0 {
             continue;
         }
-        if slot.material_asset_id < 0 {
+        if material_asset_id < 0 {
             continue;
         }
         let lookup_ids = MaterialPropertyLookupIds {
-            material_asset_id: slot.material_asset_id,
+            material_asset_id,
             mesh_property_block_slot0: slot.property_block_id,
         };
-        let batch_key = batch_key_for_slot(
-            slot.material_asset_id,
-            slot.property_block_id,
-            skinned,
-            dict,
-        );
+        let batch_key =
+            batch_key_for_slot(material_asset_id, slot.property_block_id, skinned, dict);
         out.push(WorldMeshDrawItem {
             space_id,
             node_id: renderer.node_id,
@@ -161,6 +164,7 @@ pub fn collect_and_sort_world_mesh_draws(
     scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     dict: &MaterialDictionary<'_>,
+    context: RenderingContext,
 ) -> Vec<WorldMeshDrawItem> {
     let mut mismatch_warned = HashSet::new();
     let mut out = Vec::new();
@@ -173,7 +177,7 @@ pub fn collect_and_sort_world_mesh_draws(
             continue;
         }
 
-        for r in &space.static_mesh_renderers {
+        for (renderable_index, r) in space.static_mesh_renderers.iter().enumerate() {
             if r.mesh_asset_id < 0 || r.node_id < 0 {
                 continue;
             }
@@ -185,15 +189,18 @@ pub fn collect_and_sort_world_mesh_draws(
             }
             push_draws_for_renderer(
                 &mut out,
+                scene,
                 space_id,
                 r,
+                renderable_index,
                 false,
                 &mesh.submeshes,
                 dict,
+                context,
                 &mut mismatch_warned,
             );
         }
-        for skinned in &space.skinned_mesh_renderers {
+        for (renderable_index, skinned) in space.skinned_mesh_renderers.iter().enumerate() {
             let r = &skinned.base;
             if r.mesh_asset_id < 0 || r.node_id < 0 {
                 continue;
@@ -206,11 +213,14 @@ pub fn collect_and_sort_world_mesh_draws(
             }
             push_draws_for_renderer(
                 &mut out,
+                scene,
                 space_id,
                 r,
+                renderable_index,
                 true,
                 &mesh.submeshes,
                 dict,
+                context,
                 &mut mismatch_warned,
             );
         }

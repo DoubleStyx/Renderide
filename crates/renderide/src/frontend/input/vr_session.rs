@@ -3,6 +3,8 @@
 //! The host creates a headset device only when `headset_state` is present. The desktop accumulator
 //! leaves `InputState.vr` empty; this module supplies a minimal headset snapshot for VR
 //! [`HeadOutputDevice`](crate::shared::HeadOutputDevice) sessions so VR input initialization is safe.
+//! Before the first OpenXR view sample arrives, we keep the headset present but **not tracking**
+//! rather than inventing a zero/identity tracked pose.
 //! OpenXR supplies controller snapshots via `openxr_controllers` when the runtime has bound actions.
 
 use glam::{Quat, Vec3};
@@ -16,7 +18,8 @@ use crate::shared::{
 ///
 /// `head_pose` is the center-eye pose from the last [`crate::xr::headset_center_pose_from_stereo_views`]
 /// update ([`crate::xr::openxr_pose_to_host_tracking`], same idea as Unity XR tracking), or `None`
-/// before the first XR tick.
+/// before the first XR tick. When `None`, the headset IPC object is still present but marked
+/// `is_tracking = false` so the host can allocate the device without consuming fake origin poses.
 ///
 /// On the FrooxEngine side, **TrackedObject.Position** may differ from **RawPosition** when a
 /// **TrackingSpace** applies position/rotation offsets; compare IPC trace logs to **RawPosition**
@@ -30,12 +33,13 @@ pub fn vr_inputs_for_session(
     if !head_output_device_is_vr(session_output_device) {
         return None;
     }
+    let is_tracking = head_pose.is_some();
     let (position, rotation) = head_pose.unwrap_or((Vec3::ZERO, Quat::IDENTITY));
     Some(VRInputsState {
         user_present_in_headset: true,
         dashboard_open: false,
         headset_state: Some(HeadsetState {
-            is_tracking: true,
+            is_tracking,
             position,
             rotation,
             battery_level: 1.0,
@@ -68,7 +72,7 @@ mod tests {
         let vr = vr_inputs_for_session(HeadOutputDevice::steam_vr, None, &[]).expect("vr session");
         assert!(vr.user_present_in_headset);
         let hs = vr.headset_state.expect("headset");
-        assert!(hs.is_tracking);
+        assert!(!hs.is_tracking);
         assert_eq!(hs.connection_type, HeadsetConnection::wired);
         assert_eq!(hs.headset_model.as_deref(), Some("SteamVR"));
         assert_eq!(hs.position, Vec3::ZERO);
@@ -82,6 +86,7 @@ mod tests {
         let vr =
             vr_inputs_for_session(HeadOutputDevice::steam_vr, Some((pos, rot)), &[]).expect("vr");
         let hs = vr.headset_state.expect("headset");
+        assert!(hs.is_tracking);
         assert_eq!(hs.position, pos);
         assert_eq!(hs.rotation, rot);
     }
