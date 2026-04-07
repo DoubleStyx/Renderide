@@ -9,7 +9,6 @@ use super::resolve::{
     apply_generated_config, is_dir_writable, read_config_file, renderide_config_env_nonempty,
     resolve_config_path, resolve_save_path, ConfigResolveOutcome, ConfigSource,
 };
-use crate::launch_mode::RenderMode;
 
 /// Display-related caps (future: frame pacing when unfocused). Persisted as `[display]`.
 #[derive(Clone, Debug, PartialEq)]
@@ -97,13 +96,6 @@ pub struct DebugSettings {
     pub power_preference: PowerPreferenceSetting,
 }
 
-/// Launch-related options persisted as `[launch]`.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct LaunchSettings {
-    /// Preferred render mode when env/CLI do not override (`desktop` / `openxr`).
-    pub render_mode: Option<RenderMode>,
-}
-
 /// Runtime settings for the renderer process: defaults, merged from INI, and edited via the debug UI.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RendererSettings {
@@ -113,8 +105,6 @@ pub struct RendererSettings {
     pub rendering: RenderingSettings,
     /// Debug-only flags.
     pub debug: DebugSettings,
-    /// Launch mode hint from config (optional).
-    pub launch: LaunchSettings,
 }
 
 impl RendererSettings {
@@ -155,11 +145,6 @@ impl RendererSettings {
                 self.debug.power_preference = v;
             }
         }
-        if let Some(s) = document.get("launch", "render_mode") {
-            if let Some(v) = RenderMode::parse_token(s) {
-                self.launch.render_mode = Some(v);
-            }
-        }
     }
 
     /// Builds an [`IniDocument`] representing the full current settings (for save / round-trip).
@@ -187,16 +172,6 @@ impl RendererSettings {
             "power_preference",
             self.debug.power_preference.as_ini_str(),
         );
-        if let Some(m) = self.launch.render_mode {
-            doc.set(
-                "launch",
-                "render_mode",
-                match m {
-                    RenderMode::Desktop => RenderMode::ARG_DESKTOP,
-                    RenderMode::OpenXr => RenderMode::ARG_OPENXR,
-                },
-            );
-        }
         doc
     }
 }

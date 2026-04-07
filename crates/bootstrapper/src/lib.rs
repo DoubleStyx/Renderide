@@ -17,6 +17,7 @@ mod orchestration;
 mod paths;
 mod protocol;
 mod runtime;
+pub mod vr_prompt;
 
 pub use error::BootstrapError;
 

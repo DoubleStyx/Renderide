@@ -23,7 +23,7 @@ use crate::config::RendererSettingsHandle;
 use crate::connection::{ConnectionParams, InitError};
 use crate::frontend::RendererFrontend;
 use crate::gpu::GpuContext;
-use crate::launch_mode::RenderMode;
+use crate::output_device::head_output_device_wants_openxr;
 
 #[cfg(feature = "debug-hud")]
 use crate::diagnostics::{DebugHudInput, HostHudGatherer};
@@ -53,8 +53,6 @@ pub struct RendererRuntime {
     pub host_camera: HostCameraFrame,
     /// Process-wide renderer settings (shared with the debug HUD and the frame loop).
     settings: RendererSettingsHandle,
-    /// Desktop vs OpenXR (set from [`crate::app`] before IPC init result is sent).
-    launch_render_mode: RenderMode,
     /// Target path for persisting [`Self::settings`] from the ImGui config window.
     config_save_path: PathBuf,
     /// Throttled host CPU/RAM sampling for the debug HUD.
@@ -79,7 +77,6 @@ impl RendererRuntime {
             assets: AssetSubsystem::default(),
             host_camera: HostCameraFrame::default(),
             settings,
-            launch_render_mode: RenderMode::default(),
             config_save_path,
             #[cfg(feature = "debug-hud")]
             host_hud: HostHudGatherer::default(),
@@ -91,11 +88,6 @@ impl RendererRuntime {
     /// Shared settings store ([`crate::config::RendererSettings`]).
     pub fn settings(&self) -> &RendererSettingsHandle {
         &self.settings
-    }
-
-    /// Sets launch presentation mode for [`RendererInitResult::stereo_rendering_mode`] reporting.
-    pub fn set_launch_render_mode(&mut self, mode: RenderMode) {
-        self.launch_render_mode = mode;
     }
 
     /// Path written by the **Renderer config** ImGui window and [`crate::config::save_renderer_settings`].
@@ -195,6 +187,11 @@ impl RendererRuntime {
     /// Mutable registry (e.g. register custom [`crate::materials::MaterialPipelineFamily`]).
     pub fn material_registry_mut(&mut self) -> Option<&mut crate::materials::MaterialRegistry> {
         self.backend.material_registry_mut()
+    }
+
+    /// Host [`RendererInitData`] after connect, before [`Self::take_pending_init`] consumes it.
+    pub fn pending_init(&self) -> Option<&RendererInitData> {
+        self.frontend.pending_init()
     }
 
     /// Applies pending init once a GPU/window stack exists (e.g. window title).
@@ -355,8 +352,8 @@ impl RendererRuntime {
         let _ = self.assets.drain_pending_meta();
     }
 
-    /// Drains IPC and dispatches commands. Frame submissions are sorted before other commands from
-    /// the same poll batch.
+    /// Drains IPC and dispatches commands. Each poll batch is ordered so `renderer_init_data` runs
+    /// first, then frame submits, then the rest (see [`RendererFrontend::poll_commands`]).
     pub fn poll_ipc(&mut self) {
         let batch = self.frontend.poll_commands();
         for cmd in batch {
@@ -401,7 +398,7 @@ impl RendererRuntime {
         }
         self.frontend.set_pending_init(d.clone());
         if let Some(ref mut ipc) = self.frontend.ipc_mut() {
-            send_renderer_init_result(ipc, d.output_device, self.launch_render_mode);
+            send_renderer_init_result(ipc, d.output_device);
         }
         self.frontend.on_init_received();
     }
@@ -620,14 +617,11 @@ impl RendererRuntime {
     }
 }
 
-fn send_renderer_init_result(
-    ipc: &mut crate::ipc::DualQueueIpc,
-    output_device: HeadOutputDevice,
-    launch_render_mode: RenderMode,
-) {
-    let stereo = match launch_render_mode {
-        RenderMode::OpenXr => "OpenXR(multiview)",
-        RenderMode::Desktop => "None",
+fn send_renderer_init_result(ipc: &mut crate::ipc::DualQueueIpc, output_device: HeadOutputDevice) {
+    let stereo = if head_output_device_wants_openxr(output_device) {
+        "OpenXR(multiview)"
+    } else {
+        "None"
     };
     let result = RendererInitResult {
         actual_output_device: output_device,

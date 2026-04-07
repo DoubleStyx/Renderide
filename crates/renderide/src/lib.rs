@@ -28,9 +28,9 @@ pub mod diagnostics;
 pub mod frontend;
 pub mod gpu;
 pub mod ipc;
-/// Resolved desktop vs OpenXR launch mode (CLI, env, config).
-pub mod launch_mode;
 pub mod materials;
+/// Host `HeadOutputDevice` → VR / OpenXR GPU path ([`output_device::head_output_device_wants_openxr`]).
+pub mod output_device;
 pub mod pipelines;
 pub mod present;
 /// Desktop vs OpenXR presentation (see plan).

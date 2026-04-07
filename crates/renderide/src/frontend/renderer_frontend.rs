@@ -130,13 +130,18 @@ impl RendererFrontend {
         self.ipc.is_some()
     }
 
-    /// Poll and sort commands so frame submits run first in each batch.
+    /// Poll and sort commands so [`RendererCommand::renderer_init_data`] runs before any other work
+    /// in the same batch (then frame submits), avoiding a fatal `Uninitialized` ordering hazard.
     pub fn poll_commands(&mut self) -> Vec<RendererCommand> {
         let Some(ref mut ipc) = self.ipc else {
             return Vec::new();
         };
         let mut batch = ipc.poll();
-        batch.sort_by_key(|c| !matches!(c, RendererCommand::frame_submit_data(_)));
+        batch.sort_by_key(|c| match c {
+            RendererCommand::renderer_init_data(_) => 0u8,
+            RendererCommand::frame_submit_data(_) => 1,
+            _ => 2,
+        });
         batch
     }
 

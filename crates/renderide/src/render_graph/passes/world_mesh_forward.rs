@@ -72,10 +72,7 @@ impl RenderPass for WorldMeshForwardPass {
         let use_multiview = frame.multiview_stereo
             && hc.vr_active
             && hc.stereo_view_proj.is_some()
-            && ctx
-                .device
-                .features()
-                .contains(wgpu::Features::MULTIVIEW);
+            && ctx.device.features().contains(wgpu::Features::MULTIVIEW);
 
         let pass_desc = MaterialPipelineDesc {
             surface_format: frame.surface_format,

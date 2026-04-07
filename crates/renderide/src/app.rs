@@ -4,7 +4,7 @@
 //! [`with_maximized(true)`](winit::window::WindowAttributes::with_maximized), which winit maps to
 //! the appropriate Win32, X11, and Wayland behavior.
 //!
-//! When built with `openxr` and [`RenderMode::OpenXr`](crate::launch_mode::RenderMode::OpenXr),
+//! When built with `openxr` and the host selects a VR [`HeadOutputDevice`](crate::shared::HeadOutputDevice),
 //! the Vulkan device comes from [`crate::xr::init_wgpu_openxr`]; the mirror window uses the same
 //! device. Each frame: OpenXR `wait_frame` / `locate_views` drive per-eye matrices; the mirror
 //! uses the normal render graph. When `vr_active` and multiview are available, the headset path
@@ -12,6 +12,7 @@
 //! otherwise the mirror window is rendered and the frame ends empty.
 
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use logger::{LogComponent, LogLevel};
@@ -26,13 +27,15 @@ use crate::frontend::input::{
     apply_device_event, apply_output_state_to_window, apply_per_frame_cursor_lock_when_locked,
     apply_window_event, CursorOutputTracking, WindowInputAccumulator,
 };
+use crate::frontend::InitState;
 use crate::gpu::GpuContext;
-use crate::launch_mode::RenderMode;
+use crate::output_device::head_output_device_wants_openxr;
 use crate::present::present_clear_frame;
 #[cfg(feature = "openxr")]
 use crate::render_graph::ExternalFrameTargets;
 use crate::render_graph::GraphExecuteError;
 use crate::runtime::RendererRuntime;
+use crate::shared::{HeadOutputDevice, RendererInitData};
 
 #[cfg(feature = "openxr")]
 use openxr as xr;
@@ -47,6 +50,9 @@ struct OpenxrFrameTick {
 
 /// Interval between log flushes when using file logging.
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Max time to wait for [`RendererInitData`] after IPC connect before exiting with an error.
+const IPC_INIT_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Runs the winit event loop until exit or window close.
 pub fn run() -> Option<i32> {
@@ -71,10 +77,6 @@ pub fn run() -> Option<i32> {
     log_config_resolve_trace(&config_load.resolve);
     let settings_handle = settings_handle_from(&config_load);
     let initial_vsync = config_load.settings.rendering.vsync;
-    let render_mode = RenderMode::resolve_with_optional_dialog(
-        config_load.settings.launch.render_mode,
-        RenderMode::Desktop,
-    );
 
     let default_hook = std::panic::take_hook();
     let log_path_hook = log_path.clone();
@@ -89,7 +91,6 @@ pub fn run() -> Option<i32> {
         settings_handle,
         config_load.save_path.clone(),
     );
-    runtime.set_launch_render_mode(render_mode);
     if let Err(e) = runtime.connect_ipc() {
         if params.is_some() {
             logger::error!("IPC connect failed: {e}");
@@ -99,10 +100,13 @@ pub fn run() -> Option<i32> {
 
     if params.is_some() && runtime.is_ipc_connected() {
         logger::info!("IPC connected (Primary/Background)");
+        if wait_for_renderer_init_data(&mut runtime).is_err() {
+            return Some(1);
+        }
     } else if params.is_some() {
         logger::warn!("IPC params present but connection state unexpected");
     } else {
-        logger::info!("Standalone mode (no -QueueName/-QueueCapacity)");
+        logger::info!("Standalone mode (no -QueueName/-QueueCapacity; desktop GPU, no host init)");
     }
 
     let event_loop = match EventLoop::new() {
@@ -116,7 +120,6 @@ pub fn run() -> Option<i32> {
     let mut app = RenderideApp {
         runtime,
         initial_vsync,
-        launch_render_mode: render_mode,
         window: None,
         gpu: None,
         exit_code: None,
@@ -137,14 +140,42 @@ pub fn run() -> Option<i32> {
     app.exit_code
 }
 
+/// Blocks until [`RendererInitData`] arrives or IPC fails (non-standalone only).
+fn wait_for_renderer_init_data(runtime: &mut RendererRuntime) -> Result<(), ()> {
+    let deadline = Instant::now() + IPC_INIT_WAIT_TIMEOUT;
+    while runtime.init_state() == InitState::Uninitialized {
+        if Instant::now() > deadline {
+            logger::error!("Timed out waiting for RendererInitData from host");
+            return Err(());
+        }
+        runtime.poll_ipc();
+        if runtime.fatal_error() {
+            logger::error!("Fatal IPC error while waiting for RendererInitData");
+            return Err(());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+/// Standalone runs have no host init; IPC runs should have [`RendererInitData`] before the window exists.
+fn effective_output_device_for_gpu(pending: Option<&RendererInitData>) -> HeadOutputDevice {
+    pending
+        .map(|i| i.output_device)
+        .unwrap_or(HeadOutputDevice::screen)
+}
+
+fn apply_window_title_from_init(window: &Arc<Window>, init: &RendererInitData) {
+    if let Some(ref title) = init.window_title {
+        window.set_title(title);
+    }
+}
+
 /// Winit-owned state: [`RendererRuntime`], plus lazily created window and [`GpuContext`].
 struct RenderideApp {
     runtime: RendererRuntime,
     /// VSync flag used for the initial [`GpuContext::new`] before live updates from settings.
     initial_vsync: bool,
-    /// Resolved desktop vs OpenXR (after optional dialog). Read when `openxr` is enabled for GPU bootstrap.
-    #[cfg_attr(not(feature = "openxr"), allow(dead_code))]
-    launch_render_mode: RenderMode,
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
     exit_code: Option<i32>,
@@ -196,15 +227,16 @@ impl RenderideApp {
             }
         };
 
+        let output_device = effective_output_device_for_gpu(self.runtime.pending_init());
+        let wants_openxr = head_output_device_wants_openxr(output_device);
+
         if let Some(init) = self.runtime.take_pending_init() {
-            if let Some(ref title) = init.window_title {
-                window.set_title(title);
-            }
+            apply_window_title_from_init(&window, &init);
         }
 
         #[cfg(feature = "openxr")]
         {
-            if matches!(self.launch_render_mode, RenderMode::OpenXr) {
+            if wants_openxr {
                 match crate::xr::init_wgpu_openxr() {
                     Ok(h) => {
                         match GpuContext::new_from_openxr_bootstrap(
@@ -227,16 +259,12 @@ impl RenderideApp {
                                 logger::warn!(
                                     "OpenXR mirror surface failed; falling back to desktop GPU: {e}"
                                 );
-                                self.launch_render_mode = RenderMode::Desktop;
-                                self.runtime.set_launch_render_mode(RenderMode::Desktop);
                                 self.init_desktop_gpu(&window, event_loop);
                             }
                         }
                     }
                     Err(e) => {
                         logger::warn!("OpenXR init failed; falling back to desktop: {e}");
-                        self.launch_render_mode = RenderMode::Desktop;
-                        self.runtime.set_launch_render_mode(RenderMode::Desktop);
                         self.init_desktop_gpu(&window, event_loop);
                     }
                 }

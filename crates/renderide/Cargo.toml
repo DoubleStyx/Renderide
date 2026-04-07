@@ -37,7 +37,6 @@ ash = { version = "0.38", optional = true }
 openxr = { version = "0.21", optional = true, default-features = false, features = [
     "linked",
 ] }
-rfd = "0.15"
 imgui = { version = "0.12", optional = true, features = ["tables-api"] }
 imgui-wgpu = { version = "0.28", optional = true }
 sysinfo = { version = "0.33", default-features = false, features = ["system"], optional = true }
