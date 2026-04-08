@@ -72,8 +72,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var albedo = mat.color;
     if ((mat.flags & 1u) != 0u) {
         let st = mat.tex_st;
-        let uv = in.uv * st.xy + st.zw;
-        let t = textureSample(tex_main, samp_main, uv);
+        let uv_st = in.uv * st.xy + st.zw;
+        // WebGPU samples with v=0 at the top row of stored texels; Unity mesh UVs use
+        // bottom-left texture space for `_Tex` / `_Tex_ST`. Flip V so imagery matches the host.
+        let uv_sample = vec2<f32>(uv_st.x, 1.0 - uv_st.y);
+        let t = textureSample(tex_main, samp_main, uv_sample);
         albedo = albedo * t;
     }
     if ((mat.flags & 2u) != 0u) {
