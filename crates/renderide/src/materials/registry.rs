@@ -9,6 +9,7 @@ use crate::pipelines::ShaderPermutation;
 use super::builtin_solid::SolidColorFamily;
 use super::cache::MaterialPipelineCache;
 use super::family::{MaterialFamilyId, MaterialPipelineDesc, MaterialPipelineFamily};
+use super::manifest_stem::{ManifestStemMaterialFamily, MANIFEST_RASTER_FAMILY_ID};
 use super::resolve_raster::resolve_raster_family;
 use super::router::MaterialRouter;
 use super::stem_manifest::StemResolver;
@@ -76,7 +77,7 @@ impl MaterialRegistry {
         self.router.remove_shader_family(shader_asset_id);
     }
 
-    /// Resolves a pipeline for a host shader asset (via static or default router).
+    /// Resolves a pipeline for a host shader asset (via router + manifest stem when applicable).
     pub fn pipeline_for_shader_asset(
         &mut self,
         shader_asset_id: i32,
@@ -84,16 +85,27 @@ impl MaterialRegistry {
         permutation: ShaderPermutation,
     ) -> Option<&wgpu::RenderPipeline> {
         let id = resolve_raster_family(shader_asset_id, &self.router);
-        self.pipeline_for_family(id, desc, permutation)
+        if id == MANIFEST_RASTER_FAMILY_ID {
+            let stem = self.stem_for_shader_asset(shader_asset_id)?;
+            let family = ManifestStemMaterialFamily::new(Arc::from(stem));
+            Some(self.cache.get_or_create(&family, desc, permutation))
+        } else {
+            self.pipeline_for_family(id, desc, permutation)
+        }
     }
 
     /// Looks up `family_id` and returns a cached or new pipeline.
+    ///
+    /// Returns [`None`] for [`MANIFEST_RASTER_FAMILY_ID`] — use [`Self::pipeline_for_shader_asset`].
     pub fn pipeline_for_family(
         &mut self,
         family_id: MaterialFamilyId,
         desc: &MaterialPipelineDesc,
         permutation: ShaderPermutation,
     ) -> Option<&wgpu::RenderPipeline> {
+        if family_id == MANIFEST_RASTER_FAMILY_ID {
+            return None;
+        }
         let family = self.families.get(&family_id)?.clone();
         Some(self.cache.get_or_create(family.as_ref(), desc, permutation))
     }

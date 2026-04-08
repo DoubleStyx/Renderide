@@ -1,11 +1,12 @@
 //! Coarse classification of host shaders into [`MaterialFamilyId`] for [`MaterialRegistry`](crate::materials::MaterialRegistry).
 //!
-//! Extraction of Unity logical names lives in [`super::logical_name`] and [`super::unity_asset`]. Only
-//! [`SOLID_COLOR_FAMILY_ID`](crate::materials::SOLID_COLOR_FAMILY_ID) is registered today; distinct
-//! host shader kinds still flow through classification so future families can switch on
-//! [`CoarseShaderKind`] without re-parsing bundles.
+//! Extraction of Unity logical names lives in [`super::logical_name`] and [`super::unity_asset`].
+//! Names listed in the embedded shader manifest resolve to [`MANIFEST_RASTER_FAMILY_ID`](crate::materials::MANIFEST_RASTER_FAMILY_ID);
+//! other kinds use [`DEBUG_WORLD_NORMALS_FAMILY_ID`](crate::materials::DEBUG_WORLD_NORMALS_FAMILY_ID) until implemented.
 
-use crate::materials::{MaterialFamilyId, DEBUG_WORLD_NORMALS_FAMILY_ID};
+pub use crate::assets::util::normalize_unity_shader_lookup_key;
+use crate::materials::DEBUG_WORLD_NORMALS_FAMILY_ID;
+use crate::materials::{manifest_stem_for_unity_name, MaterialFamilyId, MANIFEST_RASTER_FAMILY_ID};
 use crate::shared::ShaderUpload;
 
 use super::logical_name::{
@@ -76,14 +77,14 @@ pub fn classify_shader(unity_name: Option<&str>, path_hint: Option<&str>) -> Coa
 /// Maps Unity logical name + coarse kind to a registered [`MaterialFamilyId`] (see `resolve_shader_upload`).
 fn material_family_for_kind(kind: CoarseShaderKind, unity_name: Option<&str>) -> MaterialFamilyId {
     if let Some(name) = unity_name {
+        if manifest_stem_for_unity_name(name).is_some() {
+            return MANIFEST_RASTER_FAMILY_ID;
+        }
         let key = normalize_unity_shader_lookup_key(name);
         if key.contains("ui_unlit") || key.contains("uiunlit") {
             return DEBUG_WORLD_NORMALS_FAMILY_ID;
         }
         if key.contains("ui_text") || key.contains("uitext") || key.contains("ui_textunlit") {
-            return DEBUG_WORLD_NORMALS_FAMILY_ID;
-        }
-        if key == "unlit" || key.contains("world_unlit") {
             return DEBUG_WORLD_NORMALS_FAMILY_ID;
         }
         if key.contains("pbsmetallic")
@@ -99,21 +100,6 @@ fn material_family_for_kind(kind: CoarseShaderKind, unity_name: Option<&str>) ->
         }
         CoarseShaderKind::Unknown => DEBUG_WORLD_NORMALS_FAMILY_ID,
     }
-}
-
-/// Normalizes a Unity `Shader "…"` label or path for stable dictionary lookup (whitespace, `/` → `_`, lowercased).
-pub fn normalize_unity_shader_lookup_key(name: &str) -> String {
-    let token = name.split_whitespace().next().unwrap_or(name).trim();
-    token
-        .chars()
-        .map(|c| {
-            if c.is_whitespace() || c == '/' {
-                '_'
-            } else {
-                c.to_ascii_lowercase()
-            }
-        })
-        .collect()
 }
 
 /// Returns true when the first whitespace-delimited token of `name` matches the PBS metallic family.
@@ -221,6 +207,7 @@ pub enum WorldUnlitFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::materials::{DEBUG_WORLD_NORMALS_FAMILY_ID, MANIFEST_RASTER_FAMILY_ID};
 
     #[test]
     fn classify_ui_path_hint() {
@@ -262,6 +249,27 @@ mod tests {
         };
         let r = resolve_shader_upload(&u);
         assert_eq!(r.unity_shader_name.as_deref(), Some("UI/Unlit"));
+        assert_eq!(r.family, DEBUG_WORLD_NORMALS_FAMILY_ID);
+    }
+
+    #[test]
+    fn manifest_unity_name_maps_to_manifest_raster_family() {
+        let u = ShaderUpload {
+            asset_id: 4,
+            file: Some("Shader \"Unlit\"\n{\n".to_string()),
+        };
+        let r = resolve_shader_upload(&u);
+        assert_eq!(r.unity_shader_name.as_deref(), Some("Unlit"));
+        assert_eq!(r.family, MANIFEST_RASTER_FAMILY_ID);
+    }
+
+    #[test]
+    fn pbs_metallic_not_in_manifest_uses_debug_family() {
+        let u = ShaderUpload {
+            asset_id: 5,
+            file: Some("Shader \"PBSMetallic\"\n{\n".to_string()),
+        };
+        let r = resolve_shader_upload(&u);
         assert_eq!(r.family, DEBUG_WORLD_NORMALS_FAMILY_ID);
     }
 }

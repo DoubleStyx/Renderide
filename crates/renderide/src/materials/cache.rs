@@ -10,9 +10,11 @@ use super::family::{MaterialFamilyId, MaterialPipelineDesc, MaterialPipelineFami
 use super::wgsl_reflect::reflect_raster_material_wgsl;
 
 /// Key for [`MaterialPipelineCache`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MaterialPipelineCacheKey {
     pub family_id: MaterialFamilyId,
+    /// Present for [`super::MANIFEST_RASTER_FAMILY_ID`] so distinct manifest stems do not share a pipeline.
+    pub manifest_stem: Option<Arc<str>>,
     pub permutation: ShaderPermutation,
     /// From [`super::reflect_raster_material_wgsl`] when the shader matches the frame-globals contract; `0` if reflection failed (e.g. no `@group(0)`).
     pub layout_fingerprint: u64,
@@ -56,6 +58,7 @@ impl MaterialPipelineCache {
             .unwrap_or(0);
         let key = MaterialPipelineCacheKey {
             family_id: family.family_id(),
+            manifest_stem: family.manifest_stem(),
             permutation,
             layout_fingerprint,
             surface_format: desc.surface_format,

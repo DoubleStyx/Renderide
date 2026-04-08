@@ -18,7 +18,9 @@ use glam::Mat4;
 
 use crate::assets::material::MaterialDictionary;
 use crate::gpu::{write_per_draw_uniform_slab, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE};
-use crate::materials::{MaterialPipelineDesc, MaterialRouter, DEBUG_WORLD_NORMALS_FAMILY_ID};
+use crate::materials::{
+    MaterialPipelineDesc, MaterialRouter, DEBUG_WORLD_NORMALS_FAMILY_ID, MANIFEST_RASTER_FAMILY_ID,
+};
 use crate::pipelines::ShaderPermutation;
 use crate::pipelines::SHADER_PERM_MULTIVIEW_STEREO;
 use crate::present::SWAPCHAIN_CLEAR_COLOR;
@@ -98,8 +100,6 @@ impl RenderPass for WorldMeshForwardPass {
         };
 
         let backend = &mut frame.backend;
-        let store_ref = backend.material_property_store();
-        let dict = MaterialDictionary::new(store_ref);
         let render_context = frame.scene.active_main_render_context();
         let fallback_router = MaterialRouter::new(DEBUG_WORLD_NORMALS_FAMILY_ID);
         let router_ref = backend
@@ -107,13 +107,16 @@ impl RenderPass for WorldMeshForwardPass {
             .as_ref()
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
-        let draws = collect_and_sort_world_mesh_draws(
-            frame.scene,
-            &backend.mesh_pool,
-            &dict,
-            router_ref,
-            render_context,
-        );
+        let draws = {
+            let dict = MaterialDictionary::new(backend.material_property_store());
+            collect_and_sort_world_mesh_draws(
+                frame.scene,
+                &backend.mesh_pool,
+                &dict,
+                router_ref,
+                render_context,
+            )
+        };
         #[cfg(feature = "debug-hud")]
         {
             let stats = world_mesh_draw_stats_from_sorted(&draws);
@@ -247,13 +250,9 @@ impl RenderPass for WorldMeshForwardPass {
             return Ok(());
         };
 
-        let (Some(dbg), Some(reg)) = (
-            backend.debug_draw.as_mut(),
-            backend.material_registry.as_mut(),
-        ) else {
+        let Some(debug_bind_group) = backend.debug_draw.as_ref().map(|d| d.bind_group.clone()) else {
             return Ok(());
         };
-        let debug_bind_group = &dbg.bind_group;
 
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("world-mesh-forward"),
@@ -289,35 +288,60 @@ impl RenderPass for WorldMeshForwardPass {
         for (draw_idx, item) in draws.iter().enumerate() {
             if last_batch_key.as_ref() != Some(&item.batch_key) {
                 last_batch_key = Some(item.batch_key);
-                match reg.pipeline_for_family(item.batch_key.family_id, &pass_desc, shader_perm) {
-                    Some(pipeline) => {
-                        rpass.set_pipeline(pipeline);
-                        pipeline_ok = true;
-                    }
-                    None => {
-                        logger::trace!(
-                            "WorldMeshForward: no pipeline for family {:?}, skipping draws until registered",
-                            item.batch_key.family_id
-                        );
-                        pipeline_ok = false;
-                    }
-                }
+                let shader_asset_id = item.batch_key.shader_asset_id;
+                pipeline_ok = match backend.material_registry.as_mut() {
+                    None => false,
+                    Some(reg) => match reg.pipeline_for_shader_asset(shader_asset_id, &pass_desc, shader_perm)
+                    {
+                        Some(pipeline) => {
+                            rpass.set_pipeline(pipeline);
+                            true
+                        }
+                        None => {
+                            logger::trace!(
+                                "WorldMeshForward: no pipeline for shader_asset_id {:?} family {:?}, skipping draws until registered",
+                                shader_asset_id,
+                                item.batch_key.family_id
+                            );
+                            false
+                        }
+                    },
+                };
             }
 
             if !pipeline_ok {
                 continue;
             }
 
-            let _ = &item.lookup_ids;
-
             let dynamic_offset = (draw_idx * PER_DRAW_UNIFORM_STRIDE) as u32;
-            // Raster convention: @group(0) frame globals, @group(1) material properties (textures/uniforms),
-            // @group(2) per-draw dynamic uniform slab. Placeholder empty bind group at 1 until property uploads wire real layouts.
             rpass.set_bind_group(0, frame_bg_arc.as_ref(), &[]);
-            rpass.set_bind_group(1, empty_bg_arc.as_ref(), &[]);
-            rpass.set_bind_group(2, debug_bind_group, &[dynamic_offset]);
+            if item.batch_key.family_id == MANIFEST_RASTER_FAMILY_ID {
+                let q = ctx
+                    .queue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(mb) = backend.manifest_material_bind() {
+                    let bg = mb.world_unlit_bind_group(
+                        &q,
+                        backend.material_property_store(),
+                        backend.texture_pool(),
+                        item.lookup_ids,
+                    );
+                    rpass.set_bind_group(1, bg.as_ref(), &[]);
+                } else {
+                    rpass.set_bind_group(1, empty_bg_arc.as_ref(), &[]);
+                }
+            } else {
+                rpass.set_bind_group(1, empty_bg_arc.as_ref(), &[]);
+            }
+            rpass.set_bind_group(2, debug_bind_group.as_ref(), &[dynamic_offset]);
 
-            draw_mesh_submesh(&mut rpass, item, &backend.mesh_pool);
+            draw_mesh_submesh(
+                &mut rpass,
+                item,
+                &backend.mesh_pool,
+                item.batch_key.family_id == MANIFEST_RASTER_FAMILY_ID,
+            );
         }
 
         Ok(())
@@ -328,6 +352,7 @@ fn draw_mesh_submesh(
     rpass: &mut wgpu::RenderPass<'_>,
     item: &WorldMeshDrawItem,
     mesh_pool: &crate::resources::MeshPool,
+    manifest_uv: bool,
 ) {
     if item.mesh_asset_id < 0 || item.node_id < 0 || item.index_count == 0 {
         return;
@@ -358,6 +383,12 @@ fn draw_mesh_submesh(
 
     rpass.set_vertex_buffer(0, pos.slice(..));
     rpass.set_vertex_buffer(1, normals.slice(..));
+    if manifest_uv {
+        let Some(uv) = mesh.uv0_buffer.as_deref() else {
+            return;
+        };
+        rpass.set_vertex_buffer(2, uv.slice(..));
+    }
     rpass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
 
     let first = item.first_index;

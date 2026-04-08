@@ -346,6 +346,47 @@ pub fn extract_float3_position_normal_as_vec4_streams(
     Some((pos_out, nrm_out))
 }
 
+/// Dense `vec2<f32>` UV stream (`8` bytes per vertex) for manifest materials (e.g. world Unlit).
+///
+/// When [`VertexAttributeType::uv0`] is missing or not `float32`×2, returns **zeros** so a vertex buffer
+/// slot can always be bound.
+pub fn uv0_float2_stream_bytes(
+    vertex_data: &[u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &[VertexAttributeDescriptor],
+) -> Option<Vec<u8>> {
+    if vertex_count == 0 || stride == 0 {
+        return None;
+    }
+    let need = vertex_count.checked_mul(stride)?;
+    if vertex_data.len() < need {
+        return None;
+    }
+    let mut out = vec![0u8; vertex_count * 8];
+    let Some((off, sz)) = attribute_offset_and_size(attrs, VertexAttributeType::uv0) else {
+        return Some(out);
+    };
+    let uv_attr = attrs
+        .iter()
+        .find(|a| (a.attribute as i16) == (VertexAttributeType::uv0 as i16))?;
+    if uv_attr.format != VertexAttributeFormat::float32 || uv_attr.dimensions != 2 {
+        return Some(out);
+    }
+    if sz != 8 {
+        return Some(out);
+    }
+    for i in 0..vertex_count {
+        let base = i * stride + off;
+        if base + 8 > vertex_data.len() {
+            return None;
+        }
+        let o = i * 8;
+        out[o..o + 8].copy_from_slice(&vertex_data[base..base + 8]);
+    }
+    Some(out)
+}
+
 /// Splits the mesh tail `bone_weights` region into GPU storage buffers for the skinning shader:
 /// `array<vec4<u32>>` joint indices and `array<vec4<f32>>` weights per vertex.
 ///
@@ -497,5 +538,27 @@ mod tests {
         let stored = Mat4::from_cols_array_2d(&raw);
         assert!(stored.abs_diff_eq(expected, 1e-5));
         assert!(!stored.abs_diff_eq(expected.inverse(), 1e-2));
+    }
+
+    #[test]
+    fn uv0_float2_zeros_when_missing() {
+        let attrs = [
+            VertexAttributeDescriptor {
+                attribute: VertexAttributeType::position,
+                format: VertexAttributeFormat::float32,
+                dimensions: 3,
+            },
+            VertexAttributeDescriptor {
+                attribute: VertexAttributeType::normal,
+                format: VertexAttributeFormat::float32,
+                dimensions: 3,
+            },
+        ];
+        let stride = 24usize;
+        let verts = 2usize;
+        let raw = vec![0u8; verts * stride];
+        let out = uv0_float2_stream_bytes(&raw, verts, stride, &attrs).expect("uv stream");
+        assert_eq!(out.len(), verts * 8);
+        assert!(out.iter().all(|&b| b == 0));
     }
 }

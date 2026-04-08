@@ -161,6 +161,64 @@ fn main() {
             continue;
         }
 
+        if stem == "world_unlit" {
+            let material_source =
+                fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+
+            let meta_path = materials_dir.join("world_unlit.meta.json");
+            let unity_names: Vec<String> = if meta_path.is_file() {
+                let raw = fs::read_to_string(&meta_path)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", meta_path.display()));
+                let v: serde_json::Value = serde_json::from_str(&raw)
+                    .unwrap_or_else(|e| panic!("parse {}: {e}", meta_path.display()));
+                v.get("unity_names")
+                    .and_then(|u| u.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            let variants = [
+                ("world_unlit_default", false),
+                ("world_unlit_multiview", true),
+            ];
+            for (target_stem, multiview) in variants {
+                let mut defs = HashMap::new();
+                defs.insert("MULTIVIEW".to_string(), ShaderDefValue::Bool(multiview));
+                let module = compose_material(
+                    &globals_source,
+                    &material_source,
+                    path.to_str().expect("utf8 path"),
+                    defs,
+                );
+                let label = format!("{target_stem} (MULTIVIEW={multiview})");
+                let out_path = target_dir.join(format!("{target_stem}.wgsl"));
+                validate_and_write_wgsl(&module, &label, &out_path);
+
+                let entry_names = if multiview {
+                    Vec::new()
+                } else {
+                    unity_names.clone()
+                };
+                manifest_entries.push(serde_json::json!({
+                    "stem": target_stem,
+                    "file": format!("shaders/target/{target_stem}.wgsl"),
+                    "unity_names": entry_names,
+                }));
+
+                embedded_arms.push_str(&format!(
+                    "        \"{target_stem}\" => Some(include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/shaders/target/{target_stem}.wgsl\"))),\n"
+                ));
+                output_stems.push(target_stem.to_string());
+            }
+            continue;
+        }
+
         let material_source =
             fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
 

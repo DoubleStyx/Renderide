@@ -1,6 +1,7 @@
 //! Uniform slab and bind group for [`crate::pipelines::raster::DebugWorldNormalsFamily`] draws.
 
 use std::num::NonZeroU64;
+use std::sync::Arc;
 
 use crate::gpu::{INITIAL_PER_DRAW_UNIFORM_SLOTS, PER_DRAW_UNIFORM_STRIDE};
 use crate::pipelines::raster::DebugWorldNormalsFamily;
@@ -9,7 +10,7 @@ use crate::pipelines::raster::DebugWorldNormalsFamily;
 pub struct DebugDrawResources {
     /// Packed rows (`slot_count * 256` bytes).
     pub per_draw_uniforms: wgpu::Buffer,
-    pub bind_group: wgpu::BindGroup,
+    pub bind_group: Arc<wgpu::BindGroup>,
     slot_count: usize,
 }
 
@@ -25,7 +26,7 @@ impl DebugDrawResources {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind_group = Self::make_bind_group(device, &layout, &per_draw_uniforms);
+        let bind_group = Arc::new(Self::make_bind_group(device, &layout, &per_draw_uniforms));
         Self {
             per_draw_uniforms,
             bind_group,
@@ -70,7 +71,7 @@ impl DebugDrawResources {
             mapped_at_creation: false,
         });
         let layout = DebugWorldNormalsFamily::per_draw_bind_group_layout(device);
-        let bind_group = Self::make_bind_group(device, &layout, &per_draw_uniforms);
+        let bind_group = Arc::new(Self::make_bind_group(device, &layout, &per_draw_uniforms));
         self.per_draw_uniforms = per_draw_uniforms;
         self.bind_group = bind_group;
         self.slot_count = next;

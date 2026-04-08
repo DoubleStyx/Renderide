@@ -18,6 +18,8 @@ use crate::shared::RenderingContext;
 pub struct MaterialDrawBatchKey {
     /// Resolved from host `set_shader` → [`resolve_raster_family`].
     pub family_id: MaterialFamilyId,
+    /// Host shader asset id from material `set_shader` (or `-1` when unknown).
+    pub shader_asset_id: i32,
     /// Material asset id for this submesh slot (or `-1` when missing).
     pub material_asset_id: i32,
     /// Per-slot property block id when present; `None` is distinct from `Some` for batching.
@@ -73,6 +75,7 @@ fn batch_key_for_slot(
         .unwrap_or(-1);
     MaterialDrawBatchKey {
         family_id: resolve_raster_family(shader_asset_id, router),
+        shader_asset_id,
         material_asset_id,
         property_block_slot0: property_block_id,
         skinned,
@@ -361,6 +364,7 @@ mod tests {
             },
             batch_key: MaterialDrawBatchKey {
                 family_id: DEBUG_WORLD_NORMALS_FAMILY_ID,
+                shader_asset_id: -1,
                 material_asset_id: mid,
                 property_block_slot0: pb,
                 skinned,
@@ -388,12 +392,14 @@ mod tests {
     fn property_block_splits_batch_keys() {
         let a = MaterialDrawBatchKey {
             family_id: DEBUG_WORLD_NORMALS_FAMILY_ID,
+            shader_asset_id: -1,
             material_asset_id: 1,
             property_block_slot0: None,
             skinned: false,
         };
         let b = MaterialDrawBatchKey {
             family_id: DEBUG_WORLD_NORMALS_FAMILY_ID,
+            shader_asset_id: -1,
             material_asset_id: 1,
             property_block_slot0: Some(99),
             skinned: false,

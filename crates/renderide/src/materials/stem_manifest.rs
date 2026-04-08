@@ -1,10 +1,11 @@
 //! Build-time [`crate::embedded_shaders::SHADER_MANIFEST_JSON`] → Unity logical name → target WGSL stem.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use crate::assets::shader::route::normalize_unity_shader_lookup_key;
+use crate::assets::util::normalize_unity_shader_lookup_key;
 
 /// One material entry from `shaders/target/manifest.json`.
 #[derive(Debug, Deserialize)]
@@ -66,6 +67,17 @@ impl StemResolver {
     }
 }
 
+/// Returns the composed WGSL stem for `name` when it appears in the embedded manifest (used for routing).
+///
+/// Uses a process-wide [`StemResolver`] built from [`ShaderManifest::from_embedded_json`].
+pub fn manifest_stem_for_unity_name(name: &str) -> Option<String> {
+    static RESOLVER: OnceLock<StemResolver> = OnceLock::new();
+    RESOLVER
+        .get_or_init(StemResolver::from_embedded_manifest)
+        .stem_for_unity_name(name)
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,5 +86,14 @@ mod tests {
     fn embedded_manifest_parses() {
         let m = ShaderManifest::from_embedded_json();
         assert!(!m.materials.is_empty());
+    }
+
+    #[test]
+    fn manifest_stem_resolves_unlit() {
+        let s = super::manifest_stem_for_unity_name("Unlit").expect("manifest lists Unlit");
+        assert!(
+            s.starts_with("world_unlit"),
+            "expected world_unlit stem, got {s}"
+        );
     }
 }

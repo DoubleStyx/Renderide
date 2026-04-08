@@ -11,12 +11,14 @@
 mod debug_draw;
 mod frame_gpu;
 mod light_gpu;
+mod manifest_material_bind;
 mod mesh_deform_scratch;
 mod render_backend;
 
 pub use debug_draw::DebugDrawResources;
 pub use frame_gpu::{empty_material_bind_group_layout, EmptyMaterialBindGroup, FrameGpuResources};
 pub use light_gpu::{order_lights_for_clustered_shading, GpuLight, MAX_LIGHTS};
+pub use manifest_material_bind::ManifestMaterialBindResources;
 pub use mesh_deform_scratch::{advance_slab_cursor, MeshDeformScratch};
 pub use render_backend::{
     RenderBackend, MAX_PENDING_MATERIAL_BATCHES, MAX_PENDING_MESH_UPLOADS,

@@ -494,4 +494,14 @@ mod tests {
         validate_per_draw_group2(&r.per_draw_entries).expect("per_draw");
         assert_ne!(r.layout_fingerprint, 0);
     }
+
+    #[test]
+    fn reflect_world_unlit_default_embedded() {
+        let wgsl =
+            crate::embedded_shaders::embedded_target_wgsl("world_unlit_default").expect("stem");
+        let r = reflect_raster_material_wgsl(wgsl).expect("reflect");
+        assert_eq!(r.material_entries.len(), 3);
+        validate_per_draw_group2(&r.per_draw_entries).expect("per_draw");
+        assert_ne!(r.layout_fingerprint, 0);
+    }
 }

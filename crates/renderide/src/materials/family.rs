@@ -1,6 +1,7 @@
 //! [`MaterialPipelineFamily`]: WGSL + render pipeline layout for one material class.
 
 use std::num::NonZeroU32;
+use std::sync::Arc;
 
 use crate::pipelines::ShaderPermutation;
 
@@ -44,4 +45,9 @@ pub trait MaterialPipelineFamily: Send + Sync {
         desc: &MaterialPipelineDesc,
         wgsl_source: &str,
     ) -> wgpu::RenderPipeline;
+
+    /// When [`Some`], [`super::MaterialPipelineCache`] keys pipelines by this stem for manifest raster shaders.
+    fn manifest_stem(&self) -> Option<Arc<str>> {
+        None
+    }
 }
