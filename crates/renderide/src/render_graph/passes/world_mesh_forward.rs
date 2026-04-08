@@ -18,7 +18,7 @@ use glam::Mat4;
 
 use crate::assets::material::MaterialDictionary;
 use crate::gpu::{write_per_draw_uniform_slab, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE};
-use crate::materials::MaterialPipelineDesc;
+use crate::materials::{MaterialPipelineDesc, MaterialRouter, DEBUG_WORLD_NORMALS_FAMILY_ID};
 use crate::pipelines::ShaderPermutation;
 use crate::pipelines::SHADER_PERM_MULTIVIEW_STEREO;
 use crate::present::SWAPCHAIN_CLEAR_COLOR;
@@ -101,10 +101,17 @@ impl RenderPass for WorldMeshForwardPass {
         let store_ref = backend.material_property_store();
         let dict = MaterialDictionary::new(store_ref);
         let render_context = frame.scene.active_main_render_context();
+        let fallback_router = MaterialRouter::new(DEBUG_WORLD_NORMALS_FAMILY_ID);
+        let router_ref = backend
+            .material_registry
+            .as_ref()
+            .map(|r| &r.router)
+            .unwrap_or(&fallback_router);
         let draws = collect_and_sort_world_mesh_draws(
             frame.scene,
             &backend.mesh_pool,
             &dict,
+            router_ref,
             render_context,
         );
         #[cfg(feature = "debug-hud")]
@@ -115,12 +122,13 @@ impl RenderPass for WorldMeshForwardPass {
         if draws.is_empty() {
             return Ok(());
         }
-        let Some(reg) = backend.material_registry.as_mut() else {
-            return Ok(());
-        };
-        let Some(dbg) = backend.debug_draw.as_mut() else {
-            return Ok(());
-        };
+        let lights_for_frame = backend.frame_lights().to_vec();
+        {
+            let Some(dbg) = backend.debug_draw.as_mut() else {
+                return Ok(());
+            };
+            dbg.ensure_draw_slot_capacity(ctx.device, draws.len());
+        }
 
         let (vw, vh) = frame.viewport_px;
         let aspect = vw as f32 / vh.max(1) as f32;
@@ -146,8 +154,6 @@ impl RenderPass for WorldMeshForwardPass {
         } else {
             None
         };
-
-        dbg.ensure_draw_slot_capacity(ctx.device, draws.len());
 
         let scene = frame.scene;
         let mut slots: Vec<PaddedPerDrawUniforms> = Vec::with_capacity(draws.len());
@@ -222,12 +228,31 @@ impl RenderPass for WorldMeshForwardPass {
         let mut slab_bytes = vec![0u8; draws.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE)];
         write_per_draw_uniform_slab(&slots, &mut slab_bytes);
 
-        let queue = match ctx.queue.lock() {
-            Ok(q) => q,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        queue.write_buffer(&dbg.per_draw_uniforms, 0, &slab_bytes);
+        {
+            let queue = match ctx.queue.lock() {
+                Ok(q) => q,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let Some(dbg) = backend.debug_draw.as_mut() else {
+                return Ok(());
+            };
+            queue.write_buffer(&dbg.per_draw_uniforms, 0, &slab_bytes);
+            let camera_world = hc.head_output_transform.col(3).truncate();
+            if let Some(fgpu) = backend.frame_gpu() {
+                fgpu.write_frame(&queue, camera_world, &lights_for_frame);
+            }
+        }
 
+        let Some((frame_bg_arc, empty_bg_arc)) = backend.mesh_forward_frame_bind_groups() else {
+            return Ok(());
+        };
+
+        let (Some(dbg), Some(reg)) = (
+            backend.debug_draw.as_mut(),
+            backend.material_registry.as_mut(),
+        ) else {
+            return Ok(());
+        };
         let debug_bind_group = &dbg.bind_group;
 
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -286,7 +311,9 @@ impl RenderPass for WorldMeshForwardPass {
             let _ = &item.lookup_ids;
 
             let dynamic_offset = (draw_idx * PER_DRAW_UNIFORM_STRIDE) as u32;
-            rpass.set_bind_group(0, debug_bind_group, &[dynamic_offset]);
+            rpass.set_bind_group(0, frame_bg_arc.as_ref(), &[]);
+            rpass.set_bind_group(1, empty_bg_arc.as_ref(), &[]);
+            rpass.set_bind_group(2, debug_bind_group, &[dynamic_offset]);
 
             draw_mesh_submesh(&mut rpass, item, &backend.mesh_pool);
         }

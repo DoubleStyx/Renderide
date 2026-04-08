@@ -1,13 +1,31 @@
-//! Host shader asset → raster material family (mesh draws). All paths currently resolve to the debug
-//! mesh family until per-shader `match` arms are added.
+//! Host shader asset → raster material family for mesh draws.
 
+use super::router::MaterialRouter;
 use super::MaterialFamilyId;
-use crate::pipelines::raster::DEBUG_WORLD_NORMALS_FAMILY_ID;
 
 /// Resolves the material family used for **mesh rasterization** for a host shader asset id.
 ///
-/// The router’s per-shader table is ignored here so every draw uses the same debug path until real
-/// shader routing is implemented.
-pub fn resolve_raster_family(_shader_asset_id: i32) -> MaterialFamilyId {
-    DEBUG_WORLD_NORMALS_FAMILY_ID
+/// Uses [`MaterialRouter::family_for_shader_asset`], populated when the host sends
+/// [`crate::shared::ShaderUpload`] (see [`crate::assets::shader::resolve_shader_upload`]).
+pub fn resolve_raster_family(shader_asset_id: i32, router: &MaterialRouter) -> MaterialFamilyId {
+    router.family_for_shader_asset(shader_asset_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_raster_family;
+    use crate::materials::{MaterialRouter, DEBUG_WORLD_NORMALS_FAMILY_ID, SOLID_COLOR_FAMILY_ID};
+
+    #[test]
+    fn unknown_shader_uses_router_fallback() {
+        let r = MaterialRouter::new(SOLID_COLOR_FAMILY_ID);
+        assert_eq!(resolve_raster_family(999, &r), SOLID_COLOR_FAMILY_ID);
+    }
+
+    #[test]
+    fn registered_shader_uses_route_family() {
+        let mut r = MaterialRouter::new(SOLID_COLOR_FAMILY_ID);
+        r.set_shader_family(7, DEBUG_WORLD_NORMALS_FAMILY_ID);
+        assert_eq!(resolve_raster_family(7, &r), DEBUG_WORLD_NORMALS_FAMILY_ID);
+    }
 }

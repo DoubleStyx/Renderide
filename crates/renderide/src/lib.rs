@@ -27,6 +27,13 @@ pub mod diagnostics;
 /// Host IPC, shared memory, init, lock-step — **frontend** layer.
 pub mod frontend;
 pub mod gpu;
+
+/// Composed WGSL targets from `build.rs` (`shaders/target/*.wgsl`).
+#[doc(hidden)]
+pub mod embedded_shaders {
+    include!(concat!(env!("OUT_DIR"), "/embedded_shaders.rs"));
+}
+
 pub mod ipc;
 pub mod materials;
 /// Host `HeadOutputDevice` → VR / OpenXR GPU path ([`output_device::head_output_device_wants_openxr`]).
@@ -62,13 +69,13 @@ pub use connection::{
     DEFAULT_QUEUE_CAPACITY,
 };
 pub use frontend::RendererFrontend;
-pub use gpu::MeshPreprocessPipelines;
+pub use gpu::{FrameGpuUniforms, MeshPreprocessPipelines};
 pub use ipc::DualQueueIpc;
 pub use materials::{
     compose_wgsl, resolve_raster_family, DebugWorldNormalsFamily, MaterialFamilyId,
     MaterialPipelineCache, MaterialPipelineCacheKey, MaterialPipelineDesc, MaterialPipelineFamily,
-    MaterialRegistry, MaterialRouter, SolidColorFamily, WgslPatch, DEBUG_WORLD_NORMALS_FAMILY_ID,
-    SOLID_COLOR_FAMILY_ID,
+    MaterialPropertyGpuLayout, MaterialRegistry, MaterialRouter, SolidColorFamily, WgslPatch,
+    DEBUG_WORLD_NORMALS_FAMILY_ID, SOLID_COLOR_FAMILY_ID,
 };
 pub use render_graph::{
     build_default_main_graph, passes::MeshDeformPass, passes::SwapchainClearPass,

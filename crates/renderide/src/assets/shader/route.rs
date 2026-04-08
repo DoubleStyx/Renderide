@@ -5,7 +5,7 @@
 //! host shader kinds still flow through classification so future families can switch on
 //! [`CoarseShaderKind`] without re-parsing bundles.
 
-use crate::materials::{MaterialFamilyId, SOLID_COLOR_FAMILY_ID};
+use crate::materials::{MaterialFamilyId, DEBUG_WORLD_NORMALS_FAMILY_ID};
 use crate::shared::ShaderUpload;
 
 use super::logical_name::{
@@ -39,7 +39,7 @@ pub enum CoarseShaderKind {
 pub fn resolve_shader_upload(data: &ShaderUpload) -> ResolvedShaderUpload {
     let unity_shader_name = logical_name::resolve_logical_shader_name_from_upload(data);
     let kind = classify_shader(unity_shader_name.as_deref(), data.file.as_deref());
-    let family = material_family_for_kind(kind);
+    let family = material_family_for_kind(kind, unity_shader_name.as_deref());
     ResolvedShaderUpload {
         unity_shader_name,
         family,
@@ -73,9 +73,46 @@ pub fn classify_shader(unity_name: Option<&str>, path_hint: Option<&str>) -> Coa
     CoarseShaderKind::Unknown
 }
 
-fn material_family_for_kind(_kind: CoarseShaderKind) -> MaterialFamilyId {
-    // Dedicated UI / world / PBS WGSL families are not registered yet; keep a single builtin path.
-    SOLID_COLOR_FAMILY_ID
+/// Maps Unity logical name + coarse kind to a registered [`MaterialFamilyId`] (see `resolve_shader_upload`).
+fn material_family_for_kind(kind: CoarseShaderKind, unity_name: Option<&str>) -> MaterialFamilyId {
+    if let Some(name) = unity_name {
+        let key = normalize_unity_shader_lookup_key(name);
+        if key.contains("ui_unlit") || key.contains("uiunlit") {
+            return DEBUG_WORLD_NORMALS_FAMILY_ID;
+        }
+        if key.contains("ui_text") || key.contains("uitext") || key.contains("ui_textunlit") {
+            return DEBUG_WORLD_NORMALS_FAMILY_ID;
+        }
+        if key == "unlit" || key.contains("world_unlit") {
+            return DEBUG_WORLD_NORMALS_FAMILY_ID;
+        }
+        if key.contains("pbsmetallic")
+            || key.contains("pbs_specular")
+            || key.contains("pbsspecular")
+        {
+            return DEBUG_WORLD_NORMALS_FAMILY_ID;
+        }
+    }
+    match kind {
+        CoarseShaderKind::Ui | CoarseShaderKind::WorldUnlit | CoarseShaderKind::PbsMetallic => {
+            DEBUG_WORLD_NORMALS_FAMILY_ID
+        }
+        CoarseShaderKind::Unknown => DEBUG_WORLD_NORMALS_FAMILY_ID,
+    }
+}
+
+fn normalize_unity_shader_lookup_key(name: &str) -> String {
+    let token = name.split_whitespace().next().unwrap_or(name).trim();
+    token
+        .chars()
+        .map(|c| {
+            if c.is_whitespace() || c == '/' {
+                '_'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect()
 }
 
 /// Returns true when the first whitespace-delimited token of `name` matches the PBS metallic family.
@@ -224,6 +261,6 @@ mod tests {
         };
         let r = resolve_shader_upload(&u);
         assert_eq!(r.unity_shader_name.as_deref(), Some("UI/Unlit"));
-        assert_eq!(r.family, SOLID_COLOR_FAMILY_ID);
+        assert_eq!(r.family, DEBUG_WORLD_NORMALS_FAMILY_ID);
     }
 }

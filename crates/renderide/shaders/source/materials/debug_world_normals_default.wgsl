@@ -1,6 +1,8 @@
-// Debug raster: visualize world-space normals (RGB = n * 0.5 + 0.5).
-// One 256-byte uniform slot per draw (WebGPU dynamic uniform alignment).
-// Stereo: `view_proj_left` / `view_proj_right`; desktop duplicates the same matrix in both.
+//! Debug raster: world-space normals (RGB). Desktop / single-view path.
+//! Composed to `shaders/target/debug_world_normals_default.wgsl`.
+//!
+//! [`PerDrawUniforms`] matches [`crate::gpu::PaddedPerDrawUniforms`] and `source/modules/per_draw.wgsl`.
+//! `build.rs` prepends `source/modules/globals.wgsl` (strip `#define_import_path`).
 
 struct PerDrawUniforms {
     view_proj_left: mat4x4<f32>,
@@ -9,7 +11,7 @@ struct PerDrawUniforms {
     _pad: array<vec4<f32>, 4>,
 }
 
-@group(0) @binding(0) var<uniform> draw: PerDrawUniforms;
+@group(2) @binding(0) var<uniform> draw: PerDrawUniforms;
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
@@ -31,5 +33,11 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.world_n * 0.5 + 0.5, 1.0);
+    let n = in.world_n * 0.5 + 0.5;
+    var lit: u32 = 0u;
+    if (frame.light_count > 0u) {
+        lit = lights[0].light_type;
+    }
+    let c = vec3<f32>(n) + frame.camera_world_pos.xyz * 0.0001 + vec3<f32>(f32(lit) * 1e-10);
+    return vec4<f32>(c, 1.0);
 }

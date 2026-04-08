@@ -13,6 +13,10 @@ use crate::shared::{LightType, ShadowType};
 pub const MAX_LIGHTS: usize = 256;
 
 /// GPU-facing light record for a storage buffer upload.
+///
+/// Layout must match `GpuLight` in `shaders/source/modules/globals.wgsl`: WGSL aligns `vec3<u32>`
+/// (`_pad_trailing`) to **16 bytes**, so 4 bytes of implicit padding follow `shadow_type`, and the
+/// struct size rounds up to **112** bytes (see naga / WebGPU validation).
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct GpuLight {
@@ -31,7 +35,11 @@ pub struct GpuLight {
     pub shadow_bias: f32,
     pub shadow_normal_bias: f32,
     pub shadow_type: u32,
+    /// Padding so `_pad_trailing` starts at byte offset 88 (16-byte aligned for `vec3<u32>`).
+    pub _pad_align_vec3_trailing: [u8; 4],
     pub _pad_trailing: [u32; 3],
+    /// Pads struct size to 112 bytes (WGSL struct alignment).
+    pub _pad_struct_end: [u8; 12],
 }
 
 unsafe impl Pod for GpuLight {}
@@ -55,7 +63,9 @@ impl Default for GpuLight {
             shadow_bias: 0.0,
             shadow_normal_bias: 0.0,
             shadow_type: 0,
+            _pad_align_vec3_trailing: [0; 4],
             _pad_trailing: [0; 3],
+            _pad_struct_end: [0; 12],
         }
     }
 }
@@ -92,7 +102,9 @@ impl GpuLight {
             shadow_bias: light.shadow_bias,
             shadow_normal_bias: light.shadow_normal_bias,
             shadow_type: shadow_type_u32(light.shadow_type),
+            _pad_align_vec3_trailing: [0; 4],
             _pad_trailing: [0; 3],
+            _pad_struct_end: [0; 12],
         }
     }
 }
@@ -121,4 +133,18 @@ pub fn order_lights_for_clustered_shading(lights: &[ResolvedLight]) -> Vec<Resol
         LightType::point | LightType::spot => 1,
     });
     v
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::GpuLight;
+
+    #[test]
+    fn gpu_light_stride_matches_wgsl() {
+        assert_eq!(
+            std::mem::size_of::<GpuLight>(),
+            112,
+            "must match WGSL storage layout for `array<GpuLight>` (naga stride)"
+        );
+    }
 }

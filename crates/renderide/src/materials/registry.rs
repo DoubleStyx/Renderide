@@ -67,7 +67,7 @@ impl MaterialRegistry {
         desc: &MaterialPipelineDesc,
         permutation: ShaderPermutation,
     ) -> Option<&wgpu::RenderPipeline> {
-        let id = resolve_raster_family(shader_asset_id);
+        let id = resolve_raster_family(shader_asset_id, &self.router);
         self.pipeline_for_family(id, desc, permutation)
     }
 

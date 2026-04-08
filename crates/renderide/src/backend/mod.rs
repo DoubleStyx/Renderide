@@ -9,11 +9,13 @@
 //! callers pass those in where a command requires both transport and GPU work.
 
 mod debug_draw;
+mod frame_gpu;
 mod light_gpu;
 mod mesh_deform_scratch;
 mod render_backend;
 
 pub use debug_draw::DebugDrawResources;
+pub use frame_gpu::{empty_material_bind_group_layout, EmptyMaterialBindGroup, FrameGpuResources};
 pub use light_gpu::{order_lights_for_clustered_shading, GpuLight, MAX_LIGHTS};
 pub use mesh_deform_scratch::{advance_slab_cursor, MeshDeformScratch};
 pub use render_backend::{

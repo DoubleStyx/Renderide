@@ -16,7 +16,7 @@ pub struct DebugDrawResources {
 impl DebugDrawResources {
     /// Allocates [`INITIAL_PER_DRAW_UNIFORM_SLOTS`] slots (256 bytes each).
     pub fn new(device: &wgpu::Device) -> Self {
-        let layout = DebugWorldNormalsFamily::bind_group_layout(device);
+        let layout = DebugWorldNormalsFamily::per_draw_bind_group_layout(device);
         let slot_count = INITIAL_PER_DRAW_UNIFORM_SLOTS;
         let size = (slot_count * PER_DRAW_UNIFORM_STRIDE) as u64;
         let per_draw_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
@@ -69,7 +69,7 @@ impl DebugDrawResources {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let layout = DebugWorldNormalsFamily::bind_group_layout(device);
+        let layout = DebugWorldNormalsFamily::per_draw_bind_group_layout(device);
         let bind_group = Self::make_bind_group(device, &layout, &per_draw_uniforms);
         self.per_draw_uniforms = per_draw_uniforms;
         self.bind_group = bind_group;

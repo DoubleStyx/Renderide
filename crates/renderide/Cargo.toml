@@ -7,6 +7,11 @@ edition = "2021"
 name = "renderide"
 path = "src/lib.rs"
 
+[build-dependencies]
+naga = { version = "29", features = ["wgsl-in", "wgsl-out", "termcolor"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [[bin]]
 name = "renderide"
 path = "src/main.rs"

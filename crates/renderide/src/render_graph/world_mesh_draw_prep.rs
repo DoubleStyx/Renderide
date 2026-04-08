@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
-use crate::materials::{resolve_raster_family, MaterialFamilyId};
+use crate::materials::{resolve_raster_family, MaterialFamilyId, MaterialRouter};
 use crate::resources::MeshPool;
 use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator, StaticMeshRenderer};
 use crate::shared::RenderingContext;
@@ -66,12 +66,13 @@ fn batch_key_for_slot(
     property_block_id: Option<i32>,
     skinned: bool,
     dict: &MaterialDictionary<'_>,
+    router: &MaterialRouter,
 ) -> MaterialDrawBatchKey {
     let shader_asset_id = dict
         .shader_asset_for_material(material_asset_id)
         .unwrap_or(-1);
     MaterialDrawBatchKey {
-        family_id: resolve_raster_family(shader_asset_id),
+        family_id: resolve_raster_family(shader_asset_id, router),
         material_asset_id,
         property_block_slot0: property_block_id,
         skinned,
@@ -89,6 +90,7 @@ fn push_draws_for_renderer(
     skinned: bool,
     submeshes: &[(u32, u32)],
     dict: &MaterialDictionary<'_>,
+    router: &MaterialRouter,
     context: RenderingContext,
     mismatch_warned: &mut HashSet<i32>,
 ) {
@@ -130,8 +132,13 @@ fn push_draws_for_renderer(
             material_asset_id,
             mesh_property_block_slot0: slot.property_block_id,
         };
-        let batch_key =
-            batch_key_for_slot(material_asset_id, slot.property_block_id, skinned, dict);
+        let batch_key = batch_key_for_slot(
+            material_asset_id,
+            slot.property_block_id,
+            skinned,
+            dict,
+            router,
+        );
         out.push(WorldMeshDrawItem {
             space_id,
             node_id: renderer.node_id,
@@ -166,6 +173,7 @@ pub fn collect_and_sort_world_mesh_draws(
     scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     dict: &MaterialDictionary<'_>,
+    router: &MaterialRouter,
     context: RenderingContext,
 ) -> Vec<WorldMeshDrawItem> {
     let mut mismatch_warned = HashSet::new();
@@ -198,6 +206,7 @@ pub fn collect_and_sort_world_mesh_draws(
                 false,
                 &mesh.submeshes,
                 dict,
+                router,
                 context,
                 &mut mismatch_warned,
             );
@@ -222,6 +231,7 @@ pub fn collect_and_sort_world_mesh_draws(
                 true,
                 &mesh.submeshes,
                 dict,
+                router,
                 context,
                 &mut mismatch_warned,
             );

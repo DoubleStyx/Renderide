@@ -1,4 +1,6 @@
-// Multiview variant: `@builtin(view_index)` selects per-eye view–projection (single draw, two layers).
+//! Debug raster: world-space normals (RGB). Multiview stereo (`@builtin(view_index)`).
+//! Composed to `shaders/target/debug_world_normals_multiview.wgsl`.
+//! `build.rs` prepends `source/modules/globals.wgsl`.
 
 struct PerDrawUniforms {
     view_proj_left: mat4x4<f32>,
@@ -7,7 +9,7 @@ struct PerDrawUniforms {
     _pad: array<vec4<f32>, 4>,
 }
 
-@group(0) @binding(0) var<uniform> draw: PerDrawUniforms;
+@group(2) @binding(0) var<uniform> draw: PerDrawUniforms;
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
@@ -22,7 +24,6 @@ fn vs_main(
 ) -> VertexOutput {
     let world_p = draw.model * vec4<f32>(pos.xyz, 1.0);
     let world_n = normalize((draw.model * vec4<f32>(normal.xyz, 0.0)).xyz);
-    // WGSL `select` only allows scalars or vecN, not matrices — branch per eye.
     var vp: mat4x4<f32>;
     if (view_idx == 0u) {
         vp = draw.view_proj_left;
@@ -37,5 +38,11 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.world_n * 0.5 + 0.5, 1.0);
+    let n = in.world_n * 0.5 + 0.5;
+    var lit: u32 = 0u;
+    if (frame.light_count > 0u) {
+        lit = lights[0].light_type;
+    }
+    let c = vec3<f32>(n) + frame.camera_world_pos.xyz * 0.0001 + vec3<f32>(f32(lit) * 1e-10);
+    return vec4<f32>(c, 1.0);
 }

@@ -1,84 +1,141 @@
-//! Windows: optionally copy `openxr_loader.dll` next to the build output so dynamic OpenXR loading
-//! can resolve the loader when running tests or the binary from `target/<profile>/`.
+//! Prepends `shaders/source/modules/globals.wgsl` to each material root, validates with naga, and
+//! writes flat `shaders/target/*.wgsl` plus `OUT_DIR/embedded_shaders.rs`.
+//! (For `#import` graph composition, [`naga_oil`](https://crates.io/crates/naga_oil) can be added
+//! later; concatenation keeps the build graph simple while meeting the single-module WGSL target.)
+
+use std::fs;
+use std::path::PathBuf;
+
+use naga::back::wgsl::WriterFlags;
+use naga::front::wgsl::parse_str;
+use naga::valid::{Capabilities, ValidationFlags, Validator};
+
+fn strip_lines_starting_with(source: &str, prefix: &str) -> String {
+    source
+        .lines()
+        .filter(|l| !l.trim_start().starts_with(prefix))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 fn main() {
-    #[cfg(windows)]
-    copy_openxr_loader();
-}
+    let manifest_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let globals_path = manifest_dir.join("shaders/source/modules/globals.wgsl");
+    let materials_dir = manifest_dir.join("shaders/source/materials");
+    let target_dir = manifest_dir.join("shaders/target");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
 
-#[cfg(windows)]
-fn copy_openxr_loader() {
-    use std::path::PathBuf;
-
-    let Some(out_dir) = resolve_cargo_target_dir() else {
-        println!("cargo:rerun-if-changed=build.rs");
-        return;
-    };
-
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-    let dest_dir = out_dir.join(&profile);
-
-    // Common SteamVR locations for openxr_loader.dll
-    let candidates = [
-        r"C:\Program Files (x86)\Steam\steamapps\common\SteamVR\bin\win64\openxr_loader.dll",
-        r"C:\Program Files\Steam\steamapps\common\SteamVR\bin\win64\openxr_loader.dll",
-    ];
-
-    let src = candidates
-        .iter()
-        .map(std::path::Path::new)
-        .find(|p| p.exists());
-
-    if let Some(src) = src {
-        let dest = dest_dir.join("openxr_loader.dll");
-        if !dest.exists() {
-            match std::fs::copy(src, &dest) {
-                Ok(_) => {
-                    println!("cargo:warning=Copied openxr_loader.dll from SteamVR to {dest:?}");
-                }
-                Err(e) => {
-                    println!(
-                        "cargo:warning=Could not copy openxr_loader.dll from {} to {}: {e}",
-                        src.display(),
-                        dest.display()
-                    );
-                }
-            }
-        }
-    } else {
-        println!("cargo:warning=openxr_loader.dll not found in SteamVR — VR may fall back to desktop. Install SteamVR or copy openxr_loader.dll manually to target/{profile}/");
-    }
-
+    println!("cargo:rerun-if-changed=shaders/source");
     println!("cargo:rerun-if-changed=build.rs");
-}
 
-/// Resolves the Cargo `target/` directory used for artifact output, or `None` if unavailable.
-#[cfg(windows)]
-fn resolve_cargo_target_dir() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
+    fs::create_dir_all(materials_dir.parent().expect("materials parent")).expect("mkdir");
+    fs::create_dir_all(&target_dir).expect("mkdir target");
 
-    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
-        return Some(PathBuf::from(dir));
-    }
+    let globals_raw = fs::read_to_string(&globals_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", globals_path.display()));
+    let globals_body = strip_lines_starting_with(&globals_raw, "#define_import_path");
 
-    let Some(manifest_os) = std::env::var_os("CARGO_MANIFEST_DIR") else {
-        println!("cargo:warning=copy_openxr_loader: CARGO_MANIFEST_DIR unset; skipping OpenXR loader copy");
-        return None;
-    };
+    let mut manifest_entries: Vec<serde_json::Value> = Vec::new();
+    let mut embedded_arms = String::new();
 
-    let manifest = PathBuf::from(manifest_os);
-    let found = manifest.ancestors().find_map(|p| {
-        let t = p.join("target");
-        if t.is_dir() {
-            Some(t)
-        } else {
-            None
+    let mut material_paths: Vec<PathBuf> = fs::read_dir(&materials_dir)
+        .expect("read materials")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x == "wgsl").unwrap_or(false))
+        .collect();
+    material_paths.sort();
+
+    for path in &material_paths {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("material stem");
+        let material_raw =
+            fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let material_body = strip_lines_starting_with(&material_raw, "#import ");
+        let combined = format!("{globals_body}\n\n{material_body}");
+
+        let module =
+            parse_str(&combined).unwrap_or_else(|e| panic!("WGSL parse {}: {e}", path.display(),));
+
+        let has_vs = module
+            .entry_points
+            .iter()
+            .any(|e| e.stage == naga::ShaderStage::Vertex && e.name == "vs_main");
+        let has_fs = module
+            .entry_points
+            .iter()
+            .any(|e| e.stage == naga::ShaderStage::Fragment && e.name == "fs_main");
+        if !has_vs || !has_fs {
+            panic!(
+                "{}: expected entry points vs_main and fs_main (vertex={has_vs} fragment={has_fs})",
+                path.display()
+            );
         }
-    });
 
-    if found.is_none() {
-        println!("cargo:warning=copy_openxr_loader: could not find target/ directory; skipping OpenXR loader copy");
+        let mut validator = Validator::new(ValidationFlags::all(), Capabilities::all());
+        let info = validator
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("validate {}: {e}", path.display()));
+        let wgsl = naga::back::wgsl::write_string(&module, &info, WriterFlags::EXPLICIT_TYPES)
+            .unwrap_or_else(|e| panic!("wgsl out {}: {e}", path.display()));
+
+        let out_path = target_dir.join(format!("{stem}.wgsl"));
+        fs::write(&out_path, &wgsl).unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
+
+        manifest_entries.push(serde_json::json!({
+            "stem": stem,
+            "file": format!("shaders/target/{stem}.wgsl"),
+            "unity_names": [],
+        }));
+
+        embedded_arms.push_str(&format!(
+            "        \"{stem}\" => Some(include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/shaders/target/{stem}.wgsl\"))),\n"
+        ));
     }
 
-    found
+    let manifest = serde_json::json!({
+        "materials": manifest_entries,
+        "globals_module": "shaders/source/modules/globals.wgsl",
+    });
+    let manifest_path = target_dir.join("manifest.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).expect("manifest json"),
+    )
+    .expect("write manifest");
+
+    let embedded_rs = format!(
+        r#"// Generated by `build.rs` — do not edit.
+
+/// Flattened WGSL for `stem` (see `shaders/target/{{stem}}.wgsl`).
+pub fn embedded_target_wgsl(stem: &str) -> Option<&'static str> {{
+    match stem {{
+{embedded_arms}        _ => None,
+    }}
+}}
+
+/// Stems under `shaders/target/*.wgsl` present at build time.
+pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
+{stems}
+];
+
+/// JSON manifest written next to composed shaders.
+pub const SHADER_MANIFEST_JSON: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/shaders/target/manifest.json"));
+"#,
+        embedded_arms = embedded_arms,
+        stems = material_paths
+            .iter()
+            .map(|p| {
+                let s = p.file_stem().unwrap().to_str().unwrap();
+                format!("    \"{s}\",")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    let gen_path = out_dir.join("embedded_shaders.rs");
+    fs::write(&gen_path, embedded_rs).expect("write embedded_shaders.rs");
 }

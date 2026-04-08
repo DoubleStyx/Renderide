@@ -1,7 +1,8 @@
-//! Debug mesh material: world-space normals as RGB.
+//! Debug mesh material: world-space normals as RGB (`shaders/target/debug_world_normals_*.wgsl`).
 
 use std::num::NonZeroU64;
 
+use crate::backend::{empty_material_bind_group_layout, FrameGpuResources};
 use crate::gpu::PER_DRAW_UNIFORM_STRIDE;
 use crate::materials::{MaterialFamilyId, MaterialPipelineDesc, MaterialPipelineFamily};
 use crate::pipelines::ShaderPermutation;
@@ -10,7 +11,7 @@ use crate::render_graph::MAIN_FORWARD_DEPTH_COMPARE;
 /// Builtin family id for [`DebugWorldNormalsFamily`].
 pub const DEBUG_WORLD_NORMALS_FAMILY_ID: MaterialFamilyId = MaterialFamilyId(2);
 
-/// [`ShaderPermutation`] for multiview WGSL (`debug_world_normals_multiview.wgsl`).
+/// [`ShaderPermutation`] for multiview WGSL (`debug_world_normals_multiview` target stem).
 pub const SHADER_PERM_MULTIVIEW_STEREO: ShaderPermutation = ShaderPermutation(1);
 
 /// Minimum `min_binding_size` for the dynamic uniform binding (256-byte slots).
@@ -22,10 +23,10 @@ fn per_draw_uniform_min_binding_size() -> NonZeroU64 {
 pub struct DebugWorldNormalsFamily;
 
 impl DebugWorldNormalsFamily {
-    /// Shared layout for [`MaterialPipelineFamily::create_render_pipeline`] and bind group creation at draw time.
-    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    /// `@group(2)` dynamic uniform layout for [`crate::backend::DebugDrawResources`].
+    pub fn per_draw_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("debug_world_normals_material"),
+            label: Some("debug_world_normals_per_draw"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
@@ -38,6 +39,14 @@ impl DebugWorldNormalsFamily {
             }],
         })
     }
+
+    fn target_stem(permutation: ShaderPermutation) -> &'static str {
+        if permutation.0 == SHADER_PERM_MULTIVIEW_STEREO.0 {
+            "debug_world_normals_multiview"
+        } else {
+            "debug_world_normals_default"
+        }
+    }
 }
 
 impl MaterialPipelineFamily for DebugWorldNormalsFamily {
@@ -46,19 +55,12 @@ impl MaterialPipelineFamily for DebugWorldNormalsFamily {
     }
 
     fn build_wgsl(&self, permutation: ShaderPermutation) -> String {
-        if permutation.0 == SHADER_PERM_MULTIVIEW_STEREO.0 {
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/shaders/debug_world_normals_multiview.wgsl"
-            ))
+        let stem = Self::target_stem(permutation);
+        crate::embedded_shaders::embedded_target_wgsl(stem)
+            .unwrap_or_else(|| {
+                panic!("composed shader missing for stem {stem} (run build with shaders/source)")
+            })
             .to_string()
-        } else {
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/shaders/debug_world_normals.wgsl"
-            ))
-            .to_string()
-        }
     }
 
     fn create_render_pipeline(
@@ -67,10 +69,12 @@ impl MaterialPipelineFamily for DebugWorldNormalsFamily {
         module: &wgpu::ShaderModule,
         desc: &MaterialPipelineDesc,
     ) -> wgpu::RenderPipeline {
-        let bgl = Self::bind_group_layout(device);
+        let frame_bgl = FrameGpuResources::bind_group_layout(device);
+        let empty_mat_bgl = empty_material_bind_group_layout(device);
+        let per_draw_bgl = Self::per_draw_bind_group_layout(device);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("debug_world_normals_material"),
-            bind_group_layouts: &[Some(&bgl)],
+            bind_group_layouts: &[Some(&frame_bgl), Some(&empty_mat_bgl), Some(&per_draw_bgl)],
             immediate_size: 0,
         });
 

@@ -10,7 +10,7 @@ pub const INITIAL_PER_DRAW_UNIFORM_SLOTS: usize = 256;
 
 /// GPU layout: left/right view–projection, `model`, then padding to 256 bytes.
 ///
-/// Matches `shaders/debug_world_normals.wgsl` and `debug_world_normals_multiview.wgsl`.
+/// Matches composed `shaders/target/debug_world_normals_*.wgsl` (`PerDrawUniforms` at `@group(2)`).
 ///
 /// **Contract:** [`Self::view_proj_left`] and [`Self::view_proj_right`] store **projection × view**
 /// (PV) only. They must **not** include the mesh world matrix. Vertex shaders compute
