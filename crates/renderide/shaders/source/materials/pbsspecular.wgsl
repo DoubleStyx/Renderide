@@ -1,24 +1,25 @@
-//! Unity Standard metallic PBS (`Shader "PBSMetallic"`): clustered forward + Cook–Torrance BRDF.
+//! Unity Standard **specular** PBS (`Shader "PBSSpecular"` / Standard SpecularSetup): clustered forward +
+//! Cook–Torrance BRDF with tinted specular color and Unity-style diffuse energy (`oneMinusReflectivity`).
 //!
-//! Build emits `pbsmetallic_default` / `pbsmetallic_multiview`. `@group(1)` names match Unity material
+//! Build emits `pbsspecular_default` / `pbsspecular_multiview`. `@group(1)` names match Unity material
 //! properties. ForwardAdd / lightmaps / reflection probes are not implemented yet.
 //!
 //! Per-draw uniforms (`@group(2)`) use [`renderide::per_draw`].
 
-// unity-shader-name: PBSMetallic
+// unity-shader-name: PBSSpecular
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
 #import renderide::pbs::cluster as pcls
 
-struct PbsMetallicMaterial {
+struct PbsSpecularMaterial {
     _Color: vec4<f32>,
     _Cutoff: f32,
     _Glossiness: f32,
     _GlossMapScale: f32,
     _SmoothnessTextureChannel: f32,
-    _Metallic: f32,
+    _SpecColor: vec4<f32>,
     _BumpScale: f32,
     _Parallax: f32,
     _OcclusionStrength: f32,
@@ -30,11 +31,11 @@ struct PbsMetallicMaterial {
     _pad: vec2<f32>,
 }
 
-@group(1) @binding(0) var<uniform> mat: PbsMetallicMaterial;
+@group(1) @binding(0) var<uniform> mat: PbsSpecularMaterial;
 @group(1) @binding(1) var _MainTex: texture_2d<f32>;
 @group(1) @binding(2) var _MainTex_sampler: sampler;
-@group(1) @binding(3) var _MetallicGlossMap: texture_2d<f32>;
-@group(1) @binding(4) var _MetallicGlossMap_sampler: sampler;
+@group(1) @binding(3) var _SpecGlossMap: texture_2d<f32>;
+@group(1) @binding(4) var _SpecGlossMap_sampler: sampler;
 @group(1) @binding(5) var _BumpMap: texture_2d<f32>;
 @group(1) @binding(6) var _BumpMap_sampler: sampler;
 @group(1) @binding(7) var _OcclusionMap: texture_2d<f32>;
@@ -51,7 +52,6 @@ struct VertexOutput {
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
     @location(2) uv0: vec2<f32>,
-    // Secondary UV for `_UVSec` / detail; copied from uv0 until TEXCOORD1 is bound in the mesh pass.
     @location(3) uv1: vec2<f32>,
 }
 
@@ -61,18 +61,6 @@ fn sample_normal_world(uv: vec2<f32>, world_n: vec3<f32>, bump_scale: f32) -> ve
     let nm = vec3<f32>(raw.xy * bump_scale, raw.z);
     let nt = normalize(vec3<f32>(nm.xy, max(sqrt(max(1.0 - dot(nm.xy, nm.xy), 0.0)), 1e-6)));
     return normalize(tbn * nt);
-}
-
-fn metallic_roughness(uv: vec2<f32>) -> vec2<f32> {
-    let mg = textureSample(_MetallicGlossMap, _MetallicGlossMap_sampler, uv);
-    var metallic = mat._Metallic;
-    var smoothness = mat._Glossiness * mat._GlossMapScale;
-    metallic = metallic * mg.x;
-    let smooth_from_a = select(mg.w, mg.y, mat._SmoothnessTextureChannel < 0.5);
-    smoothness = smoothness * smooth_from_a;
-    let roughness = clamp(1.0 - smoothness, 0.045, 1.0);
-    metallic = clamp(metallic, 0.0, 1.0);
-    return vec2<f32>(metallic, roughness);
 }
 
 @vertex
@@ -101,7 +89,6 @@ fn vs_main(
     out.world_pos = world_p.xyz;
     out.world_n = wn;
     out.uv0 = uv0;
-    // Mesh forward only binds TEXCOORD0 (`@location(2)`). Duplicate until a second UV stream is plumbed.
     out.uv1 = uv0;
     return out;
 }
@@ -122,9 +109,14 @@ fn fs_main(
         discard;
     }
 
-    let mr = metallic_roughness(uv0);
-    let metallic = mr.x;
-    let roughness = mr.y;
+    let sg = textureSample(_SpecGlossMap, _SpecGlossMap_sampler, uv0);
+    var spec_tint = mat._SpecColor.rgb * sg.rgb;
+    var smoothness = mat._Glossiness * mat._GlossMapScale;
+    let smooth_from_channel = select(sg.w, albedo_s.a, mat._SmoothnessTextureChannel < 0.5);
+    smoothness = smoothness * smooth_from_channel;
+    let roughness = clamp(1.0 - smoothness, 0.045, 1.0);
+    let one_minus_reflectivity = 1.0 - max(max(spec_tint.r, spec_tint.g), spec_tint.b);
+    let f0 = spec_tint;
 
     let occ_s = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv0).x;
     let occlusion = mix(1.0, occ_s, mat._OcclusionStrength);
@@ -139,7 +131,6 @@ fn fs_main(
 
     let cam = rg::frame.camera_world_pos.xyz;
     let v = normalize(cam - world_pos);
-    let f0 = mix(vec3<f32>(0.04), base_color, metallic);
 
     let cluster_id = pcls::cluster_id_from_frag(
         frag_pos.xy,
@@ -166,9 +157,9 @@ fn fs_main(
         }
         let light = rg::lights[li];
         if spec_on {
-            lo = lo + brdf::direct_radiance_metallic(light, world_pos, n, v, roughness, metallic, base_color, f0);
+            lo = lo + brdf::direct_radiance_specular(light, world_pos, n, v, roughness, base_color, f0, one_minus_reflectivity);
         } else {
-            lo = lo + brdf::diffuse_only_metallic(light, world_pos, n, base_color);
+            lo = lo + brdf::diffuse_only_specular(light, world_pos, n, base_color, one_minus_reflectivity);
         }
     }
 
