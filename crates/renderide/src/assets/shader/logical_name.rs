@@ -14,7 +14,7 @@ use crate::shared::ShaderUpload;
 const PLAIN_SHADER_LABEL_MAX_LEN: usize = 256;
 
 /// Returns the first token of `resolved` trimmed, or empty. Routing matches host names to embedded WGSL via
-/// [`crate::materials::stem_manifest`]; material source stems under `shaders/source/materials/*.wgsl` align with
+/// [`crate::materials::embedded_shader_stem`]; material source stems under `shaders/source/materials/*.wgsl` align with
 /// normalized Unity shader **asset** names (see crate `build.rs`).
 pub fn canonical_shader_lab_logical_name(resolved: &str) -> String {
     let t = resolved

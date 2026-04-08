@@ -188,7 +188,7 @@ impl RendererRuntime {
         self.backend.material_registry()
     }
 
-    /// Mutable registry (e.g. register custom [`crate::materials::MaterialPipelineFamily`]).
+    /// Mutable registry (pipeline cache and shader routes).
     pub fn material_registry_mut(&mut self) -> Option<&mut crate::materials::MaterialRegistry> {
         self.backend.material_registry_mut()
     }
@@ -509,17 +509,17 @@ impl RendererRuntime {
         let asset_id = upload.asset_id;
         let resolved = resolve_shader_upload(&upload);
         logger::info!(
-            "shader_upload: asset_id={} unity_shader_name={:?} material_family={:?}",
+            "shader_upload: asset_id={} unity_shader_name={:?} raster_pipeline={:?}",
             asset_id,
             resolved.unity_shader_name.as_deref(),
-            resolved.family,
+            resolved.pipeline,
         );
         let display_name = resolved
             .unity_shader_name
             .clone()
             .or_else(|| upload.file.clone().filter(|s| !s.is_empty()));
         self.backend
-            .register_shader_route(asset_id, resolved.family, display_name);
+            .register_shader_route(asset_id, resolved.pipeline, display_name);
         if let Some(ref mut ipc) = self.frontend.ipc_mut() {
             ipc.send_background(RendererCommand::shader_upload_result(ShaderUploadResult {
                 asset_id,

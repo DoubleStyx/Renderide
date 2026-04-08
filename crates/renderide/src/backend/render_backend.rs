@@ -13,7 +13,7 @@ use crate::assets::texture::write_texture2d_mips;
 use crate::config::RendererSettingsHandle;
 use crate::gpu::{GpuContext, MeshPreprocessPipelines};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
-use crate::materials::MaterialFamilyId;
+use crate::materials::RasterPipelineKind;
 #[cfg(feature = "debug-hud")]
 use crate::render_graph::WorldMeshDrawStats;
 use crate::render_graph::{CompiledRenderGraph, ExternalFrameTargets, GraphExecuteError};
@@ -24,9 +24,9 @@ use crate::scene::SceneCoordinator;
 use crate::diagnostics::{DebugHud, DebugHudInput, SceneTransformsSnapshot};
 
 use super::debug_draw::DebugDrawResources;
+use super::embedded_material_bind::EmbeddedMaterialBindResources;
 use super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources};
 use super::light_gpu::{order_lights_for_clustered_shading, GpuLight};
-use super::manifest_material_bind::ManifestMaterialBindResources;
 use super::mesh_deform_scratch::MeshDeformScratch;
 use crate::shared::{
     MaterialsUpdateBatch, MaterialsUpdateBatchResult, MeshUnload, MeshUploadData, MeshUploadResult,
@@ -63,8 +63,8 @@ pub struct RenderBackend {
     pending_texture_uploads: VecDeque<SetTexture2DData>,
     /// GPU material families, router, and pipeline cache (after [`Self::attach`]).
     pub(crate) material_registry: Option<crate::materials::MaterialRegistry>,
-    /// Shader asset id → family and optional HUD label when uploads arrive before GPU attach.
-    pending_shader_routes: HashMap<i32, (MaterialFamilyId, Option<String>)>,
+    /// Shader asset id → pipeline kind and optional HUD label when uploads arrive before GPU attach.
+    pending_shader_routes: HashMap<i32, (RasterPipelineKind, Option<String>)>,
     /// Optional mesh skinning / blendshape compute pipelines (after [`Self::attach`]).
     mesh_preprocess: Option<MeshPreprocessPipelines>,
     /// Compiled DAG of render passes (after [`Self::attach`]); see [`crate::render_graph`].
@@ -77,8 +77,8 @@ pub struct RenderBackend {
     pub(crate) frame_gpu: Option<FrameGpuResources>,
     /// Placeholder `@group(1)` for materials without per-material bindings.
     pub(crate) empty_material: Option<EmptyMaterialBindGroup>,
-    /// Manifest-listed materials (`@group(1)` textures/uniforms), after [`Self::attach`].
-    pub(crate) manifest_material_bind: Option<ManifestMaterialBindResources>,
+    /// Embedded raster materials (`@group(1)` textures/uniforms), after [`Self::attach`].
+    pub(crate) embedded_material_bind: Option<EmbeddedMaterialBindResources>,
     /// Uniforms + bind group for debug mesh draws (`@group(2)` dynamic slab).
     pub(crate) debug_draw: Option<DebugDrawResources>,
     #[cfg(feature = "debug-hud")]
@@ -124,7 +124,7 @@ impl RenderBackend {
             mesh_deform_scratch: None,
             frame_gpu: None,
             empty_material: None,
-            manifest_material_bind: None,
+            embedded_material_bind: None,
             debug_draw: None,
             #[cfg(feature = "debug-hud")]
             debug_hud: None,
@@ -244,14 +244,14 @@ impl RenderBackend {
         self.material_registry.as_ref()
     }
 
-    /// Mutable registry (e.g.register custom [`crate::materials::MaterialPipelineFamily`]).
+    /// Mutable registry (pipeline cache and shader routes).
     pub fn material_registry_mut(&mut self) -> Option<&mut crate::materials::MaterialRegistry> {
         self.material_registry.as_mut()
     }
 
-    /// Manifest material bind groups (world Unlit, etc.) after [`Self::attach`].
-    pub fn manifest_material_bind(&self) -> Option<&ManifestMaterialBindResources> {
-        self.manifest_material_bind.as_ref()
+    /// Embedded material bind groups (world Unlit, etc.) after [`Self::attach`].
+    pub fn embedded_material_bind(&self) -> Option<&EmbeddedMaterialBindResources> {
+        self.embedded_material_bind.as_ref()
     }
 
     /// Number of schedules passes in the compiled frame graph, or `0` if none.
@@ -302,11 +302,11 @@ impl RenderBackend {
             device.clone(),
         ));
         if let Some(reg) = self.material_registry.as_mut() {
-            for (asset_id, (family, display_name)) in self.pending_shader_routes.drain() {
-                reg.map_shader_route(asset_id, family, display_name);
+            for (asset_id, (pipeline, display_name)) in self.pending_shader_routes.drain() {
+                reg.map_shader_route(asset_id, pipeline, display_name);
             }
         }
-        match ManifestMaterialBindResources::new(
+        match EmbeddedMaterialBindResources::new(
             device.clone(),
             Arc::clone(&self.property_id_registry),
         ) {
@@ -314,11 +314,11 @@ impl RenderBackend {
                 if let Ok(q) = queue.lock() {
                     m.write_default_white(&q);
                 }
-                self.manifest_material_bind = Some(m);
+                self.embedded_material_bind = Some(m);
             }
             Err(e) => {
-                logger::warn!("manifest material bind resources not created: {e}");
-                self.manifest_material_bind = None;
+                logger::warn!("embedded material bind resources not created: {e}");
+                self.embedded_material_bind = None;
             }
         }
         self.flush_pending_texture_allocations(&device);
@@ -499,18 +499,18 @@ impl RenderBackend {
         self.debug_draw.as_ref()
     }
 
-    /// Maps shader asset to material family and optional HUD display name, or defers until [`Self::attach`].
+    /// Maps shader asset to raster pipeline kind and optional HUD display name, or defers until [`Self::attach`].
     pub fn register_shader_route(
         &mut self,
         asset_id: i32,
-        family: MaterialFamilyId,
+        pipeline: RasterPipelineKind,
         display_name: Option<String>,
     ) {
         if let Some(reg) = self.material_registry.as_mut() {
-            reg.map_shader_route(asset_id, family, display_name);
+            reg.map_shader_route(asset_id, pipeline, display_name);
         } else {
             self.pending_shader_routes
-                .insert(asset_id, (family, display_name));
+                .insert(asset_id, (pipeline, display_name));
         }
     }
 

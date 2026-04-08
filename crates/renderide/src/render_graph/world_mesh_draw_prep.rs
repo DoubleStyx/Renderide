@@ -1,6 +1,6 @@
 //! Flatten scene mesh renderables into sorted draw items for [`super::passes::WorldMeshForwardPass`].
 //!
-//! Batches are keyed by raster family (from host shader → [`crate::materials::resolve_raster_family`]),
+//! Batches are keyed by raster pipeline kind (from host shader → [`crate::materials::resolve_raster_pipeline`]),
 //! material asset id, property block slot0, and skinned—aligned with legacy `SpaceDrawBatch` ordering in
 //! `crates_old/renderide` so pipeline and future per-material bind groups change only on boundaries.
 
@@ -8,8 +8,7 @@ use std::collections::HashSet;
 
 use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
-    manifest_stem_needs_uv0_stream, resolve_raster_family, MaterialFamilyId, MaterialRouter,
-    MANIFEST_RASTER_FAMILY_ID,
+    embedded_stem_needs_uv0_stream, resolve_raster_pipeline, MaterialRouter, RasterPipelineKind,
 };
 use crate::pipelines::ShaderPermutation;
 use crate::resources::MeshPool;
@@ -18,10 +17,10 @@ use crate::shared::RenderingContext;
 
 /// Groups draws that can share the same raster pipeline and material bind data (Unity material +
 /// [`MaterialPropertyBlock`](https://docs.unity3d.com/ScriptReference/MaterialPropertyBlock.html)-style slot0).
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct MaterialDrawBatchKey {
-    /// Resolved from host `set_shader` → [`resolve_raster_family`].
-    pub family_id: MaterialFamilyId,
+    /// Resolved from host `set_shader` → [`resolve_raster_pipeline`].
+    pub pipeline: RasterPipelineKind,
     /// Host shader asset id from material `set_shader` (or `-1` when unknown).
     pub shader_asset_id: i32,
     /// Material asset id for this submesh slot (or `-1` when missing).
@@ -30,10 +29,9 @@ pub struct MaterialDrawBatchKey {
     pub property_block_slot0: Option<i32>,
     /// Skinned deform path uses different vertex buffers.
     pub skinned: bool,
-    /// When [`Self::family_id`] is [`MANIFEST_RASTER_FAMILY_ID`](crate::materials::MANIFEST_RASTER_FAMILY_ID),
-    /// whether the active [`ShaderPermutation`] requires a UV0 vertex stream (computed once per draw item,
-    /// not per frame in the raster pass).
-    pub manifest_needs_uv0: bool,
+    /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether the active [`ShaderPermutation`]
+    /// requires a UV0 vertex stream (computed once per draw item, not per frame in the raster pass).
+    pub embedded_needs_uv0: bool,
 }
 
 /// One indexed draw after pairing a material slot with a mesh submesh range.
@@ -82,22 +80,20 @@ fn batch_key_for_slot(
     let shader_asset_id = dict
         .shader_asset_for_material(material_asset_id)
         .unwrap_or(-1);
-    let family_id = resolve_raster_family(shader_asset_id, router);
-    let manifest_needs_uv0 = if family_id == MANIFEST_RASTER_FAMILY_ID {
-        router
-            .stem_for_shader_asset(shader_asset_id)
-            .map(|stem| manifest_stem_needs_uv0_stream(stem, shader_perm))
-            .unwrap_or(false)
-    } else {
-        false
+    let pipeline = resolve_raster_pipeline(shader_asset_id, router);
+    let embedded_needs_uv0 = match &pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            embedded_stem_needs_uv0_stream(stem.as_ref(), shader_perm)
+        }
+        RasterPipelineKind::DebugWorldNormals => false,
     };
     MaterialDrawBatchKey {
-        family_id,
+        pipeline,
         shader_asset_id,
         material_asset_id,
         property_block_slot0: property_block_id,
         skinned,
-        manifest_needs_uv0,
+        embedded_needs_uv0,
     }
 }
 
@@ -296,8 +292,11 @@ pub fn world_mesh_draw_stats_from_sorted(draws: &[WorldMeshDrawItem]) -> WorldMe
     let mut batch_overlay = 0usize;
     let mut prev: Option<(MaterialDrawBatchKey, bool)> = None;
     for d in draws {
-        let cur = (d.batch_key, d.is_overlay);
-        if prev != Some(cur) {
+        let cur = (d.batch_key.clone(), d.is_overlay);
+        let same_as_prev = prev
+            .as_ref()
+            .is_some_and(|(k, o)| k == &d.batch_key && *o == d.is_overlay);
+        if !same_as_prev {
             batch_total += 1;
             if d.is_overlay {
                 batch_overlay += 1;
@@ -326,7 +325,7 @@ mod tests {
         resolved_material_slots, sort_world_mesh_draws, MaterialDrawBatchKey, WorldMeshDrawItem,
     };
     use crate::assets::material::MaterialPropertyLookupIds;
-    use crate::materials::DEBUG_WORLD_NORMALS_FAMILY_ID;
+    use crate::materials::RasterPipelineKind;
     use crate::scene::{MeshMaterialSlot, RenderSpaceId, StaticMeshRenderer};
 
     #[test]
@@ -387,12 +386,12 @@ mod tests {
                 mesh_property_block_slot0: pb,
             },
             batch_key: MaterialDrawBatchKey {
-                family_id: DEBUG_WORLD_NORMALS_FAMILY_ID,
+                pipeline: RasterPipelineKind::DebugWorldNormals,
                 shader_asset_id: -1,
                 material_asset_id: mid,
                 property_block_slot0: pb,
                 skinned,
-                manifest_needs_uv0: false,
+                embedded_needs_uv0: false,
             },
         }
     }
@@ -416,20 +415,20 @@ mod tests {
     #[test]
     fn property_block_splits_batch_keys() {
         let a = MaterialDrawBatchKey {
-            family_id: DEBUG_WORLD_NORMALS_FAMILY_ID,
+            pipeline: RasterPipelineKind::DebugWorldNormals,
             shader_asset_id: -1,
             material_asset_id: 1,
             property_block_slot0: None,
             skinned: false,
-            manifest_needs_uv0: false,
+            embedded_needs_uv0: false,
         };
         let b = MaterialDrawBatchKey {
-            family_id: DEBUG_WORLD_NORMALS_FAMILY_ID,
+            pipeline: RasterPipelineKind::DebugWorldNormals,
             shader_asset_id: -1,
             material_asset_id: 1,
             property_block_slot0: Some(99),
             skinned: false,
-            manifest_needs_uv0: false,
+            embedded_needs_uv0: false,
         };
         assert_ne!(a, b);
         assert!(a < b || b < a);

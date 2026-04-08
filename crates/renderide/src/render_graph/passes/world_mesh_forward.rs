@@ -4,11 +4,11 @@
 //! so pipeline and bind-group changes happen only when material / property-block / skinned path changes.
 //! Per-slot [`MaterialPropertyLookupIds`](crate::assets::material::MaterialPropertyLookupIds) are carried on each
 //! [`WorldMeshDrawItem`](crate::render_graph::WorldMeshDrawItem) for `get_merged` when building `@group(1)` bind
-//! groups for [`crate::materials::MANIFEST_RASTER_FAMILY_ID`] draws (see [`crate::backend::ManifestMaterialBindResources`]).
+//! groups for [`crate::materials::RasterPipelineKind::EmbeddedStem`] draws (see [`crate::backend::EmbeddedMaterialBindResources`]).
 //!
 //! Manifest raster binds use the composed WGSL **stem** from [`crate::materials::MaterialRouter::stem_for_shader_asset`]
-//! (not a hard-coded Unlit path). Whether UV0 is bound is stored on [`MaterialDrawBatchKey::manifest_needs_uv0`]
-//! (same rule as the manifest raster pipeline and [`crate::materials::manifest_stem_needs_uv0_stream`], computed during draw collection).
+//! (not a hard-coded Unlit path). Whether UV0 is bound is stored on [`MaterialDrawBatchKey::embedded_needs_uv0`]
+//! (same rule as the embedded raster pipeline and [`crate::materials::embedded_stem_needs_uv0_stream`], computed during draw collection).
 //!
 //! ## VR stereo world draws
 //!
@@ -25,9 +25,7 @@ use crate::assets::material::MaterialDictionary;
 use crate::backend::{CLUSTER_COUNT_Z, TILE_SIZE};
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::gpu::{write_per_draw_uniform_slab, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE};
-use crate::materials::{
-    MaterialPipelineDesc, MaterialRouter, DEBUG_WORLD_NORMALS_FAMILY_ID, MANIFEST_RASTER_FAMILY_ID,
-};
+use crate::materials::{MaterialPipelineDesc, MaterialRouter, RasterPipelineKind};
 use crate::pipelines::ShaderPermutation;
 use crate::pipelines::SHADER_PERM_MULTIVIEW_STEREO;
 use crate::present::SWAPCHAIN_CLEAR_COLOR;
@@ -108,7 +106,7 @@ impl RenderPass for WorldMeshForwardPass {
 
         let backend = &mut frame.backend;
         let render_context = frame.scene.active_main_render_context();
-        let fallback_router = MaterialRouter::new(DEBUG_WORLD_NORMALS_FAMILY_ID);
+        let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
         let router_ref = backend
             .material_registry
             .as_ref()
@@ -316,11 +314,11 @@ impl RenderPass for WorldMeshForwardPass {
 
         let mut last_batch_key: Option<MaterialDrawBatchKey> = None;
         let mut pipeline_ok = false;
-        let mut warned_missing_manifest_bind = false;
+        let mut warned_missing_embedded_bind = false;
 
         for (draw_idx, item) in draws.iter().enumerate() {
             if last_batch_key.as_ref() != Some(&item.batch_key) {
-                last_batch_key = Some(item.batch_key);
+                last_batch_key = Some(item.batch_key.clone());
                 let shader_asset_id = item.batch_key.shader_asset_id;
                 pipeline_ok = match backend.material_registry.as_mut() {
                     None => false,
@@ -335,9 +333,9 @@ impl RenderPass for WorldMeshForwardPass {
                         }
                         None => {
                             logger::trace!(
-                                "WorldMeshForward: no pipeline for shader_asset_id {:?} family {:?}, skipping draws until registered",
+                                "WorldMeshForward: no pipeline for shader_asset_id {:?} pipeline {:?}, skipping draws until registered",
                                 shader_asset_id,
-                                item.batch_key.family_id
+                                item.batch_key.pipeline
                             );
                             false
                         }
@@ -351,13 +349,16 @@ impl RenderPass for WorldMeshForwardPass {
 
             let dynamic_offset = (draw_idx * PER_DRAW_UNIFORM_STRIDE) as u32;
             rpass.set_bind_group(0, frame_bg_arc.as_ref(), &[]);
-            if item.batch_key.family_id == MANIFEST_RASTER_FAMILY_ID {
+            if matches!(
+                &item.batch_key.pipeline,
+                RasterPipelineKind::EmbeddedStem(_)
+            ) {
                 let stem = backend
                     .material_registry
                     .as_ref()
                     .and_then(|r| r.stem_for_shader_asset(item.batch_key.shader_asset_id));
-                if let (Some(mb), Some(stem)) = (backend.manifest_material_bind(), stem) {
-                    match mb.manifest_material_bind_group(
+                if let (Some(mb), Some(stem)) = (backend.embedded_material_bind(), stem) {
+                    match mb.embedded_material_bind_group(
                         stem,
                         queue,
                         backend.material_property_store(),
@@ -368,11 +369,11 @@ impl RenderPass for WorldMeshForwardPass {
                         Err(_) => rpass.set_bind_group(1, empty_bg_arc.as_ref(), &[]),
                     }
                 } else {
-                    if backend.manifest_material_bind().is_none() && !warned_missing_manifest_bind {
+                    if backend.embedded_material_bind().is_none() && !warned_missing_embedded_bind {
                         logger::warn!(
-                            "WorldMeshForward: manifest material bind resources unavailable; @group(1) uses empty bind group for MANIFEST_RASTER draws"
+                            "WorldMeshForward: embedded material bind resources unavailable; @group(1) uses empty bind group for embedded raster draws"
                         );
-                        warned_missing_manifest_bind = true;
+                        warned_missing_embedded_bind = true;
                     }
                     rpass.set_bind_group(1, empty_bg_arc.as_ref(), &[]);
                 }
@@ -385,7 +386,7 @@ impl RenderPass for WorldMeshForwardPass {
                 &mut rpass,
                 item,
                 &backend.mesh_pool,
-                item.batch_key.manifest_needs_uv0,
+                item.batch_key.embedded_needs_uv0,
             );
         }
 
@@ -397,7 +398,7 @@ fn draw_mesh_submesh(
     rpass: &mut wgpu::RenderPass<'_>,
     item: &WorldMeshDrawItem,
     mesh_pool: &crate::resources::MeshPool,
-    manifest_uv: bool,
+    embedded_uv: bool,
 ) {
     if item.mesh_asset_id < 0 || item.node_id < 0 || item.index_count == 0 {
         return;
@@ -436,7 +437,7 @@ fn draw_mesh_submesh(
 
     rpass.set_vertex_buffer(0, pos.slice(..));
     rpass.set_vertex_buffer(1, normals_vb.slice(..));
-    if manifest_uv {
+    if embedded_uv {
         let Some(uv) = mesh.uv0_buffer.as_deref() else {
             return;
         };

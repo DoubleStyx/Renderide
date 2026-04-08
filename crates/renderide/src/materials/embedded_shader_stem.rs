@@ -48,7 +48,7 @@ pub fn embedded_default_stem_for_unity_name(name: &str) -> Option<String> {
 }
 
 /// Returns the composed WGSL stem for `name` when an embedded `{key}_default` target exists (routing).
-pub fn manifest_stem_for_unity_name(name: &str) -> Option<String> {
+pub fn embedded_stem_for_unity_name(name: &str) -> Option<String> {
     embedded_default_stem_for_unity_name(name)
 }
 

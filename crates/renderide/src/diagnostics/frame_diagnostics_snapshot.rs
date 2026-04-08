@@ -81,9 +81,9 @@ impl FrameDiagnosticsSnapshot {
             .map(|reg| {
                 reg.shader_routes_for_hud()
                     .into_iter()
-                    .map(|(id, fam, name)| {
+                    .map(|(id, pipeline, name)| {
                         let label = name.as_deref().unwrap_or("<none>");
-                        format!("shader_asset_id={id}  {label}  family {:?}", fam)
+                        format!("shader_asset_id={id}  {label}  pipeline {:?}", pipeline)
                     })
                     .collect()
             })

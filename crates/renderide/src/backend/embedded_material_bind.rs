@@ -1,4 +1,4 @@
-//! `@group(1)` bind groups for manifest raster materials ([`crate::materials::MANIFEST_RASTER_FAMILY_ID`]).
+//! `@group(1)` bind groups for embedded raster materials (WGSL targets shipped with the renderer).
 //!
 //! Layouts and uniform packing come from [`crate::materials::reflect_raster_material_wgsl`] (naga).
 //! WGSL identifiers in `@group(1)` match Unity [`MaterialPropertyBlock`](https://docs.unity3d.com/ScriptReference/MaterialPropertyBlock.html)
@@ -26,8 +26,8 @@ use crate::materials::{
 };
 use crate::resources::{Texture2dSamplerState, TexturePool};
 
-/// GPU resources shared by manifest material bind groups (layouts, default texture, sampler).
-pub struct ManifestMaterialBindResources {
+/// GPU resources shared by embedded material bind groups (layouts, default texture, sampler).
+pub struct EmbeddedMaterialBindResources {
     device: Arc<wgpu::Device>,
     white_texture: Arc<wgpu::Texture>,
     white_texture_view: Arc<wgpu::TextureView>,
@@ -69,14 +69,14 @@ fn stem_hash(stem: &str) -> u64 {
     h.finish()
 }
 
-impl ManifestMaterialBindResources {
+impl EmbeddedMaterialBindResources {
     /// Builds layouts and placeholder texture.
     pub fn new(
         device: Arc<wgpu::Device>,
         property_registry: Arc<PropertyIdRegistry>,
     ) -> Result<Self, String> {
         let white_texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("manifest_default_white"),
+            label: Some("embedded_default_white"),
             size: wgpu::Extent3d {
                 width: 1,
                 height: 1,
@@ -93,7 +93,7 @@ impl ManifestMaterialBindResources {
             Arc::new(white_texture.create_view(&wgpu::TextureViewDescriptor::default()));
 
         let default_sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("manifest_default_sampler"),
+            label: Some("embedded_default_sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear,
@@ -137,8 +137,8 @@ impl ManifestMaterialBindResources {
         );
     }
 
-    /// Returns or builds a `@group(1)` bind group for the composed manifest `stem` (e.g. `unlit_default`).
-    pub fn manifest_material_bind_group(
+    /// Returns or builds a `@group(1)` bind group for the composed embedded `stem` (e.g. `unlit_default`).
+    pub fn embedded_material_bind_group(
         &self,
         stem: &str,
         queue: &wgpu::Queue,
@@ -186,7 +186,7 @@ impl ManifestMaterialBindResources {
             } else {
                 let buf = Arc::new(self.device.create_buffer_init(
                     &wgpu::util::BufferInitDescriptor {
-                        label: Some("manifest_material_uniform"),
+                        label: Some("embedded_material_uniform"),
                         contents: &uniform_bytes,
                         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                     },
@@ -298,7 +298,7 @@ impl ManifestMaterialBindResources {
         }
 
         let bind_group = Arc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("manifest_material_bind"),
+            label: Some("embedded_material_bind"),
             layout: &layout.bind_group_layout,
             entries: &entries,
         }));
@@ -320,7 +320,7 @@ impl ManifestMaterialBindResources {
         let bind_group_layout =
             self.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("manifest_stem_material"),
+                    label: Some("embedded_raster_material"),
                     entries: &reflected.material_entries,
                 });
 
@@ -636,7 +636,7 @@ fn sampler_from_state(device: &wgpu::Device, state: &Texture2dSamplerState) -> w
         ),
     };
     device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("manifest_texture_sampler"),
+        label: Some("embedded_texture_sampler"),
         address_mode_u,
         address_mode_v,
         address_mode_w: address_mode_u,

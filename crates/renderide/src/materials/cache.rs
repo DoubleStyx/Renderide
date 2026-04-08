@@ -1,24 +1,30 @@
-//! Cache of [`wgpu::RenderPipeline`] per material family + permutation + attachment formats.
+//! Cache of [`wgpu::RenderPipeline`] per [`RasterPipelineKind`] + permutation + attachment formats.
 //!
 //! Lookup keys intentionally **do not** include a WGSL layout fingerprint: reflecting the full
 //! shader on every cache probe would dominate CPU cost. Embedded targets are stable per
-//! `(family_id, manifest stem, permutation, [`MaterialPipelineDesc`])`. If hot-reload or dynamic
-//! WGSL is introduced, extend the key with a content hash or version.
+//! `(kind, permutation, [`MaterialPipelineDesc`])`. If hot-reload or dynamic WGSL is introduced,
+//! extend the key with a content hash or version.
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use crate::materials::embedded_raster_pipeline::{
+    build_embedded_wgsl, create_embedded_render_pipeline,
+};
+use crate::materials::RasterPipelineKind;
+use crate::pipelines::raster::debug_world_normals::{
+    build_debug_world_normals_wgsl, create_debug_world_normals_render_pipeline,
+};
 use crate::pipelines::ShaderPermutation;
 
-use super::family::{MaterialFamilyId, MaterialPipelineDesc, MaterialPipelineFamily};
+use super::family::MaterialPipelineDesc;
 
 /// Key for [`MaterialPipelineCache`] lookups (no WGSL parse — see module docs).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MaterialPipelineCacheKey {
-    pub family_id: MaterialFamilyId,
-    /// Present for [`super::MANIFEST_RASTER_FAMILY_ID`] so distinct manifest stems do not share a pipeline.
-    pub manifest_stem: Option<Arc<str>>,
+    /// Which WGSL program backs the pipeline (embedded stem or debug fallback).
+    pub kind: RasterPipelineKind,
     pub permutation: ShaderPermutation,
     pub surface_format: wgpu::TextureFormat,
     pub depth_stencil_format: Option<wgpu::TextureFormat>,
@@ -47,19 +53,17 @@ impl MaterialPipelineCache {
         &self.device
     }
 
-    /// Returns or builds a pipeline for `family`, `desc`, and `permutation`.
+    /// Returns or builds a pipeline for `kind`, `desc`, and `permutation`.
     ///
-    /// On a cache hit, does not call [`MaterialPipelineFamily::build_wgsl`] or run reflection;
-    /// those run only when inserting a new entry.
+    /// On a cache hit, does not compose WGSL or run reflection; those run only when inserting a new entry.
     pub fn get_or_create(
         &mut self,
-        family: &dyn MaterialPipelineFamily,
+        kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         permutation: ShaderPermutation,
     ) -> &wgpu::RenderPipeline {
         let key = MaterialPipelineCacheKey {
-            family_id: family.family_id(),
-            manifest_stem: family.manifest_stem(),
+            kind: kind.clone(),
             permutation,
             surface_format: desc.surface_format,
             depth_stencil_format: desc.depth_stencil_format,
@@ -67,14 +71,26 @@ impl MaterialPipelineCache {
             multiview_mask: desc.multiview_mask,
         };
         self.pipelines.entry(key).or_insert_with(|| {
-            let wgsl = family.build_wgsl(permutation);
+            let wgsl = match kind {
+                RasterPipelineKind::EmbeddedStem(stem) => build_embedded_wgsl(stem, permutation),
+                RasterPipelineKind::DebugWorldNormals => {
+                    build_debug_world_normals_wgsl(permutation)
+                }
+            };
             let module = self
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("material_family_shader"),
+                    label: Some("raster_material_shader"),
                     source: wgpu::ShaderSource::Wgsl(wgsl.clone().into()),
                 });
-            family.create_render_pipeline(&self.device, &module, desc, &wgsl)
+            match kind {
+                RasterPipelineKind::EmbeddedStem(_) => {
+                    create_embedded_render_pipeline(&self.device, &module, desc, &wgsl)
+                }
+                RasterPipelineKind::DebugWorldNormals => {
+                    create_debug_world_normals_render_pipeline(&self.device, &module, desc, &wgsl)
+                }
+            }
         })
     }
 }

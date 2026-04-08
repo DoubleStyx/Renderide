@@ -58,7 +58,7 @@ pub struct GpuMesh {
     /// Skinning output normals in world space (`vec4<f32>` per vertex; xyz used), inverse-transpose
     /// LBS of bind-pose normals. Present when [`Self::has_skeleton`].
     pub deformed_normals_buffer: Option<Arc<wgpu::Buffer>>,
-    /// `vec2<f32>` UV0 stream (`8` bytes/vertex) for manifest raster materials; zeros when uv0 is absent.
+    /// `vec2<f32>` UV0 stream (`8` bytes/vertex) for embedded raster materials; zeros when uv0 is absent.
     pub uv0_buffer: Option<Arc<wgpu::Buffer>>,
     /// True when the host uploaded a real skeleton (`bone_count > 0`).
     pub has_skeleton: bool,

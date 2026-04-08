@@ -346,7 +346,7 @@ pub fn extract_float3_position_normal_as_vec4_streams(
     Some((pos_out, nrm_out))
 }
 
-/// Dense `vec2<f32>` UV stream (`8` bytes per vertex) for manifest materials (e.g. world Unlit).
+/// Dense `vec2<f32>` UV stream (`8` bytes per vertex) for embedded materials (e.g. world Unlit).
 ///
 /// When [`VertexAttributeType::uv0`] is missing or not `float32`×2, returns **zeros** so a vertex buffer
 /// slot can always be bound.

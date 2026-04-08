@@ -1,31 +1,35 @@
-//! AAA-style materials: WGSL templates + overrides, per-family pipeline builders, and cache.
+//! AAA-style materials: WGSL templates + overrides, pipeline cache, and routing.
 //!
 //! Host material **properties** live in [`crate::assets::material::MaterialPropertyStore`] (IPC
-//! batches). **Shader program choice** (which WGSL family to use) is routed via [`MaterialRouter`]
+//! batches). **Shader program choice** (which embedded WGSL target to use) is routed via [`MaterialRouter`]
 //! from host shader asset ids updated by [`crate::assets::shader::resolve_shader_upload`].
 
 mod cache;
+mod embedded_raster_pipeline;
+mod embedded_shader_stem;
 mod family;
-mod manifest_stem;
 mod material_property_binding;
+mod pipeline_kind;
 pub(crate) mod raster_pipeline;
 mod registry;
 mod resolve_raster;
 mod router;
-mod stem_manifest;
 mod wgsl;
 mod wgsl_reflect;
 pub use cache::{MaterialPipelineCache, MaterialPipelineCacheKey};
-pub use family::{MaterialFamilyId, MaterialPipelineDesc, MaterialPipelineFamily};
-pub use manifest_stem::{
-    manifest_stem_needs_uv0_stream, manifest_wgsl_needs_uv0_stream, ManifestStemMaterialFamily,
-    MANIFEST_RASTER_FAMILY_ID,
+pub use embedded_raster_pipeline::{
+    embedded_composed_stem_for_permutation, embedded_stem_needs_uv0_stream,
+    embedded_wgsl_needs_uv0_stream,
 };
+pub use embedded_shader_stem::{
+    embedded_default_stem_for_unity_name, embedded_stem_for_unity_name,
+};
+pub use family::MaterialPipelineDesc;
 pub use material_property_binding::MaterialPropertyGpuLayout;
+pub use pipeline_kind::RasterPipelineKind;
 pub use registry::MaterialRegistry;
-pub use resolve_raster::resolve_raster_family;
+pub use resolve_raster::resolve_raster_pipeline;
 pub use router::{MaterialRouter, ShaderRouteEntry};
-pub use stem_manifest::{embedded_default_stem_for_unity_name, manifest_stem_for_unity_name};
 pub use wgsl::{compose_wgsl, WgslPatch};
 pub use wgsl_reflect::{
     reflect_raster_material_wgsl, reflect_vertex_shader_needs_uv0_stream, validate_per_draw_group2,
@@ -33,4 +37,4 @@ pub use wgsl_reflect::{
     ReflectedUniformScalarKind,
 };
 
-pub use crate::pipelines::raster::{DebugWorldNormalsFamily, DEBUG_WORLD_NORMALS_FAMILY_ID};
+pub use crate::pipelines::raster::DebugWorldNormalsFamily;

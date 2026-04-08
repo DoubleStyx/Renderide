@@ -1,124 +1,101 @@
-//! Registered [`MaterialPipelineFamily`] implementations and shared [`super::MaterialPipelineCache`].
+//! [`MaterialRegistry`]: [`MaterialRouter`], [`super::MaterialPipelineCache`], and shader route updates.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::pipelines::raster::{DebugWorldNormalsFamily, DEBUG_WORLD_NORMALS_FAMILY_ID};
 use crate::pipelines::ShaderPermutation;
 
 use super::cache::MaterialPipelineCache;
-use super::family::{MaterialFamilyId, MaterialPipelineDesc, MaterialPipelineFamily};
-use super::manifest_stem::{ManifestStemMaterialFamily, MANIFEST_RASTER_FAMILY_ID};
-use super::resolve_raster::resolve_raster_family;
+use super::embedded_shader_stem::embedded_default_stem_for_unity_name;
+use super::family::MaterialPipelineDesc;
+use super::pipeline_kind::RasterPipelineKind;
+use super::resolve_raster::resolve_raster_pipeline;
 use super::router::MaterialRouter;
-use super::stem_manifest;
 
-/// Owning table of material families, routing, and pipeline cache.
+/// Owning table of material routing and pipeline cache.
 pub struct MaterialRegistry {
     device: Arc<wgpu::Device>,
-    families: HashMap<MaterialFamilyId, Arc<dyn MaterialPipelineFamily>>,
     pub router: MaterialRouter,
     cache: MaterialPipelineCache,
 }
 
 impl MaterialRegistry {
-    /// Registers builtin families and routes unknown shader assets to [`DEBUG_WORLD_NORMALS_FAMILY_ID`].
-    /// The former solid-color builtin has been removed; manifest shaders and debug normals cover mesh draws.
+    /// Builds a registry whose router falls back to [`RasterPipelineKind::DebugWorldNormals`] for unknown shader assets.
     pub fn with_default_families(device: Arc<wgpu::Device>) -> Self {
-        let mut registry = Self {
+        Self {
             device: device.clone(),
-            families: HashMap::new(),
-            router: MaterialRouter::new(DEBUG_WORLD_NORMALS_FAMILY_ID),
+            router: MaterialRouter::new(RasterPipelineKind::DebugWorldNormals),
             cache: MaterialPipelineCache::new(device),
-        };
-        registry.register_family(Arc::new(DebugWorldNormalsFamily));
-        registry
+        }
     }
 
-    /// Adds a family (replaces if `family_id` matches an existing entry).
-    pub fn register_family(&mut self, family: Arc<dyn MaterialPipelineFamily>) {
-        self.families.insert(family.family_id(), family);
-    }
-
-    /// Inserts a host shader id → family mapping and optional HUD display name (Unity-style logical name or upload field).
+    /// Inserts a host shader id → pipeline mapping and optional HUD display name (Unity-style logical name or upload field).
     ///
     /// When `display_name` normalizes to an embedded `{key}_default` WGSL target, records the stem on
     /// [`MaterialRouter::stem_for_shader_asset`].
     pub fn map_shader_route(
         &mut self,
         shader_asset_id: i32,
-        family: MaterialFamilyId,
+        pipeline: RasterPipelineKind,
         display_name: Option<String>,
     ) {
-        let stem = display_name
+        let stem_from_display = display_name
             .as_deref()
-            .and_then(stem_manifest::embedded_default_stem_for_unity_name);
+            .and_then(embedded_default_stem_for_unity_name);
         self.router
-            .set_shader_route(shader_asset_id, family, display_name);
-        if let Some(s) = stem {
-            self.router.set_shader_stem(shader_asset_id, s);
-        } else {
-            self.router.remove_shader_stem(shader_asset_id);
+            .set_shader_route(shader_asset_id, pipeline.clone(), display_name);
+        match &pipeline {
+            RasterPipelineKind::EmbeddedStem(s) => {
+                self.router.set_shader_stem(shader_asset_id, s.to_string());
+            }
+            RasterPipelineKind::DebugWorldNormals => {
+                if let Some(s) = stem_from_display {
+                    self.router.set_shader_stem(shader_asset_id, s);
+                } else {
+                    self.router.remove_shader_stem(shader_asset_id);
+                }
+            }
         }
     }
 
-    /// Inserts a host shader id → family mapping without a HUD display name.
-    pub fn map_shader_to_family(&mut self, shader_asset_id: i32, family: MaterialFamilyId) {
-        self.map_shader_route(shader_asset_id, family, None);
+    /// Inserts a host shader id → pipeline mapping without a HUD display name.
+    pub fn map_shader_pipeline(&mut self, shader_asset_id: i32, pipeline: RasterPipelineKind) {
+        self.map_shader_route(shader_asset_id, pipeline, None);
     }
 
     /// Removes routing for a host shader id [`crate::shared::ShaderUnload`].
     pub fn unmap_shader(&mut self, shader_asset_id: i32) {
-        self.router.remove_shader_family(shader_asset_id);
+        self.router.remove_shader_route(shader_asset_id);
     }
 
-    /// Resolves a pipeline for a host shader asset (via router + manifest stem when applicable).
-    ///
-    /// This is the **only** entry point that can build [`MANIFEST_RASTER_FAMILY_ID`] pipelines: it resolves
-    /// the composed WGSL stem from [`Self::stem_for_shader_asset`] and uses
-    /// [`ManifestStemMaterialFamily`](super::manifest_stem::ManifestStemMaterialFamily).
-    /// [`Self::pipeline_for_family`] intentionally returns [`None`] for that family id so callers do not
-    /// duplicate manifest logic.
+    /// Resolves a cached or new pipeline for a host shader asset (via router + embedded stem when applicable).
     pub fn pipeline_for_shader_asset(
         &mut self,
         shader_asset_id: i32,
         desc: &MaterialPipelineDesc,
         permutation: ShaderPermutation,
     ) -> Option<&wgpu::RenderPipeline> {
-        let id = resolve_raster_family(shader_asset_id, &self.router);
-        if id == MANIFEST_RASTER_FAMILY_ID {
-            let stem = self.stem_for_shader_asset(shader_asset_id)?;
-            let family = ManifestStemMaterialFamily::new(Arc::from(stem));
-            Some(self.cache.get_or_create(&family, desc, permutation))
-        } else {
-            self.pipeline_for_family(id, desc, permutation)
-        }
+        let kind = resolve_raster_pipeline(shader_asset_id, &self.router);
+        Some(self.cache.get_or_create(&kind, desc, permutation))
     }
 
-    /// Looks up `family_id` and returns a cached or new pipeline.
-    ///
-    /// Returns [`None`] for [`MANIFEST_RASTER_FAMILY_ID`] — use [`Self::pipeline_for_shader_asset`].
-    pub fn pipeline_for_family(
+    /// Looks up a pipeline by explicit kind (for example tests or tools that do not use a host shader id).
+    pub fn pipeline_for_kind(
         &mut self,
-        family_id: MaterialFamilyId,
-        desc: &MaterialPipelineDesc,
-        permutation: ShaderPermutation,
-    ) -> Option<&wgpu::RenderPipeline> {
-        if family_id == MANIFEST_RASTER_FAMILY_ID {
-            return None;
-        }
-        let family = self.families.get(&family_id)?.clone();
-        Some(self.cache.get_or_create(family.as_ref(), desc, permutation))
-    }
-
-    /// Low-level cache access (family object instead of id).
-    pub fn get_or_create_pipeline(
-        &mut self,
-        family: &dyn MaterialPipelineFamily,
+        kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         permutation: ShaderPermutation,
     ) -> &wgpu::RenderPipeline {
-        self.cache.get_or_create(family, desc, permutation)
+        self.cache.get_or_create(kind, desc, permutation)
+    }
+
+    /// Low-level cache access keyed by [`RasterPipelineKind`].
+    pub fn get_or_create_pipeline(
+        &mut self,
+        kind: &RasterPipelineKind,
+        desc: &MaterialPipelineDesc,
+        permutation: ShaderPermutation,
+    ) -> &wgpu::RenderPipeline {
+        self.cache.get_or_create(kind, desc, permutation)
     }
 
     /// Borrow the wgpu device held by this registry.
@@ -126,8 +103,8 @@ impl MaterialRegistry {
         &self.device
     }
 
-    /// Shader routes for the debug HUD (`shader_asset_id`, [`MaterialFamilyId`], optional display name), sorted.
-    pub fn shader_routes_for_hud(&self) -> Vec<(i32, MaterialFamilyId, Option<String>)> {
+    /// Shader routes for the debug HUD (`shader_asset_id`, [`RasterPipelineKind`], optional display name), sorted.
+    pub fn shader_routes_for_hud(&self) -> Vec<(i32, RasterPipelineKind, Option<String>)> {
         self.router.routes_sorted_for_hud()
     }
 
@@ -143,7 +120,7 @@ mod wgpu_cache_tests {
 
     use super::MaterialRegistry;
     use crate::materials::family::MaterialPipelineDesc;
-    use crate::materials::DEBUG_WORLD_NORMALS_FAMILY_ID;
+    use crate::materials::RasterPipelineKind;
     use crate::pipelines::ShaderPermutation;
 
     async fn device_with_adapter() -> Option<Arc<wgpu::Device>> {
@@ -181,15 +158,19 @@ mod wgpu_cache_tests {
             multiview_mask: None,
         };
         let addr = {
-            let p = reg
-                .pipeline_for_family(DEBUG_WORLD_NORMALS_FAMILY_ID, &desc, ShaderPermutation(0))
-                .expect("builtin family");
+            let p = reg.pipeline_for_kind(
+                &RasterPipelineKind::DebugWorldNormals,
+                &desc,
+                ShaderPermutation(0),
+            );
             std::ptr::from_ref(p)
         };
         let addr2 = {
-            let p = reg
-                .pipeline_for_family(DEBUG_WORLD_NORMALS_FAMILY_ID, &desc, ShaderPermutation(0))
-                .expect("cache hit");
+            let p = reg.pipeline_for_kind(
+                &RasterPipelineKind::DebugWorldNormals,
+                &desc,
+                ShaderPermutation(0),
+            );
             std::ptr::from_ref(p)
         };
         assert_eq!(addr, addr2);
@@ -210,15 +191,19 @@ mod wgpu_cache_tests {
             multiview_mask: None,
         };
         let addr0 = {
-            let p = reg
-                .pipeline_for_family(DEBUG_WORLD_NORMALS_FAMILY_ID, &desc, ShaderPermutation(0))
-                .expect("perm 0");
+            let p = reg.pipeline_for_kind(
+                &RasterPipelineKind::DebugWorldNormals,
+                &desc,
+                ShaderPermutation(0),
+            );
             std::ptr::from_ref(p)
         };
         let addr1 = {
-            let p = reg
-                .pipeline_for_family(DEBUG_WORLD_NORMALS_FAMILY_ID, &desc, ShaderPermutation(1))
-                .expect("perm 1");
+            let p = reg.pipeline_for_kind(
+                &RasterPipelineKind::DebugWorldNormals,
+                &desc,
+                ShaderPermutation(1),
+            );
             std::ptr::from_ref(p)
         };
         assert_ne!(addr0, addr1);

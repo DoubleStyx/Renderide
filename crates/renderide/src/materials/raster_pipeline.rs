@@ -1,6 +1,6 @@
 //! Shared [`wgpu::RenderPipeline`] construction for reflective raster materials (frame, material, per-draw groups).
 //!
-//! **Transparent blending:** manifest materials that mirror Unity transparent queues (e.g. UI text) may need
+//! **Transparent blending:** embedded materials that mirror Unity transparent queues (e.g. UI text) may need
 //! alpha blending derived from material uniforms (`_SrcBlend` / `_DstBlend`) or host render-queue metadata.
 //! The default here is opaque replacement (`blend: None`); improving that is a cross-cutting, reflection-driven
 //! follow-up—not per-shader logic in the mesh pass.
@@ -18,8 +18,7 @@ use crate::render_graph::MAIN_FORWARD_DEPTH_COMPARE;
 /// Shaders must not require a **fourth** vertex attribute (e.g. UV1) until the mesh pass binds it; duplicate
 /// UV0 into extra varyings in `vs_main` if needed.
 ///
-/// Used by [`crate::pipelines::raster::DebugWorldNormalsFamily`] and
-/// [`crate::materials::ManifestStemMaterialFamily`].
+/// Used by [`crate::pipelines::raster::DebugWorldNormalsFamily`] and embedded WGSL raster materials.
 pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
     device: &wgpu::Device,
     module: &wgpu::ShaderModule,

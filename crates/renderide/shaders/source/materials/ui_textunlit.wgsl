@@ -3,14 +3,14 @@
 //! Build emits `ui_textunlit_default` / `ui_textunlit_multiview` via [`MULTIVIEW`](https://docs.rs/naga_oil).
 //! `@group(1)` global names match Unity `UI_TextUnlit.shader` material property names for host reflection.
 //!
-//! **Vertex color:** Unity multiplies `_TintColor * vertexColor`. This manifest path has no vertex color stream;
+//! **Vertex color:** Unity multiplies `_TintColor * vertexColor`. This embedded shader path has no vertex color stream;
 //! vertex color is treated as white (`vec4(1.0)`).
 //!
 //! **Glyph mode (Unity `RASTER` / `SDF` / `MSDF` keywords):** FrooxEngine always sends `_Range` from
 //! `PixelRange / atlasSize` for both raster and distance-field fonts, so **mode cannot be inferred from `_Range` alone**.
 //! Use **`_TextMode`**: `0` = MSDF (median RGB), `1` = RASTER (`atlas * tint`, alpha clip), `2` = SDF (single-channel alpha distance).
 //! The host may set `_TextMode` explicitly or rely on keyword floats (`MSDF`, `SDF`, `RASTER`) mapped in
-//! [`crate::backend::manifest_material_bind`].
+//! [`crate::backend::embedded_material_bind`].
 //!
 //! **Rect clip (Unity `RECTCLIP` keyword):** When **`_RectClip` > 0.5** and `_Rect` has non-zero area, fragments outside
 //! the rect in object XY are discarded. If `_RectClip` is unset, **`RECTCLIP` / `rectclip` keyword floats** are used.
