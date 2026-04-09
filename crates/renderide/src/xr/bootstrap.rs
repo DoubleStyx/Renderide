@@ -52,6 +52,71 @@ impl From<vk::Result> for XrBootstrapError {
     }
 }
 
+/// Converts an OpenXR [`xr::Version`] to a Vulkan `VkApplicationInfo::apiVersion` value.
+fn xr_version_to_vulkan_api_version(xr: xr::Version) -> u32 {
+    vk::make_api_version(0, xr.major() as u32, xr.minor() as u32, xr.patch())
+}
+
+fn format_vk_api_version(version: u32) -> String {
+    format!(
+        "{}.{}.{}",
+        vk::api_version_major(version),
+        vk::api_version_minor(version),
+        vk::api_version_patch(version)
+    )
+}
+
+/// Picks a single Vulkan instance `apiVersion` that satisfies wgpu-hal (Vulkan **1.2+** for promoted
+/// [`vkWaitSemaphores`] / timeline semaphores), the loader’s reported instance version, and OpenXR
+/// [`xr::graphics::vulkan::Requirements`].
+///
+/// Returns the highest version allowed by all constraints (typically `min(loader, OpenXR max,
+/// project cap)`), which must be at least `max(1.2, OpenXR min)`.
+fn choose_vulkan_api_version_for_wgpu(
+    loader_instance_version: u32,
+    reqs: &<xr::Vulkan as xr::Graphics>::Requirements,
+) -> Result<u32, XrBootstrapError> {
+    const WGPU_MIN_VULKAN: u32 = vk::API_VERSION_1_2;
+    const PROJECT_CAP_VULKAN: u32 = vk::API_VERSION_1_3;
+
+    let xr_min_vk = xr_version_to_vulkan_api_version(reqs.min_api_version_supported);
+    let xr_max_vk = xr_version_to_vulkan_api_version(reqs.max_api_version_supported);
+
+    let floor = WGPU_MIN_VULKAN.max(xr_min_vk);
+    let ceiling = loader_instance_version
+        .min(xr_max_vk)
+        .min(PROJECT_CAP_VULKAN);
+
+    if floor > ceiling {
+        return Err(XrBootstrapError::Message(format!(
+            "No Vulkan API version works for wgpu + OpenXR: need at least {} (wgpu requires Vulkan 1.2+ for timeline semaphores), but loader and runtime allow at most {} (OpenXR max {}).",
+            format_vk_api_version(floor),
+            format_vk_api_version(ceiling),
+            reqs.max_api_version_supported
+        )));
+    }
+
+    Ok(ceiling)
+}
+
+/// Fails fast if [`vkWaitSemaphores`] is not exported for the logical device. WGPU uses this for
+/// timeline-semaphore fences when the extension is promoted to core (Vulkan 1.2+).
+fn verify_device_has_wait_semaphores(
+    vk_instance: &ash::Instance,
+    device: vk::Device,
+) -> Result<(), XrBootstrapError> {
+    let addr = unsafe {
+        (vk_instance.fp_v1_0().get_device_proc_addr)(device, c"vkWaitSemaphores".as_ptr())
+    };
+    if addr.is_none() {
+        return Err(XrBootstrapError::Vulkan(
+            "Vulkan device missing vkWaitSemaphores; need Vulkan 1.2+ (or timeline semaphore support) for wgpu."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Builds a Vulkan instance through OpenXR and wraps it as wgpu [`wgpu::Instance`] / [`wgpu::Device`].
 pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
     let xr_entry = unsafe { xr::Entry::load() }
@@ -67,6 +132,9 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
 
     let mut enabled_extensions = xr::ExtensionSet::default();
     enabled_extensions.khr_vulkan_enable2 = true;
+    if available_extensions.khr_generic_controller {
+        enabled_extensions.khr_generic_controller = true;
+    }
     #[cfg(target_os = "android")]
     {
         enabled_extensions.khr_android_create_instance = true;
@@ -90,18 +158,7 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
         xr::ViewConfigurationType::PRIMARY_STEREO,
     )?[0];
 
-    let vk_target_version = vk::make_api_version(0, 1, 1, 0);
-    let vk_target_version_xr = xr::Version::new(1, 1, 0);
     let reqs = xr_instance.graphics_requirements::<xr::Vulkan>(xr_system_id)?;
-    if vk_target_version_xr < reqs.min_api_version_supported
-        || vk_target_version_xr.major() > reqs.max_api_version_supported.major()
-    {
-        return Err(XrBootstrapError::Message(format!(
-            "OpenXR requires Vulkan between {} and {}.0.0",
-            reqs.min_api_version_supported,
-            reqs.max_api_version_supported.major() + 1
-        )));
-    }
 
     let vk_entry =
         unsafe { ash::Entry::load() }.map_err(|e| XrBootstrapError::Vulkan(e.to_string()))?;
@@ -115,6 +172,8 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
             )))
         }
     };
+
+    let vk_target_version = choose_vulkan_api_version_for_wgpu(instance_api_version, &reqs)?;
 
     let flags = wgt::InstanceFlags::empty();
     let extensions =
@@ -157,9 +216,11 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
     let vk_device_properties =
         unsafe { vk_instance.get_physical_device_properties(vk_physical_device) };
     if vk_device_properties.api_version < vk_target_version {
-        return Err(XrBootstrapError::Message(
-            "Vulkan physical device does not support API version 1.1.".into(),
-        ));
+        return Err(XrBootstrapError::Message(format!(
+            "Vulkan physical device does not support API version {} (need at least {}).",
+            format_vk_api_version(vk_device_properties.api_version),
+            format_vk_api_version(vk_target_version)
+        )));
     }
 
     let queue_family_index =
@@ -179,7 +240,7 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
         hal::vulkan::Instance::from_raw(
             vk_entry.clone(),
             vk_instance.clone(),
-            vk::API_VERSION_1_3,
+            vk_target_version,
             0,
             None,
             extensions,
@@ -230,10 +291,9 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
                 &device_create_info as *const _ as *const _,
             )?
             .map_err(vk::Result::from_raw)?;
-        ash::Device::load(
-            vk_instance.fp_v1_0(),
-            vk::Device::from_raw(raw as usize as u64),
-        )
+        let device_handle = vk::Device::from_raw(raw as usize as u64);
+        verify_device_has_wait_semaphores(&vk_instance, device_handle)?;
+        ash::Device::load(vk_instance.fp_v1_0(), device_handle)
     };
 
     let (session, frame_wait, frame_stream) = unsafe {
@@ -314,4 +374,40 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
         xr_system_id,
         openxr_input,
     })
+}
+
+#[cfg(test)]
+mod choose_vulkan_api_version_tests {
+    use super::*;
+
+    type VulkanGraphicsRequirements = <xr::Vulkan as xr::Graphics>::Requirements;
+
+    #[test]
+    fn chooses_ceiling_when_loader_and_openxr_allow_1_3() {
+        let reqs = VulkanGraphicsRequirements {
+            min_api_version_supported: xr::Version::new(1, 0, 0),
+            max_api_version_supported: xr::Version::new(1, 3, 0),
+        };
+        let v = choose_vulkan_api_version_for_wgpu(vk::API_VERSION_1_3, &reqs).unwrap();
+        assert_eq!(v, vk::API_VERSION_1_3);
+    }
+
+    #[test]
+    fn clamps_to_loader_when_openxr_allows_higher() {
+        let reqs = VulkanGraphicsRequirements {
+            min_api_version_supported: xr::Version::new(1, 0, 0),
+            max_api_version_supported: xr::Version::new(1, 3, 0),
+        };
+        let v = choose_vulkan_api_version_for_wgpu(vk::API_VERSION_1_2, &reqs).unwrap();
+        assert_eq!(v, vk::API_VERSION_1_2);
+    }
+
+    #[test]
+    fn errors_when_openxr_max_below_wgpu_floor() {
+        let reqs = VulkanGraphicsRequirements {
+            min_api_version_supported: xr::Version::new(1, 0, 0),
+            max_api_version_supported: xr::Version::new(1, 1, 0),
+        };
+        assert!(choose_vulkan_api_version_for_wgpu(vk::API_VERSION_1_3, &reqs).is_err());
+    }
 }
