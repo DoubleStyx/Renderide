@@ -1,5 +1,6 @@
 //! OpenXR session and Vulkan device bootstrap (Vulkan + `KHR_vulkan_enable2`).
 
+mod app_integration;
 mod bootstrap;
 mod input;
 mod session;
@@ -16,4 +17,8 @@ pub use session::{
 pub use swapchain::{
     create_stereo_depth_texture, XrStereoSwapchain, XrSwapchainError, XR_COLOR_FORMAT,
     XR_VIEW_COUNT,
+};
+
+pub use app_integration::{
+    openxr_begin_frame_tick, try_openxr_hmd_multiview_submit, OpenxrFrameTick,
 };

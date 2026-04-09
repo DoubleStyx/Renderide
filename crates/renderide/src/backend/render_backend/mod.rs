@@ -1,5 +1,9 @@
 //! [`RenderBackend`] implementation.
 
+mod uploads;
+
+pub use uploads::{MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS};
+
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -8,8 +12,6 @@ use crate::assets::material::{
     parse_materials_update_batch_into_store, MaterialPropertyStore, ParseMaterialBatchOptions,
     PropertyIdRegistry,
 };
-use crate::assets::mesh::try_upload_mesh_from_raw;
-use crate::assets::texture::write_texture2d_mips;
 use crate::config::RendererSettingsHandle;
 use crate::gpu::{GpuContext, MeshPreprocessPipelines};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
@@ -17,7 +19,7 @@ use crate::materials::RasterPipelineKind;
 #[cfg(feature = "debug-hud")]
 use crate::render_graph::WorldMeshDrawStats;
 use crate::render_graph::{CompiledRenderGraph, ExternalFrameTargets, GraphExecuteError};
-use crate::resources::{GpuTexture2d, MeshPool, TexturePool};
+use crate::resources::{MeshPool, TexturePool};
 use crate::scene::SceneCoordinator;
 
 #[cfg(feature = "debug-hud")]
@@ -29,17 +31,10 @@ use super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources};
 use super::light_gpu::{order_lights_for_clustered_shading, GpuLight};
 use super::mesh_deform_scratch::MeshDeformScratch;
 use crate::shared::{
-    MaterialsUpdateBatch, MaterialsUpdateBatchResult, MeshUnload, MeshUploadData, MeshUploadResult,
-    RendererCommand, SetTexture2DData, SetTexture2DFormat, SetTexture2DProperties,
-    SetTexture2DResult, TextureUpdateResultType, UnloadTexture2D,
+    MaterialsUpdateBatch, MaterialsUpdateBatchResult, MeshUnload, MeshUploadData, RendererCommand,
+    SetTexture2DData, SetTexture2DFormat, SetTexture2DProperties, UnloadTexture2D,
 };
 use winit::window::Window;
-
-/// Max queued [`MeshUploadData`] when GPU is not ready yet (host data stays in shared memory).
-pub const MAX_PENDING_MESH_UPLOADS: usize = 256;
-
-/// Max queued texture data commands when GPU or format is not ready.
-pub const MAX_PENDING_TEXTURE_UPLOADS: usize = 256;
 
 /// Max queued [`MaterialsUpdateBatch`] when shared memory is not available.
 pub const MAX_PENDING_MATERIAL_BATCHES: usize = 256;
@@ -54,13 +49,17 @@ pub struct RenderBackend {
     pub(crate) mesh_pool: MeshPool,
     texture_pool: TexturePool,
     /// Latest [`SetTexture2DFormat`] per asset (required before data upload).
-    texture_formats: HashMap<i32, SetTexture2DFormat>,
+    pub(super) texture_formats: HashMap<i32, SetTexture2DFormat>,
     /// Latest [`SetTexture2DProperties`] per asset (sampler metadata on [`GpuTexture2d`]).
-    texture_properties: HashMap<i32, SetTexture2DProperties>,
-    gpu_device: Option<Arc<wgpu::Device>>,
-    gpu_queue: Option<Arc<Mutex<wgpu::Queue>>>,
-    pending_mesh_uploads: VecDeque<MeshUploadData>,
-    pending_texture_uploads: VecDeque<SetTexture2DData>,
+    pub(super) texture_properties: HashMap<i32, SetTexture2DProperties>,
+    /// Bound wgpu device after [`Self::attach`]; used by mesh/texture upload paths.
+    pub(super) gpu_device: Option<Arc<wgpu::Device>>,
+    /// Submission queue paired with [`Self::gpu_device`].
+    pub(super) gpu_queue: Option<Arc<Mutex<wgpu::Queue>>>,
+    /// Mesh payloads waiting for GPU or shared memory (drained on [`Self::attach`]).
+    pub(super) pending_mesh_uploads: VecDeque<MeshUploadData>,
+    /// Texture mip payloads waiting for GPU allocation or shared memory.
+    pub(super) pending_texture_uploads: VecDeque<SetTexture2DData>,
     /// GPU material families, router, and pipeline cache (after [`Self::attach`]).
     pub(crate) material_registry: Option<crate::materials::MaterialRegistry>,
     /// Shader asset id → pipeline kind and optional HUD label when uploads arrive before GPU attach.
@@ -321,24 +320,7 @@ impl RenderBackend {
                 self.embedded_material_bind = None;
             }
         }
-        self.flush_pending_texture_allocations(&device);
-        let pending_tex: Vec<SetTexture2DData> = self.pending_texture_uploads.drain(..).collect();
-        let pending_mesh: Vec<MeshUploadData> = self.pending_mesh_uploads.drain(..).collect();
-        if let Some(shm) = shm {
-            for data in pending_tex {
-                self.try_texture_upload_with_device(data, shm, None);
-            }
-            for data in pending_mesh {
-                self.try_mesh_upload_with_device(&device, data, shm, None);
-            }
-        } else {
-            for data in pending_tex {
-                self.pending_texture_uploads.push_back(data);
-            }
-            for data in pending_mesh {
-                self.pending_mesh_uploads.push_back(data);
-            }
-        }
+        uploads::attach_flush_pending_asset_uploads(self, &device, shm);
 
         self.frame_graph = match crate::render_graph::build_default_main_graph() {
             Ok(g) => Some(g),
@@ -567,78 +549,13 @@ impl RenderBackend {
         ));
     }
 
-    fn flush_pending_texture_allocations(&mut self, device: &Arc<wgpu::Device>) {
-        let ids: Vec<i32> = self.texture_formats.keys().copied().collect();
-        for id in ids {
-            if self.texture_pool.get_texture(id).is_some() {
-                continue;
-            }
-            let Some(fmt) = self.texture_formats.get(&id).cloned() else {
-                continue;
-            };
-            let props = self.texture_properties.get(&id);
-            let Some(tex) = GpuTexture2d::new_from_format(device.as_ref(), &fmt, props) else {
-                logger::warn!("texture {id}: failed to allocate GPU texture on attach");
-                continue;
-            };
-            let _ = self.texture_pool.insert_texture(tex);
-        }
-    }
-
-    fn send_texture_2d_result(
-        ipc: Option<&mut DualQueueIpc>,
-        asset_id: i32,
-        update: i32,
-        instance_changed: bool,
-    ) {
-        let Some(ipc) = ipc else {
-            return;
-        };
-        ipc.send_background(RendererCommand::set_texture_2d_result(SetTexture2DResult {
-            asset_id,
-            r#type: TextureUpdateResultType(update),
-            instance_changed,
-        }));
-    }
-
     /// Handle [`SetTexture2DFormat`](crate::shared::SetTexture2DFormat).
     pub fn on_set_texture_2d_format(
         &mut self,
         f: SetTexture2DFormat,
         ipc: Option<&mut DualQueueIpc>,
     ) {
-        let id = f.asset_id;
-        self.texture_formats.insert(id, f.clone());
-        let props = self.texture_properties.get(&id);
-        let Some(device) = self.gpu_device.clone() else {
-            Self::send_texture_2d_result(
-                ipc,
-                id,
-                TextureUpdateResultType::FORMAT_SET,
-                self.texture_pool.get_texture(id).is_none(),
-            );
-            return;
-        };
-        let Some(tex) = GpuTexture2d::new_from_format(device.as_ref(), &f, props) else {
-            logger::warn!("texture {id}: SetTexture2DFormat rejected (bad size or device)");
-            return;
-        };
-        let existed_before = self.texture_pool.insert_texture(tex);
-        Self::send_texture_2d_result(
-            ipc,
-            id,
-            TextureUpdateResultType::FORMAT_SET,
-            !existed_before,
-        );
-        logger::info!(
-            "texture {} format {:?} {}×{} mips={} (resident_bytes≈{})",
-            id,
-            f.format,
-            f.width,
-            f.height,
-            f.mipmap_count,
-            self.texture_pool.accounting().texture_resident_bytes()
-        );
+        uploads::on_set_texture_2d_format(self, f, ipc);
     }
 
     /// Handle [`SetTexture2DProperties`](crate::shared::SetTexture2DProperties).
@@ -647,12 +564,7 @@ impl RenderBackend {
         p: SetTexture2DProperties,
         ipc: Option<&mut DualQueueIpc>,
     ) {
-        let id = p.asset_id;
-        self.texture_properties.insert(id, p.clone());
-        if let Some(t) = self.texture_pool.get_texture_mut(id) {
-            t.apply_properties(&p);
-        }
-        Self::send_texture_2d_result(ipc, id, TextureUpdateResultType::PROPERTIES_SET, false);
+        uploads::on_set_texture_2d_properties(self, p, ipc);
     }
 
     /// Handle [`SetTexture2DData`](crate::shared::SetTexture2DData). Pass shared memory when available
@@ -663,52 +575,7 @@ impl RenderBackend {
         shm: Option<&mut SharedMemoryAccessor>,
         ipc: Option<&mut DualQueueIpc>,
     ) {
-        if d.data.length <= 0 {
-            return;
-        }
-        if !self.texture_formats.contains_key(&d.asset_id) {
-            logger::warn!(
-                "texture {}: SetTexture2DData before format; ignored",
-                d.asset_id
-            );
-            return;
-        }
-        if self.gpu_device.is_none() || self.gpu_queue.is_none() {
-            if self.pending_texture_uploads.len() >= MAX_PENDING_TEXTURE_UPLOADS {
-                logger::warn!(
-                    "texture {}: pending texture upload queue full; dropping",
-                    d.asset_id
-                );
-                return;
-            }
-            self.pending_texture_uploads.push_back(d);
-            return;
-        }
-        let Some(ref device) = self.gpu_device.clone() else {
-            return;
-        };
-        if self.texture_pool.get_texture(d.asset_id).is_none() {
-            self.flush_pending_texture_allocations(device);
-        }
-        if self.texture_pool.get_texture(d.asset_id).is_none() {
-            if self.pending_texture_uploads.len() >= MAX_PENDING_TEXTURE_UPLOADS {
-                logger::warn!(
-                    "texture {}: no GPU texture and pending full; dropping data",
-                    d.asset_id
-                );
-                return;
-            }
-            self.pending_texture_uploads.push_back(d);
-            return;
-        }
-        let Some(shm) = shm else {
-            logger::warn!(
-                "texture {}: SetTexture2DData needs shared memory for upload",
-                d.asset_id
-            );
-            return;
-        };
-        self.try_texture_upload_with_device(d, shm, ipc);
+        uploads::on_set_texture_2d_data(self, d, shm, ipc);
     }
 
     /// Upload texture mips from shared memory and optionally notify the host on the background queue.
@@ -718,65 +585,12 @@ impl RenderBackend {
         shm: &mut SharedMemoryAccessor,
         ipc: Option<&mut DualQueueIpc>,
     ) {
-        let id = data.asset_id;
-        let Some(fmt) = self.texture_formats.get(&id).cloned() else {
-            logger::warn!("texture {id}: missing format");
-            return;
-        };
-        let (tex_arc, wgpu_fmt) = match self.texture_pool.get_texture(id) {
-            Some(t) => (t.texture.clone(), t.wgpu_format),
-            None => {
-                logger::warn!("texture {id}: missing GPU texture");
-                return;
-            }
-        };
-        let Some(queue_arc) = self.gpu_queue.as_ref() else {
-            return;
-        };
-        let upload_out = shm.with_read_bytes(&data.data, |raw| {
-            let q = queue_arc.lock().expect("queue mutex poisoned");
-            Some(write_texture2d_mips(
-                &q,
-                tex_arc.as_ref(),
-                &fmt,
-                wgpu_fmt,
-                &data,
-                raw,
-            ))
-        });
-        match upload_out {
-            Some(Ok(())) => {
-                if let Some(t) = self.texture_pool.get_texture_mut(id) {
-                    let uploaded_mips = data.mip_map_sizes.len() as u32;
-                    let start = data.start_mip_level.max(0) as u32;
-                    let end_exclusive = start.saturating_add(uploaded_mips).min(t.mip_levels_total);
-                    t.mip_levels_resident = t.mip_levels_resident.max(end_exclusive);
-                }
-                Self::send_texture_2d_result(ipc, id, TextureUpdateResultType::DATA_UPLOAD, false);
-                logger::trace!("texture {id}: data upload ok");
-            }
-            Some(Err(e)) => {
-                logger::warn!("texture {id}: upload failed: {e}");
-            }
-            None => {
-                logger::warn!("texture {id}: shared memory slice missing");
-            }
-        }
+        uploads::try_texture_upload_with_device(self, data, shm, ipc);
     }
 
     /// Remove a texture asset from CPU tables and the pool.
     pub fn on_unload_texture_2d(&mut self, u: UnloadTexture2D) {
-        let id = u.asset_id;
-        self.texture_formats.remove(&id);
-        self.texture_properties.remove(&id);
-        if self.texture_pool.remove_texture(id) {
-            logger::info!(
-                "texture {id} unloaded (mesh≈{} tex≈{} total≈{})",
-                self.mesh_pool.accounting().mesh_resident_bytes(),
-                self.texture_pool.accounting().texture_resident_bytes(),
-                self.mesh_pool.accounting().total_resident_bytes()
-            );
-        }
+        uploads::on_unload_texture_2d(self, u);
     }
 
     /// Ingest mesh bytes from shared memory; notifies host when `ipc` is set.
@@ -786,61 +600,12 @@ impl RenderBackend {
         shm: &mut SharedMemoryAccessor,
         ipc: Option<&mut DualQueueIpc>,
     ) {
-        if data.buffer.length <= 0 {
-            return;
-        }
-        let Some(device) = self.gpu_device.clone() else {
-            if self.pending_mesh_uploads.len() >= MAX_PENDING_MESH_UPLOADS {
-                logger::warn!(
-                    "mesh upload pending queue full; dropping asset {}",
-                    data.asset_id
-                );
-                return;
-            }
-            self.pending_mesh_uploads.push_back(data);
-            return;
-        };
-        self.try_mesh_upload_with_device(&device, data, shm, ipc);
-    }
-
-    fn try_mesh_upload_with_device(
-        &mut self,
-        device: &Arc<wgpu::Device>,
-        data: MeshUploadData,
-        shm: &mut SharedMemoryAccessor,
-        ipc: Option<&mut DualQueueIpc>,
-    ) {
-        let upload_result = shm.with_read_bytes(&data.buffer, |raw| {
-            try_upload_mesh_from_raw(device.as_ref(), raw, &data)
-        });
-        let Some(mesh) = upload_result else {
-            logger::warn!("mesh {}: upload failed or rejected", data.asset_id);
-            return;
-        };
-        let existed_before = self.mesh_pool.insert_mesh(mesh);
-        if let Some(ipc) = ipc {
-            ipc.send_background(RendererCommand::mesh_upload_result(MeshUploadResult {
-                asset_id: data.asset_id,
-                instance_changed: !existed_before,
-            }));
-        }
-        logger::info!(
-            "mesh {} uploaded (replaced={} resident_bytes≈{})",
-            data.asset_id,
-            existed_before,
-            self.mesh_pool.accounting().total_resident_bytes()
-        );
+        uploads::try_process_mesh_upload(self, data, shm, ipc);
     }
 
     /// Remove a mesh from the pool.
     pub fn on_mesh_unload(&mut self, u: MeshUnload) {
-        if self.mesh_pool.remove_mesh(u.asset_id) {
-            logger::info!(
-                "mesh {} unloaded (resident_bytes≈{})",
-                u.asset_id,
-                self.mesh_pool.accounting().total_resident_bytes()
-            );
-        }
+        uploads::on_mesh_unload(self, u);
     }
 
     /// Remove material / property-block entries from the host store.
