@@ -23,8 +23,10 @@ mod context;
 mod error;
 mod frame_params;
 mod frustum;
-pub mod hi_z_occlusion;
+mod hi_z_cpu;
+mod hi_z_occlusion;
 mod ids;
+mod output_depth_mode;
 mod pass;
 mod resources;
 mod reverse_z_depth;
@@ -56,17 +58,26 @@ pub use frustum::{
     world_aabb_from_skinned_bone_origins, world_aabb_visible_in_homogeneous_clip, Frustum, Plane,
     HOMOGENEOUS_CLIP_EPS,
 };
-pub use hi_z_occlusion::{mesh_fully_occluded_hi_z, HiZCpuSnapshot, HiZTemporalState};
+pub use hi_z_cpu::{
+    hi_z_pyramid_dimensions, hi_z_snapshot_from_linear_linear, mip_dimensions,
+    mip_levels_for_extent, unpack_linear_rows_to_mips, HiZCpuSnapshot, HiZCullData,
+    HiZStereoCpuSnapshot,
+};
+pub use hi_z_occlusion::{
+    hi_z_view_proj_matrices, mesh_fully_occluded_in_hiz, stereo_hiz_keeps_draw,
+};
 pub use ids::PassId;
+pub use output_depth_mode::OutputDepthMode;
 pub use pass::RenderPass;
 pub use resources::{PassResources, ResourceSlot};
 pub use reverse_z_depth::{MAIN_FORWARD_DEPTH_CLEAR, MAIN_FORWARD_DEPTH_COMPARE};
 pub use skinning_palette::build_skinning_palette;
 pub use world_mesh_cull::{
-    build_world_mesh_cull_proj_params, WorldMeshCullInput, WorldMeshCullProjParams,
+    build_world_mesh_cull_proj_params, capture_hi_z_temporal, HiZTemporalState, WorldMeshCullInput,
+    WorldMeshCullProjParams,
 };
 
-/// Builds the default graph: mesh deform compute, clustered lights, world forward, then Hi-Z build.
+/// Builds the default graph: mesh deform compute, clustered lights, world forward, then Hi-Z readback.
 pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError> {
     let mut builder = GraphBuilder::new();
     let deform = builder.add_pass(Box::new(passes::MeshDeformPass::new()));

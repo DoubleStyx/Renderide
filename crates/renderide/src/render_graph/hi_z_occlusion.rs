@@ -1,149 +1,40 @@
-//! CPU-side Hi-Z sampling for temporal occlusion tests (reverse-Z depth).
+//! CPU hierarchical-Z occlusion test (reverse-Z depth buffer).
 //!
-//! The GPU pyramid stores **maximum** depth per tile (closest surface in reverse-Z). An object is
-//! conservatively occluded when its **closest** point on the AABB in **previous** clip space
-//! (maximum NDC Z in reverse-Z) is still **farther** than the occluder represented in Hi-Z
-//! (`object_closest_ndc_z + bias < hiz`).
+//! Hi-Z pyramids come from the **previous** frame; tests must use [`HiZTemporalState`] view–projection
+//! from the frame that produced that depth, not the current frame.
+//!
+//! Set `RENDERIDE_HIZ_TRACE=1` to emit [`logger::trace`] lines when a draw is classified as fully
+//! occluded (can be verbose).
 
-use std::collections::HashMap;
+use std::env;
+use std::sync::OnceLock;
 
 use glam::{Mat4, Vec3, Vec4};
 
-use crate::scene::RenderSpaceId;
-
-use super::view_matrix_from_render_transform;
+use super::hi_z_cpu::{mip_dimensions, HiZCpuSnapshot};
 use super::world_mesh_cull::WorldMeshCullProjParams;
 
-/// One mip level of the Hi-Z pyramid (row-major, width × height).
-#[derive(Clone, Debug, Default)]
-pub struct HiZCpuSnapshot {
-    /// `mips[0]` is the coarsest base level; each following level is half-sized (rounded up).
-    pub mips: Vec<Vec<f32>>,
-    pub base_width: u32,
-    pub base_height: u32,
-    /// `true` when pyramid data matches the previous frame’s depth and culling may use it.
-    pub valid: bool,
-}
+/// Small bias to reduce mip / quantization flicker at occlusion boundaries (reverse-Z).
+const HI_Z_BIAS: f32 = 5e-5;
 
-impl HiZCpuSnapshot {
-    /// Nearest-texel sample at UV in [0,1]² with **v** = 0 at the top row (matching depth viewport).
-    pub fn sample_max_depth(&self, uv: (f32, f32), mip_level: u32) -> Option<f32> {
-        if !self.valid || self.mips.is_empty() {
-            return None;
-        }
-        let level = (mip_level as usize).min(self.mips.len().saturating_sub(1));
-        let mip = self.mips.get(level)?;
-        let w = level_width(self.base_width, level as u32);
-        let h = level_height(self.base_height, level as u32);
-        if w == 0 || h == 0 {
-            return None;
-        }
-        let u = uv.0.clamp(0.0, 1.0);
-        let v = uv.1.clamp(0.0, 1.0);
-        let x = ((u * w as f32).floor() as u32).min(w - 1);
-        let y = ((v * h as f32).floor() as u32).min(h - 1);
-        mip.get((y * w + x) as usize).copied()
-    }
-}
+/// Extra reverse-Z slack before declaring full occlusion (reduces view-dependent popping at depth edges).
+const HI_Z_OCCLUSION_MARGIN: f32 = 5e-4;
 
-/// Camera and per-space view state from the **frame that produced** the Hi-Z depth buffer.
-#[derive(Clone, Debug)]
-pub struct HiZTemporalState {
-    pub snapshot: HiZCpuSnapshot,
-    pub prev_cull: WorldMeshCullProjParams,
-    pub prev_view_by_space: HashMap<RenderSpaceId, Mat4>,
-    /// Viewport dimensions of the depth texture used to build Hi-Z (for mip footprint).
-    pub depth_viewport_px: (u32, u32),
-}
+/// Caps Hi-Z mip used for the occlusion test so coarse mips do not swing the decision when the
+/// footprint crosses discrete mip boundaries.
+const HI_Z_OCCLUSION_MAX_MIP: u32 = 2;
 
-/// Builds base dimensions (long edge ≤ 256) matching [`crate::gpu::hi_z::hi_z_base_dimensions`].
-pub fn hi_z_base_dimensions(depth_w: u32, depth_h: u32) -> (u32, u32) {
-    let max_dim = depth_w.max(depth_h).max(1);
-    let scale = max_dim.div_ceil(256).max(1);
-    let bw = depth_w.div_ceil(scale).max(1);
-    let bh = depth_h.div_ceil(scale).max(1);
-    (bw, bh)
-}
-
-fn level_width(base: u32, level: u32) -> u32 {
-    let mut w = base;
-    for _ in 0..level {
-        w = w.div_ceil(2).max(1);
-    }
-    w.max(1)
-}
-
-fn level_height(base: u32, level: u32) -> u32 {
-    let mut h = base;
-    for _ in 0..level {
-        h = h.div_ceil(2).max(1);
-    }
-    h.max(1)
-}
-
-/// Total `f32` count for a full pyramid.
-pub fn hi_z_total_floats(base_w: u32, base_h: u32) -> usize {
-    let mut total = 0usize;
-    let mut cw = base_w.max(1);
-    let mut ch = base_h.max(1);
-    loop {
-        total += (cw as usize) * (ch as usize);
-        if cw <= 1 && ch <= 1 {
-            break;
-        }
-        cw = cw.div_ceil(2);
-        ch = ch.div_ceil(2);
-    }
-    total
-}
-
-/// Byte offsets (in `f32` elements) for each mip level.
-pub fn hi_z_mip_offsets(base_w: u32, base_h: u32) -> Vec<usize> {
-    let mut offsets = Vec::new();
-    let mut o = 0usize;
-    let mut cw = base_w.max(1);
-    let mut ch = base_h.max(1);
-    loop {
-        offsets.push(o);
-        o += (cw as usize) * (ch as usize);
-        if cw <= 1 && ch <= 1 {
-            break;
-        }
-        cw = cw.div_ceil(2);
-        ch = ch.div_ceil(2);
-    }
-    offsets
-}
-
-/// Decodes a linear GPU buffer into [`HiZCpuSnapshot`].
-pub fn hi_z_decode_pyramid_buffer(
-    data: &[f32],
-    base_w: u32,
-    base_h: u32,
-) -> Option<HiZCpuSnapshot> {
-    let expected = hi_z_total_floats(base_w, base_h);
-    if data.len() < expected {
-        return None;
-    }
-    let offsets = hi_z_mip_offsets(base_w, base_h);
-    let mut mips = Vec::with_capacity(offsets.len());
-    for (i, &off) in offsets.iter().enumerate() {
-        let w = level_width(base_w, i as u32);
-        let h = level_height(base_h, i as u32);
-        let len = (w as usize) * (h as usize);
-        let end = off.checked_add(len)?;
-        mips.push(data.get(off..end)?.to_vec());
-    }
-    Some(HiZCpuSnapshot {
-        mips,
-        base_width: base_w,
-        base_height: base_h,
-        valid: true,
+fn hiz_trace_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        env::var_os("RENDERIDE_HIZ_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
     })
 }
 
 /// Picks a mip level from an approximate footprint (in **base** Hi-Z texels, not full viewport pixels).
-pub fn hi_z_mip_for_pixel_extent(extent_base_px: f32) -> u32 {
+///
+/// Matches the previous single-center-sample Hi-Z path: coarser mips for larger screen extents.
+fn hi_z_mip_for_pixel_extent(extent_base_px: f32) -> u32 {
     if !extent_base_px.is_finite() || extent_base_px <= 1.0 {
         return 0;
     }
@@ -156,7 +47,8 @@ pub fn hi_z_mip_for_pixel_extent(extent_base_px: f32) -> u32 {
     level
 }
 
-/// View–projection matrices for Hi-Z (same rules as frustum culling, using **previous** frame data).
+/// Builds view–projection matrices for Hi-Z tests (same rules as frustum culling, using **previous**
+/// frame data from [`super::HiZTemporalState`]).
 pub fn hi_z_view_proj_matrices(
     prev: &WorldMeshCullProjParams,
     prev_view: Mat4,
@@ -176,99 +68,127 @@ pub fn hi_z_view_proj_matrices(
     vec![base * prev_view]
 }
 
-const HI_Z_BIAS: f32 = 5e-5;
-
-/// Returns `true` if the mesh draw should be **culled** by Hi-Z (fully occluded in **all** relevant VPs).
-#[allow(clippy::too_many_arguments)]
-pub fn mesh_fully_occluded_hi_z(
-    world_mins: Vec3,
-    world_maxs: Vec3,
-    temporal: &HiZTemporalState,
-    space_id: RenderSpaceId,
-    is_overlay: bool,
-) -> bool {
-    if !temporal.snapshot.valid || temporal.snapshot.mips.is_empty() {
-        return false;
-    }
-    let Some(prev_view) = temporal.prev_view_by_space.get(&space_id).copied() else {
-        return false;
-    };
-
-    let corners = aabb_corners(world_mins, world_maxs);
-    let vps = hi_z_view_proj_matrices(&temporal.prev_cull, prev_view, is_overlay);
-    if vps.is_empty() {
-        return false;
-    }
-
-    let base_w = temporal.snapshot.base_width.max(1) as f32;
-    let base_h = temporal.snapshot.base_height.max(1) as f32;
-
-    for vp in &vps {
-        if !aabb_occluded_in_vp(&corners, vp, &temporal.snapshot, base_w, base_h) {
-            return false;
-        }
-    }
-    true
-}
-
-fn aabb_occluded_in_vp(
-    corners: &[Vec4; 8],
-    vp: &Mat4,
+/// Returns `true` when the axis-aligned world bounds are **fully occluded** by `snapshot` for `view_proj`.
+///
+/// Conservative: if **any** corner has `clip.w <= 0` (straddles the near plane / behind the camera),
+/// returns `false` (keep the draw). Compares the AABB **closest** depth (maximum NDC Z in reverse-Z)
+/// to the **minimum** depth in a 2×2 texel neighborhood at the footprint center (weakest occluder in
+/// that block in reverse-Z, reducing single-texel and mip-boundary popping). Mip level is capped;
+/// an extra margin is required before culling.
+pub fn mesh_fully_occluded_in_hiz(
     snapshot: &HiZCpuSnapshot,
-    base_w: f32,
-    base_h: f32,
+    view_proj: Mat4,
+    world_min: Vec3,
+    world_max: Vec3,
 ) -> bool {
+    let corners = aabb_corners(world_min, world_max);
     let mut max_ndc_z = f32::MIN;
-    let mut max_ndc_x = f32::MIN;
     let mut min_ndc_x = f32::MAX;
-    let mut max_ndc_y = f32::MIN;
+    let mut max_ndc_x = f32::MIN;
     let mut min_ndc_y = f32::MAX;
-    let mut any_in_front = false;
+    let mut max_ndc_y = f32::MIN;
 
-    for c in corners {
-        let clip = *vp * *c;
-        let aw = clip.w.abs();
-        if aw < 1e-8 || !aw.is_finite() {
-            continue;
-        }
-        if clip.w <= 0.0 {
+    for c in &corners {
+        let clip = view_proj * *c;
+        if !clip.w.is_finite() || clip.w <= 0.0 {
             return false;
         }
-        any_in_front = true;
         let inv_w = 1.0 / clip.w;
         let ndc_x = clip.x * inv_w;
         let ndc_y = clip.y * inv_w;
         let ndc_z = clip.z * inv_w;
+        if !ndc_x.is_finite() || !ndc_y.is_finite() || !ndc_z.is_finite() {
+            return false;
+        }
         max_ndc_z = max_ndc_z.max(ndc_z);
-        max_ndc_x = max_ndc_x.max(ndc_x);
         min_ndc_x = min_ndc_x.min(ndc_x);
-        max_ndc_y = max_ndc_y.max(ndc_y);
+        max_ndc_x = max_ndc_x.max(ndc_x);
         min_ndc_y = min_ndc_y.min(ndc_y);
+        max_ndc_y = max_ndc_y.max(ndc_y);
     }
 
-    if !any_in_front {
-        return false;
-    }
+    let base_w = snapshot.base_width.max(1) as f32;
+    let base_h = snapshot.base_height.max(1) as f32;
 
     let u0 = min_ndc_x * 0.5 + 0.5;
     let u1 = max_ndc_x * 0.5 + 0.5;
     let v0 = 1.0 - (max_ndc_y * 0.5 + 0.5);
     let v1 = 1.0 - (min_ndc_y * 0.5 + 0.5);
-    // Footprint on the Hi-Z base grid (may be smaller than the depth viewport).
-    let du_base = (u1 - u0).abs() * base_w;
-    let dv_base = (v1 - v0).abs() * base_h;
-    let extent_base = du_base.max(dv_base).max(1.0);
-    let mip =
-        hi_z_mip_for_pixel_extent(extent_base).min(snapshot.mips.len().saturating_sub(1) as u32);
 
-    let uc = ((u0 + u1) * 0.5).clamp(0.0, 1.0);
-    let vc = ((v0 + v1) * 0.5).clamp(0.0, 1.0);
-    let Some(hiz) = snapshot.sample_max_depth((uc, vc), mip) else {
+    let px_min = u0.min(u1);
+    let px_max = u0.max(u1);
+    let py_min = v0.min(v1);
+    let py_max = v0.max(v1);
+
+    let du_base = (px_max - px_min).abs() * base_w;
+    let dv_base = (py_max - py_min).abs() * base_h;
+    let extent_base = du_base.max(dv_base).max(1.0);
+    let mip = hi_z_mip_for_pixel_extent(extent_base)
+        .min(HI_Z_OCCLUSION_MAX_MIP)
+        .min(snapshot.mip_levels.saturating_sub(1));
+
+    let (mw, mh) = match mip_dimensions(snapshot.base_width, snapshot.base_height, mip) {
+        Some(d) => d,
+        None => return false,
+    };
+    if mw == 0 || mh == 0 {
+        return false;
+    }
+
+    let uc = ((px_min + px_max) * 0.5).clamp(0.0, 1.0);
+    let vc = ((py_min + py_max) * 0.5).clamp(0.0, 1.0);
+    let sx = ((uc * mw as f32).floor() as u32).min(mw.saturating_sub(1));
+    let sy = ((vc * mh as f32).floor() as u32).min(mh.saturating_sub(1));
+
+    let Some(hiz_min) = hiz_min_in_2x2(snapshot, mip, sx, sy, mw, mh) else {
         return false;
     };
 
-    let object_closest_ndc_z = max_ndc_z;
-    object_closest_ndc_z + HI_Z_BIAS < hiz
+    // Reverse-Z: farther = smaller NDC Z. Fully occluded if the closest AABB point is still farther than the occluder.
+    let occluded = max_ndc_z + HI_Z_BIAS + HI_Z_OCCLUSION_MARGIN < hiz_min;
+    if occluded && hiz_trace_enabled() {
+        logger::trace!(
+            "Hi-Z full occluder: mip={} extent_base={} max_ndc_z={} hiz_min_2x2={}",
+            mip,
+            extent_base,
+            max_ndc_z,
+            hiz_min
+        );
+    }
+    occluded
+}
+
+/// Minimum depth in a 2×2 block anchored at `(sx, sy)` (clamped), reverse-Z.
+///
+/// Using the **minimum** (farthest surface in the neighborhood) is visibility-conservative: fewer
+/// false-positive culls when a single texel spikes closer than its neighbors.
+fn hiz_min_in_2x2(
+    snapshot: &HiZCpuSnapshot,
+    mip: u32,
+    sx: u32,
+    sy: u32,
+    mw: u32,
+    mh: u32,
+) -> Option<f32> {
+    let mut vmin = f32::MAX;
+    let mut any = false;
+    for dy in 0..=1u32 {
+        for dx in 0..=1u32 {
+            let x = (sx + dx).min(mw.saturating_sub(1));
+            let y = (sy + dy).min(mh.saturating_sub(1));
+            if let Some(v) = snapshot.sample_texel(mip, x, y) {
+                if v.is_finite() {
+                    vmin = vmin.min(v);
+                    any = true;
+                }
+            }
+        }
+    }
+    if any {
+        Some(vmin)
+    } else {
+        None
+    }
 }
 
 fn aabb_corners(min: Vec3, max: Vec3) -> [Vec4; 8] {
@@ -284,16 +204,10 @@ fn aabb_corners(min: Vec3, max: Vec3) -> [Vec4; 8] {
     ]
 }
 
-/// Updates [`HiZTemporalState::prev_view_by_space`] from the current scene (call after depth is finalized).
-pub fn hi_z_capture_prev_views(scene: &crate::scene::SceneCoordinator, out: &mut HiZTemporalState) {
-    out.prev_view_by_space.clear();
-    for id in scene.render_space_ids() {
-        let Some(space) = scene.space(id) else {
-            continue;
-        };
-        let v = view_matrix_from_render_transform(&space.view_transform);
-        out.prev_view_by_space.insert(id, v);
-    }
+/// Stereo Hi-Z policy: keep the draw unless **both** eyes report full occlusion (matches frustum OR across eyes).
+#[inline]
+pub fn stereo_hiz_keeps_draw(occluded_left: bool, occluded_right: bool) -> bool {
+    !(occluded_left && occluded_right)
 }
 
 #[cfg(test)]
@@ -301,78 +215,136 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hi_z_base_dimensions_scales_down_large_viewports() {
-        let (w, h) = hi_z_base_dimensions(512, 256);
-        assert_eq!((w, h), (256, 128));
-        let (w2, h2) = hi_z_base_dimensions(256, 256);
-        assert_eq!((w2, h2), (256, 256));
+    fn hi_z_mip_for_pixel_extent_levels() {
+        assert_eq!(hi_z_mip_for_pixel_extent(1.0), 0);
+        assert_eq!(hi_z_mip_for_pixel_extent(2.0), 0);
+        assert_eq!(hi_z_mip_for_pixel_extent(2.1), 1);
+        assert_eq!(hi_z_mip_for_pixel_extent(4.0), 1);
+        assert_eq!(hi_z_mip_for_pixel_extent(8.0), 2);
     }
 
     #[test]
-    fn mip_offsets_sum_matches_total_floats() {
-        let bw = 4u32;
-        let bh = 4u32;
-        let offsets = hi_z_mip_offsets(bw, bh);
-        let total = hi_z_total_floats(bw, bh);
-        assert_eq!(offsets.len(), 3);
-        let last_off = offsets[2];
-        let w2 = super::level_width(bw, 2);
-        let h2 = super::level_height(bh, 2);
-        assert_eq!(last_off + w2 as usize * h2 as usize, total);
-    }
-
-    #[test]
-    fn decode_roundtrip_preserves_layout() {
-        let bw = 2u32;
-        let bh = 2u32;
-        let total = hi_z_total_floats(bw, bh);
-        let mut data = vec![0.0f32; total];
-        for i in 0..total {
-            data[i] = i as f32 * 0.1 + 0.5;
-        }
-        let snap = hi_z_decode_pyramid_buffer(&data, bw, bh).expect("decode");
-        assert!(snap.valid);
-        assert_eq!(snap.base_width, bw);
-        assert_eq!(snap.base_height, bh);
-        assert_eq!(snap.mips.len(), 2);
-        assert_eq!(snap.mips[0].len(), 4);
-        assert_eq!(snap.mips[1].len(), 1);
-        assert!((snap.sample_max_depth((0.0, 0.0), 0).unwrap() - data[0]).abs() < 1e-6);
-    }
-
-    /// Regression: reverse-Z occlusion must compare the **closest** AABB point (max NDC z), not the farthest (min z).
-    /// Otherwise a box straddling depth would be culled when its front is still in front of the Hi-Z occluder.
-    #[test]
-    fn mip_chooses_level_from_base_grid_extent() {
-        // Same NDC footprint: full-viewport pixel extent 1920 would over-select a coarse mip vs base grid.
-        assert!(hi_z_mip_for_pixel_extent(256.0) < hi_z_mip_for_pixel_extent(1920.0));
-    }
-
-    #[test]
-    fn aabb_occluded_uses_closest_depth_max_ndc_z() {
-        let vp = Mat4::IDENTITY;
-        let corners = aabb_corners(Vec3::new(-0.05, -0.05, 0.05), Vec3::new(0.05, 0.05, 0.92));
-        let snap = HiZCpuSnapshot {
-            mips: vec![vec![0.85f32]],
-            base_width: 1,
-            base_height: 1,
-            valid: true,
-        };
+    fn raw_mip_extent_can_exceed_occlusion_cap() {
         assert!(
-            !aabb_occluded_in_vp(&corners, &vp, &snap, 1.0, 1.0),
-            "front of box ~0.92 is in front of Hi-Z 0.85; must not cull"
+            hi_z_mip_for_pixel_extent(1024.0) > HI_Z_OCCLUSION_MAX_MIP,
+            "large footprints choose deep mips; mesh_fully_occluded_in_hiz caps with HI_Z_OCCLUSION_MAX_MIP"
         );
+    }
 
-        let behind = aabb_corners(Vec3::new(-0.05, -0.05, 0.05), Vec3::new(0.05, 0.05, 0.35));
-        let snap_far = HiZCpuSnapshot {
-            mips: vec![vec![0.85f32]],
-            base_width: 1,
-            base_height: 1,
-            valid: true,
+    /// Borderline depth: without [`HI_Z_OCCLUSION_MARGIN`] the object could be classified occluded;
+    /// margin requires a clearer gap (reduces popping).
+    #[test]
+    fn occlusion_margin_blocks_borderline_cull() {
+        let vp = Mat4::IDENTITY;
+        let mips = vec![0.92f32; 21];
+        let snap = HiZCpuSnapshot {
+            base_width: 4,
+            base_height: 4,
+            mip_levels: 3,
+            mips,
         };
+        assert!(snap.validate().is_some());
+        // Closest point ~0.9195; uniform Hi-Z 0.92 — gap smaller than HI_Z_OCCLUSION_MARGIN + bias.
+        let wmin = Vec3::new(-0.01, -0.01, 0.9195);
+        let wmax = Vec3::new(0.01, 0.01, 0.91);
         assert!(
-            aabb_occluded_in_vp(&behind, &vp, &snap_far, 1.0, 1.0),
-            "entire box behind occluder (max z < hiz) should cull"
+            !mesh_fully_occluded_in_hiz(&snap, vp, wmin, wmax),
+            "margin should avoid cull when barely behind the Hi-Z plane"
+        );
+    }
+
+    #[test]
+    fn clearly_behind_uniform_hiz_is_fully_occluded() {
+        let vp = Mat4::IDENTITY;
+        let mips = vec![0.92f32; 21];
+        let snap = HiZCpuSnapshot {
+            base_width: 4,
+            base_height: 4,
+            mip_levels: 3,
+            mips,
+        };
+        assert!(snap.validate().is_some());
+        let wmin = Vec3::new(-0.01, -0.01, 0.85);
+        let wmax = Vec3::new(0.01, 0.01, 0.80);
+        assert!(mesh_fully_occluded_in_hiz(&snap, vp, wmin, wmax));
+    }
+
+    /// A hole (far / low reverse-Z) in the 2×2 block lowers `hiz_min`, so we do not cull.
+    #[test]
+    fn hiz_min_2x2_sees_farther_occluder_in_block() {
+        let vp = Mat4::IDENTITY;
+        // mip0 4×4 row-major: center anchor (sx,sy)=(2,2) uses indices 10..=15; put a hole at 10.
+        let mut mips = vec![0.95f32; 21];
+        mips[10] = 0.35;
+        let snap = HiZCpuSnapshot {
+            base_width: 4,
+            base_height: 4,
+            mip_levels: 3,
+            mips,
+        };
+        assert!(snap.validate().is_some());
+        let wmin = Vec3::new(-0.01, -0.01, 0.90);
+        let wmax = Vec3::new(0.01, 0.01, 0.88);
+        assert!(
+            !mesh_fully_occluded_in_hiz(&snap, vp, wmin, wmax),
+            "2×2 min must include the farther sample so we keep the draw"
+        );
+    }
+
+    #[test]
+    fn straddling_near_plane_not_fully_occluded() {
+        // Last row [0,0,0,-1] makes clip.w = -w; corners with w>0 and w<=0 in the same AABB → keep draw.
+        let vp = Mat4::from_cols_array(&[
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, -1.0,
+        ]);
+        let mips = vec![0.5f32; 21];
+        let snap = HiZCpuSnapshot {
+            base_width: 4,
+            base_height: 4,
+            mip_levels: 3,
+            mips,
+        };
+        assert!(snap.validate().is_some());
+        let wmin = Vec3::new(0.0, 0.0, 0.0);
+        let wmax = Vec3::new(1.0, 1.0, 1.0);
+        assert!(
+            !mesh_fully_occluded_in_hiz(&snap, vp, wmin, wmax),
+            "must not cull when any corner has clip.w <= 0"
+        );
+    }
+
+    #[test]
+    fn stereo_hiz_keeps_if_either_eye_not_fully_occluded() {
+        assert!(stereo_hiz_keeps_draw(false, false));
+        assert!(stereo_hiz_keeps_draw(true, false));
+        assert!(stereo_hiz_keeps_draw(false, true));
+        assert!(!stereo_hiz_keeps_draw(true, true));
+    }
+
+    /// Regression: a single center texel at the chosen mip avoids pulling unrelated **near** depth
+    /// from a wide footprint (the old rect `max` path caused false-positive culls).
+    #[test]
+    fn fully_occluded_uses_closest_corner_not_farthest() {
+        let vp = Mat4::IDENTITY;
+        // Uniform Hi-Z plane slightly farther than the front of the box (reverse-Z: smaller = farther).
+        // 4×4 + 2×2 + 1×1 = 21 floats for three mips.
+        let mips = vec![0.92f32; 21];
+        let snap = HiZCpuSnapshot {
+            base_width: 4,
+            base_height: 4,
+            mip_levels: 3,
+            mips,
+        };
+        assert!(snap.validate().is_some());
+        // Front of AABB at z=0.99 (closer than Hi-Z 0.92), back at z=0.05. Must not cull on back alone.
+        let near = Vec3::new(-0.01, -0.01, 0.99);
+        let far = Vec3::new(0.01, 0.01, 0.05);
+        assert!(
+            !mesh_fully_occluded_in_hiz(&snap, vp, near, far),
+            "closest point still in front of occluder"
         );
     }
 }

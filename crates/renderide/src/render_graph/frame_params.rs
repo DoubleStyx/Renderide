@@ -6,6 +6,8 @@ use crate::backend::RenderBackend;
 use crate::scene::SceneCoordinator;
 use crate::shared::HeadOutputDevice;
 
+use super::OutputDepthMode;
+
 /// Latest camera-related fields from host [`crate::shared::FrameSubmitData`], updated each `frame_submit`.
 #[derive(Clone, Copy, Debug)]
 pub struct HostCameraFrame {
@@ -67,4 +69,11 @@ pub struct FrameRenderParams<'a> {
     pub host_camera: HostCameraFrame,
     /// When `true`, the forward pass targets 2-layer array attachments and may use multiview.
     pub multiview_stereo: bool,
+}
+
+impl<'a> FrameRenderParams<'a> {
+    /// Output depth layout for Hi-Z and occlusion ([`OutputDepthMode::from_multiview_stereo`]).
+    pub fn output_depth_mode(&self) -> OutputDepthMode {
+        OutputDepthMode::from_multiview_stereo(self.multiview_stereo)
+    }
 }

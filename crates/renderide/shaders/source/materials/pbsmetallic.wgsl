@@ -27,12 +27,7 @@ struct PbsMetallicMaterial {
     _UVSec: f32,
     _SpecularHighlights: f32,
     _GlossyReflections: f32,
-    /// Unity `__mode` (0 Opaque, 1 Cutout, 2 Fade, 3 Transparent); used for host / CPU Hi-Z classification.
-    _Mode: f32,
-    /// Hidden Unity blend state (`One` = 1, `Zero` = 0).
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
+    _pad: vec2<f32>,
 }
 
 @group(1) @binding(0) var<uniform> mat: PbsMetallicMaterial;

@@ -22,7 +22,6 @@ use std::num::NonZeroU32;
 use glam::Mat4;
 
 use crate::assets::material::MaterialDictionary;
-use crate::backend::hi_z_culling_enabled;
 use crate::backend::{CLUSTER_COUNT_Z, TILE_SIZE};
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::gpu::{write_per_draw_uniform_slab, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE};
@@ -106,22 +105,25 @@ impl RenderPass for WorldMeshForwardPass {
             ShaderPermutation(0)
         };
 
-        let backend = &mut frame.backend;
         let render_context = frame.scene.active_main_render_context();
+        let cull_proj = build_world_mesh_cull_proj_params(frame.scene, frame.viewport_px, &hc);
+        let depth_mode = frame.output_depth_mode();
+        let hi_z_temporal = frame.backend.hi_z_temporal_snapshot();
+        let hi_z = frame.backend.hi_z_cull_data(depth_mode);
+        let culling = WorldMeshCullInput {
+            proj: cull_proj,
+            host_camera: &hc,
+            hi_z,
+            hi_z_temporal,
+        };
+
+        let backend = &mut frame.backend;
         let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
         let router_ref = backend
             .material_registry
             .as_ref()
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
-        let cull_proj = build_world_mesh_cull_proj_params(frame.scene, frame.viewport_px, &hc);
-        let culling = WorldMeshCullInput {
-            proj: cull_proj,
-            host_camera: &hc,
-        };
-        let hi_z_enabled =
-            hi_z_culling_enabled() && !use_multiview && backend.hi_z_temporal_for_cull().is_some();
-        let hi_z_temporal = backend.hi_z_temporal_for_cull();
         let collection = {
             let dict = MaterialDictionary::new(backend.material_property_store());
             collect_and_sort_world_mesh_draws(
@@ -132,11 +134,9 @@ impl RenderPass for WorldMeshForwardPass {
                 shader_perm,
                 render_context,
                 Some(&culling),
-                hi_z_temporal,
-                hi_z_enabled,
-                backend.property_id_registry(),
             )
         };
+        backend.capture_hi_z_temporal_for_next_frame(frame.scene, cull_proj, frame.viewport_px);
         let draws = collection.items;
         #[cfg(feature = "debug-hud")]
         {

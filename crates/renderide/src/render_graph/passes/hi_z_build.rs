@@ -1,16 +1,15 @@
-//! Builds a temporal Hi-Z pyramid from the main depth buffer and schedules CPU readback.
+//! Builds a CPU-readable hierarchical depth pyramid from the main depth attachment after the forward pass.
 
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
 use crate::render_graph::pass::RenderPass;
 use crate::render_graph::resources::{PassResources, ResourceSlot};
 
-/// GPU Hi-Z reduction after the world forward pass (single-layer depth only).
+/// Compute + copy pass that samples main depth and stages mips for next-frame occlusion.
 #[derive(Debug, Default)]
 pub struct HiZBuildPass;
 
 impl HiZBuildPass {
-    /// Creates the pass node.
     pub fn new() -> Self {
         Self
     }
@@ -30,36 +29,20 @@ impl RenderPass for HiZBuildPass {
 
     fn execute(&mut self, ctx: &mut RenderPassContext<'_>) -> Result<(), RenderPassError> {
         let Some(depth) = ctx.depth_view else {
-            return Err(RenderPassError::MissingDepth {
-                pass: self.name().to_string(),
-            });
+            return Ok(());
         };
         let Some(frame) = ctx.frame.as_mut() else {
-            return Err(RenderPassError::MissingFrameParams {
-                pass: self.name().to_string(),
-            });
+            return Ok(());
         };
-
-        let backend = &mut frame.backend;
-        let scene = frame.scene;
-        let viewport_px = frame.viewport_px;
-        let hc = frame.host_camera;
-        let multiview = frame.multiview_stereo;
-
-        let queue_guard = ctx
-            .queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        backend.hi_z_encode_end_of_frame(
+        let mode = frame.output_depth_mode();
+        let queue = ctx.queue.lock().unwrap_or_else(|e| e.into_inner());
+        frame.backend.encode_hi_z_build_pass(
             ctx.device,
-            &queue_guard,
+            &queue,
             ctx.encoder,
             depth,
-            viewport_px,
-            scene,
-            viewport_px,
-            &hc,
-            multiview,
+            frame.viewport_px,
+            mode,
         );
         Ok(())
     }

@@ -365,7 +365,7 @@ impl EmbeddedMaterialBindResources {
                     {
                         *f
                     } else {
-                        default_float_for_material_field(field_name)
+                        0.5f32
                     };
                     if field_name == "_Cutoff" {
                         cutoff = v;
@@ -460,17 +460,6 @@ impl EmbeddedMaterialBindResources {
 
 fn sampler_pairs_texture_binding(sampler_binding: u32) -> u32 {
     sampler_binding.saturating_sub(1)
-}
-
-/// Default `f32` when the host has not set a property (Unity shader defaults for blend / mode fields).
-fn default_float_for_material_field(field_name: &str) -> f32 {
-    match field_name {
-        "_Mode" => 0.0,
-        "_SrcBlend" => 1.0,
-        "_DstBlend" => 0.0,
-        "_ZWrite" => 1.0,
-        _ => 0.5,
-    }
 }
 
 /// True when the host material has a `set_float` for `name` with value ≥ 0.5 (Unity shader keyword pattern).

@@ -1,9 +1,7 @@
 //! [`RenderBackend`] implementation.
 
-mod hi_z_frame;
 mod uploads;
 
-pub use hi_z_frame::hi_z_culling_enabled;
 pub use uploads::{MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS};
 
 use std::collections::{HashMap, VecDeque};
@@ -16,13 +14,15 @@ use crate::assets::material::{
     PropertyIdRegistry,
 };
 use crate::config::RendererSettingsHandle;
-use crate::gpu::hi_z::HiZGpuResources;
+use crate::gpu::hi_z_build::{encode_hi_z_build, HiZGpuState};
 use crate::gpu::{GpuContext, MeshPreprocessPipelines};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::materials::RasterPipelineKind;
-use crate::render_graph::HiZTemporalState;
 #[cfg(feature = "debug-hud")]
 use crate::render_graph::WorldMeshDrawStats;
+use crate::render_graph::{
+    capture_hi_z_temporal, HiZCullData, HiZTemporalState, OutputDepthMode, WorldMeshCullProjParams,
+};
 use crate::render_graph::{CompiledRenderGraph, ExternalFrameTargets, GraphExecuteError};
 use crate::resources::{MeshPool, TexturePool};
 use crate::scene::SceneCoordinator;
@@ -100,18 +100,10 @@ pub struct RenderBackend {
     last_frame_cpu_ms: f64,
     /// Timestamp query resources for world mesh forward GPU time ([`GpuMeshPassTimestamp`]); [`None`] if unsupported.
     pub(crate) gpu_mesh_pass_timestamps: Option<GpuMeshPassTimestamp>,
+    /// Hierarchical depth pyramid GPU/CPU state for occlusion culling (previous-frame readback).
+    hi_z_gpu: HiZGpuState,
     /// Whether this frame recorded mesh pass timestamps (must resolve before submit).
     mesh_pass_timestamps_recorded_this_frame: AtomicBool,
-    /// Temporal Hi-Z GPU build + CPU readback for occlusion culling (after [`Self::attach`]).
-    hi_z_gpu: Option<HiZGpuResources>,
-    /// Previous-frame depth pyramid and matching view–projection state for draw collection.
-    hi_z_temporal: Option<HiZTemporalState>,
-    /// Hi-Z staging buffer index (0 or 1) with an async map in flight; [`None`] if idle.
-    hi_z_map_in_flight: Option<u8>,
-    /// FIFO queue of staging buffers that received a GPU copy and await CPU read in [`Self::hi_z_begin_frame`].
-    hi_z_pending_read_buf: VecDeque<u8>,
-    /// Set by `map_async` callback when staging data is ready for `get_mapped_range`.
-    hi_z_map_done: Arc<AtomicBool>,
 }
 
 impl Default for RenderBackend {
@@ -157,11 +149,7 @@ impl RenderBackend {
             last_frame_cpu_ms: 0.0,
             gpu_mesh_pass_timestamps: None,
             mesh_pass_timestamps_recorded_this_frame: AtomicBool::new(false),
-            hi_z_gpu: None,
-            hi_z_temporal: None,
-            hi_z_map_in_flight: None,
-            hi_z_pending_read_buf: VecDeque::new(),
-            hi_z_map_done: Arc::new(AtomicBool::new(false)),
+            hi_z_gpu: HiZGpuState::default(),
         }
     }
 
@@ -350,8 +338,6 @@ impl RenderBackend {
         }
         uploads::attach_flush_pending_asset_uploads(self, &device, shm);
 
-        self.attach_gpu_hi_z(device.as_ref());
-
         self.frame_graph = match crate::render_graph::build_default_main_graph() {
             Ok(g) => Some(g),
             Err(e) => {
@@ -433,6 +419,64 @@ impl RenderBackend {
         if let Some(ts) = self.gpu_mesh_pass_timestamps.as_mut() {
             ts.after_submit(device, queue);
         }
+    }
+
+    /// Hi-Z occlusion data cloned from the **previous** frame’s pyramid readback, matching `mode`.
+    pub(crate) fn hi_z_cull_data(&self, mode: OutputDepthMode) -> Option<HiZCullData> {
+        match mode {
+            OutputDepthMode::DesktopSingle => self
+                .hi_z_gpu
+                .desktop
+                .as_ref()
+                .map(|s| HiZCullData::Desktop(s.clone())),
+            OutputDepthMode::StereoArray { .. } => {
+                self.hi_z_gpu.stereo.as_ref().map(|s| HiZCullData::Stereo {
+                    left: s.left.clone(),
+                    right: s.right.clone(),
+                })
+            }
+        }
+    }
+
+    /// Records Hi-Z GPU work into `encoder` (staging copy included).
+    pub(crate) fn encode_hi_z_build_pass(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        depth_view: &wgpu::TextureView,
+        extent: (u32, u32),
+        mode: OutputDepthMode,
+    ) {
+        encode_hi_z_build(
+            device,
+            queue,
+            encoder,
+            depth_view,
+            extent,
+            mode,
+            &mut self.hi_z_gpu,
+        );
+    }
+
+    /// Maps Hi-Z staging buffers after the queue submission for this frame has completed.
+    pub(crate) fn hi_z_complete_pending_readback(&mut self, device: &wgpu::Device) {
+        self.hi_z_gpu.complete_pending_readback(device);
+    }
+
+    /// View/projection snapshot from the **previous** world forward pass (for Hi-Z occlusion tests).
+    pub(crate) fn hi_z_temporal_snapshot(&self) -> Option<HiZTemporalState> {
+        self.hi_z_gpu.temporal.clone()
+    }
+
+    /// Records per-space views and cull params from **this** frame for Hi-Z tests on the **next** frame.
+    pub(crate) fn capture_hi_z_temporal_for_next_frame(
+        &mut self,
+        scene: &SceneCoordinator,
+        prev_cull: WorldMeshCullProjParams,
+        viewport_px: (u32, u32),
+    ) {
+        self.hi_z_gpu.temporal = Some(capture_hi_z_temporal(scene, prev_cull, viewport_px));
     }
 
     /// Last measured world mesh forward GPU time for diagnostics ([`crate::diagnostics::FrameDiagnosticsSnapshot`]).
