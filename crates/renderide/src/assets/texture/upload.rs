@@ -7,9 +7,7 @@ use crate::shared::{ColorProfile, SetTexture2DData, SetTexture2DFormat};
 
 use super::decode::{decode_mip_to_rgba8, flip_mip_rows, needs_rgba8_decode_before_upload};
 use super::format::pick_wgpu_storage_format;
-use super::layout::{
-    host_format_is_compressed, mip_byte_len, mip_dimensions_at_level, validate_mip_upload_layout,
-};
+use super::layout::{host_format_is_compressed, mip_byte_len, mip_dimensions_at_level};
 
 /// Decides GPU storage format for a new 2D texture from host [`SetTexture2DFormat`].
 ///
@@ -43,7 +41,7 @@ pub fn write_texture2d_mips(
     wgpu_format: wgpu::TextureFormat,
     upload: &SetTexture2DData,
     raw: &[u8],
-) -> Result<(), String> {
+) -> Result<u32, String> {
     if upload.hint.has_region != 0 {
         logger::trace!(
             "texture {}: TextureUploadHint.has_region ignored; full mips",
@@ -58,7 +56,6 @@ pub fn write_texture2d_mips(
         ));
     }
     let payload = &raw[..want];
-    validate_mip_upload_layout(fmt.format, upload).map_err(|e| e.to_string())?;
 
     let start_base = upload.start_mip_level.max(0) as u32;
     let mipmap_count = fmt.mipmap_count.max(1) as u32;
@@ -87,6 +84,23 @@ pub fn write_texture2d_mips(
         ));
     }
 
+    if upload.mip_map_sizes.len() != upload.mip_starts.len() {
+        return Err("mip_map_sizes and mip_starts length mismatch".into());
+    }
+    if upload.mip_map_sizes.is_empty() {
+        return Err("no mips in upload".into());
+    }
+
+    let (start_bias, valid_prefix_mips) = choose_mip_start_bias(fmt.format, upload, payload.len())?;
+    if start_bias != 0 {
+        logger::debug!(
+            "texture {}: rebasing mip_starts by descriptor offset {}",
+            upload.asset_id,
+            start_bias
+        );
+    }
+
+    let mut uploaded_mips = 0u32;
     for (i, sz) in upload.mip_map_sizes.iter().enumerate() {
         let w = sz.x.max(0) as u32;
         let h = sz.y.max(0) as u32;
@@ -107,13 +121,60 @@ pub fn write_texture2d_mips(
             ));
         }
 
-        let start = upload.mip_starts[i].max(0) as usize;
+        let start_raw = upload.mip_starts[i];
+        if start_raw < 0 {
+            if uploaded_mips == 0 {
+                return Err("negative mip_starts".into());
+            }
+            logger::warn!(
+                "texture {}: uploaded {uploaded_mips}/{} mips; stopping at mip {} because mip_starts is negative",
+                upload.asset_id,
+                upload.mip_map_sizes.len(),
+                i
+            );
+            break;
+        }
+        let start_abs = start_raw as usize;
+        if start_abs < start_bias {
+            if uploaded_mips == 0 {
+                return Err(format!(
+                    "mip 0 start {} is before descriptor offset {}",
+                    start_abs, start_bias
+                ));
+            }
+            logger::warn!(
+                "texture {}: uploaded {uploaded_mips}/{} mips; stopping at mip {} because start {} is before descriptor offset {}",
+                upload.asset_id,
+                upload.mip_map_sizes.len(),
+                i,
+                start_abs,
+                start_bias
+            );
+            break;
+        }
+        let start = start_abs - start_bias;
         let host_len = mip_byte_len(fmt.format, w, h)
             .ok_or_else(|| format!("mip byte size unsupported for {:?}", fmt.format))?
             as usize;
-        let mip_src = payload
-            .get(start..start + host_len)
-            .ok_or_else(|| format!("mip {i} slice out of range"))?;
+        let Some(mip_src) = payload.get(start..start + host_len) else {
+            if uploaded_mips == 0 {
+                return Err(format!(
+                    "mip 0 slice out of range after rebasing by {start_bias} (payload_len={}, valid_prefix_mips={valid_prefix_mips})",
+                    payload.len()
+                ));
+            }
+            logger::warn!(
+                "texture {}: uploaded {uploaded_mips}/{} mips; stopping at mip {} because payload_len={} does not cover start={} len={} after rebasing by {}",
+                upload.asset_id,
+                upload.mip_map_sizes.len(),
+                i,
+                payload.len(),
+                start,
+                host_len,
+                start_bias
+            );
+            break;
+        };
 
         let pixels: std::borrow::Cow<'_, [u8]> = if is_rgba8_family(wgpu_format) {
             if needs_rgba8_decode_before_upload(fmt.format) || host_format_is_compressed(fmt.format)
@@ -163,9 +224,78 @@ pub fn write_texture2d_mips(
             wgpu_format,
             pixels.as_ref(),
         )?;
+        uploaded_mips += 1;
     }
 
-    Ok(())
+    if uploaded_mips == 0 {
+        return Err("no mip levels uploaded".into());
+    }
+    Ok(uploaded_mips)
+}
+
+fn choose_mip_start_bias(
+    format: crate::shared::TextureFormat,
+    upload: &SetTexture2DData,
+    payload_len: usize,
+) -> Result<(usize, usize), String> {
+    let offset_bias = upload.data.offset.max(0) as usize;
+    let candidates = if offset_bias > 0 {
+        [0usize, offset_bias]
+    } else {
+        [0usize, 0usize]
+    };
+    let mut best_bias = 0usize;
+    let mut best_prefix = 0usize;
+    for bias in candidates {
+        let prefix = valid_mip_prefix_len(format, upload, payload_len, bias)?;
+        if prefix > best_prefix {
+            best_prefix = prefix;
+            best_bias = bias;
+        }
+    }
+    if best_prefix == 0 {
+        return Err(format!(
+            "mip region exceeds shared memory descriptor (payload_len={}, descriptor_offset={})",
+            payload_len, offset_bias
+        ));
+    }
+    Ok((best_bias, best_prefix))
+}
+
+fn valid_mip_prefix_len(
+    format: crate::shared::TextureFormat,
+    upload: &SetTexture2DData,
+    payload_len: usize,
+    bias: usize,
+) -> Result<usize, String> {
+    let mut count = 0usize;
+    for (i, sz) in upload.mip_map_sizes.iter().enumerate() {
+        if sz.x <= 0 || sz.y <= 0 {
+            return Err("non-positive mip dimensions".into());
+        }
+        let w = sz.x as u32;
+        let h = sz.y as u32;
+        let host_len = mip_byte_len(format, w, h)
+            .ok_or_else(|| format!("mip byte size unsupported for {:?}", format))?
+            as usize;
+        let start_raw = upload.mip_starts[i];
+        if start_raw < 0 {
+            return Err("negative mip_starts".into());
+        }
+        let start_abs = start_raw as usize;
+        if start_abs < bias {
+            break;
+        }
+        let start = start_abs - bias;
+        if start
+            .checked_add(host_len)
+            .is_none_or(|end| end > payload_len)
+        {
+            break;
+        }
+        count += 1;
+    }
+    Ok(count)
 }
 
 fn is_rgba8_family(gpu: wgpu::TextureFormat) -> bool {
@@ -195,9 +325,15 @@ fn write_one_mip(
     format: wgpu::TextureFormat,
     bytes: &[u8],
 ) -> Result<(), String> {
+    // For block-compressed formats wgpu requires the copy extent to be a multiple of the
+    // block dimensions (the "physical" mip size).  The data produced by copy_layout_for_mip
+    // already covers the padded block grid (via div_ceil), so only the Extent3d needs aligning.
+    let (bw, bh) = format.block_dimensions();
+    let copy_width = if bw > 1 { width.div_ceil(bw) * bw } else { width };
+    let copy_height = if bh > 1 { height.div_ceil(bh) * bh } else { height };
     let size = wgpu::Extent3d {
-        width,
-        height,
+        width: copy_width,
+        height: copy_height,
         depth_or_array_layers: 1,
     };
     let (layout, expected_len) = copy_layout_for_mip(format, width, height)?;
@@ -271,4 +407,48 @@ fn copy_layout_for_mip(
         },
         expected,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::IVec2;
+
+    use super::{choose_mip_start_bias, valid_mip_prefix_len};
+    use crate::shared::{SetTexture2DData, TextureFormat};
+
+    #[test]
+    fn relative_mip_starts_need_no_rebase() {
+        let mut upload = SetTexture2DData::default();
+        upload.data.length = 80;
+        upload.mip_map_sizes = vec![IVec2::new(4, 4), IVec2::new(2, 2)];
+        upload.mip_starts = vec![0, 64];
+
+        let (bias, prefix) = choose_mip_start_bias(TextureFormat::rgba32, &upload, 80).unwrap();
+        assert_eq!(bias, 0);
+        assert_eq!(prefix, 2);
+    }
+
+    #[test]
+    fn absolute_mip_starts_rebase_to_descriptor_offset() {
+        let mut upload = SetTexture2DData::default();
+        upload.data.offset = 128;
+        upload.data.length = 80;
+        upload.mip_map_sizes = vec![IVec2::new(4, 4), IVec2::new(2, 2)];
+        upload.mip_starts = vec![128, 192];
+
+        let (bias, prefix) = choose_mip_start_bias(TextureFormat::rgba32, &upload, 80).unwrap();
+        assert_eq!(bias, 128);
+        assert_eq!(prefix, 2);
+    }
+
+    #[test]
+    fn valid_prefix_len_stops_when_later_mip_exceeds_payload() {
+        let mut upload = SetTexture2DData::default();
+        upload.data.length = 68;
+        upload.mip_map_sizes = vec![IVec2::new(4, 4), IVec2::new(2, 2)];
+        upload.mip_starts = vec![0, 64];
+
+        let prefix = valid_mip_prefix_len(TextureFormat::rgba32, &upload, 68, 0).unwrap();
+        assert_eq!(prefix, 1);
+    }
 }

@@ -3,9 +3,8 @@
 //! Build emits `ui_unlit_default` / `ui_unlit_multiview` via [`MULTIVIEW`](https://docs.rs/naga_oil).
 //! `@group(1)` global names match Unity `UI_Unlit.shader` material property names for host reflection.
 //!
-//! **Vertex color:** Unity multiplies `vertex_color * _Tint`. This manifest path uses the same
-//! position / normal / UV vertex buffers as world `unlit.wgsl`; there is no vertex
-//! color stream yet, so treat vertex color as white (multiply by `_Tint` only).
+//! **Vertex color:** Unity multiplies `vertex_color * _Tint`. The mesh pass now provides a dense
+//! float4 color stream at `@location(3)` with opaque-white fallback when the host mesh lacks color.
 //!
 //! **`flags` bits (host / material):** bit0 = sample `_MainTex`; bit1 = alpha clip on final alpha;
 //! bit2 = rect clip using `_Rect` (xy = min, zw = size in object XY); bit3 = overlay tint stub
@@ -47,7 +46,8 @@ struct UiUnlitMaterial {
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) obj_xy: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) obj_xy: vec2<f32>,
 }
 
 @vertex
@@ -58,6 +58,7 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) _n: vec4<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) color: vec4<f32>,
 ) -> VertexOutput {
     let world_p = pd::draw.model * vec4<f32>(pos.xyz, 1.0);
 #ifdef MULTIVIEW
@@ -73,6 +74,7 @@ fn vs_main(
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
     out.uv = uv;
+    out.color = color * mat._Tint;
     out.obj_xy = pos.xy;
     return out;
 }
@@ -84,7 +86,7 @@ fn uv_with_st(uv: vec2<f32>, st: vec4<f32>) -> vec2<f32> {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var color = mat._Tint;
+    var color = in.color;
 
     if ((mat.flags & 1u) != 0u) {
         let uv_s = uv_with_st(in.uv, mat._MainTex_ST);
@@ -109,14 +111,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             color.a = color.a * mul;
         }
         if ((mat.flags & 32u) != 0u) {
-            if (mul < mat._Cutoff) {
+            // Unity: `if (mul - _Cutoff <= 0) discard`
+            if (mul <= mat._Cutoff) {
                 discard;
             }
         }
     }
 
-    if ((mat.flags & 2u) != 0u) {
-        if (color.a < mat._Cutoff) {
+    // Alpha clip — skipped when mask clip is already active (mirrors Unity #pragma).
+    if ((mat.flags & 2u) != 0u && (mat.flags & 32u) == 0u) {
+        if (color.a <= mat._Cutoff) {
             discard;
         }
     }

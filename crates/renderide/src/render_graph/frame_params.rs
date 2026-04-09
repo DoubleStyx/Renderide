@@ -57,6 +57,8 @@ pub struct FrameRenderParams<'a> {
     pub scene: &'a SceneCoordinator,
     /// GPU pools, materials, and deform scratch buffers.
     pub backend: &'a mut RenderBackend,
+    /// Backing depth texture for the main forward pass (copy source for scene-depth snapshots).
+    pub depth_texture: &'a wgpu::Texture,
     /// Depth attachment for the main forward pass.
     pub depth_view: &'a wgpu::TextureView,
     /// Swapchain / main color format.

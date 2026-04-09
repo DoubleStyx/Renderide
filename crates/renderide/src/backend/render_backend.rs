@@ -745,15 +745,14 @@ impl RenderBackend {
             ))
         });
         match upload_out {
-            Some(Ok(())) => {
+            Some(Ok(uploaded_mips)) => {
                 if let Some(t) = self.texture_pool.get_texture_mut(id) {
-                    let uploaded_mips = data.mip_map_sizes.len() as u32;
                     let start = data.start_mip_level.max(0) as u32;
                     let end_exclusive = start.saturating_add(uploaded_mips).min(t.mip_levels_total);
                     t.mip_levels_resident = t.mip_levels_resident.max(end_exclusive);
                 }
                 Self::send_texture_2d_result(ipc, id, TextureUpdateResultType::DATA_UPLOAD, false);
-                logger::trace!("texture {id}: data upload ok");
+                logger::trace!("texture {id}: data upload ok ({uploaded_mips} mip(s))");
             }
             Some(Err(e)) => {
                 logger::warn!("texture {id}: upload failed: {e}");

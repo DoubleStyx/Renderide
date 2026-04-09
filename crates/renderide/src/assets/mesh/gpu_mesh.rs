@@ -10,10 +10,11 @@ use crate::shared::{
 };
 
 use super::layout::{
-    compute_index_count, compute_mesh_buffer_layout, compute_vertex_stride, extract_bind_poses,
-    extract_blendshape_offsets, extract_float3_position_normal_as_vec4_streams,
-    index_bytes_per_element, split_bone_weights_tail_for_gpu,
-    synthetic_bone_data_for_blendshape_only, uv0_float2_stream_bytes, MeshBufferLayout,
+    color_float4_stream_bytes, compute_index_count, compute_mesh_buffer_layout,
+    compute_vertex_stride, extract_bind_poses, extract_blendshape_offsets,
+    extract_float3_position_normal_as_vec4_streams, index_bytes_per_element,
+    split_bone_weights_tail_for_gpu, synthetic_bone_data_for_blendshape_only,
+    uv0_float2_stream_bytes, MeshBufferLayout,
 };
 
 use crate::gpu::plan_blendshape_bind_chunks;
@@ -60,6 +61,8 @@ pub struct GpuMesh {
     pub deformed_normals_buffer: Option<Arc<wgpu::Buffer>>,
     /// `vec2<f32>` UV0 stream (`8` bytes/vertex) for embedded raster materials; zeros when uv0 is absent.
     pub uv0_buffer: Option<Arc<wgpu::Buffer>>,
+    /// `vec4<f32>` color stream for UI/text embedded materials; defaults to opaque white when absent.
+    pub color_buffer: Option<Arc<wgpu::Buffer>>,
     /// True when the host uploaded a real skeleton (`bone_count > 0`).
     pub has_skeleton: bool,
     /// Unity [`Mesh.bindposes`](https://docs.unity3d.com/ScriptReference/Mesh-bindposes.html):
@@ -158,6 +161,21 @@ impl GpuMesh {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(&format!("mesh {} uv0_stream", data.asset_id)),
                     contents: &uv_bytes,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                }),
+            )
+        });
+        let color_buffer = color_float4_stream_bytes(
+            vertex_slice,
+            vc_usize,
+            vertex_stride_us,
+            &data.vertex_attributes,
+        )
+        .map(|color_bytes| {
+            Arc::new(
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("mesh {} color_stream", data.asset_id)),
+                    contents: &color_bytes,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 }),
             )
@@ -388,6 +406,9 @@ impl GpuMesh {
         if let Some(ref b) = uv0_buffer {
             resident_bytes += b.size();
         }
+        if let Some(ref b) = color_buffer {
+            resident_bytes += b.size();
+        }
 
         Some(Self {
             asset_id: data.asset_id,
@@ -411,6 +432,7 @@ impl GpuMesh {
             deformed_positions_buffer,
             deformed_normals_buffer,
             uv0_buffer,
+            color_buffer,
             has_skeleton,
             skinning_bind_matrices,
             resident_bytes,

@@ -131,7 +131,7 @@ impl GpuTexture2d {
             width: w,
             height: h,
             mip_levels_total: mips,
-            mip_levels_resident: mips,
+            mip_levels_resident: 0,
             resident_bytes,
             sampler,
             residency,

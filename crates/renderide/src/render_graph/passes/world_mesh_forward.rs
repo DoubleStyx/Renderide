@@ -41,7 +41,8 @@ use crate::render_graph::resources::{PassResources, ResourceSlot};
 use crate::render_graph::world_mesh_draw_stats_from_sorted;
 use crate::render_graph::MAIN_FORWARD_DEPTH_CLEAR;
 use crate::render_graph::{
-    collect_and_sort_world_mesh_draws, MaterialDrawBatchKey, WorldMeshDrawItem,
+    collect_and_sort_world_mesh_draws, resort_world_mesh_draws_for_camera, MaterialDrawBatchKey,
+    WorldMeshDrawItem,
 };
 /// Clears the backbuffer and depth, then draws meshes with material-batched raster pipelines.
 #[derive(Debug, Default)]
@@ -112,7 +113,7 @@ impl RenderPass for WorldMeshForwardPass {
             .as_ref()
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
-        let draws = {
+        let mut draws = {
             let dict = MaterialDictionary::new(backend.material_property_store());
             collect_and_sort_world_mesh_draws(
                 frame.scene,
@@ -123,6 +124,14 @@ impl RenderPass for WorldMeshForwardPass {
                 render_context,
             )
         };
+        let camera_world = hc.head_output_transform.col(3).truncate();
+        resort_world_mesh_draws_for_camera(
+            &mut draws,
+            frame.scene,
+            render_context,
+            hc.head_output_transform,
+            camera_world,
+        );
         #[cfg(feature = "debug-hud")]
         {
             let stats = world_mesh_draw_stats_from_sorted(&draws);
@@ -249,7 +258,6 @@ impl RenderPass for WorldMeshForwardPass {
             };
             queue.write_buffer(&dbg.per_draw_uniforms, 0, &slab_bytes);
         }
-        let camera_world = hc.head_output_transform.col(3).truncate();
         let world_to_view = scene
             .active_main_space()
             .map(|s| view_matrix_from_render_transform(&s.view_transform))
@@ -275,122 +283,228 @@ impl RenderPass for WorldMeshForwardPass {
             fgpu.write_frame_uniform_and_lights(queue, &uniforms, &lights_for_frame);
         }
 
-        let Some((frame_bg_arc, empty_bg_arc)) = backend.mesh_forward_frame_bind_groups() else {
-            return Ok(());
-        };
-
         let Some(debug_bind_group) = backend.debug_draw.as_ref().map(|d| d.bind_group.clone())
         else {
             return Ok(());
         };
 
-        let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("world-mesh-forward"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: bb,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(SWAPCHAIN_CLEAR_COLOR),
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(MAIN_FORWARD_DEPTH_CLEAR),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: if use_multiview {
-                NonZeroU32::new(3)
-            } else {
-                None
-            },
-        });
-
-        let mut last_batch_key: Option<MaterialDrawBatchKey> = None;
-        let mut pipeline_ok = false;
-        let mut warned_missing_embedded_bind = false;
-
+        let mut regular_indices = Vec::with_capacity(draws.len());
+        let mut intersect_indices = Vec::new();
         for (draw_idx, item) in draws.iter().enumerate() {
-            if last_batch_key.as_ref() != Some(&item.batch_key) {
-                last_batch_key = Some(item.batch_key.clone());
-                let shader_asset_id = item.batch_key.shader_asset_id;
-                pipeline_ok = match backend.material_registry.as_mut() {
-                    None => false,
-                    Some(reg) => match reg.pipeline_for_shader_asset(
-                        shader_asset_id,
-                        &pass_desc,
-                        shader_perm,
-                    ) {
+            if is_pbs_intersection_draw(item) {
+                intersect_indices.push(draw_idx);
+            } else {
+                regular_indices.push(draw_idx);
+            }
+        }
+
+        let mut warned_missing_embedded_bind = false;
+        let Some((frame_bg_arc, empty_bg_arc)) = backend.mesh_forward_frame_bind_groups() else {
+            return Ok(());
+        };
+
+        {
+            let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("world-mesh-forward-opaque"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: bb,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(SWAPCHAIN_CLEAR_COLOR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(MAIN_FORWARD_DEPTH_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: if use_multiview {
+                    NonZeroU32::new(3)
+                } else {
+                    None
+                },
+            });
+            draw_subset(
+                &mut rpass,
+                &regular_indices,
+                &draws,
+                backend,
+                queue,
+                frame_bg_arc.as_ref(),
+                empty_bg_arc.as_ref(),
+                debug_bind_group.as_ref(),
+                &pass_desc,
+                shader_perm,
+                &mut warned_missing_embedded_bind,
+            );
+        }
+
+        if !intersect_indices.is_empty() {
+            if let Some(fgpu) = backend.frame_gpu_mut() {
+                fgpu.copy_scene_depth_snapshot(
+                    ctx.device,
+                    ctx.encoder,
+                    frame.depth_texture,
+                    (vw, vh),
+                    use_multiview,
+                );
+            }
+            let Some((frame_bg_arc, empty_bg_arc)) = backend.mesh_forward_frame_bind_groups()
+            else {
+                return Ok(());
+            };
+            let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("world-mesh-forward-intersection"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: bb,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: if use_multiview {
+                    NonZeroU32::new(3)
+                } else {
+                    None
+                },
+            });
+            draw_subset(
+                &mut rpass,
+                &intersect_indices,
+                &draws,
+                backend,
+                queue,
+                frame_bg_arc.as_ref(),
+                empty_bg_arc.as_ref(),
+                debug_bind_group.as_ref(),
+                &pass_desc,
+                shader_perm,
+                &mut warned_missing_embedded_bind,
+            );
+        }
+
+        Ok(())
+    }
+}
+
+fn is_pbs_intersection_draw(item: &WorldMeshDrawItem) -> bool {
+    match &item.batch_key.pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            stem.starts_with("pbsintersectspecular")
+                || stem.starts_with("custom_pbsintersectspecular")
+        }
+        RasterPipelineKind::DebugWorldNormals => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_subset(
+    rpass: &mut wgpu::RenderPass<'_>,
+    draw_indices: &[usize],
+    draws: &[WorldMeshDrawItem],
+    backend: &mut crate::backend::RenderBackend,
+    queue: &wgpu::Queue,
+    frame_bg: &wgpu::BindGroup,
+    empty_bg: &wgpu::BindGroup,
+    debug_bind_group: &wgpu::BindGroup,
+    pass_desc: &MaterialPipelineDesc,
+    shader_perm: ShaderPermutation,
+    warned_missing_embedded_bind: &mut bool,
+) {
+    let mut last_batch_key: Option<MaterialDrawBatchKey> = None;
+    let mut pipeline_ok = false;
+
+    for draw_idx in draw_indices {
+        let item = &draws[*draw_idx];
+        if last_batch_key.as_ref() != Some(&item.batch_key) {
+            last_batch_key = Some(item.batch_key.clone());
+            let shader_asset_id = item.batch_key.shader_asset_id;
+            pipeline_ok = match backend.material_registry.as_mut() {
+                None => false,
+                Some(reg) => {
+                    match reg.pipeline_for_shader_asset(shader_asset_id, pass_desc, shader_perm) {
                         Some(pipeline) => {
                             rpass.set_pipeline(pipeline);
                             true
                         }
                         None => {
                             logger::trace!(
-                                "WorldMeshForward: no pipeline for shader_asset_id {:?} pipeline {:?}, skipping draws until registered",
-                                shader_asset_id,
-                                item.batch_key.pipeline
-                            );
+                            "WorldMeshForward: no pipeline for shader_asset_id {:?} pipeline {:?}, skipping draws until registered",
+                            shader_asset_id,
+                            item.batch_key.pipeline
+                        );
                             false
                         }
-                    },
-                };
-            }
-
-            if !pipeline_ok {
-                continue;
-            }
-
-            let dynamic_offset = (draw_idx * PER_DRAW_UNIFORM_STRIDE) as u32;
-            rpass.set_bind_group(0, frame_bg_arc.as_ref(), &[]);
-            if matches!(
-                &item.batch_key.pipeline,
-                RasterPipelineKind::EmbeddedStem(_)
-            ) {
-                let stem = backend
-                    .material_registry
-                    .as_ref()
-                    .and_then(|r| r.stem_for_shader_asset(item.batch_key.shader_asset_id));
-                if let (Some(mb), Some(stem)) = (backend.embedded_material_bind(), stem) {
-                    match mb.embedded_material_bind_group(
-                        stem,
-                        queue,
-                        backend.material_property_store(),
-                        backend.texture_pool(),
-                        item.lookup_ids,
-                    ) {
-                        Ok(bg) => rpass.set_bind_group(1, bg.as_ref(), &[]),
-                        Err(_) => rpass.set_bind_group(1, empty_bg_arc.as_ref(), &[]),
                     }
-                } else {
-                    if backend.embedded_material_bind().is_none() && !warned_missing_embedded_bind {
-                        logger::warn!(
-                            "WorldMeshForward: embedded material bind resources unavailable; @group(1) uses empty bind group for embedded raster draws"
-                        );
-                        warned_missing_embedded_bind = true;
-                    }
-                    rpass.set_bind_group(1, empty_bg_arc.as_ref(), &[]);
                 }
-            } else {
-                rpass.set_bind_group(1, empty_bg_arc.as_ref(), &[]);
-            }
-            rpass.set_bind_group(2, debug_bind_group.as_ref(), &[dynamic_offset]);
-
-            draw_mesh_submesh(
-                &mut rpass,
-                item,
-                &backend.mesh_pool,
-                item.batch_key.embedded_needs_uv0,
-            );
+            };
         }
 
-        Ok(())
+        if !pipeline_ok {
+            continue;
+        }
+
+        let dynamic_offset = (*draw_idx * PER_DRAW_UNIFORM_STRIDE) as u32;
+        rpass.set_bind_group(0, frame_bg, &[]);
+        if matches!(
+            &item.batch_key.pipeline,
+            RasterPipelineKind::EmbeddedStem(_)
+        ) {
+            let stem = backend
+                .material_registry
+                .as_ref()
+                .and_then(|r| r.stem_for_shader_asset(item.batch_key.shader_asset_id));
+            if let (Some(mb), Some(stem)) = (backend.embedded_material_bind(), stem) {
+                match mb.embedded_material_bind_group(
+                    stem,
+                    queue,
+                    backend.material_property_store(),
+                    backend.texture_pool(),
+                    item.lookup_ids,
+                ) {
+                    Ok(bg) => rpass.set_bind_group(1, bg.as_ref(), &[]),
+                    Err(_) => rpass.set_bind_group(1, empty_bg, &[]),
+                }
+            } else {
+                if backend.embedded_material_bind().is_none() && !*warned_missing_embedded_bind {
+                    logger::warn!(
+                        "WorldMeshForward: embedded material bind resources unavailable; @group(1) uses empty bind group for embedded raster draws"
+                    );
+                    *warned_missing_embedded_bind = true;
+                }
+                rpass.set_bind_group(1, empty_bg, &[]);
+            }
+        } else {
+            rpass.set_bind_group(1, empty_bg, &[]);
+        }
+        rpass.set_bind_group(2, debug_bind_group, &[dynamic_offset]);
+
+        draw_mesh_submesh(
+            rpass,
+            item,
+            &backend.mesh_pool,
+            item.batch_key.embedded_needs_uv0,
+            item.batch_key.embedded_needs_color,
+        );
     }
 }
 
@@ -399,6 +513,7 @@ fn draw_mesh_submesh(
     item: &WorldMeshDrawItem,
     mesh_pool: &crate::resources::MeshPool,
     embedded_uv: bool,
+    embedded_color: bool,
 ) {
     if item.mesh_asset_id < 0 || item.node_id < 0 || item.index_count == 0 {
         return;
@@ -437,11 +552,17 @@ fn draw_mesh_submesh(
 
     rpass.set_vertex_buffer(0, pos.slice(..));
     rpass.set_vertex_buffer(1, normals_vb.slice(..));
-    if embedded_uv {
+    if embedded_uv || embedded_color {
         let Some(uv) = mesh.uv0_buffer.as_deref() else {
             return;
         };
         rpass.set_vertex_buffer(2, uv.slice(..));
+    }
+    if embedded_color {
+        let Some(color) = mesh.color_buffer.as_deref() else {
+            return;
+        };
+        rpass.set_vertex_buffer(3, color.slice(..));
     }
     rpass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
 

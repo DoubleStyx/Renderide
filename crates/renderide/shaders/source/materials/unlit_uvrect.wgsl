@@ -1,0 +1,78 @@
+//! UV Rect (`Shader "Unlit/UVRect"`): alias of `uvrect` for ShaderLab path-based routing.
+//!
+//! Keep this source in sync with `uvrect.wgsl`.
+
+#import renderide::globals as rg
+#import renderide::per_draw as pd
+
+struct UnlitUvRectMaterial {
+    _Rect: vec4<f32>,
+    _ClipRect: vec4<f32>,
+    _OuterColor: vec4<f32>,
+    _InnerColor: vec4<f32>,
+    _SrcBlend: f32,
+    _DstBlend: f32,
+    _ZWrite: f32,
+    _Cull: f32,
+    _ZTest: f32,
+    _RectClip: f32,
+    _pad0: vec2<f32>,
+}
+
+@group(1) @binding(0) var<uniform> mat: UnlitUvRectMaterial;
+
+struct VertexOutput {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs_main(
+#ifdef MULTIVIEW
+    @builtin(view_index) view_idx: u32,
+#endif
+    @location(0) pos: vec4<f32>,
+    @location(1) _n: vec4<f32>,
+    @location(2) uv: vec2<f32>,
+) -> VertexOutput {
+    let world_p = pd::draw.model * vec4<f32>(pos.xyz, 1.0);
+#ifdef MULTIVIEW
+    var vp: mat4x4<f32>;
+    if (view_idx == 0u) {
+        vp = pd::draw.view_proj_left;
+    } else {
+        vp = pd::draw.view_proj_right;
+    }
+#else
+    let vp = pd::draw.view_proj_left;
+#endif
+    var out: VertexOutput;
+    out.clip_pos = vp * world_p;
+    out.uv = uv;
+    return out;
+}
+
+fn inside_rect01(p: vec2<f32>, r: vec4<f32>) -> f32 {
+    let inside_x = step(r.x, p.x) * step(p.x, r.z);
+    let inside_y = step(r.y, p.y) * step(p.y, r.w);
+    return inside_x * inside_y;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    if (mat._RectClip > 0.5 && inside_rect01(in.uv, mat._ClipRect) < 0.5) {
+        discard;
+    }
+
+    let inner = inside_rect01(in.uv, mat._Rect);
+    let color = mix(mat._OuterColor, mat._InnerColor, inner);
+
+    var lit: u32 = 0u;
+    if (rg::frame.light_count > 0u) {
+        lit = rg::lights[0].light_type;
+    }
+    let cluster_touch =
+        f32(rg::cluster_light_counts[0u] & 255u) * 1e-10 +
+        f32(rg::cluster_light_indices[0u] & 255u) * 1e-10;
+    return color + vec4<f32>(vec3<f32>(f32(lit) * 1e-10 + cluster_touch), 0.0);
+}

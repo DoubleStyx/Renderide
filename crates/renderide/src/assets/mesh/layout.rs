@@ -387,6 +387,98 @@ pub fn uv0_float2_stream_bytes(
     Some(out)
 }
 
+/// Dense `vec4<f32>` color stream (`16` bytes per vertex) for UI / text embedded materials.
+///
+/// Missing or unsupported color attributes default to opaque white so non-colored meshes keep
+/// rendering correctly while UI meshes can consume the host color stream when present.
+pub fn color_float4_stream_bytes(
+    vertex_data: &[u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &[VertexAttributeDescriptor],
+) -> Option<Vec<u8>> {
+    if vertex_count == 0 || stride == 0 {
+        return None;
+    }
+    let need = vertex_count.checked_mul(stride)?;
+    if vertex_data.len() < need {
+        return None;
+    }
+    let mut out = vec![0u8; vertex_count * 16];
+    fill_color_stream_with_white(&mut out);
+
+    let Some((off, _sz)) = attribute_offset_and_size(attrs, VertexAttributeType::color) else {
+        return Some(out);
+    };
+    let color_attr = attrs
+        .iter()
+        .find(|a| (a.attribute as i16) == (VertexAttributeType::color as i16))?;
+
+    for i in 0..vertex_count {
+        let base = i * stride + off;
+        if base >= vertex_data.len() {
+            return None;
+        }
+        let rgba = match decode_vertex_color(vertex_data, base, color_attr) {
+            Some(v) => v,
+            None => return Some(out),
+        };
+        let o = i * 16;
+        for (component, value) in rgba.into_iter().enumerate() {
+            out[o + component * 4..o + component * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    Some(out)
+}
+
+fn fill_color_stream_with_white(out: &mut [u8]) {
+    let one = 1.0f32.to_le_bytes();
+    for chunk in out.chunks_exact_mut(16) {
+        chunk[0..4].copy_from_slice(&one);
+        chunk[4..8].copy_from_slice(&one);
+        chunk[8..12].copy_from_slice(&one);
+        chunk[12..16].copy_from_slice(&one);
+    }
+}
+
+fn decode_vertex_color(
+    vertex_data: &[u8],
+    base: usize,
+    attr: &VertexAttributeDescriptor,
+) -> Option<[f32; 4]> {
+    let dims = attr.dimensions.clamp(1, 4) as usize;
+    let mut rgba = [1.0f32; 4];
+    match attr.format {
+        VertexAttributeFormat::u_norm8 => {
+            let end = base.checked_add(dims)?;
+            let src = vertex_data.get(base..end)?;
+            for i in 0..dims {
+                rgba[i] = src[i] as f32 / 255.0;
+            }
+        }
+        VertexAttributeFormat::u_norm16 => {
+            let end = base.checked_add(dims.checked_mul(2)?)?;
+            let src = vertex_data.get(base..end)?;
+            for i in 0..dims {
+                let start = i * 2;
+                rgba[i] =
+                    u16::from_le_bytes(src[start..start + 2].try_into().ok()?) as f32 / 65535.0;
+            }
+        }
+        VertexAttributeFormat::float32 => {
+            let end = base.checked_add(dims.checked_mul(4)?)?;
+            let src = vertex_data.get(base..end)?;
+            for i in 0..dims {
+                let start = i * 4;
+                rgba[i] = f32::from_le_bytes(src[start..start + 4].try_into().ok()?);
+            }
+        }
+        _ => return None,
+    }
+    Some(rgba)
+}
+
 /// Splits the mesh tail `bone_weights` region into GPU storage buffers for the skinning shader:
 /// `array<vec4<u32>>` joint indices and `array<vec4<f32>>` weights per vertex.
 ///
@@ -560,5 +652,34 @@ mod tests {
         let out = uv0_float2_stream_bytes(&raw, verts, stride, &attrs).expect("uv stream");
         assert_eq!(out.len(), verts * 8);
         assert!(out.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn color_stream_defaults_to_opaque_white_when_missing() {
+        let attrs = [VertexAttributeDescriptor {
+            attribute: VertexAttributeType::position,
+            format: VertexAttributeFormat::float32,
+            dimensions: 3,
+        }];
+        let raw = vec![0u8; 12];
+        let out = color_float4_stream_bytes(&raw, 1, 12, &attrs).expect("color stream");
+        let rgba: [f32; 4] = bytemuck::pod_read_unaligned(&out[..16]);
+        assert_eq!(rgba, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn color_stream_decodes_unorm8_rgba() {
+        let attrs = [VertexAttributeDescriptor {
+            attribute: VertexAttributeType::color,
+            format: VertexAttributeFormat::u_norm8,
+            dimensions: 4,
+        }];
+        let raw = vec![255u8, 128u8, 0u8, 64u8];
+        let out = color_float4_stream_bytes(&raw, 1, 4, &attrs).expect("color stream");
+        let rgba: [f32; 4] = bytemuck::pod_read_unaligned(&out[..16]);
+        assert!((rgba[0] - 1.0).abs() < 1e-6);
+        assert!((rgba[1] - (128.0 / 255.0)).abs() < 1e-6);
+        assert!((rgba[2] - 0.0).abs() < 1e-6);
+        assert!((rgba[3] - (64.0 / 255.0)).abs() < 1e-6);
     }
 }

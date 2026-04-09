@@ -75,12 +75,14 @@ pub use gpu::{FrameGpuUniforms, MeshPreprocessPipelines};
 pub use ipc::DualQueueIpc;
 pub use materials::{
     compose_wgsl, embedded_composed_stem_for_permutation, embedded_default_stem_for_unity_name,
-    embedded_stem_for_unity_name, embedded_stem_needs_uv0_stream, embedded_wgsl_needs_uv0_stream,
-    reflect_raster_material_wgsl, reflect_vertex_shader_needs_uv0_stream, resolve_raster_pipeline,
-    DebugWorldNormalsFamily, MaterialPipelineCache, MaterialPipelineCacheKey, MaterialPipelineDesc,
-    MaterialPropertyGpuLayout, MaterialRegistry, MaterialRouter, RasterPipelineKind, ReflectError,
-    ReflectedMaterialUniformBlock, ReflectedRasterLayout, ReflectedUniformField,
-    ReflectedUniformScalarKind, WgslPatch,
+    embedded_stem_for_unity_name, embedded_stem_needs_color_stream, embedded_stem_needs_uv0_stream,
+    embedded_stem_uses_alpha_blending, embedded_wgsl_needs_color_stream,
+    embedded_wgsl_needs_uv0_stream, reflect_raster_material_wgsl,
+    reflect_vertex_shader_needs_color_stream, reflect_vertex_shader_needs_uv0_stream,
+    resolve_raster_pipeline, DebugWorldNormalsFamily, MaterialPipelineCache,
+    MaterialPipelineCacheKey, MaterialPipelineDesc, MaterialPropertyGpuLayout, MaterialRegistry,
+    MaterialRouter, RasterPipelineKind, ReflectError, ReflectedMaterialUniformBlock,
+    ReflectedRasterLayout, ReflectedUniformField, ReflectedUniformScalarKind, WgslPatch,
 };
 pub use render_graph::{
     build_default_main_graph, passes::ClusteredLightPass, passes::MeshDeformPass,

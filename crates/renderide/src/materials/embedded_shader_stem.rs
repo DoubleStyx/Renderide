@@ -95,4 +95,108 @@ mod tests {
             Some("ui_unlit_default")
         );
     }
+
+    #[test]
+    fn resolves_overlay_unlit_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("OverlayUnlit").as_deref(),
+            Some("overlayunlit_default")
+        );
+    }
+
+    #[test]
+    fn resolves_fresnel_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("Fresnel").as_deref(),
+            Some("fresnel_default")
+        );
+    }
+
+    #[test]
+    fn resolves_textunit_from_asset_style_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("TextUnit").as_deref(),
+            Some("textunit_default")
+        );
+    }
+
+    #[test]
+    fn resolves_text_unlit_from_shader_lab_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("Text/Unlit").as_deref(),
+            Some("text_unlit_default")
+        );
+    }
+
+    #[test]
+    fn resolves_textunlit_from_plain_label() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("TextUnlit").as_deref(),
+            Some("textunlit_default")
+        );
+    }
+
+    #[test]
+    fn resolves_uvrect_from_asset_style_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("UVRect").as_deref(),
+            Some("uvrect_default")
+        );
+    }
+
+    #[test]
+    fn resolves_uvrect_from_shader_lab_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("Unlit/UVRect").as_deref(),
+            Some("unlit_uvrect_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbsrim_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSRim").as_deref(),
+            Some("pbsrim_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbsrimtransparent_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSRimTransparent").as_deref(),
+            Some("pbsrimtransparent_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbslerp_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSLerp").as_deref(),
+            Some("pbslerp_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbslerpspecular_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSLerpSpecular").as_deref(),
+            Some("pbslerpspecular_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbsintersectspecular_from_plain_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSIntersectSpecular").as_deref(),
+            Some("pbsintersectspecular_default")
+        );
+    }
+
+    #[test]
+    fn resolves_custom_pbsintersectspecular_from_shader_lab_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("Custom/PBSIntersectSpecular").as_deref(),
+            Some("custom_pbsintersectspecular_default")
+        );
+    }
 }

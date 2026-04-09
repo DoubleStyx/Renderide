@@ -624,14 +624,14 @@ impl RenderideApp {
             let (dt, dv) = crate::xr::create_stereo_depth_texture(gpu.device().as_ref(), extent);
             self.xr_stereo_depth = Some((dt, dv));
         }
-        let depth_pair = &self
+        let depth_state = self
             .xr_stereo_depth
             .as_ref()
-            .expect("xr_stereo_depth set above when missing")
-            .1;
+            .expect("xr_stereo_depth set above when missing");
         let ext = ExternalFrameTargets {
             color_view,
-            depth_view: depth_pair,
+            depth_texture: &depth_state.0,
+            depth_view: &depth_state.1,
             extent_px: extent,
             surface_format: crate::xr::XR_COLOR_FORMAT,
         };

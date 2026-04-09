@@ -22,7 +22,7 @@ use crate::config::{save_renderer_settings, PowerPreferenceSetting, RendererSett
 #[cfg(feature = "debug-hud")]
 use imgui::{
     Condition, Context, Drag, FontConfig, FontSource, Io, ListClipper,
-    MouseButton as ImGuiMouseButton, TableFlags, WindowFlags,
+    MouseButton as ImGuiMouseButton, TableFlags, TreeNodeFlags, WindowFlags,
 };
 #[cfg(feature = "debug-hud")]
 use imgui_wgpu::{Renderer as ImguiWgpuRenderer, RendererConfig};
@@ -39,6 +39,287 @@ mod hud_fmt {
     pub fn gib_value(width: usize, decimals: usize, bytes: u64) -> String {
         let g = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         f64_field(width, decimals, g)
+    }
+}
+
+#[cfg(feature = "debug-hud")]
+/// Per-property implementation status for the **Shader detail** tab.
+mod shader_props {
+    /// Implementation status of a single material property / feature.
+    #[derive(Clone, Copy)]
+    pub enum Status {
+        /// Fully implemented and active in the shader.
+        Ok,
+        /// Code path exists but behaviour is restricted (e.g. a second UV that always mirrors UV0).
+        Partial,
+        /// Struct field or texture binding is present; shader logic not yet written.
+        NotYet,
+    }
+
+    /// One row in the per-shader property table.
+    pub struct Row {
+        pub name: &'static str,
+        pub status: Status,
+        pub note: &'static str,
+    }
+
+    /// Returns `(short description, property rows)` for a given embedded shader stem,
+    /// or `None` for unknown stems.
+    pub fn rows_for_stem(stem: &str) -> Option<(&'static str, Vec<Row>)> {
+        if stem.starts_with("unlit_") {
+            return Some((
+                "World Unlit — texture × tint, optional alpha test",
+                vec![
+                    Row {
+                        name: "_Color",
+                        status: Status::Ok,
+                        note: "base tint; multiplied with texture",
+                    },
+                    Row {
+                        name: "_Tex / _Tex_ST",
+                        status: Status::Ok,
+                        note: "albedo; UV scale+offset; V-flip applied so imagery matches host",
+                    },
+                    Row {
+                        name: "_Cutoff",
+                        status: Status::Ok,
+                        note: "alpha discard (flag bit 1)",
+                    },
+                    Row {
+                        name: "Vertex color",
+                        status: Status::NotYet,
+                        note: "no color vertex stream; treated as white",
+                    },
+                ],
+            ));
+        }
+        if stem.starts_with("pbsmetallic_") {
+            return Some((
+                "PBS Metallic — Cook–Torrance BRDF, clustered forward lighting",
+                vec![
+                    Row { name: "_Color",                                      status: Status::Ok,      note: "base tint" },
+                    Row { name: "_MainTex",                                    status: Status::Ok,      note: "albedo texture" },
+                    Row { name: "_Cutoff",                                     status: Status::Ok,      note: "alpha discard" },
+                    Row { name: "_Metallic / _MetallicGlossMap",               status: Status::Ok,      note: "metallic from uniform × map.r" },
+                    Row { name: "_Glossiness / _GlossMapScale",                status: Status::Ok,      note: "smoothness → roughness (clamped min 0.045)" },
+                    Row { name: "_SmoothnessTextureChannel",                   status: Status::Ok,      note: "selects metallic map alpha vs albedo alpha for smoothness" },
+                    Row { name: "_BumpScale / _BumpMap",                       status: Status::Ok,      note: "normal map via orthonormal TBN; scale applied to XY" },
+                    Row { name: "_Parallax",                                   status: Status::NotYet,  note: "in uniform struct; no parallax offset logic in vs_main" },
+                    Row { name: "_OcclusionStrength / _OcclusionMap",          status: Status::Ok,      note: "AO from red channel; lerped with strength" },
+                    Row { name: "_EmissionColor / _EmissionMap",               status: Status::Ok,      note: "additive emission; map.rgb × EmissionColor" },
+                    Row { name: "_DetailAlbedoMap",                            status: Status::Partial, note: "sampled × 2 and multiplied into base color; UV1 is always a copy of UV0" },
+                    Row { name: "_DetailNormalMap / _DetailNormalMapScale",     status: Status::NotYet,  note: "texture bound at group(1); not applied in fs_main" },
+                    Row { name: "_UVSec",                                      status: Status::Partial, note: "select-UV1 logic present; TEXCOORD1 is always a copy of TEXCOORD0" },
+                    Row { name: "_SpecularHighlights",                         status: Status::Ok,      note: "toggles Cook–Torrance specular term off (uses diffuse-only path)" },
+                    Row { name: "_GlossyReflections",                          status: Status::Partial, note: "toggles 0.03 ambient factor off; no actual reflection probes" },
+                    Row { name: "ForwardAdd passes",                           status: Status::NotYet,  note: "clustered forward only; ForwardAdd multi-pass not implemented" },
+                    Row { name: "Lightmaps",                                   status: Status::NotYet,  note: "not implemented" },
+                    Row { name: "Reflection probes",                           status: Status::NotYet,  note: "not implemented" },
+                ],
+            ));
+        }
+        if stem.starts_with("pbsspecular_") {
+            return Some((
+                "PBS Specular — Cook–Torrance BRDF with tinted specular, clustered forward",
+                vec![
+                    Row {
+                        name: "_Color",
+                        status: Status::Ok,
+                        note: "base tint",
+                    },
+                    Row {
+                        name: "_MainTex",
+                        status: Status::Ok,
+                        note: "albedo texture",
+                    },
+                    Row {
+                        name: "_Cutoff",
+                        status: Status::Ok,
+                        note: "alpha discard",
+                    },
+                    Row {
+                        name: "_SpecColor / _SpecGlossMap",
+                        status: Status::Ok,
+                        note: "specular tint × map.rgb; diffuse energy via oneMinusReflectivity",
+                    },
+                    Row {
+                        name: "_Glossiness / _GlossMapScale",
+                        status: Status::Ok,
+                        note: "smoothness → roughness (clamped min 0.045)",
+                    },
+                    Row {
+                        name: "_SmoothnessTextureChannel",
+                        status: Status::Ok,
+                        note: "selects spec-gloss map alpha vs albedo alpha for smoothness",
+                    },
+                    Row {
+                        name: "_BumpScale / _BumpMap",
+                        status: Status::Ok,
+                        note: "normal map via orthonormal TBN",
+                    },
+                    Row {
+                        name: "_Parallax",
+                        status: Status::NotYet,
+                        note: "in uniform struct; no parallax offset logic",
+                    },
+                    Row {
+                        name: "_OcclusionStrength / _OcclusionMap",
+                        status: Status::Ok,
+                        note: "AO from red channel",
+                    },
+                    Row {
+                        name: "_EmissionColor / _EmissionMap",
+                        status: Status::Ok,
+                        note: "additive emission",
+                    },
+                    Row {
+                        name: "_DetailAlbedoMap",
+                        status: Status::Partial,
+                        note: "sampled × 2 and multiplied; UV1 is always a copy of UV0",
+                    },
+                    Row {
+                        name: "_DetailNormalMap / _DetailNormalMapScale",
+                        status: Status::NotYet,
+                        note: "texture bound at group(1); not applied in fs_main",
+                    },
+                    Row {
+                        name: "_UVSec",
+                        status: Status::Partial,
+                        note: "select-UV1 logic present; TEXCOORD1 = TEXCOORD0 copy",
+                    },
+                    Row {
+                        name: "_SpecularHighlights",
+                        status: Status::Ok,
+                        note:
+                            "toggles Cook–Torrance specular term (uses diffuse-only specular path)",
+                    },
+                    Row {
+                        name: "_GlossyReflections",
+                        status: Status::Partial,
+                        note: "toggles 0.03 ambient factor; no actual reflection probes",
+                    },
+                    Row {
+                        name: "ForwardAdd passes",
+                        status: Status::NotYet,
+                        note: "clustered forward only; ForwardAdd not implemented",
+                    },
+                    Row {
+                        name: "Lightmaps",
+                        status: Status::NotYet,
+                        note: "not implemented",
+                    },
+                    Row {
+                        name: "Reflection probes",
+                        status: Status::NotYet,
+                        note: "not implemented",
+                    },
+                ],
+            ));
+        }
+        if stem.starts_with("debug_world_normals_") {
+            return Some((
+                "Debug World Normals — fallback; outputs world-space normals as RGB",
+                vec![
+                    Row {
+                        name: "(no material properties)",
+                        status: Status::Ok,
+                        note: "world_n * 0.5 + 0.5 → RGB; used when no shader route is mapped for a host shader id",
+                    },
+                ],
+            ));
+        }
+        if stem.starts_with("ui_unlit_") {
+            return Some((
+                "UI Unlit — canvas sprite, tint, mask, rect clip",
+                vec![
+                    Row { name: "_Tint",                                       status: Status::Ok,      note: "base color tint" },
+                    Row { name: "_MainTex / _MainTex_ST",                      status: Status::Ok,      note: "sprite texture; UV scale+offset; V-flip (enabled by flag bit 0)" },
+                    Row { name: "_Cutoff",                                     status: Status::Ok,      note: "alpha clip on final alpha (flag bit 1) or mask grayscale (flag bit 5)" },
+                    Row { name: "_Rect",                                       status: Status::Ok,      note: "object-space rect discard; fragments outside XY range discarded (flag bit 2)" },
+                    Row { name: "_MaskTex / _MaskTex_ST",                      status: Status::Ok,      note: "grayscale mask; multiply alpha into color.a (flag bit 4); clip vs _Cutoff (flag bit 5)" },
+                    Row { name: "_OverlayTint",                                status: Status::Partial, note: "alpha-weighted RGB tint (flag bit 3); no scene depth composite implemented" },
+                    Row { name: "_SrcBlend / _DstBlend",                       status: Status::Partial, note: "pipeline uses fixed alpha blending for UI stems; does not honor per-material blend factors" },
+                    Row { name: "_ZWrite / _Cull",                             status: Status::NotYet,  note: "in uniform struct; pipeline does not honor per-material rasterizer state" },
+                    Row { name: "Stencil ops (_Stencil, _StencilOp, …)",       status: Status::NotYet,  note: "in uniform struct; pipeline stencil state is fixed per pass" },
+                    Row { name: "_ColorMask",                                  status: Status::NotYet,  note: "in uniform struct; color write mask is fixed" },
+                    Row { name: "Vertex color",                                status: Status::Ok,      note: "float4 vertex color stream multiplied by _Tint; defaults to opaque white when mesh color is absent" },
+                ],
+            ));
+        }
+        if stem.starts_with("ui_textunlit_") {
+            return Some((
+                "UI Text Unlit — MSDF / SDF / Raster font atlas, outline, rect clip",
+                vec![
+                    Row {
+                        name: "_TintColor",
+                        status: Status::Ok,
+                        note: "text face color multiplied by vertex color",
+                    },
+                    Row {
+                        name: "_FontAtlas",
+                        status: Status::Ok,
+                        note: "font texture atlas",
+                    },
+                    Row {
+                        name: "_TextMode",
+                        status: Status::Ok,
+                        note:
+                            "0 = MSDF (median RGB), 1 = RASTER (atlas × tint), 2 = SDF (alpha dist)",
+                    },
+                    Row {
+                        name: "_Range",
+                        status: Status::Ok,
+                        note: "pixel range for SDF/MSDF AA scale (from fwidth)",
+                    },
+                    Row {
+                        name: "_FaceDilate / _FaceSoftness",
+                        status: Status::Ok,
+                        note: "SDF/MSDF face expansion and edge softness",
+                    },
+                    Row {
+                        name: "_OutlineColor / _OutlineSize",
+                        status: Status::Ok,
+                        note: "SDF/MSDF outline; per-vertex scale from extra_data.y",
+                    },
+                    Row {
+                        name: "_BackgroundColor",
+                        status: Status::Ok,
+                        note: "glyph background fill in SDF/MSDF modes",
+                    },
+                    Row {
+                        name: "_Rect / _RectClip",
+                        status: Status::Ok,
+                        note: "object-space rect discard when _RectClip > 0.5 and rect has area",
+                    },
+                    Row {
+                        name: "_OverlayTint",
+                        status: Status::Partial,
+                        note: "alpha-weighted RGB tint; no scene depth composite",
+                    },
+                    Row {
+                        name: "_SrcBlend / _DstBlend / _ZWrite / _Cull / _ZTest",
+                        status: Status::Partial,
+                        note: "pipeline uses fixed alpha blending for UI stems; depth/cull/ztest are still fixed",
+                    },
+                    Row {
+                        name: "Stencil ops (_Stencil, _StencilOp, …)",
+                        status: Status::NotYet,
+                        note: "in uniform struct; pipeline stencil state is fixed",
+                    },
+                    Row {
+                        name: "_ColorMask",
+                        status: Status::NotYet,
+                        note: "in uniform struct; write mask is fixed",
+                    },
+                    Row {
+                        name: "Vertex color",
+                        status: Status::Ok,
+                        note: "float4 vertex color stream is provided; defaults to opaque white when absent",
+                    },
+                ],
+            ));
+        }
+        None
     }
 }
 
@@ -185,6 +466,9 @@ impl DebugHud {
                     }
                     if let Some(_tab) = ui.tab_item("Shader routes") {
                         Self::shader_mappings_tab(ui, frame_diag.as_ref());
+                    }
+                    if let Some(_tab) = ui.tab_item("Shader detail") {
+                        Self::shader_detail_tab(ui);
                     }
                 }
             });
@@ -423,6 +707,66 @@ impl DebugHud {
         } else {
             for line in &d.shader_route_lines {
                 ui.text_wrapped(line);
+            }
+        }
+    }
+
+    /// Per-property implementation table for every known embedded shader stem (**Shader detail** tab).
+    ///
+    /// Each shader gets a collapsible section; rows are color-coded: green = ok, yellow = partial,
+    /// red = not yet.
+    fn shader_detail_tab(ui: &imgui::Ui) {
+        const STEMS: &[&str] = &[
+            "unlit_default",
+            "pbsmetallic_default",
+            "pbsspecular_default",
+            "debug_world_normals_default",
+            "ui_unlit_default",
+            "ui_textunlit_default",
+        ];
+
+        ui.text_disabled("Property implementation status per embedded shader");
+        ui.text_disabled("ok (green)  |  partial (yellow)  |  not yet (red)");
+        ui.separator();
+
+        for &stem in STEMS {
+            let Some((desc, rows)) = shader_props::rows_for_stem(stem) else {
+                continue;
+            };
+
+            let header_label = format!("{stem}  —  {desc}");
+            if ui.collapsing_header(&header_label, TreeNodeFlags::empty()) {
+                let table_id = format!("##shprop_{stem}");
+                let table_flags =
+                    TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::SIZING_STRETCH_PROP;
+                if let Some(_t) =
+                    ui.begin_table_with_sizing(&table_id, 3, table_flags, [0.0, 0.0], 0.0)
+                {
+                    ui.table_setup_column("Property");
+                    ui.table_setup_column("Status");
+                    ui.table_setup_column("Notes");
+                    ui.table_headers_row();
+
+                    for row in &rows {
+                        ui.table_next_row();
+                        ui.table_next_column();
+                        ui.text(row.name);
+                        ui.table_next_column();
+                        match row.status {
+                            shader_props::Status::Ok => {
+                                ui.text_colored([0.35, 1.0, 0.35, 1.0], "ok");
+                            }
+                            shader_props::Status::Partial => {
+                                ui.text_colored([1.0, 0.88, 0.25, 1.0], "partial");
+                            }
+                            shader_props::Status::NotYet => {
+                                ui.text_colored([1.0, 0.45, 0.45, 1.0], "not yet");
+                            }
+                        }
+                        ui.table_next_column();
+                        ui.text_wrapped(row.note);
+                    }
+                }
             }
         }
     }

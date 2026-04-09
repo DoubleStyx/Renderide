@@ -8,15 +8,15 @@
 use crate::backend::{empty_material_bind_group_layout, FrameGpuResources};
 use crate::materials::MaterialPipelineDesc;
 use crate::materials::{
-    reflect_raster_material_wgsl, reflect_vertex_shader_needs_uv0_stream, validate_per_draw_group2,
+    reflect_raster_material_wgsl, reflect_vertex_shader_needs_color_stream,
+    reflect_vertex_shader_needs_uv0_stream, validate_per_draw_group2,
 };
 use crate::render_graph::MAIN_FORWARD_DEPTH_COMPARE;
 
-/// Builds a forward mesh render pipeline from reflected WGSL (`@group(0..=2)`), with optional UV0 vertex stream.
+/// Builds a forward mesh render pipeline from reflected WGSL (`@group(0..=2)`), with optional UV0 and color vertex streams.
 ///
-/// Vertex inputs are only `@location(0)` position, `@location(1)` normal, and optionally `@location(2)` UV0.
-/// Shaders must not require a **fourth** vertex attribute (e.g. UV1) until the mesh pass binds it; duplicate
-/// UV0 into extra varyings in `vs_main` if needed.
+/// Vertex inputs are `@location(0)` position, `@location(1)` normal/extra, and optionally
+/// `@location(2)` UV0 and `@location(3)` color.
 ///
 /// Used by [`crate::pipelines::raster::DebugWorldNormalsFamily`] and embedded WGSL raster materials.
 pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
@@ -26,6 +26,9 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
     wgsl_source: &str,
     label: &'static str,
     include_uv_vertex_buffer: bool,
+    include_color_vertex_buffer: bool,
+    use_alpha_blending: bool,
+    depth_write_enabled: bool,
 ) -> wgpu::RenderPipeline {
     let reflected = reflect_raster_material_wgsl(wgsl_source).unwrap_or_else(|e| {
         panic!("reflect {label} (must match frame globals + per-draw contract): {e}");
@@ -81,13 +84,31 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
             format: wgpu::VertexFormat::Float32x2,
         }],
     };
+    let color_layout = wgpu::VertexBufferLayout {
+        array_stride: 16,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[wgpu::VertexAttribute {
+            offset: 0,
+            shader_location: 3,
+            format: wgpu::VertexFormat::Float32x4,
+        }],
+    };
 
     let use_uv = include_uv_vertex_buffer && reflect_vertex_shader_needs_uv0_stream(wgsl_source);
+    let use_color =
+        include_color_vertex_buffer && reflect_vertex_shader_needs_color_stream(wgsl_source);
 
-    let vertex_buffers: &[wgpu::VertexBufferLayout<'_>] = if use_uv {
+    let vertex_buffers: &[wgpu::VertexBufferLayout<'_>] = if use_color {
+        &[pos_layout, nrm_layout, uv_layout, color_layout]
+    } else if use_uv {
         &[pos_layout, nrm_layout, uv_layout]
     } else {
         &[pos_layout, nrm_layout]
+    };
+    let blend = if use_alpha_blending {
+        Some(wgpu::BlendState::ALPHA_BLENDING)
+    } else {
+        None
     };
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -105,7 +126,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: desc.surface_format,
-                blend: None,
+                blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -117,7 +138,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
             .depth_stencil_format
             .map(|format| wgpu::DepthStencilState {
                 format,
-                depth_write_enabled: Some(true),
+                depth_write_enabled: Some(depth_write_enabled),
                 depth_compare: Some(MAIN_FORWARD_DEPTH_COMPARE),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),

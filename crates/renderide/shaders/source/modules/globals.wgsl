@@ -47,3 +47,5 @@ struct FrameGlobals {
 @group(0) @binding(1) var<storage, read> lights: array<GpuLight>;
 @group(0) @binding(2) var<storage, read> cluster_light_counts: array<u32>;
 @group(0) @binding(3) var<storage, read> cluster_light_indices: array<u32>;
+@group(0) @binding(4) var scene_depth: texture_depth_2d;
+@group(0) @binding(5) var scene_depth_array: texture_depth_2d_array;

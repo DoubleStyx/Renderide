@@ -232,34 +232,42 @@ impl GpuContext {
     ///
     /// Call after [`Self::reconfigure`] or when the swapchain size may have changed.
     pub fn ensure_depth_view(&mut self) -> &wgpu::TextureView {
+        self.ensure_depth_target().1
+    }
+
+    /// Ensures the main depth attachment exists and returns both the texture and its default view.
+    pub fn ensure_depth_target(&mut self) -> (&wgpu::Texture, &wgpu::TextureView) {
         let w = self.config.width.max(1);
         let h = self.config.height.max(1);
-        if self.depth_extent_px == (w, h) {
-            if let Some(ref v) = self.depth_view {
-                return v;
-            }
+        let needs_recreate = self.depth_extent_px != (w, h)
+            || self.depth_texture.is_none()
+            || self.depth_view.is_none();
+        if needs_recreate {
+            self.depth_texture = None;
+            self.depth_view = None;
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("renderide-depth"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.depth_extent_px = (w, h);
+            self.depth_texture = Some(tex);
+            self.depth_view = Some(view);
         }
-        self.depth_texture = None;
-        self.depth_view = None;
-        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("renderide-depth"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        self.depth_extent_px = (w, h);
-        self.depth_texture = Some(tex);
-        self.depth_view = Some(view);
-        self.depth_view.as_ref().expect("just created")
+        (
+            self.depth_texture.as_ref().expect("just created"),
+            self.depth_view.as_ref().expect("just created"),
+        )
     }
 
     /// Acquires the next frame, reconfiguring once on [`wgpu::CurrentSurfaceTexture::Lost`] or

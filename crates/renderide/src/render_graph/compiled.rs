@@ -16,6 +16,8 @@ use super::pass::RenderPass;
 pub struct ExternalFrameTargets<'a> {
     /// `D2Array` color view (`array_layer_count` = 2).
     pub color_view: &'a wgpu::TextureView,
+    /// Backing `D2Array` depth texture for copy/snapshot passes.
+    pub depth_texture: &'a wgpu::Texture,
     /// `D2Array` depth view (`array_layer_count` = 2).
     pub depth_view: &'a wgpu::TextureView,
     /// Pixel extent per eye (`width`, `height`).
@@ -124,15 +126,17 @@ impl CompiledRenderGraph {
         let device_arc = gpu.device().clone();
         let queue_arc = gpu.queue().clone();
 
-        let (surface_format, viewport_px, depth_ref, backbuffer_ref): (
+        let (surface_format, viewport_px, depth_tex_ref, depth_ref, backbuffer_ref): (
             wgpu::TextureFormat,
             (u32, u32),
+            &wgpu::Texture,
             &wgpu::TextureView,
             Option<&wgpu::TextureView>,
         ) = if let Some(ext) = external.as_ref() {
             (
                 ext.surface_format,
                 ext.extent_px,
+                ext.depth_texture,
                 ext.depth_view,
                 Some(ext.color_view),
             )
@@ -142,7 +146,8 @@ impl CompiledRenderGraph {
             let bb = backbuffer_view_holder
                 .as_ref()
                 .map(|v| v as &wgpu::TextureView);
-            (surface_format, viewport_px, gpu.ensure_depth_view(), bb)
+            let (depth_tex, depth_view) = gpu.ensure_depth_target();
+            (surface_format, viewport_px, depth_tex, depth_view, bb)
         };
         let device = device_arc.as_ref();
 
@@ -153,6 +158,7 @@ impl CompiledRenderGraph {
         let mut frame_params = FrameRenderParams {
             scene,
             backend,
+            depth_texture: depth_tex_ref,
             depth_view: depth_ref,
             surface_format,
             viewport_px,

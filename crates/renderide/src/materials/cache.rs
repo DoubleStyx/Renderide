@@ -84,8 +84,8 @@ impl MaterialPipelineCache {
                     source: wgpu::ShaderSource::Wgsl(wgsl.clone().into()),
                 });
             match kind {
-                RasterPipelineKind::EmbeddedStem(_) => {
-                    create_embedded_render_pipeline(&self.device, &module, desc, &wgsl)
+                RasterPipelineKind::EmbeddedStem(stem) => {
+                    create_embedded_render_pipeline(stem, &self.device, &module, desc, &wgsl)
                 }
                 RasterPipelineKind::DebugWorldNormals => {
                     create_debug_world_normals_render_pipeline(&self.device, &module, desc, &wgsl)

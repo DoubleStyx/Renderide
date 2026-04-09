@@ -1,7 +1,8 @@
 //! Parse composed WGSL with naga and derive [`wgpu::BindGroupLayoutEntry`] lists for `@group(1)` and
 //! `@group(2)`, and a [`ReflectedRasterLayout::layout_fingerprint`] for tests and diagnostics.
 //!
-//! Validates `@group(0)` against [`crate::backend::frame_gpu::FrameGpuResources`] buffer sizes.
+//! Validates `@group(0)` against [`crate::backend::frame_gpu::FrameGpuResources`] buffer sizes and
+//! optional scene-depth snapshot bindings.
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
@@ -177,6 +178,15 @@ pub fn reflect_vertex_shader_needs_uv0_stream(wgsl_source: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns true when `vs_main` uses vertex `@location` 3 or higher (extra color stream).
+pub fn reflect_vertex_shader_needs_color_stream(wgsl_source: &str) -> bool {
+    reflect_raster_material_wgsl(wgsl_source)
+        .ok()
+        .and_then(|r| r.vs_max_vertex_location)
+        .map(|m| m >= 3)
+        .unwrap_or(false)
+}
+
 fn reflect_group1_global_binding_names(module: &naga::Module) -> HashMap<u32, String> {
     let mut out = HashMap::new();
     for (_, gv) in module.global_variables.iter() {
@@ -336,21 +346,27 @@ fn validate_frame_group0(module: &naga::Module, layouter: &Layouter) -> Result<(
         if rb.group != 0 {
             continue;
         }
-        if rb.binding > 3 {
+        if rb.binding > 5 {
             return Err(ReflectError::UnsupportedBinding {
                 group: 0,
                 binding: rb.binding,
-                reason: "only bindings 0..=3 are supported for raster frame globals".into(),
+                reason: "only bindings 0..=5 are supported for raster frame globals".into(),
             });
         }
         let (space, data_ty) = resource_data_ty(module, gv);
-        match space {
-            AddressSpace::Uniform => {
+        match (rb.binding, space) {
+            (4, AddressSpace::Handle) => {
+                validate_frame_depth_texture_binding(module, data_ty, false, rb.binding)?;
+            }
+            (5, AddressSpace::Handle) => {
+                validate_frame_depth_texture_binding(module, data_ty, true, rb.binding)?;
+            }
+            (_, AddressSpace::Uniform) => {
                 if rb.binding == 0 {
                     b0_size = Some(layouter[data_ty].size);
                 }
             }
-            AddressSpace::Storage { .. } => {
+            (_, AddressSpace::Storage { .. }) => {
                 let stride = storage_array_element_stride(module, layouter, data_ty, rb.binding)?;
                 match rb.binding {
                     1 => b1_stride = Some(stride),
@@ -379,6 +395,35 @@ fn validate_frame_group0(module: &naga::Module, layouter: &Layouter) -> Result<(
             got2: b2_stride,
             got3: b3_stride,
         })
+    }
+}
+
+fn validate_frame_depth_texture_binding(
+    module: &naga::Module,
+    data_ty: naga::Handle<naga::Type>,
+    arrayed: bool,
+    binding: u32,
+) -> Result<(), ReflectError> {
+    match &module.types[data_ty].inner {
+        TypeInner::Image {
+            dim,
+            arrayed: got_arrayed,
+            class: ImageClass::Depth { multi },
+        } if *dim == ImageDimension::D2 && *got_arrayed == arrayed && !*multi => Ok(()),
+        TypeInner::Image { .. } => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: if arrayed {
+                "expected texture_depth_2d_array".into()
+            } else {
+                "expected texture_depth_2d".into()
+            },
+        }),
+        _ => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: "expected depth texture handle".into(),
+        }),
     }
 }
 

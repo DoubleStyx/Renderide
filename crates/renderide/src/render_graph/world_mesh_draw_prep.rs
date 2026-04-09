@@ -4,11 +4,15 @@
 //! material asset id, property block slot0, and skinned—aligned with legacy `SpaceDrawBatch` ordering in
 //! `crates_old/renderide` so pipeline and future per-material bind groups change only on boundaries.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
+
+use glam::Vec3;
 
 use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
-    embedded_stem_needs_uv0_stream, resolve_raster_pipeline, MaterialRouter, RasterPipelineKind,
+    embedded_stem_needs_color_stream, embedded_stem_needs_uv0_stream,
+    embedded_stem_uses_alpha_blending, resolve_raster_pipeline, MaterialRouter, RasterPipelineKind,
 };
 use crate::pipelines::ShaderPermutation;
 use crate::resources::MeshPool;
@@ -32,6 +36,11 @@ pub struct MaterialDrawBatchKey {
     /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether the active [`ShaderPermutation`]
     /// requires a UV0 vertex stream (computed once per draw item, not per frame in the raster pass).
     pub embedded_needs_uv0: bool,
+    /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether the active [`ShaderPermutation`]
+    /// requires a color vertex stream at `@location(3)`.
+    pub embedded_needs_color: bool,
+    /// Transparent alpha-blended UI/text stems should preserve stable canvas order.
+    pub alpha_blended: bool,
 }
 
 /// One indexed draw after pairing a material slot with a mesh submesh range.
@@ -49,6 +58,10 @@ pub struct WorldMeshDrawItem {
     pub is_overlay: bool,
     pub sorting_order: i32,
     pub skinned: bool,
+    /// Stable insertion order before sorting; used for transparent UI/text.
+    pub collect_order: usize,
+    /// Approximate camera distance used for transparent back-to-front sorting.
+    pub camera_distance_sq: f32,
     /// Merge key for host material + property block lookups (e.g. [`MaterialDictionary::get_merged`]).
     pub lookup_ids: MaterialPropertyLookupIds,
     /// Cached batch key for the forward pass.
@@ -87,6 +100,16 @@ fn batch_key_for_slot(
         }
         RasterPipelineKind::DebugWorldNormals => false,
     };
+    let embedded_needs_color = match &pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            embedded_stem_needs_color_stream(stem.as_ref(), shader_perm)
+        }
+        RasterPipelineKind::DebugWorldNormals => false,
+    };
+    let alpha_blended = match &pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) => embedded_stem_uses_alpha_blending(stem.as_ref()),
+        RasterPipelineKind::DebugWorldNormals => false,
+    };
     MaterialDrawBatchKey {
         pipeline,
         shader_asset_id,
@@ -94,6 +117,8 @@ fn batch_key_for_slot(
         property_block_slot0: property_block_id,
         skinned,
         embedded_needs_uv0,
+        embedded_needs_color,
+        alpha_blended,
     }
 }
 
@@ -169,23 +194,64 @@ fn push_draws_for_renderer(
             is_overlay,
             sorting_order: renderer.sorting_order,
             skinned,
+            collect_order: out.len(),
+            camera_distance_sq: 0.0,
             lookup_ids,
             batch_key,
         });
     }
 }
 
-/// Sorts draws for stable batching: batch key, overlay after world, higher [`WorldMeshDrawItem::sorting_order`] first.
+/// Sorts opaque draws for batching and alpha UI/text draws in stable canvas order.
 pub fn sort_world_mesh_draws(items: &mut [WorldMeshDrawItem]) {
     items.sort_by(|a, b| {
-        a.batch_key
-            .cmp(&b.batch_key)
-            .then(a.is_overlay.cmp(&b.is_overlay))
-            .then(b.sorting_order.cmp(&a.sorting_order))
-            .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
-            .then(a.node_id.cmp(&b.node_id))
-            .then(a.slot_index.cmp(&b.slot_index))
+        a.is_overlay
+            .cmp(&b.is_overlay)
+            .then(a.batch_key.alpha_blended.cmp(&b.batch_key.alpha_blended))
+            .then_with(
+                || match (a.batch_key.alpha_blended, b.batch_key.alpha_blended) {
+                    (false, false) => a
+                        .batch_key
+                        .cmp(&b.batch_key)
+                        .then(b.sorting_order.cmp(&a.sorting_order))
+                        .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
+                        .then(a.node_id.cmp(&b.node_id))
+                        .then(a.slot_index.cmp(&b.slot_index)),
+                    (true, true) => a
+                        .sorting_order
+                        .cmp(&b.sorting_order)
+                        .then_with(|| b.camera_distance_sq.total_cmp(&a.camera_distance_sq))
+                        .then(a.collect_order.cmp(&b.collect_order)),
+                    _ => Ordering::Equal,
+                },
+            )
     });
+}
+
+/// Updates alpha-blended draw distance keys from the active camera, then re-sorts the full draw list.
+pub fn resort_world_mesh_draws_for_camera(
+    items: &mut [WorldMeshDrawItem],
+    scene: &SceneCoordinator,
+    render_context: RenderingContext,
+    head_output_transform: glam::Mat4,
+    camera_world: Vec3,
+) {
+    for item in items.iter_mut() {
+        item.camera_distance_sq = if item.batch_key.alpha_blended {
+            scene
+                .world_matrix_for_render_context(
+                    item.space_id,
+                    item.node_id as usize,
+                    render_context,
+                    head_output_transform,
+                )
+                .map(|m| m.col(3).truncate().distance_squared(camera_world))
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+    }
+    sort_world_mesh_draws(items);
 }
 
 /// Collects draws from active spaces, then sorts for batching (material / pipeline boundaries).
@@ -370,6 +436,8 @@ mod tests {
         mesh: i32,
         node: i32,
         slot: usize,
+        collect_order: usize,
+        alpha_blended: bool,
     ) -> WorldMeshDrawItem {
         WorldMeshDrawItem {
             space_id: RenderSpaceId(0),
@@ -381,6 +449,8 @@ mod tests {
             is_overlay: false,
             sorting_order: sort,
             skinned,
+            collect_order,
+            camera_distance_sq: 0.0,
             lookup_ids: MaterialPropertyLookupIds {
                 material_asset_id: mid,
                 mesh_property_block_slot0: pb,
@@ -392,6 +462,8 @@ mod tests {
                 property_block_slot0: pb,
                 skinned,
                 embedded_needs_uv0: false,
+                embedded_needs_color: false,
+                alpha_blended,
             },
         }
     }
@@ -399,10 +471,10 @@ mod tests {
     #[test]
     fn sort_orders_by_material_then_higher_sorting_order() {
         let mut v = vec![
-            dummy_item(2, None, false, 0, 1, 0, 0),
-            dummy_item(1, None, false, 0, 1, 0, 0),
-            dummy_item(1, None, false, 5, 2, 0, 0),
-            dummy_item(1, None, false, 10, 1, 0, 1),
+            dummy_item(2, None, false, 0, 1, 0, 0, 0, false),
+            dummy_item(1, None, false, 0, 1, 0, 0, 1, false),
+            dummy_item(1, None, false, 5, 2, 0, 0, 2, false),
+            dummy_item(1, None, false, 10, 1, 0, 1, 3, false),
         ];
         sort_world_mesh_draws(&mut v);
         assert_eq!(v[0].lookup_ids.material_asset_id, 1);
@@ -421,6 +493,8 @@ mod tests {
             property_block_slot0: None,
             skinned: false,
             embedded_needs_uv0: false,
+            embedded_needs_color: false,
+            alpha_blended: false,
         };
         let b = MaterialDrawBatchKey {
             pipeline: RasterPipelineKind::DebugWorldNormals,
@@ -429,9 +503,36 @@ mod tests {
             property_block_slot0: Some(99),
             skinned: false,
             embedded_needs_uv0: false,
+            embedded_needs_color: false,
+            alpha_blended: false,
         };
         assert_ne!(a, b);
         assert!(a < b || b < a);
+    }
+
+    #[test]
+    fn transparent_ui_preserves_collection_order_within_sorting_order() {
+        let mut v = vec![
+            dummy_item(10, None, false, 0, 1, 0, 0, 2, true),
+            dummy_item(11, None, false, 0, 1, 0, 1, 0, true),
+            dummy_item(12, None, false, 1, 1, 0, 2, 1, true),
+        ];
+        sort_world_mesh_draws(&mut v);
+        assert_eq!(v[0].collect_order, 0);
+        assert_eq!(v[1].collect_order, 2);
+        assert_eq!(v[2].collect_order, 1);
+    }
+
+    #[test]
+    fn transparent_ui_sorts_farther_items_first() {
+        let mut far = dummy_item(10, None, false, 0, 1, 0, 0, 0, true);
+        far.camera_distance_sq = 9.0;
+        let mut near = dummy_item(11, None, false, 0, 1, 0, 1, 1, true);
+        near.camera_distance_sq = 1.0;
+        let mut v = vec![near, far];
+        sort_world_mesh_draws(&mut v);
+        assert_eq!(v[0].camera_distance_sq, 9.0);
+        assert_eq!(v[1].camera_distance_sq, 1.0);
     }
 
     #[test]
@@ -443,8 +544,8 @@ mod tests {
 
     #[test]
     fn world_mesh_draw_stats_single_batch() {
-        let a = dummy_item(1, None, false, 0, 1, 0, 0);
-        let b = dummy_item(1, None, false, 0, 1, 0, 1);
+        let a = dummy_item(1, None, false, 0, 1, 0, 0, 0, false);
+        let b = dummy_item(1, None, false, 0, 1, 0, 1, 1, false);
         let draws = vec![a, b];
         let s = super::world_mesh_draw_stats_from_sorted(&draws);
         assert_eq!(s.batch_total, 1);

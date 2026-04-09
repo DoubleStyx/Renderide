@@ -57,8 +57,7 @@ struct MaterialBindCacheKey {
     stem_hash: u64,
     material_asset_id: i32,
     property_block_slot0: Option<i32>,
-    texture_2d_asset_id: i32,
-    texture_gpu_resident: bool,
+    texture_bind_signature: u64,
 }
 
 fn stem_hash(stem: &str) -> u64 {
@@ -155,8 +154,14 @@ impl EmbeddedMaterialBindResources {
             lookup,
             self.property_registry.as_ref(),
         );
-        let texture_gpu_resident =
-            texture_2d_asset_id >= 0 && texture_pool.get_texture(texture_2d_asset_id).is_some();
+        let texture_bind_signature = texture_bind_signature(
+            &layout.reflected,
+            store,
+            lookup,
+            self.property_registry.as_ref(),
+            texture_pool,
+            texture_2d_asset_id,
+        );
 
         let uniform_key = MaterialUniformCacheKey {
             stem_hash: sh,
@@ -168,8 +173,7 @@ impl EmbeddedMaterialBindResources {
             stem_hash: sh,
             material_asset_id: lookup.material_asset_id,
             property_block_slot0: lookup.mesh_property_block_slot0,
-            texture_2d_asset_id,
-            texture_gpu_resident,
+            texture_bind_signature,
         };
 
         let uniform_bytes = self
@@ -349,7 +353,8 @@ impl EmbeddedMaterialBindResources {
             let pid = self.property_registry.intern(field_name);
             match field.kind {
                 ReflectedUniformScalarKind::Vec4 => {
-                    let mut v = [1.0f32, 1.0, 1.0, 1.0];
+                    let default = default_vec4_for_field(field_name);
+                    let mut v = default;
                     if let Some(MaterialPropertyValue::Float4(c)) = store.get_merged(lookup, pid) {
                         v = *c;
                     }
@@ -365,7 +370,12 @@ impl EmbeddedMaterialBindResources {
                     {
                         *f
                     } else {
-                        0.5f32
+                        default_f32_for_field(
+                            field_name,
+                            store,
+                            lookup,
+                            self.property_registry.as_ref(),
+                        )
                     };
                     if field_name == "_Cutoff" {
                         cutoff = v;
@@ -400,14 +410,13 @@ impl EmbeddedMaterialBindResources {
         store: &MaterialPropertyStore,
         lookup: MaterialPropertyLookupIds,
     ) -> Option<Arc<wgpu::TextureView>> {
-        let pid = self.property_registry.intern(host_name);
-        let tid = match store.get_merged(lookup, pid) {
-            Some(MaterialPropertyValue::Texture(packed)) => {
-                texture2d_asset_id_from_packed(*packed).unwrap_or(-1)
-            }
-            _ => -1,
-        };
-        let id = if tid >= 0 { tid } else { primary_texture_2d };
+        let id = resolved_texture_asset_id_for_host(
+            host_name,
+            primary_texture_2d,
+            store,
+            lookup,
+            self.property_registry.as_ref(),
+        );
         self.resolve_texture_view(texture_pool, id)
     }
 
@@ -419,14 +428,13 @@ impl EmbeddedMaterialBindResources {
         store: &MaterialPropertyStore,
         lookup: MaterialPropertyLookupIds,
     ) -> Arc<wgpu::Sampler> {
-        let pid = self.property_registry.intern(host_name);
-        let tid = store
-            .get_merged(lookup, pid)
-            .and_then(|v| match v {
-                MaterialPropertyValue::Texture(p) => texture2d_asset_id_from_packed(*p),
-                _ => None,
-            })
-            .unwrap_or(primary_texture_2d);
+        let tid = resolved_texture_asset_id_for_host(
+            host_name,
+            primary_texture_2d,
+            store,
+            lookup,
+            self.property_registry.as_ref(),
+        );
         self.resolve_sampler(texture_pool, tid)
     }
 
@@ -440,6 +448,7 @@ impl EmbeddedMaterialBindResources {
         }
         texture_pool
             .get_texture(texture_asset_id)
+            .filter(|t| t.mip_levels_resident > 0)
             .map(|t| t.view.clone())
     }
 
@@ -474,6 +483,150 @@ fn keyword_float_enabled(
         store.get_merged(lookup, pid),
         Some(MaterialPropertyValue::Float(f)) if *f >= 0.5
     )
+}
+
+fn keyword_float_enabled_any(
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    registry: &PropertyIdRegistry,
+    names: &[&str],
+) -> bool {
+    names
+        .iter()
+        .copied()
+        .any(|name| keyword_float_enabled(store, lookup, registry, name))
+}
+
+fn default_vec4_for_field(field_name: &str) -> [f32; 4] {
+    if field_name.ends_with("_ST") {
+        return [1.0, 1.0, 0.0, 0.0];
+    }
+    match field_name {
+        "_EmissionColor" | "_EmissionColor1" | "_IntersectEmissionColor" | "_OutsideColor" => {
+            [0.0, 0.0, 0.0, 0.0]
+        }
+        "_SpecularColor" | "_SpecularColor1" => [1.0, 1.0, 1.0, 0.5],
+        _ => [1.0, 1.0, 1.0, 1.0],
+    }
+}
+
+fn is_keyword_like_field(field_name: &str) -> bool {
+    let stripped = field_name.strip_prefix('_').unwrap_or(field_name);
+    !stripped.is_empty()
+        && stripped
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn texture_property_asset_id(
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    registry: &PropertyIdRegistry,
+    name: &str,
+) -> i32 {
+    let pid = registry.intern(name);
+    match store.get_merged(lookup, pid) {
+        Some(MaterialPropertyValue::Texture(packed)) => {
+            texture2d_asset_id_from_packed(*packed).unwrap_or(-1)
+        }
+        _ => -1,
+    }
+}
+
+fn texture_property_present(
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    registry: &PropertyIdRegistry,
+    names: &[&str],
+) -> bool {
+    names
+        .iter()
+        .copied()
+        .any(|name| texture_property_asset_id(store, lookup, registry, name) >= 0)
+}
+
+fn inferred_keyword_float_f32(
+    field_name: &str,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    registry: &PropertyIdRegistry,
+) -> Option<f32> {
+    let stripped = field_name.strip_prefix('_').unwrap_or(field_name);
+    let lowercase = stripped.to_ascii_lowercase();
+    if keyword_float_enabled_any(
+        store,
+        lookup,
+        registry,
+        &[field_name, stripped, lowercase.as_str()],
+    ) {
+        return Some(1.0);
+    }
+
+    let inferred = match field_name {
+        "_LERPTEX" => texture_property_present(store, lookup, registry, &["_LerpTex"]),
+        "_ALBEDOTEX" => {
+            texture_property_present(store, lookup, registry, &["_MainTex", "_MainTex1"])
+        }
+        "_EMISSIONTEX" => {
+            texture_property_present(store, lookup, registry, &["_EmissionMap", "_EmissionMap1"])
+        }
+        "_NORMALMAP" => texture_property_present(
+            store,
+            lookup,
+            registry,
+            &["_NormalMap", "_NormalMap1", "_BumpMap"],
+        ),
+        "_SPECULARMAP" => texture_property_present(
+            store,
+            lookup,
+            registry,
+            &["_SpecularMap", "_SpecularMap1", "_SpecGlossMap"],
+        ),
+        "_METALLICMAP" => texture_property_present(
+            store,
+            lookup,
+            registry,
+            &["_MetallicMap", "_MetallicMap1", "_MetallicGlossMap"],
+        ),
+        "_OCCLUSION" => texture_property_present(
+            store,
+            lookup,
+            registry,
+            &["_Occlusion", "_Occlusion1", "_OcclusionMap"],
+        ),
+        _ if is_keyword_like_field(field_name) => false,
+        _ => return None,
+    };
+    Some(if inferred { 1.0 } else { 0.0 })
+}
+
+fn default_f32_for_field(
+    field_name: &str,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    registry: &PropertyIdRegistry,
+) -> f32 {
+    if let Some(v) = inferred_keyword_float_f32(field_name, store, lookup, registry) {
+        return v;
+    }
+    match field_name {
+        "_Lerp" | "_Metallic" | "_Metallic1" | "_UVSec" | "_Mode" | "_OffsetFactor"
+        | "_OffsetUnits" => 0.0,
+        "_NormalScale"
+        | "_NormalScale1"
+        | "_BumpScale"
+        | "_GlossMapScale"
+        | "_OcclusionStrength"
+        | "_DetailNormalMapScale"
+        | "_Exposure"
+        | "_Gamma"
+        | "_ZWrite" => 1.0,
+        "_SrcBlend" => 1.0,
+        "_DstBlend" => 0.0,
+        "_Cull" => 2.0,
+        "_Cutoff" | "_AlphaClip" | "_Glossiness" | "_Glossiness1" => 0.5,
+        _ => 0.5,
+    }
 }
 
 /// Packs `UI_TextUnlit`-style `_TextMode`: explicit `0`/`1`/`2`, else keyword floats `MSDF` / `SDF` / `RASTER`, else `0` (MSDF default).
@@ -546,7 +699,77 @@ fn primary_texture_2d_asset_id(
     -1
 }
 
-/// Packs `flags` from `_Flags` when present; otherwise derives texture + alpha-test bits by convention.
+fn should_fallback_to_primary_texture(host_name: &str) -> bool {
+    matches!(host_name, "_MainTex" | "_Tex" | "_TEXTURE")
+}
+
+fn resolved_texture_asset_id_for_host(
+    host_name: &str,
+    primary_texture_2d: i32,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    property_registry: &PropertyIdRegistry,
+) -> i32 {
+    let tid = texture_property_asset_id(store, lookup, property_registry, host_name);
+    if tid >= 0 {
+        return tid;
+    }
+    if should_fallback_to_primary_texture(host_name) {
+        return primary_texture_2d;
+    }
+    -1
+}
+
+fn texture_bind_signature(
+    reflected: &ReflectedRasterLayout,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    property_registry: &PropertyIdRegistry,
+    texture_pool: &TexturePool,
+    primary_texture_2d: i32,
+) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut h = DefaultHasher::new();
+    for entry in &reflected.material_entries {
+        if !matches!(entry.ty, wgpu::BindingType::Texture { .. }) {
+            continue;
+        }
+        let Some(name) = reflected.material_group1_names.get(&entry.binding) else {
+            continue;
+        };
+        let texture_asset_id = resolved_texture_asset_id_for_host(
+            name,
+            primary_texture_2d,
+            store,
+            lookup,
+            property_registry,
+        );
+        entry.binding.hash(&mut h);
+        name.hash(&mut h);
+        texture_asset_id.hash(&mut h);
+        texture_pool
+            .get_texture(texture_asset_id)
+            .is_some_and(|t| t.mip_levels_resident > 0)
+            .hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Packs `flags` from `_Flags` when present; otherwise derives bits from texture presence,
+/// `_Cutoff`, and Unity `#pragma multi_compile` keyword floats.
+///
+/// ## Bit layout (matches `unlit.wgsl` and `ui_unlit.wgsl` documentation)
+/// | Bit | Mask  | Unity keyword / heuristic |
+/// |-----|-------|---------------------------|
+/// | 0   | 0x01  | Texture present (`_TEXTURE` / `_Tex` or `_MainTex` set) |
+/// | 1   | 0x02  | Alpha clip (`_ALPHATEST` / `_Cutoff` in (0, 1)) |
+/// | 2   | 0x04  | Offset texture (`_OFFSET_TEXTURE`) |
+/// | 3   | 0x08  | Mask multiply alpha (`_MASK_TEXTURE_MUL`) |
+/// | 4   | 0x10  | Mask clip (`_MASK_TEXTURE_CLIP`) |
+/// | 5   | 0x20  | Premultiply RGB by alpha (`_MUL_RGB_BY_ALPHA`) |
+/// | 6   | 0x40  | Additive alpha-by-luminance (`_MUL_ALPHA_INTENSITY`) |
 fn pack_flags_u32(
     field_name: &str,
     store: &MaterialPropertyStore,
@@ -558,6 +781,7 @@ fn pack_flags_u32(
     if field_name != "flags" {
         return 0;
     }
+    // Explicit `_Flags` property from host overrides all heuristics.
     let flags_pid = property_registry.intern("_Flags");
     if let Some(v) = store.get_merged(lookup, flags_pid) {
         match v {
@@ -566,13 +790,45 @@ fn pack_flags_u32(
             _ => {}
         }
     }
+
     let mut flags = 0u32;
+
+    // Bit 0 — texture present.
     if texture_2d_for_key >= 0 {
-        flags |= 1u32;
+        flags |= 0x01;
     }
+    // Bit 1 — alpha clip (cutoff between 0 and 1 exclusive).
     if cutoff > 0.0 && cutoff < 1.0 {
-        flags |= 2u32;
+        flags |= 0x02;
     }
+    // Bits 2–6 — Unity #pragma multi_compile keyword floats (>= 0.5 = enabled).
+    // The host sets these as Float material properties matching the keyword name.
+    if keyword_float_enabled(store, lookup, property_registry, "_OFFSET_TEXTURE")
+        || keyword_float_enabled(store, lookup, property_registry, "_OffsetTexture")
+    {
+        flags |= 0x04;
+    }
+    if keyword_float_enabled(store, lookup, property_registry, "_MASK_TEXTURE_MUL")
+        || keyword_float_enabled(store, lookup, property_registry, "_MaskTextureMul")
+    {
+        flags |= 0x08;
+    }
+    if keyword_float_enabled(store, lookup, property_registry, "_MASK_TEXTURE_CLIP")
+        || keyword_float_enabled(store, lookup, property_registry, "_MaskTextureClip")
+    {
+        flags |= 0x10;
+    }
+    if keyword_float_enabled(store, lookup, property_registry, "_MUL_RGB_BY_ALPHA")
+        || keyword_float_enabled(store, lookup, property_registry, "_MulRgbByAlpha")
+    {
+        flags |= 0x20;
+    }
+    if keyword_float_enabled(store, lookup, property_registry, "_MUL_ALPHA_INTENSITY")
+        || keyword_float_enabled(store, lookup, property_registry, "_MulAlphaIntensity")
+    {
+        flags |= 0x40;
+    }
+
     flags
 }
 
@@ -697,5 +953,48 @@ mod text_uniform_packing_tests {
         let pid = reg.intern("RECTCLIP");
         store.set_material(3, pid, MaterialPropertyValue::Float(1.0));
         assert_eq!(packed_rect_clip_f32(&store, lookup(3), &reg), 1.0);
+    }
+
+    #[test]
+    fn inferred_pbs_keyword_enables_from_texture_presence() {
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let pid = reg.intern("_SpecularMap");
+        store.set_material(4, pid, MaterialPropertyValue::Texture(123));
+        assert_eq!(
+            inferred_keyword_float_f32("_SPECULARMAP", &store, lookup(4), &reg),
+            Some(1.0)
+        );
+        assert_eq!(
+            inferred_keyword_float_f32("_ALBEDOTEX", &store, lookup(4), &reg),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn default_pbs_uniforms_match_unity_style_defaults() {
+        let store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        assert_eq!(default_f32_for_field("_Lerp", &store, lookup(5), &reg), 0.0);
+        assert_eq!(
+            default_f32_for_field("_NormalScale", &store, lookup(5), &reg),
+            1.0
+        );
+        assert_eq!(default_f32_for_field("_Cull", &store, lookup(5), &reg), 2.0);
+        assert_eq!(
+            default_vec4_for_field("_EmissionColor"),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            default_vec4_for_field("_SpecularColor"),
+            [1.0, 1.0, 1.0, 0.5]
+        );
+    }
+
+    #[test]
+    fn only_main_texture_bindings_fallback_to_primary_texture() {
+        assert!(should_fallback_to_primary_texture("_MainTex"));
+        assert!(!should_fallback_to_primary_texture("_MainTex1"));
+        assert!(!should_fallback_to_primary_texture("_SpecularMap"));
     }
 }

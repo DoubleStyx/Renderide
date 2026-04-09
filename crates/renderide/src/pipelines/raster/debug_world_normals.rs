@@ -60,5 +60,8 @@ pub(crate) fn create_debug_world_normals_render_pipeline(
         wgsl_source,
         "debug_world_normals_material",
         false,
+        false,
+        false,
+        true,
     )
 }

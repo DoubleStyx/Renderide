@@ -31,8 +31,9 @@ mod world_mesh_draw_prep;
 pub mod passes;
 
 pub use world_mesh_draw_prep::{
-    collect_and_sort_world_mesh_draws, resolved_material_slots, sort_world_mesh_draws,
-    world_mesh_draw_stats_from_sorted, MaterialDrawBatchKey, WorldMeshDrawItem, WorldMeshDrawStats,
+    collect_and_sort_world_mesh_draws, resolved_material_slots, resort_world_mesh_draws_for_camera,
+    sort_world_mesh_draws, world_mesh_draw_stats_from_sorted, MaterialDrawBatchKey,
+    WorldMeshDrawItem, WorldMeshDrawStats,
 };
 
 pub use builder::GraphBuilder;
