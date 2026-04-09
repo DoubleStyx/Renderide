@@ -105,19 +105,25 @@ impl RenderPass for WorldMeshForwardPass {
             ShaderPermutation(0)
         };
 
-        let backend = &mut frame.backend;
         let render_context = frame.scene.active_main_render_context();
+        let cull_proj = build_world_mesh_cull_proj_params(frame.scene, frame.viewport_px, &hc);
+        let depth_mode = frame.output_depth_mode();
+        let hi_z_temporal = frame.backend.hi_z_temporal_snapshot();
+        let hi_z = frame.backend.hi_z_cull_data(depth_mode);
+        let culling = WorldMeshCullInput {
+            proj: cull_proj,
+            host_camera: &hc,
+            hi_z,
+            hi_z_temporal,
+        };
+
+        let backend = &mut frame.backend;
         let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
         let router_ref = backend
             .material_registry
             .as_ref()
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
-        let cull_proj = build_world_mesh_cull_proj_params(frame.scene, frame.viewport_px, &hc);
-        let culling = WorldMeshCullInput {
-            proj: cull_proj,
-            host_camera: &hc,
-        };
         let collection = {
             let dict = MaterialDictionary::new(backend.material_property_store());
             collect_and_sort_world_mesh_draws(
@@ -130,12 +136,17 @@ impl RenderPass for WorldMeshForwardPass {
                 Some(&culling),
             )
         };
+        backend.capture_hi_z_temporal_for_next_frame(frame.scene, cull_proj, frame.viewport_px);
         let draws = collection.items;
         #[cfg(feature = "debug-hud")]
         {
             let stats = world_mesh_draw_stats_from_sorted(
                 &draws,
-                Some((collection.draws_pre_cull, collection.draws_culled)),
+                Some((
+                    collection.draws_pre_cull,
+                    collection.draws_culled,
+                    collection.draws_hi_z_culled,
+                )),
             );
             backend.set_last_world_mesh_draw_stats(stats);
         }

@@ -23,7 +23,10 @@ mod context;
 mod error;
 mod frame_params;
 mod frustum;
+mod hi_z_cpu;
+mod hi_z_occlusion;
 mod ids;
+mod output_depth_mode;
 mod pass;
 mod resources;
 mod reverse_z_depth;
@@ -55,23 +58,35 @@ pub use frustum::{
     world_aabb_from_skinned_bone_origins, world_aabb_visible_in_homogeneous_clip, Frustum, Plane,
     HOMOGENEOUS_CLIP_EPS,
 };
+pub use hi_z_cpu::{
+    hi_z_pyramid_dimensions, hi_z_snapshot_from_linear_linear, mip_dimensions,
+    mip_levels_for_extent, unpack_linear_rows_to_mips, HiZCpuSnapshot, HiZCullData,
+    HiZStereoCpuSnapshot, HI_Z_PYRAMID_MAX_LONG_EDGE,
+};
+pub use hi_z_occlusion::{
+    hi_z_view_proj_matrices, mesh_fully_occluded_in_hiz, stereo_hiz_keeps_draw,
+};
 pub use ids::PassId;
+pub use output_depth_mode::OutputDepthMode;
 pub use pass::RenderPass;
 pub use resources::{PassResources, ResourceSlot};
 pub use reverse_z_depth::{MAIN_FORWARD_DEPTH_CLEAR, MAIN_FORWARD_DEPTH_COMPARE};
 pub use skinning_palette::build_skinning_palette;
 pub use world_mesh_cull::{
-    build_world_mesh_cull_proj_params, WorldMeshCullInput, WorldMeshCullProjParams,
+    build_world_mesh_cull_proj_params, capture_hi_z_temporal, HiZTemporalState, WorldMeshCullInput,
+    WorldMeshCullProjParams,
 };
 
-/// Builds the default graph: mesh deform compute, then world forward (clear + depth + mesh draw).
+/// Builds the default graph: mesh deform compute, clustered lights, world forward, then Hi-Z readback.
 pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError> {
     let mut builder = GraphBuilder::new();
     let deform = builder.add_pass(Box::new(passes::MeshDeformPass::new()));
     let clustered = builder.add_pass(Box::new(passes::ClusteredLightPass::new()));
     let forward = builder.add_pass(Box::new(passes::WorldMeshForwardPass::new()));
+    let hiz = builder.add_pass(Box::new(passes::HiZBuildPass::new()));
     builder.add_edge(deform, clustered);
     builder.add_edge(clustered, forward);
+    builder.add_edge(forward, hiz);
     builder.build()
 }
 
@@ -80,10 +95,10 @@ mod default_graph_tests {
     use super::*;
 
     #[test]
-    fn default_main_needs_surface_and_three_passes() {
+    fn default_main_needs_surface_and_four_passes() {
         let g = build_default_main_graph().expect("default graph");
         assert!(g.needs_surface_acquire());
-        assert_eq!(g.pass_count(), 3);
-        assert_eq!(g.compile_stats.topo_levels, 3);
+        assert_eq!(g.pass_count(), 4);
+        assert_eq!(g.compile_stats.topo_levels, 4);
     }
 }

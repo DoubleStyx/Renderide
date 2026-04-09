@@ -2,6 +2,7 @@
 
 mod blendshape_bind_chunks;
 mod context;
+pub mod hi_z_build;
 pub mod mesh_preprocess;
 mod per_draw_uniforms;
 

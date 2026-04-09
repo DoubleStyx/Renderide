@@ -188,6 +188,7 @@ impl CompiledRenderGraph {
             let queue_lock = queue_arc.lock().expect("queue mutex poisoned");
             queue_lock.submit(std::iter::once(cmd));
             backend.after_submit_gpu_mesh_timestamps(device, &queue_lock);
+            backend.hi_z_complete_pending_readback(device);
         } else if let Some(view) = backbuffer_view_holder.as_ref() {
             let queue_lock = queue_arc.lock().expect("queue mutex poisoned");
             if let Err(e) = backend.encode_debug_hud_overlay(
@@ -202,11 +203,13 @@ impl CompiledRenderGraph {
             let cmd = encoder.finish();
             queue_lock.submit(std::iter::once(cmd));
             backend.after_submit_gpu_mesh_timestamps(device, &queue_lock);
+            backend.hi_z_complete_pending_readback(device);
         } else {
             let cmd = encoder.finish();
             let queue_lock = queue_arc.lock().expect("queue mutex poisoned");
             queue_lock.submit(std::iter::once(cmd));
             backend.after_submit_gpu_mesh_timestamps(device, &queue_lock);
+            backend.hi_z_complete_pending_readback(device);
         }
 
         if let Some(f) = frame {
