@@ -1,5 +1,12 @@
 //! Composes `shaders/source/modules/*.wgsl` with [`naga_oil`] (`#import`), validates with naga, and
-//! writes flat `shaders/target/*.wgsl` plus `OUT_DIR/embedded_shaders.rs`.
+//! writes `OUT_DIR/embedded_shaders.rs` (WGSL source embedded as Rust string literals).
+//! Also writes flat `shaders/target/*.wgsl` for inspection and diffing; the **crate does not**
+//! `include_str!` those paths — embedding avoids compile failures when `shaders/target/` is missing
+//! or stale relative to the build script output.
+//!
+//! Every `*.wgsl` file under `shaders/source/modules/` is registered as a composable module (sorted
+//! by path for deterministic builds). Add a new shared module by dropping a file there with a
+//! `#define_import_path` matching your `#import` in materials.
 //!
 //! Material sources under `shaders/source/materials/*.wgsl`: the **file stem** must match
 //! `normalize_unity_shader_lookup_key` in the renderide crate (Unity shader **asset** name, e.g.
@@ -21,7 +28,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use naga::back::wgsl::WriterFlags;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
@@ -42,12 +49,13 @@ fn multiview_shader_defs(enable: bool) -> HashMap<String, ShaderDefValue> {
     defs
 }
 
+/// Validates `module`, writes WGSL to `out_path`, returns the same string for embedding in Rust.
 fn validate_and_write_wgsl(
     module: &naga::Module,
     label: &str,
     out_path: &std::path::Path,
     expect_view_index: Option<bool>,
-) {
+) -> String {
     let has_vs = module
         .entry_points
         .iter()
@@ -78,81 +86,74 @@ fn validate_and_write_wgsl(
         }
     }
     fs::write(out_path, &wgsl).unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
+    wgsl
 }
 
-fn add_globals_module(composer: &mut Composer, globals_source: &str) {
-    composer
-        .add_composable_module(ComposableModuleDescriptor {
-            source: globals_source,
-            file_path: "shaders/source/modules/globals.wgsl",
-            language: ShaderLanguage::Wgsl,
-            ..Default::default()
-        })
-        .unwrap_or_else(|e| panic!("add globals module: {e}"));
+/// Escapes `s` as a Rust `str` literal token (same as `format!("{s:?}")`).
+fn rust_string_literal_token(s: &str) -> String {
+    format!("{s:?}")
 }
 
-fn add_per_draw_module(composer: &mut Composer, per_draw_source: &str) {
-    composer
-        .add_composable_module(ComposableModuleDescriptor {
-            source: per_draw_source,
-            file_path: "shaders/source/modules/per_draw.wgsl",
-            language: ShaderLanguage::Wgsl,
-            ..Default::default()
-        })
-        .unwrap_or_else(|e| panic!("add per_draw module: {e}"));
+/// Loads every `*.wgsl` under `shaders/source/modules/` relative to `manifest_dir`.
+///
+/// Returns `(file_path, source)` where `file_path` uses forward slashes (e.g.
+/// `shaders/source/modules/globals.wgsl`) for [`ComposableModuleDescriptor::file_path`].
+fn discover_shader_modules(manifest_dir: &Path) -> Vec<(String, String)> {
+    let modules_dir = manifest_dir.join("shaders/source/modules");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&modules_dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", modules_dir.display()))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "wgsl"))
+        .collect();
+    paths.sort();
+
+    let mut modules = Vec::with_capacity(paths.len());
+    for path in paths {
+        let source =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let rel = path.strip_prefix(manifest_dir).unwrap_or_else(|_| {
+            panic!(
+                "module path {} is not under manifest {}",
+                path.display(),
+                manifest_dir.display()
+            )
+        });
+        let file_path = rel.to_string_lossy().replace('\\', "/");
+        modules.push((file_path, source));
+    }
+
+    if modules.is_empty() {
+        panic!(
+            "no *.wgsl modules under {} (naga-oil imports will fail)",
+            modules_dir.display()
+        );
+    }
+
+    modules
 }
 
-fn add_pbs_brdf_module(composer: &mut Composer, source: &str) {
-    composer
-        .add_composable_module(ComposableModuleDescriptor {
-            source,
-            file_path: "shaders/source/modules/pbs_brdf.wgsl",
-            language: ShaderLanguage::Wgsl,
-            ..Default::default()
-        })
-        .unwrap_or_else(|e| panic!("add pbs_brdf module: {e}"));
+fn register_composable_modules(composer: &mut Composer, modules: &[(String, String)]) {
+    for (file_path, source) in modules {
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: source.as_str(),
+                file_path: file_path.as_str(),
+                language: ShaderLanguage::Wgsl,
+                ..Default::default()
+            })
+            .unwrap_or_else(|e| panic!("add composable module {file_path}: {e}"));
+    }
 }
 
-fn add_pbs_cluster_module(composer: &mut Composer, source: &str) {
-    composer
-        .add_composable_module(ComposableModuleDescriptor {
-            source,
-            file_path: "shaders/source/modules/pbs_cluster.wgsl",
-            language: ShaderLanguage::Wgsl,
-            ..Default::default()
-        })
-        .unwrap_or_else(|e| panic!("add pbs_cluster module: {e}"));
-}
-
-fn add_alpha_clip_sample_module(composer: &mut Composer, source: &str) {
-    composer
-        .add_composable_module(ComposableModuleDescriptor {
-            source,
-            file_path: "shaders/source/modules/alpha_clip_sample.wgsl",
-            language: ShaderLanguage::Wgsl,
-            ..Default::default()
-        })
-        .unwrap_or_else(|e| panic!("add alpha_clip_sample module: {e}"));
-}
-
-/// Composes one material with all shared naga-oil modules (globals, PBS, alpha-clip helpers).
-#[allow(clippy::too_many_arguments)] // One call site; splitting would not improve readability.
 fn compose_material(
-    globals_source: &str,
-    per_draw_source: &str,
-    pbs_brdf_source: &str,
-    pbs_cluster_source: &str,
-    alpha_clip_sample_source: &str,
+    modules: &[(String, String)],
     material_source: &str,
     material_file_path: &str,
     shader_defs: HashMap<String, ShaderDefValue>,
 ) -> naga::Module {
     let mut composer = Composer::default().with_capabilities(Capabilities::all());
-    add_globals_module(&mut composer, globals_source);
-    add_per_draw_module(&mut composer, per_draw_source);
-    add_pbs_brdf_module(&mut composer, pbs_brdf_source);
-    add_pbs_cluster_module(&mut composer, pbs_cluster_source);
-    add_alpha_clip_sample_module(&mut composer, alpha_clip_sample_source);
+    register_composable_modules(&mut composer, modules);
     composer
         .make_naga_module(NagaModuleDescriptor {
             source: material_source,
@@ -167,11 +168,6 @@ fn compose_material(
 fn main() {
     let manifest_dir =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let globals_path = manifest_dir.join("shaders/source/modules/globals.wgsl");
-    let per_draw_path = manifest_dir.join("shaders/source/modules/per_draw.wgsl");
-    let pbs_brdf_path = manifest_dir.join("shaders/source/modules/pbs_brdf.wgsl");
-    let pbs_cluster_path = manifest_dir.join("shaders/source/modules/pbs_cluster.wgsl");
-    let alpha_clip_sample_path = manifest_dir.join("shaders/source/modules/alpha_clip_sample.wgsl");
     let materials_dir = manifest_dir.join("shaders/source/materials");
     let target_dir = manifest_dir.join("shaders/target");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
@@ -182,16 +178,7 @@ fn main() {
     fs::create_dir_all(materials_dir.parent().expect("materials parent")).expect("mkdir");
     fs::create_dir_all(&target_dir).expect("mkdir target");
 
-    let globals_source = fs::read_to_string(&globals_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", globals_path.display()));
-    let per_draw_source = fs::read_to_string(&per_draw_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", per_draw_path.display()));
-    let pbs_brdf_source = fs::read_to_string(&pbs_brdf_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", pbs_brdf_path.display()));
-    let pbs_cluster_source = fs::read_to_string(&pbs_cluster_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", pbs_cluster_path.display()));
-    let alpha_clip_sample_source = fs::read_to_string(&alpha_clip_sample_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", alpha_clip_sample_path.display()));
+    let shader_modules = discover_shader_modules(&manifest_dir);
 
     let mut embedded_arms = String::new();
     let mut output_stems: Vec<String> = Vec::new();
@@ -220,22 +207,16 @@ fn main() {
         for (target_stem, multiview) in variants {
             let defs = multiview_shader_defs(multiview);
             let module = compose_material(
-                &globals_source,
-                &per_draw_source,
-                &pbs_brdf_source,
-                &pbs_cluster_source,
-                &alpha_clip_sample_source,
+                &shader_modules,
                 &material_source,
                 path.to_str().expect("utf8 path"),
                 defs,
             );
             let label = format!("{target_stem} (MULTIVIEW={multiview})");
             let out_path = target_dir.join(format!("{target_stem}.wgsl"));
-            validate_and_write_wgsl(&module, &label, &out_path, Some(multiview));
-
-            embedded_arms.push_str(&format!(
-                "        \"{target_stem}\" => Some(include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/shaders/target/{target_stem}.wgsl\"))),\n"
-            ));
+            let wgsl = validate_and_write_wgsl(&module, &label, &out_path, Some(multiview));
+            let lit = rust_string_literal_token(&wgsl);
+            embedded_arms.push_str(&format!("        \"{target_stem}\" => Some({lit}),\n"));
             output_stems.push(target_stem);
         }
     }
@@ -249,7 +230,7 @@ fn main() {
     let embedded_rs = format!(
         r#"// Generated by `build.rs` — do not edit.
 
-/// Flattened WGSL for `stem` (see `shaders/target/{{stem}}.wgsl`).
+/// Flattened WGSL for `stem` (also written under `shaders/target/{{stem}}.wgsl` at build time).
 pub fn embedded_target_wgsl(stem: &str) -> Option<&'static str> {{
     match stem {{
 {embedded_arms}        _ => None,
