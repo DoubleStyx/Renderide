@@ -1,3 +1,4 @@
+using System.Linq;
 using NotEnoughLogs;
 using SharedTypeGenerator.Analysis;
 using SharedTypeGenerator.IR;
@@ -64,6 +65,7 @@ public class RustEmitter
         _w.Line("use super::buffer::SharedMemoryBufferDescriptor;");
         _w.Line("use super::packing::enum_repr::EnumRepr;");
         _w.Line("use bytemuck::{Pod, Zeroable};");
+        _w.Line("use logger::warn;");
         _w.BlankLine();
     }
 
@@ -184,14 +186,15 @@ public class RustEmitter
                 _w.EnumMemberWithValue(member.Name, member.Value.ToString()!, isDefault: member.IsDefault);
         }
 
-        // MemoryPackable impl
+        // MemoryPackable impl — decode without transmute: invalid host values must not panic (Rust 1.94+
+        // treats invalid `repr` enum bit patterns as immediate UB/panic on transmute).
         _w.BlankLine();
         using (_w.BeginTraitImpl("MemoryPackable", name))
         {
             using (_w.BeginMethod("pack", "", null, ["&mut self", "packer: &mut MemoryPacker<'_>"], isPublic: false))
                 _w.Line($"packer.write(&(*self as {rustType}));");
             using (_w.BeginMethod("unpack", "", ["P: MemoryPackerEntityPool"], ["&mut self", "unpacker: &mut MemoryUnpacker<'_, '_, P>"], isPublic: false))
-                _w.Line($"unsafe {{ std::ptr::write(self as *mut Self, std::mem::transmute::<{rustType}, Self>(unpacker.read::<{rustType}>())) }};");
+                EmitValueEnumUnpackMatch(name, rustType, type.EnumMembers);
         }
 
         // EnumRepr impl
@@ -201,15 +204,81 @@ public class RustEmitter
             using (_w.BeginMethod("as_i32", "i32", null, ["self"], isPublic: false))
                 _w.Line("self as i32");
             using (_w.BeginMethod("from_i32", "Self", null, ["i: i32"], isPublic: false))
-            {
-                string castExpr = rustType == "i32" ? "i" : $"i as {rustType}";
-                _w.Line($"unsafe {{ std::mem::transmute::<{rustType}, Self>({castExpr}) }}");
-            }
+                EmitValueEnumFromI32Match(name, type.EnumMembers);
         }
 
         _w.BlankLine();
         _w.Line($"unsafe impl Pod for {name} {{}}");
         _w.Line($"unsafe impl Zeroable for {name} {{}}");
+    }
+
+    /// <summary>Emits <c>*self = match raw { ... }</c> for value enum wire decode.</summary>
+    private void EmitValueEnumUnpackMatch(string enumRustName, string rustType, List<EnumMember> members)
+    {
+        EnumMember defaultMember = members.First(static m => m.IsDefault);
+        string defaultVariant = defaultMember.Name.HumanizeField();
+
+        _w.Line($"let raw = unpacker.read::<{rustType}>();");
+        _w.Line("*self = match raw {");
+        foreach (EnumMember member in members)
+        {
+            string lit = FormatRustPatternLiteralForUnderlying(member.Value, rustType);
+            _w.Line($"    {lit} => Self::{member.Name.HumanizeField()},");
+        }
+
+        _w.Line("    _ => {");
+        _w.Line(
+            $"        warn!(\"invalid {enumRustName} wire value {{}}; using default\", raw);");
+        _w.Line($"        Self::{defaultVariant}");
+        _w.Line("    }");
+        _w.Line("};");
+    }
+
+    /// <summary>Emits <c>match i { ... }</c> for <see cref="EnumRepr"/> without transmute.</summary>
+    private void EmitValueEnumFromI32Match(string enumRustName, List<EnumMember> members)
+    {
+        EnumMember defaultMember = members.First(static m => m.IsDefault);
+        string defaultVariant = defaultMember.Name.HumanizeField();
+
+        _w.Line("match i {");
+        foreach (EnumMember member in members)
+        {
+            long v = Convert.ToInt64(member.Value);
+            if (v < int.MinValue || v > int.MaxValue)
+            {
+                _logger.LogWarning(
+                    LogCategory.Fixme,
+                    $"Enum {enumRustName} member {member.Name} value {v} is outside i32; skipping from_i32 arm.");
+                continue;
+            }
+
+            int arm = (int)v;
+            _w.Line($"    {arm} => Self::{member.Name.HumanizeField()},");
+        }
+
+        _w.Line("    _ => {");
+        _w.Line(
+            $"        warn!(\"invalid {enumRustName} discriminant {{}}; using default\", i);");
+        _w.Line($"        Self::{defaultVariant}");
+        _w.Line("    }");
+        _w.Line("}");
+    }
+
+    /// <summary>Rust pattern literal matching <paramref name="rustType"/> (underlying storage).</summary>
+    private static string FormatRustPatternLiteralForUnderlying(object value, string rustType)
+    {
+        return rustType switch
+        {
+            "u8" => Convert.ToByte(value).ToString(),
+            "i8" => Convert.ToSByte(value).ToString(),
+            "u16" => $"{Convert.ToUInt16(value)}u16",
+            "i16" => $"{Convert.ToInt16(value)}",
+            "u32" => $"{Convert.ToUInt32(value)}u32",
+            "i32" => $"{Convert.ToInt32(value)}",
+            "u64" => $"{Convert.ToUInt64(value)}u64",
+            "i64" => $"{Convert.ToInt64(value)}i64",
+            _ => Convert.ToInt64(value).ToString(),
+        };
     }
 
     // ── Flags Enum ───────────────────────────────────────────────
