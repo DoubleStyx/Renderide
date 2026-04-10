@@ -139,6 +139,10 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
     if available_extensions.khr_generic_controller {
         enabled_extensions.khr_generic_controller = true;
     }
+    let runtime_supports_bd_controller = available_extensions.bd_controller_interaction;
+    if runtime_supports_bd_controller {
+        enabled_extensions.bd_controller_interaction = true;
+    }
     #[cfg(target_os = "android")]
     {
         enabled_extensions.khr_android_create_instance = true;
@@ -338,6 +342,7 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
         &xr_instance,
         &session,
         available_extensions.khr_generic_controller,
+        runtime_supports_bd_controller,
     ) {
         Ok(i) => Some(i),
         Err(e) => {

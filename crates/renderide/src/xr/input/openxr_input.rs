@@ -86,10 +86,14 @@ impl OpenxrInput {
     ///
     /// `runtime_supports_generic_controller` must match whether the OpenXR instance was created with
     /// `XR_KHR_generic_controller` enabled; when `false`, generic controller binding suggestions are skipped.
+    ///
+    /// `runtime_supports_bd_controller` must match whether `XR_BD_controller_interaction` was enabled
+    /// on the instance; when `false`, ByteDance Pico profile binding suggestions are skipped.
     pub fn new(
         instance: &xr::Instance,
         session: &xr::Session<xr::Vulkan>,
         runtime_supports_generic_controller: bool,
+        runtime_supports_bd_controller: bool,
     ) -> Result<Self, xr::sys::Result> {
         let action_set = instance.create_action_set("renderide_input", "Renderide VR input", 0)?;
         let left_user_path = instance.string_to_path("/user/hand/left")?;
@@ -106,6 +110,8 @@ impl OpenxrInput {
             instance.string_to_path("/interaction_profiles/khr/generic_controller")?;
         let simple_controller_profile =
             instance.string_to_path("/interaction_profiles/khr/simple_controller")?;
+        let pico4_controller_profile =
+            instance.string_to_path("/interaction_profiles/bytedance/pico4_controller")?;
         let left_grip_pose =
             action_set.create_action::<xr::Posef>("left_grip_pose", "Left grip pose", &[])?;
         let right_grip_pose =
@@ -295,6 +301,7 @@ impl OpenxrInput {
             microsoft_motion: microsoft_motion_profile,
             generic_controller: generic_controller_profile,
             simple_controller: simple_controller_profile,
+            pico4_controller: pico4_controller_profile,
         };
 
         let binding_paths = BindingPaths {
@@ -397,6 +404,7 @@ impl OpenxrInput {
             &binding_paths,
             &action_refs,
             runtime_supports_generic_controller,
+            runtime_supports_bd_controller,
         )?;
 
         session.attach_action_sets(&[&action_set])?;

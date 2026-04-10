@@ -60,6 +60,8 @@ pub(super) struct InteractionProfilePaths {
     pub(super) microsoft_motion: xr::Path,
     pub(super) generic_controller: xr::Path,
     pub(super) simple_controller: xr::Path,
+    /// [`XR_BD_controller_interaction`](https://registry.khronos.org/OpenXR/specs/1.0/html/xrspec.html#XR_BD_controller_interaction) — Pico 4 and similar.
+    pub(super) pico4_controller: xr::Path,
 }
 
 /// References to every action participating in binding suggestions.
@@ -112,12 +114,16 @@ pub(super) struct ActionRefs<'a> {
 ///
 /// When `suggest_generic_controller` is `false` (runtime did not enable `XR_KHR_generic_controller`),
 /// the generic controller profile is skipped so runtimes that do not support it do not log errors.
+///
+/// When `suggest_bd_controller` is `false` (runtime did not enable `XR_BD_controller_interaction`),
+/// ByteDance Pico profile suggestions are skipped.
 pub(super) fn apply_suggested_interaction_bindings(
     instance: &xr::Instance,
     profiles: &InteractionProfilePaths,
     paths: &BindingPaths,
     actions: &ActionRefs<'_>,
     suggest_generic_controller: bool,
+    suggest_bd_controller: bool,
 ) -> Result<(), xr::sys::Result> {
     let a = actions;
     let p = paths;
@@ -164,6 +170,43 @@ pub(super) fn apply_suggested_interaction_bindings(
             xr::Binding::new(a.right_thumbrest_touch, p.right_thumbrest_touch),
         ],
     );
+    if suggest_bd_controller {
+        // Touch-like layout; `pico4_controller` has no thumbrest components (unlike Oculus Touch).
+        suggest(
+            ip.pico4_controller,
+            &[
+                xr::Binding::new(a.left_grip_pose, p.left_grip_pose),
+                xr::Binding::new(a.right_grip_pose, p.right_grip_pose),
+                xr::Binding::new(a.left_aim_pose, p.left_aim_pose),
+                xr::Binding::new(a.right_aim_pose, p.right_aim_pose),
+                xr::Binding::new(a.left_trigger, p.left_trigger_value),
+                xr::Binding::new(a.right_trigger, p.right_trigger_value),
+                xr::Binding::new(a.left_trigger_touch, p.left_trigger_touch),
+                xr::Binding::new(a.right_trigger_touch, p.right_trigger_touch),
+                xr::Binding::new(a.left_trigger_click, p.left_trigger_click),
+                xr::Binding::new(a.right_trigger_click, p.right_trigger_click),
+                xr::Binding::new(a.left_squeeze, p.left_squeeze_value),
+                xr::Binding::new(a.right_squeeze, p.right_squeeze_value),
+                xr::Binding::new(a.left_squeeze_click, p.left_squeeze_click),
+                xr::Binding::new(a.right_squeeze_click, p.right_squeeze_click),
+                xr::Binding::new(a.left_thumbstick, p.left_thumbstick),
+                xr::Binding::new(a.right_thumbstick, p.right_thumbstick),
+                xr::Binding::new(a.left_thumbstick_touch, p.left_thumbstick_touch),
+                xr::Binding::new(a.right_thumbstick_touch, p.right_thumbstick_touch),
+                xr::Binding::new(a.left_thumbstick_click, p.left_thumbstick_click),
+                xr::Binding::new(a.right_thumbstick_click, p.right_thumbstick_click),
+                xr::Binding::new(a.left_primary, p.left_x_click),
+                xr::Binding::new(a.left_secondary, p.left_y_click),
+                xr::Binding::new(a.right_primary, p.right_a_click),
+                xr::Binding::new(a.right_secondary, p.right_b_click),
+                xr::Binding::new(a.left_primary_touch, p.left_x_touch),
+                xr::Binding::new(a.left_secondary_touch, p.left_y_touch),
+                xr::Binding::new(a.right_primary_touch, p.right_a_touch),
+                xr::Binding::new(a.right_secondary_touch, p.right_b_touch),
+                xr::Binding::new(a.left_menu, p.left_menu_click),
+            ],
+        );
+    }
     suggest(
         ip.valve_index,
         &[
