@@ -3,7 +3,10 @@
 mod gpu_mesh;
 mod layout;
 
-pub use gpu_mesh::{try_upload_mesh_from_raw, GpuMesh};
+pub use gpu_mesh::{
+    compute_and_validate_mesh_layout, mesh_layout_fingerprint, mesh_upload_input_fingerprint,
+    try_upload_mesh_from_raw, GpuMesh,
+};
 pub use layout::{
     attribute_offset_and_size, color_float4_stream_bytes, compute_index_count,
     compute_mesh_buffer_layout, compute_vertex_stride, extract_bind_poses,

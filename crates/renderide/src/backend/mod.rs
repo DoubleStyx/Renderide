@@ -26,6 +26,7 @@ pub use frame_gpu::{empty_material_bind_group_layout, EmptyMaterialBindGroup, Fr
 pub use light_gpu::{order_lights_for_clustered_shading, GpuLight, MAX_LIGHTS};
 pub use mesh_deform_scratch::{advance_slab_cursor, MeshDeformScratch};
 pub use render_backend::{
-    RenderBackend, MAX_PENDING_MATERIAL_BATCHES, MAX_PENDING_MESH_UPLOADS,
-    MAX_PENDING_TEXTURE_UPLOADS,
+    RenderBackend, MAX_DEFERRED_MESH_UPLOADS, MAX_PENDING_MATERIAL_BATCHES,
+    MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
+    MESH_UPLOAD_NON_HIGH_PRIORITY_BUDGET_PER_POLL,
 };

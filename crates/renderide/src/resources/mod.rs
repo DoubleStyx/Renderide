@@ -11,7 +11,7 @@ pub use texture_pool::{GpuTexture2d, Texture2dSamplerState, TexturePool};
 
 use std::collections::HashMap;
 
-use crate::assets::mesh::GpuMesh;
+use crate::assets::mesh::{GpuMesh, MeshBufferLayout};
 
 /// Common surface for resident GPU resources (extend for textures, buffers, etc.).
 pub trait GpuResource {
@@ -34,6 +34,8 @@ impl GpuResource for GpuMesh {
 /// Insert / remove pool for meshes; evictions call [`VramAccounting`] and optional [`StreamingPolicy`].
 pub struct MeshPool {
     meshes: HashMap<i32, GpuMesh>,
+    /// Last successful [`MeshBufferLayout`] for [`mesh_upload_input_fingerprint`](crate::assets::mesh::mesh_upload_input_fingerprint) (skips `compute_mesh_buffer_layout` on hot uploads).
+    layout_cache: HashMap<i32, (u64, MeshBufferLayout)>,
     accounting: VramAccounting,
     streaming: Box<dyn StreamingPolicy>,
 }
@@ -43,6 +45,7 @@ impl MeshPool {
     pub fn new(streaming: Box<dyn StreamingPolicy>) -> Self {
         Self {
             meshes: HashMap::new(),
+            layout_cache: HashMap::new(),
             accounting: VramAccounting::default(),
             streaming,
         }
@@ -80,8 +83,27 @@ impl MeshPool {
         existed_before
     }
 
+    /// Cached [`MeshBufferLayout`] when [`crate::assets::mesh::mesh_upload_input_fingerprint`] matches.
+    pub fn get_cached_mesh_layout(&self, asset_id: i32, input_fp: u64) -> Option<MeshBufferLayout> {
+        self.layout_cache
+            .get(&asset_id)
+            .filter(|(fp, _)| *fp == input_fp)
+            .map(|(_, l)| *l)
+    }
+
+    /// Stores layout for [`crate::assets::mesh::mesh_upload_input_fingerprint`] after a successful compute.
+    pub fn set_cached_mesh_layout(
+        &mut self,
+        asset_id: i32,
+        input_fp: u64,
+        layout: MeshBufferLayout,
+    ) {
+        self.layout_cache.insert(asset_id, (input_fp, layout));
+    }
+
     /// Removes a mesh by host id; returns `true` if it was present.
     pub fn remove_mesh(&mut self, asset_id: i32) -> bool {
+        self.layout_cache.remove(&asset_id);
         if let Some(old) = self.meshes.remove(&asset_id) {
             self.accounting
                 .on_resident_removed(VramResourceKind::Mesh, old.resident_bytes);

@@ -2,7 +2,10 @@
 
 mod uploads;
 
-pub use uploads::{MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS};
+pub use uploads::{
+    MAX_DEFERRED_MESH_UPLOADS, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
+    MESH_UPLOAD_NON_HIGH_PRIORITY_BUDGET_PER_POLL,
+};
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -62,6 +65,10 @@ pub struct RenderBackend {
     pub(super) gpu_queue: Option<Arc<Mutex<wgpu::Queue>>>,
     /// Mesh payloads waiting for GPU or shared memory (drained on [`Self::attach`]).
     pub(super) pending_mesh_uploads: VecDeque<MeshUploadData>,
+    /// Low-priority mesh uploads deferred when [`Self::mesh_upload_budget_this_poll`] is exhausted.
+    pub(super) deferred_mesh_uploads: VecDeque<MeshUploadData>,
+    /// Remaining non-high-priority mesh uploads allowed this [`crate::runtime::RendererRuntime::poll_ipc`] cycle.
+    pub(super) mesh_upload_budget_this_poll: u32,
     /// Texture mip payloads waiting for GPU allocation or shared memory.
     pub(super) pending_texture_uploads: VecDeque<SetTexture2DData>,
     /// GPU material families, router, and pipeline cache (after [`Self::attach`]).
@@ -123,6 +130,8 @@ impl RenderBackend {
             gpu_device: None,
             gpu_queue: None,
             pending_mesh_uploads: VecDeque::new(),
+            deferred_mesh_uploads: VecDeque::new(),
+            mesh_upload_budget_this_poll: uploads::MESH_UPLOAD_NON_HIGH_PRIORITY_BUDGET_PER_POLL,
             pending_texture_uploads: VecDeque::new(),
             material_registry: None,
             pending_shader_routes: HashMap::new(),
@@ -223,6 +232,20 @@ impl RenderBackend {
     /// Mutable mesh pool (eviction experiments).
     pub fn mesh_pool_mut(&mut self) -> &mut MeshPool {
         &mut self.mesh_pool
+    }
+
+    /// Resets the per-[`crate::runtime::RendererRuntime::poll_ipc`] budget for non-high-priority mesh uploads.
+    pub fn begin_ipc_poll_mesh_upload_budget(&mut self) {
+        uploads::begin_ipc_poll_mesh_upload_budget(self);
+    }
+
+    /// Drains mesh uploads deferred when the non-high-priority budget was exhausted mid-batch.
+    pub fn finish_ipc_poll_mesh_upload_deferred(
+        &mut self,
+        shm: &mut SharedMemoryAccessor,
+        ipc: Option<&mut DualQueueIpc>,
+    ) {
+        uploads::drain_deferred_mesh_uploads_after_poll(self, shm, ipc);
     }
 
     /// Resident Texture2D table (bind-group prep).

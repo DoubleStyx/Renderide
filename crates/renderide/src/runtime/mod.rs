@@ -346,9 +346,14 @@ impl RendererRuntime {
     /// Drains IPC and dispatches commands. Each poll batch is ordered so `renderer_init_data` runs
     /// first, then frame submits, then the rest (see [`RendererFrontend::poll_commands`]).
     pub fn poll_ipc(&mut self) {
+        self.backend.begin_ipc_poll_mesh_upload_budget();
         let batch = self.frontend.poll_commands();
         for cmd in batch {
             self.handle_command(cmd);
+        }
+        let (shm, ipc) = self.frontend.transport_pair_mut();
+        if let Some(shm) = shm {
+            self.backend.finish_ipc_poll_mesh_upload_deferred(shm, ipc);
         }
     }
 

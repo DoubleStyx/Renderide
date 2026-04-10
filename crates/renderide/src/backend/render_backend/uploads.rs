@@ -1,8 +1,11 @@
 //! Mesh and Texture2D upload queues, shared-memory ingestion, and CPU-side format tables for uploads.
 
 use std::sync::Arc;
+use std::time::Instant;
 
-use crate::assets::mesh::try_upload_mesh_from_raw;
+use crate::assets::mesh::{
+    compute_and_validate_mesh_layout, mesh_upload_input_fingerprint, try_upload_mesh_from_raw,
+};
 use crate::assets::texture::write_texture2d_mips;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::resources::GpuTexture2d;
@@ -16,6 +19,17 @@ use super::RenderBackend;
 
 /// Max queued [`MeshUploadData`] when GPU is not ready yet (host data stays in shared memory).
 pub const MAX_PENDING_MESH_UPLOADS: usize = 256;
+
+/// Max deferred low-priority mesh uploads when [`MESH_UPLOAD_NON_HIGH_PRIORITY_BUDGET_PER_POLL`] is hit.
+pub const MAX_DEFERRED_MESH_UPLOADS: usize = 512;
+
+/// Max deferred mesh uploads drained at the end of one [`crate::runtime::RendererRuntime::poll_ipc`]
+/// (cross-tick backlog may span multiple polls).
+pub const MAX_DEFERRED_MESH_UPLOADS_DRAIN_PER_POLL: usize = 64;
+
+/// Max non-[`MeshUploadData::high_priority`] mesh uploads processed inline per
+/// [`crate::runtime::RendererRuntime::poll_ipc`] before additional commands are deferred.
+pub const MESH_UPLOAD_NON_HIGH_PRIORITY_BUDGET_PER_POLL: u32 = 32;
 
 /// Max queued texture data commands when GPU or format is not ready.
 pub const MAX_PENDING_TEXTURE_UPLOADS: usize = 256;
@@ -35,7 +49,7 @@ pub(super) fn attach_flush_pending_asset_uploads(
             try_texture_upload_with_device(backend, data, shm, None);
         }
         for data in pending_mesh {
-            try_mesh_upload_with_device(backend, device, data, shm, None);
+            try_mesh_upload_with_device(backend, device, data, shm, None, false);
         }
     } else {
         for data in pending_tex {
@@ -247,6 +261,41 @@ pub(super) fn try_texture_upload_with_device(
     }
 }
 
+/// Resets the per-poll budget for non-high-priority mesh uploads. Call at the start of each
+/// [`crate::runtime::RendererRuntime::poll_ipc`].
+pub(super) fn begin_ipc_poll_mesh_upload_budget(backend: &mut RenderBackend) {
+    backend.mesh_upload_budget_this_poll = MESH_UPLOAD_NON_HIGH_PRIORITY_BUDGET_PER_POLL;
+}
+
+/// Processes mesh uploads deferred during the current IPC batch (low-priority overflow).
+pub(super) fn drain_deferred_mesh_uploads_after_poll(
+    backend: &mut RenderBackend,
+    shm: &mut SharedMemoryAccessor,
+    ipc: Option<&mut DualQueueIpc>,
+) {
+    let Some(device) = backend.gpu_device.clone() else {
+        return;
+    };
+    let mut drained = 0usize;
+    if let Some(ipc_ref) = ipc {
+        while drained < MAX_DEFERRED_MESH_UPLOADS_DRAIN_PER_POLL {
+            let Some(data) = backend.deferred_mesh_uploads.pop_front() else {
+                break;
+            };
+            try_mesh_upload_with_device(&mut *backend, &device, data, shm, Some(ipc_ref), false);
+            drained += 1;
+        }
+    } else {
+        while drained < MAX_DEFERRED_MESH_UPLOADS_DRAIN_PER_POLL {
+            let Some(data) = backend.deferred_mesh_uploads.pop_front() else {
+                break;
+            };
+            try_mesh_upload_with_device(&mut *backend, &device, data, shm, None, false);
+            drained += 1;
+        }
+    }
+}
+
 /// Remove a texture asset from CPU tables and the pool.
 pub(super) fn on_unload_texture_2d(backend: &mut RenderBackend, u: UnloadTexture2D) {
     let id = u.asset_id;
@@ -283,33 +332,104 @@ pub(super) fn try_process_mesh_upload(
         backend.pending_mesh_uploads.push_back(data);
         return;
     };
-    try_mesh_upload_with_device(backend, &device, data, shm, ipc);
+    if !data.high_priority && backend.mesh_upload_budget_this_poll == 0 {
+        if backend.deferred_mesh_uploads.len() >= MAX_DEFERRED_MESH_UPLOADS {
+            logger::warn!(
+                "mesh {}: deferred mesh upload queue full; dropping",
+                data.asset_id
+            );
+            return;
+        }
+        logger::trace!(
+            "mesh {}: deferring low-priority mesh upload (budget exhausted)",
+            data.asset_id
+        );
+        backend.deferred_mesh_uploads.push_back(data);
+        return;
+    }
+    try_mesh_upload_with_device(backend, &device, data, shm, ipc, true);
 }
 
+/// `allow_defer` must be `false` when draining [`RenderBackend::deferred_mesh_uploads`] so work is not
+/// re-queued.
 pub(super) fn try_mesh_upload_with_device(
     backend: &mut RenderBackend,
     device: &Arc<wgpu::Device>,
     data: MeshUploadData,
     shm: &mut SharedMemoryAccessor,
     ipc: Option<&mut DualQueueIpc>,
+    allow_defer: bool,
 ) {
+    let hint = data.upload_hint.flags;
+    let high_priority = data.high_priority;
+    let asset_id = data.asset_id;
+    let started = Instant::now();
+
+    let input_fp = mesh_upload_input_fingerprint(&data);
+    let layout = if let Some(l) = backend.mesh_pool.get_cached_mesh_layout(asset_id, input_fp) {
+        l
+    } else {
+        let Some(l) = compute_and_validate_mesh_layout(&data) else {
+            logger::error!("mesh {asset_id}: invalid mesh layout or buffer descriptor");
+            return;
+        };
+        backend
+            .mesh_pool
+            .set_cached_mesh_layout(asset_id, input_fp, l);
+        l
+    };
+
+    let existing = backend.mesh_pool.get_mesh(asset_id);
+    let queue_guard = backend
+        .gpu_queue
+        .as_ref()
+        .map(|q| q.lock().unwrap_or_else(|e| e.into_inner()));
+    let queue_ref = queue_guard.as_deref();
+
     let upload_result = shm.with_read_bytes(&data.buffer, |raw| {
-        try_upload_mesh_from_raw(device.as_ref(), raw, &data)
+        try_upload_mesh_from_raw(device.as_ref(), queue_ref, raw, &data, existing, &layout)
     });
+
     let Some(mesh) = upload_result else {
-        logger::warn!("mesh {}: upload failed or rejected", data.asset_id);
+        // A `success` (or failure) field on [`MeshUploadResult`] requires updating the IPC contract
+        // via SharedTypeGenerator and the host `Renderite.Shared` assembly; until then the host
+        // cannot distinguish failure from a missing callback (timeouts may apply upstream).
+        logger::error!(
+            "mesh {asset_id}: upload failed or rejected — host callback not completed (no MeshUploadResult sent)"
+        );
         return;
     };
+
+    if allow_defer && !high_priority {
+        backend.mesh_upload_budget_this_poll =
+            backend.mesh_upload_budget_this_poll.saturating_sub(1);
+    }
+
     let existed_before = backend.mesh_pool.insert_mesh(mesh);
     if let Some(ipc) = ipc {
         ipc.send_background(RendererCommand::mesh_upload_result(MeshUploadResult {
-            asset_id: data.asset_id,
+            asset_id,
             instance_changed: !existed_before,
         }));
     }
+
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    logger::trace!(
+        "mesh_upload telemetry asset_id={} high_priority={} hint_flags=0x{:08x} (vlayout={} geo={} submesh={} dyn={}) replaced_existing={} time_ms={:.3}",
+        asset_id,
+        high_priority,
+        hint.0,
+        hint.vertex_layout(),
+        hint.geometry(),
+        hint.submesh_layout(),
+        hint.dynamic(),
+        existed_before,
+        elapsed_ms
+    );
+
     logger::info!(
         "mesh {} uploaded (replaced={} resident_bytes≈{})",
-        data.asset_id,
+        asset_id,
         existed_before,
         backend.mesh_pool.accounting().total_resident_bytes()
     );
