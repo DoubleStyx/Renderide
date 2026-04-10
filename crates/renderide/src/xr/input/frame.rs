@@ -30,28 +30,15 @@ pub(super) fn resolve_controller_frame(
         bound_hand_pose_defaults(profile, side);
     match profile {
         ActiveControllerProfile::Touch => {
-            if let Some((grip_position, grip_rotation)) = grip_pose {
-                let (position, rotation) =
-                    touch_pose_correction(side, grip_position, grip_rotation);
-                Some(ControllerFrame {
-                    position,
-                    rotation,
-                    has_bound_hand,
-                    hand_position: hand_position_default,
-                    hand_rotation: hand_rotation_default,
-                })
-            } else if let Some((aim_position, aim_rotation)) = aim_pose {
-                let (position, rotation) = controller_pose_from_aim(aim_position, aim_rotation);
-                Some(ControllerFrame {
-                    position,
-                    rotation,
-                    has_bound_hand,
-                    hand_position: hand_position_default,
-                    hand_rotation: hand_rotation_default,
-                })
-            } else {
-                None
-            }
+            let (grip_position, grip_rotation) = grip_pose?;
+            let (position, rotation) = touch_pose_correction(side, grip_position, grip_rotation);
+            Some(ControllerFrame {
+                position,
+                rotation,
+                has_bound_hand,
+                hand_position: hand_position_default,
+                hand_rotation: hand_rotation_default,
+            })
         }
         ActiveControllerProfile::Index => {
             if let (Some((aim_position, aim_rotation)), Some((grip_position, grip_rotation))) =
@@ -97,26 +84,14 @@ pub(super) fn resolve_controller_frame(
             }
         }
         _ => {
-            if let Some((grip_position, grip_rotation)) = grip_pose {
-                Some(ControllerFrame {
-                    position: grip_position,
-                    rotation: grip_rotation,
-                    has_bound_hand,
-                    hand_position: hand_position_default,
-                    hand_rotation: hand_rotation_default,
-                })
-            } else if let Some((aim_position, aim_rotation)) = aim_pose {
-                let (position, rotation) = controller_pose_from_aim(aim_position, aim_rotation);
-                Some(ControllerFrame {
-                    position,
-                    rotation,
-                    has_bound_hand,
-                    hand_position: hand_position_default,
-                    hand_rotation: hand_rotation_default,
-                })
-            } else {
-                None
-            }
+            let (position, rotation) = grip_pose?;
+            Some(ControllerFrame {
+                position,
+                rotation,
+                has_bound_hand,
+                hand_position: hand_position_default,
+                hand_rotation: hand_rotation_default,
+            })
         }
     }
 }
@@ -127,9 +102,7 @@ mod tests {
 
     use crate::shared::Chirality;
 
-    use super::super::pose::{
-        controller_pose_from_aim, index_pose_correction, touch_pose_correction, transform_pose,
-    };
+    use super::super::pose::{controller_pose_from_aim, index_pose_correction, transform_pose};
     use super::super::profile::ActiveControllerProfile;
     use super::resolve_controller_frame;
 
@@ -179,75 +152,5 @@ mod tests {
             index_pose_correction(Chirality::left, grip_position, grip_rotation);
         assert_vec3_near(hand_world_position, expected_hand_position);
         assert_quat_near(hand_world_rotation, expected_hand_rotation);
-    }
-
-    #[test]
-    fn index_aim_only_matches_controller_pose_from_aim() {
-        let aim_position = Vec3::new(0.24, 1.34, -0.28);
-        let aim_rotation = (Quat::from_rotation_y(0.75) * Quat::from_rotation_x(-0.1)).normalize();
-        let frame = resolve_controller_frame(
-            ActiveControllerProfile::Index,
-            Chirality::left,
-            None,
-            Some((aim_position, aim_rotation)),
-        )
-        .expect("frame");
-        let (expected_controller_position, expected_controller_rotation) =
-            controller_pose_from_aim(aim_position, aim_rotation);
-        assert_vec3_near(frame.position, expected_controller_position);
-        assert_quat_near(frame.rotation, expected_controller_rotation);
-    }
-
-    #[test]
-    fn generic_uses_aim_when_grip_missing() {
-        let aim_position = Vec3::new(0.1, 1.2, -0.3);
-        let aim_rotation = Quat::from_rotation_x(0.3);
-        let frame = resolve_controller_frame(
-            ActiveControllerProfile::Generic,
-            Chirality::right,
-            None,
-            Some((aim_position, aim_rotation)),
-        )
-        .expect("frame");
-        let (expected_controller_position, expected_controller_rotation) =
-            controller_pose_from_aim(aim_position, aim_rotation);
-        assert_vec3_near(frame.position, expected_controller_position);
-        assert_quat_near(frame.rotation, expected_controller_rotation);
-    }
-
-    #[test]
-    fn touch_uses_aim_when_grip_missing() {
-        let aim_position = Vec3::new(-0.2, 1.1, -0.25);
-        let aim_rotation = Quat::from_rotation_y(-0.4);
-        let frame = resolve_controller_frame(
-            ActiveControllerProfile::Touch,
-            Chirality::left,
-            None,
-            Some((aim_position, aim_rotation)),
-        )
-        .expect("frame");
-        let (expected_controller_position, expected_controller_rotation) =
-            controller_pose_from_aim(aim_position, aim_rotation);
-        assert_vec3_near(frame.position, expected_controller_position);
-        assert_quat_near(frame.rotation, expected_controller_rotation);
-    }
-
-    #[test]
-    fn touch_prefers_grip_when_both_present() {
-        let grip_position = Vec3::new(0.2, 1.3, -0.4);
-        let grip_rotation = (Quat::from_rotation_y(0.6) * Quat::from_rotation_x(-0.2)).normalize();
-        let aim_position = Vec3::new(0.5, 0.5, 0.5);
-        let aim_rotation = Quat::IDENTITY;
-        let frame = resolve_controller_frame(
-            ActiveControllerProfile::Touch,
-            Chirality::left,
-            Some((grip_position, grip_rotation)),
-            Some((aim_position, aim_rotation)),
-        )
-        .expect("frame");
-        let (expected_pos, expected_rot) =
-            touch_pose_correction(Chirality::left, grip_position, grip_rotation);
-        assert_vec3_near(frame.position, expected_pos);
-        assert_quat_near(frame.rotation, expected_rot);
     }
 }

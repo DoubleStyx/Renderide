@@ -1,6 +1,6 @@
 //! OpenXR action set, interaction profile bindings, and per-frame VR controller sampling.
 
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use glam::{Quat, Vec2, Vec3};
 use openxr as xr;
@@ -29,8 +29,6 @@ pub struct OpenxrInput {
     microsoft_motion_profile: xr::Path,
     generic_controller_profile: xr::Path,
     simple_controller_profile: xr::Path,
-    pico4_controller_profile: xr::Path,
-    pico_neo3_controller_profile: xr::Path,
     left_profile_cache: AtomicU8,
     right_profile_cache: AtomicU8,
     /// Kept alive for the OpenXR session; per-frame poses use the derived [`xr::Space`] handles.
@@ -114,8 +112,6 @@ impl OpenxrInput {
             instance.string_to_path("/interaction_profiles/khr/simple_controller")?;
         let pico4_controller_profile =
             instance.string_to_path("/interaction_profiles/bytedance/pico4_controller")?;
-        let pico_neo3_controller_profile =
-            instance.string_to_path("/interaction_profiles/bytedance/pico_neo3_controller")?;
         let left_grip_pose =
             action_set.create_action::<xr::Posef>("left_grip_pose", "Left grip pose", &[])?;
         let right_grip_pose =
@@ -430,8 +426,6 @@ impl OpenxrInput {
             microsoft_motion_profile,
             generic_controller_profile,
             simple_controller_profile,
-            pico4_controller_profile,
-            pico_neo3_controller_profile,
             left_profile_cache: AtomicU8::new(0),
             right_profile_cache: AtomicU8::new(0),
             left_grip_pose,
@@ -489,10 +483,7 @@ impl OpenxrInput {
         let Ok(profile) = session.current_interaction_profile(hand_user_path) else {
             return ActiveControllerProfile::Generic;
         };
-        if profile == self.oculus_touch_profile
-            || profile == self.pico4_controller_profile
-            || profile == self.pico_neo3_controller_profile
-        {
+        if profile == self.oculus_touch_profile {
             ActiveControllerProfile::Touch
         } else if profile == self.valve_index_profile {
             ActiveControllerProfile::Index
@@ -601,12 +592,6 @@ impl OpenxrInput {
         let right_profile = self.active_profile(session, self.right_user_path, Chirality::right);
         log_profile_transition(Chirality::left, left_profile);
         log_profile_transition(Chirality::right, right_profile);
-        Self::log_grip_missing_aim_valid_throttled(Chirality::left, left_grip_pose, left_aim_pose);
-        Self::log_grip_missing_aim_valid_throttled(
-            Chirality::right,
-            right_grip_pose,
-            right_aim_pose,
-        );
         let left_frame =
             resolve_controller_frame(left_profile, Chirality::left, left_grip_pose, left_aim_pose);
         let right_frame = resolve_controller_frame(
@@ -678,31 +663,6 @@ impl OpenxrInput {
             right_select.current_state,
         );
         Ok(vec![left, right])
-    }
-
-    /// Logs at most once every 300 frames per hand when the grip space is untracked but the aim space is valid.
-    ///
-    /// Used to confirm on-device that [`super::frame::resolve_controller_frame`] is using the aim fallback path.
-    fn log_grip_missing_aim_valid_throttled(
-        side: Chirality,
-        grip_pose: Option<(Vec3, Quat)>,
-        aim_pose: Option<(Vec3, Quat)>,
-    ) {
-        if grip_pose.is_some() || aim_pose.is_none() {
-            return;
-        }
-        static LEFT: AtomicU32 = AtomicU32::new(0);
-        static RIGHT: AtomicU32 = AtomicU32::new(0);
-        let slot = match side {
-            Chirality::left => &LEFT,
-            Chirality::right => &RIGHT,
-        };
-        let n = slot.fetch_add(1, Ordering::Relaxed);
-        if n % 300 == 0 {
-            logger::debug!(
-                "OpenXR {side:?}: grip pose invalid or untracked but aim pose valid; resolving controller frame from aim for IPC"
-            );
-        }
     }
 
     /// Logs once (at trace level) if stereo view array order may not match left-then-right pose ordering.

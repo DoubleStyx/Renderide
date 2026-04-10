@@ -47,8 +47,14 @@ sysinfo = { version = "0.38.4", default-features = false, features = ["system"],
 nalgebra = { version = "0.34.1", features = ["convert-bytemuck"] }
 tempfile = "3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
     "Win32_System_Memory",
+    "Win32_System_Pipes",
 ] }

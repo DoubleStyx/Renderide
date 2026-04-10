@@ -1,9 +1,17 @@
 //! OpenXR session and Vulkan device bootstrap (Vulkan + `KHR_vulkan_enable2`).
+//!
+//! When the runtime exposes [`XR_EXT_debug_utils`](https://registry.khronos.org/OpenXR/specs/1.0/html/xrspec.html#XR_EXT_debug_utils),
+//! [`bootstrap::init_wgpu_openxr`] registers a messenger so those messages go to the Renderide log
+//! files. On Unix, [`init_wgpu_openxr`](bootstrap::init_wgpu_openxr) also replaces libc **stderr**
+//! with a pipe and forwards lines to the file logger so native `fprintf(stderr, ...)` from the
+//! runtime does not reach the terminal.
 
 mod app_integration;
 mod bootstrap;
+mod debug_utils;
 mod input;
 mod session;
+mod stderr_forward;
 mod swapchain;
 
 pub use bootstrap::{init_wgpu_openxr, XrWgpuHandles};

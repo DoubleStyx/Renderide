@@ -28,7 +28,7 @@ mod paths;
 mod timestamp;
 
 pub use level::{parse_log_level_from_args, LogLevel};
-pub use output::{enabled, flush, init, init_with_mirror, log};
+pub use output::{enabled, flush, init, init_with_mirror, log, try_log};
 pub use panic::{log_panic, log_panic_payload};
 pub use paths::{
     ensure_log_dir, init_for, log_dir_for, log_file_path, logs_root, logs_root_with, LogComponent,

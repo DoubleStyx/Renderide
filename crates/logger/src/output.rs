@@ -2,11 +2,15 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::level::LogLevel;
 use crate::timestamp::format_line_timestamp;
+
+/// Path of the active log file, set by [`init_with_mirror`]. Used for non-blocking append when the
+/// primary mutex is held (for example a stderr forwarder thread).
+static LOG_FILE_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 /// Logger that writes to file and optionally mirrors each line to stderr.
 struct Logger {
@@ -59,6 +63,7 @@ pub fn init_with_mirror(
         max_level,
     };
     let _ = LOGGER.set(logger);
+    let _ = LOG_FILE_PATH.set(path.to_path_buf());
     Ok(())
 }
 
@@ -108,4 +113,39 @@ pub fn log(level: LogLevel, args: std::fmt::Arguments<'_>) {
         let _ = std::io::stderr().write_all(line.as_bytes());
         let _ = std::io::stderr().flush();
     }
+}
+
+/// Like [`log`], but uses [`Mutex::try_lock`] on the file handle. If the mutex is busy, appends the
+/// same formatted line via a separate open of the log file path recorded at init when available.
+///
+/// Intended for **background threads** (such as a stderr pipe reader) that must not block on the
+/// global logger mutex while other code may be writing to the same log or to stderr.
+///
+/// Returns `true` if the line was written (primary or fallback), `false` if nothing was written.
+pub fn try_log(level: LogLevel, args: std::fmt::Arguments<'_>) -> bool {
+    let Some(logger) = LOGGER.get() else {
+        return false;
+    };
+    if level > logger.max_level {
+        return false;
+    }
+    let msg = args.to_string();
+    let timestamp = format_line_timestamp();
+    let line = format!("[{timestamp}] {level:?} {msg}\n");
+    if let Ok(mut file) = logger.file.try_lock() {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
+        return true;
+    }
+    let Some(path) = LOG_FILE_PATH.get() else {
+        return false;
+    };
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true);
+    if let Ok(mut file) = opts.open(path) {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
+        return true;
+    }
+    false
 }

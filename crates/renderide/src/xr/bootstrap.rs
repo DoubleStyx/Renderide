@@ -123,6 +123,9 @@ fn verify_device_has_wait_semaphores(
 
 /// Builds a Vulkan instance through OpenXR and wraps it as wgpu [`wgpu::Instance`] / [`wgpu::Device`].
 pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
+    // Runtimes often log with fprintf(stderr); redirect fd 2 so those lines go to the file logger.
+    super::stderr_forward::ensure_stderr_forwarded_to_logger();
+
     let xr_entry = unsafe { xr::Entry::load() }
         .map_err(|e| XrBootstrapError::Message(format!("OpenXR loader not found: {e}")))?;
     let available_extensions = xr_entry
@@ -143,6 +146,9 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
     if runtime_supports_bd_controller {
         enabled_extensions.bd_controller_interaction = true;
     }
+    if available_extensions.ext_debug_utils {
+        enabled_extensions.ext_debug_utils = true;
+    }
     #[cfg(target_os = "android")]
     {
         enabled_extensions.khr_android_create_instance = true;
@@ -159,6 +165,9 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
         &enabled_extensions,
         &[],
     )?;
+
+    let openxr_debug_messenger =
+        super::debug_utils::OpenxrDebugUtilsMessenger::try_create(&xr_instance);
 
     let xr_system_id = xr_instance.system(xr::FormFactor::HEAD_MOUNTED_DISPLAY)?;
     let environment_blend_mode = xr_instance.enumerate_environment_blend_modes(
@@ -352,6 +361,7 @@ pub fn init_wgpu_openxr() -> Result<XrWgpuHandles, XrBootstrapError> {
     };
     let xr_session = super::session::XrSessionState::new(
         xr_instance,
+        openxr_debug_messenger,
         environment_blend_mode,
         session,
         frame_wait,
