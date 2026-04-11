@@ -122,6 +122,12 @@ fn shadow_type_u32(ty: ShadowType) -> u32 {
     }
 }
 
+/// Counts leading directional lights in a packed [`GpuLight`] buffer (see
+/// [`order_lights_for_clustered_shading`]: directionals are contiguous at the front).
+pub fn directional_light_count_u32(lights: &[GpuLight]) -> u32 {
+    lights.iter().take_while(|l| l.light_type == 1).count() as u32
+}
+
 /// Directional lights first (clustered forward compatibility); then point/spot; stable within bucket.
 pub fn order_lights_for_clustered_shading(lights: &[ResolvedLight]) -> Vec<ResolvedLight> {
     let mut v: Vec<ResolvedLight> = lights.iter().take(MAX_LIGHTS).cloned().collect();
@@ -134,7 +140,25 @@ pub fn order_lights_for_clustered_shading(lights: &[ResolvedLight]) -> Vec<Resol
 
 #[cfg(test)]
 mod layout_tests {
-    use super::GpuLight;
+    use super::{directional_light_count_u32, GpuLight};
+
+    #[test]
+    fn directional_light_count_u32_counts_leading_directionals() {
+        let a = GpuLight {
+            light_type: 1,
+            ..Default::default()
+        };
+        let b = GpuLight {
+            light_type: 1,
+            ..Default::default()
+        };
+        let c = GpuLight {
+            light_type: 0,
+            ..Default::default()
+        };
+        assert_eq!(directional_light_count_u32(&[a, b, c]), 2);
+        assert_eq!(directional_light_count_u32(&[c]), 0);
+    }
 
     #[test]
     fn gpu_light_stride_matches_wgsl() {

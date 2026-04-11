@@ -6,8 +6,8 @@ use glam::Mat4;
 /// Uniform block matching WGSL `FrameGlobals` (96-byte size, 16-byte aligned).
 ///
 /// Encodes camera position, coefficients for view-space Z from world position (left and optional
-/// right eye), clustered grid dimensions, clip planes, light count, and viewport size for clustered
-/// forward sampling.
+/// right eye), clustered grid dimensions, clip planes, light count, viewport size, and directional
+/// prefix count for clustered forward sampling.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FrameGpuUniforms {
@@ -27,8 +27,10 @@ pub struct FrameGpuUniforms {
     pub light_count: u32,
     pub viewport_width: u32,
     pub viewport_height: u32,
-    /// Padding to 96 bytes (WGSL uniform struct alignment).
-    pub _pad: [u8; 12],
+    /// Leading directional lights in `lights` (`0..directional_light_count`); not in cluster lists.
+    pub directional_light_count: u32,
+    /// Matches WGSL `_pad_frame` (`vec2<u32>`).
+    pub pad_frame: [u32; 2],
 }
 
 impl FrameGpuUniforms {
@@ -55,6 +57,7 @@ impl FrameGpuUniforms {
         light_count: u32,
         viewport_width: u32,
         viewport_height: u32,
+        directional_light_count: u32,
     ) -> Self {
         Self {
             camera_world_pos: [
@@ -74,18 +77,27 @@ impl FrameGpuUniforms {
             light_count,
             viewport_width,
             viewport_height,
-            _pad: [0; 12],
+            directional_light_count,
+            pad_frame: [0, 0],
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::mem::offset_of;
+
     use super::*;
 
     #[test]
     fn frame_globals_size_96() {
         assert_eq!(std::mem::size_of::<FrameGpuUniforms>(), 96);
         assert_eq!(std::mem::size_of::<FrameGpuUniforms>() % 16, 0);
+    }
+
+    #[test]
+    fn directional_light_count_field_offset_matches_wgsl_frame_globals() {
+        assert_eq!(offset_of!(FrameGpuUniforms, directional_light_count), 84);
+        assert_eq!(offset_of!(FrameGpuUniforms, pad_frame), 88);
     }
 }

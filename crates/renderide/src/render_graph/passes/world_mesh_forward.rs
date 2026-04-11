@@ -285,6 +285,7 @@ impl RenderPass for WorldMeshForwardPass {
         let cluster_count_x = vw.div_ceil(TILE_SIZE);
         let cluster_count_y = vh.div_ceil(TILE_SIZE);
         let light_count_u = lights_for_frame.len().min(crate::backend::MAX_LIGHTS) as u32;
+        let directional_light_count = crate::backend::directional_light_count_u32(&lights_for_frame);
         let camera_world = hc.head_output_transform.col(3).truncate();
         let uniforms = FrameGpuUniforms::new_clustered(
             camera_world,
@@ -299,6 +300,7 @@ impl RenderPass for WorldMeshForwardPass {
             light_count_u,
             vw.max(1),
             vh.max(1),
+            directional_light_count,
         );
         if let Some(fgpu) = backend.frame_gpu_mut() {
             fgpu.sync_cluster_viewport(ctx.device, (vw, vh), stereo_cluster_layers);

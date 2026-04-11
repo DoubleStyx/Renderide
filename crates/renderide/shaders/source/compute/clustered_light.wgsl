@@ -44,7 +44,11 @@ struct ClusterParams {
 @group(0) @binding(2) var<storage, read_write> cluster_light_counts: array<u32>;
 @group(0) @binding(3) var<storage, read_write> cluster_light_indices: array<u32>;
 
-const MAX_LIGHTS_PER_TILE: u32 = 32u;
+/// Must match `cluster_gpu::MAX_LIGHTS_PER_TILE` and `pbs_cluster.wgsl`.
+const MAX_LIGHTS_PER_TILE: u32 = 64u;
+
+/// Radians; matches `SPOT_PENUMBRA_RAD` in `pbs_brdf.wgsl` so culling bounds cover the shaded penumbra.
+const SPOT_PENUMBRA_RAD: f32 = 0.1;
 
 struct TileAabb {
     min_v: vec3f,
@@ -106,18 +110,13 @@ fn sphere_aabb_intersect(center: vec3f, radius: f32, aabb_min: vec3f, aabb_max: 
     return dot(d, d) <= radius * radius;
 }
 
-// PBS spot attenuation uses smoothstep(spot_cos_half, spot_cos_half + 0.1, spot_cos); culling widens
-// the cone in cosine space so the sphere proxy does not drop visible penumbra clusters.
-//
-// The circumsphere around the finite cone is intentionally conservative (may include extra clusters).
-// A direct cone–AABB test could trim false positives if profiling shows cluster overflow; it is not
-// required once world-to-view matches fragment cluster indexing (see `cluster_light_frame.rs`).
+// Conservative circumsphere around the finite cone; `cull_cos_half` widens the cone by `SPOT_PENUMBRA_RAD`
+// so the proxy covers the PBS smoothstep penumbra in `pbs_brdf.wgsl`.
 fn spotlight_bounds_intersect_aabb(apex: vec3f, axis: vec3f, cos_half: f32, range: f32, aabb_min: vec3f, aabb_max: vec3f) -> bool {
-    if cos_half >= 0.9999 {
+    let cull_cos_half = max(cos_half - SPOT_PENUMBRA_RAD, -1.0);
+    if cull_cos_half >= 0.9999 {
         return sphere_aabb_intersect(apex, range, aabb_min, aabb_max);
     }
-    // Widen the cone (lower cosine cutoff) by the same delta as `pbs_brdf.wgsl` smoothstep band.
-    let cull_cos_half = max(-1.0, cos_half - 0.1);
     let axis_n = normalize(axis);
     let sin_sq = max(0.0, 1.0 - cull_cos_half * cull_cos_half);
     let tan_sq = sin_sq / max(cull_cos_half * cull_cos_half, 1e-8);
@@ -152,14 +151,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
             break;
         }
         let light = lights[i];
+        // Directionals apply everywhere; evaluated in fragment from `frame.directional_light_count` prefix.
+        if light.light_type == 1u {
+            continue;
+        }
         let pos_view = (params.view * vec4f(light.position.x, light.position.y, light.position.z, 1.0)).xyz;
         let dir_view = (params.view * vec4f(light.direction.x, light.direction.y, light.direction.z, 0.0)).xyz;
 
         var intersects = false;
+        // Point lights: sphere radius `range` is conservative vs PBS smoothstep falloff (slightly wider cull).
         if light.light_type == 0u {
             intersects = sphere_aabb_intersect(pos_view, light.range, aabb_min, aabb_max);
-        } else if light.light_type == 1u {
-            intersects = true;
         } else {
             let dir_len_sq = dot(dir_view, dir_view);
             let axis = select(

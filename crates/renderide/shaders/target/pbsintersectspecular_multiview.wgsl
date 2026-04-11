@@ -30,6 +30,8 @@ struct FrameGlobalsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX {
     light_count: u32,
     viewport_width: u32,
     viewport_height: u32,
+    directional_light_count: u32,
+    _pad_frame: vec2<u32>,
 }
 
 struct PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX {
@@ -70,7 +72,8 @@ struct VertexOutput {
     @location(3) @interpolate(flat) view_layer: u32,
 }
 
-const MAX_LIGHTS_PER_TILEX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX: u32 = 32u;
+const SPOT_PENUMBRA_RADX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX: f32 = 0.1f;
+const MAX_LIGHTS_PER_TILEX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX: u32 = 64u;
 
 @group(0) @binding(0) 
 var<uniform> frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX: FrameGlobalsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX;
@@ -180,7 +183,7 @@ fn direct_radiance_specularX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(lig
             l = normalize(to_light_1);
             let _e51: vec3<f32> = l;
             let spot_cos: f32 = dot(-(_e51), normalize(light_dir));
-            let spot_atten: f32 = smoothstep(light.spot_cos_half_angle, (light.spot_cos_half_angle + 0.1f), spot_cos);
+            let spot_atten: f32 = smoothstep(light.spot_cos_half_angle, (light.spot_cos_half_angle + SPOT_PENUMBRA_RADX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX), spot_cos);
             attenuation = select(0f, (((light.intensity * spot_atten) * (1f - smoothstep((light.range * 0.9f), light.range, dist_1))) / max((dist_1 * dist_1), 0.0001f)), (light.range > 0f));
         }
     }
@@ -204,6 +207,75 @@ fn direct_radiance_specularX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(lig
     return ((diffuse + spec) * radiance);
 }
 
+fn clustered_direct_specular_sumX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(world_pos_2: vec3<f32>, n_3: vec3<f32>, v_1: vec3<f32>, roughness_4: f32, base_color_1: vec3<f32>, f0_2: vec3<f32>, one_minus_reflectivity_1: f32, cluster_id: u32) -> vec3<f32> {
+    var lo: vec3<f32> = vec3(0f);
+    var i: u32 = 0u;
+    var i_1: u32 = 0u;
+    var local: bool;
+
+    let n_dir: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.directional_light_count;
+    let lc: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.light_count;
+    let n_dir_eff: u32 = min(n_dir, lc);
+    loop {
+        let _e11: u32 = i;
+        if (_e11 < n_dir_eff) {
+        } else {
+            break;
+        }
+        {
+            let _e14: u32 = i;
+            let light_1: GpuLightX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX = lightsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX[_e14];
+            let _e18: vec3<f32> = lo;
+            let _e26: vec3<f32> = direct_radiance_specularX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(light_1, world_pos_2, n_3, v_1, roughness_4, base_color_1, f0_2, one_minus_reflectivity_1);
+            lo = (_e18 + _e26);
+        }
+        continuing {
+            let _e29: u32 = i;
+            i = (_e29 + 1u);
+        }
+    }
+    let count: u32 = cluster_light_countsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX[cluster_id];
+    let base_idx: u32 = (cluster_id * MAX_LIGHTS_PER_TILEX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX);
+    let i_max: u32 = min(count, MAX_LIGHTS_PER_TILEX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX);
+    loop {
+        let _e40: u32 = i_1;
+        if (_e40 < i_max) {
+        } else {
+            break;
+        }
+        {
+            let _e43: u32 = i_1;
+            let li: u32 = cluster_light_indicesX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX[(base_idx + _e43)];
+            if !((li >= lc)) {
+                local = (li < n_dir);
+            } else {
+                local = true;
+            }
+            let _e53: bool = local;
+            if _e53 {
+                continue;
+            }
+            let light_2: GpuLightX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX = lightsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX[li];
+            let _e57: vec3<f32> = lo;
+            let _e58: vec3<f32> = direct_radiance_specularX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(light_2, world_pos_2, n_3, v_1, roughness_4, base_color_1, f0_2, one_minus_reflectivity_1);
+            lo = (_e57 + _e58);
+        }
+        continuing {
+            let _e61: u32 = i_1;
+            i_1 = (_e61 + 1u);
+        }
+    }
+    let _e63: vec3<f32> = lo;
+    return _e63;
+}
+
+fn frame_globals_layout_anchorX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX() -> f32 {
+    let _e2: vec4<f32> = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.view_space_z_coeffs_right;
+    let _e13: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.stereo_cluster_layers;
+    let _e20: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.directional_light_count;
+    return (((dot(_e2, vec4<f32>(1f, 1f, 1f, 1f)) * 0.0000000001f) + (f32(_e13) * 0.0000000001f)) + (f32(_e20) * 0.00000000000000000001f));
+}
+
 fn view_projection_for_eyeX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ3GSZLXL5YHE33KX(view_idx_2: u32) -> mat4x4<f32> {
     if (view_idx_2 == 0u) {
         let _e5: mat4x4<f32> = drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX.view_proj_left;
@@ -219,14 +291,14 @@ fn apply_stX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ2W42LUPFPXG5AX(uv: vec2<f32>, st: v
 }
 
 fn select_eye_view_space_z_coeffsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(view_index: u32, left: vec4<f32>, right: vec4<f32>, stereo_cluster_layers: u32) -> vec4<f32> {
-    var local: bool;
+    var local_1: bool;
 
     if (stereo_cluster_layers > 1u) {
-        local = (view_index != 0u);
+        local_1 = (view_index != 0u);
     } else {
-        local = false;
+        local_1 = false;
     }
-    let _e11: bool = local;
+    let _e11: bool = local_1;
     return select(left, right, _e11);
 }
 
@@ -244,41 +316,41 @@ fn cluster_xy_from_fragX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(fr
     return vec2<u32>(u32(floor(tile_f.x)), u32(floor(tile_f.y)));
 }
 
-fn cluster_id_from_fragX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(clip_xy: vec2<f32>, world_pos_2: vec3<f32>, view_space_z_coeffs: vec4<f32>, viewport_w_1: u32, viewport_h_1: u32, cluster_count_x: u32, cluster_count_y: u32, cluster_count_z_1: u32, near_clip_1: f32, far_clip_1: f32, view_index_1: u32, stereo_cluster_layers_1: u32) -> u32 {
-    let view_z_1: f32 = (dot(view_space_z_coeffs.xyz, world_pos_2) + view_space_z_coeffs.w);
+fn cluster_id_from_fragX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(clip_xy: vec2<f32>, world_pos_3: vec3<f32>, view_space_z_coeffs: vec4<f32>, viewport_w_1: u32, viewport_h_1: u32, cluster_count_x: u32, cluster_count_y: u32, cluster_count_z_1: u32, near_clip_1: f32, far_clip_1: f32, view_index_1: u32, stereo_cluster_layers_1: u32) -> u32 {
+    let view_z_1: f32 = (dot(view_space_z_coeffs.xyz, world_pos_3) + view_space_z_coeffs.w);
     let _e9: u32 = cluster_z_from_view_zX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(view_z_1, near_clip_1, far_clip_1, cluster_count_z_1);
     let _e13: vec2<u32> = cluster_xy_from_fragX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(clip_xy, viewport_w_1, viewport_h_1);
     let cx: u32 = min(_e13.x, (cluster_count_x - 1u));
     let cy: u32 = min(_e13.y, (cluster_count_y - 1u));
-    let local_1: u32 = (cx + (cluster_count_x * (cy + (cluster_count_y * _e9))));
+    let local_2: u32 = (cx + (cluster_count_x * (cy + (cluster_count_y * _e9))));
     let per_eye: u32 = ((cluster_count_x * cluster_count_y) * cluster_count_z_1);
     let offset: u32 = select(0u, (view_index_1 * per_eye), (stereo_cluster_layers_1 > 1u));
-    return (local_1 + offset);
+    return (local_2 + offset);
 }
 
-fn kw_enabled(v_1: f32) -> bool {
-    return (v_1 > 0.5f);
+fn kw_enabled(v_2: f32) -> bool {
+    return (v_2 > 0.5f);
 }
 
 fn sample_normal_world(uv_main: vec2<f32>, world_n_1: vec3<f32>, front_facing_1: bool) -> vec3<f32> {
-    var n_3: vec3<f32>;
+    var n_4: vec3<f32>;
 
-    n_3 = normalize(world_n_1);
+    n_4 = normalize(world_n_1);
     let _e5: f32 = mat._NORMALMAP;
     let _e6: bool = kw_enabled(_e5);
     if _e6 {
-        let _e7: vec3<f32> = n_3;
+        let _e7: vec3<f32> = n_4;
         let _e8: mat3x3<f32> = orthonormal_tbnX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(_e7);
         let _e12: vec4<f32> = textureSample(_NormalMap, _NormalMap_sampler, uv_main);
         let _e16: f32 = mat._NormalScale;
         let _e17: vec3<f32> = decode_ts_normal_placeholder_flatX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(_e12.xyz, _e16);
-        n_3 = normalize((_e8 * _e17));
+        n_4 = normalize((_e8 * _e17));
     }
     if !(front_facing_1) {
-        let _e22: vec3<f32> = n_3;
-        n_3 = -(_e22);
+        let _e22: vec3<f32> = n_4;
+        n_4 = -(_e22);
     }
-    let _e24: vec3<f32> = n_3;
+    let _e24: vec3<f32> = n_4;
     return _e24;
 }
 
@@ -305,16 +377,16 @@ fn scene_linear_depth(frag_pos_1: vec4<f32>, view_layer_1: u32) -> f32 {
     return ((_e41 * _e44) / denom_2);
 }
 
-fn fragment_linear_depth(world_pos_3: vec3<f32>) -> f32 {
+fn fragment_linear_depth(world_pos_4: vec3<f32>) -> f32 {
     let _e3: vec4<f32> = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.view_space_z_coeffs;
     let _e9: f32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.view_space_z_coeffs.w;
-    let view_z_2: f32 = (dot(_e3.xyz, world_pos_3) + _e9);
+    let view_z_2: f32 = (dot(_e3.xyz, world_pos_4) + _e9);
     return -(view_z_2);
 }
 
-fn intersection_lerp(frag_pos_2: vec4<f32>, world_pos_4: vec3<f32>, view_layer_2: u32) -> f32 {
+fn intersection_lerp(frag_pos_2: vec4<f32>, world_pos_5: vec3<f32>, view_layer_2: u32) -> f32 {
     let _e2: f32 = scene_linear_depth(frag_pos_2, view_layer_2);
-    let _e4: f32 = fragment_linear_depth(world_pos_4);
+    let _e4: f32 = fragment_linear_depth(world_pos_5);
     let diff: f32 = (_e2 - _e4);
     let _e8: f32 = mat._EndTransitionStart;
     if (diff < _e8) {
@@ -353,108 +425,78 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>, @builtin(view_index) view_idx
     var occlusion: f32 = 1f;
     var spec_sample: vec4<f32>;
     var emission: vec3<f32>;
-    var lo: vec3<f32> = vec3(0f);
-    var i: u32 = 0u;
 
-    let _e6: vec4<f32> = mat._MainTex_ST;
-    let _e8: vec2<f32> = apply_stX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ2W42LUPFPXG5AX(uv0_1, _e6);
-    let _e12: f32 = intersection_lerp(frag_pos, world_pos, view_layer);
-    let _e15: vec4<f32> = mat._Color;
-    let _e18: vec4<f32> = mat._IntersectColor;
-    c0_ = mix(_e15, _e18, _e12);
-    let _e23: f32 = mat._ALBEDOTEX;
-    let _e24: bool = kw_enabled(_e23);
-    if _e24 {
-        let _e25: vec4<f32> = c0_;
-        let _e28: vec4<f32> = textureSample(_MainTex, _MainTex_sampler, _e8);
-        c0_ = (_e25 * _e28);
+    let _e3: vec4<f32> = mat._MainTex_ST;
+    let _e5: vec2<f32> = apply_stX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ2W42LUPFPXG5AX(uv0_1, _e3);
+    let _e9: f32 = intersection_lerp(frag_pos, world_pos, view_layer);
+    let _e12: vec4<f32> = mat._Color;
+    let _e15: vec4<f32> = mat._IntersectColor;
+    c0_ = mix(_e12, _e15, _e9);
+    let _e20: f32 = mat._ALBEDOTEX;
+    let _e21: bool = kw_enabled(_e20);
+    if _e21 {
+        let _e22: vec4<f32> = c0_;
+        let _e25: vec4<f32> = textureSample(_MainTex, _MainTex_sampler, _e5);
+        c0_ = (_e22 * _e25);
     }
-    let _e30: vec4<f32> = c0_;
-    let base_color_1: vec3<f32> = _e30.xyz;
+    let _e27: vec4<f32> = c0_;
+    let base_color_2: vec3<f32> = _e27.xyz;
     let alpha: f32 = c0_.w;
-    let _e36: vec3<f32> = sample_normal_world(_e8, world_n, front_facing);
-    let _e39: f32 = mat._OCCLUSION;
-    let _e40: bool = kw_enabled(_e39);
-    if _e40 {
-        let _e43: vec4<f32> = textureSample(_OcclusionMap, _OcclusionMap_sampler, _e8);
-        occlusion = _e43.x;
+    let _e33: vec3<f32> = sample_normal_world(_e5, world_n, front_facing);
+    let _e36: f32 = mat._OCCLUSION;
+    let _e37: bool = kw_enabled(_e36);
+    if _e37 {
+        let _e40: vec4<f32> = textureSample(_OcclusionMap, _OcclusionMap_sampler, _e5);
+        occlusion = _e40.x;
     }
-    let _e48: vec4<f32> = mat._SpecularColor;
-    spec_sample = _e48;
-    let _e52: f32 = mat._SPECULARMAP;
-    let _e53: bool = kw_enabled(_e52);
-    if _e53 {
-        let _e56: vec4<f32> = textureSample(_SpecularMap, _SpecularMap_sampler, _e8);
-        spec_sample = _e56;
+    let _e45: vec4<f32> = mat._SpecularColor;
+    spec_sample = _e45;
+    let _e49: f32 = mat._SPECULARMAP;
+    let _e50: bool = kw_enabled(_e49);
+    if _e50 {
+        let _e53: vec4<f32> = textureSample(_SpecularMap, _SpecularMap_sampler, _e5);
+        spec_sample = _e53;
     }
-    let _e57: vec4<f32> = spec_sample;
-    let f0_2: vec3<f32> = _e57.xyz;
-    let _e60: f32 = spec_sample.w;
-    let smoothness: f32 = clamp(_e60, 0f, 1f);
-    let roughness_4: f32 = clamp((1f - smoothness), 0.045f, 1f);
-    let one_minus_reflectivity_1: f32 = (1f - max(max(f0_2.x, f0_2.y), f0_2.z));
-    let _e78: vec4<f32> = mat._EmissionColor;
-    emission = _e78.xyz;
-    let _e83: f32 = mat._EMISSIONTEX;
-    let _e84: bool = kw_enabled(_e83);
-    if _e84 {
-        let _e85: vec3<f32> = emission;
-        let _e88: vec4<f32> = textureSample(_EmissionMap, _EmissionMap_sampler, _e8);
-        emission = (_e85 * _e88.xyz);
+    let _e54: vec4<f32> = spec_sample;
+    let f0_3: vec3<f32> = _e54.xyz;
+    let _e57: f32 = spec_sample.w;
+    let smoothness: f32 = clamp(_e57, 0f, 1f);
+    let roughness_5: f32 = clamp((1f - smoothness), 0.045f, 1f);
+    let one_minus_reflectivity_2: f32 = (1f - max(max(f0_3.x, f0_3.y), f0_3.z));
+    let _e75: vec4<f32> = mat._EmissionColor;
+    emission = _e75.xyz;
+    let _e80: f32 = mat._EMISSIONTEX;
+    let _e81: bool = kw_enabled(_e80);
+    if _e81 {
+        let _e82: vec3<f32> = emission;
+        let _e85: vec4<f32> = textureSample(_EmissionMap, _EmissionMap_sampler, _e5);
+        emission = (_e82 * _e85.xyz);
     }
-    let _e91: vec3<f32> = emission;
-    let _e94: vec4<f32> = mat._IntersectEmissionColor;
-    emission = (_e91 + (_e94.xyz * _e12));
-    let _e100: vec4<f32> = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.camera_world_pos;
-    let cam: vec3<f32> = _e100.xyz;
-    let v_2: vec3<f32> = normalize((cam - world_pos));
-    let _e106: vec4<f32> = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.view_space_z_coeffs;
-    let _e109: vec4<f32> = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.view_space_z_coeffs_right;
-    let _e112: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.stereo_cluster_layers;
-    let _e114: vec4<f32> = select_eye_view_space_z_coeffsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(view_idx_1, _e106, _e109, _e112);
-    let _e118: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.viewport_width;
-    let _e121: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.viewport_height;
-    let _e124: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.cluster_count_x;
-    let _e127: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.cluster_count_y;
-    let _e130: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.cluster_count_z;
-    let _e133: f32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.near_clip;
-    let _e136: f32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.far_clip;
-    let _e139: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.stereo_cluster_layers;
-    let _e140: u32 = cluster_id_from_fragX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(frag_pos.xy, world_pos, _e114, _e118, _e121, _e124, _e127, _e130, _e133, _e136, view_idx_1, _e139);
-    let count: u32 = cluster_light_countsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX[_e140];
-    let base_idx: u32 = (_e140 * MAX_LIGHTS_PER_TILEX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX);
-    let i_max: u32 = min(count, MAX_LIGHTS_PER_TILEX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX);
-    loop {
-        let _e149: u32 = i;
-        if (_e149 < i_max) {
-        } else {
-            break;
-        }
-        {
-            let _e152: u32 = i;
-            let li: u32 = cluster_light_indicesX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX[(base_idx + _e152)];
-            let _e158: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.light_count;
-            if (li >= _e158) {
-                continue;
-            }
-            let light_1: GpuLightX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX = lightsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX[li];
-            let _e164: vec3<f32> = lo;
-            let _e165: vec3<f32> = direct_radiance_specularX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(light_1, world_pos, _e36, v_2, roughness_4, base_color_1, f0_2, one_minus_reflectivity_1);
-            lo = (_e164 + _e165);
-        }
-        continuing {
-            let _e168: u32 = i;
-            i = (_e168 + 1u);
-        }
-    }
+    let _e88: vec3<f32> = emission;
+    let _e91: vec4<f32> = mat._IntersectEmissionColor;
+    emission = (_e88 + (_e91.xyz * _e9));
+    let _e97: vec4<f32> = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.camera_world_pos;
+    let cam: vec3<f32> = _e97.xyz;
+    let v_3: vec3<f32> = normalize((cam - world_pos));
+    let _e103: vec4<f32> = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.view_space_z_coeffs;
+    let _e106: vec4<f32> = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.view_space_z_coeffs_right;
+    let _e109: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.stereo_cluster_layers;
+    let _e111: vec4<f32> = select_eye_view_space_z_coeffsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(view_idx_1, _e103, _e106, _e109);
+    let _e115: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.viewport_width;
+    let _e118: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.viewport_height;
+    let _e121: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.cluster_count_x;
+    let _e124: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.cluster_count_y;
+    let _e127: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.cluster_count_z;
+    let _e130: f32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.near_clip;
+    let _e133: f32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.far_clip;
+    let _e136: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.stereo_cluster_layers;
+    let _e137: u32 = cluster_id_from_fragX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(frag_pos.xy, world_pos, _e111, _e115, _e118, _e121, _e124, _e127, _e130, _e133, view_idx_1, _e136);
+    let _e138: vec3<f32> = clustered_direct_specular_sumX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(world_pos, _e33, v_3, roughness_5, base_color_2, f0_3, one_minus_reflectivity_2, _e137);
     let amb: vec3<f32> = vec3(0.03f);
-    let _e173: f32 = occlusion;
-    let _e175: vec3<f32> = lo;
-    let _e176: f32 = occlusion;
-    let _e179: vec3<f32> = emission;
-    let color: vec3<f32> = ((((amb * base_color_1) * _e173) + (_e175 * _e176)) + _e179);
-    let _e183: vec4<f32> = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.view_space_z_coeffs_right;
-    let _e194: u32 = frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX.stereo_cluster_layers;
-    let fg_anchor: f32 = ((dot(_e183, vec4<f32>(1f, 1f, 1f, 1f)) * 0.0000000001f) + (f32(_e194) * 0.0000000001f));
-    return vec4<f32>((color + vec3((fg_anchor * 0.000000000000000000000000000001f))), alpha);
+    let _e142: f32 = occlusion;
+    let _e144: f32 = occlusion;
+    let _e147: vec3<f32> = emission;
+    let color: vec3<f32> = ((((amb * base_color_2) * _e142) + (_e138 * _e144)) + _e147);
+    let _e149: f32 = frame_globals_layout_anchorX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX();
+    return vec4<f32>((color + vec3((_e149 * 0.000000000000000000000000000001f))), alpha);
 }
