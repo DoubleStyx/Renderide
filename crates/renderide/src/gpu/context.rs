@@ -31,13 +31,20 @@ pub struct GpuContext {
     frame_timing: FrameCpuGpuTimingHandle,
 }
 
-/// Requests [`wgpu::Limits`] suitable for large mesh uploads (blendshape packs, etc.).
+/// Requests [`wgpu::Limits`] for [`wgpu::Adapter::request_device`].
 ///
-/// WebGPU defaults cap [`wgpu::Limits::max_buffer_size`] at 256 MiB; the adapter often allows more.
-/// Without raising `required_limits`, `create_buffer` fails validation for large assets.
+/// Starts from WebGPU-tier [`wgpu::Limits::default`], then clamps every field to what the adapter
+/// supports via [`wgpu::Limits::or_worse_values_from`] so GPUs with lower caps (for example
+/// [`wgpu::Limits::max_color_attachments`] below 8 on some ARM/Mali stacks) do not fail device
+/// creation.
+///
+/// After clamping, [`wgpu::Limits::max_buffer_size`] and
+/// [`wgpu::Limits::max_storage_buffer_binding_size`] are set from the adapter so large mesh uploads
+/// (blendshape packs, etc.) can use the full reported allowance—WebGPU defaults alone cap
+/// [`wgpu::Limits::max_buffer_size`] at 256 MiB while the adapter often allows more.
 fn required_limits_for_adapter(adapter: &wgpu::Adapter) -> wgpu::Limits {
-    let mut limits = wgpu::Limits::default();
     let al = adapter.limits();
+    let mut limits = wgpu::Limits::default().or_worse_values_from(&al);
     limits.max_buffer_size = al.max_buffer_size;
     limits.max_storage_buffer_binding_size = al.max_storage_buffer_binding_size;
     limits
