@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use glam::{Mat4, Vec3, Vec4};
 
-use super::hi_z_cpu::{mip_dimensions, HiZCpuSnapshot};
+use super::hi_z_cpu::{mip_byte_offset_floats, mip_dimensions, HiZCpuSnapshot};
 use super::world_mesh_cull::WorldMeshCullProjParams;
 
 /// Small bias to reduce mip / quantization flicker at occlusion boundaries (reverse-Z).
@@ -34,6 +34,7 @@ fn hiz_trace_enabled() -> bool {
 /// Picks a mip level from an approximate footprint (in **base** Hi-Z texels, not full viewport pixels).
 ///
 /// Matches the previous single-center-sample Hi-Z path: coarser mips for larger screen extents.
+#[inline]
 fn hi_z_mip_for_pixel_extent(extent_base_px: f32) -> u32 {
     if !extent_base_px.is_finite() || extent_base_px <= 1.0 {
         return 0;
@@ -75,6 +76,7 @@ pub fn hi_z_view_proj_matrices(
 /// to the **minimum** depth in a 2×2 texel neighborhood at the footprint center (weakest occluder in
 /// that block in reverse-Z, reducing single-texel and mip-boundary popping). Mip level is capped;
 /// an extra margin is required before culling.
+#[inline]
 pub fn mesh_fully_occluded_in_hiz(
     snapshot: &HiZCpuSnapshot,
     view_proj: Mat4,
@@ -120,8 +122,9 @@ pub fn mesh_fully_occluded_in_hiz(
     let py_min = v0.min(v1);
     let py_max = v0.max(v1);
 
-    let du_base = (px_max - px_min).abs() * base_w;
-    let dv_base = (py_max - py_min).abs() * base_h;
+    // px_max >= px_min and py_max >= py_min by construction (min/max of two values).
+    let du_base = (px_max - px_min) * base_w;
+    let dv_base = (py_max - py_min) * base_h;
     let extent_base = du_base.max(dv_base).max(1.0);
     let mip = hi_z_mip_for_pixel_extent(extent_base)
         .min(HI_Z_OCCLUSION_MAX_MIP)
@@ -162,6 +165,7 @@ pub fn mesh_fully_occluded_in_hiz(
 ///
 /// Using the **minimum** (farthest surface in the neighborhood) is visibility-conservative: fewer
 /// false-positive culls when a single texel spikes closer than its neighbors.
+#[inline]
 fn hiz_min_in_2x2(
     snapshot: &HiZCpuSnapshot,
     mip: u32,
@@ -170,13 +174,15 @@ fn hiz_min_in_2x2(
     mw: u32,
     mh: u32,
 ) -> Option<f32> {
+    let mip_base = mip_byte_offset_floats(snapshot.base_width, snapshot.base_height, mip);
     let mut vmin = f32::MAX;
     let mut any = false;
     for dy in 0..=1u32 {
         for dx in 0..=1u32 {
             let x = (sx + dx).min(mw.saturating_sub(1));
             let y = (sy + dy).min(mh.saturating_sub(1));
-            if let Some(v) = snapshot.sample_texel(mip, x, y) {
+            let idx = mip_base + (y * mw + x) as usize;
+            if let Some(&v) = snapshot.mips.get(idx) {
                 if v.is_finite() {
                     vmin = vmin.min(v);
                     any = true;
