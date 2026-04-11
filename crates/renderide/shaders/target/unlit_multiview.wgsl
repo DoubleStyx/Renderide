@@ -18,8 +18,6 @@ struct FrameGlobalsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX {
     light_count: u32,
     viewport_width: u32,
     viewport_height: u32,
-    directional_light_count: u32,
-    _pad_frame: vec2<u32>,
 }
 
 struct GpuLightX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX {

@@ -1,16 +1,11 @@
 //! Clustered forward helpers: screen tile XY and exponential Z slice (matches clustered light compute).
 //!
 //! Import with `#import renderide::pbs::cluster`.
-//!
-//! Depth slicing uses the DOOM-style exponential mapping (blog Eq. 3). Olsson et al. (2012) Eq. (2)
-//! ties Z density to tile height and FOV; switching schemes requires updating both this module and
-//! `clustered_light.wgsl` `get_cluster_aabb` in lockstep.
 
 #define_import_path renderide::pbs::cluster
 
 const TILE_SIZE: u32 = 16u;
-/// Must match `cluster_gpu::MAX_LIGHTS_PER_TILE` and clustered light compute.
-const MAX_LIGHTS_PER_TILE: u32 = 64u;
+const MAX_LIGHTS_PER_TILE: u32 = 32u;
 
 fn cluster_xy_from_frag(frag_xy: vec2<f32>, viewport_w: u32, viewport_h: u32) -> vec2<u32> {
     let max_x = max(f32(viewport_w) - 0.5, 0.5);
@@ -37,16 +32,6 @@ fn select_eye_view_space_z_coeffs(
     stereo_cluster_layers: u32,
 ) -> vec4<f32> {
     return select(left, right, stereo_cluster_layers > 1u && view_index != 0u);
-}
-
-/// Stable name for PBS materials; same as [`select_eye_view_space_z_coeffs`].
-fn cluster_view_space_z_coeffs(
-    view_index: u32,
-    left: vec4<f32>,
-    right: vec4<f32>,
-    stereo_cluster_layers: u32,
-) -> vec4<f32> {
-    return select_eye_view_space_z_coeffs(view_index, left, right, stereo_cluster_layers);
 }
 
 fn cluster_id_from_frag(

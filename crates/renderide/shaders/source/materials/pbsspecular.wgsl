@@ -201,24 +201,26 @@ fn fs_main(
         rg::frame.stereo_cluster_layers,
     );
 
-    let spec_on = mat._SpecularHighlights > 0.5;
-    let lo = select(
-        brdf::clustered_diffuse_only_specular_sum(world_pos, n, base_color, one_minus_reflectivity, cluster_id),
-        brdf::clustered_direct_specular_sum(
-            world_pos,
-            n,
-            v,
-            roughness,
-            base_color,
-            f0,
-            one_minus_reflectivity,
-            cluster_id,
-        ),
-        spec_on,
-    );
+    let count    = rg::cluster_light_counts[cluster_id];
+    let base_idx = cluster_id * pcls::MAX_LIGHTS_PER_TILE;
+    var lo       = vec3<f32>(0.0);
+    let spec_on  = mat._SpecularHighlights > 0.5;
+    let i_max    = min(count, pcls::MAX_LIGHTS_PER_TILE);
+    for (var i = 0u; i < i_max; i++) {
+        let li = rg::cluster_light_indices[base_idx + i];
+        if li >= rg::frame.light_count {
+            continue;
+        }
+        let light = rg::lights[li];
+        if spec_on {
+            lo = lo + brdf::direct_radiance_specular(light, world_pos, n, v, roughness, base_color, f0, one_minus_reflectivity);
+        } else {
+            lo = lo + brdf::diffuse_only_specular(light, world_pos, n, base_color, one_minus_reflectivity);
+        }
+    }
 
     let amb   = select(vec3<f32>(0.03), vec3<f32>(0.0), mat._GlossyReflections < 0.5);
     let color = (amb * base_color * occlusion + lo * occlusion) + em;
-    let fg_anchor = rg::frame_globals_layout_anchor();
+    let fg_anchor = (dot(rg::frame.view_space_z_coeffs_right, vec4<f32>(1.0, 1.0, 1.0, 1.0)) * 1e-10 + f32(rg::frame.stereo_cluster_layers) * 1e-10);
     return vec4<f32>(color + vec3<f32>(fg_anchor * 1e-30), alpha);
 }

@@ -249,20 +249,30 @@ fn fs_main(
         rg::frame.stereo_cluster_layers,
     );
 
-    let lo = brdf::clustered_direct_metallic_sum(
-        world_pos,
-        n,
-        v,
-        roughness,
-        metallic,
-        base_color,
-        f0,
-        cluster_id,
-        true,
-    );
+    let count = rg::cluster_light_counts[cluster_id];
+    let base_idx = cluster_id * pcls::MAX_LIGHTS_PER_TILE;
+    var lo = vec3<f32>(0.0);
+    let i_max = min(count, pcls::MAX_LIGHTS_PER_TILE);
+    for (var i = 0u; i < i_max; i++) {
+        let li = rg::cluster_light_indices[base_idx + i];
+        if (li >= rg::frame.light_count) {
+            continue;
+        }
+        let light = rg::lights[li];
+        lo = lo + brdf::direct_radiance_metallic(
+            light,
+            world_pos,
+            n,
+            v,
+            roughness,
+            metallic,
+            base_color,
+            f0,
+        );
+    }
 
     let amb = vec3<f32>(0.03);
     let color = (amb * base_color * occlusion + lo * occlusion) + em;
-    let fg_anchor = rg::frame_globals_layout_anchor();
+    let fg_anchor = (dot(rg::frame.view_space_z_coeffs_right, vec4<f32>(1.0, 1.0, 1.0, 1.0)) * 1e-10 + f32(rg::frame.stereo_cluster_layers) * 1e-10);
     return vec4<f32>(color + vec3<f32>(fg_anchor * 1e-30), alpha);
 }

@@ -1,18 +1,11 @@
 //! Cook–Torrance GGX BRDF, tangent space helpers, and clustered direct-light terms for PBS materials
 //! (metallic / specular workflows).
 //!
-//! Import with `#import renderide::pbs::brdf`. Depends on `renderide::globals` for `GpuLight`.
-//! `MAX_LIGHTS_PER_TILE` duplicates `pbs_cluster.wgsl` / `clustered_light.wgsl` (naga-oil cannot chain-import here).
+//! Import with `#import renderide::pbs::brdf`. Depends on [`renderide::globals`] for [`GpuLight`].
 
 #import renderide::globals as rg
 
 #define_import_path renderide::pbs::brdf
-
-/// Must match `pbs_cluster.wgsl` and clustered light compute.
-const MAX_LIGHTS_PER_TILE: u32 = 64u;
-
-/// Spot penumbra half-width (radians); must match `SPOT_PENUMBRA_RAD` in `clustered_light.wgsl`.
-const SPOT_PENUMBRA_RAD: f32 = 0.1;
 
 fn pow5(x: f32) -> f32 {
     let x2 = x * x;
@@ -97,7 +90,7 @@ fn direct_radiance_metallic(
         let dist = length(to_light);
         l = normalize(to_light);
         let spot_cos = dot(-l, normalize(light_dir));
-        let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + SPOT_PENUMBRA_RAD, spot_cos);
+        let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + 0.1, spot_cos);
         attenuation = select(
             0.0,
             light.intensity * spot_atten * (1.0 - smoothstep(light.range * 0.9, light.range, dist)) / max(dist * dist, 0.0001),
@@ -155,7 +148,7 @@ fn direct_radiance_specular(
         let dist = length(to_light);
         l = normalize(to_light);
         let spot_cos = dot(-l, normalize(light_dir));
-        let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + SPOT_PENUMBRA_RAD, spot_cos);
+        let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + 0.1, spot_cos);
         attenuation = select(
             0.0,
             light.intensity * spot_atten * (1.0 - smoothstep(light.range * 0.9, light.range, dist)) / max(dist * dist, 0.0001),
@@ -208,7 +201,7 @@ fn diffuse_only_metallic(
         let dist = length(to_light);
         l = normalize(to_light);
         let spot_cos = dot(-l, normalize(light_dir));
-        let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + SPOT_PENUMBRA_RAD, spot_cos);
+        let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + 0.1, spot_cos);
         attenuation = select(
             0.0,
             light.intensity * spot_atten * (1.0 - smoothstep(light.range * 0.9, light.range, dist)) / max(dist * dist, 0.0001),
@@ -250,7 +243,7 @@ fn diffuse_only_specular(
         let dist = length(to_light);
         l = normalize(to_light);
         let spot_cos = dot(-l, normalize(light_dir));
-        let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + SPOT_PENUMBRA_RAD, spot_cos);
+        let spot_atten = smoothstep(light.spot_cos_half_angle, light.spot_cos_half_angle + 0.1, spot_cos);
         attenuation = select(
             0.0,
             light.intensity * spot_atten * (1.0 - smoothstep(light.range * 0.9, light.range, dist)) / max(dist * dist, 0.0001),
@@ -259,109 +252,4 @@ fn diffuse_only_specular(
     }
     let n_dot_l = max(dot(n, l), 0.0);
     return base_color * one_minus_reflectivity / 3.14159265 * light_color * attenuation * n_dot_l;
-}
-
-/// Cook–Torrance clustered forward: directionals (`0..directional_light_count`) plus cluster indices (point/spot).
-fn clustered_direct_metallic_sum(
-    world_pos: vec3<f32>,
-    n: vec3<f32>,
-    v: vec3<f32>,
-    roughness: f32,
-    metallic: f32,
-    base_color: vec3<f32>,
-    f0: vec3<f32>,
-    cluster_id: u32,
-    specular_highlights: bool,
-) -> vec3<f32> {
-    var lo = vec3<f32>(0.0);
-    let n_dir = rg::frame.directional_light_count;
-    let lc = rg::frame.light_count;
-    let n_dir_eff = min(n_dir, lc);
-    for (var i = 0u; i < n_dir_eff; i++) {
-        let light = rg::lights[i];
-        if specular_highlights {
-            lo = lo + direct_radiance_metallic(light, world_pos, n, v, roughness, metallic, base_color, f0);
-        } else {
-            lo = lo + diffuse_only_metallic(light, world_pos, n, base_color);
-        }
-    }
-    let count = rg::cluster_light_counts[cluster_id];
-    let base_idx = cluster_id * MAX_LIGHTS_PER_TILE;
-    let i_max = min(count, MAX_LIGHTS_PER_TILE);
-    for (var i = 0u; i < i_max; i++) {
-        let li = rg::cluster_light_indices[base_idx + i];
-        if li >= lc || li < n_dir {
-            continue;
-        }
-        let light = rg::lights[li];
-        if specular_highlights {
-            lo = lo + direct_radiance_metallic(light, world_pos, n, v, roughness, metallic, base_color, f0);
-        } else {
-            lo = lo + diffuse_only_metallic(light, world_pos, n, base_color);
-        }
-    }
-    return lo;
-}
-
-/// Specular-setup clustered forward (full BRDF per light).
-fn clustered_direct_specular_sum(
-    world_pos: vec3<f32>,
-    n: vec3<f32>,
-    v: vec3<f32>,
-    roughness: f32,
-    base_color: vec3<f32>,
-    f0: vec3<f32>,
-    one_minus_reflectivity: f32,
-    cluster_id: u32,
-) -> vec3<f32> {
-    var lo = vec3<f32>(0.0);
-    let n_dir = rg::frame.directional_light_count;
-    let lc = rg::frame.light_count;
-    let n_dir_eff = min(n_dir, lc);
-    for (var i = 0u; i < n_dir_eff; i++) {
-        let light = rg::lights[i];
-        lo = lo + direct_radiance_specular(light, world_pos, n, v, roughness, base_color, f0, one_minus_reflectivity);
-    }
-    let count = rg::cluster_light_counts[cluster_id];
-    let base_idx = cluster_id * MAX_LIGHTS_PER_TILE;
-    let i_max = min(count, MAX_LIGHTS_PER_TILE);
-    for (var i = 0u; i < i_max; i++) {
-        let li = rg::cluster_light_indices[base_idx + i];
-        if li >= lc || li < n_dir {
-            continue;
-        }
-        let light = rg::lights[li];
-        lo = lo + direct_radiance_specular(light, world_pos, n, v, roughness, base_color, f0, one_minus_reflectivity);
-    }
-    return lo;
-}
-
-/// Lambertian-only clustered path for specular workflow when specular highlights are off.
-fn clustered_diffuse_only_specular_sum(
-    world_pos: vec3<f32>,
-    n: vec3<f32>,
-    base_color: vec3<f32>,
-    one_minus_reflectivity: f32,
-    cluster_id: u32,
-) -> vec3<f32> {
-    var lo = vec3<f32>(0.0);
-    let n_dir = rg::frame.directional_light_count;
-    let lc = rg::frame.light_count;
-    let n_dir_eff = min(n_dir, lc);
-    for (var i = 0u; i < n_dir_eff; i++) {
-        let light = rg::lights[i];
-        lo = lo + diffuse_only_specular(light, world_pos, n, base_color, one_minus_reflectivity);
-    }
-    let count = rg::cluster_light_counts[cluster_id];
-    let base_idx = cluster_id * MAX_LIGHTS_PER_TILE;
-    let i_max = min(count, MAX_LIGHTS_PER_TILE);
-    for (var i = 0u; i < i_max; i++) {
-        let li = rg::cluster_light_indices[base_idx + i];
-        if li >= lc || li < n_dir {
-            continue;
-        }
-        let light = rg::lights[li];
-        lo = lo + diffuse_only_specular(light, world_pos, n, base_color, one_minus_reflectivity);
-    }
-    return lo;
 }

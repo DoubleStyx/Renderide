@@ -2,9 +2,6 @@
 //!
 //! [`ClusterBufferCache`] recreates storage when the viewport, Z slice count, or stereo layer count
 //! changes. Tile size and per-tile caps match the clustered light compute shader and PBS fragment sampling.
-//!
-//! Optional Olsson et al. (2012) extensions (normal cones, explicit bounds, BVH light hierarchy,
-//! active/unique clusters) are not implemented here; add them as separate performance milestones if needed.
 
 use std::mem::size_of;
 
@@ -13,11 +10,7 @@ pub const TILE_SIZE: u32 = 16;
 /// Exponential depth slice count (view-space Z bins).
 pub const CLUSTER_COUNT_Z: u32 = 24;
 /// Maximum lights assigned to a single cluster (buffer index order).
-///
-/// Must match `MAX_LIGHTS_PER_TILE` in `pbs_cluster.wgsl` and `clustered_light.wgsl`. Raising this
-/// increases `cluster_light_indices` storage linearly; lowering risks visible light dropout when many
-/// lights overlap one cluster.
-pub const MAX_LIGHTS_PER_TILE: u32 = 64;
+pub const MAX_LIGHTS_PER_TILE: u32 = 32;
 /// Uniform buffer size for clustered light compute `ClusterParams` (WGSL layout + tail padding).
 pub const CLUSTER_PARAMS_UNIFORM_SIZE: u64 = 256;
 

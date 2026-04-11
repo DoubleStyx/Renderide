@@ -57,8 +57,8 @@ pub use assets::material::{
 };
 pub use assets::resolve_shader_routing_name_from_upload;
 pub use backend::{
-    directional_light_count_u32, order_lights_for_clustered_shading, ClusterBufferCache, GpuLight,
-    RenderBackend, CLUSTER_COUNT_Z, MAX_LIGHTS, MAX_LIGHTS_PER_TILE, TILE_SIZE,
+    order_lights_for_clustered_shading, ClusterBufferCache, GpuLight, RenderBackend,
+    CLUSTER_COUNT_Z, MAX_LIGHTS, MAX_LIGHTS_PER_TILE, TILE_SIZE,
 };
 pub use config::{
     load_renderer_settings, log_config_resolve_trace, resolve_save_path, save_renderer_settings,

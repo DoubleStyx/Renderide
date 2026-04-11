@@ -128,11 +128,9 @@ mod tests {
 
     use super::*;
 
-    /// Mirrors `clustered_light.wgsl` spotlight sphere proxy (`SPOT_PENUMBRA_RAD` penumbra margin).
+    /// Mirrors `clustered_light.wgsl` spotlight sphere proxy (including penumbra margin).
     mod spotlight_cpu {
         use glam::Vec3;
-
-        const SPOT_PENUMBRA_RAD: f32 = 0.1;
 
         pub fn sphere_aabb_intersect(
             center: Vec3,
@@ -152,10 +150,10 @@ mod tests {
             aabb_min: Vec3,
             aabb_max: Vec3,
         ) -> bool {
-            let cull_cos_half = (cos_half - SPOT_PENUMBRA_RAD).max(-1.0);
-            if cull_cos_half >= 0.9999 {
+            if cos_half >= 0.9999 {
                 return sphere_aabb_intersect(apex, range, aabb_min, aabb_max);
             }
+            let cull_cos_half = (cos_half - 0.1).max(-1.0);
             let axis_n = axis.normalize();
             let sin_sq = (1.0 - cull_cos_half * cull_cos_half).max(0.0);
             let tan_sq = sin_sq / (cull_cos_half * cull_cos_half).max(1e-8);

@@ -43,9 +43,6 @@ struct FrameGlobals {
     light_count: u32,
     viewport_width: u32,
     viewport_height: u32,
-    /// Leading directional lights in `lights` (`0..directional_light_count`); not duplicated in cluster lists.
-    directional_light_count: u32,
-    _pad_frame: vec2<u32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameGlobals;
@@ -54,10 +51,3 @@ struct FrameGlobals {
 @group(0) @binding(3) var<storage, read> cluster_light_indices: array<u32>;
 @group(0) @binding(4) var scene_depth: texture_depth_2d;
 @group(0) @binding(5) var scene_depth_array: texture_depth_2d_array;
-
-/// Keeps `frame` uniform bindings referenced so naga-oil does not strip `@group(0)` from composed shaders.
-fn frame_globals_layout_anchor() -> f32 {
-    return dot(frame.view_space_z_coeffs_right, vec4<f32>(1.0, 1.0, 1.0, 1.0)) * 1e-10
-        + f32(frame.stereo_cluster_layers) * 1e-10
-        + f32(frame.directional_light_count) * 1e-20;
-}
