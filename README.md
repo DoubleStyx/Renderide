@@ -37,7 +37,7 @@ Logs appear in the `logs/` folder.
 1. Build the workspace in debug mode:
 
    ```bash
-   cargo build --release
+   cargo build
    ```
 
 1. Run the bootstrapper in debug mode:
