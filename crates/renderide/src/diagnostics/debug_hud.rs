@@ -32,53 +32,9 @@ use imgui::{
 use imgui_wgpu::{Renderer as ImguiWgpuRenderer, RendererConfig};
 
 #[cfg(feature = "debug-hud")]
-/// First-use positions for HUD windows so **Renderer config**, **Frame timing**, **Renderide debug**,
-/// and **Scene transforms** do not share the same anchor (ImGui `FirstUseEver` only applies once).
-mod overlay_layout {
-    /// Margin from the viewport edge for anchored HUD windows.
-    pub const MARGIN: f32 = 12.0;
-    /// Gap between stacked HUD windows on the left column.
-    pub const GAP: f32 = 16.0;
-    /// Matches the first-use width of the **Renderer config** window.
-    pub const RENDERER_CONFIG_W: f32 = 440.0;
-    /// Matches the first-use height of the **Renderer config** window.
-    pub const RENDERER_CONFIG_H: f32 = 400.0;
-    /// Reserved vertical space for the auto-sized **Frame timing** window so **Scene transforms**
-    /// can be placed below without overlapping on first use.
-    pub const FRAME_TIMING_RESERVE_H: f32 = 140.0;
-
-    /// First-use position for **Frame timing**: directly under **Renderer config** (same column).
-    pub fn frame_timing_xy() -> [f32; 2] {
-        [MARGIN, MARGIN + RENDERER_CONFIG_H + GAP]
-    }
-
-    /// Minimum Y for **Scene transforms** so it stays below **Renderer config** + **Frame timing**.
-    pub fn scene_transforms_min_y() -> f32 {
-        MARGIN + RENDERER_CONFIG_H + GAP + FRAME_TIMING_RESERVE_H + GAP
-    }
-
-    /// First-use Y for **Scene transforms**: prefers the bottom of the viewport minus the window
-    /// height, but not above [`scene_transforms_min_y`] (avoids covering the config / timing stack).
-    pub fn scene_transforms_y(viewport_h: f32, window_h: f32) -> f32 {
-        let bottom_anchored = viewport_h - window_h - MARGIN;
-        bottom_anchored.max(scene_transforms_min_y())
-    }
-}
-
+use super::debug_hud_fmt as hud_fmt;
 #[cfg(feature = "debug-hud")]
-/// Right-aligned numeric [`format!`] helpers so HUD columns keep a stable width.
-mod hud_fmt {
-    /// Formats `value` as a right-aligned decimal with `decimals` places and total width `width`.
-    pub fn f64_field(width: usize, decimals: usize, value: f64) -> String {
-        format!("{value:>w$.d$}", w = width, d = decimals)
-    }
-
-    /// Human-readable gibibytes from bytes (numeric part only; caller adds `GiB` suffix).
-    pub fn gib_value(width: usize, decimals: usize, bytes: u64) -> String {
-        let g = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        f64_field(width, decimals, g)
-    }
-}
+use super::debug_hud_layout as overlay_layout;
 
 #[cfg(feature = "debug-hud")]
 pub struct DebugHud {
@@ -742,15 +698,6 @@ impl DebugHud {
                 }
             }
         }
-    }
-}
-
-#[cfg(all(test, feature = "debug-hud"))]
-mod hud_fmt_tests {
-    #[test]
-    fn hud_fmt_produces_stable_field_width() {
-        assert_eq!(super::hud_fmt::f64_field(8, 2, 1.0).len(), 8);
-        assert_eq!(super::hud_fmt::f64_field(8, 2, 123.456).len(), 8);
     }
 }
 

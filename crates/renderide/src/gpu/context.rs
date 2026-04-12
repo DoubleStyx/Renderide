@@ -23,8 +23,7 @@ pub struct GpuContext {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     /// Depth target matching [`Self::config`] extent; recreated after resize.
-    depth_texture: Option<wgpu::Texture>,
-    depth_view: Option<wgpu::TextureView>,
+    depth_attachment: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_extent_px: (u32, u32),
     /// Debug HUD: wall-clock CPU (tick start → last submit) and GPU (last submit → idle) timing.
     #[cfg(feature = "debug-hud")]
@@ -158,8 +157,7 @@ impl GpuContext {
             queue: Arc::new(Mutex::new(queue)),
             surface: surface_safe,
             config,
-            depth_texture: None,
-            depth_view: None,
+            depth_attachment: None,
             depth_extent_px: (0, 0),
             #[cfg(feature = "debug-hud")]
             frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
@@ -202,8 +200,7 @@ impl GpuContext {
             queue,
             surface: surface_safe,
             config,
-            depth_texture: None,
-            depth_view: None,
+            depth_attachment: None,
             depth_extent_px: (0, 0),
             #[cfg(feature = "debug-hud")]
             frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
@@ -245,8 +242,7 @@ impl GpuContext {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
-        self.depth_texture = None;
-        self.depth_view = None;
+        self.depth_attachment = None;
         self.depth_extent_px = (0, 0);
     }
 
@@ -383,20 +379,22 @@ impl GpuContext {
     /// Ensures a [`wgpu::TextureFormat::Depth32Float`] attachment exists for the current surface extent.
     ///
     /// Call after [`Self::reconfigure`] or when the swapchain size may have changed.
-    pub fn ensure_depth_view(&mut self) -> &wgpu::TextureView {
-        self.ensure_depth_target().1
+    ///
+    /// Returns an error string only if the depth attachment could not be read after allocation (defensive).
+    pub fn ensure_depth_view(&mut self) -> Result<&wgpu::TextureView, &'static str> {
+        self.ensure_depth_target().map(|(_, v)| v)
     }
 
     /// Ensures the main depth attachment exists and returns both the texture and its default view.
-    pub fn ensure_depth_target(&mut self) -> (&wgpu::Texture, &wgpu::TextureView) {
+    ///
+    /// Returns an error string only if the depth attachment could not be read after allocation (defensive).
+    pub fn ensure_depth_target(
+        &mut self,
+    ) -> Result<(&wgpu::Texture, &wgpu::TextureView), &'static str> {
         let w = self.config.width.max(1);
         let h = self.config.height.max(1);
-        let needs_recreate = self.depth_extent_px != (w, h)
-            || self.depth_texture.is_none()
-            || self.depth_view.is_none();
+        let needs_recreate = self.depth_extent_px != (w, h) || self.depth_attachment.is_none();
         if needs_recreate {
-            self.depth_texture = None;
-            self.depth_view = None;
             let tex = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("renderide-depth"),
                 size: wgpu::Extent3d {
@@ -415,13 +413,12 @@ impl GpuContext {
             });
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
             self.depth_extent_px = (w, h);
-            self.depth_texture = Some(tex);
-            self.depth_view = Some(view);
+            self.depth_attachment = Some((tex, view));
         }
-        (
-            self.depth_texture.as_ref().expect("just created"),
-            self.depth_view.as_ref().expect("just created"),
-        )
+        self.depth_attachment
+            .as_ref()
+            .map(|(t, v)| (t, v))
+            .ok_or("depth attachment missing after ensure_depth_target")
     }
 
     /// Acquires the next frame, reconfiguring once on [`wgpu::CurrentSurfaceTexture::Lost`] or

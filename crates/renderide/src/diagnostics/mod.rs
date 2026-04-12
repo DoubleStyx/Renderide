@@ -6,6 +6,10 @@
 
 mod debug_hud;
 #[cfg(feature = "debug-hud")]
+mod debug_hud_fmt;
+#[cfg(feature = "debug-hud")]
+mod debug_hud_layout;
+#[cfg(feature = "debug-hud")]
 mod frame_diagnostics_snapshot;
 #[cfg(feature = "debug-hud")]
 mod frame_timing_hud_snapshot;

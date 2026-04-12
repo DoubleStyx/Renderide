@@ -194,10 +194,17 @@ impl FrameGpuResources {
     }
 
     fn rebuild_bind_group(&mut self, device: &wgpu::Device, viewport: (u32, u32), stereo: bool) {
-        let refs = self
+        let Some(refs) = self
             .cluster_cache
             .get_buffers(viewport, CLUSTER_COUNT_Z, stereo)
-            .expect("cluster buffers after ensure_buffers");
+        else {
+            logger::warn!(
+                "FrameGpu: cluster buffers missing for viewport {:?} stereo={}; skipping bind group rebuild",
+                viewport,
+                stereo
+            );
+            return;
+        };
         self.bind_group = Self::create_bind_group(
             device,
             &self.frame_uniform,
@@ -227,7 +234,9 @@ impl FrameGpuResources {
     }
 
     /// Allocates frame uniform, lights storage, minimal cluster grid `(1×1×Z)`; builds [`Self::bind_group`].
-    pub fn new(device: &wgpu::Device) -> Self {
+    ///
+    /// Returns an error when the initial cluster buffer cache could not be populated (zero viewport or internal mismatch).
+    pub fn new(device: &wgpu::Device) -> Result<Self, String> {
         let frame_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame_globals_uniform"),
             size: std::mem::size_of::<FrameGpuUniforms>() as u64,
@@ -244,11 +253,11 @@ impl FrameGpuResources {
         let mut cluster_cache = ClusterBufferCache::new();
         cluster_cache
             .ensure_buffers(device, (1, 1), CLUSTER_COUNT_Z, false)
-            .expect("cluster buffers for 1x1 viewport");
+            .ok_or_else(|| "cluster buffers: ensure_buffers failed for 1x1 viewport".to_string())?;
         let cluster_bind_version = cluster_cache.version;
         let refs = cluster_cache
             .get_buffers((1, 1), CLUSTER_COUNT_Z, false)
-            .expect("cluster buffers for 1x1 viewport");
+            .ok_or_else(|| "cluster buffers: get_buffers failed for 1x1 viewport".to_string())?;
         let scene_depth_2d = Self::create_depth_snapshot_2d(device, (1, 1));
         let scene_depth_array = Self::create_depth_snapshot_array(device, (1, 1));
         let bind_group = Self::create_bind_group(
@@ -259,7 +268,7 @@ impl FrameGpuResources {
             &scene_depth_2d.1,
             &scene_depth_array.1,
         );
-        Self {
+        Ok(Self {
             frame_uniform,
             lights_buffer,
             cluster_cache,
@@ -269,7 +278,7 @@ impl FrameGpuResources {
             scene_depth_array_extent_px: (1, 1),
             bind_group,
             cluster_bind_version,
-        }
+        })
     }
 
     /// Resizes cluster buffers when `viewport` or `stereo` changes; rebuilds [`Self::bind_group`].

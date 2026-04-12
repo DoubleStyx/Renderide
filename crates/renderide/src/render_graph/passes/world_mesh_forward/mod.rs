@@ -9,6 +9,8 @@
 //! Manifest raster binds use the composed WGSL **stem** from [`crate::materials::MaterialRouter::stem_for_shader_asset`]
 //! (not a hard-coded Unlit path). Whether UV0 is bound is stored on [`MaterialDrawBatchKey::embedded_needs_uv0`]
 //! (same rule as the embedded raster pipeline and [`crate::materials::embedded_stem_needs_uv0_stream`], computed during draw collection).
+//! Intersection tint subpasses use [`MaterialDrawBatchKey::embedded_requires_intersection_pass`]
+//! ([`crate::materials::embedded_stem_requires_intersection_pass`], WGSL reflection of `_IntersectColor`).
 //!
 //! ## VR stereo world draws
 //!
@@ -49,7 +51,7 @@ use crate::render_graph::{
     build_world_mesh_cull_proj_params, collect_and_sort_world_mesh_draws, WorldMeshCullInput,
 };
 
-use encode::{draw_subset, is_pbs_intersection_draw};
+use encode::draw_subset;
 use vp::compute_per_draw_vp_triple;
 
 /// Clears the backbuffer and depth, then draws meshes with material-batched raster pipelines.
@@ -274,7 +276,7 @@ impl RenderPass for WorldMeshForwardPass {
         let mut regular_indices = Vec::with_capacity(draws.len());
         let mut intersect_indices = Vec::new();
         for (draw_idx, item) in draws.iter().enumerate() {
-            if is_pbs_intersection_draw(item) {
+            if item.batch_key.embedded_requires_intersection_pass {
                 intersect_indices.push(draw_idx);
             } else {
                 regular_indices.push(draw_idx);

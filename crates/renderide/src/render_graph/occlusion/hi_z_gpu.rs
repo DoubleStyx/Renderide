@@ -1,40 +1,23 @@
 //! GPU hierarchical depth pyramid build and CPU readback for occlusion tests.
 
-use std::num::NonZeroU64;
 use std::sync::mpsc;
-use std::sync::OnceLock;
-
-use bytemuck::{Pod, Zeroable};
 
 use crate::render_graph::{
-    hi_z_pyramid_dimensions, hi_z_snapshot_from_linear_linear, mip_dimensions,
-    mip_levels_for_extent, unpack_linear_rows_to_mips, HiZCpuSnapshot, HiZStereoCpuSnapshot,
-    HiZTemporalState, OutputDepthMode,
+    hi_z_snapshot_from_linear_linear, mip_dimensions, mip_levels_for_extent,
+    unpack_linear_rows_to_mips, HiZCpuSnapshot, HiZStereoCpuSnapshot, HiZTemporalState,
+    OutputDepthMode,
 };
 
-const HIZ_MAX_MIPS: u32 = 8;
+pub(crate) const HIZ_MAX_MIPS: u32 = 8;
 
 /// Triple-buffered staging so a slot is not reused until prior `map_async` completes (non-blocking).
-const HIZ_STAGING_RING: usize = 3;
+pub(crate) const HIZ_STAGING_RING: usize = 3;
 
-type MapRecv = mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>;
+pub(crate) type MapRecv = mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>;
 
-const fn pending_none_array<T>() -> [Option<T>; HIZ_STAGING_RING] {
+pub(crate) const fn pending_none_array<T>() -> [Option<T>; HIZ_STAGING_RING] {
     [None, None, None]
 }
-
-const MIP0_DESKTOP_SRC: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/compute/hi_z_mip0_desktop.wgsl"
-));
-const MIP0_STEREO_SRC: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/compute/hi_z_mip0_stereo.wgsl"
-));
-const DOWNSAMPLE_SRC: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/compute/hi_z_downsample_max.wgsl"
-));
 
 /// GPU + CPU Hi-Z state owned by [`crate::backend::OcclusionSystem`].
 pub struct HiZGpuState {
@@ -44,20 +27,20 @@ pub struct HiZGpuState {
     pub stereo: Option<HiZStereoCpuSnapshot>,
     /// View/projection snapshot for the frame that produced [`Self::desktop`] / [`Self::stereo`].
     pub temporal: Option<HiZTemporalState>,
-    scratch: Option<HiZGpuScratch>,
+    pub(crate) scratch: Option<HiZGpuScratch>,
     last_extent: (u32, u32),
     last_mode: OutputDepthMode,
-    /// Next ring index for [`encode_hi_z_build`] copy targets (0..[`HIZ_STAGING_RING`]).
-    write_idx: usize,
+    /// Next ring index for Hi-Z encode copy targets (0..[`HIZ_STAGING_RING`]).
+    pub(crate) write_idx: usize,
     /// Staging slot written in the current encode (consumed by [`Self::on_frame_submitted`]).
-    hi_z_encoded_slot: Option<usize>,
+    pub(crate) hi_z_encoded_slot: Option<usize>,
     /// Pending `map_async` callbacks per desktop / left-eye staging buffer.
-    desktop_pending: [Option<MapRecv>; HIZ_STAGING_RING],
+    pub(crate) desktop_pending: [Option<MapRecv>; HIZ_STAGING_RING],
     /// Pending `map_async` per right-eye buffer when stereo; `None` when desktop-only.
-    right_pending: Option<[Option<MapRecv>; HIZ_STAGING_RING]>,
+    pub(crate) right_pending: Option<[Option<MapRecv>; HIZ_STAGING_RING]>,
     /// Partial stereo CPU bytes until both eyes for the same ring slot complete.
-    stereo_left_stash: [Option<Vec<u8>>; HIZ_STAGING_RING],
-    stereo_right_stash: [Option<Vec<u8>>; HIZ_STAGING_RING],
+    pub(crate) stereo_left_stash: [Option<Vec<u8>>; HIZ_STAGING_RING],
+    pub(crate) stereo_right_stash: [Option<Vec<u8>>; HIZ_STAGING_RING],
 }
 
 impl Default for HiZGpuState {
@@ -154,10 +137,7 @@ impl HiZGpuState {
 
         if stereo {
             if let Some(ref staging_r) = scratch.staging_r {
-                if self.right_pending.is_none() {
-                    self.right_pending = Some(pending_none_array());
-                }
-                let right_pending = self.right_pending.as_mut().expect("stereo right pending");
+                let right_pending = self.right_pending.get_or_insert_with(pending_none_array);
                 for i in 0..HIZ_STAGING_RING {
                     if let Some(recv) = right_pending[i].as_mut() {
                         match recv.try_recv() {
@@ -239,7 +219,7 @@ impl HiZGpuState {
         self.write_idx = (self.write_idx + 1) % HIZ_STAGING_RING;
     }
 
-    fn can_encode_hi_z(&self, scratch: &HiZGpuScratch) -> bool {
+    pub(crate) fn can_encode_hi_z(&self, scratch: &HiZGpuScratch) -> bool {
         let idx = self.write_idx;
         if self.desktop_pending[idx].is_some() {
             return false;
@@ -320,214 +300,17 @@ fn unpack_stereo_snapshot(
 }
 
 /// Transient GPU resources reused while extent and mip count stay stable.
-struct HiZGpuScratch {
-    extent: (u32, u32),
-    mip_levels: u32,
-    pyramid: wgpu::Texture,
-    views: Vec<wgpu::TextureView>,
-    pyramid_r: Option<(wgpu::Texture, Vec<wgpu::TextureView>)>,
+pub(crate) struct HiZGpuScratch {
+    pub extent: (u32, u32),
+    pub mip_levels: u32,
+    pub pyramid: wgpu::Texture,
+    pub views: Vec<wgpu::TextureView>,
+    pub pyramid_r: Option<(wgpu::Texture, Vec<wgpu::TextureView>)>,
     /// Triple-buffered staging for async readback (see [`HiZGpuState::write_idx`]).
-    staging_desktop: [wgpu::Buffer; HIZ_STAGING_RING],
-    staging_r: Option<[wgpu::Buffer; HIZ_STAGING_RING]>,
-    layer_uniform: wgpu::Buffer,
-    downsample_uniform: wgpu::Buffer,
-}
-
-struct HiZPipelines {
-    mip0_desktop: wgpu::ComputePipeline,
-    mip0_stereo: wgpu::ComputePipeline,
-    downsample: wgpu::ComputePipeline,
-    bgl_mip0_desktop: wgpu::BindGroupLayout,
-    bgl_mip0_stereo: wgpu::BindGroupLayout,
-    bgl_downsample: wgpu::BindGroupLayout,
-}
-
-impl HiZPipelines {
-    fn get(device: &wgpu::Device) -> &'static Self {
-        static CACHE: OnceLock<HiZPipelines> = OnceLock::new();
-        CACHE.get_or_init(|| Self::new(device))
-    }
-
-    fn new(device: &wgpu::Device) -> Self {
-        let bgl_mip0_desktop = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hi_z_mip0_desktop"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::R32Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let bgl_mip0_stereo = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hi_z_mip0_stereo"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(16),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::R32Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let bgl_downsample = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hi_z_downsample"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadOnly,
-                        format: wgpu::TextureFormat::R32Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::R32Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(16),
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let layout_mip0_d = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hi_z_mip0_desktop_layout"),
-            bind_group_layouts: &[Some(&bgl_mip0_desktop)],
-            immediate_size: 0,
-        });
-        let layout_mip0_s = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hi_z_mip0_stereo_layout"),
-            bind_group_layouts: &[Some(&bgl_mip0_stereo)],
-            immediate_size: 0,
-        });
-        let layout_ds = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hi_z_downsample_layout"),
-            bind_group_layouts: &[Some(&bgl_downsample)],
-            immediate_size: 0,
-        });
-
-        let shader_m0d = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hi_z_mip0_desktop"),
-            source: wgpu::ShaderSource::Wgsl(MIP0_DESKTOP_SRC.into()),
-        });
-        let shader_m0s = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hi_z_mip0_stereo"),
-            source: wgpu::ShaderSource::Wgsl(MIP0_STEREO_SRC.into()),
-        });
-        let shader_ds = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("hi_z_downsample"),
-            source: wgpu::ShaderSource::Wgsl(DOWNSAMPLE_SRC.into()),
-        });
-
-        let mip0_desktop = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("hi_z_mip0_desktop"),
-            layout: Some(&layout_mip0_d),
-            module: &shader_m0d,
-            entry_point: Some("cs_main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        let mip0_stereo = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("hi_z_mip0_stereo"),
-            layout: Some(&layout_mip0_s),
-            module: &shader_m0s,
-            entry_point: Some("cs_main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        let downsample = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("hi_z_downsample"),
-            layout: Some(&layout_ds),
-            module: &shader_ds,
-            entry_point: Some("cs_main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        Self {
-            mip0_desktop,
-            mip0_stereo,
-            downsample,
-            bgl_mip0_desktop,
-            bgl_mip0_stereo,
-            bgl_downsample,
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct LayerUniform {
-    layer: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct DownsampleUniform {
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
+    pub staging_desktop: [wgpu::Buffer; HIZ_STAGING_RING],
+    pub staging_r: Option<[wgpu::Buffer; HIZ_STAGING_RING]>,
+    pub layer_uniform: wgpu::Buffer,
+    pub downsample_uniform: wgpu::Buffer,
 }
 
 fn staging_size_pyramid(base_w: u32, base_h: u32, mip_levels: u32) -> u64 {
@@ -556,7 +339,7 @@ fn make_staging_ring(
 }
 
 impl HiZGpuScratch {
-    fn new(device: &wgpu::Device, extent: (u32, u32), stereo: bool) -> Option<Self> {
+    pub(crate) fn new(device: &wgpu::Device, extent: (u32, u32), stereo: bool) -> Option<Self> {
         let (bw, bh) = extent;
         if bw == 0 || bh == 0 {
             return None;
@@ -637,277 +420,5 @@ impl HiZGpuScratch {
             layer_uniform,
             downsample_uniform,
         })
-    }
-}
-
-#[derive(Clone, Copy)]
-enum DepthBinding {
-    D2,
-    D2Array { layer: u32 },
-}
-
-/// Records Hi-Z build + copy-to-staging into [`HiZGpuState::write_idx`].
-///
-/// Call [`HiZGpuState::on_frame_submitted`] after [`wgpu::Queue::submit`]. Call
-/// [`HiZGpuState::begin_frame_readback`] at the **start** of the next frame to drain completed maps.
-pub fn encode_hi_z_build(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    depth_view: &wgpu::TextureView,
-    extent: (u32, u32),
-    mode: OutputDepthMode,
-    state: &mut HiZGpuState,
-) {
-    state.hi_z_encoded_slot = None;
-    state.invalidate_if_needed(extent, mode);
-
-    let (full_w, full_h) = extent;
-    if full_w == 0 || full_h == 0 {
-        return;
-    }
-
-    let (bw, bh) = hi_z_pyramid_dimensions(full_w, full_h);
-    if bw == 0 || bh == 0 {
-        return;
-    }
-
-    let stereo = matches!(mode, OutputDepthMode::StereoArray { .. });
-    let mip_levels = mip_levels_for_extent(bw, bh, HIZ_MAX_MIPS);
-    if state.scratch.as_ref().map(|s| (s.extent, s.mip_levels)) != Some(((bw, bh), mip_levels))
-        || state.scratch.as_ref().map(|s| s.pyramid_r.is_some()) != Some(stereo)
-    {
-        state.scratch = HiZGpuScratch::new(device, (bw, bh), stereo);
-        state.desktop_pending = pending_none_array();
-        state.stereo_left_stash = pending_none_array();
-        state.stereo_right_stash = pending_none_array();
-        state.write_idx = 0;
-        state.hi_z_encoded_slot = None;
-        if stereo {
-            state.right_pending = Some(pending_none_array());
-        } else {
-            state.right_pending = None;
-        }
-    }
-    let Some(scratch_ref) = state.scratch.as_ref() else {
-        return;
-    };
-
-    if stereo && state.right_pending.is_none() {
-        state.right_pending = Some(pending_none_array());
-    }
-    if !stereo {
-        state.right_pending = None;
-    }
-
-    if !state.can_encode_hi_z(scratch_ref) {
-        return;
-    }
-
-    let Some(scratch) = state.scratch.as_mut() else {
-        return;
-    };
-
-    let ws = state.write_idx;
-    let pipes = HiZPipelines::get(device);
-
-    let dispatch_mip0_and_downsample =
-        |encoder: &mut wgpu::CommandEncoder,
-         pyramid_views: &[wgpu::TextureView],
-         depth_bind: DepthBinding| {
-            match depth_bind {
-                DepthBinding::D2 => {
-                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("hi_z_mip0_d_bg"),
-                        layout: &pipes.bgl_mip0_desktop,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(depth_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::TextureView(&pyramid_views[0]),
-                            },
-                        ],
-                    });
-                    {
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("hi_z_mip0_desktop"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(&pipes.mip0_desktop);
-                        pass.set_bind_group(0, &bg, &[]);
-                        pass.dispatch_workgroups(
-                            scratch.extent.0.div_ceil(8),
-                            scratch.extent.1.div_ceil(8),
-                            1,
-                        );
-                    }
-                }
-                DepthBinding::D2Array { layer } => {
-                    let layer_u = LayerUniform {
-                        layer,
-                        _pad0: 0,
-                        _pad1: 0,
-                        _pad2: 0,
-                    };
-                    queue.write_buffer(&scratch.layer_uniform, 0, bytemuck::bytes_of(&layer_u));
-                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("hi_z_mip0_s_bg"),
-                        layout: &pipes.bgl_mip0_stereo,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(depth_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: scratch.layer_uniform.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: wgpu::BindingResource::TextureView(&pyramid_views[0]),
-                            },
-                        ],
-                    });
-                    {
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("hi_z_mip0_stereo"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(&pipes.mip0_stereo);
-                        pass.set_bind_group(0, &bg, &[]);
-                        pass.dispatch_workgroups(
-                            scratch.extent.0.div_ceil(8),
-                            scratch.extent.1.div_ceil(8),
-                            1,
-                        );
-                    }
-                }
-            }
-
-            for mip in 0..scratch.mip_levels.saturating_sub(1) {
-                let (sw, sh) = mip_dimensions(bw, bh, mip).unwrap_or((1, 1));
-                let (dw, dh) = mip_dimensions(bw, bh, mip + 1).unwrap_or((1, 1));
-                let du = DownsampleUniform {
-                    src_w: sw,
-                    src_h: sh,
-                    dst_w: dw,
-                    dst_h: dh,
-                };
-                queue.write_buffer(&scratch.downsample_uniform, 0, bytemuck::bytes_of(&du));
-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("hi_z_ds_bg"),
-                    layout: &pipes.bgl_downsample,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(
-                                &pyramid_views[mip as usize],
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(
-                                &pyramid_views[mip as usize + 1],
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: scratch.downsample_uniform.as_entire_binding(),
-                        },
-                    ],
-                });
-                {
-                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some("hi_z_downsample"),
-                        timestamp_writes: None,
-                    });
-                    pass.set_pipeline(&pipes.downsample);
-                    pass.set_bind_group(0, &bg, &[]);
-                    pass.dispatch_workgroups(dw.div_ceil(8), dh.div_ceil(8), 1);
-                }
-            }
-        };
-
-    match mode {
-        OutputDepthMode::DesktopSingle => {
-            dispatch_mip0_and_downsample(encoder, &scratch.views, DepthBinding::D2);
-            copy_pyramid_to_staging(
-                encoder,
-                &scratch.pyramid,
-                bw,
-                bh,
-                scratch.mip_levels,
-                &scratch.staging_desktop[ws],
-            );
-        }
-        OutputDepthMode::StereoArray { .. } => {
-            let Some((ref pyr_r, ref views_r)) = scratch.pyramid_r else {
-                return;
-            };
-            dispatch_mip0_and_downsample(
-                encoder,
-                &scratch.views,
-                DepthBinding::D2Array { layer: 0 },
-            );
-            dispatch_mip0_and_downsample(encoder, views_r, DepthBinding::D2Array { layer: 1 });
-            copy_pyramid_to_staging(
-                encoder,
-                &scratch.pyramid,
-                bw,
-                bh,
-                scratch.mip_levels,
-                &scratch.staging_desktop[ws],
-            );
-            copy_pyramid_to_staging(
-                encoder,
-                pyr_r,
-                bw,
-                bh,
-                scratch.mip_levels,
-                &scratch.staging_r.as_ref().expect("stereo staging")[ws],
-            );
-        }
-    }
-
-    state.hi_z_encoded_slot = Some(ws);
-}
-
-fn copy_pyramid_to_staging(
-    encoder: &mut wgpu::CommandEncoder,
-    texture: &wgpu::Texture,
-    base_w: u32,
-    base_h: u32,
-    mip_levels: u32,
-    staging: &wgpu::Buffer,
-) {
-    let mut offset = 0u64;
-    for mip in 0..mip_levels {
-        let (w, h) = mip_dimensions(base_w, base_h, mip).unwrap_or((1, 1));
-        let row_pitch = wgpu::util::align_to(w * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) as u32;
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: mip,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: staging,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset,
-                    bytes_per_row: Some(row_pitch),
-                    rows_per_image: Some(h),
-                },
-            },
-            wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-        );
-        offset += u64::from(row_pitch) * u64::from(h);
     }
 }

@@ -14,6 +14,8 @@ mod debug_draw;
 mod debug_hud_bundle;
 mod embedded_material_bind;
 mod embedded_material_layout;
+mod embedded_texture_resolve;
+mod embedded_uniform_pack;
 mod frame_gpu;
 mod frame_resource_manager;
 mod light_gpu;

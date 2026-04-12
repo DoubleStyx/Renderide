@@ -57,7 +57,13 @@ impl FrameResourceManager {
 
     /// Allocates GPU resources for this manager. Called from [`super::RenderBackend::attach`].
     pub fn attach(&mut self, device: &wgpu::Device) {
-        self.frame_gpu = Some(FrameGpuResources::new(device));
+        self.frame_gpu = match FrameGpuResources::new(device) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                logger::error!("FrameGpuResources::new failed: {e}");
+                None
+            }
+        };
         self.empty_material = Some(EmptyMaterialBindGroup::new(device));
         self.debug_draw = Some(DebugDrawResources::new(device));
     }

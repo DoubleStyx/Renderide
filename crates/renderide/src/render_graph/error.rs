@@ -52,6 +52,10 @@ pub enum GraphExecuteError {
     #[error(transparent)]
     Present(#[from] PresentClearError),
 
+    /// Main depth attachment could not be ensured for the current surface extent.
+    #[error("GPU depth attachment unavailable")]
+    DepthTarget,
+
     /// A pass returned an error while recording.
     #[error("pass execution failed: {0}")]
     Pass(#[from] RenderPassError),

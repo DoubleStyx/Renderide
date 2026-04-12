@@ -8,16 +8,6 @@ use crate::resources::MeshPool;
 
 use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 
-pub(crate) fn is_pbs_intersection_draw(item: &WorldMeshDrawItem) -> bool {
-    match &item.batch_key.pipeline {
-        RasterPipelineKind::EmbeddedStem(stem) => {
-            stem.starts_with("pbsintersectspecular")
-                || stem.starts_with("custom_pbsintersectspecular")
-        }
-        RasterPipelineKind::DebugWorldNormals => false,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_subset(
     rpass: &mut wgpu::RenderPass<'_>,

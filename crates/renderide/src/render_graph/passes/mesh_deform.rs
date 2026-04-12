@@ -439,7 +439,10 @@ fn record_mesh_deform(
         };
 
         let src_for_skin: &wgpu::Buffer = if needs_blend {
-            mesh.deform_temp_buffer.as_deref().expect("blend temp")
+            let Some(buf) = mesh.deform_temp_buffer.as_deref() else {
+                return;
+            };
+            buf
         } else {
             positions.as_ref()
         };

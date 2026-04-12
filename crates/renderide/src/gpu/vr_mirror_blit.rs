@@ -299,16 +299,13 @@ impl VrMirrorBlitResources {
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
     ) -> &wgpu::RenderPipeline {
-        let need_new = self
+        let entry = self
             .surface_pipeline
-            .as_ref()
-            .map(|(f, _)| *f != format)
-            .unwrap_or(true);
-        if need_new {
-            let pipe = surface_pipeline(device, format);
-            self.surface_pipeline = Some((format, pipe));
+            .get_or_insert_with(|| (format, surface_pipeline(device, format)));
+        if entry.0 != format {
+            *entry = (format, surface_pipeline(device, format));
         }
-        &self.surface_pipeline.as_ref().expect("just set").1
+        &entry.1
     }
 
     /// Copies the acquired swapchain eye layer into the staging texture and submits GPU work.
@@ -404,20 +401,21 @@ impl VrMirrorBlitResources {
         let uniform_bytes = bytemuck::bytes_of(&u);
         let device = gpu.device().as_ref();
         self.ensure_surface_uniform(device);
+        let Some(uniform_buf) = self.surface_uniform.as_ref() else {
+            logger::warn!(
+                "vr_mirror_blit: surface uniform buffer missing after ensure_surface_uniform"
+            );
+            return Ok(());
+        };
         {
             let q = gpu.queue().lock().unwrap_or_else(|e| e.into_inner());
-            q.write_buffer(
-                self.surface_uniform.as_ref().expect("ensured"),
-                0,
-                uniform_bytes,
-            );
+            q.write_buffer(uniform_buf, 0, uniform_bytes);
         }
 
-        let staging_view = self
-            .staging_texture
-            .as_ref()
-            .expect("checked above")
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let Some(staging_tex) = self.staging_texture.as_ref() else {
+            return Ok(());
+        };
+        let staging_view = staging_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
         let surface_view = frame
             .texture
@@ -438,11 +436,7 @@ impl VrMirrorBlitResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self
-                        .surface_uniform
-                        .as_ref()
-                        .expect("ensured")
-                        .as_entire_binding(),
+                    resource: uniform_buf.as_entire_binding(),
                 },
             ],
         });

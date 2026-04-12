@@ -5,7 +5,7 @@
 //! `crates_old/renderide` so pipeline and future per-material bind groups change only on boundaries.
 //!
 //! Optional CPU frustum and Hi-Z culling share one bounds evaluation per draw slot
-//! (`mesh_draw_passes_cpu_cull`) using the same view–projection rules as the forward pass
+//! ([`super::world_mesh_cull_eval::mesh_draw_passes_cpu_cull`]) using the same view–projection rules as the forward pass
 //! ([`super::world_mesh_cull::build_world_mesh_cull_proj_params`]).
 //!
 //! A future parallel per-space split is described in `docs/parallel_draw_prep_plan.md` (design only).
@@ -20,7 +20,8 @@ use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::assets::mesh::GpuMesh;
 use crate::materials::{
     embedded_stem_needs_color_stream, embedded_stem_needs_uv0_stream,
-    embedded_stem_uses_alpha_blending, resolve_raster_pipeline, MaterialRouter, RasterPipelineKind,
+    embedded_stem_requires_intersection_pass, embedded_stem_uses_alpha_blending,
+    resolve_raster_pipeline, MaterialRouter, RasterPipelineKind,
 };
 use crate::pipelines::ShaderPermutation;
 use crate::resources::MeshPool;
@@ -29,17 +30,7 @@ use crate::scene::{
 };
 use crate::shared::RenderingContext;
 
-use super::camera::view_matrix_from_render_transform;
-use super::frustum::{
-    mesh_bounds_degenerate_for_cull, world_aabb_from_local_bounds,
-    world_aabb_from_skinned_bone_origins, world_aabb_visible_in_homogeneous_clip,
-};
-use super::hi_z_view_proj_matrices;
-use super::mesh_fully_occluded_in_hiz;
-use super::skinning_palette::build_skinning_palette;
-use super::stereo_hiz_keeps_draw;
-use super::world_mesh_cull::{HiZTemporalState, WorldMeshCullInput};
-use super::HiZCullData;
+use super::world_mesh_cull_eval::{mesh_draw_passes_cpu_cull, CpuCullFailure};
 
 /// Groups draws that can share the same raster pipeline and material bind data (Unity material +
 /// [`MaterialPropertyBlock`](https://docs.unity3d.com/ScriptReference/MaterialPropertyBlock.html)-style slot0).
@@ -61,6 +52,9 @@ pub struct MaterialDrawBatchKey {
     /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether the active [`ShaderPermutation`]
     /// requires a color vertex stream at `@location(3)`.
     pub embedded_needs_color: bool,
+    /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether reflection reports `_IntersectColor`
+    /// in the material uniform (second forward subpass with depth snapshot).
+    pub embedded_requires_intersection_pass: bool,
     /// Transparent alpha-blended UI/text stems should preserve stable canvas order.
     pub alpha_blended: bool,
 }
@@ -150,6 +144,12 @@ fn batch_key_for_slot(
         }
         RasterPipelineKind::DebugWorldNormals => false,
     };
+    let embedded_requires_intersection_pass = match &pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            embedded_stem_requires_intersection_pass(stem.as_ref(), shader_perm)
+        }
+        RasterPipelineKind::DebugWorldNormals => false,
+    };
     let alpha_blended = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => embedded_stem_uses_alpha_blending(stem.as_ref()),
         RasterPipelineKind::DebugWorldNormals => false,
@@ -162,207 +162,8 @@ fn batch_key_for_slot(
         skinned,
         embedded_needs_uv0,
         embedded_needs_color,
+        embedded_requires_intersection_pass,
         alpha_blended,
-    }
-}
-
-/// World-space bounds and rigid transform for a single CPU cull evaluation.
-#[derive(Clone, Copy)]
-struct MeshCullGeometry {
-    /// When `None`, culling treats the draw as visible (conservative).
-    world_aabb: Option<(Vec3, Vec3)>,
-    /// World matrix for rigid meshes when [`MeshCullGeometry::world_aabb`] was built from local bounds.
-    rigid_world_matrix: Option<Mat4>,
-}
-
-/// World-space AABB (and rigid matrix when applicable) for culling, evaluated once per draw slot.
-#[allow(clippy::too_many_arguments)]
-fn mesh_world_geometry_for_cull(
-    scene: &SceneCoordinator,
-    space_id: RenderSpaceId,
-    mesh: &GpuMesh,
-    skinned: bool,
-    skinned_renderer: Option<&SkinnedMeshRenderer>,
-    node_id: i32,
-    culling: &WorldMeshCullInput<'_>,
-    render_context: RenderingContext,
-) -> MeshCullGeometry {
-    if mesh_bounds_degenerate_for_cull(&mesh.bounds) {
-        return MeshCullGeometry {
-            world_aabb: None,
-            rigid_world_matrix: None,
-        };
-    }
-    if scene.space(space_id).is_none() {
-        return MeshCullGeometry {
-            world_aabb: None,
-            rigid_world_matrix: None,
-        };
-    }
-    let hc = culling.host_camera;
-    if skinned {
-        let Some(sk) = skinned_renderer else {
-            return MeshCullGeometry {
-                world_aabb: None,
-                rigid_world_matrix: None,
-            };
-        };
-        let Some(pal) = build_skinning_palette(
-            scene,
-            space_id,
-            &mesh.skinning_bind_matrices,
-            mesh.has_skeleton,
-            &sk.bone_transform_indices,
-            sk.base.node_id,
-            render_context,
-            hc.head_output_transform,
-        ) else {
-            return MeshCullGeometry {
-                world_aabb: None,
-                rigid_world_matrix: None,
-            };
-        };
-        MeshCullGeometry {
-            world_aabb: world_aabb_from_skinned_bone_origins(&mesh.bounds, &pal),
-            rigid_world_matrix: None,
-        }
-    } else {
-        let Some(model) = scene.world_matrix_for_render_context(
-            space_id,
-            node_id as usize,
-            render_context,
-            hc.head_output_transform,
-        ) else {
-            return MeshCullGeometry {
-                world_aabb: None,
-                rigid_world_matrix: None,
-            };
-        };
-        MeshCullGeometry {
-            world_aabb: world_aabb_from_local_bounds(&mesh.bounds, model),
-            rigid_world_matrix: Some(model),
-        }
-    }
-}
-
-/// Which CPU cull stage rejected the draw (for diagnostics counters).
-enum CpuCullFailure {
-    Frustum,
-    HiZ,
-}
-
-/// Frustum + optional Hi-Z culling using a single [`mesh_world_geometry_for_cull`] evaluation.
-///
-/// On success, returns the rigid world matrix when the draw is non-skinned and the matrix was
-/// computed while building bounds (reuse in the forward pass).
-#[allow(clippy::too_many_arguments)]
-fn mesh_draw_passes_cpu_cull(
-    scene: &SceneCoordinator,
-    space_id: RenderSpaceId,
-    mesh: &GpuMesh,
-    is_overlay: bool,
-    skinned: bool,
-    skinned_renderer: Option<&SkinnedMeshRenderer>,
-    node_id: i32,
-    culling: &WorldMeshCullInput<'_>,
-    render_context: RenderingContext,
-) -> Result<Option<Mat4>, CpuCullFailure> {
-    let geom = mesh_world_geometry_for_cull(
-        scene,
-        space_id,
-        mesh,
-        skinned,
-        skinned_renderer,
-        node_id,
-        culling,
-        render_context,
-    );
-
-    let Some((wmin, wmax)) = geom.world_aabb else {
-        return Ok(geom.rigid_world_matrix);
-    };
-
-    let Some(space) = scene.space(space_id) else {
-        return Ok(geom.rigid_world_matrix);
-    };
-    let view = view_matrix_from_render_transform(&space.view_transform);
-    let proj = &culling.proj;
-
-    let passes_frustum = if let Some((sl, sr)) = proj.vr_stereo {
-        if is_overlay {
-            let vp = proj.overlay_proj * view;
-            world_aabb_visible_in_homogeneous_clip(vp, wmin, wmax)
-        } else {
-            world_aabb_visible_in_homogeneous_clip(sl, wmin, wmax)
-                || world_aabb_visible_in_homogeneous_clip(sr, wmin, wmax)
-        }
-    } else {
-        let base_proj = if is_overlay {
-            proj.overlay_proj
-        } else {
-            proj.world_proj
-        };
-        let vp = base_proj * view;
-        world_aabb_visible_in_homogeneous_clip(vp, wmin, wmax)
-    };
-
-    if !passes_frustum {
-        return Err(CpuCullFailure::Frustum);
-    }
-
-    let Some(hi) = &culling.hi_z else {
-        return Ok(geom.rigid_world_matrix);
-    };
-    let Some(temporal) = &culling.hi_z_temporal else {
-        return Ok(geom.rigid_world_matrix);
-    };
-    if is_overlay {
-        return Ok(geom.rigid_world_matrix);
-    }
-    if !hi_z_snapshot_matches_temporal(hi, temporal) {
-        return Ok(geom.rigid_world_matrix);
-    }
-    let Some(prev_view) = temporal.prev_view_by_space.get(&space_id).copied() else {
-        return Ok(geom.rigid_world_matrix);
-    };
-
-    let passes_hiz = match hi {
-        HiZCullData::Desktop(ref snap) => {
-            if temporal.prev_cull.vr_stereo.is_some() {
-                true
-            } else {
-                let vps = hi_z_view_proj_matrices(&temporal.prev_cull, prev_view, is_overlay);
-                match vps.first().copied() {
-                    None => true,
-                    Some(vp) => !mesh_fully_occluded_in_hiz(snap, vp, wmin, wmax),
-                }
-            }
-        }
-        HiZCullData::Stereo {
-            ref left,
-            ref right,
-        } => match temporal.prev_cull.vr_stereo {
-            None => true,
-            Some((sl, sr)) => {
-                let oc_l = mesh_fully_occluded_in_hiz(left, sl, wmin, wmax);
-                let oc_r = mesh_fully_occluded_in_hiz(right, sr, wmin, wmax);
-                stereo_hiz_keeps_draw(oc_l, oc_r)
-            }
-        },
-    };
-
-    if !passes_hiz {
-        return Err(CpuCullFailure::HiZ);
-    }
-    Ok(geom.rigid_world_matrix)
-}
-
-/// Ensures CPU Hi-Z dimensions match the temporal viewport used when the pyramid was built.
-fn hi_z_snapshot_matches_temporal(hi: &HiZCullData, t: &HiZTemporalState) -> bool {
-    let (w, h) = t.depth_viewport_px;
-    match hi {
-        HiZCullData::Desktop(s) => s.base_width == w && s.base_height == h,
-        HiZCullData::Stereo { left, .. } => left.base_width == w && left.base_height == h,
     }
 }
 
@@ -384,7 +185,7 @@ fn push_draws_for_renderer(
     context: RenderingContext,
     head_output_transform: Mat4,
     mismatch_warned: &mut HashSet<i32>,
-    culling: Option<&WorldMeshCullInput<'_>>,
+    culling: Option<&super::world_mesh_cull::WorldMeshCullInput<'_>>,
     cull_stats: &mut (usize, usize, usize),
 ) {
     let slots = resolved_material_slots(renderer);
@@ -543,7 +344,7 @@ pub fn resort_world_mesh_draws_for_camera(
 /// Collects draws from active spaces, then sorts for batching (material / pipeline boundaries).
 ///
 /// When `culling` is [`Some`], instances outside the frustum (and optional Hi-Z) are dropped (see
-/// [`mesh_draw_passes_cpu_cull`]).
+/// [`mesh_draw_passes_cpu_cull`](super::world_mesh_cull_eval::mesh_draw_passes_cpu_cull)).
 #[allow(clippy::too_many_arguments)] // Frame-graph entry mirrors host camera + cull snapshot inputs.
 pub fn collect_and_sort_world_mesh_draws(
     scene: &SceneCoordinator,
@@ -553,7 +354,7 @@ pub fn collect_and_sort_world_mesh_draws(
     shader_perm: ShaderPermutation,
     context: RenderingContext,
     head_output_transform: Mat4,
-    culling: Option<&WorldMeshCullInput<'_>>,
+    culling: Option<&super::world_mesh_cull::WorldMeshCullInput<'_>>,
 ) -> WorldMeshDrawCollection {
     let mut mismatch_warned = HashSet::new();
     let mut out = Vec::new();
@@ -652,74 +453,6 @@ pub fn collect_and_sort_world_mesh_draws(
     }
 }
 
-/// Draw and batch counts for the debug HUD (aligned with sorted [`WorldMeshDrawItem`] order).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WorldMeshDrawStats {
-    /// Distinct `(batch_key, overlay)` groups after sorting.
-    pub batch_total: usize,
-    pub batch_main: usize,
-    pub batch_overlay: usize,
-    pub draws_total: usize,
-    pub draws_main: usize,
-    pub draws_overlay: usize,
-    pub rigid_draws: usize,
-    pub skinned_draws: usize,
-    /// Slots that went through frustum culling before the final draw list (if culling was enabled).
-    pub draws_pre_cull: usize,
-    /// Draws removed by frustum culling.
-    pub draws_culled: usize,
-    /// Draws removed by Hi-Z occlusion when enabled.
-    pub draws_hi_z_culled: usize,
-}
-
-/// Computes batch boundaries from material/property-block/skin/overlay changes after sorting.
-pub fn world_mesh_draw_stats_from_sorted(
-    draws: &[WorldMeshDrawItem],
-    cull: Option<(usize, usize, usize)>,
-) -> WorldMeshDrawStats {
-    let draws_total = draws.len();
-    let draws_main = draws.iter().filter(|d| !d.is_overlay).count();
-    let draws_overlay = draws_total - draws_main;
-    let rigid_draws = draws.iter().filter(|d| !d.skinned).count();
-    let skinned_draws = draws_total - rigid_draws;
-
-    let mut batch_total = 0usize;
-    let mut batch_main = 0usize;
-    let mut batch_overlay = 0usize;
-    let mut prev: Option<(MaterialDrawBatchKey, bool)> = None;
-    for d in draws {
-        let cur = (d.batch_key.clone(), d.is_overlay);
-        let same_as_prev = prev
-            .as_ref()
-            .is_some_and(|(k, o)| k == &d.batch_key && *o == d.is_overlay);
-        if !same_as_prev {
-            batch_total += 1;
-            if d.is_overlay {
-                batch_overlay += 1;
-            } else {
-                batch_main += 1;
-            }
-            prev = Some(cur);
-        }
-    }
-
-    let (draws_pre_cull, draws_culled, draws_hi_z_culled) = cull.unwrap_or((0, 0, 0));
-
-    WorldMeshDrawStats {
-        batch_total,
-        batch_main,
-        batch_overlay,
-        draws_total,
-        draws_main,
-        draws_overlay,
-        rigid_draws,
-        skinned_draws,
-        draws_pre_cull,
-        draws_culled,
-        draws_hi_z_culled,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -799,6 +532,7 @@ mod tests {
                 skinned,
                 embedded_needs_uv0: false,
                 embedded_needs_color: false,
+                embedded_requires_intersection_pass: false,
                 alpha_blended,
             },
             rigid_world_matrix: None,
@@ -831,6 +565,7 @@ mod tests {
             skinned: false,
             embedded_needs_uv0: false,
             embedded_needs_color: false,
+            embedded_requires_intersection_pass: false,
             alpha_blended: false,
         };
         let b = MaterialDrawBatchKey {
@@ -841,6 +576,7 @@ mod tests {
             skinned: false,
             embedded_needs_uv0: false,
             embedded_needs_color: false,
+            embedded_requires_intersection_pass: false,
             alpha_blended: false,
         };
         assert_ne!(a, b);
@@ -870,23 +606,5 @@ mod tests {
         sort_world_mesh_draws(&mut v);
         assert_eq!(v[0].camera_distance_sq, 9.0);
         assert_eq!(v[1].camera_distance_sq, 1.0);
-    }
-
-    #[test]
-    fn world_mesh_draw_stats_empty() {
-        let s = super::world_mesh_draw_stats_from_sorted(&[], None);
-        assert_eq!(s.batch_total, 0);
-        assert_eq!(s.draws_total, 0);
-    }
-
-    #[test]
-    fn world_mesh_draw_stats_single_batch() {
-        let a = dummy_item(1, None, false, 0, 1, 0, 0, 0, false);
-        let b = dummy_item(1, None, false, 0, 1, 0, 1, 1, false);
-        let draws = vec![a, b];
-        let s = super::world_mesh_draw_stats_from_sorted(&draws, None);
-        assert_eq!(s.batch_total, 1);
-        assert_eq!(s.draws_total, 2);
-        assert_eq!(s.rigid_draws, 2);
     }
 }

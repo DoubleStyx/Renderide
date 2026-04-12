@@ -2,6 +2,7 @@
 
 mod bindings;
 mod frame;
+mod openxr_actions;
 mod openxr_input;
 mod pose;
 mod profile;

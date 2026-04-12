@@ -52,15 +52,17 @@ mod resources;
 mod reverse_z_depth;
 mod skinning_palette;
 mod world_mesh_cull;
+mod world_mesh_cull_eval;
 mod world_mesh_draw_prep;
+mod world_mesh_draw_stats;
 
 pub mod passes;
 
 pub use world_mesh_draw_prep::{
     collect_and_sort_world_mesh_draws, resolved_material_slots, sort_world_mesh_draws,
-    world_mesh_draw_stats_from_sorted, MaterialDrawBatchKey, WorldMeshDrawCollection,
-    WorldMeshDrawItem, WorldMeshDrawStats,
+    MaterialDrawBatchKey, WorldMeshDrawCollection, WorldMeshDrawItem,
 };
+pub use world_mesh_draw_stats::{world_mesh_draw_stats_from_sorted, WorldMeshDrawStats};
 
 pub use builder::GraphBuilder;
 pub use camera::{

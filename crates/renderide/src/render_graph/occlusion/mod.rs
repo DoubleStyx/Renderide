@@ -2,6 +2,9 @@
 //!
 //! Used by [`crate::backend::OcclusionSystem`] and [`crate::render_graph::passes::HiZBuildPass`].
 
+mod hi_z_encode;
 mod hi_z_gpu;
+mod hi_z_pipelines;
 
-pub use hi_z_gpu::{encode_hi_z_build, HiZGpuState};
+pub use hi_z_encode::encode_hi_z_build;
+pub use hi_z_gpu::HiZGpuState;

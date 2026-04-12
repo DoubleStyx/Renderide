@@ -146,7 +146,9 @@ impl CompiledRenderGraph {
             let bb = backbuffer_view_holder
                 .as_ref()
                 .map(|v| v as &wgpu::TextureView);
-            let (depth_tex, depth_view) = gpu.ensure_depth_target();
+            let (depth_tex, depth_view) = gpu
+                .ensure_depth_target()
+                .map_err(|_| GraphExecuteError::DepthTarget)?;
             (surface_format, viewport_px, depth_tex, depth_view, bb)
         };
         let device = device_arc.as_ref();

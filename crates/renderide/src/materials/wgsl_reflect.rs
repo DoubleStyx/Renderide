@@ -71,6 +71,10 @@ pub struct ReflectedRasterLayout {
     pub material_group1_names: HashMap<u32, String>,
     /// Highest `@location` index on `vs_main` vertex inputs (excluding builtins); `>= 2` implies a UV stream at `location(2)`.
     pub vs_max_vertex_location: Option<u32>,
+    /// `true` when the material uniform block declares intersection tint (e.g. `_IntersectColor`), used for a second forward subpass.
+    ///
+    /// Derived from reflection only (no shader stem string checks in the render graph).
+    pub requires_intersection_pass: bool,
 }
 
 /// Errors from [`reflect_raster_material_wgsl`].
@@ -159,6 +163,9 @@ pub fn reflect_raster_material_wgsl(source: &str) -> Result<ReflectedRasterLayou
         &material_group1_names,
     );
 
+    let requires_intersection_pass =
+        material_uniform_requires_intersection_subpass(&material_uniform);
+
     Ok(ReflectedRasterLayout {
         layout_fingerprint,
         material_entries,
@@ -166,7 +173,17 @@ pub fn reflect_raster_material_wgsl(source: &str) -> Result<ReflectedRasterLayou
         material_uniform,
         material_group1_names,
         vs_max_vertex_location,
+        requires_intersection_pass,
     })
+}
+
+/// `true` when `@group(1)` uniform struct includes `_IntersectColor` (PBS intersect materials).
+fn material_uniform_requires_intersection_subpass(
+    material_uniform: &Option<ReflectedMaterialUniformBlock>,
+) -> bool {
+    material_uniform
+        .as_ref()
+        .is_some_and(|u| u.fields.contains_key("_IntersectColor"))
 }
 
 /// Returns true when `vs_main` uses vertex `@location` 2 or higher (UV0 stream).
@@ -185,6 +202,13 @@ pub fn reflect_vertex_shader_needs_color_stream(wgsl_source: &str) -> bool {
         .and_then(|r| r.vs_max_vertex_location)
         .map(|m| m >= 3)
         .unwrap_or(false)
+}
+
+/// `true` when reflection reports an intersect-style material (uniform field `_IntersectColor`).
+pub fn reflect_raster_material_requires_intersection_pass(wgsl_source: &str) -> bool {
+    reflect_raster_material_wgsl(wgsl_source)
+        .ok()
+        .is_some_and(|r| r.requires_intersection_pass)
 }
 
 fn reflect_group1_global_binding_names(module: &naga::Module) -> HashMap<u32, String> {
