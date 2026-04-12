@@ -7,6 +7,7 @@ mod frame_cpu_gpu_timing;
 pub mod hi_z_build;
 pub mod mesh_preprocess;
 mod per_draw_uniforms;
+pub mod vr_mirror_blit;
 
 pub mod frame_globals;
 
@@ -18,3 +19,4 @@ pub use per_draw_uniforms::{
     write_per_draw_uniform_slab, PaddedPerDrawUniforms, INITIAL_PER_DRAW_UNIFORM_SLOTS,
     PER_DRAW_UNIFORM_STRIDE,
 };
+pub use vr_mirror_blit::{VrMirrorBlitResources, VR_MIRROR_EYE_LAYER};

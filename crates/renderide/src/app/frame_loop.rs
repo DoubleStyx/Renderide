@@ -5,10 +5,11 @@
 
 use winit::window::Window;
 
-use crate::gpu::GpuContext;
+use crate::gpu::{GpuContext, VrMirrorBlitResources};
+use crate::present::PresentClearError;
 use crate::render_graph::GraphExecuteError;
 use crate::runtime::RendererRuntime;
-use crate::xr::{OpenxrFrameTick, XrHostCameraSync, XrStereoSwapchain, XrWgpuHandles};
+use crate::xr::{OpenxrFrameTick, XrStereoSwapchain, XrWgpuHandles};
 
 /// Runs OpenXR `wait_frame` + view pose for stereo uniforms and IPC head tracking.
 pub(crate) fn begin_openxr_frame_tick(
@@ -19,12 +20,14 @@ pub(crate) fn begin_openxr_frame_tick(
 }
 
 /// Renders to the HMD multiview swapchain when VR is active; returns whether a projection layer was submitted.
+#[allow(clippy::too_many_arguments)] // OpenXR + swapchain + mirror blit wiring; kept explicit at call site.
 pub(crate) fn try_hmd_multiview_submit(
     gpu: &mut GpuContext,
     handles: &mut XrWgpuHandles,
     runtime: &mut RendererRuntime,
     xr_swapchain: &mut Option<XrStereoSwapchain>,
     xr_stereo_depth: &mut Option<(wgpu::Texture, wgpu::TextureView)>,
+    mirror_blit: &mut VrMirrorBlitResources,
     window: &Window,
     tick: &OpenxrFrameTick,
 ) -> bool {
@@ -34,22 +37,19 @@ pub(crate) fn try_hmd_multiview_submit(
         runtime,
         xr_swapchain,
         xr_stereo_depth,
+        mirror_blit,
         window,
         tick,
     )
 }
 
-/// After HMD work, mirror window uses a single-view matrix when `vr_active`.
-pub(crate) fn apply_vr_mirror_stereo_for_desktop_pass(
-    runtime: &mut impl XrHostCameraSync,
-    xr_tick: Option<&OpenxrFrameTick>,
-) {
-    if !runtime.vr_active() {
-        return;
-    }
-    let mirror_vp = xr_tick.and_then(|tick| tick.desktop_mirror_view_proj);
-    XrHostCameraSync::set_stereo_view_proj(runtime, mirror_vp.map(|vp| (vp, vp)));
-    XrHostCameraSync::set_stereo_views(runtime, None);
+/// Blits the last HMD eye staging texture to the window (VR mirror); no full scene render.
+pub(crate) fn present_vr_mirror_blit(
+    gpu: &mut GpuContext,
+    window: &Window,
+    mirror_blit: &mut VrMirrorBlitResources,
+) -> Result<(), PresentClearError> {
+    mirror_blit.present_staging_to_surface(gpu, window)
 }
 
 /// Presents the desktop mirror / compositor path.

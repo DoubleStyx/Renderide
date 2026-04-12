@@ -8,10 +8,10 @@
 //! device may come from [`crate::xr::init_wgpu_openxr`]; the mirror window uses the same device.
 //! Each frame: OpenXR `wait_frame` / `locate_views` run **before** lock-step `pre_frame` so headset
 //! pose in [`InputState::vr`](crate::shared::InputState) matches the same `locate_views` snapshot.
-//! The mirror uses the normal render graph. When `vr_active` and multiview are available, the headset path renders
-//! once to the OpenXR array swapchain and ends the frame with a projection layer, and the desktop
-//! window still renders a single-view mirror using the left-eye stereo matrix. Otherwise the
-//! mirror window is rendered and the frame ends empty.
+//! The desktop window uses the normal render graph when VR is inactive. When `vr_active` and multiview
+//! are available, the headset path renders once to the OpenXR array swapchain and ends the frame with a
+//! projection layer; the desktop window shows a **blit of the left-eye** HMD output (no second world render).
+//! When the HMD path does not run, the window is cleared for that frame.
 //!
 //! VR **IPC input** (a non-empty [`InputState::vr`](crate::shared::InputState)) is sent whenever
 //! [`Self::session_output_device`] is VR-capable so the host can create headset devices. If OpenXR
@@ -37,7 +37,7 @@ use crate::frontend::input::{
     apply_window_event, vr_inputs_for_session, CursorOutputTracking, WindowInputAccumulator,
 };
 use crate::frontend::InitState;
-use crate::gpu::GpuContext;
+use crate::gpu::{GpuContext, VrMirrorBlitResources};
 use crate::output_device::head_output_device_wants_openxr;
 use crate::present::present_clear_frame;
 use crate::render_graph::GraphExecuteError;
@@ -136,6 +136,7 @@ pub fn run() -> Option<i32> {
         xr_handles: None,
         xr_swapchain: None,
         xr_stereo_depth: None,
+        vr_mirror_blit: VrMirrorBlitResources::new(),
         #[cfg(feature = "debug-hud")]
         hud_frame_last: None,
     };
@@ -199,6 +200,8 @@ struct RenderideApp {
     xr_handles: Option<crate::xr::XrWgpuHandles>,
     xr_swapchain: Option<crate::xr::XrStereoSwapchain>,
     xr_stereo_depth: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Staging texture and blit pipelines for the VR desktop mirror (left HMD eye).
+    vr_mirror_blit: VrMirrorBlitResources,
     /// Previous redraw instant for HUD FPS ([`diagnostics::DebugHud`]).
     #[cfg(feature = "debug-hud")]
     hud_frame_last: Option<Instant>,
@@ -448,6 +451,7 @@ impl RenderideApp {
                 &mut self.runtime,
                 &mut self.xr_swapchain,
                 &mut self.xr_stereo_depth,
+                &mut self.vr_mirror_blit,
                 window.as_ref(),
                 tick,
             ),
@@ -460,8 +464,6 @@ impl RenderideApp {
             self.runtime.tick_frame_wall_clock_end(frame_start);
             return;
         };
-
-        frame_loop::apply_vr_mirror_stereo_for_desktop_pass(&mut self.runtime, xr_tick.as_ref());
 
         if let Ok(s) = self.runtime.settings().read() {
             gpu.set_vsync(s.rendering.vsync);
@@ -480,7 +482,24 @@ impl RenderideApp {
             self.runtime.set_debug_hud_frame_data(hud_in, ms);
         }
 
-        if let Err(e) =
+        // VR: desktop shows a blit of the left HMD eye (`VrMirrorBlitResources`); no second world pass.
+        // Debug HUD overlay is not drawn on this path (see `frame_graph::compiled` for non-VR HUD).
+        if self.runtime.host_camera.vr_active {
+            if hmd_projection_ended {
+                if let Err(e) = frame_loop::present_vr_mirror_blit(
+                    gpu,
+                    window.as_ref(),
+                    &mut self.vr_mirror_blit,
+                ) {
+                    logger::debug!("VR mirror blit failed: {e:?}");
+                    if let Err(pe) = present_clear_frame(gpu, window.as_ref()) {
+                        logger::warn!("present_clear_frame after mirror blit: {pe:?}");
+                    }
+                }
+            } else if let Err(e) = present_clear_frame(gpu, window.as_ref()) {
+                logger::debug!("VR mirror clear (no HMD frame): {e:?}");
+            }
+        } else if let Err(e) =
             frame_loop::execute_mirror_frame_graph(&mut self.runtime, gpu, window.as_ref())
         {
             Self::handle_frame_graph_error(gpu, window.as_ref(), e);

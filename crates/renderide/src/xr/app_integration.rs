@@ -1,16 +1,18 @@
 //! OpenXR helpers used by the winit [`crate::app::RenderideApp`] loop: frame tick state and HMD multiview submission.
 
-use crate::gpu::GpuContext;
+use crate::gpu::{GpuContext, VrMirrorBlitResources, VR_MIRROR_EYE_LAYER};
 use crate::render_graph::{effective_head_output_clip_planes, ExternalFrameTargets};
 use crate::xr::{
     create_stereo_depth_texture, XrHostCameraSync, XrMultiviewFrameRenderer, XrStereoSwapchain,
     XrWgpuHandles, XR_COLOR_FORMAT, XR_VIEW_COUNT,
 };
-use glam::Mat4;
 use openxr as xr;
 use winit::window::Window;
 
 /// Cached OpenXR frame state after a single `wait_frame` (no second wait per tick).
+///
+/// Stereo view data is consumed by the multiview HMD path and host IPC; the desktop window mirror
+/// is a GPU blit of the left eye (see [`crate::gpu::VrMirrorBlitResources`]), not a second camera render.
 pub struct OpenxrFrameTick {
     /// Predicted display time for this frame (input sampling, `end_frame`).
     pub predicted_display_time: xr::Time,
@@ -18,8 +20,6 @@ pub struct OpenxrFrameTick {
     pub should_render: bool,
     /// Stereo views from `locate_views` (may be empty when `should_render` is false).
     pub views: Vec<xr::View>,
-    /// Single-view matrix for the desktop mirror when VR is active (left-eye center), else `None`.
-    pub desktop_mirror_view_proj: Option<Mat4>,
 }
 
 /// Single `wait_frame` + `locate_views` for stereo uniforms; used for both mirror and HMD paths.
@@ -64,18 +64,10 @@ pub fn openxr_begin_frame_tick(
             let vr_view = crate::xr::view_from_xr_view_aligned(&views[1], world_from_tracking);
             runtime.set_stereo_view_proj(Some((l, r)));
             runtime.set_stereo_views(Some((vl, vr_view)));
-            let desktop_mirror_view_proj =
-                crate::xr::center_view_projection_from_stereo_views_aligned(
-                    &views,
-                    near,
-                    far,
-                    world_from_tracking,
-                );
             return Some(OpenxrFrameTick {
                 predicted_display_time: fs.predicted_display_time,
                 should_render: fs.should_render,
                 views,
-                desktop_mirror_view_proj,
             });
         }
         // Desktop (`!vr_active`): keep [`HostCameraFrame::head_output_transform`] from
@@ -85,26 +77,26 @@ pub fn openxr_begin_frame_tick(
             predicted_display_time: fs.predicted_display_time,
             should_render: fs.should_render,
             views,
-            desktop_mirror_view_proj: None,
         });
     }
     Some(OpenxrFrameTick {
         predicted_display_time: fs.predicted_display_time,
         should_render: fs.should_render,
         views,
-        desktop_mirror_view_proj: None,
     })
 }
 
 /// Renders to the OpenXR stereo swapchain and calls [`crate::xr::session::XrSessionState::end_frame_projection`].
 ///
 /// Uses the same [`xr::FrameState`] as [`openxr_begin_frame_tick`] — no second `wait_frame`.
+#[allow(clippy::too_many_arguments)] // OpenXR acquire + multiview graph + mirror staging; explicit parameters.
 pub fn try_openxr_hmd_multiview_submit(
     gpu: &mut GpuContext,
     handles: &mut XrWgpuHandles,
     runtime: &mut impl XrMultiviewFrameRenderer,
     xr_swapchain: &mut Option<XrStereoSwapchain>,
     xr_stereo_depth: &mut Option<(wgpu::Texture, wgpu::TextureView)>,
+    mirror_blit: &mut VrMirrorBlitResources,
     window: &Window,
     tick: &OpenxrFrameTick,
 ) -> bool {
@@ -195,6 +187,9 @@ pub fn try_openxr_hmd_multiview_submit(
     {
         let _ = sc.handle.release_image();
         return false;
+    }
+    if let Some(layer_view) = sc.color_layer_view_for_image(image_index, VR_MIRROR_EYE_LAYER) {
+        mirror_blit.submit_eye_to_staging(gpu, extent, &layer_view);
     }
     if sc.handle.release_image().is_err() {
         return false;

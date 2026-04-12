@@ -98,7 +98,7 @@ impl XrStereoSwapchain {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: XR_COLOR_FORMAT,
-                usage: TextureUses::COLOR_TARGET | TextureUses::COPY_DST,
+                usage: TextureUses::COLOR_TARGET | TextureUses::COPY_DST | TextureUses::RESOURCE,
                 memory_flags: MemoryFlags::empty(),
                 view_formats: Vec::new(),
             };
@@ -117,7 +117,9 @@ impl XrStereoSwapchain {
                 sample_count: hal_desc.sample_count,
                 dimension: hal_desc.dimension,
                 format: XR_COLOR_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             };
             let texture =
@@ -141,6 +143,32 @@ impl XrStereoSwapchain {
     /// `wgpu` color array view for a swapchain image index from [`xr::Swapchain::acquire_image`].
     pub fn color_view_for_image(&self, image_index: usize) -> Option<&wgpu::TextureView> {
         self.wgpu_buffers.get(image_index).map(|(_, v)| v)
+    }
+
+    /// Backing [`wgpu::Texture`] for a swapchain image index (array texture, two layers).
+    pub fn color_texture_for_image(&self, image_index: usize) -> Option<&wgpu::Texture> {
+        self.wgpu_buffers.get(image_index).map(|(t, _)| t)
+    }
+
+    /// Single-eye [`wgpu::TextureView`] (`D2`) for sampling one layer of the acquired swapchain image.
+    ///
+    /// `layer` must be `<` [`XR_VIEW_COUNT`] (0 = left, 1 = right).
+    pub fn color_layer_view_for_image(
+        &self,
+        image_index: usize,
+        layer: u32,
+    ) -> Option<wgpu::TextureView> {
+        let (tex, _) = self.wgpu_buffers.get(image_index)?;
+        if layer >= XR_VIEW_COUNT {
+            return None;
+        }
+        Some(tex.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("xr_swapchain_layer"),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_array_layer: layer,
+            array_layer_count: Some(1),
+            ..Default::default()
+        }))
     }
 }
 
