@@ -75,7 +75,7 @@ impl RendererInfoSnapshot {
             property_block_slots: store.property_block_slot_count(),
             material_shader_bindings: store.material_shader_binding_count(),
             frame_graph_pass_count: backend.frame_graph_pass_count(),
-            gpu_light_count: backend.frame_lights().len(),
+            gpu_light_count: backend.frame_resources.frame_lights().len(),
         }
     }
 }

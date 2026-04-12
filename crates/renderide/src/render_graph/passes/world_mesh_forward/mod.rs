@@ -166,9 +166,9 @@ impl RenderPass for WorldMeshForwardPass {
         if draws.is_empty() {
             return Ok(());
         }
-        let lights_for_frame = backend.frame_lights().to_vec();
+        let lights_for_frame = backend.frame_resources.frame_lights().to_vec();
         {
-            let Some(dbg) = backend.debug_draw.as_mut() else {
+            let Some(dbg) = backend.frame_resources.debug_draw.as_mut() else {
                 return Ok(());
             };
             dbg.ensure_draw_slot_capacity(ctx.device, draws.len());
@@ -228,7 +228,7 @@ impl RenderPass for WorldMeshForwardPass {
         let queue = &*queue_guard;
 
         {
-            let Some(dbg) = backend.debug_draw.as_mut() else {
+            let Some(dbg) = backend.frame_resources.debug_draw.as_mut() else {
                 return Ok(());
             };
             queue.write_buffer(&dbg.per_draw_uniforms, 0, &slab_bytes);
@@ -254,12 +254,16 @@ impl RenderPass for WorldMeshForwardPass {
             FrameGpuUniforms::zeroed()
         };
 
-        if let Some(fgpu) = backend.frame_gpu_mut() {
+        if let Some(fgpu) = backend.frame_resources.frame_gpu_mut() {
             fgpu.sync_cluster_viewport(ctx.device, (vw, vh), stereo_cluster);
             fgpu.write_frame_uniform_and_lights(queue, &uniforms, &lights_for_frame);
         }
 
-        let Some(debug_bind_group) = backend.debug_draw.as_ref().map(|d| d.bind_group.clone())
+        let Some(debug_bind_group) = backend
+            .frame_resources
+            .debug_draw
+            .as_ref()
+            .map(|d| d.bind_group.clone())
         else {
             return Ok(());
         };
@@ -275,7 +279,9 @@ impl RenderPass for WorldMeshForwardPass {
         }
 
         let mut warned_missing_embedded_bind = false;
-        let Some((frame_bg_arc, empty_bg_arc)) = backend.mesh_forward_frame_bind_groups() else {
+        let Some((frame_bg_arc, empty_bg_arc)) =
+            backend.frame_resources.mesh_forward_frame_bind_groups()
+        else {
             return Ok(());
         };
 
@@ -323,7 +329,7 @@ impl RenderPass for WorldMeshForwardPass {
         }
 
         if !intersect_indices.is_empty() {
-            if let Some(fgpu) = backend.frame_gpu_mut() {
+            if let Some(fgpu) = backend.frame_resources.frame_gpu_mut() {
                 fgpu.copy_scene_depth_snapshot(
                     ctx.device,
                     ctx.encoder,
@@ -333,7 +339,8 @@ impl RenderPass for WorldMeshForwardPass {
                     stereo_cluster,
                 );
             }
-            let Some((frame_bg_arc, empty_bg_arc)) = backend.mesh_forward_frame_bind_groups()
+            let Some((frame_bg_arc, empty_bg_arc)) =
+                backend.frame_resources.mesh_forward_frame_bind_groups()
             else {
                 return Ok(());
             };

@@ -238,7 +238,9 @@ impl RendererRuntime {
         gpu: &mut GpuContext,
         window: &Window,
     ) -> Result<(), GraphExecuteError> {
-        self.backend.prepare_lights_from_scene(&self.scene);
+        self.backend
+            .frame_resources
+            .prepare_lights_from_scene(&self.scene);
         #[cfg(feature = "debug-hud")]
         self.sync_debug_hud_diagnostics_from_settings();
         let scene_ref: &SceneCoordinator = &self.scene;
@@ -262,7 +264,9 @@ impl RendererRuntime {
         window: &Window,
         external: ExternalFrameTargets<'_>,
     ) -> Result<(), GraphExecuteError> {
-        self.backend.prepare_lights_from_scene(&self.scene);
+        self.backend
+            .frame_resources
+            .prepare_lights_from_scene(&self.scene);
         #[cfg(feature = "debug-hud")]
         self.sync_debug_hud_diagnostics_from_settings();
         let scene_ref: &SceneCoordinator = &self.scene;

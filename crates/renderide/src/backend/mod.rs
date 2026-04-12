@@ -12,6 +12,7 @@ mod cluster_gpu;
 mod debug_draw;
 mod embedded_material_bind;
 mod frame_gpu;
+mod frame_resource_manager;
 mod light_gpu;
 mod mesh_deform_scratch;
 mod occlusion;
@@ -24,6 +25,7 @@ pub use cluster_gpu::{
 pub use debug_draw::DebugDrawResources;
 pub use embedded_material_bind::EmbeddedMaterialBindResources;
 pub use frame_gpu::{empty_material_bind_group_layout, EmptyMaterialBindGroup, FrameGpuResources};
+pub use frame_resource_manager::FrameResourceManager;
 pub use light_gpu::{order_lights_for_clustered_shading, GpuLight, MAX_LIGHTS};
 pub use mesh_deform_scratch::{advance_slab_cursor, MeshDeformScratch};
 pub use occlusion::OcclusionSystem;

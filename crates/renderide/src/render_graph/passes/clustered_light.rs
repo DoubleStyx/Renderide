@@ -208,8 +208,8 @@ impl RenderPass for ClusteredLightPass {
         let scene = frame.scene;
         let stereo = hc.vr_active && hc.stereo_views.is_some() && frame.multiview_stereo;
 
-        let lights_upload: Vec<GpuLight> = frame.backend.frame_lights().to_vec();
-        let Some(fgpu) = frame.backend.frame_gpu_mut() else {
+        let lights_upload: Vec<GpuLight> = frame.backend.frame_resources.frame_lights().to_vec();
+        let Some(fgpu) = frame.backend.frame_resources.frame_gpu_mut() else {
             return Ok(());
         };
 

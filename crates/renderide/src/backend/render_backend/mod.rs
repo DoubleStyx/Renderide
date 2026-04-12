@@ -28,10 +28,7 @@ use crate::scene::SceneCoordinator;
 #[cfg(feature = "debug-hud")]
 use crate::diagnostics::{DebugHud, DebugHudInput, SceneTransformsSnapshot};
 
-use super::debug_draw::DebugDrawResources;
 use super::embedded_material_bind::EmbeddedMaterialBindResources;
-use super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources};
-use super::light_gpu::{order_lights_for_clustered_shading, GpuLight};
 use super::mesh_deform_scratch::MeshDeformScratch;
 use super::occlusion::OcclusionSystem;
 use crate::shared::{
@@ -80,18 +77,12 @@ pub struct RenderBackend {
     mesh_preprocess: Option<MeshPreprocessPipelines>,
     /// Compiled DAG of render passes (after [`Self::attach`]); see [`crate::render_graph`].
     frame_graph: Option<CompiledRenderGraph>,
-    /// Last packed lights for the frame (after [`Self::prepare_lights_from_scene`]).
-    light_scratch: Vec<GpuLight>,
     /// Scratch buffers for mesh deformation compute (after [`Self::attach`]).
     mesh_deform_scratch: Option<MeshDeformScratch>,
-    /// Per-frame `@group(0)` camera + lights (after [`Self::attach`]).
-    pub(crate) frame_gpu: Option<FrameGpuResources>,
-    /// Placeholder `@group(1)` for materials without per-material bindings.
-    pub(crate) empty_material: Option<EmptyMaterialBindGroup>,
+    /// Per-frame bind groups, light staging, and debug draw slab.
+    pub(crate) frame_resources: super::FrameResourceManager,
     /// Embedded raster materials (`@group(1)` textures/uniforms), after [`Self::attach`].
     pub(crate) embedded_material_bind: Option<EmbeddedMaterialBindResources>,
-    /// Uniforms + bind group for debug mesh draws (`@group(2)` dynamic slab).
-    pub(crate) debug_draw: Option<DebugDrawResources>,
     #[cfg(feature = "debug-hud")]
     debug_hud: Option<DebugHud>,
     #[cfg(feature = "debug-hud")]
@@ -144,12 +135,9 @@ impl RenderBackend {
             pending_shader_routes: HashMap::new(),
             mesh_preprocess: None,
             frame_graph: None,
-            light_scratch: Vec::new(),
             mesh_deform_scratch: None,
-            frame_gpu: None,
-            empty_material: None,
+            frame_resources: super::FrameResourceManager::new(),
             embedded_material_bind: None,
-            debug_draw: None,
             #[cfg(feature = "debug-hud")]
             debug_hud: None,
             #[cfg(feature = "debug-hud")]
@@ -180,52 +168,6 @@ impl RenderBackend {
             .values()
             .filter(|t| t.mip_levels_resident > 0)
             .count()
-    }
-
-    /// Packed GPU lights from the last [`Self::prepare_lights_from_scene`] call.
-    pub fn frame_lights(&self) -> &[GpuLight] {
-        &self.light_scratch
-    }
-
-    /// Per-frame `@group(0)` bind group (camera + lights), after [`Self::attach`].
-    pub fn frame_gpu(&self) -> Option<&FrameGpuResources> {
-        self.frame_gpu.as_ref()
-    }
-
-    /// Mutable frame globals (cluster resize, uniform upload).
-    pub fn frame_gpu_mut(&mut self) -> Option<&mut FrameGpuResources> {
-        self.frame_gpu.as_mut()
-    }
-
-    /// Empty `@group(1)` bind group for shaders without per-material bindings.
-    pub fn empty_material(&self) -> Option<&EmptyMaterialBindGroup> {
-        self.empty_material.as_ref()
-    }
-
-    /// Cloned [`Arc`] bind groups for mesh forward (`@group(0)` frame + `@group(1)` empty material).
-    ///
-    /// Used when the pass also needs `&mut` access to other backend fields (avoids borrow conflicts).
-    pub fn mesh_forward_frame_bind_groups(
-        &self,
-    ) -> Option<(
-        std::sync::Arc<wgpu::BindGroup>,
-        std::sync::Arc<wgpu::BindGroup>,
-    )> {
-        let f = self.frame_gpu.as_ref()?;
-        let e = self.empty_material.as_ref()?;
-        Some((f.bind_group.clone(), e.bind_group.clone()))
-    }
-
-    /// Fills [`Self::light_scratch`] from [`SceneCoordinator`] (all spaces, clustered ordering, cap [`crate::backend::MAX_LIGHTS`]).
-    pub fn prepare_lights_from_scene(&mut self, scene: &SceneCoordinator) {
-        self.light_scratch.clear();
-        let mut all = Vec::new();
-        for id in scene.render_space_ids() {
-            all.extend(scene.resolve_lights_world(id));
-        }
-        let ordered = order_lights_for_clustered_shading(&all);
-        self.light_scratch
-            .extend(ordered.iter().map(GpuLight::from_resolved));
     }
 
     /// Mesh deformation compute pipelines when GPU init succeeded.
@@ -327,9 +269,7 @@ impl RenderBackend {
         self.gpu_device = Some(device.clone());
         self.gpu_queue = Some(queue.clone());
         self.mesh_deform_scratch = Some(MeshDeformScratch::new(device.as_ref()));
-        self.frame_gpu = Some(FrameGpuResources::new(device.as_ref()));
-        self.empty_material = Some(EmptyMaterialBindGroup::new(device.as_ref()));
-        self.debug_draw = Some(DebugDrawResources::new(device.as_ref()));
+        self.frame_resources.attach(device.as_ref());
         #[cfg(feature = "debug-hud")]
         {
             let q = queue.lock().unwrap_or_else(|e| e.into_inner());
@@ -581,11 +521,6 @@ impl RenderBackend {
         let pre = self.mesh_preprocess.as_ref()?;
         let scratch = self.mesh_deform_scratch.as_mut()?;
         Some((pre, scratch))
-    }
-
-    /// Per-draw debug mesh uniforms: 256-byte dynamic uniform slab ([`DebugDrawResources`]).
-    pub fn debug_draw(&self) -> Option<&DebugDrawResources> {
-        self.debug_draw.as_ref()
     }
 
     /// Maps shader asset to raster pipeline kind and optional HUD display name, or defers until [`Self::attach`].
