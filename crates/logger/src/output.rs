@@ -3,9 +3,10 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use crate::level::LogLevel;
+use crate::level::{level_to_tag, tag_to_level, LogLevel};
 use crate::timestamp::format_line_timestamp;
 
 /// Path of the active log file, set by [`init_with_mirror`]. Used for non-blocking append when the
@@ -18,8 +19,10 @@ struct Logger {
     file: Mutex<std::fs::File>,
     /// When true, each log line is also written to stderr.
     mirror_stderr: bool,
-    /// Maximum level to log. Messages at or below this level are written.
-    max_level: LogLevel,
+    /// Maximum level to log. Messages at or below this level are written (see [`LogLevel`] ordering).
+    ///
+    /// Atomic so [`set_max_level`] can change filtering after [`init_with_mirror`] without re-init.
+    max_level: AtomicU8,
 }
 
 /// Global logger instance. Set by [`init`] or [`init_with_mirror`].
@@ -60,18 +63,38 @@ pub fn init_with_mirror(
     let logger = Logger {
         file: Mutex::new(file),
         mirror_stderr,
-        max_level,
+        max_level: AtomicU8::new(level_to_tag(max_level)),
     };
     let _ = LOGGER.set(logger);
     let _ = LOG_FILE_PATH.set(path.to_path_buf());
     Ok(())
 }
 
+/// Sets the maximum log level for the initialized global logger.
+///
+/// Has no effect if [`init`] / [`init_with_mirror`] has not succeeded. Safe to call from any thread;
+/// takes effect immediately for subsequent [`log`] / macro calls.
+pub fn set_max_level(level: LogLevel) {
+    let Some(logger) = LOGGER.get() else {
+        return;
+    };
+    logger
+        .max_level
+        .store(level_to_tag(level), Ordering::Relaxed);
+}
+
+#[inline]
+fn current_max_level(logger: &Logger) -> LogLevel {
+    tag_to_level(logger.max_level.load(Ordering::Relaxed))
+}
+
 /// Returns whether a message at `level` would be written given the current max level.
 ///
 /// Use to avoid expensive formatting when logging is filtered out.
 pub fn enabled(level: LogLevel) -> bool {
-    LOGGER.get().is_some_and(|logger| level <= logger.max_level)
+    LOGGER
+        .get()
+        .is_some_and(|logger| level <= current_max_level(logger))
 }
 
 /// Flushes any buffered log output. Call periodically if desired for API consistency.
@@ -90,7 +113,7 @@ pub fn flush() {
 #[doc(hidden)]
 #[inline(always)]
 pub fn is_level_enabled(level: LogLevel) -> bool {
-    LOGGER.get().is_some_and(|l| level <= l.max_level)
+    LOGGER.get().is_some_and(|l| level <= current_max_level(l))
 }
 
 /// Internal log writer. Called by the log macros.
@@ -99,7 +122,8 @@ pub fn log(level: LogLevel, args: std::fmt::Arguments<'_>) {
     let Some(logger) = LOGGER.get() else {
         return;
     };
-    if level > logger.max_level {
+    let max = current_max_level(logger);
+    if level > max {
         return;
     }
     let msg = args.to_string();
@@ -126,7 +150,8 @@ pub fn try_log(level: LogLevel, args: std::fmt::Arguments<'_>) -> bool {
     let Some(logger) = LOGGER.get() else {
         return false;
     };
-    if level > logger.max_level {
+    let max = current_max_level(logger);
+    if level > max {
         return false;
     }
     let msg = args.to_string();

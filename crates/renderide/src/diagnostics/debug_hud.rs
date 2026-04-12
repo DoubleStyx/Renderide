@@ -541,13 +541,7 @@ impl DebugHud {
                 if ui.checkbox("VSync", &mut g.rendering.vsync) {
                     dirty = true;
                 }
-                if Drag::new("Exposure (reserved)")
-                    .range(0.0, 16.0)
-                    .speed(0.02)
-                    .build(ui, &mut g.rendering.exposure)
-                {
-                    dirty = true;
-                }
+                ui.text_disabled("Swapchain present mode; applies immediately (no restart).");
                 ui.unindent();
 
                 ui.text("Debug");
@@ -568,7 +562,7 @@ impl DebugHud {
                 ui.text_disabled(
                     "Per-space world transform table; separate from main HUD (can be expensive on large scenes).",
                 );
-                if ui.checkbox("Log verbose (reserved)", &mut g.debug.log_verbose) {
+                if ui.checkbox("Log verbose", &mut g.debug.log_verbose) {
                     dirty = true;
                 }
                 if ui.checkbox("GPU validation layers", &mut g.debug.gpu_validation_layers) {

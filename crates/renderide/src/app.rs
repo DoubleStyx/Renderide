@@ -19,6 +19,7 @@
 //! device is VR-capable.
 
 mod frame_loop;
+mod frame_pacing;
 
 use std::sync::Arc;
 use std::thread;
@@ -27,7 +28,7 @@ use std::time::{Duration, Instant};
 use logger::{LogComponent, LogLevel};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, DeviceEvents, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::config::{load_renderer_settings, log_config_resolve_trace, settings_handle_from};
@@ -51,6 +52,20 @@ const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 /// Max time to wait for [`RendererInitData`] after IPC connect before exiting with an error.
 const IPC_INIT_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Chooses the process max log level after [`logger::init_for`].
+///
+/// Precedence: **`-LogLevel`** (if present) always wins. If absent, [`crate::config::DebugSettings::log_verbose`]
+/// selects [`LogLevel::Trace`] when true and [`LogLevel::Debug`] when false.
+fn effective_renderer_log_level(cli: Option<LogLevel>, log_verbose: bool) -> LogLevel {
+    if let Some(level) = cli {
+        level
+    } else if log_verbose {
+        LogLevel::Trace
+    } else {
+        LogLevel::Debug
+    }
+}
+
 /// Runs the winit event loop until exit or window close.
 pub fn run() -> Option<i32> {
     if let Err(e) = try_claim_renderer_singleton() {
@@ -59,14 +74,16 @@ pub fn run() -> Option<i32> {
     }
 
     let timestamp = logger::log_filename_timestamp();
-    let log_level = logger::parse_log_level_from_args().unwrap_or(LogLevel::Info);
-    let log_path = match logger::init_for(LogComponent::Renderer, &timestamp, log_level, false) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to initialize logging: {e}");
-            return Some(1);
-        }
-    };
+    let log_level_cli = logger::parse_log_level_from_args();
+    let initial_log_level = log_level_cli.unwrap_or(LogLevel::Debug);
+    let log_path =
+        match logger::init_for(LogComponent::Renderer, &timestamp, initial_log_level, false) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to initialize logging: {e}");
+                return Some(1);
+            }
+        };
 
     logger::info!("Logging to {}", log_path.display());
 
@@ -76,6 +93,10 @@ pub fn run() -> Option<i32> {
     crate::native_stdio::ensure_stdio_forwarded_to_logger();
 
     let config_load = load_renderer_settings();
+    logger::set_max_level(effective_renderer_log_level(
+        log_level_cli,
+        config_load.settings.debug.log_verbose,
+    ));
     log_config_resolve_trace(&config_load.resolve);
     let settings_handle = settings_handle_from(&config_load);
     let initial_vsync = config_load.settings.rendering.vsync;
@@ -124,6 +145,7 @@ pub fn run() -> Option<i32> {
         runtime,
         initial_vsync,
         initial_gpu_validation,
+        log_level_cli,
         session_output_device: HeadOutputDevice::screen,
         cached_head_pose: None,
         cached_openxr_controllers: Vec::new(),
@@ -139,6 +161,7 @@ pub fn run() -> Option<i32> {
         vr_mirror_blit: VrMirrorBlitResources::new(),
         #[cfg(feature = "debug-hud")]
         hud_frame_last: None,
+        last_frame_end: None,
     };
 
     let _ = event_loop.run_app(&mut app);
@@ -183,6 +206,8 @@ struct RenderideApp {
     initial_vsync: bool,
     /// GPU validation layers flag for the initial [`GpuContext::new`] (persisted; restart to apply).
     initial_gpu_validation: bool,
+    /// Parsed `-LogLevel` from startup, if any. When [`Some`], always overrides [`crate::config::DebugSettings::log_verbose`].
+    log_level_cli: Option<LogLevel>,
     /// Copied from host [`RendererInitData::output_device`] when the window is created.
     session_output_device: HeadOutputDevice,
     /// Center-eye pose for host IPC ([`crate::xr::headset_center_pose_from_stereo_views`], Unity-style
@@ -205,9 +230,17 @@ struct RenderideApp {
     /// Previous redraw instant for HUD FPS ([`diagnostics::DebugHud`]).
     #[cfg(feature = "debug-hud")]
     hud_frame_last: Option<Instant>,
+    /// Wall-clock end of the last [`Self::tick_frame`] (for desktop FPS caps).
+    last_frame_end: Option<Instant>,
 }
 
 impl RenderideApp {
+    /// Records wall-clock frame end for FPS pacing and forwards to [`RendererRuntime::tick_frame_wall_clock_end`].
+    fn record_frame_tick_end(&mut self, frame_start: Instant) {
+        self.last_frame_end = Some(Instant::now());
+        self.runtime.tick_frame_wall_clock_end(frame_start);
+    }
+
     fn maybe_flush_logs(&mut self) {
         let now = Instant::now();
         let should = self
@@ -218,6 +251,20 @@ impl RenderideApp {
             logger::flush();
             self.last_log_flush = Some(now);
         }
+    }
+
+    /// Applies [`effective_renderer_log_level`] from CLI and [`crate::config::DebugSettings::log_verbose`].
+    fn sync_log_level_from_settings(&self) {
+        let log_verbose = self
+            .runtime
+            .settings()
+            .read()
+            .map(|s| s.debug.log_verbose)
+            .unwrap_or(false);
+        logger::set_max_level(effective_renderer_log_level(
+            self.log_level_cli,
+            log_verbose,
+        ));
     }
 
     fn ensure_window_gpu(&mut self, event_loop: &ActiveEventLoop) {
@@ -315,6 +362,7 @@ impl RenderideApp {
     }
 
     fn tick_frame(&mut self, event_loop: &ActiveEventLoop) {
+        self.sync_log_level_from_settings();
         let frame_start = Instant::now();
         self.runtime.tick_frame_wall_clock_begin(frame_start);
         #[cfg(feature = "debug-hud")]
@@ -419,7 +467,7 @@ impl RenderideApp {
             event_loop.exit();
             #[cfg(feature = "debug-hud")]
             self.end_frame_timing_and_hud_capture();
-            self.runtime.tick_frame_wall_clock_end(frame_start);
+            self.record_frame_tick_end(frame_start);
             return;
         }
 
@@ -429,14 +477,14 @@ impl RenderideApp {
             event_loop.exit();
             #[cfg(feature = "debug-hud")]
             self.end_frame_timing_and_hud_capture();
-            self.runtime.tick_frame_wall_clock_end(frame_start);
+            self.record_frame_tick_end(frame_start);
             return;
         }
 
         let Some(window) = self.window.clone() else {
             #[cfg(feature = "debug-hud")]
             self.end_frame_timing_and_hud_capture();
-            self.runtime.tick_frame_wall_clock_end(frame_start);
+            self.record_frame_tick_end(frame_start);
             return;
         };
 
@@ -461,7 +509,7 @@ impl RenderideApp {
         let Some(gpu) = self.gpu.as_mut() else {
             #[cfg(feature = "debug-hud")]
             self.end_frame_timing_and_hud_capture();
-            self.runtime.tick_frame_wall_clock_end(frame_start);
+            self.record_frame_tick_end(frame_start);
             return;
         };
 
@@ -518,7 +566,7 @@ impl RenderideApp {
 
         #[cfg(feature = "debug-hud")]
         self.end_frame_timing_and_hud_capture();
-        self.runtime.tick_frame_wall_clock_end(frame_start);
+        self.record_frame_tick_end(frame_start);
     }
 
     /// Finalizes [`GpuContext`] frame timing and refreshes debug HUD snapshots for the tick.
@@ -608,11 +656,55 @@ impl ApplicationHandler for RenderideApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(window) = self.window.as_ref() {
+            if self.exit_code.is_none() && !self.runtime.host_camera.vr_active {
+                let cap = match self.runtime.settings().read() {
+                    Ok(s) => {
+                        if self.input.window_focused {
+                            s.display.focused_fps_cap
+                        } else {
+                            s.display.unfocused_fps_cap
+                        }
+                    }
+                    Err(_) => 0,
+                };
+                let now = Instant::now();
+                if let Some(deadline) =
+                    frame_pacing::next_redraw_wait_until(self.last_frame_end, cap, now)
+                {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                    self.maybe_flush_logs();
+                    return;
+                }
+            }
             window.request_redraw();
         }
         if self.exit_code.is_none() {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+            event_loop.set_control_flow(ControlFlow::Poll);
         }
         self.maybe_flush_logs();
+    }
+}
+
+#[cfg(test)]
+mod effective_log_level_tests {
+    use super::effective_renderer_log_level;
+    use logger::LogLevel;
+
+    #[test]
+    fn cli_always_overrides_log_verbose() {
+        assert_eq!(
+            effective_renderer_log_level(Some(LogLevel::Warn), true),
+            LogLevel::Warn
+        );
+    }
+
+    #[test]
+    fn no_cli_uses_trace_when_log_verbose() {
+        assert_eq!(effective_renderer_log_level(None, true), LogLevel::Trace);
+    }
+
+    #[test]
+    fn no_cli_uses_debug_when_not_log_verbose() {
+        assert_eq!(effective_renderer_log_level(None, false), LogLevel::Debug);
     }
 }

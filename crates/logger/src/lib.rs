@@ -15,7 +15,8 @@
 //!   [`log_panic`] with the same file path, or compose [`panic_report`] and
 //!   [`append_panic_report_to_file`] if you also mirror the report to a preserved terminal handle
 //!   (see the renderer’s `native_stdio` module).
-//! - Use [`parse_log_level_from_args`] for `-LogLevel` (case-insensitive).
+//! - Use [`parse_log_level_from_args`] for `-LogLevel` (case-insensitive). After init, use
+//!   [`set_max_level`] to change filtering without reopening the log file.
 //! - Prefer [`init_for`] when using the standard layout; use [`init`] with a custom path when needed.
 //!
 //! # Panics and flushing
@@ -30,7 +31,7 @@ mod paths;
 mod timestamp;
 
 pub use level::{parse_log_level_from_args, LogLevel};
-pub use output::{enabled, flush, init, init_with_mirror, log, try_log};
+pub use output::{enabled, flush, init, init_with_mirror, log, set_max_level, try_log};
 pub use panic::{append_panic_report_to_file, log_panic, log_panic_payload, panic_report};
 pub use paths::{
     ensure_log_dir, init_for, log_dir_for, log_file_path, logs_root, logs_root_with, LogComponent,

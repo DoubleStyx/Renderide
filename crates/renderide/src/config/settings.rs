@@ -13,14 +13,17 @@ use super::resolve::{
     resolve_config_path, resolve_save_path, ConfigResolveOutcome, ConfigSource, FILE_NAME_TOML,
 };
 
-/// Display-related caps (future: frame pacing when unfocused). Persisted as `[display]`.
+/// Display-related caps. Persisted as `[display]`.
+///
+/// Non-zero values cap desktop redraw scheduling via winit (`ControlFlow::WaitUntil`); OpenXR VR
+/// sessions ignore these caps so headset frame pacing is unchanged.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplaySettings {
-    /// Target max FPS when the window is focused (0 = uncapped / engine default).
+    /// Target max FPS when the window is focused (0 = uncapped).
     #[serde(rename = "focused_fps")]
     pub focused_fps_cap: u32,
-    /// Target max FPS when unfocused (0 = uncapped / engine default).
+    /// Target max FPS when unfocused (0 = uncapped).
     #[serde(rename = "unfocused_fps")]
     pub unfocused_fps_cap: u32,
 }
@@ -35,22 +38,12 @@ impl Default for DisplaySettings {
 }
 
 /// Rendering toggles and scalars. Persisted as `[rendering]`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenderingSettings {
-    /// Vertical sync via swapchain present mode ([`wgpu::PresentMode::AutoVsync`]).
+    /// Vertical sync via swapchain present mode ([`wgpu::PresentMode::AutoVsync`]); applied live
+    /// without restart (see [`crate::gpu::GpuContext::set_vsync`]).
     pub vsync: bool,
-    /// Exposure multiplier for future HDR/tonemap path (stored; not yet applied to passes).
-    pub exposure: f32,
-}
-
-impl Default for RenderingSettings {
-    fn default() -> Self {
-        Self {
-            vsync: false,
-            exposure: 1.0,
-        }
-    }
 }
 
 /// Preferred GPU power mode for future adapter selection (stored; changing at runtime may require
@@ -99,7 +92,8 @@ impl PowerPreferenceSetting {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebugSettings {
-    /// Request verbose logging (future hook into logger; stored for now).
+    /// When the `-LogLevel` CLI argument is **not** present, selects [`logger::LogLevel::Trace`] if true or
+    /// [`logger::LogLevel::Debug`] if false. If `-LogLevel` is present, it always overrides this flag.
     pub log_verbose: bool,
     /// GPU power preference hint for adapter selection (see [`PowerPreferenceSetting`]).
     pub power_preference: PowerPreferenceSetting,
@@ -148,7 +142,7 @@ fn default_debug_hud_frame_timing() -> bool {
 pub struct RendererSettings {
     /// Display caps and related options.
     pub display: DisplaySettings,
-    /// Rendering options (vsync, exposure, …).
+    /// Rendering options (e.g. vsync).
     pub rendering: RenderingSettings,
     /// Debug-only flags.
     pub debug: DebugSettings,

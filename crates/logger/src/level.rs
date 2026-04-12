@@ -52,6 +52,29 @@ impl std::fmt::Debug for LogLevel {
     }
 }
 
+/// Stable `0..=4` tag for [`LogLevel`] (matches [`PartialOrd`] order).
+#[inline]
+pub(crate) fn level_to_tag(level: LogLevel) -> u8 {
+    match level {
+        LogLevel::Error => 0,
+        LogLevel::Warn => 1,
+        LogLevel::Info => 2,
+        LogLevel::Debug => 3,
+        LogLevel::Trace => 4,
+    }
+}
+
+#[inline]
+pub(crate) fn tag_to_level(tag: u8) -> LogLevel {
+    match tag.min(4) {
+        0 => LogLevel::Error,
+        1 => LogLevel::Warn,
+        2 => LogLevel::Info,
+        3 => LogLevel::Debug,
+        _ => LogLevel::Trace,
+    }
+}
+
 /// Parses `-LogLevel` from command line args (case-insensitive).
 ///
 /// Returns [`None`] if not present or invalid; otherwise the parsed level.
@@ -66,4 +89,22 @@ pub fn parse_log_level_from_args() -> Option<LogLevel> {
         i += 1;
     }
     None
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn level_tag_roundtrip() {
+        for l in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            assert_eq!(tag_to_level(level_to_tag(l)), l);
+        }
+    }
 }
