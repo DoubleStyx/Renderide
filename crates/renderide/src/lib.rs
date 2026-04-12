@@ -9,7 +9,7 @@
 //!   and window [`input`](crate::frontend::input) (winit to [`InputState`](crate::shared::InputState)).
 //! - **[`scene`]** — Render spaces, transforms, mesh renderables, host light cache (no wgpu).
 //! - **[`backend`]** — GPU device usage, mesh/texture pools, material property store, uploads,
-//!   [`MeshPreprocessPipelines`](crate::gpu::MeshPreprocessPipelines), and the compiled
+//!   [`MeshPreprocessPipelines`](crate::backend::mesh_deform::MeshPreprocessPipelines), and the compiled
 //!   [`render_graph`](crate::render_graph).
 //!
 //! [`RendererRuntime`](crate::runtime::RendererRuntime) composes these three; prefer adding new

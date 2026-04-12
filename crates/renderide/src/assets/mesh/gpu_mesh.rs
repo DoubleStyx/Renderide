@@ -20,7 +20,7 @@ use super::layout::{
     uv0_float2_stream_bytes, MeshBufferLayout, BLENDSHAPE_OFFSET_GPU_STRIDE,
 };
 
-use crate::gpu::plan_blendshape_bind_chunks;
+use crate::backend::mesh_deform::plan_blendshape_bind_chunks;
 
 /// Resident mesh on GPU: no CPU geometry retained.
 ///

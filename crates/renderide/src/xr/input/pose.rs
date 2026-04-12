@@ -42,34 +42,39 @@ pub(super) fn index_pose_correction(
     )
 }
 
+/// Default `BodyNodeRotationOffset` and position for the bound-hand body node relative to the
+/// controller's tracked pose. The rotation orients the avatar hand bone in the controller's local
+/// frame; `generic_fix` (`Rx(-90°)`) rotates the palm normal from the controller's +Z (forward)
+/// axis to ±X (inward toward the other hand).
 pub(super) fn bound_hand_pose_defaults(
     profile: ActiveControllerProfile,
     side: Chirality,
 ) -> (bool, Vec3, Quat) {
+    let generic_fix = unity_euler_deg(90.0, 90.0, 90.0).inverse();
     match (profile, side) {
         (ActiveControllerProfile::Touch, Chirality::left) => (
             true,
             Vec3::new(-0.04, -0.025, -0.1),
-            unity_euler_deg(185.0, -95.0, -90.0),
+            unity_euler_deg(185.0, -95.0, -90.0) * generic_fix,
         ),
         (ActiveControllerProfile::Touch, Chirality::right) => (
             true,
             Vec3::new(0.04, -0.025, -0.1),
-            unity_euler_deg(5.0, -95.0, -90.0),
+            unity_euler_deg(5.0, -95.0, -90.0) * generic_fix,
         ),
         (ActiveControllerProfile::Vive, Chirality::left)
         | (ActiveControllerProfile::Generic, Chirality::left)
         | (ActiveControllerProfile::Simple, Chirality::left) => (
             true,
             Vec3::new(-0.02, 0.0, -0.16),
-            unity_euler_deg(140.0, -90.0, -90.0),
+            unity_euler_deg(140.0, -90.0, -90.0) * generic_fix,
         ),
         (ActiveControllerProfile::Vive, Chirality::right)
         | (ActiveControllerProfile::Generic, Chirality::right)
         | (ActiveControllerProfile::Simple, Chirality::right) => (
             true,
             Vec3::new(0.02, 0.0, -0.16),
-            unity_euler_deg(40.0, -90.0, -90.0),
+            unity_euler_deg(40.0, -90.0, -90.0) * generic_fix,
         ),
         (ActiveControllerProfile::WindowsMr, Chirality::left) => (
             true,

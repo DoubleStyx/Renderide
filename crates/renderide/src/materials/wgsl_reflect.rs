@@ -17,9 +17,9 @@ use naga::{
 };
 use thiserror::Error;
 
+use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::backend::GpuLight;
 use crate::gpu::frame_globals::FrameGpuUniforms;
-use crate::gpu::PER_DRAW_UNIFORM_STRIDE;
 
 /// Scalar shape of a named uniform struct member (for CPU packing from host properties).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

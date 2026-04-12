@@ -101,7 +101,7 @@ impl RendererRuntime {
     }
 
     /// Mesh deformation compute pipelines when GPU init succeeded.
-    pub fn mesh_preprocess(&self) -> Option<&crate::gpu::MeshPreprocessPipelines> {
+    pub fn mesh_preprocess(&self) -> Option<&crate::backend::mesh_deform::MeshPreprocessPipelines> {
         self.backend.mesh_preprocess()
     }
 

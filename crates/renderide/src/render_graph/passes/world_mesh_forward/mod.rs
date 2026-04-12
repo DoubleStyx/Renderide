@@ -26,8 +26,10 @@ use std::num::NonZeroU32;
 use bytemuck::Zeroable;
 
 use crate::assets::material::MaterialDictionary;
+use crate::backend::mesh_deform::{
+    write_per_draw_uniform_slab, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE,
+};
 use crate::gpu::frame_globals::FrameGpuUniforms;
-use crate::gpu::{write_per_draw_uniform_slab, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE};
 use crate::materials::{MaterialPipelineDesc, MaterialRouter, RasterPipelineKind};
 use crate::pipelines::ShaderPermutation;
 use crate::pipelines::SHADER_PERM_MULTIVIEW_STEREO;

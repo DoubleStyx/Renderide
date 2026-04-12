@@ -36,7 +36,7 @@ const DOWNSAMPLE_SRC: &str = include_str!(concat!(
     "/shaders/source/compute/hi_z_downsample_max.wgsl"
 ));
 
-/// GPU + CPU Hi-Z state owned by [`crate::backend::RenderBackend`].
+/// GPU + CPU Hi-Z state owned by [`crate::backend::OcclusionSystem`].
 pub struct HiZGpuState {
     /// Last successfully read desktop pyramid (previous frame).
     pub desktop: Option<HiZCpuSnapshot>,

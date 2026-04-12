@@ -8,8 +8,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::assets::material::MaterialPropertyStore;
+use crate::backend::mesh_deform::MeshPreprocessPipelines;
 use crate::config::RendererSettingsHandle;
-use crate::gpu::{GpuContext, MeshPreprocessPipelines};
+use crate::gpu::GpuContext;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::materials::RasterPipelineKind;
 #[cfg(feature = "debug-hud")]
@@ -410,7 +411,10 @@ impl RenderBackend {
     /// Compute preprocess pipelines + deform scratch (`MeshDeformPass`) as one disjoint borrow.
     pub fn mesh_deform_pre_and_scratch(
         &mut self,
-    ) -> Option<(&crate::gpu::MeshPreprocessPipelines, &mut MeshDeformScratch)> {
+    ) -> Option<(
+        &crate::backend::mesh_deform::MeshPreprocessPipelines,
+        &mut MeshDeformScratch,
+    )> {
         let pre = self.mesh_preprocess.as_ref()?;
         let scratch = self.mesh_deform_scratch.as_mut()?;
         Some((pre, scratch))

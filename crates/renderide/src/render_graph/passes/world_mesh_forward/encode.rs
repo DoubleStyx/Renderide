@@ -6,7 +6,7 @@ use crate::render_graph::MaterialDrawBatchKey;
 use crate::render_graph::WorldMeshDrawItem;
 use crate::resources::MeshPool;
 
-use crate::gpu::PER_DRAW_UNIFORM_STRIDE;
+use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 
 pub(crate) fn is_pbs_intersection_draw(item: &WorldMeshDrawItem) -> bool {
     match &item.batch_key.pipeline {

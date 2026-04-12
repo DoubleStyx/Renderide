@@ -27,6 +27,7 @@ mod frustum;
 mod hi_z_cpu;
 mod hi_z_occlusion;
 mod ids;
+pub mod occlusion;
 mod output_depth_mode;
 mod pass;
 mod resources;

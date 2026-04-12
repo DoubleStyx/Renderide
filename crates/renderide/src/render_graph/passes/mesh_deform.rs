@@ -7,7 +7,7 @@ use glam::Mat4;
 
 use crate::assets::mesh::{GpuMesh, BLENDSHAPE_OFFSET_GPU_STRIDE};
 use crate::backend::advance_slab_cursor;
-use crate::gpu::plan_blendshape_bind_chunks;
+use crate::backend::mesh_deform::plan_blendshape_bind_chunks;
 
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
@@ -245,7 +245,7 @@ fn record_mesh_deform(
     queue: &wgpu::Queue,
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
-    pre: &crate::gpu::MeshPreprocessPipelines,
+    pre: &crate::backend::mesh_deform::MeshPreprocessPipelines,
     scratch: &mut crate::backend::MeshDeformScratch,
     scene: &crate::scene::SceneCoordinator,
     space_id: RenderSpaceId,

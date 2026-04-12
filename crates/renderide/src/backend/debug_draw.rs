@@ -3,10 +3,10 @@
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
-use crate::gpu::{INITIAL_PER_DRAW_UNIFORM_SLOTS, PER_DRAW_UNIFORM_STRIDE};
+use crate::backend::mesh_deform::{INITIAL_PER_DRAW_UNIFORM_SLOTS, PER_DRAW_UNIFORM_STRIDE};
 use crate::pipelines::raster::DebugWorldNormalsFamily;
 
-/// Per-frame uniform slab: one 256-byte [`crate::gpu::PaddedPerDrawUniforms`] slot per mesh draw.
+/// Per-frame uniform slab: one 256-byte [`crate::backend::mesh_deform::PaddedPerDrawUniforms`] slot per mesh draw.
 pub struct DebugDrawResources {
     /// Packed rows (`slot_count * 256` bytes).
     pub per_draw_uniforms: wgpu::Buffer,

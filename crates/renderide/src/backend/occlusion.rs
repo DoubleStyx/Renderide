@@ -4,7 +4,7 @@
 //! [`crate::render_graph::passes::WorldMeshForwardPass`] for previous-frame occlusion tests and by
 //! [`crate::render_graph::passes::HiZBuildPass`] for pyramid construction after the forward pass.
 
-use crate::gpu::hi_z_build::{encode_hi_z_build, HiZGpuState};
+use crate::render_graph::occlusion::{encode_hi_z_build, HiZGpuState};
 use crate::render_graph::{
     capture_hi_z_temporal, HiZCullData, HiZTemporalState, OutputDepthMode, WorldMeshCullProjParams,
 };
