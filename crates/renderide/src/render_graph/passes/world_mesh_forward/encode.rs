@@ -40,7 +40,7 @@ pub(crate) fn draw_subset(
         if last_batch_key.as_ref() != Some(&item.batch_key) {
             last_batch_key = Some(item.batch_key.clone());
             let shader_asset_id = item.batch_key.shader_asset_id;
-            pipeline_ok = match backend.material_registry.as_mut() {
+            pipeline_ok = match backend.materials.material_registry.as_mut() {
                 None => false,
                 Some(reg) => {
                     match reg.pipeline_for_shader_asset(shader_asset_id, pass_desc, shader_perm) {
@@ -72,10 +72,11 @@ pub(crate) fn draw_subset(
             RasterPipelineKind::EmbeddedStem(_)
         ) {
             let stem = backend
+                .materials
                 .material_registry
                 .as_ref()
                 .and_then(|r| r.stem_for_shader_asset(item.batch_key.shader_asset_id));
-            if let (Some(mb), Some(stem)) = (backend.embedded_material_bind(), stem) {
+            if let (Some(mb), Some(stem)) = (backend.materials.embedded_material_bind(), stem) {
                 match mb.embedded_material_bind_group(
                     stem,
                     queue,
@@ -87,7 +88,9 @@ pub(crate) fn draw_subset(
                     Err(_) => rpass.set_bind_group(1, empty_bg, &[]),
                 }
             } else {
-                if backend.embedded_material_bind().is_none() && !*warned_missing_embedded_bind {
+                if backend.materials.embedded_material_bind().is_none()
+                    && !*warned_missing_embedded_bind
+                {
                     logger::warn!(
                         "WorldMeshForward: embedded material bind resources unavailable; @group(1) uses empty bind group for embedded raster draws"
                     );

@@ -15,6 +15,7 @@ mod embedded_material_bind;
 mod frame_gpu;
 mod frame_resource_manager;
 mod light_gpu;
+mod material_system;
 mod mesh_deform_scratch;
 mod occlusion;
 mod render_backend;
@@ -29,10 +30,10 @@ pub use embedded_material_bind::EmbeddedMaterialBindResources;
 pub use frame_gpu::{empty_material_bind_group_layout, EmptyMaterialBindGroup, FrameGpuResources};
 pub use frame_resource_manager::FrameResourceManager;
 pub use light_gpu::{order_lights_for_clustered_shading, GpuLight, MAX_LIGHTS};
+pub use material_system::{MaterialSystem, MAX_PENDING_MATERIAL_BATCHES};
 pub use mesh_deform_scratch::{advance_slab_cursor, MeshDeformScratch};
 pub use occlusion::OcclusionSystem;
 pub use render_backend::{
-    RenderBackend, MAX_DEFERRED_MESH_UPLOADS, MAX_PENDING_MATERIAL_BATCHES,
-    MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
-    MESH_UPLOAD_NON_HIGH_PRIORITY_BUDGET_PER_POLL,
+    RenderBackend, MAX_DEFERRED_MESH_UPLOADS, MAX_PENDING_MESH_UPLOADS,
+    MAX_PENDING_TEXTURE_UPLOADS, MESH_UPLOAD_NON_HIGH_PRIORITY_BUDGET_PER_POLL,
 };

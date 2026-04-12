@@ -126,6 +126,7 @@ impl RenderPass for WorldMeshForwardPass {
         let backend = &mut frame.backend;
         let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
         let router_ref = backend
+            .materials
             .material_registry
             .as_ref()
             .map(|r| &r.router)

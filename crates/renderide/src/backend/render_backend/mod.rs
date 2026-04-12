@@ -1,13 +1,9 @@
 //! [`RenderBackend`] implementation.
 
-use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::assets::material::{
-    parse_materials_update_batch_into_store, MaterialPropertyStore, ParseMaterialBatchOptions,
-    PropertyIdRegistry,
-};
+use crate::assets::material::MaterialPropertyStore;
 use crate::config::RendererSettingsHandle;
 use crate::gpu::{GpuContext, MeshPreprocessPipelines};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
@@ -22,17 +18,14 @@ use crate::scene::SceneCoordinator;
 use crate::diagnostics::{DebugHud, DebugHudInput, SceneTransformsSnapshot};
 
 use super::asset_transfer_queue::{self as asset_uploads, AssetTransferQueue};
-use super::embedded_material_bind::EmbeddedMaterialBindResources;
+use super::material_system::MaterialSystem;
 use super::mesh_deform_scratch::MeshDeformScratch;
 use super::occlusion::OcclusionSystem;
 use crate::shared::{
-    MaterialsUpdateBatch, MaterialsUpdateBatchResult, MeshUnload, MeshUploadData, RendererCommand,
-    SetTexture2DData, SetTexture2DFormat, SetTexture2DProperties, UnloadTexture2D,
+    MaterialsUpdateBatch, MeshUnload, MeshUploadData, SetTexture2DData, SetTexture2DFormat,
+    SetTexture2DProperties, UnloadTexture2D,
 };
 use winit::window::Window;
-
-/// Max queued [`MaterialsUpdateBatch`] when shared memory is not available.
-pub const MAX_PENDING_MATERIAL_BATCHES: usize = 256;
 
 pub use super::asset_transfer_queue::{
     MAX_DEFERRED_MESH_UPLOADS, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
@@ -41,17 +34,10 @@ pub use super::asset_transfer_queue::{
 
 /// GPU resource pools, material property data, and asset upload paths.
 pub struct RenderBackend {
-    /// Host material property batches (`MaterialsUpdateBatch`); separate maps for materials vs blocks.
-    material_property_store: MaterialPropertyStore,
-    /// Stable ids for [`crate::shared::MaterialPropertyIdRequest`] / batch `property_id` keys.
-    property_id_registry: Arc<PropertyIdRegistry>,
-    pending_material_batches: VecDeque<MaterialsUpdateBatch>,
+    /// Material property store, shader routes, pipeline registry, embedded `@group(1)` binds.
+    pub(crate) materials: MaterialSystem,
     /// Mesh/texture upload queues, budgets, format tables, pools, and GPU device/queue for uploads.
     pub(crate) asset_transfers: AssetTransferQueue,
-    /// GPU material families, router, and pipeline cache (after [`Self::attach`]).
-    pub(crate) material_registry: Option<crate::materials::MaterialRegistry>,
-    /// Shader asset id → pipeline kind and optional HUD label when uploads arrive before GPU attach.
-    pending_shader_routes: HashMap<i32, (RasterPipelineKind, Option<String>)>,
     /// Optional mesh skinning / blendshape compute pipelines (after [`Self::attach`]).
     mesh_preprocess: Option<MeshPreprocessPipelines>,
     /// Compiled DAG of render passes (after [`Self::attach`]); see [`crate::render_graph`].
@@ -60,8 +46,6 @@ pub struct RenderBackend {
     mesh_deform_scratch: Option<MeshDeformScratch>,
     /// Per-frame bind groups, light staging, and debug draw slab.
     pub(crate) frame_resources: super::FrameResourceManager,
-    /// Embedded raster materials (`@group(1)` textures/uniforms), after [`Self::attach`].
-    pub(crate) embedded_material_bind: Option<EmbeddedMaterialBindResources>,
     #[cfg(feature = "debug-hud")]
     debug_hud: Option<DebugHud>,
     #[cfg(feature = "debug-hud")]
@@ -94,17 +78,12 @@ impl RenderBackend {
     /// Empty pools and material store; no GPU until [`Self::attach`].
     pub fn new() -> Self {
         Self {
-            material_property_store: MaterialPropertyStore::new(),
-            property_id_registry: Arc::new(PropertyIdRegistry::new()),
-            pending_material_batches: VecDeque::new(),
+            materials: MaterialSystem::new(),
             asset_transfers: AssetTransferQueue::new(),
-            material_registry: None,
-            pending_shader_routes: HashMap::new(),
             mesh_preprocess: None,
             frame_graph: None,
             mesh_deform_scratch: None,
             frame_resources: super::FrameResourceManager::new(),
-            embedded_material_bind: None,
             #[cfg(feature = "debug-hud")]
             debug_hud: None,
             #[cfg(feature = "debug-hud")]
@@ -204,32 +183,34 @@ impl RenderBackend {
 
     /// Material property store (host uniforms, textures, shader asset bindings).
     pub fn material_property_store(&self) -> &MaterialPropertyStore {
-        &self.material_property_store
+        self.materials.material_property_store()
     }
 
     /// Mutable store for tests and tooling.
     pub fn material_property_store_mut(&mut self) -> &mut MaterialPropertyStore {
-        &mut self.material_property_store
+        self.materials.material_property_store_mut()
     }
 
     /// Property name interning for material batches.
-    pub fn property_id_registry(&self) -> &PropertyIdRegistry {
-        self.property_id_registry.as_ref()
+    pub fn property_id_registry(&self) -> &crate::assets::material::PropertyIdRegistry {
+        self.materials.property_id_registry()
     }
 
     /// Registered material families and pipeline cache (after GPU attach).
     pub fn material_registry(&self) -> Option<&crate::materials::MaterialRegistry> {
-        self.material_registry.as_ref()
+        self.materials.material_registry()
     }
 
     /// Mutable registry (pipeline cache and shader routes).
     pub fn material_registry_mut(&mut self) -> Option<&mut crate::materials::MaterialRegistry> {
-        self.material_registry.as_mut()
+        self.materials.material_registry_mut()
     }
 
     /// Embedded material bind groups (world Unlit, etc.) after [`Self::attach`].
-    pub fn embedded_material_bind(&self) -> Option<&EmbeddedMaterialBindResources> {
-        self.embedded_material_bind.as_ref()
+    pub fn embedded_material_bind(
+        &self,
+    ) -> Option<&super::embedded_material_bind::EmbeddedMaterialBindResources> {
+        self.materials.embedded_material_bind()
     }
 
     /// Number of schedules passes in the compiled frame graph, or `0` if none.
@@ -274,29 +255,7 @@ impl RenderBackend {
                 self.mesh_preprocess = None;
             }
         }
-        self.material_registry = Some(crate::materials::MaterialRegistry::with_default_families(
-            device.clone(),
-        ));
-        if let Some(reg) = self.material_registry.as_mut() {
-            for (asset_id, (pipeline, display_name)) in self.pending_shader_routes.drain() {
-                reg.map_shader_route(asset_id, pipeline, display_name);
-            }
-        }
-        match EmbeddedMaterialBindResources::new(
-            device.clone(),
-            Arc::clone(&self.property_id_registry),
-        ) {
-            Ok(m) => {
-                if let Ok(q) = queue.lock() {
-                    m.write_default_white(&q);
-                }
-                self.embedded_material_bind = Some(m);
-            }
-            Err(e) => {
-                logger::warn!("embedded material bind resources not created: {e}");
-                self.embedded_material_bind = None;
-            }
-        }
+        self.materials.attach_gpu(device.clone(), &queue);
         asset_uploads::attach_flush_pending_asset_uploads(&mut self.asset_transfers, &device, shm);
 
         self.frame_graph = match crate::render_graph::build_default_main_graph() {
@@ -514,20 +473,13 @@ impl RenderBackend {
         pipeline: RasterPipelineKind,
         display_name: Option<String>,
     ) {
-        if let Some(reg) = self.material_registry.as_mut() {
-            reg.map_shader_route(asset_id, pipeline, display_name);
-        } else {
-            self.pending_shader_routes
-                .insert(asset_id, (pipeline, display_name));
-        }
+        self.materials
+            .register_shader_route(asset_id, pipeline, display_name);
     }
 
     /// Removes shader routing for `asset_id`.
     pub fn unregister_shader_route(&mut self, asset_id: i32) {
-        self.pending_shader_routes.remove(&asset_id);
-        if let Some(reg) = self.material_registry.as_mut() {
-            reg.unmap_shader(asset_id);
-        }
+        self.materials.unregister_shader_route(asset_id);
     }
 
     /// Drain pending material batches using the given shared memory and IPC.
@@ -536,23 +488,12 @@ impl RenderBackend {
         shm: &mut SharedMemoryAccessor,
         ipc: &mut DualQueueIpc,
     ) {
-        let batches: Vec<MaterialsUpdateBatch> = self.pending_material_batches.drain(..).collect();
-        for batch in batches {
-            self.apply_materials_update_batch(batch, shm, ipc);
-        }
+        self.materials.flush_pending_material_batches(shm, ipc);
     }
 
     /// Queue a materials batch when shared memory is not yet available. Returns `false` if queue full.
     pub fn enqueue_materials_batch_no_shm(&mut self, batch: MaterialsUpdateBatch) -> bool {
-        if self.pending_material_batches.len() >= MAX_PENDING_MATERIAL_BATCHES {
-            logger::warn!(
-                "materials update batch {} dropped: pending queue full (no shared memory)",
-                batch.update_batch_id
-            );
-            return false;
-        }
-        self.pending_material_batches.push_back(batch);
-        true
+        self.materials.enqueue_materials_batch_no_shm(batch)
     }
 
     /// Apply one host materials batch (shared memory must be valid for the batch descriptors).
@@ -562,17 +503,7 @@ impl RenderBackend {
         shm: &mut SharedMemoryAccessor,
         ipc: &mut DualQueueIpc,
     ) {
-        let update_batch_id = batch.update_batch_id;
-        let opts = ParseMaterialBatchOptions::default();
-        parse_materials_update_batch_into_store(
-            shm,
-            &batch,
-            &mut self.material_property_store,
-            &opts,
-        );
-        ipc.send_background(RendererCommand::materials_update_batch_result(
-            MaterialsUpdateBatchResult { update_batch_id },
-        ));
+        self.materials.apply_materials_update_batch(batch, shm, ipc);
     }
 
     /// Handle [`SetTexture2DFormat`](crate::shared::SetTexture2DFormat).
@@ -646,11 +577,11 @@ impl RenderBackend {
 
     /// Remove material / property-block entries from the host store.
     pub fn on_unload_material(&mut self, asset_id: i32) {
-        self.material_property_store.remove_material(asset_id);
+        self.materials.on_unload_material(asset_id);
     }
 
     /// Remove a property block from the host store.
     pub fn on_unload_material_property_block(&mut self, asset_id: i32) {
-        self.material_property_store.remove_property_block(asset_id);
+        self.materials.on_unload_material_property_block(asset_id);
     }
 }
