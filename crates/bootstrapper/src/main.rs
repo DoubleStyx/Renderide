@@ -1,5 +1,6 @@
 //! Bootstrapper binary entry point.
 
+#![warn(missing_docs)]
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 /// Parses CLI args, optionally prompts for desktop vs VR, then runs [`bootstrapper::run`].
