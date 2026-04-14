@@ -41,7 +41,7 @@ Parser.Default.ParseArguments<GeneratorOptions>(args)
         {
             string? gitRoot = RenderidePathResolver.TryGetGitRepositoryRoot();
             string logFilePath = LogsLayout.EnsureNewSharedTypeGeneratorLogFilePath(gitRoot);
-            using var logSink = new SuppressWarningsSink(new LogFileSink(logFilePath));
+            using var logSink = SharedTypeGeneratorLogging.CreateMainSink(logFilePath);
             using var logger = new Logger(
                 new[] { logSink },
                 new LoggerConfiguration

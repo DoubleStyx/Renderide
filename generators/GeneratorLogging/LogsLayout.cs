@@ -53,4 +53,17 @@ public static class LogsLayout
         DateTime utc = DateTime.UtcNow;
         return utc.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
     }
+
+    /// <summary>
+    /// A unique log file under <see cref="SharedTypeGeneratorLogDirectory"/> for parallel test runs:
+    /// <c>{UTC-stamp}_{guid}.log</c>.
+    /// </summary>
+    public static string EnsureUniqueTestSharedTypeGeneratorLogFilePath(string? gitTopLevel)
+    {
+        string dir = SharedTypeGeneratorLogDirectory(gitTopLevel);
+        Directory.CreateDirectory(dir);
+        string stamp = FormatLogFilenameTimestampUtc();
+        string unique = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+        return Path.Combine(dir, $"{stamp}_{unique}.log");
+    }
 }

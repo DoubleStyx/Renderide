@@ -50,14 +50,32 @@ public sealed class LogFileSink : ILoggerSink, IDisposable
         WriteLine(level, category.ToString(), message);
     }
 
-    private void WriteLine(LogLevel level, string category, string message)
+    /// <summary>
+    /// Formats a single log line using the same rules as <see cref="LogFileSink"/> file output
+    /// (<c>[HH:MM:SS.mmm]</c> UTC, level name, optional category in brackets). Used by
+    /// <see cref="ErrorDuplicatingSink"/> so duplicated error lines match the log file.
+    /// </summary>
+    public static string FormatLogLine(LogLevel level, string category, string message)
     {
         DateTime utc = DateTime.UtcNow;
         string ts = $"{utc:HH:mm:ss}.{utc.Millisecond:000}";
         string levelName = MapLevel(level);
-        string line = string.IsNullOrEmpty(category)
+        return string.IsNullOrEmpty(category)
             ? FormattableString.Invariant($"[{ts}] {levelName} {message}")
             : FormattableString.Invariant($"[{ts}] {levelName} [{category}] {message}");
+    }
+
+    private void WriteLine(LogLevel level, string category, string message)
+    {
+        WriteFormattedLine(FormatLogLine(level, category, message));
+    }
+
+    /// <summary>
+    /// Appends one full line as returned by <see cref="FormatLogLine"/> (used when a caller formats once and mirrors elsewhere).
+    /// </summary>
+    public void WriteFormattedLine(string line)
+    {
+        ArgumentNullException.ThrowIfNull(line);
         lock (_lock)
         {
             _writer.WriteLine(line);

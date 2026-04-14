@@ -6,11 +6,11 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <RootNamespace>Renderide.Generators.Logging.Tests</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
-    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -18,18 +18,8 @@
     </PackageReference>
   </ItemGroup>
 
-  <PropertyGroup>
-    <RenderiteSharedDllPath Condition="'$(RenderiteSharedDllPath)' == ''">$(RENDERITE_SHARED_DLL)</RenderiteSharedDllPath>
-    <RenderiteSharedDllPath Condition="'$(RenderiteSharedDllPath)' == ''">$(HOME)/.steam/steam/steamapps/common/Resonite/Renderite.Shared.dll</RenderiteSharedDllPath>
-    <RenderiteSharedDllPath Condition="'$(RenderiteSharedDllPath)' == ''">$(MSBuildThisFileDirectory)lib/Renderite.Shared.dll</RenderiteSharedDllPath>
-  </PropertyGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\GeneratorLogging\GeneratorLogging.csproj" />
-    <ProjectReference Include="..\SharedTypeGenerator\SharedTypeGenerator.csproj" />
-    <Reference Include="Renderite.Shared">
-      <HintPath>$(RenderiteSharedDllPath)</HintPath>
-    </Reference>
   </ItemGroup>
 
 </Project>
