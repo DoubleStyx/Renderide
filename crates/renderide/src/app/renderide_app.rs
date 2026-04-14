@@ -13,8 +13,8 @@
 //! 4. [`lock_step_exchange`] — when allowed, [`RendererRuntime::pre_frame`] with winit input + optional VR IPC.
 //! 5. Early exits — shutdown, fatal IPC, missing window/GPU (each runs epilogue timing).
 //! 6. [`render_views`] — HMD multiview submit if XR+GPU; secondary cameras to render textures; vsync;
-//!    debug HUD input/time for this frame (must run before desktop [`frame_loop::execute_mirror_frame_graph`]).
-//! 7. [`present_and_diagnostics`] — VR mirror blit or clear vs desktop graph; OpenXR `end_frame_empty` when needed.
+//!    debug HUD input/time for this frame (must run before desktop [`RendererRuntime::render_all_views`]).
+//! 7. [`present_and_diagnostics`] — VR mirror blit or clear; OpenXR `end_frame_empty` when needed (desktop world render is in step 6).
 //! 8. [`frame_tick_epilogue`] — GPU frame timing end and debug HUD capture after the tick.
 //!
 //! [`tick_phase_trace`] emits `trace!` lines prefixed with [`TICK_TRACE_PREFIX`] for grep/profiling; the same
@@ -394,11 +394,15 @@ impl RenderideApp {
 
         let gpu = self.gpu.as_mut()?;
 
-        if let Err(e) = self
-            .runtime
-            .render_secondary_cameras_to_render_textures(gpu, window.as_ref())
-        {
-            logger::warn!("secondary camera render-to-texture failed: {e:?}");
+        if self.runtime.vr_active() {
+            if let Err(e) = self
+                .runtime
+                .render_secondary_cameras_to_render_textures(gpu, window.as_ref())
+            {
+                logger::warn!("secondary camera render-to-texture failed: {e:?}");
+            }
+        } else if let Err(e) = self.runtime.render_all_views(gpu, window.as_ref()) {
+            Self::handle_frame_graph_error(gpu, window.as_ref(), e);
         }
 
         if let Ok(s) = self.runtime.settings().read() {
@@ -452,11 +456,9 @@ impl RenderideApp {
             } else if let Err(e) = present_clear_frame(gpu, window.as_ref()) {
                 logger::debug!("VR mirror clear (no HMD frame): {e:?}");
             }
-        } else if let Err(e) =
-            frame_loop::execute_mirror_frame_graph(&mut self.runtime, gpu, window.as_ref())
-        {
-            Self::handle_frame_graph_error(gpu, window.as_ref(), e);
         }
+        // Desktop: swapchain world render + present run inside [`RendererRuntime::render_all_views`]
+        // during [`Self::render_views`].
 
         if let (Some(bundle), Some(tick)) = (self.xr_session.as_mut(), xr_tick) {
             if !hmd_projection_ended {

@@ -7,7 +7,6 @@ use winit::window::Window;
 
 use crate::gpu::{GpuContext, VrMirrorBlitResources};
 use crate::present::PresentClearError;
-use crate::render_graph::GraphExecuteError;
 use crate::runtime::RendererRuntime;
 use crate::xr::{OpenxrFrameTick, XrSessionBundle, XrWgpuHandles};
 
@@ -37,13 +36,4 @@ pub(crate) fn present_vr_mirror_blit(
     mirror_blit: &mut VrMirrorBlitResources,
 ) -> Result<(), PresentClearError> {
     mirror_blit.present_staging_to_surface(gpu, window)
-}
-
-/// Presents the desktop mirror / compositor path.
-pub(crate) fn execute_mirror_frame_graph(
-    runtime: &mut RendererRuntime,
-    gpu: &mut GpuContext,
-    window: &Window,
-) -> Result<(), GraphExecuteError> {
-    runtime.execute_frame_graph(gpu, window)
 }

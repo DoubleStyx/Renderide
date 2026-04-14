@@ -209,16 +209,20 @@ impl RenderPass for ClusteredLightPass {
         let stereo = hc.vr_active && hc.stereo_views.is_some() && frame.multiview_stereo;
 
         let lights_upload: Vec<GpuLight> = frame.backend.frame_resources.frame_lights().to_vec();
-        let Some(fgpu) = frame.backend.frame_resources.frame_gpu_mut() else {
+        let queue = ctx.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(fgpu) = frame
+            .backend
+            .frame_resources
+            .sync_cluster_viewport_ensure_lights_upload(
+                ctx.device,
+                &queue,
+                (vw, vh),
+                stereo,
+                lights_upload.as_slice(),
+            )
+        else {
             return Ok(());
         };
-
-        fgpu.sync_cluster_viewport(ctx.device, (vw, vh), stereo);
-
-        {
-            let queue = ctx.queue.lock().unwrap_or_else(|e| e.into_inner());
-            fgpu.write_lights_buffer(&queue, lights_upload.as_slice());
-        }
 
         let Some(refs) = fgpu
             .cluster_cache
@@ -276,8 +280,6 @@ impl RenderPass for ClusteredLightPass {
                 },
             ],
         });
-
-        let queue = ctx.queue.lock().unwrap_or_else(|e| e.into_inner());
 
         for (eye_idx, cfp) in eye_params.iter().enumerate() {
             let cluster_offset = (eye_idx as u32) * clusters_per_eye;

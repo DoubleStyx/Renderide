@@ -9,8 +9,8 @@ use crate::scene::SceneCoordinator;
 
 use super::context::RenderPassContext;
 use super::error::GraphExecuteError;
-use super::frame_params::{FrameRenderParams, HostCameraFrame};
-use super::pass::RenderPass;
+use super::frame_params::{FrameRenderParams, HostCameraFrame, OcclusionViewId};
+use super::pass::{PassPhase, RenderPass};
 use super::world_mesh_draw_prep::{CameraTransformDrawFilter, WorldMeshDrawCollection};
 
 /// Single-view color + depth for secondary cameras rendering to a host [`crate::resources::GpuRenderTexture`].
@@ -43,6 +43,42 @@ pub struct ExternalFrameTargets<'a> {
     pub surface_format: wgpu::TextureFormat,
 }
 
+/// Where a multi-view frame writes color/depth.
+pub enum FrameViewTarget<'a> {
+    /// Main window swapchain (acquire + present).
+    Swapchain,
+    /// OpenXR stereo multiview (pre-acquired array targets).
+    ExternalMultiview(ExternalFrameTargets<'a>),
+    /// Secondary camera to a host render texture.
+    OffscreenRt(ExternalOffscreenTargets<'a>),
+}
+
+/// One view to render in a multi-view frame.
+pub struct FrameView<'a> {
+    /// Clip planes, FOV, and matrix overrides for this view.
+    pub host_camera: HostCameraFrame,
+    /// Color/depth destination.
+    pub target: FrameViewTarget<'a>,
+    /// Optional transform filter for secondary cameras.
+    pub draw_filter: Option<CameraTransformDrawFilter>,
+    /// When set, [`crate::render_graph::passes::WorldMeshForwardPass`] skips draw collection.
+    pub prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+}
+
+impl<'a> FrameView<'a> {
+    /// Hi-Z / occlusion slot for this view.
+    pub fn occlusion_view_id(&self) -> OcclusionViewId {
+        match &self.target {
+            FrameViewTarget::Swapchain | FrameViewTarget::ExternalMultiview(_) => {
+                OcclusionViewId::Main
+            }
+            FrameViewTarget::OffscreenRt(ext) => {
+                OcclusionViewId::OffscreenRenderTexture(ext.render_texture_asset_id)
+            }
+        }
+    }
+}
+
 /// Statistics emitted when building a [`CompiledRenderGraph`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CompileStats {
@@ -55,9 +91,8 @@ pub struct CompileStats {
 /// Immutable execution schedule produced by [`super::GraphBuilder::build`].
 ///
 /// After build, pass order and [`Self::needs_surface_acquire`] do not change. Per-frame work is
-/// only [`Self::execute`], which records into one command encoder and submits once (v1).
-///
-/// Phase 2 may add subgraph expansion, multi-encoder recording, and explicit barrier insertion.
+/// [`Self::execute`] / [`Self::execute_multi_view`]. Multi-view uses a frame-global submit plus
+/// one submit per view so `wgpu::Queue::write_buffer` work in passes is ordered before each view’s GPU work.
 pub struct CompiledRenderGraph {
     pub(super) passes: Vec<Box<dyn RenderPass>>,
     /// `true` when any pass writes [`super::resources::ResourceSlot::Backbuffer`] — frame execution
@@ -65,6 +100,17 @@ pub struct CompiledRenderGraph {
     pub needs_surface_acquire: bool,
     /// Build-time stats for tests and future profiling hooks.
     pub compile_stats: CompileStats,
+}
+
+struct ResolvedView<'a> {
+    depth_texture: &'a wgpu::Texture,
+    depth_view: &'a wgpu::TextureView,
+    backbuffer: Option<&'a wgpu::TextureView>,
+    surface_format: wgpu::TextureFormat,
+    viewport_px: (u32, u32),
+    multiview_stereo: bool,
+    offscreen_write_render_texture_asset_id: Option<i32>,
+    occlusion_view: OcclusionViewId,
 }
 
 impl CompiledRenderGraph {
@@ -80,9 +126,6 @@ impl CompiledRenderGraph {
 
     /// Records all passes and submits. Matches [`crate::present::present_clear_frame`] recovery
     /// behavior for surface acquire (timeout/occluded skip, validation reconfigure).
-    ///
-    /// `scene` and `backend` are passed through [`super::FrameRenderParams`] to mesh passes; the
-    /// graph temporarily takes ownership of `backend.frame_graph` via [`RenderBackend::execute_frame_graph`].
     pub fn execute(
         &mut self,
         gpu: &mut GpuContext,
@@ -91,13 +134,21 @@ impl CompiledRenderGraph {
         backend: &mut RenderBackend,
         host_camera: HostCameraFrame,
     ) -> Result<(), GraphExecuteError> {
-        self.execute_inner(gpu, window, scene, backend, host_camera, None)
+        self.execute_multi_view(
+            gpu,
+            window,
+            scene,
+            backend,
+            vec![FrameView {
+                host_camera,
+                target: FrameViewTarget::Swapchain,
+                draw_filter: None,
+                prefetched_world_mesh_draws: None,
+            }],
+        )
     }
 
     /// Records passes against pre-built multiview array targets (OpenXR swapchain path).
-    ///
-    /// Does not acquire the window surface or present. Skips the debug HUD overlay on the external
-    /// target (mirror/HUD use a separate path).
     pub fn execute_external_multiview(
         &mut self,
         gpu: &mut GpuContext,
@@ -107,17 +158,26 @@ impl CompiledRenderGraph {
         host_camera: HostCameraFrame,
         external: ExternalFrameTargets<'_>,
     ) -> Result<(), GraphExecuteError> {
-        self.execute_inner(gpu, window, scene, backend, host_camera, Some(external))
+        self.execute_multi_view(
+            gpu,
+            window,
+            scene,
+            backend,
+            vec![FrameView {
+                host_camera,
+                target: FrameViewTarget::ExternalMultiview(external),
+                draw_filter: None,
+                prefetched_world_mesh_draws: None,
+            }],
+        )
     }
 
     /// Renders the graph to a single-view offscreen color/depth target (secondary camera → render texture).
-    ///
-    /// Does not acquire the swapchain or present. Sets [`FrameRenderParams::multiview_stereo`] to `false`.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_offscreen_single_view(
         &mut self,
         gpu: &mut GpuContext,
-        _window: &Window,
+        window: &Window,
         scene: &SceneCoordinator,
         backend: &mut RenderBackend,
         host_camera: HostCameraFrame,
@@ -125,69 +185,49 @@ impl CompiledRenderGraph {
         transform_filter: Option<CameraTransformDrawFilter>,
         prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
     ) -> Result<(), GraphExecuteError> {
-        let device_arc = gpu.device().clone();
-        let queue_arc = gpu.queue().clone();
-
-        let surface_format = external.color_format;
-        let viewport_px = external.extent_px;
-        let depth_tex_ref = external.depth_texture;
-        let depth_ref = external.depth_view;
-        let backbuffer_ref = Some(external.color_view);
-
-        let device = device_arc.as_ref();
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render-graph-offscreen"),
-        });
-
-        let mut frame_params = FrameRenderParams {
+        self.execute_multi_view(
+            gpu,
+            window,
             scene,
             backend,
-            depth_texture: depth_tex_ref,
-            depth_view: depth_ref,
-            surface_format,
-            viewport_px,
-            host_camera,
-            multiview_stereo: false,
-            transform_draw_filter: transform_filter,
-            offscreen_write_render_texture_asset_id: Some(external.render_texture_asset_id),
-            prefetched_world_mesh_draws,
-        };
-
-        let mut ctx = RenderPassContext {
-            device,
-            queue: &queue_arc,
-            encoder: &mut encoder,
-            backbuffer: backbuffer_ref,
-            depth_view: Some(depth_ref),
-            frame: Some(&mut frame_params),
-        };
-
-        for pass in &mut self.passes {
-            pass.execute(&mut ctx)?;
-        }
-
-        let cmd = encoder.finish();
-        gpu.submit_tracked_frame_commands(cmd);
-        if !host_camera.suppress_occlusion_temporal {
-            backend.occlusion.hi_z_on_frame_submitted(device);
-        }
-        Ok(())
+            vec![FrameView {
+                host_camera,
+                target: FrameViewTarget::OffscreenRt(external),
+                draw_filter: transform_filter,
+                prefetched_world_mesh_draws,
+            }],
+        )
     }
 
-    fn execute_inner(
+    /// Records all views: one encoder + submit for frame-global work, then one encoder + submit per view.
+    ///
+    /// Per-view passes use [`wgpu::Queue::write_buffer`] for camera uniforms, per-draw slabs, and
+    /// cluster params. Those writes are ordered **before** the next `queue.submit`; a single submit
+    /// for all views would leave only the last view’s uploads visible to every view’s GPU commands,
+    /// so each view is isolated in its own submit.
+    ///
+    /// Frame-global passes ([`PassPhase::FrameGlobal`]) run once in the first encoder; per-view
+    /// passes run for each [`FrameView`] in order.
+    pub fn execute_multi_view(
         &mut self,
         gpu: &mut GpuContext,
         window: &Window,
         scene: &SceneCoordinator,
         backend: &mut RenderBackend,
-        host_camera: HostCameraFrame,
-        external: Option<ExternalFrameTargets<'_>>,
+        mut views: Vec<FrameView<'_>>,
     ) -> Result<(), GraphExecuteError> {
+        if views.is_empty() {
+            return Ok(());
+        }
+
+        let needs_swapchain = views
+            .iter()
+            .any(|v| matches!(v.target, FrameViewTarget::Swapchain));
+
         let (frame, backbuffer_view_holder): (
             Option<wgpu::SurfaceTexture>,
             Option<wgpu::TextureView>,
-        ) = if external.is_some() {
+        ) = if !needs_swapchain {
             (None, None)
         } else if self.needs_surface_acquire {
             match acquire_surface_outcome(gpu, window)? {
@@ -207,94 +247,188 @@ impl CompiledRenderGraph {
 
         let device_arc = gpu.device().clone();
         let queue_arc = gpu.queue().clone();
-
-        let (surface_format, viewport_px, depth_tex_ref, depth_ref, backbuffer_ref): (
-            wgpu::TextureFormat,
-            (u32, u32),
-            &wgpu::Texture,
-            &wgpu::TextureView,
-            Option<&wgpu::TextureView>,
-        ) = if let Some(ext) = external.as_ref() {
-            (
-                ext.surface_format,
-                ext.extent_px,
-                ext.depth_texture,
-                ext.depth_view,
-                Some(ext.color_view),
-            )
-        } else {
-            let surface_format = gpu.config_format();
-            let viewport_px = gpu.surface_extent_px();
-            let bb = backbuffer_view_holder
-                .as_ref()
-                .map(|v| v as &wgpu::TextureView);
-            let (depth_tex, depth_view) = gpu
-                .ensure_depth_target()
-                .map_err(|_| GraphExecuteError::DepthTarget)?;
-            (surface_format, viewport_px, depth_tex, depth_view, bb)
-        };
         let device = device_arc.as_ref();
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render-graph"),
-        });
-
-        let mut frame_params = FrameRenderParams {
-            scene,
-            backend,
-            depth_texture: depth_tex_ref,
-            depth_view: depth_ref,
-            surface_format,
-            viewport_px,
-            host_camera,
-            multiview_stereo: external.is_some(),
-            transform_draw_filter: None,
-            offscreen_write_render_texture_asset_id: None,
-            prefetched_world_mesh_draws: None,
-        };
-
-        let mut ctx = RenderPassContext {
-            device,
-            queue: &queue_arc,
-            encoder: &mut encoder,
-            backbuffer: backbuffer_ref,
-            depth_view: Some(depth_ref),
-            frame: Some(&mut frame_params),
-        };
-
-        for pass in &mut self.passes {
-            pass.execute(&mut ctx)?;
+        let has_frame_global = self
+            .passes
+            .iter()
+            .any(|p| p.phase() == PassPhase::FrameGlobal);
+        if has_frame_global {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render-graph-frame-global"),
+            });
+            // Frame-global phase (e.g. mesh deform): use first view for host camera / scene context.
+            {
+                let first = views.first().expect("views non-empty");
+                let resolved =
+                    Self::resolve_view_from_target(&first.target, gpu, &backbuffer_view_holder)?;
+                let mut frame_params = FrameRenderParams {
+                    scene,
+                    backend,
+                    depth_texture: resolved.depth_texture,
+                    depth_view: resolved.depth_view,
+                    surface_format: resolved.surface_format,
+                    viewport_px: resolved.viewport_px,
+                    host_camera: first.host_camera,
+                    multiview_stereo: resolved.multiview_stereo,
+                    transform_draw_filter: first.draw_filter.clone(),
+                    offscreen_write_render_texture_asset_id: resolved
+                        .offscreen_write_render_texture_asset_id,
+                    prefetched_world_mesh_draws: None,
+                    occlusion_view: resolved.occlusion_view,
+                };
+                let mut ctx = RenderPassContext {
+                    device,
+                    queue: &queue_arc,
+                    encoder: &mut encoder,
+                    backbuffer: None,
+                    depth_view: None,
+                    frame: Some(&mut frame_params),
+                };
+                for pass in &mut self.passes {
+                    if pass.phase() == PassPhase::FrameGlobal {
+                        pass.execute(&mut ctx)?;
+                    }
+                }
+            }
+            let cmd = encoder.finish();
+            gpu.submit_tracked_frame_commands(cmd);
         }
 
-        if external.is_some() {
-            let cmd = encoder.finish();
-            gpu.submit_tracked_frame_commands(cmd);
-            if !host_camera.suppress_occlusion_temporal {
-                backend.occlusion.hi_z_on_frame_submitted(device);
-            }
-        } else if let Some(view) = backbuffer_view_holder.as_ref() {
-            let mut queue_lock = queue_arc.lock().expect("queue mutex poisoned");
-            if let Err(e) = backend.encode_debug_hud_overlay(
+        // Per-view: separate encoder + submit so queue writes before each submit apply only to this view.
+        for view in &mut views {
+            let prefetched = view.prefetched_world_mesh_draws.take();
+            let draw_filter = view.draw_filter.clone();
+            let host_camera = view.host_camera;
+            let target_is_swapchain = matches!(view.target, FrameViewTarget::Swapchain);
+            let resolved =
+                Self::resolve_view_from_target(&view.target, gpu, &backbuffer_view_holder)?;
+            let mut frame_params = FrameRenderParams {
+                scene,
+                backend,
+                depth_texture: resolved.depth_texture,
+                depth_view: resolved.depth_view,
+                surface_format: resolved.surface_format,
+                viewport_px: resolved.viewport_px,
+                host_camera,
+                multiview_stereo: resolved.multiview_stereo,
+                transform_draw_filter: draw_filter,
+                offscreen_write_render_texture_asset_id: resolved
+                    .offscreen_write_render_texture_asset_id,
+                prefetched_world_mesh_draws: prefetched,
+                occlusion_view: resolved.occlusion_view,
+            };
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render-graph-per-view"),
+            });
+            let mut ctx = RenderPassContext {
                 device,
-                &queue_lock,
-                &mut encoder,
-                view,
-                viewport_px,
-            ) {
-                logger::warn!("debug HUD overlay: {e}");
+                queue: &queue_arc,
+                encoder: &mut encoder,
+                backbuffer: resolved.backbuffer,
+                depth_view: Some(resolved.depth_view),
+                frame: Some(&mut frame_params),
+            };
+            for pass in &mut self.passes {
+                if pass.phase() == PassPhase::PerView {
+                    pass.execute(&mut ctx)?;
+                }
             }
-            let cmd = encoder.finish();
-            gpu.submit_tracked_frame_commands_with_queue(&mut queue_lock, cmd);
-            backend.occlusion.hi_z_on_frame_submitted(device);
-        } else {
-            let cmd = encoder.finish();
-            gpu.submit_tracked_frame_commands(cmd);
-            backend.occlusion.hi_z_on_frame_submitted(device);
+
+            if target_is_swapchain {
+                let Some(bb) = backbuffer_view_holder.as_ref() else {
+                    return Err(GraphExecuteError::MissingSwapchainView);
+                };
+                let viewport_px = gpu.surface_extent_px();
+                let mut queue_lock = queue_arc.lock().expect("queue mutex poisoned");
+                if let Err(e) = backend.encode_debug_hud_overlay(
+                    device,
+                    &queue_lock,
+                    &mut encoder,
+                    bb,
+                    viewport_px,
+                ) {
+                    logger::warn!("debug HUD overlay: {e}");
+                }
+                let cmd = encoder.finish();
+                gpu.submit_tracked_frame_commands_with_queue(&mut queue_lock, cmd);
+            } else {
+                let cmd = encoder.finish();
+                gpu.submit_tracked_frame_commands(cmd);
+            }
+
+            if Self::should_hi_z_submit_after_pass(&view.host_camera, &view.target) {
+                backend
+                    .occlusion
+                    .hi_z_on_frame_submitted_for_view(device, view.occlusion_view_id());
+            }
         }
 
         if let Some(f) = frame {
             f.present();
         }
         Ok(())
+    }
+
+    fn should_hi_z_submit_after_pass(host: &HostCameraFrame, target: &FrameViewTarget<'_>) -> bool {
+        match target {
+            FrameViewTarget::Swapchain => true,
+            FrameViewTarget::ExternalMultiview(_) => !host.suppress_occlusion_temporal,
+            FrameViewTarget::OffscreenRt(_) => !host.suppress_occlusion_temporal,
+        }
+    }
+
+    fn resolve_view_from_target<'a>(
+        target: &'a FrameViewTarget<'a>,
+        gpu: &'a mut GpuContext,
+        backbuffer_view_holder: &'a Option<wgpu::TextureView>,
+    ) -> Result<ResolvedView<'a>, GraphExecuteError> {
+        match target {
+            FrameViewTarget::Swapchain => {
+                let surface_format = gpu.config_format();
+                let viewport_px = gpu.surface_extent_px();
+                let bb = backbuffer_view_holder
+                    .as_ref()
+                    .map(|v| v as &wgpu::TextureView);
+                let Some(bb_ref) = bb else {
+                    return Err(GraphExecuteError::MissingSwapchainView);
+                };
+                let (depth_tex, depth_view) = gpu
+                    .ensure_depth_target()
+                    .map_err(|_| GraphExecuteError::DepthTarget)?;
+                Ok(ResolvedView {
+                    depth_texture: depth_tex,
+                    depth_view,
+                    backbuffer: Some(bb_ref),
+                    surface_format,
+                    viewport_px,
+                    multiview_stereo: false,
+                    offscreen_write_render_texture_asset_id: None,
+                    occlusion_view: OcclusionViewId::Main,
+                })
+            }
+            FrameViewTarget::ExternalMultiview(ext) => Ok(ResolvedView {
+                depth_texture: ext.depth_texture,
+                depth_view: ext.depth_view,
+                backbuffer: Some(ext.color_view),
+                surface_format: ext.surface_format,
+                viewport_px: ext.extent_px,
+                multiview_stereo: true,
+                offscreen_write_render_texture_asset_id: None,
+                occlusion_view: OcclusionViewId::Main,
+            }),
+            FrameViewTarget::OffscreenRt(ext) => Ok(ResolvedView {
+                depth_texture: ext.depth_texture,
+                depth_view: ext.depth_view,
+                backbuffer: Some(ext.color_view),
+                surface_format: ext.color_format,
+                viewport_px: ext.extent_px,
+                multiview_stereo: false,
+                offscreen_write_render_texture_asset_id: Some(ext.render_texture_asset_id),
+                occlusion_view: OcclusionViewId::OffscreenRenderTexture(
+                    ext.render_texture_asset_id,
+                ),
+            }),
+        }
     }
 }

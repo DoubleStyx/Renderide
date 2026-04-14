@@ -9,6 +9,15 @@ use crate::shared::HeadOutputDevice;
 use super::world_mesh_draw_prep::{CameraTransformDrawFilter, WorldMeshDrawCollection};
 use super::OutputDepthMode;
 
+/// Identifies which Hi-Z / occlusion slot a view uses (main vs host render texture).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OcclusionViewId {
+    /// Main window or OpenXR multiview (shared Hi-Z GPU state in [`crate::backend::OcclusionSystem`]).
+    Main,
+    /// Secondary camera writing to a host render texture (per-RT Hi-Z state).
+    OffscreenRenderTexture(i32),
+}
+
 /// Latest camera-related fields from host [`crate::shared::FrameSubmitData`], updated each `frame_submit`.
 #[derive(Clone, Copy, Debug)]
 pub struct HostCameraFrame {
@@ -109,6 +118,8 @@ pub struct FrameRenderParams<'a> {
     /// When set (e.g. secondary RT cameras), [`crate::render_graph::passes::WorldMeshForwardPass`] skips
     /// draw collection and uses this list instead.
     pub prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+    /// Which Hi-Z pyramid / temporal slot this view reads and writes.
+    pub occlusion_view: OcclusionViewId,
 }
 
 impl<'a> FrameRenderParams<'a> {

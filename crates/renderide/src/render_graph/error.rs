@@ -62,6 +62,10 @@ pub enum GraphExecuteError {
     #[error("GPU depth attachment unavailable")]
     DepthTarget,
 
+    /// A [`super::FrameViewTarget::Swapchain`] view was scheduled without an acquired surface texture.
+    #[error("swapchain backbuffer missing for swapchain view")]
+    MissingSwapchainView,
+
     /// A pass returned an error while recording.
     #[error("pass execution failed: {0}")]
     Pass(#[from] RenderPassError),

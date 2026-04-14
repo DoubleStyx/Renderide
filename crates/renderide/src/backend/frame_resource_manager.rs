@@ -5,6 +5,7 @@
 //! the `@group(2)` per-draw debug slab ([`DebugDrawResources`]), and the CPU-side packed light
 //! buffer used by [`crate::render_graph::passes::ClusteredLightPass`] and the forward pass.
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use super::debug_draw::DebugDrawResources;
@@ -43,6 +44,11 @@ pub struct FrameResourceManager {
     /// Cleared at the start of each winit tick so multiple graph entry points in one tick (e.g. secondary
     /// RT passes then main swapchain) share one CPU light pack.
     light_prep_done_this_tick: bool,
+    /// When true, the packed light buffer was already uploaded to the GPU this tick (multi-view path).
+    ///
+    /// Reset with [`Self::reset_light_prep_for_tick`]. [`crate::render_graph::passes::ClusteredLightPass`]
+    /// skips redundant `write_lights_buffer` while still dispatching per view.
+    lights_gpu_uploaded_this_tick: Cell<bool>,
 }
 
 impl Default for FrameResourceManager {
@@ -61,6 +67,7 @@ impl FrameResourceManager {
             light_scratch: Vec::new(),
             resolved_flatten_scratch: Vec::new(),
             light_prep_done_this_tick: false,
+            lights_gpu_uploaded_this_tick: Cell::new(false),
         }
     }
 
@@ -81,6 +88,12 @@ impl FrameResourceManager {
     /// [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`].
     pub fn reset_light_prep_for_tick(&mut self) {
         self.light_prep_done_this_tick = false;
+        self.lights_gpu_uploaded_this_tick.set(false);
+    }
+
+    /// Whether [`crate::render_graph::passes::ClusteredLightPass`] already uploaded lights this tick.
+    pub fn lights_gpu_uploaded_this_tick(&self) -> bool {
+        self.lights_gpu_uploaded_this_tick.get()
     }
 
     /// Packed GPU lights from the last [`Self::prepare_lights_from_scene`] call.
@@ -151,5 +164,31 @@ impl FrameResourceManager {
             empty_material: self.empty_material.as_ref(),
             debug_draw: self.debug_draw.as_ref(),
         }
+    }
+
+    /// Syncs cluster viewport and uploads the packed light buffer once per tick (multi-view path).
+    ///
+    /// After the first successful GPU upload in a tick, [`Self::lights_gpu_uploaded_this_tick`] is set
+    /// and subsequent calls skip [`super::frame_gpu::FrameGpuResources::write_lights_buffer`].
+    pub fn sync_cluster_viewport_ensure_lights_upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        viewport: (u32, u32),
+        stereo: bool,
+        lights: &[GpuLight],
+    ) -> Option<&mut FrameGpuResources> {
+        let skip = self.lights_gpu_uploaded_this_tick.get();
+        {
+            let fgpu = self.frame_gpu_mut()?;
+            fgpu.sync_cluster_viewport(device, viewport, stereo);
+            if !skip {
+                fgpu.write_lights_buffer(queue, lights);
+            }
+        }
+        if !skip {
+            self.lights_gpu_uploaded_this_tick.set(true);
+        }
+        self.frame_gpu_mut()
     }
 }

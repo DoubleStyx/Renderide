@@ -10,7 +10,7 @@ use rayon::prelude::*;
 
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
-use crate::render_graph::pass::RenderPass;
+use crate::render_graph::pass::{PassPhase, RenderPass};
 use crate::render_graph::resources::PassResources;
 use crate::resources::MeshPool;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
@@ -103,6 +103,10 @@ impl RenderPass for MeshDeformPass {
             reads: Vec::new(),
             writes: Vec::new(),
         }
+    }
+
+    fn phase(&self) -> PassPhase {
+        PassPhase::FrameGlobal
     }
 
     fn execute(&mut self, ctx: &mut RenderPassContext<'_>) -> Result<(), RenderPassError> {

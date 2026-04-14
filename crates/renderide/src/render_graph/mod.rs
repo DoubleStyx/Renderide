@@ -79,11 +79,12 @@ pub use camera::{
 pub use camera::{DESKTOP_FOV_DEGREES_MAX, DESKTOP_FOV_DEGREES_MIN};
 pub use cluster_frame::{cluster_frame_params, cluster_frame_params_stereo, ClusterFrameParams};
 pub use compiled::{
-    CompileStats, CompiledRenderGraph, ExternalFrameTargets, ExternalOffscreenTargets,
+    CompileStats, CompiledRenderGraph, ExternalFrameTargets, ExternalOffscreenTargets, FrameView,
+    FrameViewTarget,
 };
 pub use context::RenderPassContext;
 pub use error::{GraphBuildError, GraphExecuteError, RenderPassError};
-pub use frame_params::{FrameRenderParams, HostCameraFrame};
+pub use frame_params::{FrameRenderParams, HostCameraFrame, OcclusionViewId};
 pub use frustum::{
     mesh_bounds_degenerate_for_cull, mesh_bounds_max_half_extent, world_aabb_from_local_bounds,
     world_aabb_from_skinned_bone_origins, world_aabb_visible_in_homogeneous_clip, Frustum, Plane,
@@ -99,7 +100,7 @@ pub use hi_z_occlusion::{
 };
 pub use ids::PassId;
 pub use output_depth_mode::OutputDepthMode;
-pub use pass::RenderPass;
+pub use pass::{PassPhase, RenderPass};
 pub use resources::{PassResources, ResourceSlot};
 pub use reverse_z_depth::{MAIN_FORWARD_DEPTH_CLEAR, MAIN_FORWARD_DEPTH_COMPARE};
 pub use secondary_camera::{camera_state_enabled, host_camera_frame_for_render_texture};

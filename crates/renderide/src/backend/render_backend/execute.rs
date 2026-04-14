@@ -3,7 +3,7 @@
 use crate::gpu::GpuContext;
 use crate::render_graph::{
     CameraTransformDrawFilter, CompiledRenderGraph, ExternalFrameTargets, ExternalOffscreenTargets,
-    GraphExecuteError, WorldMeshDrawCollection,
+    FrameView, GraphExecuteError, WorldMeshDrawCollection,
 };
 use crate::scene::SceneCoordinator;
 use winit::window::Window;
@@ -11,17 +11,24 @@ use winit::window::Window;
 use super::RenderBackend;
 
 impl RenderBackend {
-    /// Runs `run` with a taken [`CompiledRenderGraph`], restoring it afterward. Invokes Hi-Z readback begin.
+    /// Runs `run` with a taken [`CompiledRenderGraph`], restoring it afterward.
+    ///
+    /// When `skip_hi_z_begin_readback` is `false`, drains Hi-Z `map_async` readbacks first
+    /// ([`crate::backend::OcclusionSystem::hi_z_begin_frame_readback`]). Set to `true` when the
+    /// caller already invoked readback this tick (e.g. [`Self::execute_multi_view_frame`] after prefetch).
     fn with_compiled_graph<R>(
         &mut self,
         gpu: &mut GpuContext,
+        skip_hi_z_begin_readback: bool,
         run: impl FnOnce(
             &mut CompiledRenderGraph,
             &mut GpuContext,
             &mut RenderBackend,
         ) -> Result<R, GraphExecuteError>,
     ) -> Result<R, GraphExecuteError> {
-        self.occlusion.hi_z_begin_frame_readback(gpu.device());
+        if !skip_hi_z_begin_readback {
+            self.occlusion.hi_z_begin_frame_readback(gpu.device());
+        }
         let Some(mut graph) = self.frame_graph.take() else {
             return Err(GraphExecuteError::NoFrameGraph);
         };
@@ -40,7 +47,7 @@ impl RenderBackend {
         scene: &SceneCoordinator,
         host_camera: crate::render_graph::HostCameraFrame,
     ) -> Result<(), GraphExecuteError> {
-        self.with_compiled_graph(gpu, |graph, gpu_ctx, backend| {
+        self.with_compiled_graph(gpu, false, |graph, gpu_ctx, backend| {
             graph.execute(gpu_ctx, window, scene, backend, host_camera)
         })
     }
@@ -54,8 +61,22 @@ impl RenderBackend {
         host_camera: crate::render_graph::HostCameraFrame,
         external: ExternalFrameTargets<'_>,
     ) -> Result<(), GraphExecuteError> {
-        self.with_compiled_graph(gpu, |graph, gpu_ctx, backend| {
+        self.with_compiled_graph(gpu, false, |graph, gpu_ctx, backend| {
             graph.execute_external_multiview(gpu_ctx, window, scene, backend, host_camera, external)
+        })
+    }
+
+    /// Unified multi-view entry: one Hi-Z readback (unless skipped), one encoder, one submit.
+    pub fn execute_multi_view_frame(
+        &mut self,
+        gpu: &mut GpuContext,
+        window: &Window,
+        scene: &SceneCoordinator,
+        views: Vec<FrameView<'_>>,
+        skip_hi_z_begin_readback: bool,
+    ) -> Result<(), GraphExecuteError> {
+        self.with_compiled_graph(gpu, skip_hi_z_begin_readback, |graph, gpu_ctx, backend| {
+            graph.execute_multi_view(gpu_ctx, window, scene, backend, views)
         })
     }
 
@@ -74,7 +95,7 @@ impl RenderBackend {
         transform_filter: Option<CameraTransformDrawFilter>,
         prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
     ) -> Result<(), GraphExecuteError> {
-        self.with_compiled_graph(gpu, |graph, gpu_ctx, backend| {
+        self.with_compiled_graph(gpu, false, |graph, gpu_ctx, backend| {
             graph.execute_offscreen_single_view(
                 gpu_ctx,
                 window,

@@ -36,6 +36,7 @@ impl RenderPass for HiZBuildPass {
             return Ok(());
         };
         let mode = frame.output_depth_mode();
+        let view_id = frame.occlusion_view;
         let queue = ctx.queue.lock().unwrap_or_else(|e| e.into_inner());
         frame.backend.occlusion.encode_hi_z_build_pass(
             ctx.device,
@@ -44,6 +45,7 @@ impl RenderPass for HiZBuildPass {
             depth,
             frame.viewport_px,
             mode,
+            view_id,
         );
         Ok(())
     }

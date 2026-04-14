@@ -123,8 +123,9 @@ impl RenderPass for WorldMeshForwardPass {
         } else {
             let cull_proj = build_world_mesh_cull_proj_params(frame.scene, frame.viewport_px, &hc);
             let depth_mode = frame.output_depth_mode();
-            let hi_z_temporal = frame.backend.occlusion.hi_z_temporal_snapshot();
-            let hi_z = frame.backend.occlusion.hi_z_cull_data(depth_mode);
+            let view_id = frame.occlusion_view;
+            let hi_z_temporal = frame.backend.occlusion.hi_z_temporal_snapshot(view_id);
+            let hi_z = frame.backend.occlusion.hi_z_cull_data(depth_mode, view_id);
             Some(WorldMeshCullInput {
                 proj: cull_proj,
                 host_camera: &hc,
@@ -160,10 +161,12 @@ impl RenderPass for WorldMeshForwardPass {
         let backend = &mut frame.backend;
         if !hc.suppress_occlusion_temporal {
             if let Some(ref cull_in) = culling {
+                let view_id = frame.occlusion_view;
                 backend.occlusion.capture_hi_z_temporal_for_next_frame(
                     frame.scene,
                     cull_in.proj,
                     frame.viewport_px,
+                    view_id,
                 );
             }
         }

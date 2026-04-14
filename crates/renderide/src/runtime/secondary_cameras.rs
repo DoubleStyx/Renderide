@@ -9,9 +9,10 @@ use crate::gpu::GpuContext;
 use crate::materials::{MaterialRouter, RasterPipelineKind};
 use crate::pipelines::ShaderPermutation;
 use crate::render_graph::{
-    camera_state_enabled, collect_and_sort_world_mesh_draws, draw_filter_from_camera_entry,
-    host_camera_frame_for_render_texture, CameraTransformDrawFilter, ExternalOffscreenTargets,
-    GraphExecuteError, HostCameraFrame, WorldMeshDrawCollection,
+    build_world_mesh_cull_proj_params, camera_state_enabled, collect_and_sort_world_mesh_draws,
+    draw_filter_from_camera_entry, host_camera_frame_for_render_texture, CameraTransformDrawFilter,
+    ExternalOffscreenTargets, FrameView, FrameViewTarget, GraphExecuteError, HostCameraFrame,
+    OcclusionViewId, OutputDepthMode, WorldMeshCullInput,
 };
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
@@ -32,6 +33,9 @@ struct SecondaryRtPrepared {
 
 impl RendererRuntime {
     /// Renders secondary cameras to host render textures before the main swapchain pass.
+    ///
+    /// Prefer [`Self::render_all_views`] for desktop; this path runs a single offscreen graph
+    /// (one submit) for compatibility.
     pub fn render_secondary_cameras_to_render_textures(
         &mut self,
         gpu: &mut GpuContext,
@@ -41,7 +45,196 @@ impl RendererRuntime {
             .frame_resources
             .prepare_lights_from_scene(&self.scene);
         self.sync_debug_hud_diagnostics_from_settings();
+        self.backend
+            .occlusion
+            .hi_z_begin_frame_readback(gpu.device());
 
+        let prepared = self.collect_secondary_rt_prepared();
+        if prepared.is_empty() {
+            return Ok(());
+        }
+
+        let render_context = self.scene.active_main_render_context();
+        let scene_ref: &SceneCoordinator = &self.scene;
+        let property_store = self.backend.material_property_store();
+        let mesh_pool = self.backend.mesh_pool();
+        let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
+        let router_ref = self
+            .backend
+            .materials
+            .material_registry
+            .as_ref()
+            .map(|r| &r.router)
+            .unwrap_or(&fallback_router);
+
+        let cull_snapshots: Vec<Option<SecondaryCullSnapshot>> = prepared
+            .iter()
+            .map(|prep| secondary_cull_snapshot(self, prep))
+            .collect();
+
+        let prefetched: Vec<crate::render_graph::WorldMeshDrawCollection> = prepared
+            .par_iter()
+            .zip(cull_snapshots.par_iter())
+            .map(|(prep, snap)| {
+                let dict = MaterialDictionary::new(property_store);
+                let culling = snap.as_ref().map(|s| WorldMeshCullInput {
+                    proj: s.proj,
+                    host_camera: &prep.host_camera,
+                    hi_z: s.hi_z.clone(),
+                    hi_z_temporal: s.hi_z_temporal.clone(),
+                });
+                collect_and_sort_world_mesh_draws(
+                    scene_ref,
+                    mesh_pool,
+                    &dict,
+                    router_ref,
+                    ShaderPermutation(0),
+                    render_context,
+                    prep.host_camera.head_output_transform,
+                    culling.as_ref(),
+                    Some(&prep.filter),
+                )
+            })
+            .collect();
+
+        for (prep, collection) in prepared.into_iter().zip(prefetched) {
+            let ext = ExternalOffscreenTargets {
+                render_texture_asset_id: prep.rt_id,
+                color_view: prep.color_view.as_ref(),
+                depth_texture: prep.depth_texture.as_ref(),
+                depth_view: prep.depth_view.as_ref(),
+                extent_px: prep.viewport,
+                color_format: prep.color_format,
+            };
+            self.backend.execute_frame_graph_offscreen_single_view(
+                gpu,
+                window,
+                scene_ref,
+                prep.host_camera,
+                ext,
+                Some(prep.filter),
+                Some(collection),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Renders all views for this tick (secondary RTs + main swapchain) in one unified pass.
+    pub fn render_all_views(
+        &mut self,
+        gpu: &mut GpuContext,
+        window: &Window,
+    ) -> Result<(), GraphExecuteError> {
+        self.backend
+            .frame_resources
+            .prepare_lights_from_scene(&self.scene);
+        self.sync_debug_hud_diagnostics_from_settings();
+        self.backend
+            .occlusion
+            .hi_z_begin_frame_readback(gpu.device());
+
+        let prepared = self.collect_secondary_rt_prepared();
+        let render_context = self.scene.active_main_render_context();
+        let scene_ref: &SceneCoordinator = &self.scene;
+        let property_store = self.backend.material_property_store();
+        let mesh_pool = self.backend.mesh_pool();
+        let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
+        let router_ref = self
+            .backend
+            .materials
+            .material_registry
+            .as_ref()
+            .map(|r| &r.router)
+            .unwrap_or(&fallback_router);
+
+        let cull_snapshots: Vec<Option<SecondaryCullSnapshot>> = prepared
+            .iter()
+            .map(|prep| secondary_cull_snapshot(self, prep))
+            .collect();
+
+        let secondary_prefetched: Vec<crate::render_graph::WorldMeshDrawCollection> = prepared
+            .par_iter()
+            .zip(cull_snapshots.par_iter())
+            .map(|(prep, snap)| {
+                let dict = MaterialDictionary::new(property_store);
+                let culling = snap.as_ref().map(|s| WorldMeshCullInput {
+                    proj: s.proj,
+                    host_camera: &prep.host_camera,
+                    hi_z: s.hi_z.clone(),
+                    hi_z_temporal: s.hi_z_temporal.clone(),
+                });
+                collect_and_sort_world_mesh_draws(
+                    scene_ref,
+                    mesh_pool,
+                    &dict,
+                    router_ref,
+                    ShaderPermutation(0),
+                    render_context,
+                    prep.host_camera.head_output_transform,
+                    culling.as_ref(),
+                    Some(&prep.filter),
+                )
+            })
+            .collect();
+
+        let hc = self.host_camera;
+        let dict = MaterialDictionary::new(property_store);
+        let culling_main = if hc.suppress_occlusion_temporal {
+            None
+        } else {
+            let cull_proj =
+                build_world_mesh_cull_proj_params(scene_ref, gpu.surface_extent_px(), &hc);
+            let main_snap = main_cull_snapshot(self);
+            Some(WorldMeshCullInput {
+                proj: cull_proj,
+                host_camera: &hc,
+                hi_z: main_snap.hi_z,
+                hi_z_temporal: main_snap.hi_z_temporal,
+            })
+        };
+        let culling_main_ref = culling_main.as_ref();
+        let main_collection = collect_and_sort_world_mesh_draws(
+            scene_ref,
+            mesh_pool,
+            &dict,
+            router_ref,
+            ShaderPermutation(0),
+            render_context,
+            hc.head_output_transform,
+            culling_main_ref,
+            None,
+        );
+
+        let mut views: Vec<FrameView<'_>> = Vec::new();
+        for (prep, collection) in prepared.iter().zip(secondary_prefetched.into_iter()) {
+            let ext = ExternalOffscreenTargets {
+                render_texture_asset_id: prep.rt_id,
+                color_view: prep.color_view.as_ref(),
+                depth_texture: prep.depth_texture.as_ref(),
+                depth_view: prep.depth_view.as_ref(),
+                extent_px: prep.viewport,
+                color_format: prep.color_format,
+            };
+            views.push(FrameView {
+                host_camera: prep.host_camera,
+                target: FrameViewTarget::OffscreenRt(ext),
+                draw_filter: Some(prep.filter.clone()),
+                prefetched_world_mesh_draws: Some(collection),
+            });
+        }
+
+        views.push(FrameView {
+            host_camera: hc,
+            target: FrameViewTarget::Swapchain,
+            draw_filter: None,
+            prefetched_world_mesh_draws: Some(main_collection),
+        });
+
+        self.backend
+            .execute_multi_view_frame(gpu, window, scene_ref, views, true)
+    }
+
+    fn collect_secondary_rt_prepared(&mut self) -> Vec<SecondaryRtPrepared> {
         let mut tasks: Vec<(RenderSpaceId, f32, usize)> = Vec::new();
         for sid in self.scene.render_space_ids() {
             let Some(space) = self.scene.space(sid) else {
@@ -119,57 +312,51 @@ impl RendererRuntime {
                 color_format,
             });
         }
+        prepared
+    }
+}
 
-        let render_context = self.scene.active_main_render_context();
-        let scene_ref: &SceneCoordinator = &self.scene;
-        let property_store = self.backend.material_property_store();
-        let mesh_pool = self.backend.mesh_pool();
-        let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
-        let router_ref = self
+struct SecondaryCullSnapshot {
+    proj: crate::render_graph::WorldMeshCullProjParams,
+    hi_z: Option<crate::render_graph::HiZCullData>,
+    hi_z_temporal: Option<crate::render_graph::HiZTemporalState>,
+}
+
+fn secondary_cull_snapshot(
+    runtime: &RendererRuntime,
+    prep: &SecondaryRtPrepared,
+) -> Option<SecondaryCullSnapshot> {
+    if prep.host_camera.suppress_occlusion_temporal {
+        return None;
+    }
+    let proj = build_world_mesh_cull_proj_params(&runtime.scene, prep.viewport, &prep.host_camera);
+    let view_id = OcclusionViewId::OffscreenRenderTexture(prep.rt_id);
+    let depth_mode = OutputDepthMode::DesktopSingle;
+    Some(SecondaryCullSnapshot {
+        proj,
+        hi_z: runtime
             .backend
-            .materials
-            .material_registry
-            .as_ref()
-            .map(|r| &r.router)
-            .unwrap_or(&fallback_router);
+            .occlusion
+            .hi_z_cull_data(depth_mode, view_id),
+        hi_z_temporal: runtime.backend.occlusion.hi_z_temporal_snapshot(view_id),
+    })
+}
 
-        let prefetched: Vec<WorldMeshDrawCollection> = prepared
-            .par_iter()
-            .map(|prep| {
-                let dict = MaterialDictionary::new(property_store);
-                collect_and_sort_world_mesh_draws(
-                    scene_ref,
-                    mesh_pool,
-                    &dict,
-                    router_ref,
-                    ShaderPermutation(0),
-                    render_context,
-                    prep.host_camera.head_output_transform,
-                    None,
-                    Some(&prep.filter),
-                )
-            })
-            .collect();
+struct MainCullSnap {
+    hi_z: Option<crate::render_graph::HiZCullData>,
+    hi_z_temporal: Option<crate::render_graph::HiZTemporalState>,
+}
 
-        for (prep, collection) in prepared.into_iter().zip(prefetched) {
-            let ext = ExternalOffscreenTargets {
-                render_texture_asset_id: prep.rt_id,
-                color_view: prep.color_view.as_ref(),
-                depth_texture: prep.depth_texture.as_ref(),
-                depth_view: prep.depth_view.as_ref(),
-                extent_px: prep.viewport,
-                color_format: prep.color_format,
-            };
-            self.backend.execute_frame_graph_offscreen_single_view(
-                gpu,
-                window,
-                scene_ref,
-                prep.host_camera,
-                ext,
-                Some(prep.filter),
-                Some(collection),
-            )?;
-        }
-        Ok(())
+fn main_cull_snapshot(runtime: &RendererRuntime) -> MainCullSnap {
+    let depth_mode = OutputDepthMode::DesktopSingle;
+    MainCullSnap {
+        hi_z: runtime
+            .backend
+            .occlusion
+            .hi_z_cull_data(depth_mode, OcclusionViewId::Main),
+        hi_z_temporal: runtime
+            .backend
+            .occlusion
+            .hi_z_temporal_snapshot(OcclusionViewId::Main),
     }
 }
