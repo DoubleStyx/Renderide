@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 
 use glam::Vec3;
+use rayon::prelude::*;
 use rayon::slice::ParallelSliceMut;
 
 use crate::assets::material::MaterialDictionary;
@@ -65,30 +66,40 @@ pub(super) fn batch_key_for_slot(
     }
 }
 
+/// Ordering for world mesh draws (opaque batching vs alpha distance sort).
+///
+/// Shared by [`sort_world_mesh_draws`] (parallel) and [`sort_world_mesh_draws_serial`].
+pub(super) fn cmp_world_mesh_draw_items(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
+    a.is_overlay
+        .cmp(&b.is_overlay)
+        .then(a.batch_key.alpha_blended.cmp(&b.batch_key.alpha_blended))
+        .then_with(
+            || match (a.batch_key.alpha_blended, b.batch_key.alpha_blended) {
+                (false, false) => a
+                    .batch_key
+                    .cmp(&b.batch_key)
+                    .then(b.sorting_order.cmp(&a.sorting_order))
+                    .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
+                    .then(a.node_id.cmp(&b.node_id))
+                    .then(a.slot_index.cmp(&b.slot_index)),
+                (true, true) => a
+                    .sorting_order
+                    .cmp(&b.sorting_order)
+                    .then_with(|| b.camera_distance_sq.total_cmp(&a.camera_distance_sq))
+                    .then(a.collect_order.cmp(&b.collect_order)),
+                _ => Ordering::Equal,
+            },
+        )
+}
+
 /// Sorts opaque draws for batching and alpha UI/text draws in stable canvas order.
 pub fn sort_world_mesh_draws(items: &mut [WorldMeshDrawItem]) {
-    items.par_sort_unstable_by(|a, b| {
-        a.is_overlay
-            .cmp(&b.is_overlay)
-            .then(a.batch_key.alpha_blended.cmp(&b.batch_key.alpha_blended))
-            .then_with(
-                || match (a.batch_key.alpha_blended, b.batch_key.alpha_blended) {
-                    (false, false) => a
-                        .batch_key
-                        .cmp(&b.batch_key)
-                        .then(b.sorting_order.cmp(&a.sorting_order))
-                        .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
-                        .then(a.node_id.cmp(&b.node_id))
-                        .then(a.slot_index.cmp(&b.slot_index)),
-                    (true, true) => a
-                        .sorting_order
-                        .cmp(&b.sorting_order)
-                        .then_with(|| b.camera_distance_sq.total_cmp(&a.camera_distance_sq))
-                        .then(a.collect_order.cmp(&b.collect_order)),
-                    _ => Ordering::Equal,
-                },
-            )
-    });
+    items.par_sort_unstable_by(cmp_world_mesh_draw_items);
+}
+
+/// Same ordering as [`sort_world_mesh_draws`] without rayon (for nested parallel batches).
+pub(super) fn sort_world_mesh_draws_serial(items: &mut [WorldMeshDrawItem]) {
+    items.sort_unstable_by(cmp_world_mesh_draw_items);
 }
 
 /// Updates alpha-blended draw distance keys from the active camera, then re-sorts the full draw list.
@@ -102,7 +113,7 @@ pub fn resort_world_mesh_draws_for_camera(
     head_output_transform: glam::Mat4,
     camera_world: Vec3,
 ) {
-    for item in items.iter_mut() {
+    items.par_iter_mut().for_each(|item| {
         item.camera_distance_sq = if item.batch_key.alpha_blended {
             scene
                 .world_matrix_for_render_context(
@@ -116,6 +127,6 @@ pub fn resort_world_mesh_draws_for_camera(
         } else {
             0.0
         };
-    }
+    });
     sort_world_mesh_draws(items);
 }

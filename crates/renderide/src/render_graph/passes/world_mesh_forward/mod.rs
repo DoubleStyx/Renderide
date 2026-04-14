@@ -28,6 +28,7 @@ mod vp;
 use std::num::NonZeroU32;
 
 use bytemuck::Zeroable;
+use rayon::prelude::*;
 
 use crate::assets::material::MaterialDictionary;
 use crate::backend::mesh_deform::{
@@ -54,6 +55,9 @@ use crate::render_graph::{
 
 use encode::draw_subset;
 use vp::compute_per_draw_vp_triple;
+
+/// Minimum draws before parallelizing per-draw VP / model uniform packing (rayon overhead).
+const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = 256;
 
 /// Clears the backbuffer and depth, then draws meshes with material-batched raster pipelines.
 #[derive(Debug, Default)]
@@ -222,22 +226,46 @@ impl RenderPass for WorldMeshForwardPass {
                 dbg.ensure_draw_slot_capacity(ctx.device, draws.len());
             }
 
-            let mut slots: Vec<PaddedPerDrawUniforms> = Vec::with_capacity(draws.len());
-            for item in &draws {
-                let (vp_l, vp_r, model) = compute_per_draw_vp_triple(
-                    scene,
-                    item,
-                    hc,
-                    render_context,
-                    world_proj,
-                    overlay_proj,
-                );
-                slots.push(if vp_l == vp_r {
-                    PaddedPerDrawUniforms::new_single(vp_l, model)
-                } else {
-                    PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
-                });
-            }
+            let slots: Vec<PaddedPerDrawUniforms> = if draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS
+            {
+                draws
+                    .par_iter()
+                    .map(|item| {
+                        let (vp_l, vp_r, model) = compute_per_draw_vp_triple(
+                            scene,
+                            item,
+                            hc,
+                            render_context,
+                            world_proj,
+                            overlay_proj,
+                        );
+                        if vp_l == vp_r {
+                            PaddedPerDrawUniforms::new_single(vp_l, model)
+                        } else {
+                            PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
+                        }
+                    })
+                    .collect()
+            } else {
+                draws
+                    .iter()
+                    .map(|item| {
+                        let (vp_l, vp_r, model) = compute_per_draw_vp_triple(
+                            scene,
+                            item,
+                            hc,
+                            render_context,
+                            world_proj,
+                            overlay_proj,
+                        );
+                        if vp_l == vp_r {
+                            PaddedPerDrawUniforms::new_single(vp_l, model)
+                        } else {
+                            PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
+                        }
+                    })
+                    .collect()
+            };
 
             slab_bytes = vec![0u8; draws.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE)];
             write_per_draw_uniform_slab(&slots, &mut slab_bytes);

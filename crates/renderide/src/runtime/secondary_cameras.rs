@@ -5,14 +5,16 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::assets::material::MaterialDictionary;
+use crate::backend::OcclusionSystem;
 use crate::gpu::GpuContext;
 use crate::materials::{MaterialRouter, RasterPipelineKind};
 use crate::pipelines::ShaderPermutation;
 use crate::render_graph::{
     build_world_mesh_cull_proj_params, camera_state_enabled, collect_and_sort_world_mesh_draws,
-    draw_filter_from_camera_entry, host_camera_frame_for_render_texture, CameraTransformDrawFilter,
-    ExternalOffscreenTargets, FrameView, FrameViewTarget, GraphExecuteError, HostCameraFrame,
-    OcclusionViewId, OutputDepthMode, WorldMeshCullInput,
+    collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
+    host_camera_frame_for_render_texture, CameraTransformDrawFilter, ExternalOffscreenTargets,
+    FrameView, FrameViewTarget, GraphExecuteError, HostCameraFrame, OcclusionViewId,
+    OutputDepthMode, WorldMeshCullInput, WorldMeshDrawCollectParallelism,
 };
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
@@ -65,9 +67,17 @@ impl RendererRuntime {
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
 
+        let occlusion_ref: &OcclusionSystem = &self.backend.occlusion;
+        let inner_parallelism = if prepared.len() > 1 {
+            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
+        } else {
+            WorldMeshDrawCollectParallelism::Full
+        };
+
+        // Hi-Z snapshot reads must stay serial: [`OcclusionSystem`] is not `Sync` (wgpu readback state).
         let cull_snapshots: Vec<Option<SecondaryCullSnapshot>> = prepared
             .iter()
-            .map(|prep| secondary_cull_snapshot(self, prep))
+            .map(|prep| secondary_cull_snapshot(scene_ref, occlusion_ref, prep))
             .collect();
 
         let prefetched: Vec<crate::render_graph::WorldMeshDrawCollection> = prepared
@@ -81,7 +91,7 @@ impl RendererRuntime {
                     hi_z: s.hi_z.clone(),
                     hi_z_temporal: s.hi_z_temporal.clone(),
                 });
-                collect_and_sort_world_mesh_draws(
+                collect_and_sort_world_mesh_draws_with_parallelism(
                     scene_ref,
                     mesh_pool,
                     &dict,
@@ -91,6 +101,7 @@ impl RendererRuntime {
                     prep.host_camera.head_output_transform,
                     culling.as_ref(),
                     Some(&prep.filter),
+                    inner_parallelism,
                 )
             })
             .collect();
@@ -144,9 +155,16 @@ impl RendererRuntime {
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
 
+        let occlusion_ref: &OcclusionSystem = &self.backend.occlusion;
+        let inner_parallelism = if prepared.len() > 1 {
+            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
+        } else {
+            WorldMeshDrawCollectParallelism::Full
+        };
+
         let cull_snapshots: Vec<Option<SecondaryCullSnapshot>> = prepared
             .iter()
-            .map(|prep| secondary_cull_snapshot(self, prep))
+            .map(|prep| secondary_cull_snapshot(scene_ref, occlusion_ref, prep))
             .collect();
 
         let secondary_prefetched: Vec<crate::render_graph::WorldMeshDrawCollection> = prepared
@@ -160,7 +178,7 @@ impl RendererRuntime {
                     hi_z: s.hi_z.clone(),
                     hi_z_temporal: s.hi_z_temporal.clone(),
                 });
-                collect_and_sort_world_mesh_draws(
+                collect_and_sort_world_mesh_draws_with_parallelism(
                     scene_ref,
                     mesh_pool,
                     &dict,
@@ -170,6 +188,7 @@ impl RendererRuntime {
                     prep.host_camera.head_output_transform,
                     culling.as_ref(),
                     Some(&prep.filter),
+                    inner_parallelism,
                 )
             })
             .collect();
@@ -319,23 +338,25 @@ struct SecondaryCullSnapshot {
     hi_z_temporal: Option<crate::render_graph::HiZTemporalState>,
 }
 
+/// Builds frustum + Hi-Z cull inputs for one secondary RT.
+///
+/// Callers keep this **serial** per prepared camera: [`OcclusionSystem`] is not [`Sync`] (wgpu
+/// readback state), so it cannot be shared across rayon worker threads.
 fn secondary_cull_snapshot(
-    runtime: &RendererRuntime,
+    scene: &SceneCoordinator,
+    occlusion: &OcclusionSystem,
     prep: &SecondaryRtPrepared,
 ) -> Option<SecondaryCullSnapshot> {
     if prep.host_camera.suppress_occlusion_temporal {
         return None;
     }
-    let proj = build_world_mesh_cull_proj_params(&runtime.scene, prep.viewport, &prep.host_camera);
+    let proj = build_world_mesh_cull_proj_params(scene, prep.viewport, &prep.host_camera);
     let view_id = OcclusionViewId::OffscreenRenderTexture(prep.rt_id);
     let depth_mode = OutputDepthMode::DesktopSingle;
     Some(SecondaryCullSnapshot {
         proj,
-        hi_z: runtime
-            .backend
-            .occlusion
-            .hi_z_cull_data(depth_mode, view_id),
-        hi_z_temporal: runtime.backend.occlusion.hi_z_temporal_snapshot(view_id),
+        hi_z: occlusion.hi_z_cull_data(depth_mode, view_id),
+        hi_z_temporal: occlusion.hi_z_temporal_snapshot(view_id),
     })
 }
 

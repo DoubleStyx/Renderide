@@ -16,12 +16,21 @@ use crate::resources::MeshPool;
 use crate::scene::{RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer};
 use crate::shared::RenderingContext;
 
-use super::sort::{batch_key_for_slot, sort_world_mesh_draws};
+use super::sort::{batch_key_for_slot, sort_world_mesh_draws, sort_world_mesh_draws_serial};
 use super::types::{
     resolved_material_slots, CameraTransformDrawFilter, WorldMeshDrawCollection, WorldMeshDrawItem,
 };
 
 use super::super::world_mesh_cull_eval::{mesh_draw_passes_cpu_cull, CpuCullFailure};
+
+/// How [`collect_and_sort_world_mesh_draws_with_parallelism`] parallelizes per-space collection and sorting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorldMeshDrawCollectParallelism {
+    /// Per-space collection and draw sort both use rayon.
+    Full,
+    /// Serial per-space merge and serial sort; use when an outer `par_iter` already fans out (e.g. multiple secondary RTs).
+    SerialInnerForNestedBatch,
+}
 
 /// Expands one static mesh renderer into draw items (material slots × submeshes).
 ///
@@ -248,7 +257,7 @@ fn collect_draws_for_one_space(
 /// When `culling` is [`Some`], instances outside the frustum (and optional Hi-Z) are dropped (see
 /// [`mesh_draw_passes_cpu_cull`](super::super::world_mesh_cull_eval::mesh_draw_passes_cpu_cull)).
 ///
-/// Per-space collection runs in parallel via [`rayon`]; results are merged in the same order as
+/// Per-space collection runs in parallel via [`rayon`] by default; results are merged in the same order as
 /// [`SceneCoordinator::render_space_ids`], then [`WorldMeshDrawItem::collect_order`] is assigned for transparent sort stability.
 #[allow(clippy::too_many_arguments)] // Frame-graph entry mirrors host camera + cull snapshot inputs.
 pub fn collect_and_sort_world_mesh_draws(
@@ -261,6 +270,34 @@ pub fn collect_and_sort_world_mesh_draws(
     head_output_transform: Mat4,
     culling: Option<&super::super::world_mesh_cull::WorldMeshCullInput<'_>>,
     transform_filter: Option<&CameraTransformDrawFilter>,
+) -> WorldMeshDrawCollection {
+    collect_and_sort_world_mesh_draws_with_parallelism(
+        scene,
+        mesh_pool,
+        dict,
+        router,
+        shader_perm,
+        context,
+        head_output_transform,
+        culling,
+        transform_filter,
+        WorldMeshDrawCollectParallelism::Full,
+    )
+}
+
+/// Like [`collect_and_sort_world_mesh_draws`], with control over inner rayon use (see [`WorldMeshDrawCollectParallelism`]).
+#[allow(clippy::too_many_arguments)]
+pub fn collect_and_sort_world_mesh_draws_with_parallelism(
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    dict: &MaterialDictionary<'_>,
+    router: &MaterialRouter,
+    shader_perm: ShaderPermutation,
+    context: RenderingContext,
+    head_output_transform: Mat4,
+    culling: Option<&super::super::world_mesh_cull::WorldMeshCullInput<'_>>,
+    transform_filter: Option<&CameraTransformDrawFilter>,
+    parallelism: WorldMeshDrawCollectParallelism,
 ) -> WorldMeshDrawCollection {
     let space_ids: Vec<RenderSpaceId> = scene.render_space_ids().collect();
 
@@ -276,24 +313,44 @@ pub fn collect_and_sort_world_mesh_draws(
         }
     }
 
-    let per_space: Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))> = space_ids
-        .par_iter()
-        .copied()
-        .map(|space_id| {
-            collect_draws_for_one_space(
-                space_id,
-                scene,
-                mesh_pool,
-                dict,
-                router,
-                shader_perm,
-                context,
-                head_output_transform,
-                culling,
-                transform_filter,
-            )
-        })
-        .collect();
+    let per_space: Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))> = match parallelism {
+        WorldMeshDrawCollectParallelism::Full => space_ids
+            .par_iter()
+            .copied()
+            .map(|space_id| {
+                collect_draws_for_one_space(
+                    space_id,
+                    scene,
+                    mesh_pool,
+                    dict,
+                    router,
+                    shader_perm,
+                    context,
+                    head_output_transform,
+                    culling,
+                    transform_filter,
+                )
+            })
+            .collect(),
+        WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => space_ids
+            .iter()
+            .copied()
+            .map(|space_id| {
+                collect_draws_for_one_space(
+                    space_id,
+                    scene,
+                    mesh_pool,
+                    dict,
+                    router,
+                    shader_perm,
+                    context,
+                    head_output_transform,
+                    culling,
+                    transform_filter,
+                )
+            })
+            .collect(),
+    };
 
     let mut out = Vec::with_capacity(cap_hint.saturating_mul(8));
     let mut cull_stats = (0usize, 0usize, 0usize);
@@ -308,7 +365,12 @@ pub fn collect_and_sort_world_mesh_draws(
         item.collect_order = i;
     }
 
-    sort_world_mesh_draws(&mut out);
+    match parallelism {
+        WorldMeshDrawCollectParallelism::Full => sort_world_mesh_draws(&mut out),
+        WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => {
+            sort_world_mesh_draws_serial(&mut out);
+        }
+    }
     WorldMeshDrawCollection {
         items: out,
         draws_pre_cull: cull_stats.0,

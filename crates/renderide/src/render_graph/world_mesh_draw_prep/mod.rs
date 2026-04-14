@@ -8,14 +8,19 @@
 //! ([`super::world_mesh_cull_eval::mesh_draw_passes_cpu_cull`]) using the same view–projection rules as the forward pass
 //! ([`super::world_mesh_cull::build_world_mesh_cull_proj_params`]).
 //!
-//! Per-space draw collection runs in parallel ([`rayon`]); the merged list is sorted with
-//! [`sort_world_mesh_draws`] ([`rayon::slice::ParallelSliceMut::par_sort_unstable_by`]).
+//! Per-space draw collection runs in parallel ([`rayon`]) by default; the merged list is sorted with
+//! [`sort_world_mesh_draws`] ([`rayon::slice::ParallelSliceMut::par_sort_unstable_by`]). When
+//! [`collect_and_sort_world_mesh_draws_with_parallelism`] uses [`WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch`]
+//! (e.g. prefetching multiple secondary RTs under an outer `par_iter`), inner collection and sort stay serial to avoid nested rayon.
 
 mod collect;
 mod sort;
 mod types;
 
-pub use collect::collect_and_sort_world_mesh_draws;
+pub use collect::{
+    collect_and_sort_world_mesh_draws, collect_and_sort_world_mesh_draws_with_parallelism,
+    WorldMeshDrawCollectParallelism,
+};
 /// Reserved for camera moves without rebuilding draw collection; currently unused in-tree.
 #[allow(unused_imports)]
 pub use sort::resort_world_mesh_draws_for_camera;
