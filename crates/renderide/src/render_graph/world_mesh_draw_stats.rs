@@ -1,6 +1,8 @@
 //! Batch and draw counters for the debug HUD (aligned with sorted [`WorldMeshDrawItem`] order).
 
-use super::world_mesh_draw_prep::{MaterialDrawBatchKey, WorldMeshDrawItem};
+use super::world_mesh_draw_prep::{
+    build_instance_batches, MaterialDrawBatchKey, WorldMeshDrawItem,
+};
 
 /// Draw and batch counts for the debug HUD (aligned with sorted [`WorldMeshDrawItem`] order).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -27,12 +29,18 @@ pub struct WorldMeshDrawStats {
     pub draws_culled: usize,
     /// Draws removed by Hi-Z occlusion when enabled.
     pub draws_hi_z_culled: usize,
+    /// GPU instance batches after merge (one indexed draw each); at most `draws_total`.
+    pub instance_batch_total: usize,
 }
 
 /// Computes batch boundaries from material/property-block/skin/overlay changes after sorting.
+///
+/// `supports_base_instance` should match the forward pass (see [`crate::render_graph::passes::WorldMeshForwardPass`])
+/// so [`WorldMeshDrawStats::instance_batch_total`] reflects the same merge policy.
 pub fn world_mesh_draw_stats_from_sorted(
     draws: &[WorldMeshDrawItem],
     cull: Option<(usize, usize, usize)>,
+    supports_base_instance: bool,
 ) -> WorldMeshDrawStats {
     let draws_total = draws.len();
     let draws_main = draws.iter().filter(|d| !d.is_overlay).count();
@@ -62,6 +70,10 @@ pub fn world_mesh_draw_stats_from_sorted(
 
     let (draws_pre_cull, draws_culled, draws_hi_z_culled) = cull.unwrap_or((0, 0, 0));
 
+    let draw_indices: Vec<usize> = (0..draws.len()).collect();
+    let instance_batch_total =
+        build_instance_batches(draws, &draw_indices, supports_base_instance).len();
+
     WorldMeshDrawStats {
         batch_total,
         batch_main,
@@ -74,6 +86,7 @@ pub fn world_mesh_draw_stats_from_sorted(
         draws_pre_cull,
         draws_culled,
         draws_hi_z_culled,
+        instance_batch_total,
     }
 }
 
@@ -129,9 +142,10 @@ mod tests {
 
     #[test]
     fn world_mesh_draw_stats_empty() {
-        let s = world_mesh_draw_stats_from_sorted(&[], None);
+        let s = world_mesh_draw_stats_from_sorted(&[], None, true);
         assert_eq!(s.batch_total, 0);
         assert_eq!(s.draws_total, 0);
+        assert_eq!(s.instance_batch_total, 0);
     }
 
     #[test]
@@ -139,9 +153,10 @@ mod tests {
         let a = dummy_item(1, None, false, 0, 1, 0, 0, 0, false);
         let b = dummy_item(1, None, false, 0, 1, 0, 1, 1, false);
         let draws = vec![a, b];
-        let s = world_mesh_draw_stats_from_sorted(&draws, None);
+        let s = world_mesh_draw_stats_from_sorted(&draws, None, true);
         assert_eq!(s.batch_total, 1);
         assert_eq!(s.draws_total, 2);
         assert_eq!(s.rigid_draws, 2);
+        assert_eq!(s.instance_batch_total, 1);
     }
 }

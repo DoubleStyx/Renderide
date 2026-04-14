@@ -9,7 +9,6 @@
 //! callers pass those in where a command requires both transport and GPU work.
 
 mod cluster_gpu;
-mod debug_draw;
 mod debug_hud_bundle;
 mod embedded;
 mod frame_gpu;
@@ -18,6 +17,7 @@ mod light_gpu;
 mod material_system;
 pub mod mesh_deform;
 mod occlusion;
+mod per_draw_resources;
 mod render_backend;
 
 pub use crate::assets::AssetTransferQueue;
@@ -25,7 +25,6 @@ pub use cluster_gpu::{
     ClusterBufferCache, ClusterBufferRefs, CLUSTER_COUNT_Z, CLUSTER_PARAMS_UNIFORM_SIZE,
     MAX_LIGHTS_PER_TILE, TILE_SIZE,
 };
-pub use debug_draw::DebugDrawResources;
 pub use debug_hud_bundle::DebugHudBundle;
 pub use embedded::EmbeddedMaterialBindResources;
 pub(crate) use embedded::MaterialBindCacheKey;
@@ -42,6 +41,7 @@ pub use mesh_deform::{
     INITIAL_PER_DRAW_UNIFORM_SLOTS, PER_DRAW_UNIFORM_STRIDE,
 };
 pub use occlusion::OcclusionSystem;
+pub use per_draw_resources::PerDrawResources;
 pub use render_backend::{
     RenderBackend, MAX_DEFERRED_MESH_UPLOADS, MAX_PENDING_MESH_UPLOADS,
     MAX_PENDING_TEXTURE_UPLOADS, MESH_UPLOAD_NON_HIGH_PRIORITY_BUDGET_PER_POLL,

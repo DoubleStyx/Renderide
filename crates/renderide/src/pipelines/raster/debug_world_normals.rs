@@ -14,7 +14,7 @@ pub const SHADER_PERM_MULTIVIEW_STEREO: ShaderPermutation = ShaderPermutation(1)
 pub struct DebugWorldNormalsFamily;
 
 impl DebugWorldNormalsFamily {
-    /// `@group(2)` dynamic uniform layout for [`crate::backend::DebugDrawResources`].
+    /// `@group(2)` per-draw storage layout for [`crate::backend::PerDrawResources`].
     ///
     /// Matches naga reflection of the embedded `debug_world_normals_default` target (same `@group(2)`
     /// as the multiview variant).

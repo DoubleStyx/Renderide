@@ -75,7 +75,7 @@ struct VertexOutput {
 const CLIP_COVERAGE_LODX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJQWY4DIMFPWG3DJOBPXGYLNOBWGKX: f32 = 0f;
 
 @group(2) @binding(0) 
-var<uniform> drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX: PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX;
+var<storage> instancesX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX: array<PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX>;
 @group(0) @binding(0) 
 var<uniform> frameX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX: FrameGlobalsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX;
 @group(0) @binding(1) 
@@ -90,6 +90,11 @@ var<uniform> mat: UiTextUnlitMaterial;
 var _FontAtlas: texture_2d<f32>;
 @group(1) @binding(2) 
 var _FontAtlas_sampler: sampler;
+
+fn get_drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX(instance_idx: u32) -> PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX {
+    let _e3: PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX = instancesX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX[instance_idx];
+    return _e3;
+}
 
 fn texture_rgba_base_mipX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJQWY4DIMFPWG3DJOBPXGYLNOBWGKX(tex: texture_2d<f32>, samp: sampler, uv_1: vec2<f32>) -> vec4<f32> {
     let _e4: vec4<f32> = textureSampleLevel(tex, samp, uv_1, CLIP_COVERAGE_LODX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJQWY4DIMFPWG3DJOBPXGYLNOBWGKX);
@@ -204,27 +209,25 @@ fn shade_distance_field(sig_dist_in: f32, vo: VertexOutput, vtx_color: vec4<f32>
 }
 
 @vertex 
-fn vs_main(@builtin(view_index) view_idx: u32, @location(0) pos: vec4<f32>, @location(1) extra_n: vec4<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>) -> VertexOutput {
+fn vs_main(@builtin(instance_index) instance_index: u32, @builtin(view_index) view_idx: u32, @location(0) pos: vec4<f32>, @location(1) extra_n: vec4<f32>, @location(2) uv: vec2<f32>, @location(3) color: vec4<f32>) -> VertexOutput {
     var vp: mat4x4<f32>;
     var out: VertexOutput;
 
-    let _e3: mat4x4<f32> = drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX.model;
-    let world_p: vec4<f32> = (_e3 * vec4<f32>(pos.xyz, 1f));
+    let _e1: PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX = get_drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX(instance_index);
+    let world_p: vec4<f32> = (_e1.model * vec4<f32>(pos.xyz, 1f));
     if (view_idx == 0u) {
-        let _e13: mat4x4<f32> = drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX.view_proj_left;
-        vp = _e13;
+        vp = _e1.view_proj_left;
     } else {
-        let _e17: mat4x4<f32> = drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX.view_proj_right;
-        vp = _e17;
+        vp = _e1.view_proj_right;
     }
-    let _e20: mat4x4<f32> = vp;
-    out.clip_pos = (_e20 * world_p);
+    let _e16: mat4x4<f32> = vp;
+    out.clip_pos = (_e16 * world_p);
     out.uv = uv;
     out.extra_data = extra_n;
     out.vtx_color = color;
     out.obj_xy = pos.xy;
-    let _e30: VertexOutput = out;
-    return _e30;
+    let _e26: VertexOutput = out;
+    return _e26;
 }
 
 @fragment 

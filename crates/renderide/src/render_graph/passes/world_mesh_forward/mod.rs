@@ -1,8 +1,10 @@
 //! Main forward pass: clear color + depth, debug normal shading for scene meshes.
 //!
 //! Draws are collected and **sorted by [`MaterialDrawBatchKey`](crate::render_graph::MaterialDrawBatchKey)**
-//! so pipeline and batch key drive pipeline switches. Embedded `@group(1)` skips redundant
-//! [`wgpu::RenderPass::set_bind_group`] when [`MaterialBindCacheKey`](crate::backend::MaterialBindCacheKey) matches
+//! so pipeline and batch key drive pipeline switches. **GPU instancing:** consecutive draws that share the
+//! same mesh submesh and batch key (opaque, non-skinned) are merged into one indexed draw with
+//! `instance_index` sampling [`crate::backend::PerDrawResources`] (`@group(2)` storage). Embedded `@group(1)`
+//! skips redundant [`wgpu::RenderPass::set_bind_group`] when [`MaterialBindCacheKey`](crate::backend::MaterialBindCacheKey) matches
 //! the previous draw (uniform updates still run each time via [`EmbeddedMaterialBindResources`](crate::backend::EmbeddedMaterialBindResources)).
 //! Per-slot [`MaterialPropertyLookupIds`](crate::assets::material::MaterialPropertyLookupIds) are carried on each
 //! [`WorldMeshDrawItem`](crate::render_graph::WorldMeshDrawItem) for `get_merged` when building `@group(1)` bind
@@ -99,6 +101,11 @@ impl RenderPass for WorldMeshForwardPass {
             });
         };
 
+        // Merged instance batches use non-zero `first_instance` on `draw_indexed`. Native
+        // Vulkan/Metal/DX12 support this; if a future downlevel path cannot, pass `false` here to
+        // force one indexed draw per draw item (same GPU output, more CPU submits).
+        let supports_base_instance = true;
+
         let hc = frame.host_camera;
         let use_multiview = frame.multiview_stereo
             && hc.vr_active
@@ -184,6 +191,7 @@ impl RenderPass for WorldMeshForwardPass {
                     collection.draws_culled,
                     collection.draws_hi_z_culled,
                 )),
+                supports_base_instance,
             );
             backend.set_last_world_mesh_draw_stats(stats);
         }
@@ -218,10 +226,10 @@ impl RenderPass for WorldMeshForwardPass {
         let mut slab_bytes = Vec::new();
         if !draws.is_empty() {
             {
-                let Some(dbg) = backend.frame_resources.debug_draw.as_mut() else {
+                let Some(pd) = backend.frame_resources.per_draw.as_mut() else {
                     return Ok(());
                 };
-                dbg.ensure_draw_slot_capacity(ctx.device, draws.len());
+                pd.ensure_draw_slot_capacity(ctx.device, draws.len());
             }
 
             let slots: Vec<PaddedPerDrawUniforms> = if draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS
@@ -276,10 +284,10 @@ impl RenderPass for WorldMeshForwardPass {
         let queue = &*queue_guard;
 
         if !draws.is_empty() {
-            let Some(dbg) = backend.frame_resources.debug_draw.as_mut() else {
+            let Some(pd) = backend.frame_resources.per_draw.as_mut() else {
                 return Ok(());
             };
-            queue.write_buffer(&dbg.per_draw_uniforms, 0, &slab_bytes);
+            queue.write_buffer(&pd.per_draw_storage, 0, &slab_bytes);
         }
         let light_count_u = backend.frame_resources.frame_light_count_u32();
         let camera_world = hc
@@ -345,9 +353,9 @@ impl RenderPass for WorldMeshForwardPass {
             return Ok(());
         }
 
-        let Some(debug_bind_group) = backend
+        let Some(per_draw_bg) = backend
             .frame_resources
-            .debug_draw
+            .per_draw
             .as_ref()
             .map(|d| d.bind_group.clone())
         else {
@@ -409,11 +417,12 @@ impl RenderPass for WorldMeshForwardPass {
                 queue,
                 frame_bg_arc.as_ref(),
                 empty_bg_arc.as_ref(),
-                debug_bind_group.as_ref(),
+                per_draw_bg.as_ref(),
                 &pass_desc,
                 shader_perm,
                 &mut warned_missing_embedded_bind,
                 offscreen_write_rt,
+                supports_base_instance,
             );
         }
 
@@ -468,11 +477,12 @@ impl RenderPass for WorldMeshForwardPass {
                 queue,
                 frame_bg_arc.as_ref(),
                 empty_bg_arc.as_ref(),
-                debug_bind_group.as_ref(),
+                per_draw_bg.as_ref(),
                 &pass_desc,
                 shader_perm,
                 &mut warned_missing_embedded_bind,
                 offscreen_write_rt,
+                supports_base_instance,
             );
         }
 

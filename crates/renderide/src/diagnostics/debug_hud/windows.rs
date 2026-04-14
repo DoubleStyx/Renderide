@@ -190,6 +190,10 @@ impl DebugHud {
                 m.draws_total, m.draws_main, m.draws_overlay
             ));
             ui.text(format!(
+                "GPU instance batches (indexed submits): {:>5}",
+                m.instance_batch_total
+            ));
+            ui.text(format!(
                 "Frustum cull: {:>5} considered  |  {:>5} culled  |  Hi-Z {:>5} culled  |  {:>5} submitted after cull",
                 m.draws_pre_cull, m.draws_culled, m.draws_hi_z_culled, m.draws_total
             ));

@@ -13,10 +13,12 @@
 //! [`collect_and_sort_world_mesh_draws_with_parallelism`] uses [`WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch`]
 //! (e.g. prefetching multiple secondary RTs under an outer `par_iter`), inner collection and sort stay serial to avoid nested rayon.
 
+mod batch;
 mod collect;
 mod sort;
 mod types;
 
+pub use batch::{build_instance_batches, InstanceBatch};
 pub use collect::{
     collect_and_sort_world_mesh_draws, collect_and_sort_world_mesh_draws_with_parallelism,
     WorldMeshDrawCollectParallelism,

@@ -64,10 +64,11 @@ mod world_mesh_draw_stats;
 pub mod passes;
 
 pub use world_mesh_draw_prep::{
-    collect_and_sort_world_mesh_draws, collect_and_sort_world_mesh_draws_with_parallelism,
-    draw_filter_from_camera_entry, resolved_material_slots, sort_world_mesh_draws,
-    CameraTransformDrawFilter, MaterialDrawBatchKey, WorldMeshDrawCollectParallelism,
-    WorldMeshDrawCollection, WorldMeshDrawItem,
+    build_instance_batches, collect_and_sort_world_mesh_draws,
+    collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
+    resolved_material_slots, sort_world_mesh_draws, CameraTransformDrawFilter, InstanceBatch,
+    MaterialDrawBatchKey, WorldMeshDrawCollectParallelism, WorldMeshDrawCollection,
+    WorldMeshDrawItem,
 };
 pub use world_mesh_draw_stats::{world_mesh_draw_stats_from_sorted, WorldMeshDrawStats};
 

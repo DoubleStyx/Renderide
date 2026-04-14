@@ -5,7 +5,7 @@ use glam::Mat4;
 /// Stride between consecutive draw slots in the uniform slab (`mat4`×3 + WGSL padding).
 pub const PER_DRAW_UNIFORM_STRIDE: usize = 256;
 
-/// Initial number of draw slots allocated for [`crate::backend::debug_draw::DebugDrawResources`].
+/// Initial number of draw slots allocated for [`crate::backend::PerDrawResources`].
 pub const INITIAL_PER_DRAW_UNIFORM_SLOTS: usize = 256;
 
 /// GPU layout: left/right view–projection, `model`, then padding to 256 bytes.

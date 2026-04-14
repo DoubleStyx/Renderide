@@ -107,6 +107,7 @@ fn metallic_roughness(uv: vec2<f32>) -> vec2<f32> {
 
 @vertex
 fn vs_main(
+    @builtin(instance_index) instance_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
@@ -114,17 +115,18 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
 ) -> VertexOutput {
-    let world_p = pd::draw.model * vec4<f32>(pos.xyz, 1.0);
-    let wn = normalize((pd::draw.model * vec4<f32>(n.xyz, 0.0)).xyz);
+    let d = pd::get_draw(instance_index);
+    let world_p = d.model * vec4<f32>(pos.xyz, 1.0);
+    let wn = normalize((d.model * vec4<f32>(n.xyz, 0.0)).xyz);
 #ifdef MULTIVIEW
     var vp: mat4x4<f32>;
     if (view_idx == 0u) {
-        vp = pd::draw.view_proj_left;
+        vp = d.view_proj_left;
     } else {
-        vp = pd::draw.view_proj_right;
+        vp = d.view_proj_right;
     }
 #else
-    let vp = pd::draw.view_proj_left;
+    let vp = d.view_proj_left;
 #endif
     var out: VertexOutput;
     out.clip_pos  = vp * world_p;

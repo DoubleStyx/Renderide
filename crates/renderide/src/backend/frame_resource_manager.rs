@@ -1,20 +1,20 @@
-//! Per-frame GPU bind groups, light staging, and debug draw resources.
+//! Per-frame GPU bind groups, light staging, and per-draw instance resources.
 //!
 //! [`FrameResourceManager`] owns the `@group(0)` frame uniform/light bind group
 //! ([`FrameGpuResources`]), the empty `@group(1)` fallback ([`EmptyMaterialBindGroup`]),
-//! the `@group(2)` per-draw debug slab ([`DebugDrawResources`]), and the CPU-side packed light
+//! the `@group(2)` per-draw instance storage slab ([`PerDrawResources`]), and the CPU-side packed light
 //! buffer used by [`crate::render_graph::passes::ClusteredLightPass`] and the forward pass.
 
 use std::cell::Cell;
 use std::sync::Arc;
 
-use super::debug_draw::DebugDrawResources;
 use super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources};
 use super::light_gpu::{order_lights_for_clustered_shading_in_place, GpuLight, MAX_LIGHTS};
+use super::per_draw_resources::PerDrawResources;
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::scene::{ResolvedLight, SceneCoordinator};
 
-/// Immutable snapshot of `@group(0)` / empty `@group(1)` / debug `@group(2)` resources for one frame.
+/// Immutable snapshot of `@group(0)` / empty `@group(1)` / per-draw `@group(2)` resources for one frame.
 ///
 /// Obtained via [`FrameResourceManager::gpu_bind_context`]; intended to narrow pass APIs that
 /// should not take the full [`super::RenderBackend`].
@@ -23,19 +23,19 @@ pub struct FrameGpuBindContext<'a> {
     pub frame_gpu: Option<&'a FrameGpuResources>,
     /// Fallback material (`@group(1)`).
     pub empty_material: Option<&'a EmptyMaterialBindGroup>,
-    /// Debug mesh draw slab (`@group(2)`).
-    pub debug_draw: Option<&'a DebugDrawResources>,
+    /// Per-draw instance storage (`@group(2)`).
+    pub per_draw: Option<&'a PerDrawResources>,
 }
 
-/// Per-frame GPU state: camera/light bind group, empty material fallback, debug draw slab, and
+/// Per-frame GPU state: camera/light bind group, empty material fallback, per-draw storage, and
 /// the CPU-side packed light buffer.
 pub struct FrameResourceManager {
     /// Per-frame `@group(0)` camera + lights (after GPU attach).
     pub(crate) frame_gpu: Option<FrameGpuResources>,
     /// Placeholder `@group(1)` for materials without per-material bindings.
     pub(crate) empty_material: Option<EmptyMaterialBindGroup>,
-    /// Uniforms + bind group for debug mesh draws (`@group(2)` dynamic slab).
-    pub(crate) debug_draw: Option<DebugDrawResources>,
+    /// Storage + bind group for mesh forward per-draw data (`@group(2)`).
+    pub(crate) per_draw: Option<PerDrawResources>,
     /// Last packed lights for the frame (after [`Self::prepare_lights_from_scene`]).
     light_scratch: Vec<GpuLight>,
     /// Reused each frame to flatten all spaces’ [`crate::scene::ResolvedLight`] before ordering and GPU pack.
@@ -69,7 +69,7 @@ impl FrameResourceManager {
         Self {
             frame_gpu: None,
             empty_material: None,
-            debug_draw: None,
+            per_draw: None,
             light_scratch: Vec::new(),
             resolved_flatten_scratch: Vec::new(),
             light_prep_done_this_tick: false,
@@ -88,7 +88,7 @@ impl FrameResourceManager {
             }
         };
         self.empty_material = Some(EmptyMaterialBindGroup::new(device));
-        self.debug_draw = Some(DebugDrawResources::new(device));
+        self.per_draw = Some(PerDrawResources::new(device));
     }
 
     /// Clears the per-tick light prep coalescing flag. Call once per winit frame from
@@ -195,17 +195,17 @@ impl FrameResourceManager {
         self.light_prep_done_this_tick = true;
     }
 
-    /// Per-draw debug mesh uniforms: 256-byte dynamic uniform slab.
-    pub fn debug_draw(&self) -> Option<&DebugDrawResources> {
-        self.debug_draw.as_ref()
+    /// Per-draw mesh forward storage: 256-byte slots, indexed by instance or dynamic offset.
+    pub fn per_draw(&self) -> Option<&PerDrawResources> {
+        self.per_draw.as_ref()
     }
 
-    /// Bundles frame/empty-material/debug bind resources for render passes.
+    /// Bundles frame/empty-material/per-draw bind resources for render passes.
     pub fn gpu_bind_context(&self) -> FrameGpuBindContext<'_> {
         FrameGpuBindContext {
             frame_gpu: self.frame_gpu.as_ref(),
             empty_material: self.empty_material.as_ref(),
-            debug_draw: self.debug_draw.as_ref(),
+            per_draw: self.per_draw.as_ref(),
         }
     }
 

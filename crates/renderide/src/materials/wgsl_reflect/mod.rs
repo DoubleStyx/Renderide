@@ -128,7 +128,7 @@ pub fn reflect_raster_material_requires_intersection_pass(wgsl_source: &str) -> 
         .is_some_and(|r| r.requires_intersection_pass)
 }
 
-/// Validates that `@group(2)` matches the dynamic per-draw uniform slab (single binding, 256-byte stride).
+/// Validates that `@group(2)` matches the per-draw storage slab (single binding, 256-byte element stride).
 pub fn validate_per_draw_group2(
     entries: &[wgpu::BindGroupLayoutEntry],
 ) -> Result<(), ReflectError> {
@@ -152,14 +152,15 @@ pub fn validate_per_draw_group2(
     }
     match e.ty {
         wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: true,
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
             min_binding_size: Some(n),
         } if n.get() == PER_DRAW_UNIFORM_STRIDE as u64 => Ok(()),
         _ => Err(ReflectError::UnsupportedBinding {
             group: 2,
             binding: 0,
-            reason: "expected var<uniform> dynamic offset min_binding_size 256".into(),
+            reason: "expected var<storage, read> array without dynamic offset min_binding_size 256"
+                .into(),
         }),
     }
 }

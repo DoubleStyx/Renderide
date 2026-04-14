@@ -97,6 +97,8 @@ pub(super) fn global_to_layout_entry(
                 visibility,
                 ty: wgpu::BindingType::Buffer {
                     ty: buf_ty,
+                    // Per-draw `@group(2)` uses the full storage slab; draw slots are selected with
+                    // `@builtin(instance_index)` and `draw_indexed` instance ranges, not dynamic offsets.
                     has_dynamic_offset: false,
                     min_binding_size: Some(min_binding_size),
                 },

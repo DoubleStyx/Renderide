@@ -82,7 +82,7 @@ var<storage> cluster_light_indicesX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX
 @group(0) @binding(4) 
 var scene_depthX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX: texture_depth_2d;
 @group(2) @binding(0) 
-var<uniform> drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX: PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX;
+var<storage> instancesX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX: array<PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX>;
 @group(1) @binding(0) 
 var<uniform> mat: CustomPbsIntersectSpecularMaterial;
 @group(1) @binding(1) 
@@ -208,6 +208,11 @@ fn decode_ts_normal_with_placeholderX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJXG64TNMFWF
     return normalize(vec3<f32>(nm_xy, z));
 }
 
+fn get_drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX(instance_idx: u32) -> PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX {
+    let _e3: PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX = instancesX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX[instance_idx];
+    return _e3;
+}
+
 fn cluster_z_from_view_zX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRWY5LTORSXEX(view_z: f32, near_clip: f32, far_clip: f32, cluster_count_z: u32) -> u32 {
     let d: f32 = clamp(-(view_z), near_clip, far_clip);
     let z_1: f32 = ((log((d / near_clip)) / log((far_clip / near_clip))) * f32(cluster_count_z));
@@ -305,21 +310,20 @@ fn intersection_lerp(frag_pos_2: vec4<f32>, world_pos_4: vec3<f32>, view_layer_3
 }
 
 @vertex 
-fn vs_main(@location(0) pos: vec4<f32>, @location(1) n: vec4<f32>, @location(2) uv0_: vec2<f32>) -> VertexOutput {
+fn vs_main(@builtin(instance_index) instance_index: u32, @location(0) pos: vec4<f32>, @location(1) n: vec4<f32>, @location(2) uv0_: vec2<f32>) -> VertexOutput {
     var out: VertexOutput;
 
-    let _e3: mat4x4<f32> = drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX.model;
-    let world_p: vec4<f32> = (_e3 * vec4<f32>(pos.xyz, 1f));
-    let _e11: mat4x4<f32> = drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX.model;
-    let wn: vec3<f32> = normalize((_e11 * vec4<f32>(n.xyz, 0f)).xyz);
-    let vp: mat4x4<f32> = drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX.view_proj_left;
+    let _e1: PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX = get_drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX(instance_index);
+    let world_p: vec4<f32> = (_e1.model * vec4<f32>(pos.xyz, 1f));
+    let wn: vec3<f32> = normalize((_e1.model * vec4<f32>(n.xyz, 0f)).xyz);
+    let vp: mat4x4<f32> = _e1.view_proj_left;
     out.clip_pos = (vp * world_p);
     out.world_pos = world_p.xyz;
     out.world_n = wn;
     out.uv0_ = uv0_;
     out.view_layer = 0u;
-    let _e31: VertexOutput = out;
-    return _e31;
+    let _e27: VertexOutput = out;
+    return _e27;
 }
 
 @fragment 
