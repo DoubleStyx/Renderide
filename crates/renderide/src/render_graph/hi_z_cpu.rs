@@ -49,7 +49,9 @@ pub enum HiZCullData {
     Desktop(HiZCpuSnapshot),
     /// Left / right pyramids aligned with [`super::world_mesh_cull::WorldMeshCullProjParams::vr_stereo`] order.
     Stereo {
+        /// Hi-Z pyramid for the left eye.
         left: HiZCpuSnapshot,
+        /// Hi-Z pyramid for the right eye.
         right: HiZCpuSnapshot,
     },
 }

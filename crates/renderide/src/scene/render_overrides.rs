@@ -28,29 +28,42 @@ pub enum MeshRendererOverrideTarget {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MaterialOverrideBinding {
+    /// Submesh / material slot index on the host renderer.
     pub material_slot_index: i32,
+    /// Replacement material asset id.
     pub material_asset_id: i32,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct RenderTransformOverrideEntry {
+    /// Scene node this override applies to.
     pub node_id: i32,
+    /// User vs external render context.
     pub context: RenderingContext,
+    /// Optional world-space position override for `node_id`.
     pub position_override: Option<Vec3>,
+    /// Optional rotation override.
     pub rotation_override: Option<Quat>,
+    /// Optional non-uniform scale override.
     pub scale_override: Option<Vec3>,
+    /// Skinned mesh renderable indices receiving the override (host ids).
     pub skinned_mesh_renderer_indices: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct RenderMaterialOverrideEntry {
+    /// Scene node owning the mesh renderer.
     pub node_id: i32,
+    /// User vs external render context.
     pub context: RenderingContext,
+    /// Static vs skinned mesh target for material swaps.
     pub target: MeshRendererOverrideTarget,
+    /// Per-slot material replacements.
     pub material_overrides: Vec<MaterialOverrideBinding>,
 }
 
 impl RenderSpaceState {
+    /// Primary rendering context for this space (user view vs external mirror).
     pub fn main_render_context(&self) -> RenderingContext {
         if self.view_position_is_external {
             RenderingContext::ExternalView
@@ -59,12 +72,14 @@ impl RenderSpaceState {
         }
     }
 
+    /// Returns whether any transform override rows exist for `context`.
     pub fn has_transform_overrides_in_context(&self, context: RenderingContext) -> bool {
         self.render_transform_overrides
             .iter()
             .any(|entry| entry.context == context && entry.node_id >= 0)
     }
 
+    /// Applies transform overrides for `node_id` in `context` atop the dense local transform.
     pub fn overridden_local_transform(
         &self,
         node_id: i32,
@@ -92,6 +107,7 @@ impl RenderSpaceState {
         matched.then_some(local)
     }
 
+    /// Resolves a material override for `target` and slot, if any, in `context`.
     pub fn overridden_material_asset_id(
         &self,
         context: RenderingContext,

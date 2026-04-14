@@ -51,6 +51,7 @@ pub struct HostCameraFrame {
     /// When both [`Self::cluster_view_override`] and [`Self::cluster_proj_override`] are set,
     /// [`super::cluster_frame::cluster_frame_params`] uses them instead of the desktop main-space camera.
     pub cluster_view_override: Option<Mat4>,
+    /// Optional override projection for clustered light assignment (reverse-Z).
     pub cluster_proj_override: Option<Mat4>,
     /// World position for `@group(0)` camera uniforms when the secondary camera is active.
     pub secondary_camera_world_position: Option<Vec3>,

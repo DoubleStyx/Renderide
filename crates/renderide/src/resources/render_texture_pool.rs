@@ -13,15 +13,25 @@ use crate::shared::SetRenderTextureFormat;
 /// Host render texture mirrored as a wgpu color target + optional depth.
 #[derive(Debug)]
 pub struct GpuRenderTexture {
+    /// Host render-texture asset id.
     pub asset_id: i32,
+    /// Color target (`Rgba16Float`); sampleable after offscreen draws.
     pub color_texture: Arc<wgpu::Texture>,
+    /// Default view over the full color mip.
     pub color_view: Arc<wgpu::TextureView>,
+    /// Optional depth texture (always allocated for scene draws in [`Self::new_from_format`]).
     pub depth_texture: Option<Arc<wgpu::Texture>>,
+    /// View over `depth_texture` when present.
     pub depth_view: Option<Arc<wgpu::TextureView>>,
+    /// wgpu format of `color_texture`.
     pub wgpu_color_format: wgpu::TextureFormat,
+    /// Pixel width of the render target.
     pub width: u32,
+    /// Pixel height of the render target.
     pub height: u32,
+    /// Estimated VRAM for color + depth (see [`estimate_texture_bytes`]).
     pub resident_bytes: u64,
+    /// Sampler state mirrored from host format for material binds.
     pub sampler: Texture2dSamplerState,
 }
 
@@ -168,6 +178,7 @@ impl RenderTexturePool {
         }
     }
 
+    /// VRAM accounting for resident render textures.
     pub fn accounting(&self) -> &VramAccounting {
         &self.accounting
     }
@@ -196,14 +207,17 @@ impl RenderTexturePool {
         false
     }
 
+    /// Borrows a resident render texture by host asset id.
     pub fn get(&self, asset_id: i32) -> Option<&GpuRenderTexture> {
         self.textures.get(&asset_id)
     }
 
+    /// Mutably borrows a resident render texture for in-place updates.
     pub fn get_mut(&mut self, asset_id: i32) -> Option<&mut GpuRenderTexture> {
         self.textures.get_mut(&asset_id)
     }
 
+    /// Full map for diagnostics and iteration.
     pub fn textures(&self) -> &HashMap<i32, GpuRenderTexture> {
         &self.textures
     }

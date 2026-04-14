@@ -21,6 +21,7 @@ use crate::scene::RenderSpaceId;
 pub struct MeshDeformPass;
 
 impl MeshDeformPass {
+    /// Creates a mesh deform pass instance.
     pub fn new() -> Self {
         Self
     }

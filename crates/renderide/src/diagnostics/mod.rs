@@ -62,12 +62,19 @@ pub struct DebugHudInput {
     pub cursor_px: [f32; 2],
     /// Drawable size in physical pixels.
     pub window_px: (u32, u32),
+    /// Whether the window currently has keyboard focus.
     pub window_focused: bool,
+    /// Whether the cursor is over the client area (from winit accumulator).
     pub mouse_active: bool,
+    /// Left mouse button held.
     pub left: bool,
+    /// Right mouse button held.
     pub right: bool,
+    /// Middle mouse button held.
     pub middle: bool,
+    /// Fourth mouse button held (e.g. side back).
     pub extra1: bool,
+    /// Fifth mouse button held (e.g. side forward).
     pub extra2: bool,
 }
 

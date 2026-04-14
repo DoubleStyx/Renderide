@@ -19,9 +19,13 @@ pub struct ExternalOffscreenTargets<'a> {
     pub render_texture_asset_id: i32,
     /// Color attachment (`Rgba16Float` for Unity `ARGBHalf` parity).
     pub color_view: &'a wgpu::TextureView,
+    /// Depth texture backing `depth_view`.
     pub depth_texture: &'a wgpu::Texture,
+    /// Depth-stencil view for the offscreen pass.
     pub depth_view: &'a wgpu::TextureView,
+    /// Color/depth attachment extent in physical pixels.
     pub extent_px: (u32, u32),
+    /// Color attachment format (must match pipeline targets).
     pub color_format: wgpu::TextureFormat,
 }
 

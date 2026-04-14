@@ -15,10 +15,15 @@ use super::{GpuResource, StreamingPolicy};
 /// Sampler-related fields mirrored from [`SetTexture2DProperties`](crate::shared::SetTexture2DProperties) for future bind groups.
 #[derive(Clone, Debug)]
 pub struct Texture2dSamplerState {
+    /// Min/mag filter from host.
     pub filter_mode: TextureFilterMode,
+    /// Anisotropic filtering level (host units).
     pub aniso_level: i32,
+    /// U address mode.
     pub wrap_u: TextureWrapMode,
+    /// V address mode.
     pub wrap_v: TextureWrapMode,
+    /// Mip bias applied when sampling.
     pub mipmap_bias: f32,
 }
 
@@ -58,18 +63,31 @@ impl Texture2dSamplerState {
 /// `mip_level_count` over sparse partial images until wgpu exposes true sparse textures.
 #[derive(Debug)]
 pub struct GpuTexture2d {
+    /// Host Texture2D asset id.
     pub asset_id: i32,
+    /// GPU texture storage (all mips allocated; uploads fill subsets).
     pub texture: Arc<wgpu::Texture>,
+    /// Default full-mip view for binding.
     pub view: Arc<wgpu::TextureView>,
+    /// Resolved wgpu format for `texture`.
     pub wgpu_format: wgpu::TextureFormat,
+    /// Host [`TextureFormat`] enum (compression / layout family).
     pub host_format: TextureFormat,
+    /// Linear vs sRGB sampling policy from host.
     pub color_profile: ColorProfile,
+    /// Texture width in texels (mip0).
     pub width: u32,
+    /// Texture height in texels (mip0).
     pub height: u32,
+    /// Mip chain length allocated on GPU.
     pub mip_levels_total: u32,
+    /// Mips with authored texels uploaded so far.
     pub mip_levels_resident: u32,
+    /// Estimated VRAM for allocated mips.
     pub resident_bytes: u64,
+    /// Sampler fields for future bind groups.
     pub sampler: Texture2dSamplerState,
+    /// Streaming / eviction hints from host properties.
     pub residency: TextureResidencyMeta,
 }
 
@@ -177,14 +195,17 @@ impl TexturePool {
         Self::new(Box::new(super::NoopStreamingPolicy))
     }
 
+    /// VRAM accounting for resident textures.
     pub fn accounting(&self) -> &VramAccounting {
         &self.accounting
     }
 
+    /// Mutable VRAM totals (insert/remove update accounting).
     pub fn accounting_mut(&mut self) -> &mut VramAccounting {
         &mut self.accounting
     }
 
+    /// Streaming policy for mip eviction suggestions.
     pub fn streaming_mut(&mut self) -> &mut dyn StreamingPolicy {
         self.streaming.as_mut()
     }
@@ -214,14 +235,17 @@ impl TexturePool {
         false
     }
 
+    /// Borrows a resident texture by host asset id.
     pub fn get_texture(&self, asset_id: i32) -> Option<&GpuTexture2d> {
         self.textures.get(&asset_id)
     }
 
+    /// Mutably borrows a resident texture (mip uploads, property changes).
     pub fn get_texture_mut(&mut self, asset_id: i32) -> Option<&mut GpuTexture2d> {
         self.textures.get_mut(&asset_id)
     }
 
+    /// Full map for iteration and HUD stats.
     pub fn textures(&self) -> &HashMap<i32, GpuTexture2d> {
         &self.textures
     }

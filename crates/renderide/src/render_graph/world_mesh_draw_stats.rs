@@ -7,12 +7,19 @@ use super::world_mesh_draw_prep::{MaterialDrawBatchKey, WorldMeshDrawItem};
 pub struct WorldMeshDrawStats {
     /// Distinct `(batch_key, overlay)` groups after sorting.
     pub batch_total: usize,
+    /// Batches for non-overlay draws only.
     pub batch_main: usize,
+    /// Batches for overlay draws only.
     pub batch_overlay: usize,
+    /// Total indexed draws submitted.
     pub draws_total: usize,
+    /// Draws in the main (non-overlay) layer.
     pub draws_main: usize,
+    /// Draws in the overlay layer.
     pub draws_overlay: usize,
+    /// Non-skinned mesh draws.
     pub rigid_draws: usize,
+    /// Skinned mesh draws.
     pub skinned_draws: usize,
     /// Slots that went through frustum culling before the final draw list (if culling was enabled).
     pub draws_pre_cull: usize,

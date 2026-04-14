@@ -117,42 +117,52 @@ impl RendererFrontend {
         self.fatal_error = value;
     }
 
+    /// Current host/renderer init handshake phase.
     pub fn init_state(&self) -> InitState {
         self.init_state
     }
 
+    /// Updates the init handshake phase (e.g. after processing [`RendererCommand::RendererInitData`]).
     pub fn set_init_state(&mut self, state: InitState) {
         self.init_state = state;
     }
 
+    /// Host [`RendererInitData`] waiting to be consumed after the SHM accessor is ready.
     pub fn pending_init(&self) -> Option<&RendererInitData> {
         self.pending_init.as_ref()
     }
 
+    /// Stores init payload until the runtime attaches shared memory and finalizes setup.
     pub fn set_pending_init(&mut self, data: RendererInitData) {
         self.pending_init = Some(data);
     }
 
+    /// Removes and returns pending init data once the consumer is ready.
     pub fn take_pending_init(&mut self) -> Option<RendererInitData> {
         self.pending_init.take()
     }
 
+    /// Large-payload shared-memory accessor when the host mapped views are available.
     pub fn shared_memory(&self) -> Option<&SharedMemoryAccessor> {
         self.shared_memory.as_ref()
     }
 
+    /// Mutable shared-memory accessor for mesh/texture uploads.
     pub fn shared_memory_mut(&mut self) -> Option<&mut SharedMemoryAccessor> {
         self.shared_memory.as_mut()
     }
 
+    /// Installs the SHM accessor produced after init handshake mapping.
     pub fn set_shared_memory(&mut self, shm: SharedMemoryAccessor) {
         self.shared_memory = Some(shm);
     }
 
+    /// Mutable reference to the dual-queue IPC when connected.
     pub fn ipc_mut(&mut self) -> Option<&mut DualQueueIpc> {
         self.ipc.as_mut()
     }
 
+    /// Primary/background command queues when IPC is connected.
     pub fn ipc(&self) -> Option<&DualQueueIpc> {
         self.ipc.as_ref()
     }
@@ -173,6 +183,7 @@ impl RendererFrontend {
         Ok(())
     }
 
+    /// Whether [`Self::connect_ipc`] successfully opened the host queues.
     pub fn is_ipc_connected(&self) -> bool {
         self.ipc.is_some()
     }

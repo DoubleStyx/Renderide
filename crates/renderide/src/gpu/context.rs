@@ -246,6 +246,7 @@ impl GpuContext {
         &self.surface
     }
 
+    /// WGPU device for buffer/texture/pipeline creation.
     pub fn device(&self) -> &Arc<wgpu::Device> {
         &self.device
     }
@@ -330,6 +331,7 @@ impl GpuContext {
         (ft.cpu_until_submit_ms, ft.last_completed_gpu_idle_ms)
     }
 
+    /// Swapchain color format from the active surface configuration.
     pub fn config_format(&self) -> wgpu::TextureFormat {
         self.config.format
     }

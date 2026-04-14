@@ -80,28 +80,44 @@ pub struct ReflectedRasterLayout {
 /// Errors from [`reflect_raster_material_wgsl`].
 #[derive(Debug, Error)]
 pub enum ReflectError {
+    /// Naga failed to parse the composed WGSL source.
     #[error("WGSL parse: {0}")]
     Parse(String),
+    /// Naga validation failed after parse.
     #[error("WGSL validate: {0}")]
     Validate(String),
+    /// Layouter could not compute buffer/struct sizes.
     #[error("layout computation: {0}")]
     Layout(String),
+    /// `@group(0)` sizes did not match [`FrameGpuUniforms`], [`GpuLight`], or cluster buffers.
     #[error("group(0) must have uniform binding 0 size {expected_frame}, storage binding 1 stride {expected_light}, bindings 2–3 u32 stride {expected_cluster_u32}; got b0={got0:?} b1={got1:?} b2={got2:?} b3={got3:?}")]
     FrameGroupMismatch {
+        /// Expected `FrameGpuUniforms` uniform size in bytes.
         expected_frame: u32,
+        /// Expected `GpuLight` struct stride in the lights storage buffer.
         expected_light: u32,
+        /// Expected `u32` stride for cluster count / index buffers.
         expected_cluster_u32: u32,
+        /// Observed binding 0 size, if any.
         got0: Option<u32>,
+        /// Observed binding 1 stride, if any.
         got1: Option<u32>,
+        /// Observed binding 2 stride, if any.
         got2: Option<u32>,
+        /// Observed binding 3 stride, if any.
         got3: Option<u32>,
     },
+    /// A global resource at the given group/binding is not supported for raster materials.
     #[error("unsupported global resource at group {group} binding {binding}: {reason}")]
     UnsupportedBinding {
+        /// Bind group index (`0`–`2` for materials).
         group: u32,
+        /// Binding index within the group.
         binding: u32,
+        /// Human-readable reason (type, access, or shape).
         reason: String,
     },
+    /// Bind group index outside `0..=2`.
     #[error("invalid bind group index {0} (only 0, 1, 2 are allowed for raster materials)")]
     InvalidBindGroup(u32),
 }

@@ -106,6 +106,7 @@ pub enum ResidencyTier {
 /// Host-driven hints for future texture mip streaming (see [`StreamingPolicy::suggest_texture_mip_evictions`]).
 #[derive(Clone, Debug)]
 pub struct TextureResidencyMeta {
+    /// Retention priority for streaming decisions.
     pub tier: ResidencyTier,
     /// From host `apply_immediatelly` / integration priority (best-effort).
     pub integration_urgent: bool,
@@ -141,6 +142,7 @@ impl TextureResidencyMeta {
 /// Metadata for future mesh eviction (not enforced yet).
 #[derive(Clone, Debug)]
 pub struct MeshResidencyMeta {
+    /// Retention priority for future mesh eviction.
     pub tier: ResidencyTier,
 }
 

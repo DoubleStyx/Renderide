@@ -46,6 +46,9 @@ pub fn try_claim_renderer_singleton() -> Result<(), InitError> {
     Ok(())
 }
 
+/// Parses `-QueueName` / `-QueueCapacity` from `std::env::args`, if present.
+///
+/// Returns [`None`] when arguments are missing or invalid so the process can run without IPC.
 pub fn get_connection_parameters() -> Option<ConnectionParams> {
     let args: Vec<String> = env::args().collect();
     if args.is_empty() {

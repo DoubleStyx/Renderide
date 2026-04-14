@@ -70,8 +70,11 @@ fn blendshape_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout 
 pub struct MeshPreprocessPipelines {
     /// [`Self::skinning_bind_group_layout`] for bind group 0.
     pub skinning_bind_group_layout: wgpu::BindGroupLayout,
+    /// Skinning LBS compute dispatch pipeline.
     pub skinning_pipeline: wgpu::ComputePipeline,
+    /// Bind group layout for blendshape compute (`@group(0)`).
     pub blendshape_bind_group_layout: wgpu::BindGroupLayout,
+    /// Blendshape delta apply compute pipeline.
     pub blendshape_pipeline: wgpu::ComputePipeline,
 }
 

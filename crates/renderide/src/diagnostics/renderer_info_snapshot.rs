@@ -19,22 +19,35 @@ pub struct RendererInfoSnapshot {
     pub adapter_backend: wgpu::Backend,
     /// Integrated vs discrete, etc.
     pub adapter_device_type: wgpu::DeviceType,
+    /// Adapter driver name (when reported by wgpu).
     pub adapter_driver: String,
+    /// Extra driver details string from the adapter.
     pub adapter_driver_info: String,
+    /// Swapchain surface format in use.
     pub surface_format: wgpu::TextureFormat,
+    /// Swapchain extent in physical pixels.
     pub viewport_px: (u32, u32),
+    /// Swapchain present mode (fifo, mailbox, etc.).
     pub present_mode: wgpu::PresentMode,
     /// Wall-clock time between redraw ticks (ms): same basis as HUD **total frame time**; FPS = `1000.0 / frame_time_ms`.
     pub frame_time_ms: f64,
+    /// Active render spaces in the scene coordinator.
     pub render_space_count: usize,
+    /// Mesh renderable records across spaces.
     pub mesh_renderable_count: usize,
+    /// Resident [`crate::resources::MeshPool`] entries.
     pub resident_mesh_count: usize,
+    /// Resident entries in [`crate::resources::TexturePool`].
     pub resident_texture_count: usize,
     /// Host [`crate::resources::GpuRenderTexture`] entries in [`crate::resources::RenderTexturePool`].
     pub resident_render_texture_count: usize,
+    /// Allocated material property uniform slots.
     pub material_property_slots: usize,
+    /// Allocated material property block slots.
     pub property_block_slots: usize,
+    /// Distinct shader binding sets registered for materials.
     pub material_shader_bindings: usize,
+    /// Pass count in the compiled main render graph.
     pub frame_graph_pass_count: usize,
     /// Packed lights after [`RenderBackend::prepare_lights_from_scene`].
     pub gpu_light_count: usize,

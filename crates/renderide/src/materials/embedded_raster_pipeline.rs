@@ -148,6 +148,7 @@ pub(crate) fn create_embedded_render_pipeline(
     )
 }
 
+/// Returns whether the embedded material stem expects alpha blending (UI/text/overlay targets).
 pub fn embedded_stem_uses_alpha_blending(stem: &str) -> bool {
     let stem = stem
         .trim_end_matches("_default")

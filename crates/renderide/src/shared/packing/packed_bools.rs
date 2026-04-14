@@ -3,13 +3,21 @@
 /// Eight flags read from one byte: `bit0` is the least significant bit (same ordering as the wire format).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PackedBools {
+    /// Wire bit 0 (LSB of the packed byte).
     pub bit0: bool,
+    /// Wire bit 1.
     pub bit1: bool,
+    /// Wire bit 2.
     pub bit2: bool,
+    /// Wire bit 3.
     pub bit3: bool,
+    /// Wire bit 4.
     pub bit4: bool,
+    /// Wire bit 5.
     pub bit5: bool,
+    /// Wire bit 6.
     pub bit6: bool,
+    /// Wire bit 7 (MSB of the packed byte).
     pub bit7: bool,
 }
 

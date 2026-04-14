@@ -56,17 +56,29 @@ pub const MAX_BUFFER_SIZE: usize = 2_147_483_648;
 /// Byte offsets for each region of the host mesh payload.
 #[derive(Clone, Copy, Debug)]
 pub struct MeshBufferLayout {
+    /// Byte length of the interleaved vertex region at the start of the host buffer.
     pub vertex_size: usize,
+    /// Byte offset where the index buffer begins.
     pub index_buffer_start: usize,
+    /// Byte length of the index buffer region.
     pub index_buffer_length: usize,
+    /// Byte offset where optional per-vertex bone count bytes begin.
     pub bone_counts_start: usize,
+    /// Byte length of the bone counts region (or zero).
     pub bone_counts_length: usize,
+    /// Byte offset where packed bone weight tail data begins.
     pub bone_weights_start: usize,
+    /// Byte length of the bone weights region (or zero).
     pub bone_weights_length: usize,
+    /// Byte offset where inverse bind-pose matrices begin.
     pub bind_poses_start: usize,
+    /// Byte length of bind pose data (or zero).
     pub bind_poses_length: usize,
+    /// Byte offset where packed blendshape delta payload begins.
     pub blendshape_data_start: usize,
+    /// Byte length of blendshape payload (or zero).
     pub blendshape_data_length: usize,
+    /// Total bytes required to cover all regions (validation vs mapped SHM).
     pub total_buffer_length: usize,
 }
 

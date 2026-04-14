@@ -16,13 +16,21 @@ pub struct FrameGpuUniforms {
     pub view_space_z_coeffs: [f32; 4],
     /// Right-eye world → view-space Z. Set equal to `view_space_z_coeffs` in mono mode.
     pub view_space_z_coeffs_right: [f32; 4],
+    /// Cluster grid width in tiles (X).
     pub cluster_count_x: u32,
+    /// Cluster grid height in tiles (Y).
     pub cluster_count_y: u32,
+    /// Depth slice count for clustered lighting (Z).
     pub cluster_count_z: u32,
+    /// Camera near clip plane (view space, positive forward).
     pub near_clip: f32,
+    /// Camera far clip plane (reverse-Z aware; matches shader expectations).
     pub far_clip: f32,
+    /// Number of lights packed into the frame storage buffer for this pass.
     pub light_count: u32,
+    /// Viewport width in pixels (physical).
     pub viewport_width: u32,
+    /// Viewport height in pixels (physical).
     pub viewport_height: u32,
 }
 

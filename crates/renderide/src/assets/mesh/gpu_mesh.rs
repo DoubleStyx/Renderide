@@ -25,16 +25,23 @@ use crate::backend::mesh_deform::plan_blendshape_bind_chunks;
 /// (`bone_counts` + bone weight tail) when the host provides skeleton data.
 #[derive(Debug)]
 pub struct GpuMesh {
+    /// Host mesh asset id (`MeshUploadData.asset_id`).
     pub asset_id: i32,
     /// Full interleaved vertices as sent by the host (`vertex_attributes` order).
     pub vertex_buffer: Arc<wgpu::Buffer>,
+    /// GPU index buffer (contents match host [`IndexBufferFormat`]).
     pub index_buffer: Arc<wgpu::Buffer>,
+    /// Element size for `index_buffer` (`Uint16` vs `Uint32`).
     pub index_format: wgpu::IndexFormat,
+    /// Total index elements across all submeshes.
     pub index_count: u32,
     /// Per-submesh `(first_index, index_count)` in elements of `index_format`.
     pub submeshes: Vec<(u32, u32)>,
+    /// Vertex count from the host upload (used for deform and draw ranges).
     pub vertex_count: u32,
+    /// Byte stride of one interleaved vertex in `vertex_buffer`.
     pub vertex_stride: u32,
+    /// Axis-aligned bounds in mesh space (from host).
     pub bounds: RenderBoundingBox,
     /// Optional 1 byte per vertex (skinned / synthetic for blendshape-only).
     pub bone_counts_buffer: Option<Arc<wgpu::Buffer>>,
@@ -46,6 +53,7 @@ pub struct GpuMesh {
     pub bind_poses_buffer: Option<Arc<wgpu::Buffer>>,
     /// Packed blendshape deltas (`BLENDSHAPE_OFFSET_GPU_STRIDE` × vertices × shapes).
     pub blendshape_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Number of blendshape shapes in `blendshape_buffer` (0 when none).
     pub num_blendshapes: u32,
     /// Decomposed position stream (`vec4<f32>` per vertex) for compute + debug raster.
     pub positions_buffer: Option<Arc<wgpu::Buffer>>,

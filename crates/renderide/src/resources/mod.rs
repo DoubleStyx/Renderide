@@ -58,14 +58,17 @@ impl MeshPool {
         Self::new(Box::new(NoopStreamingPolicy))
     }
 
+    /// VRAM accounting totals for resident meshes.
     pub fn accounting(&self) -> &VramAccounting {
         &self.accounting
     }
 
+    /// Mutable VRAM accounting (evictions and uploads update totals).
     pub fn accounting_mut(&mut self) -> &mut VramAccounting {
         &mut self.accounting
     }
 
+    /// Streaming policy hook for mip / eviction suggestions.
     pub fn streaming_mut(&mut self) -> &mut dyn StreamingPolicy {
         self.streaming.as_mut()
     }
@@ -114,6 +117,7 @@ impl MeshPool {
         false
     }
 
+    /// Borrows a resident mesh by host asset id.
     pub fn get_mesh(&self, asset_id: i32) -> Option<&GpuMesh> {
         self.meshes.get(&asset_id)
     }

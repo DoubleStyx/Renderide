@@ -10,6 +10,7 @@ use crate::pipelines::raster::DebugWorldNormalsFamily;
 pub struct DebugDrawResources {
     /// Packed rows (`slot_count * 256` bytes).
     pub per_draw_uniforms: wgpu::Buffer,
+    /// Bind group wiring `per_draw_uniforms` for [`DebugWorldNormalsFamily`].
     pub bind_group: Arc<wgpu::BindGroup>,
     slot_count: usize,
 }

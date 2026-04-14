@@ -34,11 +34,17 @@ pub enum RenderPassError {
 
     /// A pass that writes depth ran without a depth attachment view.
     #[error("pass `{pass}` requires depth view but none was provided")]
-    MissingDepth { pass: String },
+    MissingDepth {
+        /// Pass name from [`super::RenderPass::name`].
+        pass: String,
+    },
 
     /// Frame params (scene/backend) were not supplied for a mesh pass.
     #[error("pass `{pass}` requires FrameRenderParams but none was provided")]
-    MissingFrameParams { pass: String },
+    MissingFrameParams {
+        /// Pass name from [`super::RenderPass::name`].
+        pass: String,
+    },
 }
 
 /// Frame-level failure when recording or presenting the compiled graph.

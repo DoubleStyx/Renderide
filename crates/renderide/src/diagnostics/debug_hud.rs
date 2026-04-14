@@ -26,6 +26,7 @@ use imgui_wgpu::{Renderer as ImguiWgpuRenderer, RendererConfig};
 use super::debug_hud_fmt as hud_fmt;
 use super::debug_hud_layout as overlay_layout;
 
+/// Dear ImGui overlay: frame timing, renderer stats, shader routes, scene transforms, and config UI.
 pub struct DebugHud {
     imgui: Context,
     renderer: ImguiWgpuRenderer,

@@ -22,6 +22,7 @@ pub struct RenderSpaceTransformsSnapshot {
     pub is_overlay: bool,
     /// Mirrors [`crate::scene::RenderSpaceState::is_private`].
     pub is_private: bool,
+    /// One row per dense transform node in this space.
     pub rows: Vec<TransformRow>,
 }
 

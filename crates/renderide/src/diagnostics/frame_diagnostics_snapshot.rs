@@ -39,8 +39,11 @@ pub struct FrameDiagnosticsSnapshot {
     ///
     /// May lag the current frame; matches the Frame timing HUD GPU line.
     pub gpu_frame_after_submit_ms: Option<f64>,
+    /// Optional wgpu allocator byte totals when exposed by the device.
     pub gpu_allocator: GpuAllocatorHud,
+    /// Host CPU model and memory usage for the HUD.
     pub host: HostCpuMemoryHud,
+    /// World mesh forward pass draw batching stats for the frame.
     pub mesh_draw: WorldMeshDrawStats,
     /// Host [`FrameSubmitData::render_tasks`] count from the last applied frame submit.
     pub last_submit_render_task_count: usize,

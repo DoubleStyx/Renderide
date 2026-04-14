@@ -20,23 +20,39 @@ pub const MAX_LIGHTS: usize = 256;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
 pub struct GpuLight {
+    /// Light position in world space (w unused; padding follows for WGSL alignment).
     pub position: [f32; 3],
+    /// Aligns `position` to 16 bytes for WGSL `vec3` storage rules.
     pub _pad0: f32,
+    /// Forward axis for spot/directional lights (normalized; w padding).
     pub direction: [f32; 3],
+    /// Aligns `direction` to 16 bytes.
     pub _pad1: f32,
+    /// Linear RGB color (intensity applied separately).
     pub color: [f32; 3],
+    /// Scalar brightness multiplier.
     pub intensity: f32,
+    /// Attenuation range in world units.
     pub range: f32,
+    /// Cosine of the spot half-angle (spot lights).
     pub spot_cos_half_angle: f32,
+    /// [`LightType`] as `u32` (matches wire `repr`).
     pub light_type: u32,
+    /// Padding before shadow parameter block (layout match with WGSL).
     pub _pad_before_shadow_params: u32,
+    /// Shadow strength / visibility factor.
     pub shadow_strength: f32,
+    /// Shadow projection near plane.
     pub shadow_near_plane: f32,
+    /// Depth bias for shadow sampling.
     pub shadow_bias: f32,
+    /// Normal offset bias for shadowing.
     pub shadow_normal_bias: f32,
+    /// [`ShadowType`] as `u32` (matches wire `repr`).
     pub shadow_type: u32,
     /// Padding so `_pad_trailing` starts at byte offset 88 (16-byte aligned for `vec3<u32>`).
     pub _pad_align_vec3_trailing: [u8; 4],
+    /// Trailing `vec3<u32>`-shaped padding in WGSL (reserved for future shadow parameters).
     pub _pad_trailing: [u32; 3],
     /// Pads struct size to 112 bytes (WGSL struct alignment).
     pub _pad_struct_end: [u8; 12],

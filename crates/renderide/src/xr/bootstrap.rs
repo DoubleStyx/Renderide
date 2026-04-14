@@ -23,7 +23,9 @@ pub struct XrWgpuHandles {
     pub wgpu_instance: wgpu::Instance,
     /// Adapter for the XR-selected physical device.
     pub wgpu_adapter: wgpu::Adapter,
+    /// WGPU device shared with the desktop path (XR + window mirror).
     pub device: Arc<wgpu::Device>,
+    /// Default queue for submits (mutex for cross-thread encode if needed).
     pub queue: Arc<Mutex<wgpu::Queue>>,
     /// OpenXR session, frame stream, and reference space.
     pub xr_session: super::session::XrSessionState,

@@ -14,6 +14,7 @@ use super::router::MaterialRouter;
 /// Owning table of material routing and pipeline cache.
 pub struct MaterialRegistry {
     device: Arc<wgpu::Device>,
+    /// Shader asset id → pipeline family and display name routing.
     pub router: MaterialRouter,
     cache: MaterialPipelineCache,
 }

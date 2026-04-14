@@ -22,6 +22,7 @@ pub struct ConfigResolveOutcome {
     pub attempted_paths: Vec<PathBuf>,
     /// First existing regular file used for config content (`config.toml`).
     pub loaded_path: Option<PathBuf>,
+    /// How the effective config path was chosen (env, search, generated, or none).
     pub source: ConfigSource,
 }
 

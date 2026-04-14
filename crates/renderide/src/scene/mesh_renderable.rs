@@ -21,15 +21,21 @@ pub struct MeshMaterialSlot {
 pub struct StaticMeshRenderer {
     /// Dense transform index this renderer attaches to (`node_id`).
     pub node_id: i32,
+    /// Draw layer (opaque vs overlay vs hidden).
     pub layer: LayerType,
+    /// Resident mesh asset id in [`crate::resources::MeshPool`].
     pub mesh_asset_id: i32,
+    /// Host sorting order within the layer.
     pub sorting_order: i32,
+    /// Whether this mesh casts shadows.
     pub shadow_cast_mode: ShadowCastMode,
+    /// Motion vector generation mode from the host.
     pub motion_vector_mode: MotionVectorMode,
     /// Submesh order: one entry per material slot.
     pub material_slots: Vec<MeshMaterialSlot>,
     /// Legacy slot 0 material handle for single-material paths.
     pub primary_material_asset_id: Option<i32>,
+    /// Legacy slot 0 property block when present.
     pub primary_property_block_id: Option<i32>,
     /// Blendshape weights by shape index (IPD path for static is reserved; skinned uses host batches).
     pub blend_shape_weights: Vec<f32>,
@@ -57,6 +63,8 @@ impl Default for StaticMeshRenderer {
 pub struct SkinnedMeshRenderer {
     /// Shared mesh/material/blendshape header.
     pub base: StaticMeshRenderer,
+    /// Dense transform indices for each bone influence column.
     pub bone_transform_indices: Vec<i32>,
+    /// Root bone transform id when the hierarchy is anchored.
     pub root_bone_transform_id: Option<i32>,
 }

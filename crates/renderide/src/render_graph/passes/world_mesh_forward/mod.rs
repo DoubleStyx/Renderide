@@ -58,6 +58,7 @@ use vp::compute_per_draw_vp_triple;
 pub struct WorldMeshForwardPass;
 
 impl WorldMeshForwardPass {
+    /// Creates a world mesh forward pass instance.
     pub fn new() -> Self {
         Self
     }

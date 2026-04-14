@@ -114,15 +114,21 @@ pub struct WorldMeshDrawCollection {
 pub struct WorldMeshDrawItem {
     /// Host render space.
     pub space_id: RenderSpaceId,
+    /// Scene graph node id for this drawable.
     pub node_id: i32,
+    /// Resident mesh asset id in [`crate::resources::MeshPool`].
     pub mesh_asset_id: i32,
     /// Index into [`crate::resources::GpuMesh::submeshes`].
     pub slot_index: usize,
+    /// First index in the mesh index buffer for this submesh draw.
     pub first_index: u32,
+    /// Number of indices for this submesh draw.
     pub index_count: u32,
     /// `true` if [`LayerType::Overlay`](crate::shared::LayerType).
     pub is_overlay: bool,
+    /// Host sorting order for transparent draw ordering.
     pub sorting_order: i32,
+    /// Whether the mesh uses skinning / deform paths.
     pub skinned: bool,
     /// Stable insertion order before sorting; used for transparent UI/text.
     pub collect_order: usize,

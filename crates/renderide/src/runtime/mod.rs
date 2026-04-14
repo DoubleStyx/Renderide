@@ -111,6 +111,7 @@ impl RendererRuntime {
         self.frontend.is_ipc_connected()
     }
 
+    /// Host/renderer init handshake phase (see [`crate::frontend::RendererFrontend::init_state`]).
     pub fn init_state(&self) -> InitState {
         self.frontend.init_state()
     }
@@ -125,10 +126,12 @@ impl RendererRuntime {
         self.frontend.last_frame_index()
     }
 
+    /// Host requested an orderly renderer shutdown over IPC.
     pub fn shutdown_requested(&self) -> bool {
         self.frontend.shutdown_requested()
     }
 
+    /// Unrecoverable IPC/init error; begin-frame is suppressed until reset.
     pub fn fatal_error(&self) -> bool {
         self.frontend.fatal_error()
     }

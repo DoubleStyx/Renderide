@@ -11,15 +11,21 @@ use winit::window::Window;
 
 /// Read/write hooks for per-eye matrices and head-output positioning used by OpenXR frame ticks.
 pub trait XrHostCameraSync {
+    /// Effective near clip plane distance for the current frame (world units).
     fn near_clip(&self) -> f32;
+    /// Effective far clip plane distance for the current frame (world units).
     fn far_clip(&self) -> f32;
+    /// Host-selected head output device (desktop vs HMD class).
     fn output_device(&self) -> HeadOutputDevice;
+    /// Whether VR submission is active this frame (OpenXR session running).
     fn vr_active(&self) -> bool;
     /// Active main space root scale for [`crate::render_graph::camera::effective_head_output_clip_planes`].
     fn scene_root_scale_for_clip(&self) -> Option<Vec3>;
     /// Same rig alignment as [`crate::xr::tracking_space_to_world_matrix`].
     fn world_from_tracking(&self, center_pose_tracking: Option<(Vec3, Quat)>) -> Mat4;
+    /// Updates legacy head-output rig transform for overlay alignment and host IPC.
     fn set_head_output_transform(&mut self, transform: Mat4);
+    /// Stores per-eye view–projection for stereo world mesh draws and clustering.
     fn set_stereo_view_proj(&mut self, vp: Option<(Mat4, Mat4)>);
     /// Per-eye **view-only** matrices (world-to-view, handedness-fixed) for stereo clustering.
     fn set_stereo_views(&mut self, views: Option<(Mat4, Mat4)>);

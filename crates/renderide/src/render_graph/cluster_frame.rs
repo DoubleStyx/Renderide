@@ -32,9 +32,13 @@ pub struct ClusterFrameParams {
     pub world_to_view: Mat4,
     /// Reverse-Z perspective matching the desktop forward path (`world_mesh_forward`).
     pub proj: Mat4,
+    /// Cluster grid width in tiles (matches [`FrameGpuUniforms::cluster_count_x`]).
     pub cluster_count_x: u32,
+    /// Cluster grid height in tiles (matches [`FrameGpuUniforms::cluster_count_y`]).
     pub cluster_count_y: u32,
+    /// Viewport width in pixels for cluster grid sizing.
     pub viewport_width: u32,
+    /// Viewport height in pixels for cluster grid sizing.
     pub viewport_height: u32,
 }
 

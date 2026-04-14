@@ -40,7 +40,9 @@ pub fn mesh_bounds_max_half_extent(bounds: &RenderBoundingBox) -> f32 {
 /// A plane `n · x + d = 0` with unit `n`.
 #[derive(Clone, Copy, Debug)]
 pub struct Plane {
+    /// Outward-facing unit normal of the clip half-space.
     pub normal: Vec3,
+    /// Signed distance term in `n · x + d = 0`.
     pub distance: f32,
 }
 
@@ -61,6 +63,7 @@ impl Plane {
         }
     }
 
+    /// Signed distance from `p` to this plane; negative inside the frustum half-space for clip planes.
     #[inline]
     pub fn signed_distance(&self, p: Vec3) -> f32 {
         self.normal.dot(p) + self.distance
@@ -70,6 +73,7 @@ impl Plane {
 /// Six clip planes extracted from a column-major `view_proj` matching `clip = view_proj * vec4(world, 1)`.
 #[derive(Clone, Copy, Debug)]
 pub struct Frustum {
+    /// Left, right, bottom, top, near, far clip planes in world space.
     pub planes: [Plane; 6],
 }
 

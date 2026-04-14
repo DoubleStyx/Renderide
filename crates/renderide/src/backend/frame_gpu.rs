@@ -417,7 +417,9 @@ pub fn empty_material_bind_group(
 
 /// Cached empty material bind group layout + instance (one per device attach).
 pub struct EmptyMaterialBindGroup {
+    /// Shared layout for the empty `@group(1)` placeholder.
     pub layout: wgpu::BindGroupLayout,
+    /// Bind group with no entries (material slot unused).
     pub bind_group: Arc<wgpu::BindGroup>,
 }
 

@@ -10,6 +10,7 @@ use crate::render_graph::resources::{PassResources, ResourceSlot};
 pub struct HiZBuildPass;
 
 impl HiZBuildPass {
+    /// Creates a Hi-Z build pass instance.
     pub fn new() -> Self {
         Self
     }

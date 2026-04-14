@@ -10,10 +10,15 @@
 pub enum HostTextureAssetKind {
     /// 2D texture asset (`Texture2D`).
     Texture2D = 0,
+    /// 3D texture asset (`Texture3D`).
     Texture3D = 1,
+    /// Cubemap texture asset.
     Cubemap = 2,
+    /// Host render texture (`RenderTexture`).
     RenderTexture = 3,
+    /// Video texture asset.
     VideoTexture = 4,
+    /// Desktop-captured texture (`Desktop`).
     Desktop = 5,
 }
 

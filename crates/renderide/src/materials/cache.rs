@@ -25,10 +25,15 @@ use super::family::MaterialPipelineDesc;
 pub struct MaterialPipelineCacheKey {
     /// Which WGSL program backs the pipeline (embedded stem or debug fallback).
     pub kind: RasterPipelineKind,
+    /// Stereo multiview / single-view permutation for the pipeline.
     pub permutation: ShaderPermutation,
+    /// Color attachment format (swapchain or offscreen).
     pub surface_format: wgpu::TextureFormat,
+    /// Depth/stencil format when depth attachment is used.
     pub depth_stencil_format: Option<wgpu::TextureFormat>,
+    /// MSAA sample count for the color target.
     pub sample_count: u32,
+    /// OpenXR / multiview view mask when compiling multiview pipelines.
     pub multiview_mask: Option<NonZeroU32>,
 }
 
