@@ -46,6 +46,9 @@ pub struct DebugHud {
     texture_debug_open: bool,
     /// Texture table filter: only rows used by submitted world draws for the current view.
     texture_debug_current_view_only: bool,
+    /// **Shader routes** filter: when true, hides implemented routes and shows only the ones
+    /// that fall back to `debug_world_normals` (i.e., shaders with no embedded target yet).
+    shader_routes_only_fallback: bool,
     /// Live settings + persistence target for the **Renderer config** window.
     renderer_settings: RendererSettingsHandle,
     config_save_path: PathBuf,
@@ -91,6 +94,7 @@ impl DebugHud {
             texture_debug: TextureDebugSnapshot::default(),
             texture_debug_open: true,
             texture_debug_current_view_only: false,
+            shader_routes_only_fallback: false,
             renderer_settings,
             config_save_path,
             renderer_config_open: true,
@@ -210,7 +214,11 @@ impl DebugHud {
                                 );
                             }
                             if let Some(_tab) = ui.tab_item("Shader routes") {
-                                Self::shader_mappings_tab(ui, self.frame_diagnostics.as_ref());
+                                Self::shader_mappings_tab(
+                                    ui,
+                                    self.frame_diagnostics.as_ref(),
+                                    &mut self.shader_routes_only_fallback,
+                                );
                             }
                         }
                     });

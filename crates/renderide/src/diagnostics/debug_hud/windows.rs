@@ -255,17 +255,86 @@ impl DebugHud {
         }
     }
 
-    /// Host shader asset id, logical name (or `<none>`), and material family per line (see **Shader routes** tab).
-    pub(super) fn shader_mappings_tab(ui: &imgui::Ui, frame: Option<&FrameDiagnosticsSnapshot>) {
+    /// Host shader routes rendered as a table with an implementation-status filter toggle.
+    ///
+    /// Rows group implemented routes first and fallback (`debug_world_normals`) routes last;
+    /// the toggle hides implemented rows so only unimplemented shaders remain visible.
+    pub(super) fn shader_mappings_tab(
+        ui: &imgui::Ui,
+        frame: Option<&FrameDiagnosticsSnapshot>,
+        only_fallback: &mut bool,
+    ) {
         let Some(d) = frame else {
             ui.text("Waiting for frame diagnostics…");
             return;
         };
-        if d.shader_route_lines.is_empty() {
+        if d.shader_routes.is_empty() {
             ui.text("No shader route data");
-        } else {
-            for line in &d.shader_route_lines {
-                ui.text_wrapped(line);
+            return;
+        }
+
+        let implemented_count = d.shader_routes.iter().filter(|r| r.implemented).count();
+        let fallback_count = d.shader_routes.len() - implemented_count;
+
+        ui.text(format!(
+            "Routes: {}  |  implemented: {}  |  fallback (debug_world_normals): {}",
+            d.shader_routes.len(),
+            implemented_count,
+            fallback_count,
+        ));
+        ui.checkbox("Show only unimplemented (fallback)", only_fallback);
+        ui.text_disabled(
+            "Fallback rows use debug_world_normals because the host shader has no embedded target.",
+        );
+        ui.separator();
+
+        let rows: Vec<_> = d
+            .shader_routes
+            .iter()
+            .filter(|r| !*only_fallback || !r.implemented)
+            .collect();
+        if rows.is_empty() {
+            ui.text("No shader routes match the current filter.");
+            return;
+        }
+
+        let table_flags = TableFlags::BORDERS
+            | TableFlags::ROW_BG
+            | TableFlags::SCROLL_Y
+            | TableFlags::RESIZABLE
+            | TableFlags::SIZING_STRETCH_PROP;
+        let avail = ui.content_region_avail();
+        let table_height = avail[1].max(160.0);
+        if let Some(_table) = ui.begin_table_with_sizing(
+            "shader_routes",
+            4,
+            table_flags,
+            [avail[0], table_height],
+            0.0,
+        ) {
+            ui.table_setup_column("ID");
+            ui.table_setup_column("Shader name");
+            ui.table_setup_column("Pipeline");
+            ui.table_setup_column("Status");
+            ui.table_headers_row();
+
+            let clip = ListClipper::new(rows.len() as i32);
+            let tok = clip.begin(ui);
+            for row_i in tok.iter() {
+                let r = rows[row_i as usize];
+                ui.table_next_row();
+                ui.table_next_column();
+                ui.text(format!("{}", r.shader_asset_id));
+                ui.table_next_column();
+                ui.text(r.display_name.as_deref().unwrap_or("<none>"));
+                ui.table_next_column();
+                ui.text(&r.pipeline_label);
+                ui.table_next_column();
+                if r.implemented {
+                    ui.text_colored([0.5, 0.95, 0.55, 1.0], "implemented");
+                } else {
+                    ui.text_colored([1.0, 0.55, 0.4, 1.0], "fallback");
+                }
             }
         }
     }
