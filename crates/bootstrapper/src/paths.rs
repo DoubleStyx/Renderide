@@ -177,7 +177,7 @@ fn steam_path_from_registry() -> Result<PathBuf, std::io::Error> {
     use winreg::enums::HKEY_LOCAL_MACHINE;
     use winreg::RegKey;
 
-    let hklm = RegKey::Predef(HKEY_LOCAL_MACHINE);
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     for key_path in &[r"SOFTWARE\WOW6432Node\Valve\Steam", r"SOFTWARE\Valve\Steam"] {
         if let Ok(steam_key) = hklm.open_subkey(key_path) {
             if let Ok(install_path) = steam_key.get_value::<String, _>("InstallPath") {
