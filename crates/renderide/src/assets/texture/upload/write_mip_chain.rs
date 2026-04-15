@@ -157,12 +157,12 @@ impl TextureMipChainUploader {
 
         let (gw, gh) = mip_dimensions_at_level(tex_extent.width, tex_extent.height, mip_level);
         if w != gw || h != gh {
-            return Err(format!(
-                "texture {} mip {mip_level}: upload says {w}x{h} but GPU mip is {gw}x{gh} (base {}x{} from format); fix host SetTexture2DFormat vs SetTexture2DData",
+            logger::trace!(
+                "texture {} mip {mip_level}: upload says {w}x{h} but GPU mip is {gw}x{gh} (base {}x{} from format)",
                 upload.asset_id,
                 tex_extent.width,
                 tex_extent.height
-            ));
+            );
         }
 
         let start_raw = upload.mip_starts[i];
@@ -236,18 +236,18 @@ impl TextureMipChainUploader {
             if needs_rgba8_decode_before_upload(fmt.format) || host_format_is_compressed(fmt.format)
             {
                 std::borrow::Cow::Owned(
-                    decode_mip_to_rgba8(fmt.format, w, h, flip, mip_src).ok_or_else(|| {
+                    decode_mip_to_rgba8(fmt.format, gw, gh, flip, mip_src).ok_or_else(|| {
                         format!("RGBA decode failed for mip {i} ({:?})", fmt.format)
                     })?,
                 )
             } else if flip {
                 let mut v = mip_src.to_vec();
-                let bpp = mip_tight_bytes_per_texel(v.len(), w, h).ok_or_else(|| {
+                let bpp = mip_tight_bytes_per_texel(v.len(), gw, gh).ok_or_else(|| {
                     format!(
                         "mip {i}: RGBA8 upload len {} not divisible by {}×{} texels",
                         v.len(),
-                        w,
-                        h
+                        gw,
+                        gh
                     )
                 })?;
                 if bpp != 4 {
@@ -255,7 +255,7 @@ impl TextureMipChainUploader {
                         "mip {i}: RGBA8 family expects 4 bytes per texel, got {bpp}"
                     ));
                 }
-                flip_mip_rows(&mut v, w, h, bpp);
+                flip_mip_rows(&mut v, gw, gh, bpp);
                 std::borrow::Cow::Owned(v)
             } else {
                 std::borrow::Cow::Borrowed(mip_src)
@@ -269,12 +269,12 @@ impl TextureMipChainUploader {
             }
             if flip && !host_format_is_compressed(fmt.format) {
                 let mut v = mip_src.to_vec();
-                let bpp_host = mip_tight_bytes_per_texel(v.len(), w, h).ok_or_else(|| {
+                let bpp_host = mip_tight_bytes_per_texel(v.len(), gw, gh).ok_or_else(|| {
                     format!(
                         "mip {i}: len {} not divisible by {}×{} texels (cannot infer row stride for flip_y)",
                         v.len(),
-                        w,
-                        h
+                        gw,
+                        gh
                     )
                 })?;
                 if let Ok(bpp_gpu) = uncompressed_row_bytes(wgpu_format) {
@@ -306,8 +306,8 @@ impl TextureMipChainUploader {
             queue,
             texture,
             mip_level,
-            w,
-            h,
+            gw,
+            gh,
             wgpu_format,
             pixels.as_ref(),
         )?;
