@@ -35,7 +35,8 @@ struct PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX {
     view_proj_left: mat4x4<f32>,
     view_proj_right: mat4x4<f32>,
     model: mat4x4<f32>,
-    _pad: array<vec4<f32>, 4>,
+    normal_matrix: mat3x3<f32>,
+    _pad: vec4<f32>,
 }
 
 struct PbsMetallicMaterial {
@@ -146,10 +147,12 @@ var _DetailNormalMap: texture_2d<f32>;
 var _DetailNormalMap_sampler: sampler;
 
 fn orthonormal_tbnX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(n_1: vec3<f32>) -> mat3x3<f32> {
-    let up: vec3<f32> = select(vec3<f32>(0f, 1f, 0f), vec3<f32>(1f, 0f, 0f), (abs(n_1.y) > 0.99f));
-    let t: vec3<f32> = normalize(cross(up, n_1));
-    let b: vec3<f32> = cross(n_1, t);
-    return mat3x3<f32>(t, b, n_1);
+    let sign_: f32 = select(-1f, 1f, (n_1.z >= 0f));
+    let a: f32 = (-1f / (sign_ + n_1.z));
+    let b: f32 = ((n_1.x * n_1.y) * a);
+    let t: vec3<f32> = vec3<f32>((1f + (((sign_ * n_1.x) * n_1.x) * a)), (sign_ * b), (-(sign_) * n_1.x));
+    let bitan: vec3<f32> = vec3<f32>(b, (sign_ + ((n_1.y * n_1.y) * a)), -(n_1.y));
+    return mat3x3<f32>(normalize(t), normalize(bitan), n_1);
 }
 
 fn pow5X_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(x: f32) -> f32 {
@@ -163,8 +166,8 @@ fn fresnel_schlickX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(cos_theta: f
 }
 
 fn distribution_ggxX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGE4Z2HJRHEZDGX(n_dot_h: f32, roughness: f32) -> f32 {
-    let a: f32 = (roughness * roughness);
-    let a2_: f32 = (a * a);
+    let a_1: f32 = (roughness * roughness);
+    let a2_: f32 = (a_1 * a_1);
     let denom: f32 = (((n_dot_h * n_dot_h) * (a2_ - 1f)) + 1f);
     return (a2_ / max(((denom * denom) * 3.1415927f), 0.0001f));
 }
@@ -644,21 +647,21 @@ fn vs_main(@builtin(instance_index) instance_index: u32, @builtin(view_index) vi
 
     let _e1: PerDrawUniformsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX = get_drawX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJYGK4S7MRZGC5YX(instance_index);
     let world_p: vec4<f32> = (_e1.model * vec4<f32>(pos.xyz, 1f));
-    let wn: vec3<f32> = normalize((_e1.model * vec4<f32>(n.xyz, 0f)).xyz);
+    let wn: vec3<f32> = normalize((_e1.normal_matrix * n.xyz));
     if (view_idx == 0u) {
         vp = _e1.view_proj_left;
     } else {
         vp = _e1.view_proj_right;
     }
-    let _e24: mat4x4<f32> = vp;
-    out.clip_pos = (_e24 * world_p);
+    let _e21: mat4x4<f32> = vp;
+    out.clip_pos = (_e21 * world_p);
     out.world_pos = world_p.xyz;
     out.world_n = wn;
     out.uv0_ = uv0_;
     out.uv1_ = uv0_;
     out.view_layer = view_idx;
-    let _e33: VertexOutput = out;
-    return _e33;
+    let _e30: VertexOutput = out;
+    return _e30;
 }
 
 @fragment 
