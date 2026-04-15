@@ -106,6 +106,25 @@ pub fn mip_byte_len(format: TextureFormat, width: u32, height: u32) -> Option<u6
     }
 }
 
+/// Converts `mip_starts[i]` (after subtracting any descriptor rebasing bias) from host **linear texel**
+/// addressing into a **byte offset** into the tight-packed mip payload.
+///
+/// Shared-memory uploads may still report offsets in texel units; this maps them using the size of a
+/// minimal tile (`1×1` texels in host packing, or one compressed block) relative to [`block_extent`].
+pub fn host_mip_payload_byte_offset(
+    format: TextureFormat,
+    start_texel_linear: usize,
+) -> Option<usize> {
+    let (bw, bh) = block_extent(format);
+    let texels_per_tile = (bw as usize).checked_mul(bh as usize)?;
+    if texels_per_tile == 0 {
+        return None;
+    }
+    let tile_bytes = mip_byte_len(format, 1, 1)? as usize;
+    let numer = start_texel_linear.checked_mul(tile_bytes)?;
+    Some(numer.div_ceil(texels_per_tile))
+}
+
 /// Returns the width and height of mip `level` in a standard mip chain (matches wgpu/WebGPU mip sizing).
 ///
 /// `level` 0 is the base size; each subsequent level halves each dimension, clamped to at least 1.

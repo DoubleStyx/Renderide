@@ -1,5 +1,6 @@
 //! Full mip chain path: decode, optional flip, [`super::mip_write_common::write_one_mip`] per level.
 
+use crate::assets::texture::layout::host_mip_payload_byte_offset;
 use crate::shared::{SetTexture2DData, SetTexture2DFormat};
 
 use super::super::decode::{decode_mip_to_rgba8, flip_mip_rows, needs_rgba8_decode_before_upload};
@@ -157,12 +158,12 @@ impl TextureMipChainUploader {
 
         let (gw, gh) = mip_dimensions_at_level(tex_extent.width, tex_extent.height, mip_level);
         if w != gw || h != gh {
-            return Err(format!(
-                "texture {} mip {mip_level}: upload says {w}x{h} but GPU mip is {gw}x{gh} (base {}x{} from format); fix host SetTexture2DFormat vs SetTexture2DData",
+            logger::debug!(
+                "texture {} mip {mip_level}: mip_map_sizes {w}x{h} != GPU {gw}x{gh} (using GPU dimensions; base {}x{})",
                 upload.asset_id,
                 tex_extent.width,
                 tex_extent.height
-            ));
+            );
         }
 
         let start_raw = upload.mip_starts[i];
@@ -204,7 +205,13 @@ impl TextureMipChainUploader {
                 total_uploaded: self.uploaded_mips,
             });
         }
-        let start = start_abs - start_bias;
+        let start_rel = start_abs - start_bias;
+        let start = host_mip_payload_byte_offset(fmt.format, start_rel).ok_or_else(|| {
+            format!(
+                "texture {} mip {mip_level}: mip start offset unsupported for {:?}",
+                upload.asset_id, fmt.format
+            )
+        })?;
         let host_len = mip_byte_len(fmt.format, w, h)
             .ok_or_else(|| format!("mip byte size unsupported for {:?}", fmt.format))?
             as usize;
@@ -236,18 +243,18 @@ impl TextureMipChainUploader {
             if needs_rgba8_decode_before_upload(fmt.format) || host_format_is_compressed(fmt.format)
             {
                 std::borrow::Cow::Owned(
-                    decode_mip_to_rgba8(fmt.format, w, h, flip, mip_src).ok_or_else(|| {
+                    decode_mip_to_rgba8(fmt.format, gw, gh, flip, mip_src).ok_or_else(|| {
                         format!("RGBA decode failed for mip {i} ({:?})", fmt.format)
                     })?,
                 )
             } else if flip {
                 let mut v = mip_src.to_vec();
-                let bpp = mip_tight_bytes_per_texel(v.len(), w, h).ok_or_else(|| {
+                let bpp = mip_tight_bytes_per_texel(v.len(), gw, gh).ok_or_else(|| {
                     format!(
                         "mip {i}: RGBA8 upload len {} not divisible by {}×{} texels",
                         v.len(),
-                        w,
-                        h
+                        gw,
+                        gh
                     )
                 })?;
                 if bpp != 4 {
@@ -255,7 +262,7 @@ impl TextureMipChainUploader {
                         "mip {i}: RGBA8 family expects 4 bytes per texel, got {bpp}"
                     ));
                 }
-                flip_mip_rows(&mut v, w, h, bpp);
+                flip_mip_rows(&mut v, gw, gh, bpp);
                 std::borrow::Cow::Owned(v)
             } else {
                 std::borrow::Cow::Borrowed(mip_src)
@@ -269,12 +276,12 @@ impl TextureMipChainUploader {
             }
             if flip && !host_format_is_compressed(fmt.format) {
                 let mut v = mip_src.to_vec();
-                let bpp_host = mip_tight_bytes_per_texel(v.len(), w, h).ok_or_else(|| {
+                let bpp_host = mip_tight_bytes_per_texel(v.len(), gw, gh).ok_or_else(|| {
                     format!(
                         "mip {i}: len {} not divisible by {}×{} texels (cannot infer row stride for flip_y)",
                         v.len(),
-                        w,
-                        h
+                        gw,
+                        gh
                     )
                 })?;
                 if let Ok(bpp_gpu) = uncompressed_row_bytes(wgpu_format) {
@@ -288,7 +295,7 @@ impl TextureMipChainUploader {
                         );
                     }
                 }
-                flip_mip_rows(&mut v, w, h, bpp_host);
+                flip_mip_rows(&mut v, gw, gh, bpp_host);
                 std::borrow::Cow::Owned(v)
             } else {
                 if flip && host_format_is_compressed(fmt.format) {
@@ -306,8 +313,8 @@ impl TextureMipChainUploader {
             queue,
             texture,
             mip_level,
-            w,
-            h,
+            gw,
+            gh,
             wgpu_format,
             pixels.as_ref(),
         )?;

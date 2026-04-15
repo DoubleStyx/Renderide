@@ -11,11 +11,15 @@
 /// [`wgpu::Limits::max_storage_buffer_binding_size`] are set from the adapter so large mesh uploads
 /// (blendshape packs, etc.) can use the full reported allowance—WebGPU defaults alone cap
 /// [`wgpu::Limits::max_buffer_size`] at 256 MiB while the adapter often allows more.
+/// [`wgpu::Limits::max_texture_dimension_2d`] is capped at **16384** when the adapter allows it,
+/// matching the host’s maximum 2D texture size.
 pub(crate) fn required_limits_for_adapter(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let al = adapter.limits();
     let mut limits = wgpu::Limits::default().or_worse_values_from(&al);
     limits.max_buffer_size = al.max_buffer_size;
     limits.max_storage_buffer_binding_size = al.max_storage_buffer_binding_size;
+
+    limits.max_texture_dimension_2d = std::cmp::min(al.max_texture_dimension_2d, 16384);
     limits
 }
 

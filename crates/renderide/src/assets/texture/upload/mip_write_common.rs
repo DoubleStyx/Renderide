@@ -2,7 +2,7 @@
 
 use crate::shared::SetTexture2DData;
 
-use super::super::layout::mip_byte_len;
+use super::super::layout::{host_mip_payload_byte_offset, mip_byte_len};
 
 /// Picks the descriptor offset bias that maximizes how many mips fit in the SHM payload.
 pub(super) fn choose_mip_start_bias(
@@ -58,7 +58,16 @@ pub(super) fn valid_mip_prefix_len(
         if start_abs < bias {
             break;
         }
-        let start = start_abs - bias;
+        let start_rel = start_abs - bias;
+        let start = match host_mip_payload_byte_offset(format, start_rel) {
+            Some(b) => b,
+            None => {
+                return Err(format!(
+                    "mip {i}: could not convert mip_starts offset to bytes for {:?}",
+                    format
+                ));
+            }
+        };
         if start
             .checked_add(host_len)
             .is_none_or(|end| end > payload_len)
