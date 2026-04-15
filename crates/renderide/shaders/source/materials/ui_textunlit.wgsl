@@ -89,7 +89,7 @@ fn vs_main(
 #endif
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
-    out.uv = uv;
+    out.uv = vec2<f32>(uv.x, 1.0 - uv.y);
     out.extra_data = extra_n;
     out.vtx_color = color;
     out.obj_xy = pos.xy;
