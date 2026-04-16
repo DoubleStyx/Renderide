@@ -3,18 +3,26 @@
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 
-/// Uniform block matching WGSL `FrameGlobals` (80-byte size, 16-byte aligned).
+/// Uniform block matching WGSL `FrameGlobals` (144-byte size, 16-byte aligned).
 ///
-/// Encodes camera position, per-eye coefficients for view-space Z from world position, clustered
-/// grid dimensions, clip planes, light count, and viewport size for clustered forward sampling.
+/// Encodes camera position, per-eye coefficients for world-to-view rows, clustered grid dimensions,
+/// clip planes, light count, and viewport size for clustered forward sampling.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FrameGpuUniforms {
     /// World-space camera position (`.w` unused).
     pub camera_world_pos: [f32; 4],
-    /// Left-eye (or mono) world → view-space Z: `dot(xyz, world) + w` (third row of world-to-view).
+    /// Left-eye (or mono) world -> view-space X: `dot(xyz, world) + w`.
+    pub view_space_x_coeffs: [f32; 4],
+    /// Left-eye (or mono) world -> view-space Y: `dot(xyz, world) + w`.
+    pub view_space_y_coeffs: [f32; 4],
+    /// Left-eye (or mono) world -> view-space Z: `dot(xyz, world) + w`.
     pub view_space_z_coeffs: [f32; 4],
-    /// Right-eye world → view-space Z. Set equal to `view_space_z_coeffs` in mono mode.
+    /// Right-eye world -> view-space X. Set equal to `view_space_x_coeffs` in mono mode.
+    pub view_space_x_coeffs_right: [f32; 4],
+    /// Right-eye world -> view-space Y. Set equal to `view_space_y_coeffs` in mono mode.
+    pub view_space_y_coeffs_right: [f32; 4],
+    /// Right-eye world -> view-space Z. Set equal to `view_space_z_coeffs` in mono mode.
     pub view_space_z_coeffs_right: [f32; 4],
     /// Cluster grid width in tiles (X).
     pub cluster_count_x: u32,
@@ -35,6 +43,22 @@ pub struct FrameGpuUniforms {
 }
 
 impl FrameGpuUniforms {
+    /// Coefficients so `dot(coeffs.xyz, world) + coeffs.w` yields view-space X for a world point.
+    ///
+    /// Uses the first row of the column-major world-to-view matrix (`glam` column vectors).
+    pub fn view_space_x_coeffs_from_world_to_view(world_to_view: Mat4) -> [f32; 4] {
+        let m = world_to_view;
+        [m.x_axis.x, m.y_axis.x, m.z_axis.x, m.w_axis.x]
+    }
+
+    /// Coefficients so `dot(coeffs.xyz, world) + coeffs.w` yields view-space Y for a world point.
+    ///
+    /// Uses the second row of the column-major world-to-view matrix (`glam` column vectors).
+    pub fn view_space_y_coeffs_from_world_to_view(world_to_view: Mat4) -> [f32; 4] {
+        let m = world_to_view;
+        [m.x_axis.y, m.y_axis.y, m.z_axis.y, m.w_axis.y]
+    }
+
     /// Coefficients so `dot(coeffs.xyz, world) + coeffs.w` yields view-space Z for a world point.
     ///
     /// Uses the third row of the column-major world-to-view matrix (`glam` column vectors).
@@ -45,11 +69,15 @@ impl FrameGpuUniforms {
 
     /// Builds per-frame uniforms for clustered forward and lighting.
     ///
-    /// `view_space_z_coeffs_right` should equal `view_space_z_coeffs` in mono mode.
+    /// Right-eye coefficients should equal left-eye coefficients in mono mode.
     #[allow(clippy::too_many_arguments)]
     pub fn new_clustered(
         camera_world_pos: glam::Vec3,
+        view_space_x_coeffs: [f32; 4],
+        view_space_y_coeffs: [f32; 4],
         view_space_z_coeffs: [f32; 4],
+        view_space_x_coeffs_right: [f32; 4],
+        view_space_y_coeffs_right: [f32; 4],
         view_space_z_coeffs_right: [f32; 4],
         cluster_count_x: u32,
         cluster_count_y: u32,
@@ -67,7 +95,11 @@ impl FrameGpuUniforms {
                 camera_world_pos.z,
                 0.0,
             ],
+            view_space_x_coeffs,
+            view_space_y_coeffs,
             view_space_z_coeffs,
+            view_space_x_coeffs_right,
+            view_space_y_coeffs_right,
             view_space_z_coeffs_right,
             cluster_count_x,
             cluster_count_y,
@@ -86,8 +118,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_globals_size_80() {
-        assert_eq!(std::mem::size_of::<FrameGpuUniforms>(), 80);
+    fn frame_globals_size_144() {
+        assert_eq!(std::mem::size_of::<FrameGpuUniforms>(), 144);
         assert_eq!(std::mem::size_of::<FrameGpuUniforms>() % 16, 0);
     }
 }

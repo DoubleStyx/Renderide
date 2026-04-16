@@ -211,7 +211,7 @@ pub(crate) fn build_pipeline_from_pass(
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
-            cull_mode: pass.cull_mode,
+            cull_mode: render_state.cull_mode(pass.cull_mode),
             ..Default::default()
         },
         depth_stencil: desc
@@ -219,7 +219,7 @@ pub(crate) fn build_pipeline_from_pass(
             .map(|format| wgpu::DepthStencilState {
                 format,
                 depth_write_enabled: Some(render_state.depth_write(pass.depth_write)),
-                depth_compare: Some(pass.depth_compare),
+                depth_compare: Some(render_state.depth_compare(pass.depth_compare)),
                 stencil: if format.has_stencil_aspect() {
                     render_state.stencil_state()
                 } else {

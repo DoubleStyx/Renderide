@@ -12,6 +12,9 @@ use crate::assets::material::{
     MaterialDictionary, MaterialPropertyLookupIds, MaterialPropertyValue, PropertyIdRegistry,
 };
 
+/// Const zero color-write mask for build-script-emitted pass tables.
+pub const COLOR_WRITES_NONE: wgpu::ColorWrites = wgpu::ColorWrites::empty();
+
 /// Resonite/Froox material blend mode, or the shader stem's default when no material field is present.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MaterialBlendMode {
@@ -100,15 +103,17 @@ impl MaterialBlendMode {
 #[derive(Clone, Copy, Debug)]
 pub struct MaterialPipelinePropertyIds {
     blend_mode: [i32; 2],
-    src_blend: [i32; 2],
-    dst_blend: [i32; 2],
+    src_blend: [i32; 4],
+    dst_blend: [i32; 4],
     stencil_ref: [i32; 2],
     stencil_comp: [i32; 2],
     stencil_op: [i32; 2],
     stencil_read_mask: [i32; 2],
     stencil_write_mask: [i32; 2],
-    color_mask: [i32; 2],
+    color_mask: [i32; 3],
     z_write: [i32; 2],
+    z_test: [i32; 2],
+    cull: [i32; 4],
 }
 
 impl MaterialPipelinePropertyIds {
@@ -116,8 +121,18 @@ impl MaterialPipelinePropertyIds {
     pub fn new(registry: &PropertyIdRegistry) -> Self {
         Self {
             blend_mode: [registry.intern("_BlendMode"), registry.intern("BlendMode")],
-            src_blend: [registry.intern("_SrcBlend"), registry.intern("SrcBlend")],
-            dst_blend: [registry.intern("_DstBlend"), registry.intern("DstBlend")],
+            src_blend: [
+                registry.intern("_SrcBlend"),
+                registry.intern("SrcBlend"),
+                registry.intern("_SrcBlendBase"),
+                registry.intern("SrcBlendBase"),
+            ],
+            dst_blend: [
+                registry.intern("_DstBlend"),
+                registry.intern("DstBlend"),
+                registry.intern("_DstBlendBase"),
+                registry.intern("DstBlendBase"),
+            ],
             stencil_ref: [registry.intern("_Stencil"), registry.intern("Stencil")],
             stencil_comp: [
                 registry.intern("_StencilComp"),
@@ -132,8 +147,19 @@ impl MaterialPipelinePropertyIds {
                 registry.intern("_StencilWriteMask"),
                 registry.intern("StencilWriteMask"),
             ],
-            color_mask: [registry.intern("_ColorMask"), registry.intern("ColorMask")],
+            color_mask: [
+                registry.intern("_ColorMask"),
+                registry.intern("ColorMask"),
+                registry.intern("_colormask"),
+            ],
             z_write: [registry.intern("_ZWrite"), registry.intern("ZWrite")],
+            z_test: [registry.intern("_ZTest"), registry.intern("ZTest")],
+            cull: [
+                registry.intern("_Cull"),
+                registry.intern("Cull"),
+                registry.intern("_Culling"),
+                registry.intern("Culling"),
+            ],
         }
     }
 }
@@ -179,6 +205,10 @@ pub struct MaterialRenderState {
     pub color_mask: Option<u8>,
     /// Unity `ZWrite` override. `None` preserves the shader pass default.
     pub depth_write: Option<bool>,
+    /// Unity `ZTest` override. `None` preserves the shader pass default.
+    pub depth_compare: Option<u8>,
+    /// Unity `Cull` override. `None` preserves the shader pass default.
+    pub cull_mode: Option<u8>,
 }
 
 impl MaterialRenderState {
@@ -195,6 +225,18 @@ impl MaterialRenderState {
     /// Applies the optional Unity depth-write override to a pass default.
     pub fn depth_write(self, fallback: bool) -> bool {
         self.depth_write.unwrap_or(fallback)
+    }
+
+    /// Applies the optional Unity depth-compare override to a pass default.
+    pub fn depth_compare(self, fallback: wgpu::CompareFunction) -> wgpu::CompareFunction {
+        self.depth_compare
+            .map(unity_depth_compare_function)
+            .unwrap_or(fallback)
+    }
+
+    /// Applies the optional Unity cull override to a pass default.
+    pub fn cull_mode(self, fallback: Option<wgpu::Face>) -> Option<wgpu::Face> {
+        self.cull_mode.map(unity_cull_mode).unwrap_or(fallback)
     }
 
     /// Converts the resolved material state into a wgpu stencil state.
@@ -278,6 +320,29 @@ fn unity_compare_function(value: u8) -> wgpu::CompareFunction {
     }
 }
 
+fn unity_depth_compare_function(value: u8) -> wgpu::CompareFunction {
+    match value {
+        1 => wgpu::CompareFunction::Never,
+        // Renderide's main depth path uses reverse-Z.
+        2 => wgpu::CompareFunction::Greater,
+        3 => wgpu::CompareFunction::Equal,
+        4 => wgpu::CompareFunction::GreaterEqual,
+        5 => wgpu::CompareFunction::Less,
+        6 => wgpu::CompareFunction::NotEqual,
+        7 => wgpu::CompareFunction::LessEqual,
+        8 => wgpu::CompareFunction::Always,
+        _ => wgpu::CompareFunction::Always,
+    }
+}
+
+fn unity_cull_mode(value: u8) -> Option<wgpu::Face> {
+    match value {
+        1 => Some(wgpu::Face::Front),
+        2 => Some(wgpu::Face::Back),
+        _ => None,
+    }
+}
+
 fn unity_stencil_operation(value: u8) -> wgpu::StencilOperation {
     match value {
         1 => wgpu::StencilOperation::Zero,
@@ -322,6 +387,8 @@ pub fn material_render_state_for_lookup(
     let color_mask = first_float_presence_by_pids(dict, lookup, &ids.color_mask).map(unity_u8);
     let depth_write = first_float_presence_by_pids(dict, lookup, &ids.z_write)
         .map(|v| v.round().clamp(0.0, 1.0) >= 0.5);
+    let depth_compare = first_float_presence_by_pids(dict, lookup, &ids.z_test).map(unity_u8);
+    let cull_mode = first_float_presence_by_pids(dict, lookup, &ids.cull).map(unity_u8);
 
     let stencil_present = stencil_ref.is_some()
         || stencil_comp.is_some()
@@ -342,6 +409,8 @@ pub fn material_render_state_for_lookup(
         stencil,
         color_mask,
         depth_write,
+        depth_compare,
+        cull_mode,
     }
 }
 
@@ -497,7 +566,7 @@ pub fn materialized_pass_for_blend_mode(
             let Some((src, dst)) = blend_mode.unity_blend_factors() else {
                 return *pass;
             };
-            let blend = unity_single_blend_state(src, dst);
+            let blend = unity_blend_state(src, dst);
             MaterialPassDesc {
                 blend,
                 write_mask: if blend.is_some() {
@@ -586,6 +655,26 @@ mod tests {
     }
 
     #[test]
+    fn resolves_xiexe_src_dst_base_blend_properties() {
+        let reg = PropertyIdRegistry::new();
+        let ids = MaterialPipelinePropertyIds::new(&reg);
+        let mut store = MaterialPropertyStore::new();
+        let src = reg.intern("_SrcBlendBase");
+        let dst = reg.intern("_DstBlendBase");
+        store.set_material(430, src, MaterialPropertyValue::Float(5.0));
+        store.set_material(430, dst, MaterialPropertyValue::Float(10.0));
+        let dict = MaterialDictionary::new(&store);
+        let lookup = MaterialPropertyLookupIds {
+            material_asset_id: 430,
+            mesh_property_block_slot0: None,
+        };
+        assert_eq!(
+            material_blend_mode_for_lookup(&dict, lookup, &ids),
+            MaterialBlendMode::UnityBlend { src: 5, dst: 10 }
+        );
+    }
+
+    #[test]
     fn resolves_unity_stencil_and_color_mask_properties() {
         let reg = PropertyIdRegistry::new();
         let ids = MaterialPipelinePropertyIds::new(&reg);
@@ -621,6 +710,25 @@ mod tests {
         assert_eq!(
             state.stencil_state().front.pass_op,
             wgpu::StencilOperation::Replace
+        );
+    }
+
+    #[test]
+    fn resolves_xiexe_lowercase_color_mask_property() {
+        let reg = PropertyIdRegistry::new();
+        let ids = MaterialPipelinePropertyIds::new(&reg);
+        let mut store = MaterialPropertyStore::new();
+        let color_mask = reg.intern("_colormask");
+        store.set_material(441, color_mask, MaterialPropertyValue::Float(0.0));
+        let dict = MaterialDictionary::new(&store);
+        let lookup = MaterialPropertyLookupIds {
+            material_asset_id: 441,
+            mesh_property_block_slot0: None,
+        };
+        let state = material_render_state_for_lookup(&dict, lookup, &ids);
+        assert_eq!(
+            state.color_writes(wgpu::ColorWrites::ALL),
+            wgpu::ColorWrites::empty()
         );
     }
 
@@ -686,5 +794,53 @@ mod tests {
         let state = material_render_state_for_lookup(&dict, lookup, &ids);
         assert_eq!(state.depth_write, Some(true));
         assert!(state.depth_write(false));
+    }
+
+    #[test]
+    fn resolves_unity_cull_and_reverse_ztest_properties() {
+        let reg = PropertyIdRegistry::new();
+        let ids = MaterialPipelinePropertyIds::new(&reg);
+        let mut store = MaterialPropertyStore::new();
+        let cull = reg.intern("_Cull");
+        let ztest = reg.intern("_ZTest");
+        store.set_material(48, cull, MaterialPropertyValue::Float(2.0));
+        store.set_material(48, ztest, MaterialPropertyValue::Float(2.0));
+        let dict = MaterialDictionary::new(&store);
+        let lookup = MaterialPropertyLookupIds {
+            material_asset_id: 48,
+            mesh_property_block_slot0: None,
+        };
+
+        let state = material_render_state_for_lookup(&dict, lookup, &ids);
+
+        assert_eq!(
+            state.cull_mode(Some(wgpu::Face::Front)),
+            Some(wgpu::Face::Back)
+        );
+        assert_eq!(
+            state.depth_compare(wgpu::CompareFunction::GreaterEqual),
+            wgpu::CompareFunction::Greater
+        );
+    }
+
+    #[test]
+    fn unity_forward_base_uses_unity_separate_alpha_blend() {
+        let pass = MaterialPassDesc {
+            material_state: MaterialPassState::UnityForwardBase,
+            ..default_pass(false, true)
+        };
+
+        let materialized = materialized_pass_for_blend_mode(
+            &pass,
+            MaterialBlendMode::UnityBlend { src: 5, dst: 10 },
+        );
+        let blend = materialized.blend.expect("alpha blend");
+
+        assert_eq!(blend.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+        assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+        assert_eq!(blend.color.operation, wgpu::BlendOperation::Add);
+        assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One);
+        assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One);
+        assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max);
     }
 }

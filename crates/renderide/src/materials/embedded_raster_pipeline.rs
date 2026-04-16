@@ -249,6 +249,8 @@ pub fn embedded_stem_uses_alpha_blending(stem: &str) -> bool {
         || stem == "textunlit"
         || stem == "textunit"
         || stem == "text_unlit"
+        || stem == "xiexe_toon2.0_xstoon2.0_fade"
+        || stem == "xiexe_toon2.0_xstoon2.0_transparent"
 }
 
 #[cfg(test)]

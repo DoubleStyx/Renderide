@@ -43,6 +43,16 @@ pub struct ClusterFrameParams {
 }
 
 impl ClusterFrameParams {
+    /// Coefficients for `dot(coeffs.xyz, world) + coeffs.w` -> view-space X.
+    pub fn view_space_x_coeffs(&self) -> [f32; 4] {
+        FrameGpuUniforms::view_space_x_coeffs_from_world_to_view(self.world_to_view)
+    }
+
+    /// Coefficients for `dot(coeffs.xyz, world) + coeffs.w` -> view-space Y.
+    pub fn view_space_y_coeffs(&self) -> [f32; 4] {
+        FrameGpuUniforms::view_space_y_coeffs_from_world_to_view(self.world_to_view)
+    }
+
     /// Coefficients for `dot(coeffs.xyz, world) + coeffs.w` → view-space Z (third row of world-to-view).
     pub fn view_space_z_coeffs(&self) -> [f32; 4] {
         FrameGpuUniforms::view_space_z_coeffs_from_world_to_view(self.world_to_view)
@@ -50,18 +60,22 @@ impl ClusterFrameParams {
 
     /// Builds [`FrameGpuUniforms`] for clustered PBS materials (must stay in sync with compute).
     ///
-    /// `right_z_coeffs` should be the right-eye z coefficients in stereo, or equal to the left/mono
-    /// coefficients in desktop mode.
+    /// `right_eye` should be the right-eye cluster frame in stereo, or `None` in mono mode.
     pub fn frame_gpu_uniforms(
         &self,
         camera_world_pos: glam::Vec3,
         light_count: u32,
-        right_z_coeffs: [f32; 4],
+        right_eye: Option<&ClusterFrameParams>,
     ) -> FrameGpuUniforms {
+        let right = right_eye.unwrap_or(self);
         FrameGpuUniforms::new_clustered(
             camera_world_pos,
+            self.view_space_x_coeffs(),
+            self.view_space_y_coeffs(),
             self.view_space_z_coeffs(),
-            right_z_coeffs,
+            right.view_space_x_coeffs(),
+            right.view_space_y_coeffs(),
+            right.view_space_z_coeffs(),
             self.cluster_count_x,
             self.cluster_count_y,
             CLUSTER_COUNT_Z,

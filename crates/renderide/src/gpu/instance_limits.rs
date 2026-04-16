@@ -2,8 +2,9 @@
 
 /// Requests [`wgpu::Limits`] for [`wgpu::Adapter::request_device`].
 ///
-/// Starts from WebGPU-tier [`wgpu::Limits::default`], then clamps every field to what the adapter
-/// supports via [`wgpu::Limits::or_worse_values_from`] so GPUs with lower caps (for example
+/// Starts from WebGPU-tier [`wgpu::Limits::default`], raises renderer-critical material binding
+/// caps where native adapters expose them, then clamps every field to what the adapter supports via
+/// [`wgpu::Limits::or_worse_values_from`] so GPUs with lower caps (for example
 /// [`wgpu::Limits::max_color_attachments`] below 8 on some ARM/Mali stacks) do not fail device
 /// creation.
 ///
@@ -14,8 +15,17 @@
 /// [`wgpu::Limits::max_texture_dimension_2d`] is capped at **16384** when the adapter allows it,
 /// matching the host’s maximum 2D texture size.
 pub(crate) fn required_limits_for_adapter(adapter: &wgpu::Adapter) -> wgpu::Limits {
-    let al = adapter.limits();
-    let mut limits = wgpu::Limits::default().or_worse_values_from(&al);
+    required_limits_from_adapter_limits(adapter.limits())
+}
+
+pub(crate) fn required_limits_from_adapter_limits(adapter_limits: wgpu::Limits) -> wgpu::Limits {
+    let al = adapter_limits;
+    let mut desired = wgpu::Limits::default();
+    desired.max_samplers_per_shader_stage = desired.max_samplers_per_shader_stage.max(32);
+    desired.max_sampled_textures_per_shader_stage =
+        desired.max_sampled_textures_per_shader_stage.max(32);
+
+    let mut limits = desired.or_worse_values_from(&al);
     limits.max_buffer_size = al.max_buffer_size;
     limits.max_storage_buffer_binding_size = al.max_storage_buffer_binding_size;
 
@@ -41,12 +51,40 @@ pub fn instance_flags_for_gpu_init(gpu_validation_layers: bool) -> wgpu::Instanc
 
 #[cfg(test)]
 mod tests {
-    use super::instance_flags_base;
+    use super::{instance_flags_base, required_limits_from_adapter_limits};
     use wgpu::InstanceFlags;
 
     #[test]
     fn instance_flags_base_toggles_validation() {
         assert!(!instance_flags_base(false).contains(InstanceFlags::VALIDATION));
         assert!(instance_flags_base(true).contains(InstanceFlags::VALIDATION));
+    }
+
+    #[test]
+    fn required_limits_raise_material_texture_budget_when_adapter_allows() {
+        let adapter_limits = wgpu::Limits {
+            max_samplers_per_shader_stage: 64,
+            max_sampled_textures_per_shader_stage: 64,
+            ..wgpu::Limits::default()
+        };
+
+        let required = required_limits_from_adapter_limits(adapter_limits);
+
+        assert_eq!(required.max_samplers_per_shader_stage, 32);
+        assert_eq!(required.max_sampled_textures_per_shader_stage, 32);
+    }
+
+    #[test]
+    fn required_limits_clamp_material_texture_budget_to_adapter() {
+        let adapter_limits = wgpu::Limits {
+            max_samplers_per_shader_stage: 18,
+            max_sampled_textures_per_shader_stage: 18,
+            ..wgpu::Limits::default()
+        };
+
+        let required = required_limits_from_adapter_limits(adapter_limits);
+
+        assert_eq!(required.max_samplers_per_shader_stage, 18);
+        assert_eq!(required.max_sampled_textures_per_shader_stage, 18);
     }
 }

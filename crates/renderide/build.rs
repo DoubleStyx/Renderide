@@ -142,7 +142,7 @@ fn color_writes_token(value: &str, file: &str, line: usize) -> &'static str {
     match value.trim().to_ascii_lowercase().as_str() {
         "all" | "rgba" => "wgpu::ColorWrites::ALL",
         "color" | "rgb" => "wgpu::ColorWrites::COLOR",
-        "none" | "off" => "wgpu::ColorWrites::empty()",
+        "none" | "off" => "crate::materials::COLOR_WRITES_NONE",
         _ => panic!("{file}:{line}: invalid color write mask `{value}`"),
     }
 }

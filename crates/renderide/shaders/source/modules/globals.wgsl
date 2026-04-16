@@ -1,7 +1,7 @@
 //! Shared per-frame bindings (`@group(0)`) for all raster materials.
 //! Import with `#import renderide::globals` from `source/materials/*.wgsl`.
 //!
-//! Composed materials must **reference** every binding below (e.g. a no-op `cluster_light_counts` /
+//! Composed materials must reference every binding below (e.g. a no-op `cluster_light_counts` /
 //! `cluster_light_indices` touch in the fragment shader if unused); the composer drops unused globals,
 //! which breaks the fixed [`FrameGpuResources`] bind group layout at pipeline creation.
 //!
@@ -32,9 +32,17 @@ struct GpuLight {
 /// Per-frame scene + clustered grid (matches [`crate::gpu::frame_globals::FrameGpuUniforms`]).
 struct FrameGlobals {
     camera_world_pos: vec4<f32>,
-    /// Left-eye (or mono) world → view-space Z coefficients.
+    /// Left-eye (or mono) world -> view-space X coefficients.
+    view_space_x_coeffs: vec4<f32>,
+    /// Left-eye (or mono) world -> view-space Y coefficients.
+    view_space_y_coeffs: vec4<f32>,
+    /// Left-eye (or mono) world -> view-space Z coefficients.
     view_space_z_coeffs: vec4<f32>,
-    /// Right-eye world → view-space Z coefficients (equals left in mono mode).
+    /// Right-eye world -> view-space X coefficients (equals left in mono mode).
+    view_space_x_coeffs_right: vec4<f32>,
+    /// Right-eye world -> view-space Y coefficients (equals left in mono mode).
+    view_space_y_coeffs_right: vec4<f32>,
+    /// Right-eye world -> view-space Z coefficients (equals left in mono mode).
     view_space_z_coeffs_right: vec4<f32>,
     cluster_count_x: u32,
     cluster_count_y: u32,

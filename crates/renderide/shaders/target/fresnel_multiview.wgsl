@@ -27,7 +27,11 @@ struct GpuLightX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX {
 
 struct FrameGlobalsX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJTWY33CMFWHGX {
     camera_world_pos: vec4<f32>,
+    view_space_x_coeffs: vec4<f32>,
+    view_space_y_coeffs: vec4<f32>,
     view_space_z_coeffs: vec4<f32>,
+    view_space_x_coeffs_right: vec4<f32>,
+    view_space_y_coeffs_right: vec4<f32>,
     view_space_z_coeffs_right: vec4<f32>,
     cluster_count_x: u32,
     cluster_count_y: u32,

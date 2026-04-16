@@ -83,11 +83,13 @@ impl GpuLimits {
         };
 
         logger::info!(
-            "GPU limits: max_texture_2d={} max_buffer={} max_storage_binding={} max_compute_wg_per_dim={} base_instance={} multiview={}",
+            "GPU limits: max_texture_2d={} max_buffer={} max_storage_binding={} max_compute_wg_per_dim={} max_samplers_stage={} max_sampled_textures_stage={} base_instance={} multiview={}",
             limits.wgpu.max_texture_dimension_2d,
             limits.wgpu.max_buffer_size,
             limits.wgpu.max_storage_buffer_binding_size,
             limits.wgpu.max_compute_workgroups_per_dimension,
+            limits.wgpu.max_samplers_per_shader_stage,
+            limits.wgpu.max_sampled_textures_per_shader_stage,
             supports_base_instance,
             supports_multiview
         );

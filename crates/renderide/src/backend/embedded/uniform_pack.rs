@@ -71,9 +71,14 @@ fn default_vec4_for_field(field_name: &str) -> [f32; 4] {
         "_Tint0" => [1.0, 0.0, 0.0, 1.0],
         "_Tint1" => [0.0, 1.0, 0.0, 1.0],
         "_OverlayTint" => [1.0, 1.0, 1.0, 0.5],
-        "_EmissionColor" | "_EmissionColor1" | "_IntersectEmissionColor" | "_OutsideColor" => {
-            [0.0, 0.0, 0.0, 0.0]
-        }
+        "_EmissionColor"
+        | "_EmissionColor1"
+        | "_IntersectEmissionColor"
+        | "_OutsideColor"
+        | "_OcclusionColor"
+        | "_SSColor" => [0.0, 0.0, 0.0, 0.0],
+        "_OutlineColor" => [0.0, 0.0, 0.0, 1.0],
+        "_RimColor" | "_ShadowRim" | "_MatcapTint" => [1.0, 1.0, 1.0, 1.0],
         "_BehindFarColor" | "_FrontFarColor" | "_FarColor" | "_FarColor0" => [0.0, 0.0, 0.0, 1.0],
         "_FarColor1" => [0.2, 0.2, 0.2, 1.0],
         "_NearColor1" => [0.8, 0.8, 0.8, 0.8],
@@ -214,29 +219,94 @@ fn default_f32_for_field(
         return v;
     }
     match field_name {
-        "_Lerp" | "_TextureLerp" | "_ProjectionLerp" | "_CubeLOD" | "_Metallic" | "_Metallic1"
-        | "_UVSec" | "_Mode" | "_OffsetFactor" | "_OffsetUnits" | "_Stencil" | "_StencilOp" => 0.0,
+        "_Lerp"
+        | "_TextureLerp"
+        | "_ProjectionLerp"
+        | "_CubeLOD"
+        | "_Metallic"
+        | "_Metallic1"
+        | "_UVSec"
+        | "_Mode"
+        | "_OffsetFactor"
+        | "_OffsetUnits"
+        | "_Stencil"
+        | "_StencilOp"
+        | "_RimIntensity"
+        | "_RimAlbedoTint"
+        | "_RimCubemapTint"
+        | "_SpecularIntensity"
+        | "_ShadowRimAlbedoTint"
+        | "_OutlineAlbedoTint"
+        | "_OutlineLighting"
+        | "_OutlineEmissive"
+        | "_OutlineEmissiveues"
+        | "_FadeDither"
+        | "_FadeDitherDistance"
+        | "_VertexColorAlbedo"
+        | "_TilingMode"
+        | "_UVSetAlbedo"
+        | "_UVSetNormal"
+        | "_UVSetDetNormal"
+        | "_UVSetDetMask"
+        | "_UVSetMetallic"
+        | "_UVSetSpecular"
+        | "_UVSetReflectivity"
+        | "_UVSetThickness"
+        | "_UVSetOcclusion"
+        | "_UVSetEmission"
+        | "_ClearCoat"
+        | "_ReflectionBlendMode"
+        | "_EmissionToDiffuse"
+        | "_SpecMode"
+        | "_SpecularStyle"
+        | "_Offset" => 0.0,
         "_NormalScale"
         | "_NormalScale1"
         | "_BumpScale"
+        | "_DetailNormalMapScale"
         | "_GlossMapScale"
         | "_OcclusionStrength"
-        | "_DetailNormalMapScale"
         | "_SpecularHighlights"
         | "_GlossyReflections"
         | "_Exposure"
         | "_Gamma"
-        | "_ZWrite" => 1.0,
+        | "_ZWrite"
+        | "_Saturation"
+        | "_Reflectivity"
+        | "_ClearcoatStrength"
+        | "_ScaleWithLight"
+        | "_ScaleWithLightSensitivity"
+        | "_RimAttenEffect"
+        | "_SpecularAlbedoTint"
+        | "_OutlineWidth"
+        | "_SSDistortion"
+        | "_SSPower"
+        | "_SSScale"
+        | "_SrcBlendBase"
+        | "_SrcBlendAdd" => 1.0,
         "_Exp" | "_Exp0" | "_Exp1" | "_PolarPow" | "_LerpPolarPow" => 1.0,
         "_MaxIntensity" => 4.0,
         "_Parallax" => 0.02,
         "_GammaCurve" => 2.2,
         "_SrcBlend" => 1.0,
-        "_DstBlend" => 0.0,
-        "_ZTest" | "_Cull" => 2.0,
+        "_DstBlend" | "_DstBlendBase" => 0.0,
+        "_DstBlendAdd" => 1.0,
+        "_ZTest" | "_Cull" | "_Culling" => 2.0,
         "_StencilComp" => 8.0,
         "_StencilWriteMask" | "_StencilReadMask" => 255.0,
         "_ColorMask" => 15.0,
+        "_colormask" => 15.0,
+        "_ReflectionMode" => 3.0,
+        "_ClearcoatSmoothness" => 0.8,
+        "_RimRange" | "_ShadowRimRange" => 0.7,
+        "_RimThreshold" | "_ShadowRimThreshold" => 0.1,
+        "_RimSharpness" => 0.1,
+        "_ShadowRimSharpness" => 0.3,
+        "_AnisotropicAX" => 0.25,
+        "_AnisotropicAY" => 0.75,
+        "_HalftoneDotSize" => 1.7,
+        "_HalftoneDotAmount" => 50.0,
+        "_HalftoneLineAmount" => 150.0,
         "_Cutoff" | "_AlphaClip" | "_Glossiness" | "_Glossiness1" => 0.5,
         _ => 0.5,
     }

@@ -15,7 +15,7 @@ use crate::resources::{
     Texture3dSamplerState, TexturePool,
 };
 
-use super::layout::StemEmbeddedPropertyIds;
+use super::layout::{shader_writer_unescaped_property_name, StemEmbeddedPropertyIds};
 
 /// Resolved GPU texture binding for a material property (packed host id or primary fallback).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +128,7 @@ pub(crate) fn primary_texture_any_kind_present(
 }
 
 pub(crate) fn should_fallback_to_primary_texture(host_name: &str) -> bool {
+    let host_name = shader_writer_unescaped_property_name(host_name);
     matches!(host_name, "_MainTex" | "_Tex" | "_TEXTURE" | "Texture")
 }
 
@@ -454,5 +455,12 @@ mod tests {
             ),
             ResolvedTextureBinding::Texture2D { asset_id: 200 }
         );
+    }
+
+    #[test]
+    fn primary_texture_fallback_strips_naga_oil_suffix() {
+        assert!(should_fallback_to_primary_texture(
+            "_MainTexX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ4GSZLYMU5DU5DPN5XDEX"
+        ));
     }
 }

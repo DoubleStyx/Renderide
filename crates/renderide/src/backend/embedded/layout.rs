@@ -145,7 +145,10 @@ fn texture_property_aliases(name: &str) -> &'static [&'static str] {
     }
 }
 
-fn shader_writer_unescaped_property_name(name: &str) -> &str {
+pub(crate) fn shader_writer_unescaped_property_name(name: &str) -> &str {
+    let name = name
+        .split_once("X_naga_oil_mod_")
+        .map_or(name, |(base, _)| base);
     let Some(stripped) = name.strip_suffix('_') else {
         return name;
     };
@@ -186,9 +189,10 @@ impl StemEmbeddedPropertyIds {
         for entry in &reflected.material_entries {
             if matches!(entry.ty, wgpu::BindingType::Texture { .. }) {
                 if let Some(name) = reflected.material_group1_names.get(&entry.binding) {
+                    let host_name = shader_writer_unescaped_property_name(name.as_str());
                     texture_binding_to_property_id
-                        .insert(entry.binding, registry.intern(name.as_str()));
-                    let aliases = texture_property_aliases(name.as_str())
+                        .insert(entry.binding, registry.intern(host_name));
+                    let aliases = texture_property_aliases(host_name)
                         .iter()
                         .map(|alias| registry.intern(alias))
                         .collect::<Vec<_>>();
@@ -225,7 +229,13 @@ impl StemEmbeddedPropertyIds {
 
 #[cfg(test)]
 mod tests {
-    use super::shader_writer_unescaped_property_name;
+    use std::sync::Arc;
+
+    use super::{
+        shader_writer_unescaped_property_name, EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds,
+    };
+    use crate::assets::material::PropertyIdRegistry;
+    use crate::materials::reflect_raster_material_wgsl;
 
     #[test]
     fn shader_writer_escape_strips_digit_suffix_underscore() {
@@ -234,6 +244,42 @@ mod tests {
         assert_eq!(
             shader_writer_unescaped_property_name("_MainTex_ST"),
             "_MainTex_ST"
+        );
+    }
+
+    #[test]
+    fn shader_writer_escape_strips_naga_oil_module_suffix() {
+        assert_eq!(
+            shader_writer_unescaped_property_name(
+                "_MainTexX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ4GSZLYMU5DU5DPN5XDEX"
+            ),
+            "_MainTex"
+        );
+        assert_eq!(
+            shader_writer_unescaped_property_name(
+                "_Tint0_X_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ4GSZLYMU5DU5DPN5XDEX"
+            ),
+            "_Tint0"
+        );
+    }
+
+    #[test]
+    fn xiexe_module_textures_resolve_to_unmangled_property_ids() {
+        let wgsl = crate::embedded_shaders::embedded_target_wgsl("xiexe_xstoon2.0_default")
+            .expect("xiexe target WGSL");
+        let reflected = reflect_raster_material_wgsl(wgsl).expect("xiexe WGSL reflection");
+        let registry = PropertyIdRegistry::new();
+        let shared = Arc::new(EmbeddedSharedKeywordIds::new(&registry));
+
+        let ids = StemEmbeddedPropertyIds::build(shared, &registry, &reflected);
+
+        assert_eq!(
+            ids.texture_binding_to_property_id.get(&1),
+            Some(&registry.intern("_MainTex"))
+        );
+        assert_eq!(
+            ids.texture_binding_alias_property_ids.get(&1),
+            Some(&vec![registry.intern("Texture"), registry.intern("_Tex")])
         );
     }
 }
