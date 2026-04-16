@@ -6,7 +6,9 @@ use std::time::Duration;
 #[cfg(target_vendor = "apple")]
 use std::time::Instant;
 
+#[cfg(target_os = "macos")]
 use base64::prelude::*;
+#[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 
 /// Handle to a POSIX named semaphore created with `sem_open` (`/ct.ip.{memory_view_name}`).
