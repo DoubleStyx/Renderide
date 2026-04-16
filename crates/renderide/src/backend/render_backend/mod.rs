@@ -30,6 +30,22 @@ pub use crate::assets::asset_transfer_queue::{
     MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
 };
 
+/// Device, queue, and settings passed to [`RenderBackend::attach`] (shared-memory flush is passed separately for borrow reasons).
+pub struct RenderBackendAttachDesc {
+    /// Logical device for uploads and graph encoding.
+    pub device: Arc<wgpu::Device>,
+    /// Queue used for submits and GPU writes.
+    pub queue: Arc<Mutex<wgpu::Queue>>,
+    /// Capabilities for buffer sizing and MSAA.
+    pub gpu_limits: Arc<GpuLimits>,
+    /// Swapchain / main surface format for HUD and pipelines.
+    pub surface_format: wgpu::TextureFormat,
+    /// Live renderer settings (HUD, VR budgets, etc.).
+    pub renderer_settings: RendererSettingsHandle,
+    /// Path for persisting HUD/config from the debug overlay.
+    pub config_save_path: PathBuf,
+}
+
 /// Coordinates materials, asset uploads, per-frame GPU binds, occlusion, optional deform + ImGui HUD, and the render graph.
 pub struct RenderBackend {
     /// Material property store, shader routes, pipeline registry, embedded `@group(1)` binds.
@@ -185,17 +201,19 @@ impl RenderBackend {
     ///
     /// `shm` is used to flush pending mesh/texture payloads that require shared-memory reads; omit
     /// when none is available yet (uploads stay queued).
-    #[allow(clippy::too_many_arguments)]
     pub fn attach(
         &mut self,
-        device: Arc<wgpu::Device>,
-        queue: Arc<Mutex<wgpu::Queue>>,
-        gpu_limits: Arc<GpuLimits>,
+        desc: RenderBackendAttachDesc,
         shm: Option<&mut crate::ipc::SharedMemoryAccessor>,
-        surface_format: wgpu::TextureFormat,
-        renderer_settings: RendererSettingsHandle,
-        config_save_path: PathBuf,
     ) {
+        let RenderBackendAttachDesc {
+            device,
+            queue,
+            gpu_limits,
+            surface_format,
+            renderer_settings,
+            config_save_path,
+        } = desc;
         self.asset_transfers.gpu_device = Some(device.clone());
         self.asset_transfers.gpu_queue = Some(queue.clone());
         self.asset_transfers.gpu_limits = Some(Arc::clone(&gpu_limits));

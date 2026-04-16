@@ -25,56 +25,53 @@ use super::hud_input::DebugHudInput;
 use super::renderer_info_snapshot::RendererInfoSnapshot;
 use super::scene_transforms_snapshot::SceneTransformsSnapshot;
 
-/// Renders timing, Stats / Shader routes, and Scene transforms when those flags are on.
-#[allow(clippy::too_many_arguments)]
-fn build_overlay_hud_windows(
+/// Renders the **Frame timing** overlay window when enabled.
+fn overlay_frame_timing_window(ui: &imgui::Ui, frame_timing: Option<&FrameTimingHudSnapshot>) {
+    DebugHud::frame_timing_window(ui, frame_timing);
+}
+
+/// Renders the **Renderide debug** tabbed panel (Stats / Shader routes / GPU memory).
+fn overlay_main_debug_window(
     ui: &imgui::Ui,
     width: u32,
-    frame_timing: Option<&FrameTimingHudSnapshot>,
     latest: Option<&RendererInfoSnapshot>,
     frame_diagnostics: Option<&FrameDiagnosticsSnapshot>,
+) {
+    const PANEL_WIDTH: f32 = 760.0;
+    let panel_x = (width as f32 - PANEL_WIDTH - layout::MARGIN).max(layout::MARGIN);
+    let window_flags = WindowFlags::ALWAYS_AUTO_RESIZE
+        | WindowFlags::NO_RESIZE
+        | WindowFlags::NO_SAVED_SETTINGS
+        | WindowFlags::NO_FOCUS_ON_APPEARING
+        | WindowFlags::NO_NAV;
+
+    ui.window("Renderide debug")
+        .position([panel_x, layout::MARGIN], Condition::FirstUseEver)
+        .size_constraints([PANEL_WIDTH, 0.0], [PANEL_WIDTH, 1.0e9])
+        .bg_alpha(0.72)
+        .flags(window_flags)
+        .build(|| {
+            if let Some(_tab_bar) = ui.tab_bar("debug_tabs") {
+                if let Some(_tab) = ui.tab_item("Stats") {
+                    DebugHud::main_debug_panel(ui, latest, frame_diagnostics);
+                }
+                if let Some(_tab) = ui.tab_item("Shader routes") {
+                    DebugHud::shader_mappings_tab(ui, frame_diagnostics);
+                }
+                if let Some(_tab) = ui.tab_item("GPU memory") {
+                    DebugHud::gpu_memory_tab(ui, frame_diagnostics);
+                }
+            }
+        });
+}
+
+/// Renders the **Scene transforms** window when enabled.
+fn overlay_scene_transforms_window(
+    ui: &imgui::Ui,
     scene_transforms: &SceneTransformsSnapshot,
     scene_transforms_open: &mut bool,
-    frame_timing_hud: bool,
-    main_hud: bool,
-    transforms_hud: bool,
 ) {
-    if frame_timing_hud {
-        DebugHud::frame_timing_window(ui, frame_timing);
-    }
-
-    if main_hud {
-        const PANEL_WIDTH: f32 = 760.0;
-        let panel_x = (width as f32 - PANEL_WIDTH - layout::MARGIN).max(layout::MARGIN);
-        let window_flags = WindowFlags::ALWAYS_AUTO_RESIZE
-            | WindowFlags::NO_RESIZE
-            | WindowFlags::NO_SAVED_SETTINGS
-            | WindowFlags::NO_FOCUS_ON_APPEARING
-            | WindowFlags::NO_NAV;
-
-        ui.window("Renderide debug")
-            .position([panel_x, layout::MARGIN], Condition::FirstUseEver)
-            .size_constraints([PANEL_WIDTH, 0.0], [PANEL_WIDTH, 1.0e9])
-            .bg_alpha(0.72)
-            .flags(window_flags)
-            .build(|| {
-                if let Some(_tab_bar) = ui.tab_bar("debug_tabs") {
-                    if let Some(_tab) = ui.tab_item("Stats") {
-                        DebugHud::main_debug_panel(ui, latest, frame_diagnostics);
-                    }
-                    if let Some(_tab) = ui.tab_item("Shader routes") {
-                        DebugHud::shader_mappings_tab(ui, frame_diagnostics);
-                    }
-                    if let Some(_tab) = ui.tab_item("GPU memory") {
-                        DebugHud::gpu_memory_tab(ui, frame_diagnostics);
-                    }
-                }
-            });
-    }
-
-    if transforms_hud {
-        DebugHud::scene_transforms_window(ui, scene_transforms, scene_transforms_open);
-    }
+    DebugHud::scene_transforms_window(ui, scene_transforms, scene_transforms_open);
 }
 
 /// Dear ImGui overlay: frame timing, renderer stats, shader routes, scene transforms, and config UI.
@@ -262,18 +259,24 @@ impl DebugHud {
 
         let ui = self.imgui.frame();
         if any_debug_content {
-            build_overlay_hud_windows(
-                ui,
-                width,
-                self.frame_timing.as_ref(),
-                self.latest.as_ref(),
-                self.frame_diagnostics.as_ref(),
-                &self.scene_transforms,
-                &mut self.scene_transforms_open,
-                frame_timing_hud,
-                main_hud,
-                transforms_hud,
-            );
+            if frame_timing_hud {
+                overlay_frame_timing_window(ui, self.frame_timing.as_ref());
+            }
+            if main_hud {
+                overlay_main_debug_window(
+                    ui,
+                    width,
+                    self.latest.as_ref(),
+                    self.frame_diagnostics.as_ref(),
+                );
+            }
+            if transforms_hud {
+                overlay_scene_transforms_window(
+                    ui,
+                    &self.scene_transforms,
+                    &mut self.scene_transforms_open,
+                );
+            }
         }
 
         Self::renderer_config_window(

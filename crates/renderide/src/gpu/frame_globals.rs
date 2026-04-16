@@ -34,6 +34,33 @@ pub struct FrameGpuUniforms {
     pub viewport_height: u32,
 }
 
+/// Inputs for [`FrameGpuUniforms::new_clustered`] (clustered forward + lighting).
+#[derive(Clone, Copy, Debug)]
+pub struct ClusteredFrameGlobalsParams {
+    /// World-space camera position for the active view.
+    pub camera_world_pos: glam::Vec3,
+    /// Left-eye (or mono) view-space Z coefficients from world position.
+    pub view_space_z_coeffs: [f32; 4],
+    /// Right-eye view-space Z coefficients; equals `view_space_z_coeffs` in mono.
+    pub view_space_z_coeffs_right: [f32; 4],
+    /// Cluster grid width in tiles.
+    pub cluster_count_x: u32,
+    /// Cluster grid height in tiles.
+    pub cluster_count_y: u32,
+    /// Cluster grid depth (Z slices).
+    pub cluster_count_z: u32,
+    /// Near clip in view space (positive forward).
+    pub near_clip: f32,
+    /// Far clip (reverse-Z aware).
+    pub far_clip: f32,
+    /// Packed light count for the frame buffer.
+    pub light_count: u32,
+    /// Viewport width in physical pixels.
+    pub viewport_width: u32,
+    /// Viewport height in physical pixels.
+    pub viewport_height: u32,
+}
+
 impl FrameGpuUniforms {
     /// Coefficients so `dot(coeffs.xyz, world) + coeffs.w` yields view-space Z for a world point.
     ///
@@ -45,38 +72,25 @@ impl FrameGpuUniforms {
 
     /// Builds per-frame uniforms for clustered forward and lighting.
     ///
-    /// `view_space_z_coeffs_right` should equal `view_space_z_coeffs` in mono mode.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_clustered(
-        camera_world_pos: glam::Vec3,
-        view_space_z_coeffs: [f32; 4],
-        view_space_z_coeffs_right: [f32; 4],
-        cluster_count_x: u32,
-        cluster_count_y: u32,
-        cluster_count_z: u32,
-        near_clip: f32,
-        far_clip: f32,
-        light_count: u32,
-        viewport_width: u32,
-        viewport_height: u32,
-    ) -> Self {
+    /// `params.view_space_z_coeffs_right` should equal `params.view_space_z_coeffs` in mono mode.
+    pub fn new_clustered(params: ClusteredFrameGlobalsParams) -> Self {
         Self {
             camera_world_pos: [
-                camera_world_pos.x,
-                camera_world_pos.y,
-                camera_world_pos.z,
+                params.camera_world_pos.x,
+                params.camera_world_pos.y,
+                params.camera_world_pos.z,
                 0.0,
             ],
-            view_space_z_coeffs,
-            view_space_z_coeffs_right,
-            cluster_count_x,
-            cluster_count_y,
-            cluster_count_z,
-            near_clip,
-            far_clip,
-            light_count,
-            viewport_width,
-            viewport_height,
+            view_space_z_coeffs: params.view_space_z_coeffs,
+            view_space_z_coeffs_right: params.view_space_z_coeffs_right,
+            cluster_count_x: params.cluster_count_x,
+            cluster_count_y: params.cluster_count_y,
+            cluster_count_z: params.cluster_count_z,
+            near_clip: params.near_clip,
+            far_clip: params.far_clip,
+            light_count: params.light_count,
+            viewport_width: params.viewport_width,
+            viewport_height: params.viewport_height,
         }
     }
 }

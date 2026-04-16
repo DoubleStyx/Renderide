@@ -12,9 +12,10 @@ use crate::pipelines::ShaderPermutation;
 use crate::render_graph::{
     build_world_mesh_cull_proj_params, camera_state_enabled, collect_and_sort_world_mesh_draws,
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
-    host_camera_frame_for_render_texture, CameraTransformDrawFilter, ExternalOffscreenTargets,
-    FrameView, FrameViewTarget, GraphExecuteError, HostCameraFrame, OcclusionViewId,
-    OutputDepthMode, WorldMeshCullInput, WorldMeshDrawCollectParallelism, WorldMeshDrawCollection,
+    host_camera_frame_for_render_texture, CameraTransformDrawFilter, DrawCollectionContext,
+    ExternalOffscreenTargets, FrameView, FrameViewTarget, GraphExecuteError, HostCameraFrame,
+    OcclusionViewId, OutputDepthMode, WorldMeshCullInput, WorldMeshDrawCollectParallelism,
+    WorldMeshDrawCollection,
 };
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
@@ -127,15 +128,17 @@ impl RendererRuntime {
                     hi_z_temporal: s.hi_z_temporal.clone(),
                 });
                 collect_and_sort_world_mesh_draws_with_parallelism(
-                    scene_ref,
-                    mesh_pool,
-                    &dict,
-                    router_ref,
-                    ShaderPermutation(0),
-                    render_context,
-                    prep.host_camera.head_output_transform,
-                    culling.as_ref(),
-                    Some(&prep.filter),
+                    &DrawCollectionContext {
+                        scene: scene_ref,
+                        mesh_pool,
+                        material_dict: &dict,
+                        material_router: router_ref,
+                        shader_perm: ShaderPermutation(0),
+                        render_context,
+                        head_output_transform: prep.host_camera.head_output_transform,
+                        culling: culling.as_ref(),
+                        transform_filter: Some(&prep.filter),
+                    },
                     inner_parallelism,
                 )
             })
@@ -220,15 +223,17 @@ impl RendererRuntime {
                     hi_z_temporal: s.hi_z_temporal.clone(),
                 });
                 collect_and_sort_world_mesh_draws_with_parallelism(
-                    scene_ref,
-                    mesh_pool,
-                    &dict,
-                    router_ref,
-                    ShaderPermutation(0),
-                    render_context,
-                    prep.host_camera.head_output_transform,
-                    culling.as_ref(),
-                    Some(&prep.filter),
+                    &DrawCollectionContext {
+                        scene: scene_ref,
+                        mesh_pool,
+                        material_dict: &dict,
+                        material_router: router_ref,
+                        shader_perm: ShaderPermutation(0),
+                        render_context,
+                        head_output_transform: prep.host_camera.head_output_transform,
+                        culling: culling.as_ref(),
+                        transform_filter: Some(&prep.filter),
+                    },
                     inner_parallelism,
                 )
             })
@@ -250,17 +255,17 @@ impl RendererRuntime {
             })
         };
         let culling_main_ref = culling_main.as_ref();
-        let main_collection = collect_and_sort_world_mesh_draws(
-            scene_ref,
+        let main_collection = collect_and_sort_world_mesh_draws(&DrawCollectionContext {
+            scene: scene_ref,
             mesh_pool,
-            &dict,
-            router_ref,
-            ShaderPermutation(0),
+            material_dict: &dict,
+            material_router: router_ref,
+            shader_perm: ShaderPermutation(0),
             render_context,
-            hc.head_output_transform,
-            culling_main_ref,
-            None,
-        );
+            head_output_transform: hc.head_output_transform,
+            culling: culling_main_ref,
+            transform_filter: None,
+        });
 
         let views = build_desktop_multi_view_frame_list(
             &prepared,

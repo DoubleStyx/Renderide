@@ -5,7 +5,9 @@ use crate::shared::{SetTexture3DData, SetTexture3DFormat};
 use super::super::decode::{decode_mip_to_rgba8, needs_rgba8_decode_before_upload};
 use super::super::layout::{host_format_is_compressed, mip_byte_len, mip_dimensions_at_level_3d};
 use super::error::TextureUploadError;
-use super::mip_write_common::{is_rgba8_family, write_texture3d_volume_mip};
+use super::mip_write_common::{
+    is_rgba8_family, write_texture3d_volume_mip, Texture3dVolumeMipWrite,
+};
 
 /// Host mip dimensions, flat payload slice, and slice/volume byte sizes for one 3D level.
 type Texture3dMipPayload<'a> = (u32, u32, u32, &'a [u8], usize, usize);
@@ -79,11 +81,15 @@ fn texture3d_mip_volume_payload_slice<'a>(
     Ok((w, h, d, mip_src, slice_bytes, vol_bytes))
 }
 
-/// Prepares decoded RGBA8 slab or passes raw host bytes through for 3D volume upload.
-#[allow(clippy::too_many_arguments)]
-fn texture3d_mip_to_upload_pixels<'a>(
-    device: &wgpu::Device,
-    fmt: &SetTexture3DFormat,
+/// Device and format descriptors shared across 3D mip uploads.
+struct Texture3dMipChainState<'a> {
+    device: &'a wgpu::Device,
+    fmt: &'a SetTexture3DFormat,
+    upload: &'a SetTexture3DData,
+}
+
+/// Dimensions and byte layout for one 3D mip level decode ([`texture3d_mip_to_upload_pixels`]).
+struct Texture3dMipLevelDecode<'a> {
     wgpu_format: wgpu::TextureFormat,
     w: u32,
     h: u32,
@@ -91,9 +97,25 @@ fn texture3d_mip_to_upload_pixels<'a>(
     level: u32,
     slice_bytes: usize,
     vol_bytes: usize,
-    upload: &SetTexture3DData,
     mip_src: &'a [u8],
+}
+
+/// Prepares decoded RGBA8 slab or passes raw host bytes through for 3D volume upload.
+fn texture3d_mip_to_upload_pixels<'a>(
+    chain: &Texture3dMipChainState<'a>,
+    level: Texture3dMipLevelDecode<'a>,
 ) -> Result<std::borrow::Cow<'a, [u8]>, TextureUploadError> {
+    let device = chain.device;
+    let fmt = chain.fmt;
+    let upload = chain.upload;
+    let wgpu_format = level.wgpu_format;
+    let w = level.w;
+    let h = level.h;
+    let d = level.d;
+    let level_idx = level.level;
+    let slice_bytes = level.slice_bytes;
+    let vol_bytes = level.vol_bytes;
+    let mip_src = level.mip_src;
     let pixels: std::borrow::Cow<'a, [u8]> = if is_rgba8_family(wgpu_format) {
         if needs_rgba8_decode_before_upload(device, fmt.format)
             || host_format_is_compressed(fmt.format)
@@ -107,7 +129,7 @@ fn texture3d_mip_to_upload_pixels<'a>(
                 let decoded =
                     decode_mip_to_rgba8(fmt.format, w, h, false, slice_raw).ok_or_else(|| {
                         TextureUploadError::from(format!(
-                            "texture3d {}: RGBA decode failed mip {level}",
+                            "texture3d {}: RGBA decode failed mip {level_idx}",
                             upload.asset_id
                         ))
                     })?;
@@ -128,6 +150,24 @@ fn texture3d_mip_to_upload_pixels<'a>(
         std::borrow::Cow::Borrowed(mip_src)
     };
     Ok(pixels)
+}
+
+/// GPU device, queue, and host upload view for one [`Texture3dMipChainUploader::upload_next_mip`] step.
+pub struct Texture3dMipUploadStep<'a> {
+    /// Device for format capability checks during decode.
+    pub device: &'a wgpu::Device,
+    /// Queue for [`write_texture3d_volume_mip`].
+    pub queue: &'a wgpu::Queue,
+    /// Destination volume texture.
+    pub texture: &'a wgpu::Texture,
+    /// Host format descriptor.
+    pub fmt: &'a SetTexture3DFormat,
+    /// Resolved GPU storage format.
+    pub wgpu_format: wgpu::TextureFormat,
+    /// Upload record (asset id, descriptor length, etc.).
+    pub upload: &'a SetTexture3DData,
+    /// Payload bytes (`&raw[..upload.data.length]`).
+    pub payload: &'a [u8],
 }
 
 /// Incremental 3D mip upload: one mip level per [`Texture3dMipChainUploader::upload_next_mip`] call.
@@ -226,17 +266,19 @@ impl Texture3dMipChainUploader {
     }
 
     /// Writes at most one mip level. `payload` is `&raw[..upload.data.length]`.
-    #[allow(clippy::too_many_arguments)]
     pub fn upload_next_mip(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        texture: &wgpu::Texture,
-        fmt: &SetTexture3DFormat,
-        wgpu_format: wgpu::TextureFormat,
-        upload: &SetTexture3DData,
-        payload: &[u8],
+        step: Texture3dMipUploadStep<'_>,
     ) -> Result<Texture3dMipAdvance, TextureUploadError> {
+        let Texture3dMipUploadStep {
+            device,
+            queue,
+            texture,
+            fmt,
+            wgpu_format,
+            upload,
+            payload,
+        } = step;
         let level = self.next_mip;
         if level >= self.mipmap_count {
             return Ok(Texture3dMipAdvance::Finished {
@@ -254,21 +296,35 @@ impl Texture3dMipChainUploader {
             payload,
         )?;
 
-        let pixels = texture3d_mip_to_upload_pixels(
+        let chain = Texture3dMipChainState {
             device,
             fmt,
-            wgpu_format,
-            w,
-            h,
-            d,
-            level,
-            slice_bytes,
-            vol_bytes,
             upload,
-            mip_src,
+        };
+        let pixels = texture3d_mip_to_upload_pixels(
+            &chain,
+            Texture3dMipLevelDecode {
+                wgpu_format,
+                w,
+                h,
+                d,
+                level,
+                slice_bytes,
+                vol_bytes,
+                mip_src,
+            },
         )?;
 
-        write_texture3d_volume_mip(queue, texture, level, w, h, d, wgpu_format, pixels.as_ref())?;
+        write_texture3d_volume_mip(&Texture3dVolumeMipWrite {
+            queue,
+            texture,
+            mip_level: level,
+            width: w,
+            height: h,
+            depth: d,
+            format: wgpu_format,
+            bytes: pixels.as_ref(),
+        })?;
 
         self.uploaded_mips += 1;
         self.next_mip += 1;
@@ -302,7 +358,15 @@ pub fn write_texture3d_mips(
     let payload = &raw[..want];
     let mut uploader = Texture3dMipChainUploader::new(texture, fmt, upload, raw)?;
     loop {
-        match uploader.upload_next_mip(device, queue, texture, fmt, wgpu_format, upload, payload)? {
+        match uploader.upload_next_mip(Texture3dMipUploadStep {
+            device,
+            queue,
+            texture,
+            fmt,
+            wgpu_format,
+            upload,
+            payload,
+        })? {
             Texture3dMipAdvance::UploadedOne => {}
             Texture3dMipAdvance::Finished { total_uploaded } => {
                 return Ok(total_uploaded);

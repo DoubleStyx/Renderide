@@ -231,62 +231,70 @@ fn compatible_for_in_place_synthetic_blendshape_skeleton(
     derived_streams_compatible_for_in_place(mesh, vertex_slice, data, vc_usize, vertex_stride_us)
 }
 
+/// Shared host layout and GPU mesh handles for in-place mesh buffer writes (VB, IB, bones).
+struct MeshInPlaceWriteContext<'a> {
+    mesh: &'a GpuMesh,
+    queue: &'a wgpu::Queue,
+    raw: &'a [u8],
+    layout: &'a MeshBufferLayout,
+    data: &'a MeshUploadData,
+    vertex_count: usize,
+    vertex_stride: usize,
+}
+
 /// Writes interleaved VB then optional derived position/normal/uv/color streams.
-#[allow(clippy::too_many_arguments)]
 fn write_in_place_vertex_and_derived_streams(
-    mesh: &GpuMesh,
-    queue: &wgpu::Queue,
-    raw: &[u8],
-    layout: &MeshBufferLayout,
-    data: &MeshUploadData,
-    vc_usize: usize,
-    vertex_stride_us: usize,
+    ctx: &MeshInPlaceWriteContext<'_>,
     write_vertex: bool,
 ) {
     if write_vertex {
-        queue.write_buffer(mesh.vertex_buffer.as_ref(), 0, &raw[..layout.vertex_size]);
+        ctx.queue.write_buffer(
+            ctx.mesh.vertex_buffer.as_ref(),
+            0,
+            &ctx.raw[..ctx.layout.vertex_size],
+        );
     }
-    let vertex_slice = &raw[..layout.vertex_size];
+    let vertex_slice = &ctx.raw[..ctx.layout.vertex_size];
     if !write_vertex {
         return;
     }
     if let (Some(pb), Some(nb), Some((pvec, nvec))) = (
-        mesh.positions_buffer.as_ref(),
-        mesh.normals_buffer.as_ref(),
+        ctx.mesh.positions_buffer.as_ref(),
+        ctx.mesh.normals_buffer.as_ref(),
         extract_float3_position_normal_as_vec4_streams(
             vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
+            ctx.vertex_count,
+            ctx.vertex_stride,
+            &ctx.data.vertex_attributes,
         )
         .as_ref(),
     ) {
-        queue.write_buffer(pb.as_ref(), 0, pvec);
-        queue.write_buffer(nb.as_ref(), 0, nvec);
+        ctx.queue.write_buffer(pb.as_ref(), 0, pvec);
+        ctx.queue.write_buffer(nb.as_ref(), 0, nvec);
     }
 
     if let (Some(uvb), Some(uv)) = (
-        mesh.uv0_buffer.as_ref(),
+        ctx.mesh.uv0_buffer.as_ref(),
         uv0_float2_stream_bytes(
             vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
+            ctx.vertex_count,
+            ctx.vertex_stride,
+            &ctx.data.vertex_attributes,
         ),
     ) {
-        queue.write_buffer(uvb.as_ref(), 0, &uv);
+        ctx.queue.write_buffer(uvb.as_ref(), 0, &uv);
     }
 
     if let (Some(cb), Some(c)) = (
-        mesh.color_buffer.as_ref(),
+        ctx.mesh.color_buffer.as_ref(),
         color_float4_stream_bytes(
             vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
+            ctx.vertex_count,
+            ctx.vertex_stride,
+            &ctx.data.vertex_attributes,
         ),
     ) {
-        queue.write_buffer(cb.as_ref(), 0, &c);
+        ctx.queue.write_buffer(cb.as_ref(), 0, &c);
     }
 }
 
@@ -307,14 +315,8 @@ fn write_in_place_index_buffer(
 }
 
 /// Writes bone/synthetic bone buffers from `raw` according to hint flags.
-#[allow(clippy::too_many_arguments)]
 fn write_in_place_bone_buffers(
-    mesh: &GpuMesh,
-    queue: &wgpu::Queue,
-    raw: &[u8],
-    layout: &MeshBufferLayout,
-    data: &MeshUploadData,
-    vc_usize: usize,
+    ctx: &MeshInPlaceWriteContext<'_>,
     needs_bone_buffers: bool,
     synthetic_bones: bool,
     full: bool,
@@ -326,53 +328,53 @@ fn write_in_place_bone_buffers(
     }
     if synthetic_bones && (full || write_bone_weights || write_bind_poses) {
         let (bind_poses_arr, bone_counts, bone_weights) =
-            synthetic_bone_data_for_blendshape_only(data.vertex_count);
-        if let Some(bc) = &mesh.bone_counts_buffer {
-            queue.write_buffer(bc.as_ref(), 0, &bone_counts);
+            synthetic_bone_data_for_blendshape_only(ctx.data.vertex_count);
+        if let Some(bc) = &ctx.mesh.bone_counts_buffer {
+            ctx.queue.write_buffer(bc.as_ref(), 0, &bone_counts);
         }
-        if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(&bone_weights, vc_usize) {
-            if let Some(bi) = &mesh.bone_indices_buffer {
-                queue.write_buffer(bi.as_ref(), 0, &ib);
+        if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(&bone_weights, ctx.vertex_count) {
+            if let Some(bi) = &ctx.mesh.bone_indices_buffer {
+                ctx.queue.write_buffer(bi.as_ref(), 0, &ib);
             }
-            if let Some(bwt) = &mesh.bone_weights_vec4_buffer {
-                queue.write_buffer(bwt.as_ref(), 0, &wb);
+            if let Some(bwt) = &ctx.mesh.bone_weights_vec4_buffer {
+                ctx.queue.write_buffer(bwt.as_ref(), 0, &wb);
             }
         }
         let bp_bytes: Vec<u8> = bind_poses_arr
             .iter()
             .flat_map(|m| bytemuck::bytes_of(m).iter().copied())
             .collect();
-        if let Some(bp) = &mesh.bind_poses_buffer {
-            queue.write_buffer(bp.as_ref(), 0, &bp_bytes);
+        if let Some(bp) = &ctx.mesh.bind_poses_buffer {
+            ctx.queue.write_buffer(bp.as_ref(), 0, &bp_bytes);
         }
-    } else if data.bone_count > 0 {
+    } else if ctx.data.bone_count > 0 {
         if full || write_bone_weights {
-            let bc = &raw
-                [layout.bone_counts_start..layout.bone_counts_start + layout.bone_counts_length];
-            let bw = &raw
-                [layout.bone_weights_start..layout.bone_weights_start + layout.bone_weights_length];
-            if let Some(bcb) = &mesh.bone_counts_buffer {
-                queue.write_buffer(bcb.as_ref(), 0, bc);
+            let bc = &ctx.raw[ctx.layout.bone_counts_start
+                ..ctx.layout.bone_counts_start + ctx.layout.bone_counts_length];
+            let bw = &ctx.raw[ctx.layout.bone_weights_start
+                ..ctx.layout.bone_weights_start + ctx.layout.bone_weights_length];
+            if let Some(bcb) = &ctx.mesh.bone_counts_buffer {
+                ctx.queue.write_buffer(bcb.as_ref(), 0, bc);
             }
-            if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(bw, vc_usize) {
-                if let Some(bi) = &mesh.bone_indices_buffer {
-                    queue.write_buffer(bi.as_ref(), 0, &ib);
+            if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(bw, ctx.vertex_count) {
+                if let Some(bi) = &ctx.mesh.bone_indices_buffer {
+                    ctx.queue.write_buffer(bi.as_ref(), 0, &ib);
                 }
-                if let Some(bwt) = &mesh.bone_weights_vec4_buffer {
-                    queue.write_buffer(bwt.as_ref(), 0, &wb);
+                if let Some(bwt) = &ctx.mesh.bone_weights_vec4_buffer {
+                    ctx.queue.write_buffer(bwt.as_ref(), 0, &wb);
                 }
             }
         }
         if full || write_bind_poses {
-            let bp_raw =
-                &raw[layout.bind_poses_start..layout.bind_poses_start + layout.bind_poses_length];
-            if let Some(bp) = &mesh.bind_poses_buffer {
-                let bind_poses_arr = extract_bind_poses(bp_raw, data.bone_count as usize)?;
+            let bp_raw = &ctx.raw[ctx.layout.bind_poses_start
+                ..ctx.layout.bind_poses_start + ctx.layout.bind_poses_length];
+            if let Some(bp) = &ctx.mesh.bind_poses_buffer {
+                let bind_poses_arr = extract_bind_poses(bp_raw, ctx.data.bone_count as usize)?;
                 let bp_bytes: Vec<u8> = bind_poses_arr
                     .iter()
                     .flat_map(|m| bytemuck::bytes_of(m).iter().copied())
                     .collect();
-                queue.write_buffer(bp.as_ref(), 0, &bp_bytes);
+                ctx.queue.write_buffer(bp.as_ref(), 0, &bp_bytes);
             }
         }
     }
@@ -640,23 +642,28 @@ impl GpuMesh {
         let want_submeshes = validated_submesh_ranges(&data.submeshes, self.index_count);
 
         write_in_place_vertex_and_derived_streams(
-            self,
-            queue,
-            raw,
-            layout,
-            data,
-            vc_usize,
-            vertex_stride_us,
+            &MeshInPlaceWriteContext {
+                mesh: self,
+                queue,
+                raw,
+                layout,
+                data,
+                vertex_count: vc_usize,
+                vertex_stride: vertex_stride_us,
+            },
             write_vertex,
         );
         write_in_place_index_buffer(self, queue, raw, layout, write_ib);
         write_in_place_bone_buffers(
-            self,
-            queue,
-            raw,
-            layout,
-            data,
-            vc_usize,
+            &MeshInPlaceWriteContext {
+                mesh: self,
+                queue,
+                raw,
+                layout,
+                data,
+                vertex_count: vc_usize,
+                vertex_stride: vertex_stride_us,
+            },
             needs_bone_buffers,
             synthetic_bones,
             full,

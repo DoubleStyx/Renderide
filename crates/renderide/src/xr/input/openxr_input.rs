@@ -14,7 +14,7 @@ use super::profile::{
     decode_profile_code, is_concrete_profile, log_profile_transition, profile_code,
     ActiveControllerProfile,
 };
-use super::state::build_controller_state;
+use super::state::{build_controller_state, OpenxrControllerRawInputs};
 
 /// OpenXR [`xr::Action::state`] snapshot for one hand (all channels consumed by IPC mapping).
 struct PolledHandStates {
@@ -72,31 +72,31 @@ fn ipc_vr_controller_from_polled(
 ) -> VRControllerState {
     let tracking_valid = resolved_frame.is_some();
     let frame = resolved_frame.unwrap_or_else(placeholder_controller_frame);
-    build_controller_state(
+    build_controller_state(OpenxrControllerRawInputs {
         profile,
         side,
-        tracking_valid,
+        is_tracking: tracking_valid,
         frame,
-        polled.trigger.current_state,
-        polled.trigger_touch.current_state,
-        polled.trigger_click.current_state,
-        polled.squeeze.current_state,
-        polled.squeeze_click.current_state,
-        polled.thumbstick_vec(),
-        polled.thumbstick_touch.current_state,
-        polled.thumbstick_click.current_state,
-        polled.trackpad_vec(),
-        polled.trackpad_touch.current_state,
-        polled.trackpad_click.current_state,
-        polled.trackpad_force.current_state,
-        polled.primary.current_state,
-        polled.secondary.current_state,
-        polled.primary_touch.current_state,
-        polled.secondary_touch.current_state,
-        polled.menu.current_state,
-        polled.thumbrest_touch.current_state,
-        polled.select.current_state,
-    )
+        trigger: polled.trigger.current_state,
+        trigger_touch: polled.trigger_touch.current_state,
+        trigger_click: polled.trigger_click.current_state,
+        squeeze: polled.squeeze.current_state,
+        squeeze_click: polled.squeeze_click.current_state,
+        thumbstick: polled.thumbstick_vec(),
+        thumbstick_touch: polled.thumbstick_touch.current_state,
+        thumbstick_click: polled.thumbstick_click.current_state,
+        trackpad: polled.trackpad_vec(),
+        trackpad_touch: polled.trackpad_touch.current_state,
+        trackpad_click: polled.trackpad_click.current_state,
+        trackpad_force: polled.trackpad_force.current_state,
+        primary: polled.primary.current_state,
+        secondary: polled.secondary.current_state,
+        primary_touch: polled.primary_touch.current_state,
+        secondary_touch: polled.secondary_touch.current_state,
+        menu: polled.menu.current_state,
+        thumbrest_touch: polled.thumbrest_touch.current_state,
+        select: polled.select.current_state,
+    })
 }
 
 /// OpenXR actions and derived spaces for headset/controller input used by the renderer IPC path.

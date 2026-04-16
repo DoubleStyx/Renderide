@@ -376,31 +376,37 @@ fn build_wgpu_hal_and_queue_family(
     })
 }
 
-/// Creates the Vulkan logical device through OpenXR using wgpu-hal feature negotiation.
-#[allow(clippy::too_many_arguments)]
-fn create_vulkan_logical_device_openxr(
-    xr_instance: &xr::Instance,
+/// Vulkan device creation inputs for OpenXR `create_vulkan_device` + wgpu-hal negotiation.
+struct VulkanOpenXrDeviceCreateDescriptor<'a> {
+    xr_instance: &'a xr::Instance,
     xr_system_id: xr::SystemId,
-    vk_entry: &ash::Entry,
-    vk_instance: &ash::Instance,
+    vk_entry: &'a ash::Entry,
+    vk_instance: &'a ash::Instance,
     vk_physical_device: vk::PhysicalDevice,
     queue_family_index: u32,
-    wgpu_exposed: &hal::ExposedAdapter<HalVulkan>,
-    vk_device_properties: &vk::PhysicalDeviceProperties,
+    wgpu_exposed: &'a hal::ExposedAdapter<HalVulkan>,
+    vk_device_properties: &'a vk::PhysicalDeviceProperties,
+}
+
+/// Creates the Vulkan logical device through OpenXR using wgpu-hal feature negotiation.
+fn create_vulkan_logical_device_openxr(
+    desc: VulkanOpenXrDeviceCreateDescriptor<'_>,
 ) -> Result<(wgt::Features, Vec<&'static std::ffi::CStr>, ash::Device), XrBootstrapError> {
     let compression = wgt::Features::TEXTURE_COMPRESSION_BC
         | wgt::Features::TEXTURE_COMPRESSION_ETC2
         | wgt::Features::TEXTURE_COMPRESSION_ASTC;
     let optional_float32_filterable = wgt::Features::FLOAT32_FILTERABLE;
     let wgpu_features = wgt::Features::MULTIVIEW
-        | (wgpu_exposed.features & (compression | optional_float32_filterable));
+        | (desc.wgpu_exposed.features & (compression | optional_float32_filterable));
 
-    let mut enabled_device_extensions = wgpu_exposed
+    let mut enabled_device_extensions = desc
+        .wgpu_exposed
         .adapter
         .required_device_extensions(wgpu_features);
 
-    if vk_device_properties.api_version >= vk::API_VERSION_1_2
-        && wgpu_exposed
+    if desc.vk_device_properties.api_version >= vk::API_VERSION_1_2
+        && desc
+            .wgpu_exposed
             .adapter
             .physical_device_capabilities()
             .supports_extension(khr_timeline_semaphore::NAME)
@@ -412,12 +418,13 @@ fn create_vulkan_logical_device_openxr(
         enabled_device_extensions.push(khr_timeline_semaphore::NAME);
     }
 
-    let mut enabled_phd_features = wgpu_exposed
+    let mut enabled_phd_features = desc
+        .wgpu_exposed
         .adapter
         .physical_device_features(&enabled_device_extensions, wgpu_features);
 
     let family_info = vk::DeviceQueueCreateInfo::default()
-        .queue_family_index(queue_family_index)
+        .queue_family_index(desc.queue_family_index)
         .queue_priorities(&[1.0f32]);
     let str_pointers: Vec<_> = enabled_device_extensions
         .iter()
@@ -429,45 +436,49 @@ fn create_vulkan_logical_device_openxr(
     let device_create_info = enabled_phd_features.add_to_device_create(pre_info);
 
     let vk_device = unsafe {
-        let raw = xr_instance
+        let raw = desc
+            .xr_instance
             .create_vulkan_device(
-                xr_system_id,
+                desc.xr_system_id,
                 #[allow(clippy::missing_transmute_annotations)]
-                std::mem::transmute(vk_entry.static_fn().get_instance_proc_addr),
-                vk_physical_device.as_raw() as *const c_void,
+                std::mem::transmute(desc.vk_entry.static_fn().get_instance_proc_addr),
+                desc.vk_physical_device.as_raw() as *const c_void,
                 &device_create_info as *const _ as *const _,
             )?
             .map_err(vk::Result::from_raw)?;
         let device_handle = vk::Device::from_raw(raw as usize as u64);
-        verify_device_has_wait_semaphores(vk_instance, device_handle)?;
-        ash::Device::load(vk_instance.fp_v1_0(), device_handle)
+        verify_device_has_wait_semaphores(desc.vk_instance, device_handle)?;
+        ash::Device::load(desc.vk_instance.fp_v1_0(), device_handle)
     };
 
     Ok((wgpu_features, enabled_device_extensions, vk_device))
 }
 
 /// OpenXR session, reference space, optional controller actions, and [`super::session::XrSessionState`].
-#[allow(clippy::too_many_arguments)]
-fn openxr_session_state_and_input(
+struct OpenXrSessionBootstrapDescriptor<'a> {
     xr_instance: xr::Instance,
     openxr_debug_messenger: Option<super::debug_utils::OpenxrDebugUtilsMessenger>,
     environment_blend_mode: xr::EnvironmentBlendMode,
     xr_system_id: xr::SystemId,
-    vk_instance: &ash::Instance,
+    vk_instance: &'a ash::Instance,
     vk_physical_device: vk::PhysicalDevice,
-    vk_device: &ash::Device,
+    vk_device: &'a ash::Device,
     queue_family_index: u32,
     khr_generic_controller: bool,
     runtime_supports_bd_controller: bool,
+}
+
+fn openxr_session_state_and_input(
+    desc: OpenXrSessionBootstrapDescriptor<'_>,
 ) -> Result<(super::session::XrSessionState, Option<OpenxrInput>), XrBootstrapError> {
     let (session, frame_wait, frame_stream) = unsafe {
-        xr_instance.create_session::<xr::Vulkan>(
-            xr_system_id,
+        desc.xr_instance.create_session::<xr::Vulkan>(
+            desc.xr_system_id,
             &xr::vulkan::SessionCreateInfo {
-                instance: vk_instance.handle().as_raw() as _,
-                physical_device: vk_physical_device.as_raw() as _,
-                device: vk_device.handle().as_raw() as _,
-                queue_family_index,
+                instance: desc.vk_instance.handle().as_raw() as _,
+                physical_device: desc.vk_physical_device.as_raw() as _,
+                device: desc.vk_device.handle().as_raw() as _,
+                queue_family_index: desc.queue_family_index,
                 queue_index: 0,
             },
         )
@@ -477,10 +488,10 @@ fn openxr_session_state_and_input(
         .create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY)
         .map_err(XrBootstrapError::OpenXr)?;
     let openxr_input = match OpenxrInput::new(
-        &xr_instance,
+        &desc.xr_instance,
         &session,
-        khr_generic_controller,
-        runtime_supports_bd_controller,
+        desc.khr_generic_controller,
+        desc.runtime_supports_bd_controller,
     ) {
         Ok(i) => Some(i),
         Err(e) => {
@@ -489,9 +500,9 @@ fn openxr_session_state_and_input(
         }
     };
     let xr_session = super::session::XrSessionState::new(
-        xr_instance,
-        openxr_debug_messenger,
-        environment_blend_mode,
+        desc.xr_instance,
+        desc.openxr_debug_messenger,
+        desc.environment_blend_mode,
         session,
         frame_wait,
         frame_stream,
@@ -500,43 +511,47 @@ fn openxr_session_state_and_input(
     Ok((xr_session, openxr_input))
 }
 
-/// Wraps Ash device and wgpu-hal adapter in [`wgpu::Instance`] / [`wgpu::Device`] / [`XrWgpuHandles`].
-#[allow(clippy::too_many_arguments)]
-fn wgpu_from_hal_openxr_chain(
+/// wgpu-hal + OpenXR session packaging into [`XrWgpuHandles`].
+struct WgpuHalOpenXrAssembly {
     wgpu_vk_instance: hal::vulkan::Instance,
     wgpu_exposed: hal::ExposedAdapter<HalVulkan>,
     vk_device: ash::Device,
-    enabled_device_extensions: &[&'static std::ffi::CStr],
+    enabled_device_extensions: Vec<&'static std::ffi::CStr>,
     wgpu_features: wgt::Features,
     queue_family_index: u32,
     xr_session: super::session::XrSessionState,
     xr_system_id: xr::SystemId,
     openxr_input: Option<OpenxrInput>,
+}
+
+/// Wraps Ash device and wgpu-hal adapter in [`wgpu::Instance`] / [`wgpu::Device`] / [`XrWgpuHandles`].
+fn wgpu_from_hal_openxr_chain(
+    assembly: WgpuHalOpenXrAssembly,
 ) -> Result<XrWgpuHandles, XrBootstrapError> {
-    let mut limits = wgpu_exposed.capabilities.limits.clone();
+    let mut limits = assembly.wgpu_exposed.capabilities.limits.clone();
     limits.max_multiview_view_count = limits.max_multiview_view_count.max(2);
     let memory_hints = wgpu::MemoryHints::default();
 
     let wgpu_open_device = unsafe {
-        wgpu_exposed.adapter.device_from_raw(
-            vk_device,
+        assembly.wgpu_exposed.adapter.device_from_raw(
+            assembly.vk_device,
             None,
-            enabled_device_extensions,
-            wgpu_features,
+            assembly.enabled_device_extensions.as_slice(),
+            assembly.wgpu_features,
             &limits,
             &memory_hints,
-            queue_family_index,
+            assembly.queue_family_index,
             0,
         )
     }
     .map_err(|e| XrBootstrapError::Wgpu(format!("device_from_raw: {e}")))?;
 
-    let wgpu_instance = unsafe { wgpu::Instance::from_hal::<HalVulkan>(wgpu_vk_instance) };
-    let wgpu_adapter = unsafe { wgpu_instance.create_adapter_from_hal(wgpu_exposed) };
+    let wgpu_instance = unsafe { wgpu::Instance::from_hal::<HalVulkan>(assembly.wgpu_vk_instance) };
+    let wgpu_adapter = unsafe { wgpu_instance.create_adapter_from_hal(assembly.wgpu_exposed) };
 
     let device_desc = wgpu::DeviceDescriptor {
         label: Some("renderide-openxr"),
-        required_features: wgpu_features,
+        required_features: assembly.wgpu_features,
         required_limits: limits,
         memory_hints,
         experimental_features: Default::default(),
@@ -552,9 +567,9 @@ fn wgpu_from_hal_openxr_chain(
         wgpu_adapter,
         device: Arc::new(wgpu_device),
         queue: Arc::new(Mutex::new(wgpu_queue)),
-        xr_session,
-        xr_system_id,
-        openxr_input,
+        xr_session: assembly.xr_session,
+        xr_system_id: assembly.xr_system_id,
+        openxr_input: assembly.openxr_input,
     })
 }
 
@@ -594,41 +609,42 @@ pub fn init_wgpu_openxr(gpu_validation_layers: bool) -> Result<XrWgpuHandles, Xr
     } = build_wgpu_hal_and_queue_family(ash_vk)?;
 
     let (wgpu_features, enabled_device_extensions, vk_device) =
-        create_vulkan_logical_device_openxr(
-            &xr_instance,
+        create_vulkan_logical_device_openxr(VulkanOpenXrDeviceCreateDescriptor {
+            xr_instance: &xr_instance,
             xr_system_id,
-            &vk_entry,
-            &vk_instance,
+            vk_entry: &vk_entry,
+            vk_instance: &vk_instance,
             vk_physical_device,
             queue_family_index,
-            &wgpu_exposed,
-            &vk_device_properties,
-        )?;
+            wgpu_exposed: &wgpu_exposed,
+            vk_device_properties: &vk_device_properties,
+        })?;
 
-    let (xr_session, openxr_input) = openxr_session_state_and_input(
-        xr_instance,
-        openxr_debug_messenger,
-        environment_blend_mode,
-        xr_system_id,
-        &vk_instance,
-        vk_physical_device,
-        &vk_device,
-        queue_family_index,
-        khr_generic_controller,
-        runtime_supports_bd_controller,
-    )?;
+    let (xr_session, openxr_input) =
+        openxr_session_state_and_input(OpenXrSessionBootstrapDescriptor {
+            xr_instance,
+            openxr_debug_messenger,
+            environment_blend_mode,
+            xr_system_id,
+            vk_instance: &vk_instance,
+            vk_physical_device,
+            vk_device: &vk_device,
+            queue_family_index,
+            khr_generic_controller,
+            runtime_supports_bd_controller,
+        })?;
 
-    wgpu_from_hal_openxr_chain(
+    wgpu_from_hal_openxr_chain(WgpuHalOpenXrAssembly {
         wgpu_vk_instance,
         wgpu_exposed,
         vk_device,
-        &enabled_device_extensions,
+        enabled_device_extensions,
         wgpu_features,
         queue_family_index,
         xr_session,
         xr_system_id,
         openxr_input,
-    )
+    })
 }
 
 #[cfg(test)]

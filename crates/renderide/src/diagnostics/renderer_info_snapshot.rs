@@ -70,56 +70,71 @@ pub struct RendererInfoSnapshot {
     pub msaa_max_samples: u32,
 }
 
+/// Inputs for [`RendererInfoSnapshot::capture`] (IPC, adapter, swapchain, scene, and backend refs).
+pub struct RendererInfoSnapshotCapture<'a> {
+    /// Primary/Background IPC queues connected.
+    pub ipc_connected: bool,
+    /// Host/renderer init handshake state.
+    pub init_state: InitState,
+    /// Last lock-step frame index sent to the host.
+    pub last_frame_index: i32,
+    /// Selected adapter metadata.
+    pub adapter_info: &'a wgpu::AdapterInfo,
+    /// Device limits for HUD lines.
+    pub gpu_limits: &'a GpuLimits,
+    /// Swapchain surface format.
+    pub surface_format: wgpu::TextureFormat,
+    /// Swapchain extent in physical pixels.
+    pub viewport_px: (u32, u32),
+    /// Swapchain present mode.
+    pub present_mode: wgpu::PresentMode,
+    /// Wall-clock ms between redraw ticks (HUD frame time).
+    pub frame_time_ms: f64,
+    /// Scene coordinator for space/renderable counts.
+    pub scene: &'a SceneCoordinator,
+    /// Backend pools, graph, and lights.
+    pub backend: &'a RenderBackend,
+    /// GPU context (MSAA effective/max).
+    pub gpu: &'a GpuContext,
+    /// Requested MSAA sample count from settings (before clamp).
+    pub msaa_requested_samples: u32,
+}
+
 impl RendererInfoSnapshot {
     /// Fills all fields from the scene, backend, and swapchain (call after light prep for `gpu_light_count`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn capture(
-        ipc_connected: bool,
-        init_state: InitState,
-        last_frame_index: i32,
-        adapter_info: &wgpu::AdapterInfo,
-        gpu_limits: &GpuLimits,
-        surface_format: wgpu::TextureFormat,
-        viewport_px: (u32, u32),
-        present_mode: wgpu::PresentMode,
-        frame_time_ms: f64,
-        scene: &SceneCoordinator,
-        backend: &RenderBackend,
-        gpu: &GpuContext,
-        msaa_requested_samples: u32,
-    ) -> Self {
-        let store = backend.material_property_store();
+    pub fn capture(args: RendererInfoSnapshotCapture<'_>) -> Self {
+        let store = args.backend.material_property_store();
         Self {
-            ipc_connected,
-            init_state,
-            last_frame_index,
-            adapter_name: adapter_info.name.clone(),
-            adapter_backend: adapter_info.backend,
-            adapter_device_type: adapter_info.device_type,
-            adapter_driver: adapter_info.driver.clone(),
-            adapter_driver_info: adapter_info.driver_info.clone(),
-            surface_format,
-            viewport_px,
-            present_mode,
-            frame_time_ms,
-            render_space_count: scene.render_space_count(),
-            mesh_renderable_count: scene.total_mesh_renderable_count(),
-            resident_mesh_count: backend.mesh_pool().meshes().len(),
-            resident_texture_count: backend.texture_pool().resident_texture_count(),
-            resident_render_texture_count: backend.render_texture_pool().len(),
+            ipc_connected: args.ipc_connected,
+            init_state: args.init_state,
+            last_frame_index: args.last_frame_index,
+            adapter_name: args.adapter_info.name.clone(),
+            adapter_backend: args.adapter_info.backend,
+            adapter_device_type: args.adapter_info.device_type,
+            adapter_driver: args.adapter_info.driver.clone(),
+            adapter_driver_info: args.adapter_info.driver_info.clone(),
+            surface_format: args.surface_format,
+            viewport_px: args.viewport_px,
+            present_mode: args.present_mode,
+            frame_time_ms: args.frame_time_ms,
+            render_space_count: args.scene.render_space_count(),
+            mesh_renderable_count: args.scene.total_mesh_renderable_count(),
+            resident_mesh_count: args.backend.mesh_pool().meshes().len(),
+            resident_texture_count: args.backend.texture_pool().resident_texture_count(),
+            resident_render_texture_count: args.backend.render_texture_pool().len(),
             material_property_slots: store.material_property_slot_count(),
             property_block_slots: store.property_block_slot_count(),
             material_shader_bindings: store.material_shader_binding_count(),
-            frame_graph_pass_count: backend.frame_graph_pass_count(),
-            gpu_light_count: backend.frame_resources.frame_lights().len(),
-            gpu_max_texture_dim_2d: gpu_limits.max_texture_dimension_2d(),
-            gpu_max_buffer_size: gpu_limits.max_buffer_size(),
-            gpu_max_storage_binding: gpu_limits.max_storage_buffer_binding_size(),
-            gpu_supports_base_instance: gpu_limits.supports_base_instance,
-            gpu_supports_multiview: gpu_limits.supports_multiview,
-            msaa_requested_samples,
-            msaa_effective_samples: gpu.swapchain_msaa_effective(),
-            msaa_max_samples: gpu.msaa_max_sample_count(),
+            frame_graph_pass_count: args.backend.frame_graph_pass_count(),
+            gpu_light_count: args.backend.frame_resources.frame_lights().len(),
+            gpu_max_texture_dim_2d: args.gpu_limits.max_texture_dimension_2d(),
+            gpu_max_buffer_size: args.gpu_limits.max_buffer_size(),
+            gpu_max_storage_binding: args.gpu_limits.max_storage_buffer_binding_size(),
+            gpu_supports_base_instance: args.gpu_limits.supports_base_instance,
+            gpu_supports_multiview: args.gpu_limits.supports_multiview,
+            msaa_requested_samples: args.msaa_requested_samples,
+            msaa_effective_samples: args.gpu.swapchain_msaa_effective(),
+            msaa_max_samples: args.gpu.msaa_max_sample_count(),
         }
     }
 }

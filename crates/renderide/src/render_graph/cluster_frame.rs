@@ -10,7 +10,7 @@ use glam::Mat4;
 
 use crate::backend::CLUSTER_COUNT_Z;
 use crate::backend::TILE_SIZE;
-use crate::gpu::frame_globals::FrameGpuUniforms;
+use crate::gpu::frame_globals::{ClusteredFrameGlobalsParams, FrameGpuUniforms};
 use crate::render_graph::camera::{
     clamp_desktop_fov_degrees, effective_head_output_clip_planes, reverse_z_perspective,
     view_matrix_from_render_transform,
@@ -58,19 +58,19 @@ impl ClusterFrameParams {
         light_count: u32,
         right_z_coeffs: [f32; 4],
     ) -> FrameGpuUniforms {
-        FrameGpuUniforms::new_clustered(
+        FrameGpuUniforms::new_clustered(ClusteredFrameGlobalsParams {
             camera_world_pos,
-            self.view_space_z_coeffs(),
-            right_z_coeffs,
-            self.cluster_count_x,
-            self.cluster_count_y,
-            CLUSTER_COUNT_Z,
-            self.near_clip,
-            self.far_clip,
+            view_space_z_coeffs: self.view_space_z_coeffs(),
+            view_space_z_coeffs_right: right_z_coeffs,
+            cluster_count_x: self.cluster_count_x,
+            cluster_count_y: self.cluster_count_y,
+            cluster_count_z: CLUSTER_COUNT_Z,
+            near_clip: self.near_clip,
+            far_clip: self.far_clip,
             light_count,
-            self.viewport_width.max(1),
-            self.viewport_height.max(1),
-        )
+            viewport_width: self.viewport_width.max(1),
+            viewport_height: self.viewport_height.max(1),
+        })
     }
 }
 

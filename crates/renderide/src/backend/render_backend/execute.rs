@@ -2,8 +2,8 @@
 
 use crate::gpu::GpuContext;
 use crate::render_graph::{
-    CameraTransformDrawFilter, CompiledRenderGraph, ExternalFrameTargets, ExternalOffscreenTargets,
-    FrameView, GraphExecuteError, WorldMeshDrawCollection,
+    CompiledRenderGraph, ExternalFrameTargets, FrameView, GraphExecuteError,
+    OffscreenSingleViewExecuteSpec,
 };
 use crate::scene::SceneCoordinator;
 use winit::window::Window;
@@ -86,30 +86,15 @@ impl RenderBackend {
 
     /// Renders the default graph to a single-view render texture (secondary camera).
     ///
-    /// When `prefetched_world_mesh_draws` is [`Some`], the world mesh forward pass skips CPU draw
+    /// When `spec.prefetched_world_mesh_draws` is [`Some`], the world mesh forward pass skips CPU draw
     /// collection and uses the provided list (see [`crate::render_graph::FrameRenderParams::prefetched_world_mesh_draws`]).
-    #[allow(clippy::too_many_arguments)]
     pub fn execute_frame_graph_offscreen_single_view(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
-        scene: &SceneCoordinator,
-        host_camera: crate::render_graph::HostCameraFrame,
-        external: ExternalOffscreenTargets<'_>,
-        transform_filter: Option<CameraTransformDrawFilter>,
-        prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+        spec: OffscreenSingleViewExecuteSpec<'_>,
     ) -> Result<(), GraphExecuteError> {
         self.with_compiled_graph(gpu, false, |graph, gpu_ctx, backend| {
-            graph.execute_offscreen_single_view(
-                gpu_ctx,
-                window,
-                scene,
-                backend,
-                host_camera,
-                external,
-                transform_filter,
-                prefetched_world_mesh_draws,
-            )
+            graph.execute_offscreen_single_view(gpu_ctx, backend, spec)
         })
     }
 }

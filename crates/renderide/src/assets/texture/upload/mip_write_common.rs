@@ -152,18 +152,40 @@ pub(super) fn write_one_mip(
     Ok(())
 }
 
+/// Descriptor for [`write_texture3d_volume_mip`]: one full 3D subresource write via [`wgpu::Queue::write_texture`].
+pub struct Texture3dVolumeMipWrite<'a> {
+    /// Queue used for the texel copy.
+    pub queue: &'a wgpu::Queue,
+    /// Destination texture.
+    pub texture: &'a wgpu::Texture,
+    /// Mip level index.
+    pub mip_level: u32,
+    /// Logical width in texels.
+    pub width: u32,
+    /// Logical height in texels.
+    pub height: u32,
+    /// Depth in texels (array layers for 3D).
+    pub depth: u32,
+    /// Texel format (must match texture creation).
+    pub format: wgpu::TextureFormat,
+    /// Tightly packed mip bytes for the full volume at `mip_level`.
+    pub bytes: &'a [u8],
+}
+
 /// Writes one mip level of a 3D texture (full `width`×`height`×`depth` volume).
-#[allow(clippy::too_many_arguments)]
 pub fn write_texture3d_volume_mip(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    mip_level: u32,
-    width: u32,
-    height: u32,
-    depth: u32,
-    format: wgpu::TextureFormat,
-    bytes: &[u8],
+    write: &Texture3dVolumeMipWrite<'_>,
 ) -> Result<(), TextureUploadError> {
+    let Texture3dVolumeMipWrite {
+        queue,
+        texture,
+        mip_level,
+        width,
+        height,
+        depth,
+        format,
+        bytes,
+    } = *write;
     let (bw, bh) = format.block_dimensions();
     let copy_width = if bw > 1 {
         width.div_ceil(bw) * bw
@@ -210,18 +232,38 @@ pub fn write_texture3d_volume_mip(
     Ok(())
 }
 
+/// Descriptor for [`write_cubemap_face_mip`]: one cubemap face × one mip (2D array layer).
+pub struct CubemapFaceMipWrite<'a> {
+    /// Queue used for the texel copy.
+    pub queue: &'a wgpu::Queue,
+    /// Destination cubemap texture (`D2` array with six layers).
+    pub texture: &'a wgpu::Texture,
+    /// Mip level index.
+    pub mip_level: u32,
+    /// Array layer index `0..6` for the cube face.
+    pub face_layer: u32,
+    /// Face width in texels.
+    pub width: u32,
+    /// Face height in texels.
+    pub height: u32,
+    /// Texel format (must match texture creation).
+    pub format: wgpu::TextureFormat,
+    /// Tightly packed mip bytes for this face.
+    pub bytes: &'a [u8],
+}
+
 /// Writes one face × one mip of a cubemap (`D2` texture with six array layers).
-#[allow(clippy::too_many_arguments)]
-pub fn write_cubemap_face_mip(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    mip_level: u32,
-    face_layer: u32,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-    bytes: &[u8],
-) -> Result<(), TextureUploadError> {
+pub fn write_cubemap_face_mip(write: &CubemapFaceMipWrite<'_>) -> Result<(), TextureUploadError> {
+    let CubemapFaceMipWrite {
+        queue,
+        texture,
+        mip_level,
+        face_layer,
+        width,
+        height,
+        format,
+        bytes,
+    } = *write;
     let (bw, bh) = format.block_dimensions();
     let copy_width = if bw > 1 {
         width.div_ceil(bw) * bw

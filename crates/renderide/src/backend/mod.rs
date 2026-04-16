@@ -44,9 +44,10 @@ pub use mesh_deform::{
     write_per_draw_uniform_slab, MeshDeformScratch, MeshPreprocessPipelines, PaddedPerDrawUniforms,
     WgslMat3x3, INITIAL_PER_DRAW_UNIFORM_SLOTS, PER_DRAW_UNIFORM_STRIDE,
 };
+pub(crate) use occlusion::HiZBuildInput;
 pub use occlusion::OcclusionSystem;
 pub use per_draw_resources::PerDrawResources;
 pub use render_backend::{
-    RenderBackend, MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS,
+    RenderBackend, RenderBackendAttachDesc, MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS,
     MAX_PENDING_TEXTURE_UPLOADS,
 };

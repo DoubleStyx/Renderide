@@ -15,13 +15,15 @@ mod subregion;
 mod texture3d_write;
 mod write_mip_chain;
 
-pub use cubemap_write::CubemapMipChainUploader;
+pub use cubemap_write::{CubemapFaceMipUploadStep, CubemapMipChainUploader};
 pub use error::TextureUploadError;
 pub use format_resolve::{
     resolve_cubemap_wgpu_format, resolve_texture2d_wgpu_format, resolve_texture3d_wgpu_format,
 };
-pub use texture3d_write::{write_texture3d_mips, Texture3dMipAdvance, Texture3dMipChainUploader};
+pub use texture3d_write::{
+    write_texture3d_mips, Texture3dMipAdvance, Texture3dMipChainUploader, Texture3dMipUploadStep,
+};
 pub use write_mip_chain::{
     texture_upload_start, write_texture2d_mips, MipChainAdvance, TextureDataStart,
-    TextureMipChainUploader,
+    TextureMipChainUploader, TextureMipUploadStep,
 };

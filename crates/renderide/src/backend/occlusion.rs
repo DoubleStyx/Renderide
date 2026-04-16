@@ -15,6 +15,18 @@ use crate::render_graph::{
 };
 use crate::scene::SceneCoordinator;
 
+/// Depth source, layout, and logical view for [`OcclusionSystem::encode_hi_z_build_pass`].
+pub(crate) struct HiZBuildInput<'a> {
+    /// Depth attachment view (desktop 2D or multiview array) sampled for mip0.
+    pub depth_view: &'a wgpu::TextureView,
+    /// Full framebuffer extent in pixels (matches the depth attachment).
+    pub extent: (u32, u32),
+    /// Desktop single-view vs stereo depth array layout.
+    pub mode: OutputDepthMode,
+    /// Which occlusion pyramid slot to update.
+    pub view: OcclusionViewId,
+}
+
 /// GPU pyramid, CPU readback ring, and temporal cull snapshots for Hi-Z occlusion.
 pub struct OcclusionSystem {
     /// Main window / OpenXR multiview Hi-Z (desktop and stereo layouts).
@@ -80,19 +92,23 @@ impl OcclusionSystem {
     }
 
     /// Records Hi-Z GPU work into `encoder` (staging copy included).
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode_hi_z_build_pass(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        depth_view: &wgpu::TextureView,
-        extent: (u32, u32),
-        mode: OutputDepthMode,
-        view: OcclusionViewId,
+        input: HiZBuildInput<'_>,
     ) {
-        let state = self.hi_z_state_mut(view);
-        encode_hi_z_build(device, queue, encoder, depth_view, extent, mode, state);
+        let state = self.hi_z_state_mut(input.view);
+        encode_hi_z_build(
+            device,
+            queue,
+            encoder,
+            input.depth_view,
+            input.extent,
+            input.mode,
+            state,
+        );
     }
 
     /// Drains completed Hi-Z `map_async` readbacks into CPU snapshots for [`Self::hi_z_cull_data`].

@@ -25,7 +25,8 @@ use crate::render_graph::camera::{
 use crate::render_graph::cluster_frame::{cluster_frame_params, cluster_frame_params_stereo};
 use crate::render_graph::frame_params::{FrameRenderParams, HostCameraFrame};
 use crate::render_graph::world_mesh_draw_prep::{
-    collect_and_sort_world_mesh_draws, WorldMeshDrawCollection, WorldMeshDrawItem,
+    collect_and_sort_world_mesh_draws, DrawCollectionContext, WorldMeshDrawCollection,
+    WorldMeshDrawItem,
 };
 use crate::render_graph::world_mesh_draw_stats_from_sorted;
 use crate::render_graph::MAIN_FORWARD_DEPTH_CLEAR;
@@ -33,7 +34,7 @@ use crate::render_graph::{clamp_desktop_fov_degrees, WorldMeshCullInput};
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 
-use super::encode::draw_subset;
+use super::encode::{draw_subset, ForwardDrawBatch};
 use super::vp::compute_per_draw_vp_triple;
 
 /// Minimum draws before parallelizing per-draw VP / model uniform packing (rayon overhead).
@@ -105,17 +106,17 @@ pub(super) fn take_or_collect_world_mesh_draws<'a>(
         .map(|r| &r.router)
         .unwrap_or(&fallback_router);
     let dict = MaterialDictionary::new(backend.material_property_store());
-    collect_and_sort_world_mesh_draws(
-        frame.scene,
-        backend.mesh_pool(),
-        &dict,
-        router_ref,
+    collect_and_sort_world_mesh_draws(&DrawCollectionContext {
+        scene: frame.scene,
+        mesh_pool: backend.mesh_pool(),
+        material_dict: &dict,
+        material_router: router_ref,
         shader_perm,
         render_context,
-        hc.head_output_transform,
+        head_output_transform: hc.head_output_transform,
         culling,
-        frame.transform_draw_filter.as_ref(),
-    )
+        transform_filter: frame.transform_draw_filter.as_ref(),
+    })
 }
 
 /// Copies Hi-Z temporal state for the next frame when culling is active.
@@ -200,13 +201,10 @@ pub(super) fn compute_view_projections(
 }
 
 /// Packs per-draw uniforms and uploads the storage slab. Returns `false` if per-draw resources are missing.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn pack_and_upload_per_draw_slab(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    backend: &mut RenderBackend,
-    scene: &SceneCoordinator,
-    hc: HostCameraFrame,
+    frame: &mut FrameRenderParams<'_>,
     render_context: RenderingContext,
     world_proj: Mat4,
     overlay_proj: Option<Mat4>,
@@ -215,6 +213,10 @@ pub(super) fn pack_and_upload_per_draw_slab(
     if draws.is_empty() {
         return true;
     }
+
+    let scene = frame.scene;
+    let hc = frame.host_camera;
+    let backend = &mut frame.backend;
 
     {
         let Some(pd) = backend.frame_resources.per_draw.as_mut() else {
@@ -371,41 +373,84 @@ fn partition_intersection_draw_indices(draws: &[WorldMeshDrawItem]) -> (Vec<usiz
     (regular_indices, intersect_indices)
 }
 
-/// Opaque pass: clear color/depth, draw non-intersection items.
-#[allow(clippy::too_many_arguments)]
-fn encode_world_mesh_forward_opaque_pass(
-    encoder: &mut wgpu::CommandEncoder,
-    frame: &mut FrameRenderParams<'_>,
-    queue: &wgpu::Queue,
-    draws: &[WorldMeshDrawItem],
-    regular_indices: &[usize],
-    pass_desc: &MaterialPipelineDesc,
+/// Encoder, device, frame, and queue for one mesh-forward encode block.
+pub(super) struct ForwardPassEncodeFrame<'a, 'b> {
+    /// Encoder receiving render passes.
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// GPU device (MSAA depth resolve, depth snapshot copy).
+    pub device: &'a wgpu::Device,
+    /// Per-frame host + GPU state.
+    pub frame: &'a mut FrameRenderParams<'b>,
+    /// Submission queue.
+    pub queue: &'a wgpu::Queue,
+}
+
+/// Color / depth views and MSAA resolve inputs for [`encode_world_mesh_forward_draw_passes`].
+pub(super) struct ForwardPassEncodeViews<'a> {
+    /// Color attachment (MSAA or resolved).
+    pub color_view: &'a wgpu::TextureView,
+    /// Depth attachment used for rasterization (may be MSAA).
+    pub depth_raster_view: &'a wgpu::TextureView,
+    /// Optional swapchain resolve target for MSAA color.
+    pub resolve_swapchain: Option<&'a wgpu::TextureView>,
+    /// GPU resources for multisampled depth resolve, when MSAA is active.
+    pub msaa_depth_resolve: Option<&'a MsaaDepthResolveResources>,
+}
+
+/// Color/depth attachment views and store ops for one forward subpass.
+struct ForwardPassAttachments<'a> {
+    color_view: &'a wgpu::TextureView,
+    depth_view: &'a wgpu::TextureView,
+    resolve_target: Option<&'a wgpu::TextureView>,
+    color_store: wgpu::StoreOp,
+}
+
+/// Bind groups shared across opaque and intersection forward subpasses.
+struct ForwardPassBindGroups<'a> {
+    per_draw: &'a wgpu::BindGroup,
+    frame: &'a Arc<wgpu::BindGroup>,
+    empty_material: &'a Arc<wgpu::BindGroup>,
+}
+
+/// Pipeline and embedded-bind state for one opaque or intersection subpass.
+struct ForwardPassRasterConfig<'a> {
+    pass_desc: &'a MaterialPipelineDesc,
     shader_perm: ShaderPermutation,
     use_multiview: bool,
     supports_base_instance: bool,
-    color_view: &wgpu::TextureView,
-    depth_view: &wgpu::TextureView,
-    resolve_color_to: Option<&wgpu::TextureView>,
-    color_store: wgpu::StoreOp,
-    per_draw_bg: &wgpu::BindGroup,
-    frame_bg_arc: &Arc<wgpu::BindGroup>,
-    empty_bg_arc: &Arc<wgpu::BindGroup>,
-    warned_missing_embedded_bind: &mut bool,
-    offscreen_write_rt: Option<i32>,
+    offscreen_write_render_texture_asset_id: Option<i32>,
+    warned_missing_embedded_bind: &'a mut bool,
+}
+
+/// Shared recording state for [`encode_world_mesh_forward_opaque_pass`] / intersection.
+struct ForwardSubpassRecord<'a, 'b, 'c> {
+    encoder: &'a mut wgpu::CommandEncoder,
+    frame: &'a mut FrameRenderParams<'b>,
+    queue: &'a wgpu::Queue,
+    draws: &'c [WorldMeshDrawItem],
+    draw_indices: &'c [usize],
+}
+
+/// Opaque pass: clear color/depth, draw non-intersection items.
+fn encode_world_mesh_forward_opaque_pass(
+    sub: ForwardSubpassRecord<'_, '_, '_>,
+    attachments: ForwardPassAttachments<'_>,
+    bind_groups: &ForwardPassBindGroups<'_>,
+    cfg: &mut ForwardPassRasterConfig<'_>,
 ) {
-    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    let mut rpass = sub.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("world-mesh-forward-opaque"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: color_view,
-            resolve_target: resolve_color_to,
+            view: attachments.color_view,
+            resolve_target: attachments.resolve_target,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(SWAPCHAIN_CLEAR_COLOR),
-                store: color_store,
+                store: attachments.color_store,
             },
             depth_slice: None,
         })],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: depth_view,
+            view: attachments.depth_view,
             depth_ops: Some(wgpu::Operations {
                 load: wgpu::LoadOp::Clear(MAIN_FORWARD_DEPTH_CLEAR),
                 store: wgpu::StoreOp::Store,
@@ -414,64 +459,49 @@ fn encode_world_mesh_forward_opaque_pass(
         }),
         occlusion_query_set: None,
         timestamp_writes: None,
-        multiview_mask: if use_multiview {
+        multiview_mask: if cfg.use_multiview {
             NonZeroU32::new(3)
         } else {
             None
         },
     });
-    draw_subset(
-        &mut rpass,
-        regular_indices,
-        draws,
-        frame.backend,
-        queue,
-        frame_bg_arc.as_ref(),
-        empty_bg_arc.as_ref(),
-        per_draw_bg,
-        pass_desc,
-        shader_perm,
-        warned_missing_embedded_bind,
-        offscreen_write_rt,
-        supports_base_instance,
-    );
+    draw_subset(ForwardDrawBatch {
+        rpass: &mut rpass,
+        draw_indices: sub.draw_indices,
+        draws: sub.draws,
+        backend: sub.frame.backend,
+        queue: sub.queue,
+        frame_bg: bind_groups.frame.as_ref(),
+        empty_bg: bind_groups.empty_material.as_ref(),
+        per_draw_bind_group: bind_groups.per_draw,
+        pass_desc: cfg.pass_desc,
+        shader_perm: cfg.shader_perm,
+        warned_missing_embedded_bind: cfg.warned_missing_embedded_bind,
+        offscreen_write_render_texture_asset_id: cfg.offscreen_write_render_texture_asset_id,
+        supports_base_instance: cfg.supports_base_instance,
+    });
 }
 
 /// Intersection subpass after depth snapshot (load preserved depth/color).
-#[allow(clippy::too_many_arguments)]
 fn encode_world_mesh_forward_intersection_pass(
-    encoder: &mut wgpu::CommandEncoder,
-    frame: &mut FrameRenderParams<'_>,
-    queue: &wgpu::Queue,
-    draws: &[WorldMeshDrawItem],
-    intersect_indices: &[usize],
-    pass_desc: &MaterialPipelineDesc,
-    shader_perm: ShaderPermutation,
-    use_multiview: bool,
-    supports_base_instance: bool,
-    color_view: &wgpu::TextureView,
-    depth_view: &wgpu::TextureView,
-    resolve_color_to: Option<&wgpu::TextureView>,
-    color_store: wgpu::StoreOp,
-    per_draw_bg: &wgpu::BindGroup,
-    frame_bg_arc: &Arc<wgpu::BindGroup>,
-    empty_bg_arc: &Arc<wgpu::BindGroup>,
-    warned_missing_embedded_bind: &mut bool,
-    offscreen_write_rt: Option<i32>,
+    sub: ForwardSubpassRecord<'_, '_, '_>,
+    attachments: ForwardPassAttachments<'_>,
+    bind_groups: &ForwardPassBindGroups<'_>,
+    cfg: &mut ForwardPassRasterConfig<'_>,
 ) {
-    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    let mut rpass = sub.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("world-mesh-forward-intersection"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: color_view,
-            resolve_target: resolve_color_to,
+            view: attachments.color_view,
+            resolve_target: attachments.resolve_target,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Load,
-                store: color_store,
+                store: attachments.color_store,
             },
             depth_slice: None,
         })],
         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-            view: depth_view,
+            view: attachments.depth_view,
             depth_ops: Some(wgpu::Operations {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
@@ -480,48 +510,54 @@ fn encode_world_mesh_forward_intersection_pass(
         }),
         occlusion_query_set: None,
         timestamp_writes: None,
-        multiview_mask: if use_multiview {
+        multiview_mask: if cfg.use_multiview {
             NonZeroU32::new(3)
         } else {
             None
         },
     });
-    draw_subset(
-        &mut rpass,
-        intersect_indices,
-        draws,
-        frame.backend,
-        queue,
-        frame_bg_arc.as_ref(),
-        empty_bg_arc.as_ref(),
-        per_draw_bg,
-        pass_desc,
-        shader_perm,
-        warned_missing_embedded_bind,
-        offscreen_write_rt,
-        supports_base_instance,
-    );
+    draw_subset(ForwardDrawBatch {
+        rpass: &mut rpass,
+        draw_indices: sub.draw_indices,
+        draws: sub.draws,
+        backend: sub.frame.backend,
+        queue: sub.queue,
+        frame_bg: bind_groups.frame.as_ref(),
+        empty_bg: bind_groups.empty_material.as_ref(),
+        per_draw_bind_group: bind_groups.per_draw,
+        pass_desc: cfg.pass_desc,
+        shader_perm: cfg.shader_perm,
+        warned_missing_embedded_bind: cfg.warned_missing_embedded_bind,
+        offscreen_write_render_texture_asset_id: cfg.offscreen_write_render_texture_asset_id,
+        supports_base_instance: cfg.supports_base_instance,
+    });
 }
 
 /// Opaque and optional intersection subpasses for mesh forward.
 ///
 /// Returns `false` if required bind groups are missing (caller returns `Ok(())`).
-#[allow(clippy::too_many_arguments)]
 pub(super) fn encode_world_mesh_forward_draw_passes(
-    encoder: &mut wgpu::CommandEncoder,
-    device: &wgpu::Device,
-    frame: &mut FrameRenderParams<'_>,
-    queue: &wgpu::Queue,
+    ctx: ForwardPassEncodeFrame<'_, '_>,
     draws: &[WorldMeshDrawItem],
-    pass_desc: &MaterialPipelineDesc,
-    shader_perm: ShaderPermutation,
-    use_multiview: bool,
+    pipeline: &WorldMeshForwardPipeline,
     supports_base_instance: bool,
-    color_view: &wgpu::TextureView,
-    depth_raster_view: &wgpu::TextureView,
-    resolve_swapchain: Option<&wgpu::TextureView>,
-    msaa_depth_resolve: Option<&MsaaDepthResolveResources>,
+    views: ForwardPassEncodeViews<'_>,
 ) -> bool {
+    let encoder = ctx.encoder;
+    let device = ctx.device;
+    let frame = ctx.frame;
+    let queue = ctx.queue;
+
+    let ForwardPassEncodeViews {
+        color_view,
+        depth_raster_view,
+        resolve_swapchain,
+        msaa_depth_resolve,
+    } = views;
+
+    let pass_desc = &pipeline.pass_desc;
+    let shader_perm = pipeline.shader_perm;
+    let use_multiview = pipeline.use_multiview;
     let Some(per_draw_bg) = frame
         .backend
         .frame_resources
@@ -563,25 +599,37 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
         (None, wgpu::StoreOp::Store)
     };
 
-    encode_world_mesh_forward_opaque_pass(
-        encoder,
-        frame,
-        queue,
-        draws,
-        &regular_indices,
+    let bind_groups = ForwardPassBindGroups {
+        per_draw: per_draw_bg.as_ref(),
+        frame: &frame_bg_arc,
+        empty_material: &empty_bg_arc,
+    };
+
+    let mut raster_cfg = ForwardPassRasterConfig {
         pass_desc,
         shader_perm,
         use_multiview,
         supports_base_instance,
-        color_view,
-        depth_raster_view,
-        opaque_resolve,
-        opaque_color_store,
-        per_draw_bg.as_ref(),
-        &frame_bg_arc,
-        &empty_bg_arc,
-        &mut warned_missing_embedded_bind,
-        offscreen_write_rt,
+        offscreen_write_render_texture_asset_id: offscreen_write_rt,
+        warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
+    };
+
+    encode_world_mesh_forward_opaque_pass(
+        ForwardSubpassRecord {
+            encoder,
+            frame,
+            queue,
+            draws,
+            draw_indices: &regular_indices,
+        },
+        ForwardPassAttachments {
+            color_view,
+            depth_view: depth_raster_view,
+            resolve_target: opaque_resolve,
+            color_store: opaque_color_store,
+        },
+        &bind_groups,
+        &mut raster_cfg,
     );
 
     if intersect_indices.is_empty() {
@@ -647,25 +695,37 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
         (None, wgpu::StoreOp::Store)
     };
 
-    encode_world_mesh_forward_intersection_pass(
-        encoder,
-        frame,
-        queue,
-        draws,
-        &intersect_indices,
+    let bind_groups = ForwardPassBindGroups {
+        per_draw: per_draw_bg.as_ref(),
+        frame: &frame_bg_arc,
+        empty_material: &empty_bg_arc,
+    };
+
+    let mut raster_cfg = ForwardPassRasterConfig {
         pass_desc,
         shader_perm,
         use_multiview,
         supports_base_instance,
-        color_view,
-        depth_raster_view,
-        inter_resolve,
-        inter_store,
-        per_draw_bg.as_ref(),
-        &frame_bg_arc,
-        &empty_bg_arc,
-        &mut warned_missing_embedded_bind,
-        offscreen_write_rt,
+        offscreen_write_render_texture_asset_id: offscreen_write_rt,
+        warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
+    };
+
+    encode_world_mesh_forward_intersection_pass(
+        ForwardSubpassRecord {
+            encoder,
+            frame,
+            queue,
+            draws,
+            draw_indices: &intersect_indices,
+        },
+        ForwardPassAttachments {
+            color_view,
+            depth_view: depth_raster_view,
+            resolve_target: inter_resolve,
+            color_store: inter_store,
+        },
+        &bind_groups,
+        &mut raster_cfg,
     );
 
     if msaa {
@@ -716,7 +776,6 @@ pub(super) fn encode_msaa_depth_resolve_after_clear_only(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn encode_msaa_depth_resolve_to_single_sample(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::assets::texture::{
     texture_upload_start, MipChainAdvance, TextureDataStart, TextureMipChainUploader,
-    TextureUploadError,
+    TextureMipUploadStep, TextureUploadError,
 };
 use crate::gpu::GpuLimits;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
@@ -123,15 +123,15 @@ impl TextureUploadTask {
                         ))));
                     }
                     let payload = &raw[..want];
-                    Some(uploader.upload_next_mip(
-                        device.as_ref(),
-                        gpu_queue,
+                    Some(uploader.upload_next_mip(TextureMipUploadStep {
+                        device: device.as_ref(),
+                        queue: gpu_queue,
                         texture,
                         fmt,
                         wgpu_format,
                         upload,
                         payload,
-                    ))
+                    }))
                 });
                 let Some(mip_result) = mip_out else {
                     logger::warn!("texture {id}: shared memory slice missing");

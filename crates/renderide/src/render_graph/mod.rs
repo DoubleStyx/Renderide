@@ -66,9 +66,9 @@ pub mod passes;
 pub use world_mesh_draw_prep::{
     build_instance_batches, collect_and_sort_world_mesh_draws,
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
-    resolved_material_slots, sort_world_mesh_draws, CameraTransformDrawFilter, InstanceBatch,
-    MaterialDrawBatchKey, WorldMeshDrawCollectParallelism, WorldMeshDrawCollection,
-    WorldMeshDrawItem,
+    resolved_material_slots, sort_world_mesh_draws, CameraTransformDrawFilter,
+    DrawCollectionContext, InstanceBatch, MaterialDrawBatchKey, WorldMeshDrawCollectParallelism,
+    WorldMeshDrawCollection, WorldMeshDrawItem,
 };
 pub use world_mesh_draw_stats::{world_mesh_draw_stats_from_sorted, WorldMeshDrawStats};
 
@@ -82,7 +82,7 @@ pub use camera::{DESKTOP_FOV_DEGREES_MAX, DESKTOP_FOV_DEGREES_MIN};
 pub use cluster_frame::{cluster_frame_params, cluster_frame_params_stereo, ClusterFrameParams};
 pub use compiled::{
     CompileStats, CompiledRenderGraph, ExternalFrameTargets, ExternalOffscreenTargets, FrameView,
-    FrameViewTarget,
+    FrameViewTarget, OffscreenSingleViewExecuteSpec,
 };
 pub use context::RenderPassContext;
 pub use error::{GraphBuildError, GraphExecuteError, RenderPassError};

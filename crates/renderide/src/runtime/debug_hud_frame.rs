@@ -79,19 +79,21 @@ impl RendererRuntime {
                 .map(|s| s.rendering.msaa.as_count())
                 .unwrap_or(1);
             let snapshot = crate::diagnostics::RendererInfoSnapshot::capture(
-                self.is_ipc_connected(),
-                self.init_state(),
-                self.last_frame_index(),
-                gpu.adapter_info(),
-                gpu.limits().as_ref(),
-                gpu.config_format(),
-                gpu.surface_extent_px(),
-                gpu.present_mode(),
-                self.backend.debug_frame_time_ms(),
-                &self.scene,
-                &self.backend,
-                gpu,
-                msaa_requested,
+                crate::diagnostics::RendererInfoSnapshotCapture {
+                    ipc_connected: self.is_ipc_connected(),
+                    init_state: self.init_state(),
+                    last_frame_index: self.last_frame_index(),
+                    adapter_info: gpu.adapter_info(),
+                    gpu_limits: gpu.limits().as_ref(),
+                    surface_format: gpu.config_format(),
+                    viewport_px: gpu.surface_extent_px(),
+                    present_mode: gpu.present_mode(),
+                    frame_time_ms: self.backend.debug_frame_time_ms(),
+                    scene: &self.scene,
+                    backend: &self.backend,
+                    gpu,
+                    msaa_requested_samples: msaa_requested,
+                },
             );
             self.backend.set_debug_hud_snapshot(snapshot);
             self.backend.set_debug_hud_frame_diagnostics(frame_diag);

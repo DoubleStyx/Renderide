@@ -82,6 +82,9 @@ impl<'a> MemoryPacker<'a> {
     }
 
     /// Packs up to eight booleans into one byte (bit0 = LSB).
+    ///
+    /// Kept as eight parameters to match [`crate::shared`] pack output from SharedTypeGenerator; prefer
+    /// [`Self::write_packed_bools_array`] for new call sites.
     #[allow(clippy::too_many_arguments)]
     pub fn write_packed_bools(
         &mut self,
@@ -94,14 +97,19 @@ impl<'a> MemoryPacker<'a> {
         bit6: bool,
         bit7: bool,
     ) {
-        let byte = (bit0 as u8)
-            | (bit1 as u8) << 1
-            | (bit2 as u8) << 2
-            | (bit3 as u8) << 3
-            | (bit4 as u8) << 4
-            | (bit5 as u8) << 5
-            | (bit6 as u8) << 6
-            | (bit7 as u8) << 7;
+        self.write_packed_bools_array([bit0, bit1, bit2, bit3, bit4, bit5, bit6, bit7]);
+    }
+
+    /// Packs eight booleans into one byte (bit0 = LSB).
+    pub fn write_packed_bools_array(&mut self, bits: [bool; 8]) {
+        let byte = (bits[0] as u8)
+            | (bits[1] as u8) << 1
+            | (bits[2] as u8) << 2
+            | (bits[3] as u8) << 3
+            | (bits[4] as u8) << 4
+            | (bits[5] as u8) << 5
+            | (bits[6] as u8) << 6
+            | (bits[7] as u8) << 7;
         self.write(&byte);
     }
 

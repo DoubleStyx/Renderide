@@ -33,6 +33,18 @@ enum DepthBinding {
     D2Array { layer: u32 },
 }
 
+/// Device, encoder, and source/destination views for a single Hi-Z mip0 dispatch from depth.
+struct HiZMip0EncodeContext<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    encoder: &'a mut wgpu::CommandEncoder,
+    depth_view: &'a wgpu::TextureView,
+    scratch: &'a HiZGpuScratch,
+    pipes: &'a HiZPipelines,
+    pyramid_views: &'a [wgpu::TextureView],
+    depth_bind: DepthBinding,
+}
+
 /// Resets slot validity, invalidates cache, ensures [`HiZGpuScratch`] matches `extent` / stereo layout.
 ///
 /// Returns `false` when encoding must abort (zero extent, missing scratch, or GPU not ready).
@@ -113,16 +125,16 @@ pub fn encode_hi_z_build(
 
     match mode {
         OutputDepthMode::DesktopSingle => {
-            dispatch_mip0_and_downsample(
+            dispatch_mip0_and_downsample(HiZMip0EncodeContext {
                 device,
                 queue,
                 encoder,
                 depth_view,
                 scratch,
                 pipes,
-                &scratch.views,
-                DepthBinding::D2,
-            );
+                pyramid_views: &scratch.views,
+                depth_bind: DepthBinding::D2,
+            });
             copy_pyramid_to_staging(
                 encoder,
                 &scratch.pyramid,
@@ -139,26 +151,26 @@ pub fn encode_hi_z_build(
             let Some(staging_r) = scratch.staging_r.as_ref() else {
                 return;
             };
-            dispatch_mip0_and_downsample(
+            dispatch_mip0_and_downsample(HiZMip0EncodeContext {
                 device,
                 queue,
                 encoder,
                 depth_view,
                 scratch,
                 pipes,
-                &scratch.views,
-                DepthBinding::D2Array { layer: 0 },
-            );
-            dispatch_mip0_and_downsample(
+                pyramid_views: &scratch.views,
+                depth_bind: DepthBinding::D2Array { layer: 0 },
+            });
+            dispatch_mip0_and_downsample(HiZMip0EncodeContext {
                 device,
                 queue,
                 encoder,
                 depth_view,
                 scratch,
                 pipes,
-                views_r,
-                DepthBinding::D2Array { layer: 1 },
-            );
+                pyramid_views: views_r,
+                depth_bind: DepthBinding::D2Array { layer: 1 },
+            });
             copy_pyramid_to_staging(
                 encoder,
                 &scratch.pyramid,
@@ -175,43 +187,35 @@ pub fn encode_hi_z_build(
 }
 
 /// Fills Hi-Z mip0 from a depth texture (desktop 2D view or one layer of a stereo depth array).
-#[allow(clippy::too_many_arguments)]
-fn dispatch_hi_z_mip0_from_depth(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    depth_view: &wgpu::TextureView,
-    scratch: &HiZGpuScratch,
-    pipes: &HiZPipelines,
-    pyramid_views: &[wgpu::TextureView],
-    depth_bind: DepthBinding,
-) {
-    match depth_bind {
+fn dispatch_hi_z_mip0_from_depth(args: &mut HiZMip0EncodeContext<'_>) {
+    match args.depth_bind {
         DepthBinding::D2 => {
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let bg = args.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("hi_z_mip0_d_bg"),
-                layout: &pipes.bgl_mip0_desktop,
+                layout: &args.pipes.bgl_mip0_desktop,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(depth_view),
+                        resource: wgpu::BindingResource::TextureView(args.depth_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&pyramid_views[0]),
+                        resource: wgpu::BindingResource::TextureView(&args.pyramid_views[0]),
                     },
                 ],
             });
             {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("hi_z_mip0_desktop"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(&pipes.mip0_desktop);
+                let mut pass = args
+                    .encoder
+                    .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("hi_z_mip0_desktop"),
+                        timestamp_writes: None,
+                    });
+                pass.set_pipeline(&args.pipes.mip0_desktop);
                 pass.set_bind_group(0, &bg, &[]);
                 pass.dispatch_workgroups(
-                    scratch.extent.0.div_ceil(8),
-                    scratch.extent.1.div_ceil(8),
+                    args.scratch.extent.0.div_ceil(8),
+                    args.scratch.extent.1.div_ceil(8),
                     1,
                 );
             }
@@ -223,35 +227,38 @@ fn dispatch_hi_z_mip0_from_depth(
                 _pad1: 0,
                 _pad2: 0,
             };
-            queue.write_buffer(&scratch.layer_uniform, 0, bytemuck::bytes_of(&layer_u));
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            args.queue
+                .write_buffer(&args.scratch.layer_uniform, 0, bytemuck::bytes_of(&layer_u));
+            let bg = args.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("hi_z_mip0_s_bg"),
-                layout: &pipes.bgl_mip0_stereo,
+                layout: &args.pipes.bgl_mip0_stereo,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(depth_view),
+                        resource: wgpu::BindingResource::TextureView(args.depth_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: scratch.layer_uniform.as_entire_binding(),
+                        resource: args.scratch.layer_uniform.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&pyramid_views[0]),
+                        resource: wgpu::BindingResource::TextureView(&args.pyramid_views[0]),
                     },
                 ],
             });
             {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("hi_z_mip0_stereo"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(&pipes.mip0_stereo);
+                let mut pass = args
+                    .encoder
+                    .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("hi_z_mip0_stereo"),
+                        timestamp_writes: None,
+                    });
+                pass.set_pipeline(&args.pipes.mip0_stereo);
                 pass.set_bind_group(0, &bg, &[]);
                 pass.dispatch_workgroups(
-                    scratch.extent.0.div_ceil(8),
-                    scratch.extent.1.div_ceil(8),
+                    args.scratch.extent.0.div_ceil(8),
+                    args.scratch.extent.1.div_ceil(8),
                     1,
                 );
             }
@@ -260,7 +267,6 @@ fn dispatch_hi_z_mip0_from_depth(
 }
 
 /// Max-reduction chain from mip0 through the rest of the R32F pyramid.
-#[allow(clippy::too_many_arguments)]
 fn dispatch_hi_z_downsample_mips(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -311,28 +317,16 @@ fn dispatch_hi_z_downsample_mips(
 }
 
 /// Depth mip0 copy plus hierarchical downsample for one pyramid view chain (desktop or one array layer).
-#[allow(clippy::too_many_arguments)]
-fn dispatch_mip0_and_downsample(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-    depth_view: &wgpu::TextureView,
-    scratch: &HiZGpuScratch,
-    pipes: &HiZPipelines,
-    pyramid_views: &[wgpu::TextureView],
-    depth_bind: DepthBinding,
-) {
-    dispatch_hi_z_mip0_from_depth(
-        device,
-        queue,
-        encoder,
-        depth_view,
-        scratch,
-        pipes,
-        pyramid_views,
-        depth_bind,
+fn dispatch_mip0_and_downsample(mut args: HiZMip0EncodeContext<'_>) {
+    dispatch_hi_z_mip0_from_depth(&mut args);
+    dispatch_hi_z_downsample_mips(
+        args.device,
+        args.queue,
+        args.encoder,
+        args.scratch,
+        args.pipes,
+        args.pyramid_views,
     );
-    dispatch_hi_z_downsample_mips(device, queue, encoder, scratch, pipes, pyramid_views);
 }
 
 fn copy_pyramid_to_staging(

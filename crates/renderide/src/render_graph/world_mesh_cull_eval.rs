@@ -98,6 +98,22 @@ fn cpu_cull_hi_z_should_cull(
     !passes_hiz
 }
 
+/// Identity of a mesh renderable being evaluated for CPU frustum / Hi-Z culling.
+pub(crate) struct MeshCullTarget<'a> {
+    /// Scene graph and spaces.
+    pub scene: &'a SceneCoordinator,
+    /// Render space containing the mesh.
+    pub space_id: RenderSpaceId,
+    /// Resident GPU mesh (bounds, skinning buffers).
+    pub mesh: &'a GpuMesh,
+    /// Whether this path uses skinned bone bounds.
+    pub skinned: bool,
+    /// Skinned renderer when `skinned` is true.
+    pub skinned_renderer: Option<&'a SkinnedMeshRenderer>,
+    /// Scene node index for rigid transform lookup.
+    pub node_id: i32,
+}
+
 /// World-space bounds and rigid transform for a single CPU cull evaluation.
 #[derive(Clone, Copy)]
 struct MeshCullGeometry {
@@ -108,42 +124,36 @@ struct MeshCullGeometry {
 }
 
 /// World-space AABB (and rigid matrix when applicable) for culling, evaluated once per draw slot.
-#[allow(clippy::too_many_arguments)]
 fn mesh_world_geometry_for_cull(
-    scene: &SceneCoordinator,
-    space_id: RenderSpaceId,
-    mesh: &GpuMesh,
-    skinned: bool,
-    skinned_renderer: Option<&SkinnedMeshRenderer>,
-    node_id: i32,
+    target: &MeshCullTarget<'_>,
     culling: &WorldMeshCullInput<'_>,
     render_context: RenderingContext,
 ) -> MeshCullGeometry {
-    if mesh_bounds_degenerate_for_cull(&mesh.bounds) {
+    if mesh_bounds_degenerate_for_cull(&target.mesh.bounds) {
         return MeshCullGeometry {
             world_aabb: None,
             rigid_world_matrix: None,
         };
     }
-    if scene.space(space_id).is_none() {
+    if target.scene.space(target.space_id).is_none() {
         return MeshCullGeometry {
             world_aabb: None,
             rigid_world_matrix: None,
         };
     }
     let hc = culling.host_camera;
-    if skinned {
-        let Some(sk) = skinned_renderer else {
+    if target.skinned {
+        let Some(sk) = target.skinned_renderer else {
             return MeshCullGeometry {
                 world_aabb: None,
                 rigid_world_matrix: None,
             };
         };
         let Some(pal) = build_skinning_palette(
-            scene,
-            space_id,
-            &mesh.skinning_bind_matrices,
-            mesh.has_skeleton,
+            target.scene,
+            target.space_id,
+            &target.mesh.skinning_bind_matrices,
+            target.mesh.has_skeleton,
             &sk.bone_transform_indices,
             sk.base.node_id,
             render_context,
@@ -155,13 +165,13 @@ fn mesh_world_geometry_for_cull(
             };
         };
         MeshCullGeometry {
-            world_aabb: world_aabb_from_skinned_bone_origins(&mesh.bounds, &pal),
+            world_aabb: world_aabb_from_skinned_bone_origins(&target.mesh.bounds, &pal),
             rigid_world_matrix: None,
         }
     } else {
-        let Some(model) = scene.world_matrix_for_render_context(
-            space_id,
-            node_id as usize,
+        let Some(model) = target.scene.world_matrix_for_render_context(
+            target.space_id,
+            target.node_id as usize,
             render_context,
             hc.head_output_transform,
         ) else {
@@ -171,7 +181,7 @@ fn mesh_world_geometry_for_cull(
             };
         };
         MeshCullGeometry {
-            world_aabb: world_aabb_from_local_bounds(&mesh.bounds, model),
+            world_aabb: world_aabb_from_local_bounds(&target.mesh.bounds, model),
             rigid_world_matrix: Some(model),
         }
     }
@@ -187,40 +197,25 @@ pub(crate) enum CpuCullFailure {
 ///
 /// On success, returns the rigid world matrix when the draw is non-skinned and the matrix was
 /// computed while building bounds (reuse in the forward pass).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn mesh_draw_passes_cpu_cull(
-    scene: &SceneCoordinator,
-    space_id: RenderSpaceId,
-    mesh: &GpuMesh,
+    target: &MeshCullTarget<'_>,
     is_overlay: bool,
-    skinned: bool,
-    skinned_renderer: Option<&SkinnedMeshRenderer>,
-    node_id: i32,
     culling: &WorldMeshCullInput<'_>,
     render_context: RenderingContext,
 ) -> Result<Option<Mat4>, CpuCullFailure> {
-    let geom = mesh_world_geometry_for_cull(
-        scene,
-        space_id,
-        mesh,
-        skinned,
-        skinned_renderer,
-        node_id,
-        culling,
-        render_context,
-    );
+    let geom = mesh_world_geometry_for_cull(target, culling, render_context);
 
     let Some((wmin, wmax)) = geom.world_aabb else {
         return Ok(geom.rigid_world_matrix);
     };
 
-    let Some(space) = scene.space(space_id) else {
+    let Some(space) = target.scene.space(target.space_id) else {
         return Ok(geom.rigid_world_matrix);
     };
     let view = culling
         .host_camera
         .secondary_camera_world_to_view
-        .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(scene, space));
+        .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(target.scene, space));
     let proj = &culling.proj;
 
     if !cpu_cull_frustum_visible(proj, is_overlay, view, wmin, wmax) {
@@ -231,7 +226,7 @@ pub(crate) fn mesh_draw_passes_cpu_cull(
         return Ok(geom.rigid_world_matrix);
     }
 
-    if cpu_cull_hi_z_should_cull(space_id, wmin, wmax, culling) {
+    if cpu_cull_hi_z_should_cull(target.space_id, wmin, wmax, culling) {
         return Err(CpuCullFailure::HiZ);
     }
     Ok(geom.rigid_world_matrix)

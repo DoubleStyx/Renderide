@@ -86,6 +86,30 @@ struct EmbeddedBindInputResolution {
     primary_texture_any_kind_present: bool,
 }
 
+/// Host texture binding lookup for [`EmbeddedMaterialBindResources::resolve_texture_view_for_host`] and
+/// [`EmbeddedMaterialBindResources::resolve_sampler_for_host`].
+struct HostTexturePropertyQuery<'a> {
+    host_name: &'a str,
+    texture_property_id: i32,
+    primary_texture_2d: i32,
+    pools: &'a EmbeddedTexturePools<'a>,
+    store: &'a MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    offscreen_write_render_texture_asset_id: Option<i32>,
+}
+
+/// LRU uniform buffer create/refresh for [`EmbeddedMaterialBindResources::get_or_create_embedded_uniform_buffer`].
+struct EmbeddedUniformBufferRequest<'a> {
+    queue: &'a wgpu::Queue,
+    stem: &'a str,
+    layout: &'a Arc<StemMaterialLayout>,
+    uniform_key: &'a MaterialUniformCacheKey,
+    mutation_gen: u64,
+    store: &'a MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    primary_texture_any_kind_present: bool,
+}
+
 impl EmbeddedMaterialBindResources {
     /// Builds layouts and placeholder texture.
     pub fn new(
@@ -213,16 +237,17 @@ impl EmbeddedMaterialBindResources {
 
         let mutation_gen = store.mutation_generation(lookup);
 
-        let uniform_buf = self.get_or_create_embedded_uniform_buffer(
-            queue,
-            stem,
-            &layout,
-            &uniform_key,
-            mutation_gen,
-            store,
-            lookup,
-            primary_texture_any_kind_present,
-        )?;
+        let uniform_buf =
+            self.get_or_create_embedded_uniform_buffer(EmbeddedUniformBufferRequest {
+                queue,
+                stem,
+                layout: &layout,
+                uniform_key: &uniform_key,
+                mutation_gen,
+                store,
+                lookup,
+                primary_texture_any_kind_present,
+            })?;
 
         let mut cache = self.bind_cache.borrow_mut();
         if let Some(bg) = cache.get(&bind_key) {
@@ -346,15 +371,15 @@ impl EmbeddedMaterialBindResources {
                             format!("reflection: missing property id for texture @binding({b})")
                         })?;
                     let tex_view = self
-                        .resolve_texture_view_for_host(
+                        .resolve_texture_view_for_host(HostTexturePropertyQuery {
                             host_name,
-                            tex_pid,
-                            texture_2d_asset_id,
+                            texture_property_id: tex_pid,
+                            primary_texture_2d: texture_2d_asset_id,
                             pools,
                             store,
                             lookup,
                             offscreen_write_render_texture_asset_id,
-                        )
+                        })
                         .unwrap_or_else(|| self.white_texture_view.clone());
                     keepalive_views.push(tex_view);
                 }
@@ -378,15 +403,15 @@ impl EmbeddedMaterialBindResources {
                                 "reflection: missing property id for texture @binding({tex_binding})"
                             )
                         })?;
-                    let sampler = self.resolve_sampler_for_host(
+                    let sampler = self.resolve_sampler_for_host(HostTexturePropertyQuery {
                         host_name,
-                        tex_pid,
-                        texture_2d_asset_id,
+                        texture_property_id: tex_pid,
+                        primary_texture_2d: texture_2d_asset_id,
                         pools,
                         store,
                         lookup,
                         offscreen_write_render_texture_asset_id,
-                    );
+                    });
                     keepalive_samplers.push(sampler);
                 }
                 _ => {
@@ -400,18 +425,20 @@ impl EmbeddedMaterialBindResources {
     }
 
     /// LRU uniform buffer for embedded `@group(1)`; refreshes bytes when [`MaterialPropertyStore`] mutates.
-    #[allow(clippy::too_many_arguments)]
     fn get_or_create_embedded_uniform_buffer(
         &self,
-        queue: &wgpu::Queue,
-        stem: &str,
-        layout: &Arc<StemMaterialLayout>,
-        uniform_key: &MaterialUniformCacheKey,
-        mutation_gen: u64,
-        store: &MaterialPropertyStore,
-        lookup: MaterialPropertyLookupIds,
-        primary_texture_any_kind_present: bool,
+        req: EmbeddedUniformBufferRequest<'_>,
     ) -> Result<Arc<wgpu::Buffer>, EmbeddedMaterialBindError> {
+        let EmbeddedUniformBufferRequest {
+            queue,
+            stem,
+            layout,
+            uniform_key,
+            mutation_gen,
+            store,
+            lookup,
+            primary_texture_any_kind_present,
+        } = req;
         let mut uniform_cache = self.uniform_cache.borrow_mut();
         if let Some(entry) = uniform_cache.get_mut(uniform_key) {
             if entry.last_written_generation == mutation_gen {
@@ -479,46 +506,29 @@ impl EmbeddedMaterialBindResources {
         Ok(layout)
     }
 
-    #[allow(clippy::too_many_arguments)] // host name, property ids, pools, store, lookup, offscreen mask.
     fn resolve_texture_view_for_host(
         &self,
-        host_name: &str,
-        texture_property_id: i32,
-        primary_texture_2d: i32,
-        pools: &EmbeddedTexturePools<'_>,
-        store: &MaterialPropertyStore,
-        lookup: MaterialPropertyLookupIds,
-        offscreen_write_render_texture_asset_id: Option<i32>,
+        q: HostTexturePropertyQuery<'_>,
     ) -> Option<Arc<wgpu::TextureView>> {
         let binding = resolved_texture_binding_for_host(
-            host_name,
-            texture_property_id,
-            primary_texture_2d,
-            store,
-            lookup,
+            q.host_name,
+            q.texture_property_id,
+            q.primary_texture_2d,
+            q.store,
+            q.lookup,
         );
-        self.resolve_texture_view(pools, binding, offscreen_write_render_texture_asset_id)
+        self.resolve_texture_view(q.pools, binding, q.offscreen_write_render_texture_asset_id)
     }
 
-    #[allow(clippy::too_many_arguments)] // host name, property ids, pools, store, lookup, offscreen mask.
-    fn resolve_sampler_for_host(
-        &self,
-        host_name: &str,
-        texture_property_id: i32,
-        primary_texture_2d: i32,
-        pools: &EmbeddedTexturePools<'_>,
-        store: &MaterialPropertyStore,
-        lookup: MaterialPropertyLookupIds,
-        offscreen_write_render_texture_asset_id: Option<i32>,
-    ) -> Arc<wgpu::Sampler> {
+    fn resolve_sampler_for_host(&self, q: HostTexturePropertyQuery<'_>) -> Arc<wgpu::Sampler> {
         let binding = resolved_texture_binding_for_host(
-            host_name,
-            texture_property_id,
-            primary_texture_2d,
-            store,
-            lookup,
+            q.host_name,
+            q.texture_property_id,
+            q.primary_texture_2d,
+            q.store,
+            q.lookup,
         );
-        self.resolve_sampler(pools, binding, offscreen_write_render_texture_asset_id)
+        self.resolve_sampler(q.pools, binding, q.offscreen_write_render_texture_asset_id)
     }
 
     fn resolve_texture_view(

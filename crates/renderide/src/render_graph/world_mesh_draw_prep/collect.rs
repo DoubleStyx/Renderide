@@ -21,7 +21,49 @@ use super::types::{
     resolved_material_slots, CameraTransformDrawFilter, WorldMeshDrawCollection, WorldMeshDrawItem,
 };
 
-use super::super::world_mesh_cull_eval::{mesh_draw_passes_cpu_cull, CpuCullFailure};
+use super::super::world_mesh_cull_eval::{
+    mesh_draw_passes_cpu_cull, CpuCullFailure, MeshCullTarget,
+};
+
+/// Read-only scene, material, and cull state shared across all spaces during draw collection.
+pub struct DrawCollectionContext<'a> {
+    /// Scene graph for mesh renderables.
+    pub scene: &'a SceneCoordinator,
+    /// Resident meshes (submeshes, deform buffers).
+    pub mesh_pool: &'a MeshPool,
+    /// Material property dictionary for batch keys.
+    pub material_dict: &'a MaterialDictionary<'a>,
+    /// Shader stem / pipeline routing.
+    pub material_router: &'a MaterialRouter,
+    /// Default vs multiview permutation for embedded materials.
+    pub shader_perm: ShaderPermutation,
+    /// Mono vs stereo / overlay render context.
+    pub render_context: RenderingContext,
+    /// Head / rig transform for world matrix resolution.
+    pub head_output_transform: Mat4,
+    /// Optional CPU frustum + Hi-Z cull inputs.
+    pub culling: Option<&'a super::super::world_mesh_cull::WorldMeshCullInput<'a>>,
+    /// Optional per-camera node filter.
+    pub transform_filter: Option<&'a CameraTransformDrawFilter>,
+}
+
+/// One static or skinned mesh renderer with its resolved [`GpuMesh`] and submesh index ranges.
+struct StaticMeshDrawSource<'a> {
+    space_id: RenderSpaceId,
+    renderer: &'a StaticMeshRenderer,
+    renderable_index: usize,
+    skinned: bool,
+    skinned_renderer: Option<&'a SkinnedMeshRenderer>,
+    mesh: &'a GpuMesh,
+    submeshes: &'a [(u32, u32)],
+}
+
+/// Mutable expansion state while expanding one space into draw items.
+struct DrawCollectionAccumulator<'a> {
+    out: &'a mut Vec<WorldMeshDrawItem>,
+    mismatch_warned: &'a mut HashSet<i32>,
+    cull_stats: &'a mut (usize, usize, usize),
+}
 
 /// How [`collect_and_sort_world_mesh_draws_with_parallelism`] parallelizes per-space collection and sorting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,42 +78,26 @@ pub enum WorldMeshDrawCollectParallelism {
 ///
 /// `collect_order` is filled with a placeholder; [`collect_and_sort_world_mesh_draws`] assigns the
 /// final stable index after per-space results are merged.
-#[allow(clippy::too_many_arguments)] // Single fan-out site; grouping would obscure the mesh pass.
 fn push_draws_for_renderer(
-    out: &mut Vec<WorldMeshDrawItem>,
-    scene: &SceneCoordinator,
-    space_id: RenderSpaceId,
-    renderer: &StaticMeshRenderer,
-    renderable_index: usize,
-    skinned: bool,
-    skinned_renderer: Option<&SkinnedMeshRenderer>,
-    mesh: &GpuMesh,
-    submeshes: &[(u32, u32)],
-    dict: &MaterialDictionary<'_>,
-    router: &MaterialRouter,
-    shader_perm: ShaderPermutation,
-    context: RenderingContext,
-    head_output_transform: Mat4,
-    mismatch_warned: &mut HashSet<i32>,
-    culling: Option<&super::super::world_mesh_cull::WorldMeshCullInput<'_>>,
-    cull_stats: &mut (usize, usize, usize),
-    transform_filter: Option<&CameraTransformDrawFilter>,
+    ctx: &DrawCollectionContext<'_>,
+    acc: &mut DrawCollectionAccumulator<'_>,
+    draw: StaticMeshDrawSource<'_>,
 ) {
-    if let Some(f) = transform_filter {
-        if !f.passes(renderer.node_id) {
+    if let Some(f) = ctx.transform_filter {
+        if !f.passes(draw.renderer.node_id) {
             return;
         }
     }
-    let slots = resolved_material_slots(renderer);
+    let slots = resolved_material_slots(draw.renderer);
     if slots.is_empty() {
         return;
     }
-    let n_sub = submeshes.len();
+    let n_sub = draw.submeshes.len();
     let n_slot = slots.len();
-    if n_sub != n_slot && mismatch_warned.insert(renderer.mesh_asset_id) {
+    if n_sub != n_slot && acc.mismatch_warned.insert(draw.renderer.mesh_asset_id) {
         logger::trace!(
             "mesh_asset_id={}: material slot count {} != submesh count {} (using first {} pairings only)",
-            renderer.mesh_asset_id,
+            draw.renderer.mesh_asset_id,
             n_slot,
             n_sub,
             n_sub.min(n_slot),
@@ -82,51 +108,56 @@ fn push_draws_for_renderer(
         return;
     }
 
-    let is_overlay = renderer.layer == crate::shared::LayerType::Overlay;
+    let is_overlay = draw.renderer.layer == crate::shared::LayerType::Overlay;
 
     for slot_index in 0..n {
         let slot = &slots[slot_index];
-        let material_asset_id = scene
-            .overridden_material_asset_id(space_id, context, skinned, renderable_index, slot_index)
+        let material_asset_id = ctx
+            .scene
+            .overridden_material_asset_id(
+                draw.space_id,
+                ctx.render_context,
+                draw.skinned,
+                draw.renderable_index,
+                slot_index,
+            )
             .unwrap_or(slot.material_asset_id);
-        let (first_index, index_count) = submeshes[slot_index];
+        let (first_index, index_count) = draw.submeshes[slot_index];
         if index_count == 0 {
             continue;
         }
         if material_asset_id < 0 {
             continue;
         }
-        let rigid_world_matrix = if skinned {
+        let rigid_world_matrix = if draw.skinned {
             None
-        } else if let Some(c) = culling {
-            cull_stats.0 += 1;
-            match mesh_draw_passes_cpu_cull(
-                scene,
-                space_id,
-                mesh,
-                is_overlay,
-                skinned,
-                skinned_renderer,
-                renderer.node_id,
-                c,
-                context,
-            ) {
+        } else if let Some(c) = ctx.culling {
+            acc.cull_stats.0 += 1;
+            let target = MeshCullTarget {
+                scene: ctx.scene,
+                space_id: draw.space_id,
+                mesh: draw.mesh,
+                skinned: draw.skinned,
+                skinned_renderer: draw.skinned_renderer,
+                node_id: draw.renderer.node_id,
+            };
+            match mesh_draw_passes_cpu_cull(&target, is_overlay, c, ctx.render_context) {
                 Err(CpuCullFailure::Frustum) => {
-                    cull_stats.1 += 1;
+                    acc.cull_stats.1 += 1;
                     continue;
                 }
                 Err(CpuCullFailure::HiZ) => {
-                    cull_stats.2 += 1;
+                    acc.cull_stats.2 += 1;
                     continue;
                 }
                 Ok(m) => m,
             }
         } else {
-            scene.world_matrix_for_render_context(
-                space_id,
-                renderer.node_id as usize,
-                context,
-                head_output_transform,
+            ctx.scene.world_matrix_for_render_context(
+                draw.space_id,
+                draw.renderer.node_id as usize,
+                ctx.render_context,
+                ctx.head_output_transform,
             )
         };
         let lookup_ids = MaterialPropertyLookupIds {
@@ -136,21 +167,21 @@ fn push_draws_for_renderer(
         let batch_key = batch_key_for_slot(
             material_asset_id,
             slot.property_block_id,
-            skinned,
-            dict,
-            router,
-            shader_perm,
+            draw.skinned,
+            ctx.material_dict,
+            ctx.material_router,
+            ctx.shader_perm,
         );
-        out.push(WorldMeshDrawItem {
-            space_id,
-            node_id: renderer.node_id,
-            mesh_asset_id: renderer.mesh_asset_id,
+        acc.out.push(WorldMeshDrawItem {
+            space_id: draw.space_id,
+            node_id: draw.renderer.node_id,
+            mesh_asset_id: draw.renderer.mesh_asset_id,
             slot_index,
             first_index,
             index_count,
             is_overlay,
-            sorting_order: renderer.sorting_order,
-            skinned,
+            sorting_order: draw.renderer.sorting_order,
+            skinned: draw.skinned,
             collect_order: 0,
             camera_distance_sq: 0.0,
             lookup_ids,
@@ -161,24 +192,20 @@ fn push_draws_for_renderer(
 }
 
 /// Collects draws for one render space (static then skinned renderers).
-#[allow(clippy::too_many_arguments)]
 fn collect_draws_for_one_space(
     space_id: RenderSpaceId,
-    scene: &SceneCoordinator,
-    mesh_pool: &MeshPool,
-    dict: &MaterialDictionary<'_>,
-    router: &MaterialRouter,
-    shader_perm: ShaderPermutation,
-    context: RenderingContext,
-    head_output_transform: Mat4,
-    culling: Option<&super::super::world_mesh_cull::WorldMeshCullInput<'_>>,
-    transform_filter: Option<&CameraTransformDrawFilter>,
+    ctx: &DrawCollectionContext<'_>,
 ) -> (Vec<WorldMeshDrawItem>, (usize, usize, usize)) {
     let mut out = Vec::new();
     let mut cull_stats = (0usize, 0usize, 0usize);
     let mut mismatch_warned = HashSet::new();
+    let mut acc = DrawCollectionAccumulator {
+        out: &mut out,
+        mismatch_warned: &mut mismatch_warned,
+        cull_stats: &mut cull_stats,
+    };
 
-    let Some(space) = scene.space(space_id) else {
+    let Some(space) = ctx.scene.space(space_id) else {
         return (out, cull_stats);
     };
     if !space.is_active {
@@ -189,31 +216,24 @@ fn collect_draws_for_one_space(
         if r.mesh_asset_id < 0 || r.node_id < 0 {
             continue;
         }
-        let Some(mesh) = mesh_pool.get_mesh(r.mesh_asset_id) else {
+        let Some(mesh) = ctx.mesh_pool.get_mesh(r.mesh_asset_id) else {
             continue;
         };
         if mesh.submeshes.is_empty() {
             continue;
         }
         push_draws_for_renderer(
-            &mut out,
-            scene,
-            space_id,
-            r,
-            renderable_index,
-            false,
-            None,
-            mesh,
-            &mesh.submeshes,
-            dict,
-            router,
-            shader_perm,
-            context,
-            head_output_transform,
-            &mut mismatch_warned,
-            culling,
-            &mut cull_stats,
-            transform_filter,
+            ctx,
+            &mut acc,
+            StaticMeshDrawSource {
+                space_id,
+                renderer: r,
+                renderable_index,
+                skinned: false,
+                skinned_renderer: None,
+                mesh,
+                submeshes: &mesh.submeshes,
+            },
         );
     }
     for (renderable_index, skinned) in space.skinned_mesh_renderers.iter().enumerate() {
@@ -221,31 +241,24 @@ fn collect_draws_for_one_space(
         if r.mesh_asset_id < 0 || r.node_id < 0 {
             continue;
         }
-        let Some(mesh) = mesh_pool.get_mesh(r.mesh_asset_id) else {
+        let Some(mesh) = ctx.mesh_pool.get_mesh(r.mesh_asset_id) else {
             continue;
         };
         if mesh.submeshes.is_empty() {
             continue;
         }
         push_draws_for_renderer(
-            &mut out,
-            scene,
-            space_id,
-            r,
-            renderable_index,
-            true,
-            Some(skinned),
-            mesh,
-            &mesh.submeshes,
-            dict,
-            router,
-            shader_perm,
-            context,
-            head_output_transform,
-            &mut mismatch_warned,
-            culling,
-            &mut cull_stats,
-            transform_filter,
+            ctx,
+            &mut acc,
+            StaticMeshDrawSource {
+                space_id,
+                renderer: r,
+                renderable_index,
+                skinned: true,
+                skinned_renderer: Some(skinned),
+                mesh,
+                submeshes: &mesh.submeshes,
+            },
         );
     }
 
@@ -259,51 +272,22 @@ fn collect_draws_for_one_space(
 ///
 /// Per-space collection runs in parallel via [`rayon`] by default; results are merged in the same order as
 /// [`SceneCoordinator::render_space_ids`], then [`WorldMeshDrawItem::collect_order`] is assigned for transparent sort stability.
-#[allow(clippy::too_many_arguments)] // Frame-graph entry mirrors host camera + cull snapshot inputs.
 pub fn collect_and_sort_world_mesh_draws(
-    scene: &SceneCoordinator,
-    mesh_pool: &MeshPool,
-    dict: &MaterialDictionary<'_>,
-    router: &MaterialRouter,
-    shader_perm: ShaderPermutation,
-    context: RenderingContext,
-    head_output_transform: Mat4,
-    culling: Option<&super::super::world_mesh_cull::WorldMeshCullInput<'_>>,
-    transform_filter: Option<&CameraTransformDrawFilter>,
+    ctx: &DrawCollectionContext<'_>,
 ) -> WorldMeshDrawCollection {
-    collect_and_sort_world_mesh_draws_with_parallelism(
-        scene,
-        mesh_pool,
-        dict,
-        router,
-        shader_perm,
-        context,
-        head_output_transform,
-        culling,
-        transform_filter,
-        WorldMeshDrawCollectParallelism::Full,
-    )
+    collect_and_sort_world_mesh_draws_with_parallelism(ctx, WorldMeshDrawCollectParallelism::Full)
 }
 
 /// Like [`collect_and_sort_world_mesh_draws`], with control over inner rayon use (see [`WorldMeshDrawCollectParallelism`]).
-#[allow(clippy::too_many_arguments)]
 pub fn collect_and_sort_world_mesh_draws_with_parallelism(
-    scene: &SceneCoordinator,
-    mesh_pool: &MeshPool,
-    dict: &MaterialDictionary<'_>,
-    router: &MaterialRouter,
-    shader_perm: ShaderPermutation,
-    context: RenderingContext,
-    head_output_transform: Mat4,
-    culling: Option<&super::super::world_mesh_cull::WorldMeshCullInput<'_>>,
-    transform_filter: Option<&CameraTransformDrawFilter>,
+    ctx: &DrawCollectionContext<'_>,
     parallelism: WorldMeshDrawCollectParallelism,
 ) -> WorldMeshDrawCollection {
-    let space_ids: Vec<RenderSpaceId> = scene.render_space_ids().collect();
+    let space_ids: Vec<RenderSpaceId> = ctx.scene.render_space_ids().collect();
 
     let mut cap_hint = 0usize;
     for space_id in &space_ids {
-        let Some(space) = scene.space(*space_id) else {
+        let Some(space) = ctx.scene.space(*space_id) else {
             continue;
         };
         if space.is_active {
@@ -317,38 +301,12 @@ pub fn collect_and_sort_world_mesh_draws_with_parallelism(
         WorldMeshDrawCollectParallelism::Full => space_ids
             .par_iter()
             .copied()
-            .map(|space_id| {
-                collect_draws_for_one_space(
-                    space_id,
-                    scene,
-                    mesh_pool,
-                    dict,
-                    router,
-                    shader_perm,
-                    context,
-                    head_output_transform,
-                    culling,
-                    transform_filter,
-                )
-            })
+            .map(|space_id| collect_draws_for_one_space(space_id, ctx))
             .collect(),
         WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => space_ids
             .iter()
             .copied()
-            .map(|space_id| {
-                collect_draws_for_one_space(
-                    space_id,
-                    scene,
-                    mesh_pool,
-                    dict,
-                    router,
-                    shader_perm,
-                    context,
-                    head_output_transform,
-                    culling,
-                    transform_filter,
-                )
-            })
+            .map(|space_id| collect_draws_for_one_space(space_id, ctx))
             .collect(),
     };
 

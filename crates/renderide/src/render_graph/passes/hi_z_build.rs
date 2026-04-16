@@ -1,5 +1,6 @@
 //! Builds a CPU-readable hierarchical depth pyramid from the main depth attachment after the forward pass.
 
+use crate::backend::HiZBuildInput;
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
 use crate::render_graph::pass::RenderPass;
@@ -42,10 +43,12 @@ impl RenderPass for HiZBuildPass {
             ctx.device,
             &queue,
             ctx.encoder,
-            depth,
-            frame.viewport_px,
-            mode,
-            view_id,
+            HiZBuildInput {
+                depth_view: depth,
+                extent: frame.viewport_px,
+                mode,
+                view: view_id,
+            },
         );
         Ok(())
     }

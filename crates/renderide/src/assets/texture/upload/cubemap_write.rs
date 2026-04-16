@@ -8,21 +8,38 @@ use super::super::layout::{
     mip_dimensions_at_level, mip_tight_bytes_per_texel,
 };
 use super::error::TextureUploadError;
-use super::mip_write_common::{is_rgba8_family, uncompressed_row_bytes, write_cubemap_face_mip};
+use super::mip_write_common::{
+    is_rgba8_family, uncompressed_row_bytes, write_cubemap_face_mip, CubemapFaceMipWrite,
+};
 use super::write_mip_chain::MipChainAdvance;
 
-/// Host payload subslice for one cubemap face × mip after bias and length checks.
-#[allow(clippy::too_many_arguments)]
-fn resolve_cubemap_face_mip_slice<'a>(
+/// Shared device, format, upload record, payload window, and mip start bias for cubemap chain walks.
+struct CubemapMipChainState<'a> {
+    device: &'a wgpu::Device,
+    fmt: &'a SetCubemapFormat,
+    upload: &'a SetCubemapData,
+    payload: &'a [u8],
+    start_bias: usize,
+}
+
+/// Face index and mip dimensions for [`resolve_cubemap_face_mip_slice`].
+struct CubemapFaceMipSliceStep {
     face: usize,
     mip_i: usize,
-    fmt: &SetCubemapFormat,
-    upload: &SetCubemapData,
     w: u32,
     h: u32,
-    start_bias: usize,
-    payload: &'a [u8],
+}
+
+/// Host payload subslice for one cubemap face × mip after bias and length checks.
+fn resolve_cubemap_face_mip_slice<'a>(
+    chain: &CubemapMipChainState<'a>,
+    step: CubemapFaceMipSliceStep,
 ) -> Result<&'a [u8], TextureUploadError> {
+    let fmt = chain.fmt;
+    let upload = chain.upload;
+    let payload = chain.payload;
+    let start_bias = chain.start_bias;
+    let CubemapFaceMipSliceStep { face, mip_i, w, h } = step;
     let start_raw = upload.mip_starts[face][mip_i];
     if start_raw < 0 {
         return Err("negative mip_starts".into());
@@ -53,20 +70,32 @@ fn resolve_cubemap_face_mip_slice<'a>(
         })
 }
 
-/// Converts host face mip bytes for [`write_cubemap_face_mip`] (decode, optional row flip).
-#[allow(clippy::too_many_arguments)]
-fn cubemap_mip_src_to_upload_pixels<'a>(
-    device: &wgpu::Device,
-    fmt: &SetCubemapFormat,
+/// GPU format, dimensions, and source bytes for one cubemap face mip decode.
+struct CubemapMipLevelDecode<'a> {
     wgpu_format: wgpu::TextureFormat,
     w: u32,
     h: u32,
     flip: bool,
     mip_i: usize,
     face: u32,
-    asset_id: i32,
     mip_src: &'a [u8],
+}
+
+/// Converts host face mip bytes for [`write_cubemap_face_mip`] (decode, optional row flip).
+fn cubemap_mip_src_to_upload_pixels<'a>(
+    chain: &CubemapMipChainState<'a>,
+    level: CubemapMipLevelDecode<'a>,
 ) -> Result<std::borrow::Cow<'a, [u8]>, TextureUploadError> {
+    let device = chain.device;
+    let fmt = chain.fmt;
+    let asset_id = chain.upload.asset_id;
+    let wgpu_format = level.wgpu_format;
+    let w = level.w;
+    let h = level.h;
+    let flip = level.flip;
+    let mip_i = level.mip_i;
+    let face = level.face;
+    let mip_src = level.mip_src;
     let pixels: std::borrow::Cow<'a, [u8]> = if is_rgba8_family(wgpu_format) {
         if needs_rgba8_decode_before_upload(device, fmt.format)
             || host_format_is_compressed(fmt.format)
@@ -159,6 +188,24 @@ fn cubemap_mip_src_to_upload_pixels<'a>(
     Ok(pixels)
 }
 
+/// GPU and host view for one [`CubemapMipChainUploader::upload_next_face_mip`] step.
+pub struct CubemapFaceMipUploadStep<'a> {
+    /// Device for decode paths.
+    pub device: &'a wgpu::Device,
+    /// Queue for the face mip write.
+    pub queue: &'a wgpu::Queue,
+    /// Destination cubemap texture.
+    pub texture: &'a wgpu::Texture,
+    /// Host format.
+    pub fmt: &'a SetCubemapFormat,
+    /// GPU storage format.
+    pub wgpu_format: wgpu::TextureFormat,
+    /// Upload record.
+    pub upload: &'a SetCubemapData,
+    /// Payload (`&raw[..upload.data.length]`).
+    pub payload: &'a [u8],
+}
+
 /// Incremental cubemap upload: one face × one mip per step.
 #[derive(Debug)]
 pub struct CubemapMipChainUploader {
@@ -247,17 +294,19 @@ impl CubemapMipChainUploader {
     }
 
     /// Writes at most one face mip. `payload` is `&raw[..upload.data.length]`.
-    #[allow(clippy::too_many_arguments)]
     pub fn upload_next_face_mip(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        texture: &wgpu::Texture,
-        fmt: &SetCubemapFormat,
-        wgpu_format: wgpu::TextureFormat,
-        upload: &SetCubemapData,
-        payload: &[u8],
+        step: CubemapFaceMipUploadStep<'_>,
     ) -> Result<MipChainAdvance, TextureUploadError> {
+        let CubemapFaceMipUploadStep {
+            device,
+            queue,
+            texture,
+            fmt,
+            wgpu_format,
+            upload,
+            payload,
+        } = step;
         if self.face >= 6 {
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded,
@@ -286,40 +335,47 @@ impl CubemapMipChainUploader {
             )));
         }
 
-        let mip_src = resolve_cubemap_face_mip_slice(
-            self.face as usize,
-            mip_i,
+        let chain = CubemapMipChainState {
+            device,
             fmt,
             upload,
-            w,
-            h,
-            self.start_bias,
             payload,
+            start_bias: self.start_bias,
+        };
+
+        let mip_src = resolve_cubemap_face_mip_slice(
+            &chain,
+            CubemapFaceMipSliceStep {
+                face: self.face as usize,
+                mip_i,
+                w,
+                h,
+            },
         )?;
 
         let pixels = cubemap_mip_src_to_upload_pixels(
-            device,
-            fmt,
-            wgpu_format,
-            w,
-            h,
-            self.flip,
-            mip_i,
-            self.face,
-            upload.asset_id,
-            mip_src,
+            &chain,
+            CubemapMipLevelDecode {
+                wgpu_format,
+                w,
+                h,
+                flip: self.flip,
+                mip_i,
+                face: self.face,
+                mip_src,
+            },
         )?;
 
-        write_cubemap_face_mip(
+        write_cubemap_face_mip(&CubemapFaceMipWrite {
             queue,
             texture,
             mip_level,
-            self.face,
-            w,
-            h,
-            wgpu_format,
-            pixels.as_ref(),
-        )?;
+            face_layer: self.face,
+            width: w,
+            height: h,
+            format: wgpu_format,
+            bytes: pixels.as_ref(),
+        })?;
 
         self.uploaded += 1;
         self.mip_i += 1;

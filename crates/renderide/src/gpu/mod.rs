@@ -15,7 +15,7 @@ mod vr_mirror;
 pub mod frame_globals;
 
 pub use context::{GpuContext, MsaaTargets};
-pub use frame_globals::FrameGpuUniforms;
+pub use frame_globals::{ClusteredFrameGlobalsParams, FrameGpuUniforms};
 pub use instance_limits::instance_flags_for_gpu_init;
 pub use limits::{GpuLimits, GpuLimitsError};
 pub use msaa_depth_resolve::MsaaDepthResolveResources;

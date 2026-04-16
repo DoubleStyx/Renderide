@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::embedded_shaders;
 use crate::materials::pipeline_build_error::PipelineBuildError;
-use crate::materials::raster_pipeline::create_reflective_raster_mesh_forward_pipeline;
+use crate::materials::raster_pipeline::{
+    create_reflective_raster_mesh_forward_pipeline, ReflectiveRasterMeshForwardPipelineDesc,
+};
 use crate::materials::MaterialPipelineDesc;
 use crate::pipelines::raster::SHADER_PERM_MULTIVIEW_STEREO;
 use crate::pipelines::ShaderPermutation;
@@ -143,10 +145,12 @@ pub(crate) fn create_embedded_render_pipeline(
         desc,
         wgsl_source,
         "embedded_raster_material",
-        true,
-        true,
-        alpha_ui,
-        !alpha_ui,
+        ReflectiveRasterMeshForwardPipelineDesc {
+            include_uv_vertex_buffer: true,
+            include_color_vertex_buffer: true,
+            use_alpha_blending: alpha_ui,
+            depth_write_enabled: !alpha_ui,
+        },
     )
 }
 

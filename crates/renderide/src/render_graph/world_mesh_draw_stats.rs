@@ -97,7 +97,6 @@ mod tests {
     use crate::materials::RasterPipelineKind;
     use crate::scene::RenderSpaceId;
 
-    #[allow(clippy::too_many_arguments)]
     fn dummy_item(
         mid: i32,
         pb: Option<i32>,

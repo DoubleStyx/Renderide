@@ -15,6 +15,23 @@ use super::frame_params::{FrameRenderParams, HostCameraFrame, OcclusionViewId};
 use super::pass::{PassPhase, RenderPass};
 use super::world_mesh_draw_prep::{CameraTransformDrawFilter, WorldMeshDrawCollection};
 
+/// Inputs for [`CompiledRenderGraph::execute_offscreen_single_view`] and
+/// [`crate::backend::RenderBackend::execute_frame_graph_offscreen_single_view`].
+pub struct OffscreenSingleViewExecuteSpec<'a> {
+    /// Target window (swapchain acquire when the graph needs it; offscreen path may still reference extent).
+    pub window: &'a Window,
+    /// Scene after cache flush.
+    pub scene: &'a SceneCoordinator,
+    /// Per-view camera and clip data from the host.
+    pub host_camera: HostCameraFrame,
+    /// Pre-built color/depth views for the render texture.
+    pub external: ExternalOffscreenTargets<'a>,
+    /// Optional mesh transform filter for secondary cameras.
+    pub transform_filter: Option<CameraTransformDrawFilter>,
+    /// Optional pre-collected draws when skipping CPU mesh collection.
+    pub prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+}
+
 /// Single-view color + depth for secondary cameras rendering to a host [`crate::resources::GpuRenderTexture`].
 pub struct ExternalOffscreenTargets<'a> {
     /// Host render-texture asset id for `color_view` (used to suppress self-sampling during this pass).
@@ -252,18 +269,18 @@ impl CompiledRenderGraph {
     }
 
     /// Renders the graph to a single-view offscreen color/depth target (secondary camera → render texture).
-    #[allow(clippy::too_many_arguments)]
     pub fn execute_offscreen_single_view(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
-        scene: &SceneCoordinator,
         backend: &mut RenderBackend,
-        host_camera: HostCameraFrame,
-        external: ExternalOffscreenTargets<'_>,
-        transform_filter: Option<CameraTransformDrawFilter>,
-        prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+        spec: OffscreenSingleViewExecuteSpec<'_>,
     ) -> Result<(), GraphExecuteError> {
+        let window = spec.window;
+        let scene = spec.scene;
+        let host_camera = spec.host_camera;
+        let external = spec.external;
+        let transform_filter = spec.transform_filter;
+        let prefetched_world_mesh_draws = spec.prefetched_world_mesh_draws;
         self.execute_multi_view(
             gpu,
             window,
@@ -358,7 +375,7 @@ impl CompiledRenderGraph {
     }
 
     /// One per-view encoder, per-view [`PassPhase::PerView`] passes, submit, and Hi-Z bookkeeping.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Mirrors per-view submit inputs; bundling hits borrow/lifetime limits in the caller loop.
     fn execute_multi_view_submit_for_one_view(
         &mut self,
         view: &mut FrameView<'_>,
@@ -428,7 +445,7 @@ impl CompiledRenderGraph {
     }
 
     /// Runs [`PassPhase::FrameGlobal`] passes once per tick using the first view for host/scene context.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // Single call site; same bundle as per-view submit.
     fn execute_multi_view_frame_global_passes(
         &mut self,
         gpu: &mut GpuContext,

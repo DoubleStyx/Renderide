@@ -108,102 +108,101 @@ fn get_local_matrix(
     }
 }
 
-/// Incremental world matrices: only recomputes indices with `computed[i] == false`.
-///
-/// Argument list matches the historical slice-oriented solver; grouping into a struct would churn
-/// call sites without improving clarity here.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn compute_world_matrices_incremental(
-    scene_id: i32,
-    nodes: &[RenderTransform],
-    node_parents: &[i32],
-    world_matrices: &mut [Mat4],
-    computed: &mut [bool],
-    local_matrices: &mut [Mat4],
-    local_dirty: &mut [bool],
-    visit_epoch: &mut Vec<u32>,
-    walk_epoch: &mut u32,
-) -> Result<(), SceneError> {
-    let n = nodes.len();
-    let mut stack: Vec<usize> = Vec::with_capacity(64.min(n));
+impl WorldTransformCache {
+    /// Incremental world matrices: only recomputes indices with `computed[i] == false`.
+    pub(super) fn compute_world_matrices_incremental(
+        &mut self,
+        scene_id: i32,
+        nodes: &[RenderTransform],
+        node_parents: &[i32],
+    ) -> Result<(), SceneError> {
+        let world_matrices = &mut self.world_matrices;
+        let computed = &mut self.computed;
+        let local_matrices = &mut self.local_matrices;
+        let local_dirty = &mut self.local_dirty;
+        let visit_epoch = &mut self.visit_epoch;
+        let walk_epoch = &mut self.walk_epoch;
+        let n = nodes.len();
+        let mut stack: Vec<usize> = Vec::with_capacity(64.min(n));
 
-    if visit_epoch.len() < n {
-        visit_epoch.resize(n, 0);
-    }
-
-    for transform_index in (0..n).rev() {
-        if computed[transform_index] {
-            continue;
+        if visit_epoch.len() < n {
+            visit_epoch.resize(n, 0);
         }
 
-        stack.clear();
-        *walk_epoch = walk_epoch.wrapping_add(1);
-        let epoch = *walk_epoch;
+        for transform_index in (0..n).rev() {
+            if computed[transform_index] {
+                continue;
+            }
 
-        let mut maybe_uppermost_matrix: Option<Mat4> = None;
-        let mut id = transform_index;
-        let mut cycle_detected = false;
+            stack.clear();
+            *walk_epoch = (*walk_epoch).wrapping_add(1);
+            let epoch = *walk_epoch;
 
-        loop {
-            if id >= n {
-                break;
-            }
-            if computed[id] {
-                maybe_uppermost_matrix = Some(world_matrices[id]);
-                break;
-            }
-            if visit_epoch[id] == epoch {
-                cycle_detected = true;
-                logger::trace!(
-                    "parent cycle at scene {} transform {} — local-only fallback",
-                    scene_id,
-                    id
-                );
-                break;
-            }
-            visit_epoch[id] = epoch;
-            stack.push(id);
-            let p = node_parents.get(id).copied().unwrap_or(-1);
-            if p < 0 || (p as usize) >= n || p == id as i32 {
-                break;
-            }
-            id = p as usize;
-        }
+            let mut maybe_uppermost_matrix: Option<Mat4> = None;
+            let mut id = transform_index;
+            let mut cycle_detected = false;
 
-        if cycle_detected {
-            for &cid in &stack {
-                if !computed[cid] {
-                    let local = get_local_matrix(nodes, local_matrices, local_dirty, cid);
-                    world_matrices[cid] = local;
-                    computed[cid] = true;
+            loop {
+                if id >= n {
+                    break;
                 }
+                if computed[id] {
+                    maybe_uppermost_matrix = Some(world_matrices[id]);
+                    break;
+                }
+                if visit_epoch[id] == epoch {
+                    cycle_detected = true;
+                    logger::trace!(
+                        "parent cycle at scene {} transform {} — local-only fallback",
+                        scene_id,
+                        id
+                    );
+                    break;
+                }
+                visit_epoch[id] = epoch;
+                stack.push(id);
+                let p = node_parents.get(id).copied().unwrap_or(-1);
+                if p < 0 || (p as usize) >= n || p == id as i32 {
+                    break;
+                }
+                id = p as usize;
             }
-            continue;
+
+            if cycle_detected {
+                for &cid in &stack {
+                    if !computed[cid] {
+                        let local = get_local_matrix(nodes, local_matrices, local_dirty, cid);
+                        world_matrices[cid] = local;
+                        computed[cid] = true;
+                    }
+                }
+                continue;
+            }
+
+            let mut parent_matrix = match maybe_uppermost_matrix {
+                Some(m) => m,
+                None => {
+                    let top = match stack.pop() {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    let local = get_local_matrix(nodes, local_matrices, local_dirty, top);
+                    world_matrices[top] = local;
+                    computed[top] = true;
+                    local
+                }
+            };
+
+            while let Some(child_id) = stack.pop() {
+                let local = get_local_matrix(nodes, local_matrices, local_dirty, child_id);
+                parent_matrix *= local;
+                world_matrices[child_id] = parent_matrix;
+                computed[child_id] = true;
+            }
         }
 
-        let mut parent_matrix = match maybe_uppermost_matrix {
-            Some(m) => m,
-            None => {
-                let top = match stack.pop() {
-                    Some(t) => t,
-                    None => continue,
-                };
-                let local = get_local_matrix(nodes, local_matrices, local_dirty, top);
-                world_matrices[top] = local;
-                computed[top] = true;
-                local
-            }
-        };
-
-        while let Some(child_id) = stack.pop() {
-            let local = get_local_matrix(nodes, local_matrices, local_dirty, child_id);
-            parent_matrix *= local;
-            world_matrices[child_id] = parent_matrix;
-            computed[child_id] = true;
-        }
+        Ok(())
     }
-
-    Ok(())
 }
 
 /// Ensures cache vectors match `node_count`, invalidates if resized.
@@ -249,15 +248,5 @@ pub fn compute_world_matrices_for_space(
         cache.children_dirty = false;
     }
 
-    compute_world_matrices_incremental(
-        scene_id,
-        nodes,
-        node_parents,
-        &mut cache.world_matrices,
-        &mut cache.computed,
-        &mut cache.local_matrices,
-        &mut cache.local_dirty,
-        &mut cache.visit_epoch,
-        &mut cache.walk_epoch,
-    )
+    cache.compute_world_matrices_incremental(scene_id, nodes, node_parents)
 }

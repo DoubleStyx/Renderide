@@ -38,7 +38,8 @@ use execute_helpers::{
     capture_hi_z_temporal_after_collect, compute_view_projections, encode_clear_only_pass,
     encode_msaa_depth_resolve_after_clear_only, encode_world_mesh_forward_draw_passes,
     maybe_set_world_mesh_draw_stats, pack_and_upload_per_draw_slab, resolve_pass_config,
-    take_or_collect_world_mesh_draws, write_frame_uniforms_and_cluster,
+    take_or_collect_world_mesh_draws, write_frame_uniforms_and_cluster, ForwardPassEncodeFrame,
+    ForwardPassEncodeViews,
 };
 
 /// Clears the backbuffer and depth, then draws meshes with material-batched raster pipelines.
@@ -91,7 +92,6 @@ impl RenderPass for WorldMeshForwardPass {
             frame.sample_count,
         );
         let use_multiview = pipeline.use_multiview;
-        let pass_desc = pipeline.pass_desc;
         let shader_perm = pipeline.shader_perm;
 
         let culling = if hc.suppress_occlusion_temporal {
@@ -122,9 +122,8 @@ impl RenderPass for WorldMeshForwardPass {
 
         let draws = collection.items;
 
-        let scene = frame.scene;
         let (render_context, world_proj, overlay_proj) =
-            compute_view_projections(scene, hc, frame.viewport_px, &draws);
+            compute_view_projections(frame.scene, hc, frame.viewport_px, &draws);
 
         let queue_guard = ctx
             .queue
@@ -135,9 +134,7 @@ impl RenderPass for WorldMeshForwardPass {
         if !pack_and_upload_per_draw_slab(
             ctx.device,
             queue,
-            frame.backend,
-            scene,
-            hc,
+            frame,
             render_context,
             world_proj,
             overlay_proj,
@@ -151,7 +148,7 @@ impl RenderPass for WorldMeshForwardPass {
             queue,
             frame.backend,
             hc,
-            scene,
+            frame.scene,
             frame.viewport_px,
             use_multiview,
         );
@@ -186,19 +183,21 @@ impl RenderPass for WorldMeshForwardPass {
         }
 
         if !encode_world_mesh_forward_draw_passes(
-            ctx.encoder,
-            ctx.device,
-            frame,
-            queue,
+            ForwardPassEncodeFrame {
+                encoder: ctx.encoder,
+                device: ctx.device,
+                frame,
+                queue,
+            },
             &draws,
-            &pass_desc,
-            shader_perm,
-            use_multiview,
+            &pipeline,
             supports_base_instance,
-            color_view,
-            depth_raster,
-            resolve_swapchain,
-            msaa_depth_resolve.as_deref(),
+            ForwardPassEncodeViews {
+                color_view,
+                depth_raster_view: depth_raster,
+                resolve_swapchain,
+                msaa_depth_resolve: msaa_depth_resolve.as_deref(),
+            },
         ) {
             return Ok(());
         }

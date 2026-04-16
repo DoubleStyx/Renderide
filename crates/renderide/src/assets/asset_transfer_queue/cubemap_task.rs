@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::assets::texture::{CubemapMipChainUploader, MipChainAdvance, TextureUploadError};
+use crate::assets::texture::{
+    CubemapFaceMipUploadStep, CubemapMipChainUploader, MipChainAdvance, TextureUploadError,
+};
 use crate::gpu::GpuLimits;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
@@ -103,15 +105,15 @@ impl CubemapUploadTask {
                         ))));
                     }
                     let payload = &raw[..want];
-                    Some(uploader.upload_next_face_mip(
-                        device.as_ref(),
-                        gpu_queue,
+                    Some(uploader.upload_next_face_mip(CubemapFaceMipUploadStep {
+                        device: device.as_ref(),
+                        queue: gpu_queue,
                         texture,
                         fmt,
                         wgpu_format,
                         upload,
                         payload,
-                    ))
+                    }))
                 });
                 let Some(mip_result) = mip_out else {
                     logger::warn!("cubemap {id}: shared memory slice missing");

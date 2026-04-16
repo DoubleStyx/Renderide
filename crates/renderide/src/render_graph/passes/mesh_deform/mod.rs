@@ -15,7 +15,7 @@ use crate::render_graph::resources::PassResources;
 use crate::resources::MeshPool;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
-use self::encode::record_mesh_deform;
+use self::encode::{record_mesh_deform, MeshDeformEncodeGpu, MeshDeformRecordInputs};
 use self::snapshot::{deform_needs_skin_mesh, gpu_mesh_needs_deform_dispatch, MeshDeformSnapshot};
 
 /// Encodes mesh deformation compute for all active render spaces.
@@ -167,22 +167,26 @@ impl RenderPass for MeshDeformPass {
 
         for item in work {
             record_mesh_deform(
-                &queue,
-                ctx.device,
-                ctx.gpu_limits,
-                ctx.encoder,
-                pre,
-                scratch,
-                frame.scene,
-                item.space_id,
-                &item.mesh,
-                item.skinned.as_deref(),
-                item.smr_node_id,
-                render_context,
-                head_output_transform,
-                &item.blend_weights,
-                &mut bone_cursor,
-                &mut blend_weight_cursor,
+                MeshDeformEncodeGpu {
+                    queue: &queue,
+                    device: ctx.device,
+                    gpu_limits: ctx.gpu_limits,
+                    encoder: ctx.encoder,
+                    pre,
+                    scratch,
+                },
+                MeshDeformRecordInputs {
+                    scene: frame.scene,
+                    space_id: item.space_id,
+                    mesh: &item.mesh,
+                    bone_transform_indices: item.skinned.as_deref(),
+                    smr_node_id: item.smr_node_id,
+                    render_context,
+                    head_output_transform,
+                    blend_weights: &item.blend_weights,
+                    bone_cursor: &mut bone_cursor,
+                    blend_weight_cursor: &mut blend_weight_cursor,
+                },
             );
         }
 

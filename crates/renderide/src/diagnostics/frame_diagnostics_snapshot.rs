@@ -88,7 +88,6 @@ pub struct FrameDiagnosticsSnapshot {
 
 impl FrameDiagnosticsSnapshot {
     /// Builds the snapshot after [`crate::gpu::GpuContext::end_frame_timing`] for the tick.
-    #[allow(clippy::too_many_arguments)]
     pub fn capture(
         gpu: &GpuContext,
         wall_frame_time_ms: f64,

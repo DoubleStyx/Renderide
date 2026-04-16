@@ -21,7 +21,7 @@ mod types;
 pub use batch::{build_instance_batches, InstanceBatch};
 pub use collect::{
     collect_and_sort_world_mesh_draws, collect_and_sort_world_mesh_draws_with_parallelism,
-    WorldMeshDrawCollectParallelism,
+    DrawCollectionContext, WorldMeshDrawCollectParallelism,
 };
 pub use sort::sort_world_mesh_draws;
 pub use types::{
@@ -72,7 +72,6 @@ mod tests {
         assert_eq!(slots[0].property_block_id, Some(42));
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn dummy_item(
         mid: i32,
         pb: Option<i32>,

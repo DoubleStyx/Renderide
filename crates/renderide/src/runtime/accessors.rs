@@ -138,13 +138,15 @@ impl RendererRuntime {
         let queue = Arc::clone(gpu.queue());
         let shm = self.frontend.shared_memory_mut();
         self.backend.attach(
-            device,
-            queue,
-            Arc::clone(gpu.limits()),
+            crate::backend::RenderBackendAttachDesc {
+                device,
+                queue,
+                gpu_limits: Arc::clone(gpu.limits()),
+                surface_format: gpu.config_format(),
+                renderer_settings: Arc::clone(&self.settings),
+                config_save_path: self.config_save_path.clone(),
+            },
             shm,
-            gpu.config_format(),
-            Arc::clone(&self.settings),
-            self.config_save_path.clone(),
         );
     }
 

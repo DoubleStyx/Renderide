@@ -17,7 +17,7 @@ pub use frame_diagnostics_snapshot::{FrameDiagnosticsSnapshot, GpuAllocatorRepor
 pub use frame_timing_hud_snapshot::FrameTimingHudSnapshot;
 pub use host_hud::HostHudGatherer;
 pub use hud_input::{sanitize_input_state_for_imgui_host, DebugHudInput};
-pub use renderer_info_snapshot::RendererInfoSnapshot;
+pub use renderer_info_snapshot::{RendererInfoSnapshot, RendererInfoSnapshotCapture};
 pub use scene_transforms_snapshot::{
     RenderSpaceTransformsSnapshot, SceneTransformsSnapshot, TransformRow, WorldTransformSample,
 };

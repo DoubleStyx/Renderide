@@ -1,7 +1,9 @@
 //! Debug mesh material: world-space normals as RGB (`shaders/target/debug_world_normals_*.wgsl`).
 
 use crate::embedded_shaders;
-use crate::materials::raster_pipeline::create_reflective_raster_mesh_forward_pipeline;
+use crate::materials::raster_pipeline::{
+    create_reflective_raster_mesh_forward_pipeline, ReflectiveRasterMeshForwardPipelineDesc,
+};
 use crate::materials::PipelineBuildError;
 use crate::materials::{
     reflect_raster_material_wgsl, validate_per_draw_group2, MaterialPipelineDesc,
@@ -65,9 +67,11 @@ pub(crate) fn create_debug_world_normals_render_pipeline(
         desc,
         wgsl_source,
         "debug_world_normals_material",
-        false,
-        false,
-        false,
-        true,
+        ReflectiveRasterMeshForwardPipelineDesc {
+            include_uv_vertex_buffer: false,
+            include_color_vertex_buffer: false,
+            use_alpha_blending: false,
+            depth_write_enabled: true,
+        },
     )
 }
