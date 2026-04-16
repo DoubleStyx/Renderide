@@ -11,15 +11,6 @@ pub(super) const POSE_VALIDATION_THRESHOLD: f32 = 1e6;
 pub struct PoseValidation<'a> {
     /// Pose under test.
     pub pose: &'a RenderTransform,
-    /// Frame index for logging (set from the host batch; not yet read by [`Self::is_valid`]).
-    #[allow(dead_code)]
-    pub frame_index: i32,
-    /// Host render space id (set from the host batch; not yet read by [`Self::is_valid`]).
-    #[allow(dead_code)]
-    pub scene_id: i32,
-    /// Dense transform index (set from the host batch; not yet read by [`Self::is_valid`]).
-    #[allow(dead_code)]
-    pub transform_id: i32,
 }
 
 impl PoseValidation<'_> {

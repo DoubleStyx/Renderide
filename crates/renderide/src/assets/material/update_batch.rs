@@ -18,7 +18,6 @@ pub struct ParseMaterialBatchOptions {
     /// When true, persist `set_float4x4` and capped float / float4 arrays into the store.
     pub persist_extended_payloads: bool,
     /// Reserved for future wire-telemetry (matrix / array opcodes).
-    #[allow(dead_code)]
     pub record_wire_metrics: bool,
 }
 

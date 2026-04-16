@@ -23,9 +23,6 @@ pub use collect::{
     collect_and_sort_world_mesh_draws, collect_and_sort_world_mesh_draws_with_parallelism,
     WorldMeshDrawCollectParallelism,
 };
-/// Reserved for camera moves without rebuilding draw collection; currently unused in-tree.
-#[allow(unused_imports)]
-pub use sort::resort_world_mesh_draws_for_camera;
 pub use sort::sort_world_mesh_draws;
 pub use types::{
     draw_filter_from_camera_entry, resolved_material_slots, CameraTransformDrawFilter,

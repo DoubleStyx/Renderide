@@ -2,8 +2,6 @@
 
 use std::cmp::Ordering;
 
-use glam::Vec3;
-use rayon::prelude::*;
 use rayon::slice::ParallelSliceMut;
 
 use crate::assets::material::MaterialDictionary;
@@ -13,8 +11,6 @@ use crate::materials::{
     resolve_raster_pipeline, MaterialRouter, RasterPipelineKind,
 };
 use crate::pipelines::ShaderPermutation;
-use crate::scene::SceneCoordinator;
-use crate::shared::RenderingContext;
 
 use super::types::{MaterialDrawBatchKey, WorldMeshDrawItem};
 
@@ -101,33 +97,4 @@ pub fn sort_world_mesh_draws(items: &mut [WorldMeshDrawItem]) {
 /// Same ordering as [`sort_world_mesh_draws`] without rayon (for nested parallel batches).
 pub(super) fn sort_world_mesh_draws_serial(items: &mut [WorldMeshDrawItem]) {
     items.sort_unstable_by(cmp_world_mesh_draw_items);
-}
-
-/// Updates alpha-blended draw distance keys from the active camera, then re-sorts the full draw list.
-///
-/// Reserved for frame-graph paths that move the camera without rebuilding the full draw collection.
-#[allow(dead_code)]
-pub fn resort_world_mesh_draws_for_camera(
-    items: &mut [WorldMeshDrawItem],
-    scene: &SceneCoordinator,
-    render_context: RenderingContext,
-    head_output_transform: glam::Mat4,
-    camera_world: Vec3,
-) {
-    items.par_iter_mut().for_each(|item| {
-        item.camera_distance_sq = if item.batch_key.alpha_blended {
-            scene
-                .world_matrix_for_render_context(
-                    item.space_id,
-                    item.node_id as usize,
-                    render_context,
-                    head_output_transform,
-                )
-                .map(|m| m.col(3).truncate().distance_squared(camera_world))
-                .unwrap_or(0.0)
-        } else {
-            0.0
-        };
-    });
-    sort_world_mesh_draws(items);
 }

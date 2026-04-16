@@ -8,7 +8,6 @@ use std::path::PathBuf;
 ///
 /// Only read by [`unix_mmf_backing_dir`] on Unix; Windows builds keep this symbol for API parity
 /// with the bootstrapper constant name.
-#[cfg_attr(not(unix), allow(dead_code))]
 pub const RENDERIDE_INTERPROCESS_DIR_ENV: &str = "RENDERIDE_INTERPROCESS_DIR";
 
 /// Composes the memory view name per Renderite `Helper.ComposeMemoryViewName` (prefix + hex id).

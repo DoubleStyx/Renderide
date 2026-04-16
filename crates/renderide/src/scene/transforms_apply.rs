@@ -188,12 +188,7 @@ fn apply_transform_pose_updates(
             break;
         }
         if (pu.transform_id as usize) < space.nodes.len() {
-            let validation = PoseValidation {
-                pose: &pu.pose,
-                frame_index,
-                scene_id: sid,
-                transform_id: pu.transform_id,
-            };
+            let validation = PoseValidation { pose: &pu.pose };
             if validation.is_valid() {
                 space.nodes[pu.transform_id as usize] = pu.pose;
             } else {
