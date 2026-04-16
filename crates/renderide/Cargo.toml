@@ -58,6 +58,7 @@ libc = "0.2"
 signal-hook = "0.3"
 
 [target.'cfg(windows)'.dependencies]
+ctrlc = "3.4"
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",

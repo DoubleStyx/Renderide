@@ -20,6 +20,12 @@
 //! [`RenderideApp`](renderide_app::RenderideApp)’s session output device is VR-capable so the host can create headset devices. If OpenXR
 //! init fails, the app falls back to desktop GPU while still sending VR IPC input when the session
 //! device is VR-capable.
+//!
+//! ## Process exit visibility (crashes, panics, signals)
+//!
+//! See [`startup`] module documentation for how fatal faults ([`crate::fatal_crash_log`]), panics
+//! ([`std::panic::set_hook`]), and graceful shutdown (Unix signals / Windows Ctrl+C) are handled as
+//! separate layers.
 
 mod frame_loop;
 mod frame_pacing;

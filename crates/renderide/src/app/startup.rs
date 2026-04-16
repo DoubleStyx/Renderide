@@ -1,6 +1,28 @@
 //! Process bootstrap before the winit loop: logging, panic hook, config, IPC connection, and
 //! [`super::renderide_app::RenderideApp`] construction.
+//!
+//! # Process exit visibility (crashes, panics, graceful signals)
+//!
+//! Three separate mechanisms apply; they are **not** merged into one implementation because each has
+//! different safety constraints:
+//!
+//! 1. **Fatal faults** (e.g. `SIGSEGV`, Windows SEH, macOS Mach exceptions): [`crate::fatal_crash_log::install`]
+//!    registers [`crash_handler::CrashHandler`] so a short line is appended to the log file using only
+//!    async-signal-safe writes. This does **not** run for normal termination signals like `SIGTERM`
+//!    or `SIGINT`.
+//! 2. **Panics**: [`std::panic::set_hook`] in [`run`] appends a panic report to the same log file
+//!    (normal Rust context; mutex-based logging is allowed).
+//! 3. **Graceful shutdown**: Unix [`signal_hook::iterator::Signals`] (or `SIGTERM` fallback) and
+//!    Windows [`ctrlc`] set a flag; [`super::renderide_app::RenderideApp`] polls it and exits the
+//!    winit loop. Per-signal logging happens on a side thread (Unix) or a handler thread (Windows),
+//!    not inside the raw async-signal handler.
+//!
+//! **Manual verification** (Linux/macOS): `kill -TERM <pid>`, `kill -INT <pid>`, `kill -HUP <pid>`;
+//! Ctrl+C in a terminal; confirm an `info` line in `logs/renderer/*.log` and clean exit. **Windows:**
+//! Ctrl+C in a console. **Crash path:** e.g. `kill -BUS <pid>` should still append a fatal line via
+//! `fatal_crash_log` (not the graceful path).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,20 +45,120 @@ pub(super) const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 /// Max time to wait for [`RendererInitData`] after IPC connect before exiting with an error.
 const IPC_INIT_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Registers `SIGTERM` via [`signal_hook::flag`] so the winit loop can exit cleanly and log.
+/// Cooperative exit flag for OS-driven shutdown (Unix signals or Windows `Ctrl+C`).
+///
+/// When [`Self::log_when_checked`] is `true`, [`crate::app::renderide_app::RenderideApp::check_external_shutdown`] emits a log
+/// line when the flag is observed (used only when Unix registration falls back to `SIGTERM` without
+/// a [`signal_hook::iterator`] side thread).
+pub(crate) struct ExternalShutdownCoordinator {
+    /// Set by the graceful-shutdown path; polled by the winit loop.
+    pub(crate) requested: Arc<AtomicBool>,
+    /// When `true`, emit one [`logger::info!`] when the loop first observes [`Self::requested`].
+    pub(crate) log_when_checked: bool,
+}
+
+#[cfg(unix)]
+fn shutdown_signal_display_name(sig: i32) -> &'static str {
+    match sig {
+        s if s == libc::SIGTERM => "SIGTERM",
+        s if s == libc::SIGINT => "SIGINT",
+        s if s == libc::SIGHUP => "SIGHUP",
+        _ => "unknown",
+    }
+}
+
+/// Registers `SIGTERM`, `SIGINT`, and `SIGHUP` via [`signal_hook::iterator::Signals`] (side thread logs
+/// each delivery). Falls back to [`signal_hook::flag`] for `SIGTERM` only if iterator registration fails.
 ///
 /// Linux child processes may receive `SIGTERM` when the parent bootstrapper exits (e.g. `PR_SET_PDEATHSIG`);
 /// that path does not run the panic hook or fatal-crash logger.
 #[cfg(unix)]
-fn install_sigterm_shutdown_flag() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
+fn install_external_shutdown_unix() -> ExternalShutdownCoordinator {
+    use signal_hook::iterator::Signals;
 
     let flag = Arc::new(AtomicBool::new(false));
-    if let Err(e) = signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&flag)) {
-        logger::warn!("Failed to register SIGTERM handler: {e}");
+    match Signals::new([libc::SIGTERM, libc::SIGINT, libc::SIGHUP]) {
+        Ok(mut signals) => {
+            let f = Arc::clone(&flag);
+            match thread::Builder::new()
+                .name("shutdown-signals".to_owned())
+                .spawn(move || {
+                    for sig in signals.forever() {
+                        logger::info!(
+                            "Received shutdown signal ({}); cooperative exit",
+                            shutdown_signal_display_name(sig)
+                        );
+                        f.store(true, Ordering::Relaxed);
+                    }
+                }) {
+                Ok(_join) => ExternalShutdownCoordinator {
+                    requested: flag,
+                    log_when_checked: false,
+                },
+                Err(e) => {
+                    logger::error!("Failed to spawn shutdown-signals thread: {e}");
+                    if let Err(e2) = signal_hook::flag::register(libc::SIGTERM, Arc::clone(&flag)) {
+                        logger::warn!("Failed to register SIGTERM fallback: {e2}");
+                    }
+                    ExternalShutdownCoordinator {
+                        requested: flag,
+                        log_when_checked: true,
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            logger::warn!(
+                "Failed to register graceful shutdown signals ({e}); falling back to SIGTERM only"
+            );
+            if let Err(e2) = signal_hook::flag::register(libc::SIGTERM, Arc::clone(&flag)) {
+                logger::warn!("Failed to register SIGTERM fallback: {e2}");
+            }
+            ExternalShutdownCoordinator {
+                requested: flag,
+                log_when_checked: true,
+            }
+        }
     }
-    flag
+}
+
+/// Registers `Ctrl+C` so the same cooperative flag and exit path as Unix graceful signals are used.
+#[cfg(windows)]
+fn install_external_shutdown_windows() -> ExternalShutdownCoordinator {
+    let flag = Arc::new(AtomicBool::new(false));
+    let f = Arc::clone(&flag);
+    match ctrlc::set_handler(move || {
+        logger::info!("Received Ctrl+C (console control); cooperative exit");
+        f.store(true, Ordering::Relaxed);
+    }) {
+        Ok(()) => ExternalShutdownCoordinator {
+            requested: flag,
+            log_when_checked: false,
+        },
+        Err(e) => {
+            logger::warn!("Failed to register Ctrl+C handler: {e}");
+            ExternalShutdownCoordinator {
+                requested: flag,
+                log_when_checked: false,
+            }
+        }
+    }
+}
+
+/// Installs [`ExternalShutdownCoordinator`] when the platform supports it; otherwise [`None`].
+pub(crate) fn install_external_shutdown() -> Option<ExternalShutdownCoordinator> {
+    #[cfg(unix)]
+    {
+        Some(install_external_shutdown_unix())
+    }
+    #[cfg(windows)]
+    {
+        Some(install_external_shutdown_windows())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
 }
 
 /// Chooses the process max log level after [`logger::init_for`].
@@ -117,17 +239,14 @@ pub fn run() -> Result<Option<i32>, RunError> {
         e
     })?;
 
-    #[cfg(unix)]
-    let sigterm_shutdown = Some(install_sigterm_shutdown_flag());
-    #[cfg(not(unix))]
-    let sigterm_shutdown = None;
+    let external_shutdown = install_external_shutdown();
 
     let mut app = RenderideApp::new(
         runtime,
         initial_vsync,
         initial_gpu_validation,
         log_level_cli,
-        sigterm_shutdown,
+        external_shutdown,
     );
 
     let _ = event_loop.run_app(&mut app);

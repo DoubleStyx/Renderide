@@ -20,7 +20,7 @@
 //! [`tick_phase_trace`] emits `trace!` lines prefixed with [`TICK_TRACE_PREFIX`] for grep/profiling; the same
 //! splits are natural boundaries for the `tracing` crate’s spans if added later.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -47,7 +47,7 @@ use super::frame_loop;
 use super::frame_pacing;
 use super::startup::{
     apply_window_title_from_init, effective_output_device_for_gpu, effective_renderer_log_level,
-    LOG_FLUSH_INTERVAL,
+    ExternalShutdownCoordinator, LOG_FLUSH_INTERVAL,
 };
 use super::window_icon::try_embedded_window_icon;
 
@@ -88,8 +88,8 @@ pub(crate) struct RenderideApp {
     hud_frame_last: Option<Instant>,
     /// Wall-clock end of the last [`Self::tick_frame`] (for desktop FPS caps).
     last_frame_end: Option<Instant>,
-    /// Unix: set by the `SIGTERM` handler (e.g. bootstrapper exit); the event loop exits on the next check.
-    sigterm_shutdown: Option<Arc<AtomicBool>>,
+    /// OS-driven graceful shutdown (Unix signals or Windows Ctrl+C). See [`crate::app::startup`].
+    external_shutdown: Option<ExternalShutdownCoordinator>,
 }
 
 /// Reconfigures the swapchain/depth for the given physical dimensions (shared by resize path and helpers).
@@ -110,7 +110,7 @@ impl RenderideApp {
         initial_vsync: bool,
         initial_gpu_validation: bool,
         log_level_cli: Option<LogLevel>,
-        sigterm_shutdown: Option<Arc<AtomicBool>>,
+        external_shutdown: Option<ExternalShutdownCoordinator>,
     ) -> Self {
         Self {
             runtime,
@@ -129,19 +129,21 @@ impl RenderideApp {
             xr_session: None,
             hud_frame_last: None,
             last_frame_end: None,
-            sigterm_shutdown,
+            external_shutdown,
         }
     }
 
-    /// If `SIGTERM` was delivered (flag set by [`crate::app::startup`]), logs and requests loop exit.
-    fn check_sigterm_shutdown(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        let Some(flag) = self.sigterm_shutdown.as_ref() else {
+    /// If graceful shutdown was requested (see [`crate::app::startup`]), optionally logs and exits the loop.
+    fn check_external_shutdown(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let Some(coord) = self.external_shutdown.as_ref() else {
             return false;
         };
-        if !flag.load(Ordering::Relaxed) {
+        if !coord.requested.load(Ordering::Relaxed) {
             return false;
         }
-        logger::info!("Received SIGTERM (e.g. bootstrapper parent exit); shutting down");
+        if coord.log_when_checked {
+            logger::info!("Graceful shutdown requested; exiting event loop");
+        }
         self.exit_code = Some(0);
         event_loop.exit();
         true
@@ -523,7 +525,7 @@ impl RenderideApp {
         let frame_start = Instant::now();
         self.frame_tick_prologue(frame_start);
         self.poll_ipc_and_window();
-        if self.check_sigterm_shutdown(event_loop) {
+        if self.check_external_shutdown(event_loop) {
             self.frame_tick_epilogue(frame_start);
             return;
         }
@@ -644,7 +646,7 @@ impl ApplicationHandler for RenderideApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.check_sigterm_shutdown(event_loop) {
+        if self.check_external_shutdown(event_loop) {
             return;
         }
         if let Some(window) = self.window.as_ref() {

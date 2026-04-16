@@ -2473,6 +2473,7 @@ dependencies = [
  "ash",
  "bytemuck",
  "crash-handler",
+ "ctrlc",
  "figment",
  "glam 0.32.1",
  "image",
