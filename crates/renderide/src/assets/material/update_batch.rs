@@ -78,7 +78,6 @@ fn apply_set_float_array_from_batch<L: MaterialBatchBlobLoader + ?Sized>(
     let Some(len) = p.next_int() else {
         return;
     };
-    #[allow(clippy::cast_sign_loss)]
     let len = len.max(0) as usize;
     let mut out: Vec<f32> = Vec::new();
     if options.persist_extended_payloads {
@@ -113,7 +112,6 @@ fn apply_set_float4_array_from_batch<L: MaterialBatchBlobLoader + ?Sized>(
     let Some(len) = p.next_int() else {
         return;
     };
-    #[allow(clippy::cast_sign_loss)]
     let len = len.max(0) as usize;
     let mut out: Vec<[f32; 4]> = Vec::new();
     if options.persist_extended_payloads {
@@ -379,7 +377,6 @@ mod tests {
 
     impl MaterialBatchBlobLoader for TestLoader {
         fn load_blob(&mut self, descriptor: &SharedMemoryBufferDescriptor) -> Option<Vec<u8>> {
-            #[allow(clippy::cast_sign_loss)]
             let i = descriptor.buffer_id.max(0) as usize;
             self.blobs.get(i).cloned()
         }

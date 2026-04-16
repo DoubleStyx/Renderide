@@ -18,7 +18,7 @@ use super::frustum::{
 };
 use super::hi_z_view_proj_matrices;
 use super::mesh_fully_occluded_in_hiz;
-use super::skinning_palette::build_skinning_palette;
+use super::skinning_palette::{build_skinning_palette, SkinningPaletteParams};
 use super::stereo_hiz_keeps_draw;
 use super::world_mesh_cull::{HiZTemporalState, WorldMeshCullInput, WorldMeshCullProjParams};
 use super::HiZCullData;
@@ -149,16 +149,16 @@ fn mesh_world_geometry_for_cull(
                 rigid_world_matrix: None,
             };
         };
-        let Some(pal) = build_skinning_palette(
-            target.scene,
-            target.space_id,
-            &target.mesh.skinning_bind_matrices,
-            target.mesh.has_skeleton,
-            &sk.bone_transform_indices,
-            sk.base.node_id,
+        let Some(pal) = build_skinning_palette(SkinningPaletteParams {
+            scene: target.scene,
+            space_id: target.space_id,
+            skinning_bind_matrices: &target.mesh.skinning_bind_matrices,
+            has_skeleton: target.mesh.has_skeleton,
+            bone_transform_indices: &sk.bone_transform_indices,
+            smr_node_id: sk.base.node_id,
             render_context,
-            hc.head_output_transform,
-        ) else {
+            head_output_transform: hc.head_output_transform,
+        }) else {
             return MeshCullGeometry {
                 world_aabb: None,
                 rigid_world_matrix: None,

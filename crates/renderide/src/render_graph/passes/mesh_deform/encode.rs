@@ -7,7 +7,7 @@ use glam::Mat4;
 use crate::backend::advance_slab_cursor;
 use crate::backend::mesh_deform::plan_blendshape_scatter_chunks;
 use crate::gpu::GpuLimits;
-use crate::render_graph::skinning_palette::build_skinning_palette;
+use crate::render_graph::skinning_palette::{build_skinning_palette, SkinningPaletteParams};
 use crate::scene::RenderSpaceId;
 
 use super::snapshot::{
@@ -330,16 +330,16 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
 
     let bone_count_u = ctx.mesh.skinning_bind_matrices.len() as u32;
     gpu.scratch.ensure_bone_capacity(gpu.device, bone_count_u);
-    let Some(palette_mats) = build_skinning_palette(
-        ctx.scene,
-        ctx.space_id,
-        &ctx.mesh.skinning_bind_matrices,
-        ctx.mesh.has_skeleton,
-        indices,
-        ctx.smr_node_id,
-        ctx.render_context,
-        ctx.head_output_transform,
-    ) else {
+    let Some(palette_mats) = build_skinning_palette(SkinningPaletteParams {
+        scene: ctx.scene,
+        space_id: ctx.space_id,
+        skinning_bind_matrices: &ctx.mesh.skinning_bind_matrices,
+        has_skeleton: ctx.mesh.has_skeleton,
+        bone_transform_indices: indices,
+        smr_node_id: ctx.smr_node_id,
+        render_context: ctx.render_context,
+        head_output_transform: ctx.head_output_transform,
+    }) else {
         return;
     };
     let mut palette: Vec<u8> = vec![0u8; palette_mats.len() * 64];

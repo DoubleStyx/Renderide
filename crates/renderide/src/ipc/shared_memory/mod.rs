@@ -35,5 +35,4 @@ mod accessor;
 pub use accessor::SharedMemoryAccessor;
 
 // Public surface for `crate::ipc::shared_memory::*`; also re-exported at [`crate::ipc`].
-#[allow(unused_imports)]
 pub use naming::{compose_memory_view_name, RENDERIDE_INTERPROCESS_DIR_ENV};

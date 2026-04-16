@@ -5,16 +5,6 @@ use std::path::{Path, PathBuf};
 /// Linux tmpfs directory used for file-backed queues and for interop with stacks that expect `/dev/shm`.
 pub const LINUX_SHM_MEMORY_DIR: &str = "/dev/shm/.cloudtoid/interprocess/mmf";
 
-/// Linux-only default directory (same as [`LINUX_SHM_MEMORY_DIR`]).
-#[deprecated(
-    note = "use LINUX_SHM_MEMORY_DIR for Linux-specific paths, or default_memory_dir() for portable defaults"
-)]
-pub const DEFAULT_MEMORY_DIR: &str = LINUX_SHM_MEMORY_DIR;
-
-/// Legacy alias for [`LINUX_SHM_MEMORY_DIR`].
-#[deprecated(note = "use LINUX_SHM_MEMORY_DIR or default_memory_dir()")]
-pub const MEMORY_FILE_PATH: &str = LINUX_SHM_MEMORY_DIR;
-
 /// Returns the default directory for `.qu` backing files used by [`QueueOptions::new`] and [`QueueOptions::with_destroy`].
 ///
 /// - **Linux**: [`LINUX_SHM_MEMORY_DIR`] under `/dev/shm` (tmpfs, matches typical managed layouts).

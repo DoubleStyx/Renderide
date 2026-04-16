@@ -61,6 +61,9 @@ mod world_mesh_cull_eval;
 mod world_mesh_draw_prep;
 mod world_mesh_draw_stats;
 
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+
 pub mod passes;
 
 pub use world_mesh_draw_prep::{
@@ -106,7 +109,7 @@ pub use pass::{PassPhase, RenderPass};
 pub use resources::{PassResources, ResourceSlot};
 pub use reverse_z_depth::{MAIN_FORWARD_DEPTH_CLEAR, MAIN_FORWARD_DEPTH_COMPARE};
 pub use secondary_camera::{camera_state_enabled, host_camera_frame_for_render_texture};
-pub use skinning_palette::build_skinning_palette;
+pub use skinning_palette::{build_skinning_palette, SkinningPaletteParams};
 pub use world_mesh_cull::{
     build_world_mesh_cull_proj_params, capture_hi_z_temporal, HiZTemporalState, WorldMeshCullInput,
     WorldMeshCullProjParams,

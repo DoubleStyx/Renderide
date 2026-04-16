@@ -32,8 +32,6 @@ pub use layout::{
     TICKS_FOR_TEN_SECONDS, TICKS_PER_SECOND,
 };
 pub use options::{default_memory_dir, QueueOptions, LINUX_SHM_MEMORY_DIR};
-#[allow(deprecated)]
-pub use options::{DEFAULT_MEMORY_DIR, MEMORY_FILE_PATH};
 pub use publisher::Publisher;
 pub use queue::QueueFactory;
 pub use subscriber::Subscriber;

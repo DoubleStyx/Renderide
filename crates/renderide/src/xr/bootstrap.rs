@@ -281,8 +281,18 @@ fn create_openxr_vulkan_instance(
         let raw = xr_instance
             .create_vulkan_instance(
                 xr_system_id,
-                #[allow(clippy::missing_transmute_annotations)]
-                std::mem::transmute(vk_entry.static_fn().get_instance_proc_addr),
+                std::mem::transmute::<
+                    unsafe extern "system" fn(
+                        vk::Instance,
+                        *const i8,
+                    )
+                        -> Option<unsafe extern "system" fn()>,
+                    unsafe extern "system" fn(
+                        *const c_void,
+                        *const i8,
+                    )
+                        -> Option<unsafe extern "system" fn()>,
+                >(vk_entry.static_fn().get_instance_proc_addr),
                 &create_info as *const _ as *const _,
             )?
             .map_err(vk::Result::from_raw)?;
@@ -440,8 +450,18 @@ fn create_vulkan_logical_device_openxr(
             .xr_instance
             .create_vulkan_device(
                 desc.xr_system_id,
-                #[allow(clippy::missing_transmute_annotations)]
-                std::mem::transmute(desc.vk_entry.static_fn().get_instance_proc_addr),
+                std::mem::transmute::<
+                    unsafe extern "system" fn(
+                        vk::Instance,
+                        *const i8,
+                    )
+                        -> Option<unsafe extern "system" fn()>,
+                    unsafe extern "system" fn(
+                        *const c_void,
+                        *const i8,
+                    )
+                        -> Option<unsafe extern "system" fn()>,
+                >(desc.vk_entry.static_fn().get_instance_proc_addr),
                 desc.vk_physical_device.as_raw() as *const c_void,
                 &device_create_info as *const _ as *const _,
             )?

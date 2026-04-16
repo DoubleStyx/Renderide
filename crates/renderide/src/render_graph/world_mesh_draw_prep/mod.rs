@@ -31,12 +31,10 @@ pub use types::{
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        resolved_material_slots, sort_world_mesh_draws, MaterialDrawBatchKey, WorldMeshDrawItem,
-    };
-    use crate::assets::material::MaterialPropertyLookupIds;
+    use super::{resolved_material_slots, sort_world_mesh_draws, MaterialDrawBatchKey};
     use crate::materials::RasterPipelineKind;
-    use crate::scene::{MeshMaterialSlot, RenderSpaceId, StaticMeshRenderer};
+    use crate::render_graph::test_fixtures::{dummy_world_mesh_draw_item, DummyDrawItemSpec};
+    use crate::scene::{MeshMaterialSlot, StaticMeshRenderer};
 
     #[test]
     fn resolved_material_slots_prefers_explicit_vec() {
@@ -72,55 +70,53 @@ mod tests {
         assert_eq!(slots[0].property_block_id, Some(42));
     }
 
-    fn dummy_item(
-        mid: i32,
-        pb: Option<i32>,
-        skinned: bool,
-        sort: i32,
-        mesh: i32,
-        node: i32,
-        slot: usize,
-        collect_order: usize,
-        alpha_blended: bool,
-    ) -> WorldMeshDrawItem {
-        WorldMeshDrawItem {
-            space_id: RenderSpaceId(0),
-            node_id: node,
-            mesh_asset_id: mesh,
-            slot_index: slot,
-            first_index: 0,
-            index_count: 3,
-            is_overlay: false,
-            sorting_order: sort,
-            skinned,
-            collect_order,
-            camera_distance_sq: 0.0,
-            lookup_ids: MaterialPropertyLookupIds {
-                material_asset_id: mid,
-                mesh_property_block_slot0: pb,
-            },
-            batch_key: MaterialDrawBatchKey {
-                pipeline: RasterPipelineKind::DebugWorldNormals,
-                shader_asset_id: -1,
-                material_asset_id: mid,
-                property_block_slot0: pb,
-                skinned,
-                embedded_needs_uv0: false,
-                embedded_needs_color: false,
-                embedded_requires_intersection_pass: false,
-                alpha_blended,
-            },
-            rigid_world_matrix: None,
-        }
-    }
-
     #[test]
     fn sort_orders_by_material_then_higher_sorting_order() {
         let mut v = vec![
-            dummy_item(2, None, false, 0, 1, 0, 0, 0, false),
-            dummy_item(1, None, false, 0, 1, 0, 0, 1, false),
-            dummy_item(1, None, false, 5, 2, 0, 0, 2, false),
-            dummy_item(1, None, false, 10, 1, 0, 1, 3, false),
+            dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 2,
+                property_block: None,
+                skinned: false,
+                sorting_order: 0,
+                mesh_asset_id: 1,
+                node_id: 0,
+                slot_index: 0,
+                collect_order: 0,
+                alpha_blended: false,
+            }),
+            dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 1,
+                property_block: None,
+                skinned: false,
+                sorting_order: 0,
+                mesh_asset_id: 1,
+                node_id: 0,
+                slot_index: 0,
+                collect_order: 1,
+                alpha_blended: false,
+            }),
+            dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 1,
+                property_block: None,
+                skinned: false,
+                sorting_order: 5,
+                mesh_asset_id: 2,
+                node_id: 0,
+                slot_index: 0,
+                collect_order: 2,
+                alpha_blended: false,
+            }),
+            dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 1,
+                property_block: None,
+                skinned: false,
+                sorting_order: 10,
+                mesh_asset_id: 1,
+                node_id: 0,
+                slot_index: 1,
+                collect_order: 3,
+                alpha_blended: false,
+            }),
         ];
         sort_world_mesh_draws(&mut v);
         assert_eq!(v[0].lookup_ids.material_asset_id, 1);
@@ -161,9 +157,39 @@ mod tests {
     #[test]
     fn transparent_ui_preserves_collection_order_within_sorting_order() {
         let mut v = vec![
-            dummy_item(10, None, false, 0, 1, 0, 0, 2, true),
-            dummy_item(11, None, false, 0, 1, 0, 1, 0, true),
-            dummy_item(12, None, false, 1, 1, 0, 2, 1, true),
+            dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 10,
+                property_block: None,
+                skinned: false,
+                sorting_order: 0,
+                mesh_asset_id: 1,
+                node_id: 0,
+                slot_index: 0,
+                collect_order: 2,
+                alpha_blended: true,
+            }),
+            dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 11,
+                property_block: None,
+                skinned: false,
+                sorting_order: 0,
+                mesh_asset_id: 1,
+                node_id: 0,
+                slot_index: 1,
+                collect_order: 0,
+                alpha_blended: true,
+            }),
+            dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 12,
+                property_block: None,
+                skinned: false,
+                sorting_order: 1,
+                mesh_asset_id: 1,
+                node_id: 0,
+                slot_index: 2,
+                collect_order: 1,
+                alpha_blended: true,
+            }),
         ];
         sort_world_mesh_draws(&mut v);
         assert_eq!(v[0].collect_order, 0);
@@ -173,9 +199,29 @@ mod tests {
 
     #[test]
     fn transparent_ui_sorts_farther_items_first() {
-        let mut far = dummy_item(10, None, false, 0, 1, 0, 0, 0, true);
+        let mut far = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 10,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 0,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: true,
+        });
         far.camera_distance_sq = 9.0;
-        let mut near = dummy_item(11, None, false, 0, 1, 0, 1, 1, true);
+        let mut near = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 11,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 0,
+            slot_index: 1,
+            collect_order: 1,
+            alpha_blended: true,
+        });
         near.camera_distance_sq = 1.0;
         let mut v = vec![near, far];
         sort_world_mesh_draws(&mut v);

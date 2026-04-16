@@ -93,51 +93,7 @@ pub fn world_mesh_draw_stats_from_sorted(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assets::material::MaterialPropertyLookupIds;
-    use crate::materials::RasterPipelineKind;
-    use crate::scene::RenderSpaceId;
-
-    fn dummy_item(
-        mid: i32,
-        pb: Option<i32>,
-        skinned: bool,
-        sort: i32,
-        mesh: i32,
-        node: i32,
-        slot: usize,
-        collect_order: usize,
-        alpha_blended: bool,
-    ) -> WorldMeshDrawItem {
-        WorldMeshDrawItem {
-            space_id: RenderSpaceId(0),
-            node_id: node,
-            mesh_asset_id: mesh,
-            slot_index: slot,
-            first_index: 0,
-            index_count: 3,
-            is_overlay: false,
-            sorting_order: sort,
-            skinned,
-            collect_order,
-            camera_distance_sq: 0.0,
-            lookup_ids: MaterialPropertyLookupIds {
-                material_asset_id: mid,
-                mesh_property_block_slot0: pb,
-            },
-            batch_key: MaterialDrawBatchKey {
-                pipeline: RasterPipelineKind::DebugWorldNormals,
-                shader_asset_id: -1,
-                material_asset_id: mid,
-                property_block_slot0: pb,
-                skinned,
-                embedded_needs_uv0: false,
-                embedded_needs_color: false,
-                embedded_requires_intersection_pass: false,
-                alpha_blended,
-            },
-            rigid_world_matrix: None,
-        }
-    }
+    use crate::render_graph::test_fixtures::{dummy_world_mesh_draw_item, DummyDrawItemSpec};
 
     #[test]
     fn world_mesh_draw_stats_empty() {
@@ -149,8 +105,28 @@ mod tests {
 
     #[test]
     fn world_mesh_draw_stats_single_batch() {
-        let a = dummy_item(1, None, false, 0, 1, 0, 0, 0, false);
-        let b = dummy_item(1, None, false, 0, 1, 0, 1, 1, false);
+        let a = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 0,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        let b = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 0,
+            slot_index: 1,
+            collect_order: 1,
+            alpha_blended: false,
+        });
         let draws = vec![a, b];
         let s = world_mesh_draw_stats_from_sorted(&draws, None, true);
         assert_eq!(s.batch_total, 1);

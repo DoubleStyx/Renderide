@@ -37,6 +37,8 @@ const MAX_CACHED_EMBEDDED_BIND_GROUPS: usize = 512;
 /// LRU cap for embedded material uniform buffers.
 const MAX_CACHED_EMBEDDED_UNIFORMS: usize = 512;
 
+type EmbeddedGroup1TexturesAndSamplers = (Vec<Arc<wgpu::TextureView>>, Vec<Arc<wgpu::Sampler>>);
+
 /// GPU resources shared by embedded material bind groups (layouts, default texture, sampler).
 pub struct EmbeddedMaterialBindResources {
     device: Arc<wgpu::Device>,
@@ -333,7 +335,6 @@ impl EmbeddedMaterialBindResources {
     }
 
     /// Resolves every non-uniform `@group(1)` texture view and sampler in reflection order.
-    #[allow(clippy::type_complexity)]
     fn resolve_group1_textures_and_samplers(
         &self,
         layout: &Arc<StemMaterialLayout>,
@@ -342,8 +343,7 @@ impl EmbeddedMaterialBindResources {
         store: &MaterialPropertyStore,
         lookup: MaterialPropertyLookupIds,
         offscreen_write_render_texture_asset_id: Option<i32>,
-    ) -> Result<(Vec<Arc<wgpu::TextureView>>, Vec<Arc<wgpu::Sampler>>), EmbeddedMaterialBindError>
-    {
+    ) -> Result<EmbeddedGroup1TexturesAndSamplers, EmbeddedMaterialBindError> {
         let mut keepalive_views: Vec<Arc<wgpu::TextureView>> = Vec::new();
         let mut keepalive_samplers: Vec<Arc<wgpu::Sampler>> = Vec::new();
         for entry in &layout.reflected.material_entries {

@@ -62,7 +62,7 @@ public static class PackEmitter
                         args.Add($"self.{name}");
                     while (args.Count < 8)
                         args.Add("false");
-                    w.Line($"packer.write_packed_bools({string.Join(", ", args)});");
+                    w.Line($"packer.write_packed_bools_array([{string.Join(", ", args)}]);");
                     break;
                 }
 

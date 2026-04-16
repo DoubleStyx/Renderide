@@ -38,9 +38,8 @@ mod tests {
     use crate::options::QueueOptions;
 
     #[test]
-    #[allow(clippy::default_constructed_unit_structs)] // Exercise `Default` for the ZST; same as `QueueFactory`.
     fn queue_factory_default_matches_new() {
-        assert!(QueueFactory::default() == QueueFactory::new());
+        assert!(QueueFactory == QueueFactory::new());
         assert_eq!(std::mem::size_of::<QueueFactory>(), 0);
     }
 

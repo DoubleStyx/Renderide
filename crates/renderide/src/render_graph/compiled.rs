@@ -84,6 +84,24 @@ pub struct FrameView<'a> {
     pub prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
 }
 
+/// Borrows shared across frame-global and per-view [`CompiledRenderGraph::execute_multi_view`] passes.
+struct MultiViewExecutionContext<'a> {
+    /// GPU context (surface, swapchain, submits).
+    gpu: &'a mut GpuContext,
+    /// Scene after cache flush.
+    scene: &'a SceneCoordinator,
+    /// Render backend (materials, occlusion, HUD overlay).
+    backend: &'a mut RenderBackend,
+    /// Device for encoders and pipeline state.
+    device: &'a wgpu::Device,
+    /// Limits for [`RenderPassContext`].
+    gpu_limits: &'a GpuLimits,
+    /// Shared queue (mutex for cross-thread encode if needed).
+    queue_arc: &'a Arc<Mutex<wgpu::Queue>>,
+    /// Swapchain color view when a view targets the main window.
+    backbuffer_view_holder: &'a Option<wgpu::TextureView>,
+}
+
 impl<'a> FrameView<'a> {
     /// Hi-Z / occlusion slot for this view.
     pub fn occlusion_view_id(&self) -> OcclusionViewId {
@@ -343,29 +361,21 @@ impl CompiledRenderGraph {
         let gpu_limits_owned = gpu.limits().clone();
         let gpu_limits = gpu_limits_owned.as_ref();
 
-        self.execute_multi_view_frame_global_passes(
+        let mut mv_ctx = MultiViewExecutionContext {
             gpu,
             scene,
             backend,
-            &views,
-            &backbuffer_view_holder,
             device,
             gpu_limits,
-            &queue_arc,
-        )?;
+            queue_arc: &queue_arc,
+            backbuffer_view_holder: &backbuffer_view_holder,
+        };
+
+        self.execute_multi_view_frame_global_passes(&mut mv_ctx, &views)?;
 
         // Per-view: separate encoder + submit so queue writes before each submit apply only to this view.
         for view in &mut views {
-            self.execute_multi_view_submit_for_one_view(
-                view,
-                gpu,
-                scene,
-                backend,
-                device,
-                gpu_limits,
-                &queue_arc,
-                &backbuffer_view_holder,
-            )?;
+            self.execute_multi_view_submit_for_one_view(&mut mv_ctx, view)?;
         }
 
         if let Some(f) = frame {
@@ -375,18 +385,21 @@ impl CompiledRenderGraph {
     }
 
     /// One per-view encoder, per-view [`PassPhase::PerView`] passes, submit, and Hi-Z bookkeeping.
-    #[allow(clippy::too_many_arguments)] // Mirrors per-view submit inputs; bundling hits borrow/lifetime limits in the caller loop.
     fn execute_multi_view_submit_for_one_view(
         &mut self,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
         view: &mut FrameView<'_>,
-        gpu: &mut GpuContext,
-        scene: &SceneCoordinator,
-        backend: &mut RenderBackend,
-        device: &wgpu::Device,
-        gpu_limits: &GpuLimits,
-        queue_arc: &Arc<Mutex<wgpu::Queue>>,
-        backbuffer_view_holder: &Option<wgpu::TextureView>,
     ) -> Result<(), GraphExecuteError> {
+        let MultiViewExecutionContext {
+            gpu,
+            scene,
+            backend,
+            device,
+            gpu_limits,
+            queue_arc,
+            backbuffer_view_holder,
+        } = mv_ctx;
+
         let prefetched = view.prefetched_world_mesh_draws.take();
         let draw_filter = view.draw_filter.clone();
         let host_camera = view.host_camera;
@@ -445,18 +458,21 @@ impl CompiledRenderGraph {
     }
 
     /// Runs [`PassPhase::FrameGlobal`] passes once per tick using the first view for host/scene context.
-    #[allow(clippy::too_many_arguments)] // Single call site; same bundle as per-view submit.
     fn execute_multi_view_frame_global_passes(
         &mut self,
-        gpu: &mut GpuContext,
-        scene: &SceneCoordinator,
-        backend: &mut RenderBackend,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
         views: &[FrameView<'_>],
-        backbuffer_view_holder: &Option<wgpu::TextureView>,
-        device: &wgpu::Device,
-        gpu_limits: &GpuLimits,
-        queue_arc: &Arc<Mutex<wgpu::Queue>>,
     ) -> Result<(), GraphExecuteError> {
+        let MultiViewExecutionContext {
+            gpu,
+            scene,
+            backend,
+            device,
+            gpu_limits,
+            queue_arc,
+            backbuffer_view_holder,
+        } = mv_ctx;
+
         let has_frame_global = self
             .passes
             .iter()

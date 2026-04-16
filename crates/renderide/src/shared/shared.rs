@@ -2374,7 +2374,7 @@ impl MemoryPackable for VideoTextureUpdate {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
         packer.write(&self.asset_id);
         packer.write(&self.position);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.play,
             self.r#loop,
             false,
@@ -2383,7 +2383,7 @@ impl MemoryPackable for VideoTextureUpdate {
             false,
             false,
             false,
-        );
+        ]);
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         self.asset_id = unpacker.read();
@@ -4103,7 +4103,7 @@ pub struct MouseState {
 
 impl MemoryPackable for MouseState {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_active,
             self.left_button_state,
             self.right_button_state,
@@ -4112,7 +4112,7 @@ impl MemoryPackable for MouseState {
             self.button5_state,
             false,
             false,
-        );
+        ]);
         packer.write(&self.desktop_position);
         packer.write(&self.window_position);
         packer.write(&self.direct_delta);
@@ -4190,7 +4190,7 @@ pub struct VRInputsState {
 
 impl MemoryPackable for VRInputsState {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.user_present_in_headset,
             self.dashboard_open,
             false,
@@ -4199,7 +4199,7 @@ impl MemoryPackable for VRInputsState {
             false,
             false,
             false,
-        );
+        ]);
         packer.write_object(self.headset_state.as_mut());
         packer.write_polymorphic_list(Some(&mut self.controllers[..]));
         packer.write_object_list(Some(&mut self.trackers[..]));
@@ -4256,7 +4256,7 @@ impl MemoryPackable for GamepadState {
         packer.write(&self.d_pad);
         packer.write(&self.left_trigger);
         packer.write(&self.right_trigger);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.left_thumbstick_click,
             self.right_thumbstick_click,
             self.d_pad_up,
@@ -4265,11 +4265,11 @@ impl MemoryPackable for GamepadState {
             self.d_pad_left,
             self.left_bumper,
             self.right_bumper,
-        );
-        packer.write_packed_bools(
+        ]);
+        packer.write_packed_bools_array([
             self.start, self.menu, false, false, false, false, false, false,
-        );
-        packer.write_packed_bools(
+        ]);
+        packer.write_packed_bools_array([
             self.a,
             self.b,
             self.x,
@@ -4278,7 +4278,7 @@ impl MemoryPackable for GamepadState {
             self.paddle1,
             self.paddle2,
             self.paddle3,
-        );
+        ]);
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         self.display_name = unpacker.read_str();
@@ -5875,7 +5875,7 @@ pub struct HeadsetState {
 
 impl MemoryPackable for HeadsetState {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_tracking,
             self.battery_charging,
             false,
@@ -5884,7 +5884,7 @@ impl MemoryPackable for HeadsetState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -6043,7 +6043,7 @@ pub struct TrackerState {
 impl MemoryPackable for TrackerState {
     fn pack(&mut self, packer: &mut MemoryPacker<'_>) {
         packer.write_str(self.unique_id.as_deref());
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_tracking,
             self.battery_charging,
             false,
@@ -6052,7 +6052,7 @@ impl MemoryPackable for TrackerState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -6119,7 +6119,7 @@ impl MemoryPackable for HandState {
         packer.write_str(self.unique_id.as_deref());
         packer.write(&self.priority);
         packer.write_object_required(&mut self.chirality);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_device_active,
             self.is_tracking,
             self.tracks_metacarpals,
@@ -6128,7 +6128,7 @@ impl MemoryPackable for HandState {
             false,
             false,
             false,
-        );
+        ]);
         packer.write(&self.confidence);
         if self.is_tracking {
             packer.write(&self.wrist_position);
@@ -7317,7 +7317,7 @@ impl MemoryPackable for CosmosControllerState {
         packer.write_str(self.device_model.as_deref());
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_device_active,
             self.is_tracking,
             self.has_bound_hand,
@@ -7326,7 +7326,7 @@ impl MemoryPackable for CosmosControllerState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -7337,7 +7337,7 @@ impl MemoryPackable for CosmosControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.joystick_touch,
             self.joystick_click,
             self.trigger_touch,
@@ -7346,7 +7346,7 @@ impl MemoryPackable for CosmosControllerState {
             self.vive,
             self.button_ax,
             self.button_by,
-        );
+        ]);
         packer.write(&self.joystick_raw);
         packer.write(&self.trigger);
         packer.write_bool(self.bumper);
@@ -7416,7 +7416,7 @@ impl MemoryPackable for GenericControllerState {
         packer.write_str(self.device_model.as_deref());
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_device_active,
             self.is_tracking,
             self.has_bound_hand,
@@ -7425,7 +7425,7 @@ impl MemoryPackable for GenericControllerState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -7438,7 +7438,7 @@ impl MemoryPackable for GenericControllerState {
         }
         packer.write(&self.strength);
         packer.write(&self.axis);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.touching_strength,
             self.touching_axis,
             self.primary,
@@ -7447,7 +7447,7 @@ impl MemoryPackable for GenericControllerState {
             self.secondary,
             false,
             false,
-        );
+        ]);
     }
     fn unpack<P: MemoryPackerEntityPool>(&mut self, unpacker: &mut MemoryUnpacker<'_, '_, P>) {
         self.device_id = unpacker.read_str();
@@ -7514,7 +7514,7 @@ impl MemoryPackable for HPReverbControllerState {
         packer.write_str(self.device_model.as_deref());
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_device_active,
             self.is_tracking,
             self.has_bound_hand,
@@ -7523,7 +7523,7 @@ impl MemoryPackable for HPReverbControllerState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -7534,7 +7534,7 @@ impl MemoryPackable for HPReverbControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.app_menu,
             self.button_yb,
             self.button_xa,
@@ -7543,7 +7543,7 @@ impl MemoryPackable for HPReverbControllerState {
             self.joystick_click,
             self.trigger_hair,
             self.trigger_click,
-        );
+        ]);
         packer.write(&self.grip);
         packer.write(&self.joystick_raw);
         packer.write(&self.trigger);
@@ -7622,7 +7622,7 @@ impl MemoryPackable for IndexControllerState {
         packer.write_str(self.device_model.as_deref());
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_device_active,
             self.is_tracking,
             self.has_bound_hand,
@@ -7631,7 +7631,7 @@ impl MemoryPackable for IndexControllerState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -7642,7 +7642,7 @@ impl MemoryPackable for IndexControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.grip_touch,
             self.grip_click,
             self.button_a,
@@ -7651,10 +7651,10 @@ impl MemoryPackable for IndexControllerState {
             self.button_btouch,
             self.trigger_touch,
             self.trigger_click,
-        );
+        ]);
         packer.write(&self.grip);
         packer.write(&self.trigger);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.joystick_touch,
             self.joystick_click,
             self.touchpad_touch,
@@ -7663,7 +7663,7 @@ impl MemoryPackable for IndexControllerState {
             false,
             false,
             false,
-        );
+        ]);
         packer.write(&self.joystick_raw);
         packer.write(&self.touchpad);
         packer.write(&self.touchpad_force);
@@ -7742,7 +7742,7 @@ impl MemoryPackable for PicoNeo2ControllerState {
         packer.write_str(self.device_model.as_deref());
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_device_active,
             self.is_tracking,
             self.has_bound_hand,
@@ -7751,7 +7751,7 @@ impl MemoryPackable for PicoNeo2ControllerState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -7762,7 +7762,7 @@ impl MemoryPackable for PicoNeo2ControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.app,
             self.pico,
             self.button_yb,
@@ -7771,7 +7771,7 @@ impl MemoryPackable for PicoNeo2ControllerState {
             self.joystick_touch,
             self.joystick_click,
             self.trigger_click,
-        );
+        ]);
         packer.write(&self.joystick);
         packer.write(&self.trigger);
     }
@@ -7846,7 +7846,7 @@ impl MemoryPackable for TouchControllerState {
         packer.write_str(self.device_model.as_deref());
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_device_active,
             self.is_tracking,
             self.has_bound_hand,
@@ -7855,7 +7855,7 @@ impl MemoryPackable for TouchControllerState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -7867,7 +7867,7 @@ impl MemoryPackable for TouchControllerState {
             packer.write_bool(self.battery_charging);
         }
         packer.write_object_required(&mut self.model);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.start,
             self.button_yb,
             self.button_xa,
@@ -7876,8 +7876,8 @@ impl MemoryPackable for TouchControllerState {
             self.thumbrest_touch,
             false,
             false,
-        );
-        packer.write_packed_bools(
+        ]);
+        packer.write_packed_bools_array([
             self.grip_click,
             self.joystick_touch,
             self.joystick_click,
@@ -7886,7 +7886,7 @@ impl MemoryPackable for TouchControllerState {
             false,
             false,
             false,
-        );
+        ]);
         packer.write(&self.grip);
         packer.write(&self.joystick_raw);
         packer.write(&self.trigger);
@@ -7961,7 +7961,7 @@ impl MemoryPackable for ViveControllerState {
         packer.write_str(self.device_model.as_deref());
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_device_active,
             self.is_tracking,
             self.has_bound_hand,
@@ -7970,7 +7970,7 @@ impl MemoryPackable for ViveControllerState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -7981,7 +7981,7 @@ impl MemoryPackable for ViveControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.grip,
             self.app,
             self.trigger_hair,
@@ -7990,7 +7990,7 @@ impl MemoryPackable for ViveControllerState {
             self.touchpad_click,
             false,
             false,
-        );
+        ]);
         packer.write(&self.trigger);
         packer.write(&self.touchpad);
     }
@@ -8058,7 +8058,7 @@ impl MemoryPackable for WindowsMRControllerState {
         packer.write_str(self.device_model.as_deref());
         packer.write_object_required(&mut self.side);
         packer.write_object_required(&mut self.body_node);
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.is_device_active,
             self.is_tracking,
             self.has_bound_hand,
@@ -8067,7 +8067,7 @@ impl MemoryPackable for WindowsMRControllerState {
             false,
             false,
             false,
-        );
+        ]);
         if self.is_tracking {
             packer.write(&self.position);
             packer.write(&self.rotation);
@@ -8078,7 +8078,7 @@ impl MemoryPackable for WindowsMRControllerState {
             packer.write(&self.battery_level);
             packer.write_bool(self.battery_charging);
         }
-        packer.write_packed_bools(
+        packer.write_packed_bools_array([
             self.grip,
             self.app,
             self.trigger_hair,
@@ -8087,7 +8087,7 @@ impl MemoryPackable for WindowsMRControllerState {
             self.touchpad_click,
             self.joystick_click,
             false,
-        );
+        ]);
         packer.write(&self.trigger);
         packer.write(&self.touchpad);
         packer.write(&self.joystick_raw);
