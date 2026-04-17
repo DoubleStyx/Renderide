@@ -12,10 +12,8 @@ mod cluster_gpu;
 mod debug_hud_bundle;
 mod embedded;
 mod frame_gpu;
-mod frame_gpu_bindings;
 mod frame_gpu_error;
 mod frame_resource_manager;
-mod gpu_attached;
 mod light_gpu;
 mod material_system;
 pub mod mesh_deform;
@@ -34,10 +32,8 @@ pub use embedded::{
     EmbeddedMaterialBindError, EmbeddedMaterialBindResources, EmbeddedTexturePools,
 };
 pub use frame_gpu::{empty_material_bind_group_layout, EmptyMaterialBindGroup, FrameGpuResources};
-pub use frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 pub use frame_gpu_error::FrameGpuInitError;
 pub use frame_resource_manager::{FrameGpuBindContext, FrameResourceManager};
-pub use gpu_attached::{GpuAttached, RenderBackendAttachError};
 pub use light_gpu::{
     order_lights_for_clustered_shading, order_lights_for_clustered_shading_in_place, GpuLight,
     MAX_LIGHTS,
@@ -55,5 +51,3 @@ pub use render_backend::{
     RenderBackend, RenderBackendAttachDesc, MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS,
     MAX_PENDING_TEXTURE_UPLOADS,
 };
-
-pub(crate) use render_backend::WorldMeshForwardEncodeRefs;

@@ -6,18 +6,12 @@
 mod encode;
 mod snapshot;
 
-use std::fmt;
-
 use rayon::prelude::*;
 
-use crate::backend::mesh_deform::EntryNeed;
+use crate::backend::mesh_deform::{EntryNeed, GpuSkinCache};
 use crate::render_graph::context::RenderPassContext;
-use crate::render_graph::error::RenderPassError;
-use crate::render_graph::handles::ResourceId;
-use crate::render_graph::module::RenderModule;
-use crate::render_graph::pass::{PassPhase, RenderPass};
-use crate::render_graph::resources::PassResources;
-use crate::render_graph::{GraphBuilder, SharedRenderHandles};
+use crate::render_graph::error::{RenderPassError, SetupError};
+use crate::render_graph::pass::{PassBuilder, PassPhase, RenderPass};
 use crate::resources::MeshPool;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
@@ -28,47 +22,13 @@ use self::snapshot::{
 };
 
 /// Encodes mesh deformation compute for all active render spaces.
-pub struct MeshDeformPass {
-    mesh_deform_outputs: ResourceId,
-    /// Reused ordering of [`SceneCoordinator::render_space_ids`] for parallel per-space collection.
-    mesh_deform_space_ids_scratch: Vec<RenderSpaceId>,
-    /// One bucket per render space; inner [`Vec`] capacities are reused across frames.
-    mesh_deform_chunks_scratch: Vec<Vec<DeformWorkItem>>,
-    /// Flattened work list passed to encode (cleared after each successful dispatch).
-    mesh_deform_work_scratch: Vec<DeformWorkItem>,
-}
-
-impl fmt::Debug for MeshDeformPass {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MeshDeformPass")
-            .field("mesh_deform_outputs", &self.mesh_deform_outputs)
-            .finish_non_exhaustive()
-    }
-}
+#[derive(Debug, Default)]
+pub struct MeshDeformPass;
 
 impl MeshDeformPass {
-    /// Creates a mesh deform pass bound to the logical deform output resource.
-    pub fn new(mesh_deform_outputs: ResourceId) -> Self {
-        Self {
-            mesh_deform_outputs,
-            mesh_deform_space_ids_scratch: Vec::new(),
-            mesh_deform_chunks_scratch: Vec::new(),
-            mesh_deform_work_scratch: Vec::new(),
-        }
-    }
-}
-
-/// Registers [`MeshDeformPass`] on the main frame graph.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct MeshDeformModule;
-
-impl RenderModule for MeshDeformModule {
-    fn name(&self) -> &str {
-        "mesh_deform"
-    }
-
-    fn register(self: Box<Self>, builder: &mut GraphBuilder, handles: &SharedRenderHandles) {
-        builder.add_pass(Box::new(MeshDeformPass::new(handles.mesh_deform_outputs)));
+    /// Creates a mesh deform pass instance.
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -145,18 +105,17 @@ impl RenderPass for MeshDeformPass {
         "MeshDeform"
     }
 
-    fn resources(&self) -> PassResources {
-        PassResources {
-            reads: Vec::new(),
-            writes: vec![self.mesh_deform_outputs],
-        }
+    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.compute();
+        b.cull_exempt();
+        Ok(())
     }
 
     fn phase(&self) -> PassPhase {
         PassPhase::FrameGlobal
     }
 
-    fn execute(&mut self, ctx: &mut RenderPassContext<'_>) -> Result<(), RenderPassError> {
+    fn execute(&mut self, ctx: &mut RenderPassContext<'_, '_, '_>) -> Result<(), RenderPassError> {
         let Some(frame) = ctx.frame.as_mut() else {
             return Ok(());
         };
@@ -182,32 +141,31 @@ impl RenderPass for MeshDeformPass {
         }
         // Scope `scene` + `mesh_pool` so the rayon closure only captures `Sync` refs, not
         // [`crate::backend::RenderBackend`] (contains `RefCell`, imgui, non-`Sync` graph passes).
-        {
+        let work: Vec<DeformWorkItem> = {
             let scene = frame.scene;
             let mesh_pool = frame.backend.mesh_pool();
-            self.mesh_deform_space_ids_scratch.clear();
-            self.mesh_deform_space_ids_scratch
-                .extend(scene.render_space_ids());
-            let space_ids = &self.mesh_deform_space_ids_scratch;
-            self.mesh_deform_chunks_scratch.truncate(space_ids.len());
-            while self.mesh_deform_chunks_scratch.len() < space_ids.len() {
-                self.mesh_deform_chunks_scratch.push(Vec::new());
-            }
-            space_ids
+            let space_ids: Vec<RenderSpaceId> = scene.render_space_ids().collect();
+            let work_chunks: Vec<Vec<DeformWorkItem>> = space_ids
                 .par_iter()
-                .zip(self.mesh_deform_chunks_scratch.par_iter_mut())
-                .for_each(|(&space_id, chunk)| {
-                    chunk.clear();
-                    chunk.extend(collect_deform_work_for_space(scene, mesh_pool, space_id));
-                });
-            let work = &mut self.mesh_deform_work_scratch;
-            let chunks = &mut self.mesh_deform_chunks_scratch;
-            work.clear();
-            work.reserve(est);
-            for chunk in chunks.iter_mut() {
-                work.append(chunk);
+                .copied()
+                .map(|space_id| collect_deform_work_for_space(scene, mesh_pool, space_id))
+                .collect();
+            let mut work: Vec<DeformWorkItem> = Vec::with_capacity(est);
+            for chunk in work_chunks {
+                work.extend(chunk);
             }
-        }
+            work
+        };
+
+        let skin_cache_ptr = frame
+            .backend
+            .frame_resources
+            .skin_cache_mut()
+            .map(|c| c as *mut GpuSkinCache);
+
+        let Some((pre, scratch)) = frame.backend.mesh_deform_pre_and_scratch() else {
+            return Ok(());
+        };
 
         let queue = match ctx.queue.lock() {
             Ok(q) => q,
@@ -220,74 +178,62 @@ impl RenderPass for MeshDeformPass {
         let render_context = frame.scene.active_main_render_context();
         let head_output_transform = frame.host_camera.head_output_transform;
 
-        {
-            let backend = &mut frame.backend;
-            let Some((pre, scratch, skin_cache)) = backend.mesh_deform_pass_refs() else {
-                if backend.attached().is_none() {
-                    logger::warn!(
-                        "MeshDeformPass skipped: GPU attach bundle missing (RenderBackend::attach did not complete successfully)"
-                    );
-                } else {
-                    logger::warn!(
-                        "MeshDeformPass skipped: mesh preprocess compute pipelines are unavailable (deform compute disabled)"
-                    );
-                }
-                self.mesh_deform_work_scratch.clear();
-                return Ok(());
+        let Some(skin_cache_raw) = skin_cache_ptr else {
+            return Ok(());
+        };
+
+        for item in work {
+            let need = EntryNeed {
+                needs_blend: deform_needs_blend_snapshot(&item.mesh),
+                needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),
+            };
+            let key = (item.space_id, item.node_id);
+            // SAFETY: `skin_cache_raw` points at [`FrameResourceManager`]'s cache for this frame.
+            let skin_cache = unsafe { &mut *skin_cache_raw };
+            let Some((cache_entry, positions_arena, normals_arena, temp_arena)) = skin_cache
+                .get_or_alloc_with_arenas(
+                    ctx.device,
+                    ctx.encoder,
+                    key,
+                    need,
+                    item.mesh.vertex_count,
+                )
+            else {
+                continue;
             };
 
-            for item in &self.mesh_deform_work_scratch {
-                let need = EntryNeed {
-                    needs_blend: deform_needs_blend_snapshot(&item.mesh),
-                    needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),
-                };
-                let key = (item.space_id, item.node_id);
-                let Some((cache_entry, positions_arena, normals_arena, temp_arena)) = skin_cache
-                    .get_or_alloc_with_arenas(
-                        ctx.device,
-                        ctx.encoder,
-                        key,
-                        need,
-                        item.mesh.vertex_count,
-                    )
-                else {
-                    continue;
-                };
-
-                record_mesh_deform(
-                    MeshDeformEncodeGpu {
-                        queue: &queue,
-                        device: ctx.device,
-                        gpu_limits: ctx.gpu_limits,
-                        encoder: ctx.encoder,
-                        pre,
-                        scratch,
-                    },
-                    MeshDeformRecordInputs {
-                        scene: frame.scene,
-                        space_id: item.space_id,
-                        mesh: &item.mesh,
-                        bone_transform_indices: item.skinned.as_deref(),
-                        smr_node_id: item.smr_node_id,
-                        render_context,
-                        head_output_transform,
-                        blend_weights: &item.blend_weights,
-                        bone_cursor: &mut bone_cursor,
-                        blend_weight_cursor: &mut blend_weight_cursor,
-                        skin_dispatch_cursor: &mut skin_dispatch_cursor,
-                        skin_cache_entry: cache_entry,
-                        positions_arena,
-                        normals_arena,
-                        temp_arena,
-                    },
-                );
-            }
-
-            let fc = skin_cache.frame_counter();
-            skin_cache.sweep_stale(fc.saturating_sub(2));
+            record_mesh_deform(
+                MeshDeformEncodeGpu {
+                    queue: &queue,
+                    device: ctx.device,
+                    gpu_limits: ctx.gpu_limits,
+                    encoder: ctx.encoder,
+                    pre,
+                    scratch,
+                },
+                MeshDeformRecordInputs {
+                    scene: frame.scene,
+                    space_id: item.space_id,
+                    mesh: &item.mesh,
+                    bone_transform_indices: item.skinned.as_deref(),
+                    smr_node_id: item.smr_node_id,
+                    render_context,
+                    head_output_transform,
+                    blend_weights: &item.blend_weights,
+                    bone_cursor: &mut bone_cursor,
+                    blend_weight_cursor: &mut blend_weight_cursor,
+                    skin_dispatch_cursor: &mut skin_dispatch_cursor,
+                    skin_cache_entry: cache_entry,
+                    positions_arena,
+                    normals_arena,
+                    temp_arena,
+                },
+            );
         }
 
-        self.mesh_deform_work_scratch.clear();
+        let skin_cache = unsafe { &mut *skin_cache_raw };
+        let fc = skin_cache.frame_counter();
+        skin_cache.sweep_stale(fc.saturating_sub(2));
 
         frame
             .backend

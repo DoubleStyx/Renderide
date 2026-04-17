@@ -104,7 +104,10 @@ impl XrStereoSwapchain {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: XR_COLOR_FORMAT,
-                usage: TextureUses::COLOR_TARGET | TextureUses::COPY_DST | TextureUses::RESOURCE,
+                usage: TextureUses::COLOR_TARGET
+                    | TextureUses::COPY_DST
+                    | TextureUses::COPY_SRC
+                    | TextureUses::RESOURCE,
                 memory_flags: MemoryFlags::empty(),
                 view_formats: Vec::new(),
             };
@@ -125,6 +128,7 @@ impl XrStereoSwapchain {
                 format: XR_COLOR_FORMAT,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
                     | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             };
@@ -195,7 +199,7 @@ pub fn create_stereo_depth_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Depth32Float,
+        format: crate::render_graph::main_forward_depth_stencil_format(device.features()),
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::TEXTURE_BINDING,

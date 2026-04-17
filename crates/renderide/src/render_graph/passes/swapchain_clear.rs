@@ -2,52 +2,34 @@
 
 use crate::present::{record_swapchain_clear_pass, SWAPCHAIN_CLEAR_COLOR};
 
-use crate::render_graph::context::RenderPassContext;
-use crate::render_graph::error::RenderPassError;
-use crate::render_graph::handles::ResourceId;
-use crate::render_graph::module::RenderModule;
-use crate::render_graph::pass::RenderPass;
-use crate::render_graph::resources::PassResources;
-use crate::render_graph::{GraphBuilder, SharedRenderHandles};
+use crate::render_graph::context::{GraphRasterPassContext, RenderPassContext};
+use crate::render_graph::error::{RenderPassError, SetupError};
+use crate::render_graph::pass::{PassBuilder, RenderPass};
+use crate::render_graph::resources::ImportedTextureHandle;
 
 /// Clears the acquired backbuffer to a solid color (default [`SWAPCHAIN_CLEAR_COLOR`]).
 #[derive(Debug)]
 pub struct SwapchainClearPass {
-    /// Logical swapchain color target.
-    backbuffer: ResourceId,
     /// Clear color for the swapchain load op.
     pub clear_color: wgpu::Color,
+    target: ImportedTextureHandle,
 }
 
 impl SwapchainClearPass {
     /// Default clear color matches [`SWAPCHAIN_CLEAR_COLOR`].
-    pub fn new(backbuffer: ResourceId) -> Self {
+    pub fn new(target: ImportedTextureHandle) -> Self {
         Self {
-            backbuffer,
             clear_color: SWAPCHAIN_CLEAR_COLOR,
+            target,
         }
     }
 
     /// Full control over the clear color (HDR or branding).
-    pub fn with_clear_color(backbuffer: ResourceId, clear_color: wgpu::Color) -> Self {
+    pub fn with_clear_color(target: ImportedTextureHandle, clear_color: wgpu::Color) -> Self {
         Self {
-            backbuffer,
             clear_color,
+            target,
         }
-    }
-}
-
-/// Registers [`SwapchainClearPass`] (optional / tooling graphs).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SwapchainClearModule;
-
-impl RenderModule for SwapchainClearModule {
-    fn name(&self) -> &str {
-        "swapchain_clear"
-    }
-
-    fn register(self: Box<Self>, builder: &mut GraphBuilder, handles: &SharedRenderHandles) {
-        builder.add_pass(Box::new(SwapchainClearPass::new(handles.backbuffer)));
     }
 }
 
@@ -56,20 +38,38 @@ impl RenderPass for SwapchainClearPass {
         "SwapchainClear"
     }
 
-    fn resources(&self) -> PassResources {
-        PassResources {
-            reads: Vec::new(),
-            writes: vec![self.backbuffer],
-        }
+    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        let mut r = b.raster();
+        r.color(
+            self.target,
+            wgpu::Operations {
+                load: wgpu::LoadOp::Clear(self.clear_color),
+                store: wgpu::StoreOp::Store,
+            },
+            Option::<ImportedTextureHandle>::None,
+        );
+        Ok(())
     }
 
-    fn execute(&mut self, ctx: &mut RenderPassContext<'_>) -> Result<(), RenderPassError> {
+    fn execute(&mut self, ctx: &mut RenderPassContext<'_, '_, '_>) -> Result<(), RenderPassError> {
         let Some(view) = ctx.backbuffer else {
             return Err(RenderPassError::MissingBackbuffer {
                 pass: self.name().to_string(),
             });
         };
         record_swapchain_clear_pass(ctx.encoder, view, self.clear_color, Some("swapchain-clear"));
+        Ok(())
+    }
+
+    fn graph_managed_raster(&self) -> bool {
+        true
+    }
+
+    fn execute_graph_raster(
+        &mut self,
+        _ctx: &mut GraphRasterPassContext<'_, '_>,
+        _rpass: &mut wgpu::RenderPass<'_>,
+    ) -> Result<(), RenderPassError> {
         Ok(())
     }
 }

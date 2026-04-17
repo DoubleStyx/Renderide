@@ -93,16 +93,17 @@ impl RendererRuntime {
         let render_context = self.scene.active_main_render_context();
         let scene_ref: &SceneCoordinator = &self.scene;
         let property_store = self.backend.material_property_store();
+        let pipeline_property_ids =
+            MaterialPipelinePropertyIds::new(self.backend.property_id_registry());
         let mesh_pool = self.backend.mesh_pool();
         let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
         let router_ref = self
             .backend
             .materials
-            .material_registry()
+            .material_registry
+            .as_ref()
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
-        let pipeline_property_ids =
-            MaterialPipelinePropertyIds::new(self.backend.materials.property_id_registry());
 
         let occlusion_ref: &OcclusionSystem = &self.backend.occlusion;
         let inner_parallelism = if prepared.len() > 1 {
@@ -191,16 +192,17 @@ impl RendererRuntime {
         let render_context = self.scene.active_main_render_context();
         let scene_ref: &SceneCoordinator = &self.scene;
         let property_store = self.backend.material_property_store();
+        let pipeline_property_ids =
+            MaterialPipelinePropertyIds::new(self.backend.property_id_registry());
         let mesh_pool = self.backend.mesh_pool();
         let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
         let router_ref = self
             .backend
             .materials
-            .material_registry()
+            .material_registry
+            .as_ref()
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
-        let pipeline_property_ids =
-            MaterialPipelinePropertyIds::new(self.backend.materials.property_id_registry());
 
         let occlusion_ref: &OcclusionSystem = &self.backend.occlusion;
         let inner_parallelism = if prepared.len() > 1 {

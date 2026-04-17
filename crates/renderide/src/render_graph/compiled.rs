@@ -9,10 +9,23 @@ use crate::gpu::{GpuContext, GpuLimits};
 use crate::present::{acquire_surface_outcome, SurfaceFrameOutcome};
 use crate::scene::SceneCoordinator;
 
-use super::context::RenderPassContext;
+use std::collections::HashMap;
+
+use super::context::{
+    GraphRasterPassContext, GraphResolvedResources, RenderPassContext, ResolvedGraphBuffer,
+    ResolvedGraphTexture, ResolvedImportedBuffer, ResolvedImportedTexture,
+};
 use super::error::GraphExecuteError;
 use super::frame_params::{FrameRenderParams, HostCameraFrame, OcclusionViewId};
-use super::pass::{PassPhase, RenderPass};
+use super::ids::{GroupId, PassId};
+use super::pass::{GroupScope, PassKind, PassPhase, RenderPass};
+use super::resources::{
+    BufferImportSource, BufferSizePolicy, FrameTargetRole, ImportSource, ImportedBufferDecl,
+    ImportedBufferHandle, ImportedTextureDecl, ImportedTextureHandle, ResourceAccess,
+    TextureAttachmentResolve, TextureAttachmentTarget, TextureHandle, TextureResourceHandle,
+    TransientBufferDesc, TransientExtent, TransientTextureDesc,
+};
+use super::transient_pool::{BufferKey, TextureKey};
 use super::world_mesh_draw_prep::{CameraTransformDrawFilter, WorldMeshDrawCollection};
 
 /// Inputs for [`CompiledRenderGraph::execute_offscreen_single_view`] and
@@ -117,12 +130,135 @@ impl<'a> FrameView<'a> {
 }
 
 /// Statistics emitted when building a [`CompiledRenderGraph`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CompileStats {
     /// Number of passes in the flattened schedule.
     pub pass_count: usize,
     /// Number of topological levels (waves); a parallelism hint for future scheduling.
     pub topo_levels: usize,
+    /// Number of passes culled because their writes could not reach an import/export.
+    pub culled_count: usize,
+    /// Number of declared transient texture handles.
+    pub transient_texture_count: usize,
+    /// Number of physical transient texture slots after lifetime aliasing.
+    pub transient_texture_slots: usize,
+    /// Number of declared transient buffer handles.
+    pub transient_buffer_count: usize,
+    /// Number of physical transient buffer slots after lifetime aliasing.
+    pub transient_buffer_slots: usize,
+    /// Number of imported texture declarations.
+    pub imported_texture_count: usize,
+    /// Number of imported buffer declarations.
+    pub imported_buffer_count: usize,
+}
+
+/// Inclusive pass-index lifetime for one transient resource in the retained schedule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceLifetime {
+    /// First retained pass index that touches the resource.
+    pub first_pass: usize,
+    /// Last retained pass index that touches the resource.
+    pub last_pass: usize,
+}
+
+impl ResourceLifetime {
+    /// Returns true when two lifetimes do not overlap.
+    pub fn disjoint(self, other: Self) -> bool {
+        self.last_pass < other.first_pass || other.last_pass < self.first_pass
+    }
+}
+
+/// Compiled metadata for a transient texture handle.
+#[derive(Clone, Debug)]
+pub struct CompiledTextureResource {
+    /// Original descriptor.
+    pub desc: TransientTextureDesc,
+    /// Usage union across retained pass declarations.
+    pub usage: wgpu::TextureUsages,
+    /// Retained-schedule lifetime.
+    pub lifetime: Option<ResourceLifetime>,
+    /// Physical alias slot assigned by the compiler.
+    pub physical_slot: usize,
+}
+
+/// Compiled metadata for a transient buffer handle.
+#[derive(Clone, Debug)]
+pub struct CompiledBufferResource {
+    /// Original descriptor.
+    pub desc: TransientBufferDesc,
+    /// Usage union across retained pass declarations.
+    pub usage: wgpu::BufferUsages,
+    /// Retained-schedule lifetime.
+    pub lifetime: Option<ResourceLifetime>,
+    /// Physical alias slot assigned by the compiler.
+    pub physical_slot: usize,
+}
+
+/// Compiled setup metadata for one retained pass.
+#[derive(Clone, Debug)]
+pub struct CompiledPassInfo {
+    /// Original pass id in the builder.
+    pub id: PassId,
+    /// Pass name.
+    pub name: String,
+    /// Group id.
+    pub group: GroupId,
+    /// Command kind.
+    pub kind: PassKind,
+    /// Declared accesses.
+    pub(crate) accesses: Vec<ResourceAccess>,
+    /// Optional multiview mask for raster passes.
+    pub multiview_mask: Option<std::num::NonZeroU32>,
+    /// Render-pass attachment template for graph-managed raster passes.
+    pub raster_template: Option<RenderPassTemplate>,
+}
+
+/// Compiled render-pass attachment template.
+#[derive(Clone, Debug)]
+pub struct RenderPassTemplate {
+    /// Color attachments in declaration order.
+    pub color_attachments: Vec<ColorAttachmentTemplate>,
+    /// Optional depth/stencil attachment.
+    pub depth_stencil_attachment: Option<DepthAttachmentTemplate>,
+    /// Optional multiview mask.
+    pub multiview_mask: Option<std::num::NonZeroU32>,
+}
+
+/// Color attachment template.
+#[derive(Clone, Debug)]
+pub struct ColorAttachmentTemplate {
+    /// Color target handle.
+    pub target: TextureAttachmentTarget,
+    /// Load operation.
+    pub load: wgpu::LoadOp<wgpu::Color>,
+    /// Store operation.
+    pub store: wgpu::StoreOp,
+    /// Optional resolve target.
+    pub resolve_to: Option<TextureAttachmentResolve>,
+}
+
+/// Depth/stencil attachment template.
+#[derive(Clone, Debug)]
+pub struct DepthAttachmentTemplate {
+    /// Depth/stencil target handle.
+    pub target: TextureAttachmentTarget,
+    /// Depth operations.
+    pub depth: wgpu::Operations<f32>,
+    /// Optional stencil operations.
+    pub stencil: Option<wgpu::Operations<u32>>,
+}
+
+/// Ordered compiled group.
+#[derive(Clone, Debug)]
+pub struct CompiledGroup {
+    /// Group id.
+    pub id: GroupId,
+    /// Group label.
+    pub name: &'static str,
+    /// Execution scope.
+    pub scope: GroupScope,
+    /// Indices into [`CompiledRenderGraph::pass_info`].
+    pub pass_indices: Vec<usize>,
 }
 
 /// Immutable execution schedule produced by [`super::GraphBuilder::build`].
@@ -132,11 +268,23 @@ pub struct CompileStats {
 /// one submit per view so `wgpu::Queue::write_buffer` work in passes is ordered before each view’s GPU work.
 pub struct CompiledRenderGraph {
     pub(super) passes: Vec<Box<dyn RenderPass>>,
-    /// `true` when any pass writes the logical `backbuffer` resource — frame execution acquires the
-    /// swapchain once and presents after submit.
+    /// `true` when any pass writes an imported frame color target; frame execution
+    /// acquires the swapchain once and presents after submit.
     pub needs_surface_acquire: bool,
     /// Build-time stats for tests and future profiling hooks.
     pub compile_stats: CompileStats,
+    /// Ordered groups and retained pass membership.
+    pub groups: Vec<CompiledGroup>,
+    /// Retained pass metadata in execution order.
+    pub pass_info: Vec<CompiledPassInfo>,
+    /// Compiled transient texture metadata.
+    pub transient_textures: Vec<CompiledTextureResource>,
+    /// Compiled transient buffer metadata.
+    pub transient_buffers: Vec<CompiledBufferResource>,
+    /// Imported texture declarations.
+    pub imported_textures: Vec<ImportedTextureDecl>,
+    /// Imported buffer declarations.
+    pub imported_buffers: Vec<ImportedBufferDecl>,
 }
 
 struct ResolvedView<'a> {
@@ -178,6 +326,7 @@ fn frame_render_params_from_resolved<'a>(
         transform_draw_filter,
         offscreen_write_render_texture_asset_id: resolved.offscreen_write_render_texture_asset_id,
         prefetched_world_mesh_draws,
+        prepared_world_mesh_forward: None,
         occlusion_view: resolved.occlusion_view,
         sample_count: resolved.sample_count,
         msaa_color_view: resolved.msaa_color_view.clone(),
@@ -231,6 +380,176 @@ fn acquire_swapchain_for_multi_view_if_needed(
             })
         }
     }
+}
+
+fn resolve_transient_extent(
+    extent: TransientExtent,
+    viewport_px: (u32, u32),
+    array_layers: u32,
+) -> TransientExtent {
+    match extent {
+        TransientExtent::Backbuffer if array_layers > 1 => TransientExtent::MultiLayer {
+            width: viewport_px.0.max(1),
+            height: viewport_px.1.max(1),
+            layers: array_layers,
+        },
+        TransientExtent::Backbuffer => TransientExtent::Custom {
+            width: viewport_px.0.max(1),
+            height: viewport_px.1.max(1),
+        },
+        other => other,
+    }
+}
+
+fn resolve_buffer_size(size_policy: BufferSizePolicy, viewport_px: (u32, u32)) -> u64 {
+    match size_policy {
+        BufferSizePolicy::Fixed(size) => size.max(1),
+        BufferSizePolicy::PerViewport { bytes_per_px } => u64::from(viewport_px.0.max(1))
+            .saturating_mul(u64::from(viewport_px.1.max(1)))
+            .saturating_mul(bytes_per_px)
+            .max(1),
+    }
+}
+
+fn create_transient_layer_views(
+    texture: &wgpu::Texture,
+    key: TextureKey,
+) -> Vec<wgpu::TextureView> {
+    if key.dimension != wgpu::TextureDimension::D2 || key.array_layers <= 1 {
+        return Vec::new();
+    }
+    (0..key.array_layers)
+        .map(|layer| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("render-graph-transient-layer"),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: layer,
+                array_layer_count: Some(1),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+fn pass_info_raster_template(
+    pass_info: &[CompiledPassInfo],
+    pass_idx: usize,
+) -> Result<RenderPassTemplate, GraphExecuteError> {
+    let Some(info) = pass_info.get(pass_idx) else {
+        return Err(GraphExecuteError::MissingRasterTemplate {
+            pass: format!("pass#{pass_idx}"),
+        });
+    };
+    info.raster_template
+        .clone()
+        .ok_or_else(|| GraphExecuteError::MissingRasterTemplate {
+            pass: info.name.clone(),
+        })
+}
+
+fn frame_sample_count(ctx: &GraphRasterPassContext<'_, '_>) -> u32 {
+    ctx.frame
+        .as_ref()
+        .map(|frame| frame.sample_count.max(1))
+        .unwrap_or(1)
+}
+
+fn resolve_attachment_target(
+    target: TextureAttachmentTarget,
+    sample_count: u32,
+) -> TextureResourceHandle {
+    match target {
+        TextureAttachmentTarget::Resource(handle) => handle,
+        TextureAttachmentTarget::FrameSampled {
+            single_sample,
+            multisampled,
+        } => {
+            if sample_count > 1 {
+                multisampled
+            } else {
+                single_sample
+            }
+        }
+    }
+}
+
+fn resolve_attachment_resolve_target(
+    target: TextureAttachmentResolve,
+    sample_count: u32,
+) -> Option<TextureResourceHandle> {
+    match target {
+        TextureAttachmentResolve::Always(handle) => Some(handle),
+        TextureAttachmentResolve::FrameMultisampled(handle) => (sample_count > 1).then_some(handle),
+    }
+}
+
+fn execute_graph_managed_raster_pass(
+    pass: &mut dyn RenderPass,
+    template: &RenderPassTemplate,
+    graph_resources: &GraphResolvedResources,
+    encoder: &mut wgpu::CommandEncoder,
+    ctx: &mut GraphRasterPassContext<'_, '_>,
+) -> Result<(), GraphExecuteError> {
+    let sample_count = frame_sample_count(ctx);
+    let mut color_attachments = Vec::with_capacity(template.color_attachments.len());
+    for color in &template.color_attachments {
+        let target = resolve_attachment_target(color.target, sample_count);
+        let view = graph_resources.texture_view(target).ok_or_else(|| {
+            GraphExecuteError::MissingGraphAttachment {
+                pass: pass.name().to_string(),
+                resource: format!("{target:?}"),
+            }
+        })?;
+        let resolve_target = match color
+            .resolve_to
+            .and_then(|target| resolve_attachment_resolve_target(target, sample_count))
+        {
+            Some(target) => Some(graph_resources.texture_view(target).ok_or_else(|| {
+                GraphExecuteError::MissingGraphAttachment {
+                    pass: pass.name().to_string(),
+                    resource: format!("{target:?}"),
+                }
+            })?),
+            None => None,
+        };
+        color_attachments.push(Some(wgpu::RenderPassColorAttachment {
+            view,
+            resolve_target,
+            ops: wgpu::Operations {
+                load: color.load,
+                store: color.store,
+            },
+            depth_slice: None,
+        }));
+    }
+
+    let depth_stencil_attachment = if let Some(depth) = &template.depth_stencil_attachment {
+        let target = resolve_attachment_target(depth.target, sample_count);
+        let view = graph_resources.texture_view(target).ok_or_else(|| {
+            GraphExecuteError::MissingGraphAttachment {
+                pass: pass.name().to_string(),
+                resource: format!("{target:?}"),
+            }
+        })?;
+        Some(wgpu::RenderPassDepthStencilAttachment {
+            view,
+            depth_ops: Some(depth.depth),
+            stencil_ops: pass.graph_raster_stencil_ops(ctx, depth),
+        })
+    } else {
+        None
+    };
+
+    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("render-graph-raster"),
+        color_attachments: &color_attachments,
+        depth_stencil_attachment,
+        occlusion_query_set: None,
+        timestamp_writes: None,
+        multiview_mask: pass.graph_raster_multiview_mask(ctx, template),
+    });
+    pass.execute_graph_raster(ctx, &mut rpass)?;
+    Ok(())
 }
 
 impl CompiledRenderGraph {
@@ -367,6 +686,8 @@ impl CompiledRenderGraph {
         let gpu_limits_owned = gpu.limits().clone();
         let gpu_limits = gpu_limits_owned.as_ref();
 
+        backend.transient_pool_mut().begin_generation();
+
         let mut mv_ctx = MultiViewExecutionContext {
             gpu,
             scene,
@@ -383,6 +704,8 @@ impl CompiledRenderGraph {
         for view in &mut views {
             self.execute_multi_view_submit_for_one_view(&mut mv_ctx, view)?;
         }
+
+        mv_ctx.backend.transient_pool_mut().gc_tick(120);
 
         if let Some(f) = frame {
             f.present();
@@ -411,35 +734,56 @@ impl CompiledRenderGraph {
         let host_camera = view.host_camera;
         let target_is_swapchain = matches!(view.target, FrameViewTarget::Swapchain);
         let resolved = Self::resolve_view_from_target(&view.target, gpu, backbuffer_view_holder)?;
-        let mut frame_params = frame_render_params_from_resolved(
-            scene,
-            backend,
-            &resolved,
-            host_camera,
-            draw_filter,
-            prefetched,
-        );
+        let graph_resources = self.resolve_graph_resources_for_view(device, backend, &resolved);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("render-graph-per-view"),
         });
-        let mut ctx = RenderPassContext {
-            device,
-            gpu_limits,
-            queue: queue_arc,
-            encoder: &mut encoder,
-            backbuffer: resolved.backbuffer,
-            depth_view: Some(resolved.depth_view),
-            frame: Some(&mut frame_params),
-        };
-        for pass in &mut self.passes {
-            if pass.phase() == PassPhase::PerView {
-                let label = pass.name();
-                ctx.encoder.push_debug_group(label);
-                let r = pass.execute(&mut ctx);
-                ctx.encoder.pop_debug_group();
-                r?;
+        {
+            let mut frame_params = frame_render_params_from_resolved(
+                scene,
+                backend,
+                &resolved,
+                host_camera,
+                draw_filter,
+                prefetched,
+            );
+            for (pass_idx, pass) in self.passes.iter_mut().enumerate() {
+                if pass.phase() == PassPhase::PerView {
+                    if pass.graph_managed_raster() {
+                        let template = pass_info_raster_template(&self.pass_info, pass_idx)?;
+                        let mut ctx = GraphRasterPassContext {
+                            device,
+                            gpu_limits,
+                            queue: queue_arc,
+                            backbuffer: resolved.backbuffer,
+                            depth_view: Some(resolved.depth_view),
+                            frame: Some(&mut frame_params),
+                            graph_resources: Some(&graph_resources),
+                        };
+                        execute_graph_managed_raster_pass(
+                            pass.as_mut(),
+                            &template,
+                            &graph_resources,
+                            &mut encoder,
+                            &mut ctx,
+                        )?;
+                    } else {
+                        let mut ctx = RenderPassContext {
+                            device,
+                            gpu_limits,
+                            queue: queue_arc,
+                            encoder: &mut encoder,
+                            backbuffer: resolved.backbuffer,
+                            depth_view: Some(resolved.depth_view),
+                            frame: Some(&mut frame_params),
+                            graph_resources: Some(&graph_resources),
+                        };
+                        pass.execute(&mut ctx)?;
+                    }
+                }
             }
         }
+        graph_resources.release_to_pool(backend.transient_pool_mut());
 
         if target_is_swapchain {
             let Some(bb) = backbuffer_view_holder.as_ref() else {
@@ -498,32 +842,53 @@ impl CompiledRenderGraph {
             let first = views.first().expect("views non-empty");
             let resolved =
                 Self::resolve_view_from_target(&first.target, gpu, backbuffer_view_holder)?;
-            let mut frame_params = frame_render_params_from_resolved(
-                scene,
-                backend,
-                &resolved,
-                first.host_camera,
-                first.draw_filter.clone(),
-                None,
-            );
-            let mut ctx = RenderPassContext {
-                device,
-                gpu_limits,
-                queue: queue_arc,
-                encoder: &mut encoder,
-                backbuffer: None,
-                depth_view: None,
-                frame: Some(&mut frame_params),
-            };
-            for pass in &mut self.passes {
-                if pass.phase() == PassPhase::FrameGlobal {
-                    let label = pass.name();
-                    ctx.encoder.push_debug_group(label);
-                    let r = pass.execute(&mut ctx);
-                    ctx.encoder.pop_debug_group();
-                    r?;
+            let graph_resources = self.resolve_graph_resources_for_view(device, backend, &resolved);
+            {
+                let mut frame_params = frame_render_params_from_resolved(
+                    scene,
+                    backend,
+                    &resolved,
+                    first.host_camera,
+                    first.draw_filter.clone(),
+                    None,
+                );
+                for (pass_idx, pass) in self.passes.iter_mut().enumerate() {
+                    if pass.phase() == PassPhase::FrameGlobal {
+                        if pass.graph_managed_raster() {
+                            let template = pass_info_raster_template(&self.pass_info, pass_idx)?;
+                            let mut ctx = GraphRasterPassContext {
+                                device,
+                                gpu_limits,
+                                queue: queue_arc,
+                                backbuffer: None,
+                                depth_view: None,
+                                frame: Some(&mut frame_params),
+                                graph_resources: Some(&graph_resources),
+                            };
+                            execute_graph_managed_raster_pass(
+                                pass.as_mut(),
+                                &template,
+                                &graph_resources,
+                                &mut encoder,
+                                &mut ctx,
+                            )?;
+                        } else {
+                            let mut ctx = RenderPassContext {
+                                device,
+                                gpu_limits,
+                                queue: queue_arc,
+                                encoder: &mut encoder,
+                                backbuffer: None,
+                                depth_view: None,
+                                frame: Some(&mut frame_params),
+                                graph_resources: Some(&graph_resources),
+                            };
+                            pass.execute(&mut ctx)?;
+                        }
+                    }
                 }
             }
+            graph_resources.release_to_pool(backend.transient_pool_mut());
         }
         let cmd = encoder.finish();
         gpu.submit_tracked_frame_commands(cmd);
@@ -535,6 +900,192 @@ impl CompiledRenderGraph {
             FrameViewTarget::Swapchain => true,
             FrameViewTarget::ExternalMultiview(_) => !host.suppress_occlusion_temporal,
             FrameViewTarget::OffscreenRt(_) => !host.suppress_occlusion_temporal,
+        }
+    }
+
+    fn resolve_graph_resources_for_view(
+        &self,
+        device: &wgpu::Device,
+        backend: &mut RenderBackend,
+        resolved: &ResolvedView<'_>,
+    ) -> GraphResolvedResources {
+        let mut resources = GraphResolvedResources::with_capacity(
+            self.transient_textures.len(),
+            self.transient_buffers.len(),
+            self.imported_textures.len(),
+            self.imported_buffers.len(),
+        );
+        self.resolve_transient_textures(
+            device,
+            backend,
+            resolved.viewport_px,
+            resolved.surface_format,
+            resolved.sample_count,
+            resolved.multiview_stereo,
+            &mut resources,
+        );
+        self.resolve_transient_buffers(device, backend, resolved.viewport_px, &mut resources);
+        self.resolve_imported_textures(resolved, &mut resources);
+        self.resolve_imported_buffers(backend, resolved, &mut resources);
+        resources
+    }
+
+    fn resolve_transient_textures(
+        &self,
+        device: &wgpu::Device,
+        backend: &mut RenderBackend,
+        viewport_px: (u32, u32),
+        surface_format: wgpu::TextureFormat,
+        sample_count: u32,
+        multiview_stereo: bool,
+        resources: &mut GraphResolvedResources,
+    ) {
+        let mut physical_slots: HashMap<usize, ResolvedGraphTexture> = HashMap::new();
+        for (idx, compiled) in self.transient_textures.iter().enumerate() {
+            if compiled.lifetime.is_none() || compiled.physical_slot == usize::MAX {
+                continue;
+            }
+            let resolved = physical_slots
+                .entry(compiled.physical_slot)
+                .or_insert_with(|| {
+                    let array_layers = compiled.desc.array_layers.resolve(multiview_stereo);
+                    let key = TextureKey {
+                        format: compiled.desc.format.resolve(surface_format),
+                        extent: resolve_transient_extent(
+                            compiled.desc.extent,
+                            viewport_px,
+                            array_layers,
+                        ),
+                        mip_levels: compiled.desc.mip_levels,
+                        sample_count: compiled.desc.sample_count.resolve(sample_count),
+                        dimension: compiled.desc.dimension,
+                        array_layers,
+                        usage_bits: compiled.usage.bits() as u64,
+                    };
+                    let lease = backend.transient_pool_mut().acquire_texture_resource(
+                        device,
+                        key,
+                        compiled.desc.label,
+                        compiled.usage,
+                    );
+                    let layer_views = create_transient_layer_views(&lease.texture, key);
+                    ResolvedGraphTexture {
+                        pool_id: lease.pool_id,
+                        physical_slot: compiled.physical_slot,
+                        texture: lease.texture,
+                        view: lease.view,
+                        layer_views,
+                    }
+                })
+                .clone();
+            resources.set_transient_texture(TextureHandle(idx as u32), resolved);
+        }
+    }
+
+    fn resolve_transient_buffers(
+        &self,
+        device: &wgpu::Device,
+        backend: &mut RenderBackend,
+        viewport_px: (u32, u32),
+        resources: &mut GraphResolvedResources,
+    ) {
+        let mut physical_slots: HashMap<usize, ResolvedGraphBuffer> = HashMap::new();
+        for (idx, compiled) in self.transient_buffers.iter().enumerate() {
+            if compiled.lifetime.is_none() || compiled.physical_slot == usize::MAX {
+                continue;
+            }
+            let resolved = physical_slots
+                .entry(compiled.physical_slot)
+                .or_insert_with(|| {
+                    let key = BufferKey {
+                        size_policy: compiled.desc.size_policy,
+                        usage_bits: compiled.usage.bits() as u64,
+                    };
+                    let size = resolve_buffer_size(compiled.desc.size_policy, viewport_px);
+                    let lease = backend.transient_pool_mut().acquire_buffer_resource(
+                        device,
+                        key,
+                        compiled.desc.label,
+                        compiled.usage,
+                        size,
+                    );
+                    ResolvedGraphBuffer {
+                        pool_id: lease.pool_id,
+                        physical_slot: compiled.physical_slot,
+                        buffer: lease.buffer,
+                        size: lease.size,
+                    }
+                })
+                .clone();
+            resources.set_transient_buffer(super::resources::BufferHandle(idx as u32), resolved);
+        }
+    }
+
+    fn resolve_imported_textures(
+        &self,
+        resolved: &ResolvedView<'_>,
+        resources: &mut GraphResolvedResources,
+    ) {
+        for (idx, import) in self.imported_textures.iter().enumerate() {
+            let view = match &import.source {
+                ImportSource::FrameTarget(FrameTargetRole::ColorAttachment) => {
+                    resolved.backbuffer.cloned()
+                }
+                ImportSource::FrameTarget(FrameTargetRole::DepthAttachment) => {
+                    Some(resolved.depth_view.clone())
+                }
+                ImportSource::External | ImportSource::PingPong(_) => None,
+            };
+            if let Some(view) = view {
+                resources.set_imported_texture(
+                    ImportedTextureHandle(idx as u32),
+                    ResolvedImportedTexture { view },
+                );
+            }
+        }
+    }
+
+    fn resolve_imported_buffers(
+        &self,
+        backend: &RenderBackend,
+        resolved: &ResolvedView<'_>,
+        resources: &mut GraphResolvedResources,
+    ) {
+        let frame_gpu = backend.frame_resources.frame_gpu();
+        let cluster_refs = frame_gpu.and_then(|fgpu| {
+            fgpu.cluster_cache.get_buffers(
+                resolved.viewport_px,
+                crate::backend::CLUSTER_COUNT_Z,
+                resolved.multiview_stereo,
+            )
+        });
+        for (idx, import) in self.imported_buffers.iter().enumerate() {
+            let buffer = match &import.source {
+                BufferImportSource::BackendFrameResource("lights") => {
+                    frame_gpu.map(|fgpu| fgpu.lights_buffer.clone())
+                }
+                BufferImportSource::BackendFrameResource("frame_uniforms") => {
+                    frame_gpu.map(|fgpu| fgpu.frame_uniform.clone())
+                }
+                BufferImportSource::BackendFrameResource("cluster_light_counts") => cluster_refs
+                    .as_ref()
+                    .map(|refs| refs.cluster_light_counts.clone()),
+                BufferImportSource::BackendFrameResource("cluster_light_indices") => cluster_refs
+                    .as_ref()
+                    .map(|refs| refs.cluster_light_indices.clone()),
+                BufferImportSource::BackendFrameResource("per_draw_slab") => backend
+                    .frame_resources
+                    .per_draw()
+                    .map(|per_draw| per_draw.per_draw_storage.clone()),
+                BufferImportSource::BackendFrameResource(_) => None,
+                BufferImportSource::External | BufferImportSource::PingPong(_) => None,
+            };
+            if let Some(buffer) = buffer {
+                resources.set_imported_buffer(
+                    ImportedBufferHandle(idx as u32),
+                    ResolvedImportedBuffer { buffer },
+                );
+            }
         }
     }
 

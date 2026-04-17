@@ -19,13 +19,12 @@ use crate::render_graph::cluster_frame::{
     cluster_frame_params, cluster_frame_params_stereo, ClusterFrameParams,
 };
 use crate::render_graph::context::RenderPassContext;
-use crate::render_graph::error::RenderPassError;
+use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::frame_params::HostCameraFrame;
-use crate::render_graph::handles::ResourceId;
-use crate::render_graph::module::RenderModule;
-use crate::render_graph::pass::RenderPass;
-use crate::render_graph::resources::PassResources;
-use crate::render_graph::{GraphBuilder, SharedRenderHandles};
+use crate::render_graph::pass::{PassBuilder, RenderPass};
+use crate::render_graph::resources::{
+    BufferAccess, BufferHandle, ImportedBufferHandle, StorageAccess,
+};
 use crate::scene::SceneCoordinator;
 
 /// CPU layout for the compute shader `ClusterParams` uniform (WGSL `struct` + tail pad).
@@ -215,30 +214,22 @@ fn run_clustered_light_eye_passes(env: ClusteredLightEyePassEnv<'_>) {
 }
 
 /// Resolves mono or stereo [`ClusterFrameParams`] rows for the current host camera and viewport.
-///
-/// On success, replaces `out` with one or two rows; on failure clears `out` and returns `None`.
 fn clustered_light_eye_params_for_viewport(
     stereo: bool,
     hc: &HostCameraFrame,
     scene: &SceneCoordinator,
     viewport: (u32, u32),
-    out: &mut Vec<ClusterFrameParams>,
-) -> Option<()> {
-    out.clear();
+) -> Option<Vec<ClusterFrameParams>> {
     if stereo {
         if let Some((left, right)) = cluster_frame_params_stereo(hc, scene, viewport) {
-            out.push(left);
-            out.push(right);
-            Some(())
+            Some(vec![left, right])
         } else if let Some(mono) = cluster_frame_params(hc, scene, viewport) {
-            out.push(mono);
-            Some(())
+            Some(vec![mono])
         } else {
             None
         }
     } else if let Some(mono) = cluster_frame_params(hc, scene, viewport) {
-        out.push(mono);
-        Some(())
+        Some(vec![mono])
     } else {
         None
     }
@@ -247,32 +238,41 @@ fn clustered_light_eye_params_for_viewport(
 /// Builds per-cluster light lists before the world forward pass.
 #[derive(Debug)]
 pub struct ClusteredLightPass {
-    cluster_buffers: ResourceId,
-    light_buffer: ResourceId,
+    resources: ClusteredLightGraphResources,
     logged_active_once: bool,
     /// Last [`crate::backend::cluster_gpu::ClusterBufferCache::version`] used for compute bind group; recreated when cluster buffers reallocate.
     cached_cluster_bind_version: Option<u64>,
     cached_compute_bind_group: Option<wgpu::BindGroup>,
-    /// Reused each execute for mono (1) or stereo (2) [`ClusterFrameParams`] rows.
-    cluster_eye_params_scratch: Vec<ClusterFrameParams>,
+}
+
+/// Graph resources used by [`ClusteredLightPass`].
+#[derive(Clone, Copy, Debug)]
+pub struct ClusteredLightGraphResources {
+    /// Imported light storage buffer.
+    pub lights: ImportedBufferHandle,
+    /// Imported per-cluster light-count storage buffer.
+    pub cluster_light_counts: ImportedBufferHandle,
+    /// Imported per-cluster light-index storage buffer.
+    pub cluster_light_indices: ImportedBufferHandle,
+    /// Transient uniform buffer for per-eye cluster parameters.
+    pub params: BufferHandle,
 }
 
 impl ClusteredLightPass {
     /// Creates a clustered light pass (pipeline is created lazily on first execute).
-    pub fn new(cluster_buffers: ResourceId, light_buffer: ResourceId) -> Self {
-        let cluster_eye_params_scratch = Vec::with_capacity(2);
+    pub fn new(resources: ClusteredLightGraphResources) -> Self {
         Self {
-            cluster_buffers,
-            light_buffer,
+            resources,
             logged_active_once: false,
             cached_cluster_bind_version: None,
             cached_compute_bind_group: None,
-            cluster_eye_params_scratch,
         }
     }
 
     fn build_params(desc: ClusterParamsDesc) -> ClusterParams {
         let inv_proj = desc.proj.inverse();
+        let near_clip = desc.near.max(0.01);
+        let far_clip = desc.far.max(near_clip + 0.01);
         ClusterParams {
             view: desc.scene_view.to_cols_array_2d(),
             proj: desc.proj.to_cols_array_2d(),
@@ -284,8 +284,8 @@ impl ClusteredLightPass {
             cluster_count_x: desc.cluster_count_x,
             cluster_count_y: desc.cluster_count_y,
             cluster_count_z: CLUSTER_COUNT_Z,
-            near_clip: desc.near.max(0.01),
-            far_clip: desc.far,
+            near_clip,
+            far_clip,
             cluster_offset: desc.cluster_offset,
             _pad: [0; 8],
         }
@@ -338,36 +338,45 @@ impl ClusteredLightPass {
     }
 }
 
-/// Registers [`ClusteredLightPass`] on the main frame graph.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ClusteredLightModule;
-
-impl RenderModule for ClusteredLightModule {
-    fn name(&self) -> &str {
-        "clustered_light"
-    }
-
-    fn register(self: Box<Self>, builder: &mut GraphBuilder, handles: &SharedRenderHandles) {
-        builder.add_pass(Box::new(ClusteredLightPass::new(
-            handles.cluster_buffers,
-            handles.light_buffer,
-        )));
-    }
-}
-
 impl RenderPass for ClusteredLightPass {
     fn name(&self) -> &str {
         "ClusteredLight"
     }
 
-    fn resources(&self) -> PassResources {
-        PassResources {
-            reads: Vec::new(),
-            writes: vec![self.cluster_buffers, self.light_buffer],
-        }
+    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.compute();
+        b.import_buffer(
+            self.resources.lights,
+            BufferAccess::Storage {
+                stages: wgpu::ShaderStages::COMPUTE,
+                access: StorageAccess::ReadOnly,
+            },
+        );
+        b.import_buffer(
+            self.resources.cluster_light_counts,
+            BufferAccess::Storage {
+                stages: wgpu::ShaderStages::COMPUTE,
+                access: StorageAccess::WriteOnly,
+            },
+        );
+        b.import_buffer(
+            self.resources.cluster_light_indices,
+            BufferAccess::Storage {
+                stages: wgpu::ShaderStages::COMPUTE,
+                access: StorageAccess::WriteOnly,
+            },
+        );
+        b.write_buffer(
+            self.resources.params,
+            BufferAccess::Uniform {
+                stages: wgpu::ShaderStages::COMPUTE,
+                dynamic_offset: true,
+            },
+        );
+        Ok(())
     }
 
-    fn execute(&mut self, ctx: &mut RenderPassContext<'_>) -> Result<(), RenderPassError> {
+    fn execute(&mut self, ctx: &mut RenderPassContext<'_, '_, '_>) -> Result<(), RenderPassError> {
         let Some(frame) = ctx.frame.as_mut() else {
             return Ok(());
         };
@@ -401,41 +410,32 @@ impl RenderPass for ClusteredLightPass {
         };
         let viewport = (vw, vh);
 
-        if clustered_light_eye_params_for_viewport(
-            stereo,
-            &hc,
-            scene,
-            viewport,
-            &mut self.cluster_eye_params_scratch,
-        )
-        .is_none()
-        {
+        let Some(eye_params) =
+            clustered_light_eye_params_for_viewport(stereo, &hc, scene, viewport)
+        else {
             return Ok(());
-        }
+        };
 
-        let clusters_per_eye = self.cluster_eye_params_scratch[0].cluster_count_x
-            * self.cluster_eye_params_scratch[0].cluster_count_y
-            * CLUSTER_COUNT_Z;
+        let clusters_per_eye =
+            eye_params[0].cluster_count_x * eye_params[0].cluster_count_y * CLUSTER_COUNT_Z;
 
         let (pipeline, bgl) = ensure_compute_pipeline(ctx.device);
         let cluster_ver = fgpu.cluster_cache.version;
-        let bind_group = self
-            .ensure_cluster_compute_bind_group(
-                ctx.device,
-                cluster_ver,
-                &refs,
-                &fgpu.lights_buffer,
-                bgl,
-            )
-            .clone();
+        let bind_group = self.ensure_cluster_compute_bind_group(
+            ctx.device,
+            cluster_ver,
+            &refs,
+            &fgpu.lights_buffer,
+            bgl,
+        );
 
         run_clustered_light_eye_passes(ClusteredLightEyePassEnv {
             encoder: ctx.encoder,
             queue: &queue,
             pipeline,
-            bind_group: &bind_group,
+            bind_group,
             params_buffer: refs.params_buffer,
-            eye_params: self.cluster_eye_params_scratch.as_slice(),
+            eye_params: &eye_params,
             clusters_per_eye,
             light_count,
             viewport,
@@ -444,11 +444,11 @@ impl RenderPass for ClusteredLightPass {
 
         if !self.logged_active_once {
             self.logged_active_once = true;
-            let eye_count = self.cluster_eye_params_scratch.len();
+            let eye_count = eye_params.len();
             logger::info!(
                 "ClusteredLight active (grid {}x{}x{} lights={} eyes={})",
-                self.cluster_eye_params_scratch[0].cluster_count_x,
-                self.cluster_eye_params_scratch[0].cluster_count_y,
+                eye_params[0].cluster_count_x,
+                eye_params[0].cluster_count_y,
                 CLUSTER_COUNT_Z,
                 light_count,
                 eye_count,

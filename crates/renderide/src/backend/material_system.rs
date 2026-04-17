@@ -10,19 +10,11 @@ use crate::assets::material::{
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::materials::RasterPipelineKind;
 
-use super::embedded::{EmbeddedMaterialBindError, EmbeddedMaterialBindResources};
+use super::embedded::EmbeddedMaterialBindResources;
 use crate::shared::{MaterialsUpdateBatch, MaterialsUpdateBatchResult, RendererCommand};
 
 /// Max queued [`MaterialsUpdateBatch`] when shared memory is not available.
 pub const MAX_PENDING_MATERIAL_BATCHES: usize = 256;
-
-/// GPU material registry and embedded `@group(1)` resources after [`MaterialSystem::try_attach_gpu`].
-pub(crate) struct MaterialGpuState {
-    /// Material families, router, and pipeline cache.
-    pub(crate) registry: crate::materials::MaterialRegistry,
-    /// Embedded raster materials (`@group(1)` textures/uniforms).
-    pub(crate) embedded: EmbeddedMaterialBindResources,
-}
 
 /// Host material tables, GPU registry/cache, embedded bind builder, and deferred shader routes.
 pub struct MaterialSystem {
@@ -30,12 +22,14 @@ pub struct MaterialSystem {
     material_property_store: MaterialPropertyStore,
     /// Stable ids for [`crate::shared::MaterialPropertyIdRequest`] / batch `property_id` keys.
     property_id_registry: Arc<PropertyIdRegistry>,
-    /// Batches received before shared memory is available.
+    /// Batches received before shared memory is ready.
     pending_material_batches: VecDeque<MaterialsUpdateBatch>,
-    /// GPU registry + embedded binds after a successful [`Self::try_attach_gpu`].
-    pub(crate) material_gpu: Option<MaterialGpuState>,
+    /// GPU material families, router, and pipeline cache (after GPU attach).
+    pub(crate) material_registry: Option<crate::materials::MaterialRegistry>,
     /// Shader asset id → pipeline kind and optional HUD label when uploads arrive before GPU attach.
     pending_shader_routes: HashMap<i32, (RasterPipelineKind, Option<String>)>,
+    /// Embedded raster materials (`@group(1)` textures/uniforms), after GPU attach.
+    pub(crate) embedded_material_bind: Option<EmbeddedMaterialBindResources>,
 }
 
 impl Default for MaterialSystem {
@@ -45,37 +39,40 @@ impl Default for MaterialSystem {
 }
 
 impl MaterialSystem {
-    /// Empty store and registry; no GPU resources until [`Self::try_attach_gpu`].
+    /// Empty store and registry; no GPU resources until [`Self::attach_gpu`].
     pub fn new() -> Self {
         Self {
             material_property_store: MaterialPropertyStore::new(),
             property_id_registry: Arc::new(PropertyIdRegistry::new()),
             pending_material_batches: VecDeque::new(),
-            material_gpu: None,
+            material_registry: None,
             pending_shader_routes: HashMap::new(),
+            embedded_material_bind: None,
         }
     }
 
     /// Creates [`MaterialRegistry`] and [`EmbeddedMaterialBindResources`] after the device is bound.
-    ///
-    /// Returns an error if embedded binds cannot be created; the caller must not treat the backend as attached.
-    pub fn try_attach_gpu(
-        &mut self,
-        device: Arc<wgpu::Device>,
-        queue: &Arc<Mutex<wgpu::Queue>>,
-    ) -> Result<(), EmbeddedMaterialBindError> {
-        let mut registry =
-            crate::materials::MaterialRegistry::with_default_families(device.clone());
-        for (asset_id, (pipeline, display_name)) in self.pending_shader_routes.drain() {
-            registry.map_shader_route(asset_id, pipeline, display_name);
+    pub fn attach_gpu(&mut self, device: Arc<wgpu::Device>, queue: &Arc<Mutex<wgpu::Queue>>) {
+        self.material_registry = Some(crate::materials::MaterialRegistry::with_default_families(
+            device.clone(),
+        ));
+        if let Some(reg) = self.material_registry.as_mut() {
+            for (asset_id, (pipeline, display_name)) in self.pending_shader_routes.drain() {
+                reg.map_shader_route(asset_id, pipeline, display_name);
+            }
         }
-        let embedded =
-            EmbeddedMaterialBindResources::new(device, Arc::clone(&self.property_id_registry))?;
-        if let Ok(q) = queue.lock() {
-            embedded.write_default_white(&q);
+        match EmbeddedMaterialBindResources::new(device, Arc::clone(&self.property_id_registry)) {
+            Ok(m) => {
+                if let Ok(q) = queue.lock() {
+                    m.write_default_white(&q);
+                }
+                self.embedded_material_bind = Some(m);
+            }
+            Err(e) => {
+                logger::warn!("embedded material bind resources not created: {e}");
+                self.embedded_material_bind = None;
+            }
         }
-        self.material_gpu = Some(MaterialGpuState { registry, embedded });
-        Ok(())
     }
 
     /// Material property store (host uniforms, textures, shader asset bindings).
@@ -95,17 +92,17 @@ impl MaterialSystem {
 
     /// Registered material families and pipeline cache (after GPU attach).
     pub fn material_registry(&self) -> Option<&crate::materials::MaterialRegistry> {
-        self.material_gpu.as_ref().map(|g| &g.registry)
+        self.material_registry.as_ref()
     }
 
     /// Mutable registry (pipeline cache and shader routes).
     pub fn material_registry_mut(&mut self) -> Option<&mut crate::materials::MaterialRegistry> {
-        self.material_gpu.as_mut().map(|g| &mut g.registry)
+        self.material_registry.as_mut()
     }
 
     /// Embedded material bind groups (world Unlit, etc.) after GPU attach.
     pub fn embedded_material_bind(&self) -> Option<&EmbeddedMaterialBindResources> {
-        self.material_gpu.as_ref().map(|g| &g.embedded)
+        self.embedded_material_bind.as_ref()
     }
 
     /// Maps shader asset to raster pipeline kind and optional HUD display name, or defers until GPU attach.
@@ -115,9 +112,8 @@ impl MaterialSystem {
         pipeline: RasterPipelineKind,
         display_name: Option<String>,
     ) {
-        if let Some(g) = self.material_gpu.as_mut() {
-            g.registry
-                .map_shader_route(asset_id, pipeline, display_name);
+        if let Some(reg) = self.material_registry.as_mut() {
+            reg.map_shader_route(asset_id, pipeline, display_name);
         } else {
             self.pending_shader_routes
                 .insert(asset_id, (pipeline, display_name));
@@ -127,8 +123,8 @@ impl MaterialSystem {
     /// Removes shader routing for `asset_id`.
     pub fn unregister_shader_route(&mut self, asset_id: i32) {
         self.pending_shader_routes.remove(&asset_id);
-        if let Some(g) = self.material_gpu.as_mut() {
-            g.registry.unmap_shader(asset_id);
+        if let Some(reg) = self.material_registry.as_mut() {
+            reg.unmap_shader(asset_id);
         }
     }
 

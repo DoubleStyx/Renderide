@@ -45,7 +45,7 @@ pub struct GpuSkinCache {
     nrm_alloc: RangeAllocator,
     tmp_alloc: RangeAllocator,
     entries: HashMap<SkinCacheKey, SkinCacheEntry>,
-    /// Incremented each winit tick ([`crate::backend::RenderBackend::reset_light_prep_for_tick`]).
+    /// Incremented each winit tick ([`crate::backend::FrameResourceManager::reset_light_prep_for_tick`]).
     frame_counter: u64,
     capacity_cap_bytes: u64,
 }
@@ -402,15 +402,8 @@ mod tests {
         })
     }
 
-    /// Covers distinct keys and same-key reuse against a real [`wgpu::Device`].
-    ///
-    /// Kept as **one** `#[test]` so this module never runs two GPU initializations in parallel.
-    /// The default harness still runs this test concurrently with hundreds of unrelated tests; on
-    /// some stacks that can SIGSEGV during Vulkan init. Run with `--ignored` locally or in CI
-    /// where the GPU stack is stable (see `materials::registry` `wgpu_cache` tests).
     #[test]
-    #[ignore = "wgpu/GPU stack (may SIGSEGV vs parallel harness); run with --ignored"]
-    fn gpu_skin_cache_distinct_keys_and_same_key_reuse() {
+    fn two_keys_distinct_ranges() {
         let Some((device, _queue)) = dummy_device_and_queue() else {
             return;
         };
@@ -418,36 +411,49 @@ mod tests {
         let mut cache = GpuSkinCache::new(&device, max);
         let mut enc =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let need_sk = EntryNeed {
+        let k0 = (RenderSpaceId(0), 10);
+        let k1 = (RenderSpaceId(0), 11);
+        let need = EntryNeed {
             needs_blend: false,
             needs_skin: true,
         };
-
-        let k0 = (RenderSpaceId(0), 10);
-        let k1 = (RenderSpaceId(0), 11);
-        let off_distinct_a = cache
-            .get_or_alloc(&device, &mut enc, k0, need_sk, 64)
+        let off0 = cache
+            .get_or_alloc(&device, &mut enc, k0, need, 64)
             .expect("a0")
             .positions
             .offset_bytes;
-        let off_distinct_b = cache
-            .get_or_alloc(&device, &mut enc, k1, need_sk, 64)
+        let off1 = cache
+            .get_or_alloc(&device, &mut enc, k1, need, 64)
             .expect("a1")
             .positions
             .offset_bytes;
-        assert_ne!(off_distinct_a, off_distinct_b);
+        assert_ne!(off0, off1);
+    }
 
+    #[test]
+    fn same_key_reuses_range() {
+        let Some((device, _queue)) = dummy_device_and_queue() else {
+            return;
+        };
+        let max = device.limits().max_buffer_size;
+        let mut cache = GpuSkinCache::new(&device, max);
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let k = (RenderSpaceId(1), 5);
-        let off_reuse0 = cache
-            .get_or_alloc(&device, &mut enc, k, need_sk, 32)
+        let need = EntryNeed {
+            needs_blend: false,
+            needs_skin: true,
+        };
+        let off0 = cache
+            .get_or_alloc(&device, &mut enc, k, need, 32)
             .unwrap()
             .positions
             .offset_bytes;
-        let off_reuse1 = cache
-            .get_or_alloc(&device, &mut enc, k, need_sk, 32)
+        let off1 = cache
+            .get_or_alloc(&device, &mut enc, k, need, 32)
             .unwrap()
             .positions
             .offset_bytes;
-        assert_eq!(off_reuse0, off_reuse1);
+        assert_eq!(off0, off1);
     }
 }

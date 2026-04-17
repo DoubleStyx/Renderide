@@ -96,7 +96,8 @@ impl GpuRenderTexture {
             format: wgpu_color_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST,
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         }));
         let color_view =
@@ -105,13 +106,15 @@ impl GpuRenderTexture {
         // Host `depth` is Unity depth-stencil bits; when zero the asset may still be used as a full
         // scene target — we always allocate a depth attachment so the forward pass can run.
         // `TEXTURE_BINDING` is required so Hi-Z build can bind the depth view for mip0 (`hi_z_mip0_d_bg`).
+        let depth_format =
+            crate::render_graph::main_forward_depth_stencil_format(device.features());
         let dt = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
             label: Some(&format!("RenderTextureDepth {}", fmt.asset_id)),
             size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
+            format: depth_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
@@ -122,7 +125,7 @@ impl GpuRenderTexture {
         let depth_view = Some(dv);
 
         let color_bytes = estimate_texture_bytes(wgpu_color_format, w, h, 1);
-        let depth_bytes = estimate_texture_bytes(wgpu::TextureFormat::Depth32Float, w, h, 1);
+        let depth_bytes = estimate_texture_bytes(depth_format, w, h, 1);
         let resident_bytes = color_bytes.saturating_add(depth_bytes);
 
         let sampler = Texture2dSamplerState {
@@ -159,6 +162,8 @@ fn estimate_texture_bytes(format: wgpu::TextureFormat, width: u32, height: u32, 
         wgpu::TextureFormat::Rgba16Float => 8u64,
         wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => 4u64,
         wgpu::TextureFormat::Depth32Float => 4u64,
+        wgpu::TextureFormat::Depth24PlusStencil8 => 4u64,
+        wgpu::TextureFormat::Depth32FloatStencil8 => 8u64,
         _ => 4u64,
     };
     let mut total = 0u64;

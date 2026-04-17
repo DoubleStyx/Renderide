@@ -131,15 +131,13 @@ impl RendererRuntime {
     }
 
     /// Call after [`crate::gpu::GpuContext`] is created so mesh/texture uploads can use the GPU.
-    ///
-    /// Logs at `error` when attach fails; the backend stays usable for CPU work but GPU draws are not configured.
     pub fn attach_gpu(&mut self, gpu: &GpuContext) {
         use std::sync::Arc;
 
         let device = gpu.device().clone();
         let queue = Arc::clone(gpu.queue());
         let shm = self.frontend.shared_memory_mut();
-        if let Err(e) = self.backend.attach(
+        self.backend.attach(
             crate::backend::RenderBackendAttachDesc {
                 device,
                 queue,
@@ -149,9 +147,7 @@ impl RendererRuntime {
                 config_save_path: self.config_save_path.clone(),
             },
             shm,
-        ) {
-            logger::error!("RenderBackend::attach failed: {e}");
-        }
+        );
     }
 
     /// Per-frame pointer state and timing for the ImGui overlay ([`diagnostics::DebugHud`]).

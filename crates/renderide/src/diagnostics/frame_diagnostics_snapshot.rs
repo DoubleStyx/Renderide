@@ -5,7 +5,22 @@ use std::sync::Arc;
 
 use crate::backend::RenderBackend;
 use crate::gpu::GpuContext;
-use crate::render_graph::WorldMeshDrawStats;
+use crate::materials::RasterPipelineKind;
+use crate::render_graph::{WorldMeshDrawStateRow, WorldMeshDrawStats};
+
+/// One row in the **Shader routes** tab: identifies the host shader, its backing pipeline, and
+/// whether the renderer has a real embedded shader for it or falls back to `debug_world_normals`.
+#[derive(Clone, Debug)]
+pub struct ShaderRouteRow {
+    /// Host-assigned shader asset id.
+    pub shader_asset_id: i32,
+    /// Logical shader name when known (ShaderLab name, WGSL banner, or upload field).
+    pub display_name: Option<String>,
+    /// Human-readable pipeline label (composed stem, or `debug_world_normals`).
+    pub pipeline_label: String,
+    /// True when the route resolved to a real embedded shader; false when it fell back to debug.
+    pub implemented: bool,
+}
 
 /// Full GPU allocator report plus sort order for the **GPU memory** HUD tab.
 ///
@@ -70,6 +85,8 @@ pub struct FrameDiagnosticsSnapshot {
     pub host: HostCpuMemoryHud,
     /// World mesh forward pass draw batching stats for the frame.
     pub mesh_draw: WorldMeshDrawStats,
+    /// Sorted draw rows with resolved material pipeline state for the **Draw state** tab.
+    pub draw_state_rows: Vec<WorldMeshDrawStateRow>,
     /// Host [`FrameSubmitData::render_tasks`] count from the last applied frame submit.
     pub last_submit_render_task_count: usize,
     /// Textures with a registered [`crate::shared::SetTexture2DFormat`] on the backend.
@@ -82,8 +99,8 @@ pub struct FrameDiagnosticsSnapshot {
     pub render_textures_gpu_resident: usize,
     /// Rows in [`crate::resources::MeshPool`] (resident GPU mesh entries).
     pub mesh_pool_entry_count: usize,
-    /// Lines describing host shader asset id, optional logical shader name (or `<none>`), and material family (sorted by id).
-    pub shader_route_lines: Vec<String>,
+    /// Host shader routes (id, name, pipeline, implemented flag), sorted implemented-first then by id.
+    pub shader_routes: Vec<ShaderRouteRow>,
 }
 
 impl FrameDiagnosticsSnapshot {
@@ -110,18 +127,36 @@ impl FrameDiagnosticsSnapshot {
         let render_textures_gpu_resident = backend.render_texture_pool().len();
         let mesh_pool_entry_count = backend.mesh_pool().meshes().len();
 
-        let shader_route_lines = backend
+        let mut shader_routes: Vec<ShaderRouteRow> = backend
             .material_registry()
             .map(|reg| {
                 reg.shader_routes_for_hud()
                     .into_iter()
                     .map(|(id, pipeline, name)| {
-                        let label = name.as_deref().unwrap_or("<none>");
-                        format!("shader_asset_id={id}  {label}  pipeline {:?}", pipeline)
+                        let implemented =
+                            !matches!(pipeline, RasterPipelineKind::DebugWorldNormals);
+                        let pipeline_label = match &pipeline {
+                            RasterPipelineKind::EmbeddedStem(stem) => stem.to_string(),
+                            RasterPipelineKind::DebugWorldNormals => {
+                                "debug_world_normals".to_string()
+                            }
+                        };
+                        ShaderRouteRow {
+                            shader_asset_id: id,
+                            display_name: name,
+                            pipeline_label,
+                            implemented,
+                        }
                     })
                     .collect()
             })
             .unwrap_or_default();
+        // Implemented routes first, then fallbacks; preserve id-ascending order within each group.
+        shader_routes.sort_by(|a, b| {
+            b.implemented
+                .cmp(&a.implemented)
+                .then(a.shader_asset_id.cmp(&b.shader_asset_id))
+        });
 
         Self {
             wall_frame_time_ms,
@@ -132,13 +167,14 @@ impl FrameDiagnosticsSnapshot {
             gpu_allocator_report_next_refresh_in_secs,
             host,
             mesh_draw: backend.last_world_mesh_draw_stats(),
+            draw_state_rows: backend.last_world_mesh_draw_state_rows(),
             last_submit_render_task_count,
             textures_cpu_registered,
             textures_cpu_mip0_ready,
             textures_gpu_resident,
             render_textures_gpu_resident,
             mesh_pool_entry_count,
-            shader_route_lines,
+            shader_routes,
         }
     }
 
@@ -167,13 +203,14 @@ mod tests {
             gpu_allocator_report_next_refresh_in_secs: 0.0,
             host: Default::default(),
             mesh_draw: Default::default(),
+            draw_state_rows: Vec::new(),
             last_submit_render_task_count: 0,
             textures_cpu_registered: 0,
             textures_cpu_mip0_ready: 0,
             textures_gpu_resident: 0,
             render_textures_gpu_resident: 0,
             mesh_pool_entry_count: 0,
-            shader_route_lines: Vec::new(),
+            shader_routes: Vec::new(),
         };
         assert!((s.fps_from_wall() - 62.5).abs() < 0.01);
     }
@@ -189,13 +226,14 @@ mod tests {
             gpu_allocator_report_next_refresh_in_secs: 0.0,
             host: Default::default(),
             mesh_draw: Default::default(),
+            draw_state_rows: Vec::new(),
             last_submit_render_task_count: 0,
             textures_cpu_registered: 0,
             textures_cpu_mip0_ready: 0,
             textures_gpu_resident: 0,
             render_textures_gpu_resident: 0,
             mesh_pool_entry_count: 0,
-            shader_route_lines: Vec::new(),
+            shader_routes: Vec::new(),
         };
         assert_eq!(s.fps_from_wall(), 0.0);
     }

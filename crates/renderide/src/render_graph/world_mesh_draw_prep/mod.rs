@@ -32,7 +32,7 @@ pub use types::{
 #[cfg(test)]
 mod tests {
     use super::{resolved_material_slots, sort_world_mesh_draws, MaterialDrawBatchKey};
-    use crate::materials::{MaterialBlendMode, MaterialRenderState, RasterPipelineKind};
+    use crate::materials::RasterPipelineKind;
     use crate::render_graph::test_fixtures::{dummy_world_mesh_draw_item, DummyDrawItemSpec};
     use crate::scene::{MeshMaterialSlot, StaticMeshRenderer};
 
@@ -136,10 +136,10 @@ mod tests {
             skinned: false,
             embedded_needs_uv0: false,
             embedded_needs_color: false,
-            embedded_requires_intersection_pass: false,
             embedded_needs_extended_vertex_streams: false,
-            render_state: MaterialRenderState::default(),
-            blend_mode: MaterialBlendMode::StemDefault,
+            embedded_requires_intersection_pass: false,
+            render_state: Default::default(),
+            blend_mode: Default::default(),
             alpha_blended: false,
         };
         let b = MaterialDrawBatchKey {
@@ -150,10 +150,10 @@ mod tests {
             skinned: false,
             embedded_needs_uv0: false,
             embedded_needs_color: false,
-            embedded_requires_intersection_pass: false,
             embedded_needs_extended_vertex_streams: false,
-            render_state: MaterialRenderState::default(),
-            blend_mode: MaterialBlendMode::StemDefault,
+            embedded_requires_intersection_pass: false,
+            render_state: Default::default(),
+            blend_mode: Default::default(),
             alpha_blended: false,
         };
         assert_ne!(a, b);

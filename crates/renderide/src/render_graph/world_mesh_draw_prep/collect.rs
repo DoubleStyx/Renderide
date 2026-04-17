@@ -111,6 +111,11 @@ fn push_draws_for_renderer(
     }
 
     let is_overlay = draw.renderer.layer == crate::shared::LayerType::Overlay;
+    let world_space_deformed = draw.skinned
+        && draw.mesh.supports_world_space_skin_deform(
+            draw.skinned_renderer
+                .map(|skinned| skinned.bone_transform_indices.as_slice()),
+        );
 
     for slot_index in 0..n {
         let slot = &slots[slot_index];
@@ -185,6 +190,7 @@ fn push_draws_for_renderer(
             is_overlay,
             sorting_order: draw.renderer.sorting_order,
             skinned: draw.skinned,
+            world_space_deformed,
             collect_order: 0,
             camera_distance_sq: 0.0,
             lookup_ids,

@@ -87,7 +87,7 @@ pub fn build_instance_batches(
 mod tests {
     use super::*;
     use crate::assets::material::MaterialPropertyLookupIds;
-    use crate::materials::{MaterialBlendMode, MaterialRenderState, RasterPipelineKind};
+    use crate::materials::RasterPipelineKind;
     use crate::scene::RenderSpaceId;
 
     use super::super::MaterialDrawBatchKey;
@@ -110,6 +110,7 @@ mod tests {
             is_overlay: false,
             sorting_order: 0,
             skinned,
+            world_space_deformed: skinned,
             collect_order: 0,
             camera_distance_sq: 0.0,
             lookup_ids: MaterialPropertyLookupIds {
@@ -124,10 +125,10 @@ mod tests {
                 skinned,
                 embedded_needs_uv0: false,
                 embedded_needs_color: false,
-                embedded_requires_intersection_pass: false,
                 embedded_needs_extended_vertex_streams: false,
-                render_state: MaterialRenderState::default(),
-                blend_mode: MaterialBlendMode::StemDefault,
+                embedded_requires_intersection_pass: false,
+                render_state: Default::default(),
+                blend_mode: Default::default(),
                 alpha_blended: alpha,
             },
             rigid_world_matrix: None,

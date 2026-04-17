@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use rayon::slice::ParallelSliceMut;
 
-use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
+use crate::assets::material::MaterialDictionary;
 use crate::materials::{
     embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
     embedded_stem_needs_uv0_stream, embedded_stem_requires_intersection_pass,
@@ -42,19 +42,19 @@ pub(super) fn batch_key_for_slot(
         }
         RasterPipelineKind::DebugWorldNormals => false,
     };
-    let embedded_requires_intersection_pass = match &pipeline {
-        RasterPipelineKind::EmbeddedStem(stem) => {
-            embedded_stem_requires_intersection_pass(stem.as_ref(), shader_perm)
-        }
-        RasterPipelineKind::DebugWorldNormals => false,
-    };
     let embedded_needs_extended_vertex_streams = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => {
             embedded_stem_needs_extended_vertex_streams(stem.as_ref(), shader_perm)
         }
         RasterPipelineKind::DebugWorldNormals => false,
     };
-    let lookup_ids = MaterialPropertyLookupIds {
+    let embedded_requires_intersection_pass = match &pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            embedded_stem_requires_intersection_pass(stem.as_ref(), shader_perm)
+        }
+        RasterPipelineKind::DebugWorldNormals => false,
+    };
+    let lookup_ids = crate::assets::material::MaterialPropertyLookupIds {
         material_asset_id,
         mesh_property_block_slot0: property_block_id,
     };
@@ -73,8 +73,8 @@ pub(super) fn batch_key_for_slot(
         skinned,
         embedded_needs_uv0,
         embedded_needs_color,
-        embedded_requires_intersection_pass,
         embedded_needs_extended_vertex_streams,
+        embedded_requires_intersection_pass,
         render_state,
         blend_mode: material_blend_mode,
         alpha_blended,

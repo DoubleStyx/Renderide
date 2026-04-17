@@ -57,12 +57,7 @@ pub(super) fn deform_needs_blend_mesh(m: &GpuMesh) -> bool {
 
 /// Returns whether skinning compute should run for `m` (parity with deform encode).
 pub(super) fn deform_needs_skin_mesh(m: &GpuMesh, bone_transform_indices: Option<&[i32]>) -> bool {
-    bone_transform_indices.is_some()
-        && m.has_skeleton
-        && m.normals_buffer.is_some()
-        && m.bone_indices_buffer.is_some()
-        && m.bone_weights_vec4_buffer.is_some()
-        && !m.skinning_bind_matrices.is_empty()
+    m.supports_world_space_skin_deform(bone_transform_indices)
 }
 
 /// Returns `true` when deform encoding would run blend and/or skin dispatches (not an early no-op).

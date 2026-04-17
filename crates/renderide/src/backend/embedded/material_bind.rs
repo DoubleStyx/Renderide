@@ -114,8 +114,6 @@ pub struct EmbeddedMaterialBindResources {
     bind_cache: RefCell<LruCache<MaterialBindCacheKey, Arc<wgpu::BindGroup>>>,
     uniform_cache: RefCell<LruCache<MaterialUniformCacheKey, CachedUniformEntry>>,
     sampler_cache: RefCell<LruCache<EmbeddedSamplerCacheKey, Arc<wgpu::Sampler>>>,
-    /// Cached Texture2D id lists for optional HUD wiring (retained for future texture-debug UI).
-    #[allow(dead_code)]
     texture_debug_cache: RefCell<LruCache<TextureDebugCacheKey, Arc<[i32]>>>,
 }
 
@@ -674,7 +672,6 @@ impl EmbeddedMaterialBindResources {
     }
 
     /// Returns Texture2D asset ids referenced by a material draw for the texture debug HUD.
-    #[allow(dead_code)]
     pub(crate) fn texture2d_asset_ids_for_stem(
         &self,
         stem: &str,

@@ -3,10 +3,14 @@
 use glam::{Mat4, Vec3};
 
 use crate::backend::RenderBackend;
+use crate::materials::MaterialPipelineDesc;
+use crate::pipelines::ShaderPermutation;
 use crate::scene::SceneCoordinator;
 use crate::shared::HeadOutputDevice;
 
-use super::world_mesh_draw_prep::{CameraTransformDrawFilter, WorldMeshDrawCollection};
+use super::world_mesh_draw_prep::{
+    CameraTransformDrawFilter, WorldMeshDrawCollection, WorldMeshDrawItem,
+};
 use super::OutputDepthMode;
 
 /// Identifies which Hi-Z / occlusion slot a view uses (main vs host render texture).
@@ -91,6 +95,32 @@ impl Default for HostCameraFrame {
     }
 }
 
+/// Pipeline state resolved during world-mesh forward preparation.
+pub struct WorldMeshForwardPipelineState {
+    /// Whether this view records multiview raster passes.
+    pub use_multiview: bool,
+    /// Material pipeline descriptor for this view's color/depth/sample state.
+    pub pass_desc: MaterialPipelineDesc,
+    /// Shader permutation used by material pipeline lookup.
+    pub shader_perm: ShaderPermutation,
+}
+
+/// Per-view forward-pass preparation shared by future split graph nodes.
+pub struct PreparedWorldMeshForwardFrame {
+    /// Sorted world mesh draw items for this view.
+    pub draws: Vec<WorldMeshDrawItem>,
+    /// Draw indices that can be recorded in the opaque forward pass.
+    pub regular_indices: Vec<usize>,
+    /// Draw indices that need the post-depth-snapshot intersection pass.
+    pub intersect_indices: Vec<usize>,
+    /// Pipeline format/sample/multiview state.
+    pub pipeline: WorldMeshForwardPipelineState,
+    /// Whether indexed draws may use base instance.
+    pub supports_base_instance: bool,
+    /// Whether the opaque/clear forward subpass was already recorded by a split graph node.
+    pub opaque_recorded: bool,
+}
+
 /// Data passes need beyond raw GPU handles: host scene, backend pools, and main-surface formats.
 pub struct FrameRenderParams<'a> {
     /// World caches and mesh renderables after [`SceneCoordinator::flush_world_caches`].
@@ -119,6 +149,8 @@ pub struct FrameRenderParams<'a> {
     /// When set (e.g. secondary RT cameras), [`crate::render_graph::passes::WorldMeshForwardPass`] skips
     /// draw collection and uses this list instead.
     pub prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+    /// Prepared forward state for multi-node world-mesh forward execution.
+    pub prepared_world_mesh_forward: Option<PreparedWorldMeshForwardFrame>,
     /// Which Hi-Z pyramid / temporal slot this view reads and writes.
     pub occlusion_view: OcclusionViewId,
     /// Effective raster sample count for mesh forward (1 = off). Clamped to the GPU max for this view.
