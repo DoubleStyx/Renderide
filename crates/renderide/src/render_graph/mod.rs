@@ -11,6 +11,8 @@
 //!   then calls each pass's setup hook to derive resource-ordering edges.
 //! - **[`CompiledRenderGraph`]** stores the retained schedule, transient usage unions,
 //!   lifetime-based alias slots, and the existing frame execution entry points.
+//! - **[`GraphCache`]** memoizes a compiled graph by [`GraphCacheKey`] (surface extent, MSAA,
+//!   multiview, surface format) so the backend rebuilds only when one of those inputs changes.
 //!
 //! ## Frame pipeline
 //!
@@ -24,13 +26,15 @@
 //! 3. **Cull** — frustum and Hi-Z occlusion in [`world_mesh_cull`] (inputs to forward pass).
 //! 4. **Sort** — [`world_mesh_draw_prep`] builds draw order and batch keys.
 //! 5. **DrawPrep** — per-draw uniforms and material resolution inside [`passes::WorldMeshForwardPass`].
-//! 6. **RenderPasses** — [`CompiledRenderGraph`] runs deform → clustered lights → clear → forward
-//!    (see [`default_graph_tests`] / builder).
+//! 6. **RenderPasses** — [`CompiledRenderGraph`] runs mesh deform (logical deform outputs producer),
+//!    clustered lights, then forward (see [`default_graph_tests`] / [`build_main_graph`]); frame-global
+//!    deform runs before per-view passes at execute time ([`CompiledRenderGraph::execute_multi_view`]).
 //! 7. **HiZ** — [`passes::HiZBuildPass`] after depth is written; CPU readback feeds next frame’s cull
 //!    ([`crate::render_graph::occlusion`]).
 //! 8. **FrameEnd** — submit, optional debug HUD composite, present, Hi-Z frame bookkeeping.
 
 mod builder;
+mod cache;
 mod camera;
 mod cluster_frame;
 mod compiled;
@@ -72,6 +76,7 @@ pub use world_mesh_draw_stats::{
 };
 
 pub use builder::GraphBuilder;
+pub use cache::{GraphCache, GraphCacheKey};
 pub use camera::{
     apply_view_handedness_fix, clamp_desktop_fov_degrees, effective_head_output_clip_planes,
     reverse_z_orthographic, reverse_z_perspective, reverse_z_perspective_openxr_fov,
@@ -125,8 +130,14 @@ pub use world_mesh_cull::{
     WorldMeshCullProjParams,
 };
 
-/// Builds the default graph: mesh deform compute, clustered lights, world forward, then Hi-Z readback.
-pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError> {
+/// Builds the main frame graph: mesh deform compute, clustered lights, world forward, then Hi-Z readback.
+///
+/// `key` is reserved for future surface-driven resource descriptor selection (e.g. swapchain
+/// format). Imported sources resolve at execute time via [`crate::backend::FrameResourceManager`],
+/// so the typed declarations below are not yet keyed off `key`. Use [`GraphCacheKey`] from
+/// [`crate::gpu::GpuContext`] state when compiling through [`GraphCache`].
+pub fn build_main_graph(key: GraphCacheKey) -> Result<CompiledRenderGraph, GraphBuildError> {
+    let _ = key;
     let mut builder = GraphBuilder::new();
     let color = builder.import_texture(ImportedTextureDecl {
         label: "frame_color",
@@ -318,14 +329,44 @@ pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError
 
 #[cfg(test)]
 mod default_graph_tests {
+    use wgpu::TextureFormat;
+
     use super::*;
+
+    fn smoke_key() -> GraphCacheKey {
+        GraphCacheKey {
+            surface_extent: (1280, 720),
+            msaa_sample_count: 1,
+            multiview_stereo: false,
+            surface_format: TextureFormat::Bgra8UnormSrgb,
+        }
+    }
 
     #[test]
     fn default_main_needs_surface_and_eight_passes() {
-        let g = build_default_main_graph().expect("default graph");
+        let g = build_main_graph(smoke_key()).expect("default graph");
         assert!(g.needs_surface_acquire());
         assert_eq!(g.pass_count(), 8);
         assert_eq!(g.compile_stats.topo_levels, 8);
         assert_eq!(g.compile_stats.transient_texture_count, 3);
+    }
+
+    #[test]
+    fn graph_cache_reuses_when_key_unchanged() {
+        let key = smoke_key();
+        let mut cache = GraphCache::default();
+        cache
+            .ensure(key, || build_main_graph(key))
+            .expect("first build");
+        let n = cache.pass_count();
+        let mut build_called = false;
+        cache
+            .ensure(key, || {
+                build_called = true;
+                build_main_graph(key)
+            })
+            .expect("second ensure");
+        assert!(!build_called);
+        assert_eq!(cache.pass_count(), n);
     }
 }

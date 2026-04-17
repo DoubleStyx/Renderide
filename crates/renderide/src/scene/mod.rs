@@ -75,5 +75,5 @@ pub use lights::{light_casts_shadows, light_contributes, CachedLight, LightCache
 pub use math::render_transform_to_matrix;
 pub use mesh_renderable::{MeshMaterialSlot, SkinnedMeshRenderer, StaticMeshRenderer};
 pub use render_space::RenderSpaceState;
-pub use transforms_apply::TransformRemovalEvent;
+pub use transforms_apply::{TransformRemovalEvent, TransformsUpdateBuffers};
 pub use world::WorldTransformCache;

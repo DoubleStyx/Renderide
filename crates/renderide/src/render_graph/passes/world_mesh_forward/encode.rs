@@ -3,6 +3,7 @@
 use crate::backend::mesh_deform::GpuSkinCache;
 use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::backend::MaterialBindCacheKey;
+use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::materials::{MaterialPipelineDesc, MaterialPipelineSet, RasterPipelineKind};
 use crate::pipelines::ShaderPermutation;
 use crate::render_graph::world_mesh_draw_prep::build_instance_batches;
@@ -18,11 +19,11 @@ enum LastMaterialBindGroup1Key {
 }
 
 /// State for resolving and binding embedded `@group(1)` material data for one draw batch.
-struct MaterialBindState<'a, 'b, 'c> {
+struct MaterialBindState<'a, 'b, 'c, 'd> {
     rpass: &'a mut wgpu::RenderPass<'b>,
-    backend: &'a mut crate::backend::RenderBackend,
+    encode: &'a mut WorldMeshForwardEncodeRefs<'c>,
     queue: &'a wgpu::Queue,
-    item: &'c WorldMeshDrawItem,
+    item: &'d WorldMeshDrawItem,
     empty_bg: &'a wgpu::BindGroup,
     last_material_bind_key: &'a mut Option<LastMaterialBindGroup1Key>,
     warned_missing_embedded_bind: &'a mut bool,
@@ -30,23 +31,22 @@ struct MaterialBindState<'a, 'b, 'c> {
 }
 
 /// Binds `@group(1)` for embedded stems (texture/uniform pack) or the empty fallback.
-fn set_world_mesh_material_bind_group(ctx: MaterialBindState<'_, '_, '_>) {
+fn set_world_mesh_material_bind_group(ctx: MaterialBindState<'_, '_, '_, '_>) {
     if matches!(
         &ctx.item.batch_key.pipeline,
         RasterPipelineKind::EmbeddedStem(_)
     ) {
         let stem = ctx
-            .backend
+            .encode
             .materials
-            .material_registry
-            .as_ref()
+            .material_registry()
             .and_then(|r| r.stem_for_shader_asset(ctx.item.batch_key.shader_asset_id));
-        if let (Some(mb), Some(stem)) = (ctx.backend.materials.embedded_material_bind(), stem) {
-            let pools = ctx.backend.embedded_texture_pools();
+        if let (Some(mb), Some(stem)) = (ctx.encode.materials.embedded_material_bind(), stem) {
+            let pools = ctx.encode.embedded_texture_pools();
             match mb.embedded_material_bind_group_with_cache_key(
                 stem,
                 ctx.queue,
-                ctx.backend.material_property_store(),
+                ctx.encode.materials.material_property_store(),
                 &pools,
                 ctx.item.lookup_ids,
                 ctx.offscreen_write_render_texture_asset_id,
@@ -68,7 +68,7 @@ fn set_world_mesh_material_bind_group(ctx: MaterialBindState<'_, '_, '_>) {
                 }
             }
         } else {
-            if ctx.backend.materials.embedded_material_bind().is_none()
+            if ctx.encode.materials.embedded_material_bind().is_none()
                 && !*ctx.warned_missing_embedded_bind
             {
                 logger::warn!(
@@ -90,15 +90,15 @@ fn set_world_mesh_material_bind_group(ctx: MaterialBindState<'_, '_, '_>) {
 }
 
 /// Draw indices, bind groups, and pipeline state for one mesh-forward raster subpass.
-pub(crate) struct ForwardDrawBatch<'a, 'b, 'c> {
+pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
     /// Active render pass.
     pub rpass: &'a mut wgpu::RenderPass<'b>,
     /// Indices into `draws` for this subpass.
     pub draw_indices: &'c [usize],
     /// Sorted world mesh draws for the view.
     pub draws: &'c [WorldMeshDrawItem],
-    /// Backend (material registry, mesh pool).
-    pub backend: &'a mut crate::backend::RenderBackend,
+    /// Material registry, pools, and skin cache (disjoint borrows from [`crate::backend::RenderBackend`]).
+    pub encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
     /// Queue for embedded material bind uploads.
     pub queue: &'a wgpu::Queue,
     /// GPU device for lazy mesh stream creation.
@@ -123,15 +123,9 @@ pub(crate) struct ForwardDrawBatch<'a, 'b, 'c> {
     pub offscreen_write_render_texture_asset_id: Option<i32>,
     /// Whether `draw_indexed` may use non-zero `first_instance` / base instance.
     pub supports_base_instance: bool,
-    /// Per-instance deform vertex streams; pointer is valid for the frame encode scope only.
-    ///
-    /// # Safety
-    ///
-    /// Must point at [`crate::backend::FrameResourceManager`]'s cache, which outlives this draw.
-    pub skin_cache: Option<*const GpuSkinCache>,
 }
 
-pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_>) {
+pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
     let mut last_batch_key: Option<MaterialDrawBatchKey> = None;
     let mut last_material_bind_key: Option<LastMaterialBindGroup1Key> = None;
     let mut current_pipelines: Option<MaterialPipelineSet> = None;
@@ -153,7 +147,7 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_>) {
             last_batch_key = Some(item.batch_key.clone());
             let shader_asset_id = item.batch_key.shader_asset_id;
             let material_blend_mode = item.batch_key.blend_mode;
-            pipeline_ok = match batch.backend.materials.material_registry.as_mut() {
+            pipeline_ok = match batch.encode.materials.material_registry_mut() {
                 None => {
                     current_pipelines = None;
                     false
@@ -182,10 +176,10 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_>) {
                         None => {
                             current_pipelines = None;
                             logger::trace!(
-                            "WorldMeshForward: no pipeline for shader_asset_id {:?} pipeline {:?}, skipping draws until registered",
-                            shader_asset_id,
-                            item.batch_key.pipeline
-                        );
+                                "WorldMeshForward: no pipeline for shader_asset_id {:?} pipeline {:?}, skipping draws until registered",
+                                shader_asset_id,
+                                item.batch_key.pipeline
+                            );
                             false
                         }
                     }
@@ -199,7 +193,7 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_>) {
 
         set_world_mesh_material_bind_group(MaterialBindState {
             rpass: batch.rpass,
-            backend: batch.backend,
+            encode: batch.encode,
             queue: batch.queue,
             item,
             empty_bg: batch.empty_bg,
@@ -238,14 +232,15 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_>) {
         let Some(pipelines) = current_pipelines.as_ref() else {
             continue;
         };
+        let skin_cache = batch.encode.skin_cache;
         for pipeline in pipelines.iter() {
             batch.rpass.set_pipeline(pipeline);
             draw_mesh_submesh_instanced(
                 batch.rpass,
                 item,
-                batch.backend.mesh_pool_mut(),
+                batch.encode.mesh_pool_mut(),
                 batch.device,
-                batch.skin_cache,
+                skin_cache,
                 item.batch_key.embedded_needs_uv0,
                 item.batch_key.embedded_needs_color,
                 item.batch_key.embedded_needs_extended_vertex_streams,
@@ -294,7 +289,7 @@ pub(crate) fn draw_mesh_submesh_instanced(
     item: &WorldMeshDrawItem,
     mesh_pool: &mut MeshPool,
     device: &wgpu::Device,
-    skin_cache: Option<*const GpuSkinCache>,
+    skin_cache: Option<&GpuSkinCache>,
     embedded_uv: bool,
     embedded_color: bool,
     embedded_extended_vertex_streams: bool,
@@ -323,11 +318,9 @@ pub(crate) fn draw_mesh_submesh_instanced(
     let needs_cache_stream = use_deformed || use_blend_only;
 
     if needs_cache_stream {
-        let Some(cache_ptr) = skin_cache else {
+        let Some(cache) = skin_cache else {
             return;
         };
-        // SAFETY: `skin_cache` is [`FrameResourceManager`]'s cache; lives for the full encode.
-        let cache = unsafe { &*cache_ptr };
         let key = (item.space_id, item.node_id);
         let Some(entry) = cache.lookup(&key) else {
             logger::trace!(

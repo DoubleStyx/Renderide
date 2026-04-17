@@ -110,6 +110,10 @@ pub enum GraphExecuteError {
     #[error("no frame graph configured on render backend")]
     NoFrameGraph,
 
+    /// Render graph failed to compile for the current cache key.
+    #[error(transparent)]
+    GraphBuild(#[from] GraphBuildError),
+
     /// Surface acquisition or recovery failed after retry.
     #[error(transparent)]
     Present(#[from] PresentClearError),

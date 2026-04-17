@@ -11,9 +11,9 @@ use rayon::prelude::*;
 
 use crate::assets::material::MaterialDictionary;
 use crate::backend::mesh_deform::{
-    write_per_draw_uniform_slab, GpuSkinCache, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE,
+    write_per_draw_uniform_slab, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE,
 };
-use crate::backend::RenderBackend;
+use crate::backend::{RenderBackend, WorldMeshForwardEncodeRefs};
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::materials::{
@@ -104,8 +104,7 @@ pub(super) fn take_or_collect_world_mesh_draws<'a>(
     let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
     let router_ref = backend
         .materials
-        .material_registry
-        .as_ref()
+        .material_registry()
         .map(|r| &r.router)
         .unwrap_or(&fallback_router);
     let pipeline_property_ids = MaterialPipelinePropertyIds::new(backend.property_id_registry());
@@ -186,7 +185,7 @@ fn current_view_texture2d_asset_ids_from_draws(
     let Some(bind) = backend.embedded_material_bind() else {
         return Vec::new();
     };
-    let Some(registry) = backend.materials.material_registry.as_ref() else {
+    let Some(registry) = backend.material_registry() else {
         return Vec::new();
     };
     let store = backend.material_property_store();
@@ -259,18 +258,42 @@ pub(super) fn pack_and_upload_per_draw_slab(
     let scene = frame.scene;
     let hc = frame.host_camera;
     let backend = &mut frame.backend;
+    let fr = &mut backend.frame_resources;
 
     {
-        let Some(pd) = backend.frame_resources.per_draw.as_mut() else {
+        let Some(pd) = fr.per_draw_mut() else {
             return false;
         };
         pd.ensure_draw_slot_capacity(device, draws.len());
     }
 
-    let slots: Vec<PaddedPerDrawUniforms> = if draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS {
-        draws
-            .par_iter()
-            .map(|item| {
+    let need_bytes = draws.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE);
+    {
+        let uniforms = &mut fr.per_draw_uniforms_scratch;
+        let slab = &mut fr.per_draw_slab_byte_scratch;
+        uniforms.resize(draws.len(), PaddedPerDrawUniforms::zeroed());
+
+        if draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS {
+            uniforms
+                .par_iter_mut()
+                .zip(draws.par_iter())
+                .for_each(|(out, item)| {
+                    let (vp_l, vp_r, model) = compute_per_draw_vp_triple(
+                        scene,
+                        item,
+                        hc,
+                        render_context,
+                        world_proj,
+                        overlay_proj,
+                    );
+                    *out = if vp_l == vp_r {
+                        PaddedPerDrawUniforms::new_single(vp_l, model)
+                    } else {
+                        PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
+                    };
+                });
+        } else {
+            for (out, item) in uniforms.iter_mut().zip(draws.iter()) {
                 let (vp_l, vp_r, model) = compute_per_draw_vp_triple(
                     scene,
                     item,
@@ -279,41 +302,29 @@ pub(super) fn pack_and_upload_per_draw_slab(
                     world_proj,
                     overlay_proj,
                 );
-                if vp_l == vp_r {
+                *out = if vp_l == vp_r {
                     PaddedPerDrawUniforms::new_single(vp_l, model)
                 } else {
                     PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
-                }
-            })
-            .collect()
-    } else {
-        draws
-            .iter()
-            .map(|item| {
-                let (vp_l, vp_r, model) = compute_per_draw_vp_triple(
-                    scene,
-                    item,
-                    hc,
-                    render_context,
-                    world_proj,
-                    overlay_proj,
-                );
-                if vp_l == vp_r {
-                    PaddedPerDrawUniforms::new_single(vp_l, model)
-                } else {
-                    PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
-                }
-            })
-            .collect()
-    };
+                };
+            }
+        }
 
-    let mut slab_bytes = vec![0u8; draws.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE)];
-    write_per_draw_uniform_slab(&slots, &mut slab_bytes);
+        slab.resize(need_bytes, 0);
+        write_per_draw_uniform_slab(uniforms, slab);
+    }
 
-    let Some(pd) = backend.frame_resources.per_draw.as_mut() else {
-        return false;
+    let per_draw_storage = {
+        let Some(pd) = fr.per_draw_mut() else {
+            return false;
+        };
+        pd.per_draw_storage.clone()
     };
-    queue.write_buffer(&pd.per_draw_storage, 0, &slab_bytes);
+    queue.write_buffer(
+        &per_draw_storage,
+        0,
+        &fr.per_draw_slab_byte_scratch[..need_bytes],
+    );
     true
 }
 
@@ -582,26 +593,24 @@ struct ForwardPassRasterConfig<'a> {
 }
 
 /// Shared recording state for [`encode_world_mesh_forward_opaque_pass`] / intersection.
-struct ForwardSubpassRecord<'a, 'b, 'c> {
+struct ForwardSubpassRecord<'a, 'c, 'd> {
     encoder: &'a mut wgpu::CommandEncoder,
-    frame: &'a mut FrameRenderParams<'b>,
     queue: &'a wgpu::Queue,
     device: &'a wgpu::Device,
     draws: &'c [WorldMeshDrawItem],
     draw_indices: &'c [usize],
-    /// Deformed vertex streams; see [`super::encode::ForwardDrawBatch::skin_cache`].
-    skin_cache: Option<*const GpuSkinCache>,
+    /// Material registry, pools, and skin cache (disjoint borrows from [`RenderBackend`]).
+    encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
 }
 
 /// Draw state for a render pass that has already been opened.
-struct ForwardSubpassDrawRecord<'a, 'b, 'c> {
-    frame: &'a mut FrameRenderParams<'b>,
+struct ForwardSubpassDrawRecord<'a, 'c, 'd> {
     queue: &'a wgpu::Queue,
     device: &'a wgpu::Device,
     draws: &'c [WorldMeshDrawItem],
     draw_indices: &'c [usize],
-    /// Deformed vertex streams; see [`super::encode::ForwardDrawBatch::skin_cache`].
-    skin_cache: Option<*const GpuSkinCache>,
+    /// Material registry, mesh pool, and skin cache (disjoint borrows from [`RenderBackend`]).
+    encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
 }
 
 fn record_world_mesh_forward_subpass(
@@ -614,7 +623,7 @@ fn record_world_mesh_forward_subpass(
         rpass,
         draw_indices: sub.draw_indices,
         draws: sub.draws,
-        backend: sub.frame.backend,
+        encode: sub.encode,
         queue: sub.queue,
         device: sub.device,
         frame_bg: bind_groups.frame.as_ref(),
@@ -627,7 +636,6 @@ fn record_world_mesh_forward_subpass(
         warned_missing_embedded_bind: cfg.warned_missing_embedded_bind,
         offscreen_write_render_texture_asset_id: cfg.offscreen_write_render_texture_asset_id,
         supports_base_instance: cfg.supports_base_instance,
-        skin_cache: sub.skin_cache,
     });
 }
 
@@ -644,7 +652,7 @@ pub(super) fn record_world_mesh_forward_opaque_graph_raster(
     }
 
     let Some((per_draw_bg, per_draw_storage, per_draw_layout)) =
-        frame.backend.frame_resources.per_draw.as_ref().map(|d| {
+        frame.backend.frame_resources.per_draw().map(|d| {
             (
                 d.bind_group.clone(),
                 d.per_draw_storage.clone(),
@@ -680,21 +688,15 @@ pub(super) fn record_world_mesh_forward_opaque_graph_raster(
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 
-    let skin_cache = frame
-        .backend
-        .frame_resources
-        .skin_cache()
-        .map(|c| c as *const GpuSkinCache);
-
+    let mut encode_refs = frame.backend.world_mesh_forward_encode_refs();
     record_world_mesh_forward_subpass(
         rpass,
         ForwardSubpassDrawRecord {
-            frame,
             queue,
             device,
             draws: &prepared.draws,
             draw_indices: &prepared.regular_indices,
-            skin_cache,
+            encode: &mut encode_refs,
         },
         &bind_groups,
         &mut raster_cfg,
@@ -715,7 +717,7 @@ pub(super) fn record_world_mesh_forward_intersection_graph_raster(
     }
 
     let Some((per_draw_bg, per_draw_storage, per_draw_layout)) =
-        frame.backend.frame_resources.per_draw.as_ref().map(|d| {
+        frame.backend.frame_resources.per_draw().map(|d| {
             (
                 d.bind_group.clone(),
                 d.per_draw_storage.clone(),
@@ -751,21 +753,15 @@ pub(super) fn record_world_mesh_forward_intersection_graph_raster(
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 
-    let skin_cache = frame
-        .backend
-        .frame_resources
-        .skin_cache()
-        .map(|c| c as *const GpuSkinCache);
-
+    let mut encode_refs = frame.backend.world_mesh_forward_encode_refs();
     record_world_mesh_forward_subpass(
         rpass,
         ForwardSubpassDrawRecord {
-            frame,
             queue,
             device,
             draws: &prepared.draws,
             draw_indices: &prepared.intersect_indices,
-            skin_cache,
+            encode: &mut encode_refs,
         },
         &bind_groups,
         &mut raster_cfg,
@@ -810,12 +806,11 @@ fn encode_world_mesh_forward_opaque_pass(
     record_world_mesh_forward_subpass(
         &mut rpass,
         ForwardSubpassDrawRecord {
-            frame: sub.frame,
             queue: sub.queue,
             device: sub.device,
             draws: sub.draws,
             draw_indices: sub.draw_indices,
-            skin_cache: sub.skin_cache,
+            encode: sub.encode,
         },
         bind_groups,
         cfg,
@@ -928,12 +923,11 @@ fn encode_world_mesh_forward_intersection_pass(
     record_world_mesh_forward_subpass(
         &mut rpass,
         ForwardSubpassDrawRecord {
-            frame: sub.frame,
             queue: sub.queue,
             device: sub.device,
             draws: sub.draws,
             draw_indices: sub.draw_indices,
-            skin_cache: sub.skin_cache,
+            encode: sub.encode,
         },
         bind_groups,
         cfg,
@@ -980,7 +974,7 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
     }
 
     let Some((per_draw_bg, per_draw_storage, per_draw_layout)) =
-        frame.backend.frame_resources.per_draw.as_ref().map(|d| {
+        frame.backend.frame_resources.per_draw().map(|d| {
             (
                 d.bind_group.clone(),
                 d.per_draw_storage.clone(),
@@ -1045,22 +1039,16 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 
-    let skin_cache = frame
-        .backend
-        .frame_resources
-        .skin_cache()
-        .map(|c| c as *const GpuSkinCache);
-
     if !prepared.opaque_recorded {
+        let mut encode_refs = frame.backend.world_mesh_forward_encode_refs();
         encode_world_mesh_forward_opaque_pass(
             ForwardSubpassRecord {
                 encoder,
-                frame,
                 queue,
                 device,
                 draws,
                 draw_indices: regular_indices,
-                skin_cache,
+                encode: &mut encode_refs,
             },
             ForwardPassAttachments {
                 color_view,
@@ -1123,31 +1111,27 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 
-    let skin_cache = frame
-        .backend
-        .frame_resources
-        .skin_cache()
-        .map(|c| c as *const GpuSkinCache);
-
-    encode_world_mesh_forward_intersection_pass(
-        ForwardSubpassRecord {
-            encoder,
-            frame,
-            queue,
-            device,
-            draws,
-            draw_indices: intersect_indices,
-            skin_cache,
-        },
-        ForwardPassAttachments {
-            color_view,
-            depth_view: depth_raster_view,
-            resolve_target: inter_resolve,
-            color_store: inter_store,
-        },
-        &bind_groups,
-        &mut raster_cfg,
-    );
+    {
+        let mut encode_refs = frame.backend.world_mesh_forward_encode_refs();
+        encode_world_mesh_forward_intersection_pass(
+            ForwardSubpassRecord {
+                encoder,
+                queue,
+                device,
+                draws,
+                draw_indices: intersect_indices,
+                encode: &mut encode_refs,
+            },
+            ForwardPassAttachments {
+                color_view,
+                depth_view: depth_raster_view,
+                resolve_target: inter_resolve,
+                color_store: inter_store,
+            },
+            &bind_groups,
+            &mut raster_cfg,
+        );
+    }
 
     if msaa {
         if let Some(res) = msaa_depth_resolve {
