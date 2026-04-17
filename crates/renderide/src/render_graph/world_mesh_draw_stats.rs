@@ -77,6 +77,10 @@ pub struct WorldMeshDrawStateRow {
     pub requires_intersection_pass: bool,
     /// Unity `_ZWrite` / `ZWrite` override. `None` means the shader pass default is used.
     pub depth_write: Option<bool>,
+    /// Unity `_ZTest` / `ZTest` override. `None` means the shader pass default is used.
+    pub depth_compare: Option<u8>,
+    /// Unity `Offset factor, units` override. `None` means the shader pass default is used.
+    pub depth_offset: Option<(u32, i32)>,
     /// Whether stencil state was enabled by material/properties.
     pub stencil_enabled: bool,
     /// Dynamic stencil reference.
@@ -192,6 +196,10 @@ pub fn world_mesh_draw_state_rows_from_sorted(
                 alpha_blended: item.batch_key.alpha_blended,
                 requires_intersection_pass: item.batch_key.embedded_requires_intersection_pass,
                 depth_write: state.depth_write,
+                depth_compare: state.depth_compare,
+                depth_offset: state
+                    .depth_offset
+                    .map(|offset| (offset.factor_bits(), offset.units())),
                 stencil_enabled: state.stencil.enabled,
                 stencil_reference: state.stencil.reference,
                 stencil_compare: state.stencil.compare,
@@ -207,7 +215,7 @@ pub fn world_mesh_draw_state_rows_from_sorted(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::materials::MaterialBlendMode;
+    use crate::materials::{MaterialBlendMode, MaterialDepthOffsetState};
     use crate::render_graph::test_fixtures::{dummy_world_mesh_draw_item, DummyDrawItemSpec};
 
     #[test]
@@ -277,6 +285,8 @@ mod tests {
         });
         draw.batch_key.blend_mode = MaterialBlendMode::UnityBlend { src: 1, dst: 10 };
         draw.batch_key.render_state.depth_write = Some(false);
+        draw.batch_key.render_state.depth_compare = Some(8);
+        draw.batch_key.render_state.depth_offset = MaterialDepthOffsetState::new(-1.0, -2);
         draw.batch_key.render_state.color_mask = Some(0);
         draw.batch_key.render_state.stencil.enabled = true;
         draw.batch_key.render_state.stencil.reference = 2;
@@ -290,6 +300,8 @@ mod tests {
         assert_eq!(row.material_asset_id, 7);
         assert_eq!(row.property_block_slot0, Some(70));
         assert_eq!(row.depth_write, Some(false));
+        assert_eq!(row.depth_compare, Some(8));
+        assert_eq!(row.depth_offset, Some(((-1.0f32).to_bits(), -2)));
         assert_eq!(row.color_mask, Some(0));
         assert!(row.stencil_enabled);
         assert_eq!(row.stencil_reference, 2);

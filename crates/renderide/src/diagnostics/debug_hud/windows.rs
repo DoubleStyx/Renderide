@@ -408,7 +408,11 @@ fn draw_state_is_uiish(row: &WorldMeshDrawStateRow) -> bool {
 }
 
 fn draw_state_has_override(row: &WorldMeshDrawStateRow) -> bool {
-    row.depth_write.is_some() || row.color_mask.is_some() || row.stencil_enabled
+    row.depth_write.is_some()
+        || row.depth_compare.is_some()
+        || row.depth_offset.is_some()
+        || row.color_mask.is_some()
+        || row.stencil_enabled
 }
 
 fn blend_mode_label(mode: MaterialBlendMode) -> String {
@@ -460,6 +464,29 @@ fn stencil_label(row: &WorldMeshDrawStateRow) -> String {
         row.stencil_read_mask,
         row.stencil_write_mask
     )
+}
+
+fn ztest_label(value: Option<u8>) -> &'static str {
+    match value {
+        Some(0) => "off",
+        Some(1) => "never",
+        Some(2) => "less",
+        Some(3) => "equal",
+        Some(4) => "lequal",
+        Some(5) => "greater",
+        Some(6) => "not-equal",
+        Some(7) => "gequal",
+        Some(8) => "always",
+        Some(_) => "invalid",
+        None => "pass",
+    }
+}
+
+fn offset_label(value: Option<(u32, i32)>) -> String {
+    match value {
+        Some((factor_bits, units)) => format!("{:.3}/{}", f32::from_bits(factor_bits), units),
+        None => "pass".to_string(),
+    }
 }
 
 impl DebugHud {
@@ -601,7 +628,7 @@ impl DebugHud {
             | TableFlags::RESIZABLE
             | TableFlags::SIZING_STRETCH_PROP;
         if let Some(_table) =
-            ui.begin_table_with_sizing("draw_state_rows", 9, table_flags, [0.0, 360.0], 0.0)
+            ui.begin_table_with_sizing("draw_state_rows", 11, table_flags, [0.0, 360.0], 0.0)
         {
             ui.table_setup_column("Draw");
             ui.table_setup_column("Node");
@@ -610,6 +637,8 @@ impl DebugHud {
             ui.table_setup_column("Pipeline");
             ui.table_setup_column("Blend");
             ui.table_setup_column("ZWrite");
+            ui.table_setup_column("ZTest");
+            ui.table_setup_column("Offset");
             ui.table_setup_column("Color");
             ui.table_setup_column("Stencil");
             ui.table_headers_row();
@@ -639,6 +668,10 @@ impl DebugHud {
                     Some(false) => "off",
                     None => "pass",
                 });
+                ui.table_next_column();
+                ui.text(ztest_label(row.depth_compare));
+                ui.table_next_column();
+                ui.text(offset_label(row.depth_offset));
                 ui.table_next_column();
                 ui.text(color_mask_label(row.color_mask));
                 ui.table_next_column();

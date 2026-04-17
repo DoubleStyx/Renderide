@@ -2,7 +2,7 @@
 //!
 //! Opaque paths use no blend state and write RGB only so destination alpha stays at the clear value
 //! for float render textures. Pass descriptors from `//#pass` directives can override blend, depth,
-//! cull, and stencil/color-write state per material.
+//! cull, stencil/color-write, and depth state per material.
 
 use crate::backend::{empty_material_bind_group_layout, FrameGpuResources};
 use crate::materials::material_passes::{default_pass, MaterialPassDesc, MaterialRenderState};
@@ -23,7 +23,7 @@ pub(crate) struct ReflectiveRasterMeshForwardPipelineDesc {
     pub use_alpha_blending: bool,
     /// Depth write flag for the default single pass.
     pub depth_write_enabled: bool,
-    /// Runtime material overrides for color mask, stencil, and ZWrite.
+    /// Runtime material overrides for color mask, stencil, and depth state.
     pub render_state: MaterialRenderState,
 }
 
@@ -195,17 +195,14 @@ pub(crate) fn build_pipeline_from_pass(
             .map(|format| wgpu::DepthStencilState {
                 format,
                 depth_write_enabled: Some(render_state.depth_write(pass.depth_write)),
-                depth_compare: Some(pass.depth_compare),
+                depth_compare: Some(render_state.depth_compare(pass.depth_compare)),
                 stencil: if format.has_stencil_aspect() {
                     render_state.stencil_state()
                 } else {
                     wgpu::StencilState::default()
                 },
-                bias: wgpu::DepthBiasState {
-                    constant: pass.depth_bias_constant,
-                    slope_scale: pass.depth_bias_slope_scale,
-                    clamp: 0.0,
-                },
+                bias: render_state
+                    .depth_bias(pass.depth_bias_constant, pass.depth_bias_slope_scale),
             }),
         multisample: wgpu::MultisampleState {
             count: desc.sample_count,

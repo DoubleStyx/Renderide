@@ -112,6 +112,9 @@ pub struct MaterialPipelinePropertyIds {
     stencil_write_mask: [i32; 2],
     color_mask: [i32; 3],
     z_write: [i32; 2],
+    z_test: [i32; 2],
+    offset_factor: [i32; 2],
+    offset_units: [i32; 2],
 }
 
 impl MaterialPipelinePropertyIds {
@@ -151,6 +154,15 @@ impl MaterialPipelinePropertyIds {
                 registry.intern("_colormask"),
             ],
             z_write: [registry.intern("_ZWrite"), registry.intern("ZWrite")],
+            z_test: [registry.intern("_ZTest"), registry.intern("ZTest")],
+            offset_factor: [
+                registry.intern("_OffsetFactor"),
+                registry.intern("OffsetFactor"),
+            ],
+            offset_units: [
+                registry.intern("_OffsetUnits"),
+                registry.intern("OffsetUnits"),
+            ],
         }
     }
 }
@@ -187,7 +199,7 @@ pub fn material_blend_mode_for_lookup(
     MaterialBlendMode::StemDefault
 }
 
-/// Runtime Unity stencil/color/depth-write state resolved from material properties.
+/// Runtime Unity stencil/color/depth state resolved from material properties.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MaterialRenderState {
     /// Stencil state for this draw. Disabled when no stencil-related material property is present.
@@ -196,6 +208,47 @@ pub struct MaterialRenderState {
     pub color_mask: Option<u8>,
     /// Unity `ZWrite` override. `None` preserves the shader pass default.
     pub depth_write: Option<bool>,
+    /// Unity `ZTest` / `CompareFunction` override. `None` preserves the shader pass default.
+    pub depth_compare: Option<u8>,
+    /// Unity `Offset factor, units` override. `None` preserves the shader pass default.
+    pub depth_offset: Option<MaterialDepthOffsetState>,
+}
+
+/// Unity `Offset factor, units` state stored in an ordered/hashable form for pipeline keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MaterialDepthOffsetState {
+    factor_bits: u32,
+    units: i32,
+}
+
+impl MaterialDepthOffsetState {
+    /// Creates non-zero Unity `Offset factor, units` state for a material pipeline key.
+    pub fn new(factor: f32, units: i32) -> Option<Self> {
+        let factor = if factor.is_finite() { factor } else { 0.0 };
+        let factor = if factor == 0.0 { 0.0 } else { factor };
+        if factor == 0.0 && units == 0 {
+            return None;
+        }
+        Some(Self {
+            factor_bits: factor.to_bits(),
+            units,
+        })
+    }
+
+    /// Unity slope-scaled offset factor as raw bits for ordered/hashable diagnostics.
+    pub fn factor_bits(self) -> u32 {
+        self.factor_bits
+    }
+
+    /// Unity slope-scaled offset factor.
+    pub fn factor(self) -> f32 {
+        f32::from_bits(self.factor_bits)
+    }
+
+    /// Unity constant offset units.
+    pub fn units(self) -> i32 {
+        self.units
+    }
 }
 
 impl MaterialRenderState {
@@ -212,6 +265,33 @@ impl MaterialRenderState {
     /// Applies the optional Unity depth-write override to a pass default.
     pub fn depth_write(self, fallback: bool) -> bool {
         self.depth_write.unwrap_or(fallback)
+    }
+
+    /// Applies the optional Unity depth-compare override to a pass default.
+    pub fn depth_compare(self, fallback: wgpu::CompareFunction) -> wgpu::CompareFunction {
+        self.depth_compare
+            .and_then(unity_depth_compare_function)
+            .unwrap_or(fallback)
+    }
+
+    /// Applies Unity `Offset` to wgpu depth bias, accounting for reverse-Z.
+    pub fn depth_bias(
+        self,
+        fallback_constant: i32,
+        fallback_slope_scale: f32,
+    ) -> wgpu::DepthBiasState {
+        match self.depth_offset {
+            Some(offset) => wgpu::DepthBiasState {
+                constant: offset.units().saturating_neg(),
+                slope_scale: -offset.factor(),
+                clamp: 0.0,
+            },
+            None => wgpu::DepthBiasState {
+                constant: fallback_constant,
+                slope_scale: fallback_slope_scale,
+                clamp: 0.0,
+            },
+        }
     }
 
     /// Converts the resolved material state into a wgpu stencil state.
@@ -272,6 +352,10 @@ fn unity_mask(v: f32) -> u32 {
     v.round().clamp(0.0, 255.0) as u32
 }
 
+fn unity_offset_units(v: f32) -> i32 {
+    v.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32
+}
+
 fn first_float_presence_by_pids(
     dict: &MaterialDictionary<'_>,
     lookup: MaterialPropertyLookupIds,
@@ -292,6 +376,24 @@ fn unity_compare_function(value: u8) -> wgpu::CompareFunction {
         8 => wgpu::CompareFunction::Always,
         // Unity value 0 is "Disabled"; if another stencil field enabled the state, treat it as Always.
         _ => wgpu::CompareFunction::Always,
+    }
+}
+
+fn unity_depth_compare_function(value: u8) -> Option<wgpu::CompareFunction> {
+    match value {
+        // Unity value 0 is "Disabled"; use Always because wgpu has no per-pipeline depth-test off
+        // separate from the depth attachment.
+        0 => Some(wgpu::CompareFunction::Always),
+        1 => Some(wgpu::CompareFunction::Never),
+        // Renderer depth is reverse-Z, so Unity less/greater comparisons invert.
+        2 => Some(wgpu::CompareFunction::Greater),
+        3 => Some(wgpu::CompareFunction::Equal),
+        4 => Some(wgpu::CompareFunction::GreaterEqual),
+        5 => Some(wgpu::CompareFunction::Less),
+        6 => Some(wgpu::CompareFunction::NotEqual),
+        7 => Some(wgpu::CompareFunction::LessEqual),
+        8 => Some(wgpu::CompareFunction::Always),
+        _ => None,
     }
 }
 
@@ -325,7 +427,7 @@ fn unity_color_writes(mask: u8) -> wgpu::ColorWrites {
     writes
 }
 
-/// Resolves Unity stencil and color-write properties for a material/property-block pair.
+/// Resolves Unity color, stencil, and depth properties for a material/property-block pair.
 pub fn material_render_state_for_lookup(
     dict: &MaterialDictionary<'_>,
     lookup: MaterialPropertyLookupIds,
@@ -339,6 +441,19 @@ pub fn material_render_state_for_lookup(
     let color_mask = first_float_presence_by_pids(dict, lookup, &ids.color_mask).map(unity_u8);
     let depth_write = first_float_presence_by_pids(dict, lookup, &ids.z_write)
         .map(|v| v.round().clamp(0.0, 1.0) >= 0.5);
+    let depth_compare = first_float_presence_by_pids(dict, lookup, &ids.z_test).map(unity_u8);
+    let depth_offset = {
+        let factor = first_float_presence_by_pids(dict, lookup, &ids.offset_factor);
+        let units = first_float_presence_by_pids(dict, lookup, &ids.offset_units);
+        if factor.is_some() || units.is_some() {
+            MaterialDepthOffsetState::new(
+                factor.unwrap_or(0.0),
+                units.map(unity_offset_units).unwrap_or(0),
+            )
+        } else {
+            None
+        }
+    };
 
     let stencil_present = stencil_ref.is_some()
         || stencil_comp.is_some()
@@ -359,6 +474,8 @@ pub fn material_render_state_for_lookup(
         stencil,
         color_mask,
         depth_write,
+        depth_compare,
+        depth_offset,
     }
 }
 
@@ -742,6 +859,73 @@ mod tests {
         let state = material_render_state_for_lookup(&dict, lookup, &ids);
         assert_eq!(state.depth_write, Some(true));
         assert!(state.depth_write(false));
+    }
+
+    #[test]
+    fn ztest_property_overrides_pass_depth_compare_for_reverse_z() {
+        let reg = PropertyIdRegistry::new();
+        let ids = MaterialPipelinePropertyIds::new(&reg);
+        let mut store = MaterialPropertyStore::new();
+        let ztest = reg.intern("_ZTest");
+        store.set_material(48, ztest, MaterialPropertyValue::Float(8.0));
+        let dict = MaterialDictionary::new(&store);
+        let lookup = MaterialPropertyLookupIds {
+            material_asset_id: 48,
+            mesh_property_block_slot0: None,
+        };
+        let state = material_render_state_for_lookup(&dict, lookup, &ids);
+        assert_eq!(state.depth_compare, Some(8));
+        assert_eq!(
+            state.depth_compare(wgpu::CompareFunction::GreaterEqual),
+            wgpu::CompareFunction::Always
+        );
+
+        store.set_property_block(480, ztest, MaterialPropertyValue::Float(4.0));
+        let dict = MaterialDictionary::new(&store);
+        let lookup = MaterialPropertyLookupIds {
+            material_asset_id: 48,
+            mesh_property_block_slot0: Some(480),
+        };
+        let state = material_render_state_for_lookup(&dict, lookup, &ids);
+        assert_eq!(
+            state.depth_compare(wgpu::CompareFunction::Always),
+            wgpu::CompareFunction::GreaterEqual
+        );
+    }
+
+    #[test]
+    fn offset_properties_override_pass_depth_bias_for_reverse_z() {
+        let reg = PropertyIdRegistry::new();
+        let ids = MaterialPipelinePropertyIds::new(&reg);
+        let mut store = MaterialPropertyStore::new();
+        let factor = reg.intern("_OffsetFactor");
+        let units = reg.intern("_OffsetUnits");
+        store.set_material(49, factor, MaterialPropertyValue::Float(-1.0));
+        store.set_material(49, units, MaterialPropertyValue::Float(-2.0));
+        let dict = MaterialDictionary::new(&store);
+        let lookup = MaterialPropertyLookupIds {
+            material_asset_id: 49,
+            mesh_property_block_slot0: None,
+        };
+
+        let state = material_render_state_for_lookup(&dict, lookup, &ids);
+        assert_eq!(state.depth_offset.map(|offset| offset.factor()), Some(-1.0));
+        assert_eq!(state.depth_offset.map(|offset| offset.units()), Some(-2));
+        let bias = state.depth_bias(7, 0.25);
+        assert_eq!(bias.constant, 2);
+        assert_eq!(bias.slope_scale, 1.0);
+        assert_eq!(bias.clamp, 0.0);
+
+        store.set_property_block(490, units, MaterialPropertyValue::Float(3.0));
+        let dict = MaterialDictionary::new(&store);
+        let lookup = MaterialPropertyLookupIds {
+            material_asset_id: 49,
+            mesh_property_block_slot0: Some(490),
+        };
+        let state = material_render_state_for_lookup(&dict, lookup, &ids);
+        let bias = state.depth_bias(7, 0.25);
+        assert_eq!(bias.constant, -3);
+        assert_eq!(bias.slope_scale, 1.0);
     }
 
     #[test]
