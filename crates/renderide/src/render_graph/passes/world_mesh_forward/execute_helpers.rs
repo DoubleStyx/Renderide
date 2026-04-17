@@ -505,7 +505,7 @@ fn stencil_clear_ops(
         })
 }
 
-fn stencil_load_ops(
+pub(super) fn stencil_load_ops(
     depth_stencil_format: Option<wgpu::TextureFormat>,
 ) -> Option<wgpu::Operations<u32>> {
     depth_stencil_format
@@ -785,47 +785,6 @@ pub(super) fn encode_msaa_color_resolve_after_opaque(
     });
 }
 
-<<<<<<< HEAD
-/// Resolves MSAA depth when needed, then copies the single-sample frame depth into the
-/// sampled scene-depth snapshot used by intersection materials.
-pub(super) fn encode_world_mesh_forward_depth_snapshot(
-    device: &wgpu::Device,
-    encoder: &mut wgpu::CommandEncoder,
-    frame: &mut FrameRenderParams<'_>,
-    prepared: &PreparedWorldMeshForwardFrame,
-    msaa_views: Option<&ForwardMsaaResolvedViews>,
-    msaa_depth_resolve: Option<&MsaaDepthResolveResources>,
-) -> bool {
-    if prepared.intersect_indices.is_empty() {
-        return false;
-    }
-
-    if frame.sample_count > 1 {
-        if let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) {
-            encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res);
-        }
-    }
-
-    let hc = frame.host_camera;
-    let stereo_cluster =
-        prepared.pipeline.use_multiview && hc.vr_active && hc.stereo_views.is_some();
-    if let Some(fgpu) = frame.backend.frame_resources.frame_gpu_mut() {
-        fgpu.copy_scene_depth_snapshot(
-            device,
-            encoder,
-            frame.depth_texture,
-            frame.viewport_px,
-            prepared.pipeline.use_multiview,
-            stereo_cluster,
-        );
-        true
-    } else {
-        false
-    }
-}
-
-=======
->>>>>>> f8a1d58176f7d745ef9fef1d5d3437d2b3e053e8
 /// Intersection subpass after depth snapshot (load preserved depth/color).
 fn encode_world_mesh_forward_intersection_pass(
     sub: ForwardSubpassRecord<'_, '_, '_>,
@@ -901,23 +860,6 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
     let shader_perm = prepared.pipeline.shader_perm;
     let use_multiview = prepared.pipeline.use_multiview;
     let supports_base_instance = prepared.supports_base_instance;
-<<<<<<< HEAD
-    let regular_indices = &prepared.regular_indices;
-    let intersect_indices = &prepared.intersect_indices;
-    let msaa = frame.sample_count > 1;
-    let has_intersection = !intersect_indices.is_empty();
-
-    if prepared.tail_raster_recorded {
-        if msaa {
-            if let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) {
-                encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res);
-            }
-        }
-        return true;
-    }
-
-=======
->>>>>>> f8a1d58176f7d745ef9fef1d5d3437d2b3e053e8
     let Some((per_draw_bg, per_draw_storage, per_draw_layout)) =
         frame.backend.frame_resources.per_draw.as_ref().map(|d| {
             (
@@ -1031,22 +973,10 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
         return true;
     }
 
-<<<<<<< HEAD
-    if !prepared.depth_snapshot_recorded {
-        encode_world_mesh_forward_depth_snapshot(
-            device,
-            encoder,
-            frame,
-            prepared,
-            msaa_views,
-            msaa_depth_resolve,
-        );
-=======
     if msaa {
-        if let Some(res) = msaa_depth_resolve {
-            encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
+        if let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) {
+            encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res);
         }
->>>>>>> f8a1d58176f7d745ef9fef1d5d3437d2b3e053e8
     }
 
     if let Some(fgpu) = frame.backend.frame_resources.frame_gpu_mut() {
