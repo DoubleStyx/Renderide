@@ -109,8 +109,10 @@ pub use pass::{GroupScope, PassBuilder, PassKind, PassPhase, RenderPass};
 pub use resources::{
     BufferAccess, BufferHandle, BufferImportSource, BufferSizePolicy, FrameTargetRole,
     HistorySlotId, ImportSource, ImportedBufferDecl, ImportedBufferHandle, ImportedTextureDecl,
-    ImportedTextureHandle, StorageAccess, TextureAccess, TextureHandle, TextureResourceHandle,
-    TransientBufferDesc, TransientExtent, TransientTextureDesc,
+    ImportedTextureHandle, StorageAccess, TextureAccess, TextureAttachmentResolve,
+    TextureAttachmentTarget, TextureHandle, TextureResourceHandle, TransientArrayLayers,
+    TransientBufferDesc, TransientExtent, TransientSampleCount, TransientTextureDesc,
+    TransientTextureFormat,
 };
 pub use reverse_z_depth::{
     main_forward_depth_stencil_format, MAIN_FORWARD_DEPTH_CLEAR, MAIN_FORWARD_DEPTH_COMPARE,
@@ -234,6 +236,33 @@ pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError
         base_usage: wgpu::BufferUsages::COPY_DST,
         alias: true,
     });
+    let forward_msaa_color = builder.create_texture(
+        TransientTextureDesc::frame_color_sampled_texture_2d(
+            "forward_msaa_color",
+            TransientExtent::Backbuffer,
+            wgpu::TextureUsages::empty(),
+        )
+        .with_frame_array_layers(),
+    );
+    let forward_msaa_depth = builder.create_texture(
+        TransientTextureDesc::frame_sampled_texture_2d(
+            "forward_msaa_depth",
+            wgpu::TextureFormat::Depth32Float,
+            TransientExtent::Backbuffer,
+            wgpu::TextureUsages::empty(),
+        )
+        .with_frame_array_layers(),
+    );
+    let forward_msaa_depth_r32 = builder.create_texture(
+        TransientTextureDesc::texture_2d(
+            "forward_msaa_depth_r32",
+            wgpu::TextureFormat::R32Float,
+            TransientExtent::Backbuffer,
+            1,
+            wgpu::TextureUsages::empty(),
+        )
+        .with_frame_array_layers(),
+    );
     let deform = builder.add_pass(Box::new(passes::MeshDeformPass::new()));
     let clustered = builder.add_pass(Box::new(passes::ClusteredLightPass::new(
         passes::ClusteredLightGraphResources {
@@ -243,16 +272,26 @@ pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError
             params: cluster_params,
         },
     )));
+    let forward_resources = passes::WorldMeshForwardGraphResources {
+        color,
+        depth,
+        msaa_color: forward_msaa_color,
+        msaa_depth: forward_msaa_depth,
+        msaa_depth_r32: forward_msaa_depth_r32,
+        cluster_light_counts,
+        cluster_light_indices,
+        lights,
+        per_draw_slab,
+        frame_uniforms,
+    };
+    let forward_prepare = builder.add_pass(Box::new(passes::WorldMeshForwardPreparePass::new(
+        forward_resources,
+    )));
+    let forward_opaque = builder.add_pass(Box::new(passes::WorldMeshForwardOpaquePass::new(
+        forward_resources,
+    )));
     let forward = builder.add_pass(Box::new(passes::WorldMeshForwardPass::new(
-        passes::WorldMeshForwardGraphResources {
-            color,
-            depth,
-            cluster_light_counts,
-            cluster_light_indices,
-            lights,
-            per_draw_slab,
-            frame_uniforms,
-        },
+        forward_resources,
     )));
     let hiz = builder.add_pass(Box::new(passes::HiZBuildPass::new(
         passes::HiZBuildGraphResources {
@@ -262,7 +301,9 @@ pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError
         },
     )));
     builder.add_edge(deform, clustered);
-    builder.add_edge(clustered, forward);
+    builder.add_edge(clustered, forward_prepare);
+    builder.add_edge(forward_prepare, forward_opaque);
+    builder.add_edge(forward_opaque, forward);
     builder.add_edge(forward, hiz);
     builder.build()
 }
@@ -272,10 +313,11 @@ mod default_graph_tests {
     use super::*;
 
     #[test]
-    fn default_main_needs_surface_and_four_passes() {
+    fn default_main_needs_surface_and_six_passes() {
         let g = build_default_main_graph().expect("default graph");
         assert!(g.needs_surface_acquire());
-        assert_eq!(g.pass_count(), 4);
-        assert_eq!(g.compile_stats.topo_levels, 4);
+        assert_eq!(g.pass_count(), 6);
+        assert_eq!(g.compile_stats.topo_levels, 6);
+        assert_eq!(g.compile_stats.transient_texture_count, 3);
     }
 }

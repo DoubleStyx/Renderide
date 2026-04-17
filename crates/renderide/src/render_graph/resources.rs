@@ -67,6 +67,47 @@ impl From<ImportedTextureHandle> for TextureResourceHandle {
     }
 }
 
+/// Texture attachment target selection for raster templates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureAttachmentTarget {
+    /// Always use one concrete texture resource.
+    Resource(TextureResourceHandle),
+    /// Use `single_sample` when the frame sample count is 1, otherwise `multisampled`.
+    FrameSampled {
+        /// Single-sample target.
+        single_sample: TextureResourceHandle,
+        /// Multisampled target.
+        multisampled: TextureResourceHandle,
+    },
+}
+
+impl From<TextureResourceHandle> for TextureAttachmentTarget {
+    fn from(value: TextureResourceHandle) -> Self {
+        Self::Resource(value)
+    }
+}
+
+impl From<TextureHandle> for TextureAttachmentTarget {
+    fn from(value: TextureHandle) -> Self {
+        Self::Resource(TextureResourceHandle::Transient(value))
+    }
+}
+
+impl From<ImportedTextureHandle> for TextureAttachmentTarget {
+    fn from(value: ImportedTextureHandle) -> Self {
+        Self::Resource(TextureResourceHandle::Imported(value))
+    }
+}
+
+/// Optional resolve target selection for raster templates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureAttachmentResolve {
+    /// Always resolve into this target.
+    Always(TextureResourceHandle),
+    /// Resolve only when the frame sample count is greater than 1.
+    FrameMultisampled(TextureResourceHandle),
+}
+
 /// Either a transient or imported buffer handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BufferResourceHandle {
@@ -162,22 +203,85 @@ impl TransientExtent {
 pub struct TransientTextureDesc {
     /// Debug label.
     pub label: &'static str,
-    /// Texture format.
-    pub format: wgpu::TextureFormat,
+    /// Texture format policy.
+    pub format: TransientTextureFormat,
     /// Extent policy.
     pub extent: TransientExtent,
     /// Mip count.
     pub mip_levels: u32,
-    /// Sample count.
-    pub sample_count: u32,
+    /// Sample-count policy.
+    pub sample_count: TransientSampleCount,
     /// Texture dimension.
     pub dimension: wgpu::TextureDimension,
-    /// Array-layer count.
-    pub array_layers: u32,
+    /// Array-layer count policy.
+    pub array_layers: TransientArrayLayers,
     /// Always-on usage floor.
     pub base_usage: wgpu::TextureUsages,
     /// Whether this handle may share a physical slot with disjoint equal-key handles.
     pub alias: bool,
+}
+
+/// Format policy for graph-owned transient textures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TransientTextureFormat {
+    /// Fixed format known at graph build time.
+    Fixed(wgpu::TextureFormat),
+    /// Resolve to the current frame color attachment format.
+    FrameColor,
+}
+
+impl TransientTextureFormat {
+    /// Resolves this policy for a frame.
+    pub fn resolve(self, frame_color_format: wgpu::TextureFormat) -> wgpu::TextureFormat {
+        match self {
+            Self::Fixed(format) => format,
+            Self::FrameColor => frame_color_format,
+        }
+    }
+}
+
+/// Array-layer policy for graph-owned transient textures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TransientArrayLayers {
+    /// Fixed array-layer count known at graph build time.
+    Fixed(u32),
+    /// Resolve to one layer for mono views or two layers for multiview stereo.
+    Frame,
+}
+
+impl TransientArrayLayers {
+    /// Resolves this policy for a frame.
+    pub fn resolve(self, multiview_stereo: bool) -> u32 {
+        match self {
+            Self::Fixed(layers) => layers.max(1),
+            Self::Frame => {
+                if multiview_stereo {
+                    2
+                } else {
+                    1
+                }
+            }
+        }
+    }
+}
+
+/// Sample-count policy for graph-owned transient textures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TransientSampleCount {
+    /// Fixed sample count known at graph build time.
+    Fixed(u32),
+    /// Resolve to the current frame view's effective sample count.
+    Frame,
+}
+
+impl TransientSampleCount {
+    /// Resolves this policy for a frame.
+    pub fn resolve(self, frame_sample_count: u32) -> u32 {
+        match self {
+            Self::Fixed(sample_count) => sample_count.max(1),
+            Self::Frame => frame_sample_count.max(1),
+        }
+    }
 }
 
 impl TransientTextureDesc {
@@ -191,15 +295,66 @@ impl TransientTextureDesc {
     ) -> Self {
         Self {
             label,
-            format,
+            format: TransientTextureFormat::Fixed(format),
             extent,
             mip_levels: 1,
-            sample_count,
+            sample_count: TransientSampleCount::Fixed(sample_count),
             dimension: wgpu::TextureDimension::D2,
-            array_layers: 1,
+            array_layers: TransientArrayLayers::Fixed(1),
             base_usage,
             alias: true,
         }
+    }
+
+    /// Creates a standard single-layer 2D transient texture descriptor that uses the frame sample count.
+    pub fn frame_sampled_texture_2d(
+        label: &'static str,
+        format: wgpu::TextureFormat,
+        extent: TransientExtent,
+        base_usage: wgpu::TextureUsages,
+    ) -> Self {
+        Self {
+            label,
+            format: TransientTextureFormat::Fixed(format),
+            extent,
+            mip_levels: 1,
+            sample_count: TransientSampleCount::Frame,
+            dimension: wgpu::TextureDimension::D2,
+            array_layers: TransientArrayLayers::Fixed(1),
+            base_usage,
+            alias: true,
+        }
+    }
+
+    /// Creates a standard single-layer 2D transient texture that uses the frame color format and sample count.
+    pub fn frame_color_sampled_texture_2d(
+        label: &'static str,
+        extent: TransientExtent,
+        base_usage: wgpu::TextureUsages,
+    ) -> Self {
+        Self {
+            label,
+            format: TransientTextureFormat::FrameColor,
+            extent,
+            mip_levels: 1,
+            sample_count: TransientSampleCount::Frame,
+            dimension: wgpu::TextureDimension::D2,
+            array_layers: TransientArrayLayers::Fixed(1),
+            base_usage,
+            alias: true,
+        }
+    }
+
+    /// Sets a fixed array-layer count.
+    pub fn with_array_layers(mut self, layers: u32) -> Self {
+        self.array_layers = TransientArrayLayers::Fixed(layers.max(1));
+        self
+    }
+
+    /// Uses the current frame view's mono/stereo layer count.
+    pub fn with_frame_array_layers(mut self) -> Self {
+        self.array_layers = TransientArrayLayers::Frame;
+        self
     }
 }
 
@@ -563,13 +718,4 @@ impl ResourceAccess {
 pub(crate) enum AccessKind {
     Texture(TextureAccess),
     Buffer(BufferAccess),
-}
-
-impl AccessKind {
-    pub(crate) fn texture(&self) -> Option<&TextureAccess> {
-        match self {
-            Self::Texture(access) => Some(access),
-            Self::Buffer(_) => None,
-        }
-    }
 }

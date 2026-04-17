@@ -12,4 +12,7 @@ pub use clustered_light::{ClusteredLightGraphResources, ClusteredLightPass};
 pub use hi_z_build::{HiZBuildGraphResources, HiZBuildPass};
 pub use mesh_deform::MeshDeformPass;
 pub use swapchain_clear::SwapchainClearPass;
-pub use world_mesh_forward::{WorldMeshForwardGraphResources, WorldMeshForwardPass};
+pub use world_mesh_forward::{
+    WorldMeshForwardGraphResources, WorldMeshForwardOpaquePass, WorldMeshForwardPass,
+    WorldMeshForwardPreparePass,
+};

@@ -326,7 +326,16 @@ fn create_texture_and_view(
         usage,
         view_formats: &[],
     });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let view = if key.dimension == wgpu::TextureDimension::D2 && layers > 1 {
+        texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(label),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            array_layer_count: Some(layers.max(1)),
+            ..Default::default()
+        })
+    } else {
+        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    };
     (texture, view)
 }
 

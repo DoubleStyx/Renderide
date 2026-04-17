@@ -117,6 +117,8 @@ pub struct PreparedWorldMeshForwardFrame {
     pub pipeline: WorldMeshForwardPipelineState,
     /// Whether indexed draws may use base instance.
     pub supports_base_instance: bool,
+    /// Whether the opaque/clear forward subpass was already recorded by a split graph node.
+    pub opaque_recorded: bool,
 }
 
 /// Data passes need beyond raw GPU handles: host scene, backend pools, and main-surface formats.

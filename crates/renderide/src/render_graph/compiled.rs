@@ -22,8 +22,8 @@ use super::pass::{GroupScope, PassKind, PassPhase, RenderPass};
 use super::resources::{
     BufferImportSource, BufferSizePolicy, FrameTargetRole, ImportSource, ImportedBufferDecl,
     ImportedBufferHandle, ImportedTextureDecl, ImportedTextureHandle, ResourceAccess,
-    TextureHandle, TextureResourceHandle, TransientBufferDesc, TransientExtent,
-    TransientTextureDesc,
+    TextureAttachmentResolve, TextureAttachmentTarget, TextureHandle, TextureResourceHandle,
+    TransientBufferDesc, TransientExtent, TransientTextureDesc,
 };
 use super::transient_pool::{BufferKey, TextureKey};
 use super::world_mesh_draw_prep::{CameraTransformDrawFilter, WorldMeshDrawCollection};
@@ -228,20 +228,20 @@ pub struct RenderPassTemplate {
 #[derive(Clone, Debug)]
 pub struct ColorAttachmentTemplate {
     /// Color target handle.
-    pub target: TextureResourceHandle,
+    pub target: TextureAttachmentTarget,
     /// Load operation.
     pub load: wgpu::LoadOp<wgpu::Color>,
     /// Store operation.
     pub store: wgpu::StoreOp,
     /// Optional resolve target.
-    pub resolve_to: Option<TextureResourceHandle>,
+    pub resolve_to: Option<TextureAttachmentResolve>,
 }
 
 /// Depth/stencil attachment template.
 #[derive(Clone, Debug)]
 pub struct DepthAttachmentTemplate {
     /// Depth/stencil target handle.
-    pub target: TextureResourceHandle,
+    pub target: TextureAttachmentTarget,
     /// Depth operations.
     pub depth: wgpu::Operations<f32>,
     /// Optional stencil operations.
@@ -411,6 +411,26 @@ fn resolve_buffer_size(size_policy: BufferSizePolicy, viewport_px: (u32, u32)) -
     }
 }
 
+fn create_transient_layer_views(
+    texture: &wgpu::Texture,
+    key: TextureKey,
+) -> Vec<wgpu::TextureView> {
+    if key.dimension != wgpu::TextureDimension::D2 || key.array_layers <= 1 {
+        return Vec::new();
+    }
+    (0..key.array_layers)
+        .map(|layer| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("render-graph-transient-layer"),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                base_array_layer: layer,
+                array_layer_count: Some(1),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
 fn pass_info_raster_template(
     pass_info: &[CompiledPassInfo],
     pass_idx: usize,
@@ -427,6 +447,42 @@ fn pass_info_raster_template(
         })
 }
 
+fn frame_sample_count(ctx: &GraphRasterPassContext<'_, '_>) -> u32 {
+    ctx.frame
+        .as_ref()
+        .map(|frame| frame.sample_count.max(1))
+        .unwrap_or(1)
+}
+
+fn resolve_attachment_target(
+    target: TextureAttachmentTarget,
+    sample_count: u32,
+) -> TextureResourceHandle {
+    match target {
+        TextureAttachmentTarget::Resource(handle) => handle,
+        TextureAttachmentTarget::FrameSampled {
+            single_sample,
+            multisampled,
+        } => {
+            if sample_count > 1 {
+                multisampled
+            } else {
+                single_sample
+            }
+        }
+    }
+}
+
+fn resolve_attachment_resolve_target(
+    target: TextureAttachmentResolve,
+    sample_count: u32,
+) -> Option<TextureResourceHandle> {
+    match target {
+        TextureAttachmentResolve::Always(handle) => Some(handle),
+        TextureAttachmentResolve::FrameMultisampled(handle) => (sample_count > 1).then_some(handle),
+    }
+}
+
 fn execute_graph_managed_raster_pass(
     pass: &mut dyn RenderPass,
     template: &RenderPassTemplate,
@@ -434,15 +490,20 @@ fn execute_graph_managed_raster_pass(
     encoder: &mut wgpu::CommandEncoder,
     ctx: &mut GraphRasterPassContext<'_, '_>,
 ) -> Result<(), GraphExecuteError> {
+    let sample_count = frame_sample_count(ctx);
     let mut color_attachments = Vec::with_capacity(template.color_attachments.len());
     for color in &template.color_attachments {
-        let view = graph_resources.texture_view(color.target).ok_or_else(|| {
+        let target = resolve_attachment_target(color.target, sample_count);
+        let view = graph_resources.texture_view(target).ok_or_else(|| {
             GraphExecuteError::MissingGraphAttachment {
                 pass: pass.name().to_string(),
-                resource: format!("{:?}", color.target),
+                resource: format!("{target:?}"),
             }
         })?;
-        let resolve_target = match color.resolve_to {
+        let resolve_target = match color
+            .resolve_to
+            .and_then(|target| resolve_attachment_resolve_target(target, sample_count))
+        {
             Some(target) => Some(graph_resources.texture_view(target).ok_or_else(|| {
                 GraphExecuteError::MissingGraphAttachment {
                     pass: pass.name().to_string(),
@@ -463,16 +524,17 @@ fn execute_graph_managed_raster_pass(
     }
 
     let depth_stencil_attachment = if let Some(depth) = &template.depth_stencil_attachment {
-        let view = graph_resources.texture_view(depth.target).ok_or_else(|| {
+        let target = resolve_attachment_target(depth.target, sample_count);
+        let view = graph_resources.texture_view(target).ok_or_else(|| {
             GraphExecuteError::MissingGraphAttachment {
                 pass: pass.name().to_string(),
-                resource: format!("{:?}", depth.target),
+                resource: format!("{target:?}"),
             }
         })?;
         Some(wgpu::RenderPassDepthStencilAttachment {
             view,
             depth_ops: Some(depth.depth),
-            stencil_ops: depth.stencil,
+            stencil_ops: pass.graph_raster_stencil_ops(ctx, depth),
         })
     } else {
         None
@@ -484,7 +546,7 @@ fn execute_graph_managed_raster_pass(
         depth_stencil_attachment,
         occlusion_query_set: None,
         timestamp_writes: None,
-        multiview_mask: template.multiview_mask,
+        multiview_mask: pass.graph_raster_multiview_mask(ctx, template),
     });
     pass.execute_graph_raster(ctx, &mut rpass)?;
     Ok(())
@@ -853,7 +915,15 @@ impl CompiledRenderGraph {
             self.imported_textures.len(),
             self.imported_buffers.len(),
         );
-        self.resolve_transient_textures(device, backend, resolved.viewport_px, &mut resources);
+        self.resolve_transient_textures(
+            device,
+            backend,
+            resolved.viewport_px,
+            resolved.surface_format,
+            resolved.sample_count,
+            resolved.multiview_stereo,
+            &mut resources,
+        );
         self.resolve_transient_buffers(device, backend, resolved.viewport_px, &mut resources);
         self.resolve_imported_textures(resolved, &mut resources);
         self.resolve_imported_buffers(backend, resolved, &mut resources);
@@ -865,6 +935,9 @@ impl CompiledRenderGraph {
         device: &wgpu::Device,
         backend: &mut RenderBackend,
         viewport_px: (u32, u32),
+        surface_format: wgpu::TextureFormat,
+        sample_count: u32,
+        multiview_stereo: bool,
         resources: &mut GraphResolvedResources,
     ) {
         let mut physical_slots: HashMap<usize, ResolvedGraphTexture> = HashMap::new();
@@ -875,17 +948,18 @@ impl CompiledRenderGraph {
             let resolved = physical_slots
                 .entry(compiled.physical_slot)
                 .or_insert_with(|| {
+                    let array_layers = compiled.desc.array_layers.resolve(multiview_stereo);
                     let key = TextureKey {
-                        format: compiled.desc.format,
+                        format: compiled.desc.format.resolve(surface_format),
                         extent: resolve_transient_extent(
                             compiled.desc.extent,
                             viewport_px,
-                            compiled.desc.array_layers,
+                            array_layers,
                         ),
                         mip_levels: compiled.desc.mip_levels,
-                        sample_count: compiled.desc.sample_count,
+                        sample_count: compiled.desc.sample_count.resolve(sample_count),
                         dimension: compiled.desc.dimension,
-                        array_layers: compiled.desc.array_layers,
+                        array_layers,
                         usage_bits: compiled.usage.bits() as u64,
                     };
                     let lease = backend.transient_pool_mut().acquire_texture_resource(
@@ -894,11 +968,13 @@ impl CompiledRenderGraph {
                         compiled.desc.label,
                         compiled.usage,
                     );
+                    let layer_views = create_transient_layer_views(&lease.texture, key);
                     ResolvedGraphTexture {
                         pool_id: lease.pool_id,
                         physical_slot: compiled.physical_slot,
                         texture: lease.texture,
                         view: lease.view,
+                        layer_views,
                     }
                 })
                 .clone();

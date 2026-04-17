@@ -13,8 +13,8 @@ use super::pass::{GroupScope, PassBuilder, PassPhase, PassSetup, RenderPass};
 use super::resources::{
     AccessKind, BufferHandle, BufferResourceHandle, ImportSource, ImportedBufferDecl,
     ImportedBufferHandle, ImportedTextureDecl, ImportedTextureHandle, ResourceHandle,
-    TextureAccess, TextureHandle, TextureResourceHandle, TransientBufferDesc, TransientExtent,
-    TransientTextureDesc,
+    TextureAccess, TextureHandle, TextureResourceHandle, TransientArrayLayers, TransientBufferDesc,
+    TransientExtent, TransientSampleCount, TransientTextureDesc, TransientTextureFormat,
 };
 
 struct PassEntry {
@@ -38,12 +38,12 @@ struct SetupEntry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct TextureAliasKey {
-    format: wgpu::TextureFormat,
+    format: TransientTextureFormat,
     extent: TransientExtent,
     mip_levels: u32,
-    sample_count: u32,
+    sample_count: TransientSampleCount,
     dimension: wgpu::TextureDimension,
-    array_layers: u32,
+    array_layers: TransientArrayLayers,
     usage_bits: u64,
 }
 
@@ -621,36 +621,25 @@ fn compile_pass_info(setups: &[SetupEntry], ordered: &[usize]) -> Vec<CompiledPa
 }
 
 fn compile_raster_template(setup: &PassSetup) -> Option<RenderPassTemplate> {
-    let mut color_attachments = Vec::new();
-    let mut depth_stencil_attachment = None;
-    for access in &setup.accesses {
-        let Some(texture_access) = access.access.texture() else {
-            continue;
-        };
-        let ResourceHandle::Texture(target) = access.resource else {
-            continue;
-        };
-        match texture_access {
-            TextureAccess::ColorAttachment {
-                load,
-                store,
-                resolve_to,
-            } => color_attachments.push(ColorAttachmentTemplate {
-                target,
-                load: *load,
-                store: *store,
-                resolve_to: *resolve_to,
-            }),
-            TextureAccess::DepthAttachment { depth, stencil } => {
-                depth_stencil_attachment = Some(DepthAttachmentTemplate {
-                    target,
-                    depth: *depth,
-                    stencil: *stencil,
-                });
-            }
-            _ => {}
-        }
-    }
+    let color_attachments: Vec<ColorAttachmentTemplate> = setup
+        .color_attachments
+        .iter()
+        .map(|color| ColorAttachmentTemplate {
+            target: color.target,
+            load: color.load,
+            store: color.store,
+            resolve_to: color.resolve_to,
+        })
+        .collect();
+    let depth_stencil_attachment =
+        setup
+            .depth_stencil_attachment
+            .as_ref()
+            .map(|depth| DepthAttachmentTemplate {
+                target: depth.target,
+                depth: depth.depth,
+                stencil: depth.stencil,
+            });
     (!color_attachments.is_empty() || depth_stencil_attachment.is_some()).then_some(
         RenderPassTemplate {
             color_attachments,
@@ -863,7 +852,7 @@ mod tests {
     use crate::render_graph::error::RenderPassError;
     use crate::render_graph::resources::{
         BufferAccess, BufferImportSource, BufferSizePolicy, FrameTargetRole, HistorySlotId,
-        StorageAccess,
+        StorageAccess, TextureAttachmentResolve, TextureAttachmentTarget, TransientTextureFormat,
     };
     use crate::render_graph::{PassKind, RenderPassContext};
 
@@ -996,6 +985,18 @@ mod tests {
                 height: 64,
             },
             1,
+            wgpu::TextureUsages::empty(),
+        )
+    }
+
+    fn frame_sampled_tex_desc(label: &'static str) -> TransientTextureDesc {
+        TransientTextureDesc::frame_sampled_texture_2d(
+            label,
+            wgpu::TextureFormat::Rgba8Unorm,
+            TransientExtent::Custom {
+                width: 64,
+                height: 64,
+            },
             wgpu::TextureUsages::empty(),
         )
     }
@@ -1375,16 +1376,112 @@ mod tests {
         assert_eq!(template.color_attachments.len(), 1);
         assert_eq!(
             template.color_attachments[0].target,
-            TextureResourceHandle::Imported(color)
+            TextureAttachmentTarget::Resource(TextureResourceHandle::Imported(color))
         );
         assert_eq!(
             template.color_attachments[0].resolve_to,
-            Some(TextureResourceHandle::Imported(resolve))
+            Some(TextureAttachmentResolve::Always(
+                TextureResourceHandle::Imported(resolve)
+            ))
         );
         assert_eq!(template.color_attachments[0].store, wgpu::StoreOp::Discard);
         assert_eq!(
             template.depth_stencil_attachment.as_ref().map(|d| d.target),
-            Some(TextureResourceHandle::Imported(depth))
+            Some(TextureAttachmentTarget::Resource(
+                TextureResourceHandle::Imported(depth)
+            ))
+        );
+    }
+
+    #[test]
+    fn raster_template_records_frame_sampled_targets() {
+        struct FrameSampledRasterPass {
+            color: ImportedTextureHandle,
+            resolve: ImportedTextureHandle,
+            depth: ImportedTextureHandle,
+            msaa_color: TextureHandle,
+            msaa_depth: TextureHandle,
+        }
+        impl RenderPass for FrameSampledRasterPass {
+            fn name(&self) -> &str {
+                "frame-sampled"
+            }
+            fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+                let mut r = b.raster();
+                r.frame_sampled_color(
+                    self.color,
+                    self.msaa_color,
+                    wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    Some(self.resolve),
+                );
+                r.frame_sampled_depth(
+                    self.depth,
+                    self.msaa_depth,
+                    wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.5),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    None,
+                );
+                Ok(())
+            }
+            fn execute(
+                &mut self,
+                _ctx: &mut RenderPassContext<'_, '_, '_>,
+            ) -> Result<(), RenderPassError> {
+                Ok(())
+            }
+        }
+
+        let mut b = GraphBuilder::new();
+        let color = b.import_texture(backbuffer_import());
+        let resolve = b.import_texture(backbuffer_import());
+        let depth = b.import_texture(depth_import());
+        let msaa_color = b.create_texture(frame_sampled_tex_desc("msaa-color"));
+        let msaa_depth = b.create_texture(TransientTextureDesc::frame_sampled_texture_2d(
+            "msaa-depth",
+            wgpu::TextureFormat::Depth32Float,
+            TransientExtent::Custom {
+                width: 64,
+                height: 64,
+            },
+            wgpu::TextureUsages::empty(),
+        ));
+        b.add_pass(Box::new(FrameSampledRasterPass {
+            color,
+            resolve,
+            depth,
+            msaa_color,
+            msaa_depth,
+        }));
+
+        let g = b.build().expect("build");
+        let template = g.pass_info[0]
+            .raster_template
+            .as_ref()
+            .expect("raster template");
+        assert_eq!(
+            template.color_attachments[0].target,
+            TextureAttachmentTarget::FrameSampled {
+                single_sample: TextureResourceHandle::Imported(color),
+                multisampled: TextureResourceHandle::Transient(msaa_color),
+            }
+        );
+        assert_eq!(
+            template.color_attachments[0].resolve_to,
+            Some(TextureAttachmentResolve::FrameMultisampled(
+                TextureResourceHandle::Imported(resolve)
+            ))
+        );
+        assert_eq!(
+            template.depth_stencil_attachment.as_ref().map(|d| d.target),
+            Some(TextureAttachmentTarget::FrameSampled {
+                single_sample: TextureResourceHandle::Imported(depth),
+                multisampled: TextureResourceHandle::Transient(msaa_depth),
+            })
         );
     }
 
@@ -1429,5 +1526,57 @@ mod tests {
             g.transient_buffers[a.index()].physical_slot,
             g.transient_buffers[c.index()].physical_slot
         );
+    }
+
+    #[test]
+    fn texture_aliasing_keys_on_sample_count_policy() {
+        let mut b = GraphBuilder::new();
+        let frame_sampled = b.create_texture(frame_sampled_tex_desc("frame-sampled"));
+        let fixed = b.create_texture(tex_desc("fixed"));
+        let bb = b.import_texture(backbuffer_import());
+        let mut p0 = TestPass::compute("write-frame-sampled");
+        p0.texture_writes.push(frame_sampled);
+        let mut p1 = TestPass::raster("export-frame-sampled", bb);
+        p1.texture_reads.push(frame_sampled);
+        let mut p2 = TestPass::compute("write-fixed");
+        p2.texture_writes.push(fixed);
+        let mut p3 = TestPass::raster("export-fixed", bb);
+        p3.texture_reads.push(fixed);
+        b.add_pass(Box::new(p0));
+        let p1_id = b.add_pass(Box::new(p1));
+        b.add_pass(Box::new(p2));
+        b.add_pass(Box::new(p3));
+        b.add_edge(p1_id, PassId(2));
+
+        let g = b.build().expect("build");
+        assert_ne!(
+            g.transient_textures[frame_sampled.index()].physical_slot,
+            g.transient_textures[fixed.index()].physical_slot
+        );
+    }
+
+    #[test]
+    fn frame_sample_count_policy_resolves_current_frame_value() {
+        assert_eq!(TransientSampleCount::Fixed(0).resolve(4), 1);
+        assert_eq!(TransientSampleCount::Fixed(2).resolve(4), 2);
+        assert_eq!(TransientSampleCount::Frame.resolve(0), 1);
+        assert_eq!(TransientSampleCount::Frame.resolve(4), 4);
+    }
+
+    #[test]
+    fn frame_texture_format_and_layer_policies_resolve_current_frame_values() {
+        assert_eq!(
+            TransientTextureFormat::Fixed(wgpu::TextureFormat::Rgba8Unorm)
+                .resolve(wgpu::TextureFormat::Bgra8UnormSrgb),
+            wgpu::TextureFormat::Rgba8Unorm
+        );
+        assert_eq!(
+            TransientTextureFormat::FrameColor.resolve(wgpu::TextureFormat::Bgra8UnormSrgb),
+            wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+        assert_eq!(TransientArrayLayers::Fixed(0).resolve(true), 1);
+        assert_eq!(TransientArrayLayers::Fixed(3).resolve(false), 3);
+        assert_eq!(TransientArrayLayers::Frame.resolve(false), 1);
+        assert_eq!(TransientArrayLayers::Frame.resolve(true), 2);
     }
 }

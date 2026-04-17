@@ -22,6 +22,8 @@ pub struct ResolvedGraphTexture {
     pub texture: wgpu::Texture,
     /// Default texture view.
     pub view: wgpu::TextureView,
+    /// Per-layer D2 views for array textures.
+    pub layer_views: Vec<wgpu::TextureView>,
 }
 
 /// Resolved transient buffer for one graph execution scope.
