@@ -13,7 +13,6 @@ pub use hi_z_build::{HiZBuildGraphResources, HiZBuildPass};
 pub use mesh_deform::MeshDeformPass;
 pub use swapchain_clear::SwapchainClearPass;
 pub use world_mesh_forward::{
-    WorldMeshDepthSnapshotPass, WorldMeshForwardDepthResolvePass, WorldMeshForwardGraphResources,
-    WorldMeshForwardIntersectPass, WorldMeshForwardOpaquePass, WorldMeshForwardPass,
+    WorldMeshForwardGraphResources, WorldMeshForwardOpaquePass, WorldMeshForwardPass,
     WorldMeshForwardPreparePass,
 };

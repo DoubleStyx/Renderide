@@ -119,10 +119,6 @@ pub struct PreparedWorldMeshForwardFrame {
     pub supports_base_instance: bool,
     /// Whether the opaque/clear forward subpass was already recorded by a split graph node.
     pub opaque_recorded: bool,
-    /// Whether the scene-depth snapshot for intersection draws was already recorded by a split graph node.
-    pub depth_snapshot_recorded: bool,
-    /// Whether the intersection/color-resolve tail raster was already recorded by a split graph node.
-    pub tail_raster_recorded: bool,
 }
 
 /// Data passes need beyond raw GPU handles: host scene, backend pools, and main-surface formats.

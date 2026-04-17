@@ -40,10 +40,15 @@ use crate::render_graph::resources::{
 
 use execute_helpers::{
     encode_clear_only_pass, encode_msaa_color_resolve_after_opaque,
+<<<<<<< HEAD
     encode_msaa_depth_resolve_after_clear_only, encode_world_mesh_forward_depth_snapshot,
     encode_world_mesh_forward_draw_passes, prepare_world_mesh_forward_frame,
     record_world_mesh_forward_intersection_graph_raster,
     record_world_mesh_forward_opaque_graph_raster, resolve_forward_msaa_views, stencil_load_ops,
+=======
+    encode_msaa_depth_resolve_after_clear_only, encode_world_mesh_forward_draw_passes,
+    prepare_world_mesh_forward_frame, record_world_mesh_forward_opaque_graph_raster,
+>>>>>>> f8a1d58176f7d745ef9fef1d5d3437d2b3e053e8
     ForwardPassEncodeFrame, ForwardPassEncodeViews,
 };
 
@@ -62,24 +67,6 @@ pub struct WorldMeshForwardPreparePass {
 /// Graph-managed opaque/clear subpass for world-mesh forward rendering.
 #[derive(Debug)]
 pub struct WorldMeshForwardOpaquePass {
-    resources: WorldMeshForwardGraphResources,
-}
-
-/// Copies the resolved forward depth into the scene-depth snapshot for intersection materials.
-#[derive(Debug)]
-pub struct WorldMeshDepthSnapshotPass {
-    resources: WorldMeshForwardGraphResources,
-}
-
-/// Draws intersection materials and resolves forward color when MSAA is active.
-#[derive(Debug)]
-pub struct WorldMeshForwardIntersectPass {
-    resources: WorldMeshForwardGraphResources,
-}
-
-/// Resolves the final MSAA forward depth into the single-sample frame depth target.
-#[derive(Debug)]
-pub struct WorldMeshForwardDepthResolvePass {
     resources: WorldMeshForwardGraphResources,
 }
 
@@ -124,27 +111,6 @@ impl WorldMeshForwardPreparePass {
 
 impl WorldMeshForwardOpaquePass {
     /// Creates a graph-managed opaque world mesh forward pass instance.
-    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
-    }
-}
-
-impl WorldMeshDepthSnapshotPass {
-    /// Creates a world mesh depth snapshot pass instance.
-    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
-    }
-}
-
-impl WorldMeshForwardIntersectPass {
-    /// Creates a world mesh intersection raster pass instance.
-    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
-    }
-}
-
-impl WorldMeshForwardDepthResolvePass {
-    /// Creates a world mesh final depth-resolve pass instance.
     pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
         Self { resources }
     }
@@ -322,6 +288,7 @@ impl RenderPass for WorldMeshForwardOpaquePass {
     }
 }
 
+<<<<<<< HEAD
 impl RenderPass for WorldMeshDepthSnapshotPass {
     fn name(&self) -> &str {
         "WorldMeshDepthSnapshot"
@@ -564,6 +531,8 @@ impl RenderPass for WorldMeshForwardDepthResolvePass {
     }
 }
 
+=======
+>>>>>>> f8a1d58176f7d745ef9fef1d5d3437d2b3e053e8
 impl RenderPass for WorldMeshForwardPass {
     fn name(&self) -> &str {
         "WorldMeshForward"
