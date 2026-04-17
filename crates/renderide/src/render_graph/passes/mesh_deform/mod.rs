@@ -194,6 +194,15 @@ impl RenderPass for MeshDeformPass {
         {
             let backend = &mut frame.backend;
             let Some((pre, scratch, skin_cache)) = backend.mesh_deform_pass_refs() else {
+                if backend.attached().is_none() {
+                    logger::warn!(
+                        "MeshDeformPass skipped: GPU attach bundle missing (RenderBackend::attach did not complete successfully)"
+                    );
+                } else {
+                    logger::warn!(
+                        "MeshDeformPass skipped: mesh preprocess compute pipelines are unavailable (deform compute disabled)"
+                    );
+                }
                 return Ok(());
             };
 

@@ -101,8 +101,7 @@ pub(super) fn take_or_collect_world_mesh_draws<'a>(
     let fallback_router = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
     let router_ref = backend
         .materials
-        .material_registry
-        .as_ref()
+        .material_registry()
         .map(|r| &r.router)
         .unwrap_or(&fallback_router);
     let dict = MaterialDictionary::new(backend.material_property_store());
@@ -219,7 +218,7 @@ pub(super) fn pack_and_upload_per_draw_slab(
     let backend = &mut frame.backend;
 
     {
-        let Some(pd) = backend.frame_resources.per_draw.as_mut() else {
+        let Some(pd) = backend.frame_resources.per_draw_mut() else {
             return false;
         };
         pd.ensure_draw_slot_capacity(device, draws.len());
@@ -268,7 +267,7 @@ pub(super) fn pack_and_upload_per_draw_slab(
     let mut slab_bytes = vec![0u8; draws.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE)];
     write_per_draw_uniform_slab(&slots, &mut slab_bytes);
 
-    let Some(pd) = backend.frame_resources.per_draw.as_mut() else {
+    let Some(pd) = backend.frame_resources.per_draw_mut() else {
         return false;
     };
     queue.write_buffer(&pd.per_draw_storage, 0, &slab_bytes);
@@ -562,8 +561,7 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
     let Some(per_draw_bg) = frame
         .backend
         .frame_resources
-        .per_draw
-        .as_ref()
+        .per_draw()
         .map(|d| d.bind_group.clone())
     else {
         return false;

@@ -54,6 +54,10 @@ impl GraphCache {
     }
 
     /// Takes the compiled graph out for recording (matches prior `frame_graph.take()`).
+    ///
+    /// Graph execution borrows both this cache and [`crate::backend::RenderBackend`]; the lease
+    /// pattern avoids overlapping `&mut` to sibling fields that a single scoped `&mut` on the graph
+    /// would require without interior mutability or splitting the backend struct.
     #[must_use]
     pub fn take_graph(&mut self) -> Option<CompiledRenderGraph> {
         self.graph.take()

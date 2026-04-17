@@ -98,8 +98,7 @@ impl RendererRuntime {
         let router_ref = self
             .backend
             .materials
-            .material_registry
-            .as_ref()
+            .material_registry()
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
 
@@ -194,8 +193,7 @@ impl RendererRuntime {
         let router_ref = self
             .backend
             .materials
-            .material_registry
-            .as_ref()
+            .material_registry()
             .map(|r| &r.router)
             .unwrap_or(&fallback_router);
 

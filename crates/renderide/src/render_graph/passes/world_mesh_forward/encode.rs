@@ -32,7 +32,7 @@ fn set_world_mesh_pipeline_for_item(
     }
     *last_batch_key = Some(item.batch_key.clone());
     let shader_asset_id = item.batch_key.shader_asset_id;
-    *pipeline_ok = match encode.materials.material_registry.as_mut() {
+    *pipeline_ok = match encode.materials.material_registry_mut() {
         None => false,
         Some(reg) => match reg.pipeline_for_shader_asset(shader_asset_id, pass_desc, shader_perm) {
             Some(pipeline) => {
@@ -72,8 +72,7 @@ fn set_world_mesh_material_bind_group(ctx: MaterialBindState<'_, '_, '_, '_>) {
         let stem = ctx
             .encode
             .materials
-            .material_registry
-            .as_ref()
+            .material_registry()
             .and_then(|r| r.stem_for_shader_asset(ctx.item.batch_key.shader_asset_id));
         if let (Some(mb), Some(stem)) = (ctx.encode.materials.embedded_material_bind(), stem) {
             let pools = ctx.encode.embedded_texture_pools();

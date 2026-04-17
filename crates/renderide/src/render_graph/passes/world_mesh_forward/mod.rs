@@ -208,7 +208,7 @@ impl RenderPass for WorldMeshForwardPass {
             None
         };
 
-        let msaa_depth_resolve = frame.backend.msaa_depth_resolve.clone();
+        let msaa_depth_resolve = frame.backend.msaa_depth_resolve();
 
         if draws.is_empty() {
             encode_clear_only_pass(
