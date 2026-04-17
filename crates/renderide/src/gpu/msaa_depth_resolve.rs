@@ -286,7 +286,7 @@ impl MsaaDepthResolveResources {
     /// Stereo (OpenXR multiview) MSAA depth resolve.
     ///
     /// - `msaa_depth_layer_views`: two `D2`, single-layer views of the multisampled depth texture,
-    ///   sourced from [`crate::gpu::context::MsaaStereoTargets::depth_layer_views`].
+    ///   sourced from the graph-owned `forward_msaa_depth` transient's per-layer views.
     /// - `r32_layer_views`: two `D2`, single-layer storage views of the intermediate `R32Float` texture.
     /// - `r32_array_view`: `D2Array` sampled view of the same intermediate, used by the multiview blit.
     /// - `dst_depth_view`: `D2Array` (2 layers) view of the single-sample `Depth32Float` attachment.

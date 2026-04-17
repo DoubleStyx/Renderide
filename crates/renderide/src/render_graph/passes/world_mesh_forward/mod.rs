@@ -30,11 +30,8 @@ mod vp;
 
 use std::num::NonZeroU32;
 
-use crate::render_graph::context::{
-    GraphRasterPassContext, GraphResolvedResources, RenderPassContext, ResolvedGraphTexture,
-};
+use crate::render_graph::context::{GraphRasterPassContext, RenderPassContext};
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::FrameRenderParams;
 use crate::render_graph::pass::{PassBuilder, RenderPass};
 use crate::render_graph::resources::{
     BufferAccess, ImportedBufferHandle, ImportedTextureHandle, StorageAccess, TextureAccess,
@@ -46,8 +43,8 @@ use execute_helpers::{
     encode_msaa_depth_resolve_after_clear_only, encode_world_mesh_forward_depth_snapshot,
     encode_world_mesh_forward_draw_passes, prepare_world_mesh_forward_frame,
     record_world_mesh_forward_intersection_graph_raster,
-    record_world_mesh_forward_opaque_graph_raster, stencil_load_ops, ForwardPassEncodeFrame,
-    ForwardPassEncodeViews,
+    record_world_mesh_forward_opaque_graph_raster, resolve_forward_msaa_views, stencil_load_ops,
+    ForwardPassEncodeFrame, ForwardPassEncodeViews,
 };
 
 /// Clears the backbuffer and depth, then draws meshes with material-batched raster pipelines.
@@ -307,7 +304,6 @@ impl RenderPass for WorldMeshForwardOpaquePass {
                 pass: self.name().to_string(),
             });
         };
-        apply_graph_forward_msaa_views(frame, ctx.graph_resources, self.resources);
 
         let Some(mut prepared) = frame.prepared_world_mesh_forward.take() else {
             return Ok(());
@@ -372,7 +368,12 @@ impl RenderPass for WorldMeshDepthSnapshotPass {
                 pass: self.name().to_string(),
             });
         };
-        apply_graph_forward_msaa_views(frame, ctx.graph_resources, self.resources);
+        let msaa_views = resolve_forward_msaa_views(
+            ctx.graph_resources,
+            self.resources,
+            frame.sample_count,
+            frame.multiview_stereo,
+        );
 
         let Some(mut prepared) = frame.prepared_world_mesh_forward.take() else {
             return Ok(());
@@ -383,6 +384,7 @@ impl RenderPass for WorldMeshDepthSnapshotPass {
             ctx.encoder,
             frame,
             &prepared,
+            msaa_views.as_ref(),
             msaa_depth_resolve.as_deref(),
         );
         if recorded {
@@ -475,7 +477,6 @@ impl RenderPass for WorldMeshForwardIntersectPass {
                 pass: self.name().to_string(),
             });
         };
-        apply_graph_forward_msaa_views(frame, ctx.graph_resources, self.resources);
 
         let Some(mut prepared) = frame.prepared_world_mesh_forward.take() else {
             return Ok(());
@@ -545,12 +546,18 @@ impl RenderPass for WorldMeshForwardDepthResolvePass {
                 pass: self.name().to_string(),
             });
         };
-        apply_graph_forward_msaa_views(frame, ctx.graph_resources, self.resources);
+        let msaa_views = resolve_forward_msaa_views(
+            ctx.graph_resources,
+            self.resources,
+            frame.sample_count,
+            frame.multiview_stereo,
+        );
         let msaa_depth_resolve = frame.backend.msaa_depth_resolve.clone();
         encode_msaa_depth_resolve_after_clear_only(
             ctx.device,
             ctx.encoder,
             frame,
+            msaa_views.as_ref(),
             msaa_depth_resolve.as_deref(),
         );
         Ok(())
@@ -689,12 +696,21 @@ impl RenderPass for WorldMeshForwardPass {
             prepared
         };
 
-        apply_graph_forward_msaa_views(frame, ctx.graph_resources, self.resources);
+        let msaa_views = resolve_forward_msaa_views(
+            ctx.graph_resources,
+            self.resources,
+            frame.sample_count,
+            frame.multiview_stereo,
+        );
 
-        let msaa_color = frame.msaa_color_view.clone();
-        let msaa_depth = frame.msaa_depth_view.clone();
-        let color_view = msaa_color.as_ref().unwrap_or(bb);
-        let depth_raster = msaa_depth.as_ref().unwrap_or(depth);
+        let color_view = msaa_views
+            .as_ref()
+            .map(|v| &v.color_view)
+            .unwrap_or(bb);
+        let depth_raster = msaa_views
+            .as_ref()
+            .map(|v| &v.depth_view)
+            .unwrap_or(depth);
         let resolve_swapchain = if frame.sample_count > 1 {
             Some(bb)
         } else {
@@ -716,6 +732,7 @@ impl RenderPass for WorldMeshForwardPass {
                         ctx.device,
                         ctx.encoder,
                         frame,
+                        msaa_views.as_ref(),
                         msaa_depth_resolve.as_deref(),
                     );
                 }
@@ -732,6 +749,7 @@ impl RenderPass for WorldMeshForwardPass {
                     ctx.device,
                     ctx.encoder,
                     frame,
+                    msaa_views.as_ref(),
                     msaa_depth_resolve.as_deref(),
                 );
             }
@@ -750,6 +768,7 @@ impl RenderPass for WorldMeshForwardPass {
                 color_view,
                 depth_raster_view: depth_raster,
                 resolve_swapchain,
+                msaa_views: msaa_views.as_ref(),
                 msaa_depth_resolve: msaa_depth_resolve.as_deref(),
             },
         ) {
@@ -758,52 +777,4 @@ impl RenderPass for WorldMeshForwardPass {
 
         Ok(())
     }
-}
-
-fn apply_graph_forward_msaa_views(
-    frame: &mut FrameRenderParams<'_>,
-    graph_resources: Option<&GraphResolvedResources>,
-    resources: WorldMeshForwardGraphResources,
-) {
-    if frame.sample_count <= 1 {
-        return;
-    }
-    let Some(graph_resources) = graph_resources else {
-        return;
-    };
-    let (Some(color), Some(depth), Some(r32)) = (
-        graph_resources.transient_texture(resources.msaa_color),
-        graph_resources.transient_texture(resources.msaa_depth),
-        graph_resources.transient_texture(resources.msaa_depth_r32),
-    ) else {
-        return;
-    };
-
-    if frame.multiview_stereo {
-        let (Some(depth_layers), Some(r32_layers)) =
-            (first_two_layer_views(depth), first_two_layer_views(r32))
-        else {
-            return;
-        };
-        frame.msaa_color_view = Some(color.view.clone());
-        frame.msaa_depth_view = Some(depth.view.clone());
-        frame.msaa_depth_resolve_r32_view = Some(r32.view.clone());
-        frame.msaa_depth_is_array = true;
-        frame.msaa_stereo_depth_layer_views = Some(depth_layers);
-        frame.msaa_stereo_r32_layer_views = Some(r32_layers);
-    } else {
-        frame.msaa_color_view = Some(color.view.clone());
-        frame.msaa_depth_view = Some(depth.view.clone());
-        frame.msaa_depth_resolve_r32_view = Some(r32.view.clone());
-        frame.msaa_depth_is_array = false;
-        frame.msaa_stereo_depth_layer_views = None;
-        frame.msaa_stereo_r32_layer_views = None;
-    }
-}
-
-fn first_two_layer_views(texture: &ResolvedGraphTexture) -> Option<[wgpu::TextureView; 2]> {
-    Some([
-        texture.layer_views.first()?.clone(),
-        texture.layer_views.get(1)?.clone(),
-    ])
 }

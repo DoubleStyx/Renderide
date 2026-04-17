@@ -25,6 +25,7 @@ use crate::render_graph::camera::{
     effective_head_output_clip_planes, reverse_z_orthographic, reverse_z_perspective,
 };
 use crate::render_graph::cluster_frame::{cluster_frame_params, cluster_frame_params_stereo};
+use crate::render_graph::context::{GraphResolvedResources, ResolvedGraphTexture};
 use crate::render_graph::frame_params::{
     FrameRenderParams, HostCameraFrame, PreparedWorldMeshForwardFrame,
     WorldMeshForwardPipelineState,
@@ -45,6 +46,7 @@ use crate::shared::RenderingContext;
 
 use super::encode::{draw_subset, ForwardDrawBatch};
 use super::vp::compute_per_draw_vp_triple;
+use super::WorldMeshForwardGraphResources;
 
 /// Minimum draws before parallelizing per-draw VP / model uniform packing (rayon overhead).
 const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = 256;
@@ -550,6 +552,8 @@ pub(super) struct ForwardPassEncodeViews<'a> {
     pub depth_raster_view: &'a wgpu::TextureView,
     /// Optional swapchain resolve target for MSAA color.
     pub resolve_swapchain: Option<&'a wgpu::TextureView>,
+    /// Graph-resolved MSAA views for the depth resolve path, when MSAA is active.
+    pub msaa_views: Option<&'a ForwardMsaaResolvedViews>,
     /// GPU resources for multisampled depth resolve, when MSAA is active.
     pub msaa_depth_resolve: Option<&'a MsaaDepthResolveResources>,
 }
@@ -861,6 +865,7 @@ pub(super) fn encode_world_mesh_forward_depth_snapshot(
     encoder: &mut wgpu::CommandEncoder,
     frame: &mut FrameRenderParams<'_>,
     prepared: &PreparedWorldMeshForwardFrame,
+    msaa_views: Option<&ForwardMsaaResolvedViews>,
     msaa_depth_resolve: Option<&MsaaDepthResolveResources>,
 ) -> bool {
     if prepared.intersect_indices.is_empty() {
@@ -868,8 +873,8 @@ pub(super) fn encode_world_mesh_forward_depth_snapshot(
     }
 
     if frame.sample_count > 1 {
-        if let Some(res) = msaa_depth_resolve {
-            encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
+        if let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) {
+            encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res);
         }
     }
 
@@ -957,6 +962,7 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
         color_view,
         depth_raster_view,
         resolve_swapchain,
+        msaa_views,
         msaa_depth_resolve,
     } = views;
 
@@ -972,8 +978,8 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
 
     if prepared.tail_raster_recorded {
         if msaa {
-            if let Some(res) = msaa_depth_resolve {
-                encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
+            if let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) {
+                encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res);
             }
         }
         return true;
@@ -1010,8 +1016,8 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
                 resolve_swapchain,
                 use_multiview,
             );
-            if let Some(res) = msaa_depth_resolve {
-                encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
+            if let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) {
+                encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res);
             }
         }
         return true;
@@ -1075,8 +1081,8 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
 
     if intersect_indices.is_empty() {
         if msaa {
-            if let Some(res) = msaa_depth_resolve {
-                encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
+            if let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) {
+                encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res);
             }
         }
         return true;
@@ -1088,6 +1094,7 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
             encoder,
             frame,
             prepared,
+            msaa_views,
             msaa_depth_resolve,
         );
     }
@@ -1150,8 +1157,8 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
     );
 
     if msaa {
-        if let Some(res) = msaa_depth_resolve {
-            encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
+        if let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) {
+            encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res);
         }
     }
 
@@ -1163,29 +1170,31 @@ pub(super) fn encode_msaa_depth_resolve_after_clear_only(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     frame: &FrameRenderParams<'_>,
+    msaa_views: Option<&ForwardMsaaResolvedViews>,
     msaa_depth_resolve: Option<&MsaaDepthResolveResources>,
 ) {
     if frame.sample_count <= 1 {
         return;
     }
-    if let Some(res) = msaa_depth_resolve {
-        encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
-    }
+    let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) else {
+        return;
+    };
+    encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res);
 }
 
 /// Dispatches the desktop (`D2`) or stereo (`D2Array` multiview) depth-resolve path based on
-/// [`FrameRenderParams::msaa_depth_is_array`].
+/// [`ForwardMsaaResolvedViews::is_array`].
 fn encode_msaa_depth_resolve_for_frame(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     frame: &FrameRenderParams<'_>,
+    msaa: &ForwardMsaaResolvedViews,
     resolve: &MsaaDepthResolveResources,
 ) {
-    if frame.msaa_depth_is_array {
-        let (Some(msaa_layers), Some(r32_layers), Some(r32_array)) = (
-            frame.msaa_stereo_depth_layer_views.as_ref(),
-            frame.msaa_stereo_r32_layer_views.as_ref(),
-            frame.msaa_depth_resolve_r32_view.as_ref(),
+    if msaa.is_array {
+        let (Some(msaa_layers), Some(r32_layers)) = (
+            msaa.stereo_depth_layer_views.as_ref(),
+            msaa.stereo_r32_layer_views.as_ref(),
         ) else {
             return;
         };
@@ -1195,23 +1204,78 @@ fn encode_msaa_depth_resolve_for_frame(
             frame.viewport_px,
             [&msaa_layers[0], &msaa_layers[1]],
             [&r32_layers[0], &r32_layers[1]],
-            r32_array,
+            &msaa.depth_resolve_r32_view,
             frame.depth_view,
         );
     } else {
-        let (Some(msaa_d), Some(r32)) = (
-            frame.msaa_depth_view.as_ref(),
-            frame.msaa_depth_resolve_r32_view.as_ref(),
-        ) else {
-            return;
-        };
         resolve.encode_resolve(
             device,
             encoder,
             frame.viewport_px,
-            msaa_d,
-            r32,
+            &msaa.depth_view,
+            &msaa.depth_resolve_r32_view,
             frame.depth_view,
         );
     }
+}
+
+/// MSAA views resolved from the graph's transient resources for one forward pass execution.
+pub(super) struct ForwardMsaaResolvedViews {
+    /// Multisampled color attachment view.
+    pub color_view: wgpu::TextureView,
+    /// Multisampled depth attachment view.
+    pub depth_view: wgpu::TextureView,
+    /// R32Float intermediate used by the MSAA depth resolve shader.
+    pub depth_resolve_r32_view: wgpu::TextureView,
+    /// `true` when [`Self::depth_view`] is a 2-layer `D2Array` (stereo multiview MSAA).
+    pub is_array: bool,
+    /// Per-eye `D2` single-layer views of the multisampled depth texture (stereo path only).
+    pub stereo_depth_layer_views: Option<[wgpu::TextureView; 2]>,
+    /// Per-eye `D2` single-layer views of the R32Float resolve temp (stereo path only).
+    pub stereo_r32_layer_views: Option<[wgpu::TextureView; 2]>,
+}
+
+/// Resolves the MSAA transient textures for a forward pass when MSAA is active.
+pub(super) fn resolve_forward_msaa_views(
+    graph_resources: Option<&GraphResolvedResources>,
+    resources: WorldMeshForwardGraphResources,
+    sample_count: u32,
+    multiview_stereo: bool,
+) -> Option<ForwardMsaaResolvedViews> {
+    if sample_count <= 1 {
+        return None;
+    }
+    let graph_resources = graph_resources?;
+    let color = graph_resources.transient_texture(resources.msaa_color)?;
+    let depth = graph_resources.transient_texture(resources.msaa_depth)?;
+    let r32 = graph_resources.transient_texture(resources.msaa_depth_r32)?;
+
+    if multiview_stereo {
+        let depth_layers = first_two_layer_views(depth)?;
+        let r32_layers = first_two_layer_views(r32)?;
+        Some(ForwardMsaaResolvedViews {
+            color_view: color.view.clone(),
+            depth_view: depth.view.clone(),
+            depth_resolve_r32_view: r32.view.clone(),
+            is_array: true,
+            stereo_depth_layer_views: Some(depth_layers),
+            stereo_r32_layer_views: Some(r32_layers),
+        })
+    } else {
+        Some(ForwardMsaaResolvedViews {
+            color_view: color.view.clone(),
+            depth_view: depth.view.clone(),
+            depth_resolve_r32_view: r32.view.clone(),
+            is_array: false,
+            stereo_depth_layer_views: None,
+            stereo_r32_layer_views: None,
+        })
+    }
+}
+
+fn first_two_layer_views(texture: &ResolvedGraphTexture) -> Option<[wgpu::TextureView; 2]> {
+    Some([
+        texture.layer_views.first()?.clone(),
+        texture.layer_views.get(1)?.clone(),
+    ])
 }

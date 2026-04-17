@@ -3,7 +3,7 @@
 use std::num::NonZeroU32;
 
 use super::compiled::{DepthAttachmentTemplate, RenderPassTemplate};
-use super::context::{GraphRasterPassContext, RenderPassContext};
+use super::context::{GraphRasterPassContext, PostSubmitContext, RenderPassContext};
 use super::error::{RenderPassError, SetupError};
 use super::resources::{
     BufferAccess, BufferHandle, BufferResourceHandle, ImportedBufferHandle, ImportedTextureHandle,
@@ -436,5 +436,14 @@ pub trait RenderPass: Send {
     /// Scheduling phase for multi-view execution. Defaults to per-view.
     fn phase(&self) -> PassPhase {
         PassPhase::PerView
+    }
+
+    /// Runs after the encoder that contains this pass has been submitted to the queue.
+    ///
+    /// Used by passes that need to kick `map_async` on staging buffers written this frame
+    /// (e.g. Hi-Z readback). Default is a no-op. The graph calls this for every pass that was
+    /// scheduled in the submitted group.
+    fn post_submit(&mut self, _ctx: &mut PostSubmitContext<'_>) -> Result<(), RenderPassError> {
+        Ok(())
     }
 }

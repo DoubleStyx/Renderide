@@ -205,3 +205,18 @@ pub struct GraphRasterPassContext<'a, 'frame> {
     /// Typed graph resources resolved for this execution scope.
     pub graph_resources: Option<&'a GraphResolvedResources>,
 }
+
+/// Context passed to [`super::RenderPass::post_submit`] after a per-view or frame-global submit.
+///
+/// Runs on the CPU **after** [`wgpu::Queue::submit`] so passes can start `map_async` work on
+/// buffers they wrote this frame (e.g. Hi-Z readback staging rotation).
+pub struct PostSubmitContext<'a> {
+    /// WGPU device for `map_async` and device polling.
+    pub device: &'a wgpu::Device,
+    /// Mutable backend for pass-owned cross-frame state (Hi-Z readback slots, etc.).
+    pub backend: &'a mut crate::backend::RenderBackend,
+    /// Which occlusion view this submit covered.
+    pub occlusion_view: super::OcclusionViewId,
+    /// Host camera snapshot for the view — lets passes gate on flags like `suppress_occlusion_temporal`.
+    pub host_camera: super::HostCameraFrame,
+}

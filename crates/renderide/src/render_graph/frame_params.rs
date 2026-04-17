@@ -159,23 +159,6 @@ pub struct FrameRenderParams<'a> {
     pub occlusion_view: OcclusionViewId,
     /// Effective raster sample count for mesh forward (1 = off). Clamped to the GPU max for this view.
     pub sample_count: u32,
-    /// Multisampled color attachment for desktop MSAA (cheap [`wgpu::TextureView`] clone); [`None`] when off or offscreen/XR.
-    pub msaa_color_view: Option<wgpu::TextureView>,
-    /// Multisampled depth for desktop MSAA; [`None`] when off or offscreen/XR.
-    pub msaa_depth_view: Option<wgpu::TextureView>,
-    /// R32Float resolve temp for MSAA depth → single-sample depth. For the stereo (OpenXR) MSAA
-    /// path this is a `D2Array` view with 2 layers; the resolve pass dispatches per eye.
-    pub msaa_depth_resolve_r32_view: Option<wgpu::TextureView>,
-    /// `true` when [`Self::msaa_depth_view`] and [`Self::msaa_depth_resolve_r32_view`] are `D2Array`
-    /// (stereo / OpenXR multiview MSAA). The desktop swapchain path always leaves this `false` and
-    /// uses plain `D2` resolve shaders.
-    pub msaa_depth_is_array: bool,
-    /// Per-eye (`D2`, single-layer) views of the stereo MSAA depth attachment; used as the compute
-    /// inputs for the stereo depth resolve because WGSL lacks `texture_depth_multisampled_2d_array`.
-    pub msaa_stereo_depth_layer_views: Option<[wgpu::TextureView; 2]>,
-    /// Per-eye (`D2`, single-layer) storage views of the stereo R32Float resolve temp; matched to
-    /// [`Self::msaa_stereo_depth_layer_views`] one-for-one.
-    pub msaa_stereo_r32_layer_views: Option<[wgpu::TextureView; 2]>,
 }
 
 impl<'a> FrameRenderParams<'a> {
