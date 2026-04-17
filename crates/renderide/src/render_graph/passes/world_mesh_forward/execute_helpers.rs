@@ -50,17 +50,12 @@ pub(super) struct WorldMeshForwardPipeline {
 }
 
 /// Resolves multiview use, [`MaterialPipelineDesc`], and [`ShaderPermutation`].
-///
-/// When `sample_count > 1`, depth/stencil is fixed to [`wgpu::TextureFormat::Depth32Float`] for the
-/// multisampled raster path. Otherwise `frame_depth_stencil_format` comes from the frame depth
-/// texture so stencil-capable formats propagate into material pipeline selection.
 pub(super) fn resolve_pass_config(
     hc: HostCameraFrame,
     multiview_stereo: bool,
     surface_format: wgpu::TextureFormat,
     gpu_limits: &GpuLimits,
     sample_count: u32,
-    frame_depth_stencil_format: wgpu::TextureFormat,
 ) -> WorldMeshForwardPipeline {
     let use_multiview = multiview_stereo
         && hc.vr_active
@@ -69,15 +64,9 @@ pub(super) fn resolve_pass_config(
 
     let sc = sample_count.max(1);
 
-    let depth_stencil_format = if sc > 1 {
-        wgpu::TextureFormat::Depth32Float
-    } else {
-        frame_depth_stencil_format
-    };
-
     let pass_desc = MaterialPipelineDesc {
         surface_format,
-        depth_stencil_format: Some(depth_stencil_format),
+        depth_stencil_format: Some(wgpu::TextureFormat::Depth32Float),
         sample_count: sc,
         multiview_mask: if use_multiview {
             NonZeroU32::new(3)
@@ -344,36 +333,11 @@ pub(super) fn write_frame_uniforms_and_cluster(
         .write_frame_uniform_and_lights_from_scratch(queue, &uniforms);
 }
 
-/// Stencil clear (0) when the depth attachment includes a stencil aspect.
-fn stencil_clear_ops(
-    depth_stencil_format: Option<wgpu::TextureFormat>,
-) -> Option<wgpu::Operations<u32>> {
-    depth_stencil_format
-        .filter(|f| f.has_stencil_aspect())
-        .map(|_| wgpu::Operations {
-            load: wgpu::LoadOp::Clear(0),
-            store: wgpu::StoreOp::Store,
-        })
-}
-
-/// Stencil load/store when the depth attachment includes a stencil aspect (subpass continuity).
-fn stencil_load_ops(
-    depth_stencil_format: Option<wgpu::TextureFormat>,
-) -> Option<wgpu::Operations<u32>> {
-    depth_stencil_format
-        .filter(|f| f.has_stencil_aspect())
-        .map(|_| wgpu::Operations {
-            load: wgpu::LoadOp::Load,
-            store: wgpu::StoreOp::Store,
-        })
-}
-
 /// Clears color and depth when there are no draws (offscreen RTs still get defined clears).
 pub(super) fn encode_clear_only_pass(
     encoder: &mut wgpu::CommandEncoder,
     color_view: &wgpu::TextureView,
     depth_view: &wgpu::TextureView,
-    depth_stencil_format: Option<wgpu::TextureFormat>,
     resolve_color_to: Option<&wgpu::TextureView>,
     use_multiview: bool,
 ) {
@@ -399,7 +363,7 @@ pub(super) fn encode_clear_only_pass(
                 load: wgpu::LoadOp::Clear(MAIN_FORWARD_DEPTH_CLEAR),
                 store: wgpu::StoreOp::Store,
             }),
-            stencil_ops: stencil_clear_ops(depth_stencil_format),
+            stencil_ops: None,
         }),
         occlusion_query_set: None,
         timestamp_writes: None,
@@ -509,7 +473,7 @@ fn encode_world_mesh_forward_opaque_pass(
                 load: wgpu::LoadOp::Clear(MAIN_FORWARD_DEPTH_CLEAR),
                 store: wgpu::StoreOp::Store,
             }),
-            stencil_ops: stencil_clear_ops(cfg.pass_desc.depth_stencil_format),
+            stencil_ops: None,
         }),
         occlusion_query_set: None,
         timestamp_writes: None,
@@ -561,7 +525,7 @@ fn encode_world_mesh_forward_intersection_pass(
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             }),
-            stencil_ops: stencil_load_ops(cfg.pass_desc.depth_stencil_format),
+            stencil_ops: None,
         }),
         occlusion_query_set: None,
         timestamp_writes: None,

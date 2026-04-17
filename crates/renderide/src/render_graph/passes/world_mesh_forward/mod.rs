@@ -135,7 +135,6 @@ impl RenderPass for WorldMeshForwardPass {
             frame.surface_format,
             ctx.gpu_limits,
             frame.sample_count,
-            frame.depth_texture.format(),
         );
         let use_multiview = pipeline.use_multiview;
         let shader_perm = pipeline.shader_perm;
@@ -216,7 +215,6 @@ impl RenderPass for WorldMeshForwardPass {
                 ctx.encoder,
                 color_view,
                 depth_raster,
-                pipeline.pass_desc.depth_stencil_format,
                 resolve_swapchain,
                 use_multiview,
             );
