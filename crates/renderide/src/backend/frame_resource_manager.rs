@@ -1,18 +1,19 @@
 //! Per-frame GPU bind groups, light staging, and per-draw instance resources.
 //!
-//! [`FrameResourceManager`] owns the `@group(0)` frame uniform/light bind group
-//! ([`FrameGpuResources`]), the empty `@group(1)` fallback ([`EmptyMaterialBindGroup`]),
-//! the `@group(2)` per-draw instance storage slab ([`PerDrawResources`]), and the CPU-side packed light
-//! buffer used by [`crate::render_graph::passes::ClusteredLightPass`] and the forward pass.
+//! [`FrameResourceManager`] owns the CPU-side packed light buffer and tick coalescing flags.
+//! After GPU attach, [`super::FrameGpuBindings`] (when present) holds `@group(0)` / `@group(1)` /
+//! `@group(2)` resources used by [`crate::render_graph::passes::ClusteredLightPass`] and the forward pass.
+//!
+//! Per-draw packing reuses [`Self::per_draw_uniforms_scratch`] and [`Self::per_draw_slab_byte_scratch`]
+//! so mesh forward avoids per-frame `Vec` allocations for VP/model uniforms and the byte slab.
 
 use std::cell::Cell;
 use std::sync::Arc;
 
-use crate::gpu::GpuLimits;
-
 use super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources};
+use super::frame_gpu_bindings::FrameGpuBindings;
 use super::light_gpu::{order_lights_for_clustered_shading_in_place, GpuLight, MAX_LIGHTS};
-use super::mesh_deform::GpuSkinCache;
+use super::mesh_deform::PaddedPerDrawUniforms;
 use super::per_draw_resources::PerDrawResources;
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::scene::{light_contributes, ResolvedLight, SceneCoordinator};
@@ -22,23 +23,32 @@ use crate::scene::{light_contributes, ResolvedLight, SceneCoordinator};
 /// Obtained via [`FrameResourceManager::gpu_bind_context`]; intended to narrow pass APIs that
 /// should not take the full [`super::RenderBackend`].
 pub struct FrameGpuBindContext<'a> {
-    /// Camera + lights (`@group(0)`).
-    pub frame_gpu: Option<&'a FrameGpuResources>,
-    /// Fallback material (`@group(1)`).
-    pub empty_material: Option<&'a EmptyMaterialBindGroup>,
-    /// Per-draw instance storage (`@group(2)`).
-    pub per_draw: Option<&'a PerDrawResources>,
+    /// Frame / empty-material / per-draw binds when GPU attach succeeded.
+    pub binds: Option<&'a FrameGpuBindings>,
+}
+
+impl<'a> FrameGpuBindContext<'a> {
+    /// Camera + lights (`@group(0)`), if attached.
+    pub fn frame_gpu(&self) -> Option<&'a FrameGpuResources> {
+        self.binds.map(|b| b.frame_gpu())
+    }
+
+    /// Fallback material (`@group(1)`), if attached.
+    pub fn empty_material(&self) -> Option<&'a EmptyMaterialBindGroup> {
+        self.binds.map(|b| b.empty_material())
+    }
+
+    /// Per-draw instance storage (`@group(2)`), if attached.
+    pub fn per_draw(&self) -> Option<&'a PerDrawResources> {
+        self.binds.map(|b| b.per_draw())
+    }
 }
 
 /// Per-frame GPU state: camera/light bind group, empty material fallback, per-draw storage, and
 /// the CPU-side packed light buffer.
 pub struct FrameResourceManager {
-    /// Per-frame `@group(0)` camera + lights (after GPU attach).
-    pub(crate) frame_gpu: Option<FrameGpuResources>,
-    /// Placeholder `@group(1)` for materials without per-material bindings.
-    pub(crate) empty_material: Option<EmptyMaterialBindGroup>,
-    /// Storage + bind group for mesh forward per-draw data (`@group(2)`).
-    pub(crate) per_draw: Option<PerDrawResources>,
+    /// Frame / empty / per-draw binds after a successful GPU attach bundle.
+    pub(crate) gpu_binds: Option<FrameGpuBindings>,
     /// Last packed lights for the frame (after [`Self::prepare_lights_from_scene`]).
     light_scratch: Vec<GpuLight>,
     /// Reused each frame to flatten all spaces’ [`crate::scene::ResolvedLight`] before ordering and GPU pack.
@@ -61,8 +71,10 @@ pub struct FrameResourceManager {
     /// In VR, the HMD graph runs mesh deform first; secondary cameras skip it via this flag.
     /// Reset with [`Self::reset_light_prep_for_tick`].
     mesh_deform_dispatched_this_tick: Cell<bool>,
-    /// Per-instance deform output arenas (positions / normals / blend temp); after [`Self::attach`].
-    pub(crate) skin_cache: Option<GpuSkinCache>,
+    /// Reused for world mesh forward per-draw VP/model packing (cleared/resized each pack).
+    pub(crate) per_draw_uniforms_scratch: Vec<PaddedPerDrawUniforms>,
+    /// Reused byte slab for [`super::mesh_deform::write_per_draw_uniform_slab`] before `queue.write_buffer`.
+    pub(crate) per_draw_slab_byte_scratch: Vec<u8>,
 }
 
 impl Default for FrameResourceManager {
@@ -75,49 +87,29 @@ impl FrameResourceManager {
     /// Creates an empty manager with no GPU resources.
     pub fn new() -> Self {
         Self {
-            frame_gpu: None,
-            empty_material: None,
-            per_draw: None,
+            gpu_binds: None,
             light_scratch: Vec::new(),
             resolved_flatten_scratch: Vec::new(),
             light_prep_done_this_tick: false,
             prepared_light_cache_version: None,
             lights_gpu_uploaded_this_tick: Cell::new(false),
             mesh_deform_dispatched_this_tick: Cell::new(false),
-            skin_cache: None,
+            per_draw_uniforms_scratch: Vec::new(),
+            per_draw_slab_byte_scratch: Vec::new(),
         }
     }
 
-    /// Allocates GPU resources for this manager. Called from [`super::RenderBackend::attach`].
-    pub fn attach(&mut self, device: &wgpu::Device, limits: Arc<GpuLimits>) {
-        self.frame_gpu = match FrameGpuResources::new(device, Arc::clone(&limits)) {
-            Ok(f) => Some(f),
-            Err(e) => {
-                logger::error!("FrameGpuResources::new failed: {e}");
-                None
-            }
-        };
-        self.empty_material = Some(EmptyMaterialBindGroup::new(device));
-        let max_buffer_size = limits.wgpu.max_buffer_size;
-        self.per_draw = match PerDrawResources::new(device, limits) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                logger::error!("PerDrawResources::new failed: {e}");
-                None
-            }
-        };
-        self.skin_cache = Some(GpuSkinCache::new(device, max_buffer_size));
+    /// Installs a pre-built `@group(0/1/2)` bundle after a successful transactional attach.
+    pub(crate) fn set_gpu_binds(&mut self, binds: FrameGpuBindings) {
+        self.gpu_binds = Some(binds);
     }
 
     /// Clears the per-tick light prep coalescing flag. Call once per winit frame from
-    /// [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`].
+    /// [`super::RenderBackend::reset_light_prep_for_tick`] (which also advances the GPU skin cache frame counter).
     pub fn reset_light_prep_for_tick(&mut self) {
         self.light_prep_done_this_tick = false;
         self.lights_gpu_uploaded_this_tick.set(false);
         self.mesh_deform_dispatched_this_tick.set(false);
-        if let Some(ref mut cache) = self.skin_cache {
-            cache.advance_frame();
-        }
     }
 
     /// Whether [`crate::render_graph::passes::ClusteredLightPass`] already uploaded lights this tick.
@@ -155,9 +147,10 @@ impl FrameResourceManager {
         queue: &wgpu::Queue,
         uniforms: &FrameGpuUniforms,
     ) {
-        let Some(fgpu) = self.frame_gpu.as_ref() else {
+        let Some(binds) = self.gpu_binds.as_ref() else {
             return;
         };
+        let fgpu = binds.frame_gpu();
         fgpu.write_frame_uniform(queue, uniforms);
         if !self.lights_gpu_uploaded_this_tick.get() {
             fgpu.write_lights_buffer(queue, &self.light_scratch);
@@ -167,17 +160,17 @@ impl FrameResourceManager {
 
     /// Per-frame `@group(0)` bind group (camera + lights), after attach.
     pub fn frame_gpu(&self) -> Option<&FrameGpuResources> {
-        self.frame_gpu.as_ref()
+        self.gpu_binds.as_ref().map(|b| b.frame_gpu())
     }
 
     /// Mutable frame globals (cluster resize, uniform upload).
     pub fn frame_gpu_mut(&mut self) -> Option<&mut FrameGpuResources> {
-        self.frame_gpu.as_mut()
+        self.gpu_binds.as_mut().map(|b| b.frame_gpu_mut())
     }
 
     /// Empty `@group(1)` bind group for shaders without per-material bindings.
     pub fn empty_material(&self) -> Option<&EmptyMaterialBindGroup> {
-        self.empty_material.as_ref()
+        self.gpu_binds.as_ref().map(|b| b.empty_material())
     }
 
     /// Cloned [`Arc`] bind groups for mesh forward (`@group(0)` frame + `@group(1)` empty material).
@@ -186,9 +179,9 @@ impl FrameResourceManager {
     pub fn mesh_forward_frame_bind_groups(
         &self,
     ) -> Option<(Arc<wgpu::BindGroup>, Arc<wgpu::BindGroup>)> {
-        let f = self.frame_gpu.as_ref()?;
-        let e = self.empty_material.as_ref()?;
-        Some((f.bind_group.clone(), e.bind_group.clone()))
+        self.gpu_binds
+            .as_ref()
+            .map(FrameGpuBindings::mesh_forward_frame_bind_groups)
     }
 
     /// Fills the light scratch buffer from [`SceneCoordinator`] (all spaces, clustered ordering,
@@ -225,25 +218,18 @@ impl FrameResourceManager {
 
     /// Per-draw mesh forward storage: 256-byte slots, indexed by instance or dynamic offset.
     pub fn per_draw(&self) -> Option<&PerDrawResources> {
-        self.per_draw.as_ref()
+        self.gpu_binds.as_ref().map(|b| b.per_draw())
     }
 
-    /// GPU skin cache (deform output arenas) after [`Self::attach`].
-    pub fn skin_cache(&self) -> Option<&GpuSkinCache> {
-        self.skin_cache.as_ref()
+    /// Mutable per-draw slab for uploads and capacity growth.
+    pub fn per_draw_mut(&mut self) -> Option<&mut PerDrawResources> {
+        self.gpu_binds.as_mut().map(|b| b.per_draw_mut())
     }
 
-    /// Mutable skin cache (mesh deform + forward bind).
-    pub fn skin_cache_mut(&mut self) -> Option<&mut GpuSkinCache> {
-        self.skin_cache.as_mut()
-    }
-
-    /// Bundles frame/empty-material/per-draw bind resources for render passes.
+    /// Bundled frame / empty-material / per-draw bind resources for render passes.
     pub fn gpu_bind_context(&self) -> FrameGpuBindContext<'_> {
         FrameGpuBindContext {
-            frame_gpu: self.frame_gpu.as_ref(),
-            empty_material: self.empty_material.as_ref(),
-            per_draw: self.per_draw.as_ref(),
+            binds: self.gpu_binds.as_ref(),
         }
     }
 
@@ -265,7 +251,7 @@ impl FrameResourceManager {
             fgpu.sync_cluster_viewport(device, viewport, stereo);
         }
         if !skip {
-            let fgpu = self.frame_gpu.as_ref()?;
+            let fgpu = self.frame_gpu()?;
             fgpu.write_lights_buffer(queue, &self.light_scratch);
             self.lights_gpu_uploaded_this_tick.set(true);
         }

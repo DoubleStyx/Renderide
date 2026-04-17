@@ -43,7 +43,7 @@ pub(crate) fn compute_per_draw_vp_triple(
         if item.is_overlay {
             let op = projection_for_world_mesh_draw(true, overlay_proj, world_proj);
             let base_vp = op * view;
-            if item.world_space_deformed {
+            if item.skinned {
                 (base_vp, base_vp, Mat4::IDENTITY)
             } else {
                 let model = item.rigid_world_matrix.unwrap_or_else(|| {
@@ -58,7 +58,7 @@ pub(crate) fn compute_per_draw_vp_triple(
                 });
                 (base_vp, base_vp, model)
             }
-        } else if item.world_space_deformed {
+        } else if item.skinned {
             (sl * vr_stereo_view, sr * vr_stereo_view, Mat4::IDENTITY)
         } else {
             let model = item.rigid_world_matrix.unwrap_or_else(|| {
@@ -76,7 +76,7 @@ pub(crate) fn compute_per_draw_vp_triple(
     } else {
         let proj = projection_for_world_mesh_draw(item.is_overlay, overlay_proj, world_proj);
         let base_vp = proj * view;
-        if item.world_space_deformed {
+        if item.skinned {
             (base_vp, base_vp, Mat4::IDENTITY)
         } else {
             let model = item.rigid_world_matrix.unwrap_or_else(|| {

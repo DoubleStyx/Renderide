@@ -28,260 +28,69 @@ mod encode;
 mod execute_helpers;
 mod vp;
 
-use std::num::NonZeroU32;
-
-use crate::render_graph::context::{
-    GraphRasterPassContext, GraphResolvedResources, RenderPassContext, ResolvedGraphTexture,
-};
-use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::FrameRenderParams;
-use crate::render_graph::pass::{PassBuilder, RenderPass};
-use crate::render_graph::resources::{
-    BufferAccess, ImportedBufferHandle, ImportedTextureHandle, StorageAccess, TextureAccess,
-    TextureHandle,
-};
+use crate::render_graph::context::RenderPassContext;
+use crate::render_graph::error::RenderPassError;
+use crate::render_graph::handles::ResourceId;
+use crate::render_graph::module::RenderModule;
+use crate::render_graph::pass::RenderPass;
+use crate::render_graph::resources::PassResources;
+use crate::render_graph::{build_world_mesh_cull_proj_params, WorldMeshCullInput};
+use crate::render_graph::{GraphBuilder, SharedRenderHandles};
 
 use execute_helpers::{
-    encode_clear_only_pass, encode_msaa_color_resolve_after_opaque,
+    capture_hi_z_temporal_after_collect, compute_view_projections, encode_clear_only_pass,
     encode_msaa_depth_resolve_after_clear_only, encode_world_mesh_forward_draw_passes,
-    prepare_world_mesh_forward_frame, record_world_mesh_forward_opaque_graph_raster,
-    ForwardPassEncodeFrame, ForwardPassEncodeViews,
+    maybe_set_world_mesh_draw_stats, pack_and_upload_per_draw_slab, resolve_pass_config,
+    take_or_collect_world_mesh_draws, write_frame_uniforms_and_cluster, ForwardPassEncodeFrame,
+    ForwardPassEncodeViews,
 };
 
 /// Clears the backbuffer and depth, then draws meshes with material-batched raster pipelines.
 #[derive(Debug)]
 pub struct WorldMeshForwardPass {
-    resources: WorldMeshForwardGraphResources,
-}
-
-/// Prepares sorted world-mesh forward draw state for subsequent graph nodes.
-#[derive(Debug)]
-pub struct WorldMeshForwardPreparePass {
-    resources: WorldMeshForwardGraphResources,
-}
-
-/// Graph-managed opaque/clear subpass for world-mesh forward rendering.
-#[derive(Debug)]
-pub struct WorldMeshForwardOpaquePass {
-    resources: WorldMeshForwardGraphResources,
-}
-
-/// Graph resources used by [`WorldMeshForwardPass`].
-#[derive(Clone, Copy, Debug)]
-pub struct WorldMeshForwardGraphResources {
-    /// Imported frame color target.
-    pub color: ImportedTextureHandle,
-    /// Imported frame depth target.
-    pub depth: ImportedTextureHandle,
-    /// Graph-owned forward color target used when MSAA is active.
-    pub msaa_color: TextureHandle,
-    /// Graph-owned forward depth target used when MSAA is active.
-    pub msaa_depth: TextureHandle,
-    /// Graph-owned R32Float intermediate for resolving MSAA depth.
-    pub msaa_depth_r32: TextureHandle,
-    /// Imported cluster light-count storage buffer.
-    pub cluster_light_counts: ImportedBufferHandle,
-    /// Imported cluster light-index storage buffer.
-    pub cluster_light_indices: ImportedBufferHandle,
-    /// Imported light storage buffer.
-    pub lights: ImportedBufferHandle,
-    /// Imported per-draw storage slab.
-    pub per_draw_slab: ImportedBufferHandle,
-    /// Imported frame uniform buffer.
-    pub frame_uniforms: ImportedBufferHandle,
+    cluster_buffers: ResourceId,
+    light_buffer: ResourceId,
+    mesh_deform_outputs: ResourceId,
+    backbuffer: ResourceId,
+    depth: ResourceId,
 }
 
 impl WorldMeshForwardPass {
-    /// Creates a world mesh forward pass instance.
-    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
-    }
-}
-
-impl WorldMeshForwardPreparePass {
-    /// Creates a world mesh forward prepare pass instance.
-    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
-    }
-}
-
-impl WorldMeshForwardOpaquePass {
-    /// Creates a graph-managed opaque world mesh forward pass instance.
-    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
-    }
-}
-
-fn declare_forward_draw_reads(b: &mut PassBuilder<'_>, resources: WorldMeshForwardGraphResources) {
-    b.import_buffer(
-        resources.cluster_light_counts,
-        BufferAccess::Storage {
-            stages: wgpu::ShaderStages::FRAGMENT,
-            access: StorageAccess::ReadOnly,
-        },
-    );
-    b.import_buffer(
-        resources.cluster_light_indices,
-        BufferAccess::Storage {
-            stages: wgpu::ShaderStages::FRAGMENT,
-            access: StorageAccess::ReadOnly,
-        },
-    );
-    b.import_buffer(
-        resources.lights,
-        BufferAccess::Storage {
-            stages: wgpu::ShaderStages::FRAGMENT,
-            access: StorageAccess::ReadOnly,
-        },
-    );
-    b.import_buffer(
-        resources.per_draw_slab,
-        BufferAccess::Storage {
-            stages: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-            access: StorageAccess::ReadOnly,
-        },
-    );
-    b.import_buffer(
-        resources.frame_uniforms,
-        BufferAccess::Uniform {
-            stages: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-            dynamic_offset: false,
-        },
-    );
-}
-
-impl RenderPass for WorldMeshForwardPreparePass {
-    fn name(&self) -> &str {
-        "WorldMeshForwardPrepare"
-    }
-
-    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        b.copy();
-        b.import_buffer(self.resources.per_draw_slab, BufferAccess::CopyDst);
-        b.import_buffer(self.resources.frame_uniforms, BufferAccess::CopyDst);
-        b.import_buffer(self.resources.lights, BufferAccess::CopyDst);
-        Ok(())
-    }
-
-    fn execute(&mut self, ctx: &mut RenderPassContext<'_, '_, '_>) -> Result<(), RenderPassError> {
-        let Some(frame) = ctx.frame.as_mut() else {
-            return Err(RenderPassError::MissingFrameParams {
-                pass: self.name().to_string(),
-            });
-        };
-
-        let queue_guard = ctx
-            .queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let queue = &*queue_guard;
-        frame.prepared_world_mesh_forward =
-            prepare_world_mesh_forward_frame(ctx.device, queue, ctx.gpu_limits, frame);
-        Ok(())
-    }
-}
-
-impl RenderPass for WorldMeshForwardOpaquePass {
-    fn name(&self) -> &str {
-        "WorldMeshForwardOpaque"
-    }
-
-    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        {
-            let mut r = b.raster();
-            r.frame_sampled_color(
-                self.resources.color,
-                self.resources.msaa_color,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(crate::present::SWAPCHAIN_CLEAR_COLOR),
-                    store: wgpu::StoreOp::Store,
-                },
-                Option::<ImportedTextureHandle>::None,
-            );
-            r.frame_sampled_depth(
-                self.resources.depth,
-                self.resources.msaa_depth,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(crate::render_graph::MAIN_FORWARD_DEPTH_CLEAR),
-                    store: wgpu::StoreOp::Store,
-                },
-                None,
-            );
-        }
-        declare_forward_draw_reads(b, self.resources);
-        Ok(())
-    }
-
-    fn execute(&mut self, _ctx: &mut RenderPassContext<'_, '_, '_>) -> Result<(), RenderPassError> {
-        Ok(())
-    }
-
-    fn graph_managed_raster(&self) -> bool {
-        true
-    }
-
-    fn graph_raster_multiview_mask(
-        &self,
-        ctx: &GraphRasterPassContext<'_, '_>,
-        template: &crate::render_graph::RenderPassTemplate,
-    ) -> Option<NonZeroU32> {
-        let use_multiview = ctx
-            .frame
-            .as_ref()
-            .and_then(|frame| frame.prepared_world_mesh_forward.as_ref())
-            .is_some_and(|prepared| prepared.pipeline.use_multiview);
-        if use_multiview {
-            NonZeroU32::new(3)
-        } else {
-            template.multiview_mask
+    /// Creates a world mesh forward pass bound to logical main-frame resources.
+    pub fn new(
+        cluster_buffers: ResourceId,
+        light_buffer: ResourceId,
+        mesh_deform_outputs: ResourceId,
+        backbuffer: ResourceId,
+        depth: ResourceId,
+    ) -> Self {
+        Self {
+            cluster_buffers,
+            light_buffer,
+            mesh_deform_outputs,
+            backbuffer,
+            depth,
         }
     }
+}
 
-    fn graph_raster_stencil_ops(
-        &self,
-        ctx: &GraphRasterPassContext<'_, '_>,
-        depth: &crate::render_graph::DepthAttachmentTemplate,
-    ) -> Option<wgpu::Operations<u32>> {
-        let Some(format) = ctx
-            .frame
-            .as_ref()
-            .and_then(|frame| frame.prepared_world_mesh_forward.as_ref())
-            .and_then(|prepared| prepared.pipeline.pass_desc.depth_stencil_format)
-        else {
-            return depth.stencil;
-        };
-        format.has_stencil_aspect().then_some(wgpu::Operations {
-            load: wgpu::LoadOp::Clear(0),
-            store: wgpu::StoreOp::Store,
-        })
+/// Registers [`WorldMeshForwardPass`] on the main frame graph.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WorldMeshForwardModule;
+
+impl RenderModule for WorldMeshForwardModule {
+    fn name(&self) -> &str {
+        "world_mesh_forward"
     }
 
-    fn execute_graph_raster(
-        &mut self,
-        ctx: &mut GraphRasterPassContext<'_, '_>,
-        rpass: &mut wgpu::RenderPass<'_>,
-    ) -> Result<(), RenderPassError> {
-        let Some(frame) = ctx.frame.as_mut() else {
-            return Err(RenderPassError::MissingFrameParams {
-                pass: self.name().to_string(),
-            });
-        };
-        apply_graph_forward_msaa_views(frame, ctx.graph_resources, self.resources);
-
-        let Some(mut prepared) = frame.prepared_world_mesh_forward.take() else {
-            return Ok(());
-        };
-        let queue_guard = ctx
-            .queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let queue = &*queue_guard;
-        let recorded = record_world_mesh_forward_opaque_graph_raster(
-            rpass, ctx.device, queue, frame, &prepared,
-        );
-        prepared.opaque_recorded = recorded;
-        frame.prepared_world_mesh_forward = Some(prepared);
-        Ok(())
+    fn register(self: Box<Self>, builder: &mut GraphBuilder, handles: &SharedRenderHandles) {
+        builder.add_pass(Box::new(WorldMeshForwardPass::new(
+            handles.cluster_buffers,
+            handles.light_buffer,
+            handles.mesh_deform_outputs,
+            handles.backbuffer,
+            handles.depth,
+        )));
     }
 }
 
@@ -290,100 +99,18 @@ impl RenderPass for WorldMeshForwardPass {
         "WorldMeshForward"
     }
 
-    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        {
-            let mut r = b.raster();
-            r.color(
-                self.resources.color,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(crate::present::SWAPCHAIN_CLEAR_COLOR),
-                    store: wgpu::StoreOp::Store,
-                },
-                Option::<ImportedTextureHandle>::None,
-            );
-            r.depth(
-                self.resources.depth,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(crate::render_graph::MAIN_FORWARD_DEPTH_CLEAR),
-                    store: wgpu::StoreOp::Store,
-                },
-                None,
-            );
-            r.color(
-                self.resources.msaa_color,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(crate::present::SWAPCHAIN_CLEAR_COLOR),
-                    store: wgpu::StoreOp::Store,
-                },
-                Some(self.resources.color),
-            );
-            r.depth(
-                self.resources.msaa_depth,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(crate::render_graph::MAIN_FORWARD_DEPTH_CLEAR),
-                    store: wgpu::StoreOp::Store,
-                },
-                None,
-            );
+    fn resources(&self) -> PassResources {
+        PassResources {
+            reads: vec![
+                self.cluster_buffers,
+                self.light_buffer,
+                self.mesh_deform_outputs,
+            ],
+            writes: vec![self.backbuffer, self.depth],
         }
-        b.read_texture(
-            self.resources.msaa_depth,
-            TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::COMPUTE,
-            },
-        );
-        b.write_texture(
-            self.resources.msaa_depth_r32,
-            TextureAccess::Storage {
-                stages: wgpu::ShaderStages::COMPUTE,
-                access: StorageAccess::WriteOnly,
-            },
-        );
-        b.read_texture(
-            self.resources.msaa_depth_r32,
-            TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::FRAGMENT,
-            },
-        );
-        b.import_buffer(
-            self.resources.cluster_light_counts,
-            BufferAccess::Storage {
-                stages: wgpu::ShaderStages::FRAGMENT,
-                access: StorageAccess::ReadOnly,
-            },
-        );
-        b.import_buffer(
-            self.resources.cluster_light_indices,
-            BufferAccess::Storage {
-                stages: wgpu::ShaderStages::FRAGMENT,
-                access: StorageAccess::ReadOnly,
-            },
-        );
-        b.import_buffer(
-            self.resources.lights,
-            BufferAccess::Storage {
-                stages: wgpu::ShaderStages::FRAGMENT,
-                access: StorageAccess::ReadOnly,
-            },
-        );
-        b.import_buffer(
-            self.resources.per_draw_slab,
-            BufferAccess::Storage {
-                stages: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                access: StorageAccess::ReadOnly,
-            },
-        );
-        b.import_buffer(
-            self.resources.frame_uniforms,
-            BufferAccess::Uniform {
-                stages: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                dynamic_offset: false,
-            },
-        );
-        Ok(())
     }
 
-    fn execute(&mut self, ctx: &mut RenderPassContext<'_, '_, '_>) -> Result<(), RenderPassError> {
+    fn execute(&mut self, ctx: &mut RenderPassContext<'_>) -> Result<(), RenderPassError> {
         let Some(bb) = ctx.backbuffer else {
             return Err(RenderPassError::MissingBackbuffer {
                 pass: self.name().to_string(),
@@ -400,24 +127,76 @@ impl RenderPass for WorldMeshForwardPass {
             });
         };
 
+        let supports_base_instance = ctx.gpu_limits.supports_base_instance;
+        let hc = frame.host_camera;
+        let pipeline = resolve_pass_config(
+            hc,
+            frame.multiview_stereo,
+            frame.surface_format,
+            ctx.gpu_limits,
+            frame.sample_count,
+        );
+        let use_multiview = pipeline.use_multiview;
+        let shader_perm = pipeline.shader_perm;
+
+        let culling = if hc.suppress_occlusion_temporal {
+            None
+        } else {
+            let cull_proj = build_world_mesh_cull_proj_params(frame.scene, frame.viewport_px, &hc);
+            let depth_mode = frame.output_depth_mode();
+            let view_id = frame.occlusion_view;
+            let hi_z_temporal = frame.backend.occlusion.hi_z_temporal_snapshot(view_id);
+            let hi_z = frame.backend.occlusion.hi_z_cull_data(depth_mode, view_id);
+            Some(WorldMeshCullInput {
+                proj: cull_proj,
+                host_camera: &hc,
+                hi_z,
+                hi_z_temporal,
+            })
+        };
+
+        let collection = take_or_collect_world_mesh_draws(frame, culling.as_ref(), shader_perm);
+        capture_hi_z_temporal_after_collect(frame, culling.as_ref(), hc);
+
+        maybe_set_world_mesh_draw_stats(
+            frame.backend,
+            &collection,
+            &collection.items,
+            supports_base_instance,
+        );
+
+        let draws = collection.items;
+
+        let (render_context, world_proj, overlay_proj) =
+            compute_view_projections(frame.scene, hc, frame.viewport_px, &draws);
+
         let queue_guard = ctx
             .queue
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let queue = &*queue_guard;
 
-        let prepared = if let Some(prepared) = frame.prepared_world_mesh_forward.take() {
-            prepared
-        } else {
-            let Some(prepared) =
-                prepare_world_mesh_forward_frame(ctx.device, queue, ctx.gpu_limits, frame)
-            else {
-                return Ok(());
-            };
-            prepared
-        };
+        if !pack_and_upload_per_draw_slab(
+            ctx.device,
+            queue,
+            frame,
+            render_context,
+            world_proj,
+            overlay_proj,
+            &draws,
+        ) {
+            return Ok(());
+        }
 
-        apply_graph_forward_msaa_views(frame, ctx.graph_resources, self.resources);
+        write_frame_uniforms_and_cluster(
+            ctx.device,
+            queue,
+            frame.backend,
+            hc,
+            frame.scene,
+            frame.viewport_px,
+            use_multiview,
+        );
 
         let msaa_color = frame.msaa_color_view.clone();
         let msaa_depth = frame.msaa_depth_view.clone();
@@ -429,40 +208,22 @@ impl RenderPass for WorldMeshForwardPass {
             None
         };
 
-        let msaa_depth_resolve = frame.backend.msaa_depth_resolve.clone();
+        let msaa_depth_resolve = frame.backend.msaa_depth_resolve();
 
-        if prepared.draws.is_empty() {
-            if prepared.opaque_recorded {
-                if frame.sample_count > 1 {
-                    encode_msaa_color_resolve_after_opaque(
-                        ctx.encoder,
-                        color_view,
-                        resolve_swapchain,
-                        prepared.pipeline.use_multiview,
-                    );
-                    encode_msaa_depth_resolve_after_clear_only(
-                        ctx.device,
-                        ctx.encoder,
-                        frame,
-                        msaa_depth_resolve.as_deref(),
-                    );
-                }
-            } else {
-                encode_clear_only_pass(
-                    ctx.encoder,
-                    color_view,
-                    depth_raster,
-                    prepared.pipeline.pass_desc.depth_stencil_format,
-                    resolve_swapchain,
-                    prepared.pipeline.use_multiview,
-                );
-                encode_msaa_depth_resolve_after_clear_only(
-                    ctx.device,
-                    ctx.encoder,
-                    frame,
-                    msaa_depth_resolve.as_deref(),
-                );
-            }
+        if draws.is_empty() {
+            encode_clear_only_pass(
+                ctx.encoder,
+                color_view,
+                depth_raster,
+                resolve_swapchain,
+                use_multiview,
+            );
+            encode_msaa_depth_resolve_after_clear_only(
+                ctx.device,
+                ctx.encoder,
+                frame,
+                msaa_depth_resolve.as_deref(),
+            );
             return Ok(());
         }
 
@@ -473,7 +234,9 @@ impl RenderPass for WorldMeshForwardPass {
                 frame,
                 queue,
             },
-            &prepared,
+            &draws,
+            &pipeline,
+            supports_base_instance,
             ForwardPassEncodeViews {
                 color_view,
                 depth_raster_view: depth_raster,
@@ -486,52 +249,4 @@ impl RenderPass for WorldMeshForwardPass {
 
         Ok(())
     }
-}
-
-fn apply_graph_forward_msaa_views(
-    frame: &mut FrameRenderParams<'_>,
-    graph_resources: Option<&GraphResolvedResources>,
-    resources: WorldMeshForwardGraphResources,
-) {
-    if frame.sample_count <= 1 {
-        return;
-    }
-    let Some(graph_resources) = graph_resources else {
-        return;
-    };
-    let (Some(color), Some(depth), Some(r32)) = (
-        graph_resources.transient_texture(resources.msaa_color),
-        graph_resources.transient_texture(resources.msaa_depth),
-        graph_resources.transient_texture(resources.msaa_depth_r32),
-    ) else {
-        return;
-    };
-
-    if frame.multiview_stereo {
-        let (Some(depth_layers), Some(r32_layers)) =
-            (first_two_layer_views(depth), first_two_layer_views(r32))
-        else {
-            return;
-        };
-        frame.msaa_color_view = Some(color.view.clone());
-        frame.msaa_depth_view = Some(depth.view.clone());
-        frame.msaa_depth_resolve_r32_view = Some(r32.view.clone());
-        frame.msaa_depth_is_array = true;
-        frame.msaa_stereo_depth_layer_views = Some(depth_layers);
-        frame.msaa_stereo_r32_layer_views = Some(r32_layers);
-    } else {
-        frame.msaa_color_view = Some(color.view.clone());
-        frame.msaa_depth_view = Some(depth.view.clone());
-        frame.msaa_depth_resolve_r32_view = Some(r32.view.clone());
-        frame.msaa_depth_is_array = false;
-        frame.msaa_stereo_depth_layer_views = None;
-        frame.msaa_stereo_r32_layer_views = None;
-    }
-}
-
-fn first_two_layer_views(texture: &ResolvedGraphTexture) -> Option<[wgpu::TextureView; 2]> {
-    Some([
-        texture.layer_views.first()?.clone(),
-        texture.layer_views.get(1)?.clone(),
-    ])
 }

@@ -230,6 +230,7 @@ fn create_vertex_stream_buffer(
     )
 }
 
+#[allow(clippy::type_complexity)]
 pub(super) fn upload_extended_vertex_streams(
     device: &wgpu::Device,
     asset_id: i32,
@@ -272,6 +273,7 @@ pub(super) fn upload_extended_vertex_streams(
     )
 }
 
+#[allow(clippy::type_complexity)]
 pub(super) fn upload_default_extended_vertex_streams(
     device: &wgpu::Device,
     asset_id: i32,

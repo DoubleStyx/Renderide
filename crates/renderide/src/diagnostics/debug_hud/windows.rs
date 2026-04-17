@@ -5,11 +5,8 @@ use crate::config::{
 };
 use crate::diagnostics::scene_transforms_snapshot::RenderSpaceTransformsSnapshot;
 use crate::diagnostics::{
-    FrameDiagnosticsSnapshot, FrameTimingHudSnapshot, RendererInfoSnapshot,
-    SceneTransformsSnapshot, TextureDebugSnapshot,
+    FrameDiagnosticsSnapshot, FrameTimingHudSnapshot, RendererInfoSnapshot, SceneTransformsSnapshot,
 };
-use crate::materials::{MaterialBlendMode, RasterPipelineKind};
-use crate::render_graph::WorldMeshDrawStateRow;
 
 use imgui::{
     Condition, Drag, Io, ListClipper, MouseButton as ImGuiMouseButton, TableFlags, WindowFlags,
@@ -157,10 +154,6 @@ fn main_debug_panel_draw_stats(ui: &imgui::Ui, f: &FrameDiagnosticsSnapshot) {
     ui.text(format!(
         "GPU instance batches (indexed submits): {:>5}",
         m.instance_batch_total
-    ));
-    ui.text(format!(
-        "Pipeline pass submits: {:>5}",
-        m.submitted_pipeline_pass_total
     ));
     ui.text(format!(
         "Frustum cull: {:>5} considered  |  {:>5} culled  |  Hi-Z {:>5} culled  |  {:>5} submitted after cull",
@@ -314,7 +307,7 @@ fn renderer_config_debug_section(
     }
     ui.text_disabled("FPS and CPU/GPU submit intervals; snapshot is cheap.");
     if ui.checkbox(
-        "Debug HUD (Stats / Shader routes / Draw state / GPU memory)",
+        "Debug HUD (Stats / Shader routes / GPU memory)",
         &mut g.debug.debug_hud_enabled,
     ) {
         *dirty = true;
@@ -326,10 +319,6 @@ fn renderer_config_debug_section(
     ui.text_disabled(
         "Per-space world transform table; separate from main HUD (can be expensive on large scenes).",
     );
-    if ui.checkbox("Textures HUD", &mut g.debug.debug_hud_textures) {
-        *dirty = true;
-    }
-    ui.text_disabled("Texture pool rows and current-view usage; can be noisy in large scenes.");
     if ui.checkbox("Log verbose", &mut g.debug.log_verbose) {
         *dirty = true;
     }
@@ -390,107 +379,6 @@ pub(super) fn apply_input(io: &mut Io, input: &crate::diagnostics::DebugHudInput
     io.add_mouse_button_event(ImGuiMouseButton::Middle, input.middle);
     io.add_mouse_button_event(ImGuiMouseButton::Extra1, input.extra1);
     io.add_mouse_button_event(ImGuiMouseButton::Extra2, input.extra2);
-}
-
-fn pipeline_label(pipeline: &RasterPipelineKind) -> String {
-    match pipeline {
-        RasterPipelineKind::EmbeddedStem(stem) => stem.to_string(),
-        RasterPipelineKind::DebugWorldNormals => "debug_world_normals".to_string(),
-    }
-}
-
-fn draw_state_is_uiish(row: &WorldMeshDrawStateRow) -> bool {
-    row.is_overlay
-        || row.alpha_blended
-        || matches!(
-            &row.pipeline,
-            RasterPipelineKind::EmbeddedStem(stem)
-                if stem.starts_with("ui_")
-                    || stem.contains("text")
-                    || stem.contains("overlay")
-        )
-}
-
-fn draw_state_has_override(row: &WorldMeshDrawStateRow) -> bool {
-    row.depth_write.is_some()
-        || row.depth_compare.is_some()
-        || row.depth_offset.is_some()
-        || row.color_mask.is_some()
-        || row.stencil_enabled
-}
-
-fn blend_mode_label(mode: MaterialBlendMode) -> String {
-    match mode {
-        MaterialBlendMode::StemDefault => "stem".to_string(),
-        MaterialBlendMode::Opaque => "opaque".to_string(),
-        MaterialBlendMode::Cutout => "cutout".to_string(),
-        MaterialBlendMode::Alpha => "alpha".to_string(),
-        MaterialBlendMode::Transparent => "transparent".to_string(),
-        MaterialBlendMode::Additive => "additive".to_string(),
-        MaterialBlendMode::Multiply => "multiply".to_string(),
-        MaterialBlendMode::UnityBlend { src, dst } => format!("unity {src}/{dst}"),
-    }
-}
-
-fn color_mask_label(mask: Option<u8>) -> String {
-    let Some(mask) = mask else {
-        return "pass".to_string();
-    };
-    let mut out = String::new();
-    if mask & 8 != 0 {
-        out.push('R');
-    }
-    if mask & 4 != 0 {
-        out.push('G');
-    }
-    if mask & 2 != 0 {
-        out.push('B');
-    }
-    if mask & 1 != 0 {
-        out.push('A');
-    }
-    if out.is_empty() {
-        "none".to_string()
-    } else {
-        out
-    }
-}
-
-fn stencil_label(row: &WorldMeshDrawStateRow) -> String {
-    if !row.stencil_enabled {
-        return "off".to_string();
-    }
-    format!(
-        "ref={} cmp={} pass={} read=0x{:02x} write=0x{:02x}",
-        row.stencil_reference,
-        row.stencil_compare,
-        row.stencil_pass_op,
-        row.stencil_read_mask,
-        row.stencil_write_mask
-    )
-}
-
-fn ztest_label(value: Option<u8>) -> &'static str {
-    match value {
-        Some(0) => "off",
-        Some(1) => "never",
-        Some(2) => "less",
-        Some(3) => "equal",
-        Some(4) => "lequal",
-        Some(5) => "greater",
-        Some(6) => "not-equal",
-        Some(7) => "gequal",
-        Some(8) => "always",
-        Some(_) => "invalid",
-        None => "pass",
-    }
-}
-
-fn offset_label(value: Option<(u32, i32)>) -> String {
-    match value {
-        Some((factor_bits, units)) => format!("{:.3}/{}", f32::from_bits(factor_bits), units),
-        None => "pass".to_string(),
-    }
 }
 
 impl DebugHud {
@@ -568,209 +456,18 @@ impl DebugHud {
     }
 
     /// Host shader asset id, logical name (or `<none>`), and material family per line (see **Shader routes** tab).
-    pub(super) fn shader_mappings_tab(
-        ui: &imgui::Ui,
-        frame: Option<&FrameDiagnosticsSnapshot>,
-        only_fallback: &mut bool,
-    ) {
+    pub(super) fn shader_mappings_tab(ui: &imgui::Ui, frame: Option<&FrameDiagnosticsSnapshot>) {
         let Some(d) = frame else {
             ui.text("Waiting for frame diagnostics…");
             return;
         };
-        ui.checkbox("Only fallback routes", only_fallback);
-        if d.shader_routes.is_empty() {
+        if d.shader_route_lines.is_empty() {
             ui.text("No shader route data");
         } else {
-            for route in &d.shader_routes {
-                if *only_fallback && route.implemented {
-                    continue;
-                }
-                ui.text_wrapped(format!(
-                    "{}  {}  {}  {}",
-                    route.shader_asset_id,
-                    route.display_name.as_deref().unwrap_or("<none>"),
-                    route.pipeline_label,
-                    if route.implemented {
-                        "implemented"
-                    } else {
-                        "fallback"
-                    },
-                ));
+            for line in &d.shader_route_lines {
+                ui.text_wrapped(line);
             }
         }
-    }
-
-    /// Sorted draw rows with runtime material state.
-    pub(super) fn draw_state_tab(
-        ui: &imgui::Ui,
-        frame: Option<&FrameDiagnosticsSnapshot>,
-        ui_only: &mut bool,
-        only_overrides: &mut bool,
-    ) {
-        let Some(d) = frame else {
-            ui.text("Waiting for frame diagnostics");
-            return;
-        };
-        ui.checkbox("Only UI / alpha rows", ui_only);
-        ui.checkbox("Only render-state overrides", only_overrides);
-
-        let rows: Vec<&WorldMeshDrawStateRow> = d
-            .draw_state_rows
-            .iter()
-            .filter(|row| !*ui_only || draw_state_is_uiish(row))
-            .filter(|row| !*only_overrides || draw_state_has_override(row))
-            .collect();
-        ui.text(format!(
-            "{} rows ({} submitted)",
-            rows.len(),
-            d.draw_state_rows.len()
-        ));
-
-        let table_flags = TableFlags::BORDERS
-            | TableFlags::ROW_BG
-            | TableFlags::SCROLL_Y
-            | TableFlags::RESIZABLE
-            | TableFlags::SIZING_STRETCH_PROP;
-        if let Some(_table) =
-            ui.begin_table_with_sizing("draw_state_rows", 11, table_flags, [0.0, 360.0], 0.0)
-        {
-            ui.table_setup_column("Draw");
-            ui.table_setup_column("Node");
-            ui.table_setup_column("Mesh");
-            ui.table_setup_column("Material");
-            ui.table_setup_column("Pipeline");
-            ui.table_setup_column("Blend");
-            ui.table_setup_column("ZWrite");
-            ui.table_setup_column("ZTest");
-            ui.table_setup_column("Offset");
-            ui.table_setup_column("Color");
-            ui.table_setup_column("Stencil");
-            ui.table_headers_row();
-            let clip = ListClipper::new(rows.len() as i32);
-            let tok = clip.begin(ui);
-            for row_i in tok.iter() {
-                let row = rows[row_i as usize];
-                ui.table_next_row();
-                ui.table_next_column();
-                ui.text(format!("{}", row.draw_index));
-                ui.table_next_column();
-                ui.text(format!("{}", row.node_id));
-                ui.table_next_column();
-                ui.text(format!("{}:{}", row.mesh_asset_id, row.slot_index));
-                ui.table_next_column();
-                ui.text(format!(
-                    "{} / {:?}",
-                    row.material_asset_id, row.property_block_slot0
-                ));
-                ui.table_next_column();
-                ui.text_wrapped(pipeline_label(&row.pipeline));
-                ui.table_next_column();
-                ui.text(blend_mode_label(row.blend_mode));
-                ui.table_next_column();
-                ui.text(match row.depth_write {
-                    Some(true) => "on",
-                    Some(false) => "off",
-                    None => "pass",
-                });
-                ui.table_next_column();
-                ui.text(ztest_label(row.depth_compare));
-                ui.table_next_column();
-                ui.text(offset_label(row.depth_offset));
-                ui.table_next_column();
-                ui.text(color_mask_label(row.color_mask));
-                ui.table_next_column();
-                ui.text_wrapped(stencil_label(row));
-            }
-        }
-    }
-
-    /// Texture pool window with current-view filtering.
-    pub(super) fn texture_debug_window(
-        ui: &imgui::Ui,
-        snapshot: &TextureDebugSnapshot,
-        open: &mut bool,
-        current_view_only: &mut bool,
-    ) {
-        ui.window("Textures")
-            .opened(open)
-            .position(
-                [overlay_layout::MARGIN, overlay_layout::MARGIN + 360.0],
-                Condition::FirstUseEver,
-            )
-            .size([860.0, 420.0], Condition::FirstUseEver)
-            .bg_alpha(0.85)
-            .build(|| {
-                ui.checkbox("Only current view", current_view_only);
-                ui.text(format!(
-                    "{} textures  |  {} current-view  |  {} total",
-                    snapshot.rows.len(),
-                    snapshot.current_view_texture_count,
-                    hud_fmt::bytes_compact(snapshot.total_resident_bytes)
-                ));
-                let rows: Vec<_> = snapshot
-                    .rows
-                    .iter()
-                    .filter(|row| !*current_view_only || row.used_by_current_view)
-                    .collect();
-                let table_flags = TableFlags::BORDERS
-                    | TableFlags::ROW_BG
-                    | TableFlags::SCROLL_Y
-                    | TableFlags::RESIZABLE
-                    | TableFlags::SIZING_STRETCH_PROP;
-                if let Some(_table) = ui.begin_table_with_sizing(
-                    "texture_debug_rows",
-                    8,
-                    table_flags,
-                    [0.0, 330.0],
-                    0.0,
-                ) {
-                    ui.table_setup_column("Asset");
-                    ui.table_setup_column("Size");
-                    ui.table_setup_column("Mips");
-                    ui.table_setup_column("Bytes");
-                    ui.table_setup_column("Host");
-                    ui.table_setup_column("GPU");
-                    ui.table_setup_column("Sampler");
-                    ui.table_setup_column("View");
-                    ui.table_headers_row();
-                    let clip = ListClipper::new(rows.len() as i32);
-                    let tok = clip.begin(ui);
-                    for row_i in tok.iter() {
-                        let row = rows[row_i as usize];
-                        ui.table_next_row();
-                        ui.table_next_column();
-                        ui.text(format!("{}", row.asset_id));
-                        ui.table_next_column();
-                        ui.text(format!("{}x{}", row.width, row.height));
-                        ui.table_next_column();
-                        ui.text(format!(
-                            "{}/{}",
-                            row.mip_levels_resident, row.mip_levels_total
-                        ));
-                        ui.table_next_column();
-                        ui.text(hud_fmt::bytes_compact(row.resident_bytes));
-                        ui.table_next_column();
-                        ui.text(format!("{:?} {:?}", row.host_format, row.color_profile));
-                        ui.table_next_column();
-                        ui.text(format!("{:?}", row.wgpu_format));
-                        ui.table_next_column();
-                        ui.text(format!(
-                            "{:?} aniso={} wrap={:?}/{:?} bias={:.2}",
-                            row.filter_mode,
-                            row.aniso_level,
-                            row.wrap_u,
-                            row.wrap_v,
-                            row.mipmap_bias
-                        ));
-                        ui.table_next_column();
-                        ui.text(if row.used_by_current_view {
-                            "current"
-                        } else {
-                            ""
-                        });
-                    }
-                }
-            });
     }
 
     /// Full [`wgpu::AllocatorReport`] from [`FrameDiagnosticsSnapshot::gpu_allocator_report`], refreshed on a timer.

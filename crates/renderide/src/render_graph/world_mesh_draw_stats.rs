@@ -3,8 +3,6 @@
 use super::world_mesh_draw_prep::{
     build_instance_batches, MaterialDrawBatchKey, WorldMeshDrawItem,
 };
-use crate::materials::{embedded_stem_pipeline_pass_count, MaterialBlendMode, RasterPipelineKind};
-use crate::pipelines::ShaderPermutation;
 
 /// Draw and batch counts for the debug HUD (aligned with sorted [`WorldMeshDrawItem`] order).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,68 +31,6 @@ pub struct WorldMeshDrawStats {
     pub draws_hi_z_culled: usize,
     /// GPU instance batches after merge (one indexed draw each); at most `draws_total`.
     pub instance_batch_total: usize,
-    /// Actual pipeline-pass draw submissions after multi-pass materials expand each instance batch.
-    pub submitted_pipeline_pass_total: usize,
-}
-
-/// One submitted draw row for the **Draw state** debug HUD tab.
-///
-/// Rows are captured after culling and sorting, so `draw_index` matches the per-draw slab index used
-/// by `draw_indexed(..., first_instance)`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorldMeshDrawStateRow {
-    /// Index in the sorted draw list and GPU per-draw slab.
-    pub draw_index: usize,
-    /// Host render space id.
-    pub space_id: i32,
-    /// Scene graph node id.
-    pub node_id: i32,
-    /// Resident mesh asset id.
-    pub mesh_asset_id: i32,
-    /// Submesh/material slot index.
-    pub slot_index: usize,
-    /// Host shader asset id from material `set_shader`.
-    pub shader_asset_id: i32,
-    /// Material asset id.
-    pub material_asset_id: i32,
-    /// Slot0 property block id when present.
-    pub property_block_slot0: Option<i32>,
-    /// Resolved raster pipeline route.
-    pub pipeline: RasterPipelineKind,
-    /// Resolved material blend override used for pipeline selection.
-    pub blend_mode: MaterialBlendMode,
-    /// True for overlay-layer draws.
-    pub is_overlay: bool,
-    /// Host sorting order carried by the mesh renderer.
-    pub sorting_order: i32,
-    /// Stable collection order before sort.
-    pub collect_order: usize,
-    /// Whether the draw uses the skinned/deformed vertex path.
-    pub skinned: bool,
-    /// Whether this draw is alpha sorted.
-    pub alpha_blended: bool,
-    /// Whether this draw is emitted through the intersection depth-snapshot subpass.
-    pub requires_intersection_pass: bool,
-    /// Unity `_ZWrite` / `ZWrite` override. `None` means the shader pass default is used.
-    pub depth_write: Option<bool>,
-    /// Unity `_ZTest` / `ZTest` override. `None` means the shader pass default is used.
-    pub depth_compare: Option<u8>,
-    /// Unity `Offset factor, units` override. `None` means the shader pass default is used.
-    pub depth_offset: Option<(u32, i32)>,
-    /// Whether stencil state was enabled by material/properties.
-    pub stencil_enabled: bool,
-    /// Dynamic stencil reference.
-    pub stencil_reference: u32,
-    /// Unity `CompareFunction` enum value.
-    pub stencil_compare: u8,
-    /// Unity `StencilOp` enum value.
-    pub stencil_pass_op: u8,
-    /// Stencil read mask.
-    pub stencil_read_mask: u32,
-    /// Stencil write mask.
-    pub stencil_write_mask: u32,
-    /// Unity `_ColorMask` / `ColorMask` override. `None` means the shader pass default is used.
-    pub color_mask: Option<u8>,
 }
 
 /// Computes batch boundaries from material/property-block/skin/overlay changes after sorting.
@@ -105,7 +41,6 @@ pub fn world_mesh_draw_stats_from_sorted(
     draws: &[WorldMeshDrawItem],
     cull: Option<(usize, usize, usize)>,
     supports_base_instance: bool,
-    shader_perm: ShaderPermutation,
 ) -> WorldMeshDrawStats {
     let draws_total = draws.len();
     let draws_main = draws.iter().filter(|d| !d.is_overlay).count();
@@ -136,21 +71,8 @@ pub fn world_mesh_draw_stats_from_sorted(
     let (draws_pre_cull, draws_culled, draws_hi_z_culled) = cull.unwrap_or((0, 0, 0));
 
     let draw_indices: Vec<usize> = (0..draws.len()).collect();
-    let instance_batches = build_instance_batches(draws, &draw_indices, supports_base_instance);
-    let instance_batch_total = instance_batches.len();
-    //perf xlinka: this is the real submit count when a material has multiple passes.
-    let submitted_pipeline_pass_total = instance_batches
-        .iter()
-        .map(|batch| {
-            let item = &draws[batch.first_draw_index];
-            match &item.batch_key.pipeline {
-                RasterPipelineKind::EmbeddedStem(stem) => {
-                    embedded_stem_pipeline_pass_count(stem.as_ref(), shader_perm)
-                }
-                RasterPipelineKind::DebugWorldNormals => 1,
-            }
-        })
-        .sum();
+    let instance_batch_total =
+        build_instance_batches(draws, &draw_indices, supports_base_instance).len();
 
     WorldMeshDrawStats {
         batch_total,
@@ -165,71 +87,20 @@ pub fn world_mesh_draw_stats_from_sorted(
         draws_culled,
         draws_hi_z_culled,
         instance_batch_total,
-        submitted_pipeline_pass_total,
     }
-}
-
-/// Captures draw-state diagnostics from the sorted draw list submitted by the forward pass.
-pub fn world_mesh_draw_state_rows_from_sorted(
-    draws: &[WorldMeshDrawItem],
-) -> Vec<WorldMeshDrawStateRow> {
-    draws
-        .iter()
-        .enumerate()
-        .map(|(draw_index, item)| {
-            let state = item.batch_key.render_state;
-            WorldMeshDrawStateRow {
-                draw_index,
-                space_id: item.space_id.0,
-                node_id: item.node_id,
-                mesh_asset_id: item.mesh_asset_id,
-                slot_index: item.slot_index,
-                shader_asset_id: item.batch_key.shader_asset_id,
-                material_asset_id: item.batch_key.material_asset_id,
-                property_block_slot0: item.batch_key.property_block_slot0,
-                pipeline: item.batch_key.pipeline.clone(),
-                blend_mode: item.batch_key.blend_mode,
-                is_overlay: item.is_overlay,
-                sorting_order: item.sorting_order,
-                collect_order: item.collect_order,
-                skinned: item.skinned,
-                alpha_blended: item.batch_key.alpha_blended,
-                requires_intersection_pass: item.batch_key.embedded_requires_intersection_pass,
-                depth_write: state.depth_write,
-                depth_compare: state.depth_compare,
-                depth_offset: state
-                    .depth_offset
-                    .map(|offset| (offset.factor_bits(), offset.units())),
-                stencil_enabled: state.stencil.enabled,
-                stencil_reference: state.stencil.reference,
-                stencil_compare: state.stencil.compare,
-                stencil_pass_op: state.stencil.pass_op,
-                stencil_read_mask: state.stencil.read_mask,
-                stencil_write_mask: state.stencil.write_mask,
-                color_mask: state.color_mask,
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::materials::{MaterialBlendMode, MaterialDepthOffsetState};
     use crate::render_graph::test_fixtures::{dummy_world_mesh_draw_item, DummyDrawItemSpec};
 
     #[test]
     fn world_mesh_draw_stats_empty() {
-        let s = world_mesh_draw_stats_from_sorted(
-            &[],
-            None,
-            true,
-            crate::pipelines::ShaderPermutation(0),
-        );
+        let s = world_mesh_draw_stats_from_sorted(&[], None, true);
         assert_eq!(s.batch_total, 0);
         assert_eq!(s.draws_total, 0);
         assert_eq!(s.instance_batch_total, 0);
-        assert_eq!(s.submitted_pipeline_pass_total, 0);
     }
 
     #[test]
@@ -257,57 +128,10 @@ mod tests {
             alpha_blended: false,
         });
         let draws = vec![a, b];
-        let s = world_mesh_draw_stats_from_sorted(
-            &draws,
-            None,
-            true,
-            crate::pipelines::ShaderPermutation(0),
-        );
+        let s = world_mesh_draw_stats_from_sorted(&draws, None, true);
         assert_eq!(s.batch_total, 1);
         assert_eq!(s.draws_total, 2);
         assert_eq!(s.rigid_draws, 2);
         assert_eq!(s.instance_batch_total, 1);
-        assert_eq!(s.submitted_pipeline_pass_total, 1);
-    }
-
-    #[test]
-    fn world_mesh_draw_state_rows_capture_material_state() {
-        let mut draw = dummy_world_mesh_draw_item(DummyDrawItemSpec {
-            material_asset_id: 7,
-            property_block: Some(70),
-            skinned: false,
-            sorting_order: 3,
-            mesh_asset_id: 4,
-            node_id: 5,
-            slot_index: 6,
-            collect_order: 8,
-            alpha_blended: true,
-        });
-        draw.batch_key.blend_mode = MaterialBlendMode::UnityBlend { src: 1, dst: 10 };
-        draw.batch_key.render_state.depth_write = Some(false);
-        draw.batch_key.render_state.depth_compare = Some(8);
-        draw.batch_key.render_state.depth_offset = MaterialDepthOffsetState::new(-1.0, -2);
-        draw.batch_key.render_state.color_mask = Some(0);
-        draw.batch_key.render_state.stencil.enabled = true;
-        draw.batch_key.render_state.stencil.reference = 2;
-        draw.batch_key.render_state.stencil.compare = 8;
-        draw.batch_key.render_state.stencil.pass_op = 2;
-
-        let rows = world_mesh_draw_state_rows_from_sorted(&[draw]);
-        assert_eq!(rows.len(), 1);
-        let row = &rows[0];
-        assert_eq!(row.draw_index, 0);
-        assert_eq!(row.material_asset_id, 7);
-        assert_eq!(row.property_block_slot0, Some(70));
-        assert_eq!(row.depth_write, Some(false));
-        assert_eq!(row.depth_compare, Some(8));
-        assert_eq!(row.depth_offset, Some(((-1.0f32).to_bits(), -2)));
-        assert_eq!(row.color_mask, Some(0));
-        assert!(row.stencil_enabled);
-        assert_eq!(row.stencil_reference, 2);
-        assert_eq!(
-            row.blend_mode,
-            MaterialBlendMode::UnityBlend { src: 1, dst: 10 }
-        );
     }
 }

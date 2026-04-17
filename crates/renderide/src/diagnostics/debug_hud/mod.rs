@@ -2,9 +2,8 @@
 //!
 //! The **Frame timing** window shows FPS and CPU/GPU submit-interval metrics (wall-clock splits around submits).
 //! **[`crate::config::DebugSettings::debug_hud_frame_timing`]** toggles the **Frame timing** window (default on).
-//! **[`crate::config::DebugSettings::debug_hud_enabled`]** toggles **Renderide debug** (Stats / Shader routes / Draw state / GPU memory).
+//! **[`crate::config::DebugSettings::debug_hud_enabled`]** toggles **Renderide debug** (Stats / Shader routes / GPU memory).
 //! **[`crate::config::DebugSettings::debug_hud_transforms`]** toggles the **Scene transforms** window.
-//! **[`crate::config::DebugSettings::debug_hud_textures`]** toggles the **Textures** window.
 //!
 //! Window bodies live in [`mod@windows`].
 
@@ -25,22 +24,18 @@ use super::frame_timing_hud_snapshot::FrameTimingHudSnapshot;
 use super::hud_input::DebugHudInput;
 use super::renderer_info_snapshot::RendererInfoSnapshot;
 use super::scene_transforms_snapshot::SceneTransformsSnapshot;
-use super::texture_debug_snapshot::TextureDebugSnapshot;
 
 /// Renders the **Frame timing** overlay window when enabled.
 fn overlay_frame_timing_window(ui: &imgui::Ui, frame_timing: Option<&FrameTimingHudSnapshot>) {
     DebugHud::frame_timing_window(ui, frame_timing);
 }
 
-/// Renders the **Renderide debug** tabbed panel (Stats / Shader routes / Draw state / GPU memory).
+/// Renders the **Renderide debug** tabbed panel (Stats / Shader routes / GPU memory).
 fn overlay_main_debug_window(
     ui: &imgui::Ui,
     width: u32,
     latest: Option<&RendererInfoSnapshot>,
     frame_diagnostics: Option<&FrameDiagnosticsSnapshot>,
-    shader_routes_only_fallback: &mut bool,
-    draw_state_ui_only: &mut bool,
-    draw_state_only_overrides: &mut bool,
 ) {
     const PANEL_WIDTH: f32 = 760.0;
     let panel_x = (width as f32 - PANEL_WIDTH - layout::MARGIN).max(layout::MARGIN);
@@ -61,19 +56,7 @@ fn overlay_main_debug_window(
                     DebugHud::main_debug_panel(ui, latest, frame_diagnostics);
                 }
                 if let Some(_tab) = ui.tab_item("Shader routes") {
-                    DebugHud::shader_mappings_tab(
-                        ui,
-                        frame_diagnostics,
-                        shader_routes_only_fallback,
-                    );
-                }
-                if let Some(_tab) = ui.tab_item("Draw state") {
-                    DebugHud::draw_state_tab(
-                        ui,
-                        frame_diagnostics,
-                        draw_state_ui_only,
-                        draw_state_only_overrides,
-                    );
+                    DebugHud::shader_mappings_tab(ui, frame_diagnostics);
                 }
                 if let Some(_tab) = ui.tab_item("GPU memory") {
                     DebugHud::gpu_memory_tab(ui, frame_diagnostics);
@@ -91,16 +74,6 @@ fn overlay_scene_transforms_window(
     DebugHud::scene_transforms_window(ui, scene_transforms, scene_transforms_open);
 }
 
-/// Renders the **Textures** window when enabled.
-fn overlay_texture_debug_window(
-    ui: &imgui::Ui,
-    texture_debug: &TextureDebugSnapshot,
-    texture_debug_open: &mut bool,
-    current_view_only: &mut bool,
-) {
-    DebugHud::texture_debug_window(ui, texture_debug, texture_debug_open, current_view_only);
-}
-
 /// Dear ImGui overlay: frame timing, renderer stats, shader routes, scene transforms, and config UI.
 pub struct DebugHud {
     imgui: Context,
@@ -113,20 +86,8 @@ pub struct DebugHud {
     frame_diagnostics: Option<FrameDiagnosticsSnapshot>,
     /// Per-frame world transform listing for the **Scene transforms** window.
     scene_transforms: SceneTransformsSnapshot,
-    /// Per-frame texture pool listing for the **Textures** window.
-    texture_debug: TextureDebugSnapshot,
     /// Whether the **Scene transforms** window is open (independent of the stats panel).
     scene_transforms_open: bool,
-    /// Whether the **Textures** window is open.
-    texture_debug_open: bool,
-    /// Show only textures referenced by the current view in the **Textures** window.
-    texture_debug_current_view_only: bool,
-    /// Show only overlay/UI-ish draws in the **Draw state** tab.
-    draw_state_ui_only: bool,
-    /// Show only material rows with render-state overrides in the **Draw state** tab.
-    draw_state_only_overrides: bool,
-    /// Show only fallback shader routes in the **Shader routes** tab.
-    shader_routes_only_fallback: bool,
     /// Live settings + persistence target for the **Renderer config** window.
     renderer_settings: RendererSettingsHandle,
     config_save_path: PathBuf,
@@ -168,13 +129,7 @@ impl DebugHud {
             latest: None,
             frame_diagnostics: None,
             scene_transforms: SceneTransformsSnapshot::default(),
-            texture_debug: TextureDebugSnapshot::default(),
             scene_transforms_open: true,
-            texture_debug_open: true,
-            texture_debug_current_view_only: false,
-            draw_state_ui_only: false,
-            draw_state_only_overrides: false,
-            shader_routes_only_fallback: false,
             renderer_settings,
             config_save_path,
             renderer_config_open: true,
@@ -201,11 +156,6 @@ impl DebugHud {
         self.scene_transforms = sample;
     }
 
-    /// Stores texture pool rows for the **Textures** window.
-    pub fn set_texture_debug_snapshot(&mut self, sample: TextureDebugSnapshot) {
-        self.texture_debug = sample;
-    }
-
     /// Clears Stats / Shader routes payloads only (not [`Self::frame_timing`] or scene transforms).
     pub fn clear_stats_hud_payloads(&mut self) {
         self.latest = None;
@@ -217,17 +167,11 @@ impl DebugHud {
         self.scene_transforms = SceneTransformsSnapshot::default();
     }
 
-    /// Clears the **Textures** HUD payload.
-    pub fn clear_texture_debug_snapshot(&mut self) {
-        self.texture_debug = TextureDebugSnapshot::default();
-    }
-
     /// Clears all HUD payloads (including frame timing).
     pub fn clear_diagnostic_snapshots(&mut self) {
         self.frame_timing = None;
         self.clear_stats_hud_payloads();
         self.clear_scene_transforms_snapshot();
-        self.clear_texture_debug_snapshot();
     }
 
     /// Updates ImGui delta time, display size, and injects [`DebugHudInput`] for this frame.
@@ -243,8 +187,8 @@ impl DebugHud {
     }
 
     /// Reads which optional HUD windows are enabled from live settings.
-    fn overlay_feature_flags(&self) -> (bool, bool, bool, bool, bool) {
-        let (frame_timing_hud, main_hud, transforms_hud, textures_hud) = self
+    fn overlay_feature_flags(&self) -> (bool, bool, bool, bool) {
+        let (frame_timing_hud, main_hud, transforms_hud) = self
             .renderer_settings
             .read()
             .map(|g| {
@@ -252,16 +196,14 @@ impl DebugHud {
                     g.debug.debug_hud_frame_timing,
                     g.debug.debug_hud_enabled,
                     g.debug.debug_hud_transforms,
-                    g.debug.debug_hud_textures,
                 )
             })
-            .unwrap_or((true, false, false, false));
-        let any_debug_content = frame_timing_hud || main_hud || transforms_hud || textures_hud;
+            .unwrap_or((true, false, false));
+        let any_debug_content = frame_timing_hud || main_hud || transforms_hud;
         (
             frame_timing_hud,
             main_hud,
             transforms_hud,
-            textures_hud,
             any_debug_content,
         )
     }
@@ -312,7 +254,7 @@ impl DebugHud {
     ) -> Result<(bool, bool), DebugHudEncodeError> {
         self.apply_overlay_frame_io((width, height), input);
 
-        let (frame_timing_hud, main_hud, transforms_hud, textures_hud, any_debug_content) =
+        let (frame_timing_hud, main_hud, transforms_hud, any_debug_content) =
             self.overlay_feature_flags();
 
         let ui = self.imgui.frame();
@@ -326,9 +268,6 @@ impl DebugHud {
                     width,
                     self.latest.as_ref(),
                     self.frame_diagnostics.as_ref(),
-                    &mut self.shader_routes_only_fallback,
-                    &mut self.draw_state_ui_only,
-                    &mut self.draw_state_only_overrides,
                 );
             }
             if transforms_hud {
@@ -336,14 +275,6 @@ impl DebugHud {
                     ui,
                     &self.scene_transforms,
                     &mut self.scene_transforms_open,
-                );
-            }
-            if textures_hud {
-                overlay_texture_debug_window(
-                    ui,
-                    &self.texture_debug,
-                    &mut self.texture_debug_open,
-                    &mut self.texture_debug_current_view_only,
                 );
             }
         }

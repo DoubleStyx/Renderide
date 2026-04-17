@@ -202,6 +202,7 @@ pub(crate) fn build_embedded_wgsl(
     Ok(wgsl.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_embedded_render_pipelines(
     stem: &Arc<str>,
     device: &wgpu::Device,

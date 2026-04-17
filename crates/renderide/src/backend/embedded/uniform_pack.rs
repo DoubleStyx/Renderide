@@ -57,6 +57,7 @@ fn shader_writer_unescaped_field_name(field_name: &str) -> &str {
     }
 }
 
+#[allow(clippy::approx_constant)]
 fn default_vec4_for_field(field_name: &str) -> [f32; 4] {
     let field_name = shader_writer_unescaped_field_name(field_name);
     if field_name.ends_with("_ST") {

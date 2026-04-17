@@ -161,7 +161,7 @@ impl RendererRuntime {
     /// Records wall-clock spacing for host FPS metrics. Call at the very start of each winit tick,
     /// before [`Self::poll_ipc`], OpenXR, and [`Self::pre_frame`].
     pub fn tick_frame_wall_clock_begin(&mut self, now: Instant) {
-        self.backend.frame_resources.reset_light_prep_for_tick();
+        self.backend.reset_light_prep_for_tick();
         self.frontend.on_tick_frame_wall_clock(now);
     }
 

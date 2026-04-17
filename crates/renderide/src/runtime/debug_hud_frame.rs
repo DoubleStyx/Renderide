@@ -13,17 +13,14 @@ use super::RendererRuntime;
 const GPU_ALLOCATOR_FULL_REPORT_INTERVAL: Duration = Duration::from_secs(2);
 
 impl RendererRuntime {
-    /// Copies debug HUD capture flags into the backend before the render graph runs.
+    /// Copies [`crate::config::DebugSettings::debug_hud_enabled`] into the backend before the render graph runs.
     pub(super) fn sync_debug_hud_diagnostics_from_settings(&mut self) {
-        let (main, textures) = self
+        let main = self
             .settings
             .read()
-            .map(|s| (s.debug.debug_hud_enabled, s.debug.debug_hud_textures))
-            .unwrap_or((false, false));
+            .map(|s| s.debug.debug_hud_enabled)
+            .unwrap_or(false);
         self.backend.set_debug_hud_main_enabled(main);
-        self.backend.set_debug_hud_textures_enabled(textures);
-        self.backend
-            .clear_debug_hud_current_view_texture_2d_asset_ids();
     }
 
     /// Updates debug HUD snapshots after [`crate::gpu::GpuContext::end_frame_timing`] for the winit tick.
@@ -34,17 +31,11 @@ impl RendererRuntime {
         );
         self.backend.set_debug_hud_frame_timing(frame_timing);
 
-        let (main_hud, transforms_hud, textures_hud) = self
+        let (main_hud, transforms_hud) = self
             .settings
             .read()
-            .map(|s| {
-                (
-                    s.debug.debug_hud_enabled,
-                    s.debug.debug_hud_transforms,
-                    s.debug.debug_hud_textures,
-                )
-            })
-            .unwrap_or((false, false, false));
+            .map(|s| (s.debug.debug_hud_enabled, s.debug.debug_hud_transforms))
+            .unwrap_or((false, false));
 
         if main_hud {
             let host = self.host_hud.snapshot();
@@ -119,16 +110,6 @@ impl RendererRuntime {
                 .set_debug_hud_scene_transforms_snapshot(scene_transforms);
         } else {
             self.backend.clear_debug_hud_scene_transforms_snapshot();
-        }
-
-        if textures_hud {
-            let textures = crate::diagnostics::TextureDebugSnapshot::capture(
-                self.backend.texture_pool(),
-                self.backend.debug_hud_current_view_texture_2d_asset_ids(),
-            );
-            self.backend.set_debug_hud_texture_debug_snapshot(textures);
-        } else {
-            self.backend.clear_debug_hud_texture_debug_snapshot();
         }
     }
 
