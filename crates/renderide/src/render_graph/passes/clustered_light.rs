@@ -215,22 +215,30 @@ fn run_clustered_light_eye_passes(env: ClusteredLightEyePassEnv<'_>) {
 }
 
 /// Resolves mono or stereo [`ClusterFrameParams`] rows for the current host camera and viewport.
+///
+/// On success, replaces `out` with one or two rows; on failure clears `out` and returns `None`.
 fn clustered_light_eye_params_for_viewport(
     stereo: bool,
     hc: &HostCameraFrame,
     scene: &SceneCoordinator,
     viewport: (u32, u32),
-) -> Option<Vec<ClusterFrameParams>> {
+    out: &mut Vec<ClusterFrameParams>,
+) -> Option<()> {
+    out.clear();
     if stereo {
         if let Some((left, right)) = cluster_frame_params_stereo(hc, scene, viewport) {
-            Some(vec![left, right])
+            out.push(left);
+            out.push(right);
+            Some(())
         } else if let Some(mono) = cluster_frame_params(hc, scene, viewport) {
-            Some(vec![mono])
+            out.push(mono);
+            Some(())
         } else {
             None
         }
     } else if let Some(mono) = cluster_frame_params(hc, scene, viewport) {
-        Some(vec![mono])
+        out.push(mono);
+        Some(())
     } else {
         None
     }
@@ -245,17 +253,21 @@ pub struct ClusteredLightPass {
     /// Last [`crate::backend::cluster_gpu::ClusterBufferCache::version`] used for compute bind group; recreated when cluster buffers reallocate.
     cached_cluster_bind_version: Option<u64>,
     cached_compute_bind_group: Option<wgpu::BindGroup>,
+    /// Reused each execute for mono (1) or stereo (2) [`ClusterFrameParams`] rows.
+    cluster_eye_params_scratch: Vec<ClusterFrameParams>,
 }
 
 impl ClusteredLightPass {
     /// Creates a clustered light pass (pipeline is created lazily on first execute).
     pub fn new(cluster_buffers: ResourceId, light_buffer: ResourceId) -> Self {
+        let cluster_eye_params_scratch = Vec::with_capacity(2);
         Self {
             cluster_buffers,
             light_buffer,
             logged_active_once: false,
             cached_cluster_bind_version: None,
             cached_compute_bind_group: None,
+            cluster_eye_params_scratch,
         }
     }
 
@@ -389,32 +401,41 @@ impl RenderPass for ClusteredLightPass {
         };
         let viewport = (vw, vh);
 
-        let Some(eye_params) =
-            clustered_light_eye_params_for_viewport(stereo, &hc, scene, viewport)
-        else {
+        if clustered_light_eye_params_for_viewport(
+            stereo,
+            &hc,
+            scene,
+            viewport,
+            &mut self.cluster_eye_params_scratch,
+        )
+        .is_none()
+        {
             return Ok(());
-        };
+        }
 
-        let clusters_per_eye =
-            eye_params[0].cluster_count_x * eye_params[0].cluster_count_y * CLUSTER_COUNT_Z;
+        let clusters_per_eye = self.cluster_eye_params_scratch[0].cluster_count_x
+            * self.cluster_eye_params_scratch[0].cluster_count_y
+            * CLUSTER_COUNT_Z;
 
         let (pipeline, bgl) = ensure_compute_pipeline(ctx.device);
         let cluster_ver = fgpu.cluster_cache.version;
-        let bind_group = self.ensure_cluster_compute_bind_group(
-            ctx.device,
-            cluster_ver,
-            &refs,
-            &fgpu.lights_buffer,
-            bgl,
-        );
+        let bind_group = self
+            .ensure_cluster_compute_bind_group(
+                ctx.device,
+                cluster_ver,
+                &refs,
+                &fgpu.lights_buffer,
+                bgl,
+            )
+            .clone();
 
         run_clustered_light_eye_passes(ClusteredLightEyePassEnv {
             encoder: ctx.encoder,
             queue: &queue,
             pipeline,
-            bind_group,
+            bind_group: &bind_group,
             params_buffer: refs.params_buffer,
-            eye_params: &eye_params,
+            eye_params: self.cluster_eye_params_scratch.as_slice(),
             clusters_per_eye,
             light_count,
             viewport,
@@ -423,11 +444,11 @@ impl RenderPass for ClusteredLightPass {
 
         if !self.logged_active_once {
             self.logged_active_once = true;
-            let eye_count = eye_params.len();
+            let eye_count = self.cluster_eye_params_scratch.len();
             logger::info!(
                 "ClusteredLight active (grid {}x{}x{} lights={} eyes={})",
-                eye_params[0].cluster_count_x,
-                eye_params[0].cluster_count_y,
+                self.cluster_eye_params_scratch[0].cluster_count_x,
+                self.cluster_eye_params_scratch[0].cluster_count_y,
                 CLUSTER_COUNT_Z,
                 light_count,
                 eye_count,

@@ -3,6 +3,9 @@
 //! [`FrameResourceManager`] owns the CPU-side packed light buffer and tick coalescing flags.
 //! After GPU attach, [`super::FrameGpuBindings`] (when present) holds `@group(0)` / `@group(1)` /
 //! `@group(2)` resources used by [`crate::render_graph::passes::ClusteredLightPass`] and the forward pass.
+//!
+//! Per-draw packing reuses [`Self::per_draw_uniforms_scratch`] and [`Self::per_draw_slab_byte_scratch`]
+//! so mesh forward avoids per-frame `Vec` allocations for VP/model uniforms and the byte slab.
 
 use std::cell::Cell;
 use std::sync::Arc;
@@ -10,6 +13,7 @@ use std::sync::Arc;
 use super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources};
 use super::frame_gpu_bindings::FrameGpuBindings;
 use super::light_gpu::{order_lights_for_clustered_shading_in_place, GpuLight, MAX_LIGHTS};
+use super::mesh_deform::PaddedPerDrawUniforms;
 use super::per_draw_resources::PerDrawResources;
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::scene::{ResolvedLight, SceneCoordinator};
@@ -64,6 +68,10 @@ pub struct FrameResourceManager {
     /// In VR, the HMD graph runs mesh deform first; secondary cameras skip it via this flag.
     /// Reset with [`Self::reset_light_prep_for_tick`].
     mesh_deform_dispatched_this_tick: Cell<bool>,
+    /// Reused for world mesh forward per-draw VP/model packing (cleared/resized each pack).
+    pub(crate) per_draw_uniforms_scratch: Vec<PaddedPerDrawUniforms>,
+    /// Reused byte slab for [`super::mesh_deform::write_per_draw_uniform_slab`] before `queue.write_buffer`.
+    pub(crate) per_draw_slab_byte_scratch: Vec<u8>,
 }
 
 impl Default for FrameResourceManager {
@@ -82,6 +90,8 @@ impl FrameResourceManager {
             light_prep_done_this_tick: false,
             lights_gpu_uploaded_this_tick: Cell::new(false),
             mesh_deform_dispatched_this_tick: Cell::new(false),
+            per_draw_uniforms_scratch: Vec::new(),
+            per_draw_slab_byte_scratch: Vec::new(),
         }
     }
 

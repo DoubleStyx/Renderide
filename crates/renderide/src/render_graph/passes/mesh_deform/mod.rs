@@ -6,6 +6,8 @@
 mod encode;
 mod snapshot;
 
+use std::fmt;
+
 use rayon::prelude::*;
 
 use crate::backend::mesh_deform::EntryNeed;
@@ -26,9 +28,22 @@ use self::snapshot::{
 };
 
 /// Encodes mesh deformation compute for all active render spaces.
-#[derive(Debug)]
 pub struct MeshDeformPass {
     mesh_deform_outputs: ResourceId,
+    /// Reused ordering of [`SceneCoordinator::render_space_ids`] for parallel per-space collection.
+    mesh_deform_space_ids_scratch: Vec<RenderSpaceId>,
+    /// One bucket per render space; inner [`Vec`] capacities are reused across frames.
+    mesh_deform_chunks_scratch: Vec<Vec<DeformWorkItem>>,
+    /// Flattened work list passed to encode (cleared after each successful dispatch).
+    mesh_deform_work_scratch: Vec<DeformWorkItem>,
+}
+
+impl fmt::Debug for MeshDeformPass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeshDeformPass")
+            .field("mesh_deform_outputs", &self.mesh_deform_outputs)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MeshDeformPass {
@@ -36,6 +51,9 @@ impl MeshDeformPass {
     pub fn new(mesh_deform_outputs: ResourceId) -> Self {
         Self {
             mesh_deform_outputs,
+            mesh_deform_space_ids_scratch: Vec::new(),
+            mesh_deform_chunks_scratch: Vec::new(),
+            mesh_deform_work_scratch: Vec::new(),
         }
     }
 }
@@ -164,21 +182,32 @@ impl RenderPass for MeshDeformPass {
         }
         // Scope `scene` + `mesh_pool` so the rayon closure only captures `Sync` refs, not
         // [`crate::backend::RenderBackend`] (contains `RefCell`, imgui, non-`Sync` graph passes).
-        let work: Vec<DeformWorkItem> = {
+        {
             let scene = frame.scene;
             let mesh_pool = frame.backend.mesh_pool();
-            let space_ids: Vec<RenderSpaceId> = scene.render_space_ids().collect();
-            let work_chunks: Vec<Vec<DeformWorkItem>> = space_ids
-                .par_iter()
-                .copied()
-                .map(|space_id| collect_deform_work_for_space(scene, mesh_pool, space_id))
-                .collect();
-            let mut work: Vec<DeformWorkItem> = Vec::with_capacity(est);
-            for chunk in work_chunks {
-                work.extend(chunk);
+            self.mesh_deform_space_ids_scratch.clear();
+            self.mesh_deform_space_ids_scratch
+                .extend(scene.render_space_ids());
+            let space_ids = &self.mesh_deform_space_ids_scratch;
+            self.mesh_deform_chunks_scratch.truncate(space_ids.len());
+            while self.mesh_deform_chunks_scratch.len() < space_ids.len() {
+                self.mesh_deform_chunks_scratch.push(Vec::new());
             }
-            work
-        };
+            space_ids
+                .par_iter()
+                .zip(self.mesh_deform_chunks_scratch.par_iter_mut())
+                .for_each(|(&space_id, chunk)| {
+                    chunk.clear();
+                    chunk.extend(collect_deform_work_for_space(scene, mesh_pool, space_id));
+                });
+            let work = &mut self.mesh_deform_work_scratch;
+            let chunks = &mut self.mesh_deform_chunks_scratch;
+            work.clear();
+            work.reserve(est);
+            for chunk in chunks.iter_mut() {
+                work.append(chunk);
+            }
+        }
 
         let queue = match ctx.queue.lock() {
             Ok(q) => q,
@@ -203,10 +232,11 @@ impl RenderPass for MeshDeformPass {
                         "MeshDeformPass skipped: mesh preprocess compute pipelines are unavailable (deform compute disabled)"
                     );
                 }
+                self.mesh_deform_work_scratch.clear();
                 return Ok(());
             };
 
-            for item in work {
+            for item in &self.mesh_deform_work_scratch {
                 let need = EntryNeed {
                     needs_blend: deform_needs_blend_snapshot(&item.mesh),
                     needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),
@@ -256,6 +286,8 @@ impl RenderPass for MeshDeformPass {
             let fc = skin_cache.frame_counter();
             skin_cache.sweep_stale(fc.saturating_sub(2));
         }
+
+        self.mesh_deform_work_scratch.clear();
 
         frame
             .backend
