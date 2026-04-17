@@ -4,33 +4,50 @@ use crate::present::{record_swapchain_clear_pass, SWAPCHAIN_CLEAR_COLOR};
 
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
+use crate::render_graph::handles::ResourceId;
+use crate::render_graph::module::RenderModule;
 use crate::render_graph::pass::RenderPass;
-use crate::render_graph::resources::{PassResources, ResourceSlot};
+use crate::render_graph::resources::PassResources;
+use crate::render_graph::{GraphBuilder, SharedRenderHandles};
 
 /// Clears the acquired backbuffer to a solid color (default [`SWAPCHAIN_CLEAR_COLOR`]).
 #[derive(Debug)]
 pub struct SwapchainClearPass {
+    /// Logical swapchain color target.
+    backbuffer: ResourceId,
     /// Clear color for the swapchain load op.
     pub clear_color: wgpu::Color,
 }
 
 impl SwapchainClearPass {
     /// Default clear color matches [`SWAPCHAIN_CLEAR_COLOR`].
-    pub fn new() -> Self {
+    pub fn new(backbuffer: ResourceId) -> Self {
         Self {
+            backbuffer,
             clear_color: SWAPCHAIN_CLEAR_COLOR,
         }
     }
 
     /// Full control over the clear color (HDR or branding).
-    pub fn with_clear_color(clear_color: wgpu::Color) -> Self {
-        Self { clear_color }
+    pub fn with_clear_color(backbuffer: ResourceId, clear_color: wgpu::Color) -> Self {
+        Self {
+            backbuffer,
+            clear_color,
+        }
     }
 }
 
-impl Default for SwapchainClearPass {
-    fn default() -> Self {
-        Self::new()
+/// Registers [`SwapchainClearPass`] (optional / tooling graphs).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SwapchainClearModule;
+
+impl RenderModule for SwapchainClearModule {
+    fn name(&self) -> &str {
+        "swapchain_clear"
+    }
+
+    fn register(self: Box<Self>, builder: &mut GraphBuilder, handles: &SharedRenderHandles) {
+        builder.add_pass(Box::new(SwapchainClearPass::new(handles.backbuffer)));
     }
 }
 
@@ -42,7 +59,7 @@ impl RenderPass for SwapchainClearPass {
     fn resources(&self) -> PassResources {
         PassResources {
             reads: Vec::new(),
-            writes: vec![ResourceSlot::Backbuffer],
+            writes: vec![self.backbuffer],
         }
     }
 

@@ -11,8 +11,11 @@ use rayon::prelude::*;
 use crate::backend::mesh_deform::{EntryNeed, GpuSkinCache};
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
+use crate::render_graph::handles::ResourceId;
+use crate::render_graph::module::RenderModule;
 use crate::render_graph::pass::{PassPhase, RenderPass};
-use crate::render_graph::resources::{PassResources, ResourceSlot};
+use crate::render_graph::resources::PassResources;
+use crate::render_graph::{GraphBuilder, SharedRenderHandles};
 use crate::resources::MeshPool;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
@@ -23,13 +26,31 @@ use self::snapshot::{
 };
 
 /// Encodes mesh deformation compute for all active render spaces.
-#[derive(Debug, Default)]
-pub struct MeshDeformPass;
+#[derive(Debug)]
+pub struct MeshDeformPass {
+    mesh_deform_outputs: ResourceId,
+}
 
 impl MeshDeformPass {
-    /// Creates a mesh deform pass instance.
-    pub fn new() -> Self {
-        Self
+    /// Creates a mesh deform pass bound to the logical deform output resource.
+    pub fn new(mesh_deform_outputs: ResourceId) -> Self {
+        Self {
+            mesh_deform_outputs,
+        }
+    }
+}
+
+/// Registers [`MeshDeformPass`] on the main frame graph.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MeshDeformModule;
+
+impl RenderModule for MeshDeformModule {
+    fn name(&self) -> &str {
+        "mesh_deform"
+    }
+
+    fn register(self: Box<Self>, builder: &mut GraphBuilder, handles: &SharedRenderHandles) {
+        builder.add_pass(Box::new(MeshDeformPass::new(handles.mesh_deform_outputs)));
     }
 }
 
@@ -109,7 +130,7 @@ impl RenderPass for MeshDeformPass {
     fn resources(&self) -> PassResources {
         PassResources {
             reads: Vec::new(),
-            writes: vec![ResourceSlot::MeshDeformOutputs],
+            writes: vec![self.mesh_deform_outputs],
         }
     }
 

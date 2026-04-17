@@ -18,7 +18,7 @@ use crate::backend::mesh_deform::{MeshDeformScratch, MeshPreprocessPipelines};
 use crate::config::RendererSettingsHandle;
 use crate::diagnostics::{DebugHudEncodeError, DebugHudInput, SceneTransformsSnapshot};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
-use crate::render_graph::WorldMeshDrawStats;
+use crate::render_graph::{GraphCache, WorldMeshDrawStats};
 use crate::resources::{CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool};
 
 use super::debug_hud_bundle::DebugHudBundle;
@@ -54,8 +54,8 @@ pub struct RenderBackend {
     pub(crate) asset_transfers: AssetTransferQueue,
     /// Optional mesh skinning / blendshape compute pipelines (after [`Self::attach`]).
     mesh_preprocess: Option<MeshPreprocessPipelines>,
-    /// Compiled DAG of render passes (after [`Self::attach`]); see [`crate::render_graph`].
-    frame_graph: Option<crate::render_graph::CompiledRenderGraph>,
+    /// Last compiled render graph keyed by surface extent, MSAA, multiview, and format; see [`crate::render_graph`].
+    graph_cache: GraphCache,
     /// Scratch buffers for mesh deformation compute (after [`Self::attach`]).
     mesh_deform_scratch: Option<MeshDeformScratch>,
     /// Per-frame bind groups, light staging, and debug draw slab.
@@ -81,7 +81,7 @@ impl RenderBackend {
             materials: MaterialSystem::new(),
             asset_transfers: AssetTransferQueue::new(),
             mesh_preprocess: None,
-            frame_graph: None,
+            graph_cache: GraphCache::default(),
             mesh_deform_scratch: None,
             frame_resources: super::FrameResourceManager::new(),
             debug_hud: DebugHudBundle::new(),
@@ -192,9 +192,9 @@ impl RenderBackend {
         self.materials.embedded_material_bind()
     }
 
-    /// Number of schedules passes in the compiled frame graph, or `0` if none.
+    /// Number of scheduled passes in the cached frame graph, or `0` if none has been built yet.
     pub fn frame_graph_pass_count(&self) -> usize {
-        self.frame_graph.as_ref().map_or(0, |g| g.pass_count())
+        self.graph_cache.pass_count()
     }
 
     /// Call after [`crate::gpu::GpuContext`] is created so mesh/texture uploads can use the GPU.
@@ -249,14 +249,6 @@ impl RenderBackend {
         asset_uploads::attach_flush_pending_asset_uploads(&mut self.asset_transfers, &device, shm);
 
         self.msaa_depth_resolve = MsaaDepthResolveResources::try_new(device.as_ref()).map(Arc::new);
-
-        self.frame_graph = match crate::render_graph::build_default_main_graph() {
-            Ok(g) => Some(g),
-            Err(e) => {
-                logger::warn!("default render graph build failed: {e}");
-                None
-            }
-        };
     }
 
     /// Updates whether main HUD diagnostics run (mirrors [`crate::config::DebugSettings::debug_hud_enabled`]).

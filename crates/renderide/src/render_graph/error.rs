@@ -2,8 +2,8 @@
 
 use crate::present::PresentClearError;
 
+use super::handles::ResourceId;
 use super::ids::PassId;
-use super::resources::ResourceSlot;
 
 /// Errors that can occur when building a render graph.
 #[derive(Debug, thiserror::Error)]
@@ -12,14 +12,20 @@ pub enum GraphBuildError {
     #[error("cycle detected in render graph")]
     CycleDetected,
 
-    /// A pass reads a resource slot that no earlier pass produces.
-    #[error("pass {pass:?} reads {slot:?} but no earlier pass writes it")]
+    /// A pass reads a resource that no earlier pass produces (in topological order).
+    #[error("pass {pass:?} reads `{name}` ({resource:?}) but no earlier pass writes it")]
     MissingDependency {
         /// Pass that requires the missing dependency.
         pass: PassId,
-        /// Resource slot that has no producer.
-        slot: ResourceSlot,
+        /// Resource handle with no producer.
+        resource: ResourceId,
+        /// Name from the resource registry.
+        name: &'static str,
     },
+
+    /// A pass referenced a resource id not registered on this builder.
+    #[error("unknown resource handle {0:?}")]
+    UnknownResource(ResourceId),
 }
 
 /// Failure inside a single [`super::RenderPass::execute`] call.
@@ -53,6 +59,10 @@ pub enum GraphExecuteError {
     /// No compiled graph was installed (e.g. GPU attach failed before graph build).
     #[error("no frame graph configured on render backend")]
     NoFrameGraph,
+
+    /// Render graph failed to compile for the current cache key.
+    #[error(transparent)]
+    GraphBuild(#[from] GraphBuildError),
 
     /// Surface acquisition or recovery failed after retry.
     #[error(transparent)]

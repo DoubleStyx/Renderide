@@ -1,30 +1,59 @@
-//! DAG builder: topological sort, cycle detection, and producer/consumer validation.
+//! DAG builder: topological sort, cycle detection, auto-derived edges, and producer/consumer validation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::compiled::{CompileStats, CompiledRenderGraph};
 use super::error::GraphBuildError;
+use super::handles::ResourceId;
 use super::ids::PassId;
+use super::module::RenderModule;
 use super::pass::RenderPass;
-use super::resources::ResourceSlot;
+use super::resources::PassResources;
 
 /// Builder for a directed acyclic graph of render passes.
 ///
-/// Declare passes and edges (`from` before `to`), then call [`Self::build`] to obtain an immutable
-/// [`CompiledRenderGraph`]. Use [`Self::add_pass_if`] to omit optional branches without placeholder
-/// passes.
+/// Declare logical resources with [`Self::import`] / [`Self::create_transient`], register passes,
+/// then [`Self::build`]. Edges are **auto-derived** from read/write declarations (last writer →
+/// reader); use [`Self::add_edge`] only when explicit ordering is required beyond resource flow.
 pub struct GraphBuilder {
     passes: Vec<Box<dyn RenderPass>>,
     edges: Vec<(usize, usize)>,
+    resources: Vec<super::handles::ResourceDesc>,
 }
 
 impl GraphBuilder {
-    /// Empty builder with no passes or edges.
+    /// Empty builder with no passes, edges, or resource registry entries.
     pub fn new() -> Self {
         Self {
             passes: Vec::new(),
             edges: Vec::new(),
+            resources: Vec::new(),
         }
+    }
+
+    fn alloc_resource(&mut self, desc: super::handles::ResourceDesc) -> ResourceId {
+        let next = (self.resources.len() + 1) as u32;
+        self.resources.push(desc);
+        ResourceId::from_index_one_based(next)
+    }
+
+    /// Registers an externally owned logical resource (swapchain, depth, frame buffer).
+    pub fn import(&mut self, desc: super::handles::ResourceDesc) -> ResourceId {
+        self.alloc_resource(desc)
+    }
+
+    /// Registers a transient logical resource (metadata only until an allocator exists).
+    pub fn create_transient(&mut self, desc: super::handles::ResourceDesc) -> ResourceId {
+        self.alloc_resource(desc)
+    }
+
+    /// Runs [`RenderModule::register`] for `module`.
+    pub fn register_module(
+        &mut self,
+        module: Box<dyn RenderModule>,
+        handles: &super::handles::SharedRenderHandles,
+    ) {
+        module.register(self, handles);
     }
 
     /// Appends a pass; returns its [`PassId`] for [`Self::add_edge`].
@@ -48,6 +77,19 @@ impl GraphBuilder {
         self.edges.push((from.0, to.0));
     }
 
+    fn validate_pass_resources(&self, res: &PassResources) -> Result<(), GraphBuildError> {
+        for &r in res.reads.iter().chain(res.writes.iter()) {
+            if r.index() >= self.resources.len() {
+                return Err(GraphBuildError::UnknownResource(r));
+            }
+        }
+        Ok(())
+    }
+
+    fn resource_name(&self, id: ResourceId) -> &'static str {
+        self.resources[id.index()].name
+    }
+
     /// Topologically sorts passes, validates resource flow, and transfers ownership into a graph.
     pub fn build(self) -> Result<CompiledRenderGraph, GraphBuildError> {
         let n = self.passes.len();
@@ -62,17 +104,43 @@ impl GraphBuilder {
             });
         }
 
+        for i in 0..n {
+            self.validate_pass_resources(&self.passes[i].resources())?;
+        }
+
+        let mut last_writer: HashMap<ResourceId, usize> = HashMap::new();
+        let mut auto_edges: Vec<(usize, usize)> = Vec::new();
+        for pass_idx in 0..n {
+            let pr = self.passes[pass_idx].resources();
+            for &read in &pr.reads {
+                if let Some(&w) = last_writer.get(&read) {
+                    if w != pass_idx {
+                        auto_edges.push((w, pass_idx));
+                    }
+                }
+            }
+            for &wrote in &pr.writes {
+                last_writer.insert(wrote, pass_idx);
+            }
+        }
+
+        let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
+        for e in self.edges.iter().copied().chain(auto_edges) {
+            if e.0 < n && e.1 < n && e.0 != e.1 {
+                edge_set.insert(e);
+            }
+        }
+        let merged_edges: Vec<(usize, usize)> = edge_set.into_iter().collect();
+
         let mut in_degree = vec![0usize; n];
         let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
 
-        for &(from, to) in &self.edges {
+        for &(from, to) in &merged_edges {
             if from >= n || to >= n {
                 return Err(GraphBuildError::CycleDetected);
             }
-            if from != to {
-                neighbors[from].push(to);
-                in_degree[to] += 1;
-            }
+            neighbors[from].push(to);
+            in_degree[to] += 1;
         }
 
         let mut current: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
@@ -98,24 +166,27 @@ impl GraphBuilder {
             return Err(GraphBuildError::CycleDetected);
         }
 
-        let mut cumulative_writes: HashSet<ResourceSlot> = HashSet::new();
+        let mut cumulative_writes: HashSet<ResourceId> = HashSet::new();
         for &pass_idx in &sorted {
             let resources = self.passes[pass_idx].resources();
             for &slot in &resources.reads {
                 if !cumulative_writes.contains(&slot) {
                     return Err(GraphBuildError::MissingDependency {
                         pass: PassId(pass_idx),
-                        slot,
+                        resource: slot,
+                        name: self.resource_name(slot),
                     });
                 }
             }
             cumulative_writes.extend(resources.writes.iter().copied());
         }
 
-        let needs_surface_acquire = self
-            .passes
-            .iter()
-            .any(|p| p.resources().writes.contains(&ResourceSlot::Backbuffer));
+        let needs_surface_acquire = self.passes.iter().any(|p| {
+            p.resources()
+                .writes
+                .iter()
+                .any(|&rid| self.resource_name(rid) == "backbuffer")
+        });
 
         let mut pass_take: Vec<Option<Box<dyn RenderPass>>> =
             self.passes.into_iter().map(Some).collect();
@@ -147,9 +218,11 @@ impl Default for GraphBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_graph::cache::GraphCacheKey;
     use crate::render_graph::context::RenderPassContext;
     use crate::render_graph::error::RenderPassError;
-    use crate::render_graph::resources::PassResources;
+    use crate::render_graph::handles::{ResourceDesc, SharedRenderHandles};
+    use wgpu::{TextureFormat, TextureUsages};
 
     struct TestPass {
         name: &'static str,
@@ -170,7 +243,16 @@ mod tests {
         }
     }
 
-    fn pass_w(name: &'static str, writes: &[ResourceSlot]) -> Box<dyn RenderPass> {
+    fn dummy_key() -> GraphCacheKey {
+        GraphCacheKey {
+            surface_extent: (800, 600),
+            msaa_sample_count: 1,
+            multiview_stereo: false,
+            surface_format: TextureFormat::Bgra8UnormSrgb,
+        }
+    }
+
+    fn pass_w(name: &'static str, writes: &[ResourceId]) -> Box<dyn RenderPass> {
         Box::new(TestPass {
             name,
             resources: PassResources {
@@ -182,8 +264,8 @@ mod tests {
 
     fn pass_rw(
         name: &'static str,
-        reads: &[ResourceSlot],
-        writes: &[ResourceSlot],
+        reads: &[ResourceId],
+        writes: &[ResourceId],
     ) -> Box<dyn RenderPass> {
         Box::new(TestPass {
             name,
@@ -195,31 +277,31 @@ mod tests {
     }
 
     #[test]
-    fn linear_chain_validates() {
+    fn linear_chain_auto_edges_validate() {
         let mut b = GraphBuilder::new();
-        let a = b.add_pass(pass_w("a", &[ResourceSlot::Color]));
-        let b_id = b.add_pass(pass_rw(
-            "b",
-            &[ResourceSlot::Color],
-            &[ResourceSlot::Surface],
+        let color = b.import(ResourceDesc::transient_texture("color"));
+        let surface = b.import(ResourceDesc::imported_texture(
+            "surface",
+            Some(TextureFormat::Rgba8Unorm),
+            None,
+            TextureUsages::RENDER_ATTACHMENT,
         ));
-        b.add_edge(a, b_id);
+        b.add_pass(pass_w("a", &[color]));
+        b.add_pass(pass_rw("b", &[color], &[surface]));
         let g = b.build().expect("build");
         assert_eq!(g.compile_stats.pass_count, 2);
         assert_eq!(g.compile_stats.topo_levels, 2);
-        assert!(!g.needs_surface_acquire);
+        assert!(!g.needs_surface_acquire());
     }
 
     #[test]
     fn missing_dependency_errs() {
         let mut b = GraphBuilder::new();
-        b.add_pass(pass_rw("orphan_reader", &[ResourceSlot::Color], &[]));
+        let color = b.import(ResourceDesc::transient_texture("color"));
+        b.add_pass(pass_rw("orphan_reader", &[color], &[]));
         assert!(matches!(
             b.build(),
-            Err(GraphBuildError::MissingDependency {
-                slot: ResourceSlot::Color,
-                ..
-            })
+            Err(GraphBuildError::MissingDependency { name: "color", .. })
         ));
     }
 
@@ -236,9 +318,16 @@ mod tests {
     #[test]
     fn add_pass_if_skips_when_false() {
         let mut b = GraphBuilder::new();
-        b.add_pass(pass_w("root", &[ResourceSlot::Color]));
+        let color = b.import(ResourceDesc::transient_texture("color"));
+        b.add_pass(pass_w("root", &[color]));
+        let surface = b.import(ResourceDesc::imported_texture(
+            "surface",
+            None,
+            None,
+            TextureUsages::RENDER_ATTACHMENT,
+        ));
         assert!(b
-            .add_pass_if(false, pass_w("skipped", &[ResourceSlot::Surface]))
+            .add_pass_if(false, pass_w("skipped", &[surface]))
             .is_none());
         let g = b.build().expect("build");
         assert_eq!(g.compile_stats.pass_count, 1);
@@ -247,24 +336,22 @@ mod tests {
     #[test]
     fn forward_without_mesh_deform_producer_missing_dependency() {
         let mut b = GraphBuilder::new();
+        let key = dummy_key();
+        let h = SharedRenderHandles::declare(&mut b, key);
         let clustered = b.add_pass(pass_w(
             "clustered_like",
-            &[ResourceSlot::ClusterBuffers, ResourceSlot::LightBuffer],
+            &[h.cluster_buffers, h.light_buffer],
         ));
         let forward_like = b.add_pass(pass_rw(
             "forward_like",
-            &[
-                ResourceSlot::ClusterBuffers,
-                ResourceSlot::LightBuffer,
-                ResourceSlot::MeshDeformOutputs,
-            ],
-            &[ResourceSlot::Backbuffer],
+            &[h.cluster_buffers, h.light_buffer, h.mesh_deform_outputs],
+            &[h.backbuffer],
         ));
         b.add_edge(clustered, forward_like);
         assert!(matches!(
             b.build(),
             Err(GraphBuildError::MissingDependency {
-                slot: ResourceSlot::MeshDeformOutputs,
+                name: "mesh_deform_outputs",
                 ..
             })
         ));
@@ -273,22 +360,33 @@ mod tests {
     #[test]
     fn parallel_passes_single_level() {
         let mut b = GraphBuilder::new();
-        let a = b.add_pass(pass_w("a", &[ResourceSlot::Color]));
-        let c = b.add_pass(pass_w("c", &[ResourceSlot::Depth]));
-        let b_id = b.add_pass(pass_rw(
-            "b",
-            &[ResourceSlot::Color],
-            &[ResourceSlot::Surface],
+        let color = b.import(ResourceDesc::transient_texture("color"));
+        let depth = b.import(ResourceDesc::transient_texture("depth"));
+        let surface = b.import(ResourceDesc::imported_texture(
+            "surface",
+            None,
+            None,
+            TextureUsages::RENDER_ATTACHMENT,
         ));
-        let d = b.add_pass(pass_rw(
-            "d",
-            &[ResourceSlot::Depth],
-            &[ResourceSlot::Surface],
-        ));
+        let a = b.add_pass(pass_w("a", &[color]));
+        let c = b.add_pass(pass_w("c", &[depth]));
+        let b_id = b.add_pass(pass_rw("b", &[color], &[surface]));
+        let d = b.add_pass(pass_rw("d", &[depth], &[surface]));
         b.add_edge(a, b_id);
         b.add_edge(c, d);
         let g = b.build().expect("build");
         assert_eq!(g.compile_stats.topo_levels, 2);
         assert_eq!(g.compile_stats.pass_count, 4);
+    }
+
+    #[test]
+    fn auto_edge_writer_to_reader_without_manual_edge() {
+        let mut b = GraphBuilder::new();
+        let x = b.import(ResourceDesc::transient_texture("x"));
+        b.add_pass(pass_w("producer", &[x]));
+        b.add_pass(pass_rw("consumer", &[x], &[]));
+        let g = b.build().expect("build");
+        assert_eq!(g.compile_stats.pass_count, 2);
+        assert_eq!(g.compile_stats.topo_levels, 2);
     }
 }

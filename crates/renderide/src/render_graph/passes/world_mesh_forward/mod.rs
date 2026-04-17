@@ -30,9 +30,12 @@ mod vp;
 
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
+use crate::render_graph::handles::ResourceId;
+use crate::render_graph::module::RenderModule;
 use crate::render_graph::pass::RenderPass;
-use crate::render_graph::resources::{PassResources, ResourceSlot};
+use crate::render_graph::resources::PassResources;
 use crate::render_graph::{build_world_mesh_cull_proj_params, WorldMeshCullInput};
+use crate::render_graph::{GraphBuilder, SharedRenderHandles};
 
 use execute_helpers::{
     capture_hi_z_temporal_after_collect, compute_view_projections, encode_clear_only_pass,
@@ -43,13 +46,51 @@ use execute_helpers::{
 };
 
 /// Clears the backbuffer and depth, then draws meshes with material-batched raster pipelines.
-#[derive(Debug, Default)]
-pub struct WorldMeshForwardPass;
+#[derive(Debug)]
+pub struct WorldMeshForwardPass {
+    cluster_buffers: ResourceId,
+    light_buffer: ResourceId,
+    mesh_deform_outputs: ResourceId,
+    backbuffer: ResourceId,
+    depth: ResourceId,
+}
 
 impl WorldMeshForwardPass {
-    /// Creates a world mesh forward pass instance.
-    pub fn new() -> Self {
-        Self
+    /// Creates a world mesh forward pass bound to logical main-frame resources.
+    pub fn new(
+        cluster_buffers: ResourceId,
+        light_buffer: ResourceId,
+        mesh_deform_outputs: ResourceId,
+        backbuffer: ResourceId,
+        depth: ResourceId,
+    ) -> Self {
+        Self {
+            cluster_buffers,
+            light_buffer,
+            mesh_deform_outputs,
+            backbuffer,
+            depth,
+        }
+    }
+}
+
+/// Registers [`WorldMeshForwardPass`] on the main frame graph.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WorldMeshForwardModule;
+
+impl RenderModule for WorldMeshForwardModule {
+    fn name(&self) -> &str {
+        "world_mesh_forward"
+    }
+
+    fn register(self: Box<Self>, builder: &mut GraphBuilder, handles: &SharedRenderHandles) {
+        builder.add_pass(Box::new(WorldMeshForwardPass::new(
+            handles.cluster_buffers,
+            handles.light_buffer,
+            handles.mesh_deform_outputs,
+            handles.backbuffer,
+            handles.depth,
+        )));
     }
 }
 
@@ -61,11 +102,11 @@ impl RenderPass for WorldMeshForwardPass {
     fn resources(&self) -> PassResources {
         PassResources {
             reads: vec![
-                ResourceSlot::ClusterBuffers,
-                ResourceSlot::LightBuffer,
-                ResourceSlot::MeshDeformOutputs,
+                self.cluster_buffers,
+                self.light_buffer,
+                self.mesh_deform_outputs,
             ],
-            writes: vec![ResourceSlot::Backbuffer, ResourceSlot::Depth],
+            writes: vec![self.backbuffer, self.depth],
         }
     }
 

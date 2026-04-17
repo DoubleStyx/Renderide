@@ -3,17 +3,36 @@
 use crate::backend::HiZBuildInput;
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
+use crate::render_graph::handles::ResourceId;
+use crate::render_graph::module::RenderModule;
 use crate::render_graph::pass::RenderPass;
-use crate::render_graph::resources::{PassResources, ResourceSlot};
+use crate::render_graph::resources::PassResources;
+use crate::render_graph::{GraphBuilder, SharedRenderHandles};
 
 /// Compute + copy pass that samples main depth and stages mips for next-frame occlusion.
-#[derive(Debug, Default)]
-pub struct HiZBuildPass;
+#[derive(Debug)]
+pub struct HiZBuildPass {
+    depth: ResourceId,
+}
 
 impl HiZBuildPass {
-    /// Creates a Hi-Z build pass instance.
-    pub fn new() -> Self {
-        Self
+    /// Creates a Hi-Z build pass bound to the main depth logical resource.
+    pub fn new(depth: ResourceId) -> Self {
+        Self { depth }
+    }
+}
+
+/// Registers [`HiZBuildPass`] on the main frame graph.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HiZBuildModule;
+
+impl RenderModule for HiZBuildModule {
+    fn name(&self) -> &str {
+        "hi_z_build"
+    }
+
+    fn register(self: Box<Self>, builder: &mut GraphBuilder, handles: &SharedRenderHandles) {
+        builder.add_pass(Box::new(HiZBuildPass::new(handles.depth)));
     }
 }
 
@@ -24,7 +43,7 @@ impl RenderPass for HiZBuildPass {
 
     fn resources(&self) -> PassResources {
         PassResources {
-            reads: vec![ResourceSlot::Depth],
+            reads: vec![self.depth],
             writes: vec![],
         }
     }

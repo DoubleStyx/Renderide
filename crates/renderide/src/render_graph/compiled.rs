@@ -132,8 +132,8 @@ pub struct CompileStats {
 /// one submit per view so `wgpu::Queue::write_buffer` work in passes is ordered before each view’s GPU work.
 pub struct CompiledRenderGraph {
     pub(super) passes: Vec<Box<dyn RenderPass>>,
-    /// `true` when any pass writes [`super::resources::ResourceSlot::Backbuffer`] — frame execution
-    /// acquires the swapchain once and presents after submit.
+    /// `true` when any pass writes the logical `backbuffer` resource — frame execution acquires the
+    /// swapchain once and presents after submit.
     pub needs_surface_acquire: bool,
     /// Build-time stats for tests and future profiling hooks.
     pub compile_stats: CompileStats,
@@ -433,7 +433,11 @@ impl CompiledRenderGraph {
         };
         for pass in &mut self.passes {
             if pass.phase() == PassPhase::PerView {
-                pass.execute(&mut ctx)?;
+                let label = pass.name();
+                ctx.encoder.push_debug_group(label);
+                let r = pass.execute(&mut ctx);
+                ctx.encoder.pop_debug_group();
+                r?;
             }
         }
 
@@ -513,7 +517,11 @@ impl CompiledRenderGraph {
             };
             for pass in &mut self.passes {
                 if pass.phase() == PassPhase::FrameGlobal {
-                    pass.execute(&mut ctx)?;
+                    let label = pass.name();
+                    ctx.encoder.push_debug_group(label);
+                    let r = pass.execute(&mut ctx);
+                    ctx.encoder.pop_debug_group();
+                    r?;
                 }
             }
         }

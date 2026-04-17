@@ -21,8 +21,11 @@ use crate::render_graph::cluster_frame::{
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
 use crate::render_graph::frame_params::HostCameraFrame;
+use crate::render_graph::handles::ResourceId;
+use crate::render_graph::module::RenderModule;
 use crate::render_graph::pass::RenderPass;
-use crate::render_graph::resources::{PassResources, ResourceSlot};
+use crate::render_graph::resources::PassResources;
+use crate::render_graph::{GraphBuilder, SharedRenderHandles};
 use crate::scene::SceneCoordinator;
 
 /// CPU layout for the compute shader `ClusterParams` uniform (WGSL `struct` + tail pad).
@@ -236,22 +239,20 @@ fn clustered_light_eye_params_for_viewport(
 /// Builds per-cluster light lists before the world forward pass.
 #[derive(Debug)]
 pub struct ClusteredLightPass {
+    cluster_buffers: ResourceId,
+    light_buffer: ResourceId,
     logged_active_once: bool,
     /// Last [`crate::backend::cluster_gpu::ClusterBufferCache::version`] used for compute bind group; recreated when cluster buffers reallocate.
     cached_cluster_bind_version: Option<u64>,
     cached_compute_bind_group: Option<wgpu::BindGroup>,
 }
 
-impl Default for ClusteredLightPass {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ClusteredLightPass {
     /// Creates a clustered light pass (pipeline is created lazily on first execute).
-    pub fn new() -> Self {
+    pub fn new(cluster_buffers: ResourceId, light_buffer: ResourceId) -> Self {
         Self {
+            cluster_buffers,
+            light_buffer,
             logged_active_once: false,
             cached_cluster_bind_version: None,
             cached_compute_bind_group: None,
@@ -325,6 +326,23 @@ impl ClusteredLightPass {
     }
 }
 
+/// Registers [`ClusteredLightPass`] on the main frame graph.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ClusteredLightModule;
+
+impl RenderModule for ClusteredLightModule {
+    fn name(&self) -> &str {
+        "clustered_light"
+    }
+
+    fn register(self: Box<Self>, builder: &mut GraphBuilder, handles: &SharedRenderHandles) {
+        builder.add_pass(Box::new(ClusteredLightPass::new(
+            handles.cluster_buffers,
+            handles.light_buffer,
+        )));
+    }
+}
+
 impl RenderPass for ClusteredLightPass {
     fn name(&self) -> &str {
         "ClusteredLight"
@@ -333,7 +351,7 @@ impl RenderPass for ClusteredLightPass {
     fn resources(&self) -> PassResources {
         PassResources {
             reads: Vec::new(),
-            writes: vec![ResourceSlot::ClusterBuffers, ResourceSlot::LightBuffer],
+            writes: vec![self.cluster_buffers, self.light_buffer],
         }
     }
 

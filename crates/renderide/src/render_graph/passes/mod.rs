@@ -8,8 +8,8 @@ mod mesh_deform;
 mod swapchain_clear;
 mod world_mesh_forward;
 
-pub use clustered_light::ClusteredLightPass;
-pub use hi_z_build::HiZBuildPass;
-pub use mesh_deform::MeshDeformPass;
-pub use swapchain_clear::SwapchainClearPass;
-pub use world_mesh_forward::WorldMeshForwardPass;
+pub use clustered_light::{ClusteredLightModule, ClusteredLightPass};
+pub use hi_z_build::{HiZBuildModule, HiZBuildPass};
+pub use mesh_deform::{MeshDeformModule, MeshDeformPass};
+pub use swapchain_clear::{SwapchainClearModule, SwapchainClearPass};
+pub use world_mesh_forward::{WorldMeshForwardModule, WorldMeshForwardPass};
