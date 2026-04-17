@@ -46,4 +46,4 @@ The bootstrapper will launch the Resonite host and connect Renderide automatical
 
 1. Enable validation layers in the config hud to get more detailed error messages for GPU crashes. Requires a restart.
 
-1. Inspect logs in the `logs/` folder for panics, crashes,backtraces, and validation errors.
+1. Inspect logs in the `logs/` folder for panics, crashes, backtraces, and validation errors.
