@@ -10,8 +10,18 @@ use interprocess::{Publisher, Subscriber};
 use crate::child_lifetime::ChildLifetimeGroup;
 use crate::config::ResoBootConfig;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs;
+
+/// Returns `true` when `lhs` and `rhs` refer to the same inode (e.g. a hard link to the renderer binary).
+#[cfg(target_os = "macos")]
+fn same_filesystem_inode(lhs: &std::path::Path, rhs: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (fs::metadata(lhs), fs::metadata(rhs)) {
+        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
+        _ => false,
+    }
+}
 
 /// Command sent from the Host over `bootstrapper_in`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,14 +105,31 @@ pub fn handle_command(
             }
             let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 let symlink = &config.renderite_executable;
                 let target = config.renderite_directory.join("renderide");
-                if target.exists() && (!symlink.exists() || fs::read_link(symlink).is_err()) {
+                let needs_renderer_stub = target.exists() && {
+                    #[cfg(target_os = "linux")]
+                    {
+                        !symlink.exists() || fs::read_link(symlink).is_err()
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        !symlink.exists() || !same_filesystem_inode(symlink, &target)
+                    }
+                };
+                if needs_renderer_stub {
                     let _ = fs::remove_file(symlink);
-                    if let Err(e) = std::os::unix::fs::symlink("renderide", symlink) {
+                    #[cfg(target_os = "linux")]
+                    if let Err(e) = std::os::unix::fs::symlink(&target, symlink) {
                         logger::warn!("Failed to create Renderite.Renderer symlink: {}", e);
+                    }
+                    // Hard link so the Host path behaves like the real `renderide` binary; symlinks do
+                    // not affect argv0 / process image naming the same way on macOS.
+                    #[cfg(target_os = "macos")]
+                    if let Err(e) = fs::hard_link(&target, symlink) {
+                        logger::warn!("Failed to create Renderite.Renderer link: {}", e);
                     }
                 }
             }

@@ -1,7 +1,11 @@
 //! Host [`crate::shared::OutputState`] cursor policy and winit grab/warp helpers.
 
-use glam::{IVec2, Vec2};
-use winit::dpi::{LogicalPosition, LogicalSize};
+use glam::IVec2;
+#[cfg(not(target_os = "macos"))]
+use glam::Vec2;
+use winit::dpi::LogicalPosition;
+#[cfg(not(target_os = "macos"))]
+use winit::dpi::LogicalSize;
 use winit::window::{CursorGrabMode, Window};
 
 use super::accumulator::WindowInputAccumulator;
@@ -26,6 +30,7 @@ fn warp_cursor_logical(window: &Window, p: &IVec2) -> Result<(), winit::error::E
 ///
 /// Call after [`apply_output_state_to_window`] when [`OutputState::lock_cursor`] is true so relative
 /// look and IPC [`crate::shared::MouseState::window_position`] stay aligned with the OS cursor.
+#[cfg(not(target_os = "macos"))]
 pub fn apply_per_frame_cursor_lock_when_locked(
     window: &Window,
     acc: &mut WindowInputAccumulator,
@@ -58,8 +63,23 @@ pub fn apply_per_frame_cursor_lock_when_locked(
     Ok(())
 }
 
+/// Host cursor lock without per-frame warping.
+///
+/// On macOS this is intentionally a no-op: reapplying center warps every frame breaks relative mouse
+/// input with winit. Grab and visibility for [`OutputState::lock_cursor`] are still applied from
+/// [`apply_output_state_to_window`]; only continuous re-centering is omitted.
+#[cfg(target_os = "macos")]
+pub fn apply_per_frame_cursor_lock_when_locked(
+    _window: &Window,
+    _acc: &mut WindowInputAccumulator,
+    _lock_cursor_position: Option<IVec2>,
+) -> Result<(), winit::error::ExternalError> {
+    Ok(())
+}
+
 /// Applies host [`OutputState`] to the winit window (IME, grab transitions, warps). Use
-/// [`apply_per_frame_cursor_lock_when_locked`] each frame while locked for continuous re-centering.
+/// [`apply_per_frame_cursor_lock_when_locked`] each frame while locked for continuous re-centering
+/// (a no-op on macOS; see that function’s documentation).
 pub fn apply_output_state_to_window(
     window: &Window,
     state: &OutputState,

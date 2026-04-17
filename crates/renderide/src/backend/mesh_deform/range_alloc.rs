@@ -206,7 +206,7 @@ mod tests {
     fn grow_appends_tail() {
         let mut a = RangeAllocator::new(1024, 256);
         let _ = a.allocate(1024).unwrap();
-        let _ = a.free(Range {
+        a.free(Range {
             offset_bytes: 0,
             len_bytes: 1024,
         });

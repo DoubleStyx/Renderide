@@ -7,10 +7,16 @@ pub const LINUX_SHM_MEMORY_DIR: &str = "/dev/shm/.cloudtoid/interprocess/mmf";
 
 /// Returns the default directory for `.qu` backing files used by [`QueueOptions::new`] and [`QueueOptions::with_destroy`].
 ///
+/// If the process environment sets **`RENDERIDE_INTERPROCESS_DIR`**, that path is used for all
+/// platforms (override when the default tmpfs or temp layout is unavailable or wrong).
+///
 /// - **Linux**: [`LINUX_SHM_MEMORY_DIR`] under `/dev/shm` (tmpfs, matches typical managed layouts).
 /// - **Other Unix** (macOS, BSD, etc.): `std::env::temp_dir()/.cloudtoid/interprocess/mmf`.
 /// - **Windows**: same temp-dir layout (the named mapping does not use this path, but [`QueueOptions::path`] is populated for consistency).
 pub fn default_memory_dir() -> PathBuf {
+    if let Some(env_dir) = std::env::var_os("RENDERIDE_INTERPROCESS_DIR") {
+        return PathBuf::from(env_dir);
+    }
     #[cfg(target_os = "linux")]
     {
         PathBuf::from(LINUX_SHM_MEMORY_DIR)
