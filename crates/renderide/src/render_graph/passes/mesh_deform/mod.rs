@@ -12,7 +12,7 @@ use crate::backend::mesh_deform::{EntryNeed, GpuSkinCache};
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
 use crate::render_graph::pass::{PassPhase, RenderPass};
-use crate::render_graph::resources::PassResources;
+use crate::render_graph::resources::{PassResources, ResourceSlot};
 use crate::resources::MeshPool;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
@@ -109,7 +109,7 @@ impl RenderPass for MeshDeformPass {
     fn resources(&self) -> PassResources {
         PassResources {
             reads: Vec::new(),
-            writes: Vec::new(),
+            writes: vec![ResourceSlot::MeshDeformOutputs],
         }
     }
 

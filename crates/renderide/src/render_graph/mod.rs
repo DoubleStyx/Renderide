@@ -32,8 +32,9 @@
 //! 3. **Cull** — frustum and Hi-Z occlusion in [`world_mesh_cull`] (inputs to forward pass).
 //! 4. **Sort** — [`world_mesh_draw_prep`] builds draw order and batch keys.
 //! 5. **DrawPrep** — per-draw uniforms and material resolution inside [`passes::WorldMeshForwardPass`].
-//! 6. **RenderPasses** — [`CompiledRenderGraph`] runs deform → clustered lights → clear → forward
-//!    (see [`default_graph_tests`] / builder).
+//! 6. **RenderPasses** — [`CompiledRenderGraph`] runs mesh deform ([`ResourceSlot::MeshDeformOutputs`]
+//!    producer), clustered lights, then forward (see [`default_graph_tests`] / builder); frame-global
+//!    deform runs before per-view passes at execute time ([`CompiledRenderGraph::execute_multi_view`]).
 //! 7. **HiZ** — [`passes::HiZBuildPass`] after depth is written; CPU readback feeds next frame’s cull
 //!    ([`crate::render_graph::occlusion`]).
 //! 8. **FrameEnd** — submit, optional debug HUD composite, present, Hi-Z frame bookkeeping.
@@ -118,11 +119,10 @@ pub use world_mesh_cull::{
 /// Builds the default graph: mesh deform compute, clustered lights, world forward, then Hi-Z readback.
 pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError> {
     let mut builder = GraphBuilder::new();
-    let deform = builder.add_pass(Box::new(passes::MeshDeformPass::new()));
+    builder.add_pass(Box::new(passes::MeshDeformPass::new()));
     let clustered = builder.add_pass(Box::new(passes::ClusteredLightPass::new()));
     let forward = builder.add_pass(Box::new(passes::WorldMeshForwardPass::new()));
     let hiz = builder.add_pass(Box::new(passes::HiZBuildPass::new()));
-    builder.add_edge(deform, clustered);
     builder.add_edge(clustered, forward);
     builder.add_edge(forward, hiz);
     builder.build()
@@ -137,6 +137,6 @@ mod default_graph_tests {
         let g = build_default_main_graph().expect("default graph");
         assert!(g.needs_surface_acquire());
         assert_eq!(g.pass_count(), 4);
-        assert_eq!(g.compile_stats.topo_levels, 4);
+        assert_eq!(g.compile_stats.topo_levels, 3);
     }
 }

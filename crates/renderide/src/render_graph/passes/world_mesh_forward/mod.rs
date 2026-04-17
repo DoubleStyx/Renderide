@@ -60,7 +60,11 @@ impl RenderPass for WorldMeshForwardPass {
 
     fn resources(&self) -> PassResources {
         PassResources {
-            reads: vec![ResourceSlot::ClusterBuffers, ResourceSlot::LightBuffer],
+            reads: vec![
+                ResourceSlot::ClusterBuffers,
+                ResourceSlot::LightBuffer,
+                ResourceSlot::MeshDeformOutputs,
+            ],
             writes: vec![ResourceSlot::Backbuffer, ResourceSlot::Depth],
         }
     }

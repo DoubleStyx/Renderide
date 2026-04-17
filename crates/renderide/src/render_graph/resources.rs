@@ -12,6 +12,10 @@ pub enum ResourceSlot {
     ClusterBuffers,
     /// Light buffer for clustered shading.
     LightBuffer,
+    /// GPU outputs of blendshape/skinning preprocess ([`crate::render_graph::passes::MeshDeformPass`]):
+    /// deformed vertex streams and related scratch consumed by mesh draws (via mesh pool / frame
+    /// resources). Logical slot only in v1 (not a single concrete [`wgpu::Texture`]).
+    MeshDeformOutputs,
     /// MRT color (mesh pass output, composite input).
     Color,
     /// MRT position G-buffer.

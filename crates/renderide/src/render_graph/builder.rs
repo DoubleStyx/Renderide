@@ -245,6 +245,32 @@ mod tests {
     }
 
     #[test]
+    fn forward_without_mesh_deform_producer_missing_dependency() {
+        let mut b = GraphBuilder::new();
+        let clustered = b.add_pass(pass_w(
+            "clustered_like",
+            &[ResourceSlot::ClusterBuffers, ResourceSlot::LightBuffer],
+        ));
+        let forward_like = b.add_pass(pass_rw(
+            "forward_like",
+            &[
+                ResourceSlot::ClusterBuffers,
+                ResourceSlot::LightBuffer,
+                ResourceSlot::MeshDeformOutputs,
+            ],
+            &[ResourceSlot::Backbuffer],
+        ));
+        b.add_edge(clustered, forward_like);
+        assert!(matches!(
+            b.build(),
+            Err(GraphBuildError::MissingDependency {
+                slot: ResourceSlot::MeshDeformOutputs,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn parallel_passes_single_level() {
         let mut b = GraphBuilder::new();
         let a = b.add_pass(pass_w("a", &[ResourceSlot::Color]));
