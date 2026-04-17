@@ -5,7 +5,7 @@
 //! also includes `COPY_SRC` so [`crate::backend::frame_gpu::FrameGpuResources::copy_scene_depth_snapshot`]
 //! can copy scene depth for intersection / frame bindings (same as main `renderide-depth`).
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::sync::Arc;
 
 use crate::gpu::GpuLimits;

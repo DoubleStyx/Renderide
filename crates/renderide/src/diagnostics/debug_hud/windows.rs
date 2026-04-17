@@ -68,6 +68,10 @@ fn main_debug_panel_gpu_adapter(ui: &imgui::Ui, r: &RendererInfoSnapshot) {
         r.msaa_requested_samples, r.msaa_effective_samples, r.msaa_max_samples
     ));
     ui.text(format!(
+        "MSAA (VR stereo): effective {}×  |  max {}×",
+        r.msaa_effective_samples_stereo, r.msaa_max_samples_stereo
+    ));
+    ui.text(format!(
         "Limits: tex2d≤{}  max_buf={}  storage_bind={}  |  base_instance={}  multiview={}",
         r.gpu_max_texture_dim_2d,
         r.gpu_max_buffer_size,

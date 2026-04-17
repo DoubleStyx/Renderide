@@ -9,8 +9,8 @@
 //! `RECTCLIP`, case variants) are interpreted the same way as legacy FrooxEngine/Unity keyword bindings—without
 //! hard-coding a particular shader stem in the draw pass.
 
+use hashbrown::HashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 

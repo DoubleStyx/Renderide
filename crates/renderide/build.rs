@@ -44,7 +44,7 @@ mod openxr_win {
     ));
 }
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -482,7 +482,7 @@ fn compose_material(
             source: material_source,
             file_path: material_file_path,
             shader_type: ShaderType::Wgsl,
-            shader_defs,
+            shader_defs: std::collections::HashMap::from_iter(shader_defs),
             ..Default::default()
         })
         .unwrap_or_else(|e| panic!("compose {material_file_path}: {e}"))

@@ -1,6 +1,6 @@
 //! Resident [`GpuMesh`] table with optional layout fingerprint cache and VRAM accounting.
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 use crate::assets::mesh::{GpuMesh, MeshBufferLayout};
 

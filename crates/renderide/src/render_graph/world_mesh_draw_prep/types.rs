@@ -1,7 +1,7 @@
 //! Draw filter, batch keys, and collected draw item types for world mesh forward drawing.
 
+use hashbrown::HashSet;
 use std::borrow::Cow;
-use std::collections::HashSet;
 
 use glam::Mat4;
 

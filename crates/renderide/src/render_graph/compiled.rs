@@ -152,6 +152,9 @@ struct ResolvedView<'a> {
     msaa_color_view: Option<wgpu::TextureView>,
     msaa_depth_view: Option<wgpu::TextureView>,
     msaa_depth_resolve_r32_view: Option<wgpu::TextureView>,
+    msaa_depth_is_array: bool,
+    msaa_stereo_depth_layer_views: Option<[wgpu::TextureView; 2]>,
+    msaa_stereo_r32_layer_views: Option<[wgpu::TextureView; 2]>,
 }
 
 /// Builds [`FrameRenderParams`] from a resolved target and per-view host/IPC fields.
@@ -180,6 +183,9 @@ fn frame_render_params_from_resolved<'a>(
         msaa_color_view: resolved.msaa_color_view.clone(),
         msaa_depth_view: resolved.msaa_depth_view.clone(),
         msaa_depth_resolve_r32_view: resolved.msaa_depth_resolve_r32_view.clone(),
+        msaa_depth_is_array: resolved.msaa_depth_is_array,
+        msaa_stereo_depth_layer_views: resolved.msaa_stereo_depth_layer_views.clone(),
+        msaa_stereo_r32_layer_views: resolved.msaa_stereo_r32_layer_views.clone(),
     }
 }
 
@@ -572,22 +578,58 @@ impl CompiledRenderGraph {
                     msaa_color_view,
                     msaa_depth_view,
                     msaa_depth_resolve_r32_view,
+                    msaa_depth_is_array: false,
+                    msaa_stereo_depth_layer_views: None,
+                    msaa_stereo_r32_layer_views: None,
                 })
             }
-            FrameViewTarget::ExternalMultiview(ext) => Ok(ResolvedView {
-                depth_texture: ext.depth_texture,
-                depth_view: ext.depth_view,
-                backbuffer: Some(ext.color_view),
-                surface_format: ext.surface_format,
-                viewport_px: ext.extent_px,
-                multiview_stereo: true,
-                offscreen_write_render_texture_asset_id: None,
-                occlusion_view: OcclusionViewId::Main,
-                sample_count: 1,
-                msaa_color_view: None,
-                msaa_depth_view: None,
-                msaa_depth_resolve_r32_view: None,
-            }),
+            FrameViewTarget::ExternalMultiview(ext) => {
+                let requested = gpu.swapchain_msaa_effective_stereo();
+                let _ =
+                    gpu.ensure_msaa_stereo_targets(requested, ext.surface_format, ext.extent_px);
+                let sample_count = gpu
+                    .msaa_stereo_targets_ref()
+                    .map(|m| m.sample_count)
+                    .unwrap_or(1);
+                let msaa_color_view = gpu.msaa_stereo_targets_ref().map(|m| m.color_view.clone());
+                let msaa_depth_view = gpu.msaa_stereo_targets_ref().map(|m| m.depth_view.clone());
+                let msaa_stereo_depth_layer_views = gpu.msaa_stereo_targets_ref().map(|m| {
+                    [
+                        m.depth_layer_views[0].clone(),
+                        m.depth_layer_views[1].clone(),
+                    ]
+                });
+                let (msaa_depth_resolve_r32_view, msaa_stereo_r32_layer_views) = if sample_count > 1
+                {
+                    let _ = gpu.ensure_msaa_stereo_depth_resolve(ext.extent_px);
+                    let array_view = gpu
+                        .msaa_stereo_depth_resolve_ref()
+                        .map(|r| r.array_view.clone());
+                    let layer_views = gpu
+                        .msaa_stereo_depth_resolve_ref()
+                        .map(|r| [r.layer_views[0].clone(), r.layer_views[1].clone()]);
+                    (array_view, layer_views)
+                } else {
+                    (None, None)
+                };
+                Ok(ResolvedView {
+                    depth_texture: ext.depth_texture,
+                    depth_view: ext.depth_view,
+                    backbuffer: Some(ext.color_view),
+                    surface_format: ext.surface_format,
+                    viewport_px: ext.extent_px,
+                    multiview_stereo: true,
+                    offscreen_write_render_texture_asset_id: None,
+                    occlusion_view: OcclusionViewId::Main,
+                    sample_count,
+                    msaa_color_view,
+                    msaa_depth_view,
+                    msaa_depth_resolve_r32_view,
+                    msaa_depth_is_array: sample_count > 1,
+                    msaa_stereo_depth_layer_views,
+                    msaa_stereo_r32_layer_views,
+                })
+            }
             FrameViewTarget::OffscreenRt(ext) => Ok(ResolvedView {
                 depth_texture: ext.depth_texture,
                 depth_view: ext.depth_view,
@@ -603,6 +645,9 @@ impl CompiledRenderGraph {
                 msaa_color_view: None,
                 msaa_depth_view: None,
                 msaa_depth_resolve_r32_view: None,
+                msaa_depth_is_array: false,
+                msaa_stereo_depth_layer_views: None,
+                msaa_stereo_r32_layer_views: None,
             }),
         }
     }

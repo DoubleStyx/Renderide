@@ -68,6 +68,13 @@ pub struct RendererInfoSnapshot {
     pub msaa_effective_samples: u32,
     /// Maximum MSAA sample count supported for the swapchain color + depth formats on this adapter.
     pub msaa_max_samples: u32,
+    /// Effective MSAA for the OpenXR stereo forward path (single-pass multiview), after clamping to
+    /// [`Self::msaa_max_samples_stereo`]. `1` = off or device lacks
+    /// [`wgpu::Features::MULTISAMPLE_ARRAY`] / [`wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`].
+    pub msaa_effective_samples_stereo: u32,
+    /// Maximum MSAA sample count supported for 2D array color + depth (stereo multiview) on this
+    /// adapter; `1` when stereo MSAA is unavailable.
+    pub msaa_max_samples_stereo: u32,
 }
 
 /// Inputs for [`RendererInfoSnapshot::capture`] (IPC, adapter, swapchain, scene, and backend refs).
@@ -135,6 +142,8 @@ impl RendererInfoSnapshot {
             msaa_requested_samples: args.msaa_requested_samples,
             msaa_effective_samples: args.gpu.swapchain_msaa_effective(),
             msaa_max_samples: args.gpu.msaa_max_sample_count(),
+            msaa_effective_samples_stereo: args.gpu.swapchain_msaa_effective_stereo(),
+            msaa_max_samples_stereo: args.gpu.msaa_max_sample_count_stereo(),
         }
     }
 }

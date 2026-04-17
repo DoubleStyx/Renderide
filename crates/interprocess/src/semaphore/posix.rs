@@ -1,4 +1,7 @@
-//! POSIX named semaphore (`/ct.ip.{name}`).
+//! POSIX named semaphores opened with `sem_open`.
+//!
+//! - **Linux and non-Apple Unix:** name `"/ct.ip.{memory_view_name}"`.
+//! - **macOS:** a shorter `"/sem_{prefix}"` derived from a SHA-256 hash (POSIX named-semaphore length limits).
 
 use std::ffi::CString;
 use std::io;
@@ -6,13 +9,30 @@ use std::time::Duration;
 #[cfg(target_vendor = "apple")]
 use std::time::Instant;
 
-/// Handle to a POSIX named semaphore created with `sem_open` (`/ct.ip.{memory_view_name}`).
+#[cfg(target_os = "macos")]
+use base64::prelude::*;
+#[cfg(target_os = "macos")]
+use sha2::{Digest, Sha256};
+
+/// Handle to a POSIX named semaphore created with [`PosixSemaphore::open`].
 pub(super) struct PosixSemaphore(*mut libc::sem_t);
 
 impl PosixSemaphore {
     /// Opens or creates the semaphore with mode `0o777` and initial value `0`.
     pub(super) fn open(memory_view_name: &str) -> io::Result<Self> {
-        let full_name = format!("/ct.ip.{memory_view_name}");
+        let full_name;
+        #[cfg(not(target_os = "macos"))]
+        {
+            full_name = format!("/ct.ip.{memory_view_name}");
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let path_for_hash = format!("/ct.ip.{memory_view_name}");
+            let digest = Sha256::digest(path_for_hash.as_bytes());
+            let encoded = BASE64_URL_SAFE.encode(digest);
+            let prefix = encoded.get(..24).map_or(encoded.as_str(), |s| s);
+            full_name = format!("/sem_{prefix}");
+        }
         let c_name = CString::new(full_name).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "semaphore name contains NUL")
         })?;

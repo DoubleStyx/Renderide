@@ -4,6 +4,10 @@
 //! staging texture; aspect mismatch is resolved by cropping the center (no letterboxing).
 //!
 //! Used instead of a second full world render when OpenXR multiview has already drawn the scene.
+//!
+//! When stereo MSAA is active ([`crate::gpu::GpuContext::swapchain_msaa_effective_stereo`] > 1) the
+//! forward pass resolves into the single-sample OpenXR swapchain image, so this mirror always samples
+//! already-resolved color and does not need to be aware of the sample count.
 
 mod cover;
 mod pipelines;

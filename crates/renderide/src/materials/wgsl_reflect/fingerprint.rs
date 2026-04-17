@@ -1,6 +1,6 @@
 //! Stable [`ReflectedRasterLayout::layout_fingerprint`](super::types::ReflectedRasterLayout::layout_fingerprint) hashing.
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::hash::{Hash, Hasher};
 
 pub(super) fn fingerprint_layout(

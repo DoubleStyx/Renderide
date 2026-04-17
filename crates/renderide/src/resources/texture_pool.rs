@@ -1,6 +1,6 @@
 //! GPU-resident Texture2D pool ([`GpuTexture2d`]) with VRAM accounting.
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::sync::Arc;
 
 use crate::assets::texture::{estimate_gpu_texture_bytes, resolve_texture2d_wgpu_format};

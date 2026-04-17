@@ -726,40 +726,16 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
 
     if intersect_indices.is_empty() {
         if msaa {
-            if let (Some(res), Some(msaa_d), Some(r32)) = (
-                msaa_depth_resolve,
-                frame.msaa_depth_view.as_ref(),
-                frame.msaa_depth_resolve_r32_view.as_ref(),
-            ) {
-                encode_msaa_depth_resolve_to_single_sample(
-                    device,
-                    encoder,
-                    frame.viewport_px,
-                    msaa_d,
-                    r32,
-                    frame.depth_view,
-                    res,
-                );
+            if let Some(res) = msaa_depth_resolve {
+                encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
             }
         }
         return true;
     }
 
     if msaa {
-        if let (Some(res), Some(msaa_d), Some(r32)) = (
-            msaa_depth_resolve,
-            frame.msaa_depth_view.as_ref(),
-            frame.msaa_depth_resolve_r32_view.as_ref(),
-        ) {
-            encode_msaa_depth_resolve_to_single_sample(
-                device,
-                encoder,
-                frame.viewport_px,
-                msaa_d,
-                r32,
-                frame.depth_view,
-                res,
-            );
+        if let Some(res) = msaa_depth_resolve {
+            encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
         }
     }
 
@@ -831,20 +807,8 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
     );
 
     if msaa {
-        if let (Some(res), Some(msaa_d), Some(r32)) = (
-            msaa_depth_resolve,
-            frame.msaa_depth_view.as_ref(),
-            frame.msaa_depth_resolve_r32_view.as_ref(),
-        ) {
-            encode_msaa_depth_resolve_to_single_sample(
-                device,
-                encoder,
-                frame.viewport_px,
-                msaa_d,
-                r32,
-                frame.depth_view,
-                res,
-            );
+        if let Some(res) = msaa_depth_resolve {
+            encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
         }
     }
 
@@ -861,38 +825,50 @@ pub(super) fn encode_msaa_depth_resolve_after_clear_only(
     if frame.sample_count <= 1 {
         return;
     }
-    if let (Some(res), Some(msaa_d), Some(r32)) = (
-        msaa_depth_resolve,
-        frame.msaa_depth_view.as_ref(),
-        frame.msaa_depth_resolve_r32_view.as_ref(),
-    ) {
-        encode_msaa_depth_resolve_to_single_sample(
+    if let Some(res) = msaa_depth_resolve {
+        encode_msaa_depth_resolve_for_frame(device, encoder, frame, res);
+    }
+}
+
+/// Dispatches the desktop (`D2`) or stereo (`D2Array` multiview) depth-resolve path based on
+/// [`FrameRenderParams::msaa_depth_is_array`].
+fn encode_msaa_depth_resolve_for_frame(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    frame: &FrameRenderParams<'_>,
+    resolve: &MsaaDepthResolveResources,
+) {
+    if frame.msaa_depth_is_array {
+        let (Some(msaa_layers), Some(r32_layers), Some(r32_array)) = (
+            frame.msaa_stereo_depth_layer_views.as_ref(),
+            frame.msaa_stereo_r32_layer_views.as_ref(),
+            frame.msaa_depth_resolve_r32_view.as_ref(),
+        ) else {
+            return;
+        };
+        resolve.encode_resolve_stereo(
+            device,
+            encoder,
+            frame.viewport_px,
+            [&msaa_layers[0], &msaa_layers[1]],
+            [&r32_layers[0], &r32_layers[1]],
+            r32_array,
+            frame.depth_view,
+        );
+    } else {
+        let (Some(msaa_d), Some(r32)) = (
+            frame.msaa_depth_view.as_ref(),
+            frame.msaa_depth_resolve_r32_view.as_ref(),
+        ) else {
+            return;
+        };
+        resolve.encode_resolve(
             device,
             encoder,
             frame.viewport_px,
             msaa_d,
             r32,
             frame.depth_view,
-            res,
         );
     }
-}
-
-fn encode_msaa_depth_resolve_to_single_sample(
-    device: &wgpu::Device,
-    encoder: &mut wgpu::CommandEncoder,
-    extent: (u32, u32),
-    msaa_depth_view: &wgpu::TextureView,
-    r32_view: &wgpu::TextureView,
-    dst_depth_view: &wgpu::TextureView,
-    resolve: &MsaaDepthResolveResources,
-) {
-    resolve.encode_resolve(
-        device,
-        encoder,
-        extent,
-        msaa_depth_view,
-        r32_view,
-        dst_depth_view,
-    );
 }

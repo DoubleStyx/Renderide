@@ -30,6 +30,27 @@ fn msaa_supported_sample_counts(adapter: &wgpu::Adapter, color: wgpu::TextureFor
     out
 }
 
+/// Sorted list of MSAA sample counts supported for **2D array** color + [`wgpu::TextureFormat::Depth32Float`]
+/// on `adapter`, when the device exposes both [`wgpu::Features::MULTISAMPLE_ARRAY`] and
+/// [`wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`].
+///
+/// Returns an empty vector when either feature is missing; callers treat this as "stereo MSAA off"
+/// and silently fall back to `sample_count = 1` via [`clamp_msaa_request_to_supported`]. Upstream
+/// per-format support for array multisampling currently tracks the same tiers as `MULTISAMPLE_RESOLVE`,
+/// so intersecting the regular `sample_count_supported` is sufficient when the device feature is on.
+fn msaa_supported_sample_counts_stereo(
+    adapter: &wgpu::Adapter,
+    color: wgpu::TextureFormat,
+    features: wgpu::Features,
+) -> Vec<u32> {
+    let required = wgpu::Features::MULTISAMPLE_ARRAY
+        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+    if !features.contains(required) {
+        return Vec::new();
+    }
+    msaa_supported_sample_counts(adapter, color)
+}
+
 /// Maps a user-requested MSAA level to a **device-valid** sample count for the current surface format.
 ///
 /// - `requested` ≤ 1 → `1` (off).
@@ -66,6 +87,48 @@ pub struct MsaaTargets {
     pub color_format: wgpu::TextureFormat,
 }
 
+/// Multisampled 2-layer `D2Array` color + depth targets for the OpenXR single-pass stereo forward path
+/// ([`GpuContext::ensure_msaa_stereo_targets`]).
+///
+/// Color resolves into the single-sample OpenXR swapchain image; depth resolves into the stereo
+/// [`wgpu::TextureFormat::Depth32Float`] array via compute + multiview blit.
+pub struct MsaaStereoTargets {
+    /// Multisampled `D2` array texture (`depth_or_array_layers = 2`, `sample_count > 1`).
+    pub color_texture: wgpu::Texture,
+    /// `D2Array` color view for the multiview render-pass attachment.
+    pub color_view: wgpu::TextureView,
+    /// Multisampled `D2` array depth texture (2 layers, `sample_count > 1`).
+    pub depth_texture: wgpu::Texture,
+    /// `D2Array` depth view for the multiview render-pass attachment.
+    pub depth_view: wgpu::TextureView,
+    /// Per-eye (`D2`, single-layer) depth views used by the compute depth resolve shader,
+    /// which binds as `texture_depth_multisampled_2d` (WGSL has no array variant yet).
+    pub depth_layer_views: [wgpu::TextureView; 2],
+    /// Effective sample count (2, 4, or 8).
+    pub sample_count: u32,
+    /// Pixel extent per eye `(width, height)`.
+    pub extent: (u32, u32),
+    /// OpenXR swapchain color format used for [`Self::color_texture`].
+    pub color_format: wgpu::TextureFormat,
+}
+
+/// Single-sample `R32Float` 2-layer array temp used when resolving the stereo MSAA depth.
+///
+/// The compute pass writes per eye via `layer_views`; the fullscreen multiview blit samples the
+/// whole `D2Array` via `array_view` and writes into the stereo `Depth32Float` target.
+pub(crate) struct MsaaStereoDepthResolveR32 {
+    /// Owning 2-layer `R32Float` texture. Kept to document ownership and anchor lifetime of the
+    /// derived views; wgpu refcounts the underlying object so the field is intentionally not read.
+    #[allow(dead_code)]
+    pub(crate) texture: wgpu::Texture,
+    /// `D2Array` sampled view for the multiview blit source.
+    pub(crate) array_view: wgpu::TextureView,
+    /// Per-eye (`D2`, single-layer) storage views for the compute pass.
+    pub(crate) layer_views: [wgpu::TextureView; 2],
+    /// Pixel extent per eye `(width, height)`.
+    pub(crate) extent: (u32, u32),
+}
+
 /// GPU stack for presentation and future render passes.
 pub struct GpuContext {
     /// Adapter metadata from construction (for diagnostics).
@@ -73,8 +136,17 @@ pub struct GpuContext {
     /// MSAA tiers supported for the configured surface color format and [`wgpu::TextureFormat::Depth32Float`]
     /// (sorted ascending: 2, 4, …). Empty means MSAA is unavailable.
     msaa_supported_sample_counts: Vec<u32>,
+    /// MSAA tiers supported for **2D array** color + [`wgpu::TextureFormat::Depth32Float`] on the OpenXR
+    /// path (sorted ascending). Empty when the adapter lacks
+    /// [`wgpu::Features::MULTISAMPLE_ARRAY`] / [`wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`],
+    /// which silently clamps the stereo request to `1` (MSAA off).
+    msaa_supported_sample_counts_stereo: Vec<u32>,
     /// Effective swapchain MSAA sample count this frame (1 = off), set via [`Self::set_swapchain_msaa_requested`].
     swapchain_msaa_effective: u32,
+    /// Requested stereo MSAA (from settings) before clamping; set each XR frame by the runtime.
+    swapchain_msaa_requested_stereo: u32,
+    /// Effective stereo MSAA sample count (1 = off), set via [`Self::set_swapchain_msaa_requested_stereo`].
+    swapchain_msaa_effective_stereo: u32,
     /// Effective limits and derived caps for this device (shared across backend and uploads).
     limits: Arc<GpuLimits>,
     device: Arc<wgpu::Device>,
@@ -88,9 +160,13 @@ pub struct GpuContext {
     depth_extent_px: (u32, u32),
     /// Multisampled targets for desktop MSAA; [`None`] when off or extent/sample count unchanged.
     msaa_targets: Option<MsaaTargets>,
+    /// Multisampled 2-layer targets for stereo / OpenXR MSAA; [`None`] when off or stale.
+    msaa_stereo_targets: Option<MsaaStereoTargets>,
     /// Single-sample R32Float resolve temp for MSAA depth → depth blit ([`crate::gpu::MsaaDepthResolveResources`]).
     msaa_depth_resolve_r32: Option<(wgpu::Texture, wgpu::TextureView)>,
     msaa_depth_resolve_r32_extent: (u32, u32),
+    /// Stereo R32Float resolve temp (2 layers) for MSAA depth → stereo depth blit.
+    msaa_stereo_depth_resolve_r32: Option<MsaaStereoDepthResolveR32>,
     /// Debug HUD: wall-clock CPU (tick start → last submit) and GPU (last submit → idle) timing.
     frame_timing: FrameCpuGpuTimingHandle,
 }
@@ -157,11 +233,15 @@ impl GpuContext {
         // the GPU actually supports. Enabling this unlocks the hardware-reported feature set.
         let adapter_format_features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         let optional_depth32_stencil8 = wgpu::Features::DEPTH32FLOAT_STENCIL8;
+        // MULTISAMPLE_ARRAY: allows creating multisampled 2D array textures and views. Required for
+        // stereo MSAA in the OpenXR multiview path; harmless for the desktop swapchain path.
+        let multisample_array = wgpu::Features::MULTISAMPLE_ARRAY;
         let required_features = adapter.features()
             & (compression
                 | optional_float32_filterable
                 | adapter_format_features
-                | optional_depth32_stencil8);
+                | optional_depth32_stencil8
+                | multisample_array);
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -189,20 +269,33 @@ impl GpuContext {
         let adapter_info = adapter.get_info();
         let msaa_supported_sample_counts = msaa_supported_sample_counts(&adapter, config.format);
         let msaa_max = msaa_supported_sample_counts.last().copied().unwrap_or(1);
+        let msaa_supported_sample_counts_stereo =
+            msaa_supported_sample_counts_stereo(&adapter, config.format, required_features);
+        let msaa_max_stereo = msaa_supported_sample_counts_stereo
+            .last()
+            .copied()
+            .unwrap_or(1);
         logger::info!(
-            "GPU: adapter={} backend={:?} present_mode={:?} instance_flags={:?} msaa_supported_sample_counts={:?} msaa_max_sample_count={}",
+            "GPU: adapter={} backend={:?} present_mode={:?} instance_flags={:?} \
+             msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
+             msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
             adapter_info.name,
             adapter_info.backend,
             config.present_mode,
             instance_flags,
             msaa_supported_sample_counts,
-            msaa_max
+            msaa_max,
+            msaa_supported_sample_counts_stereo,
+            msaa_max_stereo
         );
 
         Ok(Self {
             adapter_info,
             msaa_supported_sample_counts,
+            msaa_supported_sample_counts_stereo,
             swapchain_msaa_effective: 1,
+            swapchain_msaa_requested_stereo: 1,
+            swapchain_msaa_effective_stereo: 1,
             limits,
             device,
             queue: Arc::new(Mutex::new(queue)),
@@ -211,8 +304,10 @@ impl GpuContext {
             depth_attachment: None,
             depth_extent_px: (0, 0),
             msaa_targets: None,
+            msaa_stereo_targets: None,
             msaa_depth_resolve_r32: None,
             msaa_depth_resolve_r32_extent: (0, 0),
+            msaa_stereo_depth_resolve_r32: None,
             frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
         })
     }
@@ -244,18 +339,31 @@ impl GpuContext {
         let limits = GpuLimits::try_new(device.as_ref(), adapter)?;
         let msaa_supported_sample_counts = msaa_supported_sample_counts(adapter, config.format);
         let msaa_max = msaa_supported_sample_counts.last().copied().unwrap_or(1);
+        let msaa_supported_sample_counts_stereo =
+            msaa_supported_sample_counts_stereo(adapter, config.format, device.features());
+        let msaa_max_stereo = msaa_supported_sample_counts_stereo
+            .last()
+            .copied()
+            .unwrap_or(1);
         logger::info!(
-            "GPU (OpenXR path): adapter={} backend={:?} present_mode={:?} msaa_supported_sample_counts={:?} msaa_max_sample_count={}",
+            "GPU (OpenXR path): adapter={} backend={:?} present_mode={:?} \
+             msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
+             msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
             adapter_info.name,
             adapter_info.backend,
             config.present_mode,
             msaa_supported_sample_counts,
-            msaa_max
+            msaa_max,
+            msaa_supported_sample_counts_stereo,
+            msaa_max_stereo
         );
         Ok(Self {
             adapter_info,
             msaa_supported_sample_counts,
+            msaa_supported_sample_counts_stereo,
             swapchain_msaa_effective: 1,
+            swapchain_msaa_requested_stereo: 1,
+            swapchain_msaa_effective_stereo: 1,
             limits,
             device,
             queue,
@@ -264,8 +372,10 @@ impl GpuContext {
             depth_attachment: None,
             depth_extent_px: (0, 0),
             msaa_targets: None,
+            msaa_stereo_targets: None,
             msaa_depth_resolve_r32: None,
             msaa_depth_resolve_r32_extent: (0, 0),
+            msaa_stereo_depth_resolve_r32: None,
             frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
         })
     }
@@ -310,6 +420,15 @@ impl GpuContext {
         self.msaa_targets = None;
         self.msaa_depth_resolve_r32 = None;
         self.msaa_depth_resolve_r32_extent = (0, 0);
+    }
+
+    /// Frees the stereo MSAA color + depth targets and R32F resolve temp.
+    ///
+    /// Call when the OpenXR swapchain is recreated (resolution change, loss) so the next frame
+    /// reallocates at the correct extent.
+    pub fn reset_msaa_stereo_targets(&mut self) {
+        self.msaa_stereo_targets = None;
+        self.msaa_stereo_depth_resolve_r32 = None;
     }
 
     /// Borrows the configured surface for acquire/submit.
@@ -443,9 +562,27 @@ impl GpuContext {
             .unwrap_or(1)
     }
 
+    /// Adapter-reported maximum MSAA sample count for **2D array** color + depth (stereo / OpenXR path).
+    ///
+    /// Returns `1` when the device lacks [`wgpu::Features::MULTISAMPLE_ARRAY`] or
+    /// [`wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`], in which case the stereo forward
+    /// path silently falls back to no MSAA.
+    pub fn msaa_max_sample_count_stereo(&self) -> u32 {
+        self.msaa_supported_sample_counts_stereo
+            .last()
+            .copied()
+            .unwrap_or(1)
+    }
+
     /// Effective MSAA sample count for the main window this frame (after [`Self::set_swapchain_msaa_requested`]).
     pub fn swapchain_msaa_effective(&self) -> u32 {
         self.swapchain_msaa_effective
+    }
+
+    /// Effective stereo MSAA sample count for the OpenXR path this frame (after
+    /// [`Self::set_swapchain_msaa_requested_stereo`]). `1` = off.
+    pub fn swapchain_msaa_effective_stereo(&self) -> u32 {
+        self.swapchain_msaa_effective_stereo
     }
 
     /// Sets requested MSAA for the desktop swapchain path; values are rounded to a **format-valid**
@@ -455,6 +592,31 @@ impl GpuContext {
     pub fn set_swapchain_msaa_requested(&mut self, requested: u32) {
         self.swapchain_msaa_effective =
             clamp_msaa_request_to_supported(requested, &self.msaa_supported_sample_counts);
+    }
+
+    /// Sets requested MSAA for the OpenXR stereo path; clamps to a format-valid tier against the
+    /// stereo supported list. When `MULTISAMPLE_ARRAY` is unavailable the stereo list is empty and
+    /// the effective count silently becomes `1`.
+    ///
+    /// Call each XR frame before graph execution (from [`crate::config::RenderingSettings::msaa`]).
+    pub fn set_swapchain_msaa_requested_stereo(&mut self, requested: u32) {
+        let requested = requested.max(1);
+        let effective =
+            clamp_msaa_request_to_supported(requested, &self.msaa_supported_sample_counts_stereo);
+        if self.swapchain_msaa_requested_stereo != requested
+            || self.swapchain_msaa_effective_stereo != effective
+        {
+            if requested > 1 && effective != requested {
+                logger::info!(
+                    "VR MSAA clamped: requested {}× → effective {}× (supported={:?})",
+                    requested,
+                    effective,
+                    self.msaa_supported_sample_counts_stereo
+                );
+            }
+            self.swapchain_msaa_requested_stereo = requested;
+            self.swapchain_msaa_effective_stereo = effective;
+        }
     }
 
     /// Ensures a single-sample [`wgpu::TextureFormat::R32Float`] texture for MSAA depth resolve + blit.
@@ -564,6 +726,158 @@ impl GpuContext {
         self.msaa_targets.as_ref()
     }
 
+    /// Ensures 2-layer (D2Array) multisampled color/depth targets for the OpenXR stereo path.
+    ///
+    /// - `requested_samples` is clamped against [`Self::msaa_supported_sample_counts_stereo`].
+    /// - `extent` is per-eye pixel size from the OpenXR swapchain.
+    /// - Returns [`None`] when MSAA is off or unsupported, in which case the caller renders directly
+    ///   to the single-sample XR swapchain.
+    pub fn ensure_msaa_stereo_targets(
+        &mut self,
+        requested_samples: u32,
+        color_format: wgpu::TextureFormat,
+        extent: (u32, u32),
+    ) -> Option<&MsaaStereoTargets> {
+        let sc = clamp_msaa_request_to_supported(
+            requested_samples,
+            &self.msaa_supported_sample_counts_stereo,
+        );
+        if sc <= 1 {
+            self.msaa_stereo_targets = None;
+            return None;
+        }
+        let w = extent.0.max(1);
+        let h = extent.1.max(1);
+        let needs = self.msaa_stereo_targets.as_ref().is_none_or(|m| {
+            m.extent != (w, h) || m.sample_count != sc || m.color_format != color_format
+        });
+        if needs {
+            let size = wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 2,
+            };
+            let color_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("renderide-msaa-color-stereo"),
+                size,
+                mip_level_count: 1,
+                sample_count: sc,
+                dimension: wgpu::TextureDimension::D2,
+                format: color_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("renderide-msaa-color-stereo-array"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                array_layer_count: Some(2),
+                ..Default::default()
+            });
+
+            let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("renderide-msaa-depth-stereo"),
+                size,
+                mip_level_count: 1,
+                sample_count: sc,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("renderide-msaa-depth-stereo-array"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                array_layer_count: Some(2),
+                ..Default::default()
+            });
+            let depth_layer_views = [0u32, 1u32].map(|layer| {
+                depth_texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("renderide-msaa-depth-stereo-layer"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: layer,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            });
+
+            self.msaa_stereo_targets = Some(MsaaStereoTargets {
+                color_texture,
+                color_view,
+                depth_texture,
+                depth_view,
+                depth_layer_views,
+                sample_count: sc,
+                extent: (w, h),
+                color_format,
+            });
+        }
+        self.msaa_stereo_targets.as_ref()
+    }
+
+    /// Ensures a 2-layer [`wgpu::TextureFormat::R32Float`] temp for stereo MSAA depth resolve.
+    ///
+    /// Matches the per-eye extent of [`Self::ensure_msaa_stereo_targets`]; reallocates on size change.
+    pub(crate) fn ensure_msaa_stereo_depth_resolve(
+        &mut self,
+        extent: (u32, u32),
+    ) -> Option<&MsaaStereoDepthResolveR32> {
+        let w = extent.0.max(1);
+        let h = extent.1.max(1);
+        let needs = self
+            .msaa_stereo_depth_resolve_r32
+            .as_ref()
+            .is_none_or(|r| r.extent != (w, h));
+        if needs {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("renderide-msaa-depth-resolve-r32-stereo"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 2,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R32Float,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let array_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("renderide-msaa-depth-resolve-r32-stereo-array"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                array_layer_count: Some(2),
+                ..Default::default()
+            });
+            let layer_views = [0u32, 1u32].map(|layer| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("renderide-msaa-depth-resolve-r32-stereo-layer"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: layer,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            });
+            self.msaa_stereo_depth_resolve_r32 = Some(MsaaStereoDepthResolveR32 {
+                texture,
+                array_view,
+                layer_views,
+                extent: (w, h),
+            });
+        }
+        self.msaa_stereo_depth_resolve_r32.as_ref()
+    }
+
+    /// Multisampled 2-layer targets when stereo MSAA is active for the OpenXR path.
+    pub(crate) fn msaa_stereo_targets_ref(&self) -> Option<&MsaaStereoTargets> {
+        self.msaa_stereo_targets.as_ref()
+    }
+
+    /// R32F resolve temp for stereo MSAA depth when [`Self::ensure_msaa_stereo_depth_resolve`] has run.
+    pub(crate) fn msaa_stereo_depth_resolve_ref(&self) -> Option<&MsaaStereoDepthResolveR32> {
+        self.msaa_stereo_depth_resolve_r32.as_ref()
+    }
+
     /// Ensures a [`wgpu::TextureFormat::Depth32Float`] attachment exists for the current surface extent.
     ///
     /// Call after [`Self::reconfigure`] or when the swapchain size may have changed.
@@ -671,5 +985,52 @@ mod msaa_clamp_tests {
     #[test]
     fn clamp_empty_supported_means_off() {
         assert_eq!(clamp_msaa_request_to_supported(4, &[]), 1);
+    }
+
+    #[test]
+    fn clamp_empty_stereo_tiers_forces_off_even_for_valid_desktop_requests() {
+        // Models the case where the device lacks MULTISAMPLE_ARRAY /
+        // TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES: `msaa_supported_sample_counts_stereo` returns
+        // an empty `Vec`, and any MSAA request must silently collapse to 1x for the stereo path.
+        for r in [2u32, 3, 4, 8, 16] {
+            assert_eq!(clamp_msaa_request_to_supported(r, &[]), 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod msaa_stereo_feature_gate_tests {
+    /// Mirrors the gate used inside `msaa_supported_sample_counts_stereo`. When either feature is
+    /// missing the stereo supported list must be empty regardless of per-format sample counts, so
+    /// [`clamp_msaa_request_to_supported`](super::clamp_msaa_request_to_supported) can silently
+    /// fall back to 1x via the empty-slice rule (see `clamp_empty_supported_means_off`).
+    fn stereo_feature_gate_passes(features: wgpu::Features) -> bool {
+        let required = wgpu::Features::MULTISAMPLE_ARRAY
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        features.contains(required)
+    }
+
+    #[test]
+    fn gate_requires_both_features() {
+        assert!(!stereo_feature_gate_passes(wgpu::Features::empty()));
+        assert!(!stereo_feature_gate_passes(
+            wgpu::Features::MULTISAMPLE_ARRAY
+        ));
+        assert!(!stereo_feature_gate_passes(
+            wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        ));
+    }
+
+    #[test]
+    fn gate_passes_when_both_present() {
+        let feats = wgpu::Features::MULTISAMPLE_ARRAY
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        assert!(stereo_feature_gate_passes(feats));
+    }
+
+    #[test]
+    fn gate_ignores_unrelated_features() {
+        let feats = wgpu::Features::MULTIVIEW | wgpu::Features::FLOAT32_FILTERABLE;
+        assert!(!stereo_feature_gate_passes(feats));
     }
 }

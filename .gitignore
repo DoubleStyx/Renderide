@@ -460,5 +460,4 @@ target
 config.toml
 *.log
 profile.json.gz
-!crates/renderide/shaders/target/**
 !crates/renderide/src/bin/**

@@ -3,7 +3,7 @@
 //!
 //! Per-frame uniform bytes and [`wgpu::BindGroup`] instances are built in [`crate::backend::embedded::material_bind`].
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::sync::Arc;
 
 use crate::assets::material::PropertyIdRegistry;

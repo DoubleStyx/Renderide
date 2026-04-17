@@ -407,9 +407,20 @@ fn create_vulkan_logical_device_openxr(
         | wgt::Features::TEXTURE_COMPRESSION_ASTC;
     let optional_float32_filterable = wgt::Features::FLOAT32_FILTERABLE;
     let optional_depth32_stencil8 = wgt::Features::DEPTH32FLOAT_STENCIL8;
+    // TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES: unlock hardware-reported MSAA sample counts (device
+    // exposes the real tiers instead of the WebGPU baseline).
+    // MULTISAMPLE_ARRAY: required for multisampled 2D array color/depth textures used by the stereo
+    // (single-pass multiview) MSAA path. Absence is silently handled: the stereo path falls back to
+    // `sample_count = 1` in [`crate::gpu::GpuContext::set_swapchain_msaa_requested_stereo`].
+    let adapter_format_features = wgt::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+    let multisample_array = wgt::Features::MULTISAMPLE_ARRAY;
     let wgpu_features = wgt::Features::MULTIVIEW
         | (desc.wgpu_exposed.features
-            & (compression | optional_float32_filterable | optional_depth32_stencil8));
+            & (compression
+                | optional_float32_filterable
+                | optional_depth32_stencil8
+                | adapter_format_features
+                | multisample_array));
 
     let mut enabled_device_extensions = desc
         .wgpu_exposed

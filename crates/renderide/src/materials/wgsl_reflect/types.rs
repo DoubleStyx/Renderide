@@ -1,6 +1,6 @@
 //! Public reflected layout types and [`ReflectError`] for WGSL material reflection.
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 use thiserror::Error;
 

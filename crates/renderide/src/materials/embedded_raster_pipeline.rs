@@ -1,6 +1,6 @@
 //! Embedded mesh raster materials: composed WGSL stems under `shaders/target/` (see crate `build.rs`).
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::embedded_shaders;

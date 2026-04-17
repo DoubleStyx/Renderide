@@ -1,6 +1,6 @@
 //! `@group(1)` uniform struct reflection and `vs_main` vertex input analysis.
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 use naga::proc::Layouter;
 use naga::{AddressSpace, Binding, Module, ShaderStage, TypeInner, VectorSize};

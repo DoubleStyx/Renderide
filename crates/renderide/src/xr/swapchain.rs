@@ -1,4 +1,10 @@
 //! OpenXR stereo swapchain images imported as wgpu [`wgpu::Texture`] / array [`wgpu::TextureView`].
+//!
+//! These images are always created with `sample_count = 1` and act as the **resolve** target for
+//! the stereo forward pass when [`crate::gpu::GpuContext::swapchain_msaa_effective_stereo`] > 1.
+//! The multisampled 2-layer `D2Array` color and depth targets live on `GpuContext`
+//! ([`crate::gpu::GpuContext::ensure_msaa_stereo_targets`]) and resolve into this swapchain each
+//! frame so the compositor and VR mirror always see a single-sample image.
 
 use ash::vk::{self, Handle};
 use openxr as xr;

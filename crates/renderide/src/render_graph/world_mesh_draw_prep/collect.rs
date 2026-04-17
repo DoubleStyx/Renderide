@@ -3,7 +3,7 @@
 //! [`collect_and_sort_world_mesh_draws`] walks each render space in parallel ([`rayon`]), merges in
 //! [`SceneCoordinator::render_space_ids`] order, assigns [`WorldMeshDrawItem::collect_order`], then sorts.
 
-use std::collections::HashSet;
+use hashbrown::HashSet;
 
 use glam::Mat4;
 use rayon::prelude::*;

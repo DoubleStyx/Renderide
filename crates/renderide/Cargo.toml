@@ -8,6 +8,7 @@ name = "renderide"
 path = "src/lib.rs"
 
 [build-dependencies]
+hashbrown = "0.17"
 naga = { version = "29", features = ["wgsl-in", "wgsl-out", "termcolor"] }
 naga_oil = { version = "0.22", default-features = false }
 
@@ -20,46 +21,48 @@ name = "roundtrip"
 path = "src/bin/roundtrip.rs"
 
 [dependencies]
-bytemuck = { version = "1.25.0", features = ["derive"] }
-glam = { version = "0.32.1", features = ["bytemuck"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+glam = { version = "0.32", features = ["bytemuck"] }
 memmap2 = "0.9"
 interprocess = { path = "../interprocess" }
 logger = { path = "../logger" }
 pollster = "0.4"
 rayon = "1.11"
-lru = "0.16.4"
+lru = "0.17"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "1.1.2"
+toml = "1.1"
 figment = { version = "0.10", features = ["toml", "env"] }
+hashbrown = "0.17"
 image = { version = "0.25", default-features = false, features = ["png"] }
-notify-debouncer-mini = "0.7.0"
-notify = "8.2.0"
+notify-debouncer-mini = "0.7"
+notify = "8.2"
 naga = { version = "29", features = ["wgsl-in", "wgsl-out", "termcolor"] }
-unity-asset = "0.2.0"
-wgpu = "29.0.1"
+unity-asset = "0.2"
+wgpu = "29.0"
 winit = "0.30"
 ash = "0.38"
 openxr = { version = "0.21", default-features = false, features = ["loaded"] }
 imgui = { version = "0.12", features = ["tables-api"] }
 imgui-wgpu = "0.28"
-sysinfo = { version = "0.38.4", default-features = false, features = [
-  "system",
-] }
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 crash-handler = "0.7"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "29.0", features = ["vulkan-portability"] }
+
 [dev-dependencies]
-nalgebra = { version = "0.34.1", features = ["convert-bytemuck"] }
+nalgebra = { version = "0.34", features = ["convert-bytemuck"] }
 tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 ctrlc = "3.4"
-windows-sys = { version = "0.61.2", features = [
+windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_System_Console",

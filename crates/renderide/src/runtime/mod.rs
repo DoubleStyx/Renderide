@@ -129,6 +129,12 @@ impl RendererRuntime {
             .frame_resources
             .prepare_lights_from_scene(&self.scene);
         self.sync_debug_hud_diagnostics_from_settings();
+        let requested_msaa = self
+            .settings
+            .read()
+            .map(|s| s.rendering.msaa.as_count())
+            .unwrap_or(1);
+        gpu.set_swapchain_msaa_requested_stereo(requested_msaa);
         let scene_ref: &SceneCoordinator = &self.scene;
         self.backend.execute_frame_graph_external_multiview(
             gpu,
