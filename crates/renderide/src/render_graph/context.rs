@@ -1,4 +1,9 @@
-//! Per-frame context passed to each [`super::RenderPass`].
+//! Context passed to each [`super::RenderPass::execute`] call while **one** [`wgpu::CommandEncoder`]
+//! is open for that recording slice.
+//!
+//! Multi-view graph execution creates a **separate** encoder (and thus a separate
+//! [`RenderPassContext`]) for frame-global work vs each view; passes never share one encoder across
+//! those slices. See [`crate::render_graph::CompiledRenderGraph::execute_multi_view`].
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -168,7 +173,11 @@ impl GraphResolvedResources {
     }
 }
 
-/// Immutable GPU handles and mutable encoder for one frame’s recording.
+/// GPU handles, queue, and the encoder used for the **current** recording slice (frame-global or one view).
+///
+/// Multi-view graph execution creates a separate [`wgpu::CommandEncoder`] per slice, so the
+/// `'encoder` lifetime is distinct from `'a` (immutable GPU handles) and `'frame` (mutable scene
+/// + backend borrow). See [`super::CompiledRenderGraph::execute_multi_view`].
 pub struct RenderPassContext<'a, 'encoder, 'frame> {
     /// WGPU device.
     pub device: &'a wgpu::Device,
@@ -176,7 +185,7 @@ pub struct RenderPassContext<'a, 'encoder, 'frame> {
     pub gpu_limits: &'a GpuLimits,
     /// Submission queue (same mutex as [`crate::gpu::GpuContext::queue`]).
     pub queue: &'a Arc<Mutex<wgpu::Queue>>,
-    /// Command encoder for this frame (all passes share one encoder in v1).
+    /// Encoder for this slice only (all passes invoked on this context share this encoder until it is finished).
     pub encoder: &'encoder mut wgpu::CommandEncoder,
     /// Swapchain view when this frame acquired the surface; [`None`] for offscreen-only graphs.
     pub backbuffer: Option<&'a wgpu::TextureView>,

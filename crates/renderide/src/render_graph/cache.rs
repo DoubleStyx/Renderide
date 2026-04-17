@@ -75,4 +75,12 @@ impl GraphCache {
             .as_ref()
             .map_or(0, CompiledRenderGraph::pass_count)
     }
+
+    /// DAG wave count from [`super::CompileStats::topo_levels`] when a graph is cached, else `0`.
+    #[must_use]
+    pub fn topo_levels(&self) -> usize {
+        self.graph
+            .as_ref()
+            .map_or(0, |g| g.compile_stats.topo_levels)
+    }
 }

@@ -203,8 +203,8 @@ fn main_debug_panel_resources_and_graph(
             ui.separator();
             ui.text("Frame graph");
             ui.text(format!(
-                "Render graph passes: {}  |  GPU lights (packed): {}",
-                r.frame_graph_pass_count, r.gpu_light_count
+                "Render graph passes: {}  (compile DAG waves: {})  |  GPU lights (packed): {}",
+                r.frame_graph_pass_count, r.frame_graph_topo_levels, r.gpu_light_count
             ));
         }
         (Some(r), None) => {
@@ -227,8 +227,8 @@ fn main_debug_panel_resources_and_graph(
             ui.separator();
             ui.text("Frame graph");
             ui.text(format!(
-                "Render graph passes: {}  |  GPU lights (packed): {}",
-                r.frame_graph_pass_count, r.gpu_light_count
+                "Render graph passes: {}  (compile DAG waves: {})  |  GPU lights (packed): {}",
+                r.frame_graph_pass_count, r.frame_graph_topo_levels, r.gpu_light_count
             ));
         }
         (None, Some(f)) => {

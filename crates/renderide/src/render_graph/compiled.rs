@@ -134,7 +134,11 @@ impl<'a> FrameView<'a> {
 pub struct CompileStats {
     /// Number of passes in the flattened schedule.
     pub pass_count: usize,
-    /// Number of topological levels (waves); a parallelism hint for future scheduling.
+    /// Number of Kahn sweep **waves** (parallel layers) in the build-time DAG sort.
+    ///
+    /// Runtime execution still walks the compiled pass list in one flat order; this
+    /// count is not a separate executor schedule. It is exposed in the debug HUD (with pass count) as
+    /// a diagnostic and a hint for future wave-based or parallel record scheduling.
     pub topo_levels: usize,
     /// Number of passes culled because their writes could not reach an import/export.
     pub culled_count: usize,
@@ -264,8 +268,10 @@ pub struct CompiledGroup {
 /// Immutable execution schedule produced by [`super::GraphBuilder::build`].
 ///
 /// After build, pass order and [`Self::needs_surface_acquire`] do not change. Per-frame work is
-/// [`Self::execute`] / [`Self::execute_multi_view`]. Multi-view uses a frame-global submit plus
-/// one submit per view so `wgpu::Queue::write_buffer` work in passes is ordered before each view’s GPU work.
+/// [`Self::execute`] / [`Self::execute_multi_view`]. When any [`PassPhase::FrameGlobal`] passes exist,
+/// multi-view records them in one encoder and submits once, then uses **one encoder + submit per
+/// [`FrameView`]** for [`PassPhase::PerView`] passes so `wgpu::Queue::write_buffer` work is ordered
+/// before each view’s GPU commands.
 pub struct CompiledRenderGraph {
     pub(super) passes: Vec<Box<dyn RenderPass>>,
     /// `true` when any pass writes an imported frame color target; frame execution
@@ -563,8 +569,11 @@ impl CompiledRenderGraph {
         self.needs_surface_acquire
     }
 
-    /// Records all passes and submits. Matches [`crate::present::present_clear_frame`] recovery
-    /// behavior for surface acquire (timeout/occluded skip, validation reconfigure).
+    /// Desktop single-view entry: delegates to [`Self::execute_multi_view`] (one swapchain view).
+    ///
+    /// Submit count follows the multi-view rules (optional frame-global encoder + submit, then
+    /// per-view encoder + submit). Matches [`crate::present::present_clear_frame`] recovery behavior
+    /// for surface acquire (timeout/occluded skip, validation reconfigure).
     pub fn execute(
         &mut self,
         gpu: &mut GpuContext,

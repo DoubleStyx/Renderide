@@ -273,6 +273,11 @@ impl RenderBackend {
         self.graph_cache.pass_count()
     }
 
+    /// Compile-time topological wave count for the cached frame graph, or `0` if none has been built yet.
+    pub fn frame_graph_topo_levels(&self) -> usize {
+        self.graph_cache.topo_levels()
+    }
+
     /// Call after [`crate::gpu::GpuContext`] is created so mesh/texture uploads can use the GPU.
     ///
     /// `shm` is used to flush pending mesh/texture payloads that require shared-memory reads; omit

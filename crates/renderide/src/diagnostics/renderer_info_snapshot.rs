@@ -50,6 +50,8 @@ pub struct RendererInfoSnapshot {
     pub material_shader_bindings: usize,
     /// Pass count in the compiled main render graph.
     pub frame_graph_pass_count: usize,
+    /// Kahn-style DAG wave count at compile time ([`crate::render_graph::CompileStats::topo_levels`]); same graph as [`Self::frame_graph_pass_count`].
+    pub frame_graph_topo_levels: usize,
     /// Packed lights after [`RenderBackend::prepare_lights_from_scene`].
     pub gpu_light_count: usize,
     /// `max_texture_dimension_2d` from [`GpuLimits`].
@@ -133,6 +135,7 @@ impl RendererInfoSnapshot {
             property_block_slots: store.property_block_slot_count(),
             material_shader_bindings: store.material_shader_binding_count(),
             frame_graph_pass_count: args.backend.frame_graph_pass_count(),
+            frame_graph_topo_levels: args.backend.frame_graph_topo_levels(),
             gpu_light_count: args.backend.frame_resources.frame_lights().len(),
             gpu_max_texture_dim_2d: args.gpu_limits.max_texture_dimension_2d(),
             gpu_max_buffer_size: args.gpu_limits.max_buffer_size(),

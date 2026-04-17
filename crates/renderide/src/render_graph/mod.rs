@@ -1,5 +1,7 @@
 //! Compile-time validated **render graph** with typed handles, setup-time access declarations,
-//! pass culling, and transient alias planning.
+//! pass culling, and transient alias planning. Per-frame command recording may use **several**
+//! [`wgpu::CommandEncoder`]s and **several** [`wgpu::Queue::submit`] calls in one tick (see
+//! [`CompiledRenderGraph::execute_multi_view`]).
 //!
 //! **Hi-Z-related code:** CPU helpers for mip layout, depth readback unpacking, and screen-space
 //! occlusion tests live in [`hi_z_cpu`] and [`hi_z_occlusion`]. GPU pyramid build, staging, and
@@ -9,10 +11,22 @@
 //!
 //! - **[`GraphBuilder`]** declares transient resources/imports, groups, and [`RenderPass`] nodes,
 //!   then calls each pass's setup hook to derive resource-ordering edges.
-//! - **[`CompiledRenderGraph`]** stores the retained schedule, transient usage unions,
-//!   lifetime-based alias slots, and the existing frame execution entry points.
+//! - **[`CompiledRenderGraph`]** — immutable flattened pass list in dependency order with
+//!   transient usage unions and lifetime-based alias slots. At run time,
+//!   [`CompiledRenderGraph::execute`] / [`CompiledRenderGraph::execute_multi_view`] may acquire the
+//!   swapchain once when any pass writes the logical `backbuffer` resource, then present after the
+//!   last GPU work for that frame. Encoding is **not** "one encoder for the whole graph":
+//!   multi-view runs [`PassPhase::FrameGlobal`] passes in a dedicated encoder + submit, then
+//!   **one encoder + submit per [`FrameView`]** for [`PassPhase::PerView`] passes so per-view
+//!   [`wgpu::Queue::write_buffer`] updates are visible before each view's commands; see
+//!   [`CompiledRenderGraph::execute_multi_view`].
 //! - **[`GraphCache`]** memoizes a compiled graph by [`GraphCacheKey`] (surface extent, MSAA,
 //!   multiview, surface format) so the backend rebuilds only when one of those inputs changes.
+//!
+//! [`CompileStats`] field `topo_levels` counts Kahn-style **parallel waves** in the DAG at compile
+//! time; the executor still walks passes in a **single flat order** (waves are not a separate
+//! runtime schedule). The debug HUD surfaces this value next to pass count as a scheduling /
+//! future-parallelism hint.
 //!
 //! ## Frame pipeline
 //!
