@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::assets::asset_transfer_queue::{self as asset_uploads, AssetTransferQueue};
 use crate::assets::material::MaterialPropertyStore;
-use crate::backend::mesh_deform::{MeshDeformScratch, MeshPreprocessPipelines};
+use crate::backend::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::config::RendererSettingsHandle;
 use crate::diagnostics::{DebugHudEncodeError, DebugHudInput, SceneTransformsSnapshot};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
@@ -60,12 +60,47 @@ pub struct RenderBackend {
     mesh_deform_scratch: Option<MeshDeformScratch>,
     /// Per-frame bind groups, light staging, and debug draw slab.
     pub(crate) frame_resources: super::FrameResourceManager,
+    /// Deformed vertex arenas shared by mesh-deform compute and mesh-forward reads (after [`Self::attach`]).
+    ///
+    /// Stored alongside [`Self::materials`] and [`Self::asset_transfers`] so passes can take disjoint
+    /// borrows without aliasing [`Self::frame_resources`].
+    gpu_skin_cache: Option<GpuSkinCache>,
     /// Dear ImGui overlay and capture state.
     debug_hud: DebugHudBundle,
     /// Hierarchical depth pyramid, CPU readback, and temporal cull state for occlusion culling.
     pub(crate) occlusion: OcclusionSystem,
     /// MSAA depth → R32F → [`wgpu::TextureFormat::Depth32Float`] resolve (after [`Self::attach`]).
     pub(crate) msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
+}
+
+/// Disjoint borrows of [`MaterialSystem`], [`AssetTransferQueue`], and the GPU skin cache for world mesh forward encoding.
+///
+/// Built by [`RenderBackend::world_mesh_forward_encode_refs`] so the raster encoder never holds
+/// `&mut RenderBackend` while also borrowing the deform cache on [`RenderBackend`].
+pub(crate) struct WorldMeshForwardEncodeRefs<'a> {
+    /// Material registry, embedded binds, and property store.
+    pub(crate) materials: &'a mut MaterialSystem,
+    /// Resident mesh and texture pools (read-only for draw recording).
+    pub(crate) asset_transfers: &'a AssetTransferQueue,
+    /// Arena-backed deformed positions and normals keyed by renderable (after [`RenderBackend::attach`]).
+    pub(crate) skin_cache: Option<&'a GpuSkinCache>,
+}
+
+impl<'a> WorldMeshForwardEncodeRefs<'a> {
+    /// Resident meshes for draw validation and vertex buffer binding.
+    pub(crate) fn mesh_pool(&self) -> &MeshPool {
+        &self.asset_transfers.mesh_pool
+    }
+
+    /// Pool views for embedded `@group(1)` texture resolution.
+    pub(crate) fn embedded_texture_pools(&self) -> EmbeddedTexturePools<'_> {
+        EmbeddedTexturePools {
+            texture: &self.asset_transfers.texture_pool,
+            texture3d: &self.asset_transfers.texture3d_pool,
+            cubemap: &self.asset_transfers.cubemap_pool,
+            render_texture: &self.asset_transfers.render_texture_pool,
+        }
+    }
 }
 
 impl Default for RenderBackend {
@@ -84,6 +119,7 @@ impl RenderBackend {
             graph_cache: GraphCache::default(),
             mesh_deform_scratch: None,
             frame_resources: super::FrameResourceManager::new(),
+            gpu_skin_cache: None,
             debug_hud: DebugHudBundle::new(),
             occlusion: OcclusionSystem::new(),
             msaa_depth_resolve: None,
@@ -108,6 +144,35 @@ impl RenderBackend {
     /// Mesh deformation compute pipelines when GPU init succeeded.
     pub fn mesh_preprocess(&self) -> Option<&MeshPreprocessPipelines> {
         self.mesh_preprocess.as_ref()
+    }
+
+    /// Arena-backed deformed vertex streams shared by mesh deform compute and mesh forward draws.
+    pub fn skin_cache(&self) -> Option<&GpuSkinCache> {
+        self.gpu_skin_cache.as_ref()
+    }
+
+    /// Mutable skin cache for mesh deform compute and cache sweeps.
+    pub fn skin_cache_mut(&mut self) -> Option<&mut GpuSkinCache> {
+        self.gpu_skin_cache.as_mut()
+    }
+
+    /// Resets per-tick light prep flags, mesh deform coalescing, and advances the skin cache frame counter.
+    ///
+    /// Call once per winit tick before IPC and frame work (see [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`]).
+    pub fn reset_light_prep_for_tick(&mut self) {
+        if let Some(cache) = self.gpu_skin_cache.as_mut() {
+            cache.advance_frame();
+        }
+        self.frame_resources.reset_light_prep_for_tick();
+    }
+
+    /// Borrows material and pool state disjointly from the GPU skin cache for mesh forward encoding.
+    pub(crate) fn world_mesh_forward_encode_refs(&mut self) -> WorldMeshForwardEncodeRefs<'_> {
+        WorldMeshForwardEncodeRefs {
+            materials: &mut self.materials,
+            asset_transfers: &self.asset_transfers,
+            skin_cache: self.gpu_skin_cache.as_ref(),
+        }
     }
 
     /// GPU limits snapshot after [`Self::attach`], if attach succeeded.
@@ -214,6 +279,7 @@ impl RenderBackend {
             renderer_settings,
             config_save_path,
         } = desc;
+        let max_buffer_size = gpu_limits.wgpu.max_buffer_size;
         self.asset_transfers.gpu_device = Some(device.clone());
         self.asset_transfers.gpu_queue = Some(queue.clone());
         self.asset_transfers.gpu_limits = Some(Arc::clone(&gpu_limits));
@@ -228,6 +294,7 @@ impl RenderBackend {
         }
         self.mesh_deform_scratch = Some(MeshDeformScratch::new(device.as_ref()));
         self.frame_resources.attach(device.as_ref(), gpu_limits);
+        self.gpu_skin_cache = Some(GpuSkinCache::new(device.as_ref(), max_buffer_size));
         {
             let q = queue.lock().unwrap_or_else(|e| e.into_inner());
             self.debug_hud.attach(
@@ -357,5 +424,21 @@ impl RenderBackend {
         let pre = self.mesh_preprocess.as_ref()?;
         let scratch = self.mesh_deform_scratch.as_mut()?;
         Some((pre, scratch))
+    }
+
+    /// Preprocess pipelines, deform scratch, and skin cache for [`crate::render_graph::passes::MeshDeformPass`].
+    ///
+    /// Single method so callers avoid overlapping borrows of [`RenderBackend`].
+    pub(crate) fn mesh_deform_pass_refs(
+        &mut self,
+    ) -> Option<(
+        &MeshPreprocessPipelines,
+        &mut MeshDeformScratch,
+        &mut GpuSkinCache,
+    )> {
+        let pre = self.mesh_preprocess.as_ref()?;
+        let scratch = self.mesh_deform_scratch.as_mut()?;
+        let skin = self.gpu_skin_cache.as_mut()?;
+        Some((pre, scratch, skin))
     }
 }

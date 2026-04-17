@@ -12,7 +12,6 @@ use crate::gpu::GpuLimits;
 
 use super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources};
 use super::light_gpu::{order_lights_for_clustered_shading_in_place, GpuLight, MAX_LIGHTS};
-use super::mesh_deform::GpuSkinCache;
 use super::per_draw_resources::PerDrawResources;
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::scene::{ResolvedLight, SceneCoordinator};
@@ -58,8 +57,6 @@ pub struct FrameResourceManager {
     /// In VR, the HMD graph runs mesh deform first; secondary cameras skip it via this flag.
     /// Reset with [`Self::reset_light_prep_for_tick`].
     mesh_deform_dispatched_this_tick: Cell<bool>,
-    /// Per-instance deform output arenas (positions / normals / blend temp); after [`Self::attach`].
-    pub(crate) skin_cache: Option<GpuSkinCache>,
 }
 
 impl Default for FrameResourceManager {
@@ -80,7 +77,6 @@ impl FrameResourceManager {
             light_prep_done_this_tick: false,
             lights_gpu_uploaded_this_tick: Cell::new(false),
             mesh_deform_dispatched_this_tick: Cell::new(false),
-            skin_cache: None,
         }
     }
 
@@ -94,7 +90,6 @@ impl FrameResourceManager {
             }
         };
         self.empty_material = Some(EmptyMaterialBindGroup::new(device));
-        let max_buffer_size = limits.wgpu.max_buffer_size;
         self.per_draw = match PerDrawResources::new(device, limits) {
             Ok(p) => Some(p),
             Err(e) => {
@@ -102,18 +97,14 @@ impl FrameResourceManager {
                 None
             }
         };
-        self.skin_cache = Some(GpuSkinCache::new(device, max_buffer_size));
     }
 
     /// Clears the per-tick light prep coalescing flag. Call once per winit frame from
-    /// [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`].
+    /// [`super::RenderBackend::reset_light_prep_for_tick`] (which also advances the GPU skin cache frame counter).
     pub fn reset_light_prep_for_tick(&mut self) {
         self.light_prep_done_this_tick = false;
         self.lights_gpu_uploaded_this_tick.set(false);
         self.mesh_deform_dispatched_this_tick.set(false);
-        if let Some(ref mut cache) = self.skin_cache {
-            cache.advance_frame();
-        }
     }
 
     /// Whether [`crate::render_graph::passes::ClusteredLightPass`] already uploaded lights this tick.
@@ -215,16 +206,6 @@ impl FrameResourceManager {
     /// Per-draw mesh forward storage: 256-byte slots, indexed by instance or dynamic offset.
     pub fn per_draw(&self) -> Option<&PerDrawResources> {
         self.per_draw.as_ref()
-    }
-
-    /// GPU skin cache (deform output arenas) after [`Self::attach`].
-    pub fn skin_cache(&self) -> Option<&GpuSkinCache> {
-        self.skin_cache.as_ref()
-    }
-
-    /// Mutable skin cache (mesh deform + forward bind).
-    pub fn skin_cache_mut(&mut self) -> Option<&mut GpuSkinCache> {
-        self.skin_cache.as_mut()
     }
 
     /// Bundles frame/empty-material/per-draw bind resources for render passes.

@@ -8,7 +8,7 @@ mod snapshot;
 
 use rayon::prelude::*;
 
-use crate::backend::mesh_deform::{EntryNeed, GpuSkinCache};
+use crate::backend::mesh_deform::EntryNeed;
 use crate::render_graph::context::RenderPassContext;
 use crate::render_graph::error::RenderPassError;
 use crate::render_graph::handles::ResourceId;
@@ -180,16 +180,6 @@ impl RenderPass for MeshDeformPass {
             work
         };
 
-        let skin_cache_ptr = frame
-            .backend
-            .frame_resources
-            .skin_cache_mut()
-            .map(|c| c as *mut GpuSkinCache);
-
-        let Some((pre, scratch)) = frame.backend.mesh_deform_pre_and_scratch() else {
-            return Ok(());
-        };
-
         let queue = match ctx.queue.lock() {
             Ok(q) => q,
             Err(poisoned) => poisoned.into_inner(),
@@ -201,62 +191,62 @@ impl RenderPass for MeshDeformPass {
         let render_context = frame.scene.active_main_render_context();
         let head_output_transform = frame.host_camera.head_output_transform;
 
-        let Some(skin_cache_raw) = skin_cache_ptr else {
-            return Ok(());
-        };
-
-        for item in work {
-            let need = EntryNeed {
-                needs_blend: deform_needs_blend_snapshot(&item.mesh),
-                needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),
-            };
-            let key = (item.space_id, item.node_id);
-            // SAFETY: `skin_cache_raw` points at [`FrameResourceManager`]'s cache for this frame.
-            let skin_cache = unsafe { &mut *skin_cache_raw };
-            let Some((cache_entry, positions_arena, normals_arena, temp_arena)) = skin_cache
-                .get_or_alloc_with_arenas(
-                    ctx.device,
-                    ctx.encoder,
-                    key,
-                    need,
-                    item.mesh.vertex_count,
-                )
-            else {
-                continue;
+        {
+            let backend = &mut frame.backend;
+            let Some((pre, scratch, skin_cache)) = backend.mesh_deform_pass_refs() else {
+                return Ok(());
             };
 
-            record_mesh_deform(
-                MeshDeformEncodeGpu {
-                    queue: &queue,
-                    device: ctx.device,
-                    gpu_limits: ctx.gpu_limits,
-                    encoder: ctx.encoder,
-                    pre,
-                    scratch,
-                },
-                MeshDeformRecordInputs {
-                    scene: frame.scene,
-                    space_id: item.space_id,
-                    mesh: &item.mesh,
-                    bone_transform_indices: item.skinned.as_deref(),
-                    smr_node_id: item.smr_node_id,
-                    render_context,
-                    head_output_transform,
-                    blend_weights: &item.blend_weights,
-                    bone_cursor: &mut bone_cursor,
-                    blend_weight_cursor: &mut blend_weight_cursor,
-                    skin_dispatch_cursor: &mut skin_dispatch_cursor,
-                    skin_cache_entry: cache_entry,
-                    positions_arena,
-                    normals_arena,
-                    temp_arena,
-                },
-            );
+            for item in work {
+                let need = EntryNeed {
+                    needs_blend: deform_needs_blend_snapshot(&item.mesh),
+                    needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),
+                };
+                let key = (item.space_id, item.node_id);
+                let Some((cache_entry, positions_arena, normals_arena, temp_arena)) = skin_cache
+                    .get_or_alloc_with_arenas(
+                        ctx.device,
+                        ctx.encoder,
+                        key,
+                        need,
+                        item.mesh.vertex_count,
+                    )
+                else {
+                    continue;
+                };
+
+                record_mesh_deform(
+                    MeshDeformEncodeGpu {
+                        queue: &queue,
+                        device: ctx.device,
+                        gpu_limits: ctx.gpu_limits,
+                        encoder: ctx.encoder,
+                        pre,
+                        scratch,
+                    },
+                    MeshDeformRecordInputs {
+                        scene: frame.scene,
+                        space_id: item.space_id,
+                        mesh: &item.mesh,
+                        bone_transform_indices: item.skinned.as_deref(),
+                        smr_node_id: item.smr_node_id,
+                        render_context,
+                        head_output_transform,
+                        blend_weights: &item.blend_weights,
+                        bone_cursor: &mut bone_cursor,
+                        blend_weight_cursor: &mut blend_weight_cursor,
+                        skin_dispatch_cursor: &mut skin_dispatch_cursor,
+                        skin_cache_entry: cache_entry,
+                        positions_arena,
+                        normals_arena,
+                        temp_arena,
+                    },
+                );
+            }
+
+            let fc = skin_cache.frame_counter();
+            skin_cache.sweep_stale(fc.saturating_sub(2));
         }
-
-        let skin_cache = unsafe { &mut *skin_cache_raw };
-        let fc = skin_cache.frame_counter();
-        skin_cache.sweep_stale(fc.saturating_sub(2));
 
         frame
             .backend

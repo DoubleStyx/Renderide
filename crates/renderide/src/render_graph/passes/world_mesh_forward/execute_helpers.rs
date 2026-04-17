@@ -11,9 +11,9 @@ use rayon::prelude::*;
 
 use crate::assets::material::MaterialDictionary;
 use crate::backend::mesh_deform::{
-    write_per_draw_uniform_slab, GpuSkinCache, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE,
+    write_per_draw_uniform_slab, PaddedPerDrawUniforms, PER_DRAW_UNIFORM_STRIDE,
 };
-use crate::backend::RenderBackend;
+use crate::backend::{RenderBackend, WorldMeshForwardEncodeRefs};
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::materials::{MaterialPipelineDesc, MaterialRouter, RasterPipelineKind};
@@ -423,14 +423,13 @@ struct ForwardPassRasterConfig<'a> {
 }
 
 /// Shared recording state for [`encode_world_mesh_forward_opaque_pass`] / intersection.
-struct ForwardSubpassRecord<'a, 'b, 'c> {
+struct ForwardSubpassRecord<'a, 'c, 'd> {
     encoder: &'a mut wgpu::CommandEncoder,
-    frame: &'a mut FrameRenderParams<'b>,
     queue: &'a wgpu::Queue,
     draws: &'c [WorldMeshDrawItem],
     draw_indices: &'c [usize],
-    /// Deformed vertex streams; see [`super::encode::ForwardDrawBatch::skin_cache`].
-    skin_cache: Option<*const GpuSkinCache>,
+    /// Material registry, pools, and skin cache (disjoint borrows from [`RenderBackend`]).
+    encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
 }
 
 /// Opaque pass: clear color/depth, draw non-intersection items.
@@ -471,7 +470,7 @@ fn encode_world_mesh_forward_opaque_pass(
         rpass: &mut rpass,
         draw_indices: sub.draw_indices,
         draws: sub.draws,
-        backend: sub.frame.backend,
+        encode: sub.encode,
         queue: sub.queue,
         frame_bg: bind_groups.frame.as_ref(),
         empty_bg: bind_groups.empty_material.as_ref(),
@@ -481,7 +480,6 @@ fn encode_world_mesh_forward_opaque_pass(
         warned_missing_embedded_bind: cfg.warned_missing_embedded_bind,
         offscreen_write_render_texture_asset_id: cfg.offscreen_write_render_texture_asset_id,
         supports_base_instance: cfg.supports_base_instance,
-        skin_cache: sub.skin_cache,
     });
 }
 
@@ -523,7 +521,7 @@ fn encode_world_mesh_forward_intersection_pass(
         rpass: &mut rpass,
         draw_indices: sub.draw_indices,
         draws: sub.draws,
-        backend: sub.frame.backend,
+        encode: sub.encode,
         queue: sub.queue,
         frame_bg: bind_groups.frame.as_ref(),
         empty_bg: bind_groups.empty_material.as_ref(),
@@ -533,7 +531,6 @@ fn encode_world_mesh_forward_intersection_pass(
         warned_missing_embedded_bind: cfg.warned_missing_embedded_bind,
         offscreen_write_render_texture_asset_id: cfg.offscreen_write_render_texture_asset_id,
         supports_base_instance: cfg.supports_base_instance,
-        skin_cache: sub.skin_cache,
     });
 }
 
@@ -618,30 +615,26 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 
-    let skin_cache = frame
-        .backend
-        .frame_resources
-        .skin_cache()
-        .map(|c| c as *const GpuSkinCache);
-
-    encode_world_mesh_forward_opaque_pass(
-        ForwardSubpassRecord {
-            encoder,
-            frame,
-            queue,
-            draws,
-            draw_indices: &regular_indices,
-            skin_cache,
-        },
-        ForwardPassAttachments {
-            color_view,
-            depth_view: depth_raster_view,
-            resolve_target: opaque_resolve,
-            color_store: opaque_color_store,
-        },
-        &bind_groups,
-        &mut raster_cfg,
-    );
+    {
+        let mut encode_refs = frame.backend.world_mesh_forward_encode_refs();
+        encode_world_mesh_forward_opaque_pass(
+            ForwardSubpassRecord {
+                encoder,
+                queue,
+                draws,
+                draw_indices: &regular_indices,
+                encode: &mut encode_refs,
+            },
+            ForwardPassAttachments {
+                color_view,
+                depth_view: depth_raster_view,
+                resolve_target: opaque_resolve,
+                color_store: opaque_color_store,
+            },
+            &bind_groups,
+            &mut raster_cfg,
+        );
+    }
 
     if intersect_indices.is_empty() {
         if msaa {
@@ -697,30 +690,26 @@ pub(super) fn encode_world_mesh_forward_draw_passes(
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 
-    let skin_cache = frame
-        .backend
-        .frame_resources
-        .skin_cache()
-        .map(|c| c as *const GpuSkinCache);
-
-    encode_world_mesh_forward_intersection_pass(
-        ForwardSubpassRecord {
-            encoder,
-            frame,
-            queue,
-            draws,
-            draw_indices: &intersect_indices,
-            skin_cache,
-        },
-        ForwardPassAttachments {
-            color_view,
-            depth_view: depth_raster_view,
-            resolve_target: inter_resolve,
-            color_store: inter_store,
-        },
-        &bind_groups,
-        &mut raster_cfg,
-    );
+    {
+        let mut encode_refs = frame.backend.world_mesh_forward_encode_refs();
+        encode_world_mesh_forward_intersection_pass(
+            ForwardSubpassRecord {
+                encoder,
+                queue,
+                draws,
+                draw_indices: &intersect_indices,
+                encode: &mut encode_refs,
+            },
+            ForwardPassAttachments {
+                color_view,
+                depth_view: depth_raster_view,
+                resolve_target: inter_resolve,
+                color_store: inter_store,
+            },
+            &bind_groups,
+            &mut raster_cfg,
+        );
+    }
 
     if msaa {
         if let Some(res) = msaa_depth_resolve {

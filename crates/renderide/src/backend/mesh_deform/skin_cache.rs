@@ -45,7 +45,7 @@ pub struct GpuSkinCache {
     nrm_alloc: RangeAllocator,
     tmp_alloc: RangeAllocator,
     entries: HashMap<SkinCacheKey, SkinCacheEntry>,
-    /// Incremented each winit tick ([`crate::backend::FrameResourceManager::reset_light_prep_for_tick`]).
+    /// Incremented each winit tick ([`crate::backend::RenderBackend::reset_light_prep_for_tick`]).
     frame_counter: u64,
     capacity_cap_bytes: u64,
 }
