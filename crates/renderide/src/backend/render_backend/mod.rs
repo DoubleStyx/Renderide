@@ -220,20 +220,37 @@ impl RenderBackend {
 
     /// Arena-backed deformed vertex streams shared by mesh deform compute and mesh forward draws.
     pub fn skin_cache(&self) -> Option<&GpuSkinCache> {
-        self.gpu_skin_cache.as_ref()
+        self.gpu.as_ref().map(|g| &g.gpu_skin_cache)
     }
 
     /// Mutable skin cache for mesh deform compute and cache sweeps.
     pub fn skin_cache_mut(&mut self) -> Option<&mut GpuSkinCache> {
-        self.gpu_skin_cache.as_mut()
+        self.gpu.as_mut().map(|g| &mut g.gpu_skin_cache)
+    }
+
+    /// GPU-bound mesh deform and MSAA resolve state after [`Self::attach`] succeeds.
+    pub fn attached(&self) -> Option<&GpuAttached> {
+        self.gpu.as_ref()
+    }
+
+    /// Mutable GPU-bound state for passes that need deform scratch or skin arenas.
+    pub fn attached_mut(&mut self) -> Option<&mut GpuAttached> {
+        self.gpu.as_mut()
+    }
+
+    /// MSAA depth → R32F → single-sample depth resolve resources when supported.
+    pub(crate) fn msaa_depth_resolve(&self) -> Option<Arc<MsaaDepthResolveResources>> {
+        self.gpu
+            .as_ref()
+            .and_then(|g| g.msaa_depth_resolve.as_ref().cloned())
     }
 
     /// Resets per-tick light prep flags, mesh deform coalescing, and advances the skin cache frame counter.
     ///
     /// Call once per winit tick before IPC and frame work (see [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`]).
     pub fn reset_light_prep_for_tick(&mut self) {
-        if let Some(cache) = self.gpu_skin_cache.as_mut() {
-            cache.advance_frame();
+        if let Some(g) = self.gpu.as_mut() {
+            g.gpu_skin_cache.advance_frame();
         }
         self.frame_resources.reset_light_prep_for_tick();
     }
@@ -243,7 +260,7 @@ impl RenderBackend {
         WorldMeshForwardEncodeRefs {
             materials: &mut self.materials,
             asset_transfers: &self.asset_transfers,
-            skin_cache: self.gpu_skin_cache.as_ref(),
+            skin_cache: self.gpu.as_ref().map(|g| &g.gpu_skin_cache),
         }
     }
 
@@ -605,9 +622,8 @@ impl RenderBackend {
         &mut MeshDeformScratch,
         &mut GpuSkinCache,
     )> {
-        let pre = self.mesh_preprocess.as_ref()?;
-        let scratch = self.mesh_deform_scratch.as_mut()?;
-        let skin = self.gpu_skin_cache.as_mut()?;
-        Some((pre, scratch, skin))
+        let g = self.gpu.as_mut()?;
+        let pre = g.mesh_preprocess.as_ref()?;
+        Some((pre, &mut g.mesh_deform_scratch, &mut g.gpu_skin_cache))
     }
 }
