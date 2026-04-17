@@ -290,7 +290,13 @@ pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError
     let forward_opaque = builder.add_pass(Box::new(passes::WorldMeshForwardOpaquePass::new(
         forward_resources,
     )));
-    let forward = builder.add_pass(Box::new(passes::WorldMeshForwardPass::new(
+    let depth_snapshot = builder.add_pass(Box::new(passes::WorldMeshDepthSnapshotPass::new(
+        forward_resources,
+    )));
+    let forward_intersect = builder.add_pass(Box::new(passes::WorldMeshForwardIntersectPass::new(
+        forward_resources,
+    )));
+    let depth_resolve = builder.add_pass(Box::new(passes::WorldMeshForwardDepthResolvePass::new(
         forward_resources,
     )));
     let hiz = builder.add_pass(Box::new(passes::HiZBuildPass::new(
@@ -303,8 +309,10 @@ pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError
     builder.add_edge(deform, clustered);
     builder.add_edge(clustered, forward_prepare);
     builder.add_edge(forward_prepare, forward_opaque);
-    builder.add_edge(forward_opaque, forward);
-    builder.add_edge(forward, hiz);
+    builder.add_edge(forward_opaque, depth_snapshot);
+    builder.add_edge(depth_snapshot, forward_intersect);
+    builder.add_edge(forward_intersect, depth_resolve);
+    builder.add_edge(depth_resolve, hiz);
     builder.build()
 }
 
@@ -313,11 +321,11 @@ mod default_graph_tests {
     use super::*;
 
     #[test]
-    fn default_main_needs_surface_and_six_passes() {
+    fn default_main_needs_surface_and_eight_passes() {
         let g = build_default_main_graph().expect("default graph");
         assert!(g.needs_surface_acquire());
-        assert_eq!(g.pass_count(), 6);
-        assert_eq!(g.compile_stats.topo_levels, 6);
+        assert_eq!(g.pass_count(), 8);
+        assert_eq!(g.compile_stats.topo_levels, 8);
         assert_eq!(g.compile_stats.transient_texture_count, 3);
     }
 }
