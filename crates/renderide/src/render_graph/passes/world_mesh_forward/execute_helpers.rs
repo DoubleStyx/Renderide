@@ -177,39 +177,6 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
         );
         backend.note_debug_hud_current_view_texture_2d_asset_ids(asset_ids);
     }
-
-    if backend.debug_hud_textures_enabled() && offscreen_write_render_texture_asset_id.is_none() {
-        let asset_ids = current_view_texture2d_asset_ids_from_draws(backend, draws);
-        backend.note_debug_hud_current_view_texture_2d_asset_ids(asset_ids);
-    }
-}
-
-fn current_view_texture2d_asset_ids_from_draws(
-    backend: &RenderBackend,
-    draws: &[WorldMeshDrawItem],
-) -> Vec<i32> {
-    let Some(bind) = backend.embedded_material_bind() else {
-        return Vec::new();
-    };
-    let Some(registry) = backend.materials.material_registry.as_ref() else {
-        return Vec::new();
-    };
-    let store = backend.material_property_store();
-    let mut out = Vec::new();
-    for item in draws {
-        if !matches!(item.batch_key.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
-            continue;
-        }
-        let Some(stem) = registry.stem_for_shader_asset(item.batch_key.shader_asset_id) else {
-            continue;
-        };
-        for asset_id in bind.texture2d_asset_ids_for_stem(stem, store, item.lookup_ids) {
-            if !out.contains(&asset_id) {
-                out.push(asset_id);
-            }
-        }
-    }
-    out
 }
 
 /// Main render-space context, perspective projection for world draws, and optional ortho for overlays.
@@ -492,6 +459,7 @@ struct ForwardPassRasterConfig<'a> {
     shader_perm: ShaderPermutation,
     supports_base_instance: bool,
     offscreen_write_render_texture_asset_id: Option<i32>,
+    has_local_lights: bool,
     warned_missing_embedded_bind: &'a mut bool,
 }
 
@@ -528,7 +496,17 @@ fn record_world_mesh_forward_subpass(
         warned_missing_embedded_bind: cfg.warned_missing_embedded_bind,
         offscreen_write_render_texture_asset_id: cfg.offscreen_write_render_texture_asset_id,
         supports_base_instance: cfg.supports_base_instance,
+        has_local_lights: cfg.has_local_lights,
     });
+}
+
+fn frame_has_local_lights(frame: &FrameRenderParams<'_>) -> bool {
+    frame
+        .backend
+        .frame_resources
+        .frame_lights()
+        .iter()
+        .any(|light| light.light_type != 1)
 }
 
 /// Records the opaque draw subset into a render pass already opened by the graph.
@@ -571,11 +549,13 @@ pub(super) fn record_world_mesh_forward_opaque_graph_raster(
     };
 
     let mut warned_missing_embedded_bind = false;
+    let has_local_lights = frame_has_local_lights(frame);
     let mut raster_cfg = ForwardPassRasterConfig {
         pass_desc: &prepared.pipeline.pass_desc,
         shader_perm: prepared.pipeline.shader_perm,
         supports_base_instance: prepared.supports_base_instance,
         offscreen_write_render_texture_asset_id: frame.offscreen_write_render_texture_asset_id,
+        has_local_lights,
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 
@@ -635,11 +615,13 @@ pub(super) fn record_world_mesh_forward_intersection_graph_raster(
     };
 
     let mut warned_missing_embedded_bind = false;
+    let has_local_lights = frame_has_local_lights(frame);
     let mut raster_cfg = ForwardPassRasterConfig {
         pass_desc: &prepared.pipeline.pass_desc,
         shader_perm: prepared.pipeline.shader_perm,
         supports_base_instance: prepared.supports_base_instance,
         offscreen_write_render_texture_asset_id: frame.offscreen_write_render_texture_asset_id,
+        has_local_lights,
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 

@@ -578,6 +578,10 @@ impl FrameGpuResources {
             depth_or_array_layers: if multiview { 2 } else { 1 },
         };
         let format = source_depth.format();
+        // Texture-to-texture copies must cover every aspect of the underlying format.
+        // The snapshot is still sampled through a depth-only view, but stencil-capable
+        // main depth formats need `All` here so wgpu copies depth and stencil together.
+        let copy_aspect = wgpu::TextureAspect::All;
         if multiview {
             self.ensure_scene_depth_array(device, (width, height), format);
             encoder.copy_texture_to_texture(
@@ -585,13 +589,13 @@ impl FrameGpuResources {
                     texture: source_depth,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::DepthOnly,
+                    aspect: copy_aspect,
                 },
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.scene_depth_array.0,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::DepthOnly,
+                    aspect: copy_aspect,
                 },
                 extent,
             );
@@ -602,13 +606,13 @@ impl FrameGpuResources {
                     texture: source_depth,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::DepthOnly,
+                    aspect: copy_aspect,
                 },
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.scene_depth_2d.0,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::DepthOnly,
+                    aspect: copy_aspect,
                 },
                 extent,
             );

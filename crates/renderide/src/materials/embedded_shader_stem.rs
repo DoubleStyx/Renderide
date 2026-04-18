@@ -63,6 +63,13 @@ fn xiexe_toon2_asset_lookup_key(name: &str) -> Option<&'static str> {
     }
 }
 
+fn compact_alias_lookup_key(name: &str) -> Option<&'static str> {
+    match compact_alnum_lower(name).as_str() {
+        "billboardunlit" => Some("billboardunlit"),
+        _ => None,
+    }
+}
+
 /// Returns `{normalized_key}_default` when that composed target exists in the embedded table.
 pub fn embedded_default_stem_for_unity_name(name: &str) -> Option<String> {
     let key = normalize_unity_shader_lookup_key(name);
@@ -71,6 +78,12 @@ pub fn embedded_default_stem_for_unity_name(name: &str) -> Option<String> {
         return Some(stem);
     }
     if let Some(asset_key) = shader_lab_ui_path_to_asset_lookup_key(name) {
+        let stem2 = format!("{asset_key}_default");
+        if embedded_shaders::embedded_target_wgsl(&stem2).is_some() {
+            return Some(stem2);
+        }
+    }
+    if let Some(asset_key) = compact_alias_lookup_key(name) {
         let stem2 = format!("{asset_key}_default");
         if embedded_shaders::embedded_target_wgsl(&stem2).is_some() {
             return Some(stem2);
@@ -315,6 +328,22 @@ mod tests {
         assert_eq!(
             embedded_default_stem_for_unity_name("Matcap").as_deref(),
             Some("matcap_default")
+        );
+    }
+
+    #[test]
+    fn resolves_billboard_unlit_from_shader_lab_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("Billboard/Unlit").as_deref(),
+            Some("billboardunlit_default")
+        );
+    }
+
+    #[test]
+    fn resolves_billboard_unlit_from_compact_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("BillboardUnlit").as_deref(),
+            Some("billboardunlit_default")
         );
     }
 

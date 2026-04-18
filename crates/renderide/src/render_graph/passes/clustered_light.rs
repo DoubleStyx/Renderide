@@ -419,6 +419,14 @@ impl RenderPass for ClusteredLightPass {
         let clusters_per_eye =
             eye_params[0].cluster_count_x * eye_params[0].cluster_count_y * CLUSTER_COUNT_Z;
 
+        if light_count == 0 {
+            let total_clusters = clusters_per_eye as u64 * eye_params.len() as u64;
+            let counts_bytes = total_clusters * std::mem::size_of::<u32>() as u64;
+            ctx.encoder
+                .clear_buffer(refs.cluster_light_counts, 0, Some(counts_bytes));
+            return Ok(());
+        }
+
         let (pipeline, bgl) = ensure_compute_pipeline(ctx.device);
         let cluster_ver = fgpu.cluster_cache.version;
         let bind_group = self.ensure_cluster_compute_bind_group(

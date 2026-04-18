@@ -18,7 +18,7 @@ mod collect;
 mod sort;
 mod types;
 
-pub use batch::{build_instance_batches, InstanceBatch};
+pub use batch::{build_instance_batches, for_each_instance_batch, InstanceBatch};
 pub use collect::{
     collect_and_sort_world_mesh_draws, collect_and_sort_world_mesh_draws_with_parallelism,
     DrawCollectionContext, WorldMeshDrawCollectParallelism,

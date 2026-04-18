@@ -140,16 +140,16 @@ fn shadow_type_u32(ty: ShadowType) -> u32 {
 
 /// Directional lights first (clustered forward compatibility); then point/spot; stable within bucket.
 ///
-/// Truncates to [`MAX_LIGHTS`] then sorts in place — prefer this over [`order_lights_for_clustered_shading`]
-/// when reusing a [`Vec`] across frames.
+/// Sorts before applying the global [`MAX_LIGHTS`] cap so directional lights are not accidentally
+/// dropped just because they arrived after many local lights in host order.
 pub fn order_lights_for_clustered_shading_in_place(lights: &mut Vec<ResolvedLight>) {
-    if lights.len() > MAX_LIGHTS {
-        lights.truncate(MAX_LIGHTS);
-    }
     lights.sort_by_key(|l| match l.light_type {
         LightType::Directional => 0u8,
         LightType::Point | LightType::Spot => 1,
     });
+    if lights.len() > MAX_LIGHTS {
+        lights.truncate(MAX_LIGHTS);
+    }
 }
 
 /// Allocates a new [`Vec`]; use [`order_lights_for_clustered_shading_in_place`] for hot paths.
@@ -161,7 +161,12 @@ pub fn order_lights_for_clustered_shading(lights: &[ResolvedLight]) -> Vec<Resol
 
 #[cfg(test)]
 mod layout_tests {
-    use super::GpuLight;
+    use glam::Vec3;
+
+    use crate::scene::ResolvedLight;
+    use crate::shared::{LightType, ShadowType};
+
+    use super::{order_lights_for_clustered_shading_in_place, GpuLight, MAX_LIGHTS};
 
     #[test]
     fn gpu_light_stride_matches_wgsl() {
@@ -170,5 +175,34 @@ mod layout_tests {
             112,
             "must match WGSL storage layout for `array<GpuLight>` (naga stride)"
         );
+    }
+
+    fn resolved_light(light_type: LightType) -> ResolvedLight {
+        ResolvedLight {
+            world_position: Vec3::ZERO,
+            world_direction: Vec3::Z,
+            color: Vec3::ONE,
+            intensity: 1.0,
+            range: 10.0,
+            spot_angle: 45.0,
+            light_type,
+            global_unique_id: -1,
+            shadow_type: ShadowType::None,
+            shadow_strength: 0.0,
+            shadow_near_plane: 0.0,
+            shadow_bias: 0.0,
+            shadow_normal_bias: 0.0,
+        }
+    }
+
+    #[test]
+    fn ordering_prioritizes_directionals_before_global_truncate() {
+        let mut lights = vec![resolved_light(LightType::Point); MAX_LIGHTS];
+        lights.push(resolved_light(LightType::Directional));
+
+        order_lights_for_clustered_shading_in_place(&mut lights);
+
+        assert_eq!(lights.len(), MAX_LIGHTS);
+        assert_eq!(lights[0].light_type, LightType::Directional);
     }
 }

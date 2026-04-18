@@ -52,6 +52,22 @@ pub fn build_instance_batches(
         return Vec::new();
     }
     let mut out = Vec::with_capacity(draw_indices.len());
+    for_each_instance_batch(draws, draw_indices, allow_multi_instance_batches, |batch| {
+        out.push(batch)
+    });
+    out
+}
+
+/// Visits instance batches without allocating a temporary batch list.
+pub fn for_each_instance_batch(
+    draws: &[WorldMeshDrawItem],
+    draw_indices: &[usize],
+    allow_multi_instance_batches: bool,
+    mut emit: impl FnMut(InstanceBatch),
+) {
+    if draw_indices.is_empty() {
+        return;
+    }
     let mut batch_start = draw_indices[0];
     let mut batch_len = 1u32;
 
@@ -68,7 +84,7 @@ pub fn build_instance_batches(
         if allow_multi_instance_batches && consecutive_in_draws && can_merge_instances(a, b) {
             batch_len += 1;
         } else {
-            out.push(InstanceBatch {
+            emit(InstanceBatch {
                 first_draw_index: batch_start,
                 instance_count: batch_len,
             });
@@ -76,11 +92,10 @@ pub fn build_instance_batches(
             batch_len = 1;
         }
     }
-    out.push(InstanceBatch {
+    emit(InstanceBatch {
         first_draw_index: batch_start,
         instance_count: batch_len,
     });
-    out
 }
 
 #[cfg(test)]
