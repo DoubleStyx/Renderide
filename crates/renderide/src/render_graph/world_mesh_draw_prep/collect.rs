@@ -65,6 +65,9 @@ struct DrawCollectionAccumulator<'a> {
     out: &'a mut Vec<WorldMeshDrawItem>,
     mismatch_warned: &'a mut HashSet<i32>,
     cull_stats: &'a mut (usize, usize, usize),
+    /// Precomputed filter result per node index. When `Some`, used in place of
+    /// [`CameraTransformDrawFilter::passes_scene_node`] to avoid per-draw ancestor walks.
+    filter_pass_mask: Option<&'a [bool]>,
 }
 
 /// How [`collect_and_sort_world_mesh_draws_with_parallelism`] parallelizes per-space collection and sorting.
@@ -86,7 +89,16 @@ fn push_draws_for_renderer(
     draw: StaticMeshDrawSource<'_>,
 ) {
     if let Some(f) = ctx.transform_filter {
-        if !f.passes_scene_node(ctx.scene, draw.space_id, draw.renderer.node_id) {
+        let passes = match acc.filter_pass_mask {
+            Some(mask) => {
+                let nid = draw.renderer.node_id;
+                nid >= 0
+                    && (nid as usize) < mask.len()
+                    && mask[nid as usize]
+            }
+            None => f.passes_scene_node(ctx.scene, draw.space_id, draw.renderer.node_id),
+        };
+        if !passes {
             return;
         }
     }
@@ -208,11 +220,6 @@ fn collect_draws_for_one_space(
     let mut out = Vec::new();
     let mut cull_stats = (0usize, 0usize, 0usize);
     let mut mismatch_warned = HashSet::new();
-    let mut acc = DrawCollectionAccumulator {
-        out: &mut out,
-        mismatch_warned: &mut mismatch_warned,
-        cull_stats: &mut cull_stats,
-    };
 
     let Some(space) = ctx.scene.space(space_id) else {
         return (out, cull_stats);
@@ -220,6 +227,19 @@ fn collect_draws_for_one_space(
     if !space.is_active {
         return (out, cull_stats);
     }
+
+    // Precompute per-node filter pass mask so `push_draws_for_renderer` skips the O(depth)
+    // ancestor walk on every draw (hot in dashboard / secondary-RT paths).
+    let filter_pass_mask: Option<Vec<bool>> = ctx
+        .transform_filter
+        .and_then(|f| f.build_pass_mask(ctx.scene, space_id));
+
+    let mut acc = DrawCollectionAccumulator {
+        out: &mut out,
+        mismatch_warned: &mut mismatch_warned,
+        cull_stats: &mut cull_stats,
+        filter_pass_mask: filter_pass_mask.as_deref(),
+    };
 
     for (renderable_index, r) in space.static_mesh_renderers.iter().enumerate() {
         if r.mesh_asset_id < 0 || r.node_id < 0 {

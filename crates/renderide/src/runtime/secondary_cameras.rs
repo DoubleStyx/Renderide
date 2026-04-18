@@ -350,7 +350,7 @@ impl RendererRuntime {
             let Some(world_m) = self.scene.world_matrix(sid, entry.transform_id as usize) else {
                 continue;
             };
-            let hc = host_camera_frame_for_render_texture(
+            let mut hc = host_camera_frame_for_render_texture(
                 &self.host_camera,
                 &entry.state,
                 viewport,
@@ -358,6 +358,12 @@ impl RendererRuntime {
                 &self.scene,
             );
             let filter = draw_filter_from_camera_entry(entry);
+            // Selective secondary cameras (dashboards, in-world UI panels, mirrors on specific
+            // subtrees) render tens of draws, not thousands. Hi-Z snapshots + occlusion temporal
+            // cost a per-camera readback path with negligible payoff at that scale — skip them.
+            if !entry.selective_transform_ids.is_empty() {
+                hc.suppress_occlusion_temporal = true;
+            }
             prepared.push(SecondaryRtPrepared {
                 host_camera: hc,
                 filter,

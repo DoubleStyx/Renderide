@@ -81,6 +81,110 @@ fn node_or_ancestor_in_set(
     false
 }
 
+/// Memoized ancestor-membership scan: for every node in `space_id`, returns whether it or any
+/// ancestor appears in `set`. Amortized O(nodes), one pass with a path-painting cache.
+fn ancestor_membership_mask(
+    scene: &SceneCoordinator,
+    space_id: RenderSpaceId,
+    set: &HashSet<i32>,
+) -> Vec<bool> {
+    let Some(space) = scene.space(space_id) else {
+        return Vec::new();
+    };
+    let n = space.nodes.len();
+    if n == 0 || set.is_empty() {
+        return vec![false; n];
+    }
+    // 0 = unknown, 1 = true, 2 = false
+    let mut cache: Vec<u8> = vec![0; n];
+    let mut path: Vec<usize> = Vec::with_capacity(32);
+    for start in 0..n {
+        if cache[start] != 0 {
+            continue;
+        }
+        path.clear();
+        let mut cur = start as i32;
+        let hit;
+        loop {
+            if cur < 0 {
+                hit = false;
+                break;
+            }
+            let cu = cur as usize;
+            if cu >= n {
+                hit = false;
+                break;
+            }
+            match cache[cu] {
+                1 => {
+                    hit = true;
+                    break;
+                }
+                2 => {
+                    hit = false;
+                    break;
+                }
+                _ => {}
+            }
+            if set.contains(&cur) {
+                // Mark self and unwind path as hits.
+                cache[cu] = 1;
+                hit = true;
+                break;
+            }
+            path.push(cu);
+            if path.len() > n {
+                hit = false;
+                break;
+            }
+            let parent = match space.node_parents.get(cu) {
+                Some(&p) => p,
+                None => {
+                    hit = false;
+                    break;
+                }
+            };
+            if parent < 0 || parent == cur {
+                hit = false;
+                break;
+            }
+            cur = parent;
+        }
+        let marker = if hit { 1u8 } else { 2u8 };
+        for &p in &path {
+            cache[p] = marker;
+        }
+    }
+    cache.into_iter().map(|v| v == 1).collect()
+}
+
+impl CameraTransformDrawFilter {
+    /// Precomputes `passes_scene_node` for every node in `space_id` so per-draw filtering
+    /// becomes an O(1) index lookup instead of repeated ancestor walks.
+    ///
+    /// Returns `None` when the space is missing; otherwise returns a `Vec<bool>` of length
+    /// `space.nodes.len()` where `mask[node_id as usize] == true` iff the draw should render.
+    pub fn build_pass_mask(
+        &self,
+        scene: &SceneCoordinator,
+        space_id: RenderSpaceId,
+    ) -> Option<Vec<bool>> {
+        let space = scene.space(space_id)?;
+        let n = space.nodes.len();
+        if let Some(only) = &self.only {
+            if only.is_empty() {
+                return Some(vec![false; n]);
+            }
+            Some(ancestor_membership_mask(scene, space_id, only))
+        } else if self.exclude.is_empty() {
+            Some(vec![true; n])
+        } else {
+            let excl = ancestor_membership_mask(scene, space_id, &self.exclude);
+            Some(excl.into_iter().map(|e| !e).collect())
+        }
+    }
+}
+
 /// Builds a filter from a host [`crate::scene::CameraRenderableEntry`].
 pub fn draw_filter_from_camera_entry(
     entry: &crate::scene::CameraRenderableEntry,
@@ -253,5 +357,38 @@ mod tests {
         assert!(filter.passes_scene_node(&scene, space_id, 0));
         assert!(!filter.passes_scene_node(&scene, space_id, 1));
         assert!(!filter.passes_scene_node(&scene, space_id, 2));
+    }
+
+    #[test]
+    fn precomputed_pass_mask_matches_per_node_walk() {
+        let (scene, space_id) = seeded_scene();
+
+        let selective = CameraTransformDrawFilter {
+            only: Some(HashSet::from_iter([1])),
+            exclude: HashSet::new(),
+        };
+        let mask = selective.build_pass_mask(&scene, space_id).unwrap();
+        assert_eq!(mask, vec![false, true, true]);
+
+        let exclude = CameraTransformDrawFilter {
+            only: None,
+            exclude: HashSet::from_iter([1]),
+        };
+        let mask = exclude.build_pass_mask(&scene, space_id).unwrap();
+        assert_eq!(mask, vec![true, false, false]);
+
+        let empty_only = CameraTransformDrawFilter {
+            only: Some(HashSet::new()),
+            exclude: HashSet::new(),
+        };
+        let mask = empty_only.build_pass_mask(&scene, space_id).unwrap();
+        assert_eq!(mask, vec![false, false, false]);
+
+        let no_exclude = CameraTransformDrawFilter {
+            only: None,
+            exclude: HashSet::new(),
+        };
+        let mask = no_exclude.build_pass_mask(&scene, space_id).unwrap();
+        assert_eq!(mask, vec![true, true, true]);
     }
 }

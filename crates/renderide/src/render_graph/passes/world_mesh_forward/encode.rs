@@ -143,7 +143,8 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
         let first_idx = inst_batch.first_draw_index;
         let item = &batch.draws[first_idx];
 
-        if last_batch_key.as_ref() != Some(&item.batch_key) {
+        let batch_key_changed = last_batch_key.as_ref() != Some(&item.batch_key);
+        if batch_key_changed {
             last_batch_key = Some(item.batch_key.clone());
             let shader_asset_id = item.batch_key.shader_asset_id;
             let material_blend_mode = item.batch_key.blend_mode;
@@ -191,16 +192,23 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
             continue;
         }
 
-        set_world_mesh_material_bind_group(MaterialBindState {
-            rpass: batch.rpass,
-            encode: batch.encode,
-            queue: batch.queue,
-            item,
-            empty_bg: batch.empty_bg,
-            last_material_bind_key: &mut last_material_bind_key,
-            warned_missing_embedded_bind: batch.warned_missing_embedded_bind,
-            offscreen_write_render_texture_asset_id: batch.offscreen_write_render_texture_asset_id,
-        });
+        // Material bind resolution (stem layout + texture signature hash + LRU lookups) only needs
+        // to run when the batch key changes. Within a run of same-key batches, @group(1) and its
+        // cached uniform buffer are invariant, so the previous `last_material_bind_key` still
+        // reflects what is bound on the render pass.
+        if batch_key_changed {
+            set_world_mesh_material_bind_group(MaterialBindState {
+                rpass: batch.rpass,
+                encode: batch.encode,
+                queue: batch.queue,
+                item,
+                empty_bg: batch.empty_bg,
+                last_material_bind_key: &mut last_material_bind_key,
+                warned_missing_embedded_bind: batch.warned_missing_embedded_bind,
+                offscreen_write_render_texture_asset_id: batch
+                    .offscreen_write_render_texture_asset_id,
+            });
+        }
 
         if batch.supports_base_instance {
             // Full-buffer bind group: slot selection is `instance_index` from
