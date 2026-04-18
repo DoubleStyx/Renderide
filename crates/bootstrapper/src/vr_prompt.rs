@@ -47,22 +47,27 @@ pub fn should_prompt_vr_dialog(host_args: &[String]) -> bool {
     true
 }
 
-/// Desktop vs VR choice: **Yes** → `-Device SteamVR`, **No** → `-Screen`.
+/// Labels used for the custom dialog buttons; also returned by `rfd` as the
+/// `MessageDialogResult::Custom(label)` payload, so they double as match keys.
+const VR_BUTTON_LABEL: &str = "VR";
+const DESKTOP_BUTTON_LABEL: &str = "Desktop";
+
+/// Desktop vs VR choice: **VR** → `-Device SteamVR`, **Desktop** → `-Screen`.
 ///
 /// Returns [`None`] when the dialog is dismissed without a choice.
 pub fn prompt_desktop_or_vr() -> Option<bool> {
     let res = rfd::MessageDialog::new()
         .set_title("Renderide")
-        .set_description(
-            "Launch the Host using a VR headset (SteamVR-style OpenXR) instead of desktop?\n\n\
-             Yes = VR (-Device SteamVR)\n\
-             No = Desktop (-Screen)",
-        )
-        .set_buttons(rfd::MessageButtons::YesNo)
+        .set_description("Launch the Host using a VR headset (SteamVR-style OpenXR) or desktop?")
+        .set_buttons(rfd::MessageButtons::OkCancelCustom(
+            VR_BUTTON_LABEL.into(),
+            DESKTOP_BUTTON_LABEL.into(),
+        ))
         .show();
     match res {
-        rfd::MessageDialogResult::Yes => Some(true),
-        rfd::MessageDialogResult::No => Some(false),
+        // Native backends that honor custom labels return them verbatim.
+        rfd::MessageDialogResult::Custom(label) if label == VR_BUTTON_LABEL => Some(true),
+        rfd::MessageDialogResult::Custom(label) if label == DESKTOP_BUTTON_LABEL => Some(false),
         _ => None,
     }
 }
