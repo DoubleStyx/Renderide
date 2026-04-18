@@ -213,11 +213,22 @@ mod wgpu_cache_tests {
         Some(Arc::new(device))
     }
 
-    /// Real device; run `cargo test -p renderide wgpu_cache -- --ignored` locally.
+    fn ci_expects_wgpu_adapter() -> bool {
+        matches!(std::env::var("CI").as_deref(), Ok("true") | Ok("1"))
+    }
+
+    /// Headless wgpu smoke: cache returns the same pipeline pointer for identical keys.
+    ///
+    /// On CI (`CI=true` / `CI=1`), missing adapters **fail** the test so runners without Vulkan
+    /// (e.g. Lavapipe) are caught. Locally, missing adapters log a warning and skip.
     #[test]
-    #[ignore = "wgpu/GPU stack (may SIGSEGV in sandbox CI); run with --ignored"]
     fn debug_world_normals_pipeline_cache_hits() {
         let Some(device) = pollster::block_on(device_with_adapter()) else {
+            if ci_expects_wgpu_adapter() {
+                panic!(
+                    "wgpu adapter required when CI is set (install Vulkan / Mesa or Lavapipe on Linux)"
+                );
+            }
             logger::warn!("skipping debug_world_normals_pipeline_cache_hits: no wgpu adapter");
             return;
         };

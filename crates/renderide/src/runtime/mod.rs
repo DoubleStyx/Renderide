@@ -334,3 +334,6 @@ impl RendererRuntime {
         frame_submit::process_frame_submit(self, data);
     }
 }
+
+#[cfg(test)]
+mod orchestration_tests;

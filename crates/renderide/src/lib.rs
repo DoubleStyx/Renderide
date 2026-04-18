@@ -76,6 +76,14 @@ pub mod prelude {
 
 pub use run_error::RunError;
 
+/// Forwards native stdout/stderr into the active file logger after [`logger`] initialization.
+///
+/// Idempotent. The main [`run`] path installs this after logging starts; entry points that skip
+/// [`run`] should call this after [`logger::init_for`] or [`logger::init`].
+pub fn ensure_native_stdio_forwarded_to_logger() {
+    native_stdio::ensure_stdio_forwarded_to_logger();
+}
+
 /// Runs the renderer process: logging, optional IPC, winit loop, and wgpu presentation.
 ///
 /// Returns [`Ok`] with [`None`] when the event loop exits without a host-requested exit code,

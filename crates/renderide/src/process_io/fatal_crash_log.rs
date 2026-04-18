@@ -350,3 +350,65 @@ fn write_hex_u32(n: u32, out: &mut [u8]) -> usize {
     }
     need
 }
+
+#[cfg(test)]
+mod formatter_tests {
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+    #[test]
+    fn write_u32_decimal_formats() {
+        let mut out = [0u8; 16];
+        let n = super::write_u32_decimal(12345, &mut out);
+        assert_eq!(&out[..n], b"12345");
+        let n0 = super::write_u32_decimal(0, &mut out);
+        assert_eq!(&out[..n0], b"0");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn linux_fatal_signal_line_contains_signo() {
+        use crash_handler::CrashContext;
+        let mut ctx: CrashContext = unsafe { std::mem::zeroed() };
+        ctx.siginfo.ssi_signo = 11;
+        let mut buf = [0u8; 224];
+        let n = super::format_linux_signal(&ctx, &mut buf);
+        let line = std::str::from_utf8(&buf[..n]).expect("utf8");
+        assert!(line.starts_with("FATAL: fatal signal (ssi_signo="));
+        assert!(line.contains("11"));
+        assert!(line.ends_with(")\n"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_fatal_line_contains_exception_code() {
+        use crash_handler::CrashContext;
+        let mut ctx: CrashContext = unsafe { std::mem::zeroed() };
+        ctx.exception_code = 0xC0000005u32 as i32;
+        let mut buf = [0u8; 224];
+        let n = super::format_fatal_line_windows(&ctx, &mut buf);
+        let line = std::str::from_utf8(&buf[..n]).expect("utf8");
+        assert!(line.starts_with("FATAL: Windows exception (code=0x"));
+        assert!(line.contains("C0000005"));
+        assert!(line.ends_with(")\n"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_hex_u32_uppercase() {
+        let mut out = [0u8; 8];
+        let n = super::write_hex_u32(0xDEADBEEF, &mut out);
+        assert_eq!(n, 8);
+        assert_eq!(&out[..n], b"DEADBEEF");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_fatal_line_no_exception() {
+        use crash_handler::CrashContext;
+        let ctx: CrashContext = unsafe { std::mem::zeroed() };
+        let mut buf = [0u8; 224];
+        let n = super::format_macos_exception(&ctx, &mut buf);
+        let line = std::str::from_utf8(&buf[..n]).expect("utf8");
+        assert!(line.contains("FATAL:"));
+        assert!(line.ends_with('\n'));
+    }
+}

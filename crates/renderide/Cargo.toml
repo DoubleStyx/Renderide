@@ -53,6 +53,7 @@ crash-handler = "0.7"
 wgpu = { version = "29.0", features = ["vulkan-portability"] }
 
 [dev-dependencies]
+logger = { path = "../logger" }
 nalgebra = { version = "0.34", features = ["convert-bytemuck"] }
 tempfile = "3"
 

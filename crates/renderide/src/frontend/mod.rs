@@ -10,6 +10,7 @@
 //! does **not** perform mesh/texture GPU uploads or mutate [`SceneCoordinator`](crate::scene::SceneCoordinator);
 //! the runtime façade combines this layer with [`crate::backend::RenderBackend`] and scene.
 
+mod begin_frame;
 mod frame_start_performance;
 mod init_state;
 mod renderer_frontend;

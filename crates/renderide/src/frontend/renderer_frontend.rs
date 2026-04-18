@@ -6,6 +6,7 @@ use crate::connection::{ConnectionParams, InitError};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{FrameStartData, InputState, OutputState, RendererCommand, RendererInitData};
 
+use super::begin_frame::begin_frame_allowed;
 use super::init_state::InitState;
 
 /// IPC, shared memory, init sequence, and lock-step fields. Does not own GPU pools or scene graph.
@@ -242,11 +243,14 @@ impl RendererFrontend {
 
     /// Whether a [`FrameStartData`] should be sent this tick (caller should supply [`InputState`] via [`Self::pre_frame`]).
     pub fn should_send_begin_frame(&self) -> bool {
-        if !self.init_state.is_finalized() || self.fatal_error || self.ipc.is_none() {
-            return false;
-        }
-        let bootstrap = self.last_frame_index < 0 && !self.sent_bootstrap_frame_start;
-        self.last_frame_data_processed || bootstrap
+        begin_frame_allowed(
+            self.init_state.is_finalized(),
+            self.fatal_error,
+            self.ipc.is_some(),
+            self.last_frame_data_processed,
+            self.last_frame_index,
+            self.sent_bootstrap_frame_start,
+        )
     }
 
     /// Lock-step begin-frame: send [`FrameStartData`] with `inputs` when [`Self::should_send_begin_frame`].

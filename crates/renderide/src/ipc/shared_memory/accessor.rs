@@ -99,7 +99,7 @@ impl SharedMemoryAccessor {
     }
 
     /// Maximum bytes allocated for a single [`Self::access_copy`] (guards corrupt `length`).
-    const MAX_ACCESS_COPY_BYTES: i32 = 64 * 1024 * 1024;
+    pub const MAX_ACCESS_COPY_BYTES: i32 = 64 * 1024 * 1024;
 
     /// Copy helper for small typed reads (tests / diagnostics). Prefer [`Self::with_read_bytes`] for large meshes.
     pub fn access_copy<T: Pod + Zeroable>(

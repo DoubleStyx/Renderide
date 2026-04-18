@@ -170,3 +170,13 @@ impl RendererRuntime {
         self.backend.debug_hud_last_want_capture_keyboard()
     }
 }
+
+#[cfg(test)]
+impl RendererRuntime {
+    /// Installs a shared-memory accessor for tests that apply [`crate::shared::FrameSubmitData`].
+    pub(crate) fn test_set_shared_memory(&mut self, prefix: impl Into<String>) {
+        use crate::ipc::SharedMemoryAccessor;
+        self.frontend
+            .set_shared_memory(SharedMemoryAccessor::new(prefix.into()));
+    }
+}
