@@ -35,13 +35,13 @@ The bootstrapper will launch the Resonite host and connect Renderide automatical
 1. Build the workspace in dev mode:
 
    ```bash
-   cargo build --profile dev
+   cargo build --profile dev-fast
    ```
 
 1. Run the bootstrapper in dev mode:
 
    ```bash
-   RUST_BACKTRACE=1 ./target/dev/bootstrapper
+   RUST_BACKTRACE=1 ./target/dev-fast/bootstrapper
    ```
 
 1. Enable validation layers in the config hud to get more detailed error messages for GPU crashes. Requires a restart.
