@@ -1,0 +1,105 @@
+//! Embedded `@group(1)` uniform buffer LRU and upload.
+
+use std::sync::Arc;
+
+use wgpu::util::DeviceExt;
+
+use super::super::embedded_material_bind_error::EmbeddedMaterialBindError;
+use super::super::layout::StemMaterialLayout;
+use super::super::uniform_pack::build_embedded_uniform_bytes;
+use crate::assets::material::{MaterialPropertyLookupIds, MaterialPropertyStore};
+
+/// Cached GPU uniform buffer and last [`crate::assets::material::MaterialPropertyStore::mutation_generation`] uploaded to it.
+pub(super) struct CachedUniformEntry {
+    pub(super) buffer: Arc<wgpu::Buffer>,
+    pub(super) last_written_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(super) struct MaterialUniformCacheKey {
+    pub(super) stem_hash: u64,
+    pub(super) material_asset_id: i32,
+    pub(super) property_block_slot0: Option<i32>,
+    pub(super) texture_2d_asset_id: i32,
+    /// Distinguishes RT-only primary slot from empty (`flags` bit 0).
+    pub(super) primary_texture_any_kind_present: bool,
+}
+
+/// LRU uniform buffer create/refresh for [`super::EmbeddedMaterialBindResources::get_or_create_embedded_uniform_buffer`].
+pub(super) struct EmbeddedUniformBufferRequest<'a> {
+    pub(super) queue: &'a wgpu::Queue,
+    pub(super) stem: &'a str,
+    pub(super) layout: &'a Arc<StemMaterialLayout>,
+    pub(super) uniform_key: &'a MaterialUniformCacheKey,
+    pub(super) mutation_gen: u64,
+    pub(super) store: &'a MaterialPropertyStore,
+    pub(super) lookup: MaterialPropertyLookupIds,
+    pub(super) primary_texture_any_kind_present: bool,
+}
+
+use super::EmbeddedMaterialBindResources;
+
+impl EmbeddedMaterialBindResources {
+    /// LRU uniform buffer for embedded `@group(1)`; refreshes bytes when [`MaterialPropertyStore`] mutates.
+    pub(super) fn get_or_create_embedded_uniform_buffer(
+        &self,
+        req: EmbeddedUniformBufferRequest<'_>,
+    ) -> Result<Arc<wgpu::Buffer>, EmbeddedMaterialBindError> {
+        let EmbeddedUniformBufferRequest {
+            queue,
+            stem,
+            layout,
+            uniform_key,
+            mutation_gen,
+            store,
+            lookup,
+            primary_texture_any_kind_present,
+        } = req;
+        let mut uniform_cache = self.uniform_cache.borrow_mut();
+        if let Some(entry) = uniform_cache.get_mut(uniform_key) {
+            if entry.last_written_generation == mutation_gen {
+                return Ok(entry.buffer.clone());
+            }
+            let uniform_bytes = build_embedded_uniform_bytes(
+                &layout.reflected,
+                layout.ids.as_ref(),
+                store,
+                lookup,
+                primary_texture_any_kind_present,
+            )
+            .ok_or_else(|| {
+                format!("stem {stem}: uniform block missing (shader has no material uniform)")
+            })?;
+            queue.write_buffer(entry.buffer.as_ref(), 0, &uniform_bytes);
+            entry.last_written_generation = mutation_gen;
+            return Ok(entry.buffer.clone());
+        }
+        let uniform_bytes = build_embedded_uniform_bytes(
+            &layout.reflected,
+            layout.ids.as_ref(),
+            store,
+            lookup,
+            primary_texture_any_kind_present,
+        )
+        .ok_or_else(|| {
+            format!("stem {stem}: uniform block missing (shader has no material uniform)")
+        })?;
+        let buf = Arc::new(
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("embedded_material_uniform"),
+                    contents: &uniform_bytes,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                }),
+        );
+        let entry = CachedUniformEntry {
+            buffer: buf.clone(),
+            last_written_generation: mutation_gen,
+        };
+        if let Some(evicted) = uniform_cache.put(*uniform_key, entry) {
+            drop(evicted);
+            logger::trace!("EmbeddedMaterialBindResources: evicted LRU uniform cache entry");
+        }
+        Ok(buf)
+    }
+}
