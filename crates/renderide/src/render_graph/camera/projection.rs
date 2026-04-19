@@ -130,3 +130,42 @@ pub fn reverse_z_orthographic(half_width: f32, half_height: f32, near: f32, far:
         Vec4::new(0.0, 0.0, z_offset, 1.0),
     )
 }
+
+#[cfg(test)]
+mod effective_clip_plane_tests {
+    use glam::Vec3;
+
+    use crate::shared::HeadOutputDevice;
+
+    use super::effective_head_output_clip_planes;
+
+    #[test]
+    fn screen360_uses_higher_near_floor_than_screen() {
+        let (n360, f360) =
+            effective_head_output_clip_planes(0.01, 100.0, HeadOutputDevice::Screen360, None);
+        let (n_screen, f_screen) =
+            effective_head_output_clip_planes(0.01, 100.0, HeadOutputDevice::Screen, None);
+        assert!((n360 - 0.25).abs() < 1e-5);
+        assert!((n_screen - 0.01).abs() < 1e-5);
+        assert!((f360 - 100.0).abs() < 1e-4);
+        assert!((f_screen - 100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn root_scale_multiplies_adjusted_planes_when_non_degenerate() {
+        let scale = Vec3::new(2.0, 1.0, 1.0);
+        let (n, f) =
+            effective_head_output_clip_planes(0.1, 50.0, HeadOutputDevice::Screen, Some(scale));
+        assert!((n - 0.2).abs() < 1e-5);
+        assert!((f - 100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn near_zero_root_scale_axis_falls_back_to_unit_scale() {
+        let scale = Vec3::new(1e-9, 1.0, 1.0);
+        let (n, f) =
+            effective_head_output_clip_planes(0.1, 50.0, HeadOutputDevice::Screen, Some(scale));
+        assert!((n - 0.1).abs() < 1e-5);
+        assert!((f - 50.0).abs() < 1e-4);
+    }
+}

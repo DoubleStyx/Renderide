@@ -220,3 +220,50 @@ fn open_publisher(
         .create_publisher(options)
         .map_err(|e| InitError::IpcConnect(e.to_string()))
 }
+
+#[cfg(test)]
+mod renderer_command_roundtrip_tests {
+    use super::encode_command;
+    use crate::shared::{
+        decode_renderer_command, default_entity_pool::DefaultEntityPool,
+        memory_unpacker::MemoryUnpacker, FrameSubmitData, FreeSharedMemoryView, KeepAlive,
+        RendererCommand, RendererShutdown,
+    };
+
+    fn assert_roundtrip(mut cmd: RendererCommand) {
+        let expect = format!("{cmd:?}");
+        let mut buf = vec![0u8; 65536];
+        let n = encode_command(&mut cmd, &mut buf);
+        let mut pool = DefaultEntityPool;
+        let mut unpacker = MemoryUnpacker::new(&buf[..n], &mut pool);
+        let decoded = decode_renderer_command(&mut unpacker).expect("decode");
+        assert_eq!(
+            expect,
+            format!("{decoded:?}"),
+            "RendererCommand wire roundtrip"
+        );
+        assert_eq!(unpacker.remaining_data(), 0, "no trailing bytes");
+    }
+
+    #[test]
+    fn roundtrip_keep_alive() {
+        assert_roundtrip(RendererCommand::KeepAlive(KeepAlive {}));
+    }
+
+    #[test]
+    fn roundtrip_renderer_shutdown() {
+        assert_roundtrip(RendererCommand::RendererShutdown(RendererShutdown {}));
+    }
+
+    #[test]
+    fn roundtrip_frame_submit_default() {
+        assert_roundtrip(RendererCommand::FrameSubmitData(FrameSubmitData::default()));
+    }
+
+    #[test]
+    fn roundtrip_free_shared_memory_view() {
+        assert_roundtrip(RendererCommand::FreeSharedMemoryView(
+            FreeSharedMemoryView { buffer_id: 42 },
+        ));
+    }
+}

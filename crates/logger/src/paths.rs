@@ -113,3 +113,20 @@ pub fn init_for(
     output::init_with_mirror(&path, max_level, append, false)?;
     Ok(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`LogsRootError::ManifestPathTooShort`] must echo the path that failed resolution (see also
+    /// crate-level tests in `lib.rs`).
+    #[test]
+    fn logs_root_manifest_path_too_short_preserves_manifest_path() {
+        let manifest = PathBuf::from("logger");
+        let err = logs_root_with(&manifest, None).unwrap_err();
+        assert!(matches!(
+            err,
+            LogsRootError::ManifestPathTooShort { manifest_dir } if manifest_dir == manifest
+        ));
+    }
+}

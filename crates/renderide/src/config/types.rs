@@ -267,6 +267,67 @@ impl RendererSettings {
 }
 
 #[cfg(test)]
+mod persist_str_parsers_tests {
+    use super::{MsaaSampleCount, PowerPreferenceSetting};
+
+    #[test]
+    fn msaa_sample_count_from_persist_str_aliases_and_counts() {
+        assert_eq!(
+            MsaaSampleCount::from_persist_str("off"),
+            Some(MsaaSampleCount::Off)
+        );
+        assert_eq!(
+            MsaaSampleCount::from_persist_str("1x"),
+            Some(MsaaSampleCount::Off)
+        );
+        assert_eq!(
+            MsaaSampleCount::from_persist_str("X2"),
+            Some(MsaaSampleCount::X2)
+        );
+        assert_eq!(
+            MsaaSampleCount::from_persist_str("4"),
+            Some(MsaaSampleCount::X4)
+        );
+        assert_eq!(
+            MsaaSampleCount::from_persist_str("x16"),
+            Some(MsaaSampleCount::X8)
+        );
+        assert_eq!(
+            MsaaSampleCount::from_persist_str("16x"),
+            Some(MsaaSampleCount::X8)
+        );
+        assert_eq!(MsaaSampleCount::from_persist_str("bogus"), None);
+
+        assert_eq!(MsaaSampleCount::Off.as_count(), 1);
+        assert_eq!(MsaaSampleCount::X2.as_count(), 2);
+        assert_eq!(MsaaSampleCount::X4.as_count(), 4);
+        assert_eq!(MsaaSampleCount::X8.as_count(), 8);
+        assert_eq!(MsaaSampleCount::X8.as_persist_str(), "x8");
+    }
+
+    #[test]
+    fn power_preference_from_persist_str() {
+        assert_eq!(
+            PowerPreferenceSetting::from_persist_str("low_power"),
+            Some(PowerPreferenceSetting::LowPower)
+        );
+        assert_eq!(
+            PowerPreferenceSetting::from_persist_str("LOW"),
+            Some(PowerPreferenceSetting::LowPower)
+        );
+        assert_eq!(
+            PowerPreferenceSetting::from_persist_str("performance"),
+            Some(PowerPreferenceSetting::HighPerformance)
+        );
+        assert_eq!(
+            PowerPreferenceSetting::from_persist_str("high_performance"),
+            Some(PowerPreferenceSetting::HighPerformance)
+        );
+        assert_eq!(PowerPreferenceSetting::from_persist_str(""), None);
+    }
+}
+
+#[cfg(test)]
 mod reported_max_texture_tests {
     use super::RendererSettings;
 

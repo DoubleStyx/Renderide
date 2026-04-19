@@ -121,6 +121,14 @@ mod tests {
     }
 
     #[test]
+    fn padded_message_length_exact_for_small_bodies() {
+        assert_eq!(padded_message_length(0), 8);
+        assert_eq!(padded_message_length(1), 16);
+        assert_eq!(padded_message_length(8), 16);
+        assert_eq!(padded_message_length(9), 24);
+    }
+
+    #[test]
     fn queue_header_is_empty_when_offsets_equal() {
         let h = QueueHeader::default();
         assert!(h.is_empty());

@@ -197,4 +197,37 @@ mod tests {
         assert!(gl.compute_dispatch_fits(256, 256, 24));
         assert!(!gl.compute_dispatch_fits(257, 1, 1));
     }
+
+    fn synthetic_limits(max_tex_2d: u32) -> GpuLimits {
+        GpuLimits {
+            wgpu: wgpu::Limits {
+                max_texture_dimension_2d: max_tex_2d,
+                ..Default::default()
+            },
+            supports_base_instance: true,
+            supports_multiview: false,
+            supports_float32_filterable: false,
+            texture_compression_features: wgpu::Features::empty(),
+            max_per_draw_slab_slots: 1024,
+        }
+    }
+
+    #[test]
+    fn clamp_render_texture_edge_clamps_min_to_four() {
+        let gl = synthetic_limits(8192);
+        assert_eq!(gl.clamp_render_texture_edge(0), 4);
+        assert_eq!(gl.clamp_render_texture_edge(-100), 4);
+        assert_eq!(gl.clamp_render_texture_edge(3), 4);
+        assert_eq!(gl.clamp_render_texture_edge(4), 4);
+    }
+
+    #[test]
+    fn clamp_render_texture_edge_caps_at_min_of_8192_and_gpu_max() {
+        let gl_small = synthetic_limits(512);
+        assert_eq!(gl_small.clamp_render_texture_edge(10_000), 512);
+
+        let gl_large = synthetic_limits(16384);
+        assert_eq!(gl_large.clamp_render_texture_edge(100_000), 8192);
+        assert_eq!(gl_large.clamp_render_texture_edge(4096), 4096);
+    }
 }

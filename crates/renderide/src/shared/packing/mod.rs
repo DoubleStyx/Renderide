@@ -14,3 +14,6 @@ pub mod packed_bools;
 pub mod polymorphic_decode_error;
 pub mod polymorphic_memory_packable_entity;
 pub mod wire_decode_error;
+
+#[cfg(test)]
+mod wire_primitive_tests;

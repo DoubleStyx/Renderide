@@ -105,4 +105,28 @@ mod tests {
         clear(buf.as_mut_ptr(), 4, 0, 0);
         assert_eq!(buf, [5u8; 4]);
     }
+
+    #[test]
+    fn read_spans_wrap_when_offset_near_capacity_end() {
+        let buf = [10u8, 20u8, 30u8, 40u8, 50u8];
+        let cap = 5i64;
+        let got = read(buf.as_ptr(), cap, 3, 4);
+        assert_eq!(got, vec![40u8, 50u8, 10u8, 20u8]);
+    }
+
+    #[test]
+    fn write_spans_wrap_from_negative_logical_offset() {
+        let mut buf = [0u8; 5];
+        let cap = 5i64;
+        write(buf.as_mut_ptr(), cap, -2, &[1, 2, 3, 4]);
+        assert_eq!(buf, [3, 4, 0, 1, 2]);
+    }
+
+    #[test]
+    fn clear_spans_wrap() {
+        let mut buf = [9u8; 6];
+        let cap = 6i64;
+        clear(buf.as_mut_ptr(), cap, 4, 4);
+        assert_eq!(buf, [0u8, 0u8, 9u8, 9u8, 0u8, 0u8]);
+    }
 }

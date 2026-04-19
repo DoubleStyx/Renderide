@@ -261,6 +261,10 @@ pub fn log_config_resolve_trace(resolve: &ConfigResolveOutcome) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate `RENDERIDE_*` process environment.
+    static CONFIG_ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn atomic_save_roundtrip() {
@@ -292,5 +296,35 @@ mod tests {
             resolve_save_path(&resolve),
             PathBuf::from("/tmp/x/config.toml")
         );
+    }
+
+    #[test]
+    fn apply_renderide_gpu_validation_env_overrides_flag() {
+        let _guard = CONFIG_ENV_TEST_LOCK.lock().expect("lock");
+        let mut s = RendererSettings::from_defaults();
+        s.debug.gpu_validation_layers = false;
+        std::env::set_var("RENDERIDE_GPU_VALIDATION", "1");
+        apply_renderide_gpu_validation_env(&mut s);
+        assert!(s.debug.gpu_validation_layers);
+
+        s.debug.gpu_validation_layers = true;
+        std::env::set_var("RENDERIDE_GPU_VALIDATION", "no");
+        apply_renderide_gpu_validation_env(&mut s);
+        assert!(!s.debug.gpu_validation_layers);
+
+        std::env::remove_var("RENDERIDE_GPU_VALIDATION");
+    }
+
+    #[test]
+    fn load_settings_from_toml_merges_renderide_env_nested_key() {
+        let _guard = CONFIG_ENV_TEST_LOCK.lock().expect("lock");
+        std::env::set_var("RENDERIDE_DISPLAY__FOCUSED_FPS", "137");
+        let toml = r#"
+[display]
+focused_fps = 10
+"#;
+        let s = load_settings_from_toml_str(toml).expect("figment extract");
+        assert_eq!(s.display.focused_fps_cap, 137);
+        std::env::remove_var("RENDERIDE_DISPLAY__FOCUSED_FPS");
     }
 }

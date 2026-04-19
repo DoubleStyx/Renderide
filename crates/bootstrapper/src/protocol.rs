@@ -283,4 +283,31 @@ mod tests {
             HostCommand::SetText(ref s) if s.is_empty()
         ));
     }
+
+    #[test]
+    fn parse_host_command_settext_preserves_utf8_payload() {
+        let cmd = parse_host_command("SETTEXTこんにちは");
+        assert!(matches!(
+            cmd,
+            HostCommand::SetText(ref s) if s == "こんにちは"
+        ));
+    }
+
+    #[test]
+    fn parse_host_command_whitespace_only_yields_empty_start_renderer() {
+        assert!(matches!(
+            parse_host_command("   \t  "),
+            HostCommand::StartRenderer(ref args) if args.is_empty()
+        ));
+    }
+
+    #[test]
+    fn parse_host_command_unknown_token_becomes_start_renderer_argv() {
+        let cmd = parse_host_command("CUSTOM opaque tail");
+        assert!(matches!(
+            cmd,
+            HostCommand::StartRenderer(ref args)
+                if args == &vec!["CUSTOM".to_string(), "opaque".to_string(), "tail".to_string()]
+        ));
+    }
 }

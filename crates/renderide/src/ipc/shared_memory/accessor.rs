@@ -336,3 +336,54 @@ impl SharedMemoryAccessor {
         true
     }
 }
+
+#[cfg(test)]
+mod access_copy_diagnostic_tests {
+    use crate::shared::buffer::SharedMemoryBufferDescriptor;
+
+    use super::SharedMemoryAccessor;
+
+    #[test]
+    fn access_copy_rejects_non_positive_length() {
+        let mut acc = SharedMemoryAccessor::new("pfx".into());
+        let d = SharedMemoryBufferDescriptor {
+            buffer_id: 1,
+            buffer_capacity: 4096,
+            offset: 0,
+            length: 0,
+        };
+        let err = acc.access_copy_diagnostic::<u32>(&d).expect_err("length 0");
+        assert!(err.contains("length<=0"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn access_copy_rejects_length_above_max() {
+        let mut acc = SharedMemoryAccessor::new("pfx".into());
+        let d = SharedMemoryBufferDescriptor {
+            buffer_id: 2,
+            buffer_capacity: 4096,
+            offset: 0,
+            length: SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES + 1,
+        };
+        let err = acc
+            .access_copy_diagnostic::<u32>(&d)
+            .expect_err("too large");
+        assert!(err.contains("exceeds max"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn access_copy_diagnostic_prefixes_context_on_early_validation_error() {
+        let mut acc = SharedMemoryAccessor::new("pfx".into());
+        let d = SharedMemoryBufferDescriptor {
+            buffer_id: 3,
+            buffer_capacity: 100,
+            offset: 0,
+            length: -1,
+        };
+        let err = acc
+            .access_copy_diagnostic_with_context::<u32>(&d, Some("mesh_upload"))
+            .expect_err("negative length");
+        assert!(err.starts_with("mesh_upload:"), "unexpected message: {err}");
+        assert!(err.contains("length<=0"), "unexpected message: {err}");
+    }
+}
