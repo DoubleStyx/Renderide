@@ -2,8 +2,6 @@
 
 use std::sync::Arc;
 
-use winit::window::Window;
-
 use crate::backend::RenderBackend;
 use crate::gpu::{GpuContext, GpuLimits};
 use crate::scene::SceneCoordinator;
@@ -20,8 +18,6 @@ use super::world_mesh_draw_prep::{CameraTransformDrawFilter, WorldMeshDrawCollec
 /// Inputs for [`CompiledRenderGraph::execute_offscreen_single_view`] and
 /// [`crate::backend::RenderBackend::execute_frame_graph_offscreen_single_view`].
 pub struct OffscreenSingleViewExecuteSpec<'a> {
-    /// Target window (swapchain acquire when the graph needs it; offscreen path may still reference extent).
-    pub window: &'a Window,
     /// Scene after cache flush.
     pub scene: &'a SceneCoordinator,
     /// Per-view camera and clip data from the host.

@@ -3,8 +3,6 @@
 //! Keeps [`super::renderide_app::RenderideApp::tick_frame`] readable while preserving ordering: OpenXR
 //! `wait_frame` / `locate_views` before lock-step [`crate::runtime::RendererRuntime::pre_frame`].
 
-use winit::window::Window;
-
 use crate::gpu::{GpuContext, VrMirrorBlitResources};
 use crate::present::PresentClearError;
 use crate::runtime::RendererRuntime;
@@ -23,10 +21,9 @@ pub(crate) fn try_hmd_multiview_submit(
     gpu: &mut GpuContext,
     bundle: &mut XrSessionBundle,
     runtime: &mut RendererRuntime,
-    window: &Window,
     tick: &OpenxrFrameTick,
 ) -> bool {
-    crate::xr::try_openxr_hmd_multiview_submit(gpu, bundle, runtime, window, tick)
+    crate::xr::try_openxr_hmd_multiview_submit(gpu, bundle, runtime, tick)
 }
 
 /// Blits the last HMD eye staging texture to the window (VR mirror); no full scene render.
@@ -34,7 +31,6 @@ pub(crate) fn try_hmd_multiview_submit(
 /// `overlay` runs on the same encoder after the mirror pass (e.g. Dear ImGui composite with `LoadOp::Load`).
 pub(crate) fn present_vr_mirror_blit<F, E>(
     gpu: &mut GpuContext,
-    window: &Window,
     mirror_blit: &mut VrMirrorBlitResources,
     overlay: F,
 ) -> Result<(), PresentClearError>
@@ -42,5 +38,5 @@ where
     F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
     E: std::fmt::Display,
 {
-    mirror_blit.present_staging_to_surface_overlay(gpu, window, overlay)
+    mirror_blit.present_staging_to_surface_overlay(gpu, overlay)
 }

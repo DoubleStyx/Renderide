@@ -14,7 +14,7 @@ mod vr_mirror;
 
 pub mod frame_globals;
 
-pub use context::GpuContext;
+pub use context::{GpuContext, GpuError};
 pub use frame_globals::{ClusteredFrameGlobalsParams, FrameGpuUniforms};
 pub use instance_limits::instance_flags_for_gpu_init;
 pub use limits::{

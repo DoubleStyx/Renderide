@@ -6,7 +6,6 @@ use crate::render_graph::{
     OffscreenSingleViewExecuteSpec,
 };
 use crate::scene::SceneCoordinator;
-use winit::window::Window;
 
 use super::RenderBackend;
 
@@ -40,33 +39,36 @@ impl RenderBackend {
     /// Records and presents one frame using the compiled render graph (deform compute + forward mesh pass).
     ///
     /// Returns [`GraphExecuteError::NoFrameGraph`] if graph build failed during [`crate::backend::RenderBackend::attach`].
+    /// Swapchain acquisition uses the window stored inside `gpu`; in headless contexts this entry
+    /// point yields [`GraphExecuteError::SwapchainRequiresWindow`] because the swapchain view has
+    /// no surface to acquire.
     pub fn execute_frame_graph(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
         scene: &SceneCoordinator,
         host_camera: crate::render_graph::HostCameraFrame,
     ) -> Result<(), GraphExecuteError> {
         self.with_compiled_graph(gpu, false, |graph, gpu_ctx, backend| {
-            graph.execute(gpu_ctx, window, scene, backend, host_camera)
+            graph.execute(gpu_ctx, scene, backend, host_camera)
         })
     }
 
     /// Renders the frame graph to pre-acquired OpenXR multiview array targets (no surface present).
     ///
     /// When `skip_hi_z_begin_readback` is `true`, the caller has already drained Hi-Z readbacks
-    /// this tick.
+    /// this tick. The OpenXR path supplies its own targets via
+    /// [`crate::render_graph::FrameViewTarget::ExternalMultiview`] and never touches the
+    /// swapchain.
     pub fn execute_frame_graph_external_multiview(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
         scene: &SceneCoordinator,
         host_camera: crate::render_graph::HostCameraFrame,
         external: ExternalFrameTargets<'_>,
         skip_hi_z_begin_readback: bool,
     ) -> Result<(), GraphExecuteError> {
         self.with_compiled_graph(gpu, skip_hi_z_begin_readback, |graph, gpu_ctx, backend| {
-            graph.execute_external_multiview(gpu_ctx, window, scene, backend, host_camera, external)
+            graph.execute_external_multiview(gpu_ctx, scene, backend, host_camera, external)
         })
     }
 
@@ -77,13 +79,12 @@ impl RenderBackend {
     pub fn execute_multi_view_frame(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
         scene: &SceneCoordinator,
         views: &mut Vec<FrameView<'_>>,
         skip_hi_z_begin_readback: bool,
     ) -> Result<(), GraphExecuteError> {
         self.with_compiled_graph(gpu, skip_hi_z_begin_readback, |graph, gpu_ctx, backend| {
-            graph.execute_multi_view(gpu_ctx, window, scene, backend, views.as_mut_slice())
+            graph.execute_multi_view(gpu_ctx, scene, backend, views.as_mut_slice())
         })
     }
 

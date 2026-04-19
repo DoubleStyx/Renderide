@@ -3,8 +3,6 @@
 use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
 
-use winit::window::Window;
-
 use crate::backend::RenderBackend;
 use crate::gpu::GpuContext;
 use crate::scene::SceneCoordinator;
@@ -81,7 +79,6 @@ impl CompiledRenderGraph {
     pub fn execute(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
         scene: &SceneCoordinator,
         backend: &mut RenderBackend,
         host_camera: HostCameraFrame,
@@ -92,14 +89,13 @@ impl CompiledRenderGraph {
             draw_filter: None,
             prefetched_world_mesh_draws: None,
         }];
-        self.execute_multi_view(gpu, window, scene, backend, &mut single)
+        self.execute_multi_view(gpu, scene, backend, &mut single)
     }
 
     /// Records passes against pre-built multiview array targets (OpenXR swapchain path).
     pub fn execute_external_multiview(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
         scene: &SceneCoordinator,
         backend: &mut RenderBackend,
         host_camera: HostCameraFrame,
@@ -111,7 +107,7 @@ impl CompiledRenderGraph {
             draw_filter: None,
             prefetched_world_mesh_draws: None,
         }];
-        self.execute_multi_view(gpu, window, scene, backend, &mut single)
+        self.execute_multi_view(gpu, scene, backend, &mut single)
     }
 
     /// Renders the graph to a single-view offscreen color/depth target (secondary camera → render texture).
@@ -121,7 +117,6 @@ impl CompiledRenderGraph {
         backend: &mut RenderBackend,
         spec: OffscreenSingleViewExecuteSpec<'_>,
     ) -> Result<(), GraphExecuteError> {
-        let window = spec.window;
         let scene = spec.scene;
         let host_camera = spec.host_camera;
         let external = spec.external;
@@ -133,7 +128,7 @@ impl CompiledRenderGraph {
             draw_filter: transform_filter,
             prefetched_world_mesh_draws,
         }];
-        self.execute_multi_view(gpu, window, scene, backend, &mut single)
+        self.execute_multi_view(gpu, scene, backend, &mut single)
     }
 
     /// Records all views: one encoder + submit for frame-global work, then one encoder + submit per view.
@@ -149,10 +144,14 @@ impl CompiledRenderGraph {
     /// `views` is borrowed for the duration of execution (callers can pass a stack-allocated
     /// one-element array or reuse a [`Vec`] through `as_mut_slice()` to avoid allocating a fresh
     /// [`Vec`] each frame for single-view paths).
+    ///
+    /// Swapchain acquisition routes through [`GpuContext::acquire_with_recovery`], which uses the
+    /// window stored inside `gpu` for size queries. Headless contexts have no window and no
+    /// swapchain views (the headless driver substitutes `Swapchain` for `OffscreenRt` upstream),
+    /// so this path never reaches the swapchain branch in headless mode.
     pub fn execute_multi_view<'a>(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
         scene: &SceneCoordinator,
         backend: &mut RenderBackend,
         views: &mut [FrameView<'a>],
@@ -172,7 +171,6 @@ impl CompiledRenderGraph {
             needs_swapchain,
             self.needs_surface_acquire,
             gpu,
-            window,
         )? {
             helpers::MultiViewSwapchainAcquire::NotNeeded => (None, None),
             helpers::MultiViewSwapchainAcquire::SkipPresent => return Ok(()),

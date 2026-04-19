@@ -3,8 +3,6 @@
 //! Serves as the minimal integration test for surface acquire, encoder submission, and present.
 //! The render graph reuses [`acquire_surface_outcome`] and [`record_swapchain_clear_pass`].
 
-use winit::window::Window;
-
 use crate::gpu::GpuContext;
 
 /// Clear color used for the skeleton swapchain clear (dark blue).
@@ -35,11 +33,13 @@ pub enum SurfaceFrameOutcome {
 }
 
 /// Acquires the next surface texture with the same policy as [`present_clear_frame`].
+///
+/// Uses the window stored inside `gpu` for surface recovery, so callers do not need to thread
+/// `&Window` through. Headless contexts have no surface and short-circuit to a hard error.
 pub fn acquire_surface_outcome(
     gpu: &mut GpuContext,
-    window: &Window,
 ) -> Result<SurfaceFrameOutcome, PresentClearError> {
-    match gpu.acquire_with_recovery(window) {
+    match gpu.acquire_with_recovery() {
         Ok(f) => Ok(SurfaceFrameOutcome::Acquired(f)),
         Err(wgpu::CurrentSurfaceTexture::Timeout) | Err(wgpu::CurrentSurfaceTexture::Occluded) => {
             logger::debug!("surface timeout or occluded; skipping frame");
@@ -47,8 +47,10 @@ pub fn acquire_surface_outcome(
         }
         Err(wgpu::CurrentSurfaceTexture::Validation) => {
             logger::error!("surface validation error during acquire; reconfiguring");
-            let s = window.inner_size();
-            gpu.reconfigure(s.width, s.height);
+            let (w, h) = gpu
+                .window_inner_size()
+                .unwrap_or_else(|| gpu.surface_extent_px());
+            gpu.reconfigure(w, h);
             Ok(SurfaceFrameOutcome::Reconfigured)
         }
         Err(e) => Err(PresentClearError { status: e }),
@@ -81,21 +83,20 @@ pub fn record_swapchain_clear_pass(
 }
 
 /// Clears the swapchain texture to [`SWAPCHAIN_CLEAR_COLOR`] and presents.
-pub fn present_clear_frame(gpu: &mut GpuContext, window: &Window) -> Result<(), PresentClearError> {
-    present_clear_frame_overlay(gpu, window, |_, _, _| Ok::<(), String>(()))
+pub fn present_clear_frame(gpu: &mut GpuContext) -> Result<(), PresentClearError> {
+    present_clear_frame_overlay(gpu, |_, _, _| Ok::<(), String>(()))
 }
 
 /// Clears the swapchain, optionally composites an overlay (e.g. Dear ImGui with `LoadOp::Load`), then presents.
 pub fn present_clear_frame_overlay<F, E>(
     gpu: &mut GpuContext,
-    window: &Window,
     overlay: F,
 ) -> Result<(), PresentClearError>
 where
     F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
     E: std::fmt::Display,
 {
-    let frame = match acquire_surface_outcome(gpu, window)? {
+    let frame = match acquire_surface_outcome(gpu)? {
         SurfaceFrameOutcome::Skip | SurfaceFrameOutcome::Reconfigured => return Ok(()),
         SurfaceFrameOutcome::Acquired(f) => f,
     };

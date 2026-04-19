@@ -136,14 +136,51 @@ pub struct GpuContext {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     /// Kept as `'static` so the context can move independently of the window borrow; the window
-    /// must outlive this value (owned alongside it in the app handler).
-    surface: wgpu::Surface<'static>,
+    /// must outlive this value (owned alongside it in the app handler). [`None`] in headless mode
+    /// (see [`Self::new_headless`]).
+    surface: Option<wgpu::Surface<'static>>,
+    /// Surface configuration. In headless mode this is synthesized to describe the offscreen color
+    /// format and target extent so [`Self::config_format`] / [`Self::surface_extent_px`] still
+    /// return useful values.
     config: wgpu::SurfaceConfiguration,
+    /// Window the surface was created from, kept so swapchain Lost/Outdated recovery can call
+    /// [`Window::inner_size`] without threading `&Window` through every render-path signature.
+    /// [`None`] in headless mode (no winit window exists).
+    window: Option<Arc<Window>>,
     /// Depth target matching [`Self::config`] extent; recreated after resize.
     depth_attachment: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_extent_px: (u32, u32),
+    /// Headless primary color/depth target (lazy). Allocated on the first call to
+    /// [`Self::ensure_primary_offscreen_targets`] when [`Self::is_headless`] is true so the
+    /// headless `render_all_views` substitution can render the main view to a persistent
+    /// offscreen RT and the headless driver can copy it back to a PNG. The wrapping `Arc` lets
+    /// callers obtain an owned handle that does not borrow from [`GpuContext`], avoiding the
+    /// `&mut GpuContext` aliasing that would otherwise prevent passing `gpu` to the backend
+    /// after substituting view targets.
+    primary_offscreen: Option<PrimaryOffscreenTargets>,
     /// Debug HUD: wall-clock CPU (tick start → last submit) and GPU (last submit → idle) timing.
     frame_timing: FrameCpuGpuTimingHandle,
+}
+
+/// Persistent offscreen color + depth pair owned by [`GpuContext`] in headless mode.
+///
+/// The render graph treats these as a host render-texture (an `OffscreenRt` view) when
+/// `render_all_views` substitutes the main `Swapchain` view in headless mode. The headless
+/// driver then `copy_texture_to_buffer` against [`PrimaryOffscreenTargets::color_texture`]
+/// to read back the pixels and write a PNG.
+pub struct PrimaryOffscreenTargets {
+    /// Color attachment ([`wgpu::TextureFormat::Rgba8UnormSrgb`] + `RENDER_ATTACHMENT | COPY_SRC`).
+    pub color_texture: wgpu::Texture,
+    /// Default view of [`Self::color_texture`] for render passes.
+    pub color_view: wgpu::TextureView,
+    /// Depth-stencil texture matching the main forward pass format.
+    pub depth_texture: wgpu::Texture,
+    /// Default view of [`Self::depth_texture`] for render passes.
+    pub depth_view: wgpu::TextureView,
+    /// Pixel extent (width, height) shared by both attachments.
+    pub extent_px: (u32, u32),
+    /// Color format reused by the render graph when binding pipelines.
+    pub color_format: wgpu::TextureFormat,
 }
 
 /// GPU initialization or resize failure.
@@ -252,10 +289,103 @@ impl GpuContext {
             limits,
             device,
             queue: Arc::new(queue),
-            surface: surface_safe,
+            surface: Some(surface_safe),
             config,
+            window: Some(window),
             depth_attachment: None,
             depth_extent_px: (0, 0),
+            primary_offscreen: None,
+            frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
+        })
+    }
+
+    /// Builds a GPU stack with **no surface** for headless offscreen rendering (CI / golden tests).
+    ///
+    /// `--headless` means no window and no swapchain; adapter selection follows normal wgpu rules
+    /// (`Backends::all()`, no forced fallback). Developer machines typically use a discrete or
+    /// integrated GPU; CI runners with only Mesa lavapipe installed still pick the software Vulkan
+    /// ICD automatically.
+    ///
+    /// The synthesized [`wgpu::SurfaceConfiguration`] has `format = Rgba8UnormSrgb` and the
+    /// requested extent so the material system and render graph compile pipelines unchanged.
+    pub async fn new_headless(
+        width: u32,
+        height: u32,
+        gpu_validation_layers: bool,
+    ) -> Result<Self, GpuError> {
+        let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
+        instance_desc.backends = wgpu::Backends::all();
+        let instance_flags = instance_flags_for_gpu_init(gpu_validation_layers);
+        instance_desc.flags = instance_flags;
+        let instance = wgpu::Instance::new(instance_desc);
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|e| {
+                GpuError::Adapter(format!(
+                    "no Vulkan adapter found ({e:?}). \
+                     Install drivers for your GPU, or for software rendering install \
+                     `mesa-vulkan-drivers` / `vulkan-swrast` (lavapipe) and verify a Vulkan ICD is present."
+                ))
+            })?;
+
+        let required_features = adapter_render_features_intersection(&adapter);
+        let (device, queue) = request_device_for_adapter(&adapter, required_features).await?;
+
+        let limits = GpuLimits::try_new(device.as_ref(), &adapter)?;
+
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            format,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode: wgpu::PresentMode::AutoNoVsync,
+            desired_maximum_frame_latency: 1,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: Vec::new(),
+        };
+        let adapter_info = adapter.get_info();
+        let depth_stencil_format =
+            crate::render_graph::main_forward_depth_stencil_format(required_features);
+        let msaa_supported_sample_counts =
+            msaa_supported_sample_counts(&adapter, format, depth_stencil_format);
+        let msaa_supported_sample_counts_stereo = msaa_supported_sample_counts_stereo(
+            &adapter,
+            format,
+            depth_stencil_format,
+            required_features,
+        );
+        logger::info!(
+            "GPU (headless): adapter={} backend={:?} extent={}x{} format={:?} instance_flags={:?}",
+            adapter_info.name,
+            adapter_info.backend,
+            config.width,
+            config.height,
+            config.format,
+            instance_flags,
+        );
+        Ok(Self {
+            adapter_info,
+            msaa_supported_sample_counts,
+            msaa_supported_sample_counts_stereo,
+            swapchain_msaa_effective: 1,
+            swapchain_msaa_requested_stereo: 1,
+            swapchain_msaa_effective_stereo: 1,
+            limits,
+            device,
+            queue: Arc::new(queue),
+            surface: None,
+            config,
+            window: None,
+            depth_attachment: None,
+            depth_extent_px: (0, 0),
+            primary_offscreen: None,
             frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
         })
     }
@@ -322,10 +452,12 @@ impl GpuContext {
             limits,
             device,
             queue,
-            surface: surface_safe,
+            surface: Some(surface_safe),
             config,
+            window: Some(window),
             depth_attachment: None,
             depth_extent_px: (0, 0),
+            primary_offscreen: None,
             frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
         })
     }
@@ -341,7 +473,9 @@ impl GpuContext {
             return;
         }
         self.config.present_mode = mode;
-        self.surface.configure(&self.device, &self.config);
+        if let Some(surface) = self.surface.as_ref() {
+            surface.configure(&self.device, &self.config);
+        }
         logger::info!(
             "Present mode set to {:?} (vsync={})",
             self.config.present_mode,
@@ -364,14 +498,108 @@ impl GpuContext {
     pub fn reconfigure(&mut self, width: u32, height: u32) {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
+        if let Some(surface) = self.surface.as_ref() {
+            surface.configure(&self.device, &self.config);
+        }
         self.depth_attachment = None;
         self.depth_extent_px = (0, 0);
     }
 
-    /// Borrows the configured surface for acquire/submit.
-    pub fn surface(&self) -> &wgpu::Surface<'static> {
-        &self.surface
+    /// Borrows the configured surface for acquire/submit; [`None`] in headless mode.
+    pub fn surface(&self) -> Option<&wgpu::Surface<'static>> {
+        self.surface.as_ref()
+    }
+
+    /// Whether this context drives a real swapchain surface (vs. headless offscreen primary target).
+    pub fn is_headless(&self) -> bool {
+        self.surface.is_none()
+    }
+
+    /// Live `inner_size` of the window stored inside this context, if windowed.
+    ///
+    /// Re-queries the window each call so callers handling `WindowEvent::ScaleFactorChanged` can
+    /// pick up the new logical size without holding a separate `Arc<Window>`. Returns [`None`] in
+    /// headless mode.
+    pub fn window_inner_size(&self) -> Option<(u32, u32)> {
+        self.window.as_ref().map(|w| {
+            let s = w.inner_size();
+            (s.width, s.height)
+        })
+    }
+
+    /// Returns the lazy-allocated primary offscreen color/depth pair owned by this context.
+    ///
+    /// Returns [`None`] when the context is windowed (it has a real swapchain instead). On the
+    /// first call in headless mode, allocates the persistent textures matching `config.width ×
+    /// config.height` and the configured color format. Subsequent calls return the same handles
+    /// until the context is dropped.
+    ///
+    /// `render_all_views` calls this when `window.is_none()` to substitute the main `Swapchain`
+    /// view with a `FrameViewTarget::OffscreenRt` backed by these textures.
+    pub fn primary_offscreen_targets(&mut self) -> Option<&PrimaryOffscreenTargets> {
+        if !self.is_headless() {
+            return None;
+        }
+        if self.primary_offscreen.is_none() {
+            let width = self.config.width.max(1);
+            let height = self.config.height.max(1);
+            let color_format = self.config.format;
+            let color_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("renderide-headless-primary-color"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: color_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let depth_format =
+                crate::render_graph::main_forward_depth_stencil_format(self.device.features());
+            let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("renderide-headless-primary-depth"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: depth_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.primary_offscreen = Some(PrimaryOffscreenTargets {
+                color_texture,
+                color_view,
+                depth_texture,
+                depth_view,
+                extent_px: (width, height),
+                color_format,
+            });
+        }
+        self.primary_offscreen.as_ref()
+    }
+
+    /// Returns the persistent headless color texture for PNG readback.
+    ///
+    /// Returns [`None`] in windowed mode and also when the headless offscreen has not yet been
+    /// allocated (call [`Self::primary_offscreen_targets`] first or run a render tick).
+    /// Unlike [`Self::primary_offscreen_targets`], this getter takes `&self` so it does not
+    /// conflict with concurrent mutable borrows on `gpu` during readback.
+    pub fn headless_color_texture(&self) -> Option<&wgpu::Texture> {
+        self.primary_offscreen.as_ref().map(|t| &t.color_texture)
     }
 
     /// Centralized device limits and derived caps ([`GpuLimits`]).
@@ -599,18 +827,29 @@ impl GpuContext {
 
     /// Acquires the next frame, reconfiguring once on [`wgpu::CurrentSurfaceTexture::Lost`] or
     /// [`wgpu::CurrentSurfaceTexture::Outdated`].
+    ///
+    /// Returns [`wgpu::CurrentSurfaceTexture::Lost`] when this context is headless (no surface).
+    /// Uses the stored [`Self::window`] for size queries on recovery so render-path callers do
+    /// not have to thread `&Window` through their signatures.
     pub fn acquire_with_recovery(
         &mut self,
-        window: &Window,
     ) -> Result<wgpu::SurfaceTexture, wgpu::CurrentSurfaceTexture> {
-        match self.surface.get_current_texture() {
+        let Some(surface) = self.surface.as_ref() else {
+            return Err(wgpu::CurrentSurfaceTexture::Lost);
+        };
+        match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Ok(t),
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 logger::info!("surface Lost or Outdated — reconfiguring");
-                let s = window.inner_size();
-                self.reconfigure(s.width, s.height);
-                match self.surface.get_current_texture() {
+                let size = self.window.as_ref().map(|w| w.inner_size());
+                if let Some(s) = size {
+                    self.reconfigure(s.width, s.height);
+                }
+                let Some(surface) = self.surface.as_ref() else {
+                    return Err(wgpu::CurrentSurfaceTexture::Lost);
+                };
+                match surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(t)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Ok(t),
                     other => Err(other),

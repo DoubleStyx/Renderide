@@ -19,6 +19,8 @@ pub struct WindowInputAccumulator {
     pub mouse_delta: Vec2,
     /// Accumulated scroll wheel / trackpad scroll since the last [`Self::take_input_state`].
     pub scroll_delta: Vec2,
+    /// Last scroll sample consumed by the HUD so repeated HUD frames don't see the same delta.
+    hud_scroll_sample: Vec2,
     /// Pointer position in window space (logical pixels) for [`crate::shared::MouseState`].
     pub window_position: Vec2,
     /// Inner drawable size in **logical** pixels (matches [`Self::window_position`] for host UVs).
@@ -54,6 +56,7 @@ impl Default for WindowInputAccumulator {
         Self {
             mouse_delta: Vec2::ZERO,
             scroll_delta: Vec2::ZERO,
+            hud_scroll_sample: Vec2::ZERO,
             window_position: Vec2::ZERO,
             window_resolution: (0, 0),
             left_held: false,
@@ -156,6 +159,8 @@ impl WindowInputAccumulator {
             direct_delta: std::mem::take(&mut self.mouse_delta),
             scroll_wheel_delta: std::mem::take(&mut self.scroll_delta),
         };
+
+        self.hud_scroll_sample = Vec2::ZERO;
         let window = WindowState {
             is_window_focused: self.window_focused,
             is_fullscreen: false,
@@ -179,6 +184,19 @@ impl WindowInputAccumulator {
             touches: Vec::new(),
             displays: Vec::new(),
         }
+    }
+
+    /// Returns the scroll delta observed since the HUD last read it and advances the HUD marker.
+    ///
+    /// The accumulator keeps a running `scroll_delta` for the host. The HUD should call this
+    /// method to obtain the incremental scroll delta since its last read; the method returns
+    /// `scroll_delta - hud_scroll_sample` and advances `hud_scroll_sample` so subsequent HUD
+    /// frames do not reapply the same input. The host still consumes the full accumulated
+    /// `scroll_delta` when `take_input_state()` is called.
+    pub fn take_hud_scroll_delta(&mut self) -> Vec2 {
+        let delta = self.scroll_delta - self.hud_scroll_sample;
+        self.hud_scroll_sample = self.scroll_delta;
+        delta
     }
 
     fn take_drag_and_drop_if_any(&mut self) -> Option<DragAndDropEvent> {

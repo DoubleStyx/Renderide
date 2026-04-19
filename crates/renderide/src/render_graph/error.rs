@@ -133,6 +133,11 @@ pub enum GraphExecuteError {
     #[error("swapchain backbuffer missing for swapchain view")]
     MissingSwapchainView,
 
+    /// A [`super::FrameViewTarget::Swapchain`] view was scheduled but no winit window was provided
+    /// (the headless offscreen path passes [`None`] here and must not target the swapchain).
+    #[error("swapchain view requires a winit window but none was provided (headless mode)")]
+    SwapchainRequiresWindow,
+
     /// A graph-managed raster pass could not resolve one of its declared attachments.
     #[error("pass `{pass}` could not resolve graph attachment `{resource}`")]
     MissingGraphAttachment {

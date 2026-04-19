@@ -1,7 +1,5 @@
 //! Shared helpers for [`super::CompiledRenderGraph`] execution (resolution, raster templates).
 
-use winit::window::Window;
-
 use crate::backend::RenderBackend;
 use crate::gpu::GpuContext;
 use crate::present::{acquire_surface_outcome, SurfaceFrameOutcome};
@@ -152,11 +150,16 @@ pub(super) enum MultiViewSwapchainAcquire {
 }
 
 /// Acquires the window swapchain when any [`FrameView`] targets [`FrameViewTarget::Swapchain`].
+///
+/// Returns [`MultiViewSwapchainAcquire::NotNeeded`] when the views do not target the swapchain
+/// (offscreen-only path). When acquisition is required, [`GpuContext::acquire_with_recovery`]
+/// uses the window stored inside `gpu`; in headless mode this returns
+/// [`GraphExecuteError::SwapchainRequiresWindow`] (unreachable in practice because the headless
+/// driver substitutes Swapchain views with OffscreenRt views before reaching here).
 pub(super) fn acquire_swapchain_for_multi_view_if_needed(
     needs_swapchain: bool,
     needs_surface_acquire: bool,
     gpu: &mut GpuContext,
-    window: &Window,
 ) -> Result<MultiViewSwapchainAcquire, GraphExecuteError> {
     if !needs_swapchain {
         return Ok(MultiViewSwapchainAcquire::NotNeeded);
@@ -164,7 +167,10 @@ pub(super) fn acquire_swapchain_for_multi_view_if_needed(
     if !needs_surface_acquire {
         return Ok(MultiViewSwapchainAcquire::NotNeeded);
     }
-    match acquire_surface_outcome(gpu, window)? {
+    if gpu.is_headless() {
+        return Err(GraphExecuteError::SwapchainRequiresWindow);
+    }
+    match acquire_surface_outcome(gpu)? {
         SurfaceFrameOutcome::Skip | SurfaceFrameOutcome::Reconfigured => {
             Ok(MultiViewSwapchainAcquire::SkipPresent)
         }

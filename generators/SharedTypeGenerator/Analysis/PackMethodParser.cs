@@ -38,6 +38,7 @@ public sealed class PackMethodParser
         return ParseBodyWithConditionals(methodDef, fields);
     }
 
+    /// <summary>Walks Pack IL, pairing <c>brfalse</c> / <c>brfalse.s</c> with field loads to build <see cref="ConditionalBlock"/> scopes.</summary>
     private List<SerializationStep> ParseBodyWithConditionals(MethodDefinition methodDef, FieldInfo[] fields)
     {
         var rootSteps = new List<SerializationStep>();
@@ -62,9 +63,9 @@ public sealed class PackMethodParser
                 fieldNameStack.Push(name);
             }
 
-            if (instruction.OpCode.Code == Code.Brfalse_S)
+            if (instruction.OpCode.Code is Code.Brfalse_S or Code.Brfalse)
             {
-                string conditionField = PopLastFieldForCondition(fieldNameStack).HumanizeField();
+                string conditionField = FieldNameStackHelpers.PopLastFieldAndClear(fieldNameStack).HumanizeField();
                 var endTarget = (Instruction)instruction.Operand;
                 var innerSteps = new List<SerializationStep>();
                 var block = new ConditionalBlock(conditionField, innerSteps);
@@ -82,16 +83,6 @@ public sealed class PackMethodParser
         }
 
         return rootSteps;
-    }
-
-    private static string PopLastFieldForCondition(Stack<string> stack)
-    {
-        if (stack.Count == 0)
-            return "_unknown";
-
-        string last = stack.Pop();
-        stack.Clear();
-        return last;
     }
 
     /// <summary>Parses the Unpack method to find steps that run only during unpack,

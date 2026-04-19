@@ -20,7 +20,53 @@ use crate::render_graph::{
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
 use super::RendererRuntime;
-use winit::window::Window;
+
+/// Cheap-clone snapshot of [`crate::gpu::PrimaryOffscreenTargets`] used by the headless render path
+/// to satisfy the borrow checker: clones are cheap (`wgpu::Texture` and `wgpu::TextureView` are
+/// internally `Arc`-backed) and let the substitution borrow from a stack-local instead of a
+/// long-lived `&mut gpu`. Without this split, holding `&gpu.primary_offscreen` while passing
+/// `&mut gpu` to the next call is a borrow error.
+struct HeadlessOffscreenSnapshot {
+    color_view: wgpu::TextureView,
+    depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
+    extent_px: (u32, u32),
+    color_format: wgpu::TextureFormat,
+}
+
+impl HeadlessOffscreenSnapshot {
+    /// Lazily allocates the headless primary targets if needed and snapshots cheap clones of
+    /// their handles. Returns [`None`] when `gpu` is windowed.
+    fn from_gpu(gpu: &mut GpuContext) -> Option<Self> {
+        let targets = gpu.primary_offscreen_targets()?;
+        Some(Self {
+            color_view: targets.color_view.clone(),
+            depth_texture: targets.depth_texture.clone(),
+            depth_view: targets.depth_view.clone(),
+            extent_px: targets.extent_px,
+            color_format: targets.color_format,
+        })
+    }
+
+    /// Replaces every [`FrameViewTarget::Swapchain`] in `views` with an
+    /// [`FrameViewTarget::OffscreenRt`] backed by this snapshot's owned handles. The borrowed
+    /// references are valid for as long as `&self` outlives `views`, which is enforced by the
+    /// `'a` lifetime.
+    fn substitute_swapchain_views<'a>(&'a self, views: &mut [FrameView<'a>]) {
+        for view in views.iter_mut() {
+            if matches!(view.target, FrameViewTarget::Swapchain) {
+                view.target = FrameViewTarget::OffscreenRt(ExternalOffscreenTargets {
+                    render_texture_asset_id: -1,
+                    color_view: &self.color_view,
+                    depth_texture: &self.depth_texture,
+                    depth_view: &self.depth_view,
+                    extent_px: self.extent_px,
+                    color_format: self.color_format,
+                });
+            }
+        }
+    }
+}
 
 /// Resolved secondary camera target and host frame data (one entry per RT draw).
 struct SecondaryRtPrepared {
@@ -78,7 +124,6 @@ impl RendererRuntime {
     pub fn render_secondary_cameras_to_render_textures(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
     ) -> Result<(), GraphExecuteError> {
         self.backend
             .frame_resources
@@ -174,17 +219,17 @@ impl RendererRuntime {
         }
         if !views.is_empty() {
             self.backend
-                .execute_multi_view_frame(gpu, window, scene_ref, &mut views, true)?;
+                .execute_multi_view_frame(gpu, scene_ref, &mut views, true)?;
         }
         Ok(())
     }
 
-    /// Renders all views for this tick (secondary RTs + main swapchain) in one unified pass.
-    pub fn render_all_views(
-        &mut self,
-        gpu: &mut GpuContext,
-        window: &Window,
-    ) -> Result<(), GraphExecuteError> {
+    /// Renders all views for this tick (secondary RTs + main camera) in one unified pass.
+    ///
+    /// In headless mode (`gpu.is_headless()`), the main `Swapchain` view is transparently
+    /// substituted for an `OffscreenRt` view backed by [`GpuContext::primary_offscreen_targets`]
+    /// before submission. The render graph stack itself stays oblivious to mode.
+    pub fn render_all_views(&mut self, gpu: &mut GpuContext) -> Result<(), GraphExecuteError> {
         self.backend
             .frame_resources
             .prepare_lights_from_scene(&self.scene);
@@ -285,6 +330,15 @@ impl RendererRuntime {
             transform_filter: None,
         });
 
+        // Headless substitution: snapshot persistent offscreen handles BEFORE building views so
+        // we can borrow from a local instead of a long-lived `&mut gpu` (which would conflict
+        // with the `&mut gpu` we hand to `execute_multi_view_frame`).
+        let headless_snapshot = if gpu.is_headless() {
+            HeadlessOffscreenSnapshot::from_gpu(gpu)
+        } else {
+            None
+        };
+
         let mut views = build_desktop_multi_view_frame_list(
             &prepared,
             secondary_prefetched,
@@ -292,8 +346,12 @@ impl RendererRuntime {
             main_collection,
         );
 
+        if let Some(snapshot) = headless_snapshot.as_ref() {
+            snapshot.substitute_swapchain_views(&mut views);
+        }
+
         self.backend
-            .execute_multi_view_frame(gpu, window, scene_ref, &mut views, true)
+            .execute_multi_view_frame(gpu, scene_ref, &mut views, true)
     }
 
     fn collect_secondary_rt_prepared(&mut self) -> Vec<SecondaryRtPrepared> {

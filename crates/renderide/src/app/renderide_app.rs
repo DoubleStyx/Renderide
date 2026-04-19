@@ -98,10 +98,16 @@ fn reconfigure_gpu_for_physical_size(gpu: &mut GpuContext, width: u32, height: u
     gpu.reconfigure(width, height);
 }
 
-/// Reconfigures using the window’s current [`Window::inner_size`].
-fn reconfigure_gpu_for_window(gpu: &mut GpuContext, window: &Window) {
-    let s = window.inner_size();
-    reconfigure_gpu_for_physical_size(gpu, s.width, s.height);
+/// Reconfigures using the live window inner size from `gpu.window_inner_size()`.
+///
+/// Falls back to the cached config size if the GPU context has no window (headless or detached).
+/// Used after `WindowEvent::ScaleFactorChanged` and as a recovery fallback after render-graph
+/// errors, both of which want the freshest size winit can report.
+fn reconfigure_gpu_for_window(gpu: &mut GpuContext) {
+    let (w, h) = gpu
+        .window_inner_size()
+        .unwrap_or_else(|| gpu.surface_extent_px());
+    reconfigure_gpu_for_physical_size(gpu, w, h);
 }
 
 impl RenderideApp {
@@ -412,13 +418,9 @@ impl RenderideApp {
             self.runtime.drain_hi_z_readback(gpu.device());
         }
         let hmd_projection_ended = match (self.gpu.as_mut(), self.xr_session.as_mut(), xr_tick) {
-            (Some(gpu), Some(bundle), Some(tick)) => frame_loop::try_hmd_multiview_submit(
-                gpu,
-                bundle,
-                &mut self.runtime,
-                window.as_ref(),
-                tick,
-            ),
+            (Some(gpu), Some(bundle), Some(tick)) => {
+                frame_loop::try_hmd_multiview_submit(gpu, bundle, &mut self.runtime, tick)
+            }
             _ => false,
         };
 
@@ -427,12 +429,12 @@ impl RenderideApp {
         if self.runtime.vr_active() {
             if let Err(e) = self
                 .runtime
-                .render_secondary_cameras_to_render_textures(gpu, window.as_ref())
+                .render_secondary_cameras_to_render_textures(gpu)
             {
                 logger::warn!("secondary camera render-to-texture failed: {e:?}");
             }
-        } else if let Err(e) = self.runtime.render_all_views(gpu, window.as_ref()) {
-            Self::handle_frame_graph_error(gpu, window.as_ref(), e);
+        } else if let Err(e) = self.runtime.render_all_views(gpu) {
+            Self::handle_frame_graph_error(gpu, e);
         }
 
         {
@@ -443,7 +445,7 @@ impl RenderideApp {
                 .unwrap_or(16.67);
             self.hud_frame_last = Some(now);
             let hud_in =
-                crate::diagnostics::DebugHudInput::from_winit(window.as_ref(), &self.input);
+                crate::diagnostics::DebugHudInput::from_winit(window.as_ref(), &mut self.input);
             self.runtime.set_debug_hud_frame_data(hud_in, ms);
         }
 
@@ -455,7 +457,6 @@ impl RenderideApp {
     /// Call only after [`Self::render_views`] returned [`Some`], so a [`GpuContext`] is guaranteed.
     fn present_and_diagnostics(
         &mut self,
-        window: &Arc<Window>,
         xr_tick: Option<OpenxrFrameTick>,
         hmd_projection_ended: bool,
     ) {
@@ -470,7 +471,6 @@ impl RenderideApp {
                 if let Some(bundle) = self.xr_session.as_mut() {
                     if let Err(e) = frame_loop::present_vr_mirror_blit(
                         gpu,
-                        window.as_ref(),
                         &mut bundle.mirror_blit,
                         |enc, view, g| {
                             self.runtime
@@ -478,22 +478,18 @@ impl RenderideApp {
                         },
                     ) {
                         logger::debug!("VR mirror blit failed: {e:?}");
-                        if let Err(pe) =
-                            present_clear_frame_overlay(gpu, window.as_ref(), |enc, view, g| {
-                                self.runtime
-                                    .encode_debug_hud_overlay_on_surface(g, enc, view)
-                            })
-                        {
+                        if let Err(pe) = present_clear_frame_overlay(gpu, |enc, view, g| {
+                            self.runtime
+                                .encode_debug_hud_overlay_on_surface(g, enc, view)
+                        }) {
                             logger::warn!("present_clear_frame after mirror blit: {pe:?}");
                         }
                     }
                 }
-            } else if let Err(e) =
-                present_clear_frame_overlay(gpu, window.as_ref(), |enc, view, g| {
-                    self.runtime
-                        .encode_debug_hud_overlay_on_surface(g, enc, view)
-                })
-            {
+            } else if let Err(e) = present_clear_frame_overlay(gpu, |enc, view, g| {
+                self.runtime
+                    .encode_debug_hud_overlay_on_surface(g, enc, view)
+            }) {
                 logger::debug!("VR mirror clear (no HMD frame): {e:?}");
             }
         }
@@ -559,7 +555,8 @@ impl RenderideApp {
             return;
         };
 
-        self.present_and_diagnostics(&window, xr_tick, hmd_projection_ended);
+        let _ = window;
+        self.present_and_diagnostics(xr_tick, hmd_projection_ended);
 
         self.frame_tick_epilogue(frame_start);
     }
@@ -572,17 +569,17 @@ impl RenderideApp {
         }
     }
 
-    fn handle_frame_graph_error(gpu: &mut GpuContext, window: &Window, e: GraphExecuteError) {
+    fn handle_frame_graph_error(gpu: &mut GpuContext, e: GraphExecuteError) {
         match e {
             GraphExecuteError::NoFrameGraph => {
-                if let Err(pe) = present_clear_frame(gpu, window) {
+                if let Err(pe) = present_clear_frame(gpu) {
                     logger::warn!("present fallback failed: {pe:?}");
-                    reconfigure_gpu_for_window(gpu, window);
+                    reconfigure_gpu_for_window(gpu);
                 }
             }
             _ => {
                 logger::warn!("frame graph failed: {e:?}");
-                reconfigure_gpu_for_window(gpu, window);
+                reconfigure_gpu_for_window(gpu);
             }
         }
     }
@@ -636,7 +633,7 @@ impl ApplicationHandler for RenderideApp {
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(gpu) = self.gpu.as_mut() {
-                    reconfigure_gpu_for_window(gpu, window.as_ref());
+                    reconfigure_gpu_for_window(gpu);
                 }
             }
             _ => {}

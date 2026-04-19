@@ -1,0 +1,20 @@
+[package]
+name = "renderide-test"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "renderide-test"
+path = "src/main.rs"
+
+[dependencies]
+renderide-shared = { path = "../renderide-shared" }
+interprocess = { path = "../interprocess" }
+logger = { path = "../logger" }
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+image-compare = "0.4"
+glam = { version = "0.32", features = ["bytemuck"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+thiserror = "2"
+tempfile = "3"

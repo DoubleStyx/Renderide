@@ -5,6 +5,8 @@ namespace SharedTypeGenerator.Logging;
 /// <summary>Resolves the Renderide tree root (directory containing <c>crates/renderide</c>) for generators and logging paths.</summary>
 public static class RenderidePathResolver
 {
+    private static readonly char[] GitOutputLineSeparators = { '\r', '\n' };
+
     /// <summary>Runs <c>git rev-parse --show-toplevel</c>; returns null if git is missing or the command fails.</summary>
     public static string? TryGetGitRepositoryRoot()
     {
@@ -46,7 +48,7 @@ public static class RenderidePathResolver
             return null;
 
         string line = process.StandardOutput.ReadToEnd().Split(
-            new[] { '\r', '\n' },
+            GitOutputLineSeparators,
             StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
         return string.IsNullOrWhiteSpace(line) ? null : line.Trim();
     }

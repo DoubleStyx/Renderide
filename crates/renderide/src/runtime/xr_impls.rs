@@ -8,7 +8,6 @@ use crate::render_graph::GraphExecuteError;
 use crate::shared::HeadOutputDevice;
 
 use super::RendererRuntime;
-use winit::window::Window;
 
 impl crate::xr::XrHostCameraSync for RendererRuntime {
     fn near_clip(&self) -> f32 {
@@ -72,10 +71,9 @@ impl crate::xr::XrMultiviewFrameRenderer for RendererRuntime {
     fn execute_frame_graph_external_multiview(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
         external: ExternalFrameTargets<'_>,
         skip_hi_z_begin_readback: bool,
     ) -> Result<(), GraphExecuteError> {
-        self.run_frame_graph_external_multiview(gpu, window, external, skip_hi_z_begin_readback)
+        self.run_frame_graph_external_multiview(gpu, external, skip_hi_z_begin_readback)
     }
 }

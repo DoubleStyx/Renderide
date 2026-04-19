@@ -1,0 +1,27 @@
+[package]
+name = "renderide-shared"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "renderide_shared"
+path = "src/lib.rs"
+
+[dependencies]
+bytemuck = { version = "1.25", features = ["derive"] }
+glam = { version = "0.32", features = ["bytemuck"] }
+hashbrown = "0.17"
+interprocess = { path = "../interprocess" }
+logger = { path = "../logger" }
+memmap2 = "0.9"
+thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Memory",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

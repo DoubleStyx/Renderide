@@ -29,6 +29,7 @@
 
 mod frame_loop;
 mod frame_pacing;
+mod headless;
 mod renderide_app;
 mod startup;
 mod window_icon;

@@ -3,6 +3,8 @@
 resolver = "2"
 members = [
   "crates/renderide",
+  "crates/renderide-shared",
+  "crates/renderide-test",
   "crates/interprocess",
   "crates/bootstrapper",
   "crates/logger",

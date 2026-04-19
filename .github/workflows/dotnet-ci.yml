@@ -1,0 +1,61 @@
+# Builds the .NET workspace (`Generators.sln`), enforces formatting and treats warnings as errors,
+# and runs unit tests on all major desktop OSes.
+name: .NET CI
+
+"on":
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: dotnet-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Quiet first-run telemetry/welcome banners on hosted runners.
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  build-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0"
+          # Restores NuGet global-packages folder between runs (keyed on dependency manifests).
+          cache: true
+          cache-dependency-path: |
+            generators/**/*.csproj
+            generators/**/Directory.Build.props
+
+      - name: Restore
+        run: dotnet restore Generators.sln
+
+      # `dotnet format` can be sensitive to the runner's git line-ending behavior (e.g. Windows
+      # `core.autocrlf=true`), so verify formatting only on Linux where checkouts match in-repo encoding.
+      - name: Verify formatting
+        if: runner.os == 'Linux'
+        run: dotnet format Generators.sln --verify-no-changes --no-restore
+
+      # `-warnaserror` promotes every compiler / analyzer warning to a build error;
+      # combined with `latest-recommended` analyzers in the project files this gates
+      # CI on a clean, warning-free build.
+      - name: Build (warnings as errors)
+        run: dotnet build Generators.sln --configuration Release --no-restore -warnaserror
+
+      # Hosted runners do not have Renderite.Shared.dll: roundtrip sources are excluded at compile time (see SharedTypeGenerator.Tests.csproj).
+      - name: Test
+        run: dotnet test Generators.sln --configuration Release --no-build --no-restore

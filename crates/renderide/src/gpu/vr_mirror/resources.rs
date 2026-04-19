@@ -1,7 +1,5 @@
 //! Staging texture and submit/present paths for the VR desktop mirror.
 
-use winit::window::Window;
-
 use crate::gpu::GpuContext;
 use crate::present::{acquire_surface_outcome, PresentClearError, SurfaceFrameOutcome};
 use crate::xr::XR_COLOR_FORMAT;
@@ -160,9 +158,8 @@ impl VrMirrorBlitResources {
     pub fn present_staging_to_surface(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
     ) -> Result<(), PresentClearError> {
-        self.present_staging_to_surface_overlay(gpu, window, |_, _, _| Ok::<(), String>(()))
+        self.present_staging_to_surface_overlay(gpu, |_, _, _| Ok::<(), String>(()))
     }
 
     /// Same as [`Self::present_staging_to_surface`], then runs `overlay` on the same encoder and swapchain view
@@ -170,7 +167,6 @@ impl VrMirrorBlitResources {
     pub fn present_staging_to_surface_overlay<F, E>(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
         overlay: F,
     ) -> Result<(), PresentClearError>
     where
@@ -184,7 +180,7 @@ impl VrMirrorBlitResources {
             return Ok(());
         }
 
-        let frame = match acquire_surface_outcome(gpu, window)? {
+        let frame = match acquire_surface_outcome(gpu)? {
             SurfaceFrameOutcome::Skip | SurfaceFrameOutcome::Reconfigured => return Ok(()),
             SurfaceFrameOutcome::Acquired(f) => f,
         };

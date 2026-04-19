@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Linq;
 using NotEnoughLogs;
 using SharedTypeGenerator.Analysis;
@@ -86,7 +87,7 @@ public partial class RustEmitter
         _w.Line("match i {");
         foreach (EnumMember member in members)
         {
-            long v = Convert.ToInt64(member.Value);
+            long v = Convert.ToInt64(member.Value, CultureInfo.InvariantCulture);
             if (v < int.MinValue || v > int.MaxValue)
             {
                 _logger.LogWarning(
@@ -110,17 +111,18 @@ public partial class RustEmitter
     /// <summary>Rust pattern literal matching <paramref name="rustType"/> (underlying storage).</summary>
     private static string FormatRustPatternLiteralForUnderlying(object value, string rustType)
     {
+        IFormatProvider inv = CultureInfo.InvariantCulture;
         return rustType switch
         {
-            "u8" => Convert.ToByte(value).ToString(),
-            "i8" => Convert.ToSByte(value).ToString(),
-            "u16" => $"{Convert.ToUInt16(value)}u16",
-            "i16" => $"{Convert.ToInt16(value)}",
-            "u32" => $"{Convert.ToUInt32(value)}u32",
-            "i32" => $"{Convert.ToInt32(value)}",
-            "u64" => $"{Convert.ToUInt64(value)}u64",
-            "i64" => $"{Convert.ToInt64(value)}i64",
-            _ => Convert.ToInt64(value).ToString(),
+            "u8" => Convert.ToByte(value, inv).ToString(inv),
+            "i8" => Convert.ToSByte(value, inv).ToString(inv),
+            "u16" => $"{Convert.ToUInt16(value, inv)}u16",
+            "i16" => $"{Convert.ToInt16(value, inv)}",
+            "u32" => $"{Convert.ToUInt32(value, inv)}u32",
+            "i32" => $"{Convert.ToInt32(value, inv)}",
+            "u64" => $"{Convert.ToUInt64(value, inv)}u64",
+            "i64" => $"{Convert.ToInt64(value, inv)}i64",
+            _ => Convert.ToInt64(value, inv).ToString(inv),
         };
     }
 
@@ -145,14 +147,14 @@ public partial class RustEmitter
         {
             foreach (EnumMember member in type.EnumMembers)
             {
-                int val = Convert.ToInt32(member.Value);
+                int val = Convert.ToInt32(member.Value, CultureInfo.InvariantCulture);
                 if (val == 0) continue;
                 string constName = member.Name.HumanizeField().ToUpperInvariant();
                 _w.Line($"pub const {constName}: {rustType} = {val};");
             }
             foreach (EnumMember member in type.EnumMembers)
             {
-                int val = Convert.ToInt32(member.Value);
+                int val = Convert.ToInt32(member.Value, CultureInfo.InvariantCulture);
                 if (val == 0) continue;
                 string methodName = member.Name.HumanizeField();
                 string constName = member.Name.HumanizeField().ToUpperInvariant();

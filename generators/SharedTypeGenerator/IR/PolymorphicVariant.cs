@@ -1,7 +1,6 @@
 namespace SharedTypeGenerator.IR;
 
-/// <summary>One registered subtype in a polymorphic type registry
-/// (extracted from the static constructor's InitTypes call).</summary>
+/// <summary>One registered subtype in a polymorphic type registry (discovered via static constructor IL).</summary>
 public sealed class PolymorphicVariant
 {
     /// <summary>C# type name of the variant.</summary>

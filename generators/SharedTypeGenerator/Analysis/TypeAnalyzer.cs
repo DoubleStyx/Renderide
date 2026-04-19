@@ -100,8 +100,8 @@ public partial class TypeAnalyzer
         TypeDescriptor? descriptor = shape switch
         {
             TypeShape.PolymorphicBase => AnalyzePolymorphic(type),
-            TypeShape.ValueEnum => AnalyzeValueEnum(type),
-            TypeShape.FlagsEnum => AnalyzeFlagsEnum(type),
+            TypeShape.ValueEnum => AnalyzeEnumCore(type, TypeShape.ValueEnum, RustTypeMapper.MapType(type, _assembly).HumanizeType()),
+            TypeShape.FlagsEnum => AnalyzeEnumCore(type, TypeShape.FlagsEnum, MapRustName(type)),
             TypeShape.PodStruct => AnalyzePodStruct(type),
             TypeShape.PackableStruct => AnalyzePackableStruct(type),
             TypeShape.GeneralStruct => AnalyzeGeneralStruct(type),
@@ -131,7 +131,7 @@ public partial class TypeAnalyzer
             return TypeShape.PodStruct;
         if ((type.Attributes & ReflectionTypeAttributes.ExplicitLayout) != 0)
             return TypeShape.PodStruct;
-        if (HasExplicitLayoutViaCecil(type))
+        if (CecilLayoutInspector.HasExplicitLayout(_assemblyDef, type))
             return TypeShape.PodStruct;
 
         if (type != _iMemoryPackable && !type.IsAbstract && type.IsAssignableTo(_iMemoryPackable))
@@ -153,48 +153,8 @@ public partial class TypeAnalyzer
         return type.BaseType.GetGenericTypeDefinition() == _polymorphicBase;
     }
 
-    /// <summary>Fallback for ExplicitLayout detection when reflection attributes are unavailable
-    /// (e.g. types loaded from a different assembly context). Uses Mono.Cecil metadata.</summary>
-    private bool HasExplicitLayoutViaCecil(Type type)
-    {
-        if (!type.IsValueType || type.IsEnum) return false;
-        string? fullName = type.FullName;
-        if (string.IsNullOrEmpty(fullName)) return false;
-        TypeDefinition? typeDef = _assemblyDef.MainModule.GetType(fullName);
-        return typeDef != null && (typeDef.Attributes & Mono.Cecil.TypeAttributes.ExplicitLayout) != 0;
-    }
-
-    /// <summary>Gets StructLayoutAttribute.Size from Cecil when reflection returns null.</summary>
-    private int GetExplicitLayoutSizeViaCecil(Type type)
-    {
-        try
-        {
-            string? fullName = type.FullName;
-            if (string.IsNullOrEmpty(fullName)) return 0;
-            TypeDefinition? typeDef = _assemblyDef.MainModule.GetType(fullName);
-            if (typeDef == null) return 0;
-            // StructLayoutAttribute.Size is stored in ClassLayout table (ClassSize), not CustomAttributes
-            if (typeDef.ClassSize > 0)
-                return typeDef.ClassSize;
-            CustomAttribute? attr = typeDef.CustomAttributes
-                .FirstOrDefault(a => a.AttributeType.Name == "StructLayoutAttribute");
-            if (attr == null) return 0;
-            foreach (Mono.Cecil.CustomAttributeNamedArgument prop in attr.Properties)
-            {
-                if (prop.Name == "Size" && prop.Argument.Value is int size && size > 0)
-                    return size;
-            }
-            if (attr.ConstructorArguments.Count >= 2 && attr.ConstructorArguments[1].Value is int sizeArg && sizeArg > 0)
-                return sizeArg;
-        }
-        catch
-        {
-            /* ignore */
-        }
-        return 0;
-    }
-
-    private string MapRustName(Type type)
+    /// <summary>Maps a CLR type name to the Rust type identifier used in generated code (nested types use <c>Outer_Inner</c>).</summary>
+    internal static string MapRustName(Type type)
     {
         if (type.DeclaringType != null)
             return (type.DeclaringType.Name + '_' + type.Name).HumanizeType();
@@ -216,71 +176,4 @@ public partial class TypeAnalyzer
             _typeQueue.Enqueue(type);
     }
 
-    private static bool IsFieldTypePod(Type ft, HashSet<Type> visited)
-    {
-        // All enums with explicit repr (ValueEnum and FlagsEnum) are Pod in Rust
-        if (ft.IsEnum) return true;
-        if (ft == typeof(bool)) return true;
-        if (ft.IsPrimitive || ft == typeof(Guid) || ft.Name?.StartsWith("SharedMemoryBufferDescriptor") == true)
-            return true;
-        if (ft.IsValueType && !ft.IsEnum && !visited.Contains(ft))
-        {
-            visited.Add(ft);
-            try
-            {
-                return ft.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                    .All(f => IsFieldTypePod(f.FieldType, visited));
-            }
-            finally { visited.Remove(ft); }
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Whether <paramref name="ft"/> can be emitted as whole-struct <c>bytemuck::Pod</c> in Rust under default SIMD glam.
-    /// Differs from <see cref="IsFieldTypePod"/> when nested composites gain SIMD alignment padding vs. C# blittable layout.
-    /// </summary>
-    private bool IsRustLayoutPodField(Type ft, HashSet<Type> visited)
-    {
-        if (ft.IsEnum) return true;
-        if (ft == typeof(bool)) return true;
-        if (ft.IsPrimitive || ft == typeof(Guid) || ft.Name?.StartsWith("SharedMemoryBufferDescriptor") == true)
-            return true;
-
-        if (ft.IsValueType && ft.Assembly == _assembly && !ft.IsEnum)
-        {
-            // Whole C# struct maps to a single glam Rust type (e.g. RenderQuaternion → Quat); that value is Pod.
-            string rustStructName = RustTypeMapper.MapType(ft, _assembly);
-            if (RustTypeMapper.IsGlamRustType(rustStructName))
-                return true;
-
-            if (visited.Contains(ft)) return false;
-            visited.Add(ft);
-            try
-            {
-                FieldInfo[] fields = ft.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                foreach (FieldInfo f in fields)
-                {
-                    string rustLeaf = RustTypeMapper.MapType(f.FieldType, _assembly);
-                    if (RustTypeMapper.IsGlamRustTypeRequiringCompositeNonPod(rustLeaf))
-                    {
-                        if (fields.Length == 1)
-                            continue;
-                        return false;
-                    }
-
-                    if (!IsRustLayoutPodField(f.FieldType, visited))
-                        return false;
-                }
-
-                return true;
-            }
-            finally
-            {
-                visited.Remove(ft);
-            }
-        }
-
-        return IsFieldTypePod(ft, visited);
-    }
 }

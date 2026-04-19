@@ -47,6 +47,8 @@ pub struct DebugHudInput {
     pub window_focused: bool,
     /// Whether the cursor is over the client area (from winit accumulator).
     pub mouse_active: bool,
+    /// Scroll wheel delta in platform units (e.g. Windows uses 120 per notch).
+    pub mouse_wheel_delta: Vec2,
     /// Left mouse button held.
     pub left: bool,
     /// Right mouse button held.
@@ -66,7 +68,7 @@ impl DebugHudInput {
     /// swapchain / ImGui framebuffer in **physical** pixels.
     pub fn from_winit(
         window: &winit::window::Window,
-        acc: &crate::frontend::input::WindowInputAccumulator,
+        acc: &mut crate::frontend::input::WindowInputAccumulator,
     ) -> Self {
         let sf = window.scale_factor() as f32;
         let cursor_px = if acc.mouse_active && acc.window_focused {
@@ -81,6 +83,7 @@ impl DebugHudInput {
             window_px,
             window_focused: acc.window_focused,
             mouse_active: acc.mouse_active,
+            mouse_wheel_delta: acc.take_hud_scroll_delta(),
             left: acc.left_held,
             right: acc.right_held,
             middle: acc.middle_held,

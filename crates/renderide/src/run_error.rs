@@ -6,6 +6,7 @@ use thiserror::Error;
 use winit::error::EventLoopError;
 
 use crate::connection::InitError as ConnectionInitError;
+use crate::gpu::GpuError;
 
 /// Startup or early abort before the winit loop returns an optional process exit code.
 #[derive(Debug, Error)]
@@ -25,4 +26,7 @@ pub enum RunError {
     /// [`winit`] could not create the event loop (display backend unavailable, etc.).
     #[error(transparent)]
     EventLoopCreate(#[from] EventLoopError),
+    /// [`crate::gpu::GpuContext`] initialization (desktop or headless) failed.
+    #[error("GPU init: {0}")]
+    Gpu(#[from] GpuError),
 }

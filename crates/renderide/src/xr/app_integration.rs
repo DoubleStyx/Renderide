@@ -7,7 +7,6 @@ use crate::xr::{
     XrWgpuHandles, XR_COLOR_FORMAT, XR_VIEW_COUNT,
 };
 use openxr as xr;
-use winit::window::Window;
 
 /// App-loop ownership for the OpenXR GPU path: Vulkan/wgpu [`XrWgpuHandles`], lazily created stereo
 /// swapchain and depth targets, and the desktop mirror blit ([`VrMirrorBlitResources`]).
@@ -205,7 +204,6 @@ pub fn try_openxr_hmd_multiview_submit(
     gpu: &mut GpuContext,
     bundle: &mut XrSessionBundle,
     runtime: &mut impl XrMultiviewFrameRenderer,
-    window: &Window,
     tick: &OpenxrFrameTick,
 ) -> bool {
     if !multiview_submit_prereqs(gpu, bundle, runtime, tick) {
@@ -258,7 +256,7 @@ pub fn try_openxr_hmd_multiview_submit(
     let views_ref = tick.views.as_slice();
     let handles = &mut bundle.handles;
     if runtime
-        .execute_frame_graph_external_multiview(gpu, window, ext, true)
+        .execute_frame_graph_external_multiview(gpu, ext, true)
         .is_err()
     {
         let _ = sc.handle.release_image();

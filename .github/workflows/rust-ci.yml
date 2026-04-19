@@ -1,5 +1,5 @@
 # Builds the Rust workspace and runs unit / integration tests on all major desktop OSes.
-# C# / dotnet tests are intentionally out of scope (see workspace `generators/`).
+# .NET (`generators/`) is covered by `dotnet-ci.yml`.
 name: Rust CI
 
 "on":
@@ -51,3 +51,18 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --locked
+
+      # Spawns the renderer in `--headless` (no window; offscreen PNG), drives the full IPC
+      # handshake + sphere upload + scene submission, and compares the rendered PNG against the
+      # committed golden via image-compare SSIM. On Linux CI the only Vulkan ICD is typically
+      # lavapipe (mesa-vulkan-drivers). Linux-only; Windows/macOS runners often lack a usable
+      # Vulkan stack for this harness.
+      #
+      # Build the `dev-fast` renderer (workspace `cargo build` is debug-only; the harness defaults
+      # to `target/dev-fast/renderide` when passed `--dev-fast`). `cargo run --profile dev-fast`
+      # for renderide-test does not build the renderer binary by itself.
+      - name: Golden image integration test
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked -p renderide
+          cargo run --locked -p renderide-test -- check

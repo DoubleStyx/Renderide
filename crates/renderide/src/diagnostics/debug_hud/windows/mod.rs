@@ -27,6 +27,11 @@ pub(super) fn apply_input(io: &mut Io, input: &crate::diagnostics::DebugHudInput
     io.add_mouse_button_event(ImGuiMouseButton::Middle, input.middle);
     io.add_mouse_button_event(ImGuiMouseButton::Extra1, input.extra1);
     io.add_mouse_button_event(ImGuiMouseButton::Extra2, input.extra2);
+    const WHEEL_UNIT: f32 = 120.0;
+    io.add_mouse_wheel_event([
+        input.mouse_wheel_delta.x / WHEEL_UNIT,
+        input.mouse_wheel_delta.y / WHEEL_UNIT,
+    ]);
 }
 
 impl DebugHud {

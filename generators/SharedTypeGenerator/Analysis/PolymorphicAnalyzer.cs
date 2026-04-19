@@ -26,7 +26,8 @@ public class PolymorphicAnalyzer
     {
         var variants = new List<PolymorphicVariant>();
 
-        TypeDefinition? typeDef = _assemblyDef.MainModule.GetType(type.FullName);
+        string? cecilName = type.FullName?.Replace("+", "/", StringComparison.Ordinal);
+        TypeDefinition? typeDef = cecilName is not null ? _assemblyDef.MainModule.GetType(cecilName) : null;
         if (typeDef == null) return variants;
 
         MethodDefinition? cctor = typeDef.GetStaticConstructor();
@@ -36,15 +37,22 @@ public class PolymorphicAnalyzer
         {
             if (instruction.OpCode.Code != Code.Ldtoken) continue;
 
-            if (instruction.Operand is not TypeDefinition tokenType) continue;
+            TypeDefinition? tokenDef = instruction.Operand switch
+            {
+                TypeDefinition td => td,
+                TypeReference tr => tr.Resolve(),
+                _ => null,
+            };
+            if (tokenDef == null) continue;
 
-            Type? runtimeType = _assembly.GetType(tokenType.FullName);
+            string reflectionName = tokenDef.FullName.Replace("/", "+", StringComparison.Ordinal);
+            Type? runtimeType = _assembly.GetType(reflectionName);
             if (runtimeType == null) continue;
 
             variants.Add(new PolymorphicVariant
             {
-                CSharpName = tokenType.Name,
-                RustName = tokenType.Name.HumanizeType(),
+                CSharpName = tokenDef.Name,
+                RustName = tokenDef.Name.HumanizeType(),
                 RuntimeType = runtimeType,
             });
         }
@@ -54,8 +62,6 @@ public class PolymorphicAnalyzer
 
     /// <summary>Collects all runtime Type objects referenced by the polymorphic registry,
     /// so the caller can queue them for generation.</summary>
-    public List<Type> GetReferencedTypes(List<PolymorphicVariant> variants)
-    {
-        return variants.Select(v => v.RuntimeType).ToList();
-    }
+    public static List<Type> GetReferencedTypes(IReadOnlyList<PolymorphicVariant> variants) =>
+        variants.Select(v => v.RuntimeType).ToList();
 }

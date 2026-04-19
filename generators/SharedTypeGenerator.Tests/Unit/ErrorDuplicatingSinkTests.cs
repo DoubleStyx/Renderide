@@ -2,6 +2,7 @@ using System.Globalization;
 using NotEnoughLogs;
 using NotEnoughLogs.Sinks;
 using SharedTypeGenerator.Logging;
+using SharedTypeGenerator.Tests.Unit.Support;
 using Xunit;
 
 namespace SharedTypeGenerator.Tests.Unit;
@@ -92,20 +93,5 @@ public sealed class ErrorDuplicatingSinkTests
         Assert.Single(inner.Lines);
         Assert.Equal("n=42", inner.Lines[0]);
         Assert.Contains("n=42", stderr.ToString(), StringComparison.Ordinal);
-    }
-
-    /// <summary>Captures log message text for assertions (not used with <see cref="LogFileSink"/>).</summary>
-    private sealed class CollectingSink : ILoggerSink
-    {
-        /// <summary>Recorded message bodies (content or formatted result).</summary>
-        public List<string> Lines { get; } = [];
-
-        /// <inheritdoc />
-        public void Log(LogLevel level, ReadOnlySpan<char> category, ReadOnlySpan<char> content) =>
-            Lines.Add(content.ToString());
-
-        /// <inheritdoc />
-        public void Log(LogLevel level, ReadOnlySpan<char> category, ReadOnlySpan<char> format, params object[] args) =>
-            Lines.Add(string.Format(CultureInfo.InvariantCulture, format.ToString(), args));
     }
 }

@@ -111,6 +111,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Verifies two appended reports by matching the full panic line and the backtrace header
+    /// boundary. A bare `"PANIC:"` count is unreliable on Windows because `Backtrace` `Debug`
+    /// output can contain that substring in paths or symbols.
     #[test]
     fn log_panic_appends_to_existing_file() {
         let path =
@@ -119,8 +122,8 @@ mod tests {
         log_panic(&path, &Dummy);
         log_panic(&path, &Dummy);
         let got = std::fs::read_to_string(&path).expect("read");
-        assert_eq!(got.matches("PANIC:").count(), 2);
-        assert_eq!(got.matches("Backtrace:").count(), 2);
+        assert_eq!(got.matches("PANIC: test panic display").count(), 2);
+        assert_eq!(got.matches("\nBacktrace:\n").count(), 2);
         let _ = std::fs::remove_file(&path);
     }
 

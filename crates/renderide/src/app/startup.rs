@@ -33,10 +33,12 @@ use winit::event_loop::EventLoop;
 use crate::config::{load_renderer_settings, log_config_resolve_trace, settings_handle_from};
 use crate::connection::{get_connection_parameters, try_claim_renderer_singleton};
 use crate::frontend::InitState;
+use crate::ipc::get_headless_params;
 use crate::run_error::RunError;
 use crate::runtime::RendererRuntime;
 use crate::shared::{HeadOutputDevice, RendererInitData};
 
+use super::headless::run_headless;
 use super::renderide_app::RenderideApp;
 
 /// Interval between log flushes when using file logging in the winit handler.
@@ -235,12 +237,21 @@ pub fn run() -> Result<Option<i32>, RunError> {
         logger::info!("Standalone mode (no -QueueName/-QueueCapacity; desktop GPU, no host init)");
     }
 
+    let external_shutdown = install_external_shutdown();
+
+    if let Some(headless_params) = get_headless_params() {
+        return run_headless(
+            &mut runtime,
+            headless_params,
+            external_shutdown,
+            initial_gpu_validation,
+        );
+    }
+
     let event_loop = EventLoop::new().map_err(|e| {
         logger::error!("EventLoop::new failed: {e}");
         e
     })?;
-
-    let external_shutdown = install_external_shutdown();
 
     let mut app = RenderideApp::new(
         runtime,

@@ -28,6 +28,7 @@ glam = { version = "0.32", features = ["bytemuck"] }
 memmap2 = "0.9"
 interprocess = { path = "../interprocess" }
 logger = { path = "../logger" }
+renderide-shared = { path = "../renderide-shared" }
 pollster = "0.4"
 rayon = "1.11"
 lru = "0.17"

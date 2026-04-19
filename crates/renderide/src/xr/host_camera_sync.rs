@@ -7,7 +7,6 @@ use glam::{Mat4, Quat, Vec3};
 use crate::gpu::GpuContext;
 use crate::render_graph::{ExternalFrameTargets, GraphExecuteError};
 use crate::shared::HeadOutputDevice;
-use winit::window::Window;
 
 /// Read/write hooks for per-eye matrices and head-output positioning used by OpenXR frame ticks.
 pub trait XrHostCameraSync {
@@ -44,7 +43,6 @@ pub trait XrMultiviewFrameRenderer: XrHostCameraSync {
     fn execute_frame_graph_external_multiview(
         &mut self,
         gpu: &mut GpuContext,
-        window: &Window,
         external: ExternalFrameTargets<'_>,
         skip_hi_z_begin_readback: bool,
     ) -> Result<(), GraphExecuteError>;
