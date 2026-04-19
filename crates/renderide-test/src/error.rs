@@ -8,7 +8,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum HarnessError {
     /// The renderer binary could not be located on disk.
-    #[error("renderer binary not found at {0}; build with `cargo build [--release] -p renderide`")]
+    #[error("renderer binary not found at {0}; build with `cargo build -p renderide` (use `--profile dev-fast` or `--release` as needed)")]
     RendererBinaryMissing(PathBuf),
     /// Spawning the renderer process failed.
     #[error("spawn renderer process: {0}")]

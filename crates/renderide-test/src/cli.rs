@@ -86,8 +86,11 @@ struct CommonOpts {
     /// Path to the renderide binary to spawn (defaults to `target/{profile}/renderide`).
     #[arg(long)]
     renderer: Option<PathBuf>,
+    /// Use the `dev-fast` profile renderer binary (`target/dev-fast/renderide`).
+    #[arg(long, default_value_t = false, conflicts_with = "release")]
+    dev_fast: bool,
     /// Use the release-mode renderer binary (`target/release/renderide`).
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, conflicts_with = "dev_fast")]
     release: bool,
     /// Output resolution (WxH) for the offscreen render target.
     #[arg(long, default_value = "256x256")]
@@ -141,7 +144,7 @@ fn run_harness(common: &CommonOpts) -> Result<HarnessRunOutcome, HarnessError> {
     let timeout = Duration::from_secs(common.timeout_seconds);
     let renderer_path = match &common.renderer {
         Some(p) => p.clone(),
-        None => default_renderer_path(common.release),
+        None => default_renderer_path(common.release, common.dev_fast),
     };
     let cfg = HostHarnessConfig {
         renderer_path,
@@ -166,8 +169,14 @@ fn parse_resolution(s: &str) -> (u32, u32) {
     (256, 256)
 }
 
-fn default_renderer_path(release: bool) -> PathBuf {
-    let profile = if release { "release" } else { "debug" };
+fn default_renderer_path(release: bool, dev_fast: bool) -> PathBuf {
+    let profile = if dev_fast {
+        "dev-fast"
+    } else if release {
+        "release"
+    } else {
+        "debug"
+    };
     let exe = if cfg!(windows) {
         "renderide.exe"
     } else {
