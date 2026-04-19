@@ -445,7 +445,7 @@ impl RenderideApp {
                 .unwrap_or(16.67);
             self.hud_frame_last = Some(now);
             let hud_in =
-                crate::diagnostics::DebugHudInput::from_winit(window.as_ref(), &self.input);
+                crate::diagnostics::DebugHudInput::from_winit(window.as_ref(), &mut self.input);
             self.runtime.set_debug_hud_frame_data(hud_in, ms);
         }
 
