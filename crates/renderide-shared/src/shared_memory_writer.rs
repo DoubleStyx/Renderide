@@ -194,11 +194,21 @@ mod platform {
 
     const MAP_NAME_PREFIX: &str = "CT_IP_";
 
-    #[derive(Debug)]
     pub(super) struct PlatformWriter {
         handle: HANDLE,
         view: MEMORY_MAPPED_VIEW_ADDRESS,
         len: usize,
+    }
+
+    /// [`MEMORY_MAPPED_VIEW_ADDRESS`] does not implement [`std::fmt::Debug`]; we print the mapped base pointer.
+    impl std::fmt::Debug for PlatformWriter {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("PlatformWriter")
+                .field("handle", &self.handle)
+                .field("view", &self.view.Value)
+                .field("len", &self.len)
+                .finish()
+        }
     }
 
     impl PlatformWriter {
