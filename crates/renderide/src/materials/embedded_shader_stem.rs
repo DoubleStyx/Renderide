@@ -66,6 +66,17 @@ fn xiexe_toon2_asset_lookup_key(name: &str) -> Option<&'static str> {
 fn compact_alias_lookup_key(name: &str) -> Option<&'static str> {
     match compact_alnum_lower(name).as_str() {
         "billboardunlit" => Some("billboardunlit"),
+        // Legacy Resonite common/material shader names routed to closest maintained WGSL stems.
+        "pbsmultiuv" => Some("pbsmetallic"),
+        "pbsmultiuvspecular" => Some("pbsspecular"),
+        "pbsrimtransparentspecular" => Some("pbsrimtransparent"),
+        "pbsdisplacespeculartransparent" => Some("pbsspecular"),
+        "reflection" => Some("matcap"),
+        // Screen-space/skybox shaders currently have no dedicated port; use a visible fallback.
+        "proceduralskybox" => Some("unlit"),
+        "gradientskybox" => Some("unlit"),
+        "blur" => Some("unlit"),
+        "blurperobject" => Some("unlit"),
         _ => None,
     }
 }
@@ -352,6 +363,54 @@ mod tests {
         assert_eq!(
             embedded_default_stem_for_unity_name("UnlitDistanceLerp").as_deref(),
             Some("unlitdistancelerp_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbs_multi_uv_to_dedicated_stem() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSMultiUV").as_deref(),
+            Some("pbsmultiuv_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbs_multi_uv_specular_to_dedicated_stem() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSMultiUVSpecular").as_deref(),
+            Some("pbsmultiuvspecular_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbs_rim_transparent_specular_to_dedicated_stem() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSRimTransparentSpecular").as_deref(),
+            Some("pbsrimtransparentspecular_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbs_displace_specular_transparent_to_dedicated_stem() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSDisplaceSpecularTransparent").as_deref(),
+            Some("pbsdisplacespeculartransparent_default")
+        );
+    }
+
+    #[test]
+    fn resolves_reflection_to_matcap() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("Reflection").as_deref(),
+            Some("matcap_default")
+        );
+    }
+
+    #[test]
+    fn resolves_blur_perobject_to_unlit() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("blur_perobject").as_deref(),
+            Some("unlit_default")
         );
     }
 
