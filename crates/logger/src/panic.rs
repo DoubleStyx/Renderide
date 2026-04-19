@@ -14,6 +14,8 @@ use crate::output;
 ///
 /// Use when handling [`Err`] from [`std::panic::catch_unwind`] to surface the panic message through
 /// the normal logger (requires an initialized global logger).
+///
+/// Mis-typed payloads fall back to a generic message instead of unwinding.
 pub fn log_panic_payload(payload: Box<dyn std::any::Any + Send>, context: &str) {
     let msg = match payload.downcast::<String>() {
         Ok(s) => format!("{context}: {}", *s),
@@ -80,12 +82,48 @@ mod tests {
     }
 
     #[test]
+    fn panic_report_includes_provided_display() {
+        let s = panic_report(&Dummy);
+        assert!(
+            s.contains("PANIC: test panic display"),
+            "expected full display in report: {s}"
+        );
+    }
+
+    #[test]
     fn append_panic_report_to_file_appends_bytes() {
         let path = std::env::temp_dir().join(format!("logger_panic_append_{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
         append_panic_report_to_file(&path, "hello panic\n");
         let got = std::fs::read_to_string(&path).unwrap();
         assert_eq!(got, "hello panic\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn log_panic_writes_panic_prefix_and_backtrace_label() {
+        let path = std::env::temp_dir().join(format!("logger_log_panic_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        log_panic(&path, &Dummy);
+        let got = std::fs::read_to_string(&path).expect("read");
+        assert!(got.starts_with("PANIC: "));
+        assert!(got.contains("Backtrace:"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Verifies two appended reports by matching the full panic line and the backtrace header
+    /// boundary. A bare `"PANIC:"` count is unreliable on Windows because `Backtrace` `Debug`
+    /// output can contain that substring in paths or symbols.
+    #[test]
+    fn log_panic_appends_to_existing_file() {
+        let path =
+            std::env::temp_dir().join(format!("logger_log_panic_append_{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        log_panic(&path, &Dummy);
+        log_panic(&path, &Dummy);
+        let got = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(got.matches("PANIC: test panic display").count(), 2);
+        assert_eq!(got.matches("\nBacktrace:\n").count(), 2);
         let _ = std::fs::remove_file(&path);
     }
 

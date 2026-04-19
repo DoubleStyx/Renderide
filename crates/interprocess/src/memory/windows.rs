@@ -31,11 +31,6 @@ impl WindowsMapping {
         self.view.Value as *const u8
     }
 
-    /// Returns the start of the mapped section for writes.
-    pub(super) fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.view.Value as *mut u8
-    }
-
     /// Length of the mapping in bytes.
     pub(super) fn len(&self) -> usize {
         self.len
@@ -65,7 +60,12 @@ impl Drop for WindowsMapping {
 /// Creates or opens the named file mapping, maps it, and opens the paired Win32 semaphore.
 pub(super) fn open_queue(options: &QueueOptions) -> Result<(WindowsMapping, Semaphore), OpenError> {
     let name = naming::windows_mapping_name(&options.memory_view_name);
-    let storage_size = options.actual_storage_size() as usize;
+    let storage_size = usize::try_from(options.actual_storage_size()).map_err(|_| {
+        OpenError(io::Error::other(format!(
+            "queue storage size does not fit usize (capacity {})",
+            options.capacity
+        )))
+    })?;
 
     let name_wide: Vec<u16> = OsStr::new(&name)
         .encode_wide()
@@ -96,7 +96,13 @@ pub(super) fn open_queue(options: &QueueOptions) -> Result<(WindowsMapping, Sema
     ))
 }
 
-/// Tries `CreateFileMappingW` first, then `OpenFileMappingW`, with exponential backoff for startup races.
+/// Attempts `CreateFileMappingW` then `OpenFileMappingW` with exponential backoff.
+///
+/// Two processes often race during bootstrap: one creates the section while the other opens it.
+/// `CreateFileMappingW` fails with `ERROR_ALREADY_EXISTS` when the object already exists; the
+/// caller then falls back to `OpenFileMappingW`. Transient failures while the creator finishes
+/// mapping setup are absorbed by retrying with bounded exponential sleep (10 ms initial, 1 s cap,
+/// 14 attempts).
 fn create_or_open_file_mapping(
     name: &[u16],
     size: usize,

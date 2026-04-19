@@ -14,7 +14,10 @@ use windows_sys::Win32::System::Threading::{
 use crate::naming;
 
 /// Win32 semaphore handle from `CreateSemaphoreW` (`Global\CT.IP.{name}`).
-pub(super) struct WinSemaphore(windows_sys::Win32::Foundation::HANDLE);
+pub(super) struct WinSemaphore(
+    /// Raw semaphore handle; closed on drop.
+    windows_sys::Win32::Foundation::HANDLE,
+);
 
 impl WinSemaphore {
     /// Creates or opens the named global semaphore (initial count `0`, max `i32::MAX`).
@@ -64,5 +67,53 @@ impl Drop for WinSemaphore {
                 CloseHandle(self.0);
             }
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use super::WinSemaphore;
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_queue_name() -> String {
+        format!(
+            "wsem_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    #[test]
+    fn post_then_try_wait_zero_timeout() {
+        let s = WinSemaphore::open(&unique_queue_name()).expect("open");
+        s.post();
+        assert!(s.wait_timeout(Duration::ZERO));
+    }
+
+    #[test]
+    fn zero_timeout_without_post_returns_false() {
+        let s = WinSemaphore::open(&unique_queue_name()).expect("open");
+        assert!(!s.wait_timeout(Duration::ZERO));
+    }
+
+    #[test]
+    fn post_then_short_wait_acquires() {
+        let s = WinSemaphore::open(&unique_queue_name()).expect("open");
+        s.post();
+        assert!(s.wait_timeout(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn multiple_posts_drain() {
+        let s = WinSemaphore::open(&unique_queue_name()).expect("open");
+        s.post();
+        s.post();
+        assert!(s.wait_timeout(Duration::from_millis(500)));
+        assert!(s.wait_timeout(Duration::from_millis(500)));
+        assert!(!s.wait_timeout(Duration::ZERO));
     }
 }

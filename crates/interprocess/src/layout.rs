@@ -1,12 +1,22 @@
 //! Binary layout shared with the managed interprocess queue implementation.
+//!
+//! ```text
+//! [ QueueHeader (32 B) | ring bytes (capacity) ]
+//!                       ^
+//!                       each message: [ MessageHeader (8 B) | body | pad to 8 B ]
+//! ```
+//!
+//! Logical `read_offset` / `write_offset` values may exceed `capacity`; physical indices use
+//! Euclidean modulo. The publisher advances `write_offset` in the `[0, 2 * capacity)` range so
+//! empty vs full disambiguation can use both logical equality and physical indices.
 
 use std::mem::size_of;
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 
-/// Offset of the ring buffer from the start of the mapping (after [`QueueHeader`]).
+/// Byte offset of the ring buffer from the start of the mapping (immediately after [`QueueHeader`]).
 pub const BUFFER_BYTE_OFFSET: usize = size_of::<QueueHeader>();
 
-/// Fixed header at the start of the mapped queue file; ring bytes follow at the byte offset given by the crate-root `BUFFER_BYTE_OFFSET` constant.
+/// Fixed header at the start of the mapped queue file; ring bytes follow at [`BUFFER_BYTE_OFFSET`].
 ///
 /// `read_offset` / `write_offset` use logical positions that may wrap using modulo `capacity`.
 /// Fields use [`AtomicI64`] so lock-free access matches the same sizes and alignment as `i64` in the managed layout.
@@ -58,7 +68,15 @@ pub const STATE_LOCKED: i32 = 1;
 /// Message is ready for the subscriber.
 pub const STATE_READY: i32 = 2;
 
-/// Little-endian wire bytes for the 8-byte [`MessageHeader`] prefix in the ring (matches `i32`/`i32` layout).
+/// Returns the little-endian byte encoding of an 8-byte [`MessageHeader`] for bulk ring writes.
+///
+/// The first four bytes are `state` (`i32` LE); the next four are `body_length` (`i32` LE). This
+/// matches the in-memory `repr(C)` layout when atomics share the same bit representation as `i32`.
+///
+/// # Safety contract
+///
+/// This performs no I/O. Callers must write the bytes only into the shared mapping at a slot
+/// boundary that satisfies the Cloudtoid wire contract.
 pub(crate) fn message_header_wire_bytes(state: i32, body_length: i32) -> [u8; 8] {
     let mut b = [0u8; 8];
     b[0..4].copy_from_slice(&state.to_le_bytes());
@@ -67,8 +85,14 @@ pub(crate) fn message_header_wire_bytes(state: i32, body_length: i32) -> [u8; 8]
 }
 
 /// Returns the wire size of a message (header + body + padding) for a given body length.
+///
+/// `body_len` must be non-negative. Panics in debug builds if arithmetic overflows.
 pub fn padded_message_length(body_len: i64) -> i64 {
-    let total = size_of::<MessageHeader>() as i64 + body_len;
+    debug_assert!(body_len >= 0, "body_len must be non-negative");
+    let header_sz = size_of::<MessageHeader>() as i64;
+    let total = header_sz
+        .checked_add(body_len)
+        .expect("padded_message_length: body_len overflow");
     ((total + 7) / 8) * 8
 }
 
@@ -113,7 +137,7 @@ mod tests {
 
     #[test]
     fn padded_length_aligns_to_eight() {
-        for body in [0i64, 1, 7, 8, 9, 100] {
+        for body in [0i64, 1, 7, 8, 9, 100, 4096] {
             let p = padded_message_length(body);
             assert_eq!(p % 8, 0);
             assert!(p >= size_of::<MessageHeader>() as i64 + body);
@@ -135,5 +159,14 @@ mod tests {
         h.read_offset.store(0, Ordering::SeqCst);
         h.write_offset.store(8, Ordering::SeqCst);
         assert!(!h.is_empty());
+    }
+
+    #[test]
+    fn message_header_wire_bytes_match_le_layout() {
+        let w = message_header_wire_bytes(STATE_READY, 42);
+        let s = i32::from_le_bytes(w[0..4].try_into().unwrap());
+        let bl = i32::from_le_bytes(w[4..8].try_into().unwrap());
+        assert_eq!(s, STATE_READY);
+        assert_eq!(bl, 42);
     }
 }

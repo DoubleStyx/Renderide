@@ -1,5 +1,6 @@
 //! [`CompiledRenderGraph`] execution: multi-view scheduling, resource resolution, and submits.
 
+use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
 
 use crate::backend::RenderBackend;
@@ -16,7 +17,7 @@ use super::super::resources::{
     BackendFrameBufferKind, BufferImportSource, FrameTargetRole, ImportSource,
     ImportedBufferHandle, ImportedTextureHandle, TextureHandle,
 };
-use super::super::transient_pool::{BufferKey, TextureKey};
+use super::super::transient_pool::{BufferKey, TextureKey, TransientPool};
 use super::helpers;
 use super::{
     CompiledRenderGraph, ExternalFrameTargets, FrameView, FrameViewTarget,
@@ -82,17 +83,13 @@ impl CompiledRenderGraph {
         backend: &mut RenderBackend,
         host_camera: HostCameraFrame,
     ) -> Result<(), GraphExecuteError> {
-        self.execute_multi_view(
-            gpu,
-            scene,
-            backend,
-            vec![FrameView {
-                host_camera,
-                target: FrameViewTarget::Swapchain,
-                draw_filter: None,
-                prefetched_world_mesh_draws: None,
-            }],
-        )
+        let mut single = [FrameView {
+            host_camera,
+            target: FrameViewTarget::Swapchain,
+            draw_filter: None,
+            prefetched_world_mesh_draws: None,
+        }];
+        self.execute_multi_view(gpu, scene, backend, &mut single)
     }
 
     /// Records passes against pre-built multiview array targets (OpenXR swapchain path).
@@ -104,17 +101,13 @@ impl CompiledRenderGraph {
         host_camera: HostCameraFrame,
         external: ExternalFrameTargets<'_>,
     ) -> Result<(), GraphExecuteError> {
-        self.execute_multi_view(
-            gpu,
-            scene,
-            backend,
-            vec![FrameView {
-                host_camera,
-                target: FrameViewTarget::ExternalMultiview(external),
-                draw_filter: None,
-                prefetched_world_mesh_draws: None,
-            }],
-        )
+        let mut single = [FrameView {
+            host_camera,
+            target: FrameViewTarget::ExternalMultiview(external),
+            draw_filter: None,
+            prefetched_world_mesh_draws: None,
+        }];
+        self.execute_multi_view(gpu, scene, backend, &mut single)
     }
 
     /// Renders the graph to a single-view offscreen color/depth target (secondary camera → render texture).
@@ -129,17 +122,13 @@ impl CompiledRenderGraph {
         let external = spec.external;
         let transform_filter = spec.transform_filter;
         let prefetched_world_mesh_draws = spec.prefetched_world_mesh_draws;
-        self.execute_multi_view(
-            gpu,
-            scene,
-            backend,
-            vec![FrameView {
-                host_camera,
-                target: FrameViewTarget::OffscreenRt(external),
-                draw_filter: transform_filter,
-                prefetched_world_mesh_draws,
-            }],
-        )
+        let mut single = [FrameView {
+            host_camera,
+            target: FrameViewTarget::OffscreenRt(external),
+            draw_filter: transform_filter,
+            prefetched_world_mesh_draws,
+        }];
+        self.execute_multi_view(gpu, scene, backend, &mut single)
     }
 
     /// Records all views: one encoder + submit for frame-global work, then one encoder + submit per view.
@@ -152,16 +141,20 @@ impl CompiledRenderGraph {
     /// Frame-global passes ([`PassPhase::FrameGlobal`]) run once in the first encoder; per-view
     /// passes run for each [`FrameView`] in order.
     ///
+    /// `views` is borrowed for the duration of execution (callers can pass a stack-allocated
+    /// one-element array or reuse a [`Vec`] through `as_mut_slice()` to avoid allocating a fresh
+    /// [`Vec`] each frame for single-view paths).
+    ///
     /// Swapchain acquisition routes through [`GpuContext::acquire_with_recovery`], which uses the
     /// window stored inside `gpu` for size queries. Headless contexts have no window and no
     /// swapchain views (the headless driver substitutes `Swapchain` for `OffscreenRt` upstream),
     /// so this path never reaches the swapchain branch in headless mode.
-    pub fn execute_multi_view(
+    pub fn execute_multi_view<'a>(
         &mut self,
         gpu: &mut GpuContext,
         scene: &SceneCoordinator,
         backend: &mut RenderBackend,
-        mut views: Vec<FrameView<'_>>,
+        views: &mut [FrameView<'a>],
     ) -> Result<(), GraphExecuteError> {
         if views.is_empty() {
             return Ok(());
@@ -187,11 +180,14 @@ impl CompiledRenderGraph {
             } => (Some(frame), Some(backbuffer_view)),
         };
 
+        // `resolve_view_from_target` and submits need `&mut GpuContext` while passes need `&Device`,
+        // `&GpuLimits`, and `&Arc<Queue>`. Those cannot be borrowed directly from `gpu` alongside
+        // the mutable context borrow, so we hold refcounted clones for the frame (cheap atomics).
         let device_arc = gpu.device().clone();
         let queue_arc = gpu.queue().clone();
+        let limits_arc = gpu.limits().clone();
         let device = device_arc.as_ref();
-        let gpu_limits_owned = gpu.limits().clone();
-        let gpu_limits = gpu_limits_owned.as_ref();
+        let gpu_limits = limits_arc.as_ref();
 
         backend.transient_pool_mut().begin_generation();
 
@@ -207,18 +203,20 @@ impl CompiledRenderGraph {
 
         let mut transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources> = HashMap::new();
 
-        self.execute_multi_view_frame_global_passes(&mut mv_ctx, &views, &mut transient_by_key)?;
+        self.execute_multi_view_frame_global_passes(&mut mv_ctx, views, &mut transient_by_key)?;
 
         // Per-view: separate encoder + submit so queue writes before each submit apply only to this view.
-        for view in &mut views {
+        for view in views.iter_mut() {
             self.execute_multi_view_submit_for_one_view(&mut mv_ctx, view, &mut transient_by_key)?;
         }
 
-        for (_, resources) in transient_by_key {
-            resources.release_to_pool(mv_ctx.backend.transient_pool_mut());
+        {
+            let pool = mv_ctx.backend.transient_pool_mut();
+            for (_, resources) in transient_by_key {
+                resources.release_to_pool(pool);
+            }
+            pool.gc_tick(120);
         }
-
-        mv_ctx.backend.transient_pool_mut().gc_tick(120);
 
         if let Some(f) = frame {
             f.present();
@@ -249,39 +247,43 @@ impl CompiledRenderGraph {
         let target_is_swapchain = matches!(view.target, FrameViewTarget::Swapchain);
         let resolved = Self::resolve_view_from_target(&view.target, gpu, backbuffer_view_holder)?;
         let key = GraphResolveKey::from_resolved(&resolved);
-        #[allow(clippy::map_entry)] // insert-on-miss pattern is clearer than Entry API here
-        if !transient_by_key.contains_key(&key) {
-            let mut resources = GraphResolvedResources::with_capacity(
-                self.transient_textures.len(),
-                self.transient_buffers.len(),
-                self.imported_textures.len(),
-                self.imported_buffers.len(),
-            );
-            let alloc_viewport = helpers::clamp_viewport_for_transient_alloc(
-                resolved.viewport_px,
-                gpu_limits.max_texture_dimension_2d(),
-            );
-            self.resolve_transient_textures(
-                device,
-                backend,
-                TransientTextureResolveSurfaceParams {
-                    viewport_px: alloc_viewport,
-                    surface_format: resolved.surface_format,
-                    depth_stencil_format: resolved.depth_texture.format(),
-                    sample_count: resolved.sample_count,
-                    multiview_stereo: resolved.multiview_stereo,
-                },
-                &mut resources,
-            )?;
-            self.resolve_transient_buffers(device, backend, alloc_viewport, &mut resources)?;
-            transient_by_key.insert(key, resources);
-        }
-        {
-            let r = transient_by_key.get_mut(&key).unwrap();
-            self.resolve_imported_textures(&resolved, r);
-            self.resolve_imported_buffers(backend, &resolved, r);
-        }
-        let graph_resources = transient_by_key.get(&key).unwrap();
+        let resolved_resources = match transient_by_key.entry(key) {
+            Entry::Vacant(v) => {
+                let mut resources = GraphResolvedResources::with_capacity(
+                    self.transient_textures.len(),
+                    self.transient_buffers.len(),
+                    self.imported_textures.len(),
+                    self.imported_buffers.len(),
+                );
+                let alloc_viewport = helpers::clamp_viewport_for_transient_alloc(
+                    resolved.viewport_px,
+                    gpu_limits.max_texture_dimension_2d(),
+                );
+                self.resolve_transient_textures(
+                    device,
+                    backend.transient_pool_mut(),
+                    TransientTextureResolveSurfaceParams {
+                        viewport_px: alloc_viewport,
+                        surface_format: resolved.surface_format,
+                        depth_stencil_format: resolved.depth_texture.format(),
+                        sample_count: resolved.sample_count,
+                        multiview_stereo: resolved.multiview_stereo,
+                    },
+                    &mut resources,
+                )?;
+                self.resolve_transient_buffers(
+                    device,
+                    backend.transient_pool_mut(),
+                    alloc_viewport,
+                    &mut resources,
+                )?;
+                v.insert(resources)
+            }
+            Entry::Occupied(o) => o.into_mut(),
+        };
+        self.resolve_imported_textures(&resolved, resolved_resources);
+        self.resolve_imported_buffers(&backend.frame_resources, &resolved, resolved_resources);
+        let graph_resources: &GraphResolvedResources = &*resolved_resources;
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("render-graph-per-view"),
@@ -357,7 +359,7 @@ impl CompiledRenderGraph {
         let occlusion_view = view.occlusion_view_id();
         let mut post_ctx = PostSubmitContext {
             device,
-            backend,
+            occlusion: &mut backend.occlusion,
             occlusion_view,
             host_camera: view.host_camera,
         };
@@ -398,39 +400,43 @@ impl CompiledRenderGraph {
             let resolved =
                 Self::resolve_view_from_target(&first.target, gpu, backbuffer_view_holder)?;
             let key = GraphResolveKey::from_resolved(&resolved);
-            #[allow(clippy::map_entry)] // insert-on-miss pattern is clearer than Entry API here
-            if !transient_by_key.contains_key(&key) {
-                let mut resources = GraphResolvedResources::with_capacity(
-                    self.transient_textures.len(),
-                    self.transient_buffers.len(),
-                    self.imported_textures.len(),
-                    self.imported_buffers.len(),
-                );
-                let alloc_viewport = helpers::clamp_viewport_for_transient_alloc(
-                    resolved.viewport_px,
-                    gpu_limits.max_texture_dimension_2d(),
-                );
-                self.resolve_transient_textures(
-                    device,
-                    backend,
-                    TransientTextureResolveSurfaceParams {
-                        viewport_px: alloc_viewport,
-                        surface_format: resolved.surface_format,
-                        depth_stencil_format: resolved.depth_texture.format(),
-                        sample_count: resolved.sample_count,
-                        multiview_stereo: resolved.multiview_stereo,
-                    },
-                    &mut resources,
-                )?;
-                self.resolve_transient_buffers(device, backend, alloc_viewport, &mut resources)?;
-                transient_by_key.insert(key, resources);
-            }
-            {
-                let r = transient_by_key.get_mut(&key).unwrap();
-                self.resolve_imported_textures(&resolved, r);
-                self.resolve_imported_buffers(backend, &resolved, r);
-            }
-            let graph_resources = transient_by_key.get(&key).unwrap();
+            let resolved_resources = match transient_by_key.entry(key) {
+                Entry::Vacant(v) => {
+                    let mut resources = GraphResolvedResources::with_capacity(
+                        self.transient_textures.len(),
+                        self.transient_buffers.len(),
+                        self.imported_textures.len(),
+                        self.imported_buffers.len(),
+                    );
+                    let alloc_viewport = helpers::clamp_viewport_for_transient_alloc(
+                        resolved.viewport_px,
+                        gpu_limits.max_texture_dimension_2d(),
+                    );
+                    self.resolve_transient_textures(
+                        device,
+                        backend.transient_pool_mut(),
+                        TransientTextureResolveSurfaceParams {
+                            viewport_px: alloc_viewport,
+                            surface_format: resolved.surface_format,
+                            depth_stencil_format: resolved.depth_texture.format(),
+                            sample_count: resolved.sample_count,
+                            multiview_stereo: resolved.multiview_stereo,
+                        },
+                        &mut resources,
+                    )?;
+                    self.resolve_transient_buffers(
+                        device,
+                        backend.transient_pool_mut(),
+                        alloc_viewport,
+                        &mut resources,
+                    )?;
+                    v.insert(resources)
+                }
+                Entry::Occupied(o) => o.into_mut(),
+            };
+            self.resolve_imported_textures(&resolved, resolved_resources);
+            self.resolve_imported_buffers(&backend.frame_resources, &resolved, resolved_resources);
+            let graph_resources: &GraphResolvedResources = &*resolved_resources;
             {
                 let mut frame_params = helpers::frame_render_params_from_resolved(
                     scene,
@@ -489,7 +495,7 @@ impl CompiledRenderGraph {
         let host_camera = first.host_camera;
         let mut post_ctx = PostSubmitContext {
             device,
-            backend,
+            occlusion: &mut backend.occlusion,
             occlusion_view,
             host_camera,
         };
@@ -505,7 +511,7 @@ impl CompiledRenderGraph {
     fn resolve_transient_textures(
         &self,
         device: &wgpu::Device,
-        backend: &mut RenderBackend,
+        pool: &mut TransientPool,
         surface: TransientTextureResolveSurfaceParams,
         resources: &mut GraphResolvedResources,
     ) -> Result<(), GraphExecuteError> {
@@ -532,7 +538,7 @@ impl CompiledRenderGraph {
                     array_layers,
                     usage_bits: compiled.usage.bits() as u64,
                 };
-                let lease = backend.transient_pool_mut().acquire_texture_resource(
+                let lease = pool.acquire_texture_resource(
                     device,
                     key,
                     compiled.desc.label,
@@ -560,7 +566,7 @@ impl CompiledRenderGraph {
     fn resolve_transient_buffers(
         &self,
         device: &wgpu::Device,
-        backend: &mut RenderBackend,
+        pool: &mut TransientPool,
         viewport_px: (u32, u32),
         resources: &mut GraphResolvedResources,
     ) -> Result<(), GraphExecuteError> {
@@ -575,7 +581,7 @@ impl CompiledRenderGraph {
                     usage_bits: compiled.usage.bits() as u64,
                 };
                 let size = helpers::resolve_buffer_size(compiled.desc.size_policy, viewport_px);
-                let lease = backend.transient_pool_mut().acquire_buffer_resource(
+                let lease = pool.acquire_buffer_resource(
                     device,
                     key,
                     compiled.desc.label,
@@ -625,11 +631,11 @@ impl CompiledRenderGraph {
 
     fn resolve_imported_buffers(
         &self,
-        backend: &RenderBackend,
+        frame_resources: &crate::backend::FrameResourceManager,
         resolved: &ResolvedView<'_>,
         resources: &mut GraphResolvedResources,
     ) {
-        let frame_gpu = backend.frame_resources.frame_gpu();
+        let frame_gpu = frame_resources.frame_gpu();
         let cluster_refs = frame_gpu.and_then(|fgpu| {
             fgpu.cluster_cache.get_buffers(
                 resolved.viewport_px,
@@ -656,8 +662,7 @@ impl CompiledRenderGraph {
                     .as_ref()
                     .map(|refs| refs.cluster_light_indices.clone()),
                 BufferImportSource::BackendFrameResource(BackendFrameBufferKind::PerDrawSlab) => {
-                    backend
-                        .frame_resources
+                    frame_resources
                         .per_draw()
                         .map(|per_draw| per_draw.per_draw_storage.clone())
                 }

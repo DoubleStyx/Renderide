@@ -9,14 +9,19 @@
 
 mod child_lifetime;
 mod cleanup;
-pub mod config;
+pub mod cli;
+mod config;
+mod constants;
 mod error;
 mod host;
-mod ipc;
+pub mod ipc;
 mod orchestration;
+mod panic_hook;
 mod paths;
 mod protocol;
-pub mod vr_prompt;
+mod protocol_handlers;
+mod renderer_stub;
+mod vr_prompt;
 mod wine_detect;
 
 pub use error::BootstrapError;
@@ -51,12 +56,7 @@ pub fn run(options: BootstrapOptions) -> Result<(), BootstrapError> {
     )
     .map_err(BootstrapError::Logging)?;
 
-    let panic_log = log_path.clone();
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        logger::log_panic(&panic_log, info);
-        default_hook(info);
-    }));
+    panic_hook::install(log_path);
 
     let ctx = orchestration::RunContext {
         host_args: options.host_args,

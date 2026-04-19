@@ -35,9 +35,30 @@ pub(super) fn frame_render_params_from_resolved<'a>(
             aspect: wgpu::TextureAspect::DepthOnly,
             ..Default::default()
         });
+    let (
+        occlusion,
+        frame_resources,
+        materials,
+        asset_transfers,
+        mesh_preprocess,
+        mesh_deform_scratch,
+        skin_cache,
+        gpu_limits,
+        msaa_depth_resolve,
+        debug_hud,
+    ) = backend.split_for_graph_frame_params();
     FrameRenderParams {
         scene,
-        backend,
+        occlusion,
+        frame_resources,
+        materials,
+        asset_transfers,
+        mesh_preprocess,
+        mesh_deform_scratch,
+        skin_cache,
+        gpu_limits,
+        msaa_depth_resolve,
+        debug_hud,
         depth_texture: resolved.depth_texture,
         depth_view: resolved.depth_view,
         depth_sample_view: Some(depth_sample_view),

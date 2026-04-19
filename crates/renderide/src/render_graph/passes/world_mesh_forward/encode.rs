@@ -122,7 +122,7 @@ pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
     pub draw_indices: &'c [usize],
     /// Sorted world mesh draws for the view.
     pub draws: &'c [WorldMeshDrawItem],
-    /// Material registry, pools, and skin cache (disjoint borrows from [`crate::backend::RenderBackend`]).
+    /// Material registry, pools, and skin cache (see [`crate::render_graph::FrameRenderParams::world_mesh_forward_encode_refs`]).
     pub encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
     /// Queue for embedded material bind uploads.
     pub queue: &'a wgpu::Queue,

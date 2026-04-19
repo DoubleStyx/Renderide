@@ -15,7 +15,10 @@ use base64::prelude::*;
 use sha2::{Digest, Sha256};
 
 /// Handle to a POSIX named semaphore created with [`PosixSemaphore::open`].
-pub(super) struct PosixSemaphore(*mut libc::sem_t);
+pub(super) struct PosixSemaphore(
+    /// Opaque `sem_t` pointer returned by `sem_open`.
+    *mut libc::sem_t,
+);
 
 impl PosixSemaphore {
     /// Opens or creates the semaphore with mode `0o777` and initial value `0`.
@@ -86,16 +89,26 @@ impl PosixSemaphore {
     }
 
     /// Linux and other non-Apple Unix: absolute deadline via `sem_timedwait`.
+    ///
+    /// Restarts the syscall when it returns `EINTR`. Uses Euclidean division so negative clock
+    /// edge cases remain well-defined.
     #[cfg(not(target_vendor = "apple"))]
     fn wait_timed(&self, timeout: Duration) -> bool {
         let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
         if unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) } != 0 {
             return false;
         }
-        let add_nanos = timeout.as_nanos().min(i128::MAX as u128) as i128;
-        let deadline_ns = ts.tv_sec as i128 * 1_000_000_000i128 + ts.tv_nsec as i128 + add_nanos;
-        ts.tv_sec = (deadline_ns / 1_000_000_000) as libc::time_t;
-        ts.tv_nsec = (deadline_ns % 1_000_000_000) as libc::c_long;
+        let cap_ns: u128 = 1_000_000_000u128 * 60 * 60 * 24 * 365;
+        let add_ns = i128::try_from(timeout.as_nanos().min(cap_ns)).unwrap_or(i128::MAX / 4);
+        let cur_ns = ts.tv_sec as i128 * 1_000_000_000i128 + ts.tv_nsec as i128;
+        let deadline_ns = cur_ns.saturating_add(add_ns);
+        let d_sec = deadline_ns.div_euclid(1_000_000_000);
+        let d_nsec = deadline_ns.rem_euclid(1_000_000_000);
+        if d_sec > i64::MAX as i128 || d_sec < i64::MIN as i128 {
+            return false;
+        }
+        ts.tv_sec = d_sec as libc::time_t;
+        ts.tv_nsec = d_nsec as libc::c_long;
         loop {
             let rc = unsafe { libc::sem_timedwait(self.0, &ts) };
             if rc == 0 {
@@ -112,7 +125,7 @@ impl PosixSemaphore {
         }
     }
 
-    /// macOS / iOS: no `sem_timedwait`; spin on `sem_trywait` like the reference implementation.
+    /// macOS / iOS: no `sem_timedwait`; poll with `sem_trywait` and short yields.
     #[cfg(target_vendor = "apple")]
     fn wait_poll(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
@@ -131,5 +144,54 @@ impl PosixSemaphore {
 impl Drop for PosixSemaphore {
     fn drop(&mut self) {
         let _ = unsafe { libc::sem_close(self.0) };
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use super::PosixSemaphore;
+
+    /// Unique logical queue names for isolated POSIX semaphore tests.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_queue_name() -> String {
+        format!(
+            "semtest_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    #[test]
+    fn post_then_zero_timeout_wait_acquires() {
+        let s = PosixSemaphore::open(&unique_queue_name()).expect("open");
+        s.post();
+        assert!(s.wait_timeout(Duration::ZERO));
+    }
+
+    #[test]
+    fn zero_timeout_without_post_returns_false() {
+        let s = PosixSemaphore::open(&unique_queue_name()).expect("open");
+        assert!(!s.wait_timeout(Duration::ZERO));
+    }
+
+    #[test]
+    fn post_then_short_wait_acquires() {
+        let s = PosixSemaphore::open(&unique_queue_name()).expect("open");
+        s.post();
+        assert!(s.wait_timeout(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn multiple_posts_drain_with_waits() {
+        let s = PosixSemaphore::open(&unique_queue_name()).expect("open");
+        s.post();
+        s.post();
+        assert!(s.wait_timeout(Duration::from_millis(500)));
+        assert!(s.wait_timeout(Duration::from_millis(500)));
+        assert!(!s.wait_timeout(Duration::ZERO));
     }
 }

@@ -29,6 +29,21 @@ use super::embedded::{EmbeddedMaterialBindError, EmbeddedTexturePools};
 use super::material_system::MaterialSystem;
 use super::occlusion::OcclusionSystem;
 use super::FrameGpuBindingsError;
+use super::FrameResourceManager;
+
+/// Disjoint backend slices assembled into [`crate::render_graph::FrameRenderParams`].
+type GraphFrameParamsSplit<'a> = (
+    &'a mut OcclusionSystem,
+    &'a mut FrameResourceManager,
+    &'a mut MaterialSystem,
+    &'a mut AssetTransferQueue,
+    Option<&'a MeshPreprocessPipelines>,
+    Option<&'a mut MeshDeformScratch>,
+    Option<&'a mut GpuSkinCache>,
+    Option<Arc<GpuLimits>>,
+    Option<Arc<MsaaDepthResolveResources>>,
+    &'a mut DebugHudBundle,
+);
 
 pub use crate::assets::asset_transfer_queue::{
     MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
@@ -75,6 +90,8 @@ pub struct RenderBackend {
     frame_graph: Option<crate::render_graph::CompiledRenderGraph>,
     /// Scratch buffers for mesh deformation compute (after [`Self::attach`]).
     mesh_deform_scratch: Option<MeshDeformScratch>,
+    /// Arena-backed deformed vertex streams (after [`Self::attach`]); sibling to [`Self::frame_resources`] for borrow splitting.
+    skin_cache: Option<GpuSkinCache>,
     /// MSAA depth -> R32F -> single-sample depth resolve resources when supported.
     msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
     /// Per-frame bind groups, light staging, and debug draw slab.
@@ -89,8 +106,8 @@ pub struct RenderBackend {
 
 /// Disjoint borrows of [`MaterialSystem`], [`AssetTransferQueue`], and the GPU skin cache for world mesh forward encoding.
 ///
-/// Built by [`RenderBackend::world_mesh_forward_encode_refs`] so the raster encoder never holds
-/// `&mut RenderBackend` while also borrowing the deform cache on [`RenderBackend`].
+/// Obtained from [`crate::render_graph::FrameRenderParams::world_mesh_forward_encode_refs`] so the raster
+/// encoder never holds `&mut RenderBackend` while also borrowing the deform cache.
 pub(crate) struct WorldMeshForwardEncodeRefs<'a> {
     /// Material registry, embedded binds, and property store.
     pub(crate) materials: &'a mut MaterialSystem,
@@ -101,6 +118,19 @@ pub(crate) struct WorldMeshForwardEncodeRefs<'a> {
 }
 
 impl<'a> WorldMeshForwardEncodeRefs<'a> {
+    /// Builds encode refs from disjoint [`crate::render_graph::FrameRenderParams`] slices.
+    pub fn from_frame_params(
+        materials: &'a mut MaterialSystem,
+        asset_transfers: &'a mut AssetTransferQueue,
+        skin_cache: Option<&'a GpuSkinCache>,
+    ) -> Self {
+        Self {
+            materials,
+            asset_transfers,
+            skin_cache,
+        }
+    }
+
     /// Mutable mesh pool for lazy extended vertex stream uploads during draw recording.
     pub(crate) fn mesh_pool_mut(&mut self) -> &mut MeshPool {
         &mut self.asset_transfers.mesh_pool
@@ -132,6 +162,7 @@ impl RenderBackend {
             mesh_preprocess: None,
             frame_graph: None,
             mesh_deform_scratch: None,
+            skin_cache: None,
             msaa_depth_resolve: None,
             frame_resources: super::FrameResourceManager::new(),
             debug_hud: DebugHudBundle::new(),
@@ -162,17 +193,12 @@ impl RenderBackend {
 
     /// Arena-backed deformed vertex streams shared by mesh deform compute and mesh forward draws.
     pub fn skin_cache(&self) -> Option<&GpuSkinCache> {
-        self.frame_resources.skin_cache()
+        self.skin_cache.as_ref()
     }
 
     /// Mutable skin cache for mesh deform compute and cache sweeps.
     pub fn skin_cache_mut(&mut self) -> Option<&mut GpuSkinCache> {
-        self.frame_resources.skin_cache_mut()
-    }
-
-    /// MSAA depth → R32F → single-sample depth resolve resources when supported.
-    pub(crate) fn msaa_depth_resolve(&self) -> Option<Arc<MsaaDepthResolveResources>> {
-        self.msaa_depth_resolve.clone()
+        self.skin_cache.as_mut()
     }
 
     /// Resets per-tick light prep flags, mesh deform coalescing, and advances the skin cache frame counter.
@@ -180,14 +206,8 @@ impl RenderBackend {
     /// Call once per winit tick before IPC and frame work (see [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`]).
     pub fn reset_light_prep_for_tick(&mut self) {
         self.frame_resources.reset_light_prep_for_tick();
-    }
-
-    /// Borrows material and pool state disjointly from the GPU skin cache for mesh forward encoding.
-    pub(crate) fn world_mesh_forward_encode_refs(&mut self) -> WorldMeshForwardEncodeRefs<'_> {
-        WorldMeshForwardEncodeRefs {
-            materials: &mut self.materials,
-            asset_transfers: &mut self.asset_transfers,
-            skin_cache: self.frame_resources.skin_cache(),
+        if let Some(ref mut cache) = self.skin_cache {
+            cache.advance_frame();
         }
     }
 
@@ -319,11 +339,10 @@ impl RenderBackend {
             self.asset_transfers.texture_vram_budget_bytes =
                 u64::from(s.rendering.texture_vram_budget_mib).saturating_mul(1024 * 1024);
         }
-        self.mesh_deform_scratch = Some(MeshDeformScratch::new(
-            device.as_ref(),
-            gpu_limits.max_buffer_size(),
-        ));
+        let max_buffer_size = gpu_limits.max_buffer_size();
+        self.mesh_deform_scratch = Some(MeshDeformScratch::new(device.as_ref(), max_buffer_size));
         self.frame_resources.attach(device.as_ref(), gpu_limits)?;
+        self.skin_cache = Some(GpuSkinCache::new(device.as_ref(), max_buffer_size));
         self.debug_hud.attach(
             device.as_ref(),
             queue.as_ref(),
@@ -359,33 +378,14 @@ impl RenderBackend {
         self.debug_hud.set_main_enabled(enabled);
     }
 
-    /// Whether main debug HUD is on (mesh-draw stats for [`crate::render_graph::passes::WorldMeshForwardOpaquePass`]).
-    pub(crate) fn debug_hud_main_enabled(&self) -> bool {
-        self.debug_hud.main_enabled()
-    }
-
     /// Updates whether texture HUD diagnostics run.
     pub(crate) fn set_debug_hud_textures_enabled(&mut self, enabled: bool) {
         self.debug_hud.set_textures_enabled(enabled);
     }
 
-    /// Whether texture debug HUD capture is on.
-    pub(crate) fn debug_hud_textures_enabled(&self) -> bool {
-        self.debug_hud.textures_enabled()
-    }
-
     /// Clears the current-view Texture2D set before collecting this frame's submitted draws.
     pub(crate) fn clear_debug_hud_current_view_texture_2d_asset_ids(&mut self) {
         self.debug_hud.clear_current_view_texture_2d_asset_ids();
-    }
-
-    /// Adds Texture2D ids used by submitted world draws for the current view.
-    pub(crate) fn note_debug_hud_current_view_texture_2d_asset_ids(
-        &mut self,
-        asset_ids: impl IntoIterator<Item = i32>,
-    ) {
-        self.debug_hud
-            .note_current_view_texture_2d_asset_ids(asset_ids);
     }
 
     /// Texture2D ids used by submitted world draws for the current view.
@@ -445,16 +445,8 @@ impl RenderBackend {
         self.debug_hud.clear_scene_transforms_snapshot();
     }
 
-    pub(crate) fn set_last_world_mesh_draw_stats(&mut self, stats: WorldMeshDrawStats) {
-        self.debug_hud.set_last_world_mesh_draw_stats(stats);
-    }
-
     pub(crate) fn last_world_mesh_draw_stats(&self) -> WorldMeshDrawStats {
         self.debug_hud.last_world_mesh_draw_stats()
-    }
-
-    pub(crate) fn set_last_world_mesh_draw_state_rows(&mut self, rows: Vec<WorldMeshDrawStateRow>) {
-        self.debug_hud.set_last_world_mesh_draw_state_rows(rows);
     }
 
     pub(crate) fn last_world_mesh_draw_state_rows(&self) -> Vec<WorldMeshDrawStateRow> {
@@ -500,6 +492,27 @@ impl RenderBackend {
         &mut self.transient_pool
     }
 
+    /// Disjoint mutable borrows and attach-time snapshots for [`crate::render_graph::FrameRenderParams`].
+    ///
+    /// Centralizes the split so the graph executor can build per-view frame parameters without
+    /// violating the borrow checker on field-by-field struct literals.
+    pub(crate) fn split_for_graph_frame_params(&mut self) -> GraphFrameParamsSplit<'_> {
+        let gpu_limits = self.gpu_limits().cloned();
+        let msaa_depth_resolve = self.msaa_depth_resolve.clone();
+        (
+            &mut self.occlusion,
+            &mut self.frame_resources,
+            &mut self.materials,
+            &mut self.asset_transfers,
+            self.mesh_preprocess.as_ref(),
+            self.mesh_deform_scratch.as_mut(),
+            self.skin_cache.as_mut(),
+            gpu_limits,
+            msaa_depth_resolve,
+            &mut self.debug_hud,
+        )
+    }
+
     /// Scratch buffers for mesh deformation (`MeshDeformPass`).
     pub fn mesh_deform_scratch_mut(&mut self) -> Option<&mut MeshDeformScratch> {
         self.mesh_deform_scratch.as_mut()
@@ -516,9 +529,7 @@ impl RenderBackend {
 
     /// Preprocess pipelines, deform scratch, and GPU skin cache as one disjoint borrow for [`MeshDeformPass`].
     ///
-    /// Bundles [`Self::mesh_preprocess`], [`Self::mesh_deform_scratch`], and
-    /// [`FrameResourceManager::skin_cache_mut`](super::FrameResourceManager::skin_cache_mut) so callers
-    /// avoid splitting borrows with raw pointers.
+    /// Bundles [`Self::mesh_preprocess`], [`Self::mesh_deform_scratch`], and [`Self::skin_cache`].
     pub fn mesh_deform_pre_scratch_and_skin_cache(
         &mut self,
     ) -> Option<(
@@ -528,7 +539,7 @@ impl RenderBackend {
     )> {
         let pre = self.mesh_preprocess.as_ref()?;
         let scratch = self.mesh_deform_scratch.as_mut()?;
-        let skin = self.frame_resources.skin_cache_mut()?;
+        let skin = self.skin_cache.as_mut()?;
         Some((pre, scratch, skin))
     }
 }

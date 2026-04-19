@@ -1,8 +1,16 @@
-//! Per-frame parameters shared across render graph passes (scene, backend, surface state).
+//! Per-frame parameters shared across render graph passes (scene, backend slices, surface state).
+
+use std::sync::Arc;
 
 use glam::{Mat4, Vec3};
 
-use crate::backend::RenderBackend;
+use crate::assets::AssetTransferQueue;
+use crate::backend::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
+use crate::backend::FrameResourceManager;
+use crate::backend::OcclusionSystem;
+use crate::backend::WorldMeshForwardEncodeRefs;
+use crate::backend::{DebugHudBundle, MaterialSystem};
+use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::materials::MaterialPipelineDesc;
 use crate::pipelines::ShaderPermutation;
 use crate::scene::SceneCoordinator;
@@ -125,12 +133,32 @@ pub struct PreparedWorldMeshForwardFrame {
     pub tail_raster_recorded: bool,
 }
 
-/// Data passes need beyond raw GPU handles: host scene, backend pools, and main-surface formats.
+/// Data passes need beyond raw GPU handles: host scene, narrow backend slices, and main-surface formats.
+///
+/// Built with disjoint borrows from [`crate::backend::RenderBackend`] so passes do not take a full backend handle.
 pub struct FrameRenderParams<'a> {
     /// World caches and mesh renderables after [`SceneCoordinator::flush_world_caches`].
     pub scene: &'a SceneCoordinator,
-    /// GPU pools, materials, and deform scratch buffers.
-    pub backend: &'a mut RenderBackend,
+    /// Hi-Z pyramid GPU/CPU state and temporal culling for this view.
+    pub occlusion: &'a mut OcclusionSystem,
+    /// Per-frame `@group(0/1/2)` binds, lights, per-draw slab, and CPU light scratch.
+    pub frame_resources: &'a mut FrameResourceManager,
+    /// Materials registry, embedded binds, and property store.
+    pub materials: &'a mut MaterialSystem,
+    /// Mesh/texture pools and upload queues.
+    pub asset_transfers: &'a mut AssetTransferQueue,
+    /// Skinning/blendshape compute pipelines after GPU attach (`MeshDeformPass`).
+    pub mesh_preprocess: Option<&'a MeshPreprocessPipelines>,
+    /// Deform scratch buffers (`MeshDeformPass`).
+    pub mesh_deform_scratch: Option<&'a mut MeshDeformScratch>,
+    /// Deformed mesh arenas for deform dispatch and forward draws (lives on [`crate::backend::RenderBackend`]).
+    pub skin_cache: Option<&'a mut GpuSkinCache>,
+    /// GPU limits after attach (`None` only before a successful attach).
+    pub gpu_limits: Option<Arc<GpuLimits>>,
+    /// MSAA depth resolve pipelines when supported (cloned from the backend attach path).
+    pub msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
+    /// Dear ImGui overlay hooks for mesh-draw diagnostics.
+    pub debug_hud: &'a mut DebugHudBundle,
     /// Backing depth texture for the main forward pass (copy source for scene-depth snapshots).
     pub depth_texture: &'a wgpu::Texture,
     /// Depth attachment for the main forward pass.
@@ -179,5 +207,14 @@ impl<'a> FrameRenderParams<'a> {
     /// Output depth layout for Hi-Z and occlusion ([`OutputDepthMode::from_multiview_stereo`]).
     pub fn output_depth_mode(&self) -> OutputDepthMode {
         OutputDepthMode::from_multiview_stereo(self.multiview_stereo)
+    }
+
+    /// Disjoint material/pool/skin borrows for world-mesh forward raster encoding.
+    pub(crate) fn world_mesh_forward_encode_refs(&mut self) -> WorldMeshForwardEncodeRefs<'_> {
+        WorldMeshForwardEncodeRefs::from_frame_params(
+            self.materials,
+            self.asset_transfers,
+            self.skin_cache.as_deref(),
+        )
     }
 }

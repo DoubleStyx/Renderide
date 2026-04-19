@@ -1,4 +1,5 @@
-//! UTC wall-clock timestamps for log file names and line prefixes.
+//! UTC wall-clock timestamps for log file names (`YYYY-MM-DD_HH-MM-SS`) and per-line prefixes
+//! (`HH:MM:SS.mmm`), derived from [`std::time::SystemTime`] without extra dependencies.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -19,6 +20,8 @@ pub fn log_filename_timestamp() -> String {
 }
 
 /// Returns a line-prefix timestamp: `HH:MM:SS.mmm` in UTC (derived from the Unix epoch wall time).
+///
+/// If wall time is before [`UNIX_EPOCH`], returns `"?"`.
 pub(crate) fn format_line_timestamp() -> String {
     let Ok(dur) = SystemTime::now().duration_since(UNIX_EPOCH) else {
         return "?".to_string();
@@ -65,11 +68,50 @@ mod tests {
     }
 
     #[test]
+    fn days_since_epoch_to_ymd_known_dates() {
+        for (days, ymd) in [
+            (0_u64, (1970_u32, 1_u32, 1_u32)),
+            (1, (1970, 1, 2)),
+            (31, (1970, 2, 1)),
+            (365, (1971, 1, 1)),
+            (366, (1971, 1, 2)),
+            (11_017, (2000, 3, 1)),
+            (20_562, (2026, 4, 19)),
+        ] {
+            assert_eq!(days_since_epoch_to_ymd(days), ymd, "days={days}");
+        }
+    }
+
+    #[test]
     fn format_line_timestamp_matches_pattern() {
         let s = format_line_timestamp();
         assert_eq!(s.len(), 12);
         assert_eq!(s.as_bytes()[2], b':');
         assert_eq!(s.as_bytes()[5], b':');
         assert_eq!(s.as_bytes()[8], b'.');
+    }
+
+    #[test]
+    fn format_line_timestamp_zero_pads_all_components() {
+        let s = format_line_timestamp();
+        for (i, chunk) in [(0usize, 2usize), (3, 2), (6, 2), (9, 3)] {
+            let slice = &s[i..i + chunk];
+            assert!(
+                slice.chars().all(|c| c.is_ascii_digit()),
+                "expected digits in {slice:?} from {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn log_filename_timestamp_format() {
+        let s = log_filename_timestamp();
+        assert_eq!(s.len(), 19);
+        assert!(s.contains('_'));
+        let (date, time) = s.split_once('_').expect("timestamp contains underscore");
+        assert_eq!(date.len(), 10);
+        assert_eq!(time.len(), 8);
+        assert!(date.chars().filter(|c| *c == '-').count() == 2);
+        assert!(time.chars().filter(|c| *c == '-').count() == 2);
     }
 }

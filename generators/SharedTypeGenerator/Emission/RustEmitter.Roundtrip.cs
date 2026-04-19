@@ -21,7 +21,7 @@ public partial class RustEmitter
             _w.Line("use super::packing::default_entity_pool::DefaultEntityPool;");
             _w.Line("let mut pool = DefaultEntityPool;");
             _w.Line("let mut unpacker = MemoryUnpacker::new(input, &mut pool);");
-            _w.Line("let mut output = vec![0u8; 1024 * 1024];");
+            _w.Line($"let mut output = vec![0u8; {PackEmitter.RoundtripBufferBytes}];");
             _w.Line("let original_len = output.len();");
             _w.Line("let mut packer = MemoryPacker::new(&mut output[..]);");
             _w.BlankLine();

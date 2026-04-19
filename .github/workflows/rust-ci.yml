@@ -1,5 +1,5 @@
 # Builds the Rust workspace and runs unit / integration tests on all major desktop OSes.
-# C# / dotnet tests are intentionally out of scope (see workspace `generators/`).
+# .NET (`generators/`) is covered by `dotnet-ci.yml`.
 name: Rust CI
 
 "on":

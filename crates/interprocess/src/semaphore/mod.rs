@@ -11,6 +11,11 @@ use std::time::Duration;
 /// Cross-process wakeup primitive paired with the queue mapping (post on enqueue, wait while idle).
 ///
 /// On Unix this is a POSIX named semaphore; on Windows, a global semaphore under `Global\CT.IP.{name}`.
+///
+/// # Threading
+///
+/// The OS primitives are designed for cross-thread and cross-process use; this wrapper carries no
+/// additional mutable Rust state between calls.
 pub(crate) struct Semaphore {
     /// Platform semaphore implementation.
     #[cfg(unix)]
@@ -19,6 +24,13 @@ pub(crate) struct Semaphore {
     #[cfg(windows)]
     inner: win::WinSemaphore,
 }
+
+/// Semaphore handles are process-global kernel objects; moving or sharing `&Semaphore` across
+/// threads cannot violate Rust aliasing rules because all operations delegate to the OS.
+unsafe impl Send for Semaphore {}
+
+/// Concurrent `post` / `wait` calls are defined by the underlying semaphore implementation.
+unsafe impl Sync for Semaphore {}
 
 impl Semaphore {
     /// Opens or creates the semaphore for the given queue name (same logical name as the mapping).

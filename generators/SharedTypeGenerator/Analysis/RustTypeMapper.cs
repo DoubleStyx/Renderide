@@ -78,7 +78,7 @@ public static class RustTypeMapper
             return $"Option<{type.Name.HumanizeType()}>";
         }
 
-        if (type.Name.StartsWith("SharedMemoryBufferDescriptor"))
+        if (type.Name.StartsWith("SharedMemoryBufferDescriptor", StringComparison.Ordinal))
         {
             if (type.GenericTypeArguments.Length > 0)
                 MapInternal(type.GenericTypeArguments.First(), targetAssembly, inList, referenced);
@@ -140,6 +140,16 @@ public static class RustTypeMapper
         string t = rustType.Trim();
         if (t.StartsWith("Option<", StringComparison.Ordinal) && t.EndsWith('>'))
             t = t[7..^1].Trim();
+
+        return t;
+    }
+
+    /// <summary>Strips a single outer <c>Vec&lt;T&gt;</c> wrapper when present (after <see cref="NormalizeRustTypeName"/>).</summary>
+    public static string StripVecElementType(string rustType)
+    {
+        string t = NormalizeRustTypeName(rustType);
+        if (t.StartsWith("Vec<", StringComparison.Ordinal) && t.EndsWith('>'))
+            return t[4..^1].Trim();
 
         return t;
     }

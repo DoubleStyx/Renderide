@@ -150,7 +150,7 @@ impl MeshDeformPass {
             let space_ids = &self.mesh_deform_space_ids_scratch;
             let chunks = &mut self.mesh_deform_chunks_scratch;
             // Scope `scene` + `mesh_pool` so the rayon closure only captures `Sync` refs, not
-            // [`crate::backend::RenderBackend`] (contains `RefCell`, imgui, non-`Sync` graph passes).
+            // fat frame handles (non-`Sync` graph state).
             space_ids
                 .par_iter()
                 .copied()
@@ -188,20 +188,22 @@ impl RenderPass for MeshDeformPass {
             return Ok(());
         };
 
-        if frame
-            .backend
-            .frame_resources
-            .mesh_deform_dispatched_this_tick()
-        {
+        if frame.frame_resources.mesh_deform_dispatched_this_tick() {
             return Ok(());
         }
 
-        let mesh_pool = frame.backend.mesh_pool();
+        let mesh_pool = &frame.asset_transfers.mesh_pool;
         self.collect_deform_work_into_scratch(frame.scene, mesh_pool);
 
-        let Some((pre, scratch, skin_cache)) =
-            frame.backend.mesh_deform_pre_scratch_and_skin_cache()
-        else {
+        let Some(pre) = frame.mesh_preprocess else {
+            self.mesh_deform_work_scratch.clear();
+            return Ok(());
+        };
+        let Some(scratch) = frame.mesh_deform_scratch.as_mut() else {
+            self.mesh_deform_work_scratch.clear();
+            return Ok(());
+        };
+        let Some(skin_cache) = frame.skin_cache.as_mut() else {
             self.mesh_deform_work_scratch.clear();
             return Ok(());
         };
@@ -264,10 +266,7 @@ impl RenderPass for MeshDeformPass {
         let fc = skin_cache.frame_counter();
         skin_cache.sweep_stale(fc.saturating_sub(2));
 
-        frame
-            .backend
-            .frame_resources
-            .set_mesh_deform_dispatched_this_tick();
+        frame.frame_resources.set_mesh_deform_dispatched_this_tick();
         Ok(())
     }
 }

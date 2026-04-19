@@ -21,7 +21,8 @@ public partial class RustEmitter
         _w.Line(")]");
         _w.BlankLine();
         string glamList = FormatGlamUseList(types);
-        _w.Line($"use glam::{{{glamList}}};");
+        if (!string.IsNullOrEmpty(glamList))
+            _w.Line($"use glam::{{{glamList}}};");
         _w.Line("use super::packing::memory_packable::MemoryPackable;");
         _w.Line("use super::packing::memory_packer::MemoryPacker;");
         _w.Line("use super::packing::memory_unpacker::MemoryUnpacker;");
@@ -32,7 +33,7 @@ public partial class RustEmitter
         _w.Line("use super::buffer::SharedMemoryBufferDescriptor;");
         _w.Line("use super::packing::enum_repr::EnumRepr;");
         _w.Line("use bytemuck::{Pod, Zeroable};");
-        _w.Line("use logger::warn;");
+        _w.Line("use logger::trace;");
         _w.BlankLine();
     }
 
@@ -41,7 +42,7 @@ public partial class RustEmitter
     {
         List<string> names = CollectRequiredGlamTypeNames(types);
         if (names.Count == 0)
-            return string.Join(", ", GlamImportOrder);
+            return string.Empty;
         return string.Join(", ", names);
     }
 

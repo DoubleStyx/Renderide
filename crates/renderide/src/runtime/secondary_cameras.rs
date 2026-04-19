@@ -219,7 +219,7 @@ impl RendererRuntime {
         }
         if !views.is_empty() {
             self.backend
-                .execute_multi_view_frame(gpu, scene_ref, views, true)?;
+                .execute_multi_view_frame(gpu, scene_ref, &mut views, true)?;
         }
         Ok(())
     }
@@ -351,7 +351,7 @@ impl RendererRuntime {
         }
 
         self.backend
-            .execute_multi_view_frame(gpu, scene_ref, views, true)
+            .execute_multi_view_frame(gpu, scene_ref, &mut views, true)
     }
 
     fn collect_secondary_rt_prepared(&mut self) -> Vec<SecondaryRtPrepared> {

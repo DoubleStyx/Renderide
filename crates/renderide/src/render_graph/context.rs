@@ -222,8 +222,8 @@ pub struct GraphRasterPassContext<'a, 'frame> {
 pub struct PostSubmitContext<'a> {
     /// WGPU device for `map_async` and device polling.
     pub device: &'a wgpu::Device,
-    /// Mutable backend for pass-owned cross-frame state (Hi-Z readback slots, etc.).
-    pub backend: &'a mut crate::backend::RenderBackend,
+    /// Hi-Z readback and temporal bookkeeping for this view after submit.
+    pub occlusion: &'a mut crate::backend::OcclusionSystem,
     /// Which occlusion view this submit covered.
     pub occlusion_view: super::OcclusionViewId,
     /// Host camera snapshot for the view — lets passes gate on flags like `suppress_occlusion_temporal`.

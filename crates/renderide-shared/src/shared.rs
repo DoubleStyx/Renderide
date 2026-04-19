@@ -14,7 +14,7 @@ use super::packing::polymorphic_memory_packable_entity::PolymorphicEncode;
 use super::packing::wire_decode_error::WireDecodeError;
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec2, Mat4, Quat, Vec2, Vec3, Vec4};
-use logger::warn;
+use logger::trace;
 
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(i32)]
@@ -2893,7 +2893,7 @@ impl MemoryPackable for HeadOutputDevice {
             9 => Self::OculusQuest,
             10 => Self::UNKNOWN,
             _ => {
-                warn!("invalid HeadOutputDevice wire value {}; using default", raw);
+                trace!("invalid HeadOutputDevice wire value {}; using default", raw);
                 Self::Autodetect
             }
         };
@@ -2919,7 +2919,7 @@ impl EnumRepr for HeadOutputDevice {
             9 => Self::OculusQuest,
             10 => Self::UNKNOWN,
             _ => {
-                warn!("invalid HeadOutputDevice discriminant {}; using default", i);
+                trace!("invalid HeadOutputDevice discriminant {}; using default", i);
                 Self::Autodetect
             }
         }
@@ -3039,7 +3039,7 @@ impl MemoryPackable for TextureFormat {
             132 => Self::ASTC10x10,
             133 => Self::ASTC12x12,
             _ => {
-                warn!("invalid TextureFormat wire value {}; using default", raw);
+                trace!("invalid TextureFormat wire value {}; using default", raw);
                 Self::Unknown
             }
         };
@@ -3087,7 +3087,7 @@ impl EnumRepr for TextureFormat {
             132 => Self::ASTC10x10,
             133 => Self::ASTC12x12,
             _ => {
-                warn!("invalid TextureFormat discriminant {}; using default", i);
+                trace!("invalid TextureFormat discriminant {}; using default", i);
                 Self::Unknown
             }
         }
@@ -3124,7 +3124,7 @@ impl MemoryPackable for TaskbarProgressBarMode {
             3 => Self::Error,
             4 => Self::Paused,
             _ => {
-                warn!(
+                trace!(
                     "invalid TaskbarProgressBarMode wire value {}; using default",
                     raw
                 );
@@ -3147,7 +3147,7 @@ impl EnumRepr for TaskbarProgressBarMode {
             3 => Self::Error,
             4 => Self::Paused,
             _ => {
-                warn!(
+                trace!(
                     "invalid TaskbarProgressBarMode discriminant {}; using default",
                     i
                 );
@@ -3521,7 +3521,7 @@ impl MemoryPackable for AntiAliasingMethod {
             2 => Self::SMAA,
             3 => Self::TAA,
             _ => {
-                warn!(
+                trace!(
                     "invalid AntiAliasingMethod wire value {}; using default",
                     raw
                 );
@@ -3543,7 +3543,7 @@ impl EnumRepr for AntiAliasingMethod {
             2 => Self::SMAA,
             3 => Self::TAA,
             _ => {
-                warn!(
+                trace!(
                     "invalid AntiAliasingMethod discriminant {}; using default",
                     i
                 );
@@ -3579,7 +3579,7 @@ impl MemoryPackable for ShadowCascadeMode {
             1 => Self::TwoCascades,
             2 => Self::FourCascades,
             _ => {
-                warn!(
+                trace!(
                     "invalid ShadowCascadeMode wire value {}; using default",
                     raw
                 );
@@ -3600,7 +3600,7 @@ impl EnumRepr for ShadowCascadeMode {
             1 => Self::TwoCascades,
             2 => Self::FourCascades,
             _ => {
-                warn!(
+                trace!(
                     "invalid ShadowCascadeMode discriminant {}; using default",
                     i
                 );
@@ -3638,7 +3638,7 @@ impl MemoryPackable for ShadowResolutionMode {
             2 => Self::High,
             3 => Self::Ultra,
             _ => {
-                warn!(
+                trace!(
                     "invalid ShadowResolutionMode wire value {}; using default",
                     raw
                 );
@@ -3660,7 +3660,7 @@ impl EnumRepr for ShadowResolutionMode {
             2 => Self::High,
             3 => Self::Ultra,
             _ => {
-                warn!(
+                trace!(
                     "invalid ShadowResolutionMode discriminant {}; using default",
                     i
                 );
@@ -3698,7 +3698,7 @@ impl MemoryPackable for SkinWeightMode {
             2 => Self::FourBones,
             3 => Self::Unlimited,
             _ => {
-                warn!("invalid SkinWeightMode wire value {}; using default", raw);
+                trace!("invalid SkinWeightMode wire value {}; using default", raw);
                 Self::OneBone
             }
         };
@@ -3717,7 +3717,7 @@ impl EnumRepr for SkinWeightMode {
             2 => Self::FourBones,
             3 => Self::Unlimited,
             _ => {
-                warn!("invalid SkinWeightMode discriminant {}; using default", i);
+                trace!("invalid SkinWeightMode discriminant {}; using default", i);
                 Self::OneBone
             }
         }
@@ -3748,7 +3748,7 @@ impl MemoryPackable for IndexBufferFormat {
             0 => Self::UInt16,
             1 => Self::UInt32,
             _ => {
-                warn!(
+                trace!(
                     "invalid IndexBufferFormat wire value {}; using default",
                     raw
                 );
@@ -3768,7 +3768,7 @@ impl EnumRepr for IndexBufferFormat {
             0 => Self::UInt16,
             1 => Self::UInt32,
             _ => {
-                warn!(
+                trace!(
                     "invalid IndexBufferFormat discriminant {}; using default",
                     i
                 );
@@ -3987,7 +3987,7 @@ impl MemoryPackable for ColorProfile {
             1 => Self::SRGB,
             2 => Self::SRGBAlpha,
             _ => {
-                warn!("invalid ColorProfile wire value {}; using default", raw);
+                trace!("invalid ColorProfile wire value {}; using default", raw);
                 Self::Linear
             }
         };
@@ -4005,7 +4005,7 @@ impl EnumRepr for ColorProfile {
             1 => Self::SRGB,
             2 => Self::SRGBAlpha,
             _ => {
-                warn!("invalid ColorProfile discriminant {}; using default", i);
+                trace!("invalid ColorProfile discriminant {}; using default", i);
                 Self::Linear
             }
         }
@@ -4040,7 +4040,7 @@ impl MemoryPackable for TextureFilterMode {
             2 => Self::Trilinear,
             3 => Self::Anisotropic,
             _ => {
-                warn!(
+                trace!(
                     "invalid TextureFilterMode wire value {}; using default",
                     raw
                 );
@@ -4062,7 +4062,7 @@ impl EnumRepr for TextureFilterMode {
             2 => Self::Trilinear,
             3 => Self::Anisotropic,
             _ => {
-                warn!(
+                trace!(
                     "invalid TextureFilterMode discriminant {}; using default",
                     i
                 );
@@ -4100,7 +4100,7 @@ impl MemoryPackable for TextureWrapMode {
             2 => Self::Mirror,
             3 => Self::MirrorOnce,
             _ => {
-                warn!("invalid TextureWrapMode wire value {}; using default", raw);
+                trace!("invalid TextureWrapMode wire value {}; using default", raw);
                 Self::Repeat
             }
         };
@@ -4119,7 +4119,7 @@ impl EnumRepr for TextureWrapMode {
             2 => Self::Mirror,
             3 => Self::MirrorOnce,
             _ => {
-                warn!("invalid TextureWrapMode discriminant {}; using default", i);
+                trace!("invalid TextureWrapMode discriminant {}; using default", i);
                 Self::Repeat
             }
         }
@@ -4237,7 +4237,7 @@ impl MemoryPackable for GaussianVectorFormat {
             2 => Self::Norm11,
             3 => Self::Norm6,
             _ => {
-                warn!(
+                trace!(
                     "invalid GaussianVectorFormat wire value {}; using default",
                     raw
                 );
@@ -4259,7 +4259,7 @@ impl EnumRepr for GaussianVectorFormat {
             2 => Self::Norm11,
             3 => Self::Norm6,
             _ => {
-                warn!(
+                trace!(
                     "invalid GaussianVectorFormat discriminant {}; using default",
                     i
                 );
@@ -4291,7 +4291,7 @@ impl MemoryPackable for GaussianRotationFormat {
         *self = match raw {
             0 => Self::PackedNorm10,
             _ => {
-                warn!(
+                trace!(
                     "invalid GaussianRotationFormat wire value {}; using default",
                     raw
                 );
@@ -4310,7 +4310,7 @@ impl EnumRepr for GaussianRotationFormat {
         match i {
             0 => Self::PackedNorm10,
             _ => {
-                warn!(
+                trace!(
                     "invalid GaussianRotationFormat discriminant {}; using default",
                     i
                 );
@@ -4348,7 +4348,7 @@ impl MemoryPackable for GaussianColorFormat {
             2 => Self::Norm8x4,
             3 => Self::BC7,
             _ => {
-                warn!(
+                trace!(
                     "invalid GaussianColorFormat wire value {}; using default",
                     raw
                 );
@@ -4370,7 +4370,7 @@ impl EnumRepr for GaussianColorFormat {
             2 => Self::Norm8x4,
             3 => Self::BC7,
             _ => {
-                warn!(
+                trace!(
                     "invalid GaussianColorFormat discriminant {}; using default",
                     i
                 );
@@ -4416,7 +4416,7 @@ impl MemoryPackable for GaussianSHFormat {
             6 => Self::Cluster8k,
             7 => Self::Cluster4k,
             _ => {
-                warn!("invalid GaussianSHFormat wire value {}; using default", raw);
+                trace!("invalid GaussianSHFormat wire value {}; using default", raw);
                 Self::Float16
             }
         };
@@ -4439,7 +4439,7 @@ impl EnumRepr for GaussianSHFormat {
             6 => Self::Cluster8k,
             7 => Self::Cluster4k,
             _ => {
-                warn!("invalid GaussianSHFormat discriminant {}; using default", i);
+                trace!("invalid GaussianSHFormat discriminant {}; using default", i);
                 Self::Float16
             }
         }
@@ -5547,7 +5547,7 @@ impl MemoryPackable for VertexAttributeType {
             12 => Self::BoneWeights,
             13 => Self::BoneIndicies,
             _ => {
-                warn!(
+                trace!(
                     "invalid VertexAttributeType wire value {}; using default",
                     raw
                 );
@@ -5579,7 +5579,7 @@ impl EnumRepr for VertexAttributeType {
             12 => Self::BoneWeights,
             13 => Self::BoneIndicies,
             _ => {
-                warn!(
+                trace!(
                     "invalid VertexAttributeType discriminant {}; using default",
                     i
                 );
@@ -5629,7 +5629,7 @@ impl MemoryPackable for VertexAttributeFormat {
             8 => Self::UInt16,
             9 => Self::UInt32,
             _ => {
-                warn!(
+                trace!(
                     "invalid VertexAttributeFormat wire value {}; using default",
                     raw
                 );
@@ -5657,7 +5657,7 @@ impl EnumRepr for VertexAttributeFormat {
             8 => Self::UInt16,
             9 => Self::UInt32,
             _ => {
-                warn!(
+                trace!(
                     "invalid VertexAttributeFormat discriminant {}; using default",
                     i
                 );
@@ -5691,7 +5691,7 @@ impl MemoryPackable for SubmeshTopology {
             0 => Self::Points,
             1 => Self::Triangles,
             _ => {
-                warn!("invalid SubmeshTopology wire value {}; using default", raw);
+                trace!("invalid SubmeshTopology wire value {}; using default", raw);
                 Self::Points
             }
         };
@@ -5708,7 +5708,7 @@ impl EnumRepr for SubmeshTopology {
             0 => Self::Points,
             1 => Self::Triangles,
             _ => {
-                warn!("invalid SubmeshTopology discriminant {}; using default", i);
+                trace!("invalid SubmeshTopology discriminant {}; using default", i);
                 Self::Points
             }
         }
@@ -5895,7 +5895,7 @@ impl MemoryPackable for MaterialPropertyUpdateType {
             10 => Self::SetTexture,
             11 => Self::UpdateBatchEnd,
             _ => {
-                warn!(
+                trace!(
                     "invalid MaterialPropertyUpdateType wire value {}; using default",
                     raw
                 );
@@ -5925,7 +5925,7 @@ impl EnumRepr for MaterialPropertyUpdateType {
             10 => Self::SetTexture,
             11 => Self::UpdateBatchEnd,
             _ => {
-                warn!(
+                trace!(
                     "invalid MaterialPropertyUpdateType discriminant {}; using default",
                     i
                 );
@@ -6267,7 +6267,7 @@ impl MemoryPackable for Key {
             514 => Self::Alt,
             515 => Self::Windows,
             _ => {
-                warn!("invalid Key wire value {}; using default", raw);
+                trace!("invalid Key wire value {}; using default", raw);
                 Self::None
             }
         };
@@ -6423,7 +6423,7 @@ impl EnumRepr for Key {
             514 => Self::Alt,
             515 => Self::Windows,
             _ => {
-                warn!("invalid Key discriminant {}; using default", i);
+                trace!("invalid Key discriminant {}; using default", i);
                 Self::None
             }
         }
@@ -6814,7 +6814,7 @@ impl MemoryPackable for RectOrientation {
             2 => Self::UpsideDown180,
             3 => Self::CounterClockwise90,
             _ => {
-                warn!("invalid RectOrientation wire value {}; using default", raw);
+                trace!("invalid RectOrientation wire value {}; using default", raw);
                 Self::Default
             }
         };
@@ -6833,7 +6833,7 @@ impl EnumRepr for RectOrientation {
             2 => Self::UpsideDown180,
             3 => Self::CounterClockwise90,
             _ => {
-                warn!("invalid RectOrientation discriminant {}; using default", i);
+                trace!("invalid RectOrientation discriminant {}; using default", i);
                 Self::Default
             }
         }
@@ -7427,7 +7427,7 @@ impl MemoryPackable for LayerType {
             0 => Self::Hidden,
             1 => Self::Overlay,
             _ => {
-                warn!("invalid LayerType wire value {}; using default", raw);
+                trace!("invalid LayerType wire value {}; using default", raw);
                 Self::Hidden
             }
         };
@@ -7444,7 +7444,7 @@ impl EnumRepr for LayerType {
             0 => Self::Hidden,
             1 => Self::Overlay,
             _ => {
-                warn!("invalid LayerType discriminant {}; using default", i);
+                trace!("invalid LayerType discriminant {}; using default", i);
                 Self::Hidden
             }
         }
@@ -7850,7 +7850,7 @@ impl MemoryPackable for CameraProjection {
             1 => Self::Orthographic,
             2 => Self::Panoramic,
             _ => {
-                warn!("invalid CameraProjection wire value {}; using default", raw);
+                trace!("invalid CameraProjection wire value {}; using default", raw);
                 Self::Perspective
             }
         };
@@ -7868,7 +7868,7 @@ impl EnumRepr for CameraProjection {
             1 => Self::Orthographic,
             2 => Self::Panoramic,
             _ => {
-                warn!("invalid CameraProjection discriminant {}; using default", i);
+                trace!("invalid CameraProjection discriminant {}; using default", i);
                 Self::Perspective
             }
         }
@@ -7903,7 +7903,7 @@ impl MemoryPackable for CameraClearMode {
             2 => Self::Depth,
             3 => Self::Nothing,
             _ => {
-                warn!("invalid CameraClearMode wire value {}; using default", raw);
+                trace!("invalid CameraClearMode wire value {}; using default", raw);
                 Self::Skybox
             }
         };
@@ -7922,7 +7922,7 @@ impl EnumRepr for CameraClearMode {
             2 => Self::Depth,
             3 => Self::Nothing,
             _ => {
-                warn!("invalid CameraClearMode discriminant {}; using default", i);
+                trace!("invalid CameraClearMode discriminant {}; using default", i);
                 Self::Skybox
             }
         }
@@ -7955,7 +7955,7 @@ impl MemoryPackable for HeadsetConnection {
             1 => Self::WirelessGeneral,
             2 => Self::WirelessSteamLink,
             _ => {
-                warn!(
+                trace!(
                     "invalid HeadsetConnection wire value {}; using default",
                     raw
                 );
@@ -7976,7 +7976,7 @@ impl EnumRepr for HeadsetConnection {
             1 => Self::WirelessGeneral,
             2 => Self::WirelessSteamLink,
             _ => {
-                warn!(
+                trace!(
                     "invalid HeadsetConnection discriminant {}; using default",
                     i
                 );
@@ -8884,7 +8884,7 @@ impl MemoryPackable for Chirality {
             0 => Self::Left,
             1 => Self::Right,
             _ => {
-                warn!("invalid Chirality wire value {}; using default", raw);
+                trace!("invalid Chirality wire value {}; using default", raw);
                 Self::Left
             }
         };
@@ -8901,7 +8901,7 @@ impl EnumRepr for Chirality {
             0 => Self::Left,
             1 => Self::Right,
             _ => {
-                warn!("invalid Chirality discriminant {}; using default", i);
+                trace!("invalid Chirality discriminant {}; using default", i);
                 Self::Left
             }
         }
@@ -8996,7 +8996,7 @@ impl MemoryPackable for ShadowCastMode {
             2 => Self::ShadowOnly,
             3 => Self::DoubleSided,
             _ => {
-                warn!("invalid ShadowCastMode wire value {}; using default", raw);
+                trace!("invalid ShadowCastMode wire value {}; using default", raw);
                 Self::Off
             }
         };
@@ -9015,7 +9015,7 @@ impl EnumRepr for ShadowCastMode {
             2 => Self::ShadowOnly,
             3 => Self::DoubleSided,
             _ => {
-                warn!("invalid ShadowCastMode discriminant {}; using default", i);
+                trace!("invalid ShadowCastMode discriminant {}; using default", i);
                 Self::Off
             }
         }
@@ -9048,7 +9048,7 @@ impl MemoryPackable for MotionVectorMode {
             1 => Self::Object,
             2 => Self::NoMotion,
             _ => {
-                warn!("invalid MotionVectorMode wire value {}; using default", raw);
+                trace!("invalid MotionVectorMode wire value {}; using default", raw);
                 Self::Camera
             }
         };
@@ -9066,7 +9066,7 @@ impl EnumRepr for MotionVectorMode {
             1 => Self::Object,
             2 => Self::NoMotion,
             _ => {
-                warn!("invalid MotionVectorMode discriminant {}; using default", i);
+                trace!("invalid MotionVectorMode discriminant {}; using default", i);
                 Self::Camera
             }
         }
@@ -9099,7 +9099,7 @@ impl MemoryPackable for LightType {
             1 => Self::Directional,
             2 => Self::Spot,
             _ => {
-                warn!("invalid LightType wire value {}; using default", raw);
+                trace!("invalid LightType wire value {}; using default", raw);
                 Self::Point
             }
         };
@@ -9117,7 +9117,7 @@ impl EnumRepr for LightType {
             1 => Self::Directional,
             2 => Self::Spot,
             _ => {
-                warn!("invalid LightType discriminant {}; using default", i);
+                trace!("invalid LightType discriminant {}; using default", i);
                 Self::Point
             }
         }
@@ -9150,7 +9150,7 @@ impl MemoryPackable for ShadowType {
             1 => Self::Hard,
             2 => Self::Soft,
             _ => {
-                warn!("invalid ShadowType wire value {}; using default", raw);
+                trace!("invalid ShadowType wire value {}; using default", raw);
                 Self::None
             }
         };
@@ -9168,7 +9168,7 @@ impl EnumRepr for ShadowType {
             1 => Self::Hard,
             2 => Self::Soft,
             _ => {
-                warn!("invalid ShadowType discriminant {}; using default", i);
+                trace!("invalid ShadowType discriminant {}; using default", i);
                 Self::None
             }
         }
@@ -9231,7 +9231,7 @@ impl MemoryPackable for ReflectionProbeType {
             1 => Self::OnChanges,
             2 => Self::Realtime,
             _ => {
-                warn!(
+                trace!(
                     "invalid ReflectionProbeType wire value {}; using default",
                     raw
                 );
@@ -9252,7 +9252,7 @@ impl EnumRepr for ReflectionProbeType {
             1 => Self::OnChanges,
             2 => Self::Realtime,
             _ => {
-                warn!(
+                trace!(
                     "invalid ReflectionProbeType discriminant {}; using default",
                     i
                 );
@@ -9286,7 +9286,7 @@ impl MemoryPackable for ReflectionProbeClear {
             0 => Self::Skybox,
             1 => Self::Color,
             _ => {
-                warn!(
+                trace!(
                     "invalid ReflectionProbeClear wire value {}; using default",
                     raw
                 );
@@ -9306,7 +9306,7 @@ impl EnumRepr for ReflectionProbeClear {
             0 => Self::Skybox,
             1 => Self::Color,
             _ => {
-                warn!(
+                trace!(
                     "invalid ReflectionProbeClear discriminant {}; using default",
                     i
                 );
@@ -9342,7 +9342,7 @@ impl MemoryPackable for ReflectionProbeTimeSlicingMode {
             1 => Self::IndividualFaces,
             2 => Self::NoTimeSlicing,
             _ => {
-                warn!(
+                trace!(
                     "invalid ReflectionProbeTimeSlicingMode wire value {}; using default",
                     raw
                 );
@@ -9363,7 +9363,7 @@ impl EnumRepr for ReflectionProbeTimeSlicingMode {
             1 => Self::IndividualFaces,
             2 => Self::NoTimeSlicing,
             _ => {
-                warn!(
+                trace!(
                     "invalid ReflectionProbeTimeSlicingMode discriminant {}; using default",
                     i
                 );
@@ -9401,7 +9401,7 @@ impl MemoryPackable for ComputeResult {
             2 => Self::Postpone,
             3 => Self::Failed,
             _ => {
-                warn!("invalid ComputeResult wire value {}; using default", raw);
+                trace!("invalid ComputeResult wire value {}; using default", raw);
                 Self::Scheduled
             }
         };
@@ -9420,7 +9420,7 @@ impl EnumRepr for ComputeResult {
             2 => Self::Postpone,
             3 => Self::Failed,
             _ => {
-                warn!("invalid ComputeResult discriminant {}; using default", i);
+                trace!("invalid ComputeResult discriminant {}; using default", i);
                 Self::Scheduled
             }
         }
@@ -9457,7 +9457,7 @@ impl MemoryPackable for BillboardAlignment {
             3 => Self::Global,
             4 => Self::Direction,
             _ => {
-                warn!(
+                trace!(
                     "invalid BillboardAlignment wire value {}; using default",
                     raw
                 );
@@ -9480,7 +9480,7 @@ impl EnumRepr for BillboardAlignment {
             3 => Self::Global,
             4 => Self::Direction,
             _ => {
-                warn!(
+                trace!(
                     "invalid BillboardAlignment discriminant {}; using default",
                     i
                 );
@@ -9518,7 +9518,7 @@ impl MemoryPackable for MeshAlignment {
             2 => Self::Local,
             3 => Self::Global,
             _ => {
-                warn!("invalid MeshAlignment wire value {}; using default", raw);
+                trace!("invalid MeshAlignment wire value {}; using default", raw);
                 Self::View
             }
         };
@@ -9537,7 +9537,7 @@ impl EnumRepr for MeshAlignment {
             2 => Self::Local,
             3 => Self::Global,
             _ => {
-                warn!("invalid MeshAlignment discriminant {}; using default", i);
+                trace!("invalid MeshAlignment discriminant {}; using default", i);
                 Self::View
             }
         }
@@ -9572,7 +9572,7 @@ impl MemoryPackable for TrailTextureMode {
             2 => Self::DistributePerSegment,
             3 => Self::RepeatPerSegment,
             _ => {
-                warn!("invalid TrailTextureMode wire value {}; using default", raw);
+                trace!("invalid TrailTextureMode wire value {}; using default", raw);
                 Self::Stretch
             }
         };
@@ -9591,7 +9591,7 @@ impl EnumRepr for TrailTextureMode {
             2 => Self::DistributePerSegment,
             3 => Self::RepeatPerSegment,
             _ => {
-                warn!("invalid TrailTextureMode discriminant {}; using default", i);
+                trace!("invalid TrailTextureMode discriminant {}; using default", i);
                 Self::Stretch
             }
         }
@@ -9630,7 +9630,7 @@ impl MemoryPackable for RenderingContext {
             4 => Self::Portal,
             5 => Self::RenderToAsset,
             _ => {
-                warn!("invalid RenderingContext wire value {}; using default", raw);
+                trace!("invalid RenderingContext wire value {}; using default", raw);
                 Self::UserView
             }
         };
@@ -9651,7 +9651,7 @@ impl EnumRepr for RenderingContext {
             4 => Self::Portal,
             5 => Self::RenderToAsset,
             _ => {
-                warn!("invalid RenderingContext discriminant {}; using default", i);
+                trace!("invalid RenderingContext discriminant {}; using default", i);
                 Self::UserView
             }
         }
@@ -9840,7 +9840,7 @@ impl MemoryPackable for BodyNode {
             79 => Self::RightToes,
             80 => Self::END,
             _ => {
-                warn!("invalid BodyNode wire value {}; using default", raw);
+                trace!("invalid BodyNode wire value {}; using default", raw);
                 Self::NONE
             }
         };
@@ -9936,7 +9936,7 @@ impl EnumRepr for BodyNode {
             79 => Self::RightToes,
             80 => Self::END,
             _ => {
-                warn!("invalid BodyNode discriminant {}; using default", i);
+                trace!("invalid BodyNode discriminant {}; using default", i);
                 Self::NONE
             }
         }
@@ -9967,7 +9967,7 @@ impl MemoryPackable for TouchControllerModel {
             0 => Self::CV1,
             1 => Self::QuestAndRiftS,
             _ => {
-                warn!(
+                trace!(
                     "invalid TouchControllerModel wire value {}; using default",
                     raw
                 );
@@ -9987,7 +9987,7 @@ impl EnumRepr for TouchControllerModel {
             0 => Self::CV1,
             1 => Self::QuestAndRiftS,
             _ => {
-                warn!(
+                trace!(
                     "invalid TouchControllerModel discriminant {}; using default",
                     i
                 );
@@ -10005,7 +10005,7 @@ pub fn roundtrip_dispatch(type_name: &str, input: &[u8]) -> std::io::Result<Vec<
     use super::packing::default_entity_pool::DefaultEntityPool;
     let mut pool = DefaultEntityPool;
     let mut unpacker = MemoryUnpacker::new(input, &mut pool);
-    let mut output = vec![0u8; 1024 * 1024];
+    let mut output = vec![0u8; 1048576];
     let original_len = output.len();
     let mut packer = MemoryPacker::new(&mut output[..]);
 

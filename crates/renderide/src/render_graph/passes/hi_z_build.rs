@@ -68,7 +68,7 @@ impl RenderPass for HiZBuildPass {
         };
         let mode = frame.output_depth_mode();
         let view_id = frame.occlusion_view;
-        frame.backend.occlusion.encode_hi_z_build_pass(
+        frame.occlusion.encode_hi_z_build_pass(
             ctx.device,
             ctx.queue.as_ref(),
             ctx.encoder,
@@ -83,8 +83,7 @@ impl RenderPass for HiZBuildPass {
     }
 
     fn post_submit(&mut self, ctx: &mut PostSubmitContext<'_>) -> Result<(), RenderPassError> {
-        ctx.backend
-            .occlusion
+        ctx.occlusion
             .hi_z_on_frame_submitted_for_view(ctx.device, ctx.occlusion_view);
         Ok(())
     }

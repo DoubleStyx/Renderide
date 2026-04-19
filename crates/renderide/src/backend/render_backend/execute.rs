@@ -73,15 +73,18 @@ impl RenderBackend {
     }
 
     /// Unified multi-view entry: one Hi-Z readback (unless skipped), one encoder, one submit.
+    ///
+    /// `views` is not consumed; callers can clear and repopulate the same [`Vec`] each frame to
+    /// retain capacity.
     pub fn execute_multi_view_frame(
         &mut self,
         gpu: &mut GpuContext,
         scene: &SceneCoordinator,
-        views: Vec<FrameView<'_>>,
+        views: &mut Vec<FrameView<'_>>,
         skip_hi_z_begin_readback: bool,
     ) -> Result<(), GraphExecuteError> {
         self.with_compiled_graph(gpu, skip_hi_z_begin_readback, |graph, gpu_ctx, backend| {
-            graph.execute_multi_view(gpu_ctx, scene, backend, views)
+            graph.execute_multi_view(gpu_ctx, scene, backend, views.as_mut_slice())
         })
     }
 

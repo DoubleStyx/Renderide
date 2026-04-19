@@ -2,7 +2,7 @@
 
 use crate::assets::material::MaterialPropertyStore;
 use crate::backend::EmbeddedMaterialBindResources;
-use crate::backend::RenderBackend;
+use crate::backend::MaterialSystem;
 use crate::materials::RasterPipelineKind;
 use crate::render_graph::world_mesh_draw_prep::WorldMeshDrawItem;
 
@@ -18,16 +18,16 @@ fn per_material_texture2d_asset_ids_for_draw(
 
 /// Collects texture ids for embedded-stem draws in order (may contain duplicates across draws).
 fn per_pass_texture2d_asset_ids_from_draws(
-    backend: &RenderBackend,
+    materials: &MaterialSystem,
     draws: &[WorldMeshDrawItem],
 ) -> Vec<i32> {
-    let Some(bind) = backend.embedded_material_bind() else {
+    let Some(bind) = materials.embedded_material_bind() else {
         return Vec::new();
     };
-    let Some(registry) = backend.material_registry() else {
+    let Some(registry) = materials.material_registry() else {
         return Vec::new();
     };
-    let store = backend.material_property_store();
+    let store = materials.material_property_store();
     let mut out = Vec::new();
     for item in draws {
         if !matches!(item.batch_key.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
@@ -56,8 +56,8 @@ fn dedup_visible_texture_asset_ids(ids: Vec<i32>) -> Vec<i32> {
 
 /// Asset ids for 2D textures referenced by embedded materials in the current sorted draw list.
 pub(super) fn current_view_texture2d_asset_ids_from_draws(
-    backend: &RenderBackend,
+    materials: &MaterialSystem,
     draws: &[WorldMeshDrawItem],
 ) -> Vec<i32> {
-    dedup_visible_texture_asset_ids(per_pass_texture2d_asset_ids_from_draws(backend, draws))
+    dedup_visible_texture_asset_ids(per_pass_texture2d_asset_ids_from_draws(materials, draws))
 }

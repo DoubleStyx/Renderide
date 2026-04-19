@@ -16,7 +16,7 @@ public partial class RustEmitter
             .ToList();
 
         // Padding may be in orderedFields (synthetic _padding at correct offsets) or trailing
-        bool hasPaddingFields = orderedFields.Any(f => f.RustName.StartsWith("_padding"));
+        bool hasPaddingFields = orderedFields.Any(f => f.RustName.StartsWith("_padding", StringComparison.Ordinal));
         bool needsTrailingPadding = type.PaddingBytes > 0 && !hasPaddingFields;
 
         // Struct definition (Clone needed when used in Option/Vec)

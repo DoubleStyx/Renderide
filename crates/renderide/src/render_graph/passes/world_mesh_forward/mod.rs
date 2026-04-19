@@ -357,7 +357,7 @@ impl RenderPass for WorldMeshDepthSnapshotPass {
         let Some(mut prepared) = frame.prepared_world_mesh_forward.take() else {
             return Ok(());
         };
-        let msaa_depth_resolve = frame.backend.msaa_depth_resolve();
+        let msaa_depth_resolve = frame.msaa_depth_resolve.clone();
         let recorded = encode_world_mesh_forward_depth_snapshot(
             ctx.device,
             ctx.encoder,
@@ -530,7 +530,7 @@ impl RenderPass for WorldMeshForwardDepthResolvePass {
             frame.sample_count,
             frame.multiview_stereo,
         );
-        let msaa_depth_resolve = frame.backend.msaa_depth_resolve();
+        let msaa_depth_resolve = frame.msaa_depth_resolve.clone();
         encode_msaa_depth_resolve_after_clear_only(
             ctx.device,
             ctx.encoder,

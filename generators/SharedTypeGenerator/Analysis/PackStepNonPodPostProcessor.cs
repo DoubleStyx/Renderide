@@ -1,8 +1,7 @@
 using System.Linq;
-using SharedTypeGenerator.Analysis;
 using SharedTypeGenerator.IR;
 
-namespace SharedTypeGenerator;
+namespace SharedTypeGenerator.Analysis;
 
 /// <summary>
 /// After analysis, IL-derived <see cref="WriteField"/> steps may still be <see cref="FieldKind.Pod"/> for

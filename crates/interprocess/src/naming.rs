@@ -1,4 +1,4 @@
-//! Windows mapping and semaphore name formatting.
+//! Windows mapping and semaphore name formatting (compiled only on `cfg(windows)` targets).
 
 /// Windows file-mapping object name (`CT_IP_{queue}`).
 pub(crate) fn windows_mapping_name(memory_view_name: &str) -> String {

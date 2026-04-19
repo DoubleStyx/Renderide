@@ -29,25 +29,32 @@ impl SharedMapping {
         #[cfg(unix)]
         {
             let (m, s) = unix::open_queue(options)?;
-            debug_assert_eq!(m.len(), options.actual_storage_size() as usize);
-            Ok((Self { inner: m }, s))
+            let mapping = Self { inner: m };
+            debug_assert_eq!(mapping.len(), options.actual_storage_size() as usize);
+            Ok((mapping, s))
         }
         #[cfg(windows)]
         {
             let (m, s) = windows::open_queue(options)?;
-            debug_assert_eq!(m.len(), options.actual_storage_size() as usize);
-            Ok((Self { inner: m }, s))
+            let mapping = Self { inner: m };
+            debug_assert_eq!(mapping.len(), options.actual_storage_size() as usize);
+            Ok((mapping, s))
         }
     }
 
     /// Base pointer to the mapped region (includes [`crate::layout::QueueHeader`] at offset zero).
+    ///
+    /// # Safety
+    ///
+    /// The returned pointer is valid for reads and writes for [`Self::len`] bytes for the lifetime
+    /// of `self`. Aliasing follows the queue wire protocol (atomics + slot state machine).
     pub(crate) fn as_ptr(&self) -> *const u8 {
         self.inner.as_ptr()
     }
 
-    /// Mutable base pointer to the mapped region.
-    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.inner.as_mut_ptr()
+    /// Byte length of the mapping (queue header plus ring).
+    pub(crate) fn len(&self) -> usize {
+        self.inner.len()
     }
 
     /// Path to the backing `.qu` file when file-backed; `None` on Windows named mappings.

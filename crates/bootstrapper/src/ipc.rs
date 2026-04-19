@@ -7,7 +7,7 @@
 //! On Windows, the named mapping backend does not read `.qu` paths from disk; [`QueueOptions::path`]
 //! is still set to the same default for consistency with [`interprocess`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use interprocess::{default_memory_dir, Publisher, QueueFactory, QueueOptions, Subscriber};
 
@@ -37,6 +37,12 @@ pub fn interprocess_backing_dir() -> PathBuf {
         .unwrap_or_else(default_memory_dir)
 }
 
+/// Builds validated [`QueueOptions`] for one bootstrap queue with `destroy_on_dispose`.
+fn make_queue_options(name: &str, dir: &Path) -> Result<QueueOptions, BootstrapError> {
+    QueueOptions::with_path_and_destroy(name, dir, BOOTSTRAP_QUEUE_CAPACITY, true)
+        .map_err(BootstrapError::QueueOptionsInvalid)
+}
+
 /// Subscriber + publisher pair used for Host ↔ bootstrapper messaging.
 pub struct BootstrapQueues {
     /// Host → bootstrapper (`*_in` from Host’s perspective).
@@ -54,21 +60,8 @@ impl BootstrapQueues {
         let dir = interprocess_backing_dir();
         let (incoming_name, outgoing_name) = bootstrap_queue_base_names(shared_memory_prefix);
 
-        let incoming_opts = QueueOptions::with_path_and_destroy(
-            &incoming_name,
-            &dir,
-            BOOTSTRAP_QUEUE_CAPACITY,
-            true,
-        )
-        .map_err(BootstrapError::QueueOptionsInvalid)?;
-
-        let outgoing_opts = QueueOptions::with_path_and_destroy(
-            &outgoing_name,
-            &dir,
-            BOOTSTRAP_QUEUE_CAPACITY,
-            true,
-        )
-        .map_err(BootstrapError::QueueOptionsInvalid)?;
+        let incoming_opts = make_queue_options(&incoming_name, &dir)?;
+        let outgoing_opts = make_queue_options(&outgoing_name, &dir)?;
 
         let factory = QueueFactory::new();
         let incoming = factory.create_subscriber(incoming_opts)?;
@@ -114,5 +107,34 @@ mod tests {
         std::env::set_var(RENDERIDE_INTERPROCESS_DIR_ENV, "");
         assert_eq!(interprocess_backing_dir(), default_memory_dir());
         std::env::remove_var(RENDERIDE_INTERPROCESS_DIR_ENV);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bootstrap_queues_open_creates_backing_under_custom_dir() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        let tmp =
+            std::env::temp_dir().join(format!("bootstrapper_ipc_open_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var(RENDERIDE_INTERPROCESS_DIR_ENV, &tmp);
+
+        let prefix = format!("t{}", std::process::id());
+        let (in_name, out_name) = bootstrap_queue_base_names(&prefix);
+        {
+            let _queues = BootstrapQueues::open(&prefix).expect("open queues");
+            let in_qu = tmp.join(format!("{in_name}.qu"));
+            let out_qu = tmp.join(format!("{out_name}.qu"));
+            assert!(
+                in_qu.exists() || out_qu.exists(),
+                "expected at least one .qu under {:?}",
+                tmp
+            );
+        }
+        assert!(!tmp.join(format!("{in_name}.qu")).exists());
+        assert!(!tmp.join(format!("{out_name}.qu")).exists());
+
+        std::env::remove_var(RENDERIDE_INTERPROCESS_DIR_ENV);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

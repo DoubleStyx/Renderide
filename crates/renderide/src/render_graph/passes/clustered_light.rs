@@ -386,11 +386,10 @@ impl RenderPass for ClusteredLightPass {
         let scene = frame.scene;
         let stereo = hc.vr_active && hc.stereo_views.is_some() && frame.multiview_stereo;
 
-        let light_count = frame.backend.frame_resources.frame_light_count_u32();
+        let light_count = frame.frame_resources.frame_light_count_u32();
 
         let queue: &wgpu::Queue = ctx.queue.as_ref();
         let Some(fgpu) = frame
-            .backend
             .frame_resources
             .sync_cluster_viewport_ensure_lights_upload(ctx.device, queue, (vw, vh), stereo)
         else {

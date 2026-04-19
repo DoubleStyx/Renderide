@@ -6,14 +6,18 @@ use crate::error::OpenError;
 use crate::layout::QueueHeader;
 use crate::memory::SharedMapping;
 use crate::options::QueueOptions;
+use crate::ring::RingView;
 use crate::semaphore::Semaphore;
 
-/// Common state opened by [`crate::Publisher::new`] and [`crate::Subscriber::new`].
+/// Shared resources opened by both [`crate::Publisher::new`] and [`crate::Subscriber::new`].
 pub(crate) struct QueueResources {
+    /// Read/write mapping of the queue header plus byte ring.
     mapping: SharedMapping,
-    /// Ring capacity in bytes (user data only).
+    /// Ring buffer capacity in bytes (user payload only; excludes the queue header).
     pub(crate) capacity: i64,
+    /// Cross-process wakeup object signaled after each successful enqueue.
     sem: Semaphore,
+    /// When `true`, best-effort unlink of the backing `.qu` path on drop (Unix file-backed queues only).
     destroy_on_dispose: bool,
 }
 
@@ -29,38 +33,28 @@ impl QueueResources {
         })
     }
 
-    /// Pointer to the shared [`QueueHeader`] at the start of the mapping.
-    pub(crate) fn header_mut(&mut self) -> *mut QueueHeader {
-        self.mapping.as_mut_ptr() as *mut QueueHeader
+    /// Shared queue header at the start of the mapping (atomics permit shared references).
+    pub(crate) fn header(&self) -> &QueueHeader {
+        // SAFETY: `open_queue` maps at least `BUFFER_BYTE_OFFSET + capacity` bytes; the header is
+        // `repr(C)` at offset 0 and fits in `BUFFER_BYTE_OFFSET`.
+        unsafe { &*(self.mapping.as_ptr() as *const QueueHeader) }
     }
 
-    /// Pointer to the start of the byte ring (after the queue header).
-    ///
-    /// # Safety
-    ///
-    /// [`crate::layout::BUFFER_BYTE_OFFSET`] is within the length of the mapping opened for this queue.
-    pub(crate) fn buffer_ptr(&self) -> *const u8 {
+    /// View over the byte ring after [`crate::layout::QueueHeader`].
+    pub(crate) fn ring(&self) -> RingView {
+        // SAFETY: Ring begins at `BUFFER_BYTE_OFFSET` within the mapping; length is `capacity`.
         unsafe {
-            self.mapping
-                .as_ptr()
-                .byte_add(crate::layout::BUFFER_BYTE_OFFSET)
+            RingView::from_raw(
+                self.mapping
+                    .as_ptr()
+                    .byte_add(crate::layout::BUFFER_BYTE_OFFSET)
+                    .cast_mut(),
+                self.capacity,
+            )
         }
     }
 
-    /// Mutable pointer to the start of the byte ring (after the queue header).
-    ///
-    /// # Safety
-    ///
-    /// Same as [`Self::buffer_ptr`].
-    pub(crate) fn buffer_mut(&mut self) -> *mut u8 {
-        unsafe {
-            self.mapping
-                .as_mut_ptr()
-                .byte_add(crate::layout::BUFFER_BYTE_OFFSET)
-        }
-    }
-
-    /// Wakeup primitive paired with the queue (signal after enqueue).
+    /// Signals waiters that new data may be available (after enqueue).
     pub(crate) fn post(&self) {
         self.sem.post();
     }

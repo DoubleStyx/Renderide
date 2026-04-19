@@ -1,4 +1,4 @@
-//! CLI parsing and per-run path configuration (ResoBoot-compatible fields).
+//! Per-run path configuration (ResoBoot-compatible fields) and shared-memory prefix generation.
 
 use std::env;
 use std::path::PathBuf;
@@ -7,60 +7,56 @@ use logger::LogLevel;
 
 use crate::wine_detect;
 
-/// Parses bootstrapper args, extracting `--log-level` / `-l` for bootstrapper and Renderide.
-///
-/// Returns `(arguments to forward to Host, optional log level)`.
-pub fn parse_args() -> (Vec<String>, Option<LogLevel>) {
-    let args: Vec<String> = env::args().skip(1).collect();
-    parse_host_args_tokens(&args)
-}
-
-/// Parses `args` as argv after the program name: strips `--log-level` / `-l` plus the following
-/// token when present, and records the parsed [`LogLevel`] (if any).
-///
-/// If `--log-level` or `-l` appears without a trailing value, that flag is left in the returned
-/// host list (same as ResoBoot-style forwarding).
-fn parse_host_args_tokens(args: &[String]) -> (Vec<String>, Option<LogLevel>) {
-    let mut host_args = Vec::new();
-    let mut log_level = None;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        let arg_lower = arg.to_lowercase();
-        if (arg_lower == "--log-level" || arg_lower == "-l") && i + 1 < args.len() {
-            log_level = LogLevel::parse(&args[i + 1]);
-            i += 2;
-            continue;
-        }
-        host_args.push(arg.clone());
-        i += 1;
-    }
-    (host_args, log_level)
-}
-
 /// Generates a ResoBoot-style alphanumeric prefix for shared-memory queue names.
+///
+/// Uses rejection sampling so every character in the charset is equally likely (no modulo bias).
 pub fn generate_shared_memory_prefix(len: usize) -> Result<String, getrandom::Error> {
-    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut bytes = vec![0u8; len];
-    getrandom::fill(&mut bytes)?;
-    Ok(bytes
-        .iter()
-        .map(|b| CHARS[(*b as usize) % CHARS.len()] as char)
-        .collect())
+    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const N: usize = CHARSET.len();
+    /// Largest multiple of `N` below 256; bytes in `0..THRESHOLD` map uniformly to indices.
+    const THRESHOLD: usize = (256 / N) * N;
+
+    if len == 0 {
+        return Ok(String::new());
+    }
+
+    let mut out = String::with_capacity(len);
+    let mut scratch = [0u8; 32];
+    let mut pos = scratch.len();
+
+    while out.len() < len {
+        if pos >= scratch.len() {
+            getrandom::fill(&mut scratch)?;
+            pos = 0;
+        }
+        let b = scratch[pos] as usize;
+        pos += 1;
+        if b < THRESHOLD {
+            out.push(CHARSET[b % N] as char);
+        }
+    }
+    Ok(out)
 }
 
 /// Resolved paths and flags for one bootstrapper run.
 pub struct ResoBootConfig {
+    // --- Paths (working directory and Host layout) ---
     /// Current working directory (Resonite install root when launched from there).
     pub current_directory: PathBuf,
     /// Path to `Renderite.Host.runtimeconfig.json` under [`Self::current_directory`].
     pub runtime_config: PathBuf,
+
+    // --- Renderer binary (bootstrapper-relative) ---
     /// Directory containing the Renderide / renderer binary (bootstrapper exe dir).
     pub renderite_directory: PathBuf,
     /// Renderer executable path (`renderide.exe` on Windows, `Renderite.Renderer` elsewhere).
     pub renderite_executable: PathBuf,
+
+    // --- IPC identity ---
     /// Random prefix for `{}.bootstrapper_in` / `{}.bootstrapper_out`.
     pub shared_memory_prefix: String,
+
+    // --- Runtime flags ---
     /// `true` when running under Wine on Linux.
     pub is_wine: bool,
     /// Passed as `-LogLevel` when spawning Renderide, if set.
@@ -106,46 +102,6 @@ impl ResoBootConfig {
 mod tests {
     use super::*;
 
-    fn tokens(args: &[&str]) -> Vec<String> {
-        args.iter().map(|s| (*s).to_string()).collect()
-    }
-
-    #[test]
-    fn parse_host_args_tokens_empty() {
-        let (host, level) = parse_host_args_tokens(&[]);
-        assert!(host.is_empty());
-        assert!(level.is_none());
-    }
-
-    #[test]
-    fn parse_host_args_tokens_log_level_consumed() {
-        let (host, level) =
-            parse_host_args_tokens(&tokens(&["--log-level", "debug", "-Invisible"]));
-        assert_eq!(host, vec!["-Invisible".to_string()]);
-        assert_eq!(level, Some(LogLevel::Debug));
-    }
-
-    #[test]
-    fn parse_host_args_tokens_short_flag_case_insensitive() {
-        let (host, level) = parse_host_args_tokens(&tokens(&["-L", "trace", "x"]));
-        assert_eq!(host, vec!["x".to_string()]);
-        assert_eq!(level, Some(LogLevel::Trace));
-    }
-
-    #[test]
-    fn parse_host_args_tokens_unknown_level_yields_none_but_consumes_pair() {
-        let (host, level) = parse_host_args_tokens(&tokens(&["--log-level", "nope", "y"]));
-        assert_eq!(host, vec!["y".to_string()]);
-        assert!(level.is_none());
-    }
-
-    #[test]
-    fn parse_host_args_tokens_trailing_log_flag_forwarded() {
-        let (host, level) = parse_host_args_tokens(&tokens(&["-l"]));
-        assert_eq!(host, vec!["-l".to_string()]);
-        assert!(level.is_none());
-    }
-
     #[test]
     fn shared_memory_prefix_length_and_charset() {
         let s = generate_shared_memory_prefix(16).expect("prefix");
@@ -158,5 +114,46 @@ mod tests {
         let a = generate_shared_memory_prefix(16).expect("a");
         let b = generate_shared_memory_prefix(16).expect("b");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn shared_memory_prefix_zero_length() {
+        assert_eq!(generate_shared_memory_prefix(0).expect("empty"), "");
+    }
+
+    #[test]
+    fn shared_memory_prefix_length_one() {
+        let s = generate_shared_memory_prefix(1).expect("one");
+        assert_eq!(s.len(), 1);
+        assert!(s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn shared_memory_prefix_large_length() {
+        let n = 4096;
+        let s = generate_shared_memory_prefix(n).expect("large");
+        assert_eq!(s.len(), n);
+        assert!(s.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn resonite_config_fields_populated() {
+        let cfg = ResoBootConfig::new("pref".to_string(), Some(LogLevel::Debug)).expect("config");
+        assert_eq!(cfg.shared_memory_prefix, "pref");
+        assert_eq!(cfg.renderide_log_level, Some(LogLevel::Debug));
+        assert!(cfg
+            .runtime_config
+            .file_name()
+            .is_some_and(|n| n == "Renderite.Host.runtimeconfig.json"));
+        let exe_name = cfg
+            .renderite_executable
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("file name");
+        if cfg!(windows) {
+            assert_eq!(exe_name, "renderide.exe");
+        } else {
+            assert_eq!(exe_name, "Renderite.Renderer");
+        }
     }
 }

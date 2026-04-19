@@ -5,8 +5,11 @@ use crate::options::QueueOptions;
 use crate::Publisher;
 use crate::Subscriber;
 
-/// Builds [`Subscriber`] and [`Publisher`] instances for the same option type as the managed API.
-#[derive(PartialEq, Eq)]
+/// Stateless builder for [`Subscriber`] and [`Publisher`] (mirrors the managed `QueueFactory` type).
+///
+/// The managed API constructs a factory once and then opens endpoints; this Rust type carries no
+/// fields so it can be copied freely and used as a namespace for constructor helpers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueueFactory;
 
 impl QueueFactory {
@@ -26,31 +29,23 @@ impl QueueFactory {
     }
 }
 
-impl Default for QueueFactory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::QueueFactory;
     use crate::options::QueueOptions;
 
     #[test]
     fn queue_factory_default_matches_new() {
-        assert!(QueueFactory == QueueFactory::new());
+        assert_eq!(QueueFactory, QueueFactory::new());
         assert_eq!(std::mem::size_of::<QueueFactory>(), 0);
     }
 
     #[test]
     fn queue_factory_creates_publisher_and_subscriber() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_qfactory_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let opts = QueueOptions::with_path("qf_queue", &dir, 4096).expect("valid options");
+        let dir = tempdir().expect("tempdir");
+        let opts = QueueOptions::with_path("qf_queue", dir.path(), 4096).expect("valid options");
         let factory = QueueFactory::new();
         let mut publisher = factory.create_publisher(opts.clone()).expect("publisher");
         let mut subscriber = factory.create_subscriber(opts).expect("subscriber");
@@ -60,7 +55,5 @@ mod tests {
             subscriber.try_dequeue().as_deref(),
             Some(b"via_factory".as_slice())
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -369,7 +369,7 @@ impl RenderideApp {
                 let render_center_x = (rp0.x + rp1.x) * 0.5;
                 let render_center_y = (rp0.y + rp1.y) * 0.5;
                 let render_center_z = (rp0.z + rp1.z) * 0.5;
-                logger::debug!(
+                logger::trace!(
                     "HEAD POS | render(OpenXR RH): ({:.3},{:.3},{:.3}) | ipc->host(Unity LH): ({:.3},{:.3},{:.3}) | ipc_quat: ({:.4},{:.4},{:.4},{:.4})",
                     render_center_x, render_center_y, render_center_z,
                     ipc_p.x, ipc_p.y, ipc_p.z,

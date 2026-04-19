@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace SharedTypeGenerator.Tests;
 
 public static partial class RandomInstancePopulator
@@ -22,11 +24,11 @@ public static partial class RandomInstancePopulator
 
         ulong mask = 0;
         foreach (var v in values)
-            mask |= Convert.ToUInt64(v);
+            mask |= Convert.ToUInt64(v, CultureInfo.InvariantCulture);
 
         var underlying = Enum.GetUnderlyingType(enumType);
         ulong raw = RandomUInt64Inclusive(rng, 0, mask);
-        return Enum.ToObject(enumType, Convert.ChangeType(raw, underlying));
+        return Enum.ToObject(enumType, Convert.ChangeType(raw, underlying, CultureInfo.InvariantCulture));
     }
 
     /// <summary>Selects a random non-flags enum by uniformly picking among <see cref="Enum.GetValues"/> members.
@@ -43,8 +45,7 @@ public static partial class RandomInstancePopulator
     /// <summary>Uniform <see cref="ulong"/> in <c>[min, max]</c> using rejection sampling (no modulo bias).</summary>
     private static ulong RandomUInt64Inclusive(Random rng, ulong min, ulong max)
     {
-        if (min > max)
-            throw new ArgumentOutOfRangeException(nameof(min));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(min, max);
         if (min == max)
             return min;
 
@@ -58,7 +59,8 @@ public static partial class RandomInstancePopulator
         do
         {
             r = NextUInt64(rng);
-        } while (r > limit);
+        }
+        while (r > limit);
 
         return min + r % count;
     }

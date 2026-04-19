@@ -46,6 +46,7 @@ Parser.Default.ParseArguments<GeneratorOptions>(args)
             Environment.Exit(exitCode);
     });
 
+/// <summary>Maps the <c>--verbose</c> flag to the maximum <see cref="LogLevel"/> used for this process.</summary>
 static LogLevel ResolveMaxLogLevel(bool verbose)
 {
     if (verbose)
