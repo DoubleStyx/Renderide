@@ -1,7 +1,10 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace SharedTypeGenerator.IR;
 
 /// <summary>Each field gets exactly one classification that determines
 /// how it is serialized and what Rust type it maps to.</summary>
+[SuppressMessage("Microsoft.Naming", "CA1720:Identifiers should not contain type names", Justification = "Member names mirror C# / wire vocabulary (string, object).")]
 public enum FieldKind
 {
     /// <summary>Primitive, Guid, SharedMemoryBufferDescriptor -- write/read directly as Pod.</summary>

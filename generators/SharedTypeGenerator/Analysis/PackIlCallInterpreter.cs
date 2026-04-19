@@ -22,7 +22,7 @@ internal static class PackIlCallInterpreter
         {
             case "Write" when callRef.Parameters.Count == 1:
                 {
-                    string name = PopLastField(fieldNameStack);
+                    string name = FieldNameStackHelpers.PopLastFieldAndClear(fieldNameStack);
                     string rustName = name.HumanizeField();
                     FieldInfo? field = FindField(fields, rustName);
                     FieldKind kind = field != null
@@ -42,14 +42,14 @@ internal static class PackIlCallInterpreter
 
             case "WriteObject":
                 {
-                    string name = PopLastField(fieldNameStack);
+                    string name = FieldNameStackHelpers.PopLastFieldAndClear(fieldNameStack);
                     steps.Add(new WriteField(name.HumanizeField(), FieldKind.Object));
                     break;
                 }
 
             case "WriteObjectRequired":
                 {
-                    string name = PopLastField(fieldNameStack);
+                    string name = FieldNameStackHelpers.PopLastFieldAndClear(fieldNameStack);
                     steps.Add(new WriteField(name.HumanizeField(), FieldKind.ObjectRequired));
                     break;
                 }
@@ -57,7 +57,7 @@ internal static class PackIlCallInterpreter
             case "WriteValueList":
             case "WriteEnumValueList":
                 {
-                    string name = PopLastField(fieldNameStack);
+                    string name = FieldNameStackHelpers.PopLastFieldAndClear(fieldNameStack);
                     string rustName = name.HumanizeField();
                     FieldInfo? field = FindField(fields, rustName);
                     FieldKind kind = field != null
@@ -69,28 +69,28 @@ internal static class PackIlCallInterpreter
 
             case "WriteObjectList":
                 {
-                    string name = PopLastField(fieldNameStack);
+                    string name = FieldNameStackHelpers.PopLastFieldAndClear(fieldNameStack);
                     steps.Add(new WriteField(name.HumanizeField(), FieldKind.ObjectList));
                     break;
                 }
 
             case "WritePolymorphicList":
                 {
-                    string name = PopLastField(fieldNameStack);
+                    string name = FieldNameStackHelpers.PopLastFieldAndClear(fieldNameStack);
                     steps.Add(new WriteField(name.HumanizeField(), FieldKind.PolymorphicList));
                     break;
                 }
 
             case "WriteStringList":
                 {
-                    string name = PopLastField(fieldNameStack);
+                    string name = FieldNameStackHelpers.PopLastFieldAndClear(fieldNameStack);
                     steps.Add(new WriteField(name.HumanizeField(), FieldKind.StringList));
                     break;
                 }
 
             case "WriteNestedValueList":
                 {
-                    string name = PopLastField(fieldNameStack);
+                    string name = FieldNameStackHelpers.PopLastFieldAndClear(fieldNameStack);
                     steps.Add(new WriteField(name.HumanizeField(), FieldKind.NestedValueList));
                     break;
                 }
@@ -116,16 +116,6 @@ internal static class PackIlCallInterpreter
             case "Read" when callRef.Parameters.All(p => p.ParameterType.Name == "Boolean&"):
                 break;
         }
-    }
-
-    private static string PopLastField(Stack<string> stack)
-    {
-        if (stack.Count == 0)
-            return "_unknown";
-
-        string last = stack.Pop();
-        stack.Clear();
-        return last;
     }
 
     private static FieldInfo? FindField(FieldInfo[] fields, string rustName)

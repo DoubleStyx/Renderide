@@ -66,4 +66,20 @@ public static class LogsLayout
         string unique = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         return Path.Combine(dir, $"{stamp}_{unique}.log");
     }
+
+    /// <summary>
+    /// Same file naming as <see cref="EnsureUniqueTestSharedTypeGeneratorLogFilePath"/> but uses a caller-supplied
+    /// logs root directory instead of <see cref="ResolveLogsRoot"/> (no <c>RENDERIDE_LOGS_ROOT</c> or git resolution).
+    /// Use when tests must not write under the repository checkout.
+    /// </summary>
+    /// <param name="logsRootDirectory">Directory that acts as the logs root; <see cref="SharedTypeGeneratorSubdir"/> is created beneath it.</param>
+    public static string EnsureUniqueTestSharedTypeGeneratorLogFilePathUnderLogsRoot(string logsRootDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(logsRootDirectory);
+        string dir = Path.Combine(Path.GetFullPath(logsRootDirectory.Trim()), SharedTypeGeneratorSubdir);
+        Directory.CreateDirectory(dir);
+        string stamp = FormatLogFilenameTimestampUtc();
+        string unique = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+        return Path.Combine(dir, $"{stamp}_{unique}.log");
+    }
 }

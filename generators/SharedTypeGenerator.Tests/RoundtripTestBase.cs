@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Reflection;
 using NotEnoughLogs;
+using SharedTypeGenerator.Emission;
 using NotEnoughLogs.Behaviour;
 using Renderite.Shared;
 using SharedTypeGenerator.Analysis;
@@ -43,20 +45,39 @@ public abstract class RoundtripTestBase
         };
         var assembly = Assembly.LoadFrom(path);
 
-        string logFilePath = LogsLayout.EnsureUniqueTestSharedTypeGeneratorLogFilePath(
-            RenderidePathResolver.TryGetGitRepositoryRoot());
-        using var logSink = SharedTypeGeneratorLogging.CreateMainSink(logFilePath);
-        using var logger = new Logger(
-            new[] { logSink },
-            new LoggerConfiguration
-            {
-                Behaviour = new DirectLoggingBehaviour(),
-                MaxLevel = LogLevel.Info,
-            });
-        var analyzer = new TypeAnalyzer(logger, path);
-        var types = analyzer.Analyze();
+        // Keep analyzer logs out of the repo: resolve under a temp tree (same naming as production helpers).
+        string tempLogsRoot = Path.Combine(
+            Path.GetTempPath(),
+            "renderide-SharedTypeGenerator-tests",
+            Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture));
+        string logFilePath = LogsLayout.EnsureUniqueTestSharedTypeGeneratorLogFilePathUnderLogsRoot(tempLogsRoot);
+        try
+        {
+            using var logSink = SharedTypeGeneratorLogging.CreateMainSink(logFilePath);
+            using var logger = new Logger(
+                new[] { logSink },
+                new LoggerConfiguration
+                {
+                    Behaviour = new DirectLoggingBehaviour(),
+                    MaxLevel = LogLevel.Info,
+                });
+            var analyzer = new TypeAnalyzer(logger, path);
+            var types = analyzer.Analyze();
 
-        return (assembly, types);
+            return (assembly, types);
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(tempLogsRoot))
+                    Directory.Delete(tempLogsRoot, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup (file locks / AV on some platforms).
+            }
+        }
     }
 
     protected static bool CanRoundtrip(TypeDescriptor d)
@@ -82,7 +103,7 @@ public abstract class RoundtripTestBase
 
     protected static (byte[] Buffer, int Length) PackToBuffer(object obj)
     {
-        var buffer = new byte[1024 * 1024];
+        var buffer = new byte[PackEmitter.RoundtripBufferBytes];
         var span = buffer.AsSpan();
         var packer = new MemoryPacker(span);
 

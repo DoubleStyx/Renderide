@@ -1,11 +1,6 @@
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
-using System.Runtime.InteropServices;
-using LayoutKind = System.Runtime.InteropServices.LayoutKind;
-using NotEnoughLogs;
 using SharedTypeGenerator.IR;
-using SharedTypeGenerator.Logging;
 
 namespace SharedTypeGenerator.Analysis;
 
@@ -15,7 +10,7 @@ public partial class TypeAnalyzer
     private TypeDescriptor AnalyzePolymorphic(Type type)
     {
         List<PolymorphicVariant> variants = _polyAnalyzer.ExtractVariants(type);
-        foreach (Type refType in _polyAnalyzer.GetReferencedTypes(variants))
+        foreach (Type refType in PolymorphicAnalyzer.GetReferencedTypes(variants))
             EnqueueType(refType);
 
         return new TypeDescriptor
@@ -28,7 +23,8 @@ public partial class TypeAnalyzer
         };
     }
 
-    private TypeDescriptor AnalyzeValueEnum(Type type)
+    /// <summary>Shared enum member extraction for <see cref="TypeShape.ValueEnum"/> and <see cref="TypeShape.FlagsEnum"/>.</summary>
+    private static TypeDescriptor AnalyzeEnumCore(Type type, TypeShape shape, string rustName)
     {
         FieldInfo valueField = type.GetField("value__")!;
         Type underlyingType = valueField.FieldType;
@@ -43,7 +39,8 @@ public partial class TypeAnalyzer
         {
             string? name = value.ToString();
             Debug.Assert(name != null);
-            if (!seen.Add(name)) continue;
+            if (!seen.Add(name))
+                continue;
 
             object? num = valueField.GetValue(value);
             Debug.Assert(num != null);
@@ -55,205 +52,12 @@ public partial class TypeAnalyzer
         return new TypeDescriptor
         {
             CSharpName = type.Name,
-            RustName = RustTypeMapper.MapType(type, _assembly).HumanizeType(),
-            Shape = TypeShape.ValueEnum,
+            RustName = rustName,
+            Shape = shape,
             Fields = [],
             UnderlyingEnumType = underlyingType,
             RustUnderlyingType = rustUnderlying,
             EnumMembers = members,
-        };
-    }
-
-    private TypeDescriptor AnalyzeFlagsEnum(Type type)
-    {
-        FieldInfo valueField = type.GetField("value__")!;
-        Type underlyingType = valueField.FieldType;
-        string rustUnderlying = RustTypeMapper.MapPrimitiveType(underlyingType);
-
-        Array values = Enum.GetValues(type);
-        var members = new List<EnumMember>();
-        var seen = new HashSet<string>();
-        bool first = true;
-
-        foreach (object value in values)
-        {
-            string? name = value.ToString();
-            Debug.Assert(name != null);
-            if (!seen.Add(name)) continue;
-
-            object? num = valueField.GetValue(value);
-            Debug.Assert(num != null);
-
-            members.Add(new EnumMember { Name = name, Value = num, IsDefault = first });
-            first = false;
-        }
-
-        return new TypeDescriptor
-        {
-            CSharpName = type.Name,
-            RustName = MapRustName(type),
-            Shape = TypeShape.FlagsEnum,
-            Fields = [],
-            UnderlyingEnumType = underlyingType,
-            RustUnderlyingType = rustUnderlying,
-            EnumMembers = members,
-        };
-    }
-
-    private TypeDescriptor AnalyzePodStruct(Type type)
-    {
-        FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        var fieldDescriptors = new List<FieldDescriptor>();
-
-        int totalSize = 0;
-        bool allFieldsPod = true;
-
-        foreach (FieldInfo field in fields)
-        {
-            FieldOffsetAttribute? offset = field.GetCustomAttribute<FieldOffsetAttribute>();
-
-            Type sizeType = field.FieldType == typeof(bool) ? typeof(byte) : field.FieldType;
-            if (sizeType.IsEnum) sizeType = sizeType.GetField("value__")!.FieldType;
-            try { totalSize += Marshal.SizeOf(sizeType); } catch { /* skip */ }
-
-            bool fieldRustLayoutPod = IsRustLayoutPodField(field.FieldType, new HashSet<Type>());
-            if (!fieldRustLayoutPod)
-                allFieldsPod = false;
-
-            string rustType = field.FieldType == typeof(bool) ? "u8" : MapRustTypeWithQueue(field.FieldType);
-            FieldKind kind = _classifier.ClassifyByType(field.FieldType);
-            if (kind == FieldKind.Pod && !fieldRustLayoutPod)
-                kind = FieldKind.ObjectRequired;
-
-            fieldDescriptors.Add(new FieldDescriptor
-            {
-                CSharpName = field.Name,
-                RustName = field.Name.HumanizeField(),
-                RustType = rustType,
-                Kind = kind,
-                ExplicitOffset = offset?.Value,
-            });
-        }
-
-        var layout = type.GetCustomAttribute<StructLayoutAttribute>();
-        int declaredSize = (layout?.Value == LayoutKind.Explicit && layout.Size > 0) ? layout.Size : 0;
-        if (declaredSize == 0)
-            declaredSize = GetExplicitLayoutSizeViaCecil(type);
-
-        int paddingBytes = 0;
-
-        try
-        {
-            if (fields.Length > 0 && fields.Any(f => f.GetCustomAttribute<FieldOffsetAttribute>() != null) && declaredSize > 0)
-            {
-                var offsetSizePairs = new List<(int Offset, int Size)>();
-                for (int i = 0; i < fields.Length; i++)
-                {
-                    FieldInfo field = fields[i];
-                    int offset = field.GetCustomAttribute<FieldOffsetAttribute>()?.Value ?? 0;
-                    Type st = field.FieldType == typeof(bool) ? typeof(byte) : field.FieldType;
-                    if (st.IsEnum) st = st.GetField("value__")!.FieldType;
-                    int size;
-                    try { size = Marshal.SizeOf(st); } catch { size = 0; }
-                    offsetSizePairs.Add((offset, size));
-                }
-
-                offsetSizePairs.Sort((a, b) => a.Offset.CompareTo(b.Offset));
-
-                int paddingIndex = 0;
-                for (int i = 0; i < offsetSizePairs.Count; i++)
-                {
-                    (int offset, int size) = offsetSizePairs[i];
-                    int gapEnd = offset + size;
-                    int nextStart = i + 1 < offsetSizePairs.Count
-                        ? offsetSizePairs[i + 1].Offset
-                        : declaredSize;
-                    int gap = nextStart - gapEnd;
-                    if (gap > 0)
-                    {
-                        string padName = paddingIndex == 0 ? "_padding" : $"_padding_{paddingIndex}";
-                        fieldDescriptors.Add(new FieldDescriptor
-                        {
-                            CSharpName = padName,
-                            RustName = padName,
-                            RustType = $"[u8; {gap}]",
-                            Kind = FieldKind.Pod,
-                            ExplicitOffset = gapEnd,
-                        });
-                        paddingBytes += gap;
-                        paddingIndex++;
-                    }
-                }
-            }
-            else if (declaredSize == 0)
-            {
-                int actualSize = Marshal.SizeOf(type);
-                paddingBytes = Math.Max(0, actualSize - totalSize);
-            }
-        }
-        catch
-        {
-            /* fallback: paddingBytes stays 0 */
-        }
-
-        // Top-level fields that map to Quat/Mat4/Vec4 can force Rust-only padding when combined with other fields.
-        bool hasSimdCompositePaddingRisk = fields.Length > 1 && fields.Any(f =>
-        {
-            string rustT = f.FieldType == typeof(bool) ? "u8" : RustTypeMapper.MapType(f.FieldType, _assembly);
-            return RustTypeMapper.IsGlamRustTypeRequiringCompositeNonPod(rustT);
-        });
-        bool isPod = allFieldsPod && !hasSimdCompositePaddingRisk;
-
-        int? hostInteropSizeBytes = null;
-        try
-        {
-            int marshalSize = Marshal.SizeOf(type);
-            hostInteropSizeBytes = marshalSize;
-            if (declaredSize > 0 && marshalSize != declaredSize)
-            {
-                _logger.LogWarning(
-                    LogCategory.Analysis,
-                    $"{type.FullName}: StructLayout.Size={declaredSize} differs from Marshal.SizeOf={marshalSize}; using Marshal.SizeOf for HostInteropSizeBytes.");
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(LogCategory.Analysis, $"{type.FullName}: Marshal.SizeOf failed: {ex.Message}");
-        }
-
-        if (hostInteropSizeBytes.HasValue && fields.Any(f => f.GetCustomAttribute<FieldOffsetAttribute>() != null))
-        {
-            int maxEnd = 0;
-            foreach (FieldInfo field in fields)
-            {
-                FieldOffsetAttribute? fo = field.GetCustomAttribute<FieldOffsetAttribute>();
-                if (fo == null) continue;
-
-                Type st = field.FieldType == typeof(bool) ? typeof(byte) : field.FieldType;
-                if (st.IsEnum) st = st.GetField("value__")!.FieldType;
-                int sz;
-                try { sz = Marshal.SizeOf(st); } catch { continue; }
-
-                maxEnd = Math.Max(maxEnd, fo.Value + sz);
-            }
-
-            if (maxEnd > hostInteropSizeBytes.Value)
-            {
-                throw new InvalidOperationException(
-                    $"{type.FullName}: explicit layout field extent ({maxEnd} bytes) exceeds Marshal.SizeOf={hostInteropSizeBytes.Value}.");
-            }
-        }
-
-        return new TypeDescriptor
-        {
-            CSharpName = type.Name,
-            RustName = MapRustName(type),
-            Shape = TypeShape.PodStruct,
-            Fields = fieldDescriptors,
-            IsPod = isPod,
-            ExplicitSize = declaredSize > 0 ? declaredSize : null,
-            PaddingBytes = paddingBytes,
-            HostInteropSizeBytes = hostInteropSizeBytes,
         };
     }
 
@@ -344,7 +148,7 @@ public partial class TypeAnalyzer
 
     /// <summary>Returns true when <paramref name="rustType"/> is a single scalar field suitable for
     /// `#[repr(C)]` layout without glam vectors (avoids SIMD padding mismatches vs. C#).</summary>
-    private static bool IsPlainRustScalarLayoutType(string rustType) =>
+    internal static bool IsPlainRustScalarLayoutType(string rustType) =>
         rustType is "i32" or "i64" or "u32" or "u64" or "u16" or "i16" or "u8" or "f32" or "f64";
 
     /// <summary>Recursively replaces CallBase steps with the inlined serialization

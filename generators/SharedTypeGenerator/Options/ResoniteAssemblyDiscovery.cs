@@ -128,7 +128,7 @@ public static class ResoniteAssemblyDiscovery
     /// Steam roots to probe: <see cref="SteamPathEnvVar"/>, registry and common folders on Windows, standard Steam Client paths on macOS,
     /// and typical Linux locations (<c>~/.local/share/Steam</c>, <c>~/.steam/steam</c>).
     /// </summary>
-    static IEnumerable<string> EnumerateSteamBasePaths()
+    static List<string> EnumerateSteamBasePaths()
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var bases = new List<string>();
