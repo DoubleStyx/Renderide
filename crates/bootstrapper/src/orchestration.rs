@@ -7,11 +7,14 @@ use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::Instant;
 
 use crate::child_lifetime::ChildLifetimeGroup;
 use crate::cleanup;
 use crate::config::ResoBootConfig;
+use crate::constants::{
+    host_exit_watcher_poll_interval, initial_heartbeat_timeout, watchdog_poll_interval,
+};
 use crate::host;
 use crate::ipc::{bootstrap_queue_base_names, BootstrapQueues};
 use crate::protocol;
@@ -25,8 +28,8 @@ pub struct RunContext {
     pub log_timestamp: String,
 }
 
-/// Runs the bootstrapper main loop after logging is initialized.
-pub fn run(config: &ResoBootConfig, ctx: RunContext) -> Result<(), BootstrapError> {
+/// Logs Resonite / interprocess paths and queue names at bootstrap start.
+fn log_run_intro(config: &ResoBootConfig) {
     if let Some(ref level) = config.renderide_log_level {
         logger::info!("Renderide log level: {}", level.as_arg());
     }
@@ -39,8 +42,95 @@ pub fn run(config: &ResoBootConfig, ctx: RunContext) -> Result<(), BootstrapErro
         backing,
         crate::ipc::RENDERIDE_INTERPROCESS_DIR_ENV
     );
+}
 
-    let lifetime = ChildLifetimeGroup::new()?;
+/// Appends `-shmprefix` and the generated prefix to Host argv.
+fn assemble_host_args(mut host_args: Vec<String>, shared_memory_prefix: &str) -> Vec<String> {
+    host_args.push("-shmprefix".to_string());
+    host_args.push(shared_memory_prefix.to_string());
+    host_args
+}
+
+/// Spawns the Host, raises priority, and starts stdout/stderr drainers into the host log file.
+fn start_host_with_drainers(
+    config: &ResoBootConfig,
+    args: &[String],
+    lifetime: &ChildLifetimeGroup,
+    log_timestamp: &str,
+) -> Result<Child, std::io::Error> {
+    let mut child = host::spawn_host(config, args, lifetime)?;
+    logger::info!("Process started. Id: {}", child.id());
+
+    host::set_host_above_normal_priority(&child);
+
+    logger::ensure_log_dir(logger::LogComponent::Host)?;
+    let host_log_path = logger::log_file_path(logger::LogComponent::Host, log_timestamp);
+
+    if let Some(stdout) = child.stdout.take() {
+        host::spawn_output_drainer(host_log_path.clone(), stdout, "[Host stdout]");
+    }
+    if let Some(stderr) = child.stderr.take() {
+        host::spawn_output_drainer(host_log_path, stderr, "[Host stderr]");
+    }
+
+    Ok(child)
+}
+
+/// Installs Ctrl+C handler on macOS to set `cancel`.
+#[cfg(target_os = "macos")]
+fn install_macos_signal_handler(cancel: &Arc<AtomicBool>) {
+    let c = Arc::clone(cancel);
+    if let Err(e) = ctrlc::set_handler(move || {
+        c.store(true, Ordering::SeqCst);
+    }) {
+        logger::warn!("macOS: could not install ctrlc (SIGINT/SIGTERM) handler: {e}");
+    }
+}
+
+/// Spawns the heartbeat watchdog; optionally spawns Host exit watcher when not under Wine.
+fn spawn_watchdogs(
+    config: &ResoBootConfig,
+    cancel: Arc<AtomicBool>,
+    heartbeat_deadline: Arc<Mutex<Instant>>,
+    child: Child,
+    log_timestamp: String,
+) -> (JoinHandle<()>, Option<JoinHandle<()>>) {
+    let heartbeat = spawn_heartbeat_watchdog(Arc::clone(&cancel), Arc::clone(&heartbeat_deadline));
+
+    let host_exit = if !config.is_wine {
+        logger::info!("Process watcher: cancel when Host process exits");
+        Some(spawn_host_exit_watcher(
+            child,
+            Arc::clone(&cancel),
+            log_timestamp,
+        ))
+    } else {
+        logger::info!("Wine mode: Host exit watcher disabled (child is shell wrapper)");
+        None
+    };
+
+    (heartbeat, host_exit)
+}
+
+/// macOS child teardown, Wine queue cleanup, and final log line.
+fn finalize(config: &ResoBootConfig, lifetime: &ChildLifetimeGroup) {
+    #[cfg(target_os = "macos")]
+    lifetime.shutdown_tracked_children();
+    #[cfg(not(target_os = "macos"))]
+    let _ = lifetime;
+
+    if config.is_wine {
+        cleanup::remove_wine_queue_backing_files(&config.shared_memory_prefix);
+    }
+
+    logger::info!("Bootstrapper end");
+}
+
+/// Runs the bootstrapper main loop after logging is initialized.
+pub fn run(config: &ResoBootConfig, ctx: RunContext) -> Result<(), BootstrapError> {
+    log_run_intro(config);
+
+    let lifetime = ChildLifetimeGroup::new().map_err(BootstrapError::Io)?;
     let mut queues = BootstrapQueues::open(&config.shared_memory_prefix)?;
 
     let (incoming_name, outgoing_name) = bootstrap_queue_base_names(&config.shared_memory_prefix);
@@ -54,50 +144,25 @@ pub fn run(config: &ResoBootConfig, ctx: RunContext) -> Result<(), BootstrapErro
         log_timestamp,
     } = ctx;
 
-    let mut args: Vec<String> = host_args;
-    args.push("-shmprefix".to_string());
-    args.push(config.shared_memory_prefix.clone());
+    let args = assemble_host_args(host_args, &config.shared_memory_prefix);
     logger::info!("Host args: {:?}", args);
 
-    let mut child = host::spawn_host(config, &args, &lifetime)?;
-    logger::info!("Process started. Id: {}", child.id());
-
-    host::set_host_above_normal_priority(&child);
-
-    logger::ensure_log_dir(logger::LogComponent::Host).map_err(BootstrapError::Io)?;
-    let host_log_path = logger::log_file_path(logger::LogComponent::Host, &log_timestamp);
-
-    if let Some(stdout) = child.stdout.take() {
-        host::spawn_output_drainer(host_log_path.clone(), stdout, "[Host stdout]");
-    }
-    if let Some(stderr) = child.stderr.take() {
-        host::spawn_output_drainer(host_log_path, stderr, "[Host stderr]");
-    }
+    let child = start_host_with_drainers(config, &args, &lifetime, &log_timestamp)
+        .map_err(BootstrapError::Io)?;
 
     let cancel = Arc::new(AtomicBool::new(false));
 
     #[cfg(target_os = "macos")]
-    {
-        let c = Arc::clone(&cancel);
-        if let Err(e) = ctrlc::set_handler(move || {
-            c.store(true, Ordering::SeqCst);
-        }) {
-            logger::warn!("macOS: could not install ctrlc (SIGINT/SIGTERM) handler: {e}");
-        }
-    }
+    install_macos_signal_handler(&cancel);
 
-    let heartbeat_deadline = Arc::new(Mutex::new(
-        std::time::Instant::now() + Duration::from_secs(120),
-    ));
-    let _heartbeat_watchdog =
-        spawn_heartbeat_watchdog(Arc::clone(&cancel), Arc::clone(&heartbeat_deadline));
-
-    if !config.is_wine {
-        logger::info!("Process watcher: cancel when Host process exits");
-        let _host_exit_watcher = spawn_host_exit_watcher(child, Arc::clone(&cancel), log_timestamp);
-    } else {
-        logger::info!("Wine mode: Host exit watcher disabled (child is shell wrapper)");
-    }
+    let heartbeat_deadline = Arc::new(Mutex::new(Instant::now() + initial_heartbeat_timeout()));
+    let (_heartbeat_watchdog, _host_exit_watcher) = spawn_watchdogs(
+        config,
+        Arc::clone(&cancel),
+        Arc::clone(&heartbeat_deadline),
+        child,
+        log_timestamp,
+    );
 
     protocol::queue_loop(
         &mut queues.incoming,
@@ -108,31 +173,24 @@ pub fn run(config: &ResoBootConfig, ctx: RunContext) -> Result<(), BootstrapErro
         &heartbeat_deadline,
     );
 
-    #[cfg(target_os = "macos")]
-    lifetime.shutdown_tracked_children();
-
-    if config.is_wine {
-        cleanup::remove_wine_queue_backing_files(&config.shared_memory_prefix);
-    }
-
-    logger::info!("Bootstrapper end");
+    finalize(config, &lifetime);
     Ok(())
 }
 
 /// Thread: sets `cancel` when the IPC heartbeat deadline passes without refresh.
 fn spawn_heartbeat_watchdog(
     cancel: Arc<AtomicBool>,
-    heartbeat_deadline: Arc<Mutex<std::time::Instant>>,
+    heartbeat_deadline: Arc<Mutex<Instant>>,
 ) -> JoinHandle<()> {
     let cancel_wd = Arc::clone(&cancel);
     let deadline_wd = Arc::clone(&heartbeat_deadline);
     std::thread::spawn(move || {
         while !cancel_wd.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(watchdog_poll_interval());
             let Ok(deadline) = deadline_wd.lock() else {
                 continue;
             };
-            if std::time::Instant::now() > *deadline {
+            if Instant::now() > *deadline {
                 cancel_wd.store(true, Ordering::SeqCst);
                 logger::info!("Bootstrapper messaging timeout!");
                 break;
@@ -159,7 +217,7 @@ fn spawn_host_exit_watcher(
                     break None;
                 }
             }
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(host_exit_watcher_poll_interval());
         };
         let exit_info = exit_status
             .as_ref()

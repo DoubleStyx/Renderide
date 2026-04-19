@@ -26,17 +26,23 @@ pub fn wine_get_version() -> Option<String> {
 fn wine_get_version_linux() -> Option<String> {
     use libloading::{Library, Symbol};
 
+    // SAFETY: `Library::new` loads a host module; under native Linux this fails fast; under Wine,
+    // `ntdll.dll` is a Wine-provided shim that exposes `wine_get_version`.
     let lib = unsafe { Library::new("ntdll.dll") }.ok()?;
+    // SAFETY: We only call a symbol name Wine documents; wrong signatures would be UB.
     let func: Symbol<unsafe extern "C" fn() -> *const u16> =
         unsafe { lib.get(b"wine_get_version\0").ok()? };
+    // SAFETY: `wine_get_version` returns a pointer to a static UTF-16 string or null when absent.
     let ptr = unsafe { func() };
     if ptr.is_null() {
         return None;
     }
     let mut len = 0usize;
+    // SAFETY: Wine NUL-terminates the version string; we scan only until the terminator.
     while unsafe { *ptr.add(len) } != 0 {
         len += 1;
     }
+    // SAFETY: `ptr` is valid for `len` UTF-16 code units for the lifetime of the returned string.
     let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
     String::from_utf16(slice).ok()
 }

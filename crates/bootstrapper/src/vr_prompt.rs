@@ -73,14 +73,19 @@ pub fn prompt_desktop_or_vr() -> Option<bool> {
 }
 
 /// Prepends `-Device SteamVR` or `-Screen` to the Host argv list.
-pub fn apply_host_vr_choice(mut host_args: Vec<String>, vr: bool) -> Vec<String> {
+pub fn apply_host_vr_choice(host_args: Vec<String>, vr: bool) -> Vec<String> {
     if vr {
-        host_args.insert(0, "SteamVR".into());
-        host_args.insert(0, "-Device".into());
+        let mut out = Vec::with_capacity(host_args.len().saturating_add(2));
+        out.push("-Device".into());
+        out.push("SteamVR".into());
+        out.extend(host_args);
+        out
     } else {
-        host_args.insert(0, "-Screen".into());
+        let mut out = Vec::with_capacity(host_args.len().saturating_add(1));
+        out.push("-Screen".into());
+        out.extend(host_args);
+        out
     }
-    host_args
 }
 
 #[cfg(test)]
@@ -119,5 +124,47 @@ mod tests {
     fn apply_desktop_prepends_screen() {
         let out = apply_host_vr_choice(vec![], false);
         assert_eq!(out, vec!["-Screen"]);
+    }
+
+    #[test]
+    fn normalized_flag_token_trims_and_strips_leading_dash() {
+        assert_eq!(super::normalized_flag_token("  -Screen  "), "screen");
+        assert_eq!(super::normalized_flag_token("Device"), "device");
+        // Only one leading `-` is stripped; `--` prefixes remain normalized for the remainder.
+        assert_eq!(super::normalized_flag_token("--Foo"), "-foo");
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn should_prompt_false_when_ci_set() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        std::env::set_var("CI", "1");
+        assert!(!should_prompt_vr_dialog(&[]));
+        std::env::remove_var("CI");
+    }
+
+    #[test]
+    fn should_prompt_false_when_skip_env_set() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        std::env::set_var(ENV_SKIP_VR_DIALOG, "1");
+        assert!(!should_prompt_vr_dialog(&[]));
+        std::env::remove_var(ENV_SKIP_VR_DIALOG);
+    }
+
+    #[test]
+    fn should_prompt_false_when_device_explicit() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        std::env::remove_var("CI");
+        std::env::remove_var(ENV_SKIP_VR_DIALOG);
+        assert!(!should_prompt_vr_dialog(&["-Device".into(), "x".into()]));
+    }
+
+    #[test]
+    fn should_prompt_true_when_unset_and_no_explicit_device() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        std::env::remove_var("CI");
+        std::env::remove_var(ENV_SKIP_VR_DIALOG);
+        assert!(should_prompt_vr_dialog(&[]));
     }
 }

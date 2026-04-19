@@ -7,7 +7,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum BootstrapError {
     /// Forwarded I/O error (filesystem, processes, etc.).
-    #[error("{0}")]
+    #[error("io: {0}")]
     Io(
         #[from]
         #[source]
@@ -39,7 +39,8 @@ mod tests {
     fn display_io_forwards_message() {
         let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
         let e = BootstrapError::Io(inner);
-        assert_eq!(e.to_string(), "missing");
+        assert!(e.to_string().contains("missing"));
+        assert!(e.to_string().starts_with("io:"));
     }
 
     #[test]
@@ -62,6 +63,27 @@ mod tests {
         let inner = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
         let e = BootstrapError::CurrentDir(inner);
         assert!(e.to_string().contains("current directory"));
+    }
+
+    #[test]
+    fn display_interprocess_open() {
+        let inner = std::io::Error::other("mapping failed");
+        let e = BootstrapError::InterprocessOpen(OpenError(inner));
+        assert_eq!(e.to_string(), "mapping failed");
+    }
+
+    #[test]
+    fn from_io_error_yields_io_variant() {
+        let io = std::io::Error::other("x");
+        let e: BootstrapError = io.into();
+        assert!(matches!(e, BootstrapError::Io(_)));
+    }
+
+    #[test]
+    fn from_open_error_yields_interprocess_variant() {
+        let o = OpenError(std::io::Error::other("open"));
+        let e: BootstrapError = o.into();
+        assert!(matches!(e, BootstrapError::InterprocessOpen(_)));
     }
 
     #[test]
