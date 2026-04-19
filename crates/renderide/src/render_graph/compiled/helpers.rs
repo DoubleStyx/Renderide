@@ -178,6 +178,28 @@ pub(super) fn resolve_transient_extent(
     }
 }
 
+/// Clamps viewport dimensions to [`wgpu::Limits::max_texture_dimension_2d`] before transient texture
+/// or buffer allocation from viewport-derived sizes.
+pub(super) fn clamp_viewport_for_transient_alloc(
+    viewport_px: (u32, u32),
+    max_texture_dimension_2d: u32,
+) -> (u32, u32) {
+    let ow = viewport_px.0.max(1);
+    let oh = viewport_px.1.max(1);
+    let w = ow.min(max_texture_dimension_2d);
+    let h = oh.min(max_texture_dimension_2d);
+    if w != ow || h != oh {
+        logger::warn!(
+            "transient alloc: viewport {}×{} clamped to {}×{} (max_texture_dimension_2d={max_texture_dimension_2d})",
+            ow,
+            oh,
+            w,
+            h,
+        );
+    }
+    (w, h)
+}
+
 pub(super) fn resolve_buffer_size(size_policy: BufferSizePolicy, viewport_px: (u32, u32)) -> u64 {
     match size_policy {
         BufferSizePolicy::Fixed(size) => size.max(1),

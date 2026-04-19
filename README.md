@@ -32,16 +32,16 @@ The bootstrapper will launch the Resonite host and connect Renderide automatical
 
 ## Debugging
 
-1. Build the workspace in debug mode:
+1. Build the workspace in dev mode:
 
    ```bash
-   cargo build
+   cargo build --profile dev
    ```
 
-1. Run the bootstrapper in debug mode:
+1. Run the bootstrapper in dev mode:
 
    ```bash
-   RUST_BACKTRACE=1 ./target/debug/bootstrapper
+   RUST_BACKTRACE=1 ./target/dev/bootstrapper
    ```
 
 1. Enable validation layers in the config hud to get more detailed error messages for GPU crashes. Requires a restart.

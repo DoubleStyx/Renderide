@@ -88,7 +88,8 @@ pub struct GpuCubemap {
 impl GpuCubemap {
     /// Allocates GPU storage for `fmt` (empty mips; data arrives via upload path).
     ///
-    /// Returns [`None`] when `size` is zero, or when the edge exceeds `max_texture_dimension_2d`.
+    /// Returns [`None`] when `size` is zero, when the edge exceeds `max_texture_dimension_2d`, or
+    /// when `max_texture_array_layers` is below six (cubemap faces).
     pub fn new_from_format(
         device: &wgpu::Device,
         limits: &GpuLimits,
@@ -105,6 +106,15 @@ impl GpuCubemap {
                 "cubemap {}: face size {} exceeds max_texture_dimension_2d ({max_dim}); GPU texture not created",
                 fmt.asset_id,
                 s
+            );
+            return None;
+        }
+        if !limits.cubemap_fits_texture_array_layers() {
+            let max_layers = limits.max_texture_array_layers();
+            logger::warn!(
+                "cubemap {}: max_texture_array_layers ({max_layers}) < {}; GPU texture not created",
+                fmt.asset_id,
+                crate::gpu::CUBEMAP_ARRAY_LAYERS
             );
             return None;
         }

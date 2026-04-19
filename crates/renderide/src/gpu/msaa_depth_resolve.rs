@@ -1,6 +1,7 @@
 //! Compute + fullscreen depth blit used to resolve multisampled depth to the single-sample forward depth target
 //! (no storage writes on depth in core WebGPU).
 
+use super::limits::GpuLimits;
 use crate::render_graph::MAIN_FORWARD_DEPTH_CLEAR;
 
 const COMPUTE_WGSL: &str = include_str!(concat!(
@@ -349,12 +350,16 @@ impl MsaaDepthResolveResources {
     }
 
     /// Resolves `targets.msaa_depth_view` into `targets.dst_depth_view` via R32F intermediate `targets.r32_view`.
+    ///
+    /// When the 8×8-tiled compute dispatch would exceed [`GpuLimits::compute_dispatch_fits`], logs a
+    /// warning and skips compute and blit (degraded depth for intersection / Hi-Z vs invalid GPU work).
     pub fn encode_resolve(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         extent: (u32, u32),
         targets: MsaaDepthResolveMonoTargets<'_>,
+        limits: &GpuLimits,
     ) {
         let MsaaDepthResolveMonoTargets {
             msaa_depth_view,
@@ -363,6 +368,17 @@ impl MsaaDepthResolveResources {
             dst_depth_format,
         } = targets;
         let (w, h) = (extent.0.max(1), extent.1.max(1));
+        let gx = w.div_ceil(8);
+        let gy = h.div_ceil(8);
+        if !limits.compute_dispatch_fits(gx, gy, 1) {
+            logger::warn!(
+                "MSAA depth resolve: dispatch {}×{}×1 exceeds max_compute_workgroups_per_dimension ({})",
+                gx,
+                gy,
+                limits.max_compute_workgroups_per_dimension()
+            );
+            return;
+        }
 
         let compute_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("msaa_depth_resolve_compute_bg"),
@@ -395,8 +411,6 @@ impl MsaaDepthResolveResources {
             });
             cpass.set_pipeline(&self.compute_pipeline);
             cpass.set_bind_group(0, &compute_bg, &[]);
-            let gx = w.div_ceil(8);
-            let gy = h.div_ceil(8);
             cpass.dispatch_workgroups(gx, gy, 1);
         }
 
@@ -438,12 +452,15 @@ impl MsaaDepthResolveResources {
     ///
     /// Does nothing when [`wgpu::Features::MULTIVIEW`] was unavailable at construction
     /// (stereo MSAA is implicitly off in that case via the feature mask in the XR bootstrap).
+    ///
+    /// See [`Self::encode_resolve`] for compute dispatch limit handling.
     pub fn encode_resolve_stereo(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         extent: (u32, u32),
         targets: MsaaDepthResolveStereoTargets<'_>,
+        limits: &GpuLimits,
     ) {
         let MsaaDepthResolveStereoTargets {
             msaa_depth_layer_views,
@@ -460,6 +477,17 @@ impl MsaaDepthResolveResources {
             return;
         };
         let (w, h) = (extent.0.max(1), extent.1.max(1));
+        let gx = w.div_ceil(8);
+        let gy = h.div_ceil(8);
+        if !limits.compute_dispatch_fits(gx, gy, 1) {
+            logger::warn!(
+                "MSAA depth resolve (stereo): dispatch {}×{}×1 exceeds max_compute_workgroups_per_dimension ({})",
+                gx,
+                gy,
+                limits.max_compute_workgroups_per_dimension()
+            );
+            return;
+        }
 
         for eye in 0..2 {
             let compute_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -482,8 +510,6 @@ impl MsaaDepthResolveResources {
             });
             cpass.set_pipeline(&self.compute_pipeline);
             cpass.set_bind_group(0, &compute_bg, &[]);
-            let gx = w.div_ceil(8);
-            let gy = h.div_ceil(8);
             cpass.dispatch_workgroups(gx, gy, 1);
         }
 

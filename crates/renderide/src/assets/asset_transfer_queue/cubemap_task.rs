@@ -5,7 +5,6 @@ use std::sync::Arc;
 use crate::assets::texture::{
     CubemapFaceMipUploadStep, CubemapMipChainUploader, MipChainAdvance, TextureUploadError,
 };
-use crate::gpu::GpuLimits;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
     RendererCommand, SetCubemapData, SetCubemapFormat, SetCubemapResult, TextureUpdateResultType,
@@ -58,7 +57,6 @@ impl CubemapUploadTask {
         &mut self,
         queue: &mut AssetTransferQueue,
         device: &Arc<wgpu::Device>,
-        _gpu_limits: &Arc<GpuLimits>,
         gpu_queue: &wgpu::Queue,
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,

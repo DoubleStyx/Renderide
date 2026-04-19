@@ -6,7 +6,6 @@ use crate::assets::texture::{
     texture_upload_start, MipChainAdvance, TextureDataStart, TextureMipChainUploader,
     TextureMipUploadStep, TextureUploadError,
 };
-use crate::gpu::GpuLimits;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
     RendererCommand, SetTexture2DData, SetTexture2DFormat, SetTexture2DResult,
@@ -63,7 +62,6 @@ impl TextureUploadTask {
         &mut self,
         queue: &mut AssetTransferQueue,
         device: &Arc<wgpu::Device>,
-        _gpu_limits: &Arc<GpuLimits>,
         gpu_queue: &wgpu::Queue,
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,

@@ -262,11 +262,15 @@ impl CompiledRenderGraph {
                 self.imported_textures.len(),
                 self.imported_buffers.len(),
             );
+            let alloc_viewport = helpers::clamp_viewport_for_transient_alloc(
+                resolved.viewport_px,
+                gpu_limits.max_texture_dimension_2d(),
+            );
             self.resolve_transient_textures(
                 device,
                 backend,
                 TransientTextureResolveSurfaceParams {
-                    viewport_px: resolved.viewport_px,
+                    viewport_px: alloc_viewport,
                     surface_format: resolved.surface_format,
                     depth_stencil_format: resolved.depth_texture.format(),
                     sample_count: resolved.sample_count,
@@ -274,7 +278,7 @@ impl CompiledRenderGraph {
                 },
                 &mut resources,
             )?;
-            self.resolve_transient_buffers(device, backend, resolved.viewport_px, &mut resources)?;
+            self.resolve_transient_buffers(device, backend, alloc_viewport, &mut resources)?;
             transient_by_key.insert(key, resources);
         }
         {
@@ -407,11 +411,15 @@ impl CompiledRenderGraph {
                     self.imported_textures.len(),
                     self.imported_buffers.len(),
                 );
+                let alloc_viewport = helpers::clamp_viewport_for_transient_alloc(
+                    resolved.viewport_px,
+                    gpu_limits.max_texture_dimension_2d(),
+                );
                 self.resolve_transient_textures(
                     device,
                     backend,
                     TransientTextureResolveSurfaceParams {
-                        viewport_px: resolved.viewport_px,
+                        viewport_px: alloc_viewport,
                         surface_format: resolved.surface_format,
                         depth_stencil_format: resolved.depth_texture.format(),
                         sample_count: resolved.sample_count,
@@ -419,12 +427,7 @@ impl CompiledRenderGraph {
                     },
                     &mut resources,
                 )?;
-                self.resolve_transient_buffers(
-                    device,
-                    backend,
-                    resolved.viewport_px,
-                    &mut resources,
-                )?;
+                self.resolve_transient_buffers(device, backend, alloc_viewport, &mut resources)?;
                 transient_by_key.insert(key, resources);
             }
             {

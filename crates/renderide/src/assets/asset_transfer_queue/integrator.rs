@@ -95,9 +95,9 @@ fn step_asset_task(
     let q = queue.as_ref();
     match task {
         AssetTask::Mesh(m) => m.step(asset, device, gpu_limits, q, shm, ipc),
-        AssetTask::Texture(t) => t.step(asset, device, gpu_limits, q, shm, ipc),
-        AssetTask::Texture3d(t) => t.step(asset, device, gpu_limits, q, shm, ipc),
-        AssetTask::Cubemap(t) => t.step(asset, device, gpu_limits, q, shm, ipc),
+        AssetTask::Texture(t) => t.step(asset, device, q, shm, ipc),
+        AssetTask::Texture3d(t) => t.step(asset, device, q, shm, ipc),
+        AssetTask::Cubemap(t) => t.step(asset, device, q, shm, ipc),
     }
 }
 

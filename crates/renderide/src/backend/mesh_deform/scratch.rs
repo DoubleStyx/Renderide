@@ -28,11 +28,15 @@ pub struct MeshDeformScratch {
     pub skin_dispatch: wgpu::Buffer,
     max_bones: u32,
     max_shapes: u32,
+    /// [`wgpu::Limits::max_buffer_size`]; growth refuses past this cap.
+    max_buffer_size: u64,
 }
 
 impl MeshDeformScratch {
     /// Allocates initial scratch buffers on `device`.
-    pub fn new(device: &wgpu::Device) -> Self {
+    ///
+    /// `max_buffer_size` must be [`wgpu::Device::limits`].`max_buffer_size` (see [`crate::gpu::GpuLimits::max_buffer_size`]).
+    pub fn new(device: &wgpu::Device, max_buffer_size: u64) -> Self {
         let bone_bytes = (INITIAL_MAX_BONES as u64) * 64;
         let weight_bytes = (INITIAL_MAX_BLENDSHAPES as u64) * 4;
         let skin_dispatch_bytes = INITIAL_SKIN_DISPATCH_SLOTS.saturating_mul(256);
@@ -69,7 +73,19 @@ impl MeshDeformScratch {
             }),
             max_bones: INITIAL_MAX_BONES,
             max_shapes: INITIAL_MAX_BLENDSHAPES,
+            max_buffer_size,
         }
+    }
+
+    fn grow_allowed(&self, next_size: u64, label: &'static str) -> bool {
+        if next_size <= self.max_buffer_size {
+            return true;
+        }
+        logger::warn!(
+            "mesh deform scratch: {label} would need {next_size} bytes (max_buffer_size={})",
+            self.max_buffer_size
+        );
+        false
     }
 
     /// Ensures the bone palette buffer fits at least `need_bones` matrices (legacy single-mesh helper).
@@ -79,6 +95,9 @@ impl MeshDeformScratch {
         }
         let next = need_bones.next_power_of_two().max(INITIAL_MAX_BONES);
         let bone_bytes = (next as u64) * 64;
+        if !self.grow_allowed(bone_bytes, "bone_matrices") {
+            return;
+        }
         self.bone_matrices = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh_deform_bone_palette"),
             size: bone_bytes,
@@ -94,6 +113,9 @@ impl MeshDeformScratch {
             return;
         }
         let next_size = end_exclusive.next_power_of_two().max(64);
+        if !self.grow_allowed(next_size, "bone_matrices") {
+            return;
+        }
         self.bone_matrices = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh_deform_bone_palette"),
             size: next_size,
@@ -109,6 +131,9 @@ impl MeshDeformScratch {
         }
         let next = need_shapes.next_power_of_two().max(INITIAL_MAX_BLENDSHAPES);
         let weight_bytes = (next as u64) * 4;
+        if !self.grow_allowed(weight_bytes, "blendshape_weights") {
+            return;
+        }
         self.blendshape_weights = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh_deform_blendshape_weights"),
             size: weight_bytes.max(16),
@@ -124,6 +149,9 @@ impl MeshDeformScratch {
             return;
         }
         let next_size = end_exclusive.next_power_of_two().max(16);
+        if !self.grow_allowed(next_size, "blendshape_weights") {
+            return;
+        }
         self.blendshape_weights = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh_deform_blendshape_weights"),
             size: next_size,
@@ -140,6 +168,9 @@ impl MeshDeformScratch {
         let next = need_bytes
             .next_power_of_two()
             .max(INITIAL_BLENDSHAPE_PARAMS_STAGING);
+        if !self.grow_allowed(next, "blendshape_params_staging") {
+            return;
+        }
         self.blendshape_params_staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh_deform_blendshape_params_staging"),
             size: next,
@@ -161,6 +192,9 @@ impl MeshDeformScratch {
             return;
         }
         let next_size = end_exclusive.next_power_of_two().max(256);
+        if !self.grow_allowed(next_size, "skin_dispatch") {
+            return;
+        }
         self.skin_dispatch = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh_deform_skin_dispatch"),
             size: next_size,
@@ -212,7 +246,8 @@ mod tests {
         let Some((device, _queue)) = dummy_device_and_queue() else {
             return;
         };
-        let mut scratch = MeshDeformScratch::new(&device);
+        let max_buf = device.limits().max_buffer_size;
+        let mut scratch = MeshDeformScratch::new(&device, max_buf);
         let initial = INITIAL_SKIN_DISPATCH_SLOTS.saturating_mul(256);
         assert_eq!(scratch.skin_dispatch.size(), initial);
         scratch.ensure_skin_dispatch_byte_capacity(&device, 5000);

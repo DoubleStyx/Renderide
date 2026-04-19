@@ -5,7 +5,6 @@ use std::sync::Arc;
 use crate::assets::texture::{
     Texture3dMipAdvance, Texture3dMipChainUploader, Texture3dMipUploadStep, TextureUploadError,
 };
-use crate::gpu::GpuLimits;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
     RendererCommand, SetTexture3DData, SetTexture3DFormat, SetTexture3DResult,
@@ -59,7 +58,6 @@ impl Texture3dUploadTask {
         &mut self,
         queue: &mut AssetTransferQueue,
         device: &Arc<wgpu::Device>,
-        _gpu_limits: &Arc<GpuLimits>,
         gpu_queue: &wgpu::Queue,
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,

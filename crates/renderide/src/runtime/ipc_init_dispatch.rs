@@ -18,8 +18,8 @@ const RENDERER_IDENTIFIER: &str = concat!("Renderide ", env!("CARGO_PKG_VERSION"
 /// `gpu_max_texture_dim_2d` should be [`None`] until a [`wgpu::Device`] exists; the host only
 /// accepts **one** init result (see FrooxEngine `RenderSystem.HandleCommand`), so this is sent once
 /// from [`crate::runtime::RendererRuntime::on_init_data`] with [`None`] before GPU init. The
-/// [`RendererSettings::reported_max_texture_dimension_for_host`] fallback (`8192` when GPU limits are
-/// unknown) matches typical GPUs; non-zero config caps are still clamped.
+/// [`RendererSettings::reported_max_texture_dimension_for_host`] fallback ([`crate::gpu::REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE`]
+/// when GPU limits are unknown) matches typical GPUs; non-zero config caps are still clamped.
 pub(crate) fn send_renderer_init_result(
     ipc: &mut DualQueueIpc,
     output_device: HeadOutputDevice,

@@ -13,6 +13,14 @@ const PER_DRAW_UNIFORM_STRIDE: usize = 256;
 /// Initial slab row count; must match [`crate::backend::mesh_deform::INITIAL_PER_DRAW_UNIFORM_SLOTS`].
 const INITIAL_PER_DRAW_UNIFORM_SLOTS: usize = 256;
 
+/// Number of array layers used for a GPU cubemap (six faces).
+pub const CUBEMAP_ARRAY_LAYERS: u32 = 6;
+
+/// Product cap (texels per edge) for host-reported max texture size when the GPU is not yet
+/// available, and upper bound used by [`GpuLimits::clamp_render_texture_edge`] together with
+/// [`wgpu::Limits::max_texture_dimension_2d`] (see [`crate::config::RendererSettings::reported_max_texture_dimension_for_host`]).
+pub const REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE: u32 = 8192;
+
 /// Renderer-specific GPU limits and feature flags (immutable after construction).
 #[derive(Clone, Debug)]
 pub struct GpuLimits {
@@ -117,6 +125,12 @@ impl GpuLimits {
         Ok(())
     }
 
+    /// `min_storage_buffer_offset_alignment` for dynamic storage offsets (e.g. per-draw slab).
+    #[inline]
+    pub fn min_storage_buffer_offset_alignment(&self) -> u32 {
+        self.wgpu.min_storage_buffer_offset_alignment
+    }
+
     /// `max_buffer_size` for the device.
     #[inline]
     pub fn max_buffer_size(&self) -> u64 {
@@ -141,6 +155,19 @@ impl GpuLimits {
         self.wgpu.max_texture_dimension_3d
     }
 
+    /// `max_texture_array_layers` for the device (cubemaps use [`CUBEMAP_ARRAY_LAYERS`]).
+    #[inline]
+    pub fn max_texture_array_layers(&self) -> u32 {
+        self.wgpu.max_texture_array_layers
+    }
+
+    /// Returns `true` when [`Self::max_texture_array_layers`] is at least [`CUBEMAP_ARRAY_LAYERS`].
+    #[must_use]
+    #[inline]
+    pub fn cubemap_fits_texture_array_layers(&self) -> bool {
+        self.wgpu.max_texture_array_layers >= CUBEMAP_ARRAY_LAYERS
+    }
+
     /// `max_compute_workgroups_per_dimension` for dispatch validation.
     #[inline]
     pub fn max_compute_workgroups_per_dimension(&self) -> u32 {
@@ -155,10 +182,13 @@ impl GpuLimits {
         x <= m && y <= m && z <= m
     }
 
-    /// Clamps host edge length for render textures: `[4, min(8192, max_texture_dimension_2d)]`.
+    /// Clamps host edge length for render textures: `[4, min(REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE, max_texture_dimension_2d)]`.
     #[inline]
     pub fn clamp_render_texture_edge(&self, edge: i32) -> u32 {
-        let cap = self.wgpu.max_texture_dimension_2d.min(8192);
+        let cap = self
+            .wgpu
+            .max_texture_dimension_2d
+            .min(REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE);
         edge.clamp(4, cap as i32) as u32
     }
 }
@@ -212,6 +242,27 @@ mod tests {
         }
     }
 
+    fn synthetic_limits_layers(max_tex_2d: u32, max_array_layers: u32) -> GpuLimits {
+        GpuLimits {
+            wgpu: wgpu::Limits {
+                max_texture_dimension_2d: max_tex_2d,
+                max_texture_array_layers: max_array_layers,
+                ..Default::default()
+            },
+            supports_base_instance: true,
+            supports_multiview: false,
+            supports_float32_filterable: false,
+            texture_compression_features: wgpu::Features::empty(),
+            max_per_draw_slab_slots: 1024,
+        }
+    }
+
+    #[test]
+    fn cubemap_fits_requires_six_array_layers() {
+        assert!(!synthetic_limits_layers(4096, 4).cubemap_fits_texture_array_layers());
+        assert!(synthetic_limits_layers(4096, 6).cubemap_fits_texture_array_layers());
+    }
+
     #[test]
     fn clamp_render_texture_edge_clamps_min_to_four() {
         let gl = synthetic_limits(8192);
@@ -222,12 +273,15 @@ mod tests {
     }
 
     #[test]
-    fn clamp_render_texture_edge_caps_at_min_of_8192_and_gpu_max() {
+    fn clamp_render_texture_edge_caps_at_min_of_fallback_edge_and_gpu_max() {
         let gl_small = synthetic_limits(512);
         assert_eq!(gl_small.clamp_render_texture_edge(10_000), 512);
 
         let gl_large = synthetic_limits(16384);
-        assert_eq!(gl_large.clamp_render_texture_edge(100_000), 8192);
+        assert_eq!(
+            gl_large.clamp_render_texture_edge(100_000),
+            REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE
+        );
         assert_eq!(gl_large.clamp_render_texture_edge(4096), 4096);
     }
 }

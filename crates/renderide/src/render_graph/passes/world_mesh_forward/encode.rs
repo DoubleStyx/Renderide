@@ -5,6 +5,7 @@ use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::backend::MaterialBindCacheKey;
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::embedded_shaders;
+use crate::gpu::GpuLimits;
 use crate::materials::{
     embedded_composed_stem_for_permutation, MaterialPassDesc, MaterialPipelineDesc,
     MaterialPipelineSet, RasterPipelineKind,
@@ -127,6 +128,8 @@ pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
     pub queue: &'a wgpu::Queue,
     /// GPU device for lazy mesh stream creation.
     pub device: &'a wgpu::Device,
+    /// Device limits snapshot (dynamic storage offset alignment for `@group(2)`).
+    pub gpu_limits: &'a GpuLimits,
     /// Frame globals at `@group(0)`.
     pub frame_bg: &'a wgpu::BindGroup,
     /// Fallback material bind group when a stem has no resources.
@@ -218,6 +221,7 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
         encode,
         queue,
         device,
+        gpu_limits,
         frame_bg,
         empty_bg,
         per_draw_bind_group,
@@ -273,7 +277,7 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
             });
         }
 
-        let storage_align = device.limits().min_storage_buffer_offset_alignment;
+        let storage_align = gpu_limits.min_storage_buffer_offset_alignment();
         let per_draw_dyn_offset = if supports_base_instance {
             0u32
         } else {

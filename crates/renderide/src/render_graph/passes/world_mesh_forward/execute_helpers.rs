@@ -471,6 +471,7 @@ struct ForwardPassRasterConfig<'a> {
 struct ForwardSubpassDrawRecord<'a, 'c, 'd> {
     queue: &'a wgpu::Queue,
     device: &'a wgpu::Device,
+    gpu_limits: &'a GpuLimits,
     draws: &'c [WorldMeshDrawItem],
     draw_indices: &'c [usize],
     /// Material registry, mesh pool, and skin cache (disjoint borrows from [`RenderBackend`]).
@@ -490,6 +491,7 @@ fn record_world_mesh_forward_subpass(
         encode: sub.encode,
         queue: sub.queue,
         device: sub.device,
+        gpu_limits: sub.gpu_limits,
         frame_bg: bind_groups.frame.as_ref(),
         empty_bg: bind_groups.empty_material.as_ref(),
         per_draw_bind_group: bind_groups.per_draw,
@@ -556,12 +558,16 @@ pub(super) fn record_world_mesh_forward_opaque_graph_raster(
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 
+    let Some(gpu_limits) = frame.backend.gpu_limits().cloned() else {
+        return false;
+    };
     let mut encode_refs = frame.backend.world_mesh_forward_encode_refs();
     record_world_mesh_forward_subpass(
         rpass,
         ForwardSubpassDrawRecord {
             queue,
             device,
+            gpu_limits: gpu_limits.as_ref(),
             draws: &prepared.draws,
             draw_indices: &prepared.regular_indices,
             encode: &mut encode_refs,
@@ -617,12 +623,16 @@ pub(super) fn record_world_mesh_forward_intersection_graph_raster(
         warned_missing_embedded_bind: &mut warned_missing_embedded_bind,
     };
 
+    let Some(gpu_limits) = frame.backend.gpu_limits().cloned() else {
+        return false;
+    };
     let mut encode_refs = frame.backend.world_mesh_forward_encode_refs();
     record_world_mesh_forward_subpass(
         rpass,
         ForwardSubpassDrawRecord {
             queue,
             device,
+            gpu_limits: gpu_limits.as_ref(),
             draws: &prepared.draws,
             draw_indices: &prepared.intersect_indices,
             encode: &mut encode_refs,
@@ -697,6 +707,11 @@ fn encode_msaa_depth_resolve_for_frame(
     msaa: &ForwardMsaaResolvedViews,
     resolve: &MsaaDepthResolveResources,
 ) {
+    let Some(limits) = frame.backend.gpu_limits() else {
+        logger::warn!("MSAA depth resolve: gpu_limits missing; skipping resolve");
+        return;
+    };
+    let limits = limits.as_ref();
     if msaa.is_array {
         let (Some(msaa_layers), Some(r32_layers)) = (
             msaa.stereo_depth_layer_views.as_ref(),
@@ -715,6 +730,7 @@ fn encode_msaa_depth_resolve_for_frame(
                 dst_depth_view: frame.depth_view,
                 dst_depth_format: frame.depth_texture.format(),
             },
+            limits,
         );
     } else {
         resolve.encode_resolve(
@@ -727,6 +743,7 @@ fn encode_msaa_depth_resolve_for_frame(
                 dst_depth_view: frame.depth_view,
                 dst_depth_format: frame.depth_texture.format(),
             },
+            limits,
         );
     }
 }

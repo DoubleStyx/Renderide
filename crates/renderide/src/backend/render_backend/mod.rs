@@ -319,7 +319,10 @@ impl RenderBackend {
             self.asset_transfers.texture_vram_budget_bytes =
                 u64::from(s.rendering.texture_vram_budget_mib).saturating_mul(1024 * 1024);
         }
-        self.mesh_deform_scratch = Some(MeshDeformScratch::new(device.as_ref()));
+        self.mesh_deform_scratch = Some(MeshDeformScratch::new(
+            device.as_ref(),
+            gpu_limits.max_buffer_size(),
+        ));
         self.frame_resources.attach(device.as_ref(), gpu_limits)?;
         self.debug_hud.attach(
             device.as_ref(),

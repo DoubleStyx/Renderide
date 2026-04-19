@@ -53,7 +53,7 @@ impl GpuRenderTexture {
     ///
     /// Color format: **`Rgba16Float`** when `hdr_color` (Unity `ARGBHalf` / HDR parity), else
     /// **`Rgba8Unorm`** for lower VRAM on typical LDR targets. Depth is always [`Depth32Float`].
-    /// Size is clamped to `[4, min(8192, max_texture_dimension_2d)]` per edge like the Unity handler.
+    /// Size is clamped per edge via [`GpuLimits::clamp_render_texture_edge`] (Unity-style bounds).
     pub fn new_from_format(
         device: &wgpu::Device,
         limits: &GpuLimits,
