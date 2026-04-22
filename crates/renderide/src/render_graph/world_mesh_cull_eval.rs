@@ -245,6 +245,8 @@ fn hi_z_snapshot_matches_temporal(hi: &HiZCullData, t: &HiZTemporalState) -> boo
 mod hi_z_temporal_match_tests {
     //! [`super::hi_z_snapshot_matches_temporal`] dimension checks (stale-pyramid guard).
 
+    use std::sync::Arc;
+
     use glam::Mat4;
     use hashbrown::HashMap;
 
@@ -260,7 +262,7 @@ mod hi_z_temporal_match_tests {
                 overlay_proj: Mat4::IDENTITY,
                 vr_stereo: None,
             },
-            prev_view_by_space: HashMap::new(),
+            prev_view_by_space: Arc::new(HashMap::new()),
             depth_viewport_px,
         }
     }
@@ -272,7 +274,7 @@ mod hi_z_temporal_match_tests {
             base_width: wx,
             base_height: hy,
             mip_levels,
-            mips: vec![0.0; n],
+            mips: Arc::from(vec![0.0; n]),
         }
     }
 

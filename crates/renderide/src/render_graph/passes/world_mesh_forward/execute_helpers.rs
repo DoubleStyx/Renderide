@@ -134,6 +134,8 @@ pub(super) fn take_or_collect_world_mesh_draws<'a>(
             .unwrap_or_else(|| hc.head_output_transform.col(3).truncate()),
         culling,
         transform_filter: frame.view.transform_draw_filter.as_ref(),
+        material_cache: None,
+        prepared: None,
     })
 }
 

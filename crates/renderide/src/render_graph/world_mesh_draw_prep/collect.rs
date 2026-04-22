@@ -24,6 +24,7 @@ use crate::scene::{
 use crate::shared::RenderingContext;
 
 use super::material_batch_cache::FrameMaterialBatchCache;
+use super::prepared::{FramePreparedDraw, FramePreparedRenderables};
 use super::sort::{batch_key_for_slot_cached, sort_world_mesh_draws, sort_world_mesh_draws_serial};
 use super::types::{WorldMeshDrawCollection, WorldMeshDrawItem};
 
@@ -33,6 +34,12 @@ use super::super::world_mesh_cull_eval::{
 
 /// Renders per chunk (static or skinned slice of one render space).
 const WORLD_MESH_COLLECT_CHUNK_SIZE: usize = 128;
+
+/// Rayon chunk width when iterating a pre-expanded [`FramePreparedRenderables`] list.
+///
+/// Matches [`WORLD_MESH_COLLECT_CHUNK_SIZE`] so per-view CPU cost stays bounded by the same
+/// per-task overhead as the scene-walk path.
+const PREPARED_CHUNK_SIZE: usize = 128;
 
 /// Submesh index range for one material slot pairing during draw collection.
 pub(crate) struct SubmeshSlotIndices {
@@ -78,6 +85,22 @@ pub struct DrawCollectionContext<'a> {
     pub culling: Option<&'a super::super::world_mesh_cull::WorldMeshCullInput<'a>>,
     /// Optional per-camera node filter.
     pub transform_filter: Option<&'a super::types::CameraTransformDrawFilter>,
+    /// Optional pre-built material batch cache shared across multiple views in the same frame.
+    ///
+    /// When `Some`, collection reuses the shared cache instead of rebuilding one per call. Callers
+    /// that render multiple views in one frame (secondary render-texture cameras + main
+    /// swapchain) should build the cache once via [`FrameMaterialBatchCache::build_for_frame`] and
+    /// hand the same borrow to every per-view context. When `None`, a fresh cache is built
+    /// internally for this call (backwards-compatible single-view path).
+    pub material_cache: Option<&'a FrameMaterialBatchCache>,
+    /// Optional pre-expanded dense draw list shared across multiple views in the same frame.
+    ///
+    /// When `Some`, collection iterates the flat list instead of walking every active render
+    /// space and looking up mesh pool entries per view. The prepared list must have been built
+    /// for the **same** [`Self::render_context`] used here; otherwise material-override
+    /// resolution may disagree. Single-view callers can leave this `None` and fall back to the
+    /// scene-walk path.
+    pub prepared: Option<&'a FramePreparedRenderables>,
 }
 
 /// One static or skinned mesh renderer with its resolved [`crate::assets::mesh::GpuMesh`] and submesh index ranges.
@@ -318,102 +341,6 @@ fn push_one_slot_draw(
     });
 }
 
-/// Warms the material batch cache for all material slots on one renderer.
-fn warm_cache_for_renderer(
-    cache: &mut FrameMaterialBatchCache,
-    r: &StaticMeshRenderer,
-    ctx: &DrawCollectionContext<'_>,
-) {
-    let fallback_slot;
-    let slots: &[MeshMaterialSlot] = if !r.material_slots.is_empty() {
-        &r.material_slots
-    } else if let Some(mat_id) = r.primary_material_asset_id {
-        fallback_slot = MeshMaterialSlot {
-            material_asset_id: mat_id,
-            property_block_id: r.primary_property_block_id,
-        };
-        std::slice::from_ref(&fallback_slot)
-    } else {
-        return;
-    };
-    for slot in slots {
-        if slot.material_asset_id < 0 {
-            continue;
-        }
-        cache.get_or_insert(
-            slot.material_asset_id,
-            slot.property_block_id,
-            ctx.material_dict,
-            ctx.material_router,
-            ctx.pipeline_property_ids,
-        );
-    }
-}
-
-/// Builds a [`FrameMaterialBatchCache`] by walking all active render spaces before the parallel
-/// collection phase. The cache is then shared as an immutable reference across rayon workers.
-///
-/// The warm-up itself is parallelized across render spaces: each rayon worker walks the renderers
-/// of one active space into a local cache, and the main thread folds the per-space caches into
-/// one shared cache afterwards. Because every entry is a pure function of its key plus the shader
-/// permutation (see [`resolve_material_batch`]), duplicate keys across per-space caches are
-/// semantically equivalent and the merge is order-independent.
-fn build_frame_material_batch_cache(ctx: &DrawCollectionContext<'_>) -> FrameMaterialBatchCache {
-    profiling::scope!("mesh::material_batch_cache");
-    use rayon::prelude::*;
-
-    let active_space_ids: Vec<RenderSpaceId> = ctx
-        .scene
-        .render_space_ids()
-        .filter(|id| ctx.scene.space(*id).map(|s| s.is_active).unwrap_or(false))
-        .collect();
-
-    // Fast path: zero or one active space — no fan-out overhead.
-    if active_space_ids.len() <= 1 {
-        let mut cache = FrameMaterialBatchCache::new(ctx.shader_perm);
-        for space_id in active_space_ids {
-            warm_cache_for_space(&mut cache, space_id, ctx);
-        }
-        return cache;
-    }
-
-    let per_space: Vec<FrameMaterialBatchCache> = active_space_ids
-        .par_iter()
-        .map(|&space_id| {
-            let mut local = FrameMaterialBatchCache::new(ctx.shader_perm);
-            warm_cache_for_space(&mut local, space_id, ctx);
-            local
-        })
-        .collect();
-
-    let mut merged = FrameMaterialBatchCache::new(ctx.shader_perm);
-    for local in per_space {
-        merged.merge_from(local);
-    }
-    merged
-}
-
-/// Warms `cache` with every `(material_asset_id, property_block_id)` pair used by one render space.
-fn warm_cache_for_space(
-    cache: &mut FrameMaterialBatchCache,
-    space_id: RenderSpaceId,
-    ctx: &DrawCollectionContext<'_>,
-) {
-    let Some(space) = ctx.scene.space(space_id) else {
-        return;
-    };
-    for r in &space.static_mesh_renderers {
-        if r.mesh_asset_id >= 0 {
-            warm_cache_for_renderer(cache, r, ctx);
-        }
-    }
-    for sk in &space.skinned_mesh_renderers {
-        if sk.base.mesh_asset_id >= 0 {
-            warm_cache_for_renderer(cache, &sk.base, ctx);
-        }
-    }
-}
-
 /// Builds the chunk list: one entry per 128-renderer slice of static or skinned renderers per space.
 fn build_chunk_specs(
     space_ids: &[RenderSpaceId],
@@ -540,6 +467,124 @@ fn collect_chunk(
     (out, cull_stats)
 }
 
+/// Collects draw items for one chunk of a pre-expanded [`FramePreparedRenderables`] list.
+///
+/// Unlike [`collect_chunk`], there is no scene walk: the prepared draws already captured every
+/// valid `(renderer × slot × submesh)` tuple plus its frame-global resolution (material override,
+/// submesh index range, overlay flag, skin deform flag). This per-view pass only applies filters
+/// and per-view CPU culling, then builds [`WorldMeshDrawItem`]s.
+fn collect_prepared_chunk(
+    draws: &[FramePreparedDraw],
+    ctx: &DrawCollectionContext<'_>,
+    cache: &FrameMaterialBatchCache,
+    filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
+) -> (Vec<WorldMeshDrawItem>, (usize, usize, usize)) {
+    let mut out: Vec<WorldMeshDrawItem> = Vec::with_capacity(draws.len());
+    let mut cull_stats = (0usize, 0usize, 0usize);
+
+    for d in draws {
+        if let Some(filter) = ctx.transform_filter {
+            let passes = match filter_masks.get(&d.space_id) {
+                Some(mask) => {
+                    d.node_id >= 0 && (d.node_id as usize) < mask.len() && mask[d.node_id as usize]
+                }
+                None => filter.passes_scene_node(ctx.scene, d.space_id, d.node_id),
+            };
+            if !passes {
+                continue;
+            }
+        }
+
+        let Some(mesh) = ctx.mesh_pool.get_mesh(d.mesh_asset_id) else {
+            continue;
+        };
+
+        // Skinned renderers need a borrow into the scene for skinning palette bounds; the index
+        // may go stale if the renderer list shrinks mid-frame (rare), so treat `None` as "skip".
+        let skinned_renderer: Option<&SkinnedMeshRenderer> = if d.skinned {
+            match ctx.scene.space(d.space_id) {
+                Some(space) => match space.skinned_mesh_renderers.get(d.renderable_index) {
+                    Some(sk) => Some(sk),
+                    None => continue,
+                },
+                None => continue,
+            }
+        } else {
+            None
+        };
+
+        let rigid_world_matrix = if let Some(c) = ctx.culling {
+            cull_stats.0 += 1;
+            let target = MeshCullTarget {
+                scene: ctx.scene,
+                space_id: d.space_id,
+                mesh,
+                skinned: d.skinned,
+                skinned_renderer,
+                node_id: d.node_id,
+            };
+            match mesh_draw_passes_cpu_cull(&target, d.is_overlay, c, ctx.render_context) {
+                Err(CpuCullFailure::Frustum) => {
+                    cull_stats.1 += 1;
+                    continue;
+                }
+                Err(CpuCullFailure::HiZ) => {
+                    cull_stats.2 += 1;
+                    continue;
+                }
+                Ok(m) => m,
+            }
+        } else if d.skinned {
+            None
+        } else {
+            ctx.scene.world_matrix_for_render_context(
+                d.space_id,
+                d.node_id as usize,
+                ctx.render_context,
+                ctx.head_output_transform,
+            )
+        };
+
+        let batch_key = batch_key_for_slot_cached(
+            d.material_asset_id,
+            d.property_block_id,
+            d.skinned,
+            cache,
+            ctx.material_dict,
+            ctx.material_router,
+            ctx.pipeline_property_ids,
+            ctx.shader_perm,
+        );
+        let camera_distance_sq = if batch_key.alpha_blended {
+            match rigid_world_matrix {
+                Some(m) => (m.col(3).truncate() - ctx.view_origin_world).length_squared(),
+                None => 0.0,
+            }
+        } else {
+            0.0
+        };
+        out.push(WorldMeshDrawItem {
+            space_id: d.space_id,
+            node_id: d.node_id,
+            mesh_asset_id: d.mesh_asset_id,
+            slot_index: d.slot_index,
+            first_index: d.first_index,
+            index_count: d.index_count,
+            is_overlay: d.is_overlay,
+            sorting_order: d.sorting_order,
+            skinned: d.skinned,
+            world_space_deformed: d.world_space_deformed,
+            collect_order: 0,
+            camera_distance_sq,
+            lookup_ids: d.lookup_ids,
+            batch_key,
+            rigid_world_matrix,
+        });
+    }
+
+    (out, cull_stats)
+}
+
 /// Collects draws from active spaces, then sorts for batching (material / pipeline boundaries).
 ///
 /// When `culling` is [`Some`], instances outside the frustum (and optional Hi-Z) are dropped (see
@@ -574,8 +619,23 @@ pub fn collect_and_sort_world_mesh_draws_with_parallelism(
         }
     }
 
-    // Build per-material cache and per-space filter masks before the parallel phase.
-    let cache = build_frame_material_batch_cache(ctx);
+    // Build per-material cache and per-space filter masks before the parallel phase. When the
+    // caller already shared a frame-scope cache (multi-view paths), reuse it instead of rebuilding
+    // — that is the whole point of `material_cache` on [`DrawCollectionContext`].
+    let owned_cache;
+    let cache: &FrameMaterialBatchCache = match ctx.material_cache {
+        Some(shared) => shared,
+        None => {
+            owned_cache = FrameMaterialBatchCache::build_for_frame(
+                ctx.scene,
+                ctx.material_dict,
+                ctx.material_router,
+                ctx.pipeline_property_ids,
+                ctx.shader_perm,
+            );
+            &owned_cache
+        }
+    };
     let filter_masks: HashMap<RenderSpaceId, Vec<bool>> = if ctx.transform_filter.is_some() {
         space_ids
             .iter()
@@ -588,18 +648,41 @@ pub fn collect_and_sort_world_mesh_draws_with_parallelism(
     } else {
         HashMap::new()
     };
-    let chunks = build_chunk_specs(&space_ids, ctx);
 
-    let per_chunk: Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))> = {
+    // Prefer the pre-expanded dense draw list when the caller shared one (multi-view paths build
+    // it once per frame). The scene-walk path below stays as the single-view fallback.
+    let per_chunk: Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))> = if let Some(prepared) =
+        ctx.prepared
+    {
+        debug_assert_eq!(
+            prepared.render_context(),
+            ctx.render_context,
+            "prepared renderables were built for a different render context than the per-view draw collection — material overrides would disagree"
+        );
+        profiling::scope!("mesh::collect_prepared");
+        let prepared_chunks: Vec<&[FramePreparedDraw]> =
+            prepared.draws.chunks(PREPARED_CHUNK_SIZE).collect();
+        match parallelism {
+            WorldMeshDrawCollectParallelism::Full => prepared_chunks
+                .par_iter()
+                .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, &filter_masks))
+                .collect(),
+            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => prepared_chunks
+                .iter()
+                .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, &filter_masks))
+                .collect(),
+        }
+    } else {
+        let chunks = build_chunk_specs(&space_ids, ctx);
         profiling::scope!("mesh::collect");
         match parallelism {
             WorldMeshDrawCollectParallelism::Full => chunks
                 .par_iter()
-                .map(|spec| collect_chunk(spec, ctx, &cache, &filter_masks))
+                .map(|spec| collect_chunk(spec, ctx, cache, &filter_masks))
                 .collect(),
             WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => chunks
                 .iter()
-                .map(|spec| collect_chunk(spec, ctx, &cache, &filter_masks))
+                .map(|spec| collect_chunk(spec, ctx, cache, &filter_masks))
                 .collect(),
         }
     };

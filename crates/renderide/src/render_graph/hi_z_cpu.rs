@@ -1,8 +1,15 @@
 //! CPU-side hierarchical depth pyramid snapshot after GPU readback.
 
+use std::sync::Arc;
+
 /// Packed reverse-Z depth values (greater = closer) for one eye / one desktop pyramid.
 ///
 /// `mips` stores mip0 row-major, then mip1, … each mip is `max(1, base_width >> k) × max(1, base_height >> k)`.
+///
+/// The pyramid buffer is shared via `Arc<[f32]>` so per-view and per-secondary-camera `Clone`s are
+/// refcount bumps rather than full `Vec<f32>` copies. Producers construct the data once in a
+/// `Vec<f32>` (see [`unpack_linear_rows_to_mips`]) and hand it to
+/// [`hi_z_snapshot_from_linear_linear`], which converts into the shared representation.
 #[derive(Clone, Debug)]
 pub struct HiZCpuSnapshot {
     /// Width of mip0 (matches main depth attachment width).
@@ -11,8 +18,8 @@ pub struct HiZCpuSnapshot {
     pub base_height: u32,
     /// Number of mips present in `mips` (including mip0).
     pub mip_levels: u32,
-    /// Row-major `f32` samples for all mips concatenated.
-    pub mips: Vec<f32>,
+    /// Row-major `f32` samples for all mips concatenated (shared; cloning is cheap).
+    pub mips: Arc<[f32]>,
 }
 
 impl HiZCpuSnapshot {
@@ -132,6 +139,8 @@ pub fn mip_levels_for_extent(base_width: u32, base_height: u32, max_mips: u32) -
 }
 
 /// Unpacks a **linear** row-major buffer (no row padding) into [`HiZCpuSnapshot`].
+///
+/// The `mips` `Vec<f32>` is moved into an [`Arc<[f32]>`] so downstream clones stay cheap.
 pub fn hi_z_snapshot_from_linear_linear(
     base_width: u32,
     base_height: u32,
@@ -142,7 +151,7 @@ pub fn hi_z_snapshot_from_linear_linear(
         base_width,
         base_height,
         mip_levels,
-        mips,
+        mips: Arc::from(mips),
     };
     snap.validate()?;
     Some(snap)
@@ -232,7 +241,7 @@ mod tests {
             base_width: base_w,
             base_height: base_h,
             mip_levels: levels,
-            mips,
+            mips: Arc::from(mips),
         };
         assert!(snap.validate().is_some());
         assert_eq!(snap.sample_texel(0, 0, 0), Some(0.0));

@@ -7,6 +7,7 @@
 //! materials.
 
 use hashbrown::HashMap;
+use rayon::prelude::*;
 
 use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
@@ -17,6 +18,7 @@ use crate::materials::{
     MaterialPipelinePropertyIds, MaterialRenderState, MaterialRouter, RasterPipelineKind,
 };
 use crate::pipelines::ShaderPermutation;
+use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator, StaticMeshRenderer};
 
 /// Batch key fields derived from one `(material_asset_id, property_block_id)` pair.
 ///
@@ -48,9 +50,15 @@ pub(super) struct ResolvedMaterialBatch {
 /// [`ResolvedMaterialBatch`].
 ///
 /// Built lazily via [`Self::get_or_insert`] on first miss, or eagerly by calling
-/// [`Self::get_or_insert`] for every material in the scene before the parallel collection phase
-/// begins. Once built, the table can be shared as an immutable reference across rayon workers.
-pub(super) struct FrameMaterialBatchCache {
+/// [`Self::build_for_frame`] to walk all active render spaces once before per-view draw
+/// collection. Once built, the table can be shared as an immutable reference across rayon
+/// workers — the per-view collection path only reads from it.
+///
+/// Hoist the build out of per-view collection when rendering multiple views in one frame
+/// (secondary render-texture cameras + main swapchain): without hoisting, the cache is rebuilt
+/// N+1 times and every `(material_asset_id, property_block_id)` lookup pays the dictionary /
+/// router resolution cost repeatedly.
+pub struct FrameMaterialBatchCache {
     entries: HashMap<(i32, Option<i32>), ResolvedMaterialBatch>,
     shader_perm: ShaderPermutation,
 }
@@ -65,7 +73,12 @@ impl FrameMaterialBatchCache {
     }
 
     /// Returns the cached [`ResolvedMaterialBatch`] for the given key, inserting on first miss.
-    pub fn get_or_insert(
+    ///
+    /// Restricted to `pub(super)` because [`ResolvedMaterialBatch`] is internal to
+    /// `world_mesh_draw_prep`. External callers interact with the cache through
+    /// [`Self::build_for_frame`] and pass the returned cache into [`DrawCollectionContext`] — the
+    /// per-draw lookup happens inside this module.
+    pub(super) fn get_or_insert(
         &mut self,
         material_asset_id: i32,
         property_block_id: Option<i32>,
@@ -91,7 +104,9 @@ impl FrameMaterialBatchCache {
     /// Returns a cached entry without inserting.
     ///
     /// Returns `None` when the entry was never populated via [`Self::get_or_insert`].
-    pub fn get(
+    ///
+    /// Restricted to `pub(super)` for the same reason as [`Self::get_or_insert`].
+    pub(super) fn get(
         &self,
         material_asset_id: i32,
         property_block_id: Option<i32>,
@@ -125,6 +140,125 @@ impl FrameMaterialBatchCache {
         for (k, v) in other.entries {
             self.entries.entry(k).or_insert(v);
         }
+    }
+
+    /// Builds a fully-warmed cache by walking every active render space's static and skinned
+    /// renderer lists once.
+    ///
+    /// Per-space warm-up runs in parallel via [`rayon`] when more than one space is active; the
+    /// main thread then folds the per-space caches into one shared cache. Entries are pure
+    /// functions of their key plus `shader_perm`, so merge order does not matter.
+    ///
+    /// Call this **once per frame** before per-view draw collection in multi-view paths so each
+    /// view's collection can share the same immutable cache. Single-view callers can keep calling
+    /// the lazy [`Self::get_or_insert`] path instead.
+    pub fn build_for_frame(
+        scene: &SceneCoordinator,
+        dict: &MaterialDictionary<'_>,
+        router: &MaterialRouter,
+        pipeline_property_ids: &MaterialPipelinePropertyIds,
+        shader_perm: ShaderPermutation,
+    ) -> Self {
+        profiling::scope!("mesh::material_batch_cache_build_for_frame");
+        let active_space_ids: Vec<RenderSpaceId> = scene
+            .render_space_ids()
+            .filter(|id| scene.space(*id).map(|s| s.is_active).unwrap_or(false))
+            .collect();
+
+        if active_space_ids.len() <= 1 {
+            let mut cache = Self::new(shader_perm);
+            for space_id in active_space_ids {
+                warm_cache_for_space(
+                    &mut cache,
+                    scene,
+                    space_id,
+                    dict,
+                    router,
+                    pipeline_property_ids,
+                );
+            }
+            return cache;
+        }
+
+        let per_space: Vec<Self> = active_space_ids
+            .par_iter()
+            .map(|&space_id| {
+                let mut local = Self::new(shader_perm);
+                warm_cache_for_space(
+                    &mut local,
+                    scene,
+                    space_id,
+                    dict,
+                    router,
+                    pipeline_property_ids,
+                );
+                local
+            })
+            .collect();
+
+        let mut merged = Self::new(shader_perm);
+        for local in per_space {
+            merged.merge_from(local);
+        }
+        merged
+    }
+}
+
+/// Warms `cache` with every `(material_asset_id, property_block_id)` pair used by one render space.
+fn warm_cache_for_space(
+    cache: &mut FrameMaterialBatchCache,
+    scene: &SceneCoordinator,
+    space_id: RenderSpaceId,
+    dict: &MaterialDictionary<'_>,
+    router: &MaterialRouter,
+    pipeline_property_ids: &MaterialPipelinePropertyIds,
+) {
+    let Some(space) = scene.space(space_id) else {
+        return;
+    };
+    for r in &space.static_mesh_renderers {
+        if r.mesh_asset_id >= 0 {
+            warm_cache_for_renderer(cache, r, dict, router, pipeline_property_ids);
+        }
+    }
+    for sk in &space.skinned_mesh_renderers {
+        if sk.base.mesh_asset_id >= 0 {
+            warm_cache_for_renderer(cache, &sk.base, dict, router, pipeline_property_ids);
+        }
+    }
+}
+
+/// Warms `cache` with every material slot referenced by one static or skinned base renderer.
+fn warm_cache_for_renderer(
+    cache: &mut FrameMaterialBatchCache,
+    r: &StaticMeshRenderer,
+    dict: &MaterialDictionary<'_>,
+    router: &MaterialRouter,
+    pipeline_property_ids: &MaterialPipelinePropertyIds,
+) {
+    let fallback_slot;
+    let slots: &[MeshMaterialSlot] = if !r.material_slots.is_empty() {
+        &r.material_slots
+    } else if let Some(mat_id) = r.primary_material_asset_id {
+        fallback_slot = MeshMaterialSlot {
+            material_asset_id: mat_id,
+            property_block_id: r.primary_property_block_id,
+        };
+        std::slice::from_ref(&fallback_slot)
+    } else {
+        return;
+    };
+    for slot in slots {
+        if slot.material_asset_id < 0 {
+            continue;
+        }
+        cache.get_or_insert(
+            slot.material_asset_id,
+            slot.property_block_id,
+            dict,
+            router,
+            pipeline_property_ids,
+        );
     }
 }
 

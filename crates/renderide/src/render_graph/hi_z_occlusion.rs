@@ -218,6 +218,8 @@ pub fn stereo_hiz_keeps_draw(occluded_left: bool, occluded_right: bool) -> bool 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -247,7 +249,7 @@ mod tests {
             base_width: 4,
             base_height: 4,
             mip_levels: 3,
-            mips,
+            mips: Arc::from(mips),
         };
         assert!(snap.validate().is_some());
         // Closest point ~0.9195; uniform Hi-Z 0.92 — gap smaller than HI_Z_OCCLUSION_MARGIN + bias.
@@ -267,7 +269,7 @@ mod tests {
             base_width: 4,
             base_height: 4,
             mip_levels: 3,
-            mips,
+            mips: Arc::from(mips),
         };
         assert!(snap.validate().is_some());
         let wmin = Vec3::new(-0.01, -0.01, 0.85);
@@ -286,7 +288,7 @@ mod tests {
             base_width: 4,
             base_height: 4,
             mip_levels: 3,
-            mips,
+            mips: Arc::from(mips),
         };
         assert!(snap.validate().is_some());
         let wmin = Vec3::new(-0.01, -0.01, 0.90);
@@ -311,7 +313,7 @@ mod tests {
             base_width: 4,
             base_height: 4,
             mip_levels: 3,
-            mips,
+            mips: Arc::from(mips),
         };
         assert!(snap.validate().is_some());
         let wmin = Vec3::new(0.0, 0.0, 0.0);
@@ -342,7 +344,7 @@ mod tests {
             base_width: 4,
             base_height: 4,
             mip_levels: 3,
-            mips,
+            mips: Arc::from(mips),
         };
         assert!(snap.validate().is_some());
         // Front of AABB at z=0.99 (closer than Hi-Z 0.92), back at z=0.05. Must not cull on back alone.

@@ -13,9 +13,9 @@ use crate::render_graph::{
     build_world_mesh_cull_proj_params, camera_state_enabled, collect_and_sort_world_mesh_draws,
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
     host_camera_frame_for_render_texture, CameraTransformDrawFilter, DrawCollectionContext,
-    ExternalOffscreenTargets, FrameView, FrameViewTarget, GraphExecuteError, HostCameraFrame,
-    OcclusionViewId, OutputDepthMode, WorldMeshCullInput, WorldMeshDrawCollectParallelism,
-    WorldMeshDrawCollection,
+    ExternalOffscreenTargets, FrameMaterialBatchCache, FramePreparedRenderables, FrameView,
+    FrameViewTarget, GraphExecuteError, HostCameraFrame, OcclusionViewId, OutputDepthMode,
+    WorldMeshCullInput, WorldMeshDrawCollectParallelism, WorldMeshDrawCollection,
 };
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
@@ -220,6 +220,8 @@ impl RendererRuntime {
                                 }),
                             culling: culling.as_ref(),
                             transform_filter: Some(&prep.filter),
+                            material_cache: None,
+                            prepared: None,
                         },
                         inner_parallelism,
                     )
@@ -307,6 +309,31 @@ impl RendererRuntime {
             WorldMeshDrawCollectParallelism::Full
         };
 
+        // Build the per-frame material batch cache **once** before any per-view collection runs.
+        // Every per-view call reuses the same immutable cache via `material_cache`, which removes
+        // the N+1 dictionary/router resolution walks that dominated secondary-camera frame cost.
+        let frame_material_cache = {
+            profiling::scope!("render::build_frame_material_cache");
+            let dict = MaterialDictionary::new(property_store);
+            FrameMaterialBatchCache::build_for_frame(
+                scene_ref,
+                &dict,
+                router_ref,
+                &pipeline_property_ids,
+                ShaderPermutation(0),
+            )
+        };
+
+        // Pre-expand the scene walk into a dense draw list once per frame. Every per-view
+        // collection iterates this shared list instead of walking each active render space
+        // independently — the single biggest source of redundant CPU work in the old multi-view
+        // path. `render_context` is the same for every view in this tick (all views use the
+        // active main render context), so override resolution matches downstream.
+        let frame_prepared = {
+            profiling::scope!("render::build_frame_prepared_renderables");
+            FramePreparedRenderables::build_for_frame(scene_ref, mesh_pool, render_context)
+        };
+
         let cull_snapshots: Vec<Option<SecondaryCullSnapshot>> = {
             profiling::scope!("render::gather_secondary_cull_snapshots");
             prepared
@@ -346,6 +373,8 @@ impl RendererRuntime {
                                 }),
                             culling: culling.as_ref(),
                             transform_filter: Some(&prep.filter),
+                            material_cache: Some(&frame_material_cache),
+                            prepared: Some(&frame_prepared),
                         },
                         inner_parallelism,
                     )
@@ -386,6 +415,8 @@ impl RendererRuntime {
                     .unwrap_or_else(|| hc.head_output_transform.col(3).truncate()),
                 culling: culling_main_ref,
                 transform_filter: None,
+                material_cache: Some(&frame_material_cache),
+                prepared: Some(&frame_prepared),
             })
         };
 

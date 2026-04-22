@@ -16,6 +16,7 @@
 mod batch;
 mod collect;
 mod material_batch_cache;
+mod prepared;
 mod sort;
 mod types;
 
@@ -24,6 +25,8 @@ pub use collect::{
     collect_and_sort_world_mesh_draws, collect_and_sort_world_mesh_draws_with_parallelism,
     DrawCollectionContext, WorldMeshDrawCollectParallelism,
 };
+pub use material_batch_cache::FrameMaterialBatchCache;
+pub use prepared::FramePreparedRenderables;
 pub use sort::sort_world_mesh_draws;
 pub use types::{
     draw_filter_from_camera_entry, resolved_material_slots, CameraTransformDrawFilter,
