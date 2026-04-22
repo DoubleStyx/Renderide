@@ -265,7 +265,12 @@ pub(super) fn pack_and_upload_per_draw_slab(
     // Step 2: pack VP uniforms and serialise to byte slab.
     // Both borrows are on distinct fields of FrameResourceManager (disjoint &mut is valid).
     {
-        let uniforms = &mut frame.shared.frame_resources.per_draw_uniforms_scratch;
+        let uniforms = frame
+            .shared
+            .frame_resources
+            .per_draw_uniforms_scratch_by_view
+            .entry(view_id)
+            .or_default();
         uniforms.clear();
         uniforms.resize_with(draws.len(), PaddedPerDrawUniforms::zeroed);
 

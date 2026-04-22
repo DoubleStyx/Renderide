@@ -134,9 +134,7 @@ impl Texture3dUploadTask {
                         self.finalize_success(queue, ipc, total_uploaded);
                         StepResult::Done
                     }
-                    Ok(Texture3dMipAdvance::YieldBackground) => {
-                        StepResult::YieldBackground
-                    }
+                    Ok(Texture3dMipAdvance::YieldBackground) => StepResult::YieldBackground,
                     Err(e) => {
                         logger::warn!("texture3d {id}: upload failed: {e}");
                         StepResult::Done

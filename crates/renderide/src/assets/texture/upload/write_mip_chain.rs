@@ -38,13 +38,12 @@ fn mip_src_to_upload_pixels(
 ) -> Result<Vec<u8>, TextureUploadError> {
     if is_rgba8_family(wgpu_format) {
         if needs_rgba8_decode || host_format_is_compressed(fmt_format) {
-            decode_mip_to_rgba8(fmt_format, gw, gh, flip, mip_src)
-                .ok_or_else(|| {
-                    TextureUploadError::from(format!(
-                        "RGBA decode failed for mip {} ({:?})",
-                        mip_index, fmt_format
-                    ))
-                })
+            decode_mip_to_rgba8(fmt_format, gw, gh, flip, mip_src).ok_or_else(|| {
+                TextureUploadError::from(format!(
+                    "RGBA decode failed for mip {} ({:?})",
+                    mip_index, fmt_format
+                ))
+            })
         } else if flip {
             let mut v = mip_src.to_vec();
             let bpp = mip_tight_bytes_per_texel(v.len(), gw, gh).ok_or_else(|| {
@@ -113,9 +112,7 @@ fn mip_src_to_upload_pixels(
                 fmt_format
             )));
         }
-        if let Some(v) =
-            flip_compressed_mip_block_rows_y(fmt_format, gw, gh, mip_src)
-        {
+        if let Some(v) = flip_compressed_mip_block_rows_y(fmt_format, gw, gh, mip_src) {
             Ok(v)
         } else {
             logger::warn!(
@@ -477,17 +474,9 @@ impl TextureMipChainUploader {
                     self.background_rx = None;
                     let pixels = res?;
                     let (mip_level, gw, gh) = self.pending_mip.take().unwrap();
-                    
-                    write_one_mip(
-                        queue,
-                        texture,
-                        mip_level,
-                        gw,
-                        gh,
-                        wgpu_format,
-                        &pixels,
-                    )?;
-                    
+
+                    write_one_mip(queue, texture, mip_level, gw, gh, wgpu_format, &pixels)?;
+
                     if is_rgba8_family(wgpu_format) {
                         self.last_rgba8_mip = Some(Rgba8Mip {
                             width: gw,
@@ -512,7 +501,9 @@ impl TextureMipChainUploader {
                     return Ok(MipChainAdvance::YieldBackground);
                 }
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    return Err(TextureUploadError::from("Background decode thread panicked"));
+                    return Err(TextureUploadError::from(
+                        "Background decode thread panicked",
+                    ));
                 }
             }
         }
@@ -566,12 +557,12 @@ impl TextureMipChainUploader {
             } => {
                 let offset = mip_src.as_ptr() as usize - payload.as_ptr() as usize;
                 let len = mip_src.len();
-                (mip_level, gw, gh, mip_index, offset..offset+len)
+                (mip_level, gw, gh, mip_index, offset..offset + len)
             }
         };
 
         self.pending_mip = Some((mip_level, gw, gh));
-        
+
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.background_rx = Some(rx);
 
@@ -645,12 +636,12 @@ impl TextureMipChainUploader {
 
         let (w, h) =
             mip_dimensions_at_level(self.tex_extent.width, self.tex_extent.height, mip_level);
-        
+
         self.pending_mip = Some((mip_level, w, h));
-        
+
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.background_rx = Some(rx);
-        
+
         rayon::spawn(move || {
             let res = downsample_rgba8_box(&source.pixels, source.width, source.height, w, h);
             let _ = tx.send(res);

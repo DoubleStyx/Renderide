@@ -8,53 +8,72 @@ use super::render_space::{LayerAssignmentEntry, RenderSpaceState};
 use super::transforms_apply::TransformRemovalEvent;
 use super::world::fixup_transform_id;
 
-pub(crate) fn apply_layer_update(
-    space: &mut RenderSpaceState,
+/// Owned per-space layer-update payload extracted from shared memory.
+///
+/// Produced by [`extract_layer_update`] in the serial pre-extract phase so the per-space apply
+/// step can run on a rayon worker without holding a mutable [`SharedMemoryAccessor`] borrow.
+#[derive(Default, Debug)]
+pub struct ExtractedLayerUpdate {
+    /// Dense layer-assignment removal indices (terminated by `< 0`).
+    pub removals: Vec<i32>,
+    /// New layer-assignment node ids (terminated by `< 0`).
+    pub additions: Vec<i32>,
+    /// Per-entry [`LayerType`] rows, indexed positionally into [`RenderSpaceState::layer_assignments`].
+    pub layer_assignments: Vec<LayerType>,
+}
+
+/// Reads every shared-memory buffer referenced by [`LayerUpdate`] into owned vectors.
+pub(crate) fn extract_layer_update(
     shm: &mut SharedMemoryAccessor,
     update: &LayerUpdate,
     scene_id: i32,
-) -> Result<(), SceneError> {
-    profiling::scope!("scene::apply_layers");
+) -> Result<ExtractedLayerUpdate, SceneError> {
+    let mut out = ExtractedLayerUpdate::default();
     if update.removals.length > 0 {
         let ctx = format!("layer removals scene_id={scene_id}");
-        let removals = shm
+        out.removals = shm
             .access_copy_diagnostic_with_context::<i32>(&update.removals, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
-        for &raw in removals.iter().take_while(|&&idx| idx >= 0) {
-            let idx = raw as usize;
-            if idx < space.layer_assignments.len() {
-                space.layer_assignments.swap_remove(idx);
-            }
-        }
     }
-
     if update.additions.length > 0 {
         let ctx = format!("layer additions scene_id={scene_id}");
-        let additions = shm
+        out.additions = shm
             .access_copy_diagnostic_with_context::<i32>(&update.additions, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
-        for &node_id in additions.iter().take_while(|&&id| id >= 0) {
-            space.layer_assignments.push(LayerAssignmentEntry {
-                node_id,
-                layer: LayerType::Hidden,
-            });
-        }
     }
-
     if update.layer_assignments.length > 0 {
         let ctx = format!("layer assignments scene_id={scene_id}");
-        let assignments = shm
+        out.layer_assignments = shm
             .access_copy_diagnostic_with_context::<LayerType>(&update.layer_assignments, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
-        for (idx, layer) in assignments.into_iter().enumerate() {
-            let Some(entry) = space.layer_assignments.get_mut(idx) else {
-                continue;
-            };
-            entry.layer = layer;
+    }
+    Ok(out)
+}
+
+/// Mutates [`RenderSpaceState::layer_assignments`] using a pre-extracted [`ExtractedLayerUpdate`].
+pub(crate) fn apply_layer_update_extracted(
+    space: &mut RenderSpaceState,
+    extracted: &ExtractedLayerUpdate,
+) {
+    profiling::scope!("scene::apply_layers");
+    for &raw in extracted.removals.iter().take_while(|&&idx| idx >= 0) {
+        let idx = raw as usize;
+        if idx < space.layer_assignments.len() {
+            space.layer_assignments.swap_remove(idx);
         }
     }
-
-    Ok(())
+    for &node_id in extracted.additions.iter().take_while(|&&id| id >= 0) {
+        space.layer_assignments.push(LayerAssignmentEntry {
+            node_id,
+            layer: LayerType::Hidden,
+        });
+    }
+    for (idx, layer) in extracted.layer_assignments.iter().copied().enumerate() {
+        let Some(entry) = space.layer_assignments.get_mut(idx) else {
+            continue;
+        };
+        entry.layer = layer;
+    }
 }
 
 pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState) {

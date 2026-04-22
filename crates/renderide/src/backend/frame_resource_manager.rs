@@ -117,8 +117,12 @@ pub struct FrameResourceManager {
     /// In VR, the HMD graph runs mesh deform first; secondary cameras skip it via this flag.
     /// Reset with [`Self::reset_light_prep_for_tick`].
     mesh_deform_dispatched_this_tick: Cell<bool>,
-    /// Reused for per-draw VP/pack before [`crate::backend::mesh_deform::write_per_draw_uniform_slab`].
-    pub(crate) per_draw_uniforms_scratch: Vec<PaddedPerDrawUniforms>,
+    /// Reused per-view scratch for per-draw VP/pack before [`crate::backend::mesh_deform::write_per_draw_uniform_slab`].
+    ///
+    /// Keyed by [`OcclusionViewId`] so parallel per-view recording never aliases the same scratch
+    /// across rayon workers. Mirrors the `per_view_frame` / `per_view_draw` pattern.
+    pub(crate) per_draw_uniforms_scratch_by_view:
+        HashMap<OcclusionViewId, Vec<PaddedPerDrawUniforms>>,
     /// Reused byte slab for [`crate::backend::mesh_deform::write_per_draw_uniform_slab`], keyed per view.
     ///
     /// Keyed by [`OcclusionViewId`] so parallel per-view recording never aliases the same scratch
@@ -147,7 +151,7 @@ impl FrameResourceManager {
             light_prep_done_this_tick: false,
             lights_gpu_uploaded_this_tick: Cell::new(false),
             mesh_deform_dispatched_this_tick: Cell::new(false),
-            per_draw_uniforms_scratch: Vec::new(),
+            per_draw_uniforms_scratch_by_view: HashMap::new(),
             per_draw_slab_byte_scratch_by_view: HashMap::new(),
         }
     }
@@ -385,16 +389,20 @@ impl FrameResourceManager {
         self.per_draw_slab_byte_scratch_by_view.get(&view_id)
     }
 
-    /// Frees the per-view byte scratch for a view that is no longer active.
+    /// Frees the per-view scratch buffers (uniforms + byte slab) for a view that is no longer active.
     ///
     /// Call alongside [`Self::retire_per_view_per_draw`] and [`Self::retire_per_view_frame`] when a
     /// secondary RT camera is destroyed. Has no effect if the view was never allocated.
     pub fn retire_per_view_per_draw_scratch(&mut self, view_id: OcclusionViewId) {
-        if self
+        let removed_uniforms = self
+            .per_draw_uniforms_scratch_by_view
+            .remove(&view_id)
+            .is_some();
+        let removed_slab = self
             .per_draw_slab_byte_scratch_by_view
             .remove(&view_id)
-            .is_some()
-        {
+            .is_some();
+        if removed_uniforms || removed_slab {
             logger::debug!("per-draw slab scratch: retired for view {view_id:?}");
         }
     }
@@ -405,6 +413,10 @@ impl FrameResourceManager {
     /// After the first successful run in a winit tick, subsequent calls are skipped until
     /// [`Self::reset_light_prep_for_tick`] runs, so secondary RT and main passes share one pack.
     /// Non-contributing lights are filtered via [`light_contributes`] before clustered ordering.
+    ///
+    /// Per-space [`SceneCoordinator::resolve_lights_world_into`] is read-only on the scene and is
+    /// fanned out across rayon workers when more than one render space exists. Single-space
+    /// scenes (the common case) take the serial fast path to avoid rayon overhead.
     pub fn prepare_lights_from_scene(&mut self, scene: &SceneCoordinator) {
         if self.light_prep_done_this_tick {
             return;
@@ -412,9 +424,31 @@ impl FrameResourceManager {
         profiling::scope!("render::prepare_lights");
         self.light_scratch.clear();
         self.resolved_flatten_scratch.clear();
-        for id in scene.render_space_ids() {
-            scene.resolve_lights_world_into(id, &mut self.resolved_flatten_scratch);
+
+        let space_ids: Vec<_> = scene.render_space_ids().collect();
+        match space_ids.len() {
+            0 => {}
+            1 => {
+                scene.resolve_lights_world_into(space_ids[0], &mut self.resolved_flatten_scratch);
+            }
+            _ => {
+                use rayon::prelude::*;
+                let per_space: Vec<Vec<ResolvedLight>> = space_ids
+                    .par_iter()
+                    .map(|&id| {
+                        let mut local = Vec::new();
+                        scene.resolve_lights_world_into(id, &mut local);
+                        local
+                    })
+                    .collect();
+                let total: usize = per_space.iter().map(Vec::len).sum();
+                self.resolved_flatten_scratch.reserve(total);
+                for chunk in per_space {
+                    self.resolved_flatten_scratch.extend(chunk);
+                }
+            }
         }
+
         self.resolved_flatten_scratch.retain(light_contributes);
         order_lights_for_clustered_shading_in_place(&mut self.resolved_flatten_scratch);
         self.light_scratch

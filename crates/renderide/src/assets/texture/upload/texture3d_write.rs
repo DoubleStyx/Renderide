@@ -83,7 +83,6 @@ fn texture3d_mip_volume_payload_slice<'a>(
     Ok((w, h, d, mip_src, slice_bytes, vol_bytes))
 }
 
-
 /// Prepares decoded RGBA8 slab or passes raw host bytes through for 3D volume upload.
 fn texture3d_mip_to_upload_pixels(
     asset_id: i32,
@@ -99,8 +98,7 @@ fn texture3d_mip_to_upload_pixels(
     mip_src: &[u8],
 ) -> Result<Vec<u8>, TextureUploadError> {
     let pixels = if is_rgba8_family(wgpu_format) {
-        if needs_rgba8_decode || host_format_is_compressed(fmt_format)
-        {
+        if needs_rgba8_decode || host_format_is_compressed(fmt_format) {
             let mut out = Vec::with_capacity(vol_bytes);
             let mut z_off = 0usize;
             for _z in 0..d {
@@ -279,7 +277,7 @@ impl Texture3dMipChainUploader {
                     self.background_rx = None;
                     let pixels = res?;
                     let (level, w, h, d) = self.pending_mip.take().unwrap();
-                    
+
                     write_texture3d_volume_mip(&Texture3dVolumeMipWrite {
                         queue,
                         texture,
@@ -305,7 +303,9 @@ impl Texture3dMipChainUploader {
                     return Ok(Texture3dMipAdvance::YieldBackground);
                 }
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    return Err(TextureUploadError::from("Background decode thread panicked"));
+                    return Err(TextureUploadError::from(
+                        "Background decode thread panicked",
+                    ));
                 }
             }
         }
@@ -323,7 +323,7 @@ impl Texture3dMipChainUploader {
         self.pending_mip = Some((level, w, h, d));
         let offset = mip_src.as_ptr() as usize - payload.as_ptr() as usize;
         let len = mip_src.len();
-        let mip_src_range = offset..offset+len;
+        let mip_src_range = offset..offset + len;
 
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.background_rx = Some(rx);

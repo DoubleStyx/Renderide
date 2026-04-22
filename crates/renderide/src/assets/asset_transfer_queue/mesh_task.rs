@@ -79,25 +79,29 @@ impl MeshUploadTask {
                 let data = self.data.clone();
                 let existing = queue.mesh_pool.get_mesh(asset_id).cloned();
                 let raw_len = data.buffer.length.max(0) as usize;
-                
+
                 let raw_arc = shm.with_read_bytes(&data.buffer, |raw| {
                     if raw.len() < raw_len {
-                        logger::error!("mesh {asset_id}: raw too short (need {}, got {})", raw_len, raw.len());
+                        logger::error!(
+                            "mesh {asset_id}: raw too short (need {}, got {})",
+                            raw_len,
+                            raw.len()
+                        );
                         return None;
                     }
                     Some(Arc::from(&raw[..raw_len]))
                 });
-                
+
                 let Some(raw) = raw_arc else {
                     return StepResult::Done;
                 };
 
                 let (tx, rx) = crossbeam_channel::bounded(1);
-                
+
                 let device_clone = Arc::clone(device);
                 let gpu_limits_clone = Arc::clone(gpu_limits);
                 let gpu_queue_clone = Arc::clone(gpu_queue);
-                
+
                 rayon::spawn(move || {
                     let mesh = try_upload_mesh_from_raw(
                         device_clone.as_ref(),
@@ -110,7 +114,7 @@ impl MeshUploadTask {
                     );
                     let _ = tx.send(mesh);
                 });
-                
+
                 self.stage = MeshStage::Decoding { rx };
                 StepResult::YieldBackground
             }
@@ -125,11 +129,12 @@ impl MeshUploadTask {
                     let existed_before = queue.mesh_pool.insert_mesh(mesh);
                     if let Some(ipc) = ipc.as_mut() {
                         use crate::shared::{MeshUploadResult, RendererCommand};
-                        let _ =
-                            ipc.send_background(RendererCommand::MeshUploadResult(MeshUploadResult {
+                        let _ = ipc.send_background(RendererCommand::MeshUploadResult(
+                            MeshUploadResult {
                                 asset_id,
                                 instance_changed: !existed_before,
-                            }));
+                            },
+                        ));
                     }
                     logger::trace!(
                         "mesh {} uploaded via integrator (replaced={} resident_bytes≈{})",
@@ -144,7 +149,7 @@ impl MeshUploadTask {
                     logger::error!("mesh {asset_id}: background decode thread panicked");
                     StepResult::Done
                 }
-            }
+            },
         }
     }
 }

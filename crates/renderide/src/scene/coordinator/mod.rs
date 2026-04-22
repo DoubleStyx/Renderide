@@ -1,5 +1,6 @@
 //! Owns all [`RenderSpaceState`](super::render_space::RenderSpaceState) instances and applies per-frame host data.
 
+pub mod parallel_apply;
 mod world_queries;
 
 use hashbrown::HashMap;
@@ -8,27 +9,24 @@ use std::collections::HashSet;
 use glam::Mat4;
 
 use crate::ipc::SharedMemoryAccessor;
+use crate::shared::FrameSubmitData;
 use crate::shared::RenderingContext;
-use crate::shared::{FrameSubmitData, RenderSpaceUpdate};
 
-use super::camera_apply;
 use super::error::SceneError;
 use super::ids::RenderSpaceId;
-use super::layer_apply::{
-    apply_layer_update, fixup_layer_assignments_for_transform_removals,
-    resolve_mesh_layers_from_assignments,
-};
 use super::lights::{
     apply_light_renderables_update, apply_lights_buffer_renderers_update, LightCache, ResolvedLight,
 };
 use super::math::multiply_root;
-use super::render_overrides::{
-    apply_render_material_overrides_update, apply_render_transform_overrides_update,
-    MeshRendererOverrideTarget,
-};
+use super::render_overrides::MeshRendererOverrideTarget;
 use super::render_space::RenderSpaceState;
-use super::transforms_apply::{TransformRemovalEvent, TransformsUpdateBuffers};
+use super::transforms_apply::TransformRemovalEvent;
 use super::world::{compute_world_matrices_for_space, ensure_cache_shapes, WorldTransformCache};
+
+use parallel_apply::{
+    apply_extracted_render_space_update, extract_render_space_update, light_updates_view,
+    ExtractedRenderSpaceUpdate, PerSpaceApplyInputs,
+};
 
 /// Warns when more than one non-overlay render space is marked active (breaks main-camera assumptions).
 fn warn_if_multiple_active_non_overlay_spaces(data: &FrameSubmitData) {
@@ -64,8 +62,6 @@ pub struct SceneCoordinator {
     light_cache: LightCache,
     /// Reused in [`Self::flush_world_caches`] to avoid per-flush `Vec` allocation.
     world_dirty_flush_scratch: Vec<RenderSpaceId>,
-    /// Reused for transform removal events between [`Self::apply_render_space_update_chunk`] sections.
-    transform_removals_scratch: Vec<TransformRemovalEvent>,
     /// Reused in [`Self::remove_render_spaces_not_in_submit`].
     remove_spaces_scratch: Vec<RenderSpaceId>,
 }
@@ -85,7 +81,6 @@ impl SceneCoordinator {
             world_dirty: HashSet::new(),
             light_cache: LightCache::new(),
             world_dirty_flush_scratch: Vec::new(),
-            transform_removals_scratch: Vec::new(),
             remove_spaces_scratch: Vec::new(),
         }
     }
@@ -286,6 +281,18 @@ impl SceneCoordinator {
     }
 
     /// Applies [`FrameSubmitData`]: transforms, meshes, skinned meshes, lights (Unity order).
+    ///
+    /// Two-phase pipeline:
+    ///
+    /// 1. **Phase A (serial):** [`extract_render_space_update`] reads every shared-memory buffer
+    ///    referenced by each [`RenderSpaceUpdate`] into owned vectors. Header fields
+    ///    ([`RenderSpaceState::apply_update_header`]) are also applied here while we still hold a
+    ///    serial borrow on the spaces map.
+    /// 2. **Phase B (parallel above one space):** per-space mutation runs over the drained
+    ///    `(RenderSpaceState, WorldTransformCache, ExtractedRenderSpaceUpdate)` tuples. Each
+    ///    tuple owns disjoint state, so rayon workers cannot race.
+    /// 3. **Phase C (serial):** light updates target the shared
+    ///    [`crate::scene::lights::LightCache`] and run after the parallel apply.
     pub fn apply_frame_submit(
         &mut self,
         shm: &mut SharedMemoryAccessor,
@@ -296,99 +303,127 @@ impl SceneCoordinator {
         mark_reflection_probe_sh2_task_failures(shm, data);
 
         let mut seen = HashSet::new();
-        for update in &data.render_spaces {
-            seen.insert(RenderSpaceId(update.id));
-            self.apply_render_space_update_chunk(shm, data.frame_index, update)?;
+
+        // Phase A: serial pre-extract + ensure entries + apply header fields.
+        let mut extracted_per_space: Vec<ExtractedRenderSpaceUpdate> =
+            Vec::with_capacity(data.render_spaces.len());
+        {
+            profiling::scope!("scene::apply_frame_submit::extract");
+            for update in &data.render_spaces {
+                let id = RenderSpaceId(update.id);
+                seen.insert(id);
+                let space = self.spaces.entry(id).or_insert_with(|| RenderSpaceState {
+                    id,
+                    ..Default::default()
+                });
+                space.id = id;
+                space.apply_update_header(update);
+                self.world_caches.entry(id).or_default();
+
+                let extracted = extract_render_space_update(shm, update, data.frame_index)?;
+                extracted_per_space.push(extracted);
+            }
+        }
+
+        // Phase B: per-space apply (parallel for >1 space, serial otherwise).
+        self.apply_extracted_per_space(extracted_per_space)?;
+
+        // Phase C: light updates (still serial: shared LightCache).
+        {
+            profiling::scope!("scene::apply_frame_submit::lights");
+            for update in &data.render_spaces {
+                let view = light_updates_view(update);
+                if let Some(lu) = view.lights_update {
+                    apply_light_renderables_update(&mut self.light_cache, shm, lu, view.space_id)?;
+                }
+                if let Some(lbu) = view.lights_buffer_renderers_update {
+                    apply_lights_buffer_renderers_update(
+                        &mut self.light_cache,
+                        shm,
+                        lbu,
+                        view.space_id,
+                    )?;
+                }
+            }
         }
 
         self.remove_render_spaces_not_in_submit(&seen);
         Ok(())
     }
 
-    /// Per-space slice of [`FrameSubmitData`]: cameras, transforms, meshes, overrides, lights.
-    fn apply_render_space_update_chunk(
+    /// Drains per-space state, runs Phase B (parallel where it pays), and re-inserts the results.
+    ///
+    /// Drives the rayon fan-out used by [`Self::apply_frame_submit`]. For one or zero entries we
+    /// stay serial to skip rayon dispatch overhead. Per-space dirty cache marks are merged into
+    /// [`Self::world_dirty`] on the main thread before reinsert.
+    fn apply_extracted_per_space(
         &mut self,
-        shm: &mut SharedMemoryAccessor,
-        frame_index: i32,
-        update: &RenderSpaceUpdate,
+        extracted_per_space: Vec<ExtractedRenderSpaceUpdate>,
     ) -> Result<(), SceneError> {
-        profiling::scope!("scene::apply_render_space_chunk");
-        let space = self
-            .spaces
-            .entry(RenderSpaceId(update.id))
-            .or_insert_with(|| RenderSpaceState {
-                id: RenderSpaceId(update.id),
-                ..Default::default()
-            });
-        space.id = RenderSpaceId(update.id);
-        space.apply_update_header(update);
+        if extracted_per_space.is_empty() {
+            return Ok(());
+        }
+        profiling::scope!("scene::apply_frame_submit::apply");
 
-        if let Some(ref cu) = update.cameras_update {
-            camera_apply::apply_camera_renderables_update(space, shm, cu, update.id)?;
+        // Drain spaces and caches into a Vec so they can move into worker closures.
+        let mut work: Vec<(
+            RenderSpaceId,
+            RenderSpaceState,
+            WorldTransformCache,
+            ExtractedRenderSpaceUpdate,
+            Vec<TransformRemovalEvent>,
+        )> = Vec::with_capacity(extracted_per_space.len());
+        for extracted in extracted_per_space {
+            let id = extracted.space_id;
+            let Some(space) = self.spaces.remove(&id) else {
+                continue;
+            };
+            let cache = self.world_caches.remove(&id).unwrap_or_default();
+            work.push((id, space, cache, extracted, Vec::new()));
         }
 
-        let cache = self
-            .world_caches
-            .entry(RenderSpaceId(update.id))
-            .or_default();
+        if work.len() <= 1 {
+            for (id, mut space, mut cache, extracted, mut removal_events) in work {
+                let dirty = apply_extracted_render_space_update(
+                    &extracted,
+                    PerSpaceApplyInputs {
+                        space: &mut space,
+                        cache: &mut cache,
+                        removal_events: &mut removal_events,
+                    },
+                );
+                if dirty {
+                    self.world_dirty.insert(id);
+                }
+                self.spaces.insert(id, space);
+                self.world_caches.insert(id, cache);
+            }
+            return Ok(());
+        }
 
-        self.transform_removals_scratch.clear();
-        if let Some(ref tu) = update.transforms_update {
-            super::transforms_apply::apply_transforms_update(
-                space,
-                cache,
-                &mut self.world_dirty,
-                RenderSpaceId(update.id),
-                TransformsUpdateBuffers {
-                    shm,
-                    update: tu,
-                    frame_index,
+        use rayon::prelude::*;
+        let processed: Vec<(RenderSpaceId, RenderSpaceState, WorldTransformCache, bool)> = work
+            .into_par_iter()
+            .map(
+                |(id, mut space, mut cache, extracted, mut removal_events)| {
+                    let dirty = apply_extracted_render_space_update(
+                        &extracted,
+                        PerSpaceApplyInputs {
+                            space: &mut space,
+                            cache: &mut cache,
+                            removal_events: &mut removal_events,
+                        },
+                    );
+                    (id, space, cache, dirty)
                 },
-                &mut self.transform_removals_scratch,
-            )?;
-        }
-        let transform_removals = &self.transform_removals_scratch;
-        if let Some(ref mu) = update.mesh_renderers_update {
-            super::mesh_apply::apply_mesh_renderables_update(
-                space,
-                shm,
-                mu,
-                frame_index,
-                update.id,
-            )?;
-        }
-        if let Some(ref su) = update.skinned_mesh_renderers_update {
-            super::mesh_apply::apply_skinned_mesh_renderables_update(
-                space,
-                shm,
-                su,
-                frame_index,
-                update.id,
-                transform_removals,
-            )?;
-        }
-        fixup_layer_assignments_for_transform_removals(space, transform_removals);
-        if let Some(ref layer_update) = update.layers_update {
-            apply_layer_update(space, shm, layer_update, update.id)?;
-        }
-        resolve_mesh_layers_from_assignments(space);
-        if let Some(ref rtu) = update.render_transform_overrides_update {
-            apply_render_transform_overrides_update(
-                space,
-                shm,
-                rtu,
-                update.id,
-                transform_removals,
-            )?;
-        }
-        if let Some(ref rmu) = update.render_material_overrides_update {
-            apply_render_material_overrides_update(space, shm, rmu, update.id, transform_removals)?;
-        }
-        if let Some(ref lu) = update.lights_update {
-            apply_light_renderables_update(&mut self.light_cache, shm, lu, update.id)?;
-        }
-        if let Some(ref lbu) = update.lights_buffer_renderers_update {
-            apply_lights_buffer_renderers_update(&mut self.light_cache, shm, lbu, update.id)?;
+            )
+            .collect();
+        for (id, space, cache, dirty) in processed {
+            if dirty {
+                self.world_dirty.insert(id);
+            }
+            self.spaces.insert(id, space);
+            self.world_caches.insert(id, cache);
         }
         Ok(())
     }

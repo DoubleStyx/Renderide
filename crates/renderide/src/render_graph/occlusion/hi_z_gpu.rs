@@ -266,41 +266,43 @@ fn unpack_desktop_snapshot(
     }
 }
 
+/// Unpacks the per-eye CPU snapshots in parallel via [`rayon::join`].
+///
+/// Each eye performs an independent O(W·H·mips) byte-to-`f32` walk over its own staging buffer
+/// (see [`unpack_linear_rows_to_mips`]), then validates dimensions through
+/// [`hi_z_snapshot_from_linear_linear`]. The two walks share no state, so fan-out is straightforward
+/// and roughly halves stereo Hi-Z readback wall time on multi-core hosts.
 fn unpack_stereo_snapshot(
     extent: (u32, u32),
     mip_levels: u32,
     left_raw: &[u8],
     right_raw: &[u8],
 ) -> Option<HiZStereoCpuSnapshot> {
-    let mips_l = match unpack_linear_rows_to_mips(extent.0, extent.1, mip_levels, left_raw) {
-        Some(m) => m,
-        None => {
-            logger::warn!("Hi-Z stereo left readback unpack failed");
-            return None;
+    let unpack_eye = |label: &'static str, raw: &[u8]| -> Option<HiZCpuSnapshot> {
+        let mips = match unpack_linear_rows_to_mips(extent.0, extent.1, mip_levels, raw) {
+            Some(m) => m,
+            None => {
+                logger::warn!("Hi-Z stereo {label} readback unpack failed");
+                return None;
+            }
+        };
+        match hi_z_snapshot_from_linear_linear(extent.0, extent.1, mip_levels, mips) {
+            Some(s) => Some(s),
+            None => {
+                logger::warn!("Hi-Z stereo {label} snapshot validation failed");
+                None
+            }
         }
     };
-    let left = match hi_z_snapshot_from_linear_linear(extent.0, extent.1, mip_levels, mips_l) {
-        Some(s) => s,
-        None => {
-            logger::warn!("Hi-Z stereo left snapshot validation failed");
-            return None;
-        }
-    };
-    let mips_r = match unpack_linear_rows_to_mips(extent.0, extent.1, mip_levels, right_raw) {
-        Some(m) => m,
-        None => {
-            logger::warn!("Hi-Z stereo right readback unpack failed");
-            return None;
-        }
-    };
-    let right = match hi_z_snapshot_from_linear_linear(extent.0, extent.1, mip_levels, mips_r) {
-        Some(s) => s,
-        None => {
-            logger::warn!("Hi-Z stereo right snapshot validation failed");
-            return None;
-        }
-    };
-    Some(HiZStereoCpuSnapshot { left, right })
+
+    let (left, right) = rayon::join(
+        || unpack_eye("left", left_raw),
+        || unpack_eye("right", right_raw),
+    );
+    Some(HiZStereoCpuSnapshot {
+        left: left?,
+        right: right?,
+    })
 }
 
 /// Transient GPU resources reused while extent and mip count stay stable.

@@ -69,7 +69,6 @@ fn resolve_cubemap_face_mip_slice<'a>(
         })
 }
 
-
 /// Converts host face mip bytes for [`write_cubemap_face_mip`] (decode, optional row flip).
 fn cubemap_mip_src_to_upload_pixels(
     asset_id: i32,
@@ -306,7 +305,7 @@ impl CubemapMipChainUploader {
                     self.background_rx = None;
                     let pixels = res?;
                     let (face, mip_level, w, h) = self.pending_mip.take().unwrap();
-                    
+
                     write_cubemap_face_mip(&CubemapFaceMipWrite {
                         queue,
                         texture,
@@ -339,7 +338,9 @@ impl CubemapMipChainUploader {
                     return Ok(MipChainAdvance::YieldBackground);
                 }
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    return Err(TextureUploadError::from("Background decode thread panicked"));
+                    return Err(TextureUploadError::from(
+                        "Background decode thread panicked",
+                    ));
                 }
             }
         }
@@ -386,7 +387,7 @@ impl CubemapMipChainUploader {
         self.pending_mip = Some((self.face, mip_level, w, h));
         let offset = mip_src.as_ptr() as usize - payload.as_ptr() as usize;
         let len = mip_src.len();
-        let mip_src_range = offset..offset+len;
+        let mip_src_range = offset..offset + len;
 
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.background_rx = Some(rx);

@@ -131,9 +131,7 @@ impl CubemapUploadTask {
                         self.finalize_success(queue, ipc, total_uploaded);
                         StepResult::Done
                     }
-                    Ok(MipChainAdvance::YieldBackground) => {
-                        StepResult::YieldBackground
-                    }
+                    Ok(MipChainAdvance::YieldBackground) => StepResult::YieldBackground,
                     Err(e) => {
                         logger::warn!("cubemap {id}: upload failed: {e}");
                         StepResult::Done

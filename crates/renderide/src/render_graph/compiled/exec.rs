@@ -257,6 +257,18 @@ impl CompiledRenderGraph {
         // Drained onto the main thread after all recording completes and before submit.
         let upload_batch = super::super::frame_upload_batch::FrameUploadBatch::new();
 
+        // ── Pre-warm per-view resources and material pipeline cache ─────────────────────────
+        //
+        // Calls `per_view_frame_or_create` and `per_view_per_draw_or_create` for every view up
+        // front so subsequent per-view recording no longer mutates the per-view resource maps.
+        // This also primes secondary RT cameras on first appearance (no first-frame stutter
+        // when a new view id shows up mid-session) and is a structural prerequisite for moving
+        // the per-view recording loop onto rayon workers in a future iteration. Pipeline cache
+        // pre-warming walks every view's prefetched draw list and materializes pipelines for
+        // unique batch keys so the per-view record loop sees only cache hits.
+        Self::pre_warm_per_view_resources_for_views(&mut mv_ctx, views)?;
+        Self::pre_warm_pipeline_cache_for_views(&mut mv_ctx, views);
+
         // ── Frame-global pass (optional) ─────────────────────────────────────────────────────
         let frame_global_cmd = self.encode_frame_global_passes(
             &mut mv_ctx,
@@ -268,14 +280,16 @@ impl CompiledRenderGraph {
         // ── Per-view recording (no submit per view) ──────────────────────────────────────────
         // Serial vs parallel recording is controlled by `backend.record_parallelism`.
         //
-        // `PerViewParallel` is prepared by Milestones A-D: `record(&self, …)` on every pass trait,
+        // `PerViewParallel` scaffolding is in place: `record(&self, …)` on every pass trait,
         // `FrameSystemsShared` / `FrameRenderParamsView` split, `FrameUploadBatch` drains on the
-        // main thread post-scope, transient textures/buffers pre-resolved once before the loop,
-        // and per-view scratch slabs keyed by `OcclusionViewId`. Full rayon fan-out with
-        // `rayon::scope` additionally requires `encode_per_view_to_cmd` to take `&self` and
-        // accept only shared (`&`) access to the GPU context and render backend, plus gating of
-        // the singleton `gpu.take_gpu_profiler()` pattern. Until that lands the parallel branch
-        // falls back to serial with a one-time `info!` on first frame.
+        // main thread post-submit, transient textures/buffers pre-resolved once before the loop,
+        // per-view scratch slabs (uniforms + byte slab) keyed by `OcclusionViewId`, per-view
+        // resources pre-warmed above, and [`encode_per_view_to_cmd`] / [`execute_pass_node`]
+        // both take `&self`. The remaining blockers for full `rayon::scope` fan-out live in
+        // [`super::super::record_parallel`]: they require interior mutability on the
+        // [`crate::backend::OcclusionSystem`] / [`crate::backend::FrameResourceManager`] /
+        // [`crate::backend::MaterialSystem`] handles passed via [`FrameSystemsShared`], plus
+        // gating around the singleton `GpuProfiler` take/restore pattern.
         let record_parallelism = mv_ctx.backend.record_parallelism;
         if record_parallelism == crate::config::RecordParallelism::PerViewParallel && n_views > 1 {
             super::super::record_parallel::warn_parallel_falls_back_once(n_views);
@@ -443,6 +457,150 @@ impl CompiledRenderGraph {
         Ok(())
     }
 
+    /// Walks every view's prefetched draw list and pre-warms the material pipeline cache for
+    /// each unique batch key. After this call the per-view recording loop can find every needed
+    /// pipeline via cached lookup, removing the lazy `&mut self` cache-miss build path from the
+    /// critical record path.
+    ///
+    /// Pre-warming uses [`crate::materials::MaterialPipelineDesc`] derived from each view's
+    /// surface format, depth format, sample count, and multiview mask so cache keys match the
+    /// keys the record path will request. Views without prefetched draws (lazy-collect path)
+    /// are skipped — they will fall back to lazy cache build during recording as before.
+    fn pre_warm_pipeline_cache_for_views(
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &[FrameView<'_>],
+    ) {
+        use crate::materials::MaterialPipelineDesc;
+        use std::num::NonZeroU32;
+        profiling::scope!("graph::pre_warm_pipelines");
+        let Some(reg) = mv_ctx.backend.materials.material_registry_mut() else {
+            return;
+        };
+        for view in views.iter() {
+            let Some(collection) = view.prefetched_world_mesh_draws.as_ref() else {
+                continue;
+            };
+            if collection.items.is_empty() {
+                continue;
+            }
+            let host_camera = view.host_camera;
+            let (viewport, multiview_stereo) = match &view.target {
+                FrameViewTarget::ExternalMultiview(ext) => {
+                    let stereo = host_camera.vr_active && host_camera.stereo_views.is_some();
+                    (ext.extent_px, stereo)
+                }
+                FrameViewTarget::OffscreenRt(ext) => (ext.extent_px, false),
+                FrameViewTarget::Swapchain => (mv_ctx.gpu.surface_extent_px(), false),
+            };
+            let _ = viewport;
+            let surface_format = match &view.target {
+                FrameViewTarget::ExternalMultiview(ext) => ext.surface_format,
+                FrameViewTarget::OffscreenRt(ext) => ext.color_format,
+                FrameViewTarget::Swapchain => mv_ctx.gpu.config_format(),
+            };
+            let depth_stencil_format = match &view.target {
+                FrameViewTarget::ExternalMultiview(ext) => ext.depth_texture.format(),
+                FrameViewTarget::OffscreenRt(ext) => ext.depth_texture.format(),
+                FrameViewTarget::Swapchain => {
+                    let Ok((depth_tex, _)) = mv_ctx.gpu.ensure_depth_target() else {
+                        continue;
+                    };
+                    depth_tex.format()
+                }
+            };
+            let sample_count = match &view.target {
+                FrameViewTarget::ExternalMultiview(_) => {
+                    mv_ctx.gpu.swapchain_msaa_effective_stereo().max(1)
+                }
+                FrameViewTarget::OffscreenRt(_) => 1,
+                FrameViewTarget::Swapchain => mv_ctx.gpu.swapchain_msaa_effective().max(1),
+            };
+            let use_multiview = multiview_stereo
+                && host_camera.vr_active
+                && host_camera.stereo_view_proj.is_some()
+                && mv_ctx.gpu_limits.supports_multiview;
+            let pass_desc = MaterialPipelineDesc {
+                surface_format,
+                depth_stencil_format: Some(depth_stencil_format),
+                sample_count,
+                multiview_mask: if use_multiview {
+                    NonZeroU32::new(3)
+                } else {
+                    None
+                },
+            };
+            let shader_perm = if use_multiview {
+                crate::pipelines::SHADER_PERM_MULTIVIEW_STEREO
+            } else {
+                crate::pipelines::ShaderPermutation(0)
+            };
+
+            // Walk unique (shader_asset_id, blend_mode, render_state) tuples to avoid duplicate
+            // cache calls for draws that share the same batch key.
+            let mut seen: std::collections::HashSet<(
+                i32,
+                crate::materials::MaterialBlendMode,
+                crate::materials::MaterialRenderState,
+            )> = std::collections::HashSet::new();
+            for item in &collection.items {
+                let key = (
+                    item.batch_key.shader_asset_id,
+                    item.batch_key.blend_mode,
+                    item.batch_key.render_state,
+                );
+                if !seen.insert(key) {
+                    continue;
+                }
+                let _ = reg.pipeline_for_shader_asset(
+                    item.batch_key.shader_asset_id,
+                    &pass_desc,
+                    shader_perm,
+                    item.batch_key.blend_mode,
+                    item.batch_key.render_state,
+                );
+            }
+        }
+    }
+
+    /// Eagerly allocates per-view frame state ([`crate::backend::FrameResourceManager::per_view_frame_or_create`])
+    /// and per-view per-draw resources ([`crate::backend::FrameResourceManager::per_view_per_draw_or_create`])
+    /// for every view in `views` before per-view recording begins.
+    ///
+    /// Hoists the lazy `&mut backend.frame_resources.*_or_create` calls out of the per-view
+    /// recording loop so that loop can later borrow `backend` shared across rayon workers
+    /// without colliding on the per-view resource maps (`per_view_frame`, `per_view_draw`).
+    /// Also primes a freshly added secondary RT camera so its first frame does not pay the
+    /// cluster-buffer / frame-uniform-buffer allocation cost mid-recording.
+    fn pre_warm_per_view_resources_for_views(
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &[FrameView<'_>],
+    ) -> Result<(), GraphExecuteError> {
+        profiling::scope!("graph::pre_warm_per_view");
+        for view in views.iter() {
+            let occlusion_view = view.occlusion_view_id();
+            let host_camera = view.host_camera;
+            let (viewport, stereo) = match &view.target {
+                FrameViewTarget::ExternalMultiview(ext) => {
+                    let stereo = host_camera.vr_active && host_camera.stereo_views.is_some();
+                    (ext.extent_px, stereo)
+                }
+                FrameViewTarget::OffscreenRt(ext) => (ext.extent_px, false),
+                FrameViewTarget::Swapchain => (mv_ctx.gpu.surface_extent_px(), false),
+            };
+            let _ = mv_ctx.backend.frame_resources.per_view_frame_or_create(
+                occlusion_view,
+                mv_ctx.device,
+                viewport,
+                stereo,
+            );
+            let _ = mv_ctx
+                .backend
+                .frame_resources
+                .per_view_per_draw_or_create(occlusion_view, mv_ctx.device);
+        }
+        Ok(())
+    }
+
     /// Pre-resolves transient textures and buffers for every view's [`GraphResolveKey`].
     ///
     /// Hoists the transient-pool allocation out of the per-view record loop so that the loop
@@ -509,8 +667,13 @@ impl CompiledRenderGraph {
     /// buffers) in a single [`wgpu::Queue::submit`] call after all per-view encoding is done.
     ///
     /// `per_view_frame_bg_and_buf` is the per-view `@group(0)` bind group + uniform buffer.
+    ///
+    /// Takes `&self` so per-view recording is structurally compatible with rayon fan-out at the
+    /// [`CompiledRenderGraph`] layer; the remaining serialization point is the `&mut backend`
+    /// borrow on [`MultiViewExecutionContext`] (see [`super::super::record_parallel`] for the
+    /// remaining gating around shared mutable system handles).
     fn encode_per_view_to_cmd(
-        &mut self,
+        &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
         view: &mut FrameView<'_>,
         view_idx: usize,
@@ -637,7 +800,7 @@ impl CompiledRenderGraph {
     /// Returns `None` when there are no frame-global passes (nothing to submit for this phase).
     /// The caller is responsible for including the returned buffer in the single-submit batch.
     fn encode_frame_global_passes(
-        &mut self,
+        &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
         views: &[FrameView<'_>],
         transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
@@ -778,9 +941,13 @@ impl CompiledRenderGraph {
     /// - `Compute` → calls `record_compute` with raw encoder.
     /// - `Copy` → calls `record_copy` with raw encoder.
     /// - `Callback` → calls `run_callback` (no encoder).
+    ///
+    /// Takes `&self` so per-view recording can be hoisted onto rayon workers without serialising
+    /// on the [`CompiledRenderGraph`] handle. All pass `record_*` methods already require only
+    /// `&self`, so the dispatch loop is structurally Send/Sync-safe at this layer.
     #[allow(clippy::too_many_arguments)]
     fn execute_pass_node<'a>(
-        &mut self,
+        &self,
         pass_idx: usize,
         resolved: &'a ResolvedView<'a>,
         graph_resources: &'a GraphResolvedResources,

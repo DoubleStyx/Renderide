@@ -141,6 +141,76 @@ fn overlay_render_matrix_tracks_head_output_transform() {
     );
 }
 
+/// [`super::parallel_apply::apply_extracted_render_space_update`] mutates only the per-space
+/// inputs it is given: pre-extracted payloads with non-identity poses commit into the right
+/// dense slots and report a dirty world cache so the caller can flag the space for re-flush.
+#[test]
+fn parallel_apply_extracted_commits_pose_writes_and_marks_dirty() {
+    use super::parallel_apply::{
+        apply_extracted_render_space_update, ExtractedRenderSpaceUpdate, PerSpaceApplyInputs,
+    };
+    use crate::scene::transforms_apply::ExtractedTransformsUpdate;
+    use crate::shared::{RenderTransform, TransformPoseUpdate};
+
+    let mut space = RenderSpaceState {
+        id: RenderSpaceId(7),
+        is_active: true,
+        nodes: vec![RenderTransform::default(); 3],
+        node_parents: vec![-1, 0, 1],
+        ..Default::default()
+    };
+    let mut cache = WorldTransformCache::default();
+    compute_world_matrices_for_space(7, &space.nodes, &space.node_parents, &mut cache)
+        .expect("solve");
+
+    let new_pose = RenderTransform {
+        position: Vec3::new(5.0, 0.0, 0.0),
+        scale: Vec3::ONE,
+        rotation: Quat::IDENTITY,
+    };
+    let extracted = ExtractedRenderSpaceUpdate {
+        space_id: RenderSpaceId(7),
+        cameras: None,
+        transforms: Some(ExtractedTransformsUpdate {
+            removals: Vec::new(),
+            parent_updates: Vec::new(),
+            pose_updates: vec![
+                TransformPoseUpdate {
+                    transform_id: 1,
+                    pose: new_pose,
+                },
+                TransformPoseUpdate {
+                    transform_id: -1,
+                    pose: RenderTransform::default(),
+                },
+            ],
+            target_transform_count: 3,
+            frame_index: 0,
+        }),
+        meshes: None,
+        skinned_meshes: None,
+        layers: None,
+        transform_overrides: None,
+        material_overrides: None,
+    };
+    let mut removal_events = Vec::new();
+    let dirty = apply_extracted_render_space_update(
+        &extracted,
+        PerSpaceApplyInputs {
+            space: &mut space,
+            cache: &mut cache,
+            removal_events: &mut removal_events,
+        },
+    );
+    assert!(dirty, "pose write must invalidate the world cache");
+    assert!((space.nodes[1].position.x - 5.0).abs() < 1e-5);
+    assert!(
+        !cache.computed[1],
+        "node 1 must be marked uncomputed after pose write"
+    );
+    assert!(removal_events.is_empty());
+}
+
 /// Overlay spaces use the main camera view because object matrices are in main-world coordinates.
 #[test]
 fn overlay_render_space_view_matrix_matches_main_space() {

@@ -25,7 +25,11 @@
 //!   multi-view runs [`PassPhase::FrameGlobal`] passes in a dedicated encoder + submit, then
 //!   **one encoder + submit per [`FrameView`]** for [`PassPhase::PerView`] passes so per-view
 //!   [`wgpu::Queue::write_buffer`] updates are visible before each view's commands; see
-//!   [`CompiledRenderGraph::execute_multi_view`].
+//!   [`CompiledRenderGraph::execute_multi_view`]. Before the per-view loop, transient resources,
+//!   per-view per-draw / frame state ([`crate::backend::FrameResourceManager`]), and the material
+//!   pipeline cache are pre-warmed once across all views so the per-view record path no longer
+//!   pays lazy `&mut` allocation costs (also a structural prerequisite for the parallel record
+//!   path; see [`record_parallel`]).
 //! - **[`GraphCache`]** memoizes a compiled graph by [`GraphCacheKey`] (surface extent, MSAA,
 //!   multiview, surface format, scene HDR format) so the backend rebuilds only when one of those inputs changes.
 //!
