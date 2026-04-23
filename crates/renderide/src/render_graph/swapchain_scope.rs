@@ -82,8 +82,15 @@ impl SwapchainScope {
         // `get_current_texture()` call. Wait specifically on the prior present instead of
         // doing a full `flush_driver` so non-surface batches (e.g. Hi-Z readback submits,
         // `on_submitted_work_done` callbacks) stay pipelined with frame N+1's recording.
-        gpu.wait_for_previous_present();
-        match acquire_surface_outcome(gpu)? {
+        {
+            profiling::scope!("gpu::wait_previous_present");
+            gpu.wait_for_previous_present();
+        }
+        let outcome = {
+            profiling::scope!("gpu::get_current_texture");
+            acquire_surface_outcome(gpu)?
+        };
+        match outcome {
             SurfaceFrameOutcome::Skip | SurfaceFrameOutcome::Reconfigured => {
                 Ok(SwapchainEnterOutcome::SkipFrame)
             }

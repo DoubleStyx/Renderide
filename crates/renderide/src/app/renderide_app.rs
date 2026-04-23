@@ -406,6 +406,8 @@ impl RenderideApp {
                 inputs.vr = Some(vr);
             }
             self.runtime.pre_frame(inputs);
+        } else {
+            profiling::scope!("lock_step::skipped");
         }
     }
 
@@ -506,6 +508,7 @@ impl RenderideApp {
 
         if let (Some(bundle), Some(tick)) = (self.xr_session.as_mut(), xr_tick) {
             if !hmd_projection_ended {
+                profiling::scope!("xr::end_frame_empty");
                 if let Err(e) = bundle
                     .handles
                     .xr_session
@@ -543,6 +546,7 @@ impl RenderideApp {
 
     /// One winit redraw; phase order is documented on this module ([`crate::app::renderide_app`]).
     fn tick_frame(&mut self, event_loop: &ActiveEventLoop) {
+        profiling::scope!("tick::frame");
         let frame_start = Instant::now();
         self.frame_tick_prologue(frame_start);
         self.poll_ipc_and_window();
