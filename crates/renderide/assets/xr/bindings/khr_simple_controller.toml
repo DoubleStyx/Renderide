@@ -1,0 +1,34 @@
+profile = "/interaction_profiles/khr/simple_controller"
+
+[[binding]]
+action = "left_grip_pose"
+path = "/user/hand/left/input/grip/pose"
+[[binding]]
+action = "right_grip_pose"
+path = "/user/hand/right/input/grip/pose"
+[[binding]]
+action = "left_aim_pose"
+path = "/user/hand/left/input/aim/pose"
+[[binding]]
+action = "right_aim_pose"
+path = "/user/hand/right/input/aim/pose"
+
+[[binding]]
+action = "left_select"
+path = "/user/hand/left/input/select/click"
+[[binding]]
+action = "right_select"
+path = "/user/hand/right/input/select/click"
+[[binding]]
+action = "left_menu"
+path = "/user/hand/left/input/menu/click"
+[[binding]]
+action = "right_menu"
+path = "/user/hand/right/input/menu/click"
+
+[[binding]]
+action = "left_haptic"
+path = "/user/hand/left/output/haptic"
+[[binding]]
+action = "right_haptic"
+path = "/user/hand/right/output/haptic"

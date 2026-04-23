@@ -1,6 +1,7 @@
 //! OpenXR action set, interaction profile bindings, and per-frame VR controller sampling.
 
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::Arc;
 
 use glam::{Quat, Vec2, Vec3};
 use openxr as xr;
@@ -9,7 +10,10 @@ use crate::shared::{Chirality, VRControllerState};
 
 use super::bindings::ProfileExtensionGates;
 use super::frame::{resolve_controller_frame, ControllerFrame};
-use super::openxr_actions::{create_openxr_input_parts, OpenxrInputParts};
+use super::manifest::Manifest;
+use super::openxr_actions::{
+    create_openxr_input_parts, OpenxrInputActions, OpenxrInputParts, ResolvedProfilePaths,
+};
 use super::pose::pose_from_location;
 use super::profile::{
     decode_profile_code, is_concrete_profile, log_profile_transition, profile_code,
@@ -100,165 +104,87 @@ fn ipc_vr_controller_from_polled(
     })
 }
 
+/// Shared flag set when the session pump sees [`openxr::Event::InteractionProfileChanged`].
+///
+/// Consumed by [`OpenxrInput::sync_and_sample`] on the next frame to clear the per-hand profile
+/// caches so `detect_profile` falls back to a fresh runtime query rather than the (now stale)
+/// cached code.
+pub type InteractionProfileDirtyFlag = Arc<AtomicBool>;
+
 /// OpenXR actions and derived spaces for headset/controller input used by the renderer IPC path.
 pub struct OpenxrInput {
     action_set: xr::ActionSet,
     left_user_path: xr::Path,
     right_user_path: xr::Path,
-    oculus_touch_profile: xr::Path,
-    valve_index_profile: xr::Path,
-    htc_vive_profile: xr::Path,
-    microsoft_motion_profile: xr::Path,
-    generic_controller_profile: xr::Path,
-    simple_controller_profile: xr::Path,
-    pico4_controller_profile: xr::Path,
-    pico_neo3_controller_profile: xr::Path,
-    hp_reverb_g2_profile: xr::Path,
-    samsung_odyssey_profile: xr::Path,
-    htc_vive_cosmos_profile: xr::Path,
-    htc_vive_focus3_profile: xr::Path,
-    meta_touch_pro_profile: xr::Path,
-    meta_touch_plus_profile: xr::Path,
+    profile_paths: ResolvedProfilePaths,
     left_profile_cache: AtomicU8,
     right_profile_cache: AtomicU8,
-    /// Kept alive for the OpenXR session; per-frame poses use the derived [`xr::Space`] handles.
-    #[expect(
-        dead_code,
-        reason = "lifetime-only field; dropped with the action set when the session ends"
-    )]
-    left_grip_pose: xr::Action<xr::Posef>,
-    /// Kept alive for the OpenXR session; per-frame poses use the derived [`xr::Space`] handles.
-    #[expect(
-        dead_code,
-        reason = "lifetime-only field; dropped with the action set when the session ends"
-    )]
-    right_grip_pose: xr::Action<xr::Posef>,
-    left_trigger: xr::Action<f32>,
-    right_trigger: xr::Action<f32>,
-    left_trigger_touch: xr::Action<bool>,
-    right_trigger_touch: xr::Action<bool>,
-    left_trigger_click: xr::Action<bool>,
-    right_trigger_click: xr::Action<bool>,
-    left_squeeze: xr::Action<f32>,
-    right_squeeze: xr::Action<f32>,
-    left_squeeze_click: xr::Action<bool>,
-    right_squeeze_click: xr::Action<bool>,
-    left_thumbstick: xr::Action<xr::Vector2f>,
-    right_thumbstick: xr::Action<xr::Vector2f>,
-    left_thumbstick_touch: xr::Action<bool>,
-    right_thumbstick_touch: xr::Action<bool>,
-    left_thumbstick_click: xr::Action<bool>,
-    right_thumbstick_click: xr::Action<bool>,
-    left_trackpad: xr::Action<xr::Vector2f>,
-    right_trackpad: xr::Action<xr::Vector2f>,
-    left_trackpad_touch: xr::Action<bool>,
-    right_trackpad_touch: xr::Action<bool>,
-    left_trackpad_click: xr::Action<bool>,
-    right_trackpad_click: xr::Action<bool>,
-    left_trackpad_force: xr::Action<f32>,
-    right_trackpad_force: xr::Action<f32>,
-    left_primary: xr::Action<bool>,
-    right_primary: xr::Action<bool>,
-    left_secondary: xr::Action<bool>,
-    right_secondary: xr::Action<bool>,
-    left_primary_touch: xr::Action<bool>,
-    right_primary_touch: xr::Action<bool>,
-    left_secondary_touch: xr::Action<bool>,
-    right_secondary_touch: xr::Action<bool>,
-    left_menu: xr::Action<bool>,
-    right_menu: xr::Action<bool>,
-    left_thumbrest_touch: xr::Action<bool>,
-    right_thumbrest_touch: xr::Action<bool>,
-    left_select: xr::Action<bool>,
-    right_select: xr::Action<bool>,
+    interaction_profile_dirty: InteractionProfileDirtyFlag,
+    actions: OpenxrInputActions,
     left_space: xr::Space,
     right_space: xr::Space,
     left_aim_space: xr::Space,
     right_aim_space: xr::Space,
 }
 
-impl From<OpenxrInputParts> for OpenxrInput {
-    fn from(p: OpenxrInputParts) -> Self {
-        Self {
-            action_set: p.action_set,
-            left_user_path: p.left_user_path,
-            right_user_path: p.right_user_path,
-            oculus_touch_profile: p.oculus_touch_profile,
-            valve_index_profile: p.valve_index_profile,
-            htc_vive_profile: p.htc_vive_profile,
-            microsoft_motion_profile: p.microsoft_motion_profile,
-            generic_controller_profile: p.generic_controller_profile,
-            simple_controller_profile: p.simple_controller_profile,
-            pico4_controller_profile: p.pico4_controller_profile,
-            pico_neo3_controller_profile: p.pico_neo3_controller_profile,
-            hp_reverb_g2_profile: p.hp_reverb_g2_profile,
-            samsung_odyssey_profile: p.samsung_odyssey_profile,
-            htc_vive_cosmos_profile: p.htc_vive_cosmos_profile,
-            htc_vive_focus3_profile: p.htc_vive_focus3_profile,
-            meta_touch_pro_profile: p.meta_touch_pro_profile,
-            meta_touch_plus_profile: p.meta_touch_plus_profile,
-            left_profile_cache: p.left_profile_cache,
-            right_profile_cache: p.right_profile_cache,
-            left_grip_pose: p.left_grip_pose,
-            right_grip_pose: p.right_grip_pose,
-            left_trigger: p.left_trigger,
-            right_trigger: p.right_trigger,
-            left_trigger_touch: p.left_trigger_touch,
-            right_trigger_touch: p.right_trigger_touch,
-            left_trigger_click: p.left_trigger_click,
-            right_trigger_click: p.right_trigger_click,
-            left_squeeze: p.left_squeeze,
-            right_squeeze: p.right_squeeze,
-            left_squeeze_click: p.left_squeeze_click,
-            right_squeeze_click: p.right_squeeze_click,
-            left_thumbstick: p.left_thumbstick,
-            right_thumbstick: p.right_thumbstick,
-            left_thumbstick_touch: p.left_thumbstick_touch,
-            right_thumbstick_touch: p.right_thumbstick_touch,
-            left_thumbstick_click: p.left_thumbstick_click,
-            right_thumbstick_click: p.right_thumbstick_click,
-            left_trackpad: p.left_trackpad,
-            right_trackpad: p.right_trackpad,
-            left_trackpad_touch: p.left_trackpad_touch,
-            right_trackpad_touch: p.right_trackpad_touch,
-            left_trackpad_click: p.left_trackpad_click,
-            right_trackpad_click: p.right_trackpad_click,
-            left_trackpad_force: p.left_trackpad_force,
-            right_trackpad_force: p.right_trackpad_force,
-            left_primary: p.left_primary,
-            right_primary: p.right_primary,
-            left_secondary: p.left_secondary,
-            right_secondary: p.right_secondary,
-            left_primary_touch: p.left_primary_touch,
-            right_primary_touch: p.right_primary_touch,
-            left_secondary_touch: p.left_secondary_touch,
-            right_secondary_touch: p.right_secondary_touch,
-            left_menu: p.left_menu,
-            right_menu: p.right_menu,
-            left_thumbrest_touch: p.left_thumbrest_touch,
-            right_thumbrest_touch: p.right_thumbrest_touch,
-            left_select: p.left_select,
-            right_select: p.right_select,
-            left_space: p.left_space,
-            right_space: p.right_space,
-            left_aim_space: p.left_aim_space,
-            right_aim_space: p.right_aim_space,
-        }
-    }
-}
-
 impl OpenxrInput {
-    /// Creates the action set, suggests bindings for known interaction profiles, and builds grip/aim spaces.
+    /// Loads the XR action manifest, creates the action set, suggests bindings, and builds spaces.
     ///
     /// `gates` must reflect which OpenXR extensions were enabled on the instance; binding
     /// suggestions for profiles whose extension is disabled are skipped so runtimes that do not
     /// recognise those paths do not emit errors.
+    ///
+    /// `dirty_flag` is the cross-module signal used by the session event pump to force a profile
+    /// re-detection on the next frame after [`openxr::Event::InteractionProfileChanged`].
     pub fn new(
         instance: &xr::Instance,
         session: &xr::Session<xr::Vulkan>,
         gates: &ProfileExtensionGates,
+        manifest: &Manifest,
+        dirty_flag: InteractionProfileDirtyFlag,
     ) -> Result<Self, xr::sys::Result> {
-        create_openxr_input_parts(instance, session, gates).map(Into::into)
+        let parts = create_openxr_input_parts(instance, session, gates, manifest)?;
+        Ok(Self::from_parts(parts, dirty_flag))
+    }
+
+    fn from_parts(parts: OpenxrInputParts, dirty_flag: InteractionProfileDirtyFlag) -> Self {
+        Self {
+            action_set: parts.action_set,
+            left_user_path: parts.left_user_path,
+            right_user_path: parts.right_user_path,
+            profile_paths: parts.profile_paths,
+            left_profile_cache: parts.left_profile_cache,
+            right_profile_cache: parts.right_profile_cache,
+            interaction_profile_dirty: dirty_flag,
+            actions: parts.actions,
+            left_space: parts.left_space,
+            right_space: parts.right_space,
+            left_aim_space: parts.left_aim_space,
+            right_aim_space: parts.right_aim_space,
+        }
+    }
+
+    /// Triggers a haptic pulse on the requested hand via
+    /// [`openxr::Action::apply_feedback`]. `amplitude` is `0..=1`; `duration_nanos` of
+    /// `xr::Duration::MIN_HAPTIC` lets the runtime choose a minimum; `frequency_hz` uses
+    /// `xr::FREQUENCY_UNSPECIFIED` when left-to-runtime.
+    pub fn apply_haptic(
+        &self,
+        session: &xr::Session<xr::Vulkan>,
+        side: Chirality,
+        amplitude: f32,
+        duration_nanos: i64,
+        frequency_hz: f32,
+    ) -> Result<(), xr::sys::Result> {
+        let action = match side {
+            Chirality::Left => &self.actions.left_haptic,
+            Chirality::Right => &self.actions.right_haptic,
+        };
+        let event = xr::HapticVibration::new()
+            .amplitude(amplitude)
+            .duration(xr::Duration::from_nanos(duration_nanos))
+            .frequency(frequency_hz);
+        action.apply_feedback(session, xr::Path::NULL, &event)
     }
 
     fn detect_profile(
@@ -269,32 +195,31 @@ impl OpenxrInput {
         let Ok(profile) = session.current_interaction_profile(hand_user_path) else {
             return ActiveControllerProfile::Generic;
         };
-        if profile == self.oculus_touch_profile
-            || profile == self.meta_touch_pro_profile
-            || profile == self.meta_touch_plus_profile
+        let paths = &self.profile_paths;
+        if profile == paths.oculus_touch
+            || profile == paths.meta_touch_pro
+            || profile == paths.meta_touch_plus
         {
             ActiveControllerProfile::Touch
-        } else if profile == self.pico4_controller_profile {
+        } else if profile == paths.pico4_controller {
             ActiveControllerProfile::Pico4
-        } else if profile == self.pico_neo3_controller_profile {
+        } else if profile == paths.pico_neo3_controller {
             ActiveControllerProfile::PicoNeo3
-        } else if profile == self.valve_index_profile {
+        } else if profile == paths.valve_index {
             ActiveControllerProfile::Index
-        } else if profile == self.htc_vive_profile {
+        } else if profile == paths.htc_vive {
             ActiveControllerProfile::Vive
-        } else if profile == self.htc_vive_cosmos_profile {
+        } else if profile == paths.htc_vive_cosmos {
             ActiveControllerProfile::ViveCosmos
-        } else if profile == self.htc_vive_focus3_profile {
+        } else if profile == paths.htc_vive_focus3 {
             ActiveControllerProfile::ViveFocus3
-        } else if profile == self.hp_reverb_g2_profile {
+        } else if profile == paths.hp_reverb_g2 {
             ActiveControllerProfile::HpReverbG2
-        } else if profile == self.microsoft_motion_profile
-            || profile == self.samsung_odyssey_profile
-        {
+        } else if profile == paths.microsoft_motion || profile == paths.samsung_odyssey {
             ActiveControllerProfile::WindowsMr
-        } else if profile == self.generic_controller_profile {
+        } else if profile == paths.generic_controller {
             ActiveControllerProfile::Generic
-        } else if profile == self.simple_controller_profile || profile == xr::Path::NULL {
+        } else if profile == paths.simple_controller || profile == xr::Path::NULL {
             ActiveControllerProfile::Simple
         } else {
             ActiveControllerProfile::Generic
@@ -327,48 +252,49 @@ impl OpenxrInput {
         session: &xr::Session<xr::Vulkan>,
         side: Chirality,
     ) -> Result<PolledHandStates, xr::sys::Result> {
+        let a = &self.actions;
         match side {
             Chirality::Left => Ok(PolledHandStates {
-                trigger: self.left_trigger.state(session, xr::Path::NULL)?,
-                trigger_touch: self.left_trigger_touch.state(session, xr::Path::NULL)?,
-                trigger_click: self.left_trigger_click.state(session, xr::Path::NULL)?,
-                squeeze: self.left_squeeze.state(session, xr::Path::NULL)?,
-                squeeze_click: self.left_squeeze_click.state(session, xr::Path::NULL)?,
-                thumbstick: self.left_thumbstick.state(session, xr::Path::NULL)?,
-                thumbstick_touch: self.left_thumbstick_touch.state(session, xr::Path::NULL)?,
-                thumbstick_click: self.left_thumbstick_click.state(session, xr::Path::NULL)?,
-                trackpad: self.left_trackpad.state(session, xr::Path::NULL)?,
-                trackpad_touch: self.left_trackpad_touch.state(session, xr::Path::NULL)?,
-                trackpad_click: self.left_trackpad_click.state(session, xr::Path::NULL)?,
-                trackpad_force: self.left_trackpad_force.state(session, xr::Path::NULL)?,
-                primary: self.left_primary.state(session, xr::Path::NULL)?,
-                secondary: self.left_secondary.state(session, xr::Path::NULL)?,
-                primary_touch: self.left_primary_touch.state(session, xr::Path::NULL)?,
-                secondary_touch: self.left_secondary_touch.state(session, xr::Path::NULL)?,
-                menu: self.left_menu.state(session, xr::Path::NULL)?,
-                thumbrest_touch: self.left_thumbrest_touch.state(session, xr::Path::NULL)?,
-                select: self.left_select.state(session, xr::Path::NULL)?,
+                trigger: a.left_trigger.state(session, xr::Path::NULL)?,
+                trigger_touch: a.left_trigger_touch.state(session, xr::Path::NULL)?,
+                trigger_click: a.left_trigger_click.state(session, xr::Path::NULL)?,
+                squeeze: a.left_squeeze.state(session, xr::Path::NULL)?,
+                squeeze_click: a.left_squeeze_click.state(session, xr::Path::NULL)?,
+                thumbstick: a.left_thumbstick.state(session, xr::Path::NULL)?,
+                thumbstick_touch: a.left_thumbstick_touch.state(session, xr::Path::NULL)?,
+                thumbstick_click: a.left_thumbstick_click.state(session, xr::Path::NULL)?,
+                trackpad: a.left_trackpad.state(session, xr::Path::NULL)?,
+                trackpad_touch: a.left_trackpad_touch.state(session, xr::Path::NULL)?,
+                trackpad_click: a.left_trackpad_click.state(session, xr::Path::NULL)?,
+                trackpad_force: a.left_trackpad_force.state(session, xr::Path::NULL)?,
+                primary: a.left_primary.state(session, xr::Path::NULL)?,
+                secondary: a.left_secondary.state(session, xr::Path::NULL)?,
+                primary_touch: a.left_primary_touch.state(session, xr::Path::NULL)?,
+                secondary_touch: a.left_secondary_touch.state(session, xr::Path::NULL)?,
+                menu: a.left_menu.state(session, xr::Path::NULL)?,
+                thumbrest_touch: a.left_thumbrest_touch.state(session, xr::Path::NULL)?,
+                select: a.left_select.state(session, xr::Path::NULL)?,
             }),
             Chirality::Right => Ok(PolledHandStates {
-                trigger: self.right_trigger.state(session, xr::Path::NULL)?,
-                trigger_touch: self.right_trigger_touch.state(session, xr::Path::NULL)?,
-                trigger_click: self.right_trigger_click.state(session, xr::Path::NULL)?,
-                squeeze: self.right_squeeze.state(session, xr::Path::NULL)?,
-                squeeze_click: self.right_squeeze_click.state(session, xr::Path::NULL)?,
-                thumbstick: self.right_thumbstick.state(session, xr::Path::NULL)?,
-                thumbstick_touch: self.right_thumbstick_touch.state(session, xr::Path::NULL)?,
-                thumbstick_click: self.right_thumbstick_click.state(session, xr::Path::NULL)?,
-                trackpad: self.right_trackpad.state(session, xr::Path::NULL)?,
-                trackpad_touch: self.right_trackpad_touch.state(session, xr::Path::NULL)?,
-                trackpad_click: self.right_trackpad_click.state(session, xr::Path::NULL)?,
-                trackpad_force: self.right_trackpad_force.state(session, xr::Path::NULL)?,
-                primary: self.right_primary.state(session, xr::Path::NULL)?,
-                secondary: self.right_secondary.state(session, xr::Path::NULL)?,
-                primary_touch: self.right_primary_touch.state(session, xr::Path::NULL)?,
-                secondary_touch: self.right_secondary_touch.state(session, xr::Path::NULL)?,
-                menu: self.right_menu.state(session, xr::Path::NULL)?,
-                thumbrest_touch: self.right_thumbrest_touch.state(session, xr::Path::NULL)?,
-                select: self.right_select.state(session, xr::Path::NULL)?,
+                trigger: a.right_trigger.state(session, xr::Path::NULL)?,
+                trigger_touch: a.right_trigger_touch.state(session, xr::Path::NULL)?,
+                trigger_click: a.right_trigger_click.state(session, xr::Path::NULL)?,
+                squeeze: a.right_squeeze.state(session, xr::Path::NULL)?,
+                squeeze_click: a.right_squeeze_click.state(session, xr::Path::NULL)?,
+                thumbstick: a.right_thumbstick.state(session, xr::Path::NULL)?,
+                thumbstick_touch: a.right_thumbstick_touch.state(session, xr::Path::NULL)?,
+                thumbstick_click: a.right_thumbstick_click.state(session, xr::Path::NULL)?,
+                trackpad: a.right_trackpad.state(session, xr::Path::NULL)?,
+                trackpad_touch: a.right_trackpad_touch.state(session, xr::Path::NULL)?,
+                trackpad_click: a.right_trackpad_click.state(session, xr::Path::NULL)?,
+                trackpad_force: a.right_trackpad_force.state(session, xr::Path::NULL)?,
+                primary: a.right_primary.state(session, xr::Path::NULL)?,
+                secondary: a.right_secondary.state(session, xr::Path::NULL)?,
+                primary_touch: a.right_primary_touch.state(session, xr::Path::NULL)?,
+                secondary_touch: a.right_secondary_touch.state(session, xr::Path::NULL)?,
+                menu: a.right_menu.state(session, xr::Path::NULL)?,
+                thumbrest_touch: a.right_thumbrest_touch.state(session, xr::Path::NULL)?,
+                select: a.right_select.state(session, xr::Path::NULL)?,
             }),
         }
     }
@@ -381,6 +307,13 @@ impl OpenxrInput {
         predicted_time: xr::Time,
     ) -> Result<Vec<VRControllerState>, xr::sys::Result> {
         profiling::scope!("xr::input_sync_and_sample");
+        if self
+            .interaction_profile_dirty
+            .swap(false, Ordering::Relaxed)
+        {
+            self.left_profile_cache.store(0, Ordering::Relaxed);
+            self.right_profile_cache.store(0, Ordering::Relaxed);
+        }
         session.sync_actions(&[xr::ActiveActionSet::new(&self.action_set)])?;
         let left_loc = self.left_space.locate(stage, predicted_time)?;
         let right_loc = self.right_space.locate(stage, predicted_time)?;
@@ -450,7 +383,6 @@ impl OpenxrInput {
 
     /// Logs once (at trace level) if stereo view array order may not match left-then-right pose ordering.
     pub fn log_stereo_view_order_once(views: &[xr::View]) {
-        use std::sync::atomic::{AtomicBool, Ordering};
         static ONCE: AtomicBool = AtomicBool::new(false);
         if views.len() < 2 || ONCE.swap(true, Ordering::Relaxed) {
             return;

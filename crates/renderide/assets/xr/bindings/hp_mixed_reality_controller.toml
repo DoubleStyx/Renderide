@@ -1,0 +1,69 @@
+profile = "/interaction_profiles/hp/mixed_reality_controller"
+extension_gate = "ext_hp_mixed_reality_controller"
+
+[[binding]]
+action = "left_grip_pose"
+path = "/user/hand/left/input/grip/pose"
+[[binding]]
+action = "right_grip_pose"
+path = "/user/hand/right/input/grip/pose"
+[[binding]]
+action = "left_aim_pose"
+path = "/user/hand/left/input/aim/pose"
+[[binding]]
+action = "right_aim_pose"
+path = "/user/hand/right/input/aim/pose"
+
+[[binding]]
+action = "left_trigger"
+path = "/user/hand/left/input/trigger/value"
+[[binding]]
+action = "right_trigger"
+path = "/user/hand/right/input/trigger/value"
+
+[[binding]]
+action = "left_squeeze"
+path = "/user/hand/left/input/squeeze/value"
+[[binding]]
+action = "right_squeeze"
+path = "/user/hand/right/input/squeeze/value"
+
+[[binding]]
+action = "left_thumbstick"
+path = "/user/hand/left/input/thumbstick"
+[[binding]]
+action = "right_thumbstick"
+path = "/user/hand/right/input/thumbstick"
+[[binding]]
+action = "left_thumbstick_click"
+path = "/user/hand/left/input/thumbstick/click"
+[[binding]]
+action = "right_thumbstick_click"
+path = "/user/hand/right/input/thumbstick/click"
+
+[[binding]]
+action = "left_primary"
+path = "/user/hand/left/input/x/click"
+[[binding]]
+action = "left_secondary"
+path = "/user/hand/left/input/y/click"
+[[binding]]
+action = "right_primary"
+path = "/user/hand/right/input/a/click"
+[[binding]]
+action = "right_secondary"
+path = "/user/hand/right/input/b/click"
+
+[[binding]]
+action = "left_menu"
+path = "/user/hand/left/input/menu/click"
+[[binding]]
+action = "right_menu"
+path = "/user/hand/right/input/menu/click"
+
+[[binding]]
+action = "left_haptic"
+path = "/user/hand/left/output/haptic"
+[[binding]]
+action = "right_haptic"
+path = "/user/hand/right/output/haptic"

@@ -15,7 +15,9 @@ use wgpu::hal::api::Vulkan as HalVulkan;
 
 use wgpu::wgt;
 
-use super::input::{OpenxrInput, ProfileExtensionGates};
+use super::input::{
+    load_manifest, InteractionProfileDirtyFlag, ManifestError, OpenxrInput, ProfileExtensionGates,
+};
 
 /// WGPU + OpenXR objects produced by [`init_wgpu_openxr`].
 pub struct XrWgpuHandles {
@@ -571,22 +573,55 @@ fn openxr_session_state_and_input(
     let stage: xr::Space = session
         .create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY)
         .map_err(XrBootstrapError::OpenXr)?;
-    let openxr_input = match OpenxrInput::new(&desc.xr_instance, &session, &desc.profile_gates) {
-        Ok(i) => Some(i),
+
+    let dirty_flag: InteractionProfileDirtyFlag = super::session::XrSessionState::new_dirty_flag();
+
+    let openxr_input = match load_manifest() {
+        Ok((manifest, location)) => {
+            logger::info!(
+                "Loaded OpenXR action manifest from {} ({} profile(s))",
+                location.root.display(),
+                manifest.profiles.len()
+            );
+            match OpenxrInput::new(
+                &desc.xr_instance,
+                &session,
+                &desc.profile_gates,
+                &manifest,
+                Arc::clone(&dirty_flag),
+            ) {
+                Ok(i) => Some(i),
+                Err(e) => {
+                    logger::warn!(
+                        "OpenXR controller input unavailable (continuing without actions): {e}"
+                    );
+                    None
+                }
+            }
+        }
+        Err(ManifestError::ActionsManifestMissing { ref searched }) => {
+            logger::warn!(
+                "OpenXR action manifest not found; searched: {}",
+                searched.join(", ")
+            );
+            None
+        }
         Err(e) => {
-            logger::warn!("OpenXR controller input unavailable (continuing without actions): {e}");
+            logger::warn!("OpenXR action manifest load failed: {e}");
             None
         }
     };
-    let xr_session = super::session::XrSessionState::new(
-        desc.xr_instance,
-        desc.openxr_debug_messenger,
-        desc.environment_blend_mode,
-        session,
-        frame_wait,
-        frame_stream,
-        stage,
-    );
+    let xr_session =
+        super::session::XrSessionState::new(super::session::XrSessionStateDescriptor {
+            xr_instance: desc.xr_instance,
+            openxr_debug_messenger: desc.openxr_debug_messenger,
+            environment_blend_mode: desc.environment_blend_mode,
+            session,
+            frame_wait,
+            frame_stream,
+            stage,
+            interaction_profile_dirty: dirty_flag,
+        });
     Ok((xr_session, openxr_input))
 }
 

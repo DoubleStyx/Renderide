@@ -20,6 +20,7 @@ mod view_math;
 mod tests;
 
 pub use state::XrSessionState;
+pub(in crate::xr) use state::XrSessionStateDescriptor;
 pub use view_math::{
     center_view_projection_from_stereo_views_aligned, headset_center_pose_from_stereo_views,
     headset_pose_from_xr_view, openxr_pose_to_engine, openxr_pose_to_host_tracking,
