@@ -1,7 +1,6 @@
 //! OpenXR action set, interaction profile bindings, and per-frame VR controller sampling.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-use std::sync::Arc;
 
 use glam::{Quat, Vec2, Vec3};
 use openxr as xr;
@@ -104,13 +103,6 @@ fn ipc_vr_controller_from_polled(
     })
 }
 
-/// Shared flag set when the session pump sees [`openxr::Event::InteractionProfileChanged`].
-///
-/// Consumed by [`OpenxrInput::sync_and_sample`] on the next frame to clear the per-hand profile
-/// caches so `detect_profile` falls back to a fresh runtime query rather than the (now stale)
-/// cached code.
-pub type InteractionProfileDirtyFlag = Arc<AtomicBool>;
-
 /// OpenXR actions and derived spaces for headset/controller input used by the renderer IPC path.
 pub struct OpenxrInput {
     action_set: xr::ActionSet,
@@ -119,7 +111,6 @@ pub struct OpenxrInput {
     profile_paths: ResolvedProfilePaths,
     left_profile_cache: AtomicU8,
     right_profile_cache: AtomicU8,
-    interaction_profile_dirty: InteractionProfileDirtyFlag,
     actions: OpenxrInputActions,
     left_space: xr::Space,
     right_space: xr::Space,
@@ -133,21 +124,17 @@ impl OpenxrInput {
     /// `gates` must reflect which OpenXR extensions were enabled on the instance; binding
     /// suggestions for profiles whose extension is disabled are skipped so runtimes that do not
     /// recognise those paths do not emit errors.
-    ///
-    /// `dirty_flag` is the cross-module signal used by the session event pump to force a profile
-    /// re-detection on the next frame after [`openxr::Event::InteractionProfileChanged`].
     pub fn new(
         instance: &xr::Instance,
         session: &xr::Session<xr::Vulkan>,
         gates: &ProfileExtensionGates,
         manifest: &Manifest,
-        dirty_flag: InteractionProfileDirtyFlag,
     ) -> Result<Self, xr::sys::Result> {
         let parts = create_openxr_input_parts(instance, session, gates, manifest)?;
-        Ok(Self::from_parts(parts, dirty_flag))
+        Ok(Self::from_parts(parts))
     }
 
-    fn from_parts(parts: OpenxrInputParts, dirty_flag: InteractionProfileDirtyFlag) -> Self {
+    fn from_parts(parts: OpenxrInputParts) -> Self {
         Self {
             action_set: parts.action_set,
             left_user_path: parts.left_user_path,
@@ -155,7 +142,6 @@ impl OpenxrInput {
             profile_paths: parts.profile_paths,
             left_profile_cache: parts.left_profile_cache,
             right_profile_cache: parts.right_profile_cache,
-            interaction_profile_dirty: dirty_flag,
             actions: parts.actions,
             left_space: parts.left_space,
             right_space: parts.right_space,
@@ -307,13 +293,6 @@ impl OpenxrInput {
         predicted_time: xr::Time,
     ) -> Result<Vec<VRControllerState>, xr::sys::Result> {
         profiling::scope!("xr::input_sync_and_sample");
-        if self
-            .interaction_profile_dirty
-            .swap(false, Ordering::Relaxed)
-        {
-            self.left_profile_cache.store(0, Ordering::Relaxed);
-            self.right_profile_cache.store(0, Ordering::Relaxed);
-        }
         session.sync_actions(&[xr::ActiveActionSet::new(&self.action_set)])?;
         let left_loc = self.left_space.locate(stage, predicted_time)?;
         let right_loc = self.right_space.locate(stage, predicted_time)?;

@@ -3,8 +3,8 @@
 use glam::Vec2;
 
 use crate::shared::{
-    BodyNode, Chirality, GenericControllerState, IndexControllerState, TouchControllerModel,
-    TouchControllerState, VRControllerState, ViveControllerState, WindowsMRControllerState,
+    BodyNode, Chirality, IndexControllerState, TouchControllerModel, TouchControllerState,
+    VRControllerState, ViveControllerState, WindowsMRControllerState,
 };
 
 use super::frame::ControllerFrame;
@@ -96,7 +96,7 @@ struct OpenxrHostControllerCtx {
     select: bool,
 }
 
-/// Oculus Touch–class mapping (and shared by [`ActiveControllerProfile::Generic`]).
+/// Oculus Touch–class mapping (also used by profiles without a dedicated host variant).
 fn host_state_touch_class_profile(ctx: OpenxrHostControllerCtx) -> VRControllerState {
     openxr_touch_class_controller_state(ctx)
 }
@@ -116,17 +116,15 @@ fn host_state_windows_mr_profile(ctx: OpenxrHostControllerCtx) -> VRControllerSt
     openxr_windows_mr_controller_state(ctx)
 }
 
-/// Khronos simple controller profile.
-fn host_state_simple_profile(ctx: OpenxrHostControllerCtx) -> VRControllerState {
-    openxr_simple_controller_state(ctx)
-}
-
 /// Dispatches to the concrete [`VRControllerState`] constructor for the active interaction profile.
 ///
-/// Pico 4, Pico Neo3, HP Reverb G2, Vive Cosmos, and Vive Focus 3 all share the touch-class
-/// payload because the host wire format has no dedicated variants for them. The `device_model`
-/// string from [`super::profile::device_label`] is what tells the host which physical
-/// controller the payload represents.
+/// Every profile without a dedicated host variant (Pico 4, Pico Neo3, HP Reverb G2, Vive Cosmos,
+/// Vive Focus 3, Generic, Simple) routes through the touch-class payload. Holding the wire
+/// variant constant across profile transitions is what prevents the host's per-`device_id`
+/// controller cache from throwing `InvalidCastException` when OpenXR reports a transient
+/// unbound profile after the user has already been assigned a concrete one. The
+/// [`super::profile::device_label`] string is what tells the host which physical controller
+/// the payload represents.
 fn dispatch_openxr_profile_to_host_state(
     profile: ActiveControllerProfile,
     ctx: OpenxrHostControllerCtx,
@@ -138,11 +136,11 @@ fn dispatch_openxr_profile_to_host_state(
         | ActiveControllerProfile::HpReverbG2
         | ActiveControllerProfile::ViveCosmos
         | ActiveControllerProfile::ViveFocus3
-        | ActiveControllerProfile::Generic => host_state_touch_class_profile(ctx),
+        | ActiveControllerProfile::Generic
+        | ActiveControllerProfile::Simple => host_state_touch_class_profile(ctx),
         ActiveControllerProfile::Index => host_state_index_profile(ctx),
         ActiveControllerProfile::Vive => host_state_vive_profile(ctx),
         ActiveControllerProfile::WindowsMr => host_state_windows_mr_profile(ctx),
-        ActiveControllerProfile::Simple => host_state_simple_profile(ctx),
     }
 }
 
@@ -175,10 +173,12 @@ pub(super) struct OpenxrControllerRawInputs {
 
 /// Maps the active OpenXR profile to a host [`VRControllerState`] variant.
 ///
-/// [`ActiveControllerProfile::Generic`] is encoded as [`VRControllerState::TouchControllerState`]
-/// so the host input stack receives the same polymorphic shape as Touch controllers (Quest-class
-/// paths) instead of [`VRControllerState::GenericControllerState`], which would deserialize to a
-/// different controller type on the host.
+/// Every profile that lacks a dedicated host variant — including
+/// [`ActiveControllerProfile::Generic`] and [`ActiveControllerProfile::Simple`] — is encoded as
+/// [`VRControllerState::TouchControllerState`]. The host caches controllers by `device_id` and
+/// casts the cached instance to the incoming variant's type; emitting the same polymorphic
+/// shape across profile transitions is what keeps that cast valid when OpenXR transiently
+/// reports an unbound profile (`xr::Path::NULL`) after a concrete profile was already observed.
 pub(super) fn build_controller_state(inputs: OpenxrControllerRawInputs) -> VRControllerState {
     let device_id = Some(match inputs.side {
         Chirality::Left => "OpenXR Left".to_string(),
@@ -232,7 +232,8 @@ pub(super) fn build_controller_state(inputs: OpenxrControllerRawInputs) -> VRCon
     )
 }
 
-/// Oculus Touch–class layout shared with [`ActiveControllerProfile::Generic`] (Quest-shaped host payload).
+/// Oculus Touch–class layout; the Quest-shaped host payload used by every OpenXR profile that
+/// lacks a dedicated host [`VRControllerState`] variant.
 fn openxr_touch_class_controller_state(ctx: OpenxrHostControllerCtx) -> VRControllerState {
     let OpenxrHostControllerCtx {
         frame,
@@ -261,8 +262,14 @@ fn openxr_touch_class_controller_state(ctx: OpenxrHostControllerCtx) -> VRContro
         secondary_touch,
         menu,
         thumbrest_touch,
-        select: _,
+        select,
     } = ctx;
+    // The Khronos Simple profile only exposes `/input/select/click` and `/input/menu/click`, so
+    // fold `select` into the Touch-class trigger/click channels. On profiles that bind trigger
+    // directly this is a no-op (select is false).
+    let trigger = trigger.max(if select { 1.0 } else { 0.0 });
+    let trigger_touch = trigger_touch || select;
+    let trigger_click = trigger_click || select;
     VRControllerState::TouchControllerState(TouchControllerState {
         model: TouchControllerModel::QuestAndRiftS,
         start: menu,
@@ -455,61 +462,6 @@ fn openxr_windows_mr_controller_state(ctx: OpenxrHostControllerCtx) -> VRControl
         touchpad: trackpad,
         joystick_click: thumbstick_click,
         joystick_raw: thumbstick,
-        device_id,
-        device_model,
-        side,
-        body_node,
-        is_device_active: true,
-        is_tracking,
-        position: frame.position,
-        rotation: frame.rotation,
-        has_bound_hand: frame.has_bound_hand,
-        hand_position: frame.hand_position,
-        hand_rotation: frame.hand_rotation,
-        battery_level: 1.0,
-        battery_charging: false,
-    })
-}
-
-fn openxr_simple_controller_state(ctx: OpenxrHostControllerCtx) -> VRControllerState {
-    let OpenxrHostControllerCtx {
-        frame,
-        is_tracking,
-        device_id,
-        device_model,
-        side,
-        body_node,
-        trigger,
-        trigger_touch,
-        trigger_click: _,
-        squeeze: _,
-        squeeze_click: _,
-        grip_touch: _,
-        grip_click,
-        joystick_touch: _,
-        touchpad_touch: _,
-        thumbstick: _,
-        thumbstick_click: _,
-        trackpad: _,
-        trackpad_click: _,
-        trackpad_force: _,
-        primary: _,
-        secondary: _,
-        primary_touch: _,
-        secondary_touch: _,
-        menu,
-        thumbrest_touch: _,
-        select,
-    } = ctx;
-    VRControllerState::GenericControllerState(GenericControllerState {
-        strength: if select { 1.0 } else { trigger },
-        axis: Vec2::ZERO,
-        touching_strength: trigger_touch || select,
-        touching_axis: false,
-        primary: select,
-        menu,
-        grab: grip_click,
-        secondary: false,
         device_id,
         device_model,
         side,
