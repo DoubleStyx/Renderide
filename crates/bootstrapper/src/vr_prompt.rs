@@ -51,18 +51,20 @@ pub fn should_prompt_vr_dialog(host_args: &[String]) -> bool {
 /// `MessageDialogResult::Custom(label)` payload, so they double as match keys.
 const VR_BUTTON_LABEL: &str = "VR";
 const DESKTOP_BUTTON_LABEL: &str = "Desktop";
+const CANCEL_BUTTON_LABEL: &str = "Cancel";
 
 /// Desktop vs VR choice: **VR** → `-Device SteamVR`, **Desktop** → `-Screen`.
 ///
-/// Returns [`None`] when the user cancels by closing the dialog window or
-/// pressing Escape; callers treat this as a request to abort the launch.
+/// Returns [`None`] when the user clicks **Cancel** or otherwise dismisses
+/// the dialog; callers treat this as a request to abort the launch.
 pub fn prompt_desktop_or_vr() -> Option<bool> {
     let res = rfd::MessageDialog::new()
         .set_title("Renderide")
-        .set_description("Launch Resonite in VR or desktop mode? Close this window to cancel.")
-        .set_buttons(rfd::MessageButtons::OkCancelCustom(
+        .set_description("Launch Resonite in VR or desktop mode?")
+        .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
             VR_BUTTON_LABEL.into(),
             DESKTOP_BUTTON_LABEL.into(),
+            CANCEL_BUTTON_LABEL.into(),
         ))
         .show();
     match res {
