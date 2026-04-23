@@ -7,6 +7,7 @@ use openxr as xr;
 
 use crate::shared::{Chirality, VRControllerState};
 
+use super::bindings::ProfileExtensionGates;
 use super::frame::{resolve_controller_frame, ControllerFrame};
 use super::openxr_actions::{create_openxr_input_parts, OpenxrInputParts};
 use super::pose::pose_from_location;
@@ -112,6 +113,12 @@ pub struct OpenxrInput {
     simple_controller_profile: xr::Path,
     pico4_controller_profile: xr::Path,
     pico_neo3_controller_profile: xr::Path,
+    hp_reverb_g2_profile: xr::Path,
+    samsung_odyssey_profile: xr::Path,
+    htc_vive_cosmos_profile: xr::Path,
+    htc_vive_focus3_profile: xr::Path,
+    meta_touch_pro_profile: xr::Path,
+    meta_touch_plus_profile: xr::Path,
     left_profile_cache: AtomicU8,
     right_profile_cache: AtomicU8,
     /// Kept alive for the OpenXR session; per-frame poses use the derived [`xr::Space`] handles.
@@ -184,6 +191,12 @@ impl From<OpenxrInputParts> for OpenxrInput {
             simple_controller_profile: p.simple_controller_profile,
             pico4_controller_profile: p.pico4_controller_profile,
             pico_neo3_controller_profile: p.pico_neo3_controller_profile,
+            hp_reverb_g2_profile: p.hp_reverb_g2_profile,
+            samsung_odyssey_profile: p.samsung_odyssey_profile,
+            htc_vive_cosmos_profile: p.htc_vive_cosmos_profile,
+            htc_vive_focus3_profile: p.htc_vive_focus3_profile,
+            meta_touch_pro_profile: p.meta_touch_pro_profile,
+            meta_touch_plus_profile: p.meta_touch_plus_profile,
             left_profile_cache: p.left_profile_cache,
             right_profile_cache: p.right_profile_cache,
             left_grip_pose: p.left_grip_pose,
@@ -237,24 +250,15 @@ impl From<OpenxrInputParts> for OpenxrInput {
 impl OpenxrInput {
     /// Creates the action set, suggests bindings for known interaction profiles, and builds grip/aim spaces.
     ///
-    /// `runtime_supports_generic_controller` must match whether the OpenXR instance was created with
-    /// `XR_KHR_generic_controller` enabled; when `false`, generic controller binding suggestions are skipped.
-    ///
-    /// `runtime_supports_bd_controller` must match whether `XR_BD_controller_interaction` was enabled
-    /// on the instance; when `false`, ByteDance Pico profile binding suggestions are skipped.
+    /// `gates` must reflect which OpenXR extensions were enabled on the instance; binding
+    /// suggestions for profiles whose extension is disabled are skipped so runtimes that do not
+    /// recognise those paths do not emit errors.
     pub fn new(
         instance: &xr::Instance,
         session: &xr::Session<xr::Vulkan>,
-        runtime_supports_generic_controller: bool,
-        runtime_supports_bd_controller: bool,
+        gates: &ProfileExtensionGates,
     ) -> Result<Self, xr::sys::Result> {
-        create_openxr_input_parts(
-            instance,
-            session,
-            runtime_supports_generic_controller,
-            runtime_supports_bd_controller,
-        )
-        .map(Into::into)
+        create_openxr_input_parts(instance, session, gates).map(Into::into)
     }
 
     fn detect_profile(
@@ -266,15 +270,27 @@ impl OpenxrInput {
             return ActiveControllerProfile::Generic;
         };
         if profile == self.oculus_touch_profile
-            || profile == self.pico4_controller_profile
-            || profile == self.pico_neo3_controller_profile
+            || profile == self.meta_touch_pro_profile
+            || profile == self.meta_touch_plus_profile
         {
             ActiveControllerProfile::Touch
+        } else if profile == self.pico4_controller_profile {
+            ActiveControllerProfile::Pico4
+        } else if profile == self.pico_neo3_controller_profile {
+            ActiveControllerProfile::PicoNeo3
         } else if profile == self.valve_index_profile {
             ActiveControllerProfile::Index
         } else if profile == self.htc_vive_profile {
             ActiveControllerProfile::Vive
-        } else if profile == self.microsoft_motion_profile {
+        } else if profile == self.htc_vive_cosmos_profile {
+            ActiveControllerProfile::ViveCosmos
+        } else if profile == self.htc_vive_focus3_profile {
+            ActiveControllerProfile::ViveFocus3
+        } else if profile == self.hp_reverb_g2_profile {
+            ActiveControllerProfile::HpReverbG2
+        } else if profile == self.microsoft_motion_profile
+            || profile == self.samsung_odyssey_profile
+        {
             ActiveControllerProfile::WindowsMr
         } else if profile == self.generic_controller_profile {
             ActiveControllerProfile::Generic

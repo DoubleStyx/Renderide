@@ -51,9 +51,21 @@ pub(super) struct UserAndProfilePaths {
     pub simple_controller_profile: xr::Path,
     pub pico4_controller_profile: xr::Path,
     pub pico_neo3_controller_profile: xr::Path,
+    pub hp_reverb_g2_profile: xr::Path,
+    pub samsung_odyssey_profile: xr::Path,
+    pub htc_vive_cosmos_profile: xr::Path,
+    pub htc_vive_focus3_profile: xr::Path,
+    pub meta_touch_pro_profile: xr::Path,
+    pub meta_touch_plus_profile: xr::Path,
 }
 
 /// Resolves `/user/hand/*` and `/interaction_profiles/*` paths.
+///
+/// Every profile path is resolved unconditionally; whether the runtime actually recognises a
+/// vendor profile depends on whether the corresponding extension was enabled at instance
+/// creation. Paths that the runtime does not know still resolve successfully as
+/// [`xr::Instance::string_to_path`] is a string-interning operation — they just never match in
+/// [`super::openxr_input::OpenxrInput::detect_profile`].
 pub(super) fn resolve_user_and_profile_paths(
     instance: &xr::Instance,
 ) -> Result<UserAndProfilePaths, xr::sys::Result> {
@@ -75,6 +87,18 @@ pub(super) fn resolve_user_and_profile_paths(
             .string_to_path("/interaction_profiles/bytedance/pico4_controller")?,
         pico_neo3_controller_profile: instance
             .string_to_path("/interaction_profiles/bytedance/pico_neo3_controller")?,
+        hp_reverb_g2_profile: instance
+            .string_to_path("/interaction_profiles/hp/mixed_reality_controller")?,
+        samsung_odyssey_profile: instance
+            .string_to_path("/interaction_profiles/samsung/odyssey_controller")?,
+        htc_vive_cosmos_profile: instance
+            .string_to_path("/interaction_profiles/htc/vive_cosmos_controller")?,
+        htc_vive_focus3_profile: instance
+            .string_to_path("/interaction_profiles/htc/vive_focus3_controller")?,
+        meta_touch_pro_profile: instance
+            .string_to_path("/interaction_profiles/facebook/touch_controller_pro")?,
+        meta_touch_plus_profile: instance
+            .string_to_path("/interaction_profiles/meta/touch_controller_plus")?,
     })
 }
 

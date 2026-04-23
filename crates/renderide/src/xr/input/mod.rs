@@ -9,4 +9,5 @@ mod pose;
 mod profile;
 mod state;
 
+pub use bindings::ProfileExtensionGates;
 pub use openxr_input::OpenxrInput;

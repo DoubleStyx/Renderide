@@ -15,7 +15,7 @@ use wgpu::hal::api::Vulkan as HalVulkan;
 
 use wgpu::wgt;
 
-use super::input::OpenxrInput;
+use super::input::{OpenxrInput, ProfileExtensionGates};
 
 /// WGPU + OpenXR objects produced by [`init_wgpu_openxr`].
 pub struct XrWgpuHandles {
@@ -161,11 +161,14 @@ fn load_xr_entry() -> Result<xr::Entry, xr::LoadError> {
 /// Result of [`create_openxr_instance`] for [`init_wgpu_openxr`].
 struct OpenxrInstanceBundle {
     xr_instance: xr::Instance,
-    khr_generic_controller: bool,
-    runtime_supports_bd_controller: bool,
+    profile_gates: ProfileExtensionGates,
 }
 
 /// Loads extension flags, validates `XR_KHR_vulkan_enable2`, and creates the OpenXR [`xr::Instance`].
+///
+/// Every controller-related extension the runtime advertises is enabled so the corresponding
+/// vendor interaction profile can be suggested. The resulting [`ProfileExtensionGates`] tells
+/// [`super::input::OpenxrInput`] which profile binding tables to attempt.
 fn create_openxr_instance(xr_entry: xr::Entry) -> Result<OpenxrInstanceBundle, XrBootstrapError> {
     let available_extensions = xr_entry
         .enumerate_extensions()
@@ -178,13 +181,18 @@ fn create_openxr_instance(xr_entry: xr::Entry) -> Result<OpenxrInstanceBundle, X
 
     let mut enabled_extensions = xr::ExtensionSet::default();
     enabled_extensions.khr_vulkan_enable2 = true;
-    if available_extensions.khr_generic_controller {
-        enabled_extensions.khr_generic_controller = true;
-    }
-    let runtime_supports_bd_controller = available_extensions.bd_controller_interaction;
-    if runtime_supports_bd_controller {
-        enabled_extensions.bd_controller_interaction = true;
-    }
+    enabled_extensions.khr_generic_controller = available_extensions.khr_generic_controller;
+    enabled_extensions.bd_controller_interaction = available_extensions.bd_controller_interaction;
+    enabled_extensions.ext_hp_mixed_reality_controller =
+        available_extensions.ext_hp_mixed_reality_controller;
+    enabled_extensions.ext_samsung_odyssey_controller =
+        available_extensions.ext_samsung_odyssey_controller;
+    enabled_extensions.htc_vive_cosmos_controller_interaction =
+        available_extensions.htc_vive_cosmos_controller_interaction;
+    enabled_extensions.htc_vive_focus3_controller_interaction =
+        available_extensions.htc_vive_focus3_controller_interaction;
+    enabled_extensions.fb_touch_controller_pro = available_extensions.fb_touch_controller_pro;
+    enabled_extensions.meta_touch_controller_plus = available_extensions.meta_touch_controller_plus;
     if available_extensions.ext_debug_utils {
         enabled_extensions.ext_debug_utils = true;
     }
@@ -205,10 +213,22 @@ fn create_openxr_instance(xr_entry: xr::Entry) -> Result<OpenxrInstanceBundle, X
         &[],
     )?;
 
+    let profile_gates = ProfileExtensionGates {
+        khr_generic_controller: enabled_extensions.khr_generic_controller,
+        bd_controller: enabled_extensions.bd_controller_interaction,
+        ext_hp_mixed_reality_controller: enabled_extensions.ext_hp_mixed_reality_controller,
+        ext_samsung_odyssey_controller: enabled_extensions.ext_samsung_odyssey_controller,
+        htc_vive_cosmos_controller_interaction: enabled_extensions
+            .htc_vive_cosmos_controller_interaction,
+        htc_vive_focus3_controller_interaction: enabled_extensions
+            .htc_vive_focus3_controller_interaction,
+        fb_touch_controller_pro: enabled_extensions.fb_touch_controller_pro,
+        meta_touch_controller_plus: enabled_extensions.meta_touch_controller_plus,
+    };
+
     Ok(OpenxrInstanceBundle {
         xr_instance,
-        khr_generic_controller: available_extensions.khr_generic_controller,
-        runtime_supports_bd_controller,
+        profile_gates,
     })
 }
 
@@ -525,8 +545,7 @@ struct OpenXrSessionBootstrapDescriptor<'a> {
     vk_physical_device: vk::PhysicalDevice,
     vk_device: &'a ash::Device,
     queue_family_index: u32,
-    khr_generic_controller: bool,
-    runtime_supports_bd_controller: bool,
+    profile_gates: ProfileExtensionGates,
 }
 
 fn openxr_session_state_and_input(
@@ -552,12 +571,7 @@ fn openxr_session_state_and_input(
     let stage: xr::Space = session
         .create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY)
         .map_err(XrBootstrapError::OpenXr)?;
-    let openxr_input = match OpenxrInput::new(
-        &desc.xr_instance,
-        &session,
-        desc.khr_generic_controller,
-        desc.runtime_supports_bd_controller,
-    ) {
+    let openxr_input = match OpenxrInput::new(&desc.xr_instance, &session, &desc.profile_gates) {
         Ok(i) => Some(i),
         Err(e) => {
             logger::warn!("OpenXR controller input unavailable (continuing without actions): {e}");
@@ -660,8 +674,7 @@ pub fn init_wgpu_openxr(gpu_validation_layers: bool) -> Result<XrWgpuHandles, Xr
 
     let OpenxrInstanceBundle {
         xr_instance,
-        khr_generic_controller,
-        runtime_supports_bd_controller,
+        profile_gates,
     } = create_openxr_instance(xr_entry)?;
 
     let openxr_debug_messenger =
@@ -704,8 +717,7 @@ pub fn init_wgpu_openxr(gpu_validation_layers: bool) -> Result<XrWgpuHandles, Xr
             vk_physical_device,
             vk_device: &vk_device,
             queue_family_index,
-            khr_generic_controller,
-            runtime_supports_bd_controller,
+            profile_gates,
         })?;
 
     wgpu_from_hal_openxr_chain(WgpuHalOpenXrAssembly {

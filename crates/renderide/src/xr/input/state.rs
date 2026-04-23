@@ -122,14 +122,23 @@ fn host_state_simple_profile(ctx: OpenxrHostControllerCtx) -> VRControllerState 
 }
 
 /// Dispatches to the concrete [`VRControllerState`] constructor for the active interaction profile.
+///
+/// Pico 4, Pico Neo3, HP Reverb G2, Vive Cosmos, and Vive Focus 3 all share the touch-class
+/// payload because the host wire format has no dedicated variants for them. The `device_model`
+/// string from [`super::profile::device_label`] is what tells the host which physical
+/// controller the payload represents.
 fn dispatch_openxr_profile_to_host_state(
     profile: ActiveControllerProfile,
     ctx: OpenxrHostControllerCtx,
 ) -> VRControllerState {
     match profile {
-        ActiveControllerProfile::Touch | ActiveControllerProfile::Generic => {
-            host_state_touch_class_profile(ctx)
-        }
+        ActiveControllerProfile::Touch
+        | ActiveControllerProfile::Pico4
+        | ActiveControllerProfile::PicoNeo3
+        | ActiveControllerProfile::HpReverbG2
+        | ActiveControllerProfile::ViveCosmos
+        | ActiveControllerProfile::ViveFocus3
+        | ActiveControllerProfile::Generic => host_state_touch_class_profile(ctx),
         ActiveControllerProfile::Index => host_state_index_profile(ctx),
         ActiveControllerProfile::Vive => host_state_vive_profile(ctx),
         ActiveControllerProfile::WindowsMr => host_state_windows_mr_profile(ctx),

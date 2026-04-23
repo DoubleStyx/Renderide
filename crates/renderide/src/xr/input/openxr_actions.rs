@@ -6,7 +6,10 @@ use std::sync::atomic::AtomicU8;
 
 use openxr as xr;
 
-use super::bindings::{apply_suggested_interaction_bindings, ActionRefs, InteractionProfilePaths};
+use super::bindings::{
+    apply_suggested_interaction_bindings, ActionRefs, InteractionProfilePaths,
+    ProfileExtensionGates,
+};
 use super::openxr_action_paths::{
     resolve_binding_subpaths, resolve_user_and_profile_paths, UserAndProfilePaths,
 };
@@ -24,6 +27,12 @@ pub(super) struct OpenxrInputParts {
     pub simple_controller_profile: xr::Path,
     pub pico4_controller_profile: xr::Path,
     pub pico_neo3_controller_profile: xr::Path,
+    pub hp_reverb_g2_profile: xr::Path,
+    pub samsung_odyssey_profile: xr::Path,
+    pub htc_vive_cosmos_profile: xr::Path,
+    pub htc_vive_focus3_profile: xr::Path,
+    pub meta_touch_pro_profile: xr::Path,
+    pub meta_touch_plus_profile: xr::Path,
     pub left_profile_cache: AtomicU8,
     pub right_profile_cache: AtomicU8,
     pub left_grip_pose: xr::Action<xr::Posef>,
@@ -365,6 +374,13 @@ fn interaction_profiles_from_user_paths(paths: &UserAndProfilePaths) -> Interact
         generic_controller: paths.generic_controller_profile,
         simple_controller: paths.simple_controller_profile,
         pico4_controller: paths.pico4_controller_profile,
+        pico_neo3_controller: paths.pico_neo3_controller_profile,
+        hp_reverb_g2: paths.hp_reverb_g2_profile,
+        samsung_odyssey: paths.samsung_odyssey_profile,
+        htc_vive_cosmos: paths.htc_vive_cosmos_profile,
+        htc_vive_focus3: paths.htc_vive_focus3_profile,
+        meta_touch_pro: paths.meta_touch_pro_profile,
+        meta_touch_plus: paths.meta_touch_plus_profile,
     }
 }
 
@@ -445,16 +461,13 @@ fn create_grip_and_aim_spaces(
 
 /// Creates the action set, suggests bindings for known interaction profiles, and builds grip/aim spaces.
 ///
-/// `runtime_supports_generic_controller` must match whether the OpenXR instance was created with
-/// `XR_KHR_generic_controller` enabled; when `false`, generic controller binding suggestions are skipped.
-///
-/// `runtime_supports_bd_controller` must match whether `XR_BD_controller_interaction` was enabled
-/// on the instance; when `false`, ByteDance Pico profile binding suggestions are skipped.
+/// `gates` describes which OpenXR extensions were enabled on the instance; profiles whose
+/// extension is disabled are skipped to avoid suggesting bindings against paths the runtime does
+/// not recognise.
 pub(super) fn create_openxr_input_parts(
     instance: &xr::Instance,
     session: &xr::Session<xr::Vulkan>,
-    runtime_supports_generic_controller: bool,
-    runtime_supports_bd_controller: bool,
+    gates: &ProfileExtensionGates,
 ) -> Result<OpenxrInputParts, xr::sys::Result> {
     let action_set = instance.create_action_set("renderide_input", "Renderide VR input", 0)?;
     let paths_bundle = resolve_user_and_profile_paths(instance)?;
@@ -482,8 +495,7 @@ pub(super) fn create_openxr_input_parts(
         &interaction_profiles,
         &binding_paths,
         &action_refs,
-        runtime_supports_generic_controller,
-        runtime_supports_bd_controller,
+        gates,
     )?;
 
     session.attach_action_sets(&[&action_set])?;
@@ -503,6 +515,12 @@ pub(super) fn create_openxr_input_parts(
         simple_controller_profile: paths_bundle.simple_controller_profile,
         pico4_controller_profile: paths_bundle.pico4_controller_profile,
         pico_neo3_controller_profile: paths_bundle.pico_neo3_controller_profile,
+        hp_reverb_g2_profile: paths_bundle.hp_reverb_g2_profile,
+        samsung_odyssey_profile: paths_bundle.samsung_odyssey_profile,
+        htc_vive_cosmos_profile: paths_bundle.htc_vive_cosmos_profile,
+        htc_vive_focus3_profile: paths_bundle.htc_vive_focus3_profile,
+        meta_touch_pro_profile: paths_bundle.meta_touch_pro_profile,
+        meta_touch_plus_profile: paths_bundle.meta_touch_plus_profile,
         left_profile_cache: AtomicU8::new(0),
         right_profile_cache: AtomicU8::new(0),
         left_grip_pose: grip_aim.left_grip_pose,
