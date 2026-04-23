@@ -9,13 +9,13 @@ use super::bounds::byte_subrange;
 use super::naming::unix_backing_file_path;
 
 /// Single mapped host buffer backing file (`.qu`).
-pub struct SharedMemoryView {
+pub(super) struct SharedMemoryView {
     mmap: MmapMut,
 }
 
 impl SharedMemoryView {
     /// Opens the backing file and maps it read/write.
-    pub fn new(prefix: &str, buffer_id: i32, _capacity: i32) -> io::Result<Self> {
+    pub(super) fn new(prefix: &str, buffer_id: i32, _capacity: i32) -> io::Result<Self> {
         let path = unix_backing_file_path(prefix, buffer_id);
         let file = OpenOptions::new()
             .read(true)
@@ -32,19 +32,19 @@ impl SharedMemoryView {
     }
 
     /// Returns `descriptor` region as an immutable slice.
-    pub fn slice(&self, offset: i32, length: i32) -> Option<&[u8]> {
+    pub(super) fn slice(&self, offset: i32, length: i32) -> Option<&[u8]> {
         let (start, end) = byte_subrange(self.mmap.len(), offset, length)?;
         Some(&self.mmap[start..end])
     }
 
     /// Returns `descriptor` region as a mutable slice.
-    pub fn slice_mut(&mut self, offset: i32, length: i32) -> Option<&mut [u8]> {
+    pub(super) fn slice_mut(&mut self, offset: i32, length: i32) -> Option<&mut [u8]> {
         let (start, end) = byte_subrange(self.mmap.len(), offset, length)?;
         Some(&mut self.mmap[start..end])
     }
 
     /// Flushes `offset..offset+length` so other processes observe writes (best-effort).
-    pub fn flush_range(&self, offset: i32, length: i32) {
+    pub(super) fn flush_range(&self, offset: i32, length: i32) {
         if let Some((start, end)) = byte_subrange(self.mmap.len(), offset, length) {
             let len = end - start;
             if len > 0 {
@@ -54,7 +54,7 @@ impl SharedMemoryView {
     }
 
     /// Length of the mapped file in bytes.
-    pub fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.mmap.len()
     }
 }

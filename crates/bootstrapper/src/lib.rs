@@ -43,7 +43,7 @@ pub struct BootstrapOptions {
 /// Initializes logging under `logs/bootstrapper/` (or the directory in the `RENDERIDE_LOGS_ROOT`
 /// environment variable), installs a panic hook, then runs the bootstrap sequence.
 ///
-/// Panics are logged and swallowed with `Ok(())` to mirror the production ResoBoot behavior.
+/// Panics are logged and swallowed with `Ok(())` to mirror the production `ResoBoot` behavior.
 pub fn run(options: BootstrapOptions) -> Result<(), BootstrapError> {
     let shared_memory_prefix =
         config::generate_shared_memory_prefix(16).map_err(BootstrapError::Prefix)?;

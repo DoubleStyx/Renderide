@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn queue_factory_default_matches_new() {
         assert_eq!(QueueFactory, QueueFactory::new());
-        assert_eq!(std::mem::size_of::<QueueFactory>(), 0);
+        assert_eq!(size_of::<QueueFactory>(), 0);
     }
 
     #[test]

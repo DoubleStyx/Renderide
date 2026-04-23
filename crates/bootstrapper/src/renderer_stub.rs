@@ -18,7 +18,7 @@ fn same_filesystem_inode(lhs: &std::path::Path, rhs: &std::path::Path) -> bool {
 /// On Linux, creates a symlink; on macOS, a hard link so argv0 / process naming match the real binary.
 ///
 /// No-op on Windows and when `renderide` does not exist beside the bootstrapper.
-pub fn ensure_link(config: &ResoBootConfig) {
+pub(crate) fn ensure_link(config: &ResoBootConfig) {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let symlink = &config.renderite_executable;

@@ -8,7 +8,7 @@ use glam::{Vec2, Vec3};
 /// One vertex of the test sphere (deterministic packing for `bytemuck` shared-memory transfer).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct SphereVertex {
+pub(crate) struct SphereVertex {
     /// Object-space position (radius `1.0`).
     pub position: [f32; 3],
     /// Smooth shading normal (unit length).
@@ -19,7 +19,7 @@ pub struct SphereVertex {
 
 /// Procedural UV sphere geometry.
 #[derive(Clone, Debug)]
-pub struct SphereMesh {
+pub(crate) struct SphereMesh {
     /// Vertices in interleaved struct-of-arrays order.
     pub vertices: Vec<SphereVertex>,
     /// 32-bit indices in counter-clockwise (right-handed) winding.
@@ -32,7 +32,7 @@ impl SphereMesh {
     ///
     /// Choosing `latitude = 16, longitude = 24` yields ~624 verts / ~1152 tris which is small
     /// enough to fit comfortably in any IPC ring while still showing recognizable shading.
-    pub fn generate(latitude: u32, longitude: u32) -> Self {
+    pub(crate) fn generate(latitude: u32, longitude: u32) -> Self {
         assert!(
             latitude >= 2 && longitude >= 3,
             "sphere needs at least 2 latitude rings and 3 longitude segments"

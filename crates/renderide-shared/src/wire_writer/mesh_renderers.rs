@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn mesh_states_row_size_24() {
-        assert_eq!(std::mem::size_of::<MeshRendererState>(), 24);
+        assert_eq!(size_of::<MeshRendererState>(), 24);
     }
 
     #[test]

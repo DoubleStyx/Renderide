@@ -6,20 +6,20 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// Steam app folder name for Resonite.
-pub const RESONITE_APP_NAME: &str = "Resonite";
+pub(crate) const RESONITE_APP_NAME: &str = "Resonite";
 /// Windows host launcher (native / Wine).
-pub const RENDERITE_HOST_EXE: &str = "Renderite.Host.exe";
+pub(crate) const RENDERITE_HOST_EXE: &str = "Renderite.Host.exe";
 /// Host assembly for `dotnet` launch.
-pub const RENDERITE_HOST_DLL: &str = "Renderite.Host.dll";
+pub(crate) const RENDERITE_HOST_DLL: &str = "Renderite.Host.dll";
 
 /// Returns true if `dir` looks like a Resonite root (host exe or host DLL present).
-pub fn is_resonite_install_dir(dir: &Path) -> bool {
+pub(crate) fn is_resonite_install_dir(dir: &Path) -> bool {
     dir.join(RENDERITE_HOST_EXE).exists() || dir.join(RENDERITE_HOST_DLL).exists()
 }
 
 /// Prefers bundled `dotnet-runtime` under the Resonite folder (`dotnet.exe` then `dotnet` on Windows),
 /// else `dotnet` on `PATH`.
-pub fn find_dotnet_for_host(resonite_dir: &Path) -> PathBuf {
+pub(crate) fn find_dotnet_for_host(resonite_dir: &Path) -> PathBuf {
     let candidates: Vec<PathBuf> = {
         #[cfg(windows)]
         {
@@ -102,7 +102,7 @@ fn resonite_candidate_dirs() -> impl Iterator<Item = PathBuf> {
 ///
 /// Order: `RESONITE_DIR`, `STEAM_PATH` + `steamapps/common/Resonite`, platform Steam roots,
 /// then libraries from `libraryfolders.vdf`.
-pub fn find_resonite_dir() -> Option<PathBuf> {
+pub(crate) fn find_resonite_dir() -> Option<PathBuf> {
     resonite_candidate_dirs().find(|p| is_resonite_install_dir(p))
 }
 
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn parse_libraryfolders_vdf_extracts_quoted_paths() {
-        let tmp = std::env::temp_dir().join(format!(
+        let tmp = env::temp_dir().join(format!(
             "bootstrapper_libraryfolders_{}",
             std::process::id()
         ));
@@ -211,7 +211,7 @@ mod tests {
         assert!(
             paths
                 .iter()
-                .any(|p| p == std::path::Path::new("/data/SteamLibrary")),
+                .any(|p| p == Path::new("/data/SteamLibrary")),
             "paths={paths:?}"
         );
         let _ = fs::remove_dir_all(&tmp);
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn parse_libraryfolders_vdf_multiple_paths_and_garbage() {
-        let tmp = std::env::temp_dir().join(format!(
+        let tmp = env::temp_dir().join(format!(
             "bootstrapper_libraryfolders_multi_{}",
             std::process::id()
         ));
@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn find_dotnet_for_host_prefers_bundled_dotnet() {
         let tmp =
-            std::env::temp_dir().join(format!("bootstrapper_dotnet_unix_{}", std::process::id()));
+            env::temp_dir().join(format!("bootstrapper_dotnet_unix_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         let bundled = tmp.join("dotnet-runtime").join("dotnet");
         fs::create_dir_all(bundled.parent().unwrap()).unwrap();
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn find_dotnet_for_host_falls_back_without_bundled() {
-        let tmp = std::env::temp_dir().join(format!(
+        let tmp = env::temp_dir().join(format!(
             "bootstrapper_dotnet_fallback_{}",
             std::process::id()
         ));
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn is_resonite_install_dir_requires_host_artifact() {
-        let tmp = std::env::temp_dir().join(format!("bootstrapper_paths_{}", std::process::id()));
+        let tmp = env::temp_dir().join(format!("bootstrapper_paths_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         assert!(!is_resonite_install_dir(&tmp));
@@ -291,13 +291,13 @@ mod tests {
     fn find_resonite_dir_env_override() {
         let _g = ENV_LOCK.lock().expect("env lock");
         let tmp =
-            std::env::temp_dir().join(format!("bootstrapper_resonite_env_{}", std::process::id()));
+            env::temp_dir().join(format!("bootstrapper_resonite_env_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         fs::write(tmp.join(RENDERITE_HOST_DLL), b"").unwrap();
-        std::env::set_var("RESONITE_DIR", &tmp);
+        env::set_var("RESONITE_DIR", &tmp);
         let got = find_resonite_dir();
-        std::env::remove_var("RESONITE_DIR");
+        env::remove_var("RESONITE_DIR");
         assert_eq!(got, Some(tmp.clone()));
         let _ = fs::remove_dir_all(&tmp);
     }

@@ -10,7 +10,7 @@ use crate::error::HarnessError;
 use crate::host::{HarnessRunOutcome, HostHarness, HostHarnessConfig};
 
 /// CLI entry point.
-pub fn run() -> ExitCode {
+pub(crate) fn run() -> ExitCode {
     let cli = Cli::parse();
     init_logger();
     match dispatch(cli) {
@@ -92,7 +92,7 @@ struct CommonOpts {
     /// Use the release-mode renderer binary (`target/release/renderide`).
     #[arg(long, default_value_t = false, conflicts_with = "dev_fast")]
     release: bool,
-    /// Output resolution (WxH) for the offscreen render target.
+    /// Output resolution (`WxH`) for the offscreen render target.
     #[arg(long, default_value = "256x256")]
     resolution: String,
     /// How long to wait for handshake / asset acks / a fresh PNG.

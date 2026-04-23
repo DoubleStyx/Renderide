@@ -24,15 +24,15 @@ use super::lockstep::{FrameSubmitScalars, LockstepDriver};
 
 /// Asset / buffer ids used by the harness. These never collide with anything the renderer
 /// allocates internally because the renderer treats the shared memory only as host-driven input.
-pub const SPHERE_MESH_ASSET_ID: i32 = 2;
-pub const SPHERE_MATERIAL_ASSET_ID: i32 = 4;
-pub const SPHERE_MESH_BUFFER_ID: i32 = 0;
-pub const SCENE_STATE_BUFFER_ID: i32 = 1;
-pub const RENDER_SPACE_ID: i32 = 1;
+pub(super) const SPHERE_MESH_ASSET_ID: i32 = 2;
+pub(super) const SPHERE_MATERIAL_ASSET_ID: i32 = 4;
+pub(super) const SPHERE_MESH_BUFFER_ID: i32 = 0;
+pub(super) const SCENE_STATE_BUFFER_ID: i32 = 1;
+pub(super) const RENDER_SPACE_ID: i32 = 1;
 
 /// Configuration for [`run_session`].
 #[derive(Clone, Debug)]
-pub struct SceneSessionConfig {
+pub(crate) struct SceneSessionConfig {
     /// Path to the `renderide` binary to spawn.
     pub renderer_path: PathBuf,
     /// Output PNG path the renderer writes to (also where the harness reads from).
@@ -51,14 +51,14 @@ pub struct SceneSessionConfig {
 
 /// Result of a successful [`run_session`] call.
 #[derive(Clone, Debug)]
-pub struct SceneSessionOutcome {
+pub(super) struct SceneSessionOutcome {
     /// Path to the freshly written PNG produced by the renderer.
     pub png_path: PathBuf,
 }
 
 /// Drives the full session end-to-end. The renderer process is killed on `Err` via [`Drop`] of the
 /// [`SpawnedRenderer`] guard.
-pub fn run_session(cfg: &SceneSessionConfig) -> Result<SceneSessionOutcome, HarnessError> {
+pub(super) fn run_session(cfg: &SceneSessionConfig) -> Result<SceneSessionOutcome, HarnessError> {
     if !cfg.renderer_path.exists() {
         return Err(HarnessError::RendererBinaryMissing(
             cfg.renderer_path.clone(),
@@ -216,7 +216,7 @@ fn ensure_scene_submitted(
     ))
 }
 
-#[allow(clippy::too_many_arguments)] // session orchestration: many independent inputs
+#[expect(clippy::too_many_arguments)] // session orchestration: many independent inputs
 fn run_lockstep_until_png_stable(
     queues: &mut renderide_shared::ipc::HostDualQueueIpc,
     lockstep: &mut LockstepDriver,
@@ -376,5 +376,5 @@ fn spawn_renderer(
     Ok(SpawnedRenderer { child: Some(child) })
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 fn _ipc_session_used(_: &IpcSession) {}

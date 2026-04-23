@@ -5,7 +5,7 @@
 //! The host therefore takes the **complementary** sides — publishes on `…A` (renderer reads) and
 //! subscribes on `…S` (renderer writes). This module mirrors the renderer-side `DualQueueIpc` so
 //! the mock host (`renderide-test`) and any future host-side Rust tooling can speak the same
-//! `RendererCommand` byte stream FrooxEngine produces, with zero divergence in encoding.
+//! `RendererCommand` byte stream `FrooxEngine` produces, with zero divergence in encoding.
 
 use interprocess::{Publisher, QueueFactory, QueueOptions, Subscriber};
 

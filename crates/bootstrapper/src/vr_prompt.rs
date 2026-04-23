@@ -1,14 +1,14 @@
-//! Host argv augmentation so FrooxEngine receives `-Screen` or `-Device <HeadOutputDevice>`
-//! before process startup, matching FrooxEngine `LaunchOptions` handling of `-screen` / `-device`.
+//! Host argv augmentation so `FrooxEngine` receives `-Screen` or `-Device <HeadOutputDevice>`
+//! before process startup, matching `FrooxEngine` `LaunchOptions` handling of `-screen` / `-device`.
 //!
 //! The renderer learns the effective device from IPC `RendererInitData` after connect.
 
 use std::env;
 
 /// When set, the bootstrapper does not show the desktop vs VR dialog (automation / headless).
-pub const ENV_SKIP_VR_DIALOG: &str = "RENDERIDE_SKIP_VR_DIALOG";
+pub(crate) const ENV_SKIP_VR_DIALOG: &str = "RENDERIDE_SKIP_VR_DIALOG";
 
-/// Strips a leading `-` (if present) and lowercases, matching FrooxEngine's normalized argv tokens.
+/// Strips a leading `-` (if present) and lowercases, matching `FrooxEngine`'s normalized argv tokens.
 ///
 /// Used so `-Screen`, `-screen`, and `Screen` are treated consistently when scanning for output flags.
 fn normalized_flag_token(arg: &str) -> String {
@@ -20,10 +20,10 @@ fn normalized_flag_token(arg: &str) -> String {
     }
 }
 
-/// Returns `true` when `args` already specify FrooxEngine output via `-Screen` or `-Device …`.
+/// Returns `true` when `args` already specify `FrooxEngine` output via `-Screen` or `-Device …`.
 ///
 /// Any `-Device` token counts as explicit (even if the following value is invalid for the host).
-pub fn host_args_have_explicit_output_device(args: &[String]) -> bool {
+pub(crate) fn host_args_have_explicit_output_device(args: &[String]) -> bool {
     for a in args {
         let n = normalized_flag_token(a);
         if n == "screen" || n == "device" {
@@ -34,7 +34,7 @@ pub fn host_args_have_explicit_output_device(args: &[String]) -> bool {
 }
 
 /// Whether the optional Yes/No dialog should run before spawning the Host.
-pub fn should_prompt_vr_dialog(host_args: &[String]) -> bool {
+pub(crate) fn should_prompt_vr_dialog(host_args: &[String]) -> bool {
     if host_args_have_explicit_output_device(host_args) {
         return false;
     }
@@ -55,7 +55,7 @@ const DESKTOP_BUTTON_LABEL: &str = "Desktop";
 /// Desktop vs VR choice: **VR** → `-Device SteamVR`, **Desktop** → `-Screen`.
 ///
 /// Returns [`None`] when the dialog is dismissed without a choice.
-pub fn prompt_desktop_or_vr() -> Option<bool> {
+pub(crate) fn prompt_desktop_or_vr() -> Option<bool> {
     let res = rfd::MessageDialog::new()
         .set_title("Renderide")
         .set_description("Launch Resonite in VR or desktop mode?")
@@ -73,7 +73,7 @@ pub fn prompt_desktop_or_vr() -> Option<bool> {
 }
 
 /// Prepends `-Device SteamVR` or `-Screen` to the Host argv list.
-pub fn apply_host_vr_choice(host_args: Vec<String>, vr: bool) -> Vec<String> {
+pub(crate) fn apply_host_vr_choice(host_args: Vec<String>, vr: bool) -> Vec<String> {
     if vr {
         let mut out = Vec::with_capacity(host_args.len().saturating_add(2));
         out.push("-Device".into());
@@ -128,10 +128,10 @@ mod tests {
 
     #[test]
     fn normalized_flag_token_trims_and_strips_leading_dash() {
-        assert_eq!(super::normalized_flag_token("  -Screen  "), "screen");
-        assert_eq!(super::normalized_flag_token("Device"), "device");
+        assert_eq!(normalized_flag_token("  -Screen  "), "screen");
+        assert_eq!(normalized_flag_token("Device"), "device");
         // Only one leading `-` is stripped; `--` prefixes remain normalized for the remainder.
-        assert_eq!(super::normalized_flag_token("--Foo"), "-foo");
+        assert_eq!(normalized_flag_token("--Foo"), "-foo");
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -139,32 +139,32 @@ mod tests {
     #[test]
     fn should_prompt_false_when_ci_set() {
         let _g = ENV_LOCK.lock().expect("env lock");
-        std::env::set_var("CI", "1");
+        env::set_var("CI", "1");
         assert!(!should_prompt_vr_dialog(&[]));
-        std::env::remove_var("CI");
+        env::remove_var("CI");
     }
 
     #[test]
     fn should_prompt_false_when_skip_env_set() {
         let _g = ENV_LOCK.lock().expect("env lock");
-        std::env::set_var(ENV_SKIP_VR_DIALOG, "1");
+        env::set_var(ENV_SKIP_VR_DIALOG, "1");
         assert!(!should_prompt_vr_dialog(&[]));
-        std::env::remove_var(ENV_SKIP_VR_DIALOG);
+        env::remove_var(ENV_SKIP_VR_DIALOG);
     }
 
     #[test]
     fn should_prompt_false_when_device_explicit() {
         let _g = ENV_LOCK.lock().expect("env lock");
-        std::env::remove_var("CI");
-        std::env::remove_var(ENV_SKIP_VR_DIALOG);
+        env::remove_var("CI");
+        env::remove_var(ENV_SKIP_VR_DIALOG);
         assert!(!should_prompt_vr_dialog(&["-Device".into(), "x".into()]));
     }
 
     #[test]
     fn should_prompt_true_when_unset_and_no_explicit_device() {
         let _g = ENV_LOCK.lock().expect("env lock");
-        std::env::remove_var("CI");
-        std::env::remove_var(ENV_SKIP_VR_DIALOG);
+        env::remove_var("CI");
+        env::remove_var(ENV_SKIP_VR_DIALOG);
         assert!(should_prompt_vr_dialog(&[]));
     }
 }

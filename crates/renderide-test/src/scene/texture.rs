@@ -5,9 +5,9 @@
 //! does not bind a texture.
 
 /// A small RGBA8 texture in row-major order (top-down).
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Clone, Debug)]
-pub struct CheckerboardTexture {
+pub(crate) struct CheckerboardTexture {
     /// Width in pixels.
     pub width: u32,
     /// Height in pixels.
@@ -16,13 +16,13 @@ pub struct CheckerboardTexture {
     pub pixels: Vec<u8>,
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl CheckerboardTexture {
     /// Generates a checkerboard with `tile` pixels per cell and the two given colors.
     ///
     /// Choosing the two colors to be visually distinct (e.g. magenta and dark blue) produces a
     /// stable golden image that highlights UV mapping bugs immediately.
-    pub fn generate(
+    pub(crate) fn generate(
         width: u32,
         height: u32,
         tile: u32,

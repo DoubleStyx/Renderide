@@ -20,7 +20,7 @@ use crate::shared::{
     MeshRenderablesUpdate, MeshRendererState, MotionVectorMode, RenderSH2, RenderSpaceUpdate,
     RenderTransform, ShadowCastMode, TransformsUpdate,
 };
-#[allow(unused_imports)] // keep `SharedMemoryWriterConfig` cross-reference rustdoc resolvable
+#[expect(unused_imports)] // keep `SharedMemoryWriterConfig` cross-reference rustdoc resolvable
 use crate::SharedMemoryWriterConfig;
 
 use super::{

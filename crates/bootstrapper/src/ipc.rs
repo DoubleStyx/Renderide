@@ -17,7 +17,7 @@ use crate::BootstrapError;
 /// instead of [`default_memory_dir`]. The Renderite Host process must be launched with the same value.
 pub const RENDERIDE_INTERPROCESS_DIR_ENV: &str = "RENDERIDE_INTERPROCESS_DIR";
 
-/// Cloudtoid queue capacity for user-visible bytes (matches ResoBoot `8192`).
+/// Cloudtoid queue capacity for user-visible bytes (matches `ResoBoot` `8192`).
 pub const BOOTSTRAP_QUEUE_CAPACITY: i64 = 8192;
 
 /// Returns the Host ↔ bootstrapper queue base names for `shared_memory_prefix`

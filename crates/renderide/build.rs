@@ -35,7 +35,7 @@
 //! Alternatively, WGSL could use `#if MULTIVIEW == true` with both `Bool(true)` and `Bool(false)`
 //! in the map; the omit-key approach matches existing `#ifdef` in source materials without edits.
 //!
-//! ## Vendored OpenXR loader (Windows)
+//! ## Vendored `OpenXR` loader (Windows)
 //!
 //! For `windows` targets, copies **one** `openxr_loader.dll` from
 //! `../../third_party/openxr_loader/openxr_loader_windows-*/` matching [`CARGO_CFG_TARGET_ARCH`](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-build-scripts)
@@ -487,7 +487,7 @@ fn pass_literal(pass: &BuildPassDirective) -> String {
 fn validate_and_write_wgsl(
     module: &naga::Module,
     label: &str,
-    out_path: &std::path::Path,
+    out_path: &Path,
     expect_view_index: Option<bool>,
     passes: &[BuildPassDirective],
 ) -> Result<String, BuildError> {
@@ -554,7 +554,7 @@ fn discover_shader_modules(manifest_dir: &Path) -> Result<Vec<(String, String)>,
     let modules_dir = manifest_dir.join("shaders/source/modules");
     let mut paths: Vec<PathBuf> = fs::read_dir(&modules_dir)
         .map_err(|e| BuildError::Message(format!("read {}: {e}", modules_dir.display())))?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "wgsl"))
         .collect();
@@ -626,7 +626,7 @@ fn compose_material(
 fn find_latest_openxr_windows_package_dir(third_party_openxr: &Path) -> Option<PathBuf> {
     let rd = fs::read_dir(third_party_openxr).ok()?;
     let mut candidates: Vec<PathBuf> = rd
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| {
             p.is_dir()
@@ -657,7 +657,7 @@ fn cargo_artifact_profile_dir(
     }
 }
 
-/// Copies the Khronos OpenXR loader DLL next to the build output for Windows targets only.
+/// Copies the Khronos `OpenXR` loader DLL next to the build output for Windows targets only.
 fn copy_vendored_openxr_loader_windows(manifest_dir: &Path) {
     let Ok(target_os) = std::env::var("CARGO_CFG_TARGET_OS") else {
         return;
@@ -740,7 +740,7 @@ fn main() {
 /// shaders both use multiview view-index selection so this is `true` for them; future entry
 /// points that intentionally compose multiview without `view_index` (e.g. layered geometry or
 /// `view_count` drawcall fan-out) can pass `false`.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn compose_and_emit_variants(
     shader_modules: &[(String, String)],
     source_path: &Path,
@@ -803,7 +803,7 @@ fn compose_and_emit_variants(
 fn list_wgsl_files(dir: &Path) -> Result<Vec<PathBuf>, BuildError> {
     let mut paths: Vec<PathBuf> = fs::read_dir(dir)
         .map_err(|e| BuildError::Message(format!("read {}: {e}", dir.display())))?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "wgsl"))
         .collect();

@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn available_space_matches_check_capacity() {
-        let h = crate::layout::QueueHeader::default();
+        let h = QueueHeader::default();
         h.read_offset.store(0, Ordering::SeqCst);
         h.write_offset.store(16, Ordering::SeqCst);
         let cap = 64i64;

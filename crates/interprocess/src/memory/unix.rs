@@ -11,7 +11,7 @@ use crate::semaphore::Semaphore;
 /// File-backed queue: keeps the `.qu` file open alongside a writable [`memmap2::MmapMut`].
 pub(super) struct UnixMapping {
     /// Open file handle; must outlive `mmap`.
-    _file: std::fs::File,
+    _file: fs::File,
     /// Writable mapping of the entire file.
     mmap: memmap2::MmapMut,
     /// Path passed to [`crate::QueueOptions::file_path`].

@@ -157,7 +157,7 @@ impl SharedMemoryAccessor {
                     view.len()
                 ))
             })?;
-        let type_size = std::mem::size_of::<T>();
+        let type_size = size_of::<T>();
         let length = descriptor.length as usize;
         let remainder = length % type_size;
         if remainder != 0 {
@@ -170,7 +170,7 @@ impl SharedMemoryAccessor {
             return Ok(Vec::new());
         }
 
-        let align = std::mem::align_of::<T>();
+        let align = align_of::<T>();
         let base = bytes.as_ptr() as usize;
         if base.is_multiple_of(align) {
             if let Ok(slice) = bytemuck::try_cast_slice::<u8, T>(bytes) {
@@ -299,7 +299,7 @@ impl SharedMemoryAccessor {
         let Some(bytes) = view.slice_mut(descriptor.offset, descriptor.length) else {
             return false;
         };
-        let type_size = std::mem::size_of::<T>();
+        let type_size = size_of::<T>();
         let count = descriptor.length as usize / type_size;
         if count == 0 {
             return false;

@@ -179,7 +179,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
 
     /// Nested value lists.
     pub fn read_nested_value_list<T: Pod>(&mut self) -> Result<Vec<Vec<T>>, MemoryUnpackError> {
-        self.read_nested_list(|unpacker| unpacker.read_value_list())
+        self.read_nested_list(MemoryUnpacker::read_value_list)
     }
 
     /// Nested list with custom inner reader.

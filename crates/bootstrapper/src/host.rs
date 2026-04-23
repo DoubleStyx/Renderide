@@ -12,7 +12,7 @@ use crate::config::ResoBootConfig;
 use crate::paths;
 
 /// Removes `Microsoft.WindowsDesktop.App` from `runtimeOptions.frameworks` for Wine compatibility.
-pub fn strip_windows_desktop_from_runtime_config(path: &Path) {
+pub(crate) fn strip_windows_desktop_from_runtime_config(path: &Path) {
     if !path.exists() {
         return;
     }
@@ -58,8 +58,8 @@ pub fn strip_windows_desktop_from_runtime_config(path: &Path) {
 }
 
 /// Drains a reader into a log file line-by-line with a prefix.
-pub fn spawn_output_drainer(
-    log_path: std::path::PathBuf,
+pub(crate) fn spawn_output_drainer(
+    log_path: PathBuf,
     reader: impl Read + Send + 'static,
     prefix: &'static str,
 ) {
@@ -120,10 +120,10 @@ pub fn set_host_above_normal_priority(child: &Child) {
 }
 
 #[cfg(not(windows))]
-pub fn set_host_above_normal_priority(_child: &Child) {}
+pub(crate) fn set_host_above_normal_priority(_child: &Child) {}
 
 /// Spawns the Renderite Host and registers it with `lifetime`.
-pub fn spawn_host(
+pub(crate) fn spawn_host(
     config: &ResoBootConfig,
     args: &[String],
     lifetime: &ChildLifetimeGroup,
@@ -202,7 +202,7 @@ mod tests {
         });
         fs::write(&path, serde_json::to_string_pretty(&before).unwrap()).unwrap();
         strip_windows_desktop_from_runtime_config(&path);
-        let after: serde_json::Value =
+        let after: Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let frameworks = after["runtimeOptions"]["frameworks"].as_array().unwrap();
         assert_eq!(frameworks.len(), 1);
@@ -245,7 +245,7 @@ mod tests {
         let before = json!({ "other": 1 });
         fs::write(&path, serde_json::to_string_pretty(&before).unwrap()).unwrap();
         strip_windows_desktop_from_runtime_config(&path);
-        let after: serde_json::Value =
+        let after: Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(after, before);
         let _ = fs::remove_file(&path);
@@ -260,7 +260,7 @@ mod tests {
         let before = json!({ "runtimeOptions": { "frameworks": [] } });
         fs::write(&path, serde_json::to_string_pretty(&before).unwrap()).unwrap();
         strip_windows_desktop_from_runtime_config(&path);
-        let after: serde_json::Value =
+        let after: Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             after["runtimeOptions"]["frameworks"]
@@ -287,7 +287,7 @@ mod tests {
         });
         fs::write(&path, serde_json::to_string_pretty(&before).unwrap()).unwrap();
         strip_windows_desktop_from_runtime_config(&path);
-        let after: serde_json::Value =
+        let after: Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert!(after["runtimeOptions"]["frameworks"]
             .as_array()

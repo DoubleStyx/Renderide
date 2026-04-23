@@ -123,7 +123,7 @@ mod platform {
             buffer_id: i32,
             capacity_bytes: i32,
         ) -> Result<Self, SharedMemoryWriterError> {
-            let dir = std::env::var_os(RENDERIDE_INTERPROCESS_DIR_ENV)
+            let dir = env::var_os(RENDERIDE_INTERPROCESS_DIR_ENV)
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(interprocess::default_memory_dir);

@@ -11,7 +11,7 @@ use renderide_shared::shared::{FrameSubmitData, RenderSpaceUpdate, RendererComma
 /// Per-tick lockstep state: how many `FrameStartData` messages we observed and the full drained
 /// command batch (for callers that want to look for asset acks like `MeshUploadResult`).
 #[derive(Debug, Default)]
-pub struct TickResult {
+pub(super) struct TickResult {
     /// Number of `FrameStartData` messages consumed this tick.
     pub frame_starts: u32,
     /// Number of `FrameSubmitData` replies actually enqueued (may be `< frame_starts` if the
@@ -23,11 +23,11 @@ pub struct TickResult {
 
 /// Lockstep driver shared across the harness. Owns the current scene state plus the per-tick
 /// frame counter.
-pub struct LockstepDriver {
+pub(super) struct LockstepDriver {
     /// Frame index for the next `FrameSubmitData` we send (matches `RenderSystem.cs:111`'s
     /// monotonically-incrementing counter).
     frame_index: i32,
-    /// Fixed scalar fields applied to every `FrameSubmitData` (clip planes, FOV, vr_active flag).
+    /// Fixed scalar fields applied to every `FrameSubmitData` (clip planes, FOV, `vr_active` flag).
     pub frame_scalars: FrameSubmitScalars,
     /// Current scene state. `None` during the handshake / asset-upload phases (no render-space yet);
     /// switch to `Some(...)` once the sphere has been uploaded and we want it on screen.
@@ -36,7 +36,7 @@ pub struct LockstepDriver {
 
 /// Static per-frame scalar fields that the harness sets once and reuses across every submit.
 #[derive(Clone, Copy, Debug)]
-pub struct FrameSubmitScalars {
+pub(super) struct FrameSubmitScalars {
     /// Near-clip plane in meters.
     pub near_clip: f32,
     /// Far-clip plane in meters.
@@ -64,7 +64,7 @@ impl Default for FrameSubmitScalars {
 impl LockstepDriver {
     /// Creates a driver with `frame_index = 0` and no scene attached yet (handshake / upload
     /// phase).
-    pub fn new(frame_scalars: FrameSubmitScalars) -> Self {
+    pub(super) fn new(frame_scalars: FrameSubmitScalars) -> Self {
         Self {
             frame_index: 0,
             frame_scalars,
@@ -74,18 +74,18 @@ impl LockstepDriver {
 
     /// Latches a render-space update so future `FrameSubmitData` messages embed the sphere scene.
     /// Pass `None` to revert to "empty" frame submits.
-    pub fn set_render_space(&mut self, update: Option<RenderSpaceUpdate>) {
+    pub(super) fn set_render_space(&mut self, update: Option<RenderSpaceUpdate>) {
         self.current_render_space = update;
     }
 
     /// Current frame index that will be assigned to the **next** outgoing `FrameSubmitData`.
-    pub fn current_frame_index(&self) -> i32 {
+    pub(super) fn current_frame_index(&self) -> i32 {
         self.frame_index
     }
 
     /// Drains both `…S` queues and replies to every `FrameStartData` with a `FrameSubmitData`
     /// built from the current scene state.
-    pub fn tick(&mut self, queues: &mut HostDualQueueIpc) -> TickResult {
+    pub(super) fn tick(&mut self, queues: &mut HostDualQueueIpc) -> TickResult {
         let mut drained = Vec::new();
         queues.poll_into(&mut drained);
         let mut result = TickResult::default();

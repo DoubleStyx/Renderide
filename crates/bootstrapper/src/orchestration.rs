@@ -22,7 +22,7 @@ use crate::protocol;
 use crate::BootstrapError;
 
 /// Paths and argv for a single bootstrap run (owned so a panic boundary can move it).
-pub struct RunContext {
+pub(crate) struct RunContext {
     /// Extra Host CLI args (before `-Invisible` / `-shmprefix` are appended).
     pub host_args: Vec<String>,
     /// Shared basename (no `.log`) for paths like `logs/host/{timestamp}.log` under [`logger::logs_root`].
@@ -107,16 +107,16 @@ fn spawn_watchdogs(
 ) -> (JoinHandle<()>, Option<JoinHandle<()>>, JoinHandle<()>) {
     let heartbeat = spawn_heartbeat_watchdog(Arc::clone(&cancel), Arc::clone(&heartbeat_deadline));
 
-    let host_exit = if !config.is_wine {
+    let host_exit = if config.is_wine {
+        logger::info!("Wine mode: Host exit watcher disabled (child is shell wrapper)");
+        None
+    } else {
         logger::info!("Process watcher: cancel when Host process exits");
         Some(spawn_host_exit_watcher(
             Arc::clone(&host_child),
             Arc::clone(&cancel),
             log_timestamp,
         ))
-    } else {
-        logger::info!("Wine mode: Host exit watcher disabled (child is shell wrapper)");
-        None
     };
 
     let renderer_exit =
@@ -140,7 +140,7 @@ fn finalize(config: &ResoBootConfig, lifetime: &ChildLifetimeGroup) {
 }
 
 /// Runs the bootstrapper main loop after logging is initialized.
-pub fn run(config: &ResoBootConfig, ctx: RunContext) -> Result<(), BootstrapError> {
+pub(crate) fn run(config: &ResoBootConfig, ctx: RunContext) -> Result<(), BootstrapError> {
     log_run_intro(config);
 
     let lifetime = ChildLifetimeGroup::new().map_err(BootstrapError::Io)?;

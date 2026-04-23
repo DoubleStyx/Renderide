@@ -3,7 +3,7 @@
 
 /// Returns the Khronos Windows package subfolder containing `openxr_loader.dll` for `arch`,
 /// or `None` if this project does not ship a matching vendored loader.
-pub fn khronos_windows_subdir_for_arch(arch: &str) -> Option<&'static str> {
+pub(crate) fn khronos_windows_subdir_for_arch(arch: &str) -> Option<&'static str> {
     match arch {
         "x86_64" => Some("x64"),
         // Khronos packages ship `Win32_uwp` (not plain `Win32`) in current SDK layouts.

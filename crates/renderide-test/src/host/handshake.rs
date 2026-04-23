@@ -18,15 +18,15 @@ use crate::error::HarnessError;
 use super::lockstep::LockstepDriver;
 
 /// Default deadline for receiving `RendererInitResult` after sending `RendererInitData`.
-pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Outcome of [`run_handshake`].
 ///
 /// The init result is exposed for future callers that want to log GPU caps or condition behavior
 /// on `actual_output_device`; the current harness only verifies the handshake completed.
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Clone, Debug)]
-pub struct HandshakeOutcome {
+pub(super) struct HandshakeOutcome {
     /// The renderer's reply to our `RendererInitData`.
     pub init_result: RendererInitResult,
 }
@@ -35,7 +35,7 @@ pub struct HandshakeOutcome {
 /// any `FrameStartData` the renderer sends before finalize gets answered (the renderer's
 /// `frontend::begin_frame::begin_frame_allowed` only sends `FrameStartData` after `Finalized`,
 /// but we still want to keep `…S` drained so `KeepAlive`s don't pile up).
-pub fn run_handshake(
+pub(super) fn run_handshake(
     queues: &mut HostDualQueueIpc,
     lockstep: &mut LockstepDriver,
     shared_memory_prefix: &str,
