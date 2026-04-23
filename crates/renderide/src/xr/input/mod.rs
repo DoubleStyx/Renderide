@@ -12,4 +12,4 @@ mod state;
 
 pub use bindings::ProfileExtensionGates;
 pub use manifest::{load_manifest, ManifestError};
-pub use openxr_input::{InteractionProfileDirtyFlag, OpenxrInput};
+pub use openxr_input::OpenxrInput;

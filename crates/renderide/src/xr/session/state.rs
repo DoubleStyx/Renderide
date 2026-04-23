@@ -1,12 +1,7 @@
 //! OpenXR session frame loop: wait, begin, locate views, end.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
 use openxr as xr;
 use openxr::{CompositionLayerProjection, CompositionLayerProjectionView, SwapchainSubImage};
-
-use crate::xr::input::InteractionProfileDirtyFlag;
 
 /// Owns OpenXR session objects (constructed in [`super::super::bootstrap::init_wgpu_openxr`]).
 pub struct XrSessionState {
@@ -22,13 +17,9 @@ pub struct XrSessionState {
     pub(super) frame_stream: xr::FrameStream<xr::Vulkan>,
     pub(super) stage: xr::Space,
     pub(super) event_storage: xr::EventDataBuffer,
-    /// Set to `true` when [`openxr::Event::InteractionProfileChanged`] fires so
-    /// [`crate::xr::input::OpenxrInput::sync_and_sample`] can invalidate its per-hand profile
-    /// caches next frame. Shared with `OpenxrInput`.
-    pub(super) interaction_profile_dirty: InteractionProfileDirtyFlag,
 }
 
-/// Bundle of values needed to construct [`XrSessionState`] — `new` takes this instead of eight
+/// Bundle of values needed to construct [`XrSessionState`] — `new` takes this instead of seven
 /// separate parameters to keep the bootstrap signature readable.
 pub(in crate::xr) struct XrSessionStateDescriptor {
     /// OpenXR instance (retained for the session lifetime).
@@ -46,8 +37,6 @@ pub(in crate::xr) struct XrSessionStateDescriptor {
     pub(in crate::xr) frame_stream: xr::FrameStream<xr::Vulkan>,
     /// Stage reference space used for view + controller pose location.
     pub(in crate::xr) stage: xr::Space,
-    /// Flag shared with [`crate::xr::input::OpenxrInput`] for interaction-profile invalidation.
-    pub(in crate::xr) interaction_profile_dirty: InteractionProfileDirtyFlag,
 }
 
 impl XrSessionState {
@@ -63,7 +52,6 @@ impl XrSessionState {
             frame_stream: desc.frame_stream,
             stage: desc.stage,
             event_storage: xr::EventDataBuffer::new(),
-            interaction_profile_dirty: desc.interaction_profile_dirty,
         }
     }
 
@@ -89,21 +77,12 @@ impl XrSessionState {
                 },
                 InstanceLossPending(_) => return Ok(false),
                 InteractionProfileChanged(_) => {
-                    logger::info!(
-                        "OpenXR interaction profile changed; invalidating per-hand profile cache"
-                    );
-                    self.interaction_profile_dirty
-                        .store(true, Ordering::Relaxed);
+                    logger::info!("OpenXR interaction profile changed");
                 }
                 _ => {}
             }
         }
         Ok(true)
-    }
-
-    /// Returns a fresh dirty flag for tests and standalone session construction.
-    pub fn new_dirty_flag() -> InteractionProfileDirtyFlag {
-        Arc::new(AtomicBool::new(false))
     }
 
     /// Whether the OpenXR session is running.

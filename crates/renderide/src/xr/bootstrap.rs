@@ -15,9 +15,7 @@ use wgpu::hal::api::Vulkan as HalVulkan;
 
 use wgpu::wgt;
 
-use super::input::{
-    load_manifest, InteractionProfileDirtyFlag, ManifestError, OpenxrInput, ProfileExtensionGates,
-};
+use super::input::{load_manifest, ManifestError, OpenxrInput, ProfileExtensionGates};
 
 /// WGPU + OpenXR objects produced by [`init_wgpu_openxr`].
 pub struct XrWgpuHandles {
@@ -574,8 +572,6 @@ fn openxr_session_state_and_input(
         .create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY)
         .map_err(XrBootstrapError::OpenXr)?;
 
-    let dirty_flag: InteractionProfileDirtyFlag = super::session::XrSessionState::new_dirty_flag();
-
     let openxr_input = match load_manifest() {
         Ok((manifest, location)) => {
             logger::info!(
@@ -583,13 +579,7 @@ fn openxr_session_state_and_input(
                 location.root.display(),
                 manifest.profiles.len()
             );
-            match OpenxrInput::new(
-                &desc.xr_instance,
-                &session,
-                &desc.profile_gates,
-                &manifest,
-                Arc::clone(&dirty_flag),
-            ) {
+            match OpenxrInput::new(&desc.xr_instance, &session, &desc.profile_gates, &manifest) {
                 Ok(i) => Some(i),
                 Err(e) => {
                     logger::warn!(
@@ -620,7 +610,6 @@ fn openxr_session_state_and_input(
             frame_wait,
             frame_stream,
             stage,
-            interaction_profile_dirty: dirty_flag,
         });
     Ok((xr_session, openxr_input))
 }
