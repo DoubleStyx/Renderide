@@ -85,7 +85,14 @@ pub fn logs_root() -> PathBuf {
         std::env::var_os(LOGS_ROOT_ENV).as_deref(),
     )
     .unwrap_or_else(|e| {
-        eprintln!("Renderide logger: {e}; using fallback logs directory");
+        // Can't route through the logger — this is the logger bootstrap path.
+        #[expect(
+            clippy::print_stderr,
+            reason = "logger not yet initialized at bootstrap"
+        )]
+        {
+            eprintln!("Renderide logger: {e}; using fallback logs directory");
+        }
         std::env::current_dir()
             .map(|p| p.join("logs"))
             .unwrap_or_else(|_| PathBuf::from("logs"))

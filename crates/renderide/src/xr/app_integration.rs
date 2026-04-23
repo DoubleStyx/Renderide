@@ -227,9 +227,8 @@ pub fn try_openxr_hmd_multiview_submit(
     if !ensure_stereo_depth_texture(gpu, bundle, extent) {
         return false;
     }
-    let sc = match bundle.stereo_swapchain.as_mut() {
-        Some(s) => s,
-        None => return false,
+    let Some(sc) = bundle.stereo_swapchain.as_mut() else {
+        return false;
     };
     let image_index = {
         profiling::scope!("xr::swapchain_acquire");

@@ -50,12 +50,13 @@ pub(crate) fn build_embedded_uniform_bytes(
         let pid = *ids.uniform_field_ids.get(field_name)?;
         match field.kind {
             ReflectedUniformScalarKind::Vec4 => {
-                let default =
-                    default_vec4_for_field(helpers::shader_writer_unescaped_field_name(field_name));
-                let mut v = default;
-                if let Some(MaterialPropertyValue::Float4(c)) = store.get_merged(lookup, pid) {
-                    v = *c;
-                }
+                let v = if let Some(MaterialPropertyValue::Float4(c)) =
+                    store.get_merged(lookup, pid)
+                {
+                    *c
+                } else {
+                    default_vec4_for_field(helpers::shader_writer_unescaped_field_name(field_name))
+                };
                 write_f32x4_at(&mut buf, field, &v);
             }
             ReflectedUniformScalarKind::F32 => {

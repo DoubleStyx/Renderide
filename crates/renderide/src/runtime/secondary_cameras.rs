@@ -137,6 +137,10 @@ impl RendererRuntime {
     /// In headless mode (`gpu.is_headless()`) the main `Swapchain` view is transparently
     /// substituted for an `OffscreenRt` view backed by [`GpuContext::primary_offscreen_targets`]
     /// so the render graph stack stays oblivious to output mode.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "per-frame entry point sequences IPC / VR / desktop / secondary views; splitting fragments the control flow"
+    )]
     pub fn render_frame(
         &mut self,
         gpu: &mut GpuContext,

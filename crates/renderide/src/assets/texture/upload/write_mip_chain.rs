@@ -132,6 +132,10 @@ fn mip_src_to_upload_pixels(
 }
 
 /// Outcome of [`validate_and_resolve_next_mip_slice`] for one [`TextureMipChainUploader`] step.
+#[expect(
+    variant_size_differences,
+    reason = "short-lived per-mip outcome; boxing `Ready` would add an allocation per mip"
+)]
 enum NextMipUploadSlice<'a> {
     /// Stop iteration: chain finished normally (`uploaded_mips` may be zero only when no mip was ever uploaded — caller treats as error in that case).
     ChainDone { total_uploaded: u32 },

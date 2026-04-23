@@ -5,6 +5,11 @@
 //! concurrently, so every case runs serialized inside a single `#[test]` fn that holds an RAII
 //! guard restoring the original environment on exit.
 
+#![expect(
+    clippy::expect_used,
+    reason = "integration test fixtures panic on setup failure"
+)]
+
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;

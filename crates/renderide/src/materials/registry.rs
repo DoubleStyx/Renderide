@@ -214,7 +214,7 @@ mod wgpu_cache_tests {
     }
 
     fn ci_expects_wgpu_adapter() -> bool {
-        matches!(std::env::var("CI").as_deref(), Ok("true") | Ok("1"))
+        matches!(std::env::var("CI").as_deref(), Ok("true" | "1"))
     }
 
     /// Headless wgpu smoke: cache returns the same pipeline pointer for identical keys.
@@ -224,11 +224,10 @@ mod wgpu_cache_tests {
     #[test]
     fn debug_world_normals_pipeline_cache_hits() {
         let Some(device) = pollster::block_on(device_with_adapter()) else {
-            if ci_expects_wgpu_adapter() {
-                panic!(
-                    "wgpu adapter required when CI is set (install Vulkan / Mesa or Lavapipe on Linux)"
-                );
-            }
+            assert!(
+                !ci_expects_wgpu_adapter(),
+                "wgpu adapter required when CI is set (install Vulkan / Mesa or Lavapipe on Linux)"
+            );
             logger::warn!("skipping debug_world_normals_pipeline_cache_hits: no wgpu adapter");
             return;
         };

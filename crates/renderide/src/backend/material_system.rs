@@ -66,7 +66,7 @@ impl MaterialSystem {
             Arc::clone(&self.property_id_registry),
         )?;
         self.material_registry = Some(crate::materials::MaterialRegistry::with_default_families(
-            device.clone(),
+            device,
         ));
         if let Some(reg) = self.material_registry.as_mut() {
             for (asset_id, (pipeline, display_name)) in self.pending_shader_routes.drain() {

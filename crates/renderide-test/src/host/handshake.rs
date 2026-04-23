@@ -18,15 +18,15 @@ use crate::error::HarnessError;
 use super::lockstep::LockstepDriver;
 
 /// Default deadline for receiving `RendererInitResult` after sending `RendererInitData`.
-pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Outcome of [`run_handshake`].
 ///
 /// The init result is exposed for future callers that want to log GPU caps or condition behavior
 /// on `actual_output_device`; the current harness only verifies the handshake completed.
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Clone, Debug)]
-pub struct HandshakeOutcome {
+pub(super) struct HandshakeOutcome {
     /// The renderer's reply to our `RendererInitData`.
     pub init_result: RendererInitResult,
 }
@@ -35,7 +35,7 @@ pub struct HandshakeOutcome {
 /// any `FrameStartData` the renderer sends before finalize gets answered (the renderer's
 /// `frontend::begin_frame::begin_frame_allowed` only sends `FrameStartData` after `Finalized`,
 /// but we still want to keep `…S` drained so `KeepAlive`s don't pile up).
-pub fn run_handshake(
+pub(super) fn run_handshake(
     queues: &mut HostDualQueueIpc,
     lockstep: &mut LockstepDriver,
     shared_memory_prefix: &str,
@@ -111,10 +111,10 @@ fn random_guid() -> Guid {
         .unwrap_or(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mix1 = pid
-        .wrapping_mul(0x9e3779b97f4a7c15)
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
         .wrapping_add(now_ns)
         .wrapping_add(n);
-    let mix2 = mix1.wrapping_mul(0xbf58476d1ce4e5b9);
+    let mix2 = mix1.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     Guid {
         a: (mix1 as i32),
         b: ((mix1 >> 32) as i16),

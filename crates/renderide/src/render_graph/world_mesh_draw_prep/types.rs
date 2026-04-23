@@ -137,12 +137,9 @@ fn ancestor_membership_mask(
                 hit = false;
                 break;
             }
-            let parent = match space.node_parents.get(cu) {
-                Some(&p) => p,
-                None => {
-                    hit = false;
-                    break;
-                }
+            let Some(&parent) = space.node_parents.get(cu) else {
+                hit = false;
+                break;
             };
             if parent < 0 || parent == cur {
                 hit = false;
@@ -189,15 +186,15 @@ impl CameraTransformDrawFilter {
 pub fn draw_filter_from_camera_entry(
     entry: &crate::scene::CameraRenderableEntry,
 ) -> CameraTransformDrawFilter {
-    if !entry.selective_transform_ids.is_empty() {
-        CameraTransformDrawFilter {
-            only: Some(entry.selective_transform_ids.iter().copied().collect()),
-            exclude: HashSet::new(),
-        }
-    } else {
+    if entry.selective_transform_ids.is_empty() {
         CameraTransformDrawFilter {
             only: None,
             exclude: entry.exclude_transform_ids.iter().copied().collect(),
+        }
+    } else {
+        CameraTransformDrawFilter {
+            only: Some(entry.selective_transform_ids.iter().copied().collect()),
+            exclude: HashSet::new(),
         }
     }
 }
@@ -296,9 +293,7 @@ pub struct WorldMeshDrawItem {
 pub fn resolved_material_slots<'a>(
     renderer: &'a StaticMeshRenderer,
 ) -> Cow<'a, [MeshMaterialSlot]> {
-    if !renderer.material_slots.is_empty() {
-        Cow::Borrowed(renderer.material_slots.as_slice())
-    } else {
+    if renderer.material_slots.is_empty() {
         match renderer.primary_material_asset_id {
             Some(material_asset_id) => Cow::Owned(vec![MeshMaterialSlot {
                 material_asset_id,
@@ -306,6 +301,8 @@ pub fn resolved_material_slots<'a>(
             }]),
             None => Cow::Borrowed(&[]),
         }
+    } else {
+        Cow::Borrowed(renderer.material_slots.as_slice())
     }
 }
 

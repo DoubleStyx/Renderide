@@ -91,7 +91,7 @@ fn destroy_on_dispose_unlinks_qu_file() {
     let opts =
         QueueOptions::with_path_and_destroy("e2e_destroy", dir.path(), 4096, true).expect("valid");
     let path = opts.file_path();
-    let _publisher = Publisher::new(opts.clone()).expect("publisher");
+    let _publisher = Publisher::new(opts).expect("publisher");
     assert!(path.exists());
     drop(_publisher);
     assert!(!path.exists());

@@ -30,11 +30,11 @@ pub fn apply_window_event(acc: &mut WindowInputAccumulator, window: &Window, eve
         }
         WindowEvent::CursorEntered { .. } => {
             profiling::scope!("frontend::window_event", "cursor_entered");
-            acc.mouse_active = true
+            acc.mouse_active = true;
         }
         WindowEvent::CursorLeft { .. } => {
             profiling::scope!("frontend::window_event", "cursor_left");
-            acc.mouse_active = false
+            acc.mouse_active = false;
         }
         WindowEvent::Focused(focused) => {
             profiling::scope!("frontend::window_event", "focus");

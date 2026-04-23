@@ -59,6 +59,10 @@ use super::WorldMeshForwardGraphResources;
 const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = 256;
 
 /// Resolves multiview use, [`MaterialPipelineDesc`], and [`ShaderPermutation`].
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "`HostCameraFrame` is Copy and threaded through the per-view frame path by value by design"
+)]
 pub(super) fn resolve_pass_config(
     hc: HostCameraFrame,
     multiview_stereo: bool,
@@ -140,6 +144,10 @@ pub(super) fn take_or_collect_world_mesh_draws<'a>(
 }
 
 /// Copies Hi-Z temporal state for the next frame when culling is active.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "`HostCameraFrame` is Copy and threaded through the per-view frame path by value by design"
+)]
 pub(super) fn capture_hi_z_temporal_after_collect(
     frame: &mut FrameRenderParams<'_>,
     culling: Option<&WorldMeshCullInput<'_>>,
@@ -196,6 +204,10 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
 }
 
 /// Main render-space context, perspective projection for world draws, and optional ortho for overlays.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "`HostCameraFrame` is Copy and threaded through the per-view frame path by value by design"
+)]
 pub(super) fn compute_view_projections(
     scene: &SceneCoordinator,
     hc: HostCameraFrame,
@@ -235,6 +247,10 @@ pub(super) fn compute_view_projections(
 /// Uses the per-view [`crate::backend::PerDrawResources`] identified by
 /// [`FrameRenderParams::occlusion_view`], growing it as needed. Writes at byte offset 0 of the
 /// view's own buffer. Returns `false` if per-draw resources cannot be created (not yet attached).
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "scratch lock owns `slab_bytes` written through to upload_batch; releasing earlier would clone per frame"
+)]
 pub(super) fn pack_and_upload_per_draw_slab(
     device: &wgpu::Device,
     upload_batch: &FrameUploadBatch,
@@ -326,6 +342,10 @@ pub(super) fn pack_and_upload_per_draw_slab(
 }
 
 /// Builds [`FrameGpuUniforms`], syncs cluster viewport, and writes frame + lights.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "`HostCameraFrame` is Copy and threaded through the per-view frame path by value by design"
+)]
 pub(super) fn write_frame_uniforms_and_cluster(
     queue: &wgpu::Queue,
     frame_resources: &FrameResourceManager,

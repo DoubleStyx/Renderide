@@ -6,7 +6,7 @@ use thiserror::Error;
 
 /// Top-level harness error.
 #[derive(Debug, Error)]
-pub enum HarnessError {
+pub(crate) enum HarnessError {
     /// The renderer binary could not be located on disk.
     #[error("renderer binary not found at {0}; build with `cargo build -p renderide` (use `--profile dev-fast` or `--release` as needed)")]
     RendererBinaryMissing(PathBuf),
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn display_golden_missing() {
         let p = PathBuf::from("missing.png");
-        let e = HarnessError::GoldenMissing(p.clone());
+        let e = HarnessError::GoldenMissing(p);
         assert!(e.to_string().contains("golden image not found"));
         assert!(e.to_string().contains("generate"));
     }

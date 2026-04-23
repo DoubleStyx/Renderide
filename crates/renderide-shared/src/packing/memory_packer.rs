@@ -83,7 +83,7 @@ impl<'a> MemoryPacker<'a> {
 
     /// Packs eight booleans into one byte (bit0 = LSB).
     ///
-    /// SharedTypeGenerator emits `packer.write_packed_bools_array([...])` for packed-bool fields in the generated shared types.
+    /// `SharedTypeGenerator` emits `packer.write_packed_bools_array([...])` for packed-bool fields in the generated shared types.
     pub fn write_packed_bools_array(&mut self, bits: [bool; 8]) {
         let byte = (bits[0] as u8)
             | (bits[1] as u8) << 1
@@ -115,7 +115,7 @@ impl<'a> MemoryPacker<'a> {
     /// `Vec<Vec<T>>`-style structure: outer count, then each inner value-list.
     pub fn write_nested_value_list<T: Pod>(&mut self, list: Option<&[Vec<T>]>) {
         self.write_nested_list(list, |packer, sublist| {
-            packer.write_value_list(Some(sublist))
+            packer.write_value_list(Some(sublist));
         });
     }
 
@@ -124,10 +124,10 @@ impl<'a> MemoryPacker<'a> {
     where
         F: FnMut(&mut MemoryPacker<'a>, &T),
     {
-        let count = list.map(|l| l.len()).unwrap_or(0) as i32;
+        let count = list.map(<[T]>::len).unwrap_or(0) as i32;
         self.write(&count);
         if let Some(list) = list {
-            for item in list.iter() {
+            for item in list {
                 sublist_writer(self, item);
             }
         }
@@ -135,7 +135,7 @@ impl<'a> MemoryPacker<'a> {
 
     /// Object list: count then each element packed in order.
     pub fn write_object_list<T: MemoryPackable>(&mut self, list: Option<&mut [T]>) {
-        let count = list.as_deref().map(|l| l.len()).unwrap_or(0) as i32;
+        let count = list.as_deref().map(<[T]>::len).unwrap_or(0) as i32;
         self.write(&count);
         if let Some(list) = list {
             for item in list.iter_mut() {
@@ -146,7 +146,7 @@ impl<'a> MemoryPacker<'a> {
 
     /// Polymorphic list: count then each element’s `encode`.
     pub fn write_polymorphic_list<T: PolymorphicEncode>(&mut self, list: Option<&mut [T]>) {
-        let count = list.as_deref().map(|l| l.len()).unwrap_or(0) as i32;
+        let count = list.as_deref().map(<[T]>::len).unwrap_or(0) as i32;
         self.write(&count);
         if let Some(list) = list {
             for item in list.iter_mut() {
@@ -157,10 +157,10 @@ impl<'a> MemoryPacker<'a> {
 
     /// Homogeneous POD list: count then each element.
     pub fn write_value_list<T: Pod>(&mut self, list: Option<&[T]>) {
-        let count = list.map(|l| l.len()).unwrap_or(0) as i32;
+        let count = list.map(<[T]>::len).unwrap_or(0) as i32;
         self.write(&count);
         if let Some(list) = list {
-            for item in list.iter() {
+            for item in list {
                 self.write(item);
             }
         }
@@ -168,10 +168,10 @@ impl<'a> MemoryPacker<'a> {
 
     /// Like [`Self::write_value_list`] but each item is an enum stored as `i32`.
     pub fn write_enum_value_list<E: EnumRepr>(&mut self, list: Option<&[E]>) {
-        let count = list.map(|l| l.len()).unwrap_or(0) as i32;
+        let count = list.map(<[E]>::len).unwrap_or(0) as i32;
         self.write(&count);
         if let Some(list) = list {
-            for e in list.iter() {
+            for e in list {
                 self.write(&e.as_i32());
             }
         }
@@ -179,10 +179,10 @@ impl<'a> MemoryPacker<'a> {
 
     /// List of nullable strings in host format.
     pub fn write_string_list(&mut self, list: Option<&[Option<&str>]>) {
-        let count = list.map(|l| l.len()).unwrap_or(0) as i32;
+        let count = list.map(<[Option<&str>]>::len).unwrap_or(0) as i32;
         self.write(&count);
         if let Some(list) = list {
-            for s in list.iter() {
+            for s in list {
                 self.write_str(*s);
             }
         }

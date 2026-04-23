@@ -22,7 +22,7 @@ pub(crate) fn perf_send_due(elapsed_since_last_send: Option<Duration>, interval:
 pub(crate) fn next_smoothed_fps(prev: Option<f32>, instant_fps: f32, alpha: f32) -> f32 {
     match prev {
         None => instant_fps,
-        Some(s) => alpha * instant_fps + (1.0 - alpha) * s,
+        Some(s) => alpha.mul_add(instant_fps, (1.0 - alpha) * s),
     }
 }
 

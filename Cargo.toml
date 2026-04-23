@@ -32,3 +32,85 @@ panic = "abort"
 
 [workspace.lints.rust]
 missing_docs = "warn"
+unused_lifetimes = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+variant_size_differences = "warn"
+
+[workspace.lints.clippy]
+# Tier 1 — bug-catchers
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+mem_forget = "warn"
+
+# Tier 2 — discipline
+allow_attributes = "warn"
+
+# Tier 3 — mechanical cleanup
+semicolon_if_nothing_returned = "warn"
+manual_let_else = "warn"
+manual_assert = "warn"
+if_not_else = "warn"
+match_wildcard_for_single_variants = "warn"
+explicit_iter_loop = "warn"
+inefficient_to_string = "warn"
+implicit_clone = "warn"
+flat_map_option = "warn"
+unnested_or_patterns = "warn"
+unreadable_literal = "warn"
+
+# Tier 4 — resource-management
+rc_buffer = "warn"
+unused_result_ok = "warn"
+large_types_passed_by_value = "warn"
+too_many_lines = "warn"
+fn_params_excessive_bools = "warn"
+debug_assert_with_mut_call = "warn"
+
+# Tier 5 — additional bug-catchers (from audit)
+unused_self = "warn"
+redundant_clone = "warn"
+significant_drop_tightening = "warn"
+as_ptr_cast_mut = "warn"
+non_send_fields_in_send_ty = "warn"
+as_underscore = "warn"
+suboptimal_flops = "warn"
+useless_let_if_seq = "warn"
+format_push_string = "warn"
+
+# Tier 6 — zero-cost sentinels (0 hits today; protect against future regressions)
+path_buf_push_overwrite = "warn"
+maybe_infinite_iter = "warn"
+same_functions_in_if_condition = "warn"
+invalid_upcast_comparisons = "warn"
+mismatching_type_param_order = "warn"
+transmute_ptr_to_ptr = "warn"
+rc_mutex = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+large_stack_arrays = "warn"
+lossy_float_literal = "warn"
+imprecise_flops = "warn"
+recursive_format_impl = "warn"
+suspicious_xor_used_as_pow = "warn"
+fallible_impl_from = "warn"
+mixed_read_write_in_expression = "warn"
+empty_drop = "warn"
+non_zero_suggestions = "warn"
+verbose_file_reads = "warn"
+stable_sort_primitive = "warn"
+option_option = "warn"
+create_dir = "warn"
+naive_bytecount = "warn"
+needless_bitwise_bool = "warn"
+linkedlist = "warn"
+manual_string_new = "warn"
+
+# Tier 7 — discipline (from the Tier C audit)
+map_err_ignore = "warn"

@@ -116,7 +116,7 @@ mod tests {
         // Sanity: dot(coeffs.xyz, p) + coeffs.w matches (m * p).z for a sample point.
         let p = glam::Vec3::new(2.0, -3.0, 4.0);
         let view_z = (m * p.extend(1.0)).z;
-        let dotted = coeffs[0] * p.x + coeffs[1] * p.y + coeffs[2] * p.z + coeffs[3];
+        let dotted = coeffs[2].mul_add(p.z, coeffs[0].mul_add(p.x, coeffs[1] * p.y)) + coeffs[3];
         assert!((view_z - dotted).abs() < 1e-6);
     }
 
@@ -127,7 +127,7 @@ mod tests {
         let coeffs = FrameGpuUniforms::view_space_z_coeffs_from_world_to_view(m);
         let p = glam::Vec3::new(1.5, -0.25, 2.0);
         let view_z = (m * p.extend(1.0)).z;
-        let dotted = coeffs[0] * p.x + coeffs[1] * p.y + coeffs[2] * p.z + coeffs[3];
+        let dotted = coeffs[2].mul_add(p.z, coeffs[0].mul_add(p.x, coeffs[1] * p.y)) + coeffs[3];
         assert!((view_z - dotted).abs() < 1e-5);
     }
 

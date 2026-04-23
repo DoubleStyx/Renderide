@@ -446,6 +446,10 @@ impl CompiledRenderGraph {
 
     /// Encodes the debug HUD overlay (swapchain path only), drains the deferred upload batch, and
     /// submits the assembled command buffers as a single batch through the GPU driver thread.
+    #[expect(
+        clippy::unused_self,
+        reason = "method syntax groups frame-submit operations on the compiled graph"
+    )]
     fn submit_frame_batch(
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
@@ -607,6 +611,10 @@ impl CompiledRenderGraph {
     }
 
     /// Prepares owned per-view work items on the main thread before serial or parallel recording.
+    #[expect(
+        clippy::unused_self,
+        reason = "method syntax groups per-view preparation on the compiled graph"
+    )]
     fn prepare_per_view_work_items(
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,

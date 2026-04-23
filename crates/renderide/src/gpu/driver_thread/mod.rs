@@ -67,6 +67,10 @@ impl DriverThread {
         let ring_clone = Arc::clone(&ring);
         let errors_clone = Arc::clone(&errors);
         let counters_clone = Arc::clone(&surface_counters);
+        #[expect(
+            clippy::expect_used,
+            reason = "renderer-driver thread spawn failure at startup is unrecoverable"
+        )]
         let handle = thread::Builder::new()
             .name("renderer-driver".to_string())
             .spawn(move || {

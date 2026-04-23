@@ -73,6 +73,10 @@ fn install_impl(log_path: &Path) -> Result<(), String> {
     let log_fd = log_f.into_raw_fd();
     let term_fd = crate::native_stdio::duplicate_preserved_stderr_raw_fd().map(|o| o.into_raw_fd());
 
+    #[expect(
+        clippy::map_err_ignore,
+        reason = "`OnceLock::set` error returns the rejected value, not useful context here"
+    )]
     UNIX_CRASH_FDS
         .set(UnixCrashFds { log_fd, term_fd })
         .map_err(|_| "fatal crash log fds already installed".to_string())?;
@@ -93,6 +97,10 @@ fn install_impl(log_path: &Path) -> Result<(), String> {
         }))
         .map_err(|e| e.to_string())?
     };
+    #[expect(
+        clippy::mem_forget,
+        reason = "handler must stay installed for the process lifetime; see SAFETY comment above"
+    )]
     std::mem::forget(handler);
     Ok(())
 }
@@ -125,11 +133,13 @@ impl UnixCrashFds {
 /// only async-signal-safe operations so it is callable from a crash signal handler.
 #[cfg(unix)]
 unsafe fn write_loop_fd(fd: std::os::unix::io::RawFd, mut data: &[u8]) -> &[u8] {
-    // SAFETY: see the function contract above — `fd` is a valid open descriptor for write(2).
     while !data.is_empty() {
-        let n = libc::write(fd, data.as_ptr().cast(), data.len());
+        // SAFETY: see the function contract above — `fd` is a valid open descriptor for write(2);
+        // `errno_value()` only reads the thread-local errno pointer.
+        let n = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
         if n < 0 {
-            if errno_value() == libc::EINTR {
+            // SAFETY: reads the thread-local errno pointer per `errno_value`'s contract.
+            if unsafe { errno_value() } == libc::EINTR {
                 continue;
             }
             return data;
@@ -153,18 +163,18 @@ unsafe fn write_loop_fd(fd: std::os::unix::io::RawFd, mut data: &[u8]) -> &[u8] 
 unsafe fn errno_value() -> libc::c_int {
     // SAFETY: see the function contract above — the thread-local errno pointer is always valid.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
+    unsafe {
         *libc::__errno_location()
     }
     #[cfg(target_os = "macos")]
-    {
+    unsafe {
         *libc::__error()
     }
     #[cfg(all(
         unix,
         not(any(target_os = "linux", target_os = "android", target_os = "macos"))
     ))]
-    {
+    unsafe {
         *libc::__errno_location()
     }
 }

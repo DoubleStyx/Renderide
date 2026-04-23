@@ -137,6 +137,7 @@ impl EmbeddedMaterialBindResources {
             self.property_registry.as_ref(),
         )?;
         cache.insert(stem.to_string(), layout.clone());
+        drop(cache);
         Ok(layout)
     }
 

@@ -8,7 +8,7 @@ pub struct XrSessionState {
     pub(super) xr_instance: xr::Instance,
     /// Dropped before [`Self::xr_instance`] so the messenger handle is destroyed first; held only
     /// for this Drop ordering, hence never read after construction.
-    #[allow(dead_code)] // Drop-order-only field; see doc comment above.
+    #[expect(dead_code, reason = "drop-order-only field; see doc comment above")]
     pub(super) openxr_debug_messenger: Option<super::super::debug_utils::OpenxrDebugUtilsMessenger>,
     pub(super) environment_blend_mode: xr::EnvironmentBlendMode,
     pub(super) session: xr::Session<xr::Vulkan>,
@@ -178,7 +178,8 @@ impl XrSessionState {
 /// `xrEndFrame` fail with `XR_ERROR_POSE_INVALID`.
 fn sanitize_pose_for_end_frame(pose: xr::Posef) -> xr::Posef {
     let o = pose.orientation;
-    let len_sq = o.x * o.x + o.y * o.y + o.z * o.z + o.w * o.w;
+    let len_sq =
+        o.w.mul_add(o.w, o.z.mul_add(o.z, o.x.mul_add(o.x, o.y * o.y)));
     if len_sq.is_finite() && len_sq >= 1e-10 {
         pose
     } else {

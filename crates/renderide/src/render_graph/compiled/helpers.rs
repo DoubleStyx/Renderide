@@ -89,6 +89,10 @@ pub(super) fn frame_render_params_from_shared<'a>(
 }
 
 /// Builds [`FrameRenderParams`] from a resolved target and per-view host/IPC fields.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "`HostCameraFrame` is Copy and threaded through the per-view frame path by value by design"
+)]
 pub(super) fn frame_render_params_from_resolved<'a>(
     scene: &'a SceneCoordinator,
     backend: &'a mut RenderBackend,

@@ -160,15 +160,15 @@ mod tests {
     #[test]
     fn prepare_run_inputs_respects_skip_vr_dialog() {
         let _g = ENV_LOCK.lock().expect("env lock");
-        std::env::set_var(vr_prompt::ENV_SKIP_VR_DIALOG, "1");
-        std::env::set_var("CI", "1");
+        env::set_var(vr_prompt::ENV_SKIP_VR_DIALOG, "1");
+        env::set_var("CI", "1");
         let opts = prepare_run_inputs().expect("dialog bypass must yield options");
         assert!(!opts.log_timestamp.is_empty());
         assert!(!opts
             .host_args
             .iter()
             .any(|a| a == "-Screen" || a == "-Device"));
-        std::env::remove_var(vr_prompt::ENV_SKIP_VR_DIALOG);
-        std::env::remove_var("CI");
+        env::remove_var(vr_prompt::ENV_SKIP_VR_DIALOG);
+        env::remove_var("CI");
     }
 }

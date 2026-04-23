@@ -286,7 +286,7 @@ pub fn extract_blendshape_offsets(
                 let x = f32::from_le_bytes(raw[src_offset..src_offset + 4].try_into().ok()?);
                 let y = f32::from_le_bytes(raw[src_offset + 4..src_offset + 8].try_into().ok()?);
                 let z = f32::from_le_bytes(raw[src_offset + 8..src_offset + 12].try_into().ok()?);
-                let mag_sq = x * x + y * y + z * z;
+                let mag_sq = z.mul_add(z, x.mul_add(x, y * y));
                 if mag_sq > BLENDSHAPE_POSITION_EPSILON_SQ {
                     per_shape[bi].push((v as u32, [x, y, z]));
                 }
@@ -583,9 +583,8 @@ pub fn color_float4_stream_bytes(
         if base >= vertex_data.len() {
             return None;
         }
-        let rgba = match decode_vertex_color(vertex_data, base, color_attr) {
-            Some(v) => v,
-            None => return Some(out),
+        let Some(rgba) = decode_vertex_color(vertex_data, base, color_attr) else {
+            return Some(out);
         };
         let o = i * 16;
         for (component, value) in rgba.into_iter().enumerate() {

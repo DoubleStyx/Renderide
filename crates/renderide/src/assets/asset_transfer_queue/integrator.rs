@@ -86,7 +86,10 @@ impl AssetIntegrator {
 }
 
 /// Returns a stable tag for [`AssetTask`] variants, used as Tracy zone data.
-#[cfg_attr(not(feature = "tracy"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "tracy"),
+    expect(dead_code, reason = "tag only consumed by Tracy zones")
+)]
 fn asset_task_kind_tag(task: &AssetTask) -> &'static str {
     match task {
         AssetTask::Mesh(_) => "Mesh",

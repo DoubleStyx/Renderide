@@ -24,6 +24,10 @@ pub(crate) fn projection_for_world_mesh_draw(
 }
 
 /// Computes `(vp_left, vp_right, model)` for one sorted draw.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "`HostCameraFrame` is Copy and threaded through the per-draw frame path by value by design"
+)]
 pub(crate) fn compute_per_draw_vp_triple(
     scene: &SceneCoordinator,
     item: &WorldMeshDrawItem,

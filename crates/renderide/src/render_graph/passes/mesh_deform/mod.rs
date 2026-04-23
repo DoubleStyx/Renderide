@@ -254,7 +254,9 @@ impl ComputePass for MeshDeformPass {
         let head_output_transform = frame.view.host_camera.head_output_transform;
 
         profiling::scope!("mesh_deform::dispatch");
-        for item in scratch.work.drain(..) {
+        let work_items: Vec<_> = scratch.work.drain(..).collect();
+        drop(scratch);
+        for item in work_items {
             let need = EntryNeed {
                 needs_blend: deform_needs_blend_snapshot(&item.mesh),
                 needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),

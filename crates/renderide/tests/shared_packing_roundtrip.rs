@@ -19,7 +19,7 @@ fn mixed_primitives_roundtrip() {
 
     let written = {
         let mut p = MemoryPacker::new(&mut buf);
-        p.write(&0x01020304_i32);
+        p.write(&0x0102_0304_i32);
         p.write(&0xabu8);
         p.write_bool(true);
         p.write_bool(false);
@@ -34,7 +34,7 @@ fn mixed_primitives_roundtrip() {
 
     let mut pool = DefaultEntityPool;
     let mut u = MemoryUnpacker::new(&buf[..written], &mut pool);
-    assert_eq!(u.read::<i32>().expect("i32"), 0x01020304);
+    assert_eq!(u.read::<i32>().expect("i32"), 0x0102_0304);
     assert_eq!(u.read::<u8>().expect("u8"), 0xab);
     assert!(u.read_bool().expect("bool true"));
     assert!(!u.read_bool().expect("bool false"));
@@ -72,7 +72,7 @@ fn underrun_reports_underrun_variant() {
                 "unexpected type name in error: {ty:?}"
             );
         }
-        other => panic!("expected Underrun, got {other:?}"),
+        other @ MemoryUnpackError::LengthOverflow => panic!("expected Underrun, got {other:?}"),
     }
 }
 

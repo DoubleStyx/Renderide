@@ -149,6 +149,7 @@ impl MaterialPipelineCache {
             drop(evicted);
             logger::trace!("MaterialPipelineCache: evicted LRU pipeline entry");
         }
+        drop(cache);
         Ok(set)
     }
 }

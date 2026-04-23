@@ -192,6 +192,10 @@ fn readback_and_write_png_atomically(
     gpu.device()
         .poll(wgpu::PollType::wait_indefinitely())
         .map_err(|e| HeadlessReadbackError::DeviceLost(format!("{e:?}")))?;
+    #[expect(
+        clippy::map_err_ignore,
+        reason = "ReadbackTimeout is the specific case we map; `RecvTimeoutError::Timeout` adds no detail"
+    )]
     receiver
         .recv_timeout(Duration::from_secs(5))
         .map_err(|_| HeadlessReadbackError::ReadbackTimeout)?

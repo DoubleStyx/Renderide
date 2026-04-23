@@ -207,7 +207,7 @@ pub fn run() -> Result<Option<i32>, RunError> {
     let initial_vsync = config_load.settings.rendering.vsync;
     let initial_gpu_validation = config_load.settings.debug.gpu_validation_layers;
 
-    let log_path_hook = log_path.clone();
+    let log_path_hook = log_path;
     std::panic::set_hook(Box::new(move |info| {
         let report = logger::panic_report(info);
         logger::append_panic_report_to_file(&log_path_hook, &report);

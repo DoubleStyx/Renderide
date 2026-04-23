@@ -54,7 +54,7 @@ pub fn build_instance_batches(
     }
     let mut out = Vec::with_capacity(draw_indices.len());
     for_each_instance_batch(draws, draw_indices, allow_multi_instance_batches, |batch| {
-        out.push(batch)
+        out.push(batch);
     });
     out
 }

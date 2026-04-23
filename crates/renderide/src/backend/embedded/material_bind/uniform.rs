@@ -88,6 +88,7 @@ impl EmbeddedMaterialBindResources {
             drop(evicted);
             logger::trace!("EmbeddedMaterialBindResources: evicted LRU uniform cache entry");
         }
+        drop(uniform_cache);
         Ok(buf)
     }
 }

@@ -417,6 +417,10 @@ macro_rules! bind_vertex_if_changed {
     }};
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "hot draw path keeps bind/set decisions inline for register reuse"
+)]
 pub(crate) fn draw_mesh_submesh_instanced(
     rpass: &mut wgpu::RenderPass<'_>,
     item: &WorldMeshDrawItem,

@@ -39,6 +39,10 @@ impl PostProcessChainSignature {
 
 /// Result of [`PostProcessChain::build_into_graph`].
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    variant_size_differences,
+    reason = "Copy enum; `Chained` carries pass-id range inline to avoid heap for a one-shot result"
+)]
 pub enum ChainOutput {
     /// No effects ran; the chain forwards the original input handle.
     PassThrough(TextureHandle),
@@ -330,7 +334,9 @@ mod tests {
                     "single effect produces a single pass"
                 );
             }
-            other => panic!("expected Chained variant, got {other:?}"),
+            other @ ChainOutput::PassThrough(_) => {
+                panic!("expected Chained variant, got {other:?}")
+            }
         }
     }
 
@@ -361,7 +367,9 @@ mod tests {
                 assert_ne!(final_handle, input);
                 assert_ne!(first_pass, last_pass);
             }
-            other => panic!("expected Chained variant, got {other:?}"),
+            other @ ChainOutput::PassThrough(_) => {
+                panic!("expected Chained variant, got {other:?}")
+            }
         }
     }
 

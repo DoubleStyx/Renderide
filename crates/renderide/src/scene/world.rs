@@ -182,9 +182,8 @@ impl WorldTransformCache {
             let mut parent_matrix = match maybe_uppermost_matrix {
                 Some(m) => m,
                 None => {
-                    let top = match stack.pop() {
-                        Some(t) => t,
-                        None => continue,
+                    let Some(top) = stack.pop() else {
+                        continue;
                     };
                     let local = get_local_matrix(nodes, local_matrices, local_dirty, top);
                     world_matrices[top] = local;
@@ -218,11 +217,11 @@ pub(super) fn ensure_cache_shapes(
         cache.local_dirty.resize(node_count, true);
         cache.visit_epoch.resize(node_count, 0);
         cache.children_dirty = true;
-        for c in cache.computed.iter_mut() {
+        for c in &mut cache.computed {
             *c = false;
         }
     } else if force_invalidate {
-        for c in cache.computed.iter_mut() {
+        for c in &mut cache.computed {
             *c = false;
         }
     }

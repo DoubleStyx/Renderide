@@ -41,7 +41,7 @@ pub fn acquire_surface_outcome(
 ) -> Result<SurfaceFrameOutcome, PresentClearError> {
     match gpu.acquire_with_recovery() {
         Ok(f) => Ok(SurfaceFrameOutcome::Acquired(f)),
-        Err(wgpu::CurrentSurfaceTexture::Timeout) | Err(wgpu::CurrentSurfaceTexture::Occluded) => {
+        Err(wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded) => {
             logger::debug!("surface timeout or occluded; skipping frame");
             Ok(SurfaceFrameOutcome::Skip)
         }

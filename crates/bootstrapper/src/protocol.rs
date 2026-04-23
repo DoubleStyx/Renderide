@@ -17,7 +17,7 @@ use crate::protocol_handlers;
 
 /// Command sent from the Host over `bootstrapper_in`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HostCommand {
+pub(crate) enum HostCommand {
     /// Extends the IPC watchdog deadline.
     Heartbeat,
     /// Clean shutdown request.
@@ -32,7 +32,7 @@ pub enum HostCommand {
 
 /// Action for the queue loop after handling one message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoopAction {
+pub(crate) enum LoopAction {
     /// Continue dequeuing.
     Continue,
     /// Exit the loop (e.g. `SHUTDOWN`).
@@ -40,7 +40,7 @@ pub enum LoopAction {
 }
 
 /// Parses a UTF-8 message from the Host into a [`HostCommand`].
-pub fn parse_host_command(s: &str) -> HostCommand {
+pub(crate) fn parse_host_command(s: &str) -> HostCommand {
     match s {
         "HEARTBEAT" => HostCommand::Heartbeat,
         "SHUTDOWN" => HostCommand::Shutdown,
@@ -55,14 +55,14 @@ pub fn parse_host_command(s: &str) -> HostCommand {
 }
 
 /// Returns `true` when queue-loop trace logging should run for this iteration counter.
-pub fn should_trace_iter(loop_iter: u64) -> bool {
+pub(crate) fn should_trace_iter(loop_iter: u64) -> bool {
     loop_iter <= 3 || loop_iter.is_multiple_of(1000)
 }
 
 /// Blocks on `incoming` until `cancel`, handling messages. Initial watchdog uses
 /// [`INITIAL_HEARTBEAT_TIMEOUT_SECS`], extended to [`HEARTBEAT_REFRESH_TIMEOUT_SECS`] on each
 /// [`HostCommand::Heartbeat`] via `heartbeat_deadline`.
-pub fn queue_loop(
+pub(crate) fn queue_loop(
     incoming: &mut Subscriber,
     outgoing: &mut Publisher,
     config: &ResoBootConfig,
@@ -115,9 +115,8 @@ pub fn queue_loop(
             continue;
         }
 
-        let arguments = match String::from_utf8(msg) {
-            Ok(s) => s,
-            Err(_) => continue,
+        let Ok(arguments) = String::from_utf8(msg) else {
+            continue;
         };
 
         logger::info!("Received message: {}", arguments);

@@ -102,7 +102,7 @@ impl CompiledRenderGraph {
         }
         // Seed per-view frame plan so the prepare pass can write frame uniforms to the
         // correct per-view buffer and bind the right @group(0) bind group.
-        if let Some((frame_bg, frame_buf)) = per_view_frame_bg_and_buf.clone() {
+        if let Some((frame_bg, frame_buf)) = per_view_frame_bg_and_buf {
             view_blackboard.insert::<PerViewFramePlanSlot>(PerViewFramePlan {
                 frame_bind_group: frame_bg,
                 frame_uniform_buffer: frame_buf,
@@ -311,7 +311,10 @@ impl CompiledRenderGraph {
     // ends at the call boundary, and the other `&'a` references must all share the per-view
     // lifetime `'a` without being pulled into a single `'a`-bound struct that would couple
     // their borrow scopes.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "borrow scopes forbid a single context struct"
+    )]
     pub(super) fn execute_pass_node<'a>(
         &self,
         pass_idx: usize,

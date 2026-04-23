@@ -34,7 +34,7 @@ impl CompiledRenderGraph {
         let Some(reg) = mv_ctx.backend.materials.material_registry() else {
             return;
         };
-        for view in views.iter() {
+        for view in views {
             let Some(collection) = view.prefetched_world_mesh_draws.as_ref() else {
                 continue;
             };
@@ -136,7 +136,7 @@ impl CompiledRenderGraph {
         profiling::scope!("graph::pre_warm_per_view");
         let mut mesh_ids_needing_extended_streams = std::collections::HashSet::new();
         let mut any_view_missing_prefetch = false;
-        for view in views.iter() {
+        for view in views {
             let occlusion_view = view.occlusion_view_id();
             let host_camera = view.host_camera;
             let (viewport, stereo) = match &view.target {
@@ -244,7 +244,7 @@ impl CompiledRenderGraph {
         transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("render::pre_resolve_transients");
-        for view in views.iter() {
+        for view in views {
             let resolved = Self::resolve_view_from_target(
                 &view.target,
                 mv_ctx.gpu,

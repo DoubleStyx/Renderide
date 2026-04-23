@@ -16,7 +16,7 @@ use crate::scene::mesh_payload::{make_mesh_upload_data, SphereMeshUpload};
 use super::lockstep::LockstepDriver;
 
 /// Default deadline for receiving `MeshUploadResult` after sending `MeshUploadData`.
-pub const DEFAULT_ASSET_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const DEFAULT_ASSET_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Owns the open `SharedMemoryWriter` for the sphere mesh buffer so the harness can keep the
 /// shared memory alive until the renderer is shut down (the renderer's `SharedMemoryAccessor`
@@ -24,8 +24,8 @@ pub const DEFAULT_ASSET_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// Fields are intentionally accessed only via [`Drop`] (writer keeps SHM alive); we expose them
 /// publicly so future host-side code can re-derive descriptors without re-opening the writer.
-#[allow(dead_code)]
-pub struct UploadedMesh {
+#[expect(dead_code)]
+pub(super) struct UploadedMesh {
     /// Asset id assigned to the uploaded mesh.
     pub asset_id: i32,
     /// Live writer keeping the SHM buffer alive.
@@ -34,7 +34,7 @@ pub struct UploadedMesh {
 
 /// Uploads `mesh` as a `MeshUploadData` against `asset_id`, blocking on `MeshUploadResult` while
 /// pumping the lockstep loop.
-pub fn upload_sphere_mesh(
+pub(super) fn upload_sphere_mesh(
     queues: &mut HostDualQueueIpc,
     lockstep: &mut LockstepDriver,
     shared_memory_prefix: &str,

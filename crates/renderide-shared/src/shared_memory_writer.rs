@@ -123,7 +123,7 @@ mod platform {
             buffer_id: i32,
             capacity_bytes: i32,
         ) -> Result<Self, SharedMemoryWriterError> {
-            let dir = std::env::var_os(RENDERIDE_INTERPROCESS_DIR_ENV)
+            let dir = env::var_os(RENDERIDE_INTERPROCESS_DIR_ENV)
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(interprocess::default_memory_dir);
@@ -341,6 +341,10 @@ impl SharedMemoryWriter {
         if capacity_bytes == 0 {
             return Err(SharedMemoryWriterError::CapacityZero);
         }
+        #[expect(
+            clippy::map_err_ignore,
+            reason = "CapacityOverflow carries the value; `TryFromIntError` adds no detail"
+        )]
         let capacity_i32: i32 = capacity_bytes
             .try_into()
             .map_err(|_| SharedMemoryWriterError::CapacityOverflow(capacity_bytes))?;

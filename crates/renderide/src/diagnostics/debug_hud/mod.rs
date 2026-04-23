@@ -33,7 +33,10 @@ fn overlay_frame_timing_window(ui: &imgui::Ui, frame_timing: Option<&FrameTiming
 }
 
 /// Renders the **Renderide debug** tabbed panel (Stats / Shader routes / Draw state / GPU memory / GPU passes).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "HUD panel needs the full snapshot bundle"
+)]
 fn overlay_main_debug_window(
     ui: &imgui::Ui,
     width: u32,

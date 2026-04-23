@@ -440,9 +440,8 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
     };
 
     let (src_for_skin, base_src_pos_e) = if ctx.needs_blend {
-        let t = match ctx.cache_entry.temp.as_ref() {
-            Some(x) => x,
-            None => return,
+        let Some(t) = ctx.cache_entry.temp.as_ref() else {
+            return;
         };
         (ctx.temp_arena, t.first_element_index(16))
     } else {

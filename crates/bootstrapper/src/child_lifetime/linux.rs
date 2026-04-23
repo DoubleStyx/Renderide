@@ -5,21 +5,29 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 
 /// No kernel objects; applies parent-death signal in [`Self::prepare_command`].
-pub struct PlatformGroup;
+pub(super) struct PlatformGroup;
 
 impl PlatformGroup {
     /// Always succeeds (no resources).
-    pub fn new() -> io::Result<Self> {
+    pub(super) fn new() -> io::Result<Self> {
         Ok(Self)
     }
 
     /// Requests `SIGTERM` when the parent (bootstrapper) exits.
-    pub fn prepare_command(&self, cmd: &mut Command) {
+    #[expect(
+        clippy::unused_self,
+        reason = "matches the cross-platform PlatformGroup API"
+    )]
+    pub(super) fn prepare_command(&self, cmd: &mut Command) {
         apply_parent_death_signal(cmd);
     }
 
     /// No PID tracking on Linux (kernel handles parent death).
-    pub fn register_spawned(&self, _child: &Child) -> io::Result<()> {
+    #[expect(
+        clippy::unused_self,
+        reason = "matches the cross-platform PlatformGroup API"
+    )]
+    pub(super) fn register_spawned(&self, _child: &Child) -> io::Result<()> {
         Ok(())
     }
 }

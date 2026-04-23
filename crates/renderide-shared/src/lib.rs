@@ -4,7 +4,7 @@
 //!
 //! This crate is the third "shared functionality" workspace member alongside [`interprocess`] and
 //! [`logger`]: anything that crosses the host/renderer process boundary lives here so neither side
-//! has to depend on the other's heavy dependencies (wgpu, naga, OpenXR, winit, imgui).
+//! has to depend on the other's heavy dependencies (wgpu, naga, `OpenXR`, winit, imgui).
 //!
 //! # Module map
 //!

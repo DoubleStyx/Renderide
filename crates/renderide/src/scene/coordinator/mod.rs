@@ -240,11 +240,10 @@ impl SceneCoordinator {
         let results: Vec<(RenderSpaceId, Result<WorldTransformCache, SceneError>)> = work
             .into_par_iter()
             .map(|(id, mut cache)| {
-                let space = match spaces.get(&id) {
-                    Some(s) => s,
-                    // Space was removed between drain and dispatch — preserve cache as-is so the
-                    // reinsert step below drops it via the `Ok` path (caller treats this as a no-op).
-                    None => return (id, Ok(cache)),
+                // Space removed between drain and dispatch — preserve cache as-is so the reinsert
+                // step below drops it via the `Ok` path (caller treats this as a no-op).
+                let Some(space) = spaces.get(&id) else {
+                    return (id, Ok(cache));
                 };
                 let n = space.nodes.len();
                 ensure_cache_shapes(&mut cache, n, false);

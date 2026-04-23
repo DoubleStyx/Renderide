@@ -163,7 +163,10 @@ impl BlackboardSlot for MsaaViewsSlot {
 /// currently resolve MSAA views directly from graph transient textures; reading from this slot
 /// is wired in but the consumer functions are migrated incrementally.
 #[derive(Clone)]
-#[allow(dead_code)] // Fields are accessed via the blackboard slot; consumer migration is incremental.
+#[expect(
+    dead_code,
+    reason = "fields are accessed via the blackboard slot; consumer migration is incremental"
+)]
 pub struct MsaaViews {
     /// Graph-owned multisampled color attachment view when MSAA is active.
     pub msaa_color_view: wgpu::TextureView,

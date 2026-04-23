@@ -19,12 +19,18 @@ fn renderer_settings_figment() -> Figment {
         .merge(Env::prefixed("RENDERIDE_").split("__"))
 }
 
-#[allow(clippy::result_large_err)] // `figment::Error` is large; only used on startup paths.
+#[expect(
+    clippy::result_large_err,
+    reason = "`figment::Error` is large; only used on startup paths"
+)]
 fn try_extract_settings(figment: Figment) -> Result<RendererSettings, figment::Error> {
     figment.extract::<RendererSettings>()
 }
 
-#[allow(clippy::result_large_err)] // `figment::Error` is large; only used on startup paths.
+#[expect(
+    clippy::result_large_err,
+    reason = "`figment::Error` is large; only used on startup paths"
+)]
 fn load_settings_from_toml_str(content: &str) -> Result<RendererSettings, figment::Error> {
     let figment = Figment::new()
         .merge(Serialized::defaults(RendererSettings::default()))
@@ -39,8 +45,8 @@ fn load_settings_from_toml_str(content: &str) -> Result<RendererSettings, figmen
 /// If unset, the value from config or defaults is unchanged.
 pub fn apply_renderide_gpu_validation_env(settings: &mut RendererSettings) {
     match std::env::var("RENDERIDE_GPU_VALIDATION").as_deref() {
-        Ok("1") | Ok("true") | Ok("yes") => settings.debug.gpu_validation_layers = true,
-        Ok("0") | Ok("false") | Ok("no") => settings.debug.gpu_validation_layers = false,
+        Ok("1" | "true" | "yes") => settings.debug.gpu_validation_layers = true,
+        Ok("0" | "false" | "no") => settings.debug.gpu_validation_layers = false,
         _ => {}
     }
 }

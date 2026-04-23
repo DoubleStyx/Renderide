@@ -36,8 +36,14 @@ impl PosixSemaphore {
             let prefix = encoded.get(..24).map_or(encoded.as_str(), |s| s);
             full_name = format!("/sem_{prefix}");
         }
-        let c_name = CString::new(full_name).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "semaphore name contains NUL")
+        let c_name = CString::new(full_name).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "semaphore name contains NUL at position {}",
+                    e.nul_position()
+                ),
+            )
         })?;
         // SAFETY: `c_name` is a NUL-terminated C string; remaining args are constants.
         let h = unsafe { libc::sem_open(c_name.as_ptr(), libc::O_CREAT, 0o777, 0) };

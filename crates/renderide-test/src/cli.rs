@@ -1,5 +1,11 @@
 //! Command-line interface for the golden-image harness.
 
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "CLI tool: stdout/stderr is the user-facing interface"
+)]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -10,7 +16,7 @@ use crate::error::HarnessError;
 use crate::host::{HarnessRunOutcome, HostHarness, HostHarnessConfig};
 
 /// CLI entry point.
-pub fn run() -> ExitCode {
+pub(crate) fn run() -> ExitCode {
     let cli = Cli::parse();
     init_logger();
     match dispatch(cli) {
@@ -92,7 +98,7 @@ struct CommonOpts {
     /// Use the release-mode renderer binary (`target/release/renderide`).
     #[arg(long, default_value_t = false, conflicts_with = "dev_fast")]
     release: bool,
-    /// Output resolution (WxH) for the offscreen render target.
+    /// Output resolution (`WxH`) for the offscreen render target.
     #[arg(long, default_value = "256x256")]
     resolution: String,
     /// How long to wait for handshake / asset acks / a fresh PNG.

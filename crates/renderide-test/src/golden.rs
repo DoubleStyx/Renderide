@@ -14,7 +14,7 @@ const FLAT_CHANNEL_RANGE_MAX: u8 = 1;
 /// Copies the freshly produced PNG at `actual` over the golden image at `golden_path`.
 ///
 /// Refuses to overwrite the golden if the capture is flat (no geometry).
-pub fn generate(actual: &Path, golden_path: &Path) -> Result<(), HarnessError> {
+pub(crate) fn generate(actual: &Path, golden_path: &Path) -> Result<(), HarnessError> {
     let img = load_rgba(actual)?;
     reject_flat_image(&img, actual)?;
     if let Some(parent) = golden_path.parent() {
@@ -28,7 +28,7 @@ pub fn generate(actual: &Path, golden_path: &Path) -> Result<(), HarnessError> {
 ///
 /// On failure (score below `threshold`), writes a side-by-side diff visualization to `diff_out`
 /// and returns [`HarnessError::GoldenMismatch`].
-pub fn check(
+pub(crate) fn check(
     actual: &Path,
     golden: &Path,
     threshold: f64,

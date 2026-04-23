@@ -71,16 +71,22 @@ pub(super) fn bound_hand_pose_defaults(
             Vec3::new(0.04, -0.025, -0.1),
             unity_euler_deg(5.0, -95.0, -90.0) * generic_fix,
         ),
-        (ActiveControllerProfile::Vive, Chirality::Left)
-        | (ActiveControllerProfile::Generic, Chirality::Left)
-        | (ActiveControllerProfile::Simple, Chirality::Left) => (
+        (
+            ActiveControllerProfile::Vive
+            | ActiveControllerProfile::Generic
+            | ActiveControllerProfile::Simple,
+            Chirality::Left,
+        ) => (
             true,
             Vec3::new(-0.02, 0.0, -0.16),
             unity_euler_deg(140.0, -90.0, -90.0) * generic_fix,
         ),
-        (ActiveControllerProfile::Vive, Chirality::Right)
-        | (ActiveControllerProfile::Generic, Chirality::Right)
-        | (ActiveControllerProfile::Simple, Chirality::Right) => (
+        (
+            ActiveControllerProfile::Vive
+            | ActiveControllerProfile::Generic
+            | ActiveControllerProfile::Simple,
+            Chirality::Right,
+        ) => (
             true,
             Vec3::new(0.02, 0.0, -0.16),
             unity_euler_deg(40.0, -90.0, -90.0) * generic_fix,

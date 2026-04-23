@@ -395,6 +395,10 @@ pub fn estimate_gpu_texture_bytes(
 }
 
 /// Validates `mip_map_sizes` / `mip_starts` against `data.data.length` (payload window).
+#[expect(
+    clippy::map_err_ignore,
+    reason = "TryFromIntError payload adds no detail beyond the overflow label already emitted"
+)]
 pub fn validate_mip_upload_layout(
     format: TextureFormat,
     data: &SetTexture2DData,

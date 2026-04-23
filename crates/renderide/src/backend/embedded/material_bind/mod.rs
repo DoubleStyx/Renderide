@@ -294,7 +294,6 @@ impl EmbeddedMaterialBindResources {
                 lookup,
             })?;
 
-        let mut cache = self.bind_cache.lock();
         let (keepalive_views, keepalive_samplers) = self.resolve_group1_textures_and_samplers(
             &layout,
             texture_2d_asset_id,
@@ -316,7 +315,8 @@ impl EmbeddedMaterialBindResources {
             layout: &layout.bind_group_layout,
             entries: &entries,
         }));
-        if let Some(evicted) = cache.put(bind_key, bind_group.clone()) {
+        let evicted = self.bind_cache.lock().put(bind_key, bind_group.clone());
+        if let Some(evicted) = evicted {
             drop(evicted);
             logger::trace!("EmbeddedMaterialBindResources: evicted LRU bind group cache entry");
         }

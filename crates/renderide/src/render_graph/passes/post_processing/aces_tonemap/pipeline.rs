@@ -107,6 +107,10 @@ impl AcesTonemapPipelineCache {
         } else {
             WGSL_STEM_MONO
         };
+        #[expect(
+            clippy::expect_used,
+            reason = "embedded shader is required; absence is a build script regression"
+        )]
         let source = embedded_target_wgsl(stem)
             .expect("aces_tonemap: embedded shader missing (build script regression)");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

@@ -126,20 +126,19 @@ impl EmbeddedMaterialBindResources {
                             "reflection: missing property id for texture @binding({b})"
                         )));
                     }
-                    let tex_view = self
-                        .resolve_texture_view_for_host(
-                            HostTexturePropertyQuery {
-                                host_name,
-                                texture_property_ids: tex_pids,
-                                primary_texture_2d: texture_2d_asset_id,
-                                pools,
-                                store,
-                                lookup,
-                                offscreen_write_render_texture_asset_id,
-                            },
-                            view_dimension,
-                        )
-                        .unwrap_or_else(|| self.default_texture_view_for_dimension(view_dimension));
+                    let tex_view = Self::resolve_texture_view_for_host(
+                        HostTexturePropertyQuery {
+                            host_name,
+                            texture_property_ids: tex_pids,
+                            primary_texture_2d: texture_2d_asset_id,
+                            pools,
+                            store,
+                            lookup,
+                            offscreen_write_render_texture_asset_id,
+                        },
+                        view_dimension,
+                    )
+                    .unwrap_or_else(|| self.default_texture_view_for_dimension(view_dimension));
                     keepalive_views.push(tex_view);
                 }
                 wgpu::BindingType::Sampler(_) => {
@@ -193,7 +192,6 @@ impl EmbeddedMaterialBindResources {
     }
 
     fn resolve_texture_view_for_host(
-        &self,
         q: HostTexturePropertyQuery<'_>,
         view_dimension: wgpu::TextureViewDimension,
     ) -> Option<Arc<wgpu::TextureView>> {
@@ -204,7 +202,7 @@ impl EmbeddedMaterialBindResources {
             q.store,
             q.lookup,
         );
-        self.resolve_texture_view(
+        Self::resolve_texture_view(
             q.pools,
             view_dimension,
             binding,
@@ -224,7 +222,6 @@ impl EmbeddedMaterialBindResources {
     }
 
     fn resolve_texture_view(
-        &self,
         pools: &EmbeddedTexturePools<'_>,
         view_dimension: wgpu::TextureViewDimension,
         binding: ResolvedTextureBinding,

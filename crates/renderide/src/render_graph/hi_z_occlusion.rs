@@ -112,10 +112,10 @@ pub fn mesh_fully_occluded_in_hiz(
     let base_w = snapshot.base_width.max(1) as f32;
     let base_h = snapshot.base_height.max(1) as f32;
 
-    let u0 = min_ndc_x * 0.5 + 0.5;
-    let u1 = max_ndc_x * 0.5 + 0.5;
-    let v0 = 1.0 - (max_ndc_y * 0.5 + 0.5);
-    let v1 = 1.0 - (min_ndc_y * 0.5 + 0.5);
+    let u0 = min_ndc_x.mul_add(0.5, 0.5);
+    let u1 = max_ndc_x.mul_add(0.5, 0.5);
+    let v0 = 1.0 - max_ndc_y.mul_add(0.5, 0.5);
+    let v1 = 1.0 - min_ndc_y.mul_add(0.5, 0.5);
 
     let px_min = u0.min(u1);
     let px_max = u0.max(u1);
@@ -130,9 +130,8 @@ pub fn mesh_fully_occluded_in_hiz(
         .min(HI_Z_OCCLUSION_MAX_MIP)
         .min(snapshot.mip_levels.saturating_sub(1));
 
-    let (mw, mh) = match mip_dimensions(snapshot.base_width, snapshot.base_height, mip) {
-        Some(d) => d,
-        None => return false,
+    let Some((mw, mh)) = mip_dimensions(snapshot.base_width, snapshot.base_height, mip) else {
+        return false;
     };
     if mw == 0 || mh == 0 {
         return false;

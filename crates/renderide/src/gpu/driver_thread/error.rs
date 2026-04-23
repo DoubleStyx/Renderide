@@ -41,7 +41,10 @@ pub(super) struct DriverErrorState {
 impl DriverErrorState {
     /// Records a failure unless one is already pending. Keeps the earliest failure so the
     /// main thread can correlate subsequent cascade failures without losing the root cause.
-    #[allow(dead_code)] // wired once wgpu surfaces fallible submit/present results
+    #[expect(
+        dead_code,
+        reason = "wired once wgpu surfaces fallible submit/present results"
+    )]
     pub(super) fn record(&self, err: DriverError) {
         let mut guard = self.slot.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_none() {

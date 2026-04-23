@@ -103,7 +103,7 @@ fn try_from_file_inner(
 
     let mut memory_bundle: Option<AssetBundle> = None;
     if env.bundles().get(&source).is_none() {
-        match load_bundle_from_memory(bytes.clone()) {
+        match load_bundle_from_memory(bytes) {
             Ok(b) => memory_bundle = Some(b),
             Err(e) => {
                 probe.bundle_err = Some(truncate_display(&e, MAX_ERR_LOG_CHARS));

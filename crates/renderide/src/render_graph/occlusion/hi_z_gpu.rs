@@ -239,10 +239,10 @@ impl HiZGpuState {
     /// after `device.poll` has flushed completion callbacks into [`Self::submit_done`].
     pub(crate) fn start_ready_maps(&mut self) {
         let Some(scratch) = self.scratch.as_ref() else {
-            for flag in self.submit_done.iter_mut() {
+            for flag in &mut self.submit_done {
                 *flag = false;
             }
-            for flag in self.pending_submit.iter_mut() {
+            for flag in &mut self.pending_submit {
                 *flag = false;
             }
             return;
@@ -312,12 +312,9 @@ fn unpack_desktop_snapshot(
     mip_levels: u32,
     raw: &[u8],
 ) -> Option<HiZCpuSnapshot> {
-    let mips = match unpack_linear_rows_to_mips(extent.0, extent.1, mip_levels, raw) {
-        Some(m) => m,
-        None => {
-            logger::warn!("Hi-Z desktop readback unpack failed");
-            return None;
-        }
+    let Some(mips) = unpack_linear_rows_to_mips(extent.0, extent.1, mip_levels, raw) else {
+        logger::warn!("Hi-Z desktop readback unpack failed");
+        return None;
     };
     match hi_z_snapshot_from_linear_linear(extent.0, extent.1, mip_levels, mips) {
         Some(s) => Some(s),
@@ -341,12 +338,9 @@ fn unpack_stereo_snapshot(
     right_raw: &[u8],
 ) -> Option<HiZStereoCpuSnapshot> {
     let unpack_eye = |label: &'static str, raw: &[u8]| -> Option<HiZCpuSnapshot> {
-        let mips = match unpack_linear_rows_to_mips(extent.0, extent.1, mip_levels, raw) {
-            Some(m) => m,
-            None => {
-                logger::warn!("Hi-Z stereo {label} readback unpack failed");
-                return None;
-            }
+        let Some(mips) = unpack_linear_rows_to_mips(extent.0, extent.1, mip_levels, raw) else {
+            logger::warn!("Hi-Z stereo {label} readback unpack failed");
+            return None;
         };
         match hi_z_snapshot_from_linear_linear(extent.0, extent.1, mip_levels, mips) {
             Some(s) => Some(s),

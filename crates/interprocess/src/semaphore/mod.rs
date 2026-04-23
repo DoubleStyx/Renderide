@@ -25,6 +25,10 @@ pub(crate) struct Semaphore {
     inner: win::WinSemaphore,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "OS-managed semaphore; Send is enforced by the kernel, not Rust field types"
+)]
 // SAFETY: the inner handle is a process-global kernel object; all operations delegate to the OS,
 // which enforces its own thread-safety. No Rust-level aliasing invariants are at stake.
 unsafe impl Send for Semaphore {}

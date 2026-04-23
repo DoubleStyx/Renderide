@@ -6,6 +6,10 @@
 /// Returns `true` when init is complete, IPC is connected, there is no fatal handshake error, and
 /// either the host has submitted a frame since the last begin-frame (`last_frame_data_processed`)
 /// or the bootstrap begin-frame is still pending (`last_frame_index < 0` and no bootstrap send yet).
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "aggregates independent frame-gate flags; a struct obscures the gate composition"
+)]
 pub(crate) fn begin_frame_allowed(
     init_finalized: bool,
     fatal_error: bool,

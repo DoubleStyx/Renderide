@@ -272,7 +272,7 @@ mod tests {
             let d0 = near * (far / near).powf(t0);
             let d1 = near * (far / near).powf(t1);
             let mid = 0.5 * (d0 + d1);
-            let z_float = (mid / near).ln() / (far / near).ln() * cluster_count_z as f32;
+            let z_float = (mid / near).log(far / near) * cluster_count_z as f32;
             let z_idx = z_float.clamp(0.0, cluster_count_z as f32 - 1.0).floor() as u32;
             assert_eq!(
                 z_idx, k,

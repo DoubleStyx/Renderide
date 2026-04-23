@@ -164,9 +164,15 @@ fn world_aabb_from_local_bounds_affine(
     let c1 = m.y_axis.xyz();
     let c2 = m.z_axis.xyz();
 
-    let hx = c0.x.abs() * ex + c1.x.abs() * ey + c2.x.abs() * ez;
-    let hy = c0.y.abs() * ex + c1.y.abs() * ey + c2.y.abs() * ez;
-    let hz = c0.z.abs() * ex + c1.z.abs() * ey + c2.z.abs() * ez;
+    let hx =
+        c2.x.abs()
+            .mul_add(ez, c0.x.abs().mul_add(ex, c1.x.abs() * ey));
+    let hy =
+        c2.y.abs()
+            .mul_add(ez, c0.y.abs().mul_add(ex, c1.y.abs() * ey));
+    let hz =
+        c2.z.abs()
+            .mul_add(ez, c0.z.abs().mul_add(ex, c1.z.abs() * ey));
 
     if !(hx.is_finite() && hy.is_finite() && hz.is_finite()) {
         return None;

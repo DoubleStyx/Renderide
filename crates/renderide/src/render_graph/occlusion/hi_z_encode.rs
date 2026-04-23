@@ -125,7 +125,10 @@ fn reset_and_prepare_hi_z_scratch(
 ///
 /// Call [`HiZGpuState::begin_frame_readback`] at the **start** of the next frame to drain
 /// completed maps.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Hi-Z build pass needs depth/pyramid/staging/uniform resources"
+)]
 pub fn encode_hi_z_build(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -313,7 +316,6 @@ fn dispatch_hi_z_mip0_from_depth(args: &mut HiZMip0EncodeContext<'_>) {
 }
 
 /// Max-reduction chain from mip0 through the rest of the R32F pyramid.
-#[allow(clippy::too_many_arguments)]
 fn dispatch_hi_z_downsample_mips(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

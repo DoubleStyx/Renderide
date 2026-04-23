@@ -11,7 +11,7 @@ use crate::semaphore::Semaphore;
 /// File-backed queue: keeps the `.qu` file open alongside a writable [`memmap2::MmapMut`].
 pub(super) struct UnixMapping {
     /// Open file handle; must outlive `mmap`.
-    _file: std::fs::File,
+    _file: fs::File,
     /// Writable mapping of the entire file.
     mmap: memmap2::MmapMut,
     /// Path passed to [`crate::QueueOptions::file_path`].
@@ -44,12 +44,13 @@ pub(super) fn open_queue(options: &QueueOptions) -> Result<(UnixMapping, Semapho
         fs::create_dir_all(parent).map_err(OpenError)?;
     }
 
-    let storage_size_u64 = u64::try_from(options.actual_storage_size()).map_err(|_| {
-        OpenError(io::Error::other(format!(
-            "queue storage size does not fit u64 (capacity {})",
-            options.capacity
-        )))
-    })?;
+    let storage_size_u64 =
+        u64::try_from(options.actual_storage_size()).map_err(|e: std::num::TryFromIntError| {
+            OpenError(io::Error::other(format!(
+                "queue storage size does not fit u64 (capacity {}): {e}",
+                options.capacity
+            )))
+        })?;
 
     let file = OpenOptions::new()
         .read(true)
