@@ -6,8 +6,8 @@
 //! this render path has one forward color target, not shadow-map, G-buffer, or lightmapping targets.
 
 // unity-shader-name: PBSMetallic
-//#pass forward: fs=fs_forward_base, depth=greater_equal, zwrite=on, cull=none, blend=none, material=forward_base
-//#pass forward_delta: fs=fs_forward_delta, depth=greater_equal, zwrite=off, cull=none, blend=one,one,add, alpha=one,one,add, material=forward_add
+//#pass forward: fs=fs_forward_base, depth=greater_equal, zwrite=on, cull=back, blend=none, material=forward_base
+//#pass forward_delta: fs=fs_forward_delta, depth=greater_equal, zwrite=off, cull=back, blend=one,one,add, alpha=one,one,add, material=forward_add
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd

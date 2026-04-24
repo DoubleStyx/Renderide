@@ -2,8 +2,8 @@
 
 // unity-shader-name: Xiexe/XSToon2.0_Outlined
 //#pass outline: vs=vs_outline, fs=fs_outline, depth=greater_equal, zwrite=on, cull=front, blend=none
-//#pass forward: fs=fs_forward_base, depth=greater_equal, zwrite=on, cull=none, blend=none, material=forward_base
-//#pass forward_delta: fs=fs_forward_delta, depth=greater_equal, zwrite=off, cull=none, blend=one,one,add, alpha=one,one,add, material=forward_add
+//#pass forward: fs=fs_forward_base, depth=greater_equal, zwrite=on, cull=back, blend=none, material=forward_base
+//#pass forward_delta: fs=fs_forward_delta, depth=greater_equal, zwrite=off, cull=back, blend=one,one,add, alpha=one,one,add, material=forward_add
 
 #import renderide::xiexe::toon2 as xs
 

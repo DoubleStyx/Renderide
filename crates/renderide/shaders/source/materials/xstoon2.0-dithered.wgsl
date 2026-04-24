@@ -1,8 +1,8 @@
 //! Xiexe Toon 2.0 dithered transparency (`Shader "Xiexe/Toon2.0/XSToon2.0_Dithered"`).
 
 // unity-shader-name: Xiexe/Toon2.0/XSToon2.0_Dithered
-//#pass forward: fs=fs_forward_base, depth=greater_equal, zwrite=on, cull=none, blend=none
-//#pass forward_delta: fs=fs_forward_delta, depth=greater_equal, zwrite=off, cull=none, blend=one,one,add, alpha=one,one,add
+//#pass forward: fs=fs_forward_base, depth=greater_equal, zwrite=on, cull=back, blend=none
+//#pass forward_delta: fs=fs_forward_delta, depth=greater_equal, zwrite=off, cull=back, blend=one,one,add, alpha=one,one,add
 
 #import renderide::xiexe::toon2 as xs
 

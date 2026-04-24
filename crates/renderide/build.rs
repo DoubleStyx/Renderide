@@ -128,7 +128,7 @@ impl BuildPassDirective {
             fragment_entry: "fs_main".to_string(),
             depth_compare: "wgpu::CompareFunction::GreaterEqual",
             depth_write: true,
-            cull_mode: "None",
+            cull_mode: "Some(wgpu::Face::Back)",
             blend: None,
             write_mask: "wgpu::ColorWrites::COLOR",
             depth_bias_slope_scale: 0.0,
