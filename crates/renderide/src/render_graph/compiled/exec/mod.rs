@@ -727,6 +727,7 @@ impl CompiledRenderGraph {
         record_parallelism: crate::config::RecordParallelism,
         n_views: usize,
     ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
+        profiling::scope!("graph::record_per_view_outputs");
         let graph: &CompiledRenderGraph = self;
         let PerViewRecordInputs {
             transient_by_key,
@@ -788,6 +789,7 @@ impl CompiledRenderGraph {
                 .map(|item| item.ok_or(GraphExecuteError::NoViewsInBatch))
                 .collect::<Result<Vec<_>, _>>()
         } else {
+            profiling::scope!("graph::per_view_serial");
             let mut outputs = Vec::with_capacity(n_views);
             for work_item in per_view_work_items {
                 let occlusion_view = work_item.occlusion_view;
