@@ -9,6 +9,16 @@ use crate::xr::{
     XrWgpuHandles, XR_COLOR_FORMAT, XR_VIEW_COUNT,
 };
 use openxr as xr;
+use std::time::Duration;
+
+use super::session::end_frame_watchdog::EndFrameWatchdog;
+
+/// Deadline for a single `xrWaitSwapchainImage` call before the watchdog logs a compositor stall.
+///
+/// Observation only: the call keeps its original `xr::Duration::INFINITE` because openxr 0.21
+/// swallows `XR_TIMEOUT_EXPIRED` (returns `Ok(())` identically to success), making a bounded
+/// timeout indistinguishable from a real image release.
+const WAIT_IMAGE_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// App-loop ownership for the OpenXR GPU path: Vulkan/wgpu [`XrWgpuHandles`], lazily created stereo
 /// swapchain and depth targets, and the desktop mirror blit ([`VrMirrorBlitResources`]).
@@ -57,7 +67,15 @@ pub fn openxr_begin_frame_tick(
     runtime: &mut impl XrHostCameraSync,
 ) -> Option<OpenxrFrameTick> {
     profiling::scope!("xr::begin_frame_tick");
-    let _ = handles.xr_session.poll_events();
+    match handles.xr_session.poll_events() {
+        Ok(_) => {}
+        Err(e) => logger::warn!("OpenXR poll_events failed: {e:?}"),
+    }
+    if handles.xr_session.exit_requested() {
+        // Exit is driven by the app loop reading `exit_requested()`; here we just skip starting a
+        // new frame so we don't `xrBeginFrame` on a terminating session.
+        return None;
+    }
     let fs = {
         profiling::scope!("xr::wait_frame");
         match handles.xr_session.wait_frame() {
@@ -142,6 +160,11 @@ fn multiview_submit_prereqs(
 ) -> bool {
     let handles = &bundle.handles;
     if !handles.xr_session.session_running() {
+        return false;
+    }
+    // Compositor is not displaying this app right now. Skip real projection-layer submission;
+    // the outer path closes the open frame via `end_frame_if_open` in `present_and_diagnostics`.
+    if !handles.xr_session.is_visible() {
         return false;
     }
     if !runtime.vr_active() {
@@ -243,7 +266,10 @@ pub fn try_openxr_hmd_multiview_submit(
     };
     {
         profiling::scope!("xr::swapchain_wait_image");
-        if sc.handle.wait_image(xr::Duration::INFINITE).is_err() {
+        let wd = EndFrameWatchdog::arm(WAIT_IMAGE_WATCHDOG_TIMEOUT, "wait_image");
+        let res = sc.handle.wait_image(xr::Duration::INFINITE);
+        wd.disarm();
+        if res.is_err() {
             return false;
         }
     }
