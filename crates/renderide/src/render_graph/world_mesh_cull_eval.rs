@@ -14,11 +14,10 @@ use crate::shared::RenderingContext;
 use super::camera::view_matrix_for_world_mesh_render_space;
 use super::frustum::{
     mesh_bounds_degenerate_for_cull, world_aabb_from_local_bounds,
-    world_aabb_from_skinned_bone_origins, world_aabb_visible_in_homogeneous_clip,
+    world_aabb_visible_in_homogeneous_clip,
 };
 use super::hi_z_view_proj_matrices;
 use super::mesh_fully_occluded_in_hiz;
-use super::skinning_palette::{build_skinning_palette, SkinningPaletteParams};
 use super::stereo_hiz_keeps_draw;
 use super::world_mesh_cull::{HiZTemporalState, WorldMeshCullInput, WorldMeshCullProjParams};
 use super::HiZCullData;
@@ -149,23 +148,33 @@ fn mesh_world_geometry_for_cull(
                 rigid_world_matrix: None,
             };
         };
-        let Some(pal) = build_skinning_palette(SkinningPaletteParams {
-            scene: target.scene,
-            space_id: target.space_id,
-            skinning_bind_matrices: &target.mesh.skinning_bind_matrices,
-            has_skeleton: target.mesh.has_skeleton,
-            bone_transform_indices: &sk.bone_transform_indices,
-            smr_node_id: sk.base.node_id,
+        // Posed bound from the host (`SkinnedMeshBoundsUpdate.local_bounds`) lives in the
+        // renderer-root local frame (Unity-parity: `SkinnedMeshRenderer.localBounds` is in
+        // `rootBone` local space when a root bone is set). Transform it by that bone's world
+        // matrix. First-frame / no-root fallback is the mesh bind-pose AABB transformed by the
+        // renderable's own world matrix — strictly tighter than the old bone-origin pad.
+        let root_node = sk
+            .root_bone_transform_id
+            .filter(|&id| id >= 0)
+            .map(|id| id as usize)
+            .unwrap_or(target.node_id as usize);
+        let Some(root_world) = target.scene.world_matrix_for_render_context(
+            target.space_id,
+            root_node,
             render_context,
-            head_output_transform: hc.head_output_transform,
-        }) else {
+            hc.head_output_transform,
+        ) else {
             return MeshCullGeometry {
                 world_aabb: None,
                 rigid_world_matrix: None,
             };
         };
+        let object_bounds = sk
+            .posed_object_bounds
+            .as_ref()
+            .unwrap_or(&target.mesh.bounds);
         MeshCullGeometry {
-            world_aabb: world_aabb_from_skinned_bone_origins(&target.mesh.bounds, &pal),
+            world_aabb: world_aabb_from_local_bounds(object_bounds, root_world),
             rigid_world_matrix: None,
         }
     } else {
@@ -245,6 +254,8 @@ fn hi_z_snapshot_matches_temporal(hi: &HiZCullData, t: &HiZTemporalState) -> boo
 mod hi_z_temporal_match_tests {
     //! [`super::hi_z_snapshot_matches_temporal`] dimension checks (stale-pyramid guard).
 
+    use std::sync::Arc;
+
     use glam::Mat4;
     use hashbrown::HashMap;
 
@@ -260,7 +271,7 @@ mod hi_z_temporal_match_tests {
                 overlay_proj: Mat4::IDENTITY,
                 vr_stereo: None,
             },
-            prev_view_by_space: HashMap::new(),
+            prev_view_by_space: Arc::new(HashMap::new()),
             depth_viewport_px,
         }
     }
@@ -272,7 +283,7 @@ mod hi_z_temporal_match_tests {
             base_width: wx,
             base_height: hy,
             mip_levels,
-            mips: vec![0.0; n],
+            mips: Arc::from(vec![0.0; n]),
         }
     }
 

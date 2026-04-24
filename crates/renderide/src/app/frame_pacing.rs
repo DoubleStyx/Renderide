@@ -19,15 +19,21 @@ pub fn min_interval_for_fps_cap(cap: u32) -> Option<Duration> {
 /// `ControlFlow::WaitUntil(deadline)` and **not** call [`winit::window::Window::request_redraw`]
 /// until the deadline.
 ///
+/// The deadline is anchored to the **start** of the previous tick so the cap expresses a true
+/// period between frame starts: a `cap` of `N` fps yields consecutive frames spaced at least
+/// `1/N` seconds apart regardless of how long each [`crate::app::renderide_app::RenderideApp::tick_frame`]
+/// runs. Anchoring to the frame end instead would stack tick duration on top of `1/cap` and
+/// collapse the effective rate to `1 / (1/cap + tick_duration)`.
+///
 /// Returns [`None`] when a redraw may be requested immediately: uncapped (`cap == 0`), no prior
-/// frame end time (cold start), or the minimum interval has already elapsed.
+/// frame start time (cold start), or the minimum interval has already elapsed.
 pub fn next_redraw_wait_until(
-    last_frame_end: Option<Instant>,
+    last_frame_start: Option<Instant>,
     cap: u32,
     now: Instant,
 ) -> Option<Instant> {
     let min_interval = min_interval_for_fps_cap(cap)?;
-    let last = last_frame_end?;
+    let last = last_frame_start?;
     let next = last.checked_add(min_interval)?;
     if now < next {
         Some(next)

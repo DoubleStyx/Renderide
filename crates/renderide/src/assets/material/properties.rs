@@ -61,7 +61,40 @@ impl<'a> MaterialDictionary<'a> {
     ) -> Option<&'a MaterialPropertyValue> {
         self.store.get_merged(ids, property_id)
     }
+
+    /// Per-material mutation generation (see [`MaterialPropertyStore::material_generation`]).
+    pub fn material_generation(&self, material_id: i32) -> u64 {
+        self.store.material_generation(material_id)
+    }
+
+    /// Per-property-block mutation generation (see [`MaterialPropertyStore::property_block_generation`]).
+    pub fn property_block_generation(&self, block_id: i32) -> u64 {
+        self.store.property_block_generation(block_id)
+    }
+
+    /// Returns the two inner property maps (material-side and property-block-side) for one
+    /// [`MaterialPropertyLookupIds`] in a single outer-map probe.
+    ///
+    /// Callers that iterate many property ids against the same lookup — e.g.
+    /// [`crate::materials::material_render_state_for_lookup`] issuing ~30 `get_merged` calls per
+    /// material — use this to hoist the two outer probes out of the inner loop, reducing per-id
+    /// cost to a single inner-map lookup on each side.
+    pub fn fetch_property_maps(&self, ids: MaterialPropertyLookupIds) -> PropertyMapPair<'a> {
+        let mat = self.store.material_properties.get(&ids.material_asset_id);
+        let pb = ids
+            .mesh_property_block_slot0
+            .and_then(|b| self.store.property_block_properties.get(&b));
+        (mat, pb)
+    }
 }
+
+/// Pair of inner `property_id → value` maps (material-side, property-block-side) returned by
+/// [`MaterialDictionary::fetch_property_maps`]. Either side may be `None` when no properties have
+/// been stored for the referenced id.
+pub type PropertyMapPair<'a> = (
+    Option<&'a HashMap<i32, MaterialPropertyValue>>,
+    Option<&'a HashMap<i32, MaterialPropertyValue>>,
+);
 
 /// Stores material and property-block maps from IPC batches (separate key spaces).
 #[derive(Debug, Default)]
@@ -89,16 +122,36 @@ impl MaterialPropertyStore {
 
     /// Monotonic generation for `material_id` and optional property block, used to skip redundant GPU uniform uploads.
     pub fn mutation_generation(&self, ids: MaterialPropertyLookupIds) -> u64 {
-        let m = self
-            .material_mutation_generation
-            .get(&ids.material_asset_id)
-            .copied()
-            .unwrap_or(0);
+        let m = self.material_generation(ids.material_asset_id);
         let pb = ids
             .mesh_property_block_slot0
-            .and_then(|b| self.property_block_mutation_generation.get(&b).copied())
+            .map(|b| self.property_block_generation(b))
             .unwrap_or(0);
         m ^ pb.rotate_left(17)
+    }
+
+    /// Monotonic per-material generation. Bumped by every `set_material` /
+    /// `set_shader_asset_for_material`. Unlike [`Self::mutation_generation`], the material and
+    /// property-block generations are exposed separately so persistent caches can store both and
+    /// avoid hash-collision ambiguity between pairs with the same XOR-rotated combination.
+    ///
+    /// Not decremented on [`Self::remove_material`] — the counter stays in place so that a later
+    /// `set_material` bumps from the old value, preserving monotonicity across unload/reload
+    /// cycles. Callers who cache a snapshot of this value can then safely compare it back to the
+    /// current value to detect any intervening mutation.
+    pub fn material_generation(&self, material_id: i32) -> u64 {
+        self.material_mutation_generation
+            .get(&material_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Monotonic per-property-block generation. Same invariants as [`Self::material_generation`].
+    pub fn property_block_generation(&self, block_id: i32) -> u64 {
+        self.property_block_mutation_generation
+            .get(&block_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     fn bump_material_generation(&mut self, material_id: i32) {
@@ -216,22 +269,32 @@ impl MaterialPropertyStore {
     }
 
     /// Removes all state for a material (`UnloadMaterial`).
+    ///
+    /// Intentionally retains the `material_mutation_generation` entry and bumps it so any cached
+    /// resolved-material entry keyed on this id gets invalidated on the next check. Preserving the
+    /// counter across unload is what lets persistent caches compare generation snapshots safely
+    /// after a later `set_material` rebinds the same id.
     pub fn remove_material(&mut self, material_id: i32) {
         self.material_properties.remove(&material_id);
         self.shader_asset_by_material.remove(&material_id);
-        self.material_mutation_generation.remove(&material_id);
+        self.bump_material_generation(material_id);
     }
 
     /// Removes a property block (`UnloadMaterialPropertyBlock`).
+    ///
+    /// Retains and bumps `property_block_mutation_generation` for the same reason as
+    /// [`Self::remove_material`].
     pub fn remove_property_block(&mut self, block_id: i32) {
         self.property_block_properties.remove(&block_id);
-        self.property_block_mutation_generation.remove(&block_id);
+        self.bump_property_block_generation(block_id);
     }
 }
 
 #[cfg(test)]
 mod material_dictionary_tests {
-    use super::{MaterialDictionary, MaterialPropertyStore};
+    use super::{
+        MaterialDictionary, MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
+    };
 
     #[test]
     fn material_dictionary_delegates_shader_binding() {
@@ -239,5 +302,116 @@ mod material_dictionary_tests {
         store.set_shader_asset_for_material(7, 99);
         let d = MaterialDictionary::new(&store);
         assert_eq!(d.shader_asset_for_material(7), Some(99));
+    }
+
+    #[test]
+    fn get_merged_prefers_property_block_over_material() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(1, 42, MaterialPropertyValue::Float(0.25));
+        store.set_property_block(5, 42, MaterialPropertyValue::Float(0.75));
+        let ids = MaterialPropertyLookupIds {
+            material_asset_id: 1,
+            mesh_property_block_slot0: Some(5),
+        };
+        assert_eq!(
+            store.get_merged(ids, 42),
+            Some(&MaterialPropertyValue::Float(0.75))
+        );
+    }
+
+    #[test]
+    fn get_merged_falls_through_missing_block_key_to_material() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(1, 42, MaterialPropertyValue::Float(0.25));
+        let ids = MaterialPropertyLookupIds {
+            material_asset_id: 1,
+            mesh_property_block_slot0: Some(5),
+        };
+        assert_eq!(
+            store.get_merged(ids, 42),
+            Some(&MaterialPropertyValue::Float(0.25))
+        );
+        assert_eq!(store.get_merged(ids, 999), None);
+    }
+
+    #[test]
+    fn set_get_material_and_property_block_are_independent() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(1, 10, MaterialPropertyValue::Float(1.0));
+        store.set_property_block(1, 10, MaterialPropertyValue::Float(2.0));
+        assert_eq!(
+            store.get_material(1, 10),
+            Some(&MaterialPropertyValue::Float(1.0))
+        );
+        assert_eq!(
+            store.get_property_block(1, 10),
+            Some(&MaterialPropertyValue::Float(2.0))
+        );
+    }
+
+    #[test]
+    fn mutation_generation_bumps_on_writes_only() {
+        let mut store = MaterialPropertyStore::new();
+        let ids = MaterialPropertyLookupIds {
+            material_asset_id: 3,
+            mesh_property_block_slot0: None,
+        };
+        let g0 = store.mutation_generation(ids);
+        store.set_material(3, 7, MaterialPropertyValue::Float(1.0));
+        let g1 = store.mutation_generation(ids);
+        assert_ne!(g0, g1);
+        // Pure reads do not bump.
+        let _ = store.get_material(3, 7);
+        assert_eq!(store.mutation_generation(ids), g1);
+        store.set_shader_asset_for_material(3, 99);
+        assert_ne!(store.mutation_generation(ids), g1);
+    }
+
+    #[test]
+    fn remove_material_clears_properties_and_shader_binding() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(1, 10, MaterialPropertyValue::Float(1.0));
+        store.set_shader_asset_for_material(1, 100);
+        store.remove_material(1);
+        assert_eq!(store.get_material(1, 10), None);
+        assert_eq!(store.shader_asset_for_material(1), None);
+        assert_eq!(store.material_property_slot_count(), 0);
+    }
+
+    #[test]
+    fn remove_property_block_clears_its_properties() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_property_block(4, 10, MaterialPropertyValue::Float(1.0));
+        assert_eq!(store.property_block_slot_count(), 1);
+        store.remove_property_block(4);
+        assert_eq!(store.get_property_block(4, 10), None);
+        assert_eq!(store.property_block_slot_count(), 0);
+    }
+
+    #[test]
+    fn material_generation_stays_monotonic_across_remove_and_recreate() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(1, 10, MaterialPropertyValue::Float(1.0));
+        let g_after_set = store.material_generation(1);
+        store.remove_material(1);
+        let g_after_remove = store.material_generation(1);
+        // remove_material must bump (invalidate cached resolves), not reset the counter.
+        assert!(g_after_remove > g_after_set);
+        store.set_material(1, 10, MaterialPropertyValue::Float(2.0));
+        let g_after_reset = store.material_generation(1);
+        assert!(g_after_reset > g_after_remove);
+    }
+
+    #[test]
+    fn property_block_generation_stays_monotonic_across_remove_and_recreate() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_property_block(4, 10, MaterialPropertyValue::Float(1.0));
+        let g0 = store.property_block_generation(4);
+        store.remove_property_block(4);
+        let g1 = store.property_block_generation(4);
+        assert!(g1 > g0);
+        store.set_property_block(4, 10, MaterialPropertyValue::Float(2.0));
+        let g2 = store.property_block_generation(4);
+        assert!(g2 > g1);
     }
 }

@@ -86,14 +86,15 @@ pub(crate) fn message_header_wire_bytes(state: i32, body_length: i32) -> [u8; 8]
 
 /// Returns the wire size of a message (header + body + padding) for a given body length.
 ///
-/// `body_len` must be non-negative. Panics in debug builds if arithmetic overflows.
+/// `body_len` must be non-negative; `debug_assert` catches the negative case in debug builds.
+/// Arithmetic saturates at [`i64::MAX`] for pathological inputs — downstream capacity checks in
+/// the publisher reject any padded length exceeding the ring capacity, so saturation cannot
+/// produce an invalid write.
 pub fn padded_message_length(body_len: i64) -> i64 {
     debug_assert!(body_len >= 0, "body_len must be non-negative");
     let header_sz = size_of::<MessageHeader>() as i64;
-    let total = header_sz
-        .checked_add(body_len)
-        .expect("padded_message_length: body_len overflow");
-    ((total + 7) / 8) * 8
+    let total = header_sz.saturating_add(body_len);
+    total.saturating_add(7) / 8 * 8
 }
 
 /// Byte offset from the start of a message slot to its body.

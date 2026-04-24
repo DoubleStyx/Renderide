@@ -44,6 +44,15 @@ struct FrameGlobals {
     light_count: u32,
     viewport_width: u32,
     viewport_height: u32,
+    /// Left-eye (or mono) projection coefficients `(P[0][0], P[1][1], P[0][2], P[1][2])`.
+    /// Screen-to-view unprojection (view Z known):
+    /// `view_x = (ndc_x - c.z) * view_z / c.x`, `view_y = (ndc_y - c.w) * view_z / c.y`.
+    proj_params_left: vec4<f32>,
+    /// Right-eye projection coefficients (equals left in mono mode).
+    proj_params_right: vec4<f32>,
+    /// Packed tail: `.x` is the monotonic frame index (for temporal / jittered screen-space
+    /// effects); `.yzw` are reserved padding to keep the trailing `vec4` slot aligned to 16 bytes.
+    frame_tail: vec4<u32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameGlobals;

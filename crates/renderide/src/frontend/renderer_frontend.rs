@@ -235,6 +235,7 @@ impl RendererFrontend {
     /// Returns an owned [`Vec`] that should be passed back with [`Self::recycle_command_batch`] after
     /// dispatch so its capacity is reused on the next tick.
     pub fn poll_commands(&mut self) -> Vec<RendererCommand> {
+        profiling::scope!("frontend::poll_commands");
         let mut batch = std::mem::take(&mut self.command_batch);
         if let Some(ipc) = self.ipc.as_mut() {
             ipc.poll_into(&mut batch);
@@ -275,6 +276,7 @@ impl RendererFrontend {
     ///
     /// Call only when [`Self::should_send_begin_frame`] is true so [`InputState`] is not dropped on the floor.
     pub fn pre_frame(&mut self, inputs: InputState) {
+        profiling::scope!("frontend::pre_frame_send");
         if !self.should_send_begin_frame() {
             return;
         }

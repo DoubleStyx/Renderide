@@ -6,10 +6,9 @@ use super::super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::super::layout::{stem_hash, StemMaterialLayout};
 use super::super::texture_pools::EmbeddedTexturePools;
 use super::super::texture_resolve::{
-    primary_texture_2d_asset_id, primary_texture_any_kind_present,
-    resolved_texture_binding_for_host, sampler_from_cubemap_state, sampler_from_state,
-    sampler_from_texture3d_state, texture_bind_signature, texture_property_ids_for_binding,
-    ResolvedTextureBinding,
+    primary_texture_2d_asset_id, resolved_texture_binding_for_host, sampler_from_cubemap_state,
+    sampler_from_state, sampler_from_texture3d_state, texture_bind_signature,
+    texture_property_ids_for_binding, ResolvedTextureBinding,
 };
 use super::cache::{EmbeddedSamplerCacheKey, MaterialBindCacheKey};
 use super::uniform::MaterialUniformCacheKey;
@@ -24,7 +23,6 @@ pub(super) struct EmbeddedBindInputResolution {
     pub(super) uniform_key: MaterialUniformCacheKey,
     pub(super) bind_key: MaterialBindCacheKey,
     pub(super) texture_2d_asset_id: i32,
-    pub(super) primary_texture_any_kind_present: bool,
 }
 
 /// Host texture binding lookup for [`super::EmbeddedMaterialBindResources::resolve_texture_view_for_host`] and
@@ -62,8 +60,6 @@ impl EmbeddedMaterialBindResources {
 
         let texture_2d_asset_id =
             primary_texture_2d_asset_id(&layout.reflected, layout.ids.as_ref(), store, lookup);
-        let primary_texture_any_kind_present =
-            primary_texture_any_kind_present(&layout.reflected, layout.ids.as_ref(), store, lookup);
         let texture_bind_signature = texture_bind_signature(
             &layout.reflected,
             layout.ids.as_ref(),
@@ -79,7 +75,6 @@ impl EmbeddedMaterialBindResources {
             material_asset_id: lookup.material_asset_id,
             property_block_slot0: lookup.mesh_property_block_slot0,
             texture_2d_asset_id,
-            primary_texture_any_kind_present,
         };
         let bind_key = MaterialBindCacheKey {
             stem_hash: sh,
@@ -94,7 +89,6 @@ impl EmbeddedMaterialBindResources {
             uniform_key,
             bind_key,
             texture_2d_asset_id,
-            primary_texture_any_kind_present,
         })
     }
 
@@ -132,20 +126,19 @@ impl EmbeddedMaterialBindResources {
                             "reflection: missing property id for texture @binding({b})"
                         )));
                     }
-                    let tex_view = self
-                        .resolve_texture_view_for_host(
-                            HostTexturePropertyQuery {
-                                host_name,
-                                texture_property_ids: tex_pids,
-                                primary_texture_2d: texture_2d_asset_id,
-                                pools,
-                                store,
-                                lookup,
-                                offscreen_write_render_texture_asset_id,
-                            },
-                            view_dimension,
-                        )
-                        .unwrap_or_else(|| self.default_texture_view_for_dimension(view_dimension));
+                    let tex_view = Self::resolve_texture_view_for_host(
+                        HostTexturePropertyQuery {
+                            host_name,
+                            texture_property_ids: tex_pids,
+                            primary_texture_2d: texture_2d_asset_id,
+                            pools,
+                            store,
+                            lookup,
+                            offscreen_write_render_texture_asset_id,
+                        },
+                        view_dimension,
+                    )
+                    .unwrap_or_else(|| self.default_texture_view_for_dimension(view_dimension));
                     keepalive_views.push(tex_view);
                 }
                 wgpu::BindingType::Sampler(_) => {
@@ -199,7 +192,6 @@ impl EmbeddedMaterialBindResources {
     }
 
     fn resolve_texture_view_for_host(
-        &self,
         q: HostTexturePropertyQuery<'_>,
         view_dimension: wgpu::TextureViewDimension,
     ) -> Option<Arc<wgpu::TextureView>> {
@@ -210,7 +202,7 @@ impl EmbeddedMaterialBindResources {
             q.store,
             q.lookup,
         );
-        self.resolve_texture_view(
+        Self::resolve_texture_view(
             q.pools,
             view_dimension,
             binding,
@@ -230,7 +222,6 @@ impl EmbeddedMaterialBindResources {
     }
 
     fn resolve_texture_view(
-        &self,
         pools: &EmbeddedTexturePools<'_>,
         view_dimension: wgpu::TextureViewDimension,
         binding: ResolvedTextureBinding,

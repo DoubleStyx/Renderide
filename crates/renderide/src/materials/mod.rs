@@ -42,15 +42,16 @@ pub use embedded_shader_stem::{
 pub use family::MaterialPipelineDesc;
 pub use material_passes::{
     default_pass, default_pass_for_blend_mode, material_blend_mode_for_lookup,
-    materialized_pass_for_blend_mode, MaterialBlendMode, MaterialPassDesc, MaterialPassState,
-    MaterialPipelinePropertyIds, COLOR_WRITES_NONE,
+    material_blend_mode_from_maps, materialized_pass_for_blend_mode, pass_from_kind,
+    MaterialBlendMode, MaterialPassDesc, MaterialPassState, MaterialPipelinePropertyIds, PassKind,
+    COLOR_WRITES_NONE,
 };
 pub use material_property_binding::MaterialPropertyGpuLayout;
 pub use pipeline_build_error::PipelineBuildError;
 pub use pipeline_kind::RasterPipelineKind;
 pub use render_state::{
-    material_render_state_for_lookup, MaterialCullOverride, MaterialDepthOffsetState,
-    MaterialRenderState, MaterialStencilState,
+    material_render_state_for_lookup, material_render_state_from_maps, MaterialCullOverride,
+    MaterialDepthOffsetState, MaterialRenderState, MaterialStencilState,
 };
 
 /// Naga reflection: composed WGSL → `wgpu` bind layouts, uniform block layout, stem fingerprints.

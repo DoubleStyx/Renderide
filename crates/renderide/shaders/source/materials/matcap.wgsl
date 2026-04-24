@@ -1,7 +1,6 @@
 //! Matcap (`Shader "Matcap"`): tangent-space normal map, view-space normal matcap lookup.
 
 // unity-shader-name: Matcap
-//#pass forward: depth=greater, zwrite=on, cull=back, blend=none, material=forward_base
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
@@ -10,11 +9,6 @@
 
 struct MatcapMaterial {
     _NormalMap_ST: vec4<f32>,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
-    _ZTest: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: MatcapMaterial;
@@ -116,6 +110,7 @@ fn vs_main(
     return out;
 }
 
+//#material forward_base
 @fragment
 fn fs_main(
     @location(0) uv_normal: vec2<f32>,

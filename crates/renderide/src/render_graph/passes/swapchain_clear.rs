@@ -1,25 +1,27 @@
 //! Full-screen clear of the swapchain target.
+//!
+//! The graph opens a render pass with [`wgpu::LoadOp::Clear`] applied to the swapchain color
+//! attachment. The pass's `record` implementation is a deliberate no-op: the clear is performed
+//! by the load operation when the render pass begins.
 
-use crate::present::{record_swapchain_clear_pass, SWAPCHAIN_CLEAR_COLOR};
-
-use crate::render_graph::context::{GraphRasterPassContext, RenderPassContext};
+use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::pass::{PassBuilder, RenderPass};
+use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::resources::ImportedTextureHandle;
 
-/// Clears the acquired backbuffer to a solid color (default [`SWAPCHAIN_CLEAR_COLOR`]).
+/// Clears the acquired backbuffer to a solid color (default [`crate::present::SWAPCHAIN_CLEAR_COLOR`]).
 #[derive(Debug)]
 pub struct SwapchainClearPass {
-    /// Clear color for the swapchain load op.
+    /// Clear color applied via the raster attachment's `LoadOp::Clear`.
     pub clear_color: wgpu::Color,
     target: ImportedTextureHandle,
 }
 
 impl SwapchainClearPass {
-    /// Default clear color matches [`SWAPCHAIN_CLEAR_COLOR`].
+    /// Default clear color matches [`crate::present::SWAPCHAIN_CLEAR_COLOR`].
     pub fn new(target: ImportedTextureHandle) -> Self {
         Self {
-            clear_color: SWAPCHAIN_CLEAR_COLOR,
+            clear_color: crate::present::SWAPCHAIN_CLEAR_COLOR,
             target,
         }
     }
@@ -33,7 +35,7 @@ impl SwapchainClearPass {
     }
 }
 
-impl RenderPass for SwapchainClearPass {
+impl RasterPass for SwapchainClearPass {
     fn name(&self) -> &str {
         "SwapchainClear"
     }
@@ -51,25 +53,13 @@ impl RenderPass for SwapchainClearPass {
         Ok(())
     }
 
-    fn execute(&mut self, ctx: &mut RenderPassContext<'_, '_, '_>) -> Result<(), RenderPassError> {
-        let Some(view) = ctx.backbuffer else {
-            return Err(RenderPassError::MissingBackbuffer {
-                pass: self.name().to_string(),
-            });
-        };
-        record_swapchain_clear_pass(ctx.encoder, view, self.clear_color, Some("swapchain-clear"));
-        Ok(())
-    }
-
-    fn graph_managed_raster(&self) -> bool {
-        true
-    }
-
-    fn execute_graph_raster(
-        &mut self,
-        _ctx: &mut GraphRasterPassContext<'_, '_>,
+    fn record(
+        &self,
+        _ctx: &mut RasterPassCtx<'_, '_>,
         _rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
+        // No-op: the clear is performed by the render pass LoadOp::Clear(self.clear_color)
+        // declared in setup. No draw calls are needed.
         Ok(())
     }
 }

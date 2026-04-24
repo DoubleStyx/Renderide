@@ -1,7 +1,6 @@
 //! UnlitDistanceLerp (`Shader "UnlitDistanceLerp"`): blends between near/far unlit textures by
 //! distance from `_Point`.
 
-//#pass forward: fs=fs_main, depth=greater, zwrite=on, cull=back, blend=one,zero,add, alpha=one,one,max, material=forward_base
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
@@ -17,11 +16,6 @@ struct UnlitDistanceLerpMaterial {
     _Distance: f32,
     _Transition: f32,
     _Cutoff: f32,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
-    _ZTest: f32,
     _WORLD_SPACE: f32,
     _LOCAL_SPACE: f32,
     _VERTEXCOLORS: f32,
@@ -88,6 +82,7 @@ fn distance_lerp(p: vec3<f32>) -> f32 {
     return clamp((dist / transition) + mat._Transition * 0.5, 0.0, 1.0);
 }
 
+//#material forward_base
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let l = distance_lerp(lerp_position(in));

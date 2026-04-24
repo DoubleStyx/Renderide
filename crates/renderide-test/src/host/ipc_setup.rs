@@ -15,10 +15,10 @@ use crate::error::HarnessError;
 
 /// Default Cloudtoid queue capacity in bytes. Matches the bootstrapper's nominal `8 MiB` payload
 /// budget so we never hit a "queue full" while uploading the sphere mesh.
-pub const DEFAULT_QUEUE_CAPACITY_BYTES: i64 = 8 * 1024 * 1024;
+pub(super) const DEFAULT_QUEUE_CAPACITY_BYTES: i64 = 8 * 1024 * 1024;
 
 /// Per-session naming + queue endpoints owned by the harness.
-pub struct IpcSession {
+pub(super) struct IpcSession {
     /// Authority-side dual-queue (publishes on `…A`, subscribes on `…S`).
     pub queues: HostDualQueueIpc,
     /// Connection params handed to the spawned renderer (`-QueueName <name> -QueueCapacity <cap>`).
@@ -35,7 +35,7 @@ pub struct IpcSession {
 ///
 /// Combines the current process id, a Unix-epoch microsecond timestamp, and a per-call atomic
 /// counter to guarantee uniqueness even when two harness runs start within the same OS tick.
-pub fn make_session_id() -> String {
+pub(super) fn make_session_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let pid = std::process::id();
     let now_us = SystemTime::now()
@@ -57,7 +57,7 @@ pub fn make_session_id() -> String {
 ///
 /// Sets `RENDERIDE_INTERPROCESS_DIR` on the current process. The harness is the only consumer of
 /// this env var in the test binary, so the mutation is local to our run.
-pub fn connect_session(queue_capacity_bytes: i64) -> Result<IpcSession, HarnessError> {
+pub(super) fn connect_session(queue_capacity_bytes: i64) -> Result<IpcSession, HarnessError> {
     let tempdir_guard = tempfile::Builder::new()
         .prefix("renderide-test-shm-")
         .tempdir()?;

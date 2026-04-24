@@ -48,15 +48,23 @@ impl ClusterFrameParams {
         FrameGpuUniforms::view_space_z_coeffs_from_world_to_view(self.world_to_view)
     }
 
+    /// Projection coefficients `(P[0][0], P[1][1], P[0][2], P[1][2])` for this view's projection.
+    pub fn proj_params(&self) -> [f32; 4] {
+        FrameGpuUniforms::proj_params_from_proj(self.proj)
+    }
+
     /// Builds [`FrameGpuUniforms`] for clustered PBS materials (must stay in sync with compute).
     ///
-    /// `right_z_coeffs` should be the right-eye z coefficients in stereo, or equal to the left/mono
-    /// coefficients in desktop mode.
+    /// `right_z_coeffs` / `right_proj_params` should be the right-eye equivalents in stereo, or
+    /// equal to the left/mono coefficients in desktop mode. `frame_index` is the monotonic host
+    /// frame index used by temporal / jittered screen-space effects.
     pub fn frame_gpu_uniforms(
         &self,
         camera_world_pos: glam::Vec3,
         light_count: u32,
         right_z_coeffs: [f32; 4],
+        right_proj_params: [f32; 4],
+        frame_index: u32,
     ) -> FrameGpuUniforms {
         FrameGpuUniforms::new_clustered(ClusteredFrameGlobalsParams {
             camera_world_pos,
@@ -70,6 +78,9 @@ impl ClusterFrameParams {
             light_count,
             viewport_width: self.viewport_width.max(1),
             viewport_height: self.viewport_height.max(1),
+            proj_params_left: self.proj_params(),
+            proj_params_right: right_proj_params,
+            frame_index,
         })
     }
 }
@@ -137,7 +148,7 @@ pub fn cluster_frame_params(
 
 /// Returns per-eye cluster params when stereo view matrices and view–projections are available.
 ///
-/// Each eye gets its own `world_to_view` (from [`HostCameraFrame::stereo_views`]) and projection
+/// Each eye gets its own `world_to_view` (from [`StereoViewMatrices::view_only`]) and projection
 /// (decomposed as `vp * view.inverse()`). Returns `None` when stereo data is absent, falling back
 /// to [`cluster_frame_params`] for mono clustering.
 pub fn cluster_frame_params_stereo(
@@ -146,8 +157,9 @@ pub fn cluster_frame_params_stereo(
     viewport_px: (u32, u32),
 ) -> Option<(ClusterFrameParams, ClusterFrameParams)> {
     let common = CommonClusterInputs::compute(host_camera, scene, viewport_px)?;
-    let (sl, sr) = host_camera.stereo_view_proj?;
-    let (view_l, view_r) = host_camera.stereo_views?;
+    let stereo = host_camera.stereo?;
+    let (sl, sr) = stereo.view_proj;
+    let (view_l, view_r) = stereo.view_only;
 
     let proj_l = extract_proj(
         sl,
@@ -272,7 +284,7 @@ mod tests {
             let d0 = near * (far / near).powf(t0);
             let d1 = near * (far / near).powf(t1);
             let mid = 0.5 * (d0 + d1);
-            let z_float = (mid / near).ln() / (far / near).ln() * cluster_count_z as f32;
+            let z_float = (mid / near).log(far / near) * cluster_count_z as f32;
             let z_idx = z_float.clamp(0.0, cluster_count_z as f32 - 1.0).floor() as u32;
             assert_eq!(
                 z_idx, k,

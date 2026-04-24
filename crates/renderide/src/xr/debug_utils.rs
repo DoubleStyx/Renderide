@@ -43,6 +43,9 @@ impl OpenxrDebugUtilsMessenger {
             user_data: ptr::null_mut(),
         };
         let mut messenger = xr::sys::DebugUtilsMessengerEXT::NULL;
+        // SAFETY: `fp` is the runtime-resolved function pointer for an enabled extension;
+        // `instance` is a valid live `xr::Instance`; `create_info` is fully initialised and its
+        // `next` pointer is null; `&mut messenger` is a valid out-pointer.
         let r = unsafe {
             (fp.create_debug_utils_messenger)(instance.as_raw(), &create_info, &mut messenger)
         };
@@ -65,6 +68,9 @@ impl Drop for OpenxrDebugUtilsMessenger {
             return;
         }
         if let Some(fp) = self.instance.exts().ext_debug_utils.as_ref() {
+            // SAFETY: `self.messenger` was returned by a successful `xrCreateDebugUtilsMessengerEXT`
+            // call and has not been destroyed (non-NULL guarded above); `fp` is still valid since
+            // `self.instance` is still alive.
             let r = unsafe { (fp.destroy_debug_utils_messenger)(self.messenger) };
             if r != xr::sys::Result::SUCCESS {
                 logger::warn!("OpenXR: xrDestroyDebugUtilsMessengerEXT failed ({r:?})");
@@ -74,6 +80,12 @@ impl Drop for OpenxrDebugUtilsMessenger {
     }
 }
 
+/// OpenXR-invoked callback that forwards messenger events to the file logger.
+///
+/// # Safety
+///
+/// Must only be installed as an `XR_EXT_debug_utils` callback; the OpenXR runtime guarantees
+/// `data` is valid (or null) for the call duration.
 unsafe extern "system" fn debug_utils_callback(
     severity: xr::sys::DebugUtilsMessageSeverityFlagsEXT,
     _types: xr::sys::DebugUtilsMessageTypeFlagsEXT,
@@ -83,8 +95,14 @@ unsafe extern "system" fn debug_utils_callback(
     if data.is_null() {
         return xr::sys::FALSE;
     }
+    // SAFETY: the OpenXR spec requires runtimes to pass a valid, fully-initialised pointer for the
+    // duration of the callback; we checked non-null above. We only borrow immutably and never
+    // retain the reference past return.
     let data = unsafe { &*data };
+    // SAFETY: `data.message` and `data.function_name` are either null or NUL-terminated C strings
+    // owned by the runtime for the callback's duration; `c_str_to_str` handles both.
     let msg = unsafe { c_str_to_str(data.message) };
+    // SAFETY: see above.
     let fn_name = unsafe { c_str_to_str(data.function_name) };
     let prefix = if fn_name.is_empty() {
         String::from("OpenXR")
@@ -107,9 +125,16 @@ unsafe extern "system" fn debug_utils_callback(
     xr::sys::FALSE
 }
 
+/// Copies a C string into an owned `String`, or returns empty if `p` is null.
+///
+/// # Safety
+///
+/// If `p` is non-null, it must point to a NUL-terminated C string that remains valid for the
+/// duration of the call.
 unsafe fn c_str_to_str(p: *const c_char) -> String {
     if p.is_null() {
         return String::new();
     }
-    CStr::from_ptr(p).to_string_lossy().into_owned()
+    // SAFETY: non-null was checked; caller guarantees NUL termination per the function contract.
+    unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
 }

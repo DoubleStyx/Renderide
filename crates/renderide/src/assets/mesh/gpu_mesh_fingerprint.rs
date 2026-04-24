@@ -65,3 +65,94 @@ pub fn mesh_upload_input_fingerprint(data: &MeshUploadData) -> u64 {
     }
     h.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::BlendshapeBufferDescriptor;
+
+    fn base_data() -> MeshUploadData {
+        MeshUploadData {
+            asset_id: 42,
+            vertex_count: 8,
+            ..Default::default()
+        }
+    }
+
+    fn base_layout() -> MeshBufferLayout {
+        MeshBufferLayout {
+            vertex_size: 0,
+            index_buffer_start: 0,
+            index_buffer_length: 0,
+            bone_counts_start: 0,
+            bone_counts_length: 0,
+            bone_weights_start: 0,
+            bone_weights_length: 0,
+            bind_poses_start: 0,
+            bind_poses_length: 0,
+            blendshape_data_start: 0,
+            blendshape_data_length: 0,
+            total_buffer_length: 0,
+        }
+    }
+
+    #[test]
+    fn layout_fingerprint_is_deterministic() {
+        let d = base_data();
+        let l = base_layout();
+        assert_eq!(
+            mesh_layout_fingerprint(&d, &l),
+            mesh_layout_fingerprint(&d, &l)
+        );
+    }
+
+    #[test]
+    fn layout_fingerprint_changes_with_asset_id() {
+        let a = base_data();
+        let mut b = base_data();
+        b.asset_id = a.asset_id + 1;
+        let l = base_layout();
+        assert_ne!(
+            mesh_layout_fingerprint(&a, &l),
+            mesh_layout_fingerprint(&b, &l)
+        );
+    }
+
+    #[test]
+    fn layout_fingerprint_changes_with_vertex_count() {
+        let a = base_data();
+        let mut b = base_data();
+        b.vertex_count = a.vertex_count + 1;
+        let l = base_layout();
+        assert_ne!(
+            mesh_layout_fingerprint(&a, &l),
+            mesh_layout_fingerprint(&b, &l)
+        );
+    }
+
+    #[test]
+    fn input_fingerprint_is_deterministic() {
+        let d = base_data();
+        assert_eq!(
+            mesh_upload_input_fingerprint(&d),
+            mesh_upload_input_fingerprint(&d)
+        );
+    }
+
+    #[test]
+    fn input_fingerprint_changes_with_blendshape_frame_weight() {
+        let mut a = base_data();
+        a.blendshape_buffers.push(BlendshapeBufferDescriptor {
+            blendshape_index: 0,
+            frame_index: 0,
+            frame_weight: 1.0,
+            ..Default::default()
+        });
+        let mut b = a.clone();
+        b.blendshape_buffers[0].frame_weight = 0.5;
+        assert_ne!(
+            mesh_upload_input_fingerprint(&a),
+            mesh_upload_input_fingerprint(&b)
+        );
+    }
+}

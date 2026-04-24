@@ -23,8 +23,26 @@ pub(crate) fn trace_duplicate_frame_index_if_interesting(
 mod trace_tests {
     use super::trace_duplicate_frame_index_if_interesting;
 
+    /// Non-matching indices take the non-logging branch; the function must not panic or log
+    /// spuriously. This is the baseline smoke case.
     #[test]
     fn trace_duplicate_is_noop_when_indices_differ() {
         trace_duplicate_frame_index_if_interesting(2, 1);
+    }
+
+    /// Matching but negative indices are skipped (negative values mean "no previous frame"), so
+    /// the trace is suppressed without error.
+    #[test]
+    fn trace_duplicate_is_noop_for_negative_indices() {
+        trace_duplicate_frame_index_if_interesting(-1, -1);
+        trace_duplicate_frame_index_if_interesting(i32::MIN, i32::MIN);
+    }
+
+    /// Matching non-negative indices hit the logging branch; the function must still return
+    /// normally without panicking even when `logger` is in its default, uninitialized state.
+    #[test]
+    fn trace_duplicate_logs_branch_is_safe_to_call() {
+        trace_duplicate_frame_index_if_interesting(0, 0);
+        trace_duplicate_frame_index_if_interesting(42, 42);
     }
 }

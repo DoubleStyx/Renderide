@@ -43,6 +43,8 @@ impl PlatformGroup {
             LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             ..unsafe { std::mem::zeroed() }
         };
+        // SAFETY: `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` is a POD Win32 struct; all-zero is a valid
+        // bit pattern for unused fields.
         let info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
             BasicLimitInformation: basic,
             ..unsafe { std::mem::zeroed() }
@@ -71,6 +73,10 @@ impl PlatformGroup {
     }
 
     /// No extra Win32 flags on the [`Command`] beyond job assignment after spawn.
+    #[expect(
+        clippy::unused_self,
+        reason = "matches the cross-platform PlatformGroup API"
+    )]
     pub fn prepare_command(&self, _cmd: &mut Command) {}
 
     /// Assigns the child process to this job object.

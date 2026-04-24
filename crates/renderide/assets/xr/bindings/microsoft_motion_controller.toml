@@ -1,0 +1,74 @@
+profile = "/interaction_profiles/microsoft/motion_controller"
+
+[[binding]]
+action = "left_grip_pose"
+path = "/user/hand/left/input/grip/pose"
+[[binding]]
+action = "right_grip_pose"
+path = "/user/hand/right/input/grip/pose"
+[[binding]]
+action = "left_aim_pose"
+path = "/user/hand/left/input/aim/pose"
+[[binding]]
+action = "right_aim_pose"
+path = "/user/hand/right/input/aim/pose"
+
+[[binding]]
+action = "left_trigger"
+path = "/user/hand/left/input/trigger/value"
+[[binding]]
+action = "right_trigger"
+path = "/user/hand/right/input/trigger/value"
+
+[[binding]]
+action = "left_squeeze_click"
+path = "/user/hand/left/input/squeeze/click"
+[[binding]]
+action = "right_squeeze_click"
+path = "/user/hand/right/input/squeeze/click"
+
+[[binding]]
+action = "left_thumbstick"
+path = "/user/hand/left/input/thumbstick"
+[[binding]]
+action = "right_thumbstick"
+path = "/user/hand/right/input/thumbstick"
+[[binding]]
+action = "left_thumbstick_click"
+path = "/user/hand/left/input/thumbstick/click"
+[[binding]]
+action = "right_thumbstick_click"
+path = "/user/hand/right/input/thumbstick/click"
+
+[[binding]]
+action = "left_trackpad"
+path = "/user/hand/left/input/trackpad"
+[[binding]]
+action = "right_trackpad"
+path = "/user/hand/right/input/trackpad"
+[[binding]]
+action = "left_trackpad_touch"
+path = "/user/hand/left/input/trackpad/touch"
+[[binding]]
+action = "right_trackpad_touch"
+path = "/user/hand/right/input/trackpad/touch"
+[[binding]]
+action = "left_trackpad_click"
+path = "/user/hand/left/input/trackpad/click"
+[[binding]]
+action = "right_trackpad_click"
+path = "/user/hand/right/input/trackpad/click"
+
+[[binding]]
+action = "left_menu"
+path = "/user/hand/left/input/menu/click"
+[[binding]]
+action = "right_menu"
+path = "/user/hand/right/input/menu/click"
+
+[[binding]]
+action = "left_haptic"
+path = "/user/hand/left/output/haptic"
+[[binding]]
+action = "right_haptic"
+path = "/user/hand/right/output/haptic"

@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use crate::assets::mesh::{
     compute_and_validate_mesh_layout, mesh_upload_input_fingerprint, try_upload_mesh_from_raw,
-    MeshBufferLayout,
 };
 use crate::gpu::GpuLimits;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
@@ -18,10 +17,9 @@ use super::AssetTransferQueue;
 enum MeshStage {
     /// Compute and cache [`MeshBufferLayout`] (CPU only).
     PendingLayout,
-    /// Read SHM and upload to GPU ([`try_upload_mesh_from_raw`]).
-    ReadyForGpu {
-        /// Validated layout for this payload.
-        layout: MeshBufferLayout,
+    /// Background thread extraction and GPU upload.
+    Decoding {
+        rx: crossbeam_channel::Receiver<Option<crate::assets::mesh::GpuMesh>>,
     },
 }
 
@@ -52,7 +50,7 @@ impl MeshUploadTask {
         queue: &mut AssetTransferQueue,
         device: &Arc<wgpu::Device>,
         gpu_limits: &Arc<GpuLimits>,
-        gpu_queue: &wgpu::Queue,
+        gpu_queue: &Arc<wgpu::Queue>,
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
@@ -77,47 +75,81 @@ impl MeshUploadTask {
                         .set_cached_mesh_layout(asset_id, input_fp, l);
                     l
                 };
-                self.stage = MeshStage::ReadyForGpu { layout };
-                StepResult::Continue
-            }
-            MeshStage::ReadyForGpu { layout } => {
-                let layout = *layout;
+
                 let data = self.data.clone();
-                let existing = queue.mesh_pool.get_mesh(asset_id);
-                let upload_result = shm.with_read_bytes(&data.buffer, |raw| {
-                    try_upload_mesh_from_raw(
-                        device.as_ref(),
-                        gpu_limits.as_ref(),
-                        Some(gpu_queue),
-                        raw,
+                let existing = queue.mesh_pool.get_mesh(asset_id).cloned();
+                let raw_len = data.buffer.length.max(0) as usize;
+
+                let raw_arc = shm.with_read_bytes(&data.buffer, |raw| {
+                    if raw.len() < raw_len {
+                        logger::error!(
+                            "mesh {asset_id}: raw too short (need {}, got {})",
+                            raw_len,
+                            raw.len()
+                        );
+                        return None;
+                    }
+                    Some(Arc::from(&raw[..raw_len]))
+                });
+
+                let Some(raw) = raw_arc else {
+                    return StepResult::Done;
+                };
+
+                let (tx, rx) = crossbeam_channel::bounded(1);
+
+                let device_clone = Arc::clone(device);
+                let gpu_limits_clone = Arc::clone(gpu_limits);
+                let gpu_queue_clone = Arc::clone(gpu_queue);
+
+                rayon::spawn(move || {
+                    let mesh = try_upload_mesh_from_raw(
+                        device_clone.as_ref(),
+                        gpu_limits_clone.as_ref(),
+                        Some(gpu_queue_clone.as_ref()),
+                        &raw,
                         &data,
                         existing,
                         &layout,
-                    )
-                });
-                let Some(mesh) = upload_result else {
-                    logger::error!(
-                        "mesh {asset_id}: upload failed or rejected — host callback not completed (no MeshUploadResult sent)"
                     );
-                    return StepResult::Done;
-                };
-                let existed_before = queue.mesh_pool.insert_mesh(mesh);
-                if let Some(ipc) = ipc.as_mut() {
-                    use crate::shared::{MeshUploadResult, RendererCommand};
-                    let _ =
-                        ipc.send_background(RendererCommand::MeshUploadResult(MeshUploadResult {
-                            asset_id,
-                            instance_changed: !existed_before,
-                        }));
-                }
-                logger::trace!(
-                    "mesh {} uploaded via integrator (replaced={} resident_bytes≈{})",
-                    asset_id,
-                    existed_before,
-                    queue.mesh_pool.accounting().total_resident_bytes()
-                );
-                StepResult::Done
+                    let _ = tx.send(mesh);
+                });
+
+                self.stage = MeshStage::Decoding { rx };
+                StepResult::YieldBackground
             }
+            MeshStage::Decoding { rx } => match rx.try_recv() {
+                Ok(upload_result) => {
+                    let Some(mesh) = upload_result else {
+                        logger::error!(
+                            "mesh {asset_id}: upload failed or rejected — host callback not completed (no MeshUploadResult sent)"
+                        );
+                        return StepResult::Done;
+                    };
+                    let existed_before = queue.mesh_pool.insert_mesh(mesh);
+                    if let Some(ipc) = ipc.as_mut() {
+                        use crate::shared::{MeshUploadResult, RendererCommand};
+                        let _ = ipc.send_background(RendererCommand::MeshUploadResult(
+                            MeshUploadResult {
+                                asset_id,
+                                instance_changed: !existed_before,
+                            },
+                        ));
+                    }
+                    logger::trace!(
+                        "mesh {} uploaded via integrator (replaced={} resident_bytes≈{})",
+                        asset_id,
+                        existed_before,
+                        queue.mesh_pool.accounting().total_resident_bytes()
+                    );
+                    StepResult::Done
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => StepResult::YieldBackground,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    logger::error!("mesh {asset_id}: background decode thread panicked");
+                    StepResult::Done
+                }
+            },
         }
     }
 }

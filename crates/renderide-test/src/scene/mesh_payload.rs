@@ -22,7 +22,7 @@ use super::sphere::SphereMesh;
 /// Combines the encoded SHM byte payload with an unfilled [`MeshUploadData`] head ready to receive
 /// a `SharedMemoryBufferDescriptor` once the host writes the bytes.
 #[derive(Clone, Debug)]
-pub struct SphereMeshUpload {
+pub(crate) struct SphereMeshUpload {
     /// Bytes to write into the host shared-memory buffer at the offset chosen by the harness.
     pub payload: MeshPayload,
     /// Number of vertices in the encoded mesh (mirrors `MeshUploadData.vertex_count`).
@@ -40,7 +40,7 @@ pub struct SphereMeshUpload {
 
 /// Errors produced when packing the sphere mesh.
 #[derive(Debug, thiserror::Error)]
-pub enum SphereMeshUploadError {
+pub(crate) enum SphereMeshUploadError {
     /// The wire-writer rejected the inputs (mismatched lengths, etc.).
     #[error("encode mesh payload: {0}")]
     Encode(#[from] mesh_layout::MeshLayoutError),
@@ -48,7 +48,7 @@ pub enum SphereMeshUploadError {
 
 /// Errors produced when assembling the final [`MeshUploadData`] from a packed sphere upload.
 #[derive(Debug, thiserror::Error)]
-pub enum SphereMeshDescriptorError {
+pub(crate) enum SphereMeshDescriptorError {
     /// Sphere had more vertices than fit in `i32` (impossible in practice; defensive).
     #[error("vertex count overflow: {0}")]
     VertexCountOverflow(usize),
@@ -59,7 +59,7 @@ pub enum SphereMeshDescriptorError {
 /// The result is independent of the asset id and the SHM descriptor so the same upload payload
 /// can be reused across runs (the harness picks the asset id and writes the bytes into its own
 /// shared-memory buffer).
-pub fn pack_sphere_mesh_upload(
+pub(crate) fn pack_sphere_mesh_upload(
     mesh: &SphereMesh,
 ) -> Result<SphereMeshUpload, SphereMeshUploadError> {
     let vertex_count = mesh.vertices.len() as i32;
@@ -119,7 +119,7 @@ pub fn pack_sphere_mesh_upload(
 }
 
 /// Builds a fully populated [`MeshUploadData`] referencing `buffer_descriptor` and `asset_id`.
-pub fn make_mesh_upload_data(
+pub(crate) fn make_mesh_upload_data(
     upload: &SphereMeshUpload,
     asset_id: i32,
     buffer_descriptor: SharedMemoryBufferDescriptor,
@@ -149,7 +149,7 @@ pub fn make_mesh_upload_data(
 
 /// Conservative axis-aligned bounds for the unit sphere (slight outward bias keeps frustum culling
 /// from false-negatives at oblique angles while staying non-degenerate).
-pub fn unit_sphere_bounds() -> RenderBoundingBox {
+pub(crate) fn unit_sphere_bounds() -> RenderBoundingBox {
     RenderBoundingBox {
         center: glam::Vec3::ZERO,
         extents: glam::Vec3::splat(1.05),

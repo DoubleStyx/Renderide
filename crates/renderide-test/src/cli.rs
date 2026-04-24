@@ -1,5 +1,11 @@
 //! Command-line interface for the golden-image harness.
 
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "CLI tool: stdout/stderr is the user-facing interface"
+)]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -10,7 +16,7 @@ use crate::error::HarnessError;
 use crate::host::{HarnessRunOutcome, HostHarness, HostHarnessConfig};
 
 /// CLI entry point.
-pub fn run() -> ExitCode {
+pub(crate) fn run() -> ExitCode {
     let cli = Cli::parse();
     init_logger();
     match dispatch(cli) {
@@ -92,7 +98,7 @@ struct CommonOpts {
     /// Use the release-mode renderer binary (`target/release/renderide`).
     #[arg(long, default_value_t = false, conflicts_with = "dev_fast")]
     release: bool,
-    /// Output resolution (WxH) for the offscreen render target.
+    /// Output resolution (`WxH`) for the offscreen render target.
     #[arg(long, default_value = "256x256")]
     resolution: String,
     /// How long to wait for handshake / asset acks / a fresh PNG.
@@ -144,7 +150,7 @@ fn run_harness(common: &CommonOpts) -> Result<HarnessRunOutcome, HarnessError> {
     let timeout = Duration::from_secs(common.timeout_seconds);
     let renderer_path = match &common.renderer {
         Some(p) => p.clone(),
-        None => default_renderer_path(common.release, common.dev_fast),
+        None => resolve_renderer_path(common.release, common.dev_fast),
     };
     let cfg = HostHarnessConfig {
         renderer_path,
@@ -183,4 +189,98 @@ fn default_renderer_path(release: bool, dev_fast: bool) -> PathBuf {
         "renderide"
     };
     PathBuf::from("target").join(profile).join(exe)
+}
+
+/// Picks a renderer next to this binary when no `--release` / `--dev-fast` flags are set, so
+/// e.g. `target/dev-fast/renderide-test` uses `target/dev-fast/renderide` by default.
+fn resolve_renderer_path(release: bool, dev_fast: bool) -> PathBuf {
+    if release || dev_fast {
+        return default_renderer_path(release, dev_fast);
+    }
+    if let Some(p) = renderide_next_to_this_test_binary() {
+        return p;
+    }
+    default_renderer_path(false, false)
+}
+
+fn renderide_next_to_this_test_binary() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let name = exe.file_name()?.to_str()?;
+    if name != "renderide-test" && name != "renderide-test.exe" {
+        return None;
+    }
+    let profile_dir = exe.parent()?;
+    let under_target = profile_dir.parent()?;
+    if under_target.file_name() != Some(std::ffi::OsStr::new("target")) {
+        return None;
+    }
+    let candidate = profile_dir.join(if cfg!(windows) {
+        "renderide.exe"
+    } else {
+        "renderide"
+    });
+    candidate.is_file().then_some(candidate)
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use std::path::PathBuf;
+
+    use super::{default_renderer_path, parse_resolution, resolve_renderer_path};
+
+    #[test]
+    fn parse_resolution_accepts_lowercase_and_uppercase_x() {
+        assert_eq!(parse_resolution("128x64"), (128, 64));
+        assert_eq!(parse_resolution("128X64"), (128, 64));
+    }
+
+    #[test]
+    fn parse_resolution_invalid_falls_back_to_default() {
+        assert_eq!(parse_resolution("not-a-resolution"), (256, 256));
+        assert_eq!(parse_resolution(""), (256, 256));
+    }
+
+    #[test]
+    fn parse_resolution_clamps_zero_dimensions_to_one() {
+        assert_eq!(parse_resolution("0x0"), (1, 1));
+        assert_eq!(parse_resolution("0x64"), (1, 64));
+    }
+
+    #[test]
+    fn default_renderer_path_profiles_and_exe_name() {
+        assert_eq!(
+            default_renderer_path(false, true),
+            PathBuf::from("target")
+                .join("dev-fast")
+                .join(expected_exe())
+        );
+        assert_eq!(
+            default_renderer_path(true, false),
+            PathBuf::from("target").join("release").join(expected_exe())
+        );
+        assert_eq!(
+            default_renderer_path(false, false),
+            PathBuf::from("target").join("debug").join(expected_exe())
+        );
+    }
+
+    #[test]
+    fn resolve_renderer_path_matches_explicit_profiles() {
+        assert_eq!(
+            resolve_renderer_path(true, false),
+            default_renderer_path(true, false)
+        );
+        assert_eq!(
+            resolve_renderer_path(false, true),
+            default_renderer_path(false, true)
+        );
+    }
+
+    fn expected_exe() -> &'static str {
+        if cfg!(windows) {
+            "renderide.exe"
+        } else {
+            "renderide"
+        }
+    }
 }

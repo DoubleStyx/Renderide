@@ -1,6 +1,8 @@
 //! Renderer config window: display, rendering, and debug settings with immediate disk sync.
 
-use crate::config::{save_renderer_settings, MsaaSampleCount, PowerPreferenceSetting};
+use crate::config::{
+    save_renderer_settings, MsaaSampleCount, PowerPreferenceSetting, SceneColorFormat,
+};
 
 use imgui::Drag;
 
@@ -54,6 +56,20 @@ fn renderer_config_rendering_section(
             .build()
         {
             g.rendering.msaa = msaa;
+            *dirty = true;
+        }
+    }
+    ui.text_disabled(
+        "Scene color format (forward HDR target; compose writes swapchain / XR / RT).",
+    );
+    for (i, &fmt) in SceneColorFormat::ALL.iter().enumerate() {
+        let _id = ui.push_id_int(100 + i as i32);
+        if ui
+            .selectable_config(fmt.label())
+            .selected(g.rendering.scene_color_format == fmt)
+            .build()
+        {
+            g.rendering.scene_color_format = fmt;
             *dirty = true;
         }
     }
@@ -113,7 +129,12 @@ fn renderer_config_debug_section(
     ui.unindent();
 }
 
-/// Body of **Renderer config**: grouped controls and immediate save.
+/// Body of **Renderer config**: tabbed groups (Display / Rendering / Debug / Post-Processing) and
+/// immediate disk save.
+///
+/// Each tab body marks a shared `dirty` flag; once any tab modifies a setting, the whole
+/// [`crate::config::RendererSettings`] struct is serialised back to disk so newly added sub-tables
+/// (e.g. `[post_processing]`, `[post_processing.tonemap]`) round-trip without separate plumbing.
 pub(super) fn renderer_config_panel_body(
     ui: &imgui::Ui,
     g: &mut crate::config::RendererSettings,
@@ -121,9 +142,22 @@ pub(super) fn renderer_config_panel_body(
     suppress_renderer_config_disk_writes: bool,
 ) {
     let mut dirty = false;
-    renderer_config_display_section(ui, g, &mut dirty);
-    renderer_config_rendering_section(ui, g, &mut dirty);
-    renderer_config_debug_section(ui, g, &mut dirty);
+    if let Some(_bar) = ui.tab_bar("renderer_config_tabs") {
+        if let Some(_t) = ui.tab_item("Display") {
+            renderer_config_display_section(ui, g, &mut dirty);
+        }
+        if let Some(_t) = ui.tab_item("Rendering") {
+            renderer_config_rendering_section(ui, g, &mut dirty);
+        }
+        if let Some(_t) = ui.tab_item("Debug") {
+            renderer_config_debug_section(ui, g, &mut dirty);
+        }
+        if let Some(_t) = ui.tab_item("Post-Processing") {
+            super::renderer_config_post_processing::renderer_config_post_processing_tab(
+                ui, g, &mut dirty,
+            );
+        }
+    }
 
     if dirty {
         if suppress_renderer_config_disk_writes {

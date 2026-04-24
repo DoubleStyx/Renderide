@@ -139,11 +139,13 @@ impl RendererRuntime {
 
         let device = gpu.device().clone();
         let queue = Arc::clone(gpu.queue());
+        let write_texture_submit_gate = gpu.write_texture_submit_gate().clone();
         let shm = self.frontend.shared_memory_mut();
         if let Err(e) = self.backend.attach(
             crate::backend::RenderBackendAttachDesc {
                 device,
                 queue,
+                write_texture_submit_gate,
                 gpu_limits: Arc::clone(gpu.limits()),
                 surface_format: gpu.config_format(),
                 renderer_settings: Arc::clone(&self.settings),

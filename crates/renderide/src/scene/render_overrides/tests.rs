@@ -22,6 +22,32 @@ fn decode_packed_mesh_renderer_target_matches_shared_packer_layout() {
     );
 }
 
+/// Negative packed values, which the host uses as "unset", always decode to
+/// [`MeshRendererOverrideTarget::Unknown`].
+#[test]
+fn decode_packed_mesh_renderer_target_treats_negative_as_unknown() {
+    assert_eq!(
+        decode_packed_mesh_renderer_target(-1),
+        MeshRendererOverrideTarget::Unknown
+    );
+    assert_eq!(
+        decode_packed_mesh_renderer_target(i32::MIN),
+        MeshRendererOverrideTarget::Unknown
+    );
+}
+
+/// The maximum positive id for either kind is `MATERIAL_RENDERER_ID_MASK` (`0x3FFF_FFFF`), which
+/// preserves the 30-bit id while keeping the kind bits cleanly separable. Values above that mask
+/// set bit 30 (the kind bit), so `id = MATERIAL_RENDERER_ID_MASK` is the largest static id.
+#[test]
+fn decode_packed_mesh_renderer_target_maximum_static_id_round_trips() {
+    let id = 0x3FFF_FFFF;
+    assert_eq!(
+        decode_packed_mesh_renderer_target(id),
+        MeshRendererOverrideTarget::Static(id)
+    );
+}
+
 #[test]
 fn main_render_context_uses_external_flag() {
     let mut space = RenderSpaceState::default();

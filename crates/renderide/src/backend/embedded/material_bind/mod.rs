@@ -16,10 +16,10 @@ mod uniform;
 pub(crate) use cache::MaterialBindCacheKey;
 
 use hashbrown::HashMap;
-use std::cell::RefCell;
 use std::sync::Arc;
 
 use lru::LruCache;
+use parking_lot::Mutex;
 
 use super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::layout::{EmbeddedSharedKeywordIds, StemMaterialLayout};
@@ -49,11 +49,11 @@ pub struct EmbeddedMaterialBindResources {
     default_sampler: Arc<wgpu::Sampler>,
     property_registry: Arc<PropertyIdRegistry>,
     shared_keyword_ids: Arc<EmbeddedSharedKeywordIds>,
-    stem_cache: RefCell<HashMap<String, Arc<StemMaterialLayout>>>,
-    bind_cache: RefCell<LruCache<MaterialBindCacheKey, Arc<wgpu::BindGroup>>>,
-    uniform_cache: RefCell<LruCache<MaterialUniformCacheKey, CachedUniformEntry>>,
-    sampler_cache: RefCell<LruCache<EmbeddedSamplerCacheKey, Arc<wgpu::Sampler>>>,
-    texture_debug_cache: RefCell<LruCache<TextureDebugCacheKey, Arc<[i32]>>>,
+    stem_cache: Mutex<HashMap<String, Arc<StemMaterialLayout>>>,
+    bind_cache: Mutex<LruCache<MaterialBindCacheKey, Arc<wgpu::BindGroup>>>,
+    uniform_cache: Mutex<LruCache<MaterialUniformCacheKey, CachedUniformEntry>>,
+    sampler_cache: Mutex<LruCache<EmbeddedSamplerCacheKey, Arc<wgpu::Sampler>>>,
+    texture_debug_cache: Mutex<LruCache<TextureDebugCacheKey, Arc<[i32]>>>,
 }
 
 impl EmbeddedMaterialBindResources {
@@ -144,11 +144,11 @@ impl EmbeddedMaterialBindResources {
             default_sampler,
             property_registry,
             shared_keyword_ids,
-            stem_cache: RefCell::new(HashMap::new()),
-            bind_cache: RefCell::new(LruCache::new(MAX_CACHED_EMBEDDED_BIND_GROUPS_NZ)),
-            uniform_cache: RefCell::new(LruCache::new(MAX_CACHED_EMBEDDED_UNIFORMS_NZ)),
-            sampler_cache: RefCell::new(LruCache::new(MAX_CACHED_EMBEDDED_SAMPLERS_NZ)),
-            texture_debug_cache: RefCell::new(LruCache::new(MAX_CACHED_TEXTURE_DEBUG_IDS_NZ)),
+            stem_cache: Mutex::new(HashMap::new()),
+            bind_cache: Mutex::new(LruCache::new(MAX_CACHED_EMBEDDED_BIND_GROUPS_NZ)),
+            uniform_cache: Mutex::new(LruCache::new(MAX_CACHED_EMBEDDED_UNIFORMS_NZ)),
+            sampler_cache: Mutex::new(LruCache::new(MAX_CACHED_EMBEDDED_SAMPLERS_NZ)),
+            texture_debug_cache: Mutex::new(LruCache::new(MAX_CACHED_TEXTURE_DEBUG_IDS_NZ)),
         })
     }
 
@@ -254,7 +254,6 @@ impl EmbeddedMaterialBindResources {
             uniform_key,
             bind_key,
             texture_2d_asset_id,
-            primary_texture_any_kind_present,
         } = self.resolve_embedded_bind_inputs(
             stem,
             store,
@@ -266,7 +265,7 @@ impl EmbeddedMaterialBindResources {
         let mutation_gen = store.mutation_generation(lookup);
 
         let hit_bg = {
-            let mut cache = self.bind_cache.borrow_mut();
+            let mut cache = self.bind_cache.lock();
             cache.get(&bind_key).cloned()
         };
         if let Some(bg) = hit_bg {
@@ -280,7 +279,6 @@ impl EmbeddedMaterialBindResources {
                     mutation_gen,
                     store,
                     lookup,
-                    primary_texture_any_kind_present,
                 })?;
             return Ok((bind_key, bg));
         }
@@ -294,10 +292,8 @@ impl EmbeddedMaterialBindResources {
                 mutation_gen,
                 store,
                 lookup,
-                primary_texture_any_kind_present,
             })?;
 
-        let mut cache = self.bind_cache.borrow_mut();
         let (keepalive_views, keepalive_samplers) = self.resolve_group1_textures_and_samplers(
             &layout,
             texture_2d_asset_id,
@@ -319,7 +315,8 @@ impl EmbeddedMaterialBindResources {
             layout: &layout.bind_group_layout,
             entries: &entries,
         }));
-        if let Some(evicted) = cache.put(bind_key, bind_group.clone()) {
+        let evicted = self.bind_cache.lock().put(bind_key, bind_group.clone());
+        if let Some(evicted) = evicted {
             drop(evicted);
             logger::trace!("EmbeddedMaterialBindResources: evicted LRU bind group cache entry");
         }

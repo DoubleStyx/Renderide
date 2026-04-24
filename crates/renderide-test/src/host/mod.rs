@@ -21,11 +21,11 @@ mod ipc_setup;
 mod lockstep;
 mod scene_session;
 
-pub use scene_session::SceneSessionConfig;
+pub(crate) use scene_session::SceneSessionConfig;
 
 /// Configuration for [`HostHarness::start`].
 #[derive(Clone, Debug)]
-pub struct HostHarnessConfig {
+pub(crate) struct HostHarnessConfig {
     /// Path to the `renderide` binary to spawn.
     pub renderer_path: PathBuf,
     /// Optional explicit PNG output path (overrides the default tempfile under the OS temp dir).
@@ -45,7 +45,7 @@ pub struct HostHarnessConfig {
 /// Outcome of a successful harness run. Holds an optional tempdir guard so callers (e.g. the
 /// `generate` subcommand) can read the PNG file before the directory is reaped.
 #[derive(Debug)]
-pub struct HarnessRunOutcome {
+pub(crate) struct HarnessRunOutcome {
     /// Path to the freshly written PNG produced by the renderer.
     pub png_path: PathBuf,
     /// When the output path was auto-allocated under a tempdir, this guard keeps the directory
@@ -55,7 +55,7 @@ pub struct HarnessRunOutcome {
 
 /// Live harness state. The renderer process itself is owned by the underlying
 /// [`SceneSessionConfig`] flow and exits via `RendererShutdownRequest` on success.
-pub struct HostHarness {
+pub(crate) struct HostHarness {
     cfg: HostHarnessConfig,
     output_path: PathBuf,
     output_dir_guard: Option<tempfile::TempDir>,
@@ -64,7 +64,7 @@ pub struct HostHarness {
 impl HostHarness {
     /// Prepares an output PNG path (either the caller-supplied one or a tempfile) and stashes the
     /// configuration; the actual session runs in [`HostHarness::run`].
-    pub fn start(cfg: HostHarnessConfig) -> Result<Self, HarnessError> {
+    pub(crate) fn start(cfg: HostHarnessConfig) -> Result<Self, HarnessError> {
         let (output_path, output_dir_guard) = match cfg.forced_output_path.clone() {
             Some(p) => (p, None),
             None => {
@@ -84,7 +84,7 @@ impl HostHarness {
 
     /// Drives the full vertical slice end-to-end. Returns the PNG path on success and transfers
     /// the (optional) tempdir guard to the outcome so the file persists for downstream consumers.
-    pub fn run(&mut self) -> Result<HarnessRunOutcome, HarnessError> {
+    pub(crate) fn run(&mut self) -> Result<HarnessRunOutcome, HarnessError> {
         let session_cfg = SceneSessionConfig {
             renderer_path: self.cfg.renderer_path.clone(),
             output_path: self.output_path.clone(),
@@ -103,8 +103,8 @@ impl HostHarness {
 
     /// Output PNG path the renderer was instructed to write. Useful for callers that want to
     /// inspect or copy the file before [`HostHarness::run`] is called.
-    #[allow(dead_code)]
-    pub fn output_path(&self) -> &PathBuf {
+    #[cfg_attr(not(test), expect(dead_code, reason = "only used by unit tests today"))]
+    pub(crate) fn output_path(&self) -> &PathBuf {
         &self.output_path
     }
 }
@@ -112,5 +112,52 @@ impl HostHarness {
 impl Drop for HostHarness {
     fn drop(&mut self) {
         let _ = self.output_dir_guard.take();
+    }
+}
+
+#[cfg(test)]
+mod harness_start_tests {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use super::{HostHarness, HostHarnessConfig};
+
+    fn minimal_config(forced_output_path: Option<PathBuf>) -> HostHarnessConfig {
+        HostHarnessConfig {
+            renderer_path: PathBuf::from("/nonexistent/renderide"),
+            forced_output_path,
+            width: 1,
+            height: 1,
+            interval_ms: 1,
+            timeout: Duration::from_secs(1),
+            verbose_renderer: false,
+        }
+    }
+
+    #[test]
+    fn start_uses_forced_output_path_when_set() {
+        let custom = PathBuf::from("/tmp/harness_forced_out.png");
+        let h = HostHarness::start(minimal_config(Some(custom.clone()))).expect("start");
+        assert_eq!(h.output_path(), &custom);
+    }
+
+    #[test]
+    fn start_allocates_temp_headless_png_when_not_forced() {
+        let h = HostHarness::start(minimal_config(None)).expect("start");
+        let out = h.output_path();
+        assert_eq!(
+            out.file_name().and_then(|n| n.to_str()),
+            Some("headless.png")
+        );
+        let parent = out.parent().expect("parent");
+        let dir_name = parent
+            .file_name()
+            .expect("dir name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            dir_name.starts_with("renderide-test-"),
+            "expected tempfile prefix, got {dir_name:?}"
+        );
     }
 }

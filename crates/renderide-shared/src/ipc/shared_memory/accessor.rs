@@ -136,15 +136,12 @@ impl SharedMemoryAccessor {
             )));
         }
         let buffer_id = descriptor.buffer_id;
-        let view = match self.get_view(descriptor) {
-            Some(v) => v,
-            None => {
-                return Err(prefix_err(&format!(
-                    "get_view failed buffer_id={} path/name={}",
-                    buffer_id,
-                    self.shm_path_for_buffer(buffer_id)
-                )));
-            }
+        let Some(view) = self.get_view(descriptor) else {
+            return Err(prefix_err(&format!(
+                "get_view failed buffer_id={} path/name={}",
+                buffer_id,
+                self.shm_path_for_buffer(buffer_id)
+            )));
         };
         let bytes = view
             .slice(descriptor.offset, descriptor.length)
@@ -157,7 +154,7 @@ impl SharedMemoryAccessor {
                     view.len()
                 ))
             })?;
-        let type_size = std::mem::size_of::<T>();
+        let type_size = size_of::<T>();
         let length = descriptor.length as usize;
         let remainder = length % type_size;
         if remainder != 0 {
@@ -170,7 +167,7 @@ impl SharedMemoryAccessor {
             return Ok(Vec::new());
         }
 
-        let align = std::mem::align_of::<T>();
+        let align = align_of::<T>();
         let base = bytes.as_ptr() as usize;
         if base.is_multiple_of(align) {
             if let Ok(slice) = bytemuck::try_cast_slice::<u8, T>(bytes) {
@@ -183,11 +180,12 @@ impl SharedMemoryAccessor {
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
             let start = i * type_size;
-            out.push(bytemuck::pod_read_unaligned(
-                bytes
-                    .get(start..start + type_size)
-                    .ok_or_else(|| prefix_err("pod chunk subslice"))?,
-            ));
+            let chunk = bytes
+                .get(start..start + type_size)
+                .ok_or_else(|| prefix_err("pod chunk subslice"))?;
+            let value = bytemuck::try_pod_read_unaligned::<T>(chunk)
+                .map_err(|e| prefix_err(&format!("pod_read_unaligned: {e:?}")))?;
+            out.push(value);
         }
         Ok(out)
     }
@@ -227,15 +225,12 @@ impl SharedMemoryAccessor {
             )));
         }
         let buffer_id = descriptor.buffer_id;
-        let view = match self.get_view(descriptor) {
-            Some(v) => v,
-            None => {
-                return Err(prefix_err(&format!(
-                    "get_view failed buffer_id={} path/name={}",
-                    buffer_id,
-                    self.shm_path_for_buffer(buffer_id)
-                )));
-            }
+        let Some(view) = self.get_view(descriptor) else {
+            return Err(prefix_err(&format!(
+                "get_view failed buffer_id={} path/name={}",
+                buffer_id,
+                self.shm_path_for_buffer(buffer_id)
+            )));
         };
         let bytes = view
             .slice(descriptor.offset, descriptor.length)
@@ -298,7 +293,7 @@ impl SharedMemoryAccessor {
         let Some(bytes) = view.slice_mut(descriptor.offset, descriptor.length) else {
             return false;
         };
-        let type_size = std::mem::size_of::<T>();
+        let type_size = size_of::<T>();
         let count = descriptor.length as usize / type_size;
         if count == 0 {
             return false;

@@ -5,6 +5,22 @@ use crate::shared::SetTexture2DData;
 use super::super::layout::{host_mip_payload_byte_offset, mip_byte_len};
 use super::error::TextureUploadError;
 
+/// Format-side context shared by every mip in one texture upload (2D, cubemap, 3D).
+///
+/// Bundled so the per-mip decode functions don't take the same four handles on every call.
+/// Fields are [`Copy`] so the context can be captured into a `rayon::spawn` closure by value.
+#[derive(Copy, Clone)]
+pub(super) struct MipUploadFormatCtx {
+    /// Host asset id for logging and diagnostics.
+    pub asset_id: i32,
+    /// Host-side texel format from the upload descriptor.
+    pub fmt_format: crate::shared::TextureFormat,
+    /// GPU-facing texel format the material system expects.
+    pub wgpu_format: wgpu::TextureFormat,
+    /// Whether host bytes must be decoded to RGBA8 before upload.
+    pub needs_rgba8_decode: bool,
+}
+
 /// Picks the descriptor offset bias that maximizes how many mips fit in the SHM payload.
 pub(super) fn choose_mip_start_bias(
     format: crate::shared::TextureFormat,
@@ -60,14 +76,11 @@ pub(super) fn valid_mip_prefix_len(
             break;
         }
         let start_rel = start_abs - bias;
-        let start = match host_mip_payload_byte_offset(format, start_rel) {
-            Some(b) => b,
-            None => {
-                return Err(TextureUploadError::from(format!(
-                    "mip {i}: could not convert mip_starts offset to bytes for {:?}",
-                    format
-                )));
-            }
+        let Some(start) = host_mip_payload_byte_offset(format, start_rel) else {
+            return Err(TextureUploadError::from(format!(
+                "mip {i}: could not convert mip_starts offset to bytes for {:?}",
+                format
+            )));
         };
         if start
             .checked_add(host_len)
@@ -98,15 +111,38 @@ pub(super) fn uncompressed_row_bytes(f: wgpu::TextureFormat) -> Result<usize, Te
     Ok(bsz as usize)
 }
 
-pub(super) fn write_one_mip(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    mip_level: u32,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-    bytes: &[u8],
-) -> Result<(), TextureUploadError> {
+/// Descriptor for [`write_one_mip`]: one mip of a 2D texture via [`wgpu::Queue::write_texture`].
+pub(super) struct Texture2dMipWrite<'a> {
+    /// Queue used for the texel copy.
+    pub queue: &'a wgpu::Queue,
+    /// Shared ABBA gate for [`wgpu::Queue::write_texture`]; see
+    /// [`crate::gpu::WriteTextureSubmitGate`].
+    pub write_texture_submit_gate: &'a crate::gpu::WriteTextureSubmitGate,
+    /// Destination texture.
+    pub texture: &'a wgpu::Texture,
+    /// Mip level index.
+    pub mip_level: u32,
+    /// Logical width in texels.
+    pub width: u32,
+    /// Logical height in texels.
+    pub height: u32,
+    /// Texel format (must match texture creation).
+    pub format: wgpu::TextureFormat,
+    /// Tightly packed mip bytes.
+    pub bytes: &'a [u8],
+}
+
+pub(super) fn write_one_mip(write: &Texture2dMipWrite<'_>) -> Result<(), TextureUploadError> {
+    let Texture2dMipWrite {
+        queue,
+        write_texture_submit_gate,
+        texture,
+        mip_level,
+        width,
+        height,
+        format,
+        bytes,
+    } = *write;
     // For block-compressed formats wgpu requires the copy extent to be a multiple of the
     // block dimensions (the "physical" mip size).  The data produced by copy_layout_for_mip
     // already covers the padded block grid (via div_ceil), so only the Extent3d needs aligning.
@@ -138,6 +174,8 @@ pub(super) fn write_one_mip(
         )));
     }
 
+    // Gate against driver-thread `Queue::submit` to avoid the wgpu-core 29 ABBA.
+    let _gate = write_texture_submit_gate.lock();
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -156,6 +194,9 @@ pub(super) fn write_one_mip(
 pub struct Texture3dVolumeMipWrite<'a> {
     /// Queue used for the texel copy.
     pub queue: &'a wgpu::Queue,
+    /// Shared ABBA gate for [`wgpu::Queue::write_texture`]; see
+    /// [`crate::gpu::WriteTextureSubmitGate`].
+    pub write_texture_submit_gate: &'a crate::gpu::WriteTextureSubmitGate,
     /// Destination texture.
     pub texture: &'a wgpu::Texture,
     /// Mip level index.
@@ -178,6 +219,7 @@ pub fn write_texture3d_volume_mip(
 ) -> Result<(), TextureUploadError> {
     let Texture3dVolumeMipWrite {
         queue,
+        write_texture_submit_gate,
         texture,
         mip_level,
         width,
@@ -218,6 +260,8 @@ pub fn write_texture3d_volume_mip(
         )));
     }
 
+    // Gate against driver-thread `Queue::submit` to avoid the wgpu-core 29 ABBA.
+    let _gate = write_texture_submit_gate.lock();
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -236,6 +280,9 @@ pub fn write_texture3d_volume_mip(
 pub struct CubemapFaceMipWrite<'a> {
     /// Queue used for the texel copy.
     pub queue: &'a wgpu::Queue,
+    /// Shared ABBA gate for [`wgpu::Queue::write_texture`]; see
+    /// [`crate::gpu::WriteTextureSubmitGate`].
+    pub write_texture_submit_gate: &'a crate::gpu::WriteTextureSubmitGate,
     /// Destination cubemap texture (`D2` array with six layers).
     pub texture: &'a wgpu::Texture,
     /// Mip level index.
@@ -256,6 +303,7 @@ pub struct CubemapFaceMipWrite<'a> {
 pub fn write_cubemap_face_mip(write: &CubemapFaceMipWrite<'_>) -> Result<(), TextureUploadError> {
     let CubemapFaceMipWrite {
         queue,
+        write_texture_submit_gate,
         texture,
         mip_level,
         face_layer,
@@ -292,6 +340,8 @@ pub fn write_cubemap_face_mip(write: &CubemapFaceMipWrite<'_>) -> Result<(), Tex
         )));
     }
 
+    // Gate against driver-thread `Queue::submit` to avoid the wgpu-core 29 ABBA.
+    let _gate = write_texture_submit_gate.lock();
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -327,6 +377,10 @@ pub(super) fn copy_layout_for_mip(
         let expected = bpr
             .checked_mul(height as usize)
             .ok_or_else(|| TextureUploadError::from("expected bytes overflow"))?;
+        #[expect(
+            clippy::map_err_ignore,
+            reason = "TryFromIntError adds no detail beyond the overflow label"
+        )]
         let bpr_u32 =
             u32::try_from(bpr).map_err(|_| TextureUploadError::from("bpr u32 overflow"))?;
         return Ok((

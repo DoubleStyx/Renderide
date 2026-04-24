@@ -137,12 +137,9 @@ fn ancestor_membership_mask(
                 hit = false;
                 break;
             }
-            let parent = match space.node_parents.get(cu) {
-                Some(&p) => p,
-                None => {
-                    hit = false;
-                    break;
-                }
+            let Some(&parent) = space.node_parents.get(cu) else {
+                hit = false;
+                break;
             };
             if parent < 0 || parent == cur {
                 hit = false;
@@ -189,15 +186,15 @@ impl CameraTransformDrawFilter {
 pub fn draw_filter_from_camera_entry(
     entry: &crate::scene::CameraRenderableEntry,
 ) -> CameraTransformDrawFilter {
-    if !entry.selective_transform_ids.is_empty() {
-        CameraTransformDrawFilter {
-            only: Some(entry.selective_transform_ids.iter().copied().collect()),
-            exclude: HashSet::new(),
-        }
-    } else {
+    if entry.selective_transform_ids.is_empty() {
         CameraTransformDrawFilter {
             only: None,
             exclude: entry.exclude_transform_ids.iter().copied().collect(),
+        }
+    } else {
+        CameraTransformDrawFilter {
+            only: Some(entry.selective_transform_ids.iter().copied().collect()),
+            exclude: HashSet::new(),
         }
     }
 }
@@ -296,9 +293,7 @@ pub struct WorldMeshDrawItem {
 pub fn resolved_material_slots<'a>(
     renderer: &'a StaticMeshRenderer,
 ) -> Cow<'a, [MeshMaterialSlot]> {
-    if !renderer.material_slots.is_empty() {
-        Cow::Borrowed(renderer.material_slots.as_slice())
-    } else {
+    if renderer.material_slots.is_empty() {
         match renderer.primary_material_asset_id {
             Some(material_asset_id) => Cow::Owned(vec![MeshMaterialSlot {
                 material_asset_id,
@@ -306,6 +301,8 @@ pub fn resolved_material_slots<'a>(
             }]),
             None => Cow::Borrowed(&[]),
         }
+    } else {
+        Cow::Borrowed(renderer.material_slots.as_slice())
     }
 }
 
@@ -390,5 +387,26 @@ mod tests {
         };
         let mask = no_exclude.build_pass_mask(&scene, space_id).unwrap();
         assert_eq!(mask, vec![true, true, true]);
+    }
+
+    /// [`CameraTransformDrawFilter::build_pass_mask`] returns `None` when the requested render
+    /// space has not been seeded in the [`SceneCoordinator`].
+    #[test]
+    fn build_pass_mask_returns_none_for_missing_space() {
+        let scene = SceneCoordinator::new();
+        let missing = RenderSpaceId(999);
+        let filter = CameraTransformDrawFilter::default();
+        assert!(filter.build_pass_mask(&scene, missing).is_none());
+    }
+
+    /// Default-constructed filters (no `only`, empty `exclude`) pass every node.
+    #[test]
+    fn default_filter_passes_all_nodes() {
+        let (scene, space_id) = seeded_scene();
+        let filter = CameraTransformDrawFilter::default();
+        for node_id in 0..3 {
+            assert!(filter.passes(node_id));
+            assert!(filter.passes_scene_node(&scene, space_id, node_id));
+        }
     }
 }

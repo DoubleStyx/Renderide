@@ -1,6 +1,6 @@
 //! Per-variant handling for [`crate::protocol::HostCommand`] messages from the Host.
 
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -13,7 +13,7 @@ use crate::protocol::{HostCommand, LoopAction};
 use crate::renderer_stub;
 
 /// Extends the IPC watchdog deadline and logs receipt.
-pub fn handle_heartbeat(heartbeat_deadline: &Arc<Mutex<Instant>>) -> LoopAction {
+pub(crate) fn handle_heartbeat(heartbeat_deadline: &Arc<Mutex<Instant>>) -> LoopAction {
     if let Ok(mut d) = heartbeat_deadline.lock() {
         *d = Instant::now() + heartbeat_refresh_timeout();
     }
@@ -22,13 +22,13 @@ pub fn handle_heartbeat(heartbeat_deadline: &Arc<Mutex<Instant>>) -> LoopAction 
 }
 
 /// Acknowledges shutdown; the queue loop sets `cancel` when this returns [`LoopAction::Break`].
-pub fn handle_shutdown() -> LoopAction {
+pub(crate) fn handle_shutdown() -> LoopAction {
     logger::info!("Got shutdown command");
     LoopAction::Break
 }
 
 /// Reads the system clipboard and enqueues UTF-8 bytes (empty string on failure).
-pub fn handle_get_text(outgoing: &mut Publisher) -> LoopAction {
+pub(crate) fn handle_get_text(outgoing: &mut Publisher) -> LoopAction {
     logger::info!("Getting clipboard text");
     let text = arboard::Clipboard::new()
         .and_then(|mut c| c.get_text())
@@ -38,7 +38,7 @@ pub fn handle_get_text(outgoing: &mut Publisher) -> LoopAction {
 }
 
 /// Writes UTF-8 text to the system clipboard (best-effort).
-pub fn handle_set_text(text: &str) -> LoopAction {
+pub(crate) fn handle_set_text(text: &str) -> LoopAction {
     logger::info!("Setting clipboard text");
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         let _ = clipboard.set_text(text);
@@ -46,12 +46,17 @@ pub fn handle_set_text(text: &str) -> LoopAction {
     LoopAction::Continue
 }
 
-/// Spawns the renderer with optional `-LogLevel`, registers it for lifetime management, and enqueues `RENDERITE_STARTED:{pid}`.
-pub fn handle_start_renderer(
+/// Spawns the renderer with optional `-LogLevel`, registers it for lifetime management, stores the
+/// [`Child`] in `renderer_child` for [`crate::orchestration::spawn_renderer_exit_watcher`], and
+/// enqueues `RENDERITE_STARTED:{pid}`.
+///
+/// If a renderer was already registered (restart), the previous process is killed and reaped first.
+pub(crate) fn handle_start_renderer(
     renderer_args: &[String],
     outgoing: &mut Publisher,
     config: &ResoBootConfig,
     lifetime: &ChildLifetimeGroup,
+    renderer_child: &Arc<Mutex<Option<Child>>>,
 ) -> LoopAction {
     let mut args: Vec<String> = renderer_args.to_vec();
     if let Some(ref level) = config.renderide_log_level {
@@ -79,12 +84,20 @@ pub fn handle_start_renderer(
                 let _ = process.kill();
                 let _ = process.wait();
             } else {
-                logger::info!(
-                    "Renderer started PID {} with args: {}",
-                    process.id(),
-                    args.join(" ")
-                );
-                let response = format!("RENDERITE_STARTED:{}", process.id());
+                let pid = process.id();
+                if let Ok(mut slot) = renderer_child.lock() {
+                    if let Some(mut old) = slot.take() {
+                        logger::info!(
+                            "Replacing previous renderer PID {} with new process",
+                            old.id()
+                        );
+                        let _ = old.kill();
+                        let _ = old.wait();
+                    }
+                    *slot = Some(process);
+                }
+                logger::info!("Renderer started PID {} with args: {}", pid, args.join(" "));
+                let response = format!("RENDERITE_STARTED:{pid}");
                 let _ = outgoing.try_enqueue(response.as_bytes());
             }
         }
@@ -96,12 +109,13 @@ pub fn handle_start_renderer(
 }
 
 /// Dispatches one parsed [`HostCommand`].
-pub fn dispatch_command(
+pub(crate) fn dispatch_command(
     cmd: HostCommand,
     outgoing: &mut Publisher,
     config: &ResoBootConfig,
     lifetime: &ChildLifetimeGroup,
     heartbeat_deadline: &Arc<Mutex<Instant>>,
+    renderer_child: &Arc<Mutex<Option<Child>>>,
 ) -> LoopAction {
     match cmd {
         HostCommand::Heartbeat => handle_heartbeat(heartbeat_deadline),
@@ -109,7 +123,7 @@ pub fn dispatch_command(
         HostCommand::GetText => handle_get_text(outgoing),
         HostCommand::SetText(text) => handle_set_text(&text),
         HostCommand::StartRenderer(args) => {
-            handle_start_renderer(&args, outgoing, config, lifetime)
+            handle_start_renderer(&args, outgoing, config, lifetime, renderer_child)
         }
     }
 }
@@ -117,6 +131,7 @@ pub fn dispatch_command(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::process::Child;
     use std::time::Duration;
 
     use interprocess::{Publisher, QueueOptions, Subscriber};
@@ -124,6 +139,10 @@ mod tests {
 
     use super::*;
     use crate::constants::heartbeat_refresh_timeout;
+
+    fn renderer_slot() -> Arc<Mutex<Option<Child>>> {
+        Arc::new(Mutex::new(None))
+    }
 
     fn sample_config(exe: PathBuf, dir: PathBuf) -> ResoBootConfig {
         ResoBootConfig {
@@ -205,8 +224,9 @@ mod tests {
         let cfg = sample_config(tmp.join("definitely_missing_exe_12345"), tmp);
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let (mut publisher, _) = make_publisher_subscriber(&dir);
+        let slot = renderer_slot();
         assert_eq!(
-            handle_start_renderer(&[], &mut publisher, &cfg, &lifetime),
+            handle_start_renderer(&[], &mut publisher, &cfg, &lifetime, &slot),
             LoopAction::Continue
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -223,8 +243,9 @@ mod tests {
         let cfg = sample_config(unix_noop_executable(), tmp);
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let (mut publisher, mut subscriber) = make_publisher_subscriber(&dir);
+        let slot = renderer_slot();
         assert_eq!(
-            handle_start_renderer(&[], &mut publisher, &cfg, &lifetime),
+            handle_start_renderer(&[], &mut publisher, &cfg, &lifetime, &slot),
             LoopAction::Continue
         );
         for _ in 0..50 {
@@ -253,13 +274,15 @@ mod tests {
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let (mut publisher, _) = make_publisher_subscriber(&dir);
         let deadline = Arc::new(Mutex::new(Instant::now()));
+        let slot = renderer_slot();
         assert_eq!(
             dispatch_command(
                 HostCommand::Heartbeat,
                 &mut publisher,
                 &cfg,
                 &lifetime,
-                &deadline
+                &deadline,
+                &slot
             ),
             LoopAction::Continue
         );
@@ -269,9 +292,32 @@ mod tests {
                 &mut publisher,
                 &cfg,
                 &lifetime,
-                &deadline
+                &deadline,
+                &slot
             ),
             LoopAction::Break
+        );
+        assert_eq!(
+            dispatch_command(
+                HostCommand::SetText("clip".into()),
+                &mut publisher,
+                &cfg,
+                &lifetime,
+                &deadline,
+                &slot
+            ),
+            LoopAction::Continue
+        );
+        assert_eq!(
+            dispatch_command(
+                HostCommand::GetText,
+                &mut publisher,
+                &cfg,
+                &lifetime,
+                &deadline,
+                &slot
+            ),
+            LoopAction::Continue
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -287,8 +333,9 @@ mod tests {
         cfg.renderide_log_level = Some(LogLevel::Warn);
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let (mut publisher, _) = make_publisher_subscriber(&dir);
+        let slot = renderer_slot();
         assert_eq!(
-            handle_start_renderer(&[], &mut publisher, &cfg, &lifetime),
+            handle_start_renderer(&[], &mut publisher, &cfg, &lifetime, &slot),
             LoopAction::Continue
         );
         let _ = std::fs::remove_dir_all(&dir);

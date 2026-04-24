@@ -1,5 +1,3 @@
-#![warn(missing_docs)]
-
 //! File-first logging for the Renderide workspace (bootstrapper, captured host output, renderer).
 //!
 //! ## API split

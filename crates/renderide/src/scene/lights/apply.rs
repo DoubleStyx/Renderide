@@ -5,7 +5,7 @@ use std::mem::size_of;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{
     LightRenderablesUpdate, LightState, LightsBufferRendererState, LightsBufferRendererUpdate,
-    LIGHT_STATE_HOST_ROW_BYTES,
+    LIGHTS_BUFFER_RENDERER_STATE_HOST_ROW_BYTES, LIGHT_STATE_HOST_ROW_BYTES,
 };
 
 use crate::scene::error::SceneError;
@@ -19,6 +19,7 @@ pub fn apply_light_renderables_update(
     update: &LightRenderablesUpdate,
     space_id: i32,
 ) -> Result<(), SceneError> {
+    profiling::scope!("scene::apply_lights");
     let i32_size = size_of::<i32>() as i32;
     let state_size = LIGHT_STATE_HOST_ROW_BYTES as i32;
 
@@ -61,8 +62,9 @@ pub fn apply_lights_buffer_renderers_update(
     update: &LightsBufferRendererUpdate,
     space_id: i32,
 ) -> Result<(), SceneError> {
+    profiling::scope!("scene::apply_lights_buffer_renderers");
     let i32_size = size_of::<i32>() as i32;
-    let state_size = size_of::<LightsBufferRendererState>() as i32;
+    let state_size = LIGHTS_BUFFER_RENDERER_STATE_HOST_ROW_BYTES as i32;
 
     let removals = if update.removals.length >= i32_size {
         let ctx = format!("lights buffer renderers removals space_id={space_id}");
@@ -82,8 +84,9 @@ pub fn apply_lights_buffer_renderers_update(
 
     let states = if update.states.length >= state_size {
         let ctx = format!("lights buffer renderers states space_id={space_id}");
-        shm.access_copy_diagnostic_with_context::<LightsBufferRendererState>(
+        shm.access_copy_memory_packable_rows::<LightsBufferRendererState>(
             &update.states,
+            LIGHTS_BUFFER_RENDERER_STATE_HOST_ROW_BYTES,
             Some(&ctx),
         )
         .map_err(SceneError::SharedMemoryAccess)?

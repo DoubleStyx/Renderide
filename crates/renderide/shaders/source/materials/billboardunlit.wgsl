@@ -3,8 +3,13 @@
 //! Unity's source uses a geometry shader to expand one point into four quad vertices. WGSL has no
 //! geometry stage, so this shader billboards already-quad geometry in the vertex stage. Meshes with
 //! duplicated center positions and quad UVs match the original point expansion closely.
+//!
+//! Offset-texture caveat: Unity's BillboardUnlit shader gates UV offset on the `_OFFSET_TEXTURE`
+//! multi-compile keyword, which is carried by `ShaderKeywords.Variant` and not plumbed through IPC
+//! (see `ShaderKeywords.cs`). Without the per-shader keyword-index table we can't decode the
+//! bitmask, so we sample `_OffsetTex` unconditionally; FrooxEngine defaults `_OffsetMagnitude` to
+//! zero, which makes the shift inert for materials that don't opt into offset sampling.
 
-//#pass forward: fs=fs_main, depth=greater, zwrite=on, cull=back, blend=one,zero,add, alpha=one,one,max, material=forward_base
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
@@ -14,18 +19,12 @@
 struct BillboardUnlitMaterial {
     _Color: vec4<f32>,
     _Tex_ST: vec4<f32>,
-    _RightEye_ST: vec4<f32>,
-    _PointSize: vec4<f32>,
     _OffsetTex_ST: vec4<f32>,
     _OffsetMagnitude: vec4<f32>,
+    _RightEye_ST: vec4<f32>,
+    _PointSize: vec4<f32>,
     _Cutoff: f32,
     _PolarPow: f32,
-    flags: u32,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
-    _ZTest: f32,
     _POLARUV: f32,
     _RIGHT_EYE_ST: f32,
     _POINT_ROTATION: f32,
@@ -155,48 +154,29 @@ fn main_st(view_layer: u32) -> vec4<f32> {
 
 fn texture_uv(base_uv: vec2<f32>, view_layer: u32) -> vec2<f32> {
     let st = main_st(view_layer);
+    let uv_off = uvu::apply_st(base_uv, mat._OffsetTex_ST);
+    let offset_s = textureSample(_OffsetTex, _OffsetTex_sampler, uv_off);
+    let offset_shift = offset_s.xy * mat._OffsetMagnitude.xy;
     if (mat._POLARUV > 0.5) {
-        return uvu::apply_st(uvu::polar_uv(base_uv, mat._PolarPow), st);
+        return uvu::apply_st(uvu::polar_uv(base_uv, mat._PolarPow), st) + offset_shift;
     }
-    return uvu::apply_st(base_uv, st);
+    return uvu::apply_st(base_uv, st) + offset_shift;
 }
 
-fn apply_offset(base_uv: vec2<f32>, sample_uv: vec2<f32>) -> vec2<f32> {
-    if ((mat.flags & 4u) == 0u) {
-        return sample_uv;
-    }
-    let offset_uv = uvu::apply_st(base_uv, mat._OffsetTex_ST);
-    let offset = textureSample(_OffsetTex, _OffsetTex_sampler, offset_uv);
-    return sample_uv + offset.xy * mat._OffsetMagnitude.xy;
-}
-
+//#material forward_base
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var col = mat._Color;
-    var clip_a = mat._Color.a;
+    let uv_main = texture_uv(in.uv, in.view_layer);
+    let tex = textureSample(_Tex, _Tex_sampler, uv_main);
+    let clip_a = mat._Color.a * acs::texture_alpha_base_mip(_Tex, _Tex_sampler, uv_main);
+    var col = mat._Color * tex;
 
-    if ((mat.flags & 1u) != 0u) {
-        let uv_main = apply_offset(in.uv, texture_uv(in.uv, in.view_layer));
-        let tex = textureSample(_Tex, _Tex_sampler, uv_main);
-        clip_a = mat._Color.a * acs::texture_alpha_base_mip(_Tex, _Tex_sampler, uv_main);
-        col = col * tex;
-    }
-
-    if ((mat.flags & 2u) != 0u && clip_a <= mat._Cutoff) {
+    if (mat._Cutoff > 0.0 && mat._Cutoff < 1.0 && clip_a <= mat._Cutoff) {
         discard;
     }
 
     if (mat._VERTEXCOLORS > 0.5) {
         col = col * in.color;
-    }
-
-    if ((mat.flags & 32u) != 0u) {
-        col = vec4<f32>(col.rgb * col.a, col.a);
-    }
-
-    if ((mat.flags & 64u) != 0u) {
-        let lum = (col.r + col.g + col.b) * 0.33333334;
-        col.a = col.a * lum;
     }
 
     return rg::retain_globals_additive(col);

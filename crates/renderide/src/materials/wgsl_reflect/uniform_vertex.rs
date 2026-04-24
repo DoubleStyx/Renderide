@@ -106,7 +106,7 @@ pub(super) fn reflect_first_group1_uniform_struct(
             continue;
         };
         let mut fields = HashMap::new();
-        for m in members.iter() {
+        for m in members {
             let Some(name) = m.name.as_deref() else {
                 continue;
             };

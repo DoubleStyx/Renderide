@@ -9,14 +9,21 @@ use std::num::NonZeroU64;
 
 use wgpu::util::DeviceExt;
 
-const SKINNING_WGSL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/compute/mesh_skinning.wgsl"
-));
-const BLENDSHAPE_WGSL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/compute/mesh_blendshape.wgsl"
-));
+use crate::embedded_shaders::embedded_target_wgsl;
+
+/// Embedded shader stem for the mesh skinning compute pass (single-variant).
+const SKINNING_STEM: &str = "mesh_skinning";
+/// Embedded shader stem for the blendshape compute pass (single-variant).
+const BLENDSHAPE_STEM: &str = "mesh_blendshape";
+
+fn load_embedded(stem: &str) -> &'static str {
+    #[expect(
+        clippy::expect_used,
+        reason = "embedded shader is required; absence is a build script regression"
+    )]
+    embedded_target_wgsl(stem)
+        .expect("mesh_preprocess: embedded shader missing (build script regression)")
+}
 
 fn storage_buffer_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -94,11 +101,11 @@ impl MeshPreprocessPipelines {
     pub fn new(device: &wgpu::Device) -> Result<Self, String> {
         let skin_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("mesh_skinning"),
-            source: wgpu::ShaderSource::Wgsl(SKINNING_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(load_embedded(SKINNING_STEM).into()),
         });
         let blend_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("mesh_blendshape"),
-            source: wgpu::ShaderSource::Wgsl(BLENDSHAPE_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(load_embedded(BLENDSHAPE_STEM).into()),
         });
 
         let skin_bgl = skinning_bind_group_layout(device);

@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use crate::gpu::GpuContext;
 
-use super::frame_diagnostics_snapshot::{GpuAllocatorHud, HostCpuMemoryHud};
+use super::frame_diagnostics_snapshot::HostCpuMemoryHud;
 
 /// Frametime history length used for the sparkline plot (power of two for predictable caps).
 pub const FRAME_TIME_HISTORY_LEN: usize = 128;
@@ -72,20 +72,18 @@ pub struct FrameTimingHudSnapshot {
     pub host_ram_used_bytes: u64,
     /// Resident memory of the renderer process in bytes (sysinfo; `None` when unavailable).
     pub process_ram_bytes: Option<u64>,
-    /// wgpu allocator byte totals (allocated + reserved) when the backend exposes a report.
-    pub gpu_allocator: GpuAllocatorHud,
 }
 
 impl FrameTimingHudSnapshot {
-    /// Reads GPU timing + allocator totals and pairs them with the supplied host / history state.
+    /// Reads GPU timing and pairs them with the supplied host / history state.
     pub fn capture(
         gpu: &GpuContext,
         wall_frame_time_ms: f64,
         host: &HostCpuMemoryHud,
         history: &FrameTimeHistory,
     ) -> Self {
+        profiling::scope!("hud::build_timing_snapshot");
         let (cpu_frame_until_submit_ms, gpu_frame_after_submit_ms) = gpu.frame_cpu_gpu_ms_for_hud();
-        let (allocated_bytes, reserved_bytes) = gpu.gpu_allocator_bytes();
         Self {
             wall_frame_time_ms,
             cpu_frame_until_submit_ms,
@@ -95,10 +93,6 @@ impl FrameTimingHudSnapshot {
             host_ram_total_bytes: host.ram_total_bytes,
             host_ram_used_bytes: host.ram_used_bytes,
             process_ram_bytes: host.process_ram_bytes,
-            gpu_allocator: GpuAllocatorHud {
-                allocated_bytes,
-                reserved_bytes,
-            },
         }
     }
 

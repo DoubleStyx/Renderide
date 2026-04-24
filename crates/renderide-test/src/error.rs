@@ -6,7 +6,7 @@ use thiserror::Error;
 
 /// Top-level harness error.
 #[derive(Debug, Error)]
-pub enum HarnessError {
+pub(crate) enum HarnessError {
     /// The renderer binary could not be located on disk.
     #[error("renderer binary not found at {0}; build with `cargo build -p renderide` (use `--profile dev-fast` or `--release` as needed)")]
     RendererBinaryMissing(PathBuf),
@@ -77,4 +77,41 @@ pub enum HarnessError {
     /// `image-compare` failed to compute a similarity score.
     #[error("image-compare: {0}")]
     ImageCompare(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::HarnessError;
+
+    #[test]
+    fn display_renderer_binary_missing() {
+        let p = PathBuf::from("/no/renderide");
+        let e = HarnessError::RendererBinaryMissing(p.clone());
+        let s = e.to_string();
+        assert!(s.contains("renderer binary not found"));
+        assert!(s.contains(p.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn display_golden_missing() {
+        let p = PathBuf::from("missing.png");
+        let e = HarnessError::GoldenMissing(p);
+        assert!(e.to_string().contains("golden image not found"));
+        assert!(e.to_string().contains("generate"));
+    }
+
+    #[test]
+    fn display_golden_mismatch_includes_scores_and_paths() {
+        let e = HarnessError::GoldenMismatch {
+            score: 0.5,
+            threshold: 0.95,
+            diff_path: PathBuf::from("target/diff.png"),
+        };
+        let s = e.to_string();
+        assert!(s.contains("SSIM=0.5000"));
+        assert!(s.contains("0.9500"));
+        assert!(s.contains("diff.png"));
+    }
 }

@@ -139,6 +139,8 @@ impl Subscriber {
         let read_offset = header.read_offset.load(Ordering::SeqCst);
         let write_offset = header.write_offset.load(Ordering::SeqCst);
         let ring = self.res.ring();
+        // SAFETY: `read_offset` is produced by the publisher after a space check and the wire
+        // protocol guarantees a contiguous eight-byte `MessageHeader` at this slot.
         let msg = unsafe { ring.message_header_at(read_offset) };
         loop {
             match msg.state.compare_exchange(

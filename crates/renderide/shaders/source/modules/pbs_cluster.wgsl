@@ -4,13 +4,27 @@
 
 #define_import_path renderide::pbs::cluster
 
-const TILE_SIZE: u32 = 16u;
+#import renderide::globals as rg
+
+const TILE_SIZE: u32 = 32u;
 const MAX_LIGHTS_PER_TILE: u32 = 64u;
 
-/// Integer pixel → tile index. Uses `floor(pxy / TILE_SIZE)` so tile `k` covers pixels `[16k, 16(k+1))`
-/// — this must match [`get_cluster_aabb`] in `compute/clustered_light.wgsl`, where AABB extents are
-/// computed at pixel-edge boundaries (`px_min = 16k`, `px_max = 16(k+1)`). Any gap between the two
-/// formulations shows as pixelated seams where fragments reach lights assigned only to a neighbor.
+/// Fetches the packed `u16` light index at `slot` within cluster `cluster_id`. Indices are stored
+/// 2 × `u16` per `u32` in `rg::cluster_light_indices` (low 16 bits = even slot, high 16 bits = odd
+/// slot). Must stay in sync with the compute-side writer in
+/// `shaders/source/compute/clustered_light.wgsl` and the Rust-side layout documented on
+/// `ClusterBufferRefs::cluster_light_indices`.
+fn cluster_light_index_at(cluster_id: u32, slot: u32) -> u32 {
+    let base_word = cluster_id * (MAX_LIGHTS_PER_TILE / 2u);
+    let word = rg::cluster_light_indices[base_word + (slot >> 1u)];
+    return (word >> ((slot & 1u) * 16u)) & 0xFFFFu;
+}
+
+/// Integer pixel → tile index. Uses `floor(pxy / TILE_SIZE)` so tile `k` covers pixels
+/// `[TILE_SIZE*k, TILE_SIZE*(k+1))` — this must match [`get_cluster_aabb`] in
+/// `compute/clustered_light.wgsl`, where AABB extents are computed at pixel-edge boundaries
+/// (`px_min = TILE_SIZE*k`, `px_max = TILE_SIZE*(k+1)`). Any gap between the two formulations
+/// shows as pixelated seams where fragments reach lights assigned only to a neighbor.
 fn cluster_xy_from_frag(frag_xy: vec2<f32>, viewport_w: u32, viewport_h: u32) -> vec2<u32> {
     let vw = max(viewport_w, 1u);
     let vh = max(viewport_h, 1u);

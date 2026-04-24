@@ -11,7 +11,7 @@ use crate::semaphore::Semaphore;
 /// File-backed queue: keeps the `.qu` file open alongside a writable [`memmap2::MmapMut`].
 pub(super) struct UnixMapping {
     /// Open file handle; must outlive `mmap`.
-    _file: std::fs::File,
+    _file: fs::File,
     /// Writable mapping of the entire file.
     mmap: memmap2::MmapMut,
     /// Path passed to [`crate::QueueOptions::file_path`].
@@ -44,12 +44,13 @@ pub(super) fn open_queue(options: &QueueOptions) -> Result<(UnixMapping, Semapho
         fs::create_dir_all(parent).map_err(OpenError)?;
     }
 
-    let storage_size_u64 = u64::try_from(options.actual_storage_size()).map_err(|_| {
-        OpenError(io::Error::other(format!(
-            "queue storage size does not fit u64 (capacity {})",
-            options.capacity
-        )))
-    })?;
+    let storage_size_u64 =
+        u64::try_from(options.actual_storage_size()).map_err(|e: std::num::TryFromIntError| {
+            OpenError(io::Error::other(format!(
+                "queue storage size does not fit u64 (capacity {}): {e}",
+                options.capacity
+            )))
+        })?;
 
     let file = OpenOptions::new()
         .read(true)
@@ -66,6 +67,10 @@ pub(super) fn open_queue(options: &QueueOptions) -> Result<(UnixMapping, Semapho
     }
 
     let map_len = storage_size_u64 as usize;
+    // SAFETY: `memmap2::MmapMut` is unsafe because the file's contents may be mutated by other
+    // processes; this is intentional — the cross-process ring protocol provides all synchronisation
+    // via atomics and single-writer / single-reader slot discipline. The mapping length is no
+    // greater than the just-set file length.
     let mmap = unsafe {
         memmap2::MmapOptions::new()
             .len(map_len)

@@ -6,29 +6,16 @@ use crate::backend::RenderBackend;
 use crate::gpu::{GpuContext, GpuLimits};
 use crate::scene::SceneCoordinator;
 
+use super::error::GraphExecuteError;
 use super::frame_params::{HostCameraFrame, OcclusionViewId};
 use super::ids::{GroupId, PassId};
-use super::pass::{GroupScope, PassKind, RenderPass};
+use super::pass::{GroupScope, PassKind, PassMergeHint, PassNode};
 use super::resources::{
     ImportedBufferDecl, ImportedTextureDecl, ResourceAccess, TextureAttachmentResolve,
-    TextureAttachmentTarget, TransientBufferDesc, TransientTextureDesc,
+    TextureAttachmentTarget, TransientBufferDesc, TransientSubresourceDesc, TransientTextureDesc,
 };
+use super::schedule::FrameSchedule;
 use super::world_mesh_draw_prep::{CameraTransformDrawFilter, WorldMeshDrawCollection};
-
-/// Inputs for [`CompiledRenderGraph::execute_offscreen_single_view`] and
-/// [`crate::backend::RenderBackend::execute_frame_graph_offscreen_single_view`].
-pub struct OffscreenSingleViewExecuteSpec<'a> {
-    /// Scene after cache flush.
-    pub scene: &'a SceneCoordinator,
-    /// Per-view camera and clip data from the host.
-    pub host_camera: HostCameraFrame,
-    /// Pre-built color/depth views for the render texture.
-    pub external: ExternalOffscreenTargets<'a>,
-    /// Optional mesh transform filter for secondary cameras.
-    pub transform_filter: Option<CameraTransformDrawFilter>,
-    /// Optional pre-collected draws when skipping CPU mesh collection.
-    pub prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
-}
 
 /// Single-view color + depth for secondary cameras rendering to a host [`crate::resources::GpuRenderTexture`].
 pub struct ExternalOffscreenTargets<'a> {
@@ -85,32 +72,141 @@ pub struct FrameView<'a> {
 /// Borrows shared across frame-global and per-view [`CompiledRenderGraph::execute_multi_view`] passes.
 pub(super) struct MultiViewExecutionContext<'a> {
     /// GPU context (surface, swapchain, submits).
-    gpu: &'a mut GpuContext,
+    pub(super) gpu: &'a mut GpuContext,
     /// Scene after cache flush.
-    scene: &'a SceneCoordinator,
+    pub(super) scene: &'a SceneCoordinator,
     /// Render backend (materials, occlusion, HUD overlay).
-    backend: &'a mut RenderBackend,
+    pub(super) backend: &'a mut RenderBackend,
     /// Device for encoders and pipeline state.
-    device: &'a wgpu::Device,
-    /// Limits for [`RenderPassContext`].
-    gpu_limits: &'a GpuLimits,
+    pub(super) device: &'a wgpu::Device,
+    /// Limits for pass contexts.
+    pub(super) gpu_limits: &'a GpuLimits,
     /// Shared queue handle (wgpu::Queue is internally synchronized).
-    queue_arc: &'a Arc<wgpu::Queue>,
+    pub(super) queue_arc: &'a Arc<wgpu::Queue>,
     /// Swapchain color view when a view targets the main window.
-    backbuffer_view_holder: &'a Option<wgpu::TextureView>,
+    pub(super) backbuffer_view_holder: &'a Option<wgpu::TextureView>,
+}
+
+impl<'a> FrameViewTarget<'a> {
+    /// `true` when this target renders to a 2-layer multiview color attachment.
+    pub fn is_multiview_target(&self) -> bool {
+        matches!(self, FrameViewTarget::ExternalMultiview(_))
+    }
+
+    /// Host render-texture asset id this target writes, or [`None`] when not an offscreen RT.
+    pub fn offscreen_rt_asset_id(&self) -> Option<i32> {
+        match self {
+            FrameViewTarget::OffscreenRt(ext) => Some(ext.render_texture_asset_id),
+            FrameViewTarget::Swapchain | FrameViewTarget::ExternalMultiview(_) => None,
+        }
+    }
+
+    /// Viewport extent in pixels for this target.
+    pub fn extent_px(&self, gpu: &GpuContext) -> (u32, u32) {
+        match self {
+            FrameViewTarget::ExternalMultiview(ext) => ext.extent_px,
+            FrameViewTarget::OffscreenRt(ext) => ext.extent_px,
+            FrameViewTarget::Swapchain => gpu.surface_extent_px(),
+        }
+    }
+
+    /// Color attachment format for this target.
+    pub fn color_format(&self, gpu: &GpuContext) -> wgpu::TextureFormat {
+        match self {
+            FrameViewTarget::ExternalMultiview(ext) => ext.surface_format,
+            FrameViewTarget::OffscreenRt(ext) => ext.color_format,
+            FrameViewTarget::Swapchain => gpu.config_format(),
+        }
+    }
+
+    /// Depth attachment format for this target. Lazily allocates the swapchain depth target if
+    /// needed (the `Swapchain` case requires `&mut`).
+    pub fn depth_format(
+        &self,
+        gpu: &mut GpuContext,
+    ) -> Result<wgpu::TextureFormat, GraphExecuteError> {
+        match self {
+            FrameViewTarget::ExternalMultiview(ext) => Ok(ext.depth_texture.format()),
+            FrameViewTarget::OffscreenRt(ext) => Ok(ext.depth_texture.format()),
+            FrameViewTarget::Swapchain => {
+                #[expect(
+                    clippy::map_err_ignore,
+                    reason = "GraphExecuteError::DepthTarget is the semantic classification; inner detail is already logged upstream"
+                )]
+                let (depth_tex, _) = gpu
+                    .ensure_depth_target()
+                    .map_err(|_| GraphExecuteError::DepthTarget)?;
+                Ok(depth_tex.format())
+            }
+        }
+    }
+
+    /// Effective MSAA sample count for this target. Offscreen RTs are single-sampled.
+    pub fn sample_count(&self, gpu: &GpuContext) -> u32 {
+        match self {
+            FrameViewTarget::ExternalMultiview(_) => gpu.swapchain_msaa_effective_stereo().max(1),
+            FrameViewTarget::OffscreenRt(_) => 1,
+            FrameViewTarget::Swapchain => gpu.swapchain_msaa_effective().max(1),
+        }
+    }
 }
 
 impl<'a> FrameView<'a> {
+    /// Builds a view that renders the main desktop swapchain.
+    pub fn for_swapchain(
+        host_camera: HostCameraFrame,
+        prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+    ) -> Self {
+        Self {
+            host_camera,
+            target: FrameViewTarget::Swapchain,
+            draw_filter: None,
+            prefetched_world_mesh_draws,
+        }
+    }
+
+    /// Builds a view that renders an OpenXR stereo multiview pair of eye layers.
+    pub fn for_hmd(host_camera: HostCameraFrame, external: ExternalFrameTargets<'a>) -> Self {
+        Self {
+            host_camera,
+            target: FrameViewTarget::ExternalMultiview(external),
+            draw_filter: None,
+            prefetched_world_mesh_draws: None,
+        }
+    }
+
+    /// Builds a view that renders a secondary camera to a host render texture.
+    pub fn for_offscreen_rt(
+        host_camera: HostCameraFrame,
+        external: ExternalOffscreenTargets<'a>,
+        draw_filter: Option<CameraTransformDrawFilter>,
+        prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+    ) -> Self {
+        Self {
+            host_camera,
+            target: FrameViewTarget::OffscreenRt(external),
+            draw_filter,
+            prefetched_world_mesh_draws,
+        }
+    }
+
     /// Hi-Z / occlusion slot for this view.
     pub fn occlusion_view_id(&self) -> OcclusionViewId {
-        match &self.target {
-            FrameViewTarget::Swapchain | FrameViewTarget::ExternalMultiview(_) => {
-                OcclusionViewId::Main
-            }
-            FrameViewTarget::OffscreenRt(ext) => {
-                OcclusionViewId::OffscreenRenderTexture(ext.render_texture_asset_id)
-            }
+        match self.target.offscreen_rt_asset_id() {
+            Some(id) => OcclusionViewId::OffscreenRenderTexture(id),
+            None => OcclusionViewId::Main,
         }
+    }
+
+    /// `true` when this view both targets a multiview attachment AND the host camera carries stereo
+    /// matrices — i.e. the per-view record path should emit stereo clustering / multiview draws.
+    ///
+    /// Single source of truth; every caller that gates on "is this the stereo multiview view?"
+    /// goes through this method rather than re-deriving the AND-chain.
+    pub fn is_multiview_stereo_active(&self) -> bool {
+        self.target.is_multiview_target()
+            && self.host_camera.vr_active
+            && self.host_camera.stereo.is_some()
     }
 }
 
@@ -122,8 +218,8 @@ pub struct CompileStats {
     /// Number of Kahn sweep **waves** (parallel layers) in the build-time DAG sort.
     ///
     /// Runtime execution still walks the compiled pass list in one flat order; this
-    /// count is not a separate executor schedule. It is exposed in the debug HUD (with pass count) as
-    /// a diagnostic and a hint for future wave-based or parallel record scheduling.
+    /// count is not a separate executor schedule. It is exposed in the debug HUD (with pass count)
+    /// as a diagnostic and a hint for future wave-based parallel record scheduling.
     pub topo_levels: usize,
     /// Number of passes culled because their writes could not reach an import/export.
     pub culled_count: usize,
@@ -200,6 +296,11 @@ pub struct CompiledPassInfo {
     pub multiview_mask: Option<std::num::NonZeroU32>,
     /// Render-pass attachment template for graph-managed raster passes.
     pub raster_template: Option<RenderPassTemplate>,
+    /// Backend merge hint declared at setup time. See [`PassMergeHint`].
+    ///
+    /// The wgpu executor currently ignores this; the field is populated for use by a future
+    /// subpass-aware backend without a second migration pass across all call sites.
+    pub merge_hint: PassMergeHint,
 }
 
 /// Compiled render-pass attachment template.
@@ -252,24 +353,30 @@ pub struct CompiledGroup {
 
 /// Immutable execution schedule produced by [`super::GraphBuilder::build`].
 ///
-/// After build, pass order and [`Self::needs_surface_acquire`] do not change. Per-frame work is
-/// [`Self::execute`] / [`Self::execute_multi_view`]. When any [`PassPhase::FrameGlobal`] passes exist,
-/// multi-view records them in one encoder and submits once, then uses **one encoder + submit per
-/// [`FrameView`]** for [`PassPhase::PerView`] passes so `wgpu::Queue::write_buffer` work is ordered
-/// before each view’s GPU commands.
+/// ## Pass storage
+///
+/// Passes are stored as [`PassNode`] enum values, enabling the executor to dispatch to the
+/// correct context type (raster/compute/copy/callback) without a runtime `graph_managed_raster()`
+/// toggle.
 ///
 /// ## Frame-global contract
 ///
-/// [`PassPhase::FrameGlobal`] passes run **once** per tick in
+/// [`super::pass::PassPhase::FrameGlobal`] passes run once per tick in
 /// [`CompiledRenderGraph::execute_multi_view_frame_global_passes`]. Host/scene context and
-/// [`super::context::GraphResolvedResources`] resolution for that encoder use the **first**
-/// [`FrameView`] only (camera, viewport, and transient pool keys derived from that view).
+/// resource resolution for that encoder use the **first** [`FrameView`] only.
+///
+/// ## Submit model (Phase 4 target)
+///
+/// The executor currently issues one submit per view plus one for frame-global work. Phase 4
+/// (per-view ring upload) collapses this to a single `Queue::submit` per tick by pre-planning
+/// ring buffer layouts and writing all per-view data before the single submit.
 pub struct CompiledRenderGraph {
-    pub(super) passes: Vec<Box<dyn RenderPass>>,
+    /// Ordered pass nodes in execution order (culled, sorted).
+    pub(super) passes: Vec<PassNode>,
     /// `true` when any pass writes an imported frame color target; frame execution
     /// acquires the swapchain once and presents after submit.
     pub needs_surface_acquire: bool,
-    /// Build-time stats for tests and future profiling hooks.
+    /// Build-time stats for tests and profiling hooks.
     pub compile_stats: CompileStats,
     /// Ordered groups and retained pass membership.
     pub groups: Vec<CompiledGroup>,
@@ -279,38 +386,38 @@ pub struct CompiledRenderGraph {
     pub transient_textures: Vec<CompiledTextureResource>,
     /// Compiled transient buffer metadata.
     pub transient_buffers: Vec<CompiledBufferResource>,
+    /// Declared subresource views of transient textures. Resolved lazily at execute time via
+    /// [`super::context::GraphResolvedResources::subresource_view`]; see
+    /// [`super::resources::SubresourceHandle`].
+    pub subresources: Vec<TransientSubresourceDesc>,
     /// Imported texture declarations.
     pub imported_textures: Vec<ImportedTextureDecl>,
     /// Imported buffer declarations.
     pub imported_buffers: Vec<ImportedBufferDecl>,
-    /// Indices into [`Self::passes`] for [`PassPhase::FrameGlobal`] passes (execution order).
-    pub(super) frame_global_pass_indices: Vec<usize>,
-    /// Indices into [`Self::passes`] for [`PassPhase::PerView`] passes (execution order).
-    pub(super) per_view_pass_indices: Vec<usize>,
+    /// Single source of truth for pass ordering, phase, and wave membership.
+    pub schedule: FrameSchedule,
     /// When this graph is the main frame graph from [`super::build_main_graph`], transient handles
-    /// for MSAA color/depth/R32 resources so the executor can wire [`super::frame_params::FrameRenderParams`]
-    /// once per view.
+    /// for MSAA color/depth/R32 resources.
     pub(super) main_graph_msaa_transient_handles:
         Option<[crate::render_graph::resources::TextureHandle; 3]>,
 }
 
 pub(super) struct ResolvedView<'a> {
-    depth_texture: &'a wgpu::Texture,
-    depth_view: &'a wgpu::TextureView,
-    backbuffer: Option<&'a wgpu::TextureView>,
-    surface_format: wgpu::TextureFormat,
-    viewport_px: (u32, u32),
-    multiview_stereo: bool,
-    offscreen_write_render_texture_asset_id: Option<i32>,
-    occlusion_view: OcclusionViewId,
-    sample_count: u32,
-    msaa_color_view: Option<wgpu::TextureView>,
-    msaa_depth_view: Option<wgpu::TextureView>,
-    msaa_depth_resolve_r32_view: Option<wgpu::TextureView>,
-    msaa_depth_is_array: bool,
-    msaa_stereo_depth_layer_views: Option<[wgpu::TextureView; 2]>,
-    msaa_stereo_r32_layer_views: Option<[wgpu::TextureView; 2]>,
+    pub(super) depth_texture: &'a wgpu::Texture,
+    pub(super) depth_view: &'a wgpu::TextureView,
+    pub(super) backbuffer: Option<&'a wgpu::TextureView>,
+    pub(super) surface_format: wgpu::TextureFormat,
+    pub(super) viewport_px: (u32, u32),
+    pub(super) multiview_stereo: bool,
+    pub(super) offscreen_write_render_texture_asset_id: Option<i32>,
+    pub(super) occlusion_view: OcclusionViewId,
+    pub(super) sample_count: u32,
+    // MSAA views are now in the per-view blackboard (MsaaViewsSlot), resolved from graph
+    // transient textures by the executor. ResolvedView no longer carries them.
 }
 
 mod exec;
 mod helpers;
+
+mod dot;
+pub use dot::DotFormat;

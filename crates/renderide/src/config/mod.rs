@@ -40,7 +40,7 @@ mod types;
 pub use persist::{
     apply_renderide_gpu_validation_env, load_renderer_settings, log_config_resolve_trace,
     save_renderer_settings, save_renderer_settings_from_load, settings_handle_from,
-    ConfigLoadResult, RendererSettingsHandle,
+    ConfigFilePolicy, ConfigLoadResult, RendererSettingsHandle,
 };
 pub use reload::{renderer_settings_changed, ConfigFileWatcher};
 pub use resolve::{
@@ -48,6 +48,7 @@ pub use resolve::{
     resolve_config_path, resolve_save_path, ConfigResolveOutcome, ConfigSource, FILE_NAME_TOML,
 };
 pub use types::{
-    DebugSettings, DisplaySettings, MsaaSampleCount, PowerPreferenceSetting, RendererSettings,
-    RenderingSettings,
+    DebugSettings, DisplaySettings, GtaoSettings, MsaaSampleCount, PostProcessingSettings,
+    PowerPreferenceSetting, RecordParallelism, RendererSettings, RenderingSettings,
+    SceneColorFormat, TonemapMode, TonemapSettings,
 };

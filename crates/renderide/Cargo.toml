@@ -21,20 +21,42 @@ path = "src/main.rs"
 name = "roundtrip"
 path = "src/bin/roundtrip.rs"
 
+[features]
+## Enables Tracy profiling integration. When active, `profiling::scope!` macros emit CPU spans
+## to the Tracy client, frame marks appear in the Tracy GUI timeline, and `wgpu-profiler` inserts
+## GPU timestamp queries around the two render-graph execution sub-phases.
+##
+## Usage: `cargo build --profile dev-fast --features tracy`
+## For realistic numbers: `cargo build --release --features tracy`
+##
+## Requires no runtime configuration; connect the Tracy GUI on port 8086 after launching.
+## Uses Tracy's `ondemand` mode so data is only streamed when a GUI is attached.
+tracy = [
+  "dep:wgpu-profiler",
+  "dep:tracy-client",
+  "profiling/profile-with-tracy",
+  "wgpu-profiler/tracy",
+]
+
+[package.metadata.cargo-machete]
+ignored = ["tracy-client"]
+
 [dependencies]
+## Thin profiler abstraction. When no backend feature (`profile-with-tracy`, etc.) is active,
+## every macro (`profiling::scope!`, `profiling::finish_frame!`, etc.) expands to nothing.
+profiling = "1.0"
 ahash = "0.8"
 bytemuck = { version = "1.25", features = ["derive"] }
 glam = { version = "0.32", features = ["bytemuck"] }
-memmap2 = "0.9"
-interprocess = { path = "../interprocess" }
 logger = { path = "../logger" }
 renderide-shared = { path = "../renderide-shared" }
 pollster = "0.4"
 rayon = "1.11"
+crossbeam-channel = "0.5"
 lru = "0.17"
+parking_lot = "0.12"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 toml = "1.1"
 figment = { version = "0.10", features = ["toml", "env"] }
 hashbrown = "0.17"
@@ -51,6 +73,16 @@ imgui = { version = "0.12", features = ["tables-api"] }
 imgui-wgpu = "0.28"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 crash-handler = "0.7"
+## GPU timestamp query scopes; bridges per-phase GPU timing to Tracy when the `tracy` feature is on.
+## Only compiled when the `tracy` workspace feature is enabled.
+wgpu-profiler = { version = "0.27", optional = true }
+## Tracy client. `enable` activates the native client library; `ondemand` keeps runtime cost
+## near-zero by only streaming data while a profiler GUI is attached. Only compiled when the
+## `tracy` feature is enabled.
+tracy-client = { version = "0.18", optional = true, default-features = false, features = [
+  "enable",
+  "ondemand",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "29.0", features = ["vulkan-portability"] }
@@ -73,3 +105,6 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Memory",
   "Win32_System_Pipes",
 ] }
+
+[lints]
+workspace = true

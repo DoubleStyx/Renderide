@@ -132,4 +132,69 @@ mod tests {
 
         assert!(light_contributes(&light));
     }
+
+    /// Point and spot lights require a finite positive range; zero or negative range excludes the
+    /// light before it can consume a clustered-light slot.
+    #[test]
+    fn light_contributes_rejects_zero_range_point_and_spot_lights() {
+        for kind in [LightType::Point, LightType::Spot] {
+            let mut light = resolved_light();
+            light.light_type = kind;
+            light.range = 0.0;
+            assert!(
+                !light_contributes(&light),
+                "{kind:?} with zero range should not contribute"
+            );
+
+            light.range = -1.0;
+            assert!(
+                !light_contributes(&light),
+                "{kind:?} with negative range should not contribute"
+            );
+
+            light.range = f32::INFINITY;
+            assert!(
+                !light_contributes(&light),
+                "{kind:?} with infinite range should not contribute"
+            );
+        }
+    }
+
+    /// Non-finite position / direction / color, or non-finite intensity, always disable the light.
+    #[test]
+    fn light_contributes_rejects_non_finite_components() {
+        let mutations: [fn(&mut ResolvedLight); 4] = [
+            |l| l.world_position.x = f32::NAN,
+            |l| l.world_direction.y = f32::INFINITY,
+            |l| l.color.z = f32::NAN,
+            |l| l.intensity = f32::NAN,
+        ];
+        for mutate in mutations {
+            let mut light = resolved_light();
+            mutate(&mut light);
+            assert!(!light_contributes(&light));
+        }
+    }
+
+    /// [`light_casts_shadows`] requires both a non-[`ShadowType::None`] kind and a strictly
+    /// positive [`ResolvedLight::shadow_strength`]; either condition alone disables shadows.
+    #[test]
+    fn light_casts_shadows_requires_both_shadow_type_and_strength() {
+        let mut light = resolved_light();
+        assert!(!light_casts_shadows(&light));
+
+        light.shadow_type = ShadowType::Hard;
+        light.shadow_strength = 0.0;
+        assert!(!light_casts_shadows(&light));
+
+        light.shadow_strength = 1.0;
+        assert!(light_casts_shadows(&light));
+
+        light.shadow_strength = -0.5;
+        assert!(!light_casts_shadows(&light));
+
+        light.shadow_type = ShadowType::None;
+        light.shadow_strength = 1.0;
+        assert!(!light_casts_shadows(&light));
+    }
 }

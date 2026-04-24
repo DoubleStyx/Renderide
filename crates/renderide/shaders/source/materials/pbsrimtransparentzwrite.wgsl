@@ -4,8 +4,6 @@
 //! prepass + `#pragma surface surf Standard alpha fullforwardshadows` color pass).
 
 // unity-shader-name: PBSRimTransparentZWrite
-//#pass depth_prepass: vs=vs_main, fs=fs_depth_only, depth=greater_equal, zwrite=on, cull=back, blend=none, write=none
-//#pass forward: vs=vs_main, fs=fs_main, depth=greater_equal, zwrite=off, cull=back, blend=src_alpha,one_minus_src_alpha,add, alpha=one,one_minus_src_alpha,add
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
@@ -23,7 +21,6 @@ struct PbsRimTransparentZWriteMaterial {
     _Metallic: f32,
     _NormalScale: f32,
     _RimPower: f32,
-    _Cull: f32,
     _ALBEDOTEX: f32,
     _EMISSIONTEX: f32,
     _NORMALMAP: f32,
@@ -105,6 +102,7 @@ fn vs_main(
 /// Depth-only prepass: writes nothing to color (`write=none`) but populates depth so the alpha-blended
 /// main pass below can self-occlude. Touches every binding so the prepass pipeline's auto-derived
 /// bind-group layout matches the forward pass and the same material bind group binds for both.
+//#material depth_prepass
 @fragment
 fn fs_depth_only(
     @location(0) world_pos: vec3<f32>,
@@ -119,14 +117,14 @@ fn fs_depth_only(
     let occ_s = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main);
     let metal_s = textureSample(_MetallicMap, _MetallicMap_sampler, uv_main);
     let touch = (mat._Color.x + mat._EmissionColor.x + mat._RimColor.x
-        + mat._Glossiness + mat._Metallic + mat._NormalScale + mat._RimPower
-        + mat._Cull + mat._ALBEDOTEX + mat._EMISSIONTEX + mat._NORMALMAP
+        + mat._Glossiness + mat._Metallic + mat._NormalScale + mat._RimPower + mat._ALBEDOTEX + mat._EMISSIONTEX + mat._NORMALMAP
         + mat._METALLICMAP + mat._OCCLUSION
         + albedo_s.x + normal_s.x + emit_s.x + occ_s.x + metal_s.x
         + world_pos.x + world_n.x + f32(view_layer)) * 0.0;
     return rg::retain_globals_additive(vec4<f32>(touch, touch, touch, 0.0));
 }
 
+//#material forward_base
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
@@ -194,11 +192,10 @@ fn fs_main(
     );
 
     let count = rg::cluster_light_counts[cluster_id];
-    let base_idx = cluster_id * pcls::MAX_LIGHTS_PER_TILE;
     var lo = vec3<f32>(0.0);
     let i_max = min(count, pcls::MAX_LIGHTS_PER_TILE);
     for (var i = 0u; i < i_max; i++) {
-        let li = rg::cluster_light_indices[base_idx + i];
+        let li = pcls::cluster_light_index_at(cluster_id, i);
         if (li >= rg::frame.light_count) {
             continue;
         }

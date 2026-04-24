@@ -9,7 +9,9 @@
 //!    `mesh_states` row order, one per material slot (see
 //!    `crates/renderide/src/scene/mesh_material_row.rs`).
 
-use crate::shared::MeshRendererState;
+use crate::packing::memory_packable::MemoryPackable;
+use crate::packing::memory_packer::MemoryPacker;
+use crate::shared::{MeshRendererState, MESH_RENDERER_STATE_HOST_ROW_BYTES};
 
 /// Encodes the `MeshRenderablesUpdate.additions` shared-memory buffer.
 ///
@@ -26,21 +28,30 @@ pub fn encode_additions(node_ids: &[i32]) -> Vec<u8> {
 
 /// Encodes the `MeshRenderablesUpdate.mesh_states` shared-memory buffer.
 ///
-/// Rows are 24-byte `#[repr(C)] MeshRendererState` blobs. The renderer breaks at the first row
-/// with `renderable_index < 0`, so this encoder appends a sentinel row.
+/// Rows are 24-byte `#[repr(C)] MeshRendererState` blobs matching C# `Marshal.SizeOf`. The renderer
+/// breaks at the first row with `renderable_index < 0`, so this encoder appends a sentinel row.
 pub fn encode_mesh_states(rows: &[MeshRendererState]) -> Vec<u8> {
-    let row_size = std::mem::size_of::<MeshRendererState>();
-    debug_assert_eq!(row_size, 24, "MeshRendererState must be 24 bytes");
-    let mut out = Vec::with_capacity((rows.len() + 1) * row_size);
-    for row in rows {
-        out.extend_from_slice(bytemuck::bytes_of(row));
+    let row_size = MESH_RENDERER_STATE_HOST_ROW_BYTES;
+    let mut out = vec![0u8; (rows.len() + 1) * row_size];
+    for (i, row) in rows.iter().enumerate() {
+        let start = i * row_size;
+        pack_row_into(&mut out[start..start + row_size], *row);
     }
+    let sentinel_start = rows.len() * row_size;
     let sentinel = MeshRendererState {
         renderable_index: -1,
         ..Default::default()
     };
-    out.extend_from_slice(bytemuck::bytes_of(&sentinel));
+    pack_row_into(
+        &mut out[sentinel_start..sentinel_start + row_size],
+        sentinel,
+    );
     out
+}
+
+fn pack_row_into(dest: &mut [u8], mut row: MeshRendererState) {
+    let mut packer = MemoryPacker::new(dest);
+    row.pack(&mut packer);
 }
 
 /// Encodes the `MeshRenderablesUpdate.mesh_materials_and_property_blocks` shared-memory buffer.
@@ -81,11 +92,14 @@ mod tests {
 
     #[test]
     fn mesh_states_row_size_24() {
-        assert_eq!(std::mem::size_of::<MeshRendererState>(), 24);
+        assert_eq!(size_of::<MeshRendererState>(), 24);
     }
 
     #[test]
-    fn mesh_states_round_trip_via_pod() {
+    fn mesh_states_round_trip() {
+        use crate::packing::default_entity_pool::DefaultEntityPool;
+        use crate::packing::memory_unpacker::MemoryUnpacker;
+
         let rows = [MeshRendererState {
             renderable_index: 0,
             mesh_asset_id: 2,
@@ -98,11 +112,18 @@ mod tests {
         }];
         let bytes = encode_mesh_states(&rows);
         assert_eq!(bytes.len(), 48); // one row + sentinel = 24 + 24
-        let row0: MeshRendererState = *bytemuck::from_bytes(&bytes[0..24]);
+
+        let mut pool = DefaultEntityPool;
+        let mut unpacker = MemoryUnpacker::new(&bytes[0..24], &mut pool);
+        let mut row0 = MeshRendererState::default();
+        row0.unpack(&mut unpacker).expect("unpack row0");
         assert_eq!(row0.renderable_index, 0);
         assert_eq!(row0.mesh_asset_id, 2);
         assert_eq!(row0.material_count, 1);
-        let sentinel: MeshRendererState = *bytemuck::from_bytes(&bytes[24..48]);
+
+        let mut unpacker = MemoryUnpacker::new(&bytes[24..48], &mut pool);
+        let mut sentinel = MeshRendererState::default();
+        sentinel.unpack(&mut unpacker).expect("unpack sentinel");
         assert_eq!(sentinel.renderable_index, -1);
     }
 

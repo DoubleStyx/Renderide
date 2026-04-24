@@ -4,10 +4,11 @@ using SharedTypeGenerator.IR;
 namespace SharedTypeGenerator.Analysis;
 
 /// <summary>
-/// After analysis, IL-derived <see cref="WriteField"/> steps may still be <see cref="FieldKind.Pod"/> for
-/// C# <c>Write&lt;T&gt;</c> calls on nested shared structs. When SIMD glam makes the Rust type non-<c>Pod</c>
-/// as a whole, upgrade those steps to <see cref="FieldKind.ObjectRequired"/> so emitted code uses
-/// <c>write_object_required</c> / <c>read_object_required</c>.
+/// After analysis, IL-derived <see cref="WriteField"/> steps may still be <see cref="FieldKind.Pod"/> or
+/// <see cref="FieldKind.ValueList"/> for C# <c>Write&lt;T&gt;</c> / <c>WriteValueList&lt;T&gt;</c> calls on
+/// nested shared structs. When SIMD glam or restricted-variant enums make the Rust element type
+/// non-<c>Pod</c>, upgrade those steps so emitted code uses the MemoryPackable path
+/// (<c>write_object_required</c> / <c>write_object_list</c>) instead of the bytemuck-<c>Pod</c> path.
 /// </summary>
 internal static class PackStepNonPodPostProcessor
 {
@@ -56,14 +57,21 @@ internal static class PackStepNonPodPostProcessor
         Dictionary<string, FieldDescriptor> byRustName,
         HashSet<string> nonPodRust)
     {
-        if (wf.Kind != FieldKind.Pod)
-            return wf;
         if (!byRustName.TryGetValue(wf.FieldName, out FieldDescriptor? fd))
             return wf;
 
-        string normalized = RustTypeMapper.NormalizeRustTypeName(fd.RustType);
-        if (nonPodRust.Contains(normalized))
-            return wf with { Kind = FieldKind.ObjectRequired };
+        if (wf.Kind == FieldKind.Pod)
+        {
+            string normalized = RustTypeMapper.NormalizeRustTypeName(fd.RustType);
+            if (nonPodRust.Contains(normalized))
+                return wf with { Kind = FieldKind.ObjectRequired };
+        }
+        else if (wf.Kind == FieldKind.ValueList)
+        {
+            string element = RustTypeMapper.StripVecElementType(fd.RustType);
+            if (nonPodRust.Contains(element))
+                return wf with { Kind = FieldKind.ObjectList };
+        }
 
         return wf;
     }

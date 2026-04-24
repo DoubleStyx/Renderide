@@ -4,7 +4,7 @@ use super::memory_packable::MemoryPackable;
 
 /// Entity pool used while unpacking optional objects and object lists.
 ///
-/// The FrooxEngine host may reuse instances from a pool; the renderer typically uses [`DefaultEntityPool`](super::default_entity_pool::DefaultEntityPool).
+/// The `FrooxEngine` host may reuse instances from a pool; the renderer typically uses [`DefaultEntityPool`](super::default_entity_pool::DefaultEntityPool).
 pub trait MemoryPackerEntityPool {
     /// Obtains a value to deserialize into (new or from a pool).
     fn borrow<T: MemoryPackable + Default>(&mut self) -> T;

@@ -17,36 +17,15 @@ pub(crate) struct StemMaterialLayout {
     pub(crate) ids: Arc<StemEmbeddedPropertyIds>,
 }
 
-/// Pre-interned property ids for static keyword names (`MSDF`, `_Flags`, texture probe lists), shared by all embedded stems.
+/// Pre-interned property ids used by [`super::uniform_pack::inferred_keyword_float_f32`] to
+/// probe texture presence (PBS `_NORMALMAP` / `_EMISSION` / `_SPECULARMAP` / … flags) and by
+/// the `_ALPHATEST_ON`/`_ALPHABLEND_ON` inference path that reads a Resonite `BlendMode`
+/// property. The renderer never receives FrooxEngine's `ShaderKeywords.Variant` bitmask over
+/// IPC, so every multi-compile-keyword toggle has to be inferred from what the host does
+/// send: texture bindings and numeric material properties.
 pub(crate) struct EmbeddedSharedKeywordIds {
-    pub(crate) text_mode: i32,
-    pub(crate) rect_clip: i32,
-    pub(crate) msdf: i32,
-    pub(crate) sdf: i32,
-    pub(crate) raster: i32,
-    pub(crate) msdf_lower: i32,
-    pub(crate) sdf_lower: i32,
-    pub(crate) raster_lower: i32,
-    pub(crate) rectclip: i32,
-    pub(crate) rectclip_lower: i32,
-    pub(crate) flags: i32,
-    pub(crate) offset_texture: i32,
-    pub(crate) offset_texture_alt: i32,
-    pub(crate) mask_texture_mul: i32,
-    pub(crate) mask_texture_mul_alt: i32,
-    pub(crate) mask_texture_clip: i32,
-    pub(crate) mask_texture_clip_alt: i32,
-    pub(crate) mask_mode: i32,
-    pub(crate) mask_mode_alt: i32,
     pub(crate) blend_mode: i32,
-    pub(crate) blend_mode_alt: i32,
-    pub(crate) alpha_cutoff: i32,
-    pub(crate) alpha_cutoff_alt: i32,
     pub(crate) mode: i32,
-    pub(crate) mul_rgb_by_alpha: i32,
-    pub(crate) mul_rgb_by_alpha_alt: i32,
-    pub(crate) mul_alpha_intensity: i32,
-    pub(crate) mul_alpha_intensity_alt: i32,
     pub(crate) lerp_tex: i32,
     pub(crate) main_tex: i32,
     pub(crate) main_tex1: i32,
@@ -73,34 +52,8 @@ pub(crate) struct EmbeddedSharedKeywordIds {
 impl EmbeddedSharedKeywordIds {
     pub(crate) fn new(registry: &PropertyIdRegistry) -> Self {
         Self {
-            text_mode: registry.intern("_TextMode"),
-            rect_clip: registry.intern("_RectClip"),
-            msdf: registry.intern("MSDF"),
-            sdf: registry.intern("SDF"),
-            raster: registry.intern("RASTER"),
-            msdf_lower: registry.intern("msdf"),
-            sdf_lower: registry.intern("sdf"),
-            raster_lower: registry.intern("raster"),
-            rectclip: registry.intern("RECTCLIP"),
-            rectclip_lower: registry.intern("rectclip"),
-            flags: registry.intern("_Flags"),
-            offset_texture: registry.intern("_OFFSET_TEXTURE"),
-            offset_texture_alt: registry.intern("_OffsetTexture"),
-            mask_texture_mul: registry.intern("_MASK_TEXTURE_MUL"),
-            mask_texture_mul_alt: registry.intern("_MaskTextureMul"),
-            mask_texture_clip: registry.intern("_MASK_TEXTURE_CLIP"),
-            mask_texture_clip_alt: registry.intern("_MaskTextureClip"),
-            mask_mode: registry.intern("_MaskMode"),
-            mask_mode_alt: registry.intern("MaskMode"),
             blend_mode: registry.intern("_BlendMode"),
-            blend_mode_alt: registry.intern("BlendMode"),
-            alpha_cutoff: registry.intern("_AlphaCutoff"),
-            alpha_cutoff_alt: registry.intern("AlphaCutoff"),
             mode: registry.intern("_Mode"),
-            mul_rgb_by_alpha: registry.intern("_MUL_RGB_BY_ALPHA"),
-            mul_rgb_by_alpha_alt: registry.intern("_MulRgbByAlpha"),
-            mul_alpha_intensity: registry.intern("_MUL_ALPHA_INTENSITY"),
-            mul_alpha_intensity_alt: registry.intern("_MulAlphaIntensity"),
             lerp_tex: registry.intern("_LerpTex"),
             main_tex: registry.intern("_MainTex"),
             main_tex1: registry.intern("_MainTex1"),
@@ -128,19 +81,22 @@ impl EmbeddedSharedKeywordIds {
 
 /// Per-stem stable property ids from WGSL reflection (uniform members and `@group(1)` texture globals), built once when the stem layout loads.
 pub(crate) struct StemEmbeddedPropertyIds {
-    pub(crate) stem: Arc<str>,
     pub(crate) shared: Arc<EmbeddedSharedKeywordIds>,
     pub(crate) uniform_field_ids: HashMap<String, i32>,
     pub(crate) texture_binding_property_ids: HashMap<u32, Arc<[i32]>>,
     pub(crate) keyword_field_probe_ids: HashMap<String, [i32; 3]>,
 }
 
+/// Returns alternate host property names for a canonical texture binding name.
+///
+/// Only the `_Tex` ⇄ `_MainTex` cross-alias is live (`UnlitMaterial.cs` uses `_Tex`; PBS/Toon
+/// materials use `_MainTex`). The audit of `references_external/FrooxEngine/` confirmed that
+/// the no-underscore forms `Texture`, `MaskTexture`, `OffsetTexture` are never declared as
+/// `MaterialProperty` and thus never sent; they were removed.
 fn texture_property_aliases(name: &str) -> &'static [&'static str] {
     match name {
-        "_Tex" => &["Texture", "_MainTex"],
-        "_MaskTex" => &["MaskTexture"],
-        "_OffsetTex" => &["OffsetTexture"],
-        "_MainTex" => &["Texture", "_Tex"],
+        "_Tex" => &["_MainTex"],
+        "_MainTex" => &["_Tex"],
         _ => &[],
     }
 }
@@ -165,7 +121,6 @@ pub(crate) fn shader_writer_unescaped_property_name(name: &str) -> &str {
 
 impl StemEmbeddedPropertyIds {
     pub(crate) fn build(
-        stem: &str,
         shared: Arc<EmbeddedSharedKeywordIds>,
         registry: &PropertyIdRegistry,
         reflected: &ReflectedRasterLayout,
@@ -207,7 +162,6 @@ impl StemEmbeddedPropertyIds {
         }
 
         Self {
-            stem: Arc::from(stem),
             shared,
             uniform_field_ids,
             texture_binding_property_ids,
@@ -220,12 +174,7 @@ impl StemEmbeddedPropertyIds {
 impl StemEmbeddedPropertyIds {
     /// Shared keyword ids only (no per-stem uniform/texture reflection); for unit tests.
     pub fn minimal_for_tests(registry: &PropertyIdRegistry) -> Self {
-        Self::minimal_for_tests_with_stem(registry, "")
-    }
-
-    pub fn minimal_for_tests_with_stem(registry: &PropertyIdRegistry, stem: &str) -> Self {
         Self {
-            stem: Arc::from(stem),
             shared: Arc::new(EmbeddedSharedKeywordIds::new(registry)),
             uniform_field_ids: HashMap::new(),
             texture_binding_property_ids: HashMap::new(),
@@ -261,7 +210,6 @@ pub(crate) fn build_stem_material_layout(
     });
 
     let ids = Arc::new(StemEmbeddedPropertyIds::build(
-        stem,
         Arc::clone(shared_keyword_ids),
         property_registry,
         &reflected,
@@ -312,29 +260,17 @@ mod tests {
 
     #[test]
     fn xiexe_module_textures_resolve_to_unmangled_property_ids() {
-        let wgsl = crate::embedded_shaders::embedded_target_wgsl("xiexe_xstoon2.0_default")
+        let wgsl = crate::embedded_shaders::embedded_target_wgsl("xstoon2.0_default")
             .expect("xiexe target WGSL");
         let reflected = reflect_raster_material_wgsl(wgsl).expect("xiexe WGSL reflection");
         let registry = PropertyIdRegistry::new();
         let shared = Arc::new(EmbeddedSharedKeywordIds::new(&registry));
 
-        let ids = StemEmbeddedPropertyIds::build(
-            "xiexe_xstoon2.0_default",
-            shared,
-            &registry,
-            &reflected,
-        );
+        let ids = StemEmbeddedPropertyIds::build(shared, &registry, &reflected);
 
         assert_eq!(
             ids.texture_binding_property_ids.get(&1).map(|p| &**p),
-            Some(
-                [
-                    registry.intern("_MainTex"),
-                    registry.intern("Texture"),
-                    registry.intern("_Tex"),
-                ]
-                .as_slice()
-            )
+            Some([registry.intern("_MainTex"), registry.intern("_Tex"),].as_slice())
         );
     }
 }

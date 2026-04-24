@@ -504,15 +504,22 @@ fn sample_surface(
     );
 }
 
-/// Windowed inverse-square distance attenuation (Karis/Lagarde): exactly zero at `range` with a wide
-/// smooth transition zone, so the per-cluster cull boundary (16-px tiles) is hidden by the falloff.
+/// Range-coupled windowed inverse-square distance attenuation for punctual lights.
+/// `intensity * (saturate(1 - (d/r)^4))^2 / d² * 4π*r²` — Karis/Lagarde window (exactly zero at
+/// `range` with a wide smooth transition zone that hides the per-cluster cull boundary) plus a
+/// `4π*range²` range-coupling term so that larger `range` reads as a brighter light, matching
+/// Resonite's BiRP-style authoring convention where increasing a light's range is expected to
+/// increase perceived brightness as well as extend the falloff.
 fn punctual_attenuation(intensity: f32, dist: f32, range: f32) -> f32 {
     if (range <= 0.0) {
         return 0.0;
     }
-    let inv_d2 = 1.0 / max(dist * dist, 0.0001);
-    let t = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
-    return intensity * inv_d2 * t * t;
+    let inv_d2 = 1.0 / max(dist * dist, 0.01 * 0.01);
+    let t = dist / range;
+    let window_inner = clamp(1.0 - t * t * t * t, 0.0, 1.0);
+    let window = window_inner * window_inner;
+    let range_boost = range * range;
+    return intensity * inv_d2 * window * range_boost;
 }
 
 fn sample_light(light: rg::GpuLight, world_pos: vec3<f32>) -> LightSample {
@@ -691,7 +698,6 @@ fn clustered_toon_lighting(
         rg::frame.far_clip,
     );
     let count = rg::cluster_light_counts[cluster_id];
-    let base_idx = cluster_id * pcls::MAX_LIGHTS_PER_TILE;
     let i_max = min(count, pcls::MAX_LIGHTS_PER_TILE);
 
     var lit = vec3<f32>(0.0);
@@ -701,7 +707,7 @@ fn clustered_toon_lighting(
     var strongest_shadow = vec3<f32>(1.0);
 
     for (var i = 0u; i < i_max; i++) {
-        let li = rg::cluster_light_indices[base_idx + i];
+        let li = pcls::cluster_light_index_at(cluster_id, i);
         if (li >= rg::frame.light_count) {
             continue;
         }

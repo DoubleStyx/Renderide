@@ -135,6 +135,7 @@ impl WindowInputAccumulator {
     ///
     /// `host_requests_cursor_lock`: merged into [`MouseState::is_active`] (Unity / old session parity).
     pub fn take_input_state(&mut self, host_requests_cursor_lock: bool) -> InputState {
+        profiling::scope!("frontend::build_input_state");
         let type_delta = {
             let mut out = String::new();
             out.push_str(&std::mem::take(&mut self.ime_commit_buffer));

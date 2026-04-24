@@ -234,4 +234,85 @@ mod tests {
         );
         assert_eq!(try_resolve_plain_shader_label("C:\\a\\b.shader"), None);
     }
+
+    #[test]
+    fn try_resolve_plain_accepts_stem_and_first_token() {
+        assert_eq!(
+            try_resolve_plain_shader_label("UI_Unlit"),
+            Some("UI_Unlit".to_string())
+        );
+        assert_eq!(
+            try_resolve_plain_shader_label("UI_Unlit kw1 kw2"),
+            Some("UI_Unlit".to_string())
+        );
+        assert_eq!(
+            try_resolve_plain_shader_label("  Foo-Bar/baz.v2  "),
+            Some("Foo-Bar/baz.v2".to_string())
+        );
+    }
+
+    #[test]
+    fn try_resolve_plain_strips_renderide_prefix() {
+        assert_eq!(
+            try_resolve_plain_shader_label("renderide:MyShader"),
+            Some("MyShader".to_string())
+        );
+    }
+
+    #[test]
+    fn try_resolve_plain_rejects_multi_line_and_bad_tokens() {
+        assert_eq!(try_resolve_plain_shader_label(""), None);
+        assert_eq!(try_resolve_plain_shader_label("."), None);
+        assert_eq!(try_resolve_plain_shader_label(".."), None);
+        assert_eq!(try_resolve_plain_shader_label("Shader \"X\"\n{\n}\n"), None);
+        assert_eq!(try_resolve_plain_shader_label("bad!char"), None);
+        let too_long = "a".repeat(PLAIN_SHADER_LABEL_MAX_LEN + 1);
+        assert_eq!(try_resolve_plain_shader_label(&too_long), None);
+    }
+
+    #[test]
+    fn parse_shader_lab_quoted_name_extracts_name() {
+        assert_eq!(
+            parse_shader_lab_quoted_name("Shader \"Custom/UI_Unlit\""),
+            Some("Custom/UI_Unlit".to_string())
+        );
+        assert_eq!(
+            parse_shader_lab_quoted_name("\u{feff}Shader \"Boxed\" { }"),
+            Some("Boxed".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_shader_lab_quoted_name_rejects_malformed() {
+        assert_eq!(parse_shader_lab_quoted_name("Shader {}"), None);
+        assert_eq!(parse_shader_lab_quoted_name("Shader \"\""), None);
+        assert_eq!(parse_shader_lab_quoted_name("not shader source"), None);
+    }
+
+    #[test]
+    fn parse_wgsl_banner_extracts_and_rejects() {
+        let src = "// unity-shader-name: UI/TextUnlit\n@vertex fn vs() {}";
+        assert_eq!(
+            parse_wgsl_unity_shader_name_banner(src),
+            Some("UI/TextUnlit".to_string())
+        );
+        assert_eq!(
+            parse_wgsl_unity_shader_name_banner("// unrelated\n@vertex fn vs() {}"),
+            None
+        );
+        assert_eq!(
+            parse_wgsl_unity_shader_name_banner("// unity-shader-name:\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn canonical_takes_first_token_and_handles_empty() {
+        assert_eq!(
+            canonical_shader_lab_logical_name("Custom/UI_Unlit kw1 kw2"),
+            "Custom/UI_Unlit"
+        );
+        assert_eq!(canonical_shader_lab_logical_name("   "), "");
+        assert_eq!(canonical_shader_lab_logical_name("Solo"), "Solo");
+    }
 }

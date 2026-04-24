@@ -1,12 +1,21 @@
 //! Per-pass pipeline descriptor for multi-pass material shaders.
 //!
-//! A material stem may declare multiple passes via `//#pass` directives parsed in `build.rs` and
-//! embedded alongside the composed WGSL (see [`crate::embedded_shaders::embedded_target_passes`]).
-//! Each pass becomes one `wgpu::RenderPipeline`; the forward encode loop dispatches all pipelines
-//! for every draw that binds the material, in declared order.
+//! A material stem may declare multiple passes via `//#material <kind>` tags parsed in `build.rs`
+//! and embedded alongside the composed WGSL (see [`crate::embedded_shaders::embedded_target_passes`]).
+//! Each tag sits directly above an `@fragment` entry point and names one [`PassKind`]; the build
+//! script turns each tag into a [`MaterialPassDesc`] via [`pass_from_kind`]. Every descriptor becomes
+//! one `wgpu::RenderPipeline`; the forward encode loop dispatches all pipelines for every draw that
+//! binds the material, in declared order.
 //!
-//! Single-pass materials (the majority) do not declare any directives and fall through to
-//! [`default_pass`], which preserves the pre-multi-pass behavior exactly.
+//! Render-state fields (depth compare, depth write, cull, blend, write mask) live entirely in
+//! [`pass_from_kind`]'s per-kind defaults plus the host's runtime material properties
+//! (`_ZWrite`, `_ZTest`, `_Cull`, `_ColorMask`, `_OffsetFactor`, `_OffsetUnits`, `_SrcBlend`,
+//! `_DstBlend`, stencil) resolved through
+//! [`MaterialRenderState`](super::render_state::MaterialRenderState). Shaders carry no depth /
+//! blend / cull metadata of their own.
+//!
+//! Single-pass materials that declare no `//#material` tag fall through to [`default_pass`],
+//! preserving the pre-multi-pass opaque default exactly.
 
 use crate::assets::material::{
     MaterialDictionary, MaterialPropertyLookupIds, MaterialPropertyValue, PropertyIdRegistry,
@@ -19,24 +28,37 @@ use super::material_pass_tables::{
 /// Const zero color-write mask for build-script-emitted pass tables.
 pub const COLOR_WRITES_NONE: wgpu::ColorWrites = wgpu::ColorWrites::empty();
 
+/// Unity overlay blend: color is an effective no-op (`One * src + Zero * dst`), alpha takes the
+/// max of src/dst. Used by [`PassKind::OverlayFront`] and [`PassKind::OverlayBehind`] to preserve
+/// the destination alpha channel while letting the shader author its own RGB output unmodified.
+const OVERLAY_NOOP_COLOR_MAX_ALPHA_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::Zero,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Max,
+    },
+};
+
 /// Resonite/Froox material blend mode, or the shader stem's default when no material field is present.
+///
+/// Reconstructed from the `_SrcBlend` / `_DstBlend` Unity blend-factor floats that FrooxEngine
+/// writes for every material (see [`MaterialBlendMode::from_unity_blend_factors`]). The host
+/// never sends a named `BlendMode` enum value on the wire — `MaterialProvider.SetBlendMode(Alpha)`
+/// on the C# side simply translates to `SrcBlend=SrcAlpha` / `DstBlend=OneMinusSrcAlpha` floats —
+/// so only three shapes are observable here: no override, the `(1, 0)` opaque canonical form, and
+/// every other valid `(src, dst)` pair.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MaterialBlendMode {
     /// No material-level override; use the stem's normal static behavior.
     #[default]
     StemDefault,
-    /// `BlendMode.Opaque` (`0`).
+    /// Canonical Unity `Blend One Zero` — opaque, no color blend.
     Opaque,
-    /// `BlendMode.Cutout` (`1`).
-    Cutout,
-    /// `BlendMode.Alpha` (`2`).
-    Alpha,
-    /// `BlendMode.Transparent` (`3`).
-    Transparent,
-    /// `BlendMode.Additive` (`4`).
-    Additive,
-    /// `BlendMode.Multiply` (`5`).
-    Multiply,
     /// Direct Unity `Blend[src][dst], One One` factors from `_SrcBlend` / `_DstBlend`.
     UnityBlend {
         /// Unity source blend factor enum value.
@@ -47,27 +69,10 @@ pub enum MaterialBlendMode {
 }
 
 impl MaterialBlendMode {
-    /// Converts Resonite's `BlendMode` enum value into a pipeline mode.
-    pub fn from_resonite_value(v: f32) -> Self {
-        match v.round() as i32 {
-            0 => Self::Opaque,
-            1 => Self::Cutout,
-            2 => Self::Alpha,
-            3 => Self::Transparent,
-            4 => Self::Additive,
-            5 => Self::Multiply,
-            _ => Self::StemDefault,
-        }
-    }
-
     fn unity_blend_factors(self) -> Option<(u8, u8)> {
         match self {
             Self::StemDefault => None,
-            Self::Opaque | Self::Cutout => Some((1, 0)),
-            Self::Alpha => Some((5, 10)),
-            Self::Transparent => Some((1, 10)),
-            Self::Additive => Some((1, 1)),
-            Self::Multiply => Some((2, 0)),
+            Self::Opaque => Some((1, 0)),
             Self::UnityBlend { src, dst } => Some((src, dst)),
         }
     }
@@ -92,113 +97,110 @@ impl MaterialBlendMode {
 
     /// Returns true when the mode must be sorted/drawn as transparent.
     pub fn is_transparent(self) -> bool {
-        matches!(
-            self,
-            Self::Alpha
-                | Self::Transparent
-                | Self::Additive
-                | Self::Multiply
-                | Self::UnityBlend { .. }
-        )
+        matches!(self, Self::UnityBlend { .. })
     }
 }
 
 /// Property ids used for material-driven pipeline state.
+///
+/// Names are the underscore-prefixed forms FrooxEngine's `MaterialUpdateWriter` actually sends
+/// (audited against `references_external/FrooxEngine/MaterialProvider.cs` and the per-material
+/// subclasses). Previously-carried no-underscore and CamelCase aliases (`ZWrite`, `Cull`,
+/// `_Culling`, `BlendMode`, `SrcBlend`, `_colormask`, `_StencilPass`, …) were confirmed never
+/// emitted by any host code path and were removed. `_SrcBlendBase`/`_DstBlendBase` are kept
+/// because `XiexeToonMaterial` overrides `SrcBlendProp`/`DstBlendProp` to those names.
+/// `_BlendMode` is not carried: the host never sends it; the mode is reconstructed from
+/// `_SrcBlend`/`_DstBlend` factors via [`MaterialBlendMode::from_unity_blend_factors`].
 #[derive(Clone, Copy, Debug)]
 pub struct MaterialPipelinePropertyIds {
-    pub(crate) blend_mode: [i32; 2],
-    pub(crate) src_blend: [i32; 4],
-    pub(crate) dst_blend: [i32; 4],
-    pub(crate) stencil_ref: [i32; 2],
-    pub(crate) stencil_comp: [i32; 2],
-    pub(crate) stencil_op: [i32; 4],
-    pub(crate) stencil_fail_op: [i32; 2],
-    pub(crate) stencil_depth_fail_op: [i32; 2],
-    pub(crate) stencil_read_mask: [i32; 2],
-    pub(crate) stencil_write_mask: [i32; 2],
-    pub(crate) color_mask: [i32; 3],
-    pub(crate) z_write: [i32; 2],
-    pub(crate) z_test: [i32; 2],
-    pub(crate) offset_factor: [i32; 2],
-    pub(crate) offset_units: [i32; 2],
-    pub(crate) cull: [i32; 2],
+    pub(crate) src_blend: [i32; 2],
+    pub(crate) dst_blend: [i32; 2],
+    pub(crate) stencil_ref: [i32; 1],
+    pub(crate) stencil_comp: [i32; 1],
+    pub(crate) stencil_op: [i32; 1],
+    pub(crate) stencil_fail_op: [i32; 1],
+    pub(crate) stencil_depth_fail_op: [i32; 1],
+    pub(crate) stencil_read_mask: [i32; 1],
+    pub(crate) stencil_write_mask: [i32; 1],
+    pub(crate) color_mask: [i32; 1],
+    pub(crate) z_write: [i32; 1],
+    pub(crate) z_test: [i32; 1],
+    pub(crate) offset_factor: [i32; 1],
+    pub(crate) offset_units: [i32; 1],
+    pub(crate) cull: [i32; 1],
 }
 
 impl MaterialPipelinePropertyIds {
-    /// Interns property names used by Resonite material components and Unity-style shaders.
+    /// Interns the underscore-prefixed Unity property names FrooxEngine actually sends.
     pub fn new(registry: &PropertyIdRegistry) -> Self {
         Self {
-            blend_mode: [registry.intern("_BlendMode"), registry.intern("BlendMode")],
             src_blend: [
                 registry.intern("_SrcBlend"),
-                registry.intern("SrcBlend"),
                 registry.intern("_SrcBlendBase"),
-                registry.intern("SrcBlendBase"),
             ],
             dst_blend: [
                 registry.intern("_DstBlend"),
-                registry.intern("DstBlend"),
                 registry.intern("_DstBlendBase"),
-                registry.intern("DstBlendBase"),
             ],
-            stencil_ref: [registry.intern("_Stencil"), registry.intern("Stencil")],
-            stencil_comp: [
-                registry.intern("_StencilComp"),
-                registry.intern("StencilComp"),
-            ],
-            stencil_op: [
-                registry.intern("_StencilOp"),
-                registry.intern("StencilOp"),
-                registry.intern("_StencilPass"),
-                registry.intern("StencilPass"),
-            ],
-            stencil_fail_op: [
-                registry.intern("_StencilFail"),
-                registry.intern("StencilFail"),
-            ],
-            stencil_depth_fail_op: [
-                registry.intern("_StencilZFail"),
-                registry.intern("StencilZFail"),
-            ],
-            stencil_read_mask: [
-                registry.intern("_StencilReadMask"),
-                registry.intern("StencilReadMask"),
-            ],
-            stencil_write_mask: [
-                registry.intern("_StencilWriteMask"),
-                registry.intern("StencilWriteMask"),
-            ],
-            color_mask: [
-                registry.intern("_ColorMask"),
-                registry.intern("ColorMask"),
-                registry.intern("_colormask"),
-            ],
-            z_write: [registry.intern("_ZWrite"), registry.intern("ZWrite")],
-            z_test: [registry.intern("_ZTest"), registry.intern("ZTest")],
-            offset_factor: [
-                registry.intern("_OffsetFactor"),
-                registry.intern("OffsetFactor"),
-            ],
-            offset_units: [
-                registry.intern("_OffsetUnits"),
-                registry.intern("OffsetUnits"),
-            ],
-            cull: [registry.intern("_Cull"), registry.intern("_Culling")],
+            stencil_ref: [registry.intern("_Stencil")],
+            stencil_comp: [registry.intern("_StencilComp")],
+            stencil_op: [registry.intern("_StencilOp")],
+            stencil_fail_op: [registry.intern("_StencilFail")],
+            stencil_depth_fail_op: [registry.intern("_StencilZFail")],
+            stencil_read_mask: [registry.intern("_StencilReadMask")],
+            stencil_write_mask: [registry.intern("_StencilWriteMask")],
+            color_mask: [registry.intern("_ColorMask")],
+            z_write: [registry.intern("_ZWrite")],
+            z_test: [registry.intern("_ZTest")],
+            offset_factor: [registry.intern("_OffsetFactor")],
+            offset_units: [registry.intern("_OffsetUnits")],
+            cull: [registry.intern("_Cull")],
         }
     }
 }
 
-pub(crate) fn first_float_by_pids(
-    dict: &MaterialDictionary<'_>,
-    lookup: MaterialPropertyLookupIds,
+/// One side of a [`MaterialPropertyLookupIds`] fetched via
+/// [`MaterialDictionary::fetch_property_maps`]: the inner `property_id → value` map for either the
+/// material or the property block. `None` when no properties have been stored for that id.
+pub(crate) type PropertyMapRef<'a> =
+    Option<&'a std::collections::HashMap<i32, MaterialPropertyValue>>;
+
+/// Like [`first_float_by_pids`] but takes the two inner maps already fetched once via
+/// [`MaterialDictionary::fetch_property_maps`]. Iterates `pids` doing only one inner-map lookup
+/// per side per id, matching [`crate::assets::material::MaterialPropertyStore::get_merged`]'s
+/// "property block overrides material" semantics.
+pub(crate) fn first_float_from_maps(
+    material_map: PropertyMapRef<'_>,
+    property_block_map: PropertyMapRef<'_>,
     pids: &[i32],
 ) -> Option<f32> {
-    pids.iter()
-        .find_map(|&pid| match dict.get_merged(lookup, pid) {
-            Some(MaterialPropertyValue::Float(f)) => Some(*f),
-            Some(MaterialPropertyValue::Float4(v)) => Some(v[0]),
+    pids.iter().find_map(|&pid| {
+        let v = property_block_map
+            .and_then(|m| m.get(&pid))
+            .or_else(|| material_map.and_then(|m| m.get(&pid)))?;
+        match v {
+            MaterialPropertyValue::Float(f) => Some(*f),
+            MaterialPropertyValue::Float4(v4) => Some(v4[0]),
             _ => None,
-        })
+        }
+    })
+}
+
+/// Resolves a material/property-block `BlendMode` override using pre-fetched inner maps. Prefer
+/// this in hot paths that also call [`crate::materials::material_render_state_from_maps`] for
+/// the same lookup — the two outer-map probes are amortised across both calls.
+pub fn material_blend_mode_from_maps(
+    material_map: PropertyMapRef<'_>,
+    property_block_map: PropertyMapRef<'_>,
+    ids: &MaterialPipelinePropertyIds,
+) -> MaterialBlendMode {
+    if let (Some(src), Some(dst)) = (
+        first_float_from_maps(material_map, property_block_map, &ids.src_blend),
+        first_float_from_maps(material_map, property_block_map, &ids.dst_blend),
+    ) {
+        return MaterialBlendMode::from_unity_blend_factors(src, dst);
+    }
+    MaterialBlendMode::StemDefault
 }
 
 /// Resolves a material/property-block `BlendMode` override.
@@ -207,29 +209,121 @@ pub fn material_blend_mode_for_lookup(
     lookup: MaterialPropertyLookupIds,
     ids: &MaterialPipelinePropertyIds,
 ) -> MaterialBlendMode {
-    if let Some(v) = first_float_by_pids(dict, lookup, &ids.blend_mode) {
-        return MaterialBlendMode::from_resonite_value(v);
-    }
-    if let (Some(src), Some(dst)) = (
-        first_float_by_pids(dict, lookup, &ids.src_blend),
-        first_float_by_pids(dict, lookup, &ids.dst_blend),
-    ) {
-        return MaterialBlendMode::from_unity_blend_factors(src, dst);
-    }
-
-    MaterialBlendMode::StemDefault
+    let (mat_map, pb_map) = dict.fetch_property_maps(lookup);
+    material_blend_mode_from_maps(mat_map, pb_map, ids)
 }
 
 /// How a declared shader pass applies material-driven Unity render state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MaterialPassState {
-    /// Use the pass descriptor exactly as authored.
+    /// Use the pass descriptor exactly as authored; runtime `_SrcBlend`/`_DstBlend` are ignored.
     #[default]
     Static,
     /// Unity ForwardBase: `Blend [_SrcBlend] [_DstBlend]`, `ZWrite [_ZWrite]`.
     UnityForwardBase,
     /// Unity ForwardAdd: `Blend [_SrcBlend] One`, `ZWrite Off`.
     UnityForwardAdd,
+}
+
+/// Semantic pass kind authored as `//#material <kind>` above an `@fragment` entry point.
+///
+/// Maps to a canonical set of static defaults (depth compare, cull, blend, write mask) plus the
+/// [`MaterialPassState`] that drives runtime blend-property overrides. Parsed in the build script;
+/// each tag produces one [`MaterialPassDesc`] via [`pass_from_kind`]. Runtime `MaterialRenderState`
+/// still overrides depth / cull / stencil / color-mask / depth-bias on top of these defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassKind {
+    /// Opaque forward pass with no material-driven blend override; `Cull Back`, `ZWrite On`.
+    Static,
+    /// Unity ForwardBase: opaque/transparent forward pass whose blend is driven by `_SrcBlend`/`_DstBlend`.
+    ForwardBase,
+    /// Unity ForwardAdd: additive per-light pass. `ZWrite Off`; runtime `_SrcBlend` drives src, dst is `One`.
+    ForwardAdd,
+    /// Outline silhouette pass: like [`Self::Static`] but `Cull Front` so back faces of an inflated shell show.
+    Outline,
+    /// Stencil-only pass: `Cull Front`, `ColorMask 0`, `ZWrite Off`; writes only to the stencil buffer.
+    Stencil,
+    /// Depth-only prepass: writes depth, no color (`ColorMask 0`). Runs before the matching color pass.
+    DepthPrepass,
+    /// Overlay rendered on top of already-drawn geometry. Writes RGBA (`ColorWrites::ALL`).
+    OverlayFront,
+    /// Overlay rendered behind already-drawn geometry: reverse-Z `depth=Less` inverts the usual test.
+    OverlayBehind,
+}
+
+/// Returns the canonical [`MaterialPassDesc`] for a given [`PassKind`] and fragment entry point.
+///
+/// All render-state fields come from this table; the shader side only declares the kind and entry
+/// point name. Host material properties override depth / cull / stencil / color-mask / depth-bias at
+/// pipeline build time via [`MaterialRenderState`](super::render_state::MaterialRenderState), and
+/// blend state via [`materialized_pass_for_blend_mode`] when the kind's [`MaterialPassState`] is not
+/// [`MaterialPassState::Static`].
+pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> MaterialPassDesc {
+    let base = MaterialPassDesc {
+        name: pass_kind_label(kind),
+        vertex_entry: "vs_main",
+        fragment_entry,
+        depth_compare: crate::render_graph::MAIN_FORWARD_DEPTH_COMPARE,
+        depth_write: true,
+        cull_mode: Some(wgpu::Face::Back),
+        blend: None,
+        write_mask: wgpu::ColorWrites::COLOR,
+        depth_bias_slope_scale: 0.0,
+        depth_bias_constant: 0,
+        material_state: MaterialPassState::Static,
+    };
+    match kind {
+        PassKind::Static => base,
+        PassKind::ForwardBase => MaterialPassDesc {
+            material_state: MaterialPassState::UnityForwardBase,
+            ..base
+        },
+        PassKind::ForwardAdd => MaterialPassDesc {
+            depth_write: false,
+            write_mask: wgpu::ColorWrites::ALL,
+            material_state: MaterialPassState::UnityForwardAdd,
+            ..base
+        },
+        PassKind::Outline => MaterialPassDesc {
+            cull_mode: Some(wgpu::Face::Front),
+            ..base
+        },
+        PassKind::Stencil => MaterialPassDesc {
+            depth_write: false,
+            cull_mode: Some(wgpu::Face::Front),
+            write_mask: COLOR_WRITES_NONE,
+            ..base
+        },
+        PassKind::DepthPrepass => MaterialPassDesc {
+            write_mask: COLOR_WRITES_NONE,
+            ..base
+        },
+        PassKind::OverlayFront => MaterialPassDesc {
+            blend: Some(OVERLAY_NOOP_COLOR_MAX_ALPHA_BLEND),
+            write_mask: wgpu::ColorWrites::ALL,
+            ..base
+        },
+        PassKind::OverlayBehind => MaterialPassDesc {
+            depth_compare: wgpu::CompareFunction::Less,
+            blend: Some(OVERLAY_NOOP_COLOR_MAX_ALPHA_BLEND),
+            write_mask: wgpu::ColorWrites::ALL,
+            ..base
+        },
+    }
+}
+
+/// Short debug label for a [`PassKind`] used in pipeline names.
+const fn pass_kind_label(kind: PassKind) -> &'static str {
+    match kind {
+        PassKind::Static => "static",
+        PassKind::ForwardBase => "forward_base",
+        PassKind::ForwardAdd => "forward_add",
+        PassKind::Outline => "outline",
+        PassKind::Stencil => "stencil",
+        PassKind::DepthPrepass => "depth_prepass",
+        PassKind::OverlayFront => "overlay_front",
+        PassKind::OverlayBehind => "overlay_behind",
+    }
 }
 
 /// Pipeline state for one pass of a material shader. All fields are `const`-constructible so the
@@ -262,16 +356,23 @@ pub struct MaterialPassDesc {
 
 /// Default single-pass descriptor matching the pre-multi-pass pipeline builder.
 ///
-/// `use_alpha_blending` picks between opaque (`ColorWrites::COLOR`, `blend: None`) and transparent
-/// (`ColorWrites::ALL`, `ALPHA_BLENDING`). `depth_write` mirrors the old `depth_write_enabled` arg.
+/// `use_alpha_blending` picks between opaque (`ColorWrites::COLOR`, `blend: None`,
+/// `cull_mode: Some(Back)`) and transparent (`ColorWrites::ALL`, `ALPHA_BLENDING`,
+/// `cull_mode: None`). `depth_write` mirrors the old `depth_write_enabled` arg.
+///
+/// The opaque `Cull Back` default mirrors Unity's ShaderLab default for passes that declare
+/// no explicit `Cull` directive. Host materials that want different culling still override
+/// this via the `_Cull` property resolved through
+/// [`MaterialRenderState::resolved_cull_mode`](super::render_state::MaterialRenderState::resolved_cull_mode).
 pub const fn default_pass(use_alpha_blending: bool, depth_write: bool) -> MaterialPassDesc {
-    let (blend, write_mask) = if use_alpha_blending {
+    let (blend, write_mask, cull_mode) = if use_alpha_blending {
         (
             Some(wgpu::BlendState::ALPHA_BLENDING),
             wgpu::ColorWrites::ALL,
+            None,
         )
     } else {
-        (None, wgpu::ColorWrites::COLOR)
+        (None, wgpu::ColorWrites::COLOR, Some(wgpu::Face::Back))
     };
     MaterialPassDesc {
         name: "main",
@@ -279,7 +380,7 @@ pub const fn default_pass(use_alpha_blending: bool, depth_write: bool) -> Materi
         fragment_entry: "fs_main",
         depth_compare: crate::render_graph::MAIN_FORWARD_DEPTH_COMPARE,
         depth_write,
-        cull_mode: None,
+        cull_mode,
         blend,
         write_mask,
         depth_bias_slope_scale: 0.0,
@@ -340,20 +441,9 @@ pub fn materialized_pass_for_blend_mode(
 }
 
 /// Default single-pass descriptor after applying a material `BlendMode` override.
-pub fn default_pass_for_blend_mode(
-    stem_uses_alpha_blending: bool,
-    blend_mode: MaterialBlendMode,
-) -> MaterialPassDesc {
+pub fn default_pass_for_blend_mode(blend_mode: MaterialBlendMode) -> MaterialPassDesc {
     match blend_mode {
-        MaterialBlendMode::StemDefault => {
-            default_pass(stem_uses_alpha_blending, !stem_uses_alpha_blending)
-        }
-        MaterialBlendMode::Opaque | MaterialBlendMode::Cutout => default_pass(false, true),
-        MaterialBlendMode::Alpha => unity_blend_pass("alpha", 5, 10, false),
-        // Resonite's Transparent mode is premultiplied-alpha style.
-        MaterialBlendMode::Transparent => unity_blend_pass("transparent", 1, 10, false),
-        MaterialBlendMode::Additive => unity_blend_pass("additive", 1, 1, false),
-        MaterialBlendMode::Multiply => unity_blend_pass("multiply", 2, 0, false),
+        MaterialBlendMode::StemDefault | MaterialBlendMode::Opaque => default_pass(false, true),
         MaterialBlendMode::UnityBlend { src, dst } => {
             unity_blend_pass("unity_blend", src, dst, src == 1 && dst == 0)
         }
@@ -362,27 +452,11 @@ pub fn default_pass_for_blend_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::super::render_state::{material_render_state_for_lookup, MaterialCullOverride};
+    use super::super::render_state::{
+        material_render_state_for_lookup, MaterialCullOverride, MaterialRenderState,
+    };
     use super::*;
     use crate::assets::material::{MaterialPropertyStore, PropertyIdRegistry};
-
-    #[test]
-    fn resolves_resonite_blend_mode_property() {
-        let reg = PropertyIdRegistry::new();
-        let ids = MaterialPipelinePropertyIds::new(&reg);
-        let mut store = MaterialPropertyStore::new();
-        let pid = reg.intern("BlendMode");
-        store.set_material(42, pid, MaterialPropertyValue::Float(4.0));
-        let dict = MaterialDictionary::new(&store);
-        let lookup = MaterialPropertyLookupIds {
-            material_asset_id: 42,
-            mesh_property_block_slot0: None,
-        };
-        assert_eq!(
-            material_blend_mode_for_lookup(&dict, lookup, &ids),
-            MaterialBlendMode::Additive
-        );
-    }
 
     #[test]
     fn resolves_unity_src_dst_blend_properties() {
@@ -431,7 +505,7 @@ mod tests {
         let mut store = MaterialPropertyStore::new();
         let stencil = reg.intern("_Stencil");
         let comp = reg.intern("_StencilComp");
-        let op = reg.intern("_StencilPass");
+        let op = reg.intern("_StencilOp");
         let fail = reg.intern("_StencilFail");
         let zfail = reg.intern("_StencilZFail");
         let read = reg.intern("_StencilReadMask");
@@ -474,25 +548,6 @@ mod tests {
         assert_eq!(
             state.stencil_state().front.depth_fail_op,
             wgpu::StencilOperation::IncrementClamp
-        );
-    }
-
-    #[test]
-    fn resolves_xiexe_lowercase_color_mask_property() {
-        let reg = PropertyIdRegistry::new();
-        let ids = MaterialPipelinePropertyIds::new(&reg);
-        let mut store = MaterialPropertyStore::new();
-        let color_mask = reg.intern("_colormask");
-        store.set_material(441, color_mask, MaterialPropertyValue::Float(0.0));
-        let dict = MaterialDictionary::new(&store);
-        let lookup = MaterialPropertyLookupIds {
-            material_asset_id: 441,
-            mesh_property_block_slot0: None,
-        };
-        let state = material_render_state_for_lookup(&dict, lookup, &ids);
-        assert_eq!(
-            state.color_writes(wgpu::ColorWrites::ALL),
-            wgpu::ColorWrites::empty()
         );
     }
 
@@ -685,22 +740,6 @@ mod tests {
     }
 
     #[test]
-    fn culling_property_alias_resolves_like_cull() {
-        let reg = PropertyIdRegistry::new();
-        let ids = MaterialPipelinePropertyIds::new(&reg);
-        let mut store = MaterialPropertyStore::new();
-        let culling = reg.intern("_Culling");
-        store.set_material(51, culling, MaterialPropertyValue::Float(2.0));
-        let dict = MaterialDictionary::new(&store);
-        let lookup = MaterialPropertyLookupIds {
-            material_asset_id: 51,
-            mesh_property_block_slot0: None,
-        };
-        let state = material_render_state_for_lookup(&dict, lookup, &ids);
-        assert_eq!(state.cull_override, MaterialCullOverride::Back);
-    }
-
-    #[test]
     fn property_block_overrides_cull() {
         let reg = PropertyIdRegistry::new();
         let ids = MaterialPipelinePropertyIds::new(&reg);
@@ -719,7 +758,29 @@ mod tests {
 
     #[test]
     fn default_blend_mode_alpha_pass_culls_back_faces() {
-        let pass = default_pass_for_blend_mode(false, MaterialBlendMode::Alpha);
+        let pass = default_pass_for_blend_mode(MaterialBlendMode::UnityBlend { src: 5, dst: 10 });
         assert_eq!(pass.cull_mode, Some(wgpu::Face::Back));
+    }
+
+    #[test]
+    fn default_pass_opaque_culls_back_faces() {
+        let pass = default_pass(false, true);
+        assert_eq!(pass.cull_mode, Some(wgpu::Face::Back));
+    }
+
+    #[test]
+    fn default_pass_alpha_blended_disables_culling() {
+        let pass = default_pass(true, false);
+        assert_eq!(pass.cull_mode, None);
+    }
+
+    #[test]
+    fn unspecified_cull_preserves_opaque_back_face_default() {
+        let state = MaterialRenderState::default();
+        assert_eq!(state.cull_override, MaterialCullOverride::Unspecified);
+        assert_eq!(
+            state.resolved_cull_mode(default_pass(false, true).cull_mode),
+            Some(wgpu::Face::Back)
+        );
     }
 }

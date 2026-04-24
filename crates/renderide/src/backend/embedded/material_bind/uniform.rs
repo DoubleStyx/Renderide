@@ -21,8 +21,6 @@ pub(super) struct MaterialUniformCacheKey {
     pub(super) material_asset_id: i32,
     pub(super) property_block_slot0: Option<i32>,
     pub(super) texture_2d_asset_id: i32,
-    /// Distinguishes RT-only primary slot from empty (`flags` bit 0).
-    pub(super) primary_texture_any_kind_present: bool,
 }
 
 /// LRU uniform buffer create/refresh for [`super::EmbeddedMaterialBindResources::get_or_create_embedded_uniform_buffer`].
@@ -34,7 +32,6 @@ pub(super) struct EmbeddedUniformBufferRequest<'a> {
     pub(super) mutation_gen: u64,
     pub(super) store: &'a MaterialPropertyStore,
     pub(super) lookup: MaterialPropertyLookupIds,
-    pub(super) primary_texture_any_kind_present: bool,
 }
 
 use super::EmbeddedMaterialBindResources;
@@ -53,37 +50,28 @@ impl EmbeddedMaterialBindResources {
             mutation_gen,
             store,
             lookup,
-            primary_texture_any_kind_present,
         } = req;
-        let mut uniform_cache = self.uniform_cache.borrow_mut();
+        let mut uniform_cache = self.uniform_cache.lock();
         if let Some(entry) = uniform_cache.get_mut(uniform_key) {
             if entry.last_written_generation == mutation_gen {
                 return Ok(entry.buffer.clone());
             }
-            let uniform_bytes = build_embedded_uniform_bytes(
-                &layout.reflected,
-                layout.ids.as_ref(),
-                store,
-                lookup,
-                primary_texture_any_kind_present,
-            )
-            .ok_or_else(|| {
-                format!("stem {stem}: uniform block missing (shader has no material uniform)")
-            })?;
+            let uniform_bytes =
+                build_embedded_uniform_bytes(&layout.reflected, layout.ids.as_ref(), store, lookup)
+                    .ok_or_else(|| {
+                        format!(
+                            "stem {stem}: uniform block missing (shader has no material uniform)"
+                        )
+                    })?;
             queue.write_buffer(entry.buffer.as_ref(), 0, &uniform_bytes);
             entry.last_written_generation = mutation_gen;
             return Ok(entry.buffer.clone());
         }
-        let uniform_bytes = build_embedded_uniform_bytes(
-            &layout.reflected,
-            layout.ids.as_ref(),
-            store,
-            lookup,
-            primary_texture_any_kind_present,
-        )
-        .ok_or_else(|| {
-            format!("stem {stem}: uniform block missing (shader has no material uniform)")
-        })?;
+        let uniform_bytes =
+            build_embedded_uniform_bytes(&layout.reflected, layout.ids.as_ref(), store, lookup)
+                .ok_or_else(|| {
+                    format!("stem {stem}: uniform block missing (shader has no material uniform)")
+                })?;
         let buf = Arc::new(
             self.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -100,6 +88,7 @@ impl EmbeddedMaterialBindResources {
             drop(evicted);
             logger::trace!("EmbeddedMaterialBindResources: evicted LRU uniform cache entry");
         }
+        drop(uniform_cache);
         Ok(buf)
     }
 }

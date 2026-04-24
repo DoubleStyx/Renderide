@@ -179,6 +179,7 @@ pub struct FrameDiagnosticsSnapshot {
 impl FrameDiagnosticsSnapshot {
     /// Builds the snapshot after [`crate::gpu::GpuContext::end_frame_timing`] for the tick.
     pub fn capture(capture: FrameDiagnosticsSnapshotCapture<'_>) -> Self {
+        profiling::scope!("hud::build_diagnostics_snapshot");
         let FrameDiagnosticsSnapshotCapture {
             gpu,
             wall_frame_time_ms,
@@ -264,7 +265,7 @@ impl FrameDiagnosticsSnapshot {
         }
     }
 
-    /// FPS from wall-clock interval between redraws (matches legacy HUD semantics).
+    /// FPS computed from the wall-clock interval between consecutive redraw events.
     pub fn fps_from_wall(&self) -> f64 {
         if self.wall_frame_time_ms <= f64::EPSILON {
             0.0

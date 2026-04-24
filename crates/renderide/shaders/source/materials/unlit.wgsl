@@ -1,21 +1,23 @@
-//! World Unlit (`Shader "Unlit"`): texture × tint, optional alpha test, mask and offset textures.
+//! World Unlit (`Shader "Unlit"`): texture × tint, optional alpha test,
+//! optional UV-shift from a packed offset texture and alpha mask.
 //!
 //! Build emits `unlit_default` / `unlit_multiview` targets via [`MULTIVIEW`](https://docs.rs/naga_oil).
-//! `@group(1)` identifiers match Unity material property names (`_Color`, `_Tex`, …) for host binding by reflection.
+//! `@group(1)` identifiers match Unity material property names (`_Color`, `_Tex`, `_MaskTex`, `_OffsetTex`, …)
+//! so host binding picks them up by reflection.
 //!
 //! Per-frame bindings (`@group(0)`) are imported from `globals.wgsl` so composed targets match the frame bind group layout used by the renderer.
 //! Per-draw uniforms (`@group(2)`) use [`renderide::per_draw`].
 //!
-//! ## `flags` bits (host-set u32)
-//! | Bit | Mask | Meaning |
-//! |-----|------|---------|
-//! | 0   | 0x01 | Sample `_Tex` and multiply into color (`_TEXTURE`) |
-//! | 1   | 0x02 | Alpha clip vs `_Cutoff` (`_ALPHATEST`) |
-//! | 2   | 0x04 | Apply `_OffsetTex` UV offset (`_OFFSET_TEXTURE`) |
-//! | 3   | 0x08 | Multiply alpha by `_MaskTex` luminance×alpha (`_MASK_TEXTURE_MUL`) |
-//! | 4   | 0x10 | Clip when `_MaskTex` luminance×alpha < `_Cutoff` (`_MASK_TEXTURE_CLIP`) |
-//! | 5   | 0x20 | Premultiply: multiply RGB by alpha after all ops (`_MUL_RGB_BY_ALPHA`) |
-//! | 6   | 0x40 | Additive alpha: multiply output alpha by luminance (`_MUL_ALPHA_INTENSITY`) |
+//! Mask-mode caveat: Unity's Unlit shader gates mask application on
+//! `_MASK_TEXTURE_MUL` / `_MASK_TEXTURE_CLIP` multi-compile keywords that FrooxEngine sets
+//! through `ShaderKeywords.SetKeyword`, which the renderer never receives — decoding them
+//! would require plumbing `ShaderKeywords.Variant` plus each shader's keyword-index table
+//! through IPC (see `ShaderKeywords.cs`). The shader instead infers the mode from signals
+//! that *are* on the wire: alpha-test active (`_Cutoff ∈ (0, 1)`) → CLIP; transparent blend
+//! (`(_SrcBlend, _DstBlend) ≠ (1, 0)`) → MUL; opaque no-cutoff → mask has no visible effect,
+//! skipped. The default-white texture fallback keeps every branch inert when no host mask
+//! is bound (`mask.a == 1.0`). The rare case of an opaque cutoff-less material with
+//! `MaskMode = AlphaClip` can only be recovered by plumbing the keyword bitmask.
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
@@ -27,11 +29,9 @@ struct UnlitMaterial {
     _Tex_ST: vec4<f32>,
     _MaskTex_ST: vec4<f32>,
     _OffsetTex_ST: vec4<f32>,
-    // Unity declares _OffsetMagnitude as a Vector property (vec4); only xy are used.
     _OffsetMagnitude: vec4<f32>,
     _Cutoff: f32,
     _PolarPow: f32,
-    flags: u32,
     _SrcBlend: f32,
     _DstBlend: f32,
     _ZWrite: f32,
@@ -82,63 +82,27 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var albedo = mat._Color;
-    // Alpha for `_ALPHATEST` vs `_Cutoff` (base mip — stable coverage).
-    var clip_a = mat._Color.a;
+    let uv_off = uvu::apply_st(in.uv, mat._OffsetTex_ST);
+    let offset_s = textureSample(_OffsetTex, _OffsetTex_sampler, uv_off);
+    let uv_main = uvu::apply_st(in.uv, mat._Tex_ST) + offset_s.xy * mat._OffsetMagnitude.xy;
 
-    // --- Main texture ---
-    if ((mat.flags & 1u) != 0u) {
-        var uv_main = uvu::apply_st(in.uv, mat._Tex_ST);
+    let t = textureSample(_Tex, _Tex_sampler, uv_main);
+    var albedo = mat._Color * t;
+    var clip_a = mat._Color.a * acs::texture_alpha_base_mip(_Tex, _Tex_sampler, uv_main);
 
-        // Offset texture: shift UV by (offsetSample.xy * _OffsetMagnitude).
-        if ((mat.flags & 4u) != 0u) {
-            let uv_off = uvu::apply_st(in.uv, mat._OffsetTex_ST);
-            let offset_s = textureSample(_OffsetTex, _OffsetTex_sampler, uv_off);
-            uv_main = uv_main + offset_s.xy * mat._OffsetMagnitude.xy;
-        }
-
-        let t = textureSample(_Tex, _Tex_sampler, uv_main);
-        clip_a = mat._Color.a * acs::texture_alpha_base_mip(_Tex, _Tex_sampler, uv_main);
-        albedo = albedo * t;
+    let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
+    let cutoff_active = mat._Cutoff > 0.0 && mat._Cutoff < 1.0;
+    let is_opaque_blend = mat._SrcBlend == 1.0 && mat._DstBlend == 0.0;
+    if (cutoff_active) {
+        clip_a = clip_a * acs::texture_alpha_base_mip(_MaskTex, _MaskTex_sampler, uv_mask);
+    } else if (!is_opaque_blend) {
+        albedo.a = albedo.a * textureSample(_MaskTex, _MaskTex_sampler, uv_mask).a;
     }
 
-    // --- Mask texture (MUL and/or CLIP) ---
-    if ((mat.flags & 24u) != 0u) {   // bits 3 or 4
-        let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
-        let mask = textureSample(_MaskTex, _MaskTex_sampler, uv_mask);
-        // Unity: mul = (r+g+b) * 0.3333 * a  (luminance × alpha)
-        let mul = (mask.r + mask.g + mask.b) * 0.33333334 * mask.a;
-        let mul_clip = acs::mask_luminance_mul_base_mip(_MaskTex, _MaskTex_sampler, uv_mask);
-
-        if ((mat.flags & 8u) != 0u) {     // _MASK_TEXTURE_MUL
-            albedo.a = albedo.a * mul;
-            clip_a = clip_a * mul_clip;
-        }
-        if ((mat.flags & 16u) != 0u) {    // _MASK_TEXTURE_CLIP
-            // Unity: `if (mul - _Cutoff <= 0) discard` → discard when mul <= _Cutoff.
-            if (mul_clip <= mat._Cutoff) {
-                discard;
-            }
-        }
-    }
-
-    // --- Alpha clip — skipped when mask clip is already active (mirrors Unity #pragma) ---
-    if ((mat.flags & 2u) != 0u && (mat.flags & 16u) == 0u) {
-        // Unity: `if (col.a - _Cutoff <= 0) discard` → discard when a <= _Cutoff.
-        if (clip_a <= mat._Cutoff) {
-            discard;
-        }
-    }
-
-    // --- Premultiply RGB by alpha (_MUL_RGB_BY_ALPHA) ---
-    if ((mat.flags & 32u) != 0u) {
-        albedo = vec4<f32>(albedo.rgb * albedo.a, albedo.a);
-    }
-
-    // --- Additive alpha: replace alpha with luminance (_MUL_ALPHA_INTENSITY) ---
-    if ((mat.flags & 64u) != 0u) {
-        let lum = (albedo.r + albedo.g + albedo.b) * 0.33333334;
-        albedo.a = albedo.a * lum;
+    // Alpha test is active when `_Cutoff` is a meaningful value in (0, 1); otherwise every
+    // alpha at exactly 0 or exactly 1 would either never discard or always discard.
+    if (mat._Cutoff > 0.0 && mat._Cutoff < 1.0 && clip_a <= mat._Cutoff) {
+        discard;
     }
 
     return rg::retain_globals_additive(albedo);

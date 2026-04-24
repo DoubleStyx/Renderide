@@ -3,10 +3,11 @@
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 
-/// Uniform block matching WGSL `FrameGlobals` (80-byte size, 16-byte aligned).
+/// Uniform block matching WGSL `FrameGlobals` (128-byte size, 16-byte aligned).
 ///
 /// Encodes camera position, per-eye coefficients for view-space Z from world position, clustered
-/// grid dimensions, clip planes, light count, and viewport size for clustered forward sampling.
+/// grid dimensions, clip planes, light count, viewport size, per-eye projection coefficients for
+/// screen-space-to-view unprojection, and a monotonic frame index for temporal / jittered effects.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FrameGpuUniforms {
@@ -32,6 +33,22 @@ pub struct FrameGpuUniforms {
     pub viewport_width: u32,
     /// Viewport height in pixels (physical).
     pub viewport_height: u32,
+    /// Left-eye (or mono) projection coefficients: `(P[0][0], P[1][1], P[0][2], P[1][2])`.
+    ///
+    /// Column-major `glam::Mat4` indexing. Screen-space → view-space unprojection (view Z known)
+    /// uses `view_x = (ndc_x - c.z) * view_z / c.x` and `view_y = (ndc_y - c.w) * view_z / c.y`,
+    /// where `c` is this vec4. Encodes both symmetric (desktop) and asymmetric (per-eye VR)
+    /// perspective projections exactly.
+    pub proj_params_left: [f32; 4],
+    /// Right-eye projection coefficients (same packing as [`Self::proj_params_left`]).
+    ///
+    /// Equals [`Self::proj_params_left`] in mono mode.
+    pub proj_params_right: [f32; 4],
+    /// Packed trailing `vec4<u32>` slot: `.x` is the monotonic frame index (wraps
+    /// `host_camera.frame_index`; used for temporal / jittered screen-space effects), `.yzw` are
+    /// reserved padding so the struct aligns to a 16-byte boundary without tripping naga-oil's
+    /// composable-identifier substitution rules (numeric-suffix names are rejected).
+    pub frame_tail: [u32; 4],
 }
 
 /// Inputs for [`FrameGpuUniforms::new_clustered`] (clustered forward + lighting).
@@ -59,6 +76,12 @@ pub struct ClusteredFrameGlobalsParams {
     pub viewport_width: u32,
     /// Viewport height in physical pixels.
     pub viewport_height: u32,
+    /// Left-eye (or mono) projection coefficients `(P[0][0], P[1][1], P[0][2], P[1][2])`.
+    pub proj_params_left: [f32; 4],
+    /// Right-eye projection coefficients; equals `proj_params_left` in mono.
+    pub proj_params_right: [f32; 4],
+    /// Monotonic frame index (wraps `HostCameraFrame::frame_index`).
+    pub frame_index: u32,
 }
 
 impl FrameGpuUniforms {
@@ -70,9 +93,19 @@ impl FrameGpuUniforms {
         [m.x_axis.z, m.y_axis.z, m.z_axis.z, m.w_axis.z]
     }
 
+    /// Extracts `(P[0][0], P[1][1], P[0][2], P[1][2])` from a column-major perspective matrix.
+    ///
+    /// For symmetric projections `P[0][2]` and `P[1][2]` are zero; asymmetric (per-eye VR)
+    /// projections encode the principal-point offset there. Used by screen-space passes that
+    /// unproject from depth to view space without needing the full `inv_proj` matrix.
+    pub fn proj_params_from_proj(proj: Mat4) -> [f32; 4] {
+        [proj.x_axis.x, proj.y_axis.y, proj.z_axis.x, proj.z_axis.y]
+    }
+
     /// Builds per-frame uniforms for clustered forward and lighting.
     ///
-    /// `params.view_space_z_coeffs_right` should equal `params.view_space_z_coeffs` in mono mode.
+    /// `params.view_space_z_coeffs_right` should equal `params.view_space_z_coeffs` in mono mode;
+    /// `params.proj_params_right` should equal `params.proj_params_left` in mono mode.
     pub fn new_clustered(params: ClusteredFrameGlobalsParams) -> Self {
         Self {
             camera_world_pos: [
@@ -91,6 +124,9 @@ impl FrameGpuUniforms {
             light_count: params.light_count,
             viewport_width: params.viewport_width,
             viewport_height: params.viewport_height,
+            proj_params_left: params.proj_params_left,
+            proj_params_right: params.proj_params_right,
+            frame_tail: [params.frame_index, 0, 0, 0],
         }
     }
 }
@@ -100,8 +136,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_globals_size_80() {
-        assert_eq!(std::mem::size_of::<FrameGpuUniforms>(), 80);
+    fn frame_globals_size_128() {
+        assert_eq!(std::mem::size_of::<FrameGpuUniforms>(), 128);
         assert_eq!(std::mem::size_of::<FrameGpuUniforms>() % 16, 0);
+    }
+
+    #[test]
+    fn z_coeffs_extracts_third_row_for_translation_only_view() {
+        // Translation-only view: world-to-view z = world.z + tz (tz from row 3, w component).
+        let tz = 7.0;
+        let m = Mat4::from_translation(glam::Vec3::new(0.0, 0.0, tz));
+        let coeffs = FrameGpuUniforms::view_space_z_coeffs_from_world_to_view(m);
+        assert_eq!(coeffs, [0.0, 0.0, 1.0, tz]);
+
+        // Sanity: dot(coeffs.xyz, p) + coeffs.w matches (m * p).z for a sample point.
+        let p = glam::Vec3::new(2.0, -3.0, 4.0);
+        let view_z = (m * p.extend(1.0)).z;
+        let dotted = coeffs[2].mul_add(p.z, coeffs[0].mul_add(p.x, coeffs[1] * p.y)) + coeffs[3];
+        assert!((view_z - dotted).abs() < 1e-6);
+    }
+
+    #[test]
+    fn z_coeffs_matches_third_component_under_yaw_rotation() {
+        // Yaw should leave Z row invariant (rotation about Y keeps Z-basis).
+        let m = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_3);
+        let coeffs = FrameGpuUniforms::view_space_z_coeffs_from_world_to_view(m);
+        let p = glam::Vec3::new(1.5, -0.25, 2.0);
+        let view_z = (m * p.extend(1.0)).z;
+        let dotted = coeffs[2].mul_add(p.z, coeffs[0].mul_add(p.x, coeffs[1] * p.y)) + coeffs[3];
+        assert!((view_z - dotted).abs() < 1e-5);
+    }
+
+    #[test]
+    fn proj_params_extract_diagonal_and_offcenter_are_zero_for_symmetric() {
+        // Symmetric perspective: [0][2] and [1][2] are zero.
+        let p = Mat4::perspective_rh(60.0_f32.to_radians(), 16.0 / 9.0, 0.1, 1000.0);
+        let coeffs = FrameGpuUniforms::proj_params_from_proj(p);
+        assert!(coeffs[0].abs() > 0.0);
+        assert!(coeffs[1].abs() > 0.0);
+        assert!(coeffs[2].abs() < 1e-5);
+        assert!(coeffs[3].abs() < 1e-5);
+    }
+
+    #[test]
+    fn new_clustered_populates_fields_including_zero_w_for_camera_pos() {
+        let u = FrameGpuUniforms::new_clustered(ClusteredFrameGlobalsParams {
+            camera_world_pos: glam::Vec3::new(1.0, 2.0, 3.0),
+            view_space_z_coeffs: [0.1, 0.2, 0.3, 0.4],
+            view_space_z_coeffs_right: [0.5, 0.6, 0.7, 0.8],
+            cluster_count_x: 16,
+            cluster_count_y: 9,
+            cluster_count_z: 24,
+            near_clip: 0.05,
+            far_clip: 1000.0,
+            light_count: 42,
+            viewport_width: 1920,
+            viewport_height: 1080,
+            proj_params_left: [1.5, 2.5, 0.0, 0.0],
+            proj_params_right: [1.5, 2.5, 0.1, -0.2],
+            frame_index: 7,
+        });
+        assert_eq!(u.camera_world_pos, [1.0, 2.0, 3.0, 0.0]);
+        assert_eq!(u.view_space_z_coeffs, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(u.view_space_z_coeffs_right, [0.5, 0.6, 0.7, 0.8]);
+        assert_eq!(u.cluster_count_x, 16);
+        assert_eq!(u.cluster_count_y, 9);
+        assert_eq!(u.cluster_count_z, 24);
+        assert_eq!(u.near_clip, 0.05);
+        assert_eq!(u.far_clip, 1000.0);
+        assert_eq!(u.light_count, 42);
+        assert_eq!(u.viewport_width, 1920);
+        assert_eq!(u.viewport_height, 1080);
+        assert_eq!(u.proj_params_left, [1.5, 2.5, 0.0, 0.0]);
+        assert_eq!(u.proj_params_right, [1.5, 2.5, 0.1, -0.2]);
+        assert_eq!(u.frame_tail, [7, 0, 0, 0]);
     }
 }

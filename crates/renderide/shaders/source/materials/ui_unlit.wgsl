@@ -1,17 +1,23 @@
-//! Canvas UI Unlit (`Shader "UI/Unlit"`): sprite texture, tint, optional rect/mask/alpha paths.
+//! Canvas UI Unlit (`Shader "UI/Unlit"`): sprite texture, tint, optional alpha clip, optional alpha mask.
 //!
 //! Build emits `ui_unlit_default` / `ui_unlit_multiview` via [`MULTIVIEW`](https://docs.rs/naga_oil).
 //! `@group(1)` global names match Unity `UI_Unlit.shader` material property names for host reflection.
 //!
-//! **Vertex color:** Unity multiplies `vertex_color * _Tint`. The mesh pass now provides a dense
+//! **Vertex color:** Unity multiplies `vertex_color * _Tint`. The mesh pass provides a dense
 //! float4 color stream at `@location(3)` with opaque-white fallback when the host mesh lacks color.
 //!
-//! **`flags` bits (host / material):** bit0 = sample `_MainTex`; bit1 = alpha clip on final alpha;
-//! bit2 = rect clip using `_Rect` (xy = min, zw = max in object XY); bit3 = overlay tint stub
-//! (multiplies by `_OverlayTint.a` as a stand-in; no scene depth); bit4 = mask multiply alpha;
-//! bit5 = mask alpha clip vs `_Cutoff`. The manifest CPU path also sets bit0/bit1 from texture presence and `_Cutoff` when `_Flags` is absent.
+//! Mask-mode caveat: Unity's UI_Unlit shader gates mask handling on
+//! `_MASK_TEXTURE_MUL` / `_MASK_TEXTURE_CLIP` multi-compile keywords that FrooxEngine sets
+//! through `ShaderKeywords.SetKeyword`, which the renderer never receives — decoding them
+//! would require plumbing `ShaderKeywords.Variant` and each shader's keyword-index table
+//! through IPC. The shader instead infers the mode from signals that *are* on the wire:
+//! alpha-test active (`_Cutoff ∈ (0, 1)`) → CLIP; transparent blend
+//! (`(_SrcBlend, _DstBlend) ≠ (1, 0)`) → MUL; opaque no-cutoff → mask skipped. The
+//! default-white texture fallback keeps every branch inert when no host mask is bound
+//! (`mask.a == 1.0`).
 //!
 //! Per-draw uniforms (`@group(2)`) use [`renderide::per_draw`].
+
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
@@ -22,8 +28,6 @@ struct UiUnlitMaterial {
     _MainTex_ST: vec4<f32>,
     _MaskTex_ST: vec4<f32>,
     _Tint: vec4<f32>,
-    _OverlayTint: vec4<f32>,
-    _Rect: vec4<f32>,
     _Cutoff: f32,
     _SrcBlend: f32,
     _DstBlend: f32,
@@ -35,8 +39,6 @@ struct UiUnlitMaterial {
     _StencilWriteMask: f32,
     _StencilReadMask: f32,
     _ColorMask: f32,
-    flags: u32,
-    _pad_end: vec2<f32>,
 }
 
 @group(1) @binding(0) var<uniform> mat: UiUnlitMaterial;
@@ -49,7 +51,6 @@ struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
-    @location(2) obj_xy: vec2<f32>,
 }
 
 @vertex
@@ -79,60 +80,28 @@ fn vs_main(
     out.clip_pos = vp * world_p;
     out.uv = uv;
     out.color = color * mat._Tint;
-    out.obj_xy = pos.xy;
     return out;
 }
 
+//#material forward_base
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var color = in.color;
-    var clip_a = in.color.a;
+    let uv_s = uvu::apply_st(in.uv, mat._MainTex_ST);
+    let t = textureSample(_MainTex, _MainTex_sampler, uv_s);
+    var color = in.color * t;
+    var clip_a = in.color.a * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_s);
 
-    if ((mat.flags & 1u) != 0u) {
-        let uv_s = uvu::apply_st(in.uv, mat._MainTex_ST);
-        let t = textureSample(_MainTex, _MainTex_sampler, uv_s);
-        clip_a = in.color.a * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_s);
-        color = color * t;
+    let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
+    let cutoff_active = mat._Cutoff > 0.0 && mat._Cutoff < 1.0;
+    let is_opaque_blend = mat._SrcBlend == 1.0 && mat._DstBlend == 0.0;
+    if (cutoff_active) {
+        clip_a = clip_a * acs::texture_alpha_base_mip(_MaskTex, _MaskTex_sampler, uv_mask);
+    } else if (!is_opaque_blend) {
+        color.a = color.a * textureSample(_MaskTex, _MaskTex_sampler, uv_mask).a;
     }
 
-    if ((mat.flags & 4u) != 0u) {
-        let r = mat._Rect;
-        let min_v = r.xy;
-        let max_v = r.zw;
-        let rect_size = max_v - min_v;
-        if (abs(rect_size.x * rect_size.y) > 1e-6 &&
-            (in.obj_xy.x < min_v.x || in.obj_xy.x > max_v.x || in.obj_xy.y < min_v.y || in.obj_xy.y > max_v.y)) {
-            discard;
-        }
-    }
-
-    if ((mat.flags & 48u) != 0u) {
-        let uv_m = uvu::apply_st(in.uv, mat._MaskTex_ST);
-        let mask = textureSample(_MaskTex, _MaskTex_sampler, uv_m);
-        let mul = (mask.r + mask.g + mask.b) * 0.33333334 * mask.a;
-        let mul_clip = acs::mask_luminance_mul_base_mip(_MaskTex, _MaskTex_sampler, uv_m);
-        if ((mat.flags & 16u) != 0u) {
-            color.a = color.a * mul;
-            clip_a = clip_a * mul_clip;
-        }
-        if ((mat.flags & 32u) != 0u) {
-            // Unity: `if (mul - _Cutoff <= 0) discard`
-            if (mul_clip <= mat._Cutoff) {
-                discard;
-            }
-        }
-    }
-
-    // Alpha clip — skipped when mask clip is already active (mirrors Unity #pragma).
-    if ((mat.flags & 2u) != 0u && (mat.flags & 32u) == 0u) {
-        if (clip_a <= mat._Cutoff) {
-            discard;
-        }
-    }
-
-    if ((mat.flags & 8u) != 0u) {
-        let o = mat._OverlayTint;
-        color = vec4<f32>(color.rgb * mix(vec3<f32>(1.0), o.rgb, o.a), color.a);
+    if (mat._Cutoff > 0.0 && mat._Cutoff < 1.0 && clip_a <= mat._Cutoff) {
+        discard;
     }
 
     return rg::retain_globals_additive(color);

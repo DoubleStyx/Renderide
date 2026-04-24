@@ -9,7 +9,7 @@ use super::material_pass_tables::{
     unity_color_writes, unity_compare_function, unity_depth_compare_function,
     unity_stencil_operation,
 };
-use super::material_passes::{first_float_by_pids, MaterialPipelinePropertyIds};
+use super::material_passes::{first_float_from_maps, MaterialPipelinePropertyIds, PropertyMapRef};
 
 /// Unity `Cull` / `CullMode` material override for raster pipeline keys and [`MaterialRenderState::resolved_cull_mode`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -200,24 +200,28 @@ fn unity_offset_units(v: f32) -> i32 {
     v.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32
 }
 
-/// Resolves Unity color, stencil, and depth properties for a material/property-block pair.
-pub fn material_render_state_for_lookup(
-    dict: &MaterialDictionary<'_>,
-    lookup: MaterialPropertyLookupIds,
+/// Resolves Unity color, stencil, and depth properties using pre-fetched inner maps. Prefer this
+/// in hot paths that also call [`crate::materials::material_blend_mode_from_maps`] for the same
+/// lookup — the two outer-map probes are amortised across both calls.
+pub fn material_render_state_from_maps(
+    material_map: PropertyMapRef<'_>,
+    property_block_map: PropertyMapRef<'_>,
     ids: &MaterialPipelinePropertyIds,
 ) -> MaterialRenderState {
-    let stencil_ref = first_float_by_pids(dict, lookup, &ids.stencil_ref);
-    let stencil_comp = first_float_by_pids(dict, lookup, &ids.stencil_comp);
-    let stencil_op = first_float_by_pids(dict, lookup, &ids.stencil_op);
-    let stencil_fail_op = first_float_by_pids(dict, lookup, &ids.stencil_fail_op);
-    let stencil_depth_fail_op = first_float_by_pids(dict, lookup, &ids.stencil_depth_fail_op);
-    let stencil_read_mask = first_float_by_pids(dict, lookup, &ids.stencil_read_mask);
-    let stencil_write_mask = first_float_by_pids(dict, lookup, &ids.stencil_write_mask);
-    let color_mask = first_float_by_pids(dict, lookup, &ids.color_mask).map(unity_u8);
-    let depth_write =
-        first_float_by_pids(dict, lookup, &ids.z_write).map(|v| v.round().clamp(0.0, 1.0) >= 0.5);
-    let depth_compare = first_float_by_pids(dict, lookup, &ids.z_test).map(unity_u8);
-    let cull_override = match first_float_by_pids(dict, lookup, &ids.cull).map(unity_u8) {
+    // Shorthand to keep the ~12 per-field lookups readable.
+    let get = |pids: &[i32]| first_float_from_maps(material_map, property_block_map, pids);
+
+    let stencil_ref = get(&ids.stencil_ref);
+    let stencil_comp = get(&ids.stencil_comp);
+    let stencil_op = get(&ids.stencil_op);
+    let stencil_fail_op = get(&ids.stencil_fail_op);
+    let stencil_depth_fail_op = get(&ids.stencil_depth_fail_op);
+    let stencil_read_mask = get(&ids.stencil_read_mask);
+    let stencil_write_mask = get(&ids.stencil_write_mask);
+    let color_mask = get(&ids.color_mask).map(unity_u8);
+    let depth_write = get(&ids.z_write).map(|v| v.round().clamp(0.0, 1.0) >= 0.5);
+    let depth_compare = get(&ids.z_test).map(unity_u8);
+    let cull_override = match get(&ids.cull).map(unity_u8) {
         None => MaterialCullOverride::Unspecified,
         // UnityEngine.Rendering.CullMode: Off / Front / Back
         Some(0) => MaterialCullOverride::Off,
@@ -226,8 +230,8 @@ pub fn material_render_state_for_lookup(
         Some(_) => MaterialCullOverride::Unspecified,
     };
     let depth_offset = {
-        let factor = first_float_by_pids(dict, lookup, &ids.offset_factor);
-        let units = first_float_by_pids(dict, lookup, &ids.offset_units);
+        let factor = get(&ids.offset_factor);
+        let units = get(&ids.offset_units);
         if factor.is_some() || units.is_some() {
             MaterialDepthOffsetState::new(
                 factor.unwrap_or(0.0),
@@ -264,5 +268,170 @@ pub fn material_render_state_for_lookup(
         depth_compare,
         depth_offset,
         cull_override,
+    }
+}
+
+/// Resolves Unity color, stencil, and depth properties for a material/property-block pair.
+pub fn material_render_state_for_lookup(
+    dict: &MaterialDictionary<'_>,
+    lookup: MaterialPropertyLookupIds,
+    ids: &MaterialPipelinePropertyIds,
+) -> MaterialRenderState {
+    let (mat_map, pb_map) = dict.fetch_property_maps(lookup);
+    material_render_state_from_maps(mat_map, pb_map, ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn depth_offset_rejects_all_zero() {
+        assert!(MaterialDepthOffsetState::new(0.0, 0).is_none());
+    }
+
+    #[test]
+    fn depth_offset_accepts_non_zero() {
+        let s = MaterialDepthOffsetState::new(1.5, -3).expect("non-zero");
+        assert_eq!(s.factor(), 1.5);
+        assert_eq!(s.units(), -3);
+        assert_eq!(s.factor_bits(), 1.5_f32.to_bits());
+    }
+
+    #[test]
+    fn depth_offset_nan_factor_coerced_to_zero_requires_units() {
+        // NaN coerces to 0.0; with units=0 the state is None.
+        assert!(MaterialDepthOffsetState::new(f32::NAN, 0).is_none());
+        let s = MaterialDepthOffsetState::new(f32::NAN, 4).expect("non-zero units");
+        assert_eq!(s.factor(), 0.0);
+        assert_eq!(s.units(), 4);
+    }
+
+    #[test]
+    fn unity_u8_clamps_and_rounds() {
+        assert_eq!(unity_u8(-10.0), 0);
+        assert_eq!(unity_u8(0.4), 0);
+        assert_eq!(unity_u8(0.6), 1);
+        assert_eq!(unity_u8(254.7), 255);
+        assert_eq!(unity_u8(1_000.0), 255);
+    }
+
+    #[test]
+    fn unity_offset_units_saturates_at_i32_bounds() {
+        assert_eq!(unity_offset_units(0.4), 0);
+        assert_eq!(unity_offset_units(5.6), 6);
+        assert_eq!(unity_offset_units(-5.6), -6);
+        assert_eq!(unity_offset_units(1e12), i32::MAX);
+        assert_eq!(unity_offset_units(-1e12), i32::MIN);
+    }
+
+    #[test]
+    fn color_writes_uses_fallback_when_unset() {
+        let st = MaterialRenderState::default();
+        assert_eq!(
+            st.color_writes(wgpu::ColorWrites::ALL),
+            wgpu::ColorWrites::ALL
+        );
+    }
+
+    #[test]
+    fn color_writes_applies_override() {
+        let st = MaterialRenderState {
+            color_mask: Some(0b1000),
+            ..MaterialRenderState::default()
+        };
+        assert_eq!(
+            st.color_writes(wgpu::ColorWrites::ALL),
+            wgpu::ColorWrites::RED
+        );
+    }
+
+    #[test]
+    fn depth_write_and_compare_apply_overrides_or_fallback() {
+        let st = MaterialRenderState::default();
+        assert!(st.depth_write(true));
+        assert_eq!(
+            st.depth_compare(wgpu::CompareFunction::Greater),
+            wgpu::CompareFunction::Greater
+        );
+
+        let st = MaterialRenderState {
+            depth_write: Some(false),
+            depth_compare: Some(2),
+            ..MaterialRenderState::default()
+        };
+        assert!(!st.depth_write(true));
+        assert_eq!(
+            st.depth_compare(wgpu::CompareFunction::Always),
+            wgpu::CompareFunction::Greater
+        );
+    }
+
+    #[test]
+    fn resolved_cull_mode_maps_each_variant() {
+        let mut st = MaterialRenderState::default();
+        assert_eq!(
+            st.resolved_cull_mode(Some(wgpu::Face::Back)),
+            Some(wgpu::Face::Back)
+        );
+        st.cull_override = MaterialCullOverride::Off;
+        assert_eq!(st.resolved_cull_mode(Some(wgpu::Face::Back)), None);
+        st.cull_override = MaterialCullOverride::Front;
+        assert_eq!(st.resolved_cull_mode(None), Some(wgpu::Face::Front));
+        st.cull_override = MaterialCullOverride::Back;
+        assert_eq!(st.resolved_cull_mode(None), Some(wgpu::Face::Back));
+    }
+
+    #[test]
+    fn depth_bias_inverts_sign_for_reverse_z() {
+        let st = MaterialRenderState {
+            depth_offset: MaterialDepthOffsetState::new(2.0, 3),
+            ..MaterialRenderState::default()
+        };
+        let bias = st.depth_bias(99, 99.0);
+        assert_eq!(bias.constant, -3);
+        assert_eq!(bias.slope_scale, -2.0);
+        assert_eq!(bias.clamp, 0.0);
+    }
+
+    #[test]
+    fn depth_bias_uses_fallback_when_no_offset() {
+        let st = MaterialRenderState::default();
+        let bias = st.depth_bias(7, 0.25);
+        assert_eq!(bias.constant, 7);
+        assert_eq!(bias.slope_scale, 0.25);
+    }
+
+    #[test]
+    fn stencil_state_disabled_matches_default() {
+        let st = MaterialRenderState::default();
+        let s = st.stencil_state();
+        assert_eq!(s, wgpu::StencilState::default());
+    }
+
+    #[test]
+    fn stencil_state_assembles_face_state_when_enabled() {
+        let st = MaterialRenderState {
+            stencil: MaterialStencilState {
+                enabled: true,
+                reference: 4,
+                compare: 3, // Equal
+                pass_op: 2, // Replace
+                fail_op: 1, // Zero
+                depth_fail_op: 0,
+                read_mask: 0xf0,
+                write_mask: 0x0f,
+            },
+            ..MaterialRenderState::default()
+        };
+        let s = st.stencil_state();
+        assert_eq!(s.front.compare, wgpu::CompareFunction::Equal);
+        assert_eq!(s.front.pass_op, wgpu::StencilOperation::Replace);
+        assert_eq!(s.front.fail_op, wgpu::StencilOperation::Zero);
+        assert_eq!(s.front.depth_fail_op, wgpu::StencilOperation::Keep);
+        assert_eq!(s.front, s.back, "front and back faces match");
+        assert_eq!(s.read_mask, 0xf0);
+        assert_eq!(s.write_mask, 0x0f);
+        assert_eq!(st.stencil_reference(), 4);
     }
 }

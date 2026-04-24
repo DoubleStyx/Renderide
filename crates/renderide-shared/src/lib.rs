@@ -1,13 +1,10 @@
-#![warn(missing_docs)]
-#![allow(clippy::module_inception)]
-
 //! Shared IPC types, packing helpers, and queue + shared-memory primitives used by both the
 //! Renderide renderer (`renderide`) and any host-side Rust tooling that talks to it (currently
 //! `renderide-test`; potentially future debug CLIs and replay tools).
 //!
 //! This crate is the third "shared functionality" workspace member alongside [`interprocess`] and
 //! [`logger`]: anything that crosses the host/renderer process boundary lives here so neither side
-//! has to depend on the other's heavy dependencies (wgpu, naga, OpenXR, winit, imgui).
+//! has to depend on the other's heavy dependencies (wgpu, naga, `OpenXR`, winit, imgui).
 //!
 //! # Module map
 //!
@@ -23,6 +20,7 @@
 pub mod buffer;
 pub mod ipc;
 pub mod packing;
+pub mod packing_extras;
 pub mod shader_upload_extras;
 pub mod shared_memory_writer;
 pub mod wire_writer;

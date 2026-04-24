@@ -66,6 +66,10 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
         return Err(format!("{USAGE}\nexpected 3 arguments, got {}", args.len()));
     }
 
+    #[expect(
+        clippy::map_err_ignore,
+        reason = "`OsString::into_string` returns the original `OsString` on error, not useful here"
+    )]
     let type_name = args
         .remove(0)
         .into_string()

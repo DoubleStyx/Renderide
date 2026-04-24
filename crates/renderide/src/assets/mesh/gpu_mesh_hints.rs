@@ -190,3 +190,91 @@ pub(super) fn blendshape_descriptor_count(descs: &[BlendshapeBufferDescriptor]) 
         .max()
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::SubmeshTopology;
+
+    fn submesh(start: i32, count: i32) -> SubmeshBufferDescriptor {
+        SubmeshBufferDescriptor {
+            topology: SubmeshTopology::default(),
+            index_start: start,
+            index_count: count,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_submeshes_with_zero_indices_yields_empty() {
+        assert!(validated_submesh_ranges(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn empty_submeshes_with_indices_yields_single_full_range() {
+        assert_eq!(validated_submesh_ranges(&[], 12), vec![(0, 12)]);
+    }
+
+    #[test]
+    fn valid_submeshes_are_passed_through() {
+        let s = [submesh(0, 6), submesh(6, 6)];
+        assert_eq!(validated_submesh_ranges(&s, 12), vec![(0, 6), (6, 6)]);
+    }
+
+    #[test]
+    fn zero_count_submeshes_are_filtered_out() {
+        let s = [submesh(0, 0), submesh(0, 6)];
+        assert_eq!(validated_submesh_ranges(&s, 6), vec![(0, 6)]);
+    }
+
+    #[test]
+    fn out_of_range_submeshes_are_filtered_out() {
+        let s = [submesh(0, 6), submesh(6, 10)];
+        assert_eq!(validated_submesh_ranges(&s, 12), vec![(0, 6)]);
+    }
+
+    #[test]
+    fn all_invalid_submeshes_fall_back_to_full_range() {
+        let s = [submesh(100, 6)];
+        assert_eq!(validated_submesh_ranges(&s, 12), vec![(0, 12)]);
+    }
+
+    #[test]
+    fn all_invalid_with_no_indices_yields_empty() {
+        let s = [submesh(100, 6)];
+        assert!(validated_submesh_ranges(&s, 0).is_empty());
+    }
+
+    #[test]
+    fn blendshape_count_empty_is_zero() {
+        assert_eq!(blendshape_descriptor_count(&[]), 0);
+    }
+
+    #[test]
+    fn blendshape_count_is_max_index_plus_one() {
+        let d = [
+            BlendshapeBufferDescriptor {
+                blendshape_index: 0,
+                ..Default::default()
+            },
+            BlendshapeBufferDescriptor {
+                blendshape_index: 4,
+                ..Default::default()
+            },
+            BlendshapeBufferDescriptor {
+                blendshape_index: 2,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(blendshape_descriptor_count(&d), 5);
+    }
+
+    #[test]
+    fn blendshape_count_treats_negative_indices_as_zero() {
+        let d = [BlendshapeBufferDescriptor {
+            blendshape_index: -3,
+            ..Default::default()
+        }];
+        assert_eq!(blendshape_descriptor_count(&d), 1);
+    }
+}

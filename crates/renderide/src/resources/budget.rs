@@ -288,4 +288,29 @@ mod tests {
         assert_eq!(m.tier, ResidencyTier::Streaming);
         assert_eq!(m.mipmap_bias, 1.25);
     }
+
+    /// Defaults for streaming metadata must bias new resources toward [`ResidencyTier::Hot`] so
+    /// assets are retained until an eviction policy opts them out.
+    #[test]
+    fn default_tiers_are_hot() {
+        assert_eq!(ResidencyTier::default(), ResidencyTier::Hot);
+        let meta = TextureResidencyMeta::default();
+        assert_eq!(meta.tier, ResidencyTier::Hot);
+        assert!(!meta.integration_urgent);
+        assert_eq!(meta.mipmap_bias, 0.0);
+        assert_eq!(super::MeshResidencyMeta::default().tier, ResidencyTier::Hot);
+    }
+
+    /// Subtracting from only one kind must not let another kind's subtotal underflow; per-kind
+    /// tallies stay independent from the combined saturating total.
+    #[test]
+    fn per_kind_subtotals_are_independent_under_mixed_operations() {
+        let mut a = VramAccounting::default();
+        a.on_resident_added(VramResourceKind::Mesh, 50);
+        a.on_resident_added(VramResourceKind::Texture, 50);
+        a.on_resident_removed(VramResourceKind::Texture, 200);
+        assert_eq!(a.mesh_resident_bytes(), 50);
+        assert_eq!(a.texture_resident_bytes(), 0);
+        assert_eq!(a.total_resident_bytes(), 0);
+    }
 }

@@ -4,8 +4,10 @@ use wgpu::TextureFormat;
 
 use super::compiled::CompiledRenderGraph;
 use super::error::GraphBuildError;
+use super::post_processing::PostProcessChainSignature;
 
-/// Inputs that invalidate a compiled main graph (extent, MSAA, multiview, surface format).
+/// Inputs that invalidate a compiled main graph (extent, MSAA, multiview, surface format,
+/// post-processing chain topology).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GraphCacheKey {
     /// Main surface extent in physical pixels.
@@ -16,6 +18,12 @@ pub struct GraphCacheKey {
     pub multiview_stereo: bool,
     /// Swapchain / main color format.
     pub surface_format: TextureFormat,
+    /// Forward scene-color HDR format ([`crate::config::SceneColorFormat`] at runtime).
+    pub scene_color_format: TextureFormat,
+    /// Active post-processing chain topology (which effects are wired into the graph). Changes to
+    /// effect parameters that only update uniforms do not flip this signature; only adding or
+    /// removing a pass invalidates the cached graph.
+    pub post_processing: PostProcessChainSignature,
 }
 
 /// Holds the last successfully built graph and its cache key.
@@ -82,5 +90,32 @@ impl GraphCache {
         self.graph
             .as_ref()
             .map_or(0, |g| g.compile_stats.topo_levels)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key_with_post(sig: PostProcessChainSignature) -> GraphCacheKey {
+        GraphCacheKey {
+            surface_extent: (1280, 720),
+            msaa_sample_count: 1,
+            multiview_stereo: false,
+            surface_format: TextureFormat::Bgra8UnormSrgb,
+            scene_color_format: TextureFormat::Rgba16Float,
+            post_processing: sig,
+        }
+    }
+
+    #[test]
+    fn post_processing_signature_change_changes_cache_key_equality() {
+        let off = key_with_post(PostProcessChainSignature::default());
+        let on = key_with_post(PostProcessChainSignature {
+            aces_tonemap: true,
+            gtao: false,
+        });
+        assert_ne!(off, on);
+        assert_eq!(off, key_with_post(PostProcessChainSignature::default()));
     }
 }

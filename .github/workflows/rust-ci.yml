@@ -43,6 +43,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - uses: uncenter/setup-taplo@v2
+        with:
+          version: "0.10.0"
+
+      - name: Check TOML formatting (taplo)
+        run: taplo fmt --check --diff
+
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -W clippy::all -D warnings
 

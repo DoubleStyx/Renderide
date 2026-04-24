@@ -223,59 +223,62 @@ pub(crate) fn build_pipeline_from_pass(
     pass: &MaterialPassDesc,
     render_state: MaterialRenderState,
 ) -> wgpu::RenderPipeline {
+    profiling::scope!("materials::build_pipeline_from_pass");
     let pass_label = format!("{}__{}", shared.label, pass.name);
-    shared
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(&pass_label),
-            layout: Some(shared.layout),
-            vertex: wgpu::VertexState {
-                module: shared.module,
-                entry_point: Some(pass.vertex_entry),
-                compilation_options: Default::default(),
-                buffers: shared.vertex_buffers,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: shared.module,
-                entry_point: Some(pass.fragment_entry),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: shared.desc.surface_format,
-                    blend: pass.blend,
-                    write_mask: render_state.color_writes(pass.write_mask),
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                // Unity / host mesh winding uses clockwise front faces (D3D-style). wgpu defaults to
-                // `FrontFace::Ccw`; without this, `Cull Back` removes Unity's outward-facing tris.
-                front_face: wgpu::FrontFace::Cw,
-                cull_mode: render_state.resolved_cull_mode(pass.cull_mode),
-                ..Default::default()
-            },
-            depth_stencil: shared
-                .desc
-                .depth_stencil_format
-                .map(|format| wgpu::DepthStencilState {
-                    format,
-                    depth_write_enabled: Some(render_state.depth_write(pass.depth_write)),
-                    depth_compare: Some(render_state.depth_compare(pass.depth_compare)),
-                    stencil: if format.has_stencil_aspect() {
-                        render_state.stencil_state()
-                    } else {
-                        wgpu::StencilState::default()
-                    },
-                    bias: render_state
-                        .depth_bias(pass.depth_bias_constant, pass.depth_bias_slope_scale),
+    {
+        profiling::scope!("materials::create_render_pipeline_wgpu");
+        shared
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(&pass_label),
+                layout: Some(shared.layout),
+                vertex: wgpu::VertexState {
+                    module: shared.module,
+                    entry_point: Some(pass.vertex_entry),
+                    compilation_options: Default::default(),
+                    buffers: shared.vertex_buffers,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shared.module,
+                    entry_point: Some(pass.fragment_entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: shared.desc.surface_format,
+                        blend: pass.blend,
+                        write_mask: render_state.color_writes(pass.write_mask),
+                    })],
                 }),
-            multisample: wgpu::MultisampleState {
-                count: shared.desc.sample_count,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: shared.desc.multiview_mask,
-            cache: None,
-        })
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    // Unity / host mesh winding uses clockwise front faces (D3D-style). wgpu defaults to
+                    // `FrontFace::Ccw`; without this, `Cull Back` removes Unity's outward-facing tris.
+                    front_face: wgpu::FrontFace::Cw,
+                    cull_mode: render_state.resolved_cull_mode(pass.cull_mode),
+                    ..Default::default()
+                },
+                depth_stencil: shared.desc.depth_stencil_format.map(|format| {
+                    wgpu::DepthStencilState {
+                        format,
+                        depth_write_enabled: Some(render_state.depth_write(pass.depth_write)),
+                        depth_compare: Some(render_state.depth_compare(pass.depth_compare)),
+                        stencil: if format.has_stencil_aspect() {
+                            render_state.stencil_state()
+                        } else {
+                            wgpu::StencilState::default()
+                        },
+                        bias: render_state
+                            .depth_bias(pass.depth_bias_constant, pass.depth_bias_slope_scale),
+                    }
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: shared.desc.sample_count,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: shared.desc.multiview_mask,
+                cache: None,
+            })
+    }
 }
 
 /// Builds a default single-pass forward mesh pipeline from reflected WGSL (`@group(0..=2)`).

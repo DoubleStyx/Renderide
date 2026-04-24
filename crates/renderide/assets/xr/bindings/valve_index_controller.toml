@@ -1,0 +1,110 @@
+profile = "/interaction_profiles/valve/index_controller"
+
+[[binding]]
+action = "left_grip_pose"
+path = "/user/hand/left/input/grip/pose"
+[[binding]]
+action = "right_grip_pose"
+path = "/user/hand/right/input/grip/pose"
+[[binding]]
+action = "left_aim_pose"
+path = "/user/hand/left/input/aim/pose"
+[[binding]]
+action = "right_aim_pose"
+path = "/user/hand/right/input/aim/pose"
+
+[[binding]]
+action = "left_trigger"
+path = "/user/hand/left/input/trigger/value"
+[[binding]]
+action = "right_trigger"
+path = "/user/hand/right/input/trigger/value"
+[[binding]]
+action = "left_trigger_touch"
+path = "/user/hand/left/input/trigger/touch"
+[[binding]]
+action = "right_trigger_touch"
+path = "/user/hand/right/input/trigger/touch"
+[[binding]]
+action = "left_trigger_click"
+path = "/user/hand/left/input/trigger/click"
+[[binding]]
+action = "right_trigger_click"
+path = "/user/hand/right/input/trigger/click"
+
+[[binding]]
+action = "left_squeeze"
+path = "/user/hand/left/input/squeeze/value"
+[[binding]]
+action = "right_squeeze"
+path = "/user/hand/right/input/squeeze/value"
+
+[[binding]]
+action = "left_thumbstick"
+path = "/user/hand/left/input/thumbstick"
+[[binding]]
+action = "right_thumbstick"
+path = "/user/hand/right/input/thumbstick"
+[[binding]]
+action = "left_thumbstick_touch"
+path = "/user/hand/left/input/thumbstick/touch"
+[[binding]]
+action = "right_thumbstick_touch"
+path = "/user/hand/right/input/thumbstick/touch"
+[[binding]]
+action = "left_thumbstick_click"
+path = "/user/hand/left/input/thumbstick/click"
+[[binding]]
+action = "right_thumbstick_click"
+path = "/user/hand/right/input/thumbstick/click"
+
+[[binding]]
+action = "left_trackpad"
+path = "/user/hand/left/input/trackpad"
+[[binding]]
+action = "right_trackpad"
+path = "/user/hand/right/input/trackpad"
+[[binding]]
+action = "left_trackpad_touch"
+path = "/user/hand/left/input/trackpad/touch"
+[[binding]]
+action = "right_trackpad_touch"
+path = "/user/hand/right/input/trackpad/touch"
+[[binding]]
+action = "left_trackpad_force"
+path = "/user/hand/left/input/trackpad/force"
+[[binding]]
+action = "right_trackpad_force"
+path = "/user/hand/right/input/trackpad/force"
+
+[[binding]]
+action = "left_primary"
+path = "/user/hand/left/input/a/click"
+[[binding]]
+action = "left_secondary"
+path = "/user/hand/left/input/b/click"
+[[binding]]
+action = "right_primary"
+path = "/user/hand/right/input/a/click"
+[[binding]]
+action = "right_secondary"
+path = "/user/hand/right/input/b/click"
+[[binding]]
+action = "left_primary_touch"
+path = "/user/hand/left/input/a/touch"
+[[binding]]
+action = "left_secondary_touch"
+path = "/user/hand/left/input/b/touch"
+[[binding]]
+action = "right_primary_touch"
+path = "/user/hand/right/input/a/touch"
+[[binding]]
+action = "right_secondary_touch"
+path = "/user/hand/right/input/b/touch"
+
+[[binding]]
+action = "left_haptic"
+path = "/user/hand/left/output/haptic"
+[[binding]]
+action = "right_haptic"
+path = "/user/hand/right/output/haptic"

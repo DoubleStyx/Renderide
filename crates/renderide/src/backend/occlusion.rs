@@ -5,11 +5,13 @@
 //! [`crate::render_graph::passes::HiZBuildPass`].
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use glam::Mat4;
 use lru::LruCache;
+use parking_lot::Mutex;
 
-use crate::render_graph::occlusion::{encode_hi_z_build, HiZGpuState};
+use crate::render_graph::occlusion::{encode_hi_z_build, HiZBuildRecord, HiZGpuState};
 use crate::render_graph::OcclusionViewId;
 use crate::render_graph::{
     capture_hi_z_temporal, HiZCullData, HiZTemporalState, OutputDepthMode, WorldMeshCullProjParams,
@@ -34,16 +36,14 @@ pub(crate) struct HiZBuildInput<'a> {
     pub extent: (u32, u32),
     /// Desktop single-view vs stereo depth array layout.
     pub mode: OutputDepthMode,
-    /// Which occlusion pyramid slot to update.
-    pub view: OcclusionViewId,
 }
 
 /// GPU pyramid, CPU readback ring, and temporal cull snapshots for Hi-Z occlusion.
 pub struct OcclusionSystem {
     /// Main window / OpenXR multiview Hi-Z (desktop and stereo layouts).
-    main: HiZGpuState,
+    main: Arc<Mutex<HiZGpuState>>,
     /// Per host render-texture secondary camera pyramids (single-view desktop layout each), LRU-bounded.
-    offscreen: LruCache<i32, HiZGpuState>,
+    offscreen: Mutex<LruCache<i32, Arc<Mutex<HiZGpuState>>>>,
 }
 
 impl Default for OcclusionSystem {
@@ -56,24 +56,32 @@ impl OcclusionSystem {
     /// Creates an empty occlusion system with no pyramid data.
     pub fn new() -> Self {
         Self {
-            main: HiZGpuState::default(),
-            offscreen: LruCache::new(OFFSCREEN_HIZ_LRU_CAP_NZ),
+            main: Arc::new(Mutex::new(HiZGpuState::default())),
+            offscreen: Mutex::new(LruCache::new(OFFSCREEN_HIZ_LRU_CAP_NZ)),
         }
     }
 
-    fn hi_z_state_mut(&mut self, view: OcclusionViewId) -> &mut HiZGpuState {
+    /// Returns the mutex-wrapped Hi-Z slot for `view`, creating it when needed.
+    pub(crate) fn ensure_hi_z_state(&self, view: OcclusionViewId) -> Arc<Mutex<HiZGpuState>> {
         match view {
-            OcclusionViewId::Main => &mut self.main,
+            OcclusionViewId::Main => self.main.clone(),
             OcclusionViewId::OffscreenRenderTexture(id) => {
-                self.offscreen.get_or_insert_mut(id, HiZGpuState::default)
+                let mut offscreen = self.offscreen.lock();
+                if let Some(existing) = offscreen.get(&id) {
+                    return existing.clone();
+                }
+                let slot = Arc::new(Mutex::new(HiZGpuState::default()));
+                let _ = offscreen.put(id, slot.clone());
+                slot
             }
         }
     }
 
-    fn hi_z_state_ref(&self, view: OcclusionViewId) -> Option<&HiZGpuState> {
+    /// Returns the existing mutex-wrapped Hi-Z slot for `view` without creating one.
+    fn hi_z_state_slot(&self, view: OcclusionViewId) -> Option<Arc<Mutex<HiZGpuState>>> {
         match view {
-            OcclusionViewId::Main => Some(&self.main),
-            OcclusionViewId::OffscreenRenderTexture(id) => self.offscreen.peek(&id),
+            OcclusionViewId::Main => Some(self.main.clone()),
+            OcclusionViewId::OffscreenRenderTexture(id) => self.offscreen.lock().peek(&id).cloned(),
         }
     }
 
@@ -83,7 +91,8 @@ impl OcclusionSystem {
         mode: OutputDepthMode,
         view: OcclusionViewId,
     ) -> Option<HiZCullData> {
-        let state = self.hi_z_state_ref(view)?;
+        let slot = self.hi_z_state_slot(view)?;
+        let state = slot.lock();
         match view {
             OcclusionViewId::Main => match mode {
                 OutputDepthMode::DesktopSingle => state
@@ -105,66 +114,143 @@ impl OcclusionSystem {
     }
 
     /// Records Hi-Z GPU work into `encoder` (staging copy included).
+    #[expect(
+        clippy::unused_self,
+        reason = "method syntax groups Hi-Z operations on the occlusion system"
+    )]
     pub(crate) fn encode_hi_z_build_pass(
-        &mut self,
+        &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
+        state_slot: &Mutex<HiZGpuState>,
         input: HiZBuildInput<'_>,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) {
-        let state = self.hi_z_state_mut(input.view);
+        profiling::scope!("hi_z::build");
+        let mut state = state_slot.lock();
         encode_hi_z_build(
-            device,
-            queue,
-            encoder,
+            HiZBuildRecord {
+                device,
+                queue,
+                encoder,
+            },
             input.depth_view,
             input.extent,
             input.mode,
-            state,
+            &mut state,
+            profiler,
         );
     }
 
-    /// Drains completed Hi-Z `map_async` readbacks into CPU snapshots for [`Self::hi_z_cull_data`].
+    /// Drains completed Hi-Z `map_async` readbacks into CPU snapshots for [`Self::hi_z_cull_data`]
+    /// and promotes any `submit_done` slots into fresh `map_async` requests on the main thread.
     ///
     /// Non-blocking: uses at most one [`wgpu::Device::poll`]; if a read is not ready, prior
     /// snapshots are kept.
+    ///
+    /// The poll runs **before** any [`HiZGpuState`] lock so the
+    /// [`wgpu::Queue::on_submitted_work_done`] callback installed by
+    /// [`crate::render_graph::compiled::exec::CompiledRenderGraph::execute_multi_view`]
+    /// (which itself locks the per-view [`HiZGpuState`]) can execute without re-entering
+    /// a lock held by this function. That callback only flips
+    /// [`crate::render_graph::occlusion::HiZGpuState::submit_done`]; the actual `map_async`
+    /// runs here via [`crate::render_graph::occlusion::HiZGpuState::start_ready_maps`], so no
+    /// wgpu call is issued from inside the device-poll callback (which would risk deadlocks
+    /// with wgpu's internal queue-write locks — observed as a futex hang inside
+    /// `queue.write_texture` during asset upload).
     pub fn hi_z_begin_frame_readback(&mut self, device: &wgpu::Device) {
-        self.main.begin_frame_readback(device);
-        for (_, s) in self.offscreen.iter_mut() {
-            s.begin_frame_readback(device);
+        profiling::scope!("hi_z::readback_drain");
+        let _ = device.poll(wgpu::PollType::Poll);
+        {
+            let mut main = self.main.lock();
+            main.drain_completed_map_async();
+            main.start_ready_maps();
         }
-    }
-
-    /// Call after each successful render-graph submit that recorded Hi-Z copies for the given view.
-    pub(crate) fn hi_z_on_frame_submitted_for_view(
-        &mut self,
-        device: &wgpu::Device,
-        view: OcclusionViewId,
-    ) {
-        self.hi_z_state_mut(view).on_frame_submitted(device);
+        let offscreen = self.offscreen.lock();
+        for (_, slot) in offscreen.iter() {
+            let mut state = slot.lock();
+            state.drain_completed_map_async();
+            state.start_ready_maps();
+        }
     }
 
     /// View/projection snapshot from the **previous** world forward pass (for Hi-Z occlusion tests).
     pub(crate) fn hi_z_temporal_snapshot(&self, view: OcclusionViewId) -> Option<HiZTemporalState> {
-        self.hi_z_state_ref(view)?.temporal.clone()
+        self.hi_z_state_slot(view)?.lock().temporal.clone()
     }
 
     /// Records per-space views and cull params from **this** frame for Hi-Z tests on the **next** frame.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "Copy value propagates through hot frame-path by design; avoids lifetime threading"
+    )]
+    #[expect(
+        clippy::unused_self,
+        reason = "method syntax groups Hi-Z operations on the occlusion system"
+    )]
     pub(crate) fn capture_hi_z_temporal_for_next_frame(
-        &mut self,
+        &self,
         scene: &SceneCoordinator,
         prev_cull: WorldMeshCullProjParams,
         viewport_px: (u32, u32),
-        view: OcclusionViewId,
+        state_slot: &Mutex<HiZGpuState>,
         secondary_camera_world_to_view: Option<Mat4>,
     ) {
+        profiling::scope!("hi_z::capture_temporal");
         let temporal = Some(capture_hi_z_temporal(
             scene,
             prev_cull,
             viewport_px,
             secondary_camera_world_to_view,
         ));
-        let state = self.hi_z_state_mut(view);
+        let mut state = state_slot.lock();
         state.temporal = temporal;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::OcclusionSystem;
+    use crate::render_graph::OcclusionViewId;
+
+    #[test]
+    fn ensure_hi_z_state_reuses_slots_per_view() {
+        let system = OcclusionSystem::new();
+        let main_a = system.ensure_hi_z_state(OcclusionViewId::Main);
+        let main_b = system.ensure_hi_z_state(OcclusionViewId::Main);
+        let offscreen_a = system.ensure_hi_z_state(OcclusionViewId::OffscreenRenderTexture(17));
+        let offscreen_b = system.ensure_hi_z_state(OcclusionViewId::OffscreenRenderTexture(17));
+
+        assert!(Arc::ptr_eq(&main_a, &main_b));
+        assert!(Arc::ptr_eq(&offscreen_a, &offscreen_b));
+        assert!(!Arc::ptr_eq(&main_a, &offscreen_a));
+    }
+
+    #[test]
+    fn ensure_hi_z_state_is_thread_safe_for_shared_view() {
+        let system = Arc::new(OcclusionSystem::new());
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let system = Arc::clone(&system);
+                std::thread::spawn(move || {
+                    system.ensure_hi_z_state(OcclusionViewId::OffscreenRenderTexture(99))
+                })
+            })
+            .collect();
+
+        let first = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("thread should finish"))
+            .reduce(|first, next| {
+                assert!(Arc::ptr_eq(&first, &next));
+                first
+            })
+            .expect("at least one slot");
+
+        let again = system.ensure_hi_z_state(OcclusionViewId::OffscreenRenderTexture(99));
+        assert!(Arc::ptr_eq(&first, &again));
     }
 }

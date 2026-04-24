@@ -64,4 +64,30 @@ mod tests {
         );
         assert!(!head_output_device_wants_openxr(non));
     }
+
+    /// The OpenXR predicate must remain exactly aligned with [`head_output_device_is_vr`] for every
+    /// variant the renderer currently knows about. If the VR set grows, this test forces the
+    /// wants-OpenXR predicate to be updated in lock-step rather than silently diverging.
+    #[test]
+    fn wants_openxr_aligns_with_is_vr_for_all_known_variants() {
+        for device in [
+            HeadOutputDevice::Autodetect,
+            HeadOutputDevice::Headless,
+            HeadOutputDevice::Screen,
+            HeadOutputDevice::Screen360,
+            HeadOutputDevice::StaticCamera,
+            HeadOutputDevice::StaticCamera360,
+            HeadOutputDevice::SteamVR,
+            HeadOutputDevice::WindowsMR,
+            HeadOutputDevice::Oculus,
+            HeadOutputDevice::OculusQuest,
+            HeadOutputDevice::UNKNOWN,
+        ] {
+            assert_eq!(
+                head_output_device_wants_openxr(device),
+                head_output_device_is_vr(device),
+                "wants_openxr must equal is_vr for {device:?}"
+            );
+        }
+    }
 }

@@ -125,7 +125,7 @@ impl EmbeddedMaterialBindResources {
         &self,
         stem: &str,
     ) -> Result<Arc<StemMaterialLayout>, EmbeddedMaterialBindError> {
-        let mut cache = self.stem_cache.borrow_mut();
+        let mut cache = self.stem_cache.lock();
         if let Some(s) = cache.get(stem) {
             return Ok(s.clone());
         }
@@ -137,6 +137,7 @@ impl EmbeddedMaterialBindResources {
             self.property_registry.as_ref(),
         )?;
         cache.insert(stem.to_string(), layout.clone());
+        drop(cache);
         Ok(layout)
     }
 
@@ -157,7 +158,7 @@ impl EmbeddedMaterialBindResources {
             mutation_generation: store.mutation_generation(lookup),
         };
         {
-            let mut cache = self.texture_debug_cache.borrow_mut();
+            let mut cache = self.texture_debug_cache.lock();
             if let Some(hit) = cache.get(&cache_key) {
                 return hit.to_vec();
             }
@@ -191,7 +192,7 @@ impl EmbeddedMaterialBindResources {
         }
         //perf xlinka: texture HUD can scan thousands of draws; cache by material mutation.
         self.texture_debug_cache
-            .borrow_mut()
+            .lock()
             .put(cache_key, Arc::from(out.clone()));
         out
     }
@@ -202,14 +203,14 @@ impl EmbeddedMaterialBindResources {
         create: impl FnOnce() -> wgpu::Sampler,
     ) -> Arc<wgpu::Sampler> {
         {
-            let mut cache = self.sampler_cache.borrow_mut();
+            let mut cache = self.sampler_cache.lock();
             if let Some(hit) = cache.get(&key) {
                 return hit.clone();
             }
         }
         //perf xlinka: sampler objects are cheap-ish, but bind misses can make lots of them.
         let sampler = Arc::new(create());
-        if let Some(evicted) = self.sampler_cache.borrow_mut().put(key, sampler.clone()) {
+        if let Some(evicted) = self.sampler_cache.lock().put(key, sampler.clone()) {
             drop(evicted);
         }
         sampler

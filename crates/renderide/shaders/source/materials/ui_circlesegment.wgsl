@@ -7,6 +7,7 @@
 
 // unity-shader-name: UI/CircleSegment
 
+
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 
@@ -17,19 +18,6 @@ struct UiCircleSegmentMaterial {
     _OutlineTint: vec4<f32>,
     _OverlayTint: vec4<f32>,
     _Rect: vec4<f32>,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
-    _ZTest: f32,
-    _StencilComp: f32,
-    _Stencil: f32,
-    _StencilOp: f32,
-    _StencilWriteMask: f32,
-    _StencilReadMask: f32,
-    _ColorMask: f32,
-    _OffsetFactor: f32,
-    _OffsetUnits: f32,
     _RectClip: f32,
     _OVERLAY: f32,
     _pad0: f32,
@@ -172,6 +160,7 @@ fn fragment_linear_depth(world_pos: vec3<f32>, view_layer: u32) -> f32 {
     return -view_z;
 }
 
+//#material forward_base
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let use_rect_clip = mat._RectClip > 0.5 && abs((mat._Rect.z - mat._Rect.x) * (mat._Rect.w - mat._Rect.y)) > 1e-6;

@@ -7,9 +7,9 @@ namespace SharedTypeGenerator.Emission;
 public partial class RustEmitter
 {
     /// <summary>
-    /// Writes the generated file header: generated notice, <c>#![allow(...)]</c> (including
-    /// <c>missing_docs</c> and <c>clippy::large_enum_variant</c>), a minimal <c>glam</c> import list,
-    /// and shared imports.
+    /// Writes the generated file header: generated notice, a workspace-lint <c>#![allow(...)]</c>
+    /// block (generated IPC code can't reasonably satisfy discipline / style / narrowing-cast lints
+    /// that apply to hand-written code), a minimal <c>glam</c> import list, and shared imports.
     /// </summary>
     private void EmitHeader(List<TypeDescriptor> types)
     {
@@ -17,7 +17,16 @@ public partial class RustEmitter
         _w.Comment($"Generated for {_engineVersion}\n");
         _w.Line("#![allow(");
         _w.Line("    missing_docs,");
+        _w.Line("    variant_size_differences,");
+        _w.Line("    clippy::allow_attributes,");
         _w.Line("    clippy::large_enum_variant,");
+        _w.Line("    clippy::too_many_lines,");
+        _w.Line("    clippy::unreadable_literal,");
+        _w.Line("    clippy::explicit_iter_loop,");
+        _w.Line("    clippy::match_wildcard_for_single_variants,");
+        _w.Line("    clippy::manual_let_else,");
+        _w.Line("    clippy::unnested_or_patterns,");
+        _w.Line("    reason = \"generated code: lints enforced on hand-written code do not apply here\"");
         _w.Line(")]");
         _w.BlankLine();
         string glamList = FormatGlamUseList(types);

@@ -1,0 +1,3 @@
+# Source manifests only: `target/` is Cargo output (often restored in CI) and may
+# contain generated or local config TOML that should not gate formatting.
+exclude = ["target/**"]

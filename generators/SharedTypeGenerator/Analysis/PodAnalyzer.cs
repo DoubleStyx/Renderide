@@ -36,11 +36,14 @@ internal static class PodAnalyzer
     /// <summary>
     /// Whether <paramref name="ft"/> can be emitted as whole-struct <c>bytemuck::Pod</c> in Rust under default SIMD glam.
     /// Differs from <see cref="IsFieldTypePod"/> when nested composites gain SIMD alignment padding vs. C# blittable layout.
+    /// Restricted-variant value enums are rejected: <c>Pod</c> requires every bit pattern to be a valid value, so reading
+    /// an out-of-range byte via <c>bytemuck::pod_read_unaligned</c> is UB. Such fields are routed through
+    /// <c>MemoryPackable</c>, which validates the wire byte via <c>EnumRepr::from_i32</c> in the generated unpack match.
     /// </summary>
     public static bool IsRustLayoutPodField(Type ft, HashSet<Type> visited, Assembly assembly)
     {
         if (ft.IsEnum)
-            return true;
+            return false;
         if (ft == typeof(bool))
             return true;
         if (ft.IsPrimitive || ft == typeof(Guid) || ft.Name?.StartsWith("SharedMemoryBufferDescriptor", StringComparison.Ordinal) == true)

@@ -18,7 +18,7 @@ pub(crate) trait MeshRendererStateSink {
         shadow: ShadowCastMode,
         motion: crate::shared::MotionVectorMode,
     );
-    /// Replaces submesh [`MeshMaterialSlot`] list and legacy primary material / property-block handles.
+    /// Replaces submesh [`MeshMaterialSlot`] list plus the row's primary material and property-block handles.
     fn set_material_slots_and_legacy(
         &mut self,
         slots: Vec<MeshMaterialSlot>,

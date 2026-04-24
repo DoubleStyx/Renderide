@@ -24,15 +24,15 @@ use super::lockstep::{FrameSubmitScalars, LockstepDriver};
 
 /// Asset / buffer ids used by the harness. These never collide with anything the renderer
 /// allocates internally because the renderer treats the shared memory only as host-driven input.
-pub const SPHERE_MESH_ASSET_ID: i32 = 2;
-pub const SPHERE_MATERIAL_ASSET_ID: i32 = 4;
-pub const SPHERE_MESH_BUFFER_ID: i32 = 0;
-pub const SCENE_STATE_BUFFER_ID: i32 = 1;
-pub const RENDER_SPACE_ID: i32 = 1;
+pub(super) const SPHERE_MESH_ASSET_ID: i32 = 2;
+pub(super) const SPHERE_MATERIAL_ASSET_ID: i32 = 4;
+pub(super) const SPHERE_MESH_BUFFER_ID: i32 = 0;
+pub(super) const SCENE_STATE_BUFFER_ID: i32 = 1;
+pub(super) const RENDER_SPACE_ID: i32 = 1;
 
 /// Configuration for [`run_session`].
 #[derive(Clone, Debug)]
-pub struct SceneSessionConfig {
+pub(crate) struct SceneSessionConfig {
     /// Path to the `renderide` binary to spawn.
     pub renderer_path: PathBuf,
     /// Output PNG path the renderer writes to (also where the harness reads from).
@@ -51,14 +51,14 @@ pub struct SceneSessionConfig {
 
 /// Result of a successful [`run_session`] call.
 #[derive(Clone, Debug)]
-pub struct SceneSessionOutcome {
+pub(super) struct SceneSessionOutcome {
     /// Path to the freshly written PNG produced by the renderer.
     pub png_path: PathBuf,
 }
 
 /// Drives the full session end-to-end. The renderer process is killed on `Err` via [`Drop`] of the
 /// [`SpawnedRenderer`] guard.
-pub fn run_session(cfg: &SceneSessionConfig) -> Result<SceneSessionOutcome, HarnessError> {
+pub(super) fn run_session(cfg: &SceneSessionConfig) -> Result<SceneSessionOutcome, HarnessError> {
     if !cfg.renderer_path.exists() {
         return Err(HarnessError::RendererBinaryMissing(
             cfg.renderer_path.clone(),
@@ -113,10 +113,16 @@ pub fn run_session(cfg: &SceneSessionConfig) -> Result<SceneSessionOutcome, Harn
         &mut session.queues,
         &mut lockstep,
         &cfg.output_path,
-        scene_submitted_at,
-        scene_submit_instant,
-        cfg.timeout,
-        Duration::from_millis(cfg.interval_ms.max(1)),
+        PngStabilityWaitTiming {
+            scene_submitted_at,
+            scene_submit_instant,
+            overall_timeout: cfg.timeout,
+            interval: Duration::from_millis(cfg.interval_ms.max(1)),
+        },
+        #[expect(
+            clippy::expect_used,
+            reason = "child set immediately above by spawn_renderer_child"
+        )]
         spawned.child.as_mut().expect("child set"),
     )?;
     drop(scene); // explicitly hold scene SHM writer alive until after readback
@@ -216,17 +222,31 @@ fn ensure_scene_submitted(
     ))
 }
 
-#[allow(clippy::too_many_arguments)] // session orchestration: many independent inputs
+/// Scene submission moment and the wall-clock budget for [`run_lockstep_until_png_stable`].
+struct PngStabilityWaitTiming {
+    /// `SystemTime` when the scene was submitted (used to compare against the PNG `mtime`).
+    scene_submitted_at: SystemTime,
+    /// Monotonic instant at scene submit (used for the "wait at least N intervals" gate).
+    scene_submit_instant: Instant,
+    /// Wall-clock budget for the entire wait-until-stable-PNG loop.
+    overall_timeout: Duration,
+    /// Renderer's configured PNG write interval.
+    interval: Duration,
+}
+
 fn run_lockstep_until_png_stable(
     queues: &mut renderide_shared::ipc::HostDualQueueIpc,
     lockstep: &mut LockstepDriver,
     output_path: &Path,
-    scene_submitted_at: SystemTime,
-    scene_submit_instant: Instant,
-    overall_timeout: Duration,
-    interval: Duration,
+    timing: PngStabilityWaitTiming,
     renderer: &mut Child,
 ) -> Result<SceneSessionOutcome, HarnessError> {
+    let PngStabilityWaitTiming {
+        scene_submitted_at,
+        scene_submit_instant,
+        overall_timeout,
+        interval,
+    } = timing;
     // Renderer needs at least one full interval AFTER scene apply to write a fresh PNG that
     // reflects the new scene state, plus slack for IPC round-trip + PNG encoding. Lavapipe is
     // slow so we wait for at least 2 full intervals past scene submit before accepting a PNG.
@@ -353,6 +373,7 @@ fn spawn_renderer(
     cmd.arg("-QueueCapacity")
         .arg(DEFAULT_QUEUE_CAPACITY_BYTES.to_string());
     cmd.arg("-LogLevel").arg("debug");
+    cmd.arg("--ignore-config");
     cmd.env("RENDERIDE_INTERPROCESS_DIR", backing_dir);
 
     if cfg.verbose_renderer {
@@ -362,7 +383,7 @@ fn spawn_renderer(
     }
 
     logger::info!(
-        "Spawning renderer: {} --headless --headless-output {} --headless-resolution {}x{} --headless-interval-ms {} -QueueName {} -QueueCapacity {}",
+        "Spawning renderer: {} --headless --headless-output {} --headless-resolution {}x{} --headless-interval-ms {} -QueueName {} -QueueCapacity {} --ignore-config",
         cfg.renderer_path.display(),
         cfg.output_path.display(),
         cfg.width,
@@ -376,5 +397,4 @@ fn spawn_renderer(
     Ok(SpawnedRenderer { child: Some(child) })
 }
 
-#[allow(dead_code)]
 fn _ipc_session_used(_: &IpcSession) {}

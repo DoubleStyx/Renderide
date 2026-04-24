@@ -57,9 +57,8 @@ impl SceneCoordinator {
 
     /// Hierarchy world matrix prepared for actual rendering.
     ///
-    /// Overlay spaces follow legacy Unity Renderite parity: before drawing, active overlay
-    /// render spaces are re-rooted against the current `HeadOutput.transform`
-    /// (`RenderSpace.UpdateOverlayPositioning`).
+    /// Overlay spaces are re-rooted against the current `HeadOutput.transform` before drawing
+    /// (`RenderSpace.UpdateOverlayPositioning` on the host side).
     pub fn world_matrix_for_render_context(
         &self,
         id: RenderSpaceId,

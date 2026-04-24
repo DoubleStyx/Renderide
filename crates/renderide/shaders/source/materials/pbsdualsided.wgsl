@@ -5,8 +5,6 @@
 //! shader declares the forward base + forward additive passes and keeps culling disabled.
 
 // unity-shader-name: PBSDualSided
-//#pass forward: fs=fs_forward_base, depth=greater_equal, zwrite=on, cull=none, blend=none, material=forward_base
-//#pass forward_delta: fs=fs_forward_delta, depth=greater_equal, zwrite=off, cull=none, blend=one,one,add, alpha=one,one,add, material=forward_add
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
@@ -24,9 +22,6 @@ struct PbsDualSidedMaterial {
     _Glossiness: f32,
     _Metallic: f32,
     _AlphaClip: f32,
-    _Cull: f32,
-    _OffsetFactor: f32,
-    _OffsetUnits: f32,
     _ALPHACLIP: f32,
     _ALBEDOTEX: f32,
     _EMISSIONTEX: f32,
@@ -182,11 +177,10 @@ fn clustered_direct_lighting(
     );
 
     let count = rg::cluster_light_counts[cluster_id];
-    let base_idx = cluster_id * pcls::MAX_LIGHTS_PER_TILE;
     let i_max = min(count, pcls::MAX_LIGHTS_PER_TILE);
     var lo = vec3<f32>(0.0);
     for (var i = 0u; i < i_max; i++) {
-        let li = rg::cluster_light_indices[base_idx + i];
+        let li = pcls::cluster_light_index_at(cluster_id, i);
         if (li >= rg::frame.light_count) {
             continue;
         }
@@ -248,6 +242,7 @@ fn vs_main(
     return out;
 }
 
+//#material forward_base
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
@@ -264,6 +259,7 @@ fn fs_forward_base(
     return vec4<f32>(ambient + direct + s.emission, s.alpha);
 }
 
+//#material forward_add
 @fragment
 fn fs_forward_delta(
     @builtin(position) frag_pos: vec4<f32>,

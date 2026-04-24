@@ -44,11 +44,6 @@ pub(super) fn blend_mode_label(mode: MaterialBlendMode) -> String {
     match mode {
         MaterialBlendMode::StemDefault => "stem".to_string(),
         MaterialBlendMode::Opaque => "opaque".to_string(),
-        MaterialBlendMode::Cutout => "cutout".to_string(),
-        MaterialBlendMode::Alpha => "alpha".to_string(),
-        MaterialBlendMode::Transparent => "transparent".to_string(),
-        MaterialBlendMode::Additive => "additive".to_string(),
-        MaterialBlendMode::Multiply => "multiply".to_string(),
         MaterialBlendMode::UnityBlend { src, dst } => format!("unity {src}/{dst}"),
     }
 }

@@ -22,7 +22,7 @@ public class GeneratorOptions
     [Option('o', "output-rust-file", Required = false, Default = null, HelpText = "The destination .rs file to generate.")]
     public string? OutputRustFile { get; set; }
 
-    /// <summary>Sets <see cref="OutputRustFile"/> to <c>crates/renderide/src/shared/shared.rs</c> under the git repository root.</summary>
+    /// <summary>Sets <see cref="OutputRustFile"/> to <c>crates/renderide-shared/src/shared.rs</c> under the git repository root.</summary>
     /// <exception cref="InvalidOperationException">Thrown when git is missing, times out, or the path cannot be resolved.</exception>
     public void DetermineDefaultOutputPath()
     {
@@ -34,6 +34,6 @@ public class GeneratorOptions
         }
 
         string renderideRoot = RenderidePathResolver.ResolveRenderideRoot(gitRoot);
-        OutputRustFile = Path.Combine(renderideRoot, "crates", "renderide", "src", "shared", "shared.rs");
+        OutputRustFile = Path.Combine(renderideRoot, "crates", "renderide-shared", "src", "shared.rs");
     }
 }

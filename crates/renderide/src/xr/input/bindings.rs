@@ -1,368 +1,224 @@
-//! OpenXR interaction profile binding suggestions for the Renderide action set.
+//! OpenXR interaction profile binding suggestions, driven by the data-only TOML manifest.
+//!
+//! The per-profile binding tables previously hardcoded in this file now live under
+//! `crates/renderide/assets/xr/bindings/` and are loaded via [`super::manifest`]. This module owns
+//! the extension-gating logic, the [`ActionHandleRef`] dispatch helper that turns a parsed binding
+//! entry into a typed [`xr::Binding`], and [`apply_suggested_interaction_bindings`] which submits
+//! each profile table to the runtime.
+
+use std::collections::HashMap;
 
 use openxr as xr;
 
-/// All [`xr::Path`] values used when calling [`openxr::Instance::suggest_interaction_profile_bindings`].
-pub(super) struct BindingPaths {
-    pub(super) left_grip_pose: xr::Path,
-    pub(super) right_grip_pose: xr::Path,
-    pub(super) left_aim_pose: xr::Path,
-    pub(super) right_aim_pose: xr::Path,
-    pub(super) left_trigger_value: xr::Path,
-    pub(super) right_trigger_value: xr::Path,
-    pub(super) left_trigger_touch: xr::Path,
-    pub(super) right_trigger_touch: xr::Path,
-    pub(super) left_trigger_click: xr::Path,
-    pub(super) right_trigger_click: xr::Path,
-    pub(super) left_squeeze_value: xr::Path,
-    pub(super) right_squeeze_value: xr::Path,
-    pub(super) left_squeeze_click: xr::Path,
-    pub(super) right_squeeze_click: xr::Path,
-    pub(super) left_thumbstick: xr::Path,
-    pub(super) right_thumbstick: xr::Path,
-    pub(super) left_thumbstick_touch: xr::Path,
-    pub(super) right_thumbstick_touch: xr::Path,
-    pub(super) left_thumbstick_click: xr::Path,
-    pub(super) right_thumbstick_click: xr::Path,
-    pub(super) left_trackpad: xr::Path,
-    pub(super) right_trackpad: xr::Path,
-    pub(super) left_trackpad_touch: xr::Path,
-    pub(super) right_trackpad_touch: xr::Path,
-    pub(super) left_trackpad_click: xr::Path,
-    pub(super) right_trackpad_click: xr::Path,
-    pub(super) left_trackpad_force: xr::Path,
-    pub(super) right_trackpad_force: xr::Path,
-    pub(super) left_x_click: xr::Path,
-    pub(super) left_y_click: xr::Path,
-    pub(super) left_x_touch: xr::Path,
-    pub(super) left_y_touch: xr::Path,
-    pub(super) left_a_click: xr::Path,
-    pub(super) left_b_click: xr::Path,
-    pub(super) left_a_touch: xr::Path,
-    pub(super) left_b_touch: xr::Path,
-    pub(super) right_a_click: xr::Path,
-    pub(super) right_b_click: xr::Path,
-    pub(super) right_a_touch: xr::Path,
-    pub(super) right_b_touch: xr::Path,
-    pub(super) left_menu_click: xr::Path,
-    pub(super) right_menu_click: xr::Path,
-    pub(super) left_thumbrest_touch: xr::Path,
-    pub(super) right_thumbrest_touch: xr::Path,
-    pub(super) left_select_click: xr::Path,
-    pub(super) right_select_click: xr::Path,
-}
+use super::manifest::{ExtensionGate, Manifest};
+use super::openxr_actions::OpenxrInputActions;
 
-/// Registered OpenXR interaction profile paths (e.g. Oculus Touch, Index).
-pub(super) struct InteractionProfilePaths {
-    pub(super) oculus_touch: xr::Path,
-    pub(super) valve_index: xr::Path,
-    pub(super) htc_vive: xr::Path,
-    pub(super) microsoft_motion: xr::Path,
-    pub(super) generic_controller: xr::Path,
-    pub(super) simple_controller: xr::Path,
-    /// [`XR_BD_controller_interaction`](https://registry.khronos.org/OpenXR/specs/1.0/html/xrspec.html#XR_BD_controller_interaction) — Pico 4 and similar.
-    pub(super) pico4_controller: xr::Path,
-}
-
-/// References to every action participating in binding suggestions.
-pub(super) struct ActionRefs<'a> {
-    pub(super) left_grip_pose: &'a xr::Action<xr::Posef>,
-    pub(super) right_grip_pose: &'a xr::Action<xr::Posef>,
-    pub(super) left_aim_pose: &'a xr::Action<xr::Posef>,
-    pub(super) right_aim_pose: &'a xr::Action<xr::Posef>,
-    pub(super) left_trigger: &'a xr::Action<f32>,
-    pub(super) right_trigger: &'a xr::Action<f32>,
-    pub(super) left_trigger_touch: &'a xr::Action<bool>,
-    pub(super) right_trigger_touch: &'a xr::Action<bool>,
-    pub(super) left_trigger_click: &'a xr::Action<bool>,
-    pub(super) right_trigger_click: &'a xr::Action<bool>,
-    pub(super) left_squeeze: &'a xr::Action<f32>,
-    pub(super) right_squeeze: &'a xr::Action<f32>,
-    pub(super) left_squeeze_click: &'a xr::Action<bool>,
-    pub(super) right_squeeze_click: &'a xr::Action<bool>,
-    pub(super) left_thumbstick: &'a xr::Action<xr::Vector2f>,
-    pub(super) right_thumbstick: &'a xr::Action<xr::Vector2f>,
-    pub(super) left_thumbstick_touch: &'a xr::Action<bool>,
-    pub(super) right_thumbstick_touch: &'a xr::Action<bool>,
-    pub(super) left_thumbstick_click: &'a xr::Action<bool>,
-    pub(super) right_thumbstick_click: &'a xr::Action<bool>,
-    pub(super) left_trackpad: &'a xr::Action<xr::Vector2f>,
-    pub(super) right_trackpad: &'a xr::Action<xr::Vector2f>,
-    pub(super) left_trackpad_touch: &'a xr::Action<bool>,
-    pub(super) right_trackpad_touch: &'a xr::Action<bool>,
-    pub(super) left_trackpad_click: &'a xr::Action<bool>,
-    pub(super) right_trackpad_click: &'a xr::Action<bool>,
-    pub(super) left_trackpad_force: &'a xr::Action<f32>,
-    pub(super) right_trackpad_force: &'a xr::Action<f32>,
-    pub(super) left_primary: &'a xr::Action<bool>,
-    pub(super) right_primary: &'a xr::Action<bool>,
-    pub(super) left_secondary: &'a xr::Action<bool>,
-    pub(super) right_secondary: &'a xr::Action<bool>,
-    pub(super) left_primary_touch: &'a xr::Action<bool>,
-    pub(super) right_primary_touch: &'a xr::Action<bool>,
-    pub(super) left_secondary_touch: &'a xr::Action<bool>,
-    pub(super) right_secondary_touch: &'a xr::Action<bool>,
-    pub(super) left_menu: &'a xr::Action<bool>,
-    pub(super) right_menu: &'a xr::Action<bool>,
-    pub(super) left_thumbrest_touch: &'a xr::Action<bool>,
-    pub(super) right_thumbrest_touch: &'a xr::Action<bool>,
-    pub(super) left_select: &'a xr::Action<bool>,
-    pub(super) right_select: &'a xr::Action<bool>,
-}
-
-/// Oculus Touch interaction profile suggestions for the shared action set.
-fn oculus_touch_bindings<'a>(a: &'a ActionRefs<'a>, p: &'a BindingPaths) -> Vec<xr::Binding<'a>> {
-    vec![
-        xr::Binding::new(a.left_grip_pose, p.left_grip_pose),
-        xr::Binding::new(a.right_grip_pose, p.right_grip_pose),
-        xr::Binding::new(a.left_aim_pose, p.left_aim_pose),
-        xr::Binding::new(a.right_aim_pose, p.right_aim_pose),
-        xr::Binding::new(a.left_trigger, p.left_trigger_value),
-        xr::Binding::new(a.right_trigger, p.right_trigger_value),
-        xr::Binding::new(a.left_trigger_touch, p.left_trigger_touch),
-        xr::Binding::new(a.right_trigger_touch, p.right_trigger_touch),
-        xr::Binding::new(a.left_squeeze, p.left_squeeze_value),
-        xr::Binding::new(a.right_squeeze, p.right_squeeze_value),
-        xr::Binding::new(a.left_thumbstick, p.left_thumbstick),
-        xr::Binding::new(a.right_thumbstick, p.right_thumbstick),
-        xr::Binding::new(a.left_thumbstick_touch, p.left_thumbstick_touch),
-        xr::Binding::new(a.right_thumbstick_touch, p.right_thumbstick_touch),
-        xr::Binding::new(a.left_thumbstick_click, p.left_thumbstick_click),
-        xr::Binding::new(a.right_thumbstick_click, p.right_thumbstick_click),
-        xr::Binding::new(a.left_primary, p.left_x_click),
-        xr::Binding::new(a.left_secondary, p.left_y_click),
-        xr::Binding::new(a.right_primary, p.right_a_click),
-        xr::Binding::new(a.right_secondary, p.right_b_click),
-        xr::Binding::new(a.left_primary_touch, p.left_x_touch),
-        xr::Binding::new(a.left_secondary_touch, p.left_y_touch),
-        xr::Binding::new(a.right_primary_touch, p.right_a_touch),
-        xr::Binding::new(a.right_secondary_touch, p.right_b_touch),
-        xr::Binding::new(a.left_menu, p.left_menu_click),
-        xr::Binding::new(a.left_thumbrest_touch, p.left_thumbrest_touch),
-        xr::Binding::new(a.right_thumbrest_touch, p.right_thumbrest_touch),
-    ]
-}
-
-/// ByteDance Pico / `XR_BD_controller_interaction`; touch-like layout without thumbrest paths.
-fn pico4_controller_bindings<'a>(
-    a: &'a ActionRefs<'a>,
-    p: &'a BindingPaths,
-) -> Vec<xr::Binding<'a>> {
-    vec![
-        xr::Binding::new(a.left_grip_pose, p.left_grip_pose),
-        xr::Binding::new(a.right_grip_pose, p.right_grip_pose),
-        xr::Binding::new(a.left_aim_pose, p.left_aim_pose),
-        xr::Binding::new(a.right_aim_pose, p.right_aim_pose),
-        xr::Binding::new(a.left_trigger, p.left_trigger_value),
-        xr::Binding::new(a.right_trigger, p.right_trigger_value),
-        xr::Binding::new(a.left_trigger_touch, p.left_trigger_touch),
-        xr::Binding::new(a.right_trigger_touch, p.right_trigger_touch),
-        xr::Binding::new(a.left_trigger_click, p.left_trigger_click),
-        xr::Binding::new(a.right_trigger_click, p.right_trigger_click),
-        xr::Binding::new(a.left_squeeze, p.left_squeeze_value),
-        xr::Binding::new(a.right_squeeze, p.right_squeeze_value),
-        xr::Binding::new(a.left_squeeze_click, p.left_squeeze_click),
-        xr::Binding::new(a.right_squeeze_click, p.right_squeeze_click),
-        xr::Binding::new(a.left_thumbstick, p.left_thumbstick),
-        xr::Binding::new(a.right_thumbstick, p.right_thumbstick),
-        xr::Binding::new(a.left_thumbstick_touch, p.left_thumbstick_touch),
-        xr::Binding::new(a.right_thumbstick_touch, p.right_thumbstick_touch),
-        xr::Binding::new(a.left_thumbstick_click, p.left_thumbstick_click),
-        xr::Binding::new(a.right_thumbstick_click, p.right_thumbstick_click),
-        xr::Binding::new(a.left_primary, p.left_x_click),
-        xr::Binding::new(a.left_secondary, p.left_y_click),
-        xr::Binding::new(a.right_primary, p.right_a_click),
-        xr::Binding::new(a.right_secondary, p.right_b_click),
-        xr::Binding::new(a.left_primary_touch, p.left_x_touch),
-        xr::Binding::new(a.left_secondary_touch, p.left_y_touch),
-        xr::Binding::new(a.right_primary_touch, p.right_a_touch),
-        xr::Binding::new(a.right_secondary_touch, p.right_b_touch),
-        xr::Binding::new(a.left_menu, p.left_menu_click),
-    ]
-}
-
-/// Valve Index controller profile.
-fn valve_index_bindings<'a>(a: &'a ActionRefs<'a>, p: &'a BindingPaths) -> Vec<xr::Binding<'a>> {
-    vec![
-        xr::Binding::new(a.left_grip_pose, p.left_grip_pose),
-        xr::Binding::new(a.right_grip_pose, p.right_grip_pose),
-        xr::Binding::new(a.left_aim_pose, p.left_aim_pose),
-        xr::Binding::new(a.right_aim_pose, p.right_aim_pose),
-        xr::Binding::new(a.left_trigger, p.left_trigger_value),
-        xr::Binding::new(a.right_trigger, p.right_trigger_value),
-        xr::Binding::new(a.left_trigger_touch, p.left_trigger_touch),
-        xr::Binding::new(a.right_trigger_touch, p.right_trigger_touch),
-        xr::Binding::new(a.left_trigger_click, p.left_trigger_click),
-        xr::Binding::new(a.right_trigger_click, p.right_trigger_click),
-        xr::Binding::new(a.left_squeeze, p.left_squeeze_value),
-        xr::Binding::new(a.right_squeeze, p.right_squeeze_value),
-        xr::Binding::new(a.left_thumbstick, p.left_thumbstick),
-        xr::Binding::new(a.right_thumbstick, p.right_thumbstick),
-        xr::Binding::new(a.left_thumbstick_touch, p.left_thumbstick_touch),
-        xr::Binding::new(a.right_thumbstick_touch, p.right_thumbstick_touch),
-        xr::Binding::new(a.left_thumbstick_click, p.left_thumbstick_click),
-        xr::Binding::new(a.right_thumbstick_click, p.right_thumbstick_click),
-        xr::Binding::new(a.left_trackpad, p.left_trackpad),
-        xr::Binding::new(a.right_trackpad, p.right_trackpad),
-        xr::Binding::new(a.left_trackpad_touch, p.left_trackpad_touch),
-        xr::Binding::new(a.right_trackpad_touch, p.right_trackpad_touch),
-        xr::Binding::new(a.left_trackpad_force, p.left_trackpad_force),
-        xr::Binding::new(a.right_trackpad_force, p.right_trackpad_force),
-        xr::Binding::new(a.left_primary, p.left_a_click),
-        xr::Binding::new(a.left_secondary, p.left_b_click),
-        xr::Binding::new(a.right_primary, p.right_a_click),
-        xr::Binding::new(a.right_secondary, p.right_b_click),
-        xr::Binding::new(a.left_primary_touch, p.left_a_touch),
-        xr::Binding::new(a.left_secondary_touch, p.left_b_touch),
-        xr::Binding::new(a.right_primary_touch, p.right_a_touch),
-        xr::Binding::new(a.right_secondary_touch, p.right_b_touch),
-    ]
-}
-
-/// HTC Vive wand profile.
-fn htc_vive_bindings<'a>(a: &'a ActionRefs<'a>, p: &'a BindingPaths) -> Vec<xr::Binding<'a>> {
-    vec![
-        xr::Binding::new(a.left_grip_pose, p.left_grip_pose),
-        xr::Binding::new(a.right_grip_pose, p.right_grip_pose),
-        xr::Binding::new(a.left_aim_pose, p.left_aim_pose),
-        xr::Binding::new(a.right_aim_pose, p.right_aim_pose),
-        xr::Binding::new(a.left_trigger, p.left_trigger_value),
-        xr::Binding::new(a.right_trigger, p.right_trigger_value),
-        xr::Binding::new(a.left_trigger_click, p.left_trigger_click),
-        xr::Binding::new(a.right_trigger_click, p.right_trigger_click),
-        xr::Binding::new(a.left_squeeze_click, p.left_squeeze_click),
-        xr::Binding::new(a.right_squeeze_click, p.right_squeeze_click),
-        xr::Binding::new(a.left_trackpad, p.left_trackpad),
-        xr::Binding::new(a.right_trackpad, p.right_trackpad),
-        xr::Binding::new(a.left_trackpad_touch, p.left_trackpad_touch),
-        xr::Binding::new(a.right_trackpad_touch, p.right_trackpad_touch),
-        xr::Binding::new(a.left_trackpad_click, p.left_trackpad_click),
-        xr::Binding::new(a.right_trackpad_click, p.right_trackpad_click),
-        xr::Binding::new(a.left_menu, p.left_menu_click),
-        xr::Binding::new(a.right_menu, p.right_menu_click),
-    ]
-}
-
-/// Windows Mixed Reality motion controllers.
-fn microsoft_motion_bindings<'a>(
-    a: &'a ActionRefs<'a>,
-    p: &'a BindingPaths,
-) -> Vec<xr::Binding<'a>> {
-    vec![
-        xr::Binding::new(a.left_grip_pose, p.left_grip_pose),
-        xr::Binding::new(a.right_grip_pose, p.right_grip_pose),
-        xr::Binding::new(a.left_aim_pose, p.left_aim_pose),
-        xr::Binding::new(a.right_aim_pose, p.right_aim_pose),
-        xr::Binding::new(a.left_trigger, p.left_trigger_value),
-        xr::Binding::new(a.right_trigger, p.right_trigger_value),
-        xr::Binding::new(a.left_squeeze_click, p.left_squeeze_click),
-        xr::Binding::new(a.right_squeeze_click, p.right_squeeze_click),
-        xr::Binding::new(a.left_thumbstick, p.left_thumbstick),
-        xr::Binding::new(a.right_thumbstick, p.right_thumbstick),
-        xr::Binding::new(a.left_thumbstick_click, p.left_thumbstick_click),
-        xr::Binding::new(a.right_thumbstick_click, p.right_thumbstick_click),
-        xr::Binding::new(a.left_trackpad, p.left_trackpad),
-        xr::Binding::new(a.right_trackpad, p.right_trackpad),
-        xr::Binding::new(a.left_trackpad_touch, p.left_trackpad_touch),
-        xr::Binding::new(a.right_trackpad_touch, p.right_trackpad_touch),
-        xr::Binding::new(a.left_trackpad_click, p.left_trackpad_click),
-        xr::Binding::new(a.right_trackpad_click, p.right_trackpad_click),
-        xr::Binding::new(a.left_menu, p.left_menu_click),
-        xr::Binding::new(a.right_menu, p.right_menu_click),
-    ]
-}
-
-/// `XR_KHR_generic_controller` minimal suggestions (tracked pose + triggers + sticks + face buttons).
-fn generic_controller_bindings<'a>(
-    a: &'a ActionRefs<'a>,
-    p: &'a BindingPaths,
-) -> Vec<xr::Binding<'a>> {
-    vec![
-        xr::Binding::new(a.left_grip_pose, p.left_grip_pose),
-        xr::Binding::new(a.right_grip_pose, p.right_grip_pose),
-        xr::Binding::new(a.left_aim_pose, p.left_aim_pose),
-        xr::Binding::new(a.right_aim_pose, p.right_aim_pose),
-        xr::Binding::new(a.left_trigger, p.left_trigger_value),
-        xr::Binding::new(a.right_trigger, p.right_trigger_value),
-        xr::Binding::new(a.left_squeeze, p.left_squeeze_value),
-        xr::Binding::new(a.right_squeeze, p.right_squeeze_value),
-        xr::Binding::new(a.left_thumbstick, p.left_thumbstick),
-        xr::Binding::new(a.right_thumbstick, p.right_thumbstick),
-        xr::Binding::new(a.left_thumbstick_click, p.left_thumbstick_click),
-        xr::Binding::new(a.right_thumbstick_click, p.right_thumbstick_click),
-        xr::Binding::new(a.left_primary, p.left_select_click),
-        xr::Binding::new(a.right_primary, p.right_select_click),
-        xr::Binding::new(a.left_secondary, p.left_menu_click),
-        xr::Binding::new(a.right_secondary, p.right_menu_click),
-    ]
-}
-
-/// OpenXR `simple_controller` profile.
-fn simple_controller_bindings<'a>(
-    a: &'a ActionRefs<'a>,
-    p: &'a BindingPaths,
-) -> Vec<xr::Binding<'a>> {
-    vec![
-        xr::Binding::new(a.left_grip_pose, p.left_grip_pose),
-        xr::Binding::new(a.right_grip_pose, p.right_grip_pose),
-        xr::Binding::new(a.left_aim_pose, p.left_aim_pose),
-        xr::Binding::new(a.right_aim_pose, p.right_aim_pose),
-        xr::Binding::new(a.left_select, p.left_select_click),
-        xr::Binding::new(a.right_select, p.right_select_click),
-        xr::Binding::new(a.left_menu, p.left_menu_click),
-        xr::Binding::new(a.right_menu, p.right_menu_click),
-    ]
-}
-
-/// Applies all known interaction profile binding tables; succeeds if at least one profile accepted bindings.
+/// Per-extension flags gating which profile binding suggestions are attempted.
 ///
-/// When `suggest_generic_controller` is `false` (runtime did not enable `XR_KHR_generic_controller`),
-/// the generic controller profile is skipped so runtimes that do not support it do not log errors.
+/// Each flag tracks whether the runtime exposed (and the application enabled) the matching
+/// OpenXR extension that registers the profile path. Profiles whose extension was not enabled
+/// are skipped in [`apply_suggested_interaction_bindings`] so the runtime does not log an error
+/// for an unknown profile. Populated by `bootstrap` from the enabled `xr::ExtensionSet`.
+pub struct ProfileExtensionGates {
+    /// `XR_KHR_generic_controller`.
+    pub khr_generic_controller: bool,
+    /// `XR_BD_controller_interaction` — gates both Pico 4 and Pico Neo3.
+    pub bd_controller: bool,
+    /// `XR_EXT_hp_mixed_reality_controller`.
+    pub ext_hp_mixed_reality_controller: bool,
+    /// `XR_EXT_samsung_odyssey_controller`.
+    pub ext_samsung_odyssey_controller: bool,
+    /// `XR_HTC_vive_cosmos_controller_interaction`.
+    pub htc_vive_cosmos_controller_interaction: bool,
+    /// `XR_HTC_vive_focus3_controller_interaction`.
+    pub htc_vive_focus3_controller_interaction: bool,
+    /// `XR_FB_touch_controller_pro`.
+    pub fb_touch_controller_pro: bool,
+    /// `XR_META_touch_controller_plus`.
+    pub meta_touch_controller_plus: bool,
+}
+
+impl ProfileExtensionGates {
+    /// Returns `true` when the extension advertised by `gate` was enabled on the instance.
+    pub fn is_enabled(&self, gate: ExtensionGate) -> bool {
+        match gate {
+            ExtensionGate::KhrGenericController => self.khr_generic_controller,
+            ExtensionGate::BdController => self.bd_controller,
+            ExtensionGate::ExtHpMixedRealityController => self.ext_hp_mixed_reality_controller,
+            ExtensionGate::ExtSamsungOdysseyController => self.ext_samsung_odyssey_controller,
+            ExtensionGate::HtcViveCosmosControllerInteraction => {
+                self.htc_vive_cosmos_controller_interaction
+            }
+            ExtensionGate::HtcViveFocus3ControllerInteraction => {
+                self.htc_vive_focus3_controller_interaction
+            }
+            ExtensionGate::FbTouchControllerPro => self.fb_touch_controller_pro,
+            ExtensionGate::MetaTouchControllerPlus => self.meta_touch_controller_plus,
+        }
+    }
+}
+
+/// Typed reference to a created [`xr::Action`], used to construct [`xr::Binding`] values by id.
 ///
-/// When `suggest_bd_controller` is `false` (runtime did not enable `XR_BD_controller_interaction`),
-/// ByteDance Pico profile suggestions are skipped.
+/// The manifest is string-keyed; this enum carries the type information needed to call the
+/// matching generic [`xr::Binding::new`] overload at submission time.
+#[derive(Clone, Copy)]
+pub(super) enum ActionHandleRef<'a> {
+    /// Tracked pose handle (grip or aim).
+    Pose(&'a xr::Action<xr::Posef>),
+    /// Digital state handle.
+    Bool(&'a xr::Action<bool>),
+    /// Analog axis handle.
+    Float(&'a xr::Action<f32>),
+    /// Two-axis handle (thumbstick, trackpad).
+    Vector2f(&'a xr::Action<xr::Vector2f>),
+    /// Haptic output handle.
+    Haptic(&'a xr::Action<xr::Haptic>),
+}
+
+impl<'a> ActionHandleRef<'a> {
+    /// Dispatches to the typed [`xr::Binding::new`] constructor.
+    fn to_binding(self, path: xr::Path) -> xr::Binding<'a> {
+        match self {
+            Self::Pose(a) => xr::Binding::new(a, path),
+            Self::Bool(a) => xr::Binding::new(a, path),
+            Self::Float(a) => xr::Binding::new(a, path),
+            Self::Vector2f(a) => xr::Binding::new(a, path),
+            Self::Haptic(a) => xr::Binding::new(a, path),
+        }
+    }
+}
+
+/// Submits every manifest-declared binding table to the runtime, honouring extension gates.
+///
+/// Succeeds if **any** profile accepted bindings; returns the last error otherwise. Each profile
+/// result is logged separately (info on accept, warn on reject) so runtime mismatches — e.g. a
+/// profile rejected because the runtime does not recognise a path — are diagnosable rather than
+/// silently swallowed.
+///
+/// `actions_by_id` must cover every action id referenced in `manifest.profiles[*].bindings`; the
+/// manifest parser has already validated this invariant at load time.
 pub(super) fn apply_suggested_interaction_bindings(
     instance: &xr::Instance,
-    profiles: &InteractionProfilePaths,
-    paths: &BindingPaths,
-    actions: &ActionRefs<'_>,
-    suggest_generic_controller: bool,
-    suggest_bd_controller: bool,
+    manifest: &Manifest,
+    actions_by_id: &HashMap<String, ActionHandleRef<'_>>,
+    gates: &ProfileExtensionGates,
 ) -> Result<(), xr::sys::Result> {
-    let a = actions;
-    let p = paths;
-    let ip = profiles;
+    let mut any_accepted = false;
+    let mut last_err: Option<xr::sys::Result> = None;
 
-    let mut any_bindings = false;
-    let mut last_binding_err = None;
-    let mut suggest = |profile: xr::Path, bindings: &[xr::Binding<'_>]| match instance
-        .suggest_interaction_profile_bindings(profile, bindings)
-    {
-        Ok(()) => any_bindings = true,
-        Err(e) => last_binding_err = Some(e),
-    };
+    for profile in &manifest.profiles {
+        if let Some(gate) = profile.extension_gate {
+            if !gates.is_enabled(gate) {
+                continue;
+            }
+        }
 
-    let oculus_touch = oculus_touch_bindings(a, p);
-    suggest(ip.oculus_touch, &oculus_touch);
-    if suggest_bd_controller {
-        let pico4 = pico4_controller_bindings(a, p);
-        suggest(ip.pico4_controller, &pico4);
+        let profile_path = instance.string_to_path(&profile.profile)?;
+
+        let mut bindings: Vec<xr::Binding<'_>> = Vec::with_capacity(profile.bindings.len());
+        for entry in &profile.bindings {
+            let Some(handle) = actions_by_id.get(entry.action.as_str()) else {
+                logger::error!(
+                    "OpenXR manifest invariant: binding for '{}' in '{}' has no matching action handle",
+                    entry.action,
+                    profile.profile
+                );
+                return Err(xr::sys::Result::ERROR_VALIDATION_FAILURE);
+            };
+            let binding_path = instance.string_to_path(&entry.path)?;
+            bindings.push(handle.to_binding(binding_path));
+        }
+
+        match instance.suggest_interaction_profile_bindings(profile_path, &bindings) {
+            Ok(()) => {
+                any_accepted = true;
+                logger::info!("OpenXR binding suggestion accepted: {}", profile.profile);
+            }
+            Err(e) => {
+                last_err = Some(e);
+                logger::warn!(
+                    "OpenXR binding suggestion rejected: {}: {e:?}",
+                    profile.profile
+                );
+            }
+        }
     }
-    let valve_index = valve_index_bindings(a, p);
-    suggest(ip.valve_index, &valve_index);
-    let htc_vive = htc_vive_bindings(a, p);
-    suggest(ip.htc_vive, &htc_vive);
-    let microsoft_motion = microsoft_motion_bindings(a, p);
-    suggest(ip.microsoft_motion, &microsoft_motion);
-    if suggest_generic_controller {
-        let generic_controller = generic_controller_bindings(a, p);
-        suggest(ip.generic_controller, &generic_controller);
-    }
-    let simple_controller = simple_controller_bindings(a, p);
-    suggest(ip.simple_controller, &simple_controller);
 
-    if !any_bindings {
-        return Err(last_binding_err.unwrap_or(xr::sys::Result::ERROR_PATH_UNSUPPORTED));
+    if !any_accepted {
+        return Err(last_err.unwrap_or(xr::sys::Result::ERROR_PATH_UNSUPPORTED));
     }
     Ok(())
+}
+
+/// Builds a `HashMap<id, ActionHandleRef>` over every action owned by [`OpenxrInputActions`] so the
+/// binding loop can look up handles by the string ids declared in the manifest.
+pub(super) fn build_action_handle_map(
+    actions: &OpenxrInputActions,
+) -> HashMap<String, ActionHandleRef<'_>> {
+    let mut map = HashMap::with_capacity(44);
+    macro_rules! put {
+        ($variant:ident, $field:ident) => {
+            map.insert(
+                stringify!($field).into(),
+                ActionHandleRef::$variant(&actions.$field),
+            );
+        };
+    }
+
+    put!(Pose, left_grip_pose);
+    put!(Pose, right_grip_pose);
+    put!(Pose, left_aim_pose);
+    put!(Pose, right_aim_pose);
+
+    put!(Float, left_trigger);
+    put!(Float, right_trigger);
+    put!(Bool, left_trigger_touch);
+    put!(Bool, right_trigger_touch);
+    put!(Bool, left_trigger_click);
+    put!(Bool, right_trigger_click);
+
+    put!(Float, left_squeeze);
+    put!(Float, right_squeeze);
+    put!(Bool, left_squeeze_click);
+    put!(Bool, right_squeeze_click);
+
+    put!(Vector2f, left_thumbstick);
+    put!(Vector2f, right_thumbstick);
+    put!(Bool, left_thumbstick_touch);
+    put!(Bool, right_thumbstick_touch);
+    put!(Bool, left_thumbstick_click);
+    put!(Bool, right_thumbstick_click);
+
+    put!(Vector2f, left_trackpad);
+    put!(Vector2f, right_trackpad);
+    put!(Bool, left_trackpad_touch);
+    put!(Bool, right_trackpad_touch);
+    put!(Bool, left_trackpad_click);
+    put!(Bool, right_trackpad_click);
+    put!(Float, left_trackpad_force);
+    put!(Float, right_trackpad_force);
+
+    put!(Bool, left_primary);
+    put!(Bool, right_primary);
+    put!(Bool, left_secondary);
+    put!(Bool, right_secondary);
+    put!(Bool, left_primary_touch);
+    put!(Bool, right_primary_touch);
+    put!(Bool, left_secondary_touch);
+    put!(Bool, right_secondary_touch);
+
+    put!(Bool, left_menu);
+    put!(Bool, right_menu);
+
+    put!(Bool, left_thumbrest_touch);
+    put!(Bool, right_thumbrest_touch);
+
+    put!(Bool, left_select);
+    put!(Bool, right_select);
+
+    put!(Haptic, left_haptic);
+    put!(Haptic, right_haptic);
+
+    map
 }

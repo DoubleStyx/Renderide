@@ -36,9 +36,16 @@ impl PosixSemaphore {
             let prefix = encoded.get(..24).map_or(encoded.as_str(), |s| s);
             full_name = format!("/sem_{prefix}");
         }
-        let c_name = CString::new(full_name).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "semaphore name contains NUL")
+        let c_name = CString::new(full_name).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "semaphore name contains NUL at position {}",
+                    e.nul_position()
+                ),
+            )
         })?;
+        // SAFETY: `c_name` is a NUL-terminated C string; remaining args are constants.
         let h = unsafe { libc::sem_open(c_name.as_ptr(), libc::O_CREAT, 0o777, 0) };
         if h == libc::SEM_FAILED {
             return Err(io::Error::last_os_error());
@@ -48,6 +55,7 @@ impl PosixSemaphore {
 
     /// Increments the semaphore (wake one waiter).
     pub(super) fn post(&self) {
+        // SAFETY: `self.0` is a non-`SEM_FAILED` pointer returned by `sem_open` in `open`.
         let rc = unsafe { libc::sem_post(self.0) };
         if rc != 0 {
             debug_assert!(false, "sem_post: {:?}", io::Error::last_os_error());
@@ -72,6 +80,7 @@ impl PosixSemaphore {
     /// Non-blocking wait; returns `true` if the semaphore was acquired.
     fn try_wait(&self) -> bool {
         loop {
+            // SAFETY: `self.0` is a live `sem_open` handle owned by `self`.
             let rc = unsafe { libc::sem_trywait(self.0) };
             if rc == 0 {
                 return true;
@@ -94,7 +103,9 @@ impl PosixSemaphore {
     /// edge cases remain well-defined.
     #[cfg(not(target_vendor = "apple"))]
     fn wait_timed(&self, timeout: Duration) -> bool {
+        // SAFETY: `timespec` is a POD struct of integers; all-zero is a valid bit pattern.
         let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: `&mut ts` is a valid out-pointer; clockid is a constant.
         if unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) } != 0 {
             return false;
         }
@@ -110,6 +121,7 @@ impl PosixSemaphore {
         ts.tv_sec = d_sec as libc::time_t;
         ts.tv_nsec = d_nsec as libc::c_long;
         loop {
+            // SAFETY: `self.0` is a live sem handle; `&ts` is a valid absolute timespec.
             let rc = unsafe { libc::sem_timedwait(self.0, &ts) };
             if rc == 0 {
                 return true;
@@ -143,6 +155,7 @@ impl PosixSemaphore {
 
 impl Drop for PosixSemaphore {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is a live sem handle owned by `self`; dropping closes it exactly once.
         let _ = unsafe { libc::sem_close(self.0) };
     }
 }

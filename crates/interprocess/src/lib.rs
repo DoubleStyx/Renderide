@@ -1,5 +1,3 @@
-#![warn(missing_docs)]
-
 //! Cloudtoid-compatible shared-memory queue for IPC between processes.
 //!
 //! ```text

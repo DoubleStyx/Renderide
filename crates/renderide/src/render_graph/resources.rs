@@ -13,6 +13,69 @@ impl TextureHandle {
     }
 }
 
+/// A named view into a subrange (mip levels, array layers) of a transient texture.
+///
+/// Subresource handles are graph-time declarations; the concrete [`wgpu::TextureView`] is created
+/// on demand at execute time and cached per-range by the graph resources context. They do not
+/// participate in dependency analysis today — accesses that touch a subresource are recorded
+/// against the parent [`TextureHandle`], so an overlapping read + write on different mip slices
+/// of the same parent is conservatively serialized.
+///
+/// Motivating consumers: bloom / SSR mip-chain passes that sample mip N and write mip N+1;
+/// future CSM shadow atlas slice writes; per-mip Hi-Z pyramid builds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SubresourceHandle(pub(crate) u32);
+
+impl SubresourceHandle {
+    /// Zero-based index into the graph subresource declaration table.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Descriptor for a subresource view rooted at a transient texture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TransientSubresourceDesc {
+    /// Parent transient texture.
+    pub parent: TextureHandle,
+    /// Debug label used for the generated `wgpu::TextureView`.
+    pub label: &'static str,
+    /// First mip level visible through the view.
+    pub base_mip_level: u32,
+    /// Number of mip levels visible; must be `>= 1`.
+    pub mip_level_count: u32,
+    /// First array layer visible through the view.
+    pub base_array_layer: u32,
+    /// Number of array layers visible; must be `>= 1`.
+    pub array_layer_count: u32,
+}
+
+impl TransientSubresourceDesc {
+    /// Creates a descriptor targeting a single mip of the parent's default array layer(s).
+    pub fn single_mip(parent: TextureHandle, label: &'static str, mip_level: u32) -> Self {
+        Self {
+            parent,
+            label,
+            base_mip_level: mip_level,
+            mip_level_count: 1,
+            base_array_layer: 0,
+            array_layer_count: 1,
+        }
+    }
+
+    /// Creates a descriptor targeting a single array layer at mip 0.
+    pub fn single_layer(parent: TextureHandle, label: &'static str, array_layer: u32) -> Self {
+        Self {
+            parent,
+            label,
+            base_mip_level: 0,
+            mip_level_count: 1,
+            base_array_layer: array_layer,
+            array_layer_count: 1,
+        }
+    }
+}
+
 /// A transient buffer allocated and owned by the graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BufferHandle(pub(crate) u32);
@@ -230,6 +293,8 @@ pub enum TransientTextureFormat {
     FrameColor,
     /// Resolve to the current frame depth/stencil attachment format.
     FrameDepthStencil,
+    /// Resolve to the HDR scene-color format ([`crate::config::RenderingSettings::scene_color_format`]).
+    SceneColorHdr,
 }
 
 impl TransientTextureFormat {
@@ -238,11 +303,13 @@ impl TransientTextureFormat {
         self,
         frame_color_format: wgpu::TextureFormat,
         frame_depth_stencil_format: wgpu::TextureFormat,
+        scene_color_hdr_format: wgpu::TextureFormat,
     ) -> wgpu::TextureFormat {
         match self {
             Self::Fixed(format) => format,
             Self::FrameColor => frame_color_format,
             Self::FrameDepthStencil => frame_depth_stencil_format,
+            Self::SceneColorHdr => scene_color_hdr_format,
         }
     }
 }
@@ -619,14 +686,44 @@ pub enum FrameTargetRole {
     DepthAttachment,
 }
 
-/// Identifier for persistent graph history slots.
+/// Stable identifier for a persistent graph history slot.
+///
+/// A **history slot** is a ping-pong pair of GPU resources (textures or buffers) that survive
+/// across frames. [`ImportSource::PingPong`] and [`BufferImportSource::PingPong`] reference a
+/// slot by this id; a [`crate::backend::HistoryRegistry`] owns the concrete resources.
+///
+/// Slots are identified by a stable `&'static str` id so subsystems can register their own slot
+/// names without editing a centralized enum. Use [`HistorySlotId::new`] to declare new ids; the
+/// associated constants here cover slots that already ship.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum HistorySlotId {
-    /// Hi-Z pyramid for a view.
-    HiZ,
+pub struct HistorySlotId(&'static str);
+
+impl HistorySlotId {
+    /// Hi-Z pyramid for a view — the previous-frame depth pyramid used by GPU-side occlusion.
+    pub const HI_Z: Self = Self("hi_z");
+
+    /// Declares a new history slot id with a stable name. The name must be unique across
+    /// subsystems and stable across frames (it is the hash key of the backing resources).
+    pub const fn new(name: &'static str) -> Self {
+        Self(name)
+    }
+
+    /// Returns the stable string name of this slot.
+    pub const fn name(self) -> &'static str {
+        self.0
+    }
 }
 
 /// Texture import source.
+///
+/// The [`Self::PingPong`] variant carries a [`HistorySlotId`] ([`&'static str`] newtype) so slot
+/// names stay readable in logs and registry errors. The size-difference lint is allowed because
+/// the alternative — an interned `u32` id — loses the debug name without meaningful payoff for a
+/// type instantiated a handful of times at graph build.
+#[expect(
+    variant_size_differences,
+    reason = "trade enum payload uniformity for debug-readable history slot names"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ImportSource {
     /// Resolved from the frame target at execute time.
@@ -679,6 +776,13 @@ impl BackendFrameBufferKind {
 }
 
 /// Buffer import source.
+///
+/// See [`ImportSource`] for the rationale behind the size-difference allow — the
+/// [`HistorySlotId`] carries a debug-readable name over an opaque id on purpose.
+#[expect(
+    variant_size_differences,
+    reason = "trade enum payload uniformity for debug-readable history slot names"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BufferImportSource {
     /// Backend frame resource buffer resolved at execute time.

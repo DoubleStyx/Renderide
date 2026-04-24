@@ -7,6 +7,7 @@
 //! Keyword-style float fields mirror Unity `#pragma multi_compile` values:
 //! `_POLARUV`, `_MUL_RGB_BY_ALPHA`, `_MUL_ALPHA_INTENSITY`.
 
+
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::alpha_clip_sample as acs
@@ -19,10 +20,6 @@ struct OverlayUnlitMaterial {
     _FrontTex_ST: vec4<f32>,
     _Cutoff: f32,
     _PolarPow: f32,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
     _POLARUV: f32,
     _MUL_RGB_BY_ALPHA: f32,
     _MUL_ALPHA_INTENSITY: f32,
@@ -103,6 +100,7 @@ fn alpha_over(front: vec4<f32>, behind: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(out_rgb, out_a);
 }
 
+//#material forward_base
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let behind = sample_layer(

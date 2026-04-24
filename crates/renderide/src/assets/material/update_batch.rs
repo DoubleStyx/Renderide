@@ -10,7 +10,13 @@ use super::properties::{
     MATERIAL_BATCH_MAX_FLOAT_ARRAY_LEN,
 };
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
-use crate::shared::{MaterialPropertyUpdate, MaterialPropertyUpdateType, MaterialsUpdateBatch};
+use crate::shared::packing::default_entity_pool::DefaultEntityPool;
+use crate::shared::packing::memory_packable::MemoryPackable;
+use crate::shared::packing::memory_unpacker::MemoryUnpacker;
+use crate::shared::{
+    MaterialPropertyUpdate, MaterialPropertyUpdateType, MaterialsUpdateBatch,
+    MATERIAL_PROPERTY_UPDATE_HOST_ROW_BYTES,
+};
 
 /// Options for [`parse_materials_update_batch_into_store`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -213,6 +219,7 @@ pub fn parse_materials_update_batch_into_store(
     store: &mut MaterialPropertyStore,
     options: &ParseMaterialBatchOptions,
 ) {
+    profiling::scope!("material::parse_update_batch");
     let _ = options.record_wire_metrics;
     let mut p = BatchParser {
         loader,
@@ -330,6 +337,28 @@ impl<'a> ChainCursor<'a> {
         self.offset += elem_size;
         Some(v)
     }
+
+    fn next_packable<T: MemoryPackable + Default, L: MaterialBatchBlobLoader + ?Sized>(
+        &mut self,
+        loader: &mut L,
+        host_row_bytes: usize,
+    ) -> Option<T> {
+        if host_row_bytes == 0 {
+            return Some(T::default());
+        }
+        if !self.ensure_capacity(loader, host_row_bytes) {
+            return None;
+        }
+        let slice = &self.data[self.offset..self.offset + host_row_bytes];
+        let mut pool = DefaultEntityPool;
+        let mut unpacker = MemoryUnpacker::new(slice, &mut pool);
+        let mut out = T::default();
+        if out.unpack(&mut unpacker).is_err() {
+            return None;
+        }
+        self.offset += host_row_bytes;
+        Some(out)
+    }
 }
 
 struct BatchParser<'a, L: MaterialBatchBlobLoader + ?Sized> {
@@ -343,7 +372,8 @@ struct BatchParser<'a, L: MaterialBatchBlobLoader + ?Sized> {
 
 impl<'a, L: MaterialBatchBlobLoader + ?Sized> BatchParser<'a, L> {
     fn next_update(&mut self) -> Option<MaterialPropertyUpdate> {
-        self.updates.next(self.loader)
+        self.updates
+            .next_packable(self.loader, MATERIAL_PROPERTY_UPDATE_HOST_ROW_BYTES)
     }
 
     fn next_int(&mut self) -> Option<i32> {
@@ -396,14 +426,19 @@ mod tests {
         }
     }
 
+    fn update_bytes(property_id: i32, ty: MaterialPropertyUpdateType) -> Vec<u8> {
+        let mut row = write_update(property_id, ty);
+        let mut buf = vec![0u8; MATERIAL_PROPERTY_UPDATE_HOST_ROW_BYTES];
+        let mut packer = crate::shared::packing::memory_packer::MemoryPacker::new(&mut buf);
+        row.pack(&mut packer);
+        buf
+    }
+
     #[test]
     fn select_target_uses_property_id_set_shader_in_property_id() {
-        let b0 = bytemuck::bytes_of(&write_update(42, MaterialPropertyUpdateType::SelectTarget))
-            .to_vec();
-        let b1 =
-            bytemuck::bytes_of(&write_update(7, MaterialPropertyUpdateType::SetShader)).to_vec();
-        let b2 = bytemuck::bytes_of(&write_update(0, MaterialPropertyUpdateType::UpdateBatchEnd))
-            .to_vec();
+        let b0 = update_bytes(42, MaterialPropertyUpdateType::SelectTarget);
+        let b1 = update_bytes(7, MaterialPropertyUpdateType::SetShader);
+        let b2 = update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd);
         let mut loader = TestLoader {
             blobs: vec![b0.clone(), b1.clone(), b2.clone()],
         };
@@ -424,19 +459,12 @@ mod tests {
 
     #[test]
     fn set_texture_reads_packed_from_int_buffer() {
-        let stream: Vec<u8> =
-            bytemuck::bytes_of(&write_update(99, MaterialPropertyUpdateType::SelectTarget))
-                .iter()
-                .chain(bytemuck::bytes_of(&write_update(
-                    1,
-                    MaterialPropertyUpdateType::SetTexture,
-                )))
-                .chain(bytemuck::bytes_of(&write_update(
-                    0,
-                    MaterialPropertyUpdateType::UpdateBatchEnd,
-                )))
-                .copied()
-                .collect();
+        let stream: Vec<u8> = [
+            update_bytes(99, MaterialPropertyUpdateType::SelectTarget),
+            update_bytes(1, MaterialPropertyUpdateType::SetTexture),
+            update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+        ]
+        .concat();
         let packed: i32 = 0x00AB_CD01;
         let int_bytes = bytemuck::bytes_of(&packed).to_vec();
 
@@ -464,23 +492,13 @@ mod tests {
 
     #[test]
     fn set_float_and_float4_from_typed_buffers() {
-        let stream: Vec<u8> =
-            bytemuck::bytes_of(&write_update(10, MaterialPropertyUpdateType::SelectTarget))
-                .iter()
-                .chain(bytemuck::bytes_of(&write_update(
-                    2,
-                    MaterialPropertyUpdateType::SetFloat,
-                )))
-                .chain(bytemuck::bytes_of(&write_update(
-                    3,
-                    MaterialPropertyUpdateType::SetFloat4,
-                )))
-                .chain(bytemuck::bytes_of(&write_update(
-                    0,
-                    MaterialPropertyUpdateType::UpdateBatchEnd,
-                )))
-                .copied()
-                .collect();
+        let stream: Vec<u8> = [
+            update_bytes(10, MaterialPropertyUpdateType::SelectTarget),
+            update_bytes(2, MaterialPropertyUpdateType::SetFloat),
+            update_bytes(3, MaterialPropertyUpdateType::SetFloat4),
+            update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+        ]
+        .concat();
         let fv: f32 = 2.5;
         let v4 = [1.0f32, 2.0, 3.0, 4.0];
 
@@ -515,10 +533,8 @@ mod tests {
 
     #[test]
     fn chained_material_update_buffers() {
-        let b0 =
-            bytemuck::bytes_of(&write_update(5, MaterialPropertyUpdateType::SelectTarget)).to_vec();
-        let b1 =
-            bytemuck::bytes_of(&write_update(9, MaterialPropertyUpdateType::SetShader)).to_vec();
+        let b0 = update_bytes(5, MaterialPropertyUpdateType::SelectTarget);
+        let b1 = update_bytes(9, MaterialPropertyUpdateType::SetShader);
         let mut loader = TestLoader {
             blobs: vec![b0.clone(), b1.clone()],
         };
@@ -539,19 +555,12 @@ mod tests {
 
     #[test]
     fn set_float4x4_persisted_when_option_on() {
-        let stream: Vec<u8> =
-            bytemuck::bytes_of(&write_update(20, MaterialPropertyUpdateType::SelectTarget))
-                .iter()
-                .chain(bytemuck::bytes_of(&write_update(
-                    3,
-                    MaterialPropertyUpdateType::SetFloat4x4,
-                )))
-                .chain(bytemuck::bytes_of(&write_update(
-                    0,
-                    MaterialPropertyUpdateType::UpdateBatchEnd,
-                )))
-                .copied()
-                .collect();
+        let stream: Vec<u8> = [
+            update_bytes(20, MaterialPropertyUpdateType::SelectTarget),
+            update_bytes(3, MaterialPropertyUpdateType::SetFloat4x4),
+            update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+        ]
+        .concat();
         let mat: [f32; 16] = std::array::from_fn(|i| i as f32 + 1.0);
         let matrix_bytes = bytemuck::cast_slice(&mat).to_vec();
         let mut loader = TestLoader {
@@ -577,19 +586,12 @@ mod tests {
 
     #[test]
     fn set_float_array_persisted_when_option_on() {
-        let stream: Vec<u8> =
-            bytemuck::bytes_of(&write_update(21, MaterialPropertyUpdateType::SelectTarget))
-                .iter()
-                .chain(bytemuck::bytes_of(&write_update(
-                    4,
-                    MaterialPropertyUpdateType::SetFloatArray,
-                )))
-                .chain(bytemuck::bytes_of(&write_update(
-                    0,
-                    MaterialPropertyUpdateType::UpdateBatchEnd,
-                )))
-                .copied()
-                .collect();
+        let stream: Vec<u8> = [
+            update_bytes(21, MaterialPropertyUpdateType::SelectTarget),
+            update_bytes(4, MaterialPropertyUpdateType::SetFloatArray),
+            update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+        ]
+        .concat();
         let len: i32 = 2;
         let f0: f32 = 0.25;
         let f1: f32 = 0.75;
@@ -623,19 +625,12 @@ mod tests {
 
     #[test]
     fn material_update_count_zero_targets_property_blocks_only() {
-        let stream: Vec<u8> =
-            bytemuck::bytes_of(&write_update(10, MaterialPropertyUpdateType::SelectTarget))
-                .iter()
-                .chain(bytemuck::bytes_of(&write_update(
-                    2,
-                    MaterialPropertyUpdateType::SetFloat,
-                )))
-                .chain(bytemuck::bytes_of(&write_update(
-                    0,
-                    MaterialPropertyUpdateType::UpdateBatchEnd,
-                )))
-                .copied()
-                .collect();
+        let stream: Vec<u8> = [
+            update_bytes(10, MaterialPropertyUpdateType::SelectTarget),
+            update_bytes(2, MaterialPropertyUpdateType::SetFloat),
+            update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+        ]
+        .concat();
         let fv: f32 = 3.0;
         let fbytes = bytemuck::bytes_of(&fv).to_vec();
         let mut loader = TestLoader {
@@ -663,27 +658,14 @@ mod tests {
 
     #[test]
     fn same_numeric_id_material_and_property_block_do_not_collide() {
-        let stream: Vec<u8> =
-            bytemuck::bytes_of(&write_update(100, MaterialPropertyUpdateType::SelectTarget))
-                .iter()
-                .chain(bytemuck::bytes_of(&write_update(
-                    1,
-                    MaterialPropertyUpdateType::SetFloat,
-                )))
-                .chain(bytemuck::bytes_of(&write_update(
-                    100,
-                    MaterialPropertyUpdateType::SelectTarget,
-                )))
-                .chain(bytemuck::bytes_of(&write_update(
-                    1,
-                    MaterialPropertyUpdateType::SetFloat,
-                )))
-                .chain(bytemuck::bytes_of(&write_update(
-                    0,
-                    MaterialPropertyUpdateType::UpdateBatchEnd,
-                )))
-                .copied()
-                .collect();
+        let stream: Vec<u8> = [
+            update_bytes(100, MaterialPropertyUpdateType::SelectTarget),
+            update_bytes(1, MaterialPropertyUpdateType::SetFloat),
+            update_bytes(100, MaterialPropertyUpdateType::SelectTarget),
+            update_bytes(1, MaterialPropertyUpdateType::SetFloat),
+            update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+        ]
+        .concat();
         let fbytes = bytemuck::bytes_of(&1.0f32)
             .iter()
             .chain(bytemuck::bytes_of(&2.0f32))

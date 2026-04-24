@@ -5,7 +5,7 @@
 //! **separate** tables, mirroring [`crate::shared::MeshRenderablesUpdate`] vs
 //! [`crate::shared::SkinnedMeshRenderablesUpdate`].
 
-use crate::shared::{LayerType, MotionVectorMode, ShadowCastMode};
+use crate::shared::{LayerType, MotionVectorMode, RenderBoundingBox, ShadowCastMode};
 
 /// One submesh slot: material asset id and optional per-slot property block.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -67,4 +67,10 @@ pub struct SkinnedMeshRenderer {
     pub bone_transform_indices: Vec<i32>,
     /// Root bone transform id when the hierarchy is anchored.
     pub root_bone_transform_id: Option<i32>,
+    /// Host-computed posed AABB for this skinned renderable, expressed in the space of
+    /// [`Self::root_bone_transform_id`] (the renderer-root local frame the host sends to us in
+    /// [`crate::shared::SkinnedMeshBoundsUpdate::local_bounds`]). `None` until the host has sent
+    /// the first bounds row for this renderable — culling falls back to the mesh bind-pose AABB
+    /// transformed by the renderable's root matrix.
+    pub posed_object_bounds: Option<RenderBoundingBox>,
 }

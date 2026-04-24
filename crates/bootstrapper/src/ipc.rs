@@ -17,7 +17,7 @@ use crate::BootstrapError;
 /// instead of [`default_memory_dir`]. The Renderite Host process must be launched with the same value.
 pub const RENDERIDE_INTERPROCESS_DIR_ENV: &str = "RENDERIDE_INTERPROCESS_DIR";
 
-/// Cloudtoid queue capacity for user-visible bytes (matches ResoBoot `8192`).
+/// Cloudtoid queue capacity for user-visible bytes (matches `ResoBoot` `8192`).
 pub const BOOTSTRAP_QUEUE_CAPACITY: i64 = 8192;
 
 /// Returns the Host ↔ bootstrapper queue base names for `shared_memory_prefix`
@@ -69,6 +69,29 @@ impl BootstrapQueues {
 
         Ok(Self { incoming, outgoing })
     }
+}
+
+/// Opens bootstrap queues for tests where the Host [`Publisher`] and bootstrapper [`Subscriber`]
+/// share one process.
+///
+/// [`BootstrapQueues::open`] creates the incoming [`Subscriber`] first (bootstrapper waits like
+/// production). That ordering can strand enqueued bytes when a second in-process [`Publisher`] is
+/// opened afterward. Opening the incoming [`Publisher`] first matches cross-process startup and
+/// makes [`Publisher::try_enqueue`] visible to the bootstrapper [`Subscriber`].
+#[cfg(test)]
+pub(crate) fn open_bootstrap_queues_host_publisher_first(
+    shared_memory_prefix: &str,
+) -> Result<(BootstrapQueues, Publisher), BootstrapError> {
+    let dir = interprocess_backing_dir();
+    let (incoming_name, outgoing_name) = bootstrap_queue_base_names(shared_memory_prefix);
+    let incoming_opts = make_queue_options(&incoming_name, &dir)?;
+    let outgoing_opts = make_queue_options(&outgoing_name, &dir)?;
+
+    let host_incoming = Publisher::new(incoming_opts.clone()).map_err(BootstrapError::from)?;
+    let incoming = Subscriber::new(incoming_opts).map_err(BootstrapError::from)?;
+    let factory = QueueFactory::new();
+    let outgoing = factory.create_publisher(outgoing_opts)?;
+    Ok((BootstrapQueues { incoming, outgoing }, host_incoming))
 }
 
 #[cfg(test)]

@@ -37,6 +37,10 @@ impl WindowsMapping {
     }
 
     /// Always [`None`]; Windows uses named mappings, not a `.qu` path.
+    #[expect(
+        clippy::unused_self,
+        reason = "matches the cross-platform WindowsMapping / UnixMapping API"
+    )]
     pub(super) fn backing_file_path(&self) -> Option<&std::path::PathBuf> {
         None
     }
@@ -45,11 +49,15 @@ impl WindowsMapping {
 impl Drop for WindowsMapping {
     fn drop(&mut self) {
         if !self.view.Value.is_null() {
+            // SAFETY: `self.view` was returned by `MapViewOfFile` and is owned by `self`; unmapped
+            // exactly once on drop.
             unsafe {
                 UnmapViewOfFile(self.view);
             }
         }
         if !self.map_handle.is_null() && self.map_handle != INVALID_HANDLE_VALUE {
+            // SAFETY: `self.map_handle` was opened in `open_queue` and is owned by `self`; closed
+            // exactly once on drop.
             unsafe {
                 CloseHandle(self.map_handle);
             }
@@ -60,9 +68,9 @@ impl Drop for WindowsMapping {
 /// Creates or opens the named file mapping, maps it, and opens the paired Win32 semaphore.
 pub(super) fn open_queue(options: &QueueOptions) -> Result<(WindowsMapping, Semaphore), OpenError> {
     let name = naming::windows_mapping_name(&options.memory_view_name);
-    let storage_size = usize::try_from(options.actual_storage_size()).map_err(|_| {
+    let storage_size = usize::try_from(options.actual_storage_size()).map_err(|err| {
         OpenError(io::Error::other(format!(
-            "queue storage size does not fit usize (capacity {})",
+            "queue storage size does not fit usize (capacity {}): {err}",
             options.capacity
         )))
     })?;
@@ -74,9 +82,12 @@ pub(super) fn open_queue(options: &QueueOptions) -> Result<(WindowsMapping, Sema
 
     let map_handle = create_or_open_file_mapping(&name_wide, storage_size)?;
 
+    // SAFETY: `map_handle` was just returned as valid by `create_or_open_file_mapping`; zero
+    // offsets request a full-length view.
     let view = unsafe { MapViewOfFile(map_handle, FILE_MAP_ALL_ACCESS, 0, 0, storage_size) };
 
     if view.Value.is_null() {
+        // SAFETY: `map_handle` is live; closed exactly once on this error path.
         unsafe { CloseHandle(map_handle) };
         return Err(OpenError(io::Error::other(format!(
             "MapViewOfFile failed for queue: {}",
@@ -111,6 +122,8 @@ fn create_or_open_file_mapping(
     let mut wait_sleep_ms: u64 = 0;
 
     loop {
+        // SAFETY: `name` is a NUL-terminated wide string; `INVALID_HANDLE_VALUE` plus a non-zero
+        // size requests an anonymous (pagefile-backed) named mapping.
         let handle = unsafe {
             CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
@@ -126,6 +139,7 @@ fn create_or_open_file_mapping(
             return Ok(handle);
         }
 
+        // SAFETY: `name` is a NUL-terminated wide string.
         let handle = unsafe { OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, name.as_ptr()) };
 
         if !handle.is_null() && handle != INVALID_HANDLE_VALUE {

@@ -153,6 +153,38 @@ public partial class TypeAnalyzer
         }
     }
 
+    /// <summary>
+    /// Computes the max `FieldOffset + managed_field_size` over all fields, where `bool` is 1 byte
+    /// and enums take their underlying type's size (mirroring the CLR's managed layout, not the
+    /// P/Invoke marshaled layout). For Sequential layout fields without offsets, returns 0.
+    /// </summary>
+    private static int MaxFieldEndBytesInManagedLayout(FieldInfo[] fields)
+    {
+        int maxEnd = 0;
+        foreach (FieldInfo field in fields)
+        {
+            FieldOffsetAttribute? fo = field.GetCustomAttribute<FieldOffsetAttribute>();
+            if (fo == null)
+                continue;
+
+            Type st = field.FieldType == typeof(bool) ? typeof(byte) : field.FieldType;
+            if (st.IsEnum)
+                st = st.GetField("value__")!.FieldType;
+            int sz;
+            try
+            {
+                sz = Marshal.SizeOf(st);
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+            maxEnd = Math.Max(maxEnd, fo.Value + sz);
+        }
+
+        return maxEnd;
+    }
+
     private TypeDescriptor AnalyzePodStruct(Type type)
     {
         FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
@@ -212,15 +244,28 @@ public partial class TypeAnalyzer
         try
         {
             int marshalSize = Marshal.SizeOf(type);
-            hostInteropSizeBytes = marshalSize;
-            if (declaredSize > 0 && marshalSize != declaredSize)
+            // CLR managed layout size: `Marshal.SizeOf` uses P/Invoke rules (bool→4, etc.), which can
+            // differ from what the host writes on wire. For explicit-layout structs, use
+            // `max(declaredSize, field_end_bytes)` with `bool` counted as 1 byte so the constant
+            // matches the managed on-wire record stride. For sequential-layout structs we don't
+            // compute field ends here, so fall back to `Marshal.SizeOf`.
+            int fieldEndBytes = MaxFieldEndBytesInManagedLayout(fields);
+            if (fieldEndBytes > 0 || declaredSize > 0)
             {
-                _logger.LogWarning(
-                    LogCategory.Analysis,
-                    $"{type.FullName}: StructLayout.Size={declaredSize} differs from Marshal.SizeOf={marshalSize}; using Marshal.SizeOf for HostInteropSizeBytes.");
+                hostInteropSizeBytes = Math.Max(declaredSize, fieldEndBytes);
+                if (hostInteropSizeBytes.Value != marshalSize)
+                {
+                    _logger.LogInfo(
+                        LogCategory.Analysis,
+                        $"{type.FullName}: managed layout size={hostInteropSizeBytes} differs from Marshal.SizeOf={marshalSize} (declaredSize={declaredSize}, fieldEnd={fieldEndBytes}); using managed layout size for HostInteropSizeBytes.");
+                }
+            }
+            else
+            {
+                hostInteropSizeBytes = marshalSize;
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is ArgumentException or MissingMethodException)
         {
             _logger.LogWarning(LogCategory.Analysis, $"{type.FullName}: Marshal.SizeOf failed: {ex.Message}");
         }

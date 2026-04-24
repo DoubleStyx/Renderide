@@ -48,12 +48,13 @@ pub fn build_instance_batches(
     draw_indices: &[usize],
     allow_multi_instance_batches: bool,
 ) -> Vec<InstanceBatch> {
+    profiling::scope!("mesh::build_instance_batches");
     if draw_indices.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::with_capacity(draw_indices.len());
     for_each_instance_batch(draws, draw_indices, allow_multi_instance_batches, |batch| {
-        out.push(batch)
+        out.push(batch);
     });
     out
 }

@@ -3,7 +3,7 @@
 //! Mirrors the desktop `RenderideApp` driver as closely as possible: builds a [`GpuContext`]
 //! (with no surface) via [`GpuContext::new_headless`], attaches it to the runtime, and then runs
 //! the same per-frame phases as desktop. **Full frames** ([`RendererRuntime::tick_one_frame`],
-//! including `render_all_views`) run on a wall-clock cadence (`--headless-interval-ms`, default
+//! including `render_frame`) run on a wall-clock cadence (`--headless-interval-ms`, default
 //! 1000 ms). Between those ticks the loop only runs
 //! [`RendererRuntime::tick_one_frame_lockstep_only`] so IPC and asset integration stay responsive
 //! on slow adapters (e.g. software Vulkan). After each full frame, the GpuContext's primary offscreen color
@@ -12,7 +12,7 @@
 //! This loop has **no winit / OpenXR involvement** and never threads a window through any
 //! render-path API — the renderer's window lives inside [`GpuContext`] in windowed mode and is
 //! `None` here, with the same render graph executing against `OffscreenRt` views substituted for
-//! `Swapchain` views inside `render_all_views` (see [`crate::runtime::RendererRuntime`]).
+//! `Swapchain` views inside `render_frame` (see [`crate::runtime::RendererRuntime`]).
 
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -71,22 +71,25 @@ pub fn run_headless(
         }
 
         let now = Instant::now();
+        runtime.tick_frame_wall_clock_begin(now);
         let due_for_full_frame = now >= next_full_frame_at;
 
         // Per-frame work split:
         //
         // - Most ticks only do `tick_one_frame_lockstep_only`: `poll_ipc + asset_integration +
-        //   pre_frame`. No `render_all_views`. This is cheap (microseconds) and keeps the IPC
+        //   pre_frame`. No `render_frame`. This is cheap (microseconds) and keeps the IPC
         //   queue drained so the host's `FrameSubmitData` is consumed promptly.
         // - On the wall-clock schedule (`render_interval`, default 1s), run the full
-        //   `tick_one_frame` which includes `render_all_views`. Advance the clock **after** that
+        //   `tick_one_frame` which includes `render_frame`. Advance the clock **after** that
         //   attempt so we do not re-enter a full render on every 5ms tick while lavapipe is still
         //   busy or before the offscreen texture exists.
         let outcome = if due_for_full_frame {
+            profiling::scope!("headless::full_frame");
             let o = runtime.tick_one_frame(&mut gpu, InputState::default());
             next_full_frame_at = Instant::now() + render_interval;
             o
         } else {
+            profiling::scope!("headless::lockstep_tick");
             runtime.tick_one_frame_lockstep_only(InputState::default())
         };
         if outcome.shutdown_requested {
@@ -95,6 +98,7 @@ pub fn run_headless(
         }
         if outcome.fatal_error {
             logger::error!("Headless: fatal IPC error, exiting");
+            crate::profiling::emit_frame_mark();
             return Ok(Some(4));
         }
         if let Some(err) = outcome.graph_error {
@@ -110,6 +114,8 @@ pub fn run_headless(
             }
         }
 
+        runtime.tick_frame_wall_clock_end(now);
+        crate::profiling::emit_frame_mark();
         std::thread::sleep(HEADLESS_TICK_SLEEP);
     }
 
@@ -143,6 +149,12 @@ fn readback_and_write_png_atomically(
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
+
+    // Ensure the frame's main submit has been executed by the driver thread before we
+    // enqueue a texture-to-buffer copy that reads from the offscreen color texture. The
+    // driver thread's ring is FIFO, so observing the flush sentinel's completion implies
+    // every earlier batch's `Queue::submit` has already run.
+    gpu.flush_driver();
 
     let mut encoder = gpu
         .device()
@@ -180,6 +192,10 @@ fn readback_and_write_png_atomically(
     gpu.device()
         .poll(wgpu::PollType::wait_indefinitely())
         .map_err(|e| HeadlessReadbackError::DeviceLost(format!("{e:?}")))?;
+    #[expect(
+        clippy::map_err_ignore,
+        reason = "ReadbackTimeout is the specific case we map; `RecvTimeoutError::Timeout` adds no detail"
+    )]
     receiver
         .recv_timeout(Duration::from_secs(5))
         .map_err(|_| HeadlessReadbackError::ReadbackTimeout)?
@@ -250,4 +266,44 @@ enum HeadlessReadbackError {
     /// Filesystem operation (mkdir, rename) failed.
     #[error("io: {0}")]
     Io(#[source] std::io::Error),
+}
+
+#[cfg(test)]
+mod readback_error_tests {
+    use super::HeadlessReadbackError;
+
+    /// Variants with constant or mostly-constant messages have stable [`std::fmt::Display`] output
+    /// used in the headless warn line, so CI log scrapers can match them.
+    #[test]
+    fn constant_variants_render_stable_messages() {
+        assert_eq!(
+            HeadlessReadbackError::NoOffscreenTexture.to_string(),
+            "no headless offscreen color texture allocated"
+        );
+        assert_eq!(
+            HeadlessReadbackError::EmptyExtent.to_string(),
+            "headless offscreen target has empty extent"
+        );
+        assert_eq!(
+            HeadlessReadbackError::ReadbackTimeout.to_string(),
+            "buffer.map_async timed out"
+        );
+        assert_eq!(
+            HeadlessReadbackError::EncodeBufferSize.to_string(),
+            "readback dimensions invalid for image::RgbaImage construction"
+        );
+    }
+
+    /// String-carrying variants interpolate their payload into the message without truncating.
+    #[test]
+    fn payload_variants_interpolate_inner_string() {
+        let lost = HeadlessReadbackError::DeviceLost("adapter went away".into()).to_string();
+        assert!(lost.contains("adapter went away"), "got {lost:?}");
+
+        let mapped = HeadlessReadbackError::Map("OOM".into()).to_string();
+        assert!(mapped.contains("OOM"), "got {mapped:?}");
+
+        let encoded = HeadlessReadbackError::Encode("IO(BrokenPipe)".into()).to_string();
+        assert!(encoded.contains("IO(BrokenPipe)"), "got {encoded:?}");
+    }
 }

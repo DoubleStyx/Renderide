@@ -1,5 +1,6 @@
 //! Host-to-bootstrapper queue messages: heartbeat, clipboard, renderer spawn.
 
+use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -16,7 +17,7 @@ use crate::protocol_handlers;
 
 /// Command sent from the Host over `bootstrapper_in`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HostCommand {
+pub(crate) enum HostCommand {
     /// Extends the IPC watchdog deadline.
     Heartbeat,
     /// Clean shutdown request.
@@ -31,7 +32,7 @@ pub enum HostCommand {
 
 /// Action for the queue loop after handling one message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoopAction {
+pub(crate) enum LoopAction {
     /// Continue dequeuing.
     Continue,
     /// Exit the loop (e.g. `SHUTDOWN`).
@@ -39,7 +40,7 @@ pub enum LoopAction {
 }
 
 /// Parses a UTF-8 message from the Host into a [`HostCommand`].
-pub fn parse_host_command(s: &str) -> HostCommand {
+pub(crate) fn parse_host_command(s: &str) -> HostCommand {
     match s {
         "HEARTBEAT" => HostCommand::Heartbeat,
         "SHUTDOWN" => HostCommand::Shutdown,
@@ -54,20 +55,21 @@ pub fn parse_host_command(s: &str) -> HostCommand {
 }
 
 /// Returns `true` when queue-loop trace logging should run for this iteration counter.
-pub fn should_trace_iter(loop_iter: u64) -> bool {
+pub(crate) fn should_trace_iter(loop_iter: u64) -> bool {
     loop_iter <= 3 || loop_iter.is_multiple_of(1000)
 }
 
 /// Blocks on `incoming` until `cancel`, handling messages. Initial watchdog uses
 /// [`INITIAL_HEARTBEAT_TIMEOUT_SECS`], extended to [`HEARTBEAT_REFRESH_TIMEOUT_SECS`] on each
 /// [`HostCommand::Heartbeat`] via `heartbeat_deadline`.
-pub fn queue_loop(
+pub(crate) fn queue_loop(
     incoming: &mut Subscriber,
     outgoing: &mut Publisher,
     config: &ResoBootConfig,
     cancel: &AtomicBool,
     lifetime: &ChildLifetimeGroup,
     heartbeat_deadline: &Arc<Mutex<Instant>>,
+    renderer_child: &Arc<Mutex<Option<Child>>>,
 ) {
     let start = Instant::now();
     let mut last_wait_log = Instant::now();
@@ -98,7 +100,9 @@ pub fn queue_loop(
         let msg = incoming.dequeue(cancel);
         if msg.is_empty() {
             if cancel.load(Ordering::Relaxed) {
-                logger::info!("Queue loop stopping (cancel set: host exit, SHUTDOWN, or timeout)");
+                logger::info!(
+                    "Queue loop stopping (cancel set: host exit, renderer exit, SHUTDOWN, or timeout)"
+                );
                 break;
             }
             if last_wait_log.elapsed() >= queue_wait_log_interval() {
@@ -111,9 +115,8 @@ pub fn queue_loop(
             continue;
         }
 
-        let arguments = match String::from_utf8(msg) {
-            Ok(s) => s,
-            Err(_) => continue,
+        let Ok(arguments) = String::from_utf8(msg) else {
+            continue;
         };
 
         logger::info!("Received message: {}", arguments);
@@ -125,7 +128,8 @@ pub fn queue_loop(
                 outgoing,
                 config,
                 lifetime,
-                heartbeat_deadline
+                heartbeat_deadline,
+                renderer_child,
             ),
             LoopAction::Break
         ) {
@@ -220,5 +224,100 @@ mod tests {
         assert!(!should_trace_iter(999));
         assert!(should_trace_iter(1000));
         assert!(!should_trace_iter(1001));
+    }
+}
+
+#[cfg(test)]
+mod queue_loop_tests {
+    use std::process::Child;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Mutex, MutexGuard};
+    use std::time::Instant;
+
+    use super::queue_loop;
+    use crate::child_lifetime::ChildLifetimeGroup;
+    use crate::config::ResoBootConfig;
+    use crate::ipc::{
+        open_bootstrap_queues_host_publisher_first, BootstrapQueues, RENDERIDE_INTERPROCESS_DIR_ENV,
+    };
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().expect("env lock")
+    }
+
+    #[test]
+    fn queue_loop_returns_immediately_when_cancel_pre_set() {
+        let _g = lock_env();
+        let tmp =
+            std::env::temp_dir().join(format!("bootstrapper_ql_cancel_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("mkdir");
+        std::env::set_var(RENDERIDE_INTERPROCESS_DIR_ENV, &tmp);
+
+        let prefix = format!("cc{}", std::process::id());
+        let mut queues = BootstrapQueues::open(&prefix).expect("open queues");
+        let config = ResoBootConfig::new(prefix, None).expect("config");
+        let lifetime = ChildLifetimeGroup::new().expect("lifetime");
+        let cancel = AtomicBool::new(true);
+        let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));
+        let renderer: std::sync::Arc<Mutex<Option<Child>>> = std::sync::Arc::new(Mutex::new(None));
+
+        queue_loop(
+            &mut queues.incoming,
+            &mut queues.outgoing,
+            &config,
+            &cancel,
+            &lifetime,
+            &deadline,
+            &renderer,
+        );
+
+        std::env::remove_var(RENDERIDE_INTERPROCESS_DIR_ENV);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn queue_loop_exits_on_shutdown_from_host_publisher() {
+        let _g = lock_env();
+        let tmp = std::env::temp_dir().join(format!("bootstrapper_ql_sd_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("mkdir");
+        std::env::set_var(RENDERIDE_INTERPROCESS_DIR_ENV, &tmp);
+
+        let prefix = format!("sd{}", std::process::id());
+        let (mut queues, mut host_publisher) =
+            open_bootstrap_queues_host_publisher_first(&prefix).expect("open queues");
+
+        assert!(
+            host_publisher.try_enqueue(b"SHUTDOWN"),
+            "host should enqueue SHUTDOWN before queue_loop runs"
+        );
+
+        let config = ResoBootConfig::new(prefix, None).expect("config");
+        let lifetime = ChildLifetimeGroup::new().expect("lifetime");
+        let cancel = AtomicBool::new(false);
+        let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));
+        let renderer: std::sync::Arc<Mutex<Option<Child>>> = std::sync::Arc::new(Mutex::new(None));
+
+        queue_loop(
+            &mut queues.incoming,
+            &mut queues.outgoing,
+            &config,
+            &cancel,
+            &lifetime,
+            &deadline,
+            &renderer,
+        );
+
+        assert!(
+            cancel.load(std::sync::atomic::Ordering::SeqCst),
+            "SHUTDOWN should set cancel"
+        );
+
+        drop(host_publisher);
+        std::env::remove_var(RENDERIDE_INTERPROCESS_DIR_ENV);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -165,4 +165,12 @@ pub enum GraphExecuteError {
     /// Transient GPU pool could not produce a lease (internal invariant violated).
     #[error(transparent)]
     TransientPool(#[from] super::transient_pool::TransientPoolError),
+
+    /// Per-view recording looked up a transient-resource key that the pre-resolve step did not populate.
+    ///
+    /// Raised as an internal invariant violation when [`super::compiled::CompiledRenderGraph`]
+    /// drives per-view encoding after `pre_resolve_transients_for_views` was expected to have
+    /// inserted an entry for every unique [`super::compiled::GraphResolveKey`].
+    #[error("per-view record missing pre-resolved transient resources")]
+    MissingTransientResources,
 }

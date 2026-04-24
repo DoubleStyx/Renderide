@@ -15,6 +15,7 @@ mod frame_gpu;
 mod frame_gpu_bindings;
 mod frame_gpu_error;
 mod frame_resource_manager;
+mod history_registry;
 mod light_gpu;
 mod material_system;
 pub mod mesh_deform;
@@ -28,7 +29,6 @@ pub use cluster_gpu::{
     MAX_LIGHTS_PER_TILE, TILE_SIZE,
 };
 pub use debug_hud_bundle::DebugHudBundle;
-pub(crate) use embedded::MaterialBindCacheKey;
 pub use embedded::{
     EmbeddedMaterialBindError, EmbeddedMaterialBindResources, EmbeddedTexturePools,
 };
@@ -38,7 +38,11 @@ pub use frame_gpu::{
 };
 pub use frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 pub use frame_gpu_error::FrameGpuInitError;
-pub use frame_resource_manager::{FrameGpuBindContext, FrameResourceManager};
+pub use frame_resource_manager::{FrameGpuBindContext, FrameResourceManager, PerViewFrameState};
+pub use history_registry::{
+    BufferHistorySlot, BufferHistorySpec, HistoryRegistry, HistoryRegistryError, HistoryTexture,
+    TextureHistorySlot, TextureHistorySpec,
+};
 pub use light_gpu::{
     order_lights_for_clustered_shading, order_lights_for_clustered_shading_in_place, GpuLight,
     MAX_LIGHTS,

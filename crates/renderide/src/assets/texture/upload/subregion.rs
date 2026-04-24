@@ -6,6 +6,7 @@ use super::super::decode::needs_rgba8_decode_before_upload;
 use super::super::layout::{host_format_is_compressed, mip_byte_len, mip_tight_bytes_per_texel};
 use super::error::TextureUploadError;
 use super::mip_write_common::{choose_mip_start_bias, copy_layout_for_mip, is_rgba8_family};
+use super::write_mip_chain::Texture2dUploadContext;
 
 /// Describes a sub-rectangle within a full mip for tight row-major extraction (uncompressed).
 pub(super) struct MipSubrectCopy {
@@ -75,6 +76,7 @@ pub(super) fn pack_subrect_tight(
 /// Parameters for [`write_texture_subregion`] (partial [`wgpu::Queue::write_texture`]).
 struct TextureWriteSubregion<'a> {
     queue: &'a wgpu::Queue,
+    write_texture_submit_gate: &'a crate::gpu::WriteTextureSubmitGate,
     texture: &'a wgpu::Texture,
     mip_level: u32,
     origin_x: u32,
@@ -88,6 +90,7 @@ struct TextureWriteSubregion<'a> {
 /// Writes a tight sub-rectangle of texels into `texture` at the given mip and origin.
 fn write_texture_subregion(w: TextureWriteSubregion<'_>) -> Result<(), TextureUploadError> {
     let queue = w.queue;
+    let write_texture_submit_gate = w.write_texture_submit_gate;
     let texture = w.texture;
     let mip_level = w.mip_level;
     let origin_x = w.origin_x;
@@ -124,6 +127,8 @@ fn write_texture_subregion(w: TextureWriteSubregion<'_>) -> Result<(), TextureUp
         )));
     }
 
+    // Gate against driver-thread `Queue::submit` to avoid the wgpu-core 29 ABBA.
+    let _gate = write_texture_submit_gate.lock();
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -230,33 +235,27 @@ fn subregion_rect_from_hint(
 ///
 /// Returns [`None`] when the fast path does not apply (caller uses the full mip chain path).
 pub(super) fn try_write_texture2d_subregion(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    fmt: &SetTexture2DFormat,
-    wgpu_format: wgpu::TextureFormat,
-    upload: &SetTexture2DData,
-    raw: &[u8],
+    ctx: &Texture2dUploadContext<'_>,
 ) -> Option<Result<u32, TextureUploadError>> {
-    subregion_fast_path_supported(device, upload, fmt, wgpu_format)?;
+    subregion_fast_path_supported(ctx.device, ctx.upload, ctx.fmt, ctx.wgpu_format)?;
 
-    let want = upload.data.length.max(0) as usize;
-    if raw.len() < want {
+    let want = ctx.upload.data.length.max(0) as usize;
+    if ctx.raw.len() < want {
         return Some(Err(TextureUploadError::from(format!(
             "raw shorter than descriptor (need {want}, got {})",
-            raw.len()
+            ctx.raw.len()
         ))));
     }
-    let payload = &raw[..want];
+    let payload = &ctx.raw[..want];
 
-    let tex_extent = texture.size();
-    let w0 = upload.mip_map_sizes[0].x.max(0) as u32;
-    let h0 = upload.mip_map_sizes[0].y.max(0) as u32;
+    let tex_extent = ctx.texture.size();
+    let w0 = ctx.upload.mip_map_sizes[0].x.max(0) as u32;
+    let h0 = ctx.upload.mip_map_sizes[0].y.max(0) as u32;
     if tex_extent.width != w0 || tex_extent.height != h0 {
         return None;
     }
 
-    let (w, h, mip_src) = match subregion_resolve_mip0_slice(fmt, upload, payload) {
+    let (w, h, mip_src) = match subregion_resolve_mip0_slice(ctx.fmt, ctx.upload, payload) {
         Ok(v) => v,
         Err(e) => return Some(Err(e)),
     };
@@ -266,7 +265,7 @@ pub(super) fn try_write_texture2d_subregion(
         return None;
     }
 
-    let (rx, ry, rw, rh) = match subregion_rect_from_hint(&upload.hint, w, h) {
+    let (rx, ry, rw, rh) = match subregion_rect_from_hint(&ctx.upload.hint, w, h) {
         Ok(r) => r,
         Err(e) => return Some(Err(e)),
     };
@@ -288,14 +287,15 @@ pub(super) fn try_write_texture2d_subregion(
     };
 
     match write_texture_subregion(TextureWriteSubregion {
-        queue,
-        texture,
+        queue: ctx.queue,
+        write_texture_submit_gate: ctx.write_texture_submit_gate,
+        texture: ctx.texture,
         mip_level: 0,
         origin_x: rx,
         origin_y: ry,
         width: rw,
         height: rh,
-        format: wgpu_format,
+        format: ctx.wgpu_format,
         bytes: &packed,
     }) {
         Ok(()) => Some(Ok(1)),

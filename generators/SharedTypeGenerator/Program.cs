@@ -35,6 +35,8 @@ Parser.Default.ParseArguments<GeneratorOptions>(args)
             {
                 GeneratorRunner.Run(options, logger);
             }
+            // Process-exit boundary: catch everything so we can log the failure before returning a
+            // non-zero exit code; there is no caller left to receive a typed exception.
             catch (Exception ex)
             {
                 logger.LogError(LogCategory.Bug, $"SharedTypeGenerator failed: {ex.Message}\n{ex}");

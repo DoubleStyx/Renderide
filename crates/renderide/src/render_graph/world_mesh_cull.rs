@@ -5,6 +5,8 @@
 //! [`HostCameraFrame::secondary_camera_world_to_view`] is set, frustum and Hi-Z temporal paths use
 //! that world-to-view (same as the forward pass) instead of [`view_matrix_for_world_mesh_render_space`].
 
+use std::sync::Arc;
+
 use hashbrown::HashMap;
 
 use glam::Mat4;
@@ -21,16 +23,20 @@ use super::HiZCullData;
 
 /// View and projection snapshot from the **frame that produced** the Hi-Z depth buffer (used for
 /// CPU occlusion tests against the previous frame’s pyramid).
+///
+/// The per-space view table is stored as [`Arc<HashMap<...>>`] so per-view clones are refcount
+/// bumps rather than full hash table copies (important when secondary render-texture cameras fan
+/// out across rayon workers).
 #[derive(Clone, Debug)]
 pub struct HiZTemporalState {
     /// [`WorldMeshCullProjParams`] from the depth author frame (matches forward-pass cull bundle).
     pub prev_cull: WorldMeshCullProjParams,
-    /// World-to-camera view matrix per render space at that frame.
+    /// World-to-camera view matrix per render space at that frame (shared; cloning is cheap).
     ///
     /// For secondary (render-texture) cameras, every space stores the same
     /// [`HostCameraFrame::secondary_camera_world_to_view`] snapshot, matching the single view used to
     /// render that pass’s depth pyramid.
-    pub prev_view_by_space: HashMap<RenderSpaceId, Mat4>,
+    pub prev_view_by_space: Arc<HashMap<RenderSpaceId, Mat4>>,
     /// Hi-Z mip0 size in texels (downscaled from full depth; see [`super::hi_z_cpu::hi_z_pyramid_dimensions`]).
     pub depth_viewport_px: (u32, u32),
 }
@@ -64,7 +70,7 @@ pub fn capture_hi_z_temporal(
     let depth_viewport_px = hi_z_pyramid_dimensions(full_viewport_px.0, full_viewport_px.1);
     HiZTemporalState {
         prev_cull,
-        prev_view_by_space,
+        prev_view_by_space: Arc::new(prev_view_by_space),
         depth_viewport_px,
     }
 }
@@ -117,8 +123,8 @@ pub fn build_world_mesh_cull_proj_params(
         reverse_z_orthographic(1.0 * aspect, 1.0, near, far)
     };
 
-    let vr_stereo = match (hc.vr_active, hc.stereo_view_proj) {
-        (true, Some(pair)) => Some(pair),
+    let vr_stereo = match (hc.vr_active, hc.stereo) {
+        (true, Some(stereo)) => Some(stereo.view_proj),
         _ => None,
     };
 
@@ -196,10 +202,15 @@ mod tests {
 
     #[test]
     fn build_world_mesh_cull_proj_params_sets_vr_stereo_only_when_active_and_pair_present() {
+        use crate::render_graph::StereoViewMatrices;
         let scene = SceneCoordinator::new();
+        let stereo = Some(StereoViewMatrices {
+            view_proj: (Mat4::IDENTITY, Mat4::IDENTITY),
+            view_only: (Mat4::IDENTITY, Mat4::IDENTITY),
+        });
         let hc = HostCameraFrame {
             vr_active: true,
-            stereo_view_proj: Some((Mat4::IDENTITY, Mat4::IDENTITY)),
+            stereo,
             ..Default::default()
         };
         let p = build_world_mesh_cull_proj_params(&scene, (1280, 720), &hc);
@@ -207,7 +218,7 @@ mod tests {
 
         let hc2 = HostCameraFrame {
             vr_active: false,
-            stereo_view_proj: Some((Mat4::IDENTITY, Mat4::IDENTITY)),
+            stereo,
             ..Default::default()
         };
         let p2 = build_world_mesh_cull_proj_params(&scene, (1280, 720), &hc2);

@@ -170,6 +170,8 @@ fn store_preserved_unix(stream: StdioStream, saved: i32) {
     use std::os::fd::FromRawFd;
     use std::os::fd::OwnedFd;
 
+    // SAFETY: `saved` was just produced by `libc::dup`, is open, owned by this process, and has
+    // not been handed to another `OwnedFd`/`File`. Transferring ownership to `OwnedFd` is sound.
     let owned = unsafe { OwnedFd::from_raw_fd(saved) };
     let file = File::from(owned);
     let cell = match stream {
@@ -187,6 +189,10 @@ fn try_redirect_unix_stream(
 ) -> Result<(), String> {
     use std::thread;
 
+    // SAFETY: all libc calls below operate on file descriptors that this function either just
+    // created (via `pipe`/`dup`) or received from the caller (`target_fd` is always a valid
+    // stdio fd). Ownership is tracked manually: each branch that errors out closes every fd it
+    // created; the success path transfers ownership into `OwnedFd` via `store_preserved_unix`.
     unsafe {
         let mut fds = [0i32; 2];
         if libc::pipe(fds.as_mut_ptr()) != 0 {
@@ -264,6 +270,8 @@ fn try_redirect_windows_stream(
     use windows_sys::Win32::System::Console::{GetStdHandle, SetStdHandle};
     use windows_sys::Win32::System::Pipes::CreatePipe;
 
+    // SAFETY: Win32 API calls on handles this function owns; each error path closes every
+    // handle it created, and the success path transfers handles into `OwnedHandle`/`File`.
     unsafe {
         let mut read_h: HANDLE = INVALID_HANDLE_VALUE;
         let mut write_h: HANDLE = INVALID_HANDLE_VALUE;
@@ -350,6 +358,8 @@ fn forward_pipe_lines_to_logger_unix(rfd: i32, stream: StdioStream) {
     use std::fs::File;
     use std::os::unix::io::FromRawFd;
 
+    // SAFETY: `rfd` is the read end of the pipe created in `try_redirect_unix_stream`; ownership
+    // is transferred exclusively to the spawned thread via this call and has no other owner.
     let f = unsafe { File::from_raw_fd(rfd) };
     forward_pipe_lines_to_logger_impl(f, stream);
 }
@@ -367,5 +377,59 @@ fn emit_stdio_line(line: &[u8], level: LogLevel, stream: StdioStream) {
     match stream {
         StdioStream::Stderr => try_write_preserved_stderr(bytes),
         StdioStream::Stdout => try_write_preserved_stdout(bytes),
+    }
+}
+
+#[cfg(test)]
+mod tee_env_tests {
+    use super::tee_terminal_enabled;
+
+    /// Environment variable consulted by [`tee_terminal_enabled`].
+    const VAR: &str = "RENDERIDE_LOG_TEE_TERMINAL";
+
+    /// RAII guard that restores the original value of [`VAR`] (or unsets it) on drop so tests do
+    /// not leak process-global state.
+    struct EnvGuard(Option<String>);
+
+    impl EnvGuard {
+        /// Captures the current value for later restoration.
+        fn capture() -> Self {
+            Self(std::env::var(VAR).ok())
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var(VAR, v),
+                None => std::env::remove_var(VAR),
+            }
+        }
+    }
+
+    /// All env-var parsing cases are exercised in a single serialized test because
+    /// [`std::env::set_var`] mutates process-global state.
+    #[test]
+    fn tee_terminal_enabled_parses_env_var() {
+        let _guard = EnvGuard::capture();
+
+        std::env::remove_var(VAR);
+        assert!(tee_terminal_enabled(), "unset should default to enabled");
+
+        for disabled in ["0", "false", "no", "off", "FALSE", "  No  "] {
+            std::env::set_var(VAR, disabled);
+            assert!(
+                !tee_terminal_enabled(),
+                "value {disabled:?} should disable tee"
+            );
+        }
+
+        for enabled in ["1", "true", "yes", "", "anything else"] {
+            std::env::set_var(VAR, enabled);
+            assert!(
+                tee_terminal_enabled(),
+                "value {enabled:?} should keep tee enabled"
+            );
+        }
     }
 }

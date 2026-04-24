@@ -1,8 +1,15 @@
 //! CPU-side hierarchical depth pyramid snapshot after GPU readback.
 
+use std::sync::Arc;
+
 /// Packed reverse-Z depth values (greater = closer) for one eye / one desktop pyramid.
 ///
 /// `mips` stores mip0 row-major, then mip1, … each mip is `max(1, base_width >> k) × max(1, base_height >> k)`.
+///
+/// The pyramid buffer is shared via `Arc<[f32]>` so per-view and per-secondary-camera `Clone`s are
+/// refcount bumps rather than full `Vec<f32>` copies. Producers construct the data once in a
+/// `Vec<f32>` (see [`unpack_linear_rows_to_mips`]) and hand it to
+/// [`hi_z_snapshot_from_linear_linear`], which converts into the shared representation.
 #[derive(Clone, Debug)]
 pub struct HiZCpuSnapshot {
     /// Width of mip0 (matches main depth attachment width).
@@ -11,8 +18,8 @@ pub struct HiZCpuSnapshot {
     pub base_height: u32,
     /// Number of mips present in `mips` (including mip0).
     pub mip_levels: u32,
-    /// Row-major `f32` samples for all mips concatenated.
-    pub mips: Vec<f32>,
+    /// Row-major `f32` samples for all mips concatenated (shared; cloning is cheap).
+    pub mips: Arc<[f32]>,
 }
 
 impl HiZCpuSnapshot {
@@ -132,30 +139,39 @@ pub fn mip_levels_for_extent(base_width: u32, base_height: u32, max_mips: u32) -
 }
 
 /// Unpacks a **linear** row-major buffer (no row padding) into [`HiZCpuSnapshot`].
+///
+/// The `mips` `Vec<f32>` is moved into an [`Arc<[f32]>`] so downstream clones stay cheap.
 pub fn hi_z_snapshot_from_linear_linear(
     base_width: u32,
     base_height: u32,
     mip_levels: u32,
     mips: Vec<f32>,
 ) -> Option<HiZCpuSnapshot> {
+    profiling::scope!("hi_z::build_cpu_snapshot");
     let snap = HiZCpuSnapshot {
         base_width,
         base_height,
         mip_levels,
-        mips,
+        mips: Arc::from(mips),
     };
     snap.validate()?;
     Some(snap)
 }
 
 /// Unpacks GPU readback with `bytes_per_row` alignment (256-byte aligned rows) into dense `mips`.
+///
+/// The output is pre-allocated to [`total_float_count`] and row reads use `chunks_exact(4)` so the
+/// inner loop avoids per-byte bounds checks. Bytes are interpreted via [`f32::from_le_bytes`] to
+/// stay correct on misaligned [`Vec<u8>`] buffers from `wgpu::BufferSlice::get_mapped_range`.
 pub fn unpack_linear_rows_to_mips(
     base_width: u32,
     base_height: u32,
     mip_levels: u32,
     staging: &[u8],
 ) -> Option<Vec<f32>> {
-    let mut out: Vec<f32> = Vec::new();
+    profiling::scope!("hi_z::unpack_linear_rows");
+    let expected = total_float_count(base_width, base_height, mip_levels);
+    let mut out: Vec<f32> = Vec::with_capacity(expected);
     let mut staging_off = 0usize;
     for mip in 0..mip_levels {
         let (w, h) = mip_dimensions(base_width, base_height, mip)?;
@@ -164,18 +180,18 @@ pub fn unpack_linear_rows_to_mips(
         if staging_off + mip_bytes > staging.len() {
             return None;
         }
-        let slice = &staging[staging_off..staging_off + mip_bytes];
+        let dense_row_bytes = (w as usize) * 4;
         for row in 0..h {
-            let row_start = row as usize * row_pitch;
-            for col in 0..w {
-                let o = row_start + col as usize * 4;
-                let b = slice.get(o..o + 4)?;
-                out.push(f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-            }
+            let row_start = staging_off + row as usize * row_pitch;
+            let row_bytes = staging.get(row_start..row_start + dense_row_bytes)?;
+            out.extend(
+                row_bytes
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
+            );
         }
         staging_off += mip_bytes;
     }
-    let expected = total_float_count(base_width, base_height, mip_levels);
     if out.len() != expected {
         return None;
     }
@@ -227,7 +243,7 @@ mod tests {
             base_width: base_w,
             base_height: base_h,
             mip_levels: levels,
-            mips,
+            mips: Arc::from(mips),
         };
         assert!(snap.validate().is_some());
         assert_eq!(snap.sample_texel(0, 0, 0), Some(0.0));

@@ -13,7 +13,7 @@ public static class GeneratorRunner
 {
     /// <summary>
     /// Loads the target assembly, analyzes reachable types from <c>RendererCommand</c>, and writes <c>shared.rs</c>
-    /// (default path under the Renderide repo: <c>crates/renderide/src/shared/shared.rs</c>).
+    /// (default path under the Renderide repo: <c>crates/renderide-shared/src/shared.rs</c>).
     /// Cross-language roundtrip tests additionally require <c>cargo build -p renderide --bin roundtrip</c> so the
     /// Rust binary can exercise <c>roundtrip_dispatch</c> from the generated file.
     /// </summary>

@@ -30,21 +30,21 @@ use std::io;
 use std::process::{Child, Command};
 
 /// Holds OS resources so direct children are terminated when the bootstrapper exits unexpectedly.
-pub struct ChildLifetimeGroup(Inner);
+pub(crate) struct ChildLifetimeGroup(Inner);
 
 impl ChildLifetimeGroup {
     /// Creates a lifetime group (job object on Windows, PID list on macOS, otherwise empty).
-    pub fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         Ok(Self(Inner::new()?))
     }
 
     /// Applies platform-specific options so the child exits when the bootstrapper dies (where supported).
-    pub fn prepare_command(&self, cmd: &mut Command) {
+    pub(crate) fn prepare_command(&self, cmd: &mut Command) {
         self.0.prepare_command(cmd);
     }
 
     /// Registers a spawned direct child (required on Windows for job assignment; tracks PIDs on macOS).
-    pub fn register_spawned(&self, child: &Child) -> io::Result<()> {
+    pub(crate) fn register_spawned(&self, child: &Child) -> io::Result<()> {
         self.0.register_spawned(child)
     }
 
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn prepare_command_true_round_trip() {
         let g = ChildLifetimeGroup::new().expect("group");
-        let mut cmd = std::process::Command::new("true");
+        let mut cmd = Command::new("true");
         g.prepare_command(&mut cmd);
         assert!(cmd.status().expect("status").success());
     }
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn register_spawned_with_exiting_child() {
         let g = ChildLifetimeGroup::new().expect("group");
-        let mut cmd = std::process::Command::new("true");
+        let mut cmd = Command::new("true");
         g.prepare_command(&mut cmd);
         let mut child = cmd.spawn().expect("spawn");
         let _ = g.register_spawned(&child);

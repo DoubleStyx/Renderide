@@ -48,7 +48,7 @@ impl fmt::Debug for ExtendedVertexStreamSource {
 ///
 /// **Vertex groups** in Renderite are expressed through per-vertex bone influence streams
 /// (`bone_counts` + bone weight tail) when the host provides skeleton data.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GpuMesh {
     /// Host mesh asset id (`MeshUploadData.asset_id`).
     pub asset_id: i32,
@@ -394,6 +394,10 @@ pub(super) fn write_in_place_index_buffer(
 }
 
 /// Writes bone/synthetic bone buffers from `raw` according to hint flags.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "per-buffer hint flags from the host; grouping them obscures the per-buffer intent"
+)]
 pub(super) fn write_in_place_bone_buffers(
     ctx: &MeshInPlaceWriteContext<'_>,
     needs_bone_buffers: bool,

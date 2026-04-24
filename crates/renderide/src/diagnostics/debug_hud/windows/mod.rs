@@ -3,8 +3,10 @@
 mod draw_state_tab;
 mod frame_timing;
 mod gpu_memory_tab;
+mod gpu_passes_tab;
 mod labels;
 mod renderer_config;
+mod renderer_config_post_processing;
 mod renderer_config_window;
 mod scene_transforms;
 mod shader_routes_tab;
@@ -90,6 +92,11 @@ impl DebugHud {
         frame: Option<&crate::diagnostics::FrameDiagnosticsSnapshot>,
     ) {
         gpu_memory_tab::gpu_memory_tab(ui, frame);
+    }
+
+    /// Per-pass GPU timestamps captured by [`crate::profiling::GpuProfilerHandle`].
+    pub(super) fn gpu_passes_tab(ui: &imgui::Ui, timings: &[crate::profiling::GpuPassEntry]) {
+        gpu_passes_tab::gpu_passes_tab(ui, timings);
     }
 
     /// Third overlay window: editable [`crate::config::RendererSettings`] with immediate disk sync.

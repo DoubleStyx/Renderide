@@ -52,6 +52,11 @@ fn embedded_grab_pass_cache() -> &'static Mutex<HashMap<String, bool>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn embedded_alpha_blending_cache() -> &'static Mutex<HashMap<String, bool>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// `true` when composed embedded WGSL's `vs_main` uses `@location(2)` or higher (UV0 vertex stream).
 ///
 /// Uses the same embedded source and reflection as the embedded raster pipeline for the given
@@ -246,8 +251,7 @@ pub(crate) fn create_embedded_render_pipelines(
         );
     }
 
-    let pass =
-        default_pass_for_blend_mode(embedded_stem_uses_alpha_blending(stem.as_ref()), blend_mode);
+    let pass = default_pass_for_blend_mode(blend_mode);
     create_reflective_raster_mesh_forward_pipelines(
         shader,
         streams,
@@ -256,20 +260,22 @@ pub(crate) fn create_embedded_render_pipelines(
     )
 }
 
-/// Returns whether the embedded material stem expects alpha blending (UI/text/overlay targets).
-pub fn embedded_stem_uses_alpha_blending(stem: &str) -> bool {
-    let stem = stem
-        .trim_end_matches("_default")
-        .trim_end_matches("_multiview");
-    stem.starts_with("ui_")
-        || stem == "overlayunlit"
-        || stem == "overlayfresnel"
-        || stem == "projection360"
-        || stem == "textunlit"
-        || stem == "textunit"
-        || stem == "text_unlit"
-        || stem == "xiexe_toon2.0_xstoon2.0_fade"
-        || stem == "xiexe_toon2.0_xstoon2.0_transparent"
+/// Returns whether the embedded material stem declares alpha blending (any `//#pass` directive
+/// with non-None blend state). Memoized per base stem.
+pub fn embedded_stem_uses_alpha_blending(base_stem: &str) -> bool {
+    let key = base_stem.to_string();
+    let mut guard = embedded_alpha_blending_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(v) = guard.get(&key) {
+        return *v;
+    }
+    let composed = embedded_composed_stem_for_permutation(base_stem, ShaderPermutation(0));
+    let v = embedded_shaders::embedded_target_passes(&composed)
+        .iter()
+        .any(|p| p.blend.is_some());
+    guard.insert(key, v);
+    v
 }
 
 #[cfg(test)]
@@ -286,6 +292,40 @@ mod tests {
         assert!(!embedded_stem_needs_uv0_stream(
             "debug_world_normals_default",
             SHADER_PERM_MULTIVIEW_STEREO
+        ));
+    }
+
+    /// Regression guard: the compiled-render-graph per-view pre-warm uploads a mesh's
+    /// tangent / UV1..3 streams only when its material stem is flagged as needing extended
+    /// vertex streams. If this ever flips for `ui_circlesegment` (the context-menu material,
+    /// whose vertex shader declares `@location(0..=7)`), VR draws will start silently skipping
+    /// again because the per-view record path uses an immutable `MeshPool` and cannot upload
+    /// the streams on demand.
+    #[test]
+    fn ui_circlesegment_needs_extended_vertex_streams_both_permutations() {
+        assert!(embedded_stem_needs_extended_vertex_streams(
+            "ui_circlesegment_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_extended_vertex_streams(
+            "ui_circlesegment_default",
+            SHADER_PERM_MULTIVIEW_STEREO,
+        ));
+    }
+
+    /// Counterpart to `ui_circlesegment_needs_extended_vertex_streams_both_permutations`: the
+    /// text material fits in `@location(0..=3)`, so it must never be flagged as needing
+    /// extended streams. If this flips, the VR pre-warm would try to upload empty tangent /
+    /// UV1..3 buffers for every text draw.
+    #[test]
+    fn ui_textunlit_does_not_need_extended_vertex_streams() {
+        assert!(!embedded_stem_needs_extended_vertex_streams(
+            "ui_textunlit_default",
+            ShaderPermutation(0),
+        ));
+        assert!(!embedded_stem_needs_extended_vertex_streams(
+            "ui_textunlit_default",
+            SHADER_PERM_MULTIVIEW_STEREO,
         ));
     }
 }

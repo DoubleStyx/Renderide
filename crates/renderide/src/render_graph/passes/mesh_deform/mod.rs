@@ -8,12 +8,13 @@ mod snapshot;
 
 use std::fmt;
 
+use parking_lot::Mutex;
 use rayon::prelude::*;
 
 use crate::backend::mesh_deform::EntryNeed;
-use crate::render_graph::context::RenderPassContext;
+use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::pass::{PassBuilder, PassPhase, RenderPass};
+use crate::render_graph::pass::{ComputePass, PassBuilder, PassPhase};
 use crate::resources::MeshPool;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
@@ -25,15 +26,34 @@ use self::snapshot::{
 
 /// Encodes mesh deformation compute for all active render spaces.
 ///
-/// Per-frame collection reuses scratch buffers to avoid `Vec` allocations on the hot path.
-#[derive(Default)]
+/// Per-frame collection reuses scratch buffers (held inside a [`parking_lot::Mutex`]) to avoid
+/// `Vec` allocations on the hot path. [`parking_lot::Mutex`] is chosen over [`std::sync::Mutex`]
+/// so the `lock` API is infallible and the per-frame record path does not need poison-handling.
+/// The mutex is never contended in practice because [`MeshDeformPass::phase`] returns
+/// [`PassPhase::FrameGlobal`], so `record` always runs on the main thread before per-view
+/// parallel encoding begins.
 pub struct MeshDeformPass {
+    scratch: Mutex<MeshDeformScratch>,
+}
+
+/// Reusable per-frame scratch buffers for mesh deform work collection.
+struct MeshDeformScratch {
     /// Reused ordering of [`SceneCoordinator::render_space_ids`] for parallel per-space collection.
-    mesh_deform_space_ids_scratch: Vec<RenderSpaceId>,
+    space_ids: Vec<RenderSpaceId>,
     /// One bucket per render space; inner [`Vec`] capacities are reused across frames.
-    mesh_deform_chunks_scratch: Vec<Vec<DeformWorkItem>>,
+    chunks: Vec<Vec<DeformWorkItem>>,
     /// Flattened work list passed to encode (cleared after each successful dispatch).
-    mesh_deform_work_scratch: Vec<DeformWorkItem>,
+    work: Vec<DeformWorkItem>,
+}
+
+impl MeshDeformScratch {
+    fn new() -> Self {
+        Self {
+            space_ids: Vec::new(),
+            chunks: Vec::new(),
+            work: Vec::new(),
+        }
+    }
 }
 
 impl fmt::Debug for MeshDeformPass {
@@ -42,13 +62,21 @@ impl fmt::Debug for MeshDeformPass {
     }
 }
 
+impl Default for MeshDeformPass {
+    fn default() -> Self {
+        Self {
+            scratch: Mutex::new(MeshDeformScratch::new()),
+        }
+    }
+}
+
 struct DeformWorkItem {
     space_id: RenderSpaceId,
-    /// [`StaticMeshRenderer::node_id`](crate::scene::StaticMeshRenderer::node_id) for GPU skin cache key.
+    /// [`crate::scene::StaticMeshRenderer::node_id`] for GPU skin cache key.
     node_id: i32,
     mesh: MeshDeformSnapshot,
     skinned: Option<Vec<i32>>,
-    /// [`StaticMeshRenderer::node_id`](crate::scene::StaticMeshRenderer::node_id) (SMR) for skinning fallbacks when a bone is unmapped.
+    /// [`crate::scene::StaticMeshRenderer::node_id`] (SMR) for skinning fallbacks when a bone is unmapped.
     smr_node_id: i32,
     blend_weights: Vec<f32>,
 }
@@ -126,49 +154,50 @@ fn deform_work_upper_bound(scene: &SceneCoordinator) -> usize {
     est
 }
 
+/// Fills `scratch` with deform work collected in parallel across all render spaces.
+fn collect_deform_work_into_scratch(
+    scratch: &mut MeshDeformScratch,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+) {
+    profiling::scope!("mesh_deform::collect_work");
+    let est = deform_work_upper_bound(scene);
+    scratch.space_ids.clear();
+    scratch.space_ids.extend(scene.render_space_ids());
+    let space_count = scratch.space_ids.len();
+    if scratch.chunks.len() < space_count {
+        scratch.chunks.resize_with(space_count, Vec::new);
+    } else {
+        scratch.chunks.truncate(space_count);
+    }
+
+    {
+        let space_ids = &scratch.space_ids;
+        let chunks = &mut scratch.chunks;
+        space_ids
+            .par_iter()
+            .copied()
+            .zip(chunks.par_iter_mut())
+            .for_each(|(space_id, chunk)| {
+                collect_deform_work_for_space(scene, mesh_pool, space_id, chunk);
+            });
+    }
+
+    scratch.work.clear();
+    scratch.work.reserve(est);
+    for chunk in &mut scratch.chunks {
+        scratch.work.append(chunk);
+    }
+}
+
 impl MeshDeformPass {
     /// Creates a mesh deform pass with empty scratch buffers (filled lazily on first execute).
     pub fn new() -> Self {
         Self::default()
     }
-
-    /// Parallel per-space collection merged into [`Self::mesh_deform_work_scratch`].
-    fn collect_deform_work_into_scratch(&mut self, scene: &SceneCoordinator, mesh_pool: &MeshPool) {
-        let est = deform_work_upper_bound(scene);
-        self.mesh_deform_space_ids_scratch.clear();
-        self.mesh_deform_space_ids_scratch
-            .extend(scene.render_space_ids());
-        let space_count = self.mesh_deform_space_ids_scratch.len();
-        if self.mesh_deform_chunks_scratch.len() < space_count {
-            self.mesh_deform_chunks_scratch
-                .resize_with(space_count, Vec::new);
-        } else {
-            self.mesh_deform_chunks_scratch.truncate(space_count);
-        }
-
-        {
-            let space_ids = &self.mesh_deform_space_ids_scratch;
-            let chunks = &mut self.mesh_deform_chunks_scratch;
-            // Scope `scene` + `mesh_pool` so the rayon closure only captures `Sync` refs, not
-            // fat frame handles (non-`Sync` graph state).
-            space_ids
-                .par_iter()
-                .copied()
-                .zip(chunks.par_iter_mut())
-                .for_each(|(space_id, chunk)| {
-                    collect_deform_work_for_space(scene, mesh_pool, space_id, chunk);
-                });
-        }
-
-        self.mesh_deform_work_scratch.clear();
-        self.mesh_deform_work_scratch.reserve(est);
-        for chunk in &mut self.mesh_deform_chunks_scratch {
-            self.mesh_deform_work_scratch.append(chunk);
-        }
-    }
 }
 
-impl RenderPass for MeshDeformPass {
+impl ComputePass for MeshDeformPass {
     fn name(&self) -> &str {
         "MeshDeform"
     }
@@ -183,40 +212,49 @@ impl RenderPass for MeshDeformPass {
         PassPhase::FrameGlobal
     }
 
-    fn execute(&mut self, ctx: &mut RenderPassContext<'_, '_, '_>) -> Result<(), RenderPassError> {
+    fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         let Some(frame) = ctx.frame.as_mut() else {
             return Ok(());
         };
 
-        if frame.frame_resources.mesh_deform_dispatched_this_tick() {
+        if frame
+            .shared
+            .frame_resources
+            .mesh_deform_dispatched_this_tick()
+        {
             return Ok(());
         }
 
-        let mesh_pool = &frame.asset_transfers.mesh_pool;
-        self.collect_deform_work_into_scratch(frame.scene, mesh_pool);
+        let mesh_pool = &frame.shared.asset_transfers.mesh_pool;
 
-        let Some(pre) = frame.mesh_preprocess else {
-            self.mesh_deform_work_scratch.clear();
-            return Ok(());
-        };
-        let Some(scratch) = frame.mesh_deform_scratch.as_mut() else {
-            self.mesh_deform_work_scratch.clear();
-            return Ok(());
-        };
-        let Some(skin_cache) = frame.skin_cache.as_mut() else {
-            self.mesh_deform_work_scratch.clear();
-            return Ok(());
-        };
+        // Lock the scratch buffers. This is a FrameGlobal pass running on the main thread,
+        // so the lock is never contended.
+        let mut scratch = self.scratch.lock();
+        collect_deform_work_into_scratch(&mut scratch, frame.shared.scene, mesh_pool);
 
-        let queue: &wgpu::Queue = ctx.queue.as_ref();
+        let Some(pre) = frame.shared.mesh_preprocess else {
+            scratch.work.clear();
+            return Ok(());
+        };
+        let Some(deform_scratch) = frame.shared.mesh_deform_scratch.as_mut() else {
+            scratch.work.clear();
+            return Ok(());
+        };
+        let Some(skin_cache) = frame.shared.mesh_deform_skin_cache.as_mut() else {
+            scratch.work.clear();
+            return Ok(());
+        };
 
         let mut bone_cursor = 0u64;
         let mut blend_weight_cursor = 0u64;
         let mut skin_dispatch_cursor = 0u64;
-        let render_context = frame.scene.active_main_render_context();
-        let head_output_transform = frame.host_camera.head_output_transform;
+        let render_context = frame.shared.scene.active_main_render_context();
+        let head_output_transform = frame.view.host_camera.head_output_transform;
 
-        for item in self.mesh_deform_work_scratch.drain(..) {
+        profiling::scope!("mesh_deform::dispatch");
+        let work_items: Vec<_> = scratch.work.drain(..).collect();
+        drop(scratch);
+        for item in work_items {
             let need = EntryNeed {
                 needs_blend: deform_needs_blend_snapshot(&item.mesh),
                 needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),
@@ -236,15 +274,16 @@ impl RenderPass for MeshDeformPass {
 
             record_mesh_deform(
                 MeshDeformEncodeGpu {
-                    queue,
                     device: ctx.device,
                     gpu_limits: ctx.gpu_limits,
                     encoder: ctx.encoder,
                     pre,
-                    scratch,
+                    scratch: deform_scratch,
+                    upload_batch: ctx.upload_batch,
+                    profiler: ctx.profiler,
                 },
                 MeshDeformRecordInputs {
-                    scene: frame.scene,
+                    scene: frame.shared.scene,
                     space_id: item.space_id,
                     mesh: &item.mesh,
                     bone_transform_indices: item.skinned.as_deref(),
@@ -266,7 +305,10 @@ impl RenderPass for MeshDeformPass {
         let fc = skin_cache.frame_counter();
         skin_cache.sweep_stale(fc.saturating_sub(2));
 
-        frame.frame_resources.set_mesh_deform_dispatched_this_tick();
+        frame
+            .shared
+            .frame_resources
+            .set_mesh_deform_dispatched_this_tick();
         Ok(())
     }
 }

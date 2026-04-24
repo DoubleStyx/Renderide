@@ -1,7 +1,7 @@
 //! Integration tests using only the public `interprocess` API.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
 
@@ -19,6 +19,45 @@ fn enqueue_and_dequeue_roundtrip() {
         subscriber.try_dequeue().as_deref(),
         Some(b"hello".as_slice())
     );
+}
+
+#[test]
+fn subscriber_opens_before_publisher_roundtrip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("e2e_sub_first_{}", std::process::id());
+    let opts = QueueOptions::with_path(&name, dir.path(), 4096).expect("valid options");
+    let mut subscriber = Subscriber::new(opts.clone()).expect("subscriber");
+    let mut publisher = Publisher::new(opts).expect("publisher");
+
+    assert!(publisher.try_enqueue(b"hello"));
+    assert_eq!(
+        subscriber.try_dequeue().as_deref(),
+        Some(b"hello".as_slice())
+    );
+}
+
+#[test]
+fn dequeue_unblocks_after_subscriber_first() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = format!("e2e_deq_block_{}", std::process::id());
+    let opts = QueueOptions::with_path(&name, dir.path(), 4096).expect("valid");
+    let opts_pub = opts.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier_consumer = Arc::clone(&barrier);
+
+    let consumer = thread::spawn(move || {
+        let mut subscriber = Subscriber::new(opts).expect("subscriber");
+        barrier_consumer.wait();
+        let cancel = AtomicBool::new(false);
+        subscriber.dequeue(&cancel)
+    });
+
+    barrier.wait();
+    let mut publisher = Publisher::new(opts_pub).expect("publisher");
+    assert!(publisher.try_enqueue(b"wake"));
+
+    let got = consumer.join().expect("consumer join");
+    assert_eq!(got, b"wake");
 }
 
 #[test]
@@ -52,7 +91,7 @@ fn destroy_on_dispose_unlinks_qu_file() {
     let opts =
         QueueOptions::with_path_and_destroy("e2e_destroy", dir.path(), 4096, true).expect("valid");
     let path = opts.file_path();
-    let _publisher = Publisher::new(opts.clone()).expect("publisher");
+    let _publisher = Publisher::new(opts).expect("publisher");
     assert!(path.exists());
     drop(_publisher);
     assert!(!path.exists());

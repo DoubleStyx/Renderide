@@ -1,21 +1,31 @@
 //! Compute + fullscreen depth blit used to resolve multisampled depth to the single-sample forward depth target
 //! (no storage writes on depth in core WebGPU).
+//!
+//! WGSL is sourced from the build-time embedded shader registry
+//! ([`crate::embedded_shaders::embedded_target_wgsl`]). The blit shader lives in a single source
+//! with `#ifdef MULTIVIEW` and is composed into `depth_blit_r32_to_depth_default` (2D source)
+//! and `depth_blit_r32_to_depth_multiview` (2D array source + `@builtin(view_index)`); the
+//! compute shader is single-variant.
 
 use super::limits::GpuLimits;
+use crate::embedded_shaders::embedded_target_wgsl;
 use crate::render_graph::MAIN_FORWARD_DEPTH_CLEAR;
 
-const COMPUTE_WGSL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/compute/msaa_depth_resolve_to_r32.wgsl"
-));
-const BLIT_WGSL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/backend/depth_blit_r32_to_depth.wgsl"
-));
-const BLIT_STEREO_WGSL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/backend/depth_blit_r32_to_depth_stereo.wgsl"
-));
+/// Embedded shader stem for the MSAA depth → R32Float compute resolve (single-variant).
+const COMPUTE_STEM: &str = "msaa_depth_resolve_to_r32";
+/// Embedded shader stem for the mono (2D source) blit.
+const BLIT_STEM_MONO: &str = "depth_blit_r32_to_depth_default";
+/// Embedded shader stem for the multiview (2D array source + view_index) blit.
+const BLIT_STEM_MULTIVIEW: &str = "depth_blit_r32_to_depth_multiview";
+
+fn load_embedded(stem: &str) -> &'static str {
+    #[expect(
+        clippy::expect_used,
+        reason = "embedded shader is required; absence is a build script regression"
+    )]
+    embedded_target_wgsl(stem)
+        .expect("msaa_depth_resolve: embedded shader missing (build script regression)")
+}
 
 /// Single-view (desktop) MSAA depth resolve: sampled views and destination depth format.
 pub struct MsaaDepthResolveMonoTargets<'a> {
@@ -133,7 +143,7 @@ fn create_stereo_multiview_blit_pipelines(device: &wgpu::Device) -> StereoMultiv
     }
     let blit_stereo_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("msaa_depth_resolve_blit_stereo"),
-        source: wgpu::ShaderSource::Wgsl(BLIT_STEREO_WGSL.into()),
+        source: wgpu::ShaderSource::Wgsl(load_embedded(BLIT_STEM_MULTIVIEW).into()),
     });
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("msaa_depth_blit_stereo_bgl"),
@@ -236,11 +246,11 @@ impl MsaaDepthResolveResources {
     pub fn try_new(device: &wgpu::Device) -> Option<Self> {
         let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("msaa_depth_resolve_cs"),
-            source: wgpu::ShaderSource::Wgsl(COMPUTE_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(load_embedded(COMPUTE_STEM).into()),
         });
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("msaa_depth_resolve_blit"),
-            source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(load_embedded(BLIT_STEM_MONO).into()),
         });
 
         let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

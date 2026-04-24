@@ -19,6 +19,10 @@ impl PlatformGroup {
     }
 
     /// No `PR_SET_PDEATHSIG` equivalent; children rely on signal escalation from [`Self::shutdown`].
+    #[expect(
+        clippy::unused_self,
+        reason = "matches the cross-platform PlatformGroup API"
+    )]
     pub fn prepare_command(&self, _cmd: &mut Command) {}
 
     /// Records non-zero child PIDs for [`Self::shutdown`].

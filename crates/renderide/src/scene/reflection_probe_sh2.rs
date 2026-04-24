@@ -15,8 +15,7 @@ use crate::shared::{ComputeResult, ReflectionProbeSH2Task, ReflectionProbeSH2Tas
 /// Writes [`ComputeResult::Failed`] to the `result` field of each active task in `tasks.tasks`.
 ///
 /// Tasks are laid out as a dense array of [`ReflectionProbeSH2Task`] in shared memory; iteration
-/// stops at the first entry whose `renderable_index` is negative (host terminator convention, same
-/// as the legacy renderer).
+/// stops at the first entry whose `renderable_index` is negative (host terminator convention).
 pub(crate) fn mark_reflection_probe_sh2_tasks_failed(
     shm: &mut SharedMemoryAccessor,
     tasks: &ReflectionProbeSH2Tasks,

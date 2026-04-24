@@ -1,11 +1,14 @@
-//! Command-line parsing and optional desktop vs VR dialog before [`crate::run`].
+//! Command-line parsing and the optional desktop vs VR dialog that precedes [`crate::run`].
+//!
+//! The desktop/VR dialog is resolved **after** the global logger has been initialized so that any
+//! `rfd` hang (see `vr_prompt` module docs) is visible in `logs/bootstrapper/*.log` rather than
+//! producing a silent "nothing happens" failure.
 
 use std::env;
 
 use logger::LogLevel;
 
 use crate::vr_prompt;
-use crate::BootstrapOptions;
 
 /// Parses bootstrapper args, extracting `--log-level` / `-l` for bootstrapper and Renderide.
 ///
@@ -40,21 +43,22 @@ pub fn parse_host_args_tokens(args: &[String]) -> (Vec<String>, Option<LogLevel>
     (host_args, log_level)
 }
 
-/// Parses argv, optionally prompts for desktop vs VR, and builds [`BootstrapOptions`] for [`crate::run`].
+/// Runs the desktop vs VR dialog if required by [`vr_prompt::should_prompt_vr_dialog`] and
+/// returns host argv augmented with the resulting `-Screen` / `-Device SteamVR` flag.
 ///
-/// Uses [`logger::log_filename_timestamp`] for the log file basename.
-pub fn prepare_run_inputs() -> BootstrapOptions {
-    let (mut host_args, log_level) = parse_args();
-    if vr_prompt::should_prompt_vr_dialog(&host_args) {
-        if let Some(vr) = vr_prompt::prompt_desktop_or_vr() {
-            host_args = vr_prompt::apply_host_vr_choice(host_args, vr);
-        }
+/// Returns [`None`] only when the dialog runs **and** the user cancels or dismisses it; in every
+/// bypass path (explicit output flag, `CI`, [`vr_prompt::ENV_SKIP_VR_DIALOG`], no Linux display)
+/// the original `host_args` are returned unchanged.
+///
+/// The caller **must** have initialized the global logger before invocation because
+/// [`vr_prompt::prompt_desktop_or_vr`] emits before/after log lines and installs a watchdog that
+/// logs on timeout.
+pub fn resolve_vr_choice(host_args: Vec<String>) -> Option<Vec<String>> {
+    if !vr_prompt::should_prompt_vr_dialog(&host_args) {
+        return Some(host_args);
     }
-    BootstrapOptions {
-        host_args,
-        log_level,
-        log_timestamp: logger::log_filename_timestamp(),
-    }
+    let vr = vr_prompt::prompt_desktop_or_vr()?;
+    Some(vr_prompt::apply_host_vr_choice(host_args, vr))
 }
 
 #[cfg(test)]
@@ -151,20 +155,43 @@ mod tests {
         assert!(level.is_none());
     }
 
+    /// Serializes env-mutating tests so parallel runs do not race on shared env state.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Restores a previously captured env var, removing it when `value` is [`None`].
+    fn restore(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(v) = value {
+            env::set_var(key, v);
+        } else {
+            env::remove_var(key);
+        }
+    }
+
     #[test]
-    fn prepare_run_inputs_respects_skip_vr_dialog() {
+    fn resolve_vr_choice_bypasses_dialog_on_skip_env_without_invoking_rfd() {
         let _g = ENV_LOCK.lock().expect("env lock");
-        std::env::set_var(vr_prompt::ENV_SKIP_VR_DIALOG, "1");
-        std::env::set_var("CI", "1");
-        let opts = prepare_run_inputs();
-        assert!(!opts.log_timestamp.is_empty());
-        assert!(!opts
-            .host_args
-            .iter()
-            .any(|a| a == "-Screen" || a == "-Device"));
-        std::env::remove_var(vr_prompt::ENV_SKIP_VR_DIALOG);
-        std::env::remove_var("CI");
+        let prev_skip = env::var_os(vr_prompt::ENV_SKIP_VR_DIALOG);
+        let prev_ci = env::var_os("CI");
+        env::set_var(vr_prompt::ENV_SKIP_VR_DIALOG, "1");
+        env::set_var("CI", "1");
+        let out =
+            resolve_vr_choice(vec!["-Invisible".to_string()]).expect("bypass path must yield Some");
+        assert_eq!(out, vec!["-Invisible".to_string()]);
+        restore(vr_prompt::ENV_SKIP_VR_DIALOG, prev_skip);
+        restore("CI", prev_ci);
+    }
+
+    #[test]
+    fn resolve_vr_choice_preserves_explicit_screen_arg() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        let prev_skip = env::var_os(vr_prompt::ENV_SKIP_VR_DIALOG);
+        let prev_ci = env::var_os("CI");
+        env::remove_var(vr_prompt::ENV_SKIP_VR_DIALOG);
+        env::remove_var("CI");
+        let out = resolve_vr_choice(vec!["-Screen".to_string(), "-Invisible".to_string()])
+            .expect("explicit output flag bypasses dialog");
+        assert_eq!(out, vec!["-Screen".to_string(), "-Invisible".to_string()]);
+        restore(vr_prompt::ENV_SKIP_VR_DIALOG, prev_skip);
+        restore("CI", prev_ci);
     }
 }

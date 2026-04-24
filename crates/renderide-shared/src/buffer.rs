@@ -12,7 +12,7 @@ use super::packing::memory_unpacker::MemoryUnpacker;
 use super::packing::wire_decode_error::WireDecodeError;
 
 /// Identifies a subrange of a shared buffer: which mapping, capacity hint, start offset, and span length (all in bytes).
-#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct SharedMemoryBufferDescriptor {
     /// Identifier for the shared memory object on the host.
@@ -50,5 +50,57 @@ impl MemoryPackable for SharedMemoryBufferDescriptor {
         self.offset = unpacker.read()?;
         self.length = unpacker.read()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SharedMemoryBufferDescriptor;
+    use crate::packing::default_entity_pool::DefaultEntityPool;
+    use crate::packing::memory_packable::MemoryPackable;
+    use crate::packing::memory_packer::MemoryPacker;
+    use crate::packing::memory_unpacker::MemoryUnpacker;
+
+    #[test]
+    fn is_empty_when_length_zero() {
+        assert!(SharedMemoryBufferDescriptor {
+            buffer_id: 1,
+            buffer_capacity: 100,
+            offset: 0,
+            length: 0,
+        }
+        .is_empty());
+        assert!(!SharedMemoryBufferDescriptor {
+            buffer_id: 1,
+            buffer_capacity: 100,
+            offset: 0,
+            length: 1,
+        }
+        .is_empty());
+    }
+
+    #[test]
+    fn memory_packable_roundtrip() {
+        let original = SharedMemoryBufferDescriptor {
+            buffer_id: 7,
+            buffer_capacity: 65_536,
+            offset: 128,
+            length: 256,
+        };
+        let mut packed = original;
+        let mut buf = [0u8; 32];
+        let full = buf.len();
+        let written = {
+            let mut p = MemoryPacker::new(&mut buf);
+            packed.pack(&mut p);
+            full - p.remaining_len()
+        };
+        assert_eq!(written, 16, "four i32 fields");
+
+        let mut pool = DefaultEntityPool;
+        let mut u = MemoryUnpacker::new(&buf[..written], &mut pool);
+        let mut decoded = SharedMemoryBufferDescriptor::default();
+        decoded.unpack(&mut u).expect("unpack");
+        assert_eq!(decoded, original);
     }
 }

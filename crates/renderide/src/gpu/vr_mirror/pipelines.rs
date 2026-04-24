@@ -1,24 +1,34 @@
 //! Cached shaders, bind layouts, samplers, and pipelines for the VR mirror passes.
+//!
+//! WGSL is sourced from the build-time embedded shader registry
+//! ([`crate::embedded_shaders::embedded_target_wgsl`]). Both shaders are single-variant
+//! (not part of any multiview fan-out).
 
 use std::sync::OnceLock;
 
+use crate::embedded_shaders::embedded_target_wgsl;
 use crate::xr::XR_COLOR_FORMAT;
 
-pub(super) const EYE_TO_STAGING_WGSL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/present/vr_mirror_eye_to_staging.wgsl"
-));
-pub(super) const SURFACE_BLIT_WGSL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/shaders/source/present/vr_mirror_surface.wgsl"
-));
+/// Embedded shader stem for the per-eye → staging blit.
+const EYE_TO_STAGING_STEM: &str = "vr_mirror_eye_to_staging";
+/// Embedded shader stem for the staging → surface blit.
+const SURFACE_BLIT_STEM: &str = "vr_mirror_surface";
+
+fn load_embedded(stem: &str) -> &'static str {
+    #[expect(
+        clippy::expect_used,
+        reason = "embedded shader is required; absence is a build script regression"
+    )]
+    embedded_target_wgsl(stem)
+        .expect("vr_mirror: embedded shader missing (build script regression)")
+}
 
 pub(super) fn eye_pipeline(device: &wgpu::Device) -> &'static wgpu::RenderPipeline {
     static PIPE: OnceLock<wgpu::RenderPipeline> = OnceLock::new();
     PIPE.get_or_init(|| {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vr_mirror_eye_to_staging"),
-            source: wgpu::ShaderSource::Wgsl(EYE_TO_STAGING_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(load_embedded(EYE_TO_STAGING_STEM).into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("vr_mirror_eye_to_staging"),
@@ -126,7 +136,7 @@ pub(super) fn surface_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("vr_mirror_surface"),
-        source: wgpu::ShaderSource::Wgsl(SURFACE_BLIT_WGSL.into()),
+        source: wgpu::ShaderSource::Wgsl(load_embedded(SURFACE_BLIT_STEM).into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("vr_mirror_surface"),

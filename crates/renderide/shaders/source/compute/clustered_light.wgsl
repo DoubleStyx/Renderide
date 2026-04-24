@@ -41,6 +41,8 @@ struct ClusterParams {
 @group(0) @binding(0) var<uniform> params: ClusterParams;
 @group(0) @binding(1) var<storage, read> lights: array<GpuLight>;
 @group(0) @binding(2) var<storage, read_write> cluster_light_counts: array<u32>;
+/// Packed light indices: 2 × `u16` per `u32` slot (low 16 bits = even slot, high 16 bits = odd
+/// slot). Each cluster is written by a single compute thread, so no atomics are required.
 @group(0) @binding(3) var<storage, read_write> cluster_light_indices: array<u32>;
 
 const MAX_LIGHTS_PER_TILE: u32 = 64u;
@@ -145,7 +147,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
 
     let global_cluster_id = params.cluster_offset + local_cluster_id;
     var count: u32 = 0u;
-    let base_idx = global_cluster_id * MAX_LIGHTS_PER_TILE;
+    var packed: u32 = 0u;
+    let base_word = global_cluster_id * (MAX_LIGHTS_PER_TILE / 2u);
 
     for (var i = 0u; i < params.light_count; i++) {
         if count >= MAX_LIGHTS_PER_TILE {
@@ -172,9 +175,18 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
         }
 
         if intersects {
-            cluster_light_indices[base_idx + count] = i;
+            let shift = (count & 1u) * 16u;
+            packed |= (i & 0xFFFFu) << shift;
             count += 1u;
+            if (count & 1u) == 0u {
+                cluster_light_indices[base_word + (count >> 1u) - 1u] = packed;
+                packed = 0u;
+            }
         }
+    }
+
+    if (count & 1u) != 0u {
+        cluster_light_indices[base_word + (count >> 1u)] = packed;
     }
 
     cluster_light_counts[global_cluster_id] = count;

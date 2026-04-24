@@ -138,7 +138,12 @@ pub(super) fn resolve_controller_frame(
     let (has_bound_hand, hand_position_default, hand_rotation_default) =
         bound_hand_pose_defaults(profile, side);
     match profile {
-        ActiveControllerProfile::Touch => resolve_touch_controller_frame(
+        ActiveControllerProfile::Touch
+        | ActiveControllerProfile::Pico4
+        | ActiveControllerProfile::PicoNeo3
+        | ActiveControllerProfile::HpReverbG2
+        | ActiveControllerProfile::ViveCosmos
+        | ActiveControllerProfile::ViveFocus3 => resolve_touch_controller_frame(
             side,
             grip_pose,
             aim_pose,

@@ -40,10 +40,12 @@ impl SharedMemoryView {
 
         let map_handle = create_or_open_file_mapping(&name_wide, size)?;
 
+        // SAFETY: `map_handle` was just returned valid by `create_or_open_file_mapping`.
         let view =
             unsafe { MapViewOfFile(map_handle, FILE_MAP_ALL_ACCESS | FILE_MAP_WRITE, 0, 0, size) };
 
         if view.Value.is_null() {
+            // SAFETY: `map_handle` is live; closed once on this error path.
             unsafe {
                 CloseHandle(map_handle);
             }
@@ -66,6 +68,8 @@ impl SharedMemoryView {
         if self.view.Value.is_null() {
             return None;
         }
+        // SAFETY: `(start, end)` was validated against `self.len`, which is the mapping size, and
+        // `self.view.Value` is the non-null mapping base. Borrow lives no longer than `&self`.
         Some(unsafe {
             std::slice::from_raw_parts(self.view.Value.add(start) as *const u8, end - start)
         })
@@ -77,6 +81,8 @@ impl SharedMemoryView {
         if self.view.Value.is_null() {
             return None;
         }
+        // SAFETY: same bounds-checked region as `slice`, but `&mut self` guarantees unique access
+        // on the Rust side; cross-process exclusivity is enforced by the IPC protocol.
         Some(unsafe {
             std::slice::from_raw_parts_mut(self.view.Value.add(start) as *mut u8, end - start)
         })
@@ -91,7 +97,9 @@ impl SharedMemoryView {
         if range_len == 0 || self.view.Value.is_null() {
             return;
         }
+        // SAFETY: `start + range_len <= self.len`; `self.view.Value` is the live mapping base.
         let base = unsafe { self.view.Value.add(start) as *const std::ffi::c_void };
+        // SAFETY: `base` and `range_len` describe a subrange of the mapping.
         unsafe {
             let _ = FlushViewOfFile(base, range_len);
         }
@@ -106,11 +114,13 @@ impl SharedMemoryView {
 impl Drop for SharedMemoryView {
     fn drop(&mut self) {
         if !self.view.Value.is_null() {
+            // SAFETY: `self.view` was mapped in `new`; unmapped exactly once on drop.
             unsafe {
                 UnmapViewOfFile(self.view);
             }
         }
         if is_valid_handle(self.map_handle) {
+            // SAFETY: `self.map_handle` was opened in `new`; closed exactly once on drop.
             unsafe {
                 CloseHandle(self.map_handle);
             }
@@ -123,6 +133,8 @@ fn is_valid_handle(h: HANDLE) -> bool {
 }
 
 fn create_or_open_file_mapping(name: &[u16], size: usize) -> io::Result<HANDLE> {
+    // SAFETY: `name` is a NUL-terminated wide string; `INVALID_HANDLE_VALUE` requests an anonymous
+    // pagefile-backed mapping.
     let handle = unsafe {
         CreateFileMappingW(
             INVALID_HANDLE_VALUE,
@@ -138,6 +150,7 @@ fn create_or_open_file_mapping(name: &[u16], size: usize) -> io::Result<HANDLE> 
         return Ok(handle);
     }
 
+    // SAFETY: `name` is a NUL-terminated wide string.
     let handle = unsafe { OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, name.as_ptr()) };
 
     if is_valid_handle(handle) {

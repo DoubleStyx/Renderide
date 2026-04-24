@@ -41,7 +41,7 @@ pub fn acquire_surface_outcome(
 ) -> Result<SurfaceFrameOutcome, PresentClearError> {
     match gpu.acquire_with_recovery() {
         Ok(f) => Ok(SurfaceFrameOutcome::Acquired(f)),
-        Err(wgpu::CurrentSurfaceTexture::Timeout) | Err(wgpu::CurrentSurfaceTexture::Occluded) => {
+        Err(wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded) => {
             logger::debug!("surface timeout or occluded; skipping frame");
             Ok(SurfaceFrameOutcome::Skip)
         }
@@ -113,7 +113,11 @@ where
     if let Err(e) = overlay(&mut encoder, &view, gpu) {
         logger::warn!("debug HUD overlay (clear frame): {e}");
     }
-    gpu.submit_tracked_frame_commands(encoder.finish());
-    frame.present();
+    // Hand submit + present to the driver thread so `Queue::submit` runs before
+    // `SurfaceTexture::present`. Calling `present()` on the main thread immediately after
+    // `submit_tracked_frame_commands` (which only enqueues on the driver) destroys the surface
+    // texture, which makes the driver's deferred `Queue::submit` reject the command buffer:
+    // "Texture with '<Surface Texture>' label has been destroyed".
+    gpu.submit_frame_batch(vec![encoder.finish()], Some(frame), None);
     Ok(())
 }

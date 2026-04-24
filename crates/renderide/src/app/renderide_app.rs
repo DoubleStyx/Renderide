@@ -14,7 +14,7 @@
 //! 5. [`lock_step_exchange`] — when allowed, [`RendererRuntime::pre_frame`] with winit input + optional VR IPC.
 //! 6. Early exits — shutdown, fatal IPC, missing window/GPU (each runs epilogue timing).
 //! 7. [`render_views`] — HMD multiview submit if XR+GPU; secondary cameras to render textures;
-//!    debug HUD input/time for this frame (must run before desktop [`RendererRuntime::render_all_views`]).
+//!    debug HUD input/time for this frame (must run before [`RendererRuntime::render_frame`] appends the main camera).
 //! 8. [`present_and_diagnostics`] — VR mirror blit or clear (with optional Dear ImGui overlay on the desktop surface); OpenXR `end_frame_empty` when needed (desktop world render is in step 7).
 //! 9. [`frame_tick_epilogue`] — GPU frame timing end and debug HUD capture after the tick.
 //!
@@ -41,7 +41,7 @@ use crate::present::{present_clear_frame, present_clear_frame_overlay};
 use crate::render_graph::GraphExecuteError;
 use crate::runtime::RendererRuntime;
 use crate::shared::{HeadOutputDevice, VRControllerState};
-use crate::xr::{OpenxrFrameTick, XrSessionBundle};
+use crate::xr::{synthesize_hand_states, OpenxrFrameTick, XrSessionBundle};
 use glam::{Quat, Vec3};
 
 use super::frame_loop;
@@ -87,14 +87,22 @@ pub(crate) struct RenderideApp {
     xr_session: Option<XrSessionBundle>,
     /// Previous redraw instant for HUD FPS ([`crate::diagnostics::DebugHud`]).
     hud_frame_last: Option<Instant>,
-    /// Wall-clock end of the last [`Self::tick_frame`] (for desktop FPS caps).
-    last_frame_end: Option<Instant>,
+    /// Wall-clock start of the last [`Self::tick_frame`]; anchors desktop FPS caps so the cap
+    /// is a true period between frame starts rather than an end-to-start spacing that would
+    /// add [`Self::tick_frame`]'s own duration on top of `1/cap`.
+    last_frame_start: Option<Instant>,
+    /// Wall-clock end of the previous [`Self::tick_frame`]; used only to emit the
+    /// [`crate::profiling::plot_event_loop_idle_ms`] Tracy plot at the top of the next tick so
+    /// the true inter-frame idle (winit `WaitUntil` parking plus any driver/compositor block)
+    /// is visible alongside the frame mark. Not used for pacing decisions.
+    previous_tick_end: Option<Instant>,
     /// OS-driven graceful shutdown (Unix signals or Windows Ctrl+C). See [`crate::app::startup`].
     external_shutdown: Option<ExternalShutdownCoordinator>,
 }
 
 /// Reconfigures the swapchain/depth for the given physical dimensions (shared by resize path and helpers).
 fn reconfigure_gpu_for_physical_size(gpu: &mut GpuContext, width: u32, height: u32) {
+    profiling::scope!("startup::reconfigure_gpu");
     gpu.reconfigure(width, height);
 }
 
@@ -135,7 +143,8 @@ impl RenderideApp {
             cursor_output_tracking: CursorOutputTracking::default(),
             xr_session: None,
             hud_frame_last: None,
-            last_frame_end: None,
+            last_frame_start: None,
+            previous_tick_end: None,
             external_shutdown,
         }
     }
@@ -156,10 +165,9 @@ impl RenderideApp {
         true
     }
 
-    /// Records wall-clock frame end for FPS pacing and forwards to [`RendererRuntime::tick_frame_wall_clock_end`].
-    fn record_frame_tick_end(&mut self, frame_start: Instant) {
-        self.last_frame_end = Some(Instant::now());
-        self.runtime.tick_frame_wall_clock_end(frame_start);
+    /// Records wall-clock frame start for FPS pacing; called from [`Self::frame_tick_prologue`].
+    fn record_frame_tick_start(&mut self, frame_start: Instant) {
+        self.last_frame_start = Some(frame_start);
     }
 
     fn maybe_flush_logs(&mut self) {
@@ -192,6 +200,7 @@ impl RenderideApp {
         if self.window.is_some() {
             return;
         }
+        profiling::scope!("startup::ensure_window_gpu");
 
         let attrs = winit::window::Window::default_attributes()
             .with_title("Renderide")
@@ -286,7 +295,16 @@ impl RenderideApp {
     /// Phase: log level sync, wall-clock tick markers ([`RendererRuntime::tick_frame_wall_clock_begin`]),
     /// and [`GpuContext::begin_frame_timing`] when a device exists.
     fn frame_tick_prologue(&mut self, frame_start: Instant) {
+        profiling::scope!("tick::prologue");
         tick_phase_trace("frame_tick_prologue");
+        if let Some(prev_end) = self.previous_tick_end {
+            let idle_ms = frame_start
+                .saturating_duration_since(prev_end)
+                .as_secs_f64()
+                * 1000.0;
+            crate::profiling::plot_event_loop_idle_ms(idle_ms);
+        }
+        self.record_frame_tick_start(frame_start);
         self.sync_log_level_from_settings();
         self.runtime.tick_frame_wall_clock_begin(frame_start);
         if let Some(gpu) = self.gpu.as_mut() {
@@ -299,6 +317,7 @@ impl RenderideApp {
 
     /// Phase: drain incoming IPC and apply host-driven window state (cursor/output) plus per-frame cursor lock.
     fn poll_ipc_and_window(&mut self) {
+        profiling::scope!("tick::poll_ipc_and_window");
         tick_phase_trace("poll_ipc_and_window");
         self.runtime.poll_ipc();
 
@@ -336,6 +355,7 @@ impl RenderideApp {
     ///
     /// Returns [`None`] when OpenXR is not active or the session does not produce a tick this frame.
     fn xr_begin_tick(&mut self) -> Option<OpenxrFrameTick> {
+        profiling::scope!("tick::xr_begin_tick");
         tick_phase_trace("xr_begin_tick");
         let xr_tick = self
             .xr_session
@@ -383,6 +403,7 @@ impl RenderideApp {
 
     /// Phase: lock-step begin-frame to host when [`RendererRuntime::should_send_begin_frame`].
     fn lock_step_exchange(&mut self) {
+        profiling::scope!("tick::lock_step_exchange");
         tick_phase_trace("lock_step_exchange");
         if self.runtime.should_send_begin_frame() {
             let lock = self.runtime.host_cursor_lock_requested();
@@ -392,14 +413,18 @@ impl RenderideApp {
                 self.runtime.debug_hud_last_want_capture_mouse(),
                 self.runtime.debug_hud_last_want_capture_keyboard(),
             );
+            let synthesised_hands = synthesize_hand_states(&self.cached_openxr_controllers);
             if let Some(vr) = vr_inputs_for_session(
                 self.session_output_device,
                 self.cached_head_pose,
                 &self.cached_openxr_controllers,
+                synthesised_hands,
             ) {
                 inputs.vr = Some(vr);
             }
             self.runtime.pre_frame(inputs);
+        } else {
+            profiling::scope!("lock_step::skipped");
         }
     }
 
@@ -413,6 +438,7 @@ impl RenderideApp {
         window: &Arc<Window>,
         xr_tick: Option<&OpenxrFrameTick>,
     ) -> Option<bool> {
+        profiling::scope!("tick::render_views");
         tick_phase_trace("render_views");
         if let Some(gpu) = self.gpu.as_mut() {
             self.runtime.drain_hi_z_readback(gpu.device());
@@ -426,15 +452,20 @@ impl RenderideApp {
 
         let gpu = self.gpu.as_mut()?;
 
-        if self.runtime.vr_active() {
-            if let Err(e) = self
-                .runtime
-                .render_secondary_cameras_to_render_textures(gpu)
-            {
-                logger::warn!("secondary camera render-to-texture failed: {e:?}");
+        // When the HMD path submitted the stereo + secondary RT views together, skip the
+        // fallback render to avoid a redundant second submit. Otherwise: VR fallback only
+        // renders secondary RTs (the desktop stays on the mirror clear); desktop renders the
+        // main swapchain view plus any secondaries.
+        if !hmd_projection_ended {
+            use crate::xr::XrFrameRenderer;
+            let result = if self.runtime.vr_active() {
+                self.runtime.submit_secondary_only(gpu)
+            } else {
+                self.runtime.render_desktop_frame(gpu)
+            };
+            if let Err(e) = result {
+                Self::handle_frame_graph_error(gpu, e);
             }
-        } else if let Err(e) = self.runtime.render_all_views(gpu) {
-            Self::handle_frame_graph_error(gpu, e);
         }
 
         {
@@ -460,6 +491,7 @@ impl RenderideApp {
         xr_tick: Option<OpenxrFrameTick>,
         hmd_projection_ended: bool,
     ) {
+        profiling::scope!("tick::present_and_diagnostics");
         tick_phase_trace("present_and_diagnostics");
         let Some(gpu) = self.gpu.as_mut() else {
             return;
@@ -493,11 +525,12 @@ impl RenderideApp {
                 logger::debug!("VR mirror clear (no HMD frame): {e:?}");
             }
         }
-        // Desktop: swapchain world render + present run inside [`RendererRuntime::render_all_views`]
+        // Desktop: swapchain world render + present run inside [`RendererRuntime::render_frame`]
         // during [`Self::render_views`].
 
         if let (Some(bundle), Some(tick)) = (self.xr_session.as_mut(), xr_tick) {
             if !hmd_projection_ended {
+                profiling::scope!("xr::end_frame_empty");
                 if let Err(e) = bundle
                     .handles
                     .xr_session
@@ -511,21 +544,44 @@ impl RenderideApp {
 
     /// Ends GPU frame timing and refreshes debug HUD snapshots; pairs with [`Self::frame_tick_prologue`].
     fn frame_tick_epilogue(&mut self, frame_start: Instant) {
+        profiling::scope!("tick::epilogue");
         tick_phase_trace("frame_tick_epilogue");
+        self.drain_driver_thread_error();
         self.end_frame_timing_and_hud_capture();
-        self.record_frame_tick_end(frame_start);
+        self.runtime.tick_frame_wall_clock_end(frame_start);
+        self.previous_tick_end = Some(Instant::now());
+    }
+
+    /// Logs any error captured on the driver thread since the last epilogue.
+    ///
+    /// Current wgpu 29's `Queue::submit` and `SurfaceTexture::present` are infallible, so
+    /// this path is reserved for future wgpu versions that return fallible submits or
+    /// explicit present errors. The check is cheap (one mutex acquire on an empty slot)
+    /// and keeps the wiring in place for when it begins firing.
+    fn drain_driver_thread_error(&mut self) {
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
+        };
+        if let Some(err) = gpu.take_driver_error() {
+            logger::error!("{err}");
+        }
     }
 
     /// One winit redraw; phase order is documented on this module ([`crate::app::renderide_app`]).
     fn tick_frame(&mut self, event_loop: &ActiveEventLoop) {
+        profiling::scope!("tick::frame");
         let frame_start = Instant::now();
         self.frame_tick_prologue(frame_start);
         self.poll_ipc_and_window();
         if self.check_external_shutdown(event_loop) {
             self.frame_tick_epilogue(frame_start);
+            crate::profiling::emit_frame_mark();
             return;
         }
-        self.runtime.run_asset_integration();
+        {
+            profiling::scope!("tick::asset_integration");
+            self.runtime.run_asset_integration();
+        }
         let xr_tick = self.xr_begin_tick();
         self.lock_step_exchange();
 
@@ -534,6 +590,7 @@ impl RenderideApp {
             self.exit_code = Some(0);
             event_loop.exit();
             self.frame_tick_epilogue(frame_start);
+            crate::profiling::emit_frame_mark();
             return;
         }
 
@@ -542,16 +599,19 @@ impl RenderideApp {
             self.exit_code = Some(4);
             event_loop.exit();
             self.frame_tick_epilogue(frame_start);
+            crate::profiling::emit_frame_mark();
             return;
         }
 
         let Some(window) = self.window.clone() else {
             self.frame_tick_epilogue(frame_start);
+            crate::profiling::emit_frame_mark();
             return;
         };
 
         let Some(hmd_projection_ended) = self.render_views(&window, xr_tick.as_ref()) else {
             self.frame_tick_epilogue(frame_start);
+            crate::profiling::emit_frame_mark();
             return;
         };
 
@@ -559,12 +619,14 @@ impl RenderideApp {
         self.present_and_diagnostics(xr_tick, hmd_projection_ended);
 
         self.frame_tick_epilogue(frame_start);
+        crate::profiling::emit_frame_mark();
     }
 
-    /// Finalizes [`GpuContext`] frame timing and refreshes debug HUD snapshots for the tick.
+    /// Finalizes [`GpuContext`] frame timing, drains GPU profiler results, and refreshes debug HUD snapshots for the tick.
     fn end_frame_timing_and_hud_capture(&mut self) {
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.end_frame_timing();
+            gpu.end_gpu_profiler_frame();
             self.runtime.capture_debug_hud_after_frame_end(gpu);
         }
     }
@@ -587,6 +649,7 @@ impl RenderideApp {
 
 impl ApplicationHandler for RenderideApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        profiling::scope!("app::resumed");
         event_loop.listen_device_events(DeviceEvents::Always);
         self.ensure_window_gpu(event_loop);
     }
@@ -597,6 +660,7 @@ impl ApplicationHandler for RenderideApp {
         _device_id: winit::event::DeviceId,
         event: DeviceEvent,
     ) {
+        profiling::scope!("app::device_event");
         apply_device_event(&mut self.input, &event);
     }
 
@@ -612,6 +676,12 @@ impl ApplicationHandler for RenderideApp {
         if window.id() != window_id {
             return;
         }
+        // Outer scope covers the full handling of one winit window event (input dispatch,
+        // resize/scale reconfigure, redraw, log flush). Per-event kind sub-scopes emitted
+        // inside `apply_window_event` (e.g. `frontend::window_event "cursor_moved"`) nest
+        // underneath. The `RedrawRequested` arm additionally opens `app::redraw_requested`
+        // so the frame-producing path is distinguishable at a glance.
+        profiling::scope!("app::window_event");
 
         apply_window_event(&mut self.input, window, &event);
 
@@ -621,17 +691,20 @@ impl ApplicationHandler for RenderideApp {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
+                profiling::scope!("app::window_event_resize");
                 if let Some(gpu) = self.gpu.as_mut() {
                     reconfigure_gpu_for_physical_size(gpu, size.width, size.height);
                 }
             }
             WindowEvent::RedrawRequested => {
+                profiling::scope!("app::redraw_requested");
                 if let Some(w) = self.window.as_ref() {
                     self.input.sync_window_resolution_logical(w.as_ref());
                 }
                 self.tick_frame(event_loop);
             }
             WindowEvent::ScaleFactorChanged { .. } => {
+                profiling::scope!("app::window_event_scale_factor");
                 if let Some(gpu) = self.gpu.as_mut() {
                     reconfigure_gpu_for_window(gpu);
                 }
@@ -639,10 +712,15 @@ impl ApplicationHandler for RenderideApp {
             _ => {}
         }
 
-        self.maybe_flush_logs();
+        {
+            profiling::scope!("app::flush_logs");
+            self.maybe_flush_logs();
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        profiling::scope!("app::about_to_wait");
+        crate::profiling::plot_window_focused(self.input.window_focused);
         if self.check_external_shutdown(event_loop) {
             return;
         }
@@ -658,20 +736,34 @@ impl ApplicationHandler for RenderideApp {
                     }
                     Err(_) => 0,
                 };
+                crate::profiling::plot_fps_cap_active(cap);
                 let now = Instant::now();
                 if let Some(deadline) =
-                    frame_pacing::next_redraw_wait_until(self.last_frame_end, cap, now)
+                    frame_pacing::next_redraw_wait_until(self.last_frame_start, cap, now)
                 {
+                    let wait_ms = deadline.saturating_duration_since(now).as_secs_f64() * 1000.0;
+                    crate::profiling::plot_event_loop_wait_ms(wait_ms);
                     event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                    profiling::scope!("app::flush_logs");
                     self.maybe_flush_logs();
                     return;
                 }
+                crate::profiling::plot_event_loop_wait_ms(0.0);
+            } else {
+                crate::profiling::plot_fps_cap_active(0);
+                crate::profiling::plot_event_loop_wait_ms(0.0);
             }
             window.request_redraw();
+        } else {
+            crate::profiling::plot_fps_cap_active(0);
+            crate::profiling::plot_event_loop_wait_ms(0.0);
         }
         if self.exit_code.is_none() {
             event_loop.set_control_flow(ControlFlow::Poll);
         }
-        self.maybe_flush_logs();
+        {
+            profiling::scope!("app::flush_logs");
+            self.maybe_flush_logs();
+        }
     }
 }

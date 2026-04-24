@@ -16,14 +16,19 @@ pub struct ShaderRouteEntry {
     pub display_name: Option<String>,
 }
 
-/// Shader asset id → route; unknown ids use [`Self::fallback`].
+/// Shader asset id → route; unknown ids use the fallback pipeline set via [`Self::new`] /
+/// [`Self::set_fallback`].
 #[derive(Debug)]
 pub struct MaterialRouter {
     routes: HashMap<i32, ShaderRouteEntry>,
     /// Optional composed WGSL stem (`shaders/target/<stem>.wgsl`) when an embedded `{key}_default` target exists.
     shader_stem: HashMap<i32, String>,
     /// Default when `routes` has no entry.
-    pub fallback: RasterPipelineKind,
+    fallback: RasterPipelineKind,
+    /// Monotonic counter bumped on every mutation; read by
+    /// [`crate::render_graph::world_mesh_draw_prep::material_batch_cache::FrameMaterialBatchCache`]
+    /// to invalidate resolved entries when any route, stem, or fallback changes.
+    generation: u64,
 }
 
 impl MaterialRouter {
@@ -33,7 +38,31 @@ impl MaterialRouter {
             routes: HashMap::new(),
             shader_stem: HashMap::new(),
             fallback,
+            generation: 0,
         }
+    }
+
+    fn bump(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Monotonic generation counter bumped on any route / stem / fallback mutation.
+    ///
+    /// Persistent resolved-material caches compare a snapshot of this value against the current
+    /// value to detect when a re-resolve is required.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Replaces the fallback pipeline kind used when no route is registered for a shader id.
+    pub fn set_fallback(&mut self, fallback: RasterPipelineKind) {
+        self.fallback = fallback;
+        self.bump();
+    }
+
+    /// Returns the current fallback pipeline kind.
+    pub fn fallback(&self) -> &RasterPipelineKind {
+        &self.fallback
     }
 
     /// Inserts or replaces a host shader route (pipeline kind and optional HUD label).
@@ -50,6 +79,7 @@ impl MaterialRouter {
                 display_name,
             },
         );
+        self.bump();
     }
 
     /// Inserts a host shader → pipeline mapping with no HUD display name.
@@ -68,11 +98,14 @@ impl MaterialRouter {
     /// Records a target WGSL stem for `shader_asset_id` (from embedded Unity name resolution).
     pub fn set_shader_stem(&mut self, shader_asset_id: i32, stem: String) {
         self.shader_stem.insert(shader_asset_id, stem);
+        self.bump();
     }
 
     /// Clears [`Self::stem_for_shader_asset`] for `shader_asset_id`.
     pub fn remove_shader_stem(&mut self, shader_asset_id: i32) {
-        self.shader_stem.remove(&shader_asset_id);
+        if self.shader_stem.remove(&shader_asset_id).is_some() {
+            self.bump();
+        }
     }
 
     /// Composed material stem when the host shader name matched an embedded target.
@@ -82,8 +115,11 @@ impl MaterialRouter {
 
     /// Drops a host shader id mapping after [`crate::shared::ShaderUnload`].
     pub fn remove_shader_route(&mut self, shader_asset_id: i32) {
-        self.routes.remove(&shader_asset_id);
-        self.shader_stem.remove(&shader_asset_id);
+        let had_route = self.routes.remove(&shader_asset_id).is_some();
+        let had_stem = self.shader_stem.remove(&shader_asset_id).is_some();
+        if had_route || had_stem {
+            self.bump();
+        }
     }
 
     /// Returns the mapped pipeline kind when the host id was registered via [`Self::set_shader_route`].
@@ -174,5 +210,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 10]
         );
+    }
+
+    #[test]
+    fn generation_bumps_on_mutations() {
+        let mut r = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
+        let g0 = r.generation();
+        r.set_shader_pipeline(1, test_route_pipeline());
+        let g1 = r.generation();
+        assert_ne!(g0, g1);
+        // Reads don't bump.
+        let _ = r.pipeline_for_shader_asset(1);
+        assert_eq!(r.generation(), g1);
+        r.set_shader_stem(1, "foo_default".to_string());
+        let g2 = r.generation();
+        assert_ne!(g1, g2);
+        r.remove_shader_route(1);
+        let g3 = r.generation();
+        assert_ne!(g2, g3);
+        r.set_fallback(RasterPipelineKind::DebugWorldNormals);
+        assert_ne!(r.generation(), g3);
+    }
+
+    #[test]
+    fn remove_without_effect_does_not_bump() {
+        let mut r = MaterialRouter::new(RasterPipelineKind::DebugWorldNormals);
+        r.set_shader_pipeline(1, test_route_pipeline());
+        let g = r.generation();
+        r.remove_shader_stem(999);
+        r.remove_shader_route(999);
+        assert_eq!(r.generation(), g);
     }
 }

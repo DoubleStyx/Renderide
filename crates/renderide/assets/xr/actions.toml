@@ -1,0 +1,248 @@
+# Renderide OpenXR action manifest.
+#
+# Defines the single action set and every action submitted to OpenXR at session
+# init. Per-profile binding tables live in `bindings/*.toml`; this file owns
+# the action inventory shared across all profiles.
+#
+# Action `type` is one of: "pose", "bool", "float", "vector2f", "haptic".
+# Localized names appear in runtime binding UIs (SteamVR, Monado tooling,
+# minimal Meta overlay), so they must be human-readable English.
+
+[action_set]
+id = "renderide_input"
+localized_name = "Renderide VR input"
+priority = 0
+
+# --- Pose actions ---
+
+[[action]]
+id = "left_grip_pose"
+type = "pose"
+localized_name = "Left grip pose"
+
+[[action]]
+id = "right_grip_pose"
+type = "pose"
+localized_name = "Right grip pose"
+
+[[action]]
+id = "left_aim_pose"
+type = "pose"
+localized_name = "Left aim pose"
+
+[[action]]
+id = "right_aim_pose"
+type = "pose"
+localized_name = "Right aim pose"
+
+# --- Trigger ---
+
+[[action]]
+id = "left_trigger"
+type = "float"
+localized_name = "Left trigger"
+
+[[action]]
+id = "right_trigger"
+type = "float"
+localized_name = "Right trigger"
+
+[[action]]
+id = "left_trigger_touch"
+type = "bool"
+localized_name = "Left trigger touch"
+
+[[action]]
+id = "right_trigger_touch"
+type = "bool"
+localized_name = "Right trigger touch"
+
+[[action]]
+id = "left_trigger_click"
+type = "bool"
+localized_name = "Left trigger click"
+
+[[action]]
+id = "right_trigger_click"
+type = "bool"
+localized_name = "Right trigger click"
+
+# --- Squeeze ---
+
+[[action]]
+id = "left_squeeze"
+type = "float"
+localized_name = "Left squeeze"
+
+[[action]]
+id = "right_squeeze"
+type = "float"
+localized_name = "Right squeeze"
+
+[[action]]
+id = "left_squeeze_click"
+type = "bool"
+localized_name = "Left squeeze click"
+
+[[action]]
+id = "right_squeeze_click"
+type = "bool"
+localized_name = "Right squeeze click"
+
+# --- Thumbstick ---
+
+[[action]]
+id = "left_thumbstick"
+type = "vector2f"
+localized_name = "Left thumbstick"
+
+[[action]]
+id = "right_thumbstick"
+type = "vector2f"
+localized_name = "Right thumbstick"
+
+[[action]]
+id = "left_thumbstick_touch"
+type = "bool"
+localized_name = "Left thumbstick touch"
+
+[[action]]
+id = "right_thumbstick_touch"
+type = "bool"
+localized_name = "Right thumbstick touch"
+
+[[action]]
+id = "left_thumbstick_click"
+type = "bool"
+localized_name = "Left thumbstick click"
+
+[[action]]
+id = "right_thumbstick_click"
+type = "bool"
+localized_name = "Right thumbstick click"
+
+# --- Trackpad ---
+
+[[action]]
+id = "left_trackpad"
+type = "vector2f"
+localized_name = "Left trackpad"
+
+[[action]]
+id = "right_trackpad"
+type = "vector2f"
+localized_name = "Right trackpad"
+
+[[action]]
+id = "left_trackpad_touch"
+type = "bool"
+localized_name = "Left trackpad touch"
+
+[[action]]
+id = "right_trackpad_touch"
+type = "bool"
+localized_name = "Right trackpad touch"
+
+[[action]]
+id = "left_trackpad_click"
+type = "bool"
+localized_name = "Left trackpad click"
+
+[[action]]
+id = "right_trackpad_click"
+type = "bool"
+localized_name = "Right trackpad click"
+
+[[action]]
+id = "left_trackpad_force"
+type = "float"
+localized_name = "Left trackpad force"
+
+[[action]]
+id = "right_trackpad_force"
+type = "float"
+localized_name = "Right trackpad force"
+
+# --- Face and utility buttons ---
+
+[[action]]
+id = "left_primary"
+type = "bool"
+localized_name = "Left primary button"
+
+[[action]]
+id = "right_primary"
+type = "bool"
+localized_name = "Right primary button"
+
+[[action]]
+id = "left_secondary"
+type = "bool"
+localized_name = "Left secondary button"
+
+[[action]]
+id = "right_secondary"
+type = "bool"
+localized_name = "Right secondary button"
+
+[[action]]
+id = "left_primary_touch"
+type = "bool"
+localized_name = "Left primary touch"
+
+[[action]]
+id = "right_primary_touch"
+type = "bool"
+localized_name = "Right primary touch"
+
+[[action]]
+id = "left_secondary_touch"
+type = "bool"
+localized_name = "Left secondary touch"
+
+[[action]]
+id = "right_secondary_touch"
+type = "bool"
+localized_name = "Right secondary touch"
+
+[[action]]
+id = "left_menu"
+type = "bool"
+localized_name = "Left menu"
+
+[[action]]
+id = "right_menu"
+type = "bool"
+localized_name = "Right menu"
+
+[[action]]
+id = "left_thumbrest_touch"
+type = "bool"
+localized_name = "Left thumbrest touch"
+
+[[action]]
+id = "right_thumbrest_touch"
+type = "bool"
+localized_name = "Right thumbrest touch"
+
+[[action]]
+id = "left_select"
+type = "bool"
+localized_name = "Left select"
+
+[[action]]
+id = "right_select"
+type = "bool"
+localized_name = "Right select"
+
+# --- Haptics ---
+
+[[action]]
+id = "left_haptic"
+type = "haptic"
+localized_name = "Left haptic"
+
+[[action]]
+id = "right_haptic"
+type = "haptic"
+localized_name = "Right haptic"

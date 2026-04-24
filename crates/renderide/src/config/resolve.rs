@@ -332,6 +332,16 @@ mod tests {
     }
 
     #[test]
+    fn is_dir_writable_detects_writable_tempdir_and_rejects_non_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(is_dir_writable(dir.path()));
+        let file = dir.path().join("not_a_dir.txt");
+        fs::write(&file, b"x").unwrap();
+        assert!(!is_dir_writable(&file));
+        assert!(!is_dir_writable(&dir.path().join("does/not/exist")));
+    }
+
+    #[test]
     fn find_workspace_root_negative_without_renderide_crate() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
@@ -362,7 +372,7 @@ mod tests {
         let _iso = TestSearchIsolation::new_binary_only(binary_dir.clone());
         std::env::set_current_dir(dir.path()).expect("set cwd");
 
-        let load = crate::config::load_renderer_settings();
+        let load = crate::config::load_renderer_settings(crate::config::ConfigFilePolicy::Load);
         let path = binary_dir.join(FILE_NAME_TOML);
         assert!(
             path.is_file(),

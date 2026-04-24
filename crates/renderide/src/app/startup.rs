@@ -30,10 +30,12 @@ use std::time::{Duration, Instant};
 use logger::{LogComponent, LogLevel};
 use winit::event_loop::EventLoop;
 
-use crate::config::{load_renderer_settings, log_config_resolve_trace, settings_handle_from};
+use crate::config::{
+    load_renderer_settings, log_config_resolve_trace, settings_handle_from, ConfigFilePolicy,
+};
 use crate::connection::{get_connection_parameters, try_claim_renderer_singleton};
 use crate::frontend::InitState;
-use crate::ipc::get_headless_params;
+use crate::ipc::{get_headless_params, get_ignore_config};
 use crate::run_error::RunError;
 use crate::runtime::RendererRuntime;
 use crate::shared::{HeadOutputDevice, RendererInitData};
@@ -197,7 +199,12 @@ pub fn run() -> Result<Option<i32>, RunError> {
     // stdio forwarding so a duplicate of the preserved terminal fd exists when tee is enabled.
     crate::fatal_crash_log::install(&log_path);
 
-    let config_load = load_renderer_settings();
+    let config_file_policy = if get_ignore_config() {
+        ConfigFilePolicy::Ignore
+    } else {
+        ConfigFilePolicy::Load
+    };
+    let config_load = load_renderer_settings(config_file_policy);
     logger::set_max_level(effective_renderer_log_level(
         log_level_cli,
         config_load.settings.debug.log_verbose,
@@ -207,7 +214,7 @@ pub fn run() -> Result<Option<i32>, RunError> {
     let initial_vsync = config_load.settings.rendering.vsync;
     let initial_gpu_validation = config_load.settings.debug.gpu_validation_layers;
 
-    let log_path_hook = log_path.clone();
+    let log_path_hook = log_path;
     std::panic::set_hook(Box::new(move |info| {
         let report = logger::panic_report(info);
         logger::append_panic_report_to_file(&log_path_hook, &report);
@@ -238,6 +245,15 @@ pub fn run() -> Result<Option<i32>, RunError> {
     }
 
     let external_shutdown = install_external_shutdown();
+
+    crate::profiling::register_main_thread();
+    if let Err(e) = rayon::ThreadPoolBuilder::new()
+        .thread_name(|i| format!("rayon-worker-{i}"))
+        .start_handler(crate::profiling::rayon_thread_start_handler())
+        .build_global()
+    {
+        logger::warn!("Rayon global pool already initialized or build_global failed: {e}");
+    }
 
     if let Some(headless_params) = get_headless_params() {
         return run_headless(
@@ -322,5 +338,73 @@ mod effective_log_level_tests {
     #[test]
     fn no_cli_uses_debug_when_not_log_verbose() {
         assert_eq!(effective_renderer_log_level(None, false), LogLevel::Debug);
+    }
+}
+
+#[cfg(test)]
+mod effective_output_device_tests {
+    use super::effective_output_device_for_gpu;
+    use crate::shared::{HeadOutputDevice, RendererInitData};
+
+    #[test]
+    fn none_falls_back_to_screen() {
+        assert_eq!(
+            effective_output_device_for_gpu(None),
+            HeadOutputDevice::Screen
+        );
+    }
+
+    #[test]
+    fn some_screen_returns_screen() {
+        let init = RendererInitData {
+            output_device: HeadOutputDevice::Screen,
+            ..Default::default()
+        };
+        assert_eq!(
+            effective_output_device_for_gpu(Some(&init)),
+            HeadOutputDevice::Screen
+        );
+    }
+
+    #[test]
+    fn some_vr_device_is_passed_through() {
+        let init = RendererInitData {
+            output_device: HeadOutputDevice::SteamVR,
+            ..Default::default()
+        };
+        assert_eq!(
+            effective_output_device_for_gpu(Some(&init)),
+            HeadOutputDevice::SteamVR
+        );
+    }
+
+    #[test]
+    fn some_autodetect_is_passed_through() {
+        let init = RendererInitData {
+            output_device: HeadOutputDevice::Autodetect,
+            ..Default::default()
+        };
+        assert_eq!(
+            effective_output_device_for_gpu(Some(&init)),
+            HeadOutputDevice::Autodetect
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod shutdown_signal_display_name_tests {
+    use super::shutdown_signal_display_name;
+
+    #[test]
+    fn known_signals_map_to_name() {
+        assert_eq!(shutdown_signal_display_name(libc::SIGTERM), "SIGTERM");
+        assert_eq!(shutdown_signal_display_name(libc::SIGINT), "SIGINT");
+        assert_eq!(shutdown_signal_display_name(libc::SIGHUP), "SIGHUP");
+    }
+
+    #[test]
+    fn unrecognized_signal_is_unknown() {
+        assert_eq!(shutdown_signal_display_name(libc::SIGUSR1), "unknown");
+        assert_eq!(shutdown_signal_display_name(-1), "unknown");
     }
 }

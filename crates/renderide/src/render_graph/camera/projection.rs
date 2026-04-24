@@ -169,3 +169,75 @@ mod effective_clip_plane_tests {
         assert!((f - 50.0).abs() < 1e-4);
     }
 }
+
+#[cfg(test)]
+mod projection_math_tests {
+    use glam::Vec4;
+    use openxr::Fovf;
+    use std::f32::consts::FRAC_PI_2;
+
+    use super::{
+        clamp_desktop_fov_degrees, reverse_z_perspective, reverse_z_perspective_openxr_fov,
+        DEFAULT_DESKTOP_FOV_DEGREES, DESKTOP_FOV_DEGREES_MAX, DESKTOP_FOV_DEGREES_MIN,
+    };
+
+    /// Projects a view-space point through `m` and returns its `z / w` clip depth.
+    fn project_depth(m: &glam::Mat4, view_z: f32) -> f32 {
+        let clip = m.mul_vec4(Vec4::new(0.0, 0.0, view_z, 1.0));
+        clip.z / clip.w
+    }
+
+    /// [`clamp_desktop_fov_degrees`] maps NaN to the default and clamps out-of-range inputs to the
+    /// declared bounds without changing in-range values.
+    #[test]
+    fn clamp_desktop_fov_handles_special_values() {
+        assert_eq!(
+            clamp_desktop_fov_degrees(f32::NAN),
+            DEFAULT_DESKTOP_FOV_DEGREES
+        );
+        assert_eq!(clamp_desktop_fov_degrees(-1.0), DESKTOP_FOV_DEGREES_MIN);
+        assert_eq!(clamp_desktop_fov_degrees(500.0), DESKTOP_FOV_DEGREES_MAX);
+        assert_eq!(
+            clamp_desktop_fov_degrees(f32::INFINITY),
+            DESKTOP_FOV_DEGREES_MAX
+        );
+        assert_eq!(
+            clamp_desktop_fov_degrees(f32::NEG_INFINITY),
+            DESKTOP_FOV_DEGREES_MIN
+        );
+        assert_eq!(clamp_desktop_fov_degrees(45.0), 45.0);
+    }
+
+    /// The reverse-Z perspective matrix must have positive scale on the diagonal, a `-1` on the
+    /// view-Z → clip-W row, and map the near/far view-space planes to clip depths `1` and `0`.
+    #[test]
+    fn reverse_z_perspective_near_and_far_depth_values() {
+        let near = 0.1_f32;
+        let far = 100.0_f32;
+        let m = reverse_z_perspective(1.0, FRAC_PI_2, near, far);
+        let cols = m.to_cols_array_2d();
+
+        assert!(cols[0][0].is_finite() && cols[0][0] > 0.0);
+        assert!(cols[1][1].is_finite() && cols[1][1] > 0.0);
+        assert!((cols[2][3] - -1.0).abs() < 1e-6);
+
+        assert!((project_depth(&m, -near) - 1.0).abs() < 1e-4);
+        assert!(project_depth(&m, -far).abs() < 1e-4);
+    }
+
+    /// A degenerate all-zero OpenXR FOV takes the symmetric 16:9 fallback and yields a finite
+    /// matrix.
+    #[test]
+    fn openxr_degenerate_fov_falls_back_to_finite_matrix() {
+        let fov = Fovf {
+            angle_left: 0.0,
+            angle_right: 0.0,
+            angle_down: 0.0,
+            angle_up: 0.0,
+        };
+        let m = reverse_z_perspective_openxr_fov(&fov, 0.1, 100.0);
+        for v in m.to_cols_array() {
+            assert!(v.is_finite(), "matrix element must be finite: {v}");
+        }
+    }
+}

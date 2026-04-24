@@ -11,6 +11,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 
 use lru::LruCache;
+use parking_lot::Mutex;
 
 use crate::materials::embedded_raster_pipeline::{
     build_embedded_wgsl, create_embedded_render_pipelines, EmbeddedRasterPipelineSource,
@@ -66,7 +67,7 @@ pub type MaterialPipelineSet = Arc<[wgpu::RenderPipeline]>;
 #[derive(Debug)]
 pub struct MaterialPipelineCache {
     device: Arc<wgpu::Device>,
-    pipelines: LruCache<MaterialPipelineCacheKey, MaterialPipelineSet>,
+    pipelines: Mutex<LruCache<MaterialPipelineCacheKey, MaterialPipelineSet>>,
 }
 
 impl MaterialPipelineCache {
@@ -74,7 +75,7 @@ impl MaterialPipelineCache {
     pub fn new(device: Arc<wgpu::Device>) -> Self {
         Self {
             device,
-            pipelines: LruCache::new(MAX_CACHED_PIPELINES_NZ),
+            pipelines: Mutex::new(LruCache::new(MAX_CACHED_PIPELINES_NZ)),
         }
     }
 
@@ -87,13 +88,14 @@ impl MaterialPipelineCache {
     ///
     /// On a cache hit, does not compose WGSL or run reflection; those run only when inserting a new entry.
     pub fn get_or_create(
-        &mut self,
+        &self,
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         permutation: ShaderPermutation,
         blend_mode: MaterialBlendMode,
         render_state: MaterialRenderState,
     ) -> Result<MaterialPipelineSet, PipelineBuildError> {
+        profiling::scope!("materials::get_or_create_pipeline");
         let key = MaterialPipelineCacheKey {
             kind: kind.clone(),
             permutation,
@@ -105,7 +107,7 @@ impl MaterialPipelineCache {
             render_state,
         };
         //perf xlinka: a hit is real use; promote it so hot pipelines do not get evicted.
-        if let Some(hit) = self.pipelines.get(&key) {
+        if let Some(hit) = self.pipelines.lock().get(&key) {
             return Ok(hit.clone());
         }
         let wgsl = match kind {
@@ -139,10 +141,15 @@ impl MaterialPipelineCache {
             }
         };
         let set: MaterialPipelineSet = Arc::from(pipelines.into_boxed_slice());
-        if let Some(evicted) = self.pipelines.put(key, set.clone()) {
+        let mut cache = self.pipelines.lock();
+        if let Some(existing) = cache.get(&key) {
+            return Ok(existing.clone());
+        }
+        if let Some(evicted) = cache.put(key, set.clone()) {
             drop(evicted);
             logger::trace!("MaterialPipelineCache: evicted LRU pipeline entry");
         }
+        drop(cache);
         Ok(set)
     }
 }

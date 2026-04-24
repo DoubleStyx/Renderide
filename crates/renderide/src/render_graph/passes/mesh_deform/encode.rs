@@ -17,8 +17,6 @@ use super::snapshot::{
 
 /// GPU handles and scratch used while recording mesh deform compute on one encoder.
 pub(super) struct MeshDeformEncodeGpu<'a> {
-    /// Submission queue for buffer writes and compute.
-    pub queue: &'a wgpu::Queue,
     /// Device for bind groups and pipelines.
     pub device: &'a wgpu::Device,
     /// Limits checked before dispatch.
@@ -29,6 +27,11 @@ pub(super) struct MeshDeformEncodeGpu<'a> {
     pub pre: &'a crate::backend::mesh_deform::MeshPreprocessPipelines,
     /// Scratch buffers and slab cursors backing.
     pub scratch: &'a mut crate::backend::MeshDeformScratch,
+    /// Deferred [`wgpu::Queue::write_buffer`] sink shared with the rest of the frame; used for
+    /// the per-mesh blendshape weight writes to keep them off the inline encode path.
+    pub upload_batch: &'a crate::render_graph::frame_upload_batch::FrameUploadBatch,
+    /// GPU profiler for per-dispatch pass-level timestamp queries; [`None`] when disabled.
+    pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
 /// Scene, mesh snapshot, slab cursors, and GPU skin cache subranges for one deform work item.
@@ -66,6 +69,7 @@ pub(super) fn record_mesh_deform(
     mut gpu: MeshDeformEncodeGpu<'_>,
     inputs: MeshDeformRecordInputs<'_, '_>,
 ) {
+    profiling::scope!("mesh_deform::record");
     let Some(deform_guard) =
         validate_deform_preconditions(inputs.mesh, inputs.bone_transform_indices, gpu.gpu_limits)
     else {
@@ -197,7 +201,7 @@ fn blendshape_record_scatter_compute_passes(
 ) {
     gpu.scratch
         .ensure_blendshape_params_staging(gpu.device, packed_params.len() as u64);
-    gpu.queue
+    gpu.upload_batch
         .write_buffer(&gpu.scratch.blendshape_params_staging, 0, packed_params);
 
     let Some(weight_size) = NonZeroU64::new(weight_binding_len) else {
@@ -242,15 +246,24 @@ fn blendshape_record_scatter_compute_passes(
             ],
         });
 
-        let mut cpass = gpu
-            .encoder
-            .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("blendshape_scatter"),
-                timestamp_writes: None,
-            });
-        cpass.set_pipeline(&gpu.pre.blendshape_pipeline);
-        cpass.set_bind_group(0, &blend_bg, &[]);
-        cpass.dispatch_workgroups(scatter_wg, 1, 1);
+        let pass_query = gpu
+            .profiler
+            .map(|p| p.begin_pass_query("blendshape_scatter", gpu.encoder));
+        let timestamp_writes = crate::profiling::compute_pass_timestamp_writes(pass_query.as_ref());
+        {
+            let mut cpass = gpu
+                .encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("blendshape_scatter"),
+                    timestamp_writes,
+                });
+            cpass.set_pipeline(&gpu.pre.blendshape_pipeline);
+            cpass.set_bind_group(0, &blend_bg, &[]);
+            cpass.dispatch_workgroups(scatter_wg, 1, 1);
+        }
+        if let (Some(p), Some(q)) = (gpu.profiler, pass_query) {
+            p.end_query(gpu.encoder, q);
+        }
     }
 
     *blend_weight_cursor = advance_slab_cursor(*blend_weight_cursor, weight_binding_len);
@@ -264,6 +277,7 @@ fn record_blendshape_deform(
     blend_weight_cursor: &mut u64,
     ctx: BlendshapeCacheCtx<'_>,
 ) {
+    profiling::scope!("mesh_deform::record_blendshape");
     let BlendshapeCacheCtx {
         cache_entry,
         positions_arena,
@@ -317,7 +331,7 @@ fn record_blendshape_deform(
         gpu.device,
         (*blend_weight_cursor).saturating_add(weight_binding_len),
     );
-    gpu.queue.write_buffer(
+    gpu.upload_batch.write_buffer(
         &gpu.scratch.blendshape_weights,
         *blend_weight_cursor,
         &wbytes,
@@ -376,6 +390,7 @@ fn record_blendshape_deform(
 
 /// Linear blend skinning compute after optional blendshape pass.
 fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeformContext<'_, '_>) {
+    profiling::scope!("mesh_deform::record_skinning");
     let Some(ref positions) = ctx.mesh.positions_buffer else {
         return;
     };
@@ -418,7 +433,7 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
     let palette_len = palette.len() as u64;
     gpu.scratch
         .ensure_bone_byte_capacity(gpu.device, ctx.bone_cursor.saturating_add(palette_len));
-    gpu.queue
+    gpu.upload_batch
         .write_buffer(&gpu.scratch.bone_matrices, *ctx.bone_cursor, &palette);
 
     let Some(bone_binding_size) = NonZeroU64::new(palette_len) else {
@@ -426,9 +441,8 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
     };
 
     let (src_for_skin, base_src_pos_e) = if ctx.needs_blend {
-        let t = match ctx.cache_entry.temp.as_ref() {
-            Some(x) => x,
-            None => return,
+        let Some(t) = ctx.cache_entry.temp.as_ref() else {
+            return;
         };
         (ctx.temp_arena, t.first_element_index(16))
     } else {
@@ -445,7 +459,7 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
     let sd_cursor = *ctx.skin_dispatch_cursor;
     gpu.scratch
         .ensure_skin_dispatch_byte_capacity(gpu.device, sd_cursor.saturating_add(32));
-    gpu.queue
+    gpu.upload_batch
         .write_buffer(&gpu.scratch.skin_dispatch, sd_cursor, &skin_params);
 
     skinning_dispatch_with_uploaded_palette(SkinningPaletteDispatch {
@@ -463,6 +477,7 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
         bone_binding_size,
         wg: ctx.wg,
         skin_dispatch_offset: sd_cursor,
+        profiler: gpu.profiler,
     });
 
     *ctx.bone_cursor = advance_slab_cursor(*ctx.bone_cursor, palette_len);
@@ -486,6 +501,8 @@ struct SkinningPaletteDispatch<'a> {
     wg: u32,
     /// Byte offset into [`MeshDeformScratch::skin_dispatch`] for this dispatch’s `SkinDispatchParams`.
     skin_dispatch_offset: u64,
+    /// GPU profiler for the pass-level timestamp query on the skinning compute pass.
+    profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
 /// Builds skinning bind group (bone slab + attributes) and dispatches the skinning shader.
@@ -542,15 +559,24 @@ fn skinning_dispatch_with_uploaded_palette(dispatch: SkinningPaletteDispatch<'_>
             ],
         });
 
-    let mut cpass = dispatch
-        .encoder
-        .begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("skinning"),
-            timestamp_writes: None,
-        });
-    cpass.set_pipeline(&dispatch.pre.skinning_pipeline);
-    cpass.set_bind_group(0, &skin_bg, &[]);
-    cpass.dispatch_workgroups(dispatch.wg, 1, 1);
+    let pass_query = dispatch
+        .profiler
+        .map(|p| p.begin_pass_query("skinning", dispatch.encoder));
+    let timestamp_writes = crate::profiling::compute_pass_timestamp_writes(pass_query.as_ref());
+    {
+        let mut cpass = dispatch
+            .encoder
+            .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("skinning"),
+                timestamp_writes,
+            });
+        cpass.set_pipeline(&dispatch.pre.skinning_pipeline);
+        cpass.set_bind_group(0, &skin_bg, &[]);
+        cpass.dispatch_workgroups(dispatch.wg, 1, 1);
+    }
+    if let (Some(p), Some(q)) = (dispatch.profiler, pass_query) {
+        p.end_query(dispatch.encoder, q);
+    }
 }
 
 fn workgroup_count(count: u32) -> u32 {

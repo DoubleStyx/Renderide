@@ -9,5 +9,4 @@ mod uniform_pack;
 
 pub use embedded_material_bind_error::EmbeddedMaterialBindError;
 pub use material_bind::EmbeddedMaterialBindResources;
-pub(crate) use material_bind::MaterialBindCacheKey;
 pub use texture_pools::EmbeddedTexturePools;

@@ -25,7 +25,7 @@ pub use unpack::{
 pub use upload::{
     resolve_cubemap_wgpu_format, resolve_texture2d_wgpu_format, resolve_texture3d_wgpu_format,
     texture_upload_start, write_texture2d_mips, write_texture3d_mips, CubemapFaceMipUploadStep,
-    CubemapMipChainUploader, MipChainAdvance, Texture3dMipAdvance, Texture3dMipChainUploader,
-    Texture3dMipUploadStep, TextureDataStart, TextureMipChainUploader, TextureMipUploadStep,
-    TextureUploadError,
+    CubemapMipChainUploader, MipChainAdvance, Texture2dUploadContext, Texture3dMipAdvance,
+    Texture3dMipChainUploader, Texture3dMipUploadStep, Texture3dUploadContext, TextureDataStart,
+    TextureMipChainUploader, TextureMipUploadStep, TextureUploadError,
 };

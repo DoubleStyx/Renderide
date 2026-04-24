@@ -8,67 +8,112 @@ use super::render_space::{LayerAssignmentEntry, RenderSpaceState};
 use super::transforms_apply::TransformRemovalEvent;
 use super::world::fixup_transform_id;
 
-pub(crate) fn apply_layer_update(
-    space: &mut RenderSpaceState,
+/// Owned per-space layer-update payload extracted from shared memory.
+///
+/// Produced by [`extract_layer_update`] in the serial pre-extract phase so the per-space apply
+/// step can run on a rayon worker without holding a mutable [`SharedMemoryAccessor`] borrow.
+#[derive(Default, Debug)]
+pub struct ExtractedLayerUpdate {
+    /// Dense layer-assignment removal indices (terminated by `< 0`).
+    pub removals: Vec<i32>,
+    /// New layer-assignment node ids (terminated by `< 0`).
+    pub additions: Vec<i32>,
+    /// Per-entry [`LayerType`] rows, indexed positionally into [`RenderSpaceState::layer_assignments`].
+    pub layer_assignments: Vec<LayerType>,
+}
+
+/// Reads every shared-memory buffer referenced by [`LayerUpdate`] into owned vectors.
+pub(crate) fn extract_layer_update(
     shm: &mut SharedMemoryAccessor,
     update: &LayerUpdate,
     scene_id: i32,
-) -> Result<(), SceneError> {
+) -> Result<ExtractedLayerUpdate, SceneError> {
+    let mut out = ExtractedLayerUpdate::default();
     if update.removals.length > 0 {
         let ctx = format!("layer removals scene_id={scene_id}");
-        let removals = shm
+        out.removals = shm
             .access_copy_diagnostic_with_context::<i32>(&update.removals, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
-        for &raw in removals.iter().take_while(|&&idx| idx >= 0) {
-            let idx = raw as usize;
-            if idx < space.layer_assignments.len() {
-                space.layer_assignments.swap_remove(idx);
-            }
-        }
     }
-
     if update.additions.length > 0 {
         let ctx = format!("layer additions scene_id={scene_id}");
-        let additions = shm
+        out.additions = shm
             .access_copy_diagnostic_with_context::<i32>(&update.additions, Some(&ctx))
             .map_err(SceneError::SharedMemoryAccess)?;
-        for &node_id in additions.iter().take_while(|&&id| id >= 0) {
-            space.layer_assignments.push(LayerAssignmentEntry {
-                node_id,
-                layer: LayerType::Hidden,
-            });
-        }
     }
-
     if update.layer_assignments.length > 0 {
         let ctx = format!("layer assignments scene_id={scene_id}");
-        let assignments = shm
-            .access_copy_diagnostic_with_context::<LayerType>(&update.layer_assignments, Some(&ctx))
+        out.layer_assignments = shm
+            .access_copy_memory_packable_rows::<LayerType>(
+                &update.layer_assignments,
+                std::mem::size_of::<LayerType>(),
+                Some(&ctx),
+            )
             .map_err(SceneError::SharedMemoryAccess)?;
-        for (idx, layer) in assignments.into_iter().enumerate() {
-            let Some(entry) = space.layer_assignments.get_mut(idx) else {
-                continue;
-            };
-            entry.layer = layer;
-        }
     }
-
-    Ok(())
+    Ok(out)
 }
 
+/// Mutates [`RenderSpaceState::layer_assignments`] using a pre-extracted [`ExtractedLayerUpdate`].
+pub(crate) fn apply_layer_update_extracted(
+    space: &mut RenderSpaceState,
+    extracted: &ExtractedLayerUpdate,
+) {
+    profiling::scope!("scene::apply_layers");
+    for &raw in extracted.removals.iter().take_while(|&&idx| idx >= 0) {
+        let idx = raw as usize;
+        if idx < space.layer_assignments.len() {
+            space.layer_assignments.swap_remove(idx);
+        }
+    }
+    for &node_id in extracted.additions.iter().take_while(|&&id| id >= 0) {
+        space.layer_assignments.push(LayerAssignmentEntry {
+            node_id,
+            layer: LayerType::Hidden,
+        });
+    }
+    for (idx, layer) in extracted.layer_assignments.iter().copied().enumerate() {
+        let Some(entry) = space.layer_assignments.get_mut(idx) else {
+            continue;
+        };
+        entry.layer = layer;
+    }
+}
+
+/// Combined renderer count above which the per-renderer layer resolve fans out to the rayon pool.
+///
+/// Each call to [`resolve_layer_for_node`] walks the parent chain and scans `layer_assignments`,
+/// so per-renderer cost scales with scene depth × assignment count. Above this threshold the
+/// parallel dispatch pays for itself; below it the serial path avoids rayon overhead.
+const LAYER_RESOLVE_PARALLEL_MIN: usize = 256;
+
 pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState) {
+    profiling::scope!("scene::resolve_mesh_layers");
     let node_parents = &space.node_parents;
     let layer_assignments = &space.layer_assignments;
+    let total = space.static_mesh_renderers.len() + space.skinned_mesh_renderers.len();
 
-    for renderer in &mut space.static_mesh_renderers {
-        renderer.layer = resolve_layer_for_node(node_parents, layer_assignments, renderer.node_id)
-            .unwrap_or_default();
-    }
-
-    for renderer in &mut space.skinned_mesh_renderers {
-        renderer.base.layer =
-            resolve_layer_for_node(node_parents, layer_assignments, renderer.base.node_id)
+    if total >= LAYER_RESOLVE_PARALLEL_MIN {
+        use rayon::prelude::*;
+        space.static_mesh_renderers.par_iter_mut().for_each(|r| {
+            r.layer = resolve_layer_for_node(node_parents, layer_assignments, r.node_id)
                 .unwrap_or_default();
+        });
+        space.skinned_mesh_renderers.par_iter_mut().for_each(|r| {
+            r.base.layer = resolve_layer_for_node(node_parents, layer_assignments, r.base.node_id)
+                .unwrap_or_default();
+        });
+    } else {
+        for renderer in &mut space.static_mesh_renderers {
+            renderer.layer =
+                resolve_layer_for_node(node_parents, layer_assignments, renderer.node_id)
+                    .unwrap_or_default();
+        }
+        for renderer in &mut space.skinned_mesh_renderers {
+            renderer.base.layer =
+                resolve_layer_for_node(node_parents, layer_assignments, renderer.base.node_id)
+                    .unwrap_or_default();
+        }
     }
 }
 
@@ -99,17 +144,34 @@ fn resolve_layer_for_node(
     None
 }
 
+/// Layer-assignment count above which the per-removal fixup sweep fans out to the rayon pool.
+///
+/// Each entry's `fixup_transform_id` is a trivial branch, but removals × assignments can grow
+/// into the tens of thousands during bulky scene teardowns.
+const LAYER_FIXUP_PARALLEL_MIN: usize = 128;
+
 pub(crate) fn fixup_layer_assignments_for_transform_removals(
     space: &mut RenderSpaceState,
     removals: &[TransformRemovalEvent],
 ) {
     for removal in removals {
-        for entry in &mut space.layer_assignments {
-            entry.node_id = fixup_transform_id(
-                entry.node_id,
-                removal.removed_index,
-                removal.last_index_before_swap,
-            );
+        if space.layer_assignments.len() >= LAYER_FIXUP_PARALLEL_MIN {
+            use rayon::prelude::*;
+            space.layer_assignments.par_iter_mut().for_each(|entry| {
+                entry.node_id = fixup_transform_id(
+                    entry.node_id,
+                    removal.removed_index,
+                    removal.last_index_before_swap,
+                );
+            });
+        } else {
+            for entry in &mut space.layer_assignments {
+                entry.node_id = fixup_transform_id(
+                    entry.node_id,
+                    removal.removed_index,
+                    removal.last_index_before_swap,
+                );
+            }
         }
         space.layer_assignments.retain(|entry| entry.node_id >= 0);
     }

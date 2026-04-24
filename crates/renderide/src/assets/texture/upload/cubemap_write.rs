@@ -10,12 +10,12 @@ use super::super::layout::{
 use super::error::TextureUploadError;
 use super::mip_write_common::{
     is_rgba8_family, uncompressed_row_bytes, write_cubemap_face_mip, CubemapFaceMipWrite,
+    MipUploadFormatCtx,
 };
 use super::write_mip_chain::MipChainAdvance;
 
 /// Shared device, format, upload record, payload window, and mip start bias for cubemap chain walks.
 struct CubemapMipChainState<'a> {
-    device: &'a wgpu::Device,
     fmt: &'a SetCubemapFormat,
     upload: &'a SetCubemapData,
     payload: &'a [u8],
@@ -70,43 +70,29 @@ fn resolve_cubemap_face_mip_slice<'a>(
         })
 }
 
-/// GPU format, dimensions, and source bytes for one cubemap face mip decode.
-struct CubemapMipLevelDecode<'a> {
-    wgpu_format: wgpu::TextureFormat,
+/// Converts host face mip bytes for [`write_cubemap_face_mip`] (decode, optional row flip).
+fn cubemap_mip_src_to_upload_pixels(
+    ctx: MipUploadFormatCtx,
     w: u32,
     h: u32,
     flip: bool,
     mip_i: usize,
     face: u32,
-    mip_src: &'a [u8],
-}
-
-/// Converts host face mip bytes for [`write_cubemap_face_mip`] (decode, optional row flip).
-fn cubemap_mip_src_to_upload_pixels<'a>(
-    chain: &CubemapMipChainState<'a>,
-    level: CubemapMipLevelDecode<'a>,
-) -> Result<std::borrow::Cow<'a, [u8]>, TextureUploadError> {
-    let device = chain.device;
-    let fmt = chain.fmt;
-    let asset_id = chain.upload.asset_id;
-    let wgpu_format = level.wgpu_format;
-    let w = level.w;
-    let h = level.h;
-    let flip = level.flip;
-    let mip_i = level.mip_i;
-    let face = level.face;
-    let mip_src = level.mip_src;
-    let pixels: std::borrow::Cow<'a, [u8]> = if is_rgba8_family(wgpu_format) {
-        if needs_rgba8_decode_before_upload(device, fmt.format)
-            || host_format_is_compressed(fmt.format)
-        {
-            std::borrow::Cow::Owned(
-                decode_mip_to_rgba8(fmt.format, w, h, flip, mip_src).ok_or_else(|| {
-                    TextureUploadError::from(format!(
-                        "RGBA decode failed for cubemap face {face} mip {mip_i}"
-                    ))
-                })?,
-            )
+    mip_src: &[u8],
+) -> Result<Vec<u8>, TextureUploadError> {
+    let MipUploadFormatCtx {
+        asset_id,
+        fmt_format,
+        wgpu_format,
+        needs_rgba8_decode,
+    } = ctx;
+    let pixels = if is_rgba8_family(wgpu_format) {
+        if needs_rgba8_decode || host_format_is_compressed(fmt_format) {
+            decode_mip_to_rgba8(fmt_format, w, h, flip, mip_src).ok_or_else(|| {
+                TextureUploadError::from(format!(
+                    "RGBA decode failed for cubemap face {face} mip {mip_i}"
+                ))
+            })?
         } else if flip {
             let mut v = mip_src.to_vec();
             let bpp = mip_tight_bytes_per_texel(v.len(), w, h).ok_or_else(|| {
@@ -123,18 +109,18 @@ fn cubemap_mip_src_to_upload_pixels<'a>(
                 )));
             }
             flip_mip_rows(&mut v, w, h, bpp);
-            std::borrow::Cow::Owned(v)
+            v
         } else {
-            std::borrow::Cow::Borrowed(mip_src)
+            mip_src.to_vec()
         }
     } else {
-        if needs_rgba8_decode_before_upload(device, fmt.format) {
+        if needs_rgba8_decode {
             return Err(TextureUploadError::from(format!(
                 "host {:?} must use RGBA decode but GPU format is {:?}",
-                fmt.format, wgpu_format
+                fmt_format, wgpu_format
             )));
         }
-        if flip && !host_format_is_compressed(fmt.format) {
+        if flip && !host_format_is_compressed(fmt_format) {
             let mut v = mip_src.to_vec();
             let bpp_host = mip_tight_bytes_per_texel(v.len(), w, h).ok_or_else(|| {
                 TextureUploadError::from(format!(
@@ -156,12 +142,12 @@ fn cubemap_mip_src_to_upload_pixels<'a>(
                 }
             }
             flip_mip_rows(&mut v, w, h, bpp_host);
-            std::borrow::Cow::Owned(v)
-        } else if flip && host_format_is_compressed(fmt.format) {
-            let expected_len = mip_byte_len(fmt.format, w, h).ok_or_else(|| {
+            v
+        } else if flip && host_format_is_compressed(fmt_format) {
+            let expected_len = mip_byte_len(fmt_format, w, h).ok_or_else(|| {
                 TextureUploadError::from(format!(
                     "cubemap {asset_id} face {face} mip {mip_i}: mip byte size unknown for {:?}",
-                    fmt.format
+                    fmt_format
                 ))
             })? as usize;
             if mip_src.len() != expected_len {
@@ -169,20 +155,20 @@ fn cubemap_mip_src_to_upload_pixels<'a>(
                     "cubemap {asset_id} face {face} mip {mip_i}: mip len {} != expected {} for {:?}",
                     mip_src.len(),
                     expected_len,
-                    fmt.format
+                    fmt_format
                 )));
             }
-            if let Some(v) = flip_compressed_mip_block_rows_y(fmt.format, w, h, mip_src) {
-                std::borrow::Cow::Owned(v)
+            if let Some(v) = flip_compressed_mip_block_rows_y(fmt_format, w, h, mip_src) {
+                v
             } else {
                 logger::warn!(
                     "cubemap {asset_id} face {face} mip {mip_i}: flip_y skipped for compressed {:?} (vertical flip not implemented for this block-compressed format)",
-                    fmt.format
+                    fmt_format
                 );
-                std::borrow::Cow::Borrowed(mip_src)
+                mip_src.to_vec()
             }
         } else {
-            std::borrow::Cow::Borrowed(mip_src)
+            mip_src.to_vec()
         }
     };
     Ok(pixels)
@@ -194,6 +180,9 @@ pub struct CubemapFaceMipUploadStep<'a> {
     pub device: &'a wgpu::Device,
     /// Queue for the face mip write.
     pub queue: &'a wgpu::Queue,
+    /// Shared ABBA gate for [`wgpu::Queue::write_texture`]; see
+    /// [`crate::gpu::WriteTextureSubmitGate`].
+    pub write_texture_submit_gate: &'a crate::gpu::WriteTextureSubmitGate,
     /// Destination cubemap texture.
     pub texture: &'a wgpu::Texture,
     /// Host format.
@@ -203,7 +192,7 @@ pub struct CubemapFaceMipUploadStep<'a> {
     /// Upload record.
     pub upload: &'a SetCubemapData,
     /// Payload (`&raw[..upload.data.length]`).
-    pub payload: &'a [u8],
+    pub payload: &'a std::sync::Arc<[u8]>,
 }
 
 /// Incremental cubemap upload: one face × one mip per step.
@@ -217,6 +206,8 @@ pub struct CubemapMipChainUploader {
     mipmap_count: u32,
     face_size: u32,
     flip: bool,
+    background_rx: Option<crossbeam_channel::Receiver<Result<Vec<u8>, TextureUploadError>>>,
+    pending_mip: Option<(u32, u32, u32, u32)>, // face, mip_level, w, h
 }
 
 impl CubemapMipChainUploader {
@@ -290,6 +281,8 @@ impl CubemapMipChainUploader {
             mipmap_count,
             face_size,
             flip: upload.flip_y,
+            background_rx: None,
+            pending_mip: None,
         })
     }
 
@@ -298,25 +291,86 @@ impl CubemapMipChainUploader {
         &mut self,
         step: CubemapFaceMipUploadStep<'_>,
     ) -> Result<MipChainAdvance, TextureUploadError> {
-        let CubemapFaceMipUploadStep {
-            device,
-            queue,
-            texture,
-            fmt,
-            wgpu_format,
-            upload,
-            payload,
-        } = step;
         if self.face >= 6 {
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded,
             });
         }
 
-        let mip_i = self.mip_i;
-        debug_assert!(mip_i < upload.mip_map_sizes.len());
+        if let Some(advance) = self.poll_background_decoded_face_mip(&step)? {
+            return Ok(advance);
+        }
 
-        let sz = upload.mip_map_sizes[mip_i];
+        self.spawn_upload_next_face_mip(&step)
+    }
+
+    /// Drains a completed background face-mip decode into a `Queue::write_texture`, or yields if pending.
+    ///
+    /// Returns `None` when no background decode is in flight (caller should start one).
+    fn poll_background_decoded_face_mip(
+        &mut self,
+        step: &CubemapFaceMipUploadStep<'_>,
+    ) -> Result<Option<MipChainAdvance>, TextureUploadError> {
+        let Some(rx) = &self.background_rx else {
+            return Ok(None);
+        };
+        match rx.try_recv() {
+            Ok(res) => {
+                self.background_rx = None;
+                let pixels = res?;
+                let (face, mip_level, w, h) = self.pending_mip.take().ok_or_else(|| {
+                    TextureUploadError::from(
+                        "cubemap_write: background decode completed without a pending mip slot; state machine desync",
+                    )
+                })?;
+
+                write_cubemap_face_mip(&CubemapFaceMipWrite {
+                    queue: step.queue,
+                    write_texture_submit_gate: step.write_texture_submit_gate,
+                    texture: step.texture,
+                    mip_level,
+                    face_layer: face,
+                    width: w,
+                    height: h,
+                    format: step.wgpu_format,
+                    bytes: &pixels,
+                })?;
+
+                self.uploaded += 1;
+                self.mip_i += 1;
+                if self.mip_i >= step.upload.mip_map_sizes.len() {
+                    self.face += 1;
+                    self.mip_i = 0;
+                }
+
+                if self.face >= 6 {
+                    return Ok(Some(MipChainAdvance::Finished {
+                        total_uploaded: self.uploaded,
+                    }));
+                }
+
+                Ok(Some(MipChainAdvance::UploadedOne {
+                    total_uploaded: self.uploaded,
+                }))
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                Ok(Some(MipChainAdvance::YieldBackground))
+            }
+            Err(crossbeam_channel::TryRecvError::Disconnected) => Err(TextureUploadError::from(
+                "Background decode thread panicked",
+            )),
+        }
+    }
+
+    /// Resolves the next face/mip slice and spawns a rayon decode.
+    fn spawn_upload_next_face_mip(
+        &mut self,
+        step: &CubemapFaceMipUploadStep<'_>,
+    ) -> Result<MipChainAdvance, TextureUploadError> {
+        let mip_i = self.mip_i;
+        debug_assert!(mip_i < step.upload.mip_map_sizes.len());
+
+        let sz = step.upload.mip_map_sizes[mip_i];
         let w = sz.x.max(0) as u32;
         let h = sz.y.max(0) as u32;
         let mip_level = self.start_base + mip_i as u32;
@@ -331,15 +385,14 @@ impl CubemapMipChainUploader {
         if w != gw || h != gh {
             return Err(TextureUploadError::from(format!(
                 "cubemap {} mip {mip_level}: upload says {w}×{h} but GPU mip is {gw}×{gh}",
-                upload.asset_id
+                step.upload.asset_id
             )));
         }
 
         let chain = CubemapMipChainState {
-            device,
-            fmt,
-            upload,
-            payload,
+            fmt: step.fmt,
+            upload: step.upload,
+            payload: step.payload,
             start_bias: self.start_bias,
         };
 
@@ -353,46 +406,30 @@ impl CubemapMipChainUploader {
             },
         )?;
 
-        let pixels = cubemap_mip_src_to_upload_pixels(
-            &chain,
-            CubemapMipLevelDecode {
-                wgpu_format,
-                w,
-                h,
-                flip: self.flip,
-                mip_i,
-                face: self.face,
-                mip_src,
-            },
-        )?;
+        self.pending_mip = Some((self.face, mip_level, w, h));
+        let offset = mip_src.as_ptr() as usize - step.payload.as_ptr() as usize;
+        let len = mip_src.len();
+        let mip_src_range = offset..offset + len;
 
-        write_cubemap_face_mip(&CubemapFaceMipWrite {
-            queue,
-            texture,
-            mip_level,
-            face_layer: self.face,
-            width: w,
-            height: h,
-            format: wgpu_format,
-            bytes: pixels.as_ref(),
-        })?;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.background_rx = Some(rx);
 
-        self.uploaded += 1;
-        self.mip_i += 1;
-        if self.mip_i >= upload.mip_map_sizes.len() {
-            self.face += 1;
-            self.mip_i = 0;
-        }
+        let ctx = MipUploadFormatCtx {
+            asset_id: step.upload.asset_id,
+            fmt_format: step.fmt.format,
+            wgpu_format: step.wgpu_format,
+            needs_rgba8_decode: needs_rgba8_decode_before_upload(step.device, step.fmt.format),
+        };
+        let payload_arc = std::sync::Arc::clone(step.payload);
+        let flip = self.flip;
+        let face = self.face;
+        rayon::spawn(move || {
+            let mip_src = &payload_arc[mip_src_range];
+            let res = cubemap_mip_src_to_upload_pixels(ctx, w, h, flip, mip_i, face, mip_src);
+            let _ = tx.send(res);
+        });
 
-        if self.face >= 6 {
-            return Ok(MipChainAdvance::Finished {
-                total_uploaded: self.uploaded,
-            });
-        }
-
-        Ok(MipChainAdvance::UploadedOne {
-            total_uploaded: self.uploaded,
-        })
+        Ok(MipChainAdvance::YieldBackground)
     }
 }
 

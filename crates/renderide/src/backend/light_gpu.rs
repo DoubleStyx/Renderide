@@ -9,8 +9,10 @@ use bytemuck::{Pod, Zeroable};
 use crate::scene::ResolvedLight;
 use crate::shared::{LightType, ShadowType};
 
-/// Max lights copied into the scratch buffer (`prepare_lights_from_scene`).
-pub const MAX_LIGHTS: usize = 256;
+/// Max lights copied into the scratch buffer (`prepare_lights_from_scene`). Sized so per-cluster
+/// indices stored in `cluster_light_indices` fit in a `u16` (which enables the 2-per-`u32`
+/// packing in `crate::backend::cluster_gpu`).
+pub const MAX_LIGHTS: usize = 65536;
 
 /// GPU-facing light record for a storage buffer upload.
 ///
@@ -143,6 +145,7 @@ fn shadow_type_u32(ty: ShadowType) -> u32 {
 /// Sorts before applying the global [`MAX_LIGHTS`] cap so directional lights are not accidentally
 /// dropped just because they arrived after many local lights in host order.
 pub fn order_lights_for_clustered_shading_in_place(lights: &mut Vec<ResolvedLight>) {
+    profiling::scope!("render::order_lights_for_clustered_shading");
     lights.sort_by_key(|l| match l.light_type {
         LightType::Directional => 0u8,
         LightType::Point | LightType::Spot => 1,

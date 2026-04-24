@@ -1,8 +1,8 @@
 //! Host-side mesh payload encoder.
 //!
 //! Produces the byte buffer for `MeshUploadData.buffer`, matching the canonical region order from
-//! `Renderite.Shared.MeshBuffer.ComputeBufferLayout`: vertices → indices → bone_counts →
-//! bone_weights → bind_poses → blendshape_data. The renderer-side parser lives at
+//! `Renderite.Shared.MeshBuffer.ComputeBufferLayout`: vertices → indices → `bone_counts` →
+//! `bone_weights` → `bind_poses` → `blendshape_data`. The renderer-side parser lives at
 //! `crates/renderide/src/assets/mesh/layout.rs` and reads exactly this layout.
 //!
 //! For the integration test we only use vertices and indices: the sphere has no bones and no
@@ -357,7 +357,7 @@ mod tests {
         let nrm_buf = nrm_bytes(&normals);
         let input = MeshLayoutInput {
             vertex_count: positions.len() as i32,
-            vertex_attributes: attrs.clone(),
+            vertex_attributes: attrs,
             sources: vec![
                 InterleavedAttribute { bytes: &pos_buf },
                 InterleavedAttribute { bytes: &nrm_buf },

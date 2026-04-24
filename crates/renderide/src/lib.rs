@@ -19,8 +19,6 @@
 //! `wgpu` dependency**, enforcing the “no GPU in scene” rule via Cargo boundaries; the current
 //! single crate keeps iteration cheaper until the scene API stabilizes.
 
-#![warn(missing_docs)]
-
 mod process_io;
 mod run_error;
 
@@ -55,6 +53,9 @@ pub mod materials;
 /// Host `HeadOutputDevice` → VR / OpenXR GPU path ([`output_device::head_output_device_wants_openxr`]).
 pub mod output_device;
 pub mod pipelines;
+/// Tracy profiling integration: CPU spans, frame marks, and optional GPU timestamp queries.
+/// All items compile to nothing when the `tracy` Cargo feature is not active.
+pub mod profiling;
 pub mod render_graph;
 pub mod resources;
 pub mod runtime;
@@ -71,7 +72,7 @@ pub mod prelude {
     pub use crate::config::{MsaaSampleCount, RendererSettings, RendererSettingsHandle};
     pub use crate::render_graph::HostCameraFrame;
     pub use crate::runtime::{InitState, RendererRuntime};
-    pub use crate::xr::{XrHostCameraSync, XrMultiviewFrameRenderer};
+    pub use crate::xr::{XrFrameRenderer, XrHostCameraSync};
 }
 
 pub use run_error::RunError;

@@ -88,7 +88,7 @@ impl MeshDeformScratch {
         false
     }
 
-    /// Ensures the bone palette buffer fits at least `need_bones` matrices (legacy single-mesh helper).
+    /// Ensures the bone palette buffer fits at least `need_bones` matrices for a single-mesh dispatch.
     pub fn ensure_bone_capacity(&mut self, device: &wgpu::Device, need_bones: u32) {
         if need_bones <= self.max_bones {
             return;
@@ -124,7 +124,7 @@ impl MeshDeformScratch {
         });
     }
 
-    /// Ensures the blendshape weight buffer fits at least `need_shapes` floats (legacy helper).
+    /// Ensures the blendshape weight buffer fits at least `need_shapes` floats for a single-mesh dispatch.
     pub fn ensure_shape_weight_capacity(&mut self, device: &wgpu::Device, need_shapes: u32) {
         if need_shapes <= self.max_shapes {
             return;

@@ -19,7 +19,7 @@ enum CubemapStage {
     Start,
     Chain {
         uploader: CubemapMipChainUploader,
-        payload: Vec<u8>,
+        payload: Arc<[u8]>,
     },
 }
 
@@ -58,6 +58,7 @@ impl CubemapUploadTask {
         queue: &mut AssetTransferQueue,
         device: &Arc<wgpu::Device>,
         gpu_queue: &wgpu::Queue,
+        write_texture_submit_gate: &crate::gpu::WriteTextureSubmitGate,
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
@@ -86,13 +87,13 @@ impl CubemapUploadTask {
                                         "raw shorter than descriptor (need {want}, got {})",
                                         raw.len()
                                     ))),
-                                    Vec::new(),
+                                    Arc::from([] as [u8; 0]),
                                 ));
                             }
                             //review: keep the bytes owned while the cooperative face/mip task spans frames.
-                            raw[..want].to_vec()
+                            Arc::from(&raw[..want])
                         }
-                        Err(_) => Vec::new(),
+                        Err(_) => Arc::from([] as [u8; 0]),
                     };
                     Some((uploader, payload))
                 });
@@ -119,6 +120,7 @@ impl CubemapUploadTask {
                 let mip_result = uploader.upload_next_face_mip(CubemapFaceMipUploadStep {
                     device: device.as_ref(),
                     queue: gpu_queue,
+                    write_texture_submit_gate,
                     texture,
                     fmt,
                     wgpu_format,
@@ -131,6 +133,7 @@ impl CubemapUploadTask {
                         self.finalize_success(queue, ipc, total_uploaded);
                         StepResult::Done
                     }
+                    Ok(MipChainAdvance::YieldBackground) => StepResult::YieldBackground,
                     Err(e) => {
                         logger::warn!("cubemap {id}: upload failed: {e}");
                         StepResult::Done

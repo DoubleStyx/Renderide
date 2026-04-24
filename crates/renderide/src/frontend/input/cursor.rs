@@ -25,8 +25,8 @@ fn warp_cursor_logical(window: &Window, p: &IVec2) -> Result<(), winit::error::E
     window.set_cursor_position(physical)
 }
 
-/// Reapplies grab and warp **every frame** while the host requests cursor lock (matches the legacy
-/// renderer redraw path: center when no freeze position, else the host lock point).
+/// Reapplies grab and warp **every frame** while the host requests cursor lock: the cursor is
+/// centered when the host supplies no freeze position, else snapped to the host lock point.
 ///
 /// Call after [`apply_output_state_to_window`] when [`OutputState::lock_cursor`] is true so relative
 /// look and IPC [`crate::shared::MouseState::window_position`] stay aligned with the OS cursor.

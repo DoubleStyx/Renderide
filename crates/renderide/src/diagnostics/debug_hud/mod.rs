@@ -32,15 +32,32 @@ fn overlay_frame_timing_window(ui: &imgui::Ui, frame_timing: Option<&FrameTiming
     DebugHud::frame_timing_window(ui, frame_timing);
 }
 
-/// Renders the **Renderide debug** tabbed panel (Stats / Shader routes / Draw state / GPU memory).
+/// Per-frame read-only snapshots shown in the **Renderide debug** tabbed panel.
+struct MainDebugWindowSnapshots<'a> {
+    /// IPC / adapter / scene / materials / graph stats for the **Stats** tab.
+    latest: Option<&'a RendererInfoSnapshot>,
+    /// Timing, host/allocator, draws, shader routes, GPU memory tab payload.
+    frame_diagnostics: Option<&'a FrameDiagnosticsSnapshot>,
+    /// Flattened per-pass GPU timings for the **GPU passes** tab.
+    gpu_pass_timings: &'a [crate::profiling::GpuPassEntry],
+}
+
+/// Mutable tab filter toggles owned by [`DebugHud`] and borrowed into the main debug window.
+struct MainDebugTabFilters<'a> {
+    /// **Shader routes** tab: show only fallback routes when set.
+    shader_routes_only_fallback: &'a mut bool,
+    /// **Draw state** tab: show only overlay/UI-ish draws when set.
+    draw_state_ui_only: &'a mut bool,
+    /// **Draw state** tab: show only material rows with render-state overrides when set.
+    draw_state_only_overrides: &'a mut bool,
+}
+
+/// Renders the **Renderide debug** tabbed panel (Stats / Shader routes / Draw state / GPU memory / GPU passes).
 fn overlay_main_debug_window(
     ui: &imgui::Ui,
     width: u32,
-    latest: Option<&RendererInfoSnapshot>,
-    frame_diagnostics: Option<&FrameDiagnosticsSnapshot>,
-    shader_routes_only_fallback: &mut bool,
-    draw_state_ui_only: &mut bool,
-    draw_state_only_overrides: &mut bool,
+    snapshots: MainDebugWindowSnapshots<'_>,
+    filters: MainDebugTabFilters<'_>,
 ) {
     const PANEL_WIDTH: f32 = 760.0;
     let panel_x = (width as f32 - PANEL_WIDTH - layout::MARGIN).max(layout::MARGIN);
@@ -49,6 +66,17 @@ fn overlay_main_debug_window(
         | WindowFlags::NO_SAVED_SETTINGS
         | WindowFlags::NO_FOCUS_ON_APPEARING
         | WindowFlags::NO_NAV;
+
+    let MainDebugWindowSnapshots {
+        latest,
+        frame_diagnostics,
+        gpu_pass_timings,
+    } = snapshots;
+    let MainDebugTabFilters {
+        shader_routes_only_fallback,
+        draw_state_ui_only,
+        draw_state_only_overrides,
+    } = filters;
 
     ui.window("Renderide debug")
         .position([panel_x, layout::MARGIN], Condition::FirstUseEver)
@@ -77,6 +105,9 @@ fn overlay_main_debug_window(
                 }
                 if let Some(_tab) = ui.tab_item("GPU memory") {
                     DebugHud::gpu_memory_tab(ui, frame_diagnostics);
+                }
+                if let Some(_tab) = ui.tab_item("GPU passes") {
+                    DebugHud::gpu_passes_tab(ui, gpu_pass_timings);
                 }
             }
         });
@@ -134,6 +165,10 @@ pub struct DebugHud {
     suppress_renderer_config_disk_writes: bool,
     /// Whether the **Renderer config** window is open.
     renderer_config_open: bool,
+    /// Most recent flattened per-pass GPU timings for the **GPU passes** tab. Empty until the
+    /// first profiled frame completes; see
+    /// [`crate::gpu::GpuContext::latest_gpu_pass_timings_handle`].
+    gpu_pass_timings: Vec<crate::profiling::GpuPassEntry>,
 }
 
 impl DebugHud {
@@ -182,7 +217,16 @@ impl DebugHud {
             config_save_path,
             suppress_renderer_config_disk_writes,
             renderer_config_open: true,
+            gpu_pass_timings: Vec::new(),
         }
+    }
+
+    /// Replaces the flattened GPU pass timings shown in the **GPU passes** tab.
+    ///
+    /// Called once per winit tick from the HUD update path with the latest snapshot read out of
+    /// [`crate::gpu::GpuContext::latest_gpu_pass_timings_handle`].
+    pub fn set_gpu_pass_timings(&mut self, timings: Vec<crate::profiling::GpuPassEntry>) {
+        self.gpu_pass_timings = timings;
     }
 
     /// Stores [`FrameTimingHudSnapshot`] for the **Frame timing** window.
@@ -236,6 +280,7 @@ impl DebugHud {
 
     /// Updates ImGui delta time, display size, and injects [`DebugHudInput`] for this frame.
     fn apply_overlay_frame_io(&mut self, (width, height): (u32, u32), input: &DebugHudInput) {
+        profiling::scope!("hud::apply_input");
         let delta = self.last_frame_at.elapsed().max(Duration::from_millis(1));
         self.last_frame_at = Instant::now();
 
@@ -278,6 +323,7 @@ impl DebugHud {
         encoder: &mut wgpu::CommandEncoder,
         backbuffer: &wgpu::TextureView,
     ) -> Result<(bool, bool), DebugHudEncodeError> {
+        profiling::scope!("hud::encode_imgui_wgpu");
         let draw_data = self.imgui.render();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -314,6 +360,7 @@ impl DebugHud {
         (width, height): (u32, u32),
         input: &DebugHudInput,
     ) -> Result<(bool, bool), DebugHudEncodeError> {
+        profiling::scope!("hud::encode_overlay");
         self.apply_overlay_frame_io((width, height), input);
 
         let (frame_timing_hud, main_hud, transforms_hud, textures_hud, any_debug_content) =
@@ -328,11 +375,16 @@ impl DebugHud {
                 overlay_main_debug_window(
                     ui,
                     width,
-                    self.latest.as_ref(),
-                    self.frame_diagnostics.as_ref(),
-                    &mut self.shader_routes_only_fallback,
-                    &mut self.draw_state_ui_only,
-                    &mut self.draw_state_only_overrides,
+                    MainDebugWindowSnapshots {
+                        latest: self.latest.as_ref(),
+                        frame_diagnostics: self.frame_diagnostics.as_ref(),
+                        gpu_pass_timings: &self.gpu_pass_timings,
+                    },
+                    MainDebugTabFilters {
+                        shader_routes_only_fallback: &mut self.shader_routes_only_fallback,
+                        draw_state_ui_only: &mut self.draw_state_ui_only,
+                        draw_state_only_overrides: &mut self.draw_state_only_overrides,
+                    },
                 );
             }
             if transforms_hud {

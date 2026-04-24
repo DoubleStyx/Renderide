@@ -62,7 +62,7 @@ pub fn try_upload_mesh_from_raw(
     queue: Option<&wgpu::Queue>,
     raw: &[u8],
     data: &MeshUploadData,
-    existing: Option<&GpuMesh>,
+    existing: Option<GpuMesh>,
     layout: &MeshBufferLayout,
 ) -> Option<GpuMesh> {
     if raw.len() < layout.total_buffer_length {

@@ -1,0 +1,55 @@
+profile = "/interaction_profiles/khr/generic_controller"
+extension_gate = "khr_generic_controller"
+
+[[binding]]
+action = "left_grip_pose"
+path = "/user/hand/left/input/grip/pose"
+[[binding]]
+action = "right_grip_pose"
+path = "/user/hand/right/input/grip/pose"
+[[binding]]
+action = "left_aim_pose"
+path = "/user/hand/left/input/aim/pose"
+[[binding]]
+action = "right_aim_pose"
+path = "/user/hand/right/input/aim/pose"
+
+[[binding]]
+action = "left_trigger"
+path = "/user/hand/left/input/trigger/value"
+[[binding]]
+action = "right_trigger"
+path = "/user/hand/right/input/trigger/value"
+
+[[binding]]
+action = "left_squeeze"
+path = "/user/hand/left/input/squeeze/value"
+[[binding]]
+action = "right_squeeze"
+path = "/user/hand/right/input/squeeze/value"
+
+[[binding]]
+action = "left_thumbstick"
+path = "/user/hand/left/input/thumbstick"
+[[binding]]
+action = "right_thumbstick"
+path = "/user/hand/right/input/thumbstick"
+[[binding]]
+action = "left_thumbstick_click"
+path = "/user/hand/left/input/thumbstick/click"
+[[binding]]
+action = "right_thumbstick_click"
+path = "/user/hand/right/input/thumbstick/click"
+
+[[binding]]
+action = "left_primary"
+path = "/user/hand/left/input/select/click"
+[[binding]]
+action = "right_primary"
+path = "/user/hand/right/input/select/click"
+[[binding]]
+action = "left_secondary"
+path = "/user/hand/left/input/menu/click"
+[[binding]]
+action = "right_secondary"
+path = "/user/hand/right/input/menu/click"

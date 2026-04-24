@@ -194,7 +194,7 @@ fn layout_entry_for_sampled_image(
         ImageDimension::D2 => wgpu::TextureViewDimension::D2,
         ImageDimension::D3 => wgpu::TextureViewDimension::D3,
         ImageDimension::Cube => wgpu::TextureViewDimension::Cube,
-        _ => {
+        ImageDimension::D1 => {
             return Err(ReflectError::UnsupportedBinding {
                 group,
                 binding,

@@ -128,3 +128,140 @@ pub(crate) fn unity_single_blend_state(src: u8, dst: u8) -> Option<wgpu::BlendSt
         },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compare_function_covers_each_unity_value() {
+        assert_eq!(unity_compare_function(1), wgpu::CompareFunction::Never);
+        assert_eq!(unity_compare_function(2), wgpu::CompareFunction::Less);
+        assert_eq!(unity_compare_function(3), wgpu::CompareFunction::Equal);
+        assert_eq!(unity_compare_function(4), wgpu::CompareFunction::LessEqual);
+        assert_eq!(unity_compare_function(5), wgpu::CompareFunction::Greater);
+        assert_eq!(unity_compare_function(6), wgpu::CompareFunction::NotEqual);
+        assert_eq!(
+            unity_compare_function(7),
+            wgpu::CompareFunction::GreaterEqual
+        );
+        assert_eq!(unity_compare_function(8), wgpu::CompareFunction::Always);
+        // Unknown and 0 (Disabled) fall through to Always.
+        assert_eq!(unity_compare_function(0), wgpu::CompareFunction::Always);
+        assert_eq!(unity_compare_function(200), wgpu::CompareFunction::Always);
+    }
+
+    #[test]
+    fn depth_compare_inverts_for_reverse_z() {
+        // Unity Less (2) inverts to wgpu Greater under reverse-Z.
+        assert_eq!(
+            unity_depth_compare_function(2),
+            Some(wgpu::CompareFunction::Greater)
+        );
+        assert_eq!(
+            unity_depth_compare_function(5),
+            Some(wgpu::CompareFunction::Less)
+        );
+        assert_eq!(
+            unity_depth_compare_function(4),
+            Some(wgpu::CompareFunction::GreaterEqual)
+        );
+        assert_eq!(
+            unity_depth_compare_function(7),
+            Some(wgpu::CompareFunction::LessEqual)
+        );
+        // Disabled → Always (wgpu has no per-pipeline disable).
+        assert_eq!(
+            unity_depth_compare_function(0),
+            Some(wgpu::CompareFunction::Always)
+        );
+        assert_eq!(unity_depth_compare_function(99), None);
+    }
+
+    #[test]
+    fn stencil_operation_covers_unity_enum() {
+        assert_eq!(unity_stencil_operation(0), wgpu::StencilOperation::Keep);
+        assert_eq!(unity_stencil_operation(1), wgpu::StencilOperation::Zero);
+        assert_eq!(unity_stencil_operation(2), wgpu::StencilOperation::Replace);
+        assert_eq!(
+            unity_stencil_operation(3),
+            wgpu::StencilOperation::IncrementClamp
+        );
+        assert_eq!(
+            unity_stencil_operation(4),
+            wgpu::StencilOperation::DecrementClamp
+        );
+        assert_eq!(unity_stencil_operation(5), wgpu::StencilOperation::Invert);
+        assert_eq!(
+            unity_stencil_operation(6),
+            wgpu::StencilOperation::IncrementWrap
+        );
+        assert_eq!(
+            unity_stencil_operation(7),
+            wgpu::StencilOperation::DecrementWrap
+        );
+        // Unknown → Keep (stable, matches Unity default).
+        assert_eq!(unity_stencil_operation(200), wgpu::StencilOperation::Keep);
+    }
+
+    #[test]
+    fn color_writes_unpacks_rgba_nibble_order() {
+        assert_eq!(unity_color_writes(0), wgpu::ColorWrites::empty());
+        assert_eq!(unity_color_writes(0b1111), wgpu::ColorWrites::ALL);
+        assert_eq!(unity_color_writes(0b1000), wgpu::ColorWrites::RED);
+        assert_eq!(unity_color_writes(0b0100), wgpu::ColorWrites::GREEN);
+        assert_eq!(unity_color_writes(0b0010), wgpu::ColorWrites::BLUE);
+        assert_eq!(unity_color_writes(0b0001), wgpu::ColorWrites::ALPHA);
+        assert_eq!(
+            unity_color_writes(0b1010),
+            wgpu::ColorWrites::RED | wgpu::ColorWrites::BLUE
+        );
+    }
+
+    #[test]
+    fn blend_factor_mapping_covers_unity_indices() {
+        assert_eq!(unity_blend_factor(0), Some(wgpu::BlendFactor::Zero));
+        assert_eq!(unity_blend_factor(1), Some(wgpu::BlendFactor::One));
+        assert_eq!(unity_blend_factor(5), Some(wgpu::BlendFactor::SrcAlpha));
+        assert_eq!(
+            unity_blend_factor(10),
+            Some(wgpu::BlendFactor::OneMinusSrcAlpha)
+        );
+        assert_eq!(unity_blend_factor(11), None);
+    }
+
+    #[test]
+    fn blend_state_none_when_opaque_one_zero() {
+        // `Blend One Zero` → opaque, no wgpu blend state needed.
+        assert!(unity_blend_state(1, 0).is_none());
+        assert!(unity_single_blend_state(1, 0).is_none());
+    }
+
+    #[test]
+    fn blend_state_uses_separate_alpha_max() {
+        let bs = unity_blend_state(5, 10).expect("blend state");
+        assert_eq!(bs.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+        assert_eq!(bs.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+        assert_eq!(bs.color.operation, wgpu::BlendOperation::Add);
+        // Alpha uses One/One + Max regardless of src/dst factors.
+        assert_eq!(bs.alpha.src_factor, wgpu::BlendFactor::One);
+        assert_eq!(bs.alpha.dst_factor, wgpu::BlendFactor::One);
+        assert_eq!(bs.alpha.operation, wgpu::BlendOperation::Max);
+    }
+
+    #[test]
+    fn single_blend_state_shares_factors_on_both_components() {
+        let bs = unity_single_blend_state(5, 10).expect("blend state");
+        assert_eq!(bs.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+        assert_eq!(bs.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+        assert_eq!(bs.alpha.src_factor, bs.color.src_factor);
+        assert_eq!(bs.alpha.dst_factor, bs.color.dst_factor);
+        assert_eq!(bs.alpha.operation, wgpu::BlendOperation::Add);
+    }
+
+    #[test]
+    fn blend_state_rejects_unknown_factors() {
+        assert!(unity_blend_state(11, 0).is_none());
+        assert!(unity_single_blend_state(0, 11).is_none());
+    }
+}

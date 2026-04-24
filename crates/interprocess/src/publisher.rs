@@ -155,7 +155,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let cap = 24i64;
         let opts = QueueOptions::with_path("pub_no_adv", &dir, cap).expect("valid");
-        let mut publisher = Publisher::new(opts.clone()).expect("publisher");
+        let mut publisher = Publisher::new(opts).expect("publisher");
         let w0 = publisher.res.header().write_offset.load(Ordering::SeqCst);
         let big = vec![0u8; cap as usize];
         assert!(!publisher.try_enqueue(&big));
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn available_space_matches_check_capacity() {
-        let h = crate::layout::QueueHeader::default();
+        let h = QueueHeader::default();
         h.read_offset.store(0, Ordering::SeqCst);
         h.write_offset.store(16, Ordering::SeqCst);
         let cap = 64i64;

@@ -23,6 +23,7 @@ pub(crate) fn try_hmd_multiview_submit(
     runtime: &mut RendererRuntime,
     tick: &OpenxrFrameTick,
 ) -> bool {
+    profiling::scope!("xr::hmd_multiview_submit");
     crate::xr::try_openxr_hmd_multiview_submit(gpu, bundle, runtime, tick)
 }
 
@@ -38,5 +39,6 @@ where
     F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
     E: std::fmt::Display,
 {
+    profiling::scope!("vr::mirror_blit");
     mirror_blit.present_staging_to_surface_overlay(gpu, overlay)
 }

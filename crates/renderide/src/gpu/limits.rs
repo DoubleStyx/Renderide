@@ -26,7 +26,7 @@ pub const REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE: u32 = 8192;
 pub struct GpuLimits {
     /// Full wgpu limits for the active device (post–`request_device` effective caps).
     pub wgpu: wgpu::Limits,
-    /// Whether merged mesh draws may use non-zero `first_instance` (`wgpu::DownlevelCapabilities::is_webgpu_compliant`).
+    /// Whether merged mesh draws may use non-zero `first_instance` ([`wgpu::DownlevelCapabilities::is_webgpu_compliant`]).
     pub supports_base_instance: bool,
     /// Whether [`wgpu::Features::MULTIVIEW`] was enabled on the device.
     pub supports_multiview: bool,
@@ -63,6 +63,8 @@ impl GpuLimits {
 
         // Non–WebGPU-compliant stacks (e.g. some GLES/WebGL paths) may not implement `first_instance`
         // for `draw_indexed` batching the same way; disable merged instance batches there.
+        // wgpu 29 removed the dedicated BASE_INSTANCE DownlevelFlag; is_webgpu_compliant() is the
+        // correct proxy.
         let supports_base_instance = down.is_webgpu_compliant();
         let supports_multiview = features.contains(wgpu::Features::MULTIVIEW);
         let supports_float32_filterable = features.contains(wgpu::Features::FLOAT32_FILTERABLE);

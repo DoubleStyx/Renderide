@@ -9,9 +9,9 @@ use crate::shared::RenderTransform;
 
 /// `T_renderer_world_from_view`: maps view-local points into the renderer's world basis.
 ///
-/// Scene/object transforms are still expressed in the host/Unity-style LH basis, so the HMD pose
-/// must be converted into that same basis before building the legacy `z_flip * inverse(camera)`
-/// view matrix used by the mesh path.
+/// Scene/object transforms are still expressed in the host's LH basis, so the HMD pose must be
+/// converted into that same basis before the mesh path builds its `z_flip * inverse(camera)` view
+/// matrix.
 #[inline]
 pub(crate) fn ref_from_view_matrix(pose: &xr::Posef) -> Mat4 {
     let (translation, rotation) = openxr_pose_to_engine(pose);

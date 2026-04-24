@@ -165,4 +165,62 @@ mod path_tests {
             );
         }
     }
+
+    /// [`push_unique`] must not append a duplicate path; insertion order is otherwise preserved.
+    #[test]
+    fn push_unique_dedupes_existing_entries() {
+        let mut out: Vec<PathBuf> = Vec::new();
+        let a = PathBuf::from("/tmp/a");
+        let b = PathBuf::from("/tmp/b");
+        super::push_unique(&mut out, a.clone());
+        super::push_unique(&mut out, b.clone());
+        super::push_unique(&mut out, a.clone());
+        super::push_unique(&mut out, b.clone());
+        assert_eq!(out, vec![a, b]);
+    }
+
+    /// All env-mutating cases are exercised in a single test so they serialize under cargo's
+    /// default parallel test harness; mutating [`RENDERIDE_OPENXR_LOADER`] from concurrent tests
+    /// would race otherwise.
+    #[test]
+    fn env_override_absent_directory_and_verbatim() {
+        let _guard = EnvGuard::capture();
+        let name = openxr_loader_library_filename();
+
+        std::env::remove_var(RENDERIDE_OPENXR_LOADER);
+        assert!(
+            super::path_from_renderide_openxr_loader_env(name).is_none(),
+            "unset env should return None"
+        );
+
+        let tmp_dir = std::env::temp_dir();
+        std::env::set_var(RENDERIDE_OPENXR_LOADER, &tmp_dir);
+        let resolved =
+            super::path_from_renderide_openxr_loader_env(name).expect("directory override");
+        assert_eq!(resolved, tmp_dir.join(name));
+
+        let made_up = tmp_dir.join("renderide-openxr-test-this-path-should-not-exist.dll");
+        std::env::set_var(RENDERIDE_OPENXR_LOADER, &made_up);
+        let resolved = super::path_from_renderide_openxr_loader_env(name).expect("file override");
+        assert_eq!(resolved, made_up);
+    }
+
+    /// RAII guard that restores [`RENDERIDE_OPENXR_LOADER`] to its original state on drop so env
+    /// mutations across tests do not leak process-wide.
+    struct EnvGuard(Option<std::ffi::OsString>);
+
+    impl EnvGuard {
+        fn capture() -> Self {
+            Self(std::env::var_os(RENDERIDE_OPENXR_LOADER))
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var(RENDERIDE_OPENXR_LOADER, v),
+                None => std::env::remove_var(RENDERIDE_OPENXR_LOADER),
+            }
+        }
+    }
 }

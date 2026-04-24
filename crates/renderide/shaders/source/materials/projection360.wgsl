@@ -2,7 +2,6 @@
 //! optional second texture, tint texture, offset map, rectangular clipping, and Unity UI stencil state.
 
 // unity-shader-name: Projection360
-//#pass main: depth=greater_equal, zwrite=on, cull=back, blend=none, write=all, material=forward_base
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
@@ -24,23 +23,9 @@ struct Projection360Material {
     _Rect: vec4<f32>,
     _TextureLerp: f32,
     _CubeLOD: f32,
-    _ProjectionLerp: f32,
     _Exposure: f32,
     _Gamma: f32,
     _MaxIntensity: f32,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
-    _ZTest: f32,
-    _OffsetFactor: f32,
-    _OffsetUnits: f32,
-    _StencilComp: f32,
-    _Stencil: f32,
-    _StencilOp: f32,
-    _StencilWriteMask: f32,
-    _StencilReadMask: f32,
-    _ColorMask: f32,
     _RectClip: f32,
     _VIEW: f32,
     _WORLD_VIEW: f32,
@@ -280,6 +265,7 @@ fn vs_main(
     return out;
 }
 
+//#material forward_base
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if ((uvu::kw_enabled(mat._RectClip) || uvu::kw_enabled(mat.RECTCLIP)) && !inside_rect(in.local_xy, mat._Rect)) {

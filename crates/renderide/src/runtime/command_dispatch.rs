@@ -4,7 +4,9 @@
 
 use crate::shared::{
     FrameStartData, MaterialPropertyIdRequest, MaterialPropertyIdResult, MeshUploadData,
-    RendererCommand,
+    RendererCommand, SetCubemapData, SetCubemapFormat, SetCubemapProperties, SetTexture2DData,
+    SetTexture2DFormat, SetTexture2DProperties, SetTexture3DData, SetTexture3DFormat,
+    SetTexture3DProperties,
 };
 
 use super::renderer_command_kind::renderer_command_variant_tag;
@@ -32,50 +34,17 @@ pub(super) fn dispatch_running_command(runtime: &mut RendererRuntime, cmd: Rende
         RendererCommand::FrameSubmitData(data) => runtime.on_frame_submit(data),
         RendererCommand::MeshUploadData(d) => process_mesh_upload(runtime, d),
         RendererCommand::MeshUnload(u) => runtime.backend.on_mesh_unload(u),
-        RendererCommand::SetTexture2DFormat(f) => {
-            runtime
-                .backend
-                .on_set_texture_2d_format(f, runtime.frontend.ipc_mut());
-        }
-        RendererCommand::SetTexture2DProperties(p) => {
-            runtime
-                .backend
-                .on_set_texture_2d_properties(p, runtime.frontend.ipc_mut());
-        }
-        RendererCommand::SetTexture2DData(d) => {
-            let (shm, ipc) = runtime.frontend.transport_pair_mut();
-            runtime.backend.on_set_texture_2d_data(d, shm, ipc);
-        }
+        RendererCommand::SetTexture2DFormat(f) => dispatch_texture_2d_format(runtime, f),
+        RendererCommand::SetTexture2DProperties(p) => dispatch_texture_2d_properties(runtime, p),
+        RendererCommand::SetTexture2DData(d) => dispatch_texture_2d_data(runtime, d),
         RendererCommand::UnloadTexture2D(u) => runtime.backend.on_unload_texture_2d(u),
-        RendererCommand::SetTexture3DFormat(f) => {
-            runtime
-                .backend
-                .on_set_texture_3d_format(f, runtime.frontend.ipc_mut());
-        }
-        RendererCommand::SetTexture3DProperties(p) => {
-            runtime
-                .backend
-                .on_set_texture_3d_properties(p, runtime.frontend.ipc_mut());
-        }
-        RendererCommand::SetTexture3DData(d) => {
-            let (shm, ipc) = runtime.frontend.transport_pair_mut();
-            runtime.backend.on_set_texture_3d_data(d, shm, ipc);
-        }
+        RendererCommand::SetTexture3DFormat(f) => dispatch_texture_3d_format(runtime, f),
+        RendererCommand::SetTexture3DProperties(p) => dispatch_texture_3d_properties(runtime, p),
+        RendererCommand::SetTexture3DData(d) => dispatch_texture_3d_data(runtime, d),
         RendererCommand::UnloadTexture3D(u) => runtime.backend.on_unload_texture_3d(u),
-        RendererCommand::SetCubemapFormat(f) => {
-            runtime
-                .backend
-                .on_set_cubemap_format(f, runtime.frontend.ipc_mut());
-        }
-        RendererCommand::SetCubemapProperties(p) => {
-            runtime
-                .backend
-                .on_set_cubemap_properties(p, runtime.frontend.ipc_mut());
-        }
-        RendererCommand::SetCubemapData(d) => {
-            let (shm, ipc) = runtime.frontend.transport_pair_mut();
-            runtime.backend.on_set_cubemap_data(d, shm, ipc);
-        }
+        RendererCommand::SetCubemapFormat(f) => dispatch_cubemap_format(runtime, f),
+        RendererCommand::SetCubemapProperties(p) => dispatch_cubemap_properties(runtime, p),
+        RendererCommand::SetCubemapData(d) => dispatch_cubemap_data(runtime, d),
         RendererCommand::UnloadCubemap(u) => runtime.backend.on_unload_cubemap(u),
         RendererCommand::SetRenderTextureFormat(f) => {
             runtime
@@ -112,6 +81,11 @@ pub(super) fn dispatch_running_command(runtime: &mut RendererRuntime, cmd: Rende
                 "runtime: render_texture_result from host (ignored; renderer is source)"
             );
         }
+        RendererCommand::RendererEngineReady(_) => {
+            logger::trace!(
+                "runtime: renderer_engine_ready from host (post-init lifecycle ack; no action)"
+            );
+        }
         ref cmd => {
             let tag = renderer_command_variant_tag(cmd);
             runtime.record_unhandled_renderer_command(tag);
@@ -139,6 +113,57 @@ fn release_shared_memory_view(runtime: &mut RendererRuntime, buffer_id: i32) {
     if let Some(shm) = runtime.frontend.shared_memory_mut() {
         shm.release_view(buffer_id);
     }
+}
+
+fn dispatch_texture_2d_format(runtime: &mut RendererRuntime, f: SetTexture2DFormat) {
+    runtime
+        .backend
+        .on_set_texture_2d_format(f, runtime.frontend.ipc_mut());
+}
+
+fn dispatch_texture_2d_properties(runtime: &mut RendererRuntime, p: SetTexture2DProperties) {
+    runtime
+        .backend
+        .on_set_texture_2d_properties(p, runtime.frontend.ipc_mut());
+}
+
+fn dispatch_texture_2d_data(runtime: &mut RendererRuntime, d: SetTexture2DData) {
+    let (shm, ipc) = runtime.frontend.transport_pair_mut();
+    runtime.backend.on_set_texture_2d_data(d, shm, ipc);
+}
+
+fn dispatch_texture_3d_format(runtime: &mut RendererRuntime, f: SetTexture3DFormat) {
+    runtime
+        .backend
+        .on_set_texture_3d_format(f, runtime.frontend.ipc_mut());
+}
+
+fn dispatch_texture_3d_properties(runtime: &mut RendererRuntime, p: SetTexture3DProperties) {
+    runtime
+        .backend
+        .on_set_texture_3d_properties(p, runtime.frontend.ipc_mut());
+}
+
+fn dispatch_texture_3d_data(runtime: &mut RendererRuntime, d: SetTexture3DData) {
+    let (shm, ipc) = runtime.frontend.transport_pair_mut();
+    runtime.backend.on_set_texture_3d_data(d, shm, ipc);
+}
+
+fn dispatch_cubemap_format(runtime: &mut RendererRuntime, f: SetCubemapFormat) {
+    runtime
+        .backend
+        .on_set_cubemap_format(f, runtime.frontend.ipc_mut());
+}
+
+fn dispatch_cubemap_properties(runtime: &mut RendererRuntime, p: SetCubemapProperties) {
+    runtime
+        .backend
+        .on_set_cubemap_properties(p, runtime.frontend.ipc_mut());
+}
+
+fn dispatch_cubemap_data(runtime: &mut RendererRuntime, d: SetCubemapData) {
+    let (shm, ipc) = runtime.frontend.transport_pair_mut();
+    runtime.backend.on_set_cubemap_data(d, shm, ipc);
 }
 
 fn material_property_id_request(runtime: &mut RendererRuntime, req: MaterialPropertyIdRequest) {

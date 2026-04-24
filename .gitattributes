@@ -1,0 +1,4 @@
+# Pin TOML manifests to LF so taplo's default LF output matches the working
+# copy on Windows runners (Git for Windows' core.autocrlf=true would otherwise
+# rewrite them to CRLF on checkout and fail `taplo fmt --check`).
+*.toml text eol=lf

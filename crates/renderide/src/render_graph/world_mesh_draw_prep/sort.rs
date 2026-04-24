@@ -14,9 +14,15 @@ use crate::materials::{
 };
 use crate::pipelines::ShaderPermutation;
 
+use super::material_batch_cache::{
+    FrameMaterialBatchCache, MaterialResolveCtx, ResolvedMaterialBatch,
+};
 use super::types::{MaterialDrawBatchKey, WorldMeshDrawItem};
 
 /// Builds a [`MaterialDrawBatchKey`] for one material slot from dictionary + router state.
+///
+/// This is the full per-draw computation path. Used for cache warm-up and as a fallback for
+/// materials not present in [`FrameMaterialBatchCache`] (e.g. render-context override materials).
 pub(super) fn batch_key_for_slot(
     material_asset_id: i32,
     property_block_id: Option<i32>,
@@ -78,6 +84,56 @@ pub(super) fn batch_key_for_slot(
         render_state,
         blend_mode: material_blend_mode,
         alpha_blended,
+    }
+}
+
+/// Assembles a [`MaterialDrawBatchKey`] from a pre-resolved [`ResolvedMaterialBatch`] entry.
+#[inline]
+fn batch_key_from_resolved(
+    material_asset_id: i32,
+    property_block_id: Option<i32>,
+    skinned: bool,
+    r: &ResolvedMaterialBatch,
+) -> MaterialDrawBatchKey {
+    MaterialDrawBatchKey {
+        pipeline: r.pipeline.clone(),
+        shader_asset_id: r.shader_asset_id,
+        material_asset_id,
+        property_block_slot0: property_block_id,
+        skinned,
+        embedded_needs_uv0: r.embedded_needs_uv0,
+        embedded_needs_color: r.embedded_needs_color,
+        embedded_needs_extended_vertex_streams: r.embedded_needs_extended_vertex_streams,
+        embedded_requires_intersection_pass: r.embedded_requires_intersection_pass,
+        render_state: r.render_state,
+        blend_mode: r.blend_mode,
+        alpha_blended: r.alpha_blended,
+    }
+}
+
+/// Builds a [`MaterialDrawBatchKey`] using a pre-built [`FrameMaterialBatchCache`].
+///
+/// Falls back to the full dictionary / router lookup path when the material is not cached (e.g.
+/// render-context override materials not encountered during the eager pre-build pass).
+pub(super) fn batch_key_for_slot_cached(
+    material_asset_id: i32,
+    property_block_id: Option<i32>,
+    skinned: bool,
+    cache: &FrameMaterialBatchCache,
+    ctx: MaterialResolveCtx<'_>,
+) -> MaterialDrawBatchKey {
+    if let Some(resolved) = cache.get(material_asset_id, property_block_id) {
+        batch_key_from_resolved(material_asset_id, property_block_id, skinned, resolved)
+    } else {
+        batch_key_for_slot(
+            material_asset_id,
+            property_block_id,
+            skinned,
+            ctx.dict,
+            ctx.router,
+            ctx.pipeline_property_ids,
+            ctx.shader_perm,
+        )
     }
 }
 

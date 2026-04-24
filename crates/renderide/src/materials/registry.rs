@@ -23,7 +23,7 @@ pub struct MaterialRegistry {
 
 impl MaterialRegistry {
     fn try_pipeline_with_fallback(
-        &mut self,
+        &self,
         shader_asset_id: Option<i32>,
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
@@ -126,7 +126,7 @@ impl MaterialRegistry {
 
     /// Resolves a cached or new pipeline for a host shader asset (via router + embedded stem when applicable).
     pub fn pipeline_for_shader_asset(
-        &mut self,
+        &self,
         shader_asset_id: i32,
         desc: &MaterialPipelineDesc,
         permutation: ShaderPermutation,
@@ -146,7 +146,7 @@ impl MaterialRegistry {
 
     /// Looks up a pipeline by explicit kind (for example tests or tools that do not use a host shader id).
     pub fn pipeline_for_kind(
-        &mut self,
+        &self,
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         permutation: ShaderPermutation,
@@ -158,7 +158,7 @@ impl MaterialRegistry {
 
     /// Low-level cache access keyed by [`RasterPipelineKind`].
     pub fn get_or_create_pipeline(
-        &mut self,
+        &self,
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         permutation: ShaderPermutation,
@@ -214,7 +214,7 @@ mod wgpu_cache_tests {
     }
 
     fn ci_expects_wgpu_adapter() -> bool {
-        matches!(std::env::var("CI").as_deref(), Ok("true") | Ok("1"))
+        matches!(std::env::var("CI").as_deref(), Ok("true" | "1"))
     }
 
     /// Headless wgpu smoke: cache returns the same pipeline pointer for identical keys.
@@ -224,15 +224,14 @@ mod wgpu_cache_tests {
     #[test]
     fn debug_world_normals_pipeline_cache_hits() {
         let Some(device) = pollster::block_on(device_with_adapter()) else {
-            if ci_expects_wgpu_adapter() {
-                panic!(
-                    "wgpu adapter required when CI is set (install Vulkan / Mesa or Lavapipe on Linux)"
-                );
-            }
+            assert!(
+                !ci_expects_wgpu_adapter(),
+                "wgpu adapter required when CI is set (install Vulkan / Mesa or Lavapipe on Linux)"
+            );
             logger::warn!("skipping debug_world_normals_pipeline_cache_hits: no wgpu adapter");
             return;
         };
-        let mut reg = MaterialRegistry::with_default_families(device);
+        let reg = MaterialRegistry::with_default_families(device);
         let desc = MaterialPipelineDesc {
             surface_format: wgpu::TextureFormat::Bgra8UnormSrgb,
             depth_stencil_format: None,
@@ -273,7 +272,7 @@ mod wgpu_cache_tests {
             logger::warn!("skipping permutation_bit_changes_pipeline: no wgpu adapter");
             return;
         };
-        let mut reg = MaterialRegistry::with_default_families(device);
+        let reg = MaterialRegistry::with_default_families(device);
         let desc = MaterialPipelineDesc {
             surface_format: wgpu::TextureFormat::Bgra8UnormSrgb,
             depth_stencil_format: None,

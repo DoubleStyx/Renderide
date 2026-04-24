@@ -6,8 +6,9 @@ use openxr::{CompositionLayerProjection, CompositionLayerProjectionView, Swapcha
 /// Owns OpenXR session objects (constructed in [`super::super::bootstrap::init_wgpu_openxr`]).
 pub struct XrSessionState {
     pub(super) xr_instance: xr::Instance,
-    /// Dropped before [`Self::xr_instance`] so the messenger handle is destroyed first.
-    #[allow(dead_code)]
+    /// Dropped before [`Self::xr_instance`] so the messenger handle is destroyed first; held only
+    /// for this Drop ordering, hence never read after construction.
+    #[expect(dead_code, reason = "drop-order-only field; see doc comment above")]
     pub(super) openxr_debug_messenger: Option<super::super::debug_utils::OpenxrDebugUtilsMessenger>,
     pub(super) environment_blend_mode: xr::EnvironmentBlendMode,
     pub(super) session: xr::Session<xr::Vulkan>,
@@ -18,26 +19,38 @@ pub struct XrSessionState {
     pub(super) event_storage: xr::EventDataBuffer,
 }
 
+/// Bundle of values needed to construct [`XrSessionState`] — `new` takes this instead of seven
+/// separate parameters to keep the bootstrap signature readable.
+pub(in crate::xr) struct XrSessionStateDescriptor {
+    /// OpenXR instance (retained for the session lifetime).
+    pub(in crate::xr) xr_instance: xr::Instance,
+    /// Debug-utils messenger; must drop before the instance. See [`XrSessionState`].
+    pub(in crate::xr) openxr_debug_messenger:
+        Option<super::super::debug_utils::OpenxrDebugUtilsMessenger>,
+    /// Blend mode used for `xrEndFrame`.
+    pub(in crate::xr) environment_blend_mode: xr::EnvironmentBlendMode,
+    /// Vulkan-backed session.
+    pub(in crate::xr) session: xr::Session<xr::Vulkan>,
+    /// Frame waiter from the session tuple.
+    pub(in crate::xr) frame_wait: xr::FrameWaiter,
+    /// Frame stream from the session tuple.
+    pub(in crate::xr) frame_stream: xr::FrameStream<xr::Vulkan>,
+    /// Stage reference space used for view + controller pose location.
+    pub(in crate::xr) stage: xr::Space,
+}
+
 impl XrSessionState {
     /// Constructed only from [`crate::xr::bootstrap::init_wgpu_openxr`].
-    pub(in crate::xr) fn new(
-        xr_instance: xr::Instance,
-        openxr_debug_messenger: Option<super::super::debug_utils::OpenxrDebugUtilsMessenger>,
-        environment_blend_mode: xr::EnvironmentBlendMode,
-        session: xr::Session<xr::Vulkan>,
-        frame_wait: xr::FrameWaiter,
-        frame_stream: xr::FrameStream<xr::Vulkan>,
-        stage: xr::Space,
-    ) -> Self {
+    pub(in crate::xr) fn new(desc: XrSessionStateDescriptor) -> Self {
         Self {
-            xr_instance,
-            openxr_debug_messenger,
-            environment_blend_mode,
-            session,
+            xr_instance: desc.xr_instance,
+            openxr_debug_messenger: desc.openxr_debug_messenger,
+            environment_blend_mode: desc.environment_blend_mode,
+            session: desc.session,
             session_running: false,
-            frame_wait,
-            frame_stream,
-            stage,
+            frame_wait: desc.frame_wait,
+            frame_stream: desc.frame_stream,
+            stage: desc.stage,
             event_storage: xr::EventDataBuffer::new(),
         }
     }
@@ -63,6 +76,9 @@ impl XrSessionState {
                     _ => {}
                 },
                 InstanceLossPending(_) => return Ok(false),
+                InteractionProfileChanged(_) => {
+                    logger::info!("OpenXR interaction profile changed");
+                }
                 _ => {}
             }
         }
@@ -121,6 +137,7 @@ impl XrSessionState {
         views: &[xr::View],
         image_rect: xr::Rect2Di,
     ) -> Result<(), xr::sys::Result> {
+        profiling::scope!("xr::end_frame");
         if views.len() < 2 {
             return self.end_frame_empty(predicted_display_time);
         }
@@ -176,7 +193,8 @@ impl XrSessionState {
 /// `xrEndFrame` fail with `XR_ERROR_POSE_INVALID`.
 fn sanitize_pose_for_end_frame(pose: xr::Posef) -> xr::Posef {
     let o = pose.orientation;
-    let len_sq = o.x * o.x + o.y * o.y + o.z * o.z + o.w * o.w;
+    let len_sq =
+        o.w.mul_add(o.w, o.z.mul_add(o.z, o.x.mul_add(o.x, o.y * o.y)));
     if len_sq.is_finite() && len_sq >= 1e-10 {
         pose
     } else {

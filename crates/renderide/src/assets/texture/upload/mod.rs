@@ -22,8 +22,9 @@ pub use format_resolve::{
 };
 pub use texture3d_write::{
     write_texture3d_mips, Texture3dMipAdvance, Texture3dMipChainUploader, Texture3dMipUploadStep,
+    Texture3dUploadContext,
 };
 pub use write_mip_chain::{
-    texture_upload_start, write_texture2d_mips, MipChainAdvance, TextureDataStart,
-    TextureMipChainUploader, TextureMipUploadStep,
+    texture_upload_start, write_texture2d_mips, MipChainAdvance, Texture2dUploadContext,
+    TextureDataStart, TextureMipChainUploader, TextureMipUploadStep,
 };

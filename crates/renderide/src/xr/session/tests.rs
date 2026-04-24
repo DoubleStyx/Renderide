@@ -164,6 +164,65 @@ fn pitch_up_moves_forward_point_up_in_clip_space() {
     );
 }
 
+/// An OpenXR pose whose quaternion has zero length cannot be normalized; the conversion must fall
+/// back to identity rather than produce NaN components.
+#[test]
+fn non_finite_quat_falls_back_to_identity() {
+    let pose = xr::Posef {
+        orientation: xr::Quaternionf {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 0.0,
+        },
+        position: xr::Vector3f {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    };
+    let (_p, q) = super::view_math::openxr_pose_to_host_tracking(&pose);
+    assert!(q.abs_diff_eq(Quat::IDENTITY, 1e-4));
+}
+
+/// [`headset_center_pose_from_stereo_views`] returns [`None`] for an empty view slice and the raw
+/// mono pose (not the averaged one) for a single-view slice.
+#[test]
+fn headset_center_pose_handles_empty_and_single_view() {
+    use super::view_math::{headset_pose_from_xr_view, openxr_pose_to_host_tracking};
+
+    let views: [xr::View; 0] = [];
+    assert!(headset_center_pose_from_stereo_views(&views).is_none());
+
+    let pose = xr::Posef {
+        orientation: xr::Quaternionf {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        },
+        position: xr::Vector3f {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        },
+    };
+    let fov = xr::Fovf {
+        angle_left: 0.0,
+        angle_right: 0.0,
+        angle_up: 0.0,
+        angle_down: 0.0,
+    };
+    let single = [xr::View { pose, fov }];
+    let (p, q) = headset_center_pose_from_stereo_views(&single).expect("single-view pose");
+    let (expected_p, expected_q) = headset_pose_from_xr_view(&single[0]);
+    assert!(p.abs_diff_eq(expected_p, 1e-5));
+    assert!(q.abs_diff_eq(expected_q, 1e-5));
+
+    let (raw_p, _) = openxr_pose_to_host_tracking(&pose);
+    assert!(p.abs_diff_eq(raw_p, 1e-5));
+}
+
 #[test]
 fn yaw_right_moves_forward_point_left_in_clip_space() {
     // OpenXR uses right-handed pose rotations with -Z forward, so physical "look right"

@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::assets::texture::{
-    texture_upload_start, MipChainAdvance, TextureDataStart, TextureMipChainUploader,
-    TextureMipUploadStep, TextureUploadError,
+    texture_upload_start, MipChainAdvance, Texture2dUploadContext, TextureDataStart,
+    TextureMipChainUploader, TextureMipUploadStep, TextureUploadError,
 };
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
@@ -23,7 +23,7 @@ enum TextureStage {
     /// Upload one mip per [`super::integrator::drain_asset_tasks`] step from an owned payload copy.
     MipChain {
         uploader: TextureMipChainUploader,
-        payload: Vec<u8>,
+        payload: Arc<[u8]>,
     },
 }
 
@@ -63,6 +63,7 @@ impl TextureUploadTask {
         queue: &mut AssetTransferQueue,
         device: &Arc<wgpu::Device>,
         gpu_queue: &wgpu::Queue,
+        write_texture_submit_gate: &crate::gpu::WriteTextureSubmitGate,
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
@@ -82,15 +83,16 @@ impl TextureUploadTask {
                 let wgpu_format = self.wgpu_format;
                 let upload = &self.data;
                 let start = shm.with_read_bytes(&upload.data, |raw| {
-                    let start = texture_upload_start(
-                        device.as_ref(),
-                        gpu_queue,
+                    let start = texture_upload_start(&Texture2dUploadContext {
+                        device: device.as_ref(),
+                        queue: gpu_queue,
+                        write_texture_submit_gate,
                         texture,
                         fmt,
                         wgpu_format,
                         upload,
                         raw,
-                    );
+                    });
                     let payload = match start {
                         Ok(TextureDataStart::MipChain(_)) => {
                             let want = upload.data.length.max(0) as usize;
@@ -100,13 +102,13 @@ impl TextureUploadTask {
                                         "raw shorter than descriptor (need {want}, got {})",
                                         raw.len()
                                     ))),
-                                    Vec::new(),
+                                    Arc::from([] as [u8; 0]),
                                 ));
                             }
                             //review: keep the bytes owned while the cooperative mip task spans frames.
-                            raw[..want].to_vec()
+                            Arc::from(&raw[..want])
                         }
-                        _ => Vec::new(),
+                        _ => Arc::from([] as [u8; 0]),
                     };
                     Some((start, payload))
                 });
@@ -137,6 +139,7 @@ impl TextureUploadTask {
                 let mip_result = uploader.upload_next_mip(TextureMipUploadStep {
                     device: device.as_ref(),
                     queue: gpu_queue,
+                    write_texture_submit_gate,
                     texture,
                     fmt,
                     wgpu_format,
@@ -152,6 +155,7 @@ impl TextureUploadTask {
                         self.finalize_success(queue, ipc, total_uploaded);
                         StepResult::Done
                     }
+                    Ok(MipChainAdvance::YieldBackground) => StepResult::YieldBackground,
                     Err(e) => {
                         logger::warn!("texture {id}: upload failed: {e}");
                         StepResult::Done

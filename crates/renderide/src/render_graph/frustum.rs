@@ -9,7 +9,7 @@ use glam::{Mat4, Vec3, Vec4, Vec4Swizzles};
 
 use crate::shared::RenderBoundingBox;
 
-/// Epsilon for homogeneous clip half-space tests (aligned with legacy visibility checks).
+/// Epsilon for homogeneous clip half-space tests used by frustum culling.
 pub const HOMOGENEOUS_CLIP_EPS: f32 = 1e-5;
 
 /// Maximum absolute half-extent below which uploaded mesh bounds are treated as **untrusted** for culling.
@@ -27,15 +27,6 @@ pub fn mesh_bounds_degenerate_for_cull(bounds: &RenderBoundingBox) -> bool {
     }
     let m = e.x.abs().max(e.y.abs()).max(e.z.abs());
     m < DEGENERATE_MESH_BOUNDS_EXTENT_EPS
-}
-
-/// Largest absolute half-extent along any axis; `0` if extents are non-finite.
-pub fn mesh_bounds_max_half_extent(bounds: &RenderBoundingBox) -> f32 {
-    let e = bounds.extents;
-    if !(e.x.is_finite() && e.y.is_finite() && e.z.is_finite()) {
-        return 0.0;
-    }
-    e.x.abs().max(e.y.abs()).max(e.z.abs())
 }
 
 /// A plane `n · x + d = 0` with unit `n`.
@@ -164,9 +155,15 @@ fn world_aabb_from_local_bounds_affine(
     let c1 = m.y_axis.xyz();
     let c2 = m.z_axis.xyz();
 
-    let hx = c0.x.abs() * ex + c1.x.abs() * ey + c2.x.abs() * ez;
-    let hy = c0.y.abs() * ex + c1.y.abs() * ey + c2.y.abs() * ez;
-    let hz = c0.z.abs() * ex + c1.z.abs() * ey + c2.z.abs() * ez;
+    let hx =
+        c2.x.abs()
+            .mul_add(ez, c0.x.abs().mul_add(ex, c1.x.abs() * ey));
+    let hy =
+        c2.y.abs()
+            .mul_add(ez, c0.y.abs().mul_add(ex, c1.y.abs() * ey));
+    let hz =
+        c2.z.abs()
+            .mul_add(ez, c0.z.abs().mul_add(ex, c1.z.abs() * ey));
 
     if !(hx.is_finite() && hy.is_finite() && hz.is_finite()) {
         return None;
@@ -301,36 +298,6 @@ pub fn world_aabb_visible_in_homogeneous_clip(
     }
 
     true
-}
-
-/// Conservative world AABB for skinning: union of bone palette origins expanded by max half-extent.
-pub fn world_aabb_from_skinned_bone_origins(
-    bounds: &RenderBoundingBox,
-    bone_palette: &[Mat4],
-) -> Option<(Vec3, Vec3)> {
-    if bone_palette.is_empty() {
-        return None;
-    }
-    let pad = mesh_bounds_max_half_extent(bounds);
-    if !pad.is_finite() || pad < 0.0 {
-        return None;
-    }
-
-    let mut wmin = Vec3::splat(f32::INFINITY);
-    let mut wmax = Vec3::splat(f32::NEG_INFINITY);
-    for m in bone_palette {
-        let t = m.col(3);
-        let p = Vec3::new(t.x, t.y, t.z);
-        if p.x.is_finite() && p.y.is_finite() && p.z.is_finite() {
-            wmin = wmin.min(p);
-            wmax = wmax.max(p);
-        }
-    }
-    if !(wmin.x.is_finite() && wmax.x.is_finite()) {
-        return None;
-    }
-    let pad_v = Vec3::splat(pad);
-    Some((wmin - pad_v, wmax + pad_v))
 }
 
 #[cfg(test)]

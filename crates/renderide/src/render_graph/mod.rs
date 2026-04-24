@@ -25,9 +25,13 @@
 //!   multi-view runs [`PassPhase::FrameGlobal`] passes in a dedicated encoder + submit, then
 //!   **one encoder + submit per [`FrameView`]** for [`PassPhase::PerView`] passes so per-view
 //!   [`wgpu::Queue::write_buffer`] updates are visible before each view's commands; see
-//!   [`CompiledRenderGraph::execute_multi_view`].
+//!   [`CompiledRenderGraph::execute_multi_view`]. Before the per-view loop, transient resources,
+//!   per-view per-draw / frame state ([`crate::backend::FrameResourceManager`]), and the material
+//!   pipeline cache are pre-warmed once across all views so the per-view record path no longer
+//!   pays lazy `&mut` allocation costs (also a structural prerequisite for the parallel record
+//!   path; see [`record_parallel`]).
 //! - **[`GraphCache`]** memoizes a compiled graph by [`GraphCacheKey`] (surface extent, MSAA,
-//!   multiview, surface format) so the backend rebuilds only when one of those inputs changes.
+//!   multiview, surface format, scene HDR format) so the backend rebuilds only when one of those inputs changes.
 //!
 //! [`CompileStats`] field `topo_levels` counts Kahn-style **parallel waves** in the DAG at compile
 //! time; the executor still walks passes in a **single flat order** (waves are not a separate
@@ -51,8 +55,11 @@
 //!    deform runs before per-view passes at execute time ([`CompiledRenderGraph::execute_multi_view`]).
 //! 7. **HiZ** — [`passes::HiZBuildPass`] after depth is written; CPU readback feeds next frame’s cull
 //!    ([`crate::render_graph::occlusion`]).
-//! 8. **FrameEnd** — submit, optional debug HUD composite, present, Hi-Z frame bookkeeping.
+//! 8. **SceneColorCompose** — [`passes::SceneColorComposePass`] copies HDR scene color into the swapchain
+//!    / XR / offscreen output (hook for future post-processing).
+//! 9. **FrameEnd** — submit, optional debug HUD composite, present, Hi-Z frame bookkeeping.
 
+mod blackboard;
 mod builder;
 mod cache;
 mod camera;
@@ -61,17 +68,22 @@ mod compiled;
 mod context;
 mod error;
 mod frame_params;
+mod frame_upload_batch;
 mod frustum;
 mod hi_z_cpu;
 mod hi_z_occlusion;
 mod ids;
 pub mod occlusion;
 mod output_depth_mode;
-mod pass;
+pub mod pass;
+pub mod post_processing;
+mod record_parallel;
 mod resources;
 mod reverse_z_depth;
+mod schedule;
 mod secondary_camera;
 mod skinning_palette;
+mod swapchain_scope;
 mod transient_pool;
 mod world_mesh_cull;
 mod world_mesh_cull_eval;
@@ -87,14 +99,16 @@ pub use world_mesh_draw_prep::{
     build_instance_batches, collect_and_sort_world_mesh_draws,
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
     resolved_material_slots, sort_world_mesh_draws, CameraTransformDrawFilter,
-    DrawCollectionContext, InstanceBatch, MaterialDrawBatchKey, WorldMeshDrawCollectParallelism,
-    WorldMeshDrawCollection, WorldMeshDrawItem,
+    DrawCollectionContext, FrameMaterialBatchCache, FramePreparedRenderables, InstanceBatch,
+    MaterialDrawBatchKey, WorldMeshDrawCollectParallelism, WorldMeshDrawCollection,
+    WorldMeshDrawItem,
 };
 pub use world_mesh_draw_stats::{
     world_mesh_draw_state_rows_from_sorted, world_mesh_draw_stats_from_sorted,
     WorldMeshDrawStateRow, WorldMeshDrawStats,
 };
 
+pub use blackboard::{Blackboard, BlackboardSlot, FrameMotionVectorsSlot};
 pub use builder::GraphBuilder;
 pub use cache::{GraphCache, GraphCacheKey};
 pub use camera::{
@@ -105,20 +119,24 @@ pub use camera::{
 pub use camera::{DESKTOP_FOV_DEGREES_MAX, DESKTOP_FOV_DEGREES_MIN};
 pub use cluster_frame::{cluster_frame_params, cluster_frame_params_stereo, ClusterFrameParams};
 pub use compiled::{
-    ColorAttachmentTemplate, CompileStats, CompiledRenderGraph, DepthAttachmentTemplate,
-    ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewTarget,
-    OffscreenSingleViewExecuteSpec, RenderPassTemplate,
+    ColorAttachmentTemplate, CompileStats, CompiledRenderGraph, DepthAttachmentTemplate, DotFormat,
+    ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewTarget, RenderPassTemplate,
 };
 pub use context::{
-    GraphRasterPassContext, GraphResolvedResources, RenderPassContext, ResolvedGraphBuffer,
-    ResolvedGraphTexture, ResolvedImportedBuffer, ResolvedImportedTexture,
+    CallbackCtx, ComputePassCtx, CopyPassCtx, GraphRasterPassContext, GraphResolvedResources,
+    PostSubmitContext, RasterPassCtx, RenderPassContext, ResolvedGraphBuffer, ResolvedGraphTexture,
+    ResolvedImportedBuffer, ResolvedImportedTexture,
 };
 pub use error::{GraphBuildError, GraphExecuteError, RenderPassError, SetupError};
-pub use frame_params::{FrameRenderParams, HostCameraFrame, OcclusionViewId};
+pub use frame_params::{
+    FrameRenderParams, HostCameraFrame, OcclusionViewId, PerViewFramePlan, PerViewFramePlanSlot,
+    PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot, PrecomputedMaterialBind,
+    PrefetchedWorldMeshDrawsSlot, PreparedWorldMeshForwardFrame, StereoViewMatrices,
+    WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,
+};
 pub use frustum::{
-    mesh_bounds_degenerate_for_cull, mesh_bounds_max_half_extent, world_aabb_from_local_bounds,
-    world_aabb_from_skinned_bone_origins, world_aabb_visible_in_homogeneous_clip, Frustum, Plane,
-    HOMOGENEOUS_CLIP_EPS,
+    mesh_bounds_degenerate_for_cull, world_aabb_from_local_bounds,
+    world_aabb_visible_in_homogeneous_clip, Frustum, Plane, HOMOGENEOUS_CLIP_EPS,
 };
 pub use hi_z_cpu::{
     hi_z_pyramid_dimensions, hi_z_snapshot_from_linear_linear, mip_dimensions,
@@ -130,20 +148,25 @@ pub use hi_z_occlusion::{
 };
 pub use ids::{GroupId, PassId};
 pub use output_depth_mode::{OutputDepthMode, OutputDepthModeError};
-pub use pass::{GroupScope, PassBuilder, PassKind, PassPhase, RenderPass};
+pub use pass::{
+    CallbackPass, ComputePass, CopyPass, GroupScope, PassBuilder, PassKind, PassMergeHint,
+    PassNode, PassPhase, RasterPass, RasterPassBuilder,
+};
 pub use resources::{
     BackendFrameBufferKind, BufferAccess, BufferHandle, BufferImportSource, BufferSizePolicy,
     FrameTargetRole, HistorySlotId, ImportSource, ImportedBufferDecl, ImportedBufferHandle,
-    ImportedTextureDecl, ImportedTextureHandle, StorageAccess, TextureAccess,
+    ImportedTextureDecl, ImportedTextureHandle, StorageAccess, SubresourceHandle, TextureAccess,
     TextureAttachmentResolve, TextureAttachmentTarget, TextureHandle, TextureResourceHandle,
     TransientArrayLayers, TransientBufferDesc, TransientExtent, TransientSampleCount,
-    TransientTextureDesc, TransientTextureFormat,
+    TransientSubresourceDesc, TransientTextureDesc, TransientTextureFormat,
 };
 pub use reverse_z_depth::{
     main_forward_depth_stencil_format, MAIN_FORWARD_DEPTH_CLEAR, MAIN_FORWARD_DEPTH_COMPARE,
 };
+pub use schedule::{FrameSchedule, ScheduleHudSnapshot, ScheduleStep, ScheduleValidationError};
 pub use secondary_camera::{camera_state_enabled, host_camera_frame_for_render_texture};
 pub use skinning_palette::{build_skinning_palette, SkinningPaletteParams};
+pub use swapchain_scope::{SwapchainEnterOutcome, SwapchainScope};
 pub use transient_pool::{
     BufferKey, TextureKey, TransientPool, TransientPoolError, TransientPoolMetrics,
 };
@@ -164,7 +187,10 @@ struct MainGraphHandles {
     frame_uniforms: ImportedBufferHandle,
     cluster_params: BufferHandle,
     hi_z_readback: BufferHandle,
-    forward_msaa_color: TextureHandle,
+    /// Single-sample HDR scene color (forward resolve target + compose input).
+    scene_color_hdr: TextureHandle,
+    /// Multisampled HDR scene color for forward when MSAA is active.
+    scene_color_hdr_msaa: TextureHandle,
     forward_msaa_depth: TextureHandle,
     forward_msaa_depth_r32: TextureHandle,
 }
@@ -211,7 +237,7 @@ fn import_main_graph_textures(
     });
     let hi_z_current = builder.import_texture(ImportedTextureDecl {
         label: "hi_z_current",
-        source: ImportSource::PingPong(HistorySlotId::HiZ),
+        source: ImportSource::PingPong(HistorySlotId::HI_Z),
         initial_access: TextureAccess::Storage {
             stages: wgpu::ShaderStages::COMPUTE,
             access: StorageAccess::WriteOnly,
@@ -298,12 +324,17 @@ fn import_main_graph_buffers(builder: &mut GraphBuilder) -> MainGraphBufferImpor
     }
 }
 
+/// Declares cluster/Hi-Z staging buffers and HDR forward transients for [`build_main_graph`].
+///
+/// Forward MSAA depth targets use [`TransientArrayLayers::Frame`] (not a fixed layer count from
+/// [`GraphCacheKey::multiview_stereo`]) so the same compiled graph can run mono desktop and stereo
+/// OpenXR without mismatched multiview attachment layers.
 fn create_main_graph_transient_resources(
     builder: &mut GraphBuilder,
-    key: GraphCacheKey,
 ) -> (
     BufferHandle,
     BufferHandle,
+    TextureHandle,
     TextureHandle,
     TextureHandle,
     TextureHandle,
@@ -320,7 +351,6 @@ fn create_main_graph_transient_resources(
         base_usage: wgpu::BufferUsages::COPY_DST,
         alias: true,
     });
-    let stereo_layers = if key.multiview_stereo { 2u32 } else { 1u32 };
     // Use [`TransientExtent::Backbuffer`] for forward MSAA targets: [`build_default_main_graph`]
     // uses a placeholder [`GraphCacheKey::surface_extent`]; baking that into `Custom` extent would
     // allocate 1×1 textures while resolve / imported frame color stay at the real swapchain size.
@@ -329,18 +359,28 @@ fn create_main_graph_transient_resources(
     // Multisampled forward attachments use [`TransientSampleCount::Frame`] so pool allocations match
     // the live MSAA tier; [`GraphCacheKey::msaa_sample_count`] still invalidates [`GraphCache`].
     let extent_backbuffer = TransientExtent::Backbuffer;
-    // Use [`TransientTextureFormat::FrameColor`], not [`GraphCacheKey::surface_format`]:
-    // [`build_default_main_graph`] bakes a placeholder BGRA format while the live swapchain may be
-    // RGBA (or vice versa). MSAA resolve requires the multisampled attachment and resolve target
-    // formats to match; both follow [`ResolvedView::surface_format`] at execute time.
-    let forward_msaa_color = builder.create_texture(TransientTextureDesc {
-        label: "forward_msaa_color",
-        format: TransientTextureFormat::FrameColor,
+    // HDR scene color uses [`TransientTextureFormat::SceneColorHdr`]; the resolved format comes from
+    // [`crate::config::RenderingSettings::scene_color_format`] at execute time
+    // ([`TransientTextureResolveSurfaceParams::scene_color_format`]).
+    let scene_color_hdr = builder.create_texture(TransientTextureDesc {
+        label: "scene_color_hdr",
+        format: TransientTextureFormat::SceneColorHdr,
+        extent: extent_backbuffer,
+        mip_levels: 1,
+        sample_count: TransientSampleCount::Fixed(1),
+        dimension: wgpu::TextureDimension::D2,
+        array_layers: TransientArrayLayers::Frame,
+        base_usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        alias: true,
+    });
+    let scene_color_hdr_msaa = builder.create_texture(TransientTextureDesc {
+        label: "scene_color_hdr_msaa",
+        format: TransientTextureFormat::SceneColorHdr,
         extent: extent_backbuffer,
         mip_levels: 1,
         sample_count: TransientSampleCount::Frame,
         dimension: wgpu::TextureDimension::D2,
-        array_layers: TransientArrayLayers::Fixed(stereo_layers),
+        array_layers: TransientArrayLayers::Frame,
         base_usage: wgpu::TextureUsages::empty(),
         alias: true,
     });
@@ -350,7 +390,9 @@ fn create_main_graph_transient_resources(
         wgpu::TextureUsages::empty(),
     );
     forward_msaa_depth.sample_count = TransientSampleCount::Frame;
-    forward_msaa_depth.array_layers = TransientArrayLayers::Fixed(stereo_layers);
+    // Same layer policy as scene color MSAA: execute-time stereo (e.g. OpenXR) must not disagree
+    // with a graph built under a mono [`GraphCacheKey`].
+    forward_msaa_depth.array_layers = TransientArrayLayers::Frame;
     let forward_msaa_depth = builder.create_texture(forward_msaa_depth);
     let forward_msaa_depth_r32 = builder.create_texture(
         TransientTextureDesc::texture_2d(
@@ -360,27 +402,30 @@ fn create_main_graph_transient_resources(
             1,
             wgpu::TextureUsages::empty(),
         )
-        .with_array_layers(stereo_layers),
+        .with_frame_array_layers(),
     );
     (
         cluster_params,
         hi_z_readback,
-        forward_msaa_color,
+        scene_color_hdr,
+        scene_color_hdr_msaa,
         forward_msaa_depth,
         forward_msaa_depth_r32,
     )
 }
 
-fn import_main_graph_resources(builder: &mut GraphBuilder, key: GraphCacheKey) -> MainGraphHandles {
+/// Wires imported frame targets and main-graph transients into `builder` for [`build_main_graph`].
+fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGraphHandles {
     let (color, depth, hi_z_current) = import_main_graph_textures(builder);
     let buf = import_main_graph_buffers(builder);
     let (
         cluster_params,
         hi_z_readback,
-        forward_msaa_color,
+        scene_color_hdr,
+        scene_color_hdr_msaa,
         forward_msaa_depth,
         forward_msaa_depth_r32,
-    ) = create_main_graph_transient_resources(builder, key);
+    ) = create_main_graph_transient_resources(builder);
     MainGraphHandles {
         color,
         depth,
@@ -392,7 +437,8 @@ fn import_main_graph_resources(builder: &mut GraphBuilder, key: GraphCacheKey) -
         frame_uniforms: buf.frame_uniforms,
         cluster_params,
         hi_z_readback,
-        forward_msaa_color,
+        scene_color_hdr,
+        scene_color_hdr_msaa,
         forward_msaa_depth,
         forward_msaa_depth_r32,
     }
@@ -401,9 +447,10 @@ fn import_main_graph_resources(builder: &mut GraphBuilder, key: GraphCacheKey) -
 fn add_main_graph_passes_and_edges(
     mut builder: GraphBuilder,
     h: MainGraphHandles,
+    post_processing: &crate::config::PostProcessingSettings,
 ) -> Result<CompiledRenderGraph, GraphBuildError> {
-    let deform = builder.add_pass(Box::new(passes::MeshDeformPass::new()));
-    let clustered = builder.add_pass(Box::new(passes::ClusteredLightPass::new(
+    let deform = builder.add_compute_pass(Box::new(passes::MeshDeformPass::new()));
+    let clustered = builder.add_compute_pass(Box::new(passes::ClusteredLightPass::new(
         passes::ClusteredLightGraphResources {
             lights: h.lights,
             cluster_light_counts: h.cluster_light_counts,
@@ -412,9 +459,9 @@ fn add_main_graph_passes_and_edges(
         },
     )));
     let forward_resources = passes::WorldMeshForwardGraphResources {
-        color: h.color,
+        scene_color_hdr: h.scene_color_hdr,
+        scene_color_hdr_msaa: h.scene_color_hdr_msaa,
         depth: h.depth,
-        msaa_color: h.forward_msaa_color,
         msaa_depth: h.forward_msaa_depth,
         msaa_depth_r32: h.forward_msaa_depth_r32,
         cluster_light_counts: h.cluster_light_counts,
@@ -423,26 +470,37 @@ fn add_main_graph_passes_and_edges(
         per_draw_slab: h.per_draw_slab,
         frame_uniforms: h.frame_uniforms,
     };
-    let forward_prepare = builder.add_pass(Box::new(passes::WorldMeshForwardPreparePass::new(
-        forward_resources,
-    )));
-    let forward_opaque = builder.add_pass(Box::new(passes::WorldMeshForwardOpaquePass::new(
-        forward_resources,
-    )));
-    let depth_snapshot = builder.add_pass(Box::new(passes::WorldMeshDepthSnapshotPass::new(
-        forward_resources,
-    )));
-    let forward_intersect = builder.add_pass(Box::new(passes::WorldMeshForwardIntersectPass::new(
-        forward_resources,
-    )));
-    let depth_resolve = builder.add_pass(Box::new(passes::WorldMeshForwardDepthResolvePass::new(
-        forward_resources,
-    )));
-    let hiz = builder.add_pass(Box::new(passes::HiZBuildPass::new(
+    let forward_prepare = builder.add_callback_pass(Box::new(
+        passes::WorldMeshForwardPreparePass::new(forward_resources),
+    ));
+    let forward_opaque = builder.add_raster_pass(Box::new(
+        passes::WorldMeshForwardOpaquePass::new(forward_resources),
+    ));
+    let depth_snapshot = builder.add_compute_pass(Box::new(
+        passes::WorldMeshDepthSnapshotPass::new(forward_resources),
+    ));
+    let forward_intersect = builder.add_raster_pass(Box::new(
+        passes::WorldMeshForwardIntersectPass::new(forward_resources),
+    ));
+    let depth_resolve = builder.add_compute_pass(Box::new(
+        passes::WorldMeshForwardDepthResolvePass::new(forward_resources),
+    ));
+    let hiz = builder.add_compute_pass(Box::new(passes::HiZBuildPass::new(
         passes::HiZBuildGraphResources {
             depth: h.depth,
             hi_z_current: h.hi_z_current,
             readback_staging: h.hi_z_readback,
+        },
+    )));
+
+    let chain = build_default_post_processing_chain(&h, post_processing);
+    let chain_output = chain.build_into_graph(&mut builder, h.scene_color_hdr, post_processing);
+    let compose_input = chain_output.final_handle();
+
+    let compose = builder.add_raster_pass(Box::new(passes::SceneColorComposePass::new(
+        passes::SceneColorComposeGraphResources {
+            scene_color_hdr: compose_input,
+            frame_color: h.color,
         },
     )));
     builder.add_edge(deform, clustered);
@@ -452,41 +510,94 @@ fn add_main_graph_passes_and_edges(
     builder.add_edge(depth_snapshot, forward_intersect);
     builder.add_edge(forward_intersect, depth_resolve);
     builder.add_edge(depth_resolve, hiz);
+    if let Some((first_post, last_post)) = chain_output.pass_range() {
+        builder.add_edge(hiz, first_post);
+        builder.add_edge(last_post, compose);
+    } else {
+        builder.add_edge(hiz, compose);
+    }
     builder.build()
 }
 
-/// Builds the main frame graph: mesh deform compute, clustered lights, world forward, then Hi-Z readback.
+/// Builds the canonical post-processing chain shipped with the renderer.
+///
+/// Execution order is GTAO → ACES tonemap. GTAO must run first so ambient occlusion modulates
+/// linear HDR light before tonemap compresses it. Each effect gates itself via
+/// [`PostProcessEffect::is_enabled`] against the live [`crate::config::PostProcessingSettings`].
+///
+/// `GtaoEffect` is parameterised with the current [`crate::config::GtaoSettings`] snapshot and
+/// the imported `frame_uniforms` handle (used to access per-eye projection coefficients and the
+/// frame index at record time).
+fn build_default_post_processing_chain(
+    h: &MainGraphHandles,
+    post_processing: &crate::config::PostProcessingSettings,
+) -> post_processing::PostProcessChain {
+    let mut chain = post_processing::PostProcessChain::new();
+    chain.push(Box::new(passes::GtaoEffect {
+        settings: post_processing.gtao,
+        depth: h.depth,
+        frame_uniforms: h.frame_uniforms,
+    }));
+    chain.push(Box::new(passes::AcesTonemapEffect));
+    chain
+}
+
+/// Builds the main frame graph: mesh deform compute, clustered lights, world forward, Hi-Z readback,
+/// then HDR scene-color compose into the display target.
 ///
 /// Forward MSAA transients use [`TransientExtent::Backbuffer`] and [`TransientSampleCount::Frame`] so
 /// sizes match the current view at execute time (the graph is often built with
-/// [`build_default_main_graph`]'s placeholder [`GraphCacheKey::surface_extent`]). Forward MSAA
-/// color uses [`TransientTextureFormat::FrameColor`] so its format matches the live swapchain at
-/// execute time (the cache key’s surface format may not match [`build_default_main_graph`]'s
-/// hardcoded placeholder). `key` still drives fixed stereo layer count and [`GraphCache`] identity
-/// ([`GraphCacheKey::surface_format`], [`GraphCacheKey::multiview_stereo`],
+/// [`build_default_main_graph`]'s placeholder [`GraphCacheKey::surface_extent`]). HDR scene color
+/// uses [`TransientTextureFormat::SceneColorHdr`]; the resolved format follows
+/// [`crate::config::RenderingSettings::scene_color_format`] at execute time (see
+/// [`GraphCacheKey::scene_color_format`] for [`GraphCache`] identity). `key` still drives
+/// [`GraphCache`] identity ([`GraphCacheKey::surface_format`], [`GraphCacheKey::multiview_stereo`],
 /// [`GraphCacheKey::msaa_sample_count`]). Imported sources resolve at execute time via
 /// [`crate::backend::FrameResourceManager`].
-pub fn build_main_graph(key: GraphCacheKey) -> Result<CompiledRenderGraph, GraphBuildError> {
+pub fn build_main_graph(
+    key: GraphCacheKey,
+    post_processing: &crate::config::PostProcessingSettings,
+) -> Result<CompiledRenderGraph, GraphBuildError> {
+    logger::info!(
+        "main render graph: scene color HDR format = {:?}, post-processing = {} effect(s)",
+        key.scene_color_format,
+        key.post_processing.active_count()
+    );
     let mut builder = GraphBuilder::new();
-    let handles = import_main_graph_resources(&mut builder, key);
+    let handles = import_main_graph_resources(&mut builder);
     let msaa_handles = [
-        handles.forward_msaa_color,
+        handles.scene_color_hdr_msaa,
         handles.forward_msaa_depth,
         handles.forward_msaa_depth_r32,
     ];
-    let mut graph = add_main_graph_passes_and_edges(builder, handles)?;
+    let mut graph = add_main_graph_passes_and_edges(builder, handles, post_processing)?;
     graph.main_graph_msaa_transient_handles = Some(msaa_handles);
     Ok(graph)
 }
 
 /// Builds the main graph with a placeholder cache key for callers that still compile it once at attach.
+///
+/// Uses [`crate::config::PostProcessingSettings::default`] (chain disabled), yielding a graph with
+/// an empty post-processing chain. Pass live settings via [`build_default_main_graph_with`] when
+/// the chain should be applied.
 pub fn build_default_main_graph() -> Result<CompiledRenderGraph, GraphBuildError> {
-    build_main_graph(GraphCacheKey {
+    build_default_main_graph_with(&crate::config::PostProcessingSettings::default())
+}
+
+/// Builds the main graph with a placeholder cache key but applies `post_processing` so the chain
+/// is wired into the graph at attach time.
+pub fn build_default_main_graph_with(
+    post_processing: &crate::config::PostProcessingSettings,
+) -> Result<CompiledRenderGraph, GraphBuildError> {
+    let key = GraphCacheKey {
         surface_extent: (1, 1),
         msaa_sample_count: 1,
         multiview_stereo: false,
         surface_format: wgpu::TextureFormat::Bgra8UnormSrgb,
-    })
+        scene_color_format: wgpu::TextureFormat::Rgba16Float,
+        post_processing: post_processing::PostProcessChainSignature::from_settings(post_processing),
+    };
+    build_main_graph(key, post_processing)
 }
 
 #[cfg(test)]
@@ -494,6 +605,8 @@ mod default_graph_tests {
     use wgpu::TextureFormat;
 
     use super::*;
+    use crate::config::{PostProcessingSettings, TonemapMode, TonemapSettings};
+    use crate::render_graph::post_processing::PostProcessChainSignature;
 
     fn smoke_key() -> GraphCacheKey {
         GraphCacheKey {
@@ -501,34 +614,127 @@ mod default_graph_tests {
             msaa_sample_count: 1,
             multiview_stereo: false,
             surface_format: TextureFormat::Bgra8UnormSrgb,
+            scene_color_format: TextureFormat::Rgba16Float,
+            post_processing: PostProcessChainSignature::default(),
+        }
+    }
+
+    fn no_post() -> PostProcessingSettings {
+        PostProcessingSettings::default()
+    }
+
+    fn aces_enabled_post() -> PostProcessingSettings {
+        PostProcessingSettings {
+            enabled: true,
+            tonemap: TonemapSettings {
+                mode: TonemapMode::AcesFitted,
+            },
+            ..Default::default()
         }
     }
 
     #[test]
-    fn default_main_needs_surface_and_eight_passes() {
-        let g = build_main_graph(smoke_key()).expect("default graph");
+    fn default_main_needs_surface_and_nine_passes() {
+        let g = build_main_graph(smoke_key(), &no_post()).expect("default graph");
         assert!(g.needs_surface_acquire());
-        assert_eq!(g.pass_count(), 8);
-        assert_eq!(g.compile_stats.topo_levels, 8);
-        assert_eq!(g.compile_stats.transient_texture_count, 3);
+        assert_eq!(g.pass_count(), 9);
+        assert_eq!(g.compile_stats.topo_levels, 9);
+        assert_eq!(g.compile_stats.transient_texture_count, 4);
+    }
+
+    #[test]
+    fn enabling_aces_adds_a_pass_and_a_transient() {
+        let g_off = build_main_graph(smoke_key(), &no_post()).expect("default graph");
+        let mut key_on = smoke_key();
+        key_on.post_processing = PostProcessChainSignature::from_settings(&aces_enabled_post());
+        let g_on = build_main_graph(key_on, &aces_enabled_post()).expect("aces graph");
+        assert_eq!(g_on.pass_count(), g_off.pass_count() + 1);
+        assert!(g_on.needs_surface_acquire());
+        assert!(
+            g_on.compile_stats.transient_texture_count
+                >= g_off.compile_stats.transient_texture_count
+        );
     }
 
     #[test]
     fn graph_cache_reuses_when_key_unchanged() {
         let key = smoke_key();
+        let post = no_post();
         let mut cache = GraphCache::default();
         cache
-            .ensure(key, || build_main_graph(key))
+            .ensure(key, || build_main_graph(key, &post))
             .expect("first build");
         let n = cache.pass_count();
         let mut build_called = false;
         cache
             .ensure(key, || {
                 build_called = true;
-                build_main_graph(key)
+                build_main_graph(key, &post)
             })
             .expect("second ensure");
         assert!(!build_called);
         assert_eq!(cache.pass_count(), n);
+    }
+
+    #[test]
+    fn graph_cache_rebuilds_when_scene_color_format_changes() {
+        let mut a = smoke_key();
+        a.scene_color_format = TextureFormat::Rgba16Float;
+        let mut b = smoke_key();
+        b.scene_color_format = TextureFormat::Rg11b10Ufloat;
+        let post = no_post();
+        let mut cache = GraphCache::default();
+        cache
+            .ensure(a, || build_main_graph(a, &post))
+            .expect("first build");
+        let mut build_called = false;
+        cache
+            .ensure(b, || {
+                build_called = true;
+                build_main_graph(b, &post)
+            })
+            .expect("second ensure");
+        assert!(build_called);
+    }
+
+    /// MSAA depth transients must follow [`TransientArrayLayers::Frame`] so stereo execution matches
+    /// HDR color even when [`GraphCacheKey::multiview_stereo`] was `false` at compile time.
+    #[test]
+    fn forward_msaa_depth_uses_frame_array_layers_with_mono_cache_key() {
+        let mut key = smoke_key();
+        key.multiview_stereo = false;
+        let g = build_main_graph(key, &no_post()).expect("default graph");
+        let forward_depth = g
+            .transient_textures
+            .iter()
+            .find(|t| t.desc.label == "forward_msaa_depth")
+            .expect("forward_msaa_depth transient");
+        assert_eq!(forward_depth.desc.array_layers, TransientArrayLayers::Frame);
+        let r32 = g
+            .transient_textures
+            .iter()
+            .find(|t| t.desc.label == "forward_msaa_depth_r32")
+            .expect("forward_msaa_depth_r32 transient");
+        assert_eq!(r32.desc.array_layers, TransientArrayLayers::Frame);
+    }
+
+    #[test]
+    fn graph_cache_rebuilds_when_post_processing_signature_changes() {
+        let mut a = smoke_key();
+        a.post_processing = PostProcessChainSignature::default();
+        let mut b = smoke_key();
+        b.post_processing = PostProcessChainSignature::from_settings(&aces_enabled_post());
+        let mut cache = GraphCache::default();
+        cache
+            .ensure(a, || build_main_graph(a, &no_post()))
+            .expect("first build");
+        let mut build_called = false;
+        cache
+            .ensure(b, || {
+                build_called = true;
+                build_main_graph(b, &aces_enabled_post())
+            })
+            .expect("second ensure");
+        assert!(build_called);
     }
 }

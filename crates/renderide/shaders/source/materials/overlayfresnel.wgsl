@@ -1,12 +1,10 @@
 //! OverlayFresnel (`Shader "OverlayFresnel"`): two-pass fresnel overlay.
 //!
-//! Pass mapping uses reverse-Z:
-//! - Unity `ZTest Greater` becomes `depth=less` for the behind pass.
-//! - Unity `ZTest LEqual` becomes `depth=greater_equal` for the front pass.
+//! The `behind` pass uses reverse-Z `depth=Less` (Unity `ZTest Greater`) so the fresnel glow paints
+//! only where the geometry lies behind existing depth; the `front` pass uses the standard
+//! `depth=GreaterEqual` (Unity `ZTest LEqual`) for the visible silhouette.
 
 // unity-shader-name: OverlayFresnel
-//#pass behind: fs=fs_main_behind, depth=less, zwrite=on, cull=back, blend=one,zero,add, alpha=one,one,max
-//#pass front: fs=fs_main_front, depth=greater_equal, zwrite=on, cull=back, blend=one,zero,add, alpha=one,one,max
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
@@ -25,13 +23,7 @@ struct OverlayFresnelMaterial {
     _FrontNearTex_ST: vec4<f32>,
     _Exp: f32,
     _GammaCurve: f32,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
     _PolarPow: f32,
-    _OffsetFactor: f32,
-    _OffsetUnits: f32,
     _NORMALMAP: f32,
     _MUL_ALPHA_INTENSITY: f32,
     _POLARUV: f32,
@@ -125,6 +117,7 @@ fn apply_alpha_intensity(color_in: vec4<f32>) -> vec4<f32> {
     return color;
 }
 
+//#material overlay_behind
 @fragment
 fn fs_main_behind(in: VertexOutput) -> @location(0) vec4<f32> {
     let fresnel = fresnel_value(in, false);
@@ -136,6 +129,7 @@ fn fs_main_behind(in: VertexOutput) -> @location(0) vec4<f32> {
     return rg::retain_globals_additive(color);
 }
 
+//#material overlay_front
 @fragment
 fn fs_main_front(in: VertexOutput) -> @location(0) vec4<f32> {
     let fresnel = fresnel_value(in, true);

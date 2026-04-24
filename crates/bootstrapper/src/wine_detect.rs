@@ -4,12 +4,12 @@
 ///
 /// Native Windows, macOS, and Linux builds never report Wine except when
 /// `ntdll.dll` exports `wine_get_version` as injected by Wine.
-pub fn is_wine() -> bool {
+pub(crate) fn is_wine() -> bool {
     wine_get_version().is_some()
 }
 
 /// Wine version string from `ntdll`, or `None` when not running under Wine.
-pub fn wine_get_version() -> Option<String> {
+pub(crate) fn wine_get_version() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         wine_get_version_linux()

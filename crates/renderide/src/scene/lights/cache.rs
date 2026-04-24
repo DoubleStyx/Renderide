@@ -90,6 +90,7 @@ impl LightCache {
     }
 
     fn refresh_buffer_contributions(&mut self, lights_buffer_unique_id: i32) {
+        profiling::scope!("lights::refresh_buffer_contributions");
         let Some(buffer_data) = self.buffers.get(&lights_buffer_unique_id).cloned() else {
             return;
         };
@@ -125,6 +126,7 @@ impl LightCache {
     /// Reuses the [`Vec`] stored in [`Self::spaces`] and scratch buffers for sort keys so steady-state
     /// updates avoid allocating new vectors every time.
     fn rebuild_space_vec(&mut self, space_id: i32) {
+        profiling::scope!("lights::rebuild_space_vec");
         let v = self.spaces.entry(space_id).or_default();
         v.clear();
 
@@ -165,6 +167,7 @@ impl LightCache {
         additions: &[i32],
         states: &[LightsBufferRendererState],
     ) {
+        profiling::scope!("lights::apply_update");
         let removal_set: HashSet<i32> = removals.iter().take_while(|&&i| i >= 0).copied().collect();
 
         for &ridx in &removal_set {
@@ -330,6 +333,7 @@ impl LightCache {
         get_world_matrix: impl Fn(usize) -> Option<Mat4>,
         out: &mut Vec<ResolvedLight>,
     ) {
+        profiling::scope!("lights::resolve_lights_into");
         let Some(lights) = self.get_lights_for_space(space_id) else {
             return;
         };
@@ -380,7 +384,7 @@ impl LightCache {
         }
     }
 
-    /// Legacy alias for [`Self::resolve_lights`].
+    /// Alias for [`Self::resolve_lights`] kept for callers that distinguish the "with fallback" name.
     ///
     /// Raw buffer submissions are not renderable by themselves; a matching renderer state is required.
     pub fn resolve_lights_with_fallback(
@@ -391,7 +395,7 @@ impl LightCache {
         self.resolve_lights(space_id, get_world_matrix)
     }
 
-    /// Legacy alias for [`Self::resolve_lights_into`].
+    /// Alias for [`Self::resolve_lights_into`] kept for callers that distinguish the "with fallback" name.
     pub fn resolve_lights_with_fallback_into(
         &self,
         space_id: i32,

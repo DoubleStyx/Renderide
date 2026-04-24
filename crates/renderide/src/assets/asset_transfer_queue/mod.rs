@@ -68,6 +68,11 @@ pub struct AssetTransferQueue {
     pub(crate) gpu_device: Option<Arc<wgpu::Device>>,
     /// Submission queue paired with [`Self::gpu_device`].
     pub(crate) gpu_queue: Option<Arc<wgpu::Queue>>,
+    /// Shared ABBA gate cloned from [`crate::gpu::GpuContext`]; held around every
+    /// `Queue::write_texture` in the asset texture upload path so it cannot run
+    /// concurrently with the driver-thread `Queue::submit` that acquires the same gate.
+    /// See [`crate::gpu::WriteTextureSubmitGate`].
+    pub(crate) write_texture_submit_gate: Option<crate::gpu::WriteTextureSubmitGate>,
     /// Effective limits snapshot (set with device on attach).
     pub(crate) gpu_limits: Option<Arc<GpuLimits>>,
     /// When true, [`crate::resources::GpuRenderTexture`] uses `Rgba16Float`; else `Rgba8Unorm`.
@@ -140,6 +145,7 @@ impl AssetTransferQueue {
             cubemap_properties: HashMap::new(),
             gpu_device: None,
             gpu_queue: None,
+            write_texture_submit_gate: None,
             gpu_limits: None,
             render_texture_hdr_color: false,
             texture_vram_budget_bytes: 0,

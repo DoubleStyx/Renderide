@@ -37,4 +37,30 @@ mod tests {
     fn bytes_compact_zero() {
         assert_eq!(bytes_compact(0), "0.00 B");
     }
+
+    #[test]
+    fn bytes_compact_boundaries() {
+        assert_eq!(bytes_compact(1023), "1023.00 B");
+        assert_eq!(bytes_compact(1024), "1.00 KiB");
+        assert_eq!(bytes_compact(1024 * 1024), "1.00 MiB");
+        assert_eq!(bytes_compact(1024_u64.pow(3)), "1.00 GiB");
+        assert_eq!(bytes_compact(1024_u64.pow(4)), "1.00 TiB");
+        // Saturates at TiB (largest suffix).
+        assert_eq!(bytes_compact(1024_u64.pow(5)), "1024.00 TiB");
+    }
+
+    #[test]
+    fn gib_value_zero_and_exact_gib() {
+        assert_eq!(gib_value(6, 2, 0), "  0.00");
+        assert_eq!(gib_value(6, 2, 1024_u64.pow(3)), "  1.00");
+        assert_eq!(gib_value(6, 2, 2 * 1024_u64.pow(3)), "  2.00");
+    }
+
+    #[test]
+    fn f64_field_overflows_width_when_value_too_wide() {
+        // Width is a minimum: oversized values are not truncated.
+        let s = f64_field(4, 2, 12345.678);
+        assert!(s.len() >= 4);
+        assert!(s.trim_start().starts_with("12345.68"));
+    }
 }

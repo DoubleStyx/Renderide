@@ -2,17 +2,11 @@
 
 use crate::backend::mesh_deform::GpuSkinCache;
 use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
-use crate::backend::MaterialBindCacheKey;
 use crate::backend::WorldMeshForwardEncodeRefs;
-use crate::embedded_shaders;
 use crate::gpu::GpuLimits;
-use crate::materials::{
-    embedded_composed_stem_for_permutation, MaterialPassDesc, MaterialPipelineDesc,
-    MaterialPipelineSet, RasterPipelineKind,
-};
-use crate::pipelines::ShaderPermutation;
+use crate::materials::{MaterialPassDesc, MaterialPipelineSet};
+use crate::render_graph::frame_params::PrecomputedMaterialBind;
 use crate::render_graph::world_mesh_draw_prep::for_each_instance_batch;
-use crate::render_graph::MaterialDrawBatchKey;
 use crate::render_graph::WorldMeshDrawItem;
 use crate::resources::MeshPool;
 
@@ -29,301 +23,288 @@ pub(crate) struct EmbeddedVertexStreamFlags {
 /// GPU mesh pool and optional skin cache for [`draw_mesh_submesh_instanced`].
 pub(crate) struct WorldMeshDrawGpuRefs<'a> {
     /// Resident meshes and vertex buffers.
-    pub mesh_pool: &'a mut MeshPool,
-    /// Device for buffer ensures.
-    pub device: &'a wgpu::Device,
+    pub mesh_pool: &'a MeshPool,
     /// Skin/deform cache when the draw uses deformed or blendshape streams.
     pub skin_cache: Option<&'a GpuSkinCache>,
 }
 
-/// Last `@group(1)` bind state for skipping redundant [`wgpu::RenderPass::set_bind_group`] when unchanged.
+/// Compact identity for a [`wgpu::Buffer`] sub-range used to skip redundant vertex / index binds.
+///
+/// `byte_len == None` encodes a full-buffer `.slice(..)` bind; `Some(n)` is a ranged bind
+/// of `byte_offset..byte_offset + n`. Two `BufferBindId`s are equal when they refer to the
+/// same buffer object, offset, and length — a sufficient condition for the bind to be a no-op.
+///
+/// Buffer identity is a raw pointer cast to `usize`; the pointer is stable for the lifetime
+/// of the mesh pool / skin cache (both outlive any single render pass).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LastMaterialBindGroup1Key {
-    Embedded(MaterialBindCacheKey),
-    Empty,
+struct BufferBindId {
+    ptr: usize,
+    byte_offset: u64,
+    byte_len: Option<u64>,
 }
 
-/// State for resolving and binding embedded `@group(1)` material data for one draw batch.
-struct MaterialBindState<'a, 'b, 'c, 'd> {
-    rpass: &'a mut wgpu::RenderPass<'b>,
-    encode: &'a mut WorldMeshForwardEncodeRefs<'c>,
-    queue: &'a wgpu::Queue,
-    item: &'d WorldMeshDrawItem,
-    empty_bg: &'a wgpu::BindGroup,
-    last_material_bind_key: &'a mut Option<LastMaterialBindGroup1Key>,
-    warned_missing_embedded_bind: &'a mut bool,
-    offscreen_write_render_texture_asset_id: Option<i32>,
-}
+impl BufferBindId {
+    /// Full-buffer bind (`buf.slice(..)`).
+    fn full(buf: &wgpu::Buffer) -> Self {
+        Self {
+            ptr: buf as *const wgpu::Buffer as usize,
+            byte_offset: 0,
+            byte_len: None,
+        }
+    }
 
-/// Binds `@group(1)` for embedded stems (texture/uniform pack) or the empty fallback.
-fn set_world_mesh_material_bind_group(ctx: MaterialBindState<'_, '_, '_, '_>) {
-    if matches!(
-        &ctx.item.batch_key.pipeline,
-        RasterPipelineKind::EmbeddedStem(_)
-    ) {
-        let stem = ctx
-            .encode
-            .materials
-            .material_registry()
-            .and_then(|r| r.stem_for_shader_asset(ctx.item.batch_key.shader_asset_id));
-        if let (Some(mb), Some(stem)) = (ctx.encode.materials.embedded_material_bind(), stem) {
-            let pools = ctx.encode.embedded_texture_pools();
-            match mb.embedded_material_bind_group_with_cache_key(
-                stem,
-                ctx.queue,
-                ctx.encode.materials.material_property_store(),
-                &pools,
-                ctx.item.lookup_ids,
-                ctx.offscreen_write_render_texture_asset_id,
-            ) {
-                Ok((cache_key, bg)) => {
-                    if *ctx.last_material_bind_key
-                        != Some(LastMaterialBindGroup1Key::Embedded(cache_key))
-                    {
-                        ctx.rpass.set_bind_group(1, bg.as_ref(), &[]);
-                    }
-                    *ctx.last_material_bind_key =
-                        Some(LastMaterialBindGroup1Key::Embedded(cache_key));
-                }
-                Err(_) => {
-                    if *ctx.last_material_bind_key != Some(LastMaterialBindGroup1Key::Empty) {
-                        ctx.rpass.set_bind_group(1, ctx.empty_bg, &[]);
-                    }
-                    *ctx.last_material_bind_key = Some(LastMaterialBindGroup1Key::Empty);
-                }
-            }
-        } else {
-            if ctx.encode.materials.embedded_material_bind().is_none()
-                && !*ctx.warned_missing_embedded_bind
-            {
-                logger::warn!(
-                    "WorldMeshForward: embedded material bind resources unavailable; @group(1) uses empty bind group for embedded raster draws"
-                );
-                *ctx.warned_missing_embedded_bind = true;
-            }
-            if *ctx.last_material_bind_key != Some(LastMaterialBindGroup1Key::Empty) {
-                ctx.rpass.set_bind_group(1, ctx.empty_bg, &[]);
-            }
-            *ctx.last_material_bind_key = Some(LastMaterialBindGroup1Key::Empty);
+    /// Ranged bind (`buf.slice(byte_start..byte_end)`).
+    fn ranged(buf: &wgpu::Buffer, byte_start: u64, byte_end: u64) -> Self {
+        Self {
+            ptr: buf as *const wgpu::Buffer as usize,
+            byte_offset: byte_start,
+            byte_len: Some(byte_end - byte_start),
         }
-    } else {
-        if *ctx.last_material_bind_key != Some(LastMaterialBindGroup1Key::Empty) {
-            ctx.rpass.set_bind_group(1, ctx.empty_bg, &[]);
-        }
-        *ctx.last_material_bind_key = Some(LastMaterialBindGroup1Key::Empty);
     }
 }
 
-/// Draw indices, bind groups, and pipeline state for one mesh-forward raster subpass.
+/// Per-render-pass last-bound vertex and index buffer state for bind deduplication.
+///
+/// Tracks the last-submitted buffer identity for each of the 8 vertex slots and the index
+/// buffer. Reset at every new render pass (i.e. at the start of [`draw_subset`]).
+pub(crate) struct LastMeshBindState {
+    /// Last bound buffer identity per vertex slot 0–7; `None` = never bound this pass.
+    vertex: [Option<BufferBindId>; 8],
+    /// Last bound index buffer (pointer-as-usize identity) and format; `None` = never bound.
+    index: Option<(usize, wgpu::IndexFormat)>,
+}
+
+impl LastMeshBindState {
+    fn new() -> Self {
+        Self {
+            vertex: [None; 8],
+            index: None,
+        }
+    }
+}
+
+/// Draw indices, bind groups, and precomputed-batch table for one mesh-forward raster subpass.
+///
+/// Pipelines and `@group(1)` bind groups are pre-resolved in
+/// [`crate::render_graph::passes::world_mesh_forward::execute_helpers::precompute_material_resolve_batches`]
+/// during the prepare pass, so this struct carries no material-system references and makes no
+/// LRU cache lookups during recording.
 pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
     /// Active render pass.
     pub rpass: &'a mut wgpu::RenderPass<'b>,
-    /// Indices into `draws` for this subpass.
+    /// Indices into `draws` for this subpass (opaque or intersect).
     pub draw_indices: &'c [usize],
-    /// Sorted world mesh draws for the view.
+    /// Full sorted world mesh draw list for the view.
     pub draws: &'c [WorldMeshDrawItem],
-    /// Material registry, pools, and skin cache (see [`crate::render_graph::FrameRenderParams::world_mesh_forward_encode_refs`]).
+    /// Pre-resolved pipelines and bind groups; one entry per unique batch-key run in `draws`.
+    pub precomputed: &'c [PrecomputedMaterialBind],
+    /// Mesh pool and skin cache for vertex/index binding.
     pub encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
-    /// Queue for embedded material bind uploads.
-    pub queue: &'a wgpu::Queue,
-    /// GPU device for lazy mesh stream creation.
-    pub device: &'a wgpu::Device,
-    /// Device limits snapshot (dynamic storage offset alignment for `@group(2)`).
+    /// Device limits snapshot (storage-offset alignment for `@group(2)`).
     pub gpu_limits: &'a GpuLimits,
     /// Frame globals at `@group(0)`.
     pub frame_bg: &'a wgpu::BindGroup,
-    /// Fallback material bind group when a stem has no resources.
+    /// Fallback material bind group when a batch has no resolved `@group(1)`.
     pub empty_bg: &'a wgpu::BindGroup,
-    /// Per-draw storage slab at `@group(2)` (dynamic storage offset; see [`Self::supports_base_instance`]).
+    /// Per-draw storage slab at `@group(2)` (dynamic offset; see [`Self::supports_base_instance`]).
     pub per_draw_bind_group: &'a wgpu::BindGroup,
-    /// Surface / depth / MSAA pipeline description.
-    pub pass_desc: &'a MaterialPipelineDesc,
-    /// Default vs multiview shader permutation.
-    pub shader_perm: ShaderPermutation,
-    /// Set true after logging missing embedded bind resources once.
-    pub warned_missing_embedded_bind: &'a mut bool,
-    /// Offscreen render-texture write target for embedded lookups.
-    pub offscreen_write_render_texture_asset_id: Option<i32>,
     /// Whether `draw_indexed` may use non-zero `first_instance` / base instance.
     pub supports_base_instance: bool,
     /// Whether the packed frame light buffer contains any point/spot light.
     pub has_local_lights: bool,
 }
 
-fn declared_passes_for_pipeline(
-    pipeline: &RasterPipelineKind,
-    shader_perm: ShaderPermutation,
-) -> &'static [MaterialPassDesc] {
-    let RasterPipelineKind::EmbeddedStem(stem) = pipeline else {
-        return &[];
-    };
-    let composed = embedded_composed_stem_for_permutation(stem.as_ref(), shader_perm);
-    embedded_shaders::embedded_target_passes(&composed)
-}
-
 fn should_skip_pipeline_pass(
-    declared_passes: &[MaterialPassDesc],
+    declared_passes: &[crate::materials::MaterialPassDesc],
     pass_idx: usize,
     has_local_lights: bool,
 ) -> bool {
     !has_local_lights
-        && declared_passes
-            .get(pass_idx)
-            .is_some_and(|pass| pass.name == "forward_delta")
+        && declared_passes.get(pass_idx).is_some_and(|pass| {
+            pass.material_state == crate::materials::MaterialPassState::UnityForwardAdd
+        })
 }
 
-/// Resolves raster pipeline set for `item`’s batch key, logging when the registry has no match.
-fn resolve_pipelines_for_batch_item(
-    encode: &mut WorldMeshForwardEncodeRefs<'_>,
-    pass_desc: &MaterialPipelineDesc,
-    shader_perm: ShaderPermutation,
-    item: &WorldMeshDrawItem,
-) -> (bool, Option<MaterialPipelineSet>) {
-    let shader_asset_id = item.batch_key.shader_asset_id;
-    let material_blend_mode = item.batch_key.blend_mode;
-    match encode.materials.material_registry_mut() {
-        None => (false, None),
-        Some(reg) => {
-            match reg.pipeline_for_shader_asset(
-                shader_asset_id,
-                pass_desc,
-                shader_perm,
-                material_blend_mode,
-                item.batch_key.render_state,
-            ) {
-                Some(pipelines) if !pipelines.is_empty() => (true, Some(pipelines)),
-                Some(_) => {
-                    logger::trace!(
-                        "WorldMeshForward: empty pipeline set for shader_asset_id {:?} pipeline {:?}, skipping draws until registered",
-                        shader_asset_id,
-                        item.batch_key.pipeline
-                    );
-                    (false, None)
-                }
-                None => {
-                    logger::trace!(
-                        "WorldMeshForward: no pipeline for shader_asset_id {:?} pipeline {:?}, skipping draws until registered",
-                        shader_asset_id,
-                        item.batch_key.pipeline
-                    );
-                    (false, None)
-                }
-            }
-        }
-    }
-}
-
+/// Records one raster subpass using the pre-resolved batch table built by the prepare pass.
+///
+/// For each instance batch the cursor advances through `precomputed` to find the covering entry
+/// — O(1) amortised since both lists are in draw-index order. Pipelines and `@group(1)` bind
+/// groups are bound directly from the table; no cache lookups occur during recording.
 pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
+    profiling::scope!("world_mesh::draw_subset");
     let ForwardDrawBatch {
         rpass,
         draw_indices,
         draws,
+        precomputed,
         encode,
-        queue,
-        device,
         gpu_limits,
         frame_bg,
         empty_bg,
         per_draw_bind_group,
-        pass_desc,
-        shader_perm,
-        warned_missing_embedded_bind,
-        offscreen_write_render_texture_asset_id,
         supports_base_instance,
         has_local_lights,
     } = batch;
 
-    let mut last_batch_key: Option<MaterialDrawBatchKey> = None;
-    let mut last_material_bind_key: Option<LastMaterialBindGroup1Key> = None;
-    let mut current_pipelines: Option<MaterialPipelineSet> = None;
-    let mut current_declared_passes: &'static [MaterialPassDesc] = &[];
-    let mut pipeline_ok = false;
+    let mut last_mesh = LastMeshBindState::new();
+    let mut last_per_draw_dyn_offset: Option<u32> = None;
+    let mut last_stencil_ref: Option<u32> = None;
+    // Cursor into `precomputed`; advances monotonically as draw indices increase.
+    let mut batch_cursor: usize = 0;
+    // Track which precomputed batch is currently bound to avoid redundant set_bind_group(1).
+    let mut bound_batch_cursor: Option<usize> = None;
 
     rpass.set_bind_group(0, frame_bg, &[]);
 
     for_each_instance_batch(draws, draw_indices, supports_base_instance, |inst_batch| {
         let first_idx = inst_batch.first_draw_index;
-        let item = &draws[first_idx];
 
-        let batch_key_changed = last_batch_key.as_ref() != Some(&item.batch_key);
-        if batch_key_changed {
-            last_batch_key = Some(item.batch_key.clone());
-            let (ok, pipes) =
-                resolve_pipelines_for_batch_item(encode, pass_desc, shader_perm, item);
-            pipeline_ok = ok;
-            current_pipelines = pipes;
-            current_declared_passes =
-                declared_passes_for_pipeline(&item.batch_key.pipeline, shader_perm);
+        // Advance the cursor to the precomputed batch that covers `first_idx`.
+        while batch_cursor + 1 < precomputed.len()
+            && precomputed[batch_cursor].last_draw_idx < first_idx
+        {
+            batch_cursor += 1;
         }
 
-        if !pipeline_ok {
-            return;
-        }
+        let pc = &precomputed[batch_cursor];
+        debug_assert!(
+            first_idx >= pc.first_draw_idx && first_idx <= pc.last_draw_idx,
+            "precomputed batch [{}, {}] should cover draw index {}",
+            pc.first_draw_idx,
+            pc.last_draw_idx,
+            first_idx,
+        );
 
-        // Material bind resolution (stem layout + texture signature hash + LRU lookups) only needs
-        // to run when the batch key changes. Within a run of same-key batches, @group(1) and its
-        // cached uniform buffer are invariant, so the previous `last_material_bind_key` still
-        // reflects what is bound on the render pass.
-        if batch_key_changed {
-            set_world_mesh_material_bind_group(MaterialBindState {
-                rpass: &mut *rpass,
-                encode: &mut *encode,
-                queue,
-                item,
-                empty_bg,
-                last_material_bind_key: &mut last_material_bind_key,
-                warned_missing_embedded_bind,
-                offscreen_write_render_texture_asset_id,
-            });
-        }
-
-        let storage_align = gpu_limits.min_storage_buffer_offset_alignment();
-        let per_draw_dyn_offset = if supports_base_instance {
-            0u32
-        } else {
-            // Downlevel: `first_instance` is always zero; select the draw row via dynamic offset.
-            debug_assert_eq!(inst_batch.instance_count, 1);
-            let raw = (first_idx * PER_DRAW_UNIFORM_STRIDE) as u32;
-            debug_assert_eq!(
-                raw % storage_align,
-                0,
-                "per-draw offset must match min_storage_buffer_offset_alignment"
-            );
-            raw
+        let Some(pipelines) = pc.pipelines.as_ref() else {
+            return; // pipeline unavailable for this batch — skip draws
         };
-        rpass.set_bind_group(2, per_draw_bind_group, &[per_draw_dyn_offset]);
+
+        // Bind @group(1) once per unique batch; skip when the cursor hasn't advanced.
+        if bound_batch_cursor != Some(batch_cursor) {
+            let material_bg = pc.bind_group.as_deref().unwrap_or(empty_bg);
+            rpass.set_bind_group(1, material_bg, &[]);
+            bound_batch_cursor = Some(batch_cursor);
+        }
+
+        bind_per_draw_slab_if_changed(
+            rpass,
+            per_draw_bind_group,
+            gpu_limits,
+            first_idx,
+            inst_batch.instance_count,
+            supports_base_instance,
+            &mut last_per_draw_dyn_offset,
+        );
+
+        let stencil_ref = draws[first_idx].batch_key.render_state.stencil_reference();
+        if last_stencil_ref != Some(stencil_ref) {
+            rpass.set_stencil_reference(stencil_ref);
+            last_stencil_ref = Some(stencil_ref);
+        }
+
         let inst_range =
             instance_range_for_batch(first_idx, inst_batch.instance_count, supports_base_instance);
-        rpass.set_stencil_reference(item.batch_key.render_state.stencil_reference());
 
-        let Some(pipelines) = current_pipelines.as_ref() else {
-            return;
-        };
-        let skin_cache = encode.skin_cache;
-        for (pass_idx, pipeline) in pipelines.iter().enumerate() {
-            if should_skip_pipeline_pass(current_declared_passes, pass_idx, has_local_lights) {
-                continue;
-            }
-            rpass.set_pipeline(pipeline);
-            draw_mesh_submesh_instanced(
-                rpass,
-                item,
-                WorldMeshDrawGpuRefs {
-                    mesh_pool: encode.mesh_pool_mut(),
-                    device,
-                    skin_cache,
-                },
-                EmbeddedVertexStreamFlags {
-                    embedded_uv: item.batch_key.embedded_needs_uv0,
-                    embedded_color: item.batch_key.embedded_needs_color,
-                    embedded_extended_vertex_streams: item
-                        .batch_key
-                        .embedded_needs_extended_vertex_streams,
-                },
-                inst_range.clone(),
-            );
-        }
+        issue_material_pipeline_passes(
+            rpass,
+            encode,
+            &draws[first_idx],
+            ActivePipelineSelection {
+                pipelines,
+                declared_passes: pc.declared_passes,
+                has_local_lights,
+            },
+            &inst_range,
+            &mut last_mesh,
+        );
     });
+}
+
+/// Updates @group(2) dynamic offset and rebinds the per-draw slab when the row offset changes.
+///
+/// On base-instance-capable devices the dynamic offset is always zero, so the rebind occurs once
+/// at most. On downlevel paths each instance batch carries one draw, so `instance_count == 1`.
+fn bind_per_draw_slab_if_changed(
+    rpass: &mut wgpu::RenderPass<'_>,
+    per_draw_bind_group: &wgpu::BindGroup,
+    gpu_limits: &crate::gpu::GpuLimits,
+    first_idx: usize,
+    instance_count: u32,
+    supports_base_instance: bool,
+    last_per_draw_dyn_offset: &mut Option<u32>,
+) {
+    let storage_align = gpu_limits.min_storage_buffer_offset_alignment();
+    let per_draw_dyn_offset = if supports_base_instance {
+        // Base-instance path: all rows accessed via `first_instance`; dynamic offset is
+        // always zero for the entire pass so the bind is skipped after the first draw.
+        0u32
+    } else {
+        // Downlevel: `first_instance` is always zero; select the draw row via dynamic offset.
+        debug_assert_eq!(instance_count, 1);
+        let raw = (first_idx * PER_DRAW_UNIFORM_STRIDE) as u32;
+        debug_assert_eq!(
+            raw % storage_align,
+            0,
+            "per-draw offset must match min_storage_buffer_offset_alignment"
+        );
+        raw
+    };
+    if *last_per_draw_dyn_offset != Some(per_draw_dyn_offset) {
+        rpass.set_bind_group(2, per_draw_bind_group, &[per_draw_dyn_offset]);
+        *last_per_draw_dyn_offset = Some(per_draw_dyn_offset);
+    }
+}
+
+/// Per-batch pipeline selection for [`issue_material_pipeline_passes`].
+///
+/// Bundled so the dispatcher doesn't thread three separate arguments through.
+struct ActivePipelineSelection<'a> {
+    /// Per-material pipeline objects in pass order.
+    pipelines: &'a MaterialPipelineSet,
+    /// Pass descriptors declared by the material, parallel to `pipelines`.
+    declared_passes: &'a [MaterialPassDesc],
+    /// Whether the current view has any local lights requiring the lit variant.
+    has_local_lights: bool,
+}
+
+/// Walks the pipeline set for `item`, skipping pass variants that the material doesn't declare
+/// and issuing one [`draw_mesh_submesh_instanced`] per remaining pipeline.
+fn issue_material_pipeline_passes(
+    rpass: &mut wgpu::RenderPass<'_>,
+    encode: &mut crate::backend::WorldMeshForwardEncodeRefs<'_>,
+    item: &WorldMeshDrawItem,
+    pipeline_sel: ActivePipelineSelection<'_>,
+    inst_range: &std::ops::Range<u32>,
+    last_mesh: &mut LastMeshBindState,
+) {
+    let skin_cache = encode.skin_cache;
+    for (pass_idx, pipeline) in pipeline_sel.pipelines.iter().enumerate() {
+        if should_skip_pipeline_pass(
+            pipeline_sel.declared_passes,
+            pass_idx,
+            pipeline_sel.has_local_lights,
+        ) {
+            continue;
+        }
+        rpass.set_pipeline(pipeline);
+        draw_mesh_submesh_instanced(
+            rpass,
+            item,
+            WorldMeshDrawGpuRefs {
+                mesh_pool: encode.mesh_pool(),
+                skin_cache,
+            },
+            EmbeddedVertexStreamFlags {
+                embedded_uv: item.batch_key.embedded_needs_uv0,
+                embedded_color: item.batch_key.embedded_needs_color,
+                embedded_extended_vertex_streams: item
+                    .batch_key
+                    .embedded_needs_extended_vertex_streams,
+            },
+            inst_range.clone(),
+            last_mesh,
+        );
+    }
 }
 
 fn instance_range_for_batch(
@@ -339,12 +320,30 @@ fn instance_range_for_batch(
     }
 }
 
+/// Binds one vertex slot only when the buffer identity or range has changed since the last bind.
+///
+/// Using `global_id()` rather than pointer equality is safe because wgpu `Buffer`s are
+/// refcounted and their IDs are stable for the lifetime of the object.
+macro_rules! bind_vertex_if_changed {
+    ($rpass:expr, $slot:expr, $buf:expr, $id:expr, $last:expr) => {{
+        if $last[$slot as usize] != Some($id) {
+            $rpass.set_vertex_buffer($slot, $buf);
+            $last[$slot as usize] = Some($id);
+        }
+    }};
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "hot draw path keeps bind/set decisions inline for register reuse"
+)]
 pub(crate) fn draw_mesh_submesh_instanced(
     rpass: &mut wgpu::RenderPass<'_>,
     item: &WorldMeshDrawItem,
     gpu: WorldMeshDrawGpuRefs<'_>,
     streams: EmbeddedVertexStreamFlags,
     instances: std::ops::Range<u32>,
+    last_mesh: &mut LastMeshBindState,
 ) {
     if item.mesh_asset_id < 0 || item.node_id < 0 || item.index_count == 0 {
         return;
@@ -357,8 +356,13 @@ pub(crate) fn draw_mesh_submesh_instanced(
     if embedded_extended_vertex_streams
         && !gpu
             .mesh_pool
-            .ensure_extended_vertex_streams(gpu.device, item.mesh_asset_id)
+            .get_mesh(item.mesh_asset_id)
+            .is_some_and(|mesh| mesh.extended_vertex_streams_ready())
     {
+        logger::trace!(
+            "WorldMeshForward: extended vertex streams missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
+            item.mesh_asset_id
+        );
         return;
     }
     let Some(mesh) = gpu.mesh_pool.get_mesh(item.mesh_asset_id) else {
@@ -389,34 +393,78 @@ pub(crate) fn draw_mesh_submesh_instanced(
             return;
         };
         let pos_buf = cache.positions_arena();
-        rpass.set_vertex_buffer(0, pos_buf.slice(entry.positions.byte_range()));
+        let pos_range = entry.positions.byte_range();
+        bind_vertex_if_changed!(
+            rpass,
+            0,
+            pos_buf.slice(pos_range.start..pos_range.end),
+            BufferBindId::ranged(pos_buf, pos_range.start, pos_range.end),
+            last_mesh.vertex
+        );
         if use_deformed {
             let Some(nrm_r) = entry.normals.as_ref() else {
                 return;
             };
             let nrm_buf = cache.normals_arena();
-            rpass.set_vertex_buffer(1, nrm_buf.slice(nrm_r.byte_range()));
+            let nrm_range = nrm_r.byte_range();
+            bind_vertex_if_changed!(
+                rpass,
+                1,
+                nrm_buf.slice(nrm_range.start..nrm_range.end),
+                BufferBindId::ranged(nrm_buf, nrm_range.start, nrm_range.end),
+                last_mesh.vertex
+            );
         } else {
-            rpass.set_vertex_buffer(1, normals_bind.slice(..));
+            bind_vertex_if_changed!(
+                rpass,
+                1,
+                normals_bind.slice(..),
+                BufferBindId::full(normals_bind),
+                last_mesh.vertex
+            );
         }
     } else {
         let Some(pos) = mesh.positions_buffer.as_deref() else {
             return;
         };
-        rpass.set_vertex_buffer(0, pos.slice(..));
-        rpass.set_vertex_buffer(1, normals_bind.slice(..));
+        bind_vertex_if_changed!(
+            rpass,
+            0,
+            pos.slice(..),
+            BufferBindId::full(pos),
+            last_mesh.vertex
+        );
+        bind_vertex_if_changed!(
+            rpass,
+            1,
+            normals_bind.slice(..),
+            BufferBindId::full(normals_bind),
+            last_mesh.vertex
+        );
     }
     if embedded_uv || embedded_color || embedded_extended_vertex_streams {
         let Some(uv) = mesh.uv0_buffer.as_deref() else {
             return;
         };
-        rpass.set_vertex_buffer(2, uv.slice(..));
+        bind_vertex_if_changed!(
+            rpass,
+            2,
+            uv.slice(..),
+            BufferBindId::full(uv),
+            last_mesh.vertex
+        );
     }
     if embedded_color || embedded_extended_vertex_streams {
         let Some(color) = mesh.color_buffer.as_deref() else {
             return;
         };
-        rpass.set_vertex_buffer(3, color.slice(..));
+        bind_vertex_if_changed!(
+            rpass,
+            3,
+            color.slice(..),
+            BufferBindId::full(color),
+            last_mesh.vertex
+        );
     }
     if embedded_extended_vertex_streams {
         let (Some(tangent), Some(uv1), Some(uv2), Some(uv3)) = (
@@ -427,12 +475,44 @@ pub(crate) fn draw_mesh_submesh_instanced(
         ) else {
             return;
         };
-        rpass.set_vertex_buffer(4, tangent.slice(..));
-        rpass.set_vertex_buffer(5, uv1.slice(..));
-        rpass.set_vertex_buffer(6, uv2.slice(..));
-        rpass.set_vertex_buffer(7, uv3.slice(..));
+        bind_vertex_if_changed!(
+            rpass,
+            4,
+            tangent.slice(..),
+            BufferBindId::full(tangent),
+            last_mesh.vertex
+        );
+        bind_vertex_if_changed!(
+            rpass,
+            5,
+            uv1.slice(..),
+            BufferBindId::full(uv1),
+            last_mesh.vertex
+        );
+        bind_vertex_if_changed!(
+            rpass,
+            6,
+            uv2.slice(..),
+            BufferBindId::full(uv2),
+            last_mesh.vertex
+        );
+        bind_vertex_if_changed!(
+            rpass,
+            7,
+            uv3.slice(..),
+            BufferBindId::full(uv3),
+            last_mesh.vertex
+        );
     }
-    rpass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
+
+    let index_key = (
+        mesh.index_buffer.as_ref() as *const wgpu::Buffer as usize,
+        mesh.index_format,
+    );
+    if last_mesh.index != Some(index_key) {
+        rpass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
+        last_mesh.index = Some(index_key);
+    }
 
     let first = item.first_index;
     let end = first.saturating_add(item.index_count);
@@ -441,9 +521,9 @@ pub(crate) fn draw_mesh_submesh_instanced(
 
 #[cfg(test)]
 mod tests {
-    use crate::materials::default_pass;
+    use crate::materials::{pass_from_kind, PassKind};
 
-    use super::{instance_range_for_batch, should_skip_pipeline_pass, MaterialPassDesc};
+    use super::{instance_range_for_batch, should_skip_pipeline_pass};
 
     #[test]
     fn no_base_instance_draws_from_zero() {
@@ -456,16 +536,10 @@ mod tests {
     }
 
     #[test]
-    fn skips_forward_delta_only_when_no_local_lights() {
+    fn skips_forward_add_only_when_no_local_lights() {
         let passes = [
-            MaterialPassDesc {
-                name: "forward",
-                ..default_pass(false, true)
-            },
-            MaterialPassDesc {
-                name: "forward_delta",
-                ..default_pass(false, false)
-            },
+            pass_from_kind(PassKind::ForwardBase, "fs_main"),
+            pass_from_kind(PassKind::ForwardAdd, "fs_delta"),
         ];
 
         assert!(!should_skip_pipeline_pass(&passes, 0, false));

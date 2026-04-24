@@ -8,7 +8,7 @@ use crate::diagnostics::{
     DebugHud, DebugHudEncodeError, DebugHudInput, FrameDiagnosticsSnapshot, FrameTimingHudSnapshot,
     RendererInfoSnapshot, SceneTransformsSnapshot, TextureDebugSnapshot,
 };
-use crate::render_graph::{WorldMeshDrawStateRow, WorldMeshDrawStats};
+use crate::render_graph::{PerViewHudOutputs, WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 /// ImGui overlay, input/timing state, and mesh-draw stats for the diagnostics HUD.
 pub struct DebugHudBundle {
@@ -101,6 +101,21 @@ impl DebugHudBundle {
             .extend(asset_ids.into_iter().filter(|id| *id >= 0));
     }
 
+    /// Merges one view's deferred HUD payload into the bundle on the main thread.
+    pub(crate) fn apply_per_view_outputs(&mut self, outputs: &PerViewHudOutputs) {
+        if let Some(stats) = outputs.world_mesh_draw_stats {
+            self.set_last_world_mesh_draw_stats(stats);
+        }
+        if let Some(rows) = outputs.world_mesh_draw_state_rows.clone() {
+            self.set_last_world_mesh_draw_state_rows(rows);
+        }
+        if !outputs.current_view_texture_2d_asset_ids.is_empty() {
+            self.note_current_view_texture_2d_asset_ids(
+                outputs.current_view_texture_2d_asset_ids.iter().copied(),
+            );
+        }
+    }
+
     /// Texture2D ids used by submitted world draws for the current view.
     pub(crate) fn current_view_texture_2d_asset_ids(&self) -> &BTreeSet<i32> {
         &self.current_view_texture_2d_asset_ids
@@ -143,6 +158,13 @@ impl DebugHudBundle {
     pub(crate) fn set_frame_timing(&mut self, snapshot: FrameTimingHudSnapshot) {
         if let Some(hud) = self.hud.as_mut() {
             hud.set_frame_timing(snapshot);
+        }
+    }
+
+    /// Forwards the latest flattened GPU pass timings to the wrapped HUD.
+    pub(crate) fn set_gpu_pass_timings(&mut self, timings: Vec<crate::profiling::GpuPassEntry>) {
+        if let Some(hud) = self.hud.as_mut() {
+            hud.set_gpu_pass_timings(timings);
         }
     }
 

@@ -1,7 +1,8 @@
-//! Serde/TOML schema for renderer settings (`[display]`, `[rendering]`, `[debug]`).
+//! Serde/TOML schema for renderer settings (`[display]`, `[rendering]`, `[debug]`, `[post_processing]`).
 
 use crate::gpu::REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE;
 use serde::{Deserialize, Serialize};
+use wgpu::TextureFormat;
 
 /// Display-related caps. Persisted as `[display]`.
 ///
@@ -55,6 +56,22 @@ pub struct RenderingSettings {
     /// count is clamped to the GPU’s supported maximum for the swapchain format. VR and offscreen host
     /// render textures stay at 1× until extended separately.
     pub msaa: MsaaSampleCount,
+    /// Format for the **scene-color** HDR target the forward pass renders into before
+    /// [`crate::render_graph::passes::SceneColorComposePass`] writes the displayable target.
+    ///
+    /// This is intermediate precision/range (e.g. [`SceneColorFormat::Rgba16Float`]), not the OS
+    /// swapchain HDR mode.
+    #[serde(rename = "scene_color_format")]
+    pub scene_color_format: SceneColorFormat,
+    /// Whether to record per-view encoders in parallel using rayon.
+    ///
+    /// [`RecordParallelism::PerViewParallel`] (default) records views on rayon worker threads
+    /// for a CPU-side speedup on multi-view workloads (stereo VR, secondary-camera RTs).
+    /// [`RecordParallelism::Serial`] records views sequentially on the main thread, which can
+    /// simplify debugging but leaves throughput on the table on multi-view scenes. Requires
+    /// all per-view pass nodes to be `Send` (enforced by trait bounds).
+    #[serde(rename = "record_parallelism", default)]
+    pub record_parallelism: RecordParallelism,
 }
 
 impl Default for RenderingSettings {
@@ -66,6 +83,59 @@ impl Default for RenderingSettings {
             render_texture_hdr_color: false,
             texture_vram_budget_mib: 0,
             msaa: MsaaSampleCount::default(),
+            scene_color_format: SceneColorFormat::default(),
+            record_parallelism: RecordParallelism::default(),
+        }
+    }
+}
+
+/// Controls whether per-view encoder recording uses rayon for parallelism.
+///
+/// The default [`RecordParallelism::PerViewParallel`] records per-view encoders on rayon
+/// workers for CPU-side speedup on stereo / multi-camera scenes. Switch to
+/// [`RecordParallelism::Serial`] only for debugging or when isolating regressions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordParallelism {
+    /// Record each per-view encoder sequentially on the main thread. Safe and debuggable.
+    Serial,
+    /// Record each per-view encoder on a rayon worker thread. Requires all per-view pass nodes
+    /// to be `Send` (enforced at compile time by the trait bound on [`crate::render_graph::PassNode`]).
+    #[default]
+    PerViewParallel,
+}
+
+/// Intermediate scene color format for the forward pass (pre-compose, pre-post-processing).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneColorFormat {
+    /// `rgba16float`: wide dynamic range and alpha (default HDR scene target).
+    #[default]
+    Rgba16Float,
+    /// `rg11b10float`: lower bandwidth; no distinct alpha channel (avoid with premultiplied transparency).
+    Rg11b10Float,
+    /// `rgba8unorm`: LDR scene color (debug / parity).
+    Rgba8Unorm,
+}
+
+impl SceneColorFormat {
+    /// All variants for config UI and persistence.
+    pub const ALL: [Self; 3] = [Self::Rgba16Float, Self::Rg11b10Float, Self::Rgba8Unorm];
+
+    /// [`wgpu::TextureFormat`] for graph transients and forward color attachments.
+    pub fn wgpu_format(self) -> TextureFormat {
+        match self {
+            Self::Rgba16Float => TextureFormat::Rgba16Float,
+            Self::Rg11b10Float => TextureFormat::Rg11b10Ufloat,
+            Self::Rgba8Unorm => TextureFormat::Rgba8Unorm,
+        }
+    }
+
+    /// Short label for the renderer config window.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Rgba16Float => "RGBA16Float (HDR scene)",
+            Self::Rg11b10Float => "RG11B10Float (packed HDR)",
+            Self::Rgba8Unorm => "RGBA8 UNORM (LDR scene)",
         }
     }
 }
@@ -244,6 +314,114 @@ pub struct RendererSettings {
     pub rendering: RenderingSettings,
     /// Debug-only flags.
     pub debug: DebugSettings,
+    /// Post-processing stack toggles and per-effect parameters.
+    pub post_processing: PostProcessingSettings,
+}
+
+/// Post-processing stack configuration. Persisted as `[post_processing]` (with sub-tables per effect).
+///
+/// Effects are organised as nested sub-structs (`tonemap`, future `bloom`, `color_grading`, etc.)
+/// so each gets its own TOML sub-table (`[post_processing.tonemap]`, …) and so the
+/// [`crate::render_graph::post_processing::PostProcessChainSignature`] can be derived purely from
+/// this value.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PostProcessingSettings {
+    /// Master enable for the entire stack. When `false`, the render graph skips the chain entirely
+    /// and `SceneColorComposePass` samples the raw forward HDR target.
+    pub enabled: bool,
+    /// Ground-Truth Ambient Occlusion (pre-tonemap HDR modulation). See [`GtaoSettings`].
+    pub gtao: GtaoSettings,
+    /// Tonemapping (HDR → display-referred 0..1 linear). See [`TonemapSettings`].
+    pub tonemap: TonemapSettings,
+}
+
+/// Tonemapping configuration. Persisted as `[post_processing.tonemap]`.
+///
+/// Tonemapping converts unbounded HDR scene-referred radiance to a bounded display-referred linear
+/// signal. Output values are in `[0, 1]` linear sRGB so the existing sRGB swapchain encodes gamma
+/// correctly without a separate gamma pass.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TonemapSettings {
+    /// Selected tonemapping curve (see [`TonemapMode`]).
+    pub mode: TonemapMode,
+}
+
+/// Ground-Truth Ambient Occlusion (Jimenez et al. 2016) configuration.
+///
+/// Persisted as `[post_processing.gtao]`. GTAO runs pre-tonemap and modulates HDR scene color by
+/// a visibility factor reconstructed from the depth buffer. View-space normals are reconstructed
+/// from depth derivatives (no separate GBuffer). Defaults pick a perceptually neutral strength that
+/// still visibly darkens creases and corners; the implementation uses one horizon direction per
+/// pixel with a 4×4 spatial jitter so aliasing masks as grain rather than structured banding.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GtaoSettings {
+    /// Whether GTAO runs in the post-processing chain. Off by default (opt-in).
+    pub enabled: bool,
+    /// World-space horizon search radius (meters). Larger = broader contact-shadow falloff.
+    pub radius_meters: f32,
+    /// AO strength exponent applied to the occlusion factor (1.0 = physical, >1 darker).
+    pub intensity: f32,
+    /// Screen-space cap on the search radius (pixels) to avoid GPU cache trashing on near geometry.
+    pub max_pixel_radius: f32,
+    /// Horizon steps per side (per-pixel samples). 6 matches the paper's recommended default.
+    pub step_count: u32,
+    /// Distance-falloff range as a fraction of [`Self::radius_meters`]. Candidate samples are
+    /// linearly faded toward the tangent-plane horizon over the last `falloff_range ·
+    /// radius_meters` of the search radius (matches XeGTAO's `FalloffRange`). Smaller = harder
+    /// cutoff; larger = smoother transition but more distant influence.
+    pub falloff_range: f32,
+    /// Gray-albedo proxy for the multi-bounce fit (paper Eq. 10). Recovers the near-field light
+    /// lost by assuming fully-absorbing occluders. Set lower for darker scenes, higher for brighter.
+    pub albedo_multibounce: f32,
+}
+
+impl Default for GtaoSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            radius_meters: 0.5,
+            intensity: 1.0,
+            max_pixel_radius: 96.0,
+            step_count: 6,
+            falloff_range: 0.615,
+            albedo_multibounce: 0.4,
+        }
+    }
+}
+
+/// Tonemapping curve selector for [`TonemapSettings::mode`].
+///
+/// Adding a new variant only requires extending [`Self::ALL`], [`Self::label`] and any new
+/// post-processing pass that consumes it; the chain signature in
+/// [`crate::render_graph::cache::PostProcessChainSignature`] does not need to change unless the
+/// new mode introduces additional render-graph passes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TonemapMode {
+    /// No tonemapping (raw HDR is passed through, identical to the master-disabled path but kept
+    /// as an explicit option so the master toggle can stay enabled while only other future
+    /// effects run).
+    None,
+    /// Stephen Hill ACES Fitted (sRGB → AP1, RRT+ODT, AP1 → sRGB). High-quality reference curve
+    /// used by Bevy and Unity HDRP.
+    #[default]
+    AcesFitted,
+}
+
+impl TonemapMode {
+    /// All variants for ImGui combo lists and config round-trip tests.
+    pub const ALL: [Self; 2] = [Self::None, Self::AcesFitted];
+
+    /// Short label for the renderer config window.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None (HDR pass-through)",
+            Self::AcesFitted => "ACES Fitted (Hill)",
+        }
+    }
 }
 
 impl RendererSettings {
@@ -358,5 +536,150 @@ mod reported_max_texture_tests {
             s.reported_max_texture_dimension_for_host(None),
             REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE as i32
         );
+    }
+}
+
+#[cfg(test)]
+mod msaa_sample_count_tests {
+    use super::{MsaaSampleCount, RendererSettings};
+
+    #[test]
+    fn all_variants_persist_str_round_trip() {
+        for v in MsaaSampleCount::ALL {
+            let s = v.as_persist_str();
+            assert_eq!(
+                MsaaSampleCount::from_persist_str(s),
+                Some(v),
+                "round-trip failed for {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn msaa_toml_round_trip_all_variants() {
+        for v in MsaaSampleCount::ALL {
+            let mut s = RendererSettings::default();
+            s.rendering.msaa = v;
+            let toml = toml::to_string(&s).expect("serialize");
+            let back: RendererSettings = toml::from_str(&toml).expect("deserialize");
+            assert_eq!(back.rendering.msaa, v);
+        }
+    }
+
+    #[test]
+    fn labels_are_non_empty() {
+        for v in MsaaSampleCount::ALL {
+            assert!(!v.label().is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod scene_color_format_tests {
+    use super::{RendererSettings, SceneColorFormat};
+    use wgpu::TextureFormat;
+
+    #[test]
+    fn scene_color_format_wgpu_mapping() {
+        assert_eq!(
+            SceneColorFormat::Rgba16Float.wgpu_format(),
+            TextureFormat::Rgba16Float
+        );
+        assert_eq!(
+            SceneColorFormat::Rg11b10Float.wgpu_format(),
+            TextureFormat::Rg11b10Ufloat
+        );
+        assert_eq!(
+            SceneColorFormat::Rgba8Unorm.wgpu_format(),
+            TextureFormat::Rgba8Unorm
+        );
+    }
+
+    #[test]
+    fn scene_color_format_all_covers_every_variant() {
+        for v in SceneColorFormat::ALL {
+            // Ensures `wgpu_format` and `label` are defined for every variant.
+            let _ = v.wgpu_format();
+            assert!(!v.label().is_empty());
+        }
+    }
+
+    #[test]
+    fn scene_color_format_toml_roundtrip() {
+        let mut s = RendererSettings::default();
+        s.rendering.scene_color_format = SceneColorFormat::Rg11b10Float;
+        let toml = toml::to_string(&s).expect("serialize");
+        let back: RendererSettings = toml::from_str(&toml).expect("deserialize");
+        assert_eq!(
+            back.rendering.scene_color_format,
+            SceneColorFormat::Rg11b10Float
+        );
+    }
+}
+
+#[cfg(test)]
+mod post_processing_tests {
+    use super::{PostProcessingSettings, RendererSettings, TonemapMode};
+
+    #[test]
+    fn defaults_are_disabled_with_aces_selected() {
+        let s = PostProcessingSettings::default();
+        assert!(!s.enabled, "post-processing should default to disabled");
+        assert_eq!(s.tonemap.mode, TonemapMode::AcesFitted);
+    }
+
+    #[test]
+    fn renderer_settings_includes_post_processing_section() {
+        let s = RendererSettings::default();
+        assert_eq!(s.post_processing, PostProcessingSettings::default());
+    }
+
+    #[test]
+    fn tonemap_mode_label_is_stable() {
+        for mode in TonemapMode::ALL {
+            assert!(!mode.label().is_empty());
+        }
+    }
+
+    #[test]
+    fn post_processing_toml_roundtrip_emits_expected_sections() {
+        let mut s = RendererSettings::default();
+        s.post_processing.enabled = true;
+        s.post_processing.tonemap.mode = TonemapMode::AcesFitted;
+        let toml = toml::to_string(&s).expect("serialize");
+        assert!(
+            toml.contains("[post_processing]"),
+            "expected `[post_processing]` table, got:\n{toml}"
+        );
+        assert!(
+            toml.contains("[post_processing.tonemap]"),
+            "expected `[post_processing.tonemap]` sub-table, got:\n{toml}"
+        );
+        assert!(
+            toml.contains("mode = \"aces_fitted\""),
+            "expected snake_case mode value, got:\n{toml}"
+        );
+        let back: RendererSettings = toml::from_str(&toml).expect("deserialize");
+        assert!(back.post_processing.enabled);
+        assert_eq!(back.post_processing.tonemap.mode, TonemapMode::AcesFitted);
+    }
+
+    #[test]
+    fn post_processing_toml_roundtrip_disabled_with_none_mode() {
+        let mut s = RendererSettings::default();
+        s.post_processing.enabled = false;
+        s.post_processing.tonemap.mode = TonemapMode::None;
+        let toml = toml::to_string(&s).expect("serialize");
+        assert!(toml.contains("mode = \"none\""), "got:\n{toml}");
+        let back: RendererSettings = toml::from_str(&toml).expect("deserialize");
+        assert!(!back.post_processing.enabled);
+        assert_eq!(back.post_processing.tonemap.mode, TonemapMode::None);
+    }
+
+    #[test]
+    fn missing_post_processing_section_yields_defaults() {
+        let toml = "\n[display]\nfocused_fps = 60\nunfocused_fps = 30\n";
+        let s: RendererSettings = toml::from_str(toml).expect("deserialize");
+        assert_eq!(s.post_processing, PostProcessingSettings::default());
     }
 }

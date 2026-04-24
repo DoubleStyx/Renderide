@@ -18,10 +18,14 @@ use thiserror::Error;
 use crate::assets::asset_transfer_queue::{self as asset_uploads, AssetTransferQueue};
 use crate::assets::material::MaterialPropertyStore;
 use crate::backend::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
-use crate::config::RendererSettingsHandle;
+use crate::config::{PostProcessingSettings, RendererSettingsHandle, SceneColorFormat};
 use crate::diagnostics::{DebugHudEncodeError, DebugHudInput, SceneTransformsSnapshot};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
-use crate::render_graph::{TransientPool, WorldMeshDrawStateRow, WorldMeshDrawStats};
+use crate::render_graph::post_processing::PostProcessChainSignature;
+use crate::render_graph::FrameMaterialBatchCache;
+use crate::render_graph::{
+    PerViewHudConfig, PerViewHudOutputs, TransientPool, WorldMeshDrawStateRow, WorldMeshDrawStats,
+};
 use crate::resources::{CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool};
 
 use super::debug_hud_bundle::DebugHudBundle;
@@ -33,16 +37,16 @@ use super::FrameResourceManager;
 
 /// Disjoint backend slices assembled into [`crate::render_graph::FrameRenderParams`].
 type GraphFrameParamsSplit<'a> = (
-    &'a mut OcclusionSystem,
-    &'a mut FrameResourceManager,
-    &'a mut MaterialSystem,
-    &'a mut AssetTransferQueue,
+    &'a OcclusionSystem,
+    &'a FrameResourceManager,
+    &'a MaterialSystem,
+    &'a AssetTransferQueue,
     Option<&'a MeshPreprocessPipelines>,
     Option<&'a mut MeshDeformScratch>,
     Option<&'a mut GpuSkinCache>,
     Option<Arc<GpuLimits>>,
     Option<Arc<MsaaDepthResolveResources>>,
-    &'a mut DebugHudBundle,
+    PerViewHudConfig,
 );
 
 pub use crate::assets::asset_transfer_queue::{
@@ -66,6 +70,10 @@ pub struct RenderBackendAttachDesc {
     pub device: Arc<wgpu::Device>,
     /// Queue used for submits and GPU writes.
     pub queue: Arc<wgpu::Queue>,
+    /// Shared ABBA gate cloned from [`crate::gpu::GpuContext`]; acquired by the texture
+    /// upload path around every `Queue::write_texture`. See
+    /// [`crate::gpu::WriteTextureSubmitGate`].
+    pub write_texture_submit_gate: crate::gpu::WriteTextureSubmitGate,
     /// Capabilities for buffer sizing and MSAA.
     pub gpu_limits: Arc<GpuLimits>,
     /// Swapchain / main surface format for HUD and pipelines.
@@ -88,6 +96,13 @@ pub struct RenderBackend {
     mesh_preprocess: Option<MeshPreprocessPipelines>,
     /// Compiled DAG of render passes (after [`Self::attach`]); see [`crate::render_graph`].
     frame_graph: Option<crate::render_graph::CompiledRenderGraph>,
+    /// [`PostProcessChainSignature`] the cached [`Self::frame_graph`] was built against.
+    ///
+    /// Compared against the live signature derived from
+    /// [`Self::renderer_settings`] in [`Self::ensure_frame_graph_post_processing_in_sync`] to
+    /// detect HUD edits to `[post_processing]` that change graph topology (effect added or
+    /// removed). Parameter-only tweaks that do not flip the signature avoid a rebuild.
+    frame_graph_post_processing_signature: PostProcessChainSignature,
     /// Scratch buffers for mesh deformation compute (after [`Self::attach`]).
     mesh_deform_scratch: Option<MeshDeformScratch>,
     /// Arena-backed deformed vertex streams (after [`Self::attach`]); sibling to [`Self::frame_resources`] for borrow splitting.
@@ -102,6 +117,24 @@ pub struct RenderBackend {
     pub(crate) occlusion: OcclusionSystem,
     /// Render-graph transient texture/buffer pool retained across frames.
     pub(crate) transient_pool: TransientPool,
+    /// Live settings for per-frame graph parameters (scene HDR format, etc.); set in [`Self::attach`].
+    renderer_settings: Option<RendererSettingsHandle>,
+    /// Whether per-view encoder recording runs on rayon workers or sequentially on the main thread.
+    ///
+    /// Defaults to [`crate::config::RecordParallelism::Serial`]. Switch to
+    /// [`crate::config::RecordParallelism::PerViewParallel`] via `[rendering] record_parallelism`
+    /// in the renderer config once per-view pass state is fully validated as `Send`-safe.
+    pub(crate) record_parallelism: crate::config::RecordParallelism,
+    /// Persistent resolved-material cache, refreshed once per frame before per-view draw
+    /// collection. Entries invalidate against
+    /// [`crate::assets::material::MaterialPropertyStore`] and
+    /// [`crate::materials::MaterialRouter`] generation counters, so steady-state refresh cost is
+    /// proportional to the number of mutated materials rather than the total material count.
+    pub(crate) material_batch_cache: FrameMaterialBatchCache,
+    /// Registry of persistent ping-pong resources used by graph history slots
+    /// (`ImportSource::PingPong` / `BufferImportSource::PingPong`). New infrastructure; no
+    /// subsystem writes through it yet. Future TAA / SSR / cached-shadow work registers here.
+    pub(crate) history_registry: super::HistoryRegistry,
 }
 
 /// Disjoint borrows of [`MaterialSystem`], [`AssetTransferQueue`], and the GPU skin cache for world mesh forward encoding.
@@ -110,9 +143,9 @@ pub struct RenderBackend {
 /// encoder never holds `&mut RenderBackend` while also borrowing the deform cache.
 pub(crate) struct WorldMeshForwardEncodeRefs<'a> {
     /// Material registry, embedded binds, and property store.
-    pub(crate) materials: &'a mut MaterialSystem,
-    /// Mesh and texture pools (mutable for lazy extended vertex stream uploads).
-    pub(crate) asset_transfers: &'a mut AssetTransferQueue,
+    pub(crate) materials: &'a MaterialSystem,
+    /// Mesh and texture pools.
+    pub(crate) asset_transfers: &'a AssetTransferQueue,
     /// Arena-backed deformed positions and normals keyed by renderable (after [`RenderBackend::attach`]).
     pub(crate) skin_cache: Option<&'a GpuSkinCache>,
 }
@@ -120,8 +153,8 @@ pub(crate) struct WorldMeshForwardEncodeRefs<'a> {
 impl<'a> WorldMeshForwardEncodeRefs<'a> {
     /// Builds encode refs from disjoint [`crate::render_graph::FrameRenderParams`] slices.
     pub fn from_frame_params(
-        materials: &'a mut MaterialSystem,
-        asset_transfers: &'a mut AssetTransferQueue,
+        materials: &'a MaterialSystem,
+        asset_transfers: &'a AssetTransferQueue,
         skin_cache: Option<&'a GpuSkinCache>,
     ) -> Self {
         Self {
@@ -131,9 +164,9 @@ impl<'a> WorldMeshForwardEncodeRefs<'a> {
         }
     }
 
-    /// Mutable mesh pool for lazy extended vertex stream uploads during draw recording.
-    pub(crate) fn mesh_pool_mut(&mut self) -> &mut MeshPool {
-        &mut self.asset_transfers.mesh_pool
+    /// Mesh pool for draw recording after any required lazy stream uploads were pre-warmed.
+    pub(crate) fn mesh_pool(&self) -> &MeshPool {
+        &self.asset_transfers.mesh_pool
     }
 
     /// Pool views for embedded `@group(1)` texture resolution.
@@ -161,6 +194,7 @@ impl RenderBackend {
             asset_transfers: AssetTransferQueue::new(),
             mesh_preprocess: None,
             frame_graph: None,
+            frame_graph_post_processing_signature: PostProcessChainSignature::default(),
             mesh_deform_scratch: None,
             skin_cache: None,
             msaa_depth_resolve: None,
@@ -168,7 +202,50 @@ impl RenderBackend {
             debug_hud: DebugHudBundle::new(),
             occlusion: OcclusionSystem::new(),
             transient_pool: TransientPool::new(),
+            renderer_settings: None,
+            record_parallelism: crate::config::RecordParallelism::PerViewParallel,
+            material_batch_cache: FrameMaterialBatchCache::new(),
+            history_registry: super::HistoryRegistry::new(),
         }
+    }
+
+    /// Returns a mutable reference to the persistent history registry.
+    ///
+    /// New subsystems (future TAA color, motion vectors, SSR history, cached shadows) register
+    /// their ping-pong slots here at init. Today no subsystem uses this path; the existing Hi-Z
+    /// pyramid keeps its bespoke state on [`OcclusionSystem`] pending a future migration.
+    pub fn history_registry_mut(&mut self) -> &mut super::HistoryRegistry {
+        &mut self.history_registry
+    }
+
+    /// Shared reference to the persistent history registry.
+    pub fn history_registry(&self) -> &super::HistoryRegistry {
+        &self.history_registry
+    }
+
+    /// Effective HDR scene-color [`wgpu::TextureFormat`] from [`crate::config::RenderingSettings`].
+    ///
+    /// Falls back to [`SceneColorFormat::default`] when settings are unavailable (pre-attach).
+    pub(crate) fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok())
+            .map(|s| s.rendering.scene_color_format.wgpu_format())
+            .unwrap_or_else(|| SceneColorFormat::default().wgpu_format())
+    }
+
+    /// Snapshot of the live GTAO settings for the current frame.
+    ///
+    /// Seeded into each view's blackboard as [`crate::render_graph::frame_params::GtaoSettingsSlot`]
+    /// so the shader UBO reflects slider changes without rebuilding the compiled render graph
+    /// (the chain signature only tracks enable booleans, so parameter edits wouldn't otherwise
+    /// reach the pass).
+    pub(crate) fn live_gtao_settings(&self) -> crate::config::GtaoSettings {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok())
+            .map(|s| s.post_processing.gtao)
+            .unwrap_or_default()
     }
 
     /// Count of host Texture2D asset ids that have received a [`crate::shared::SetTexture2DFormat`] (CPU-side table).
@@ -194,6 +271,39 @@ impl RenderBackend {
     /// Arena-backed deformed vertex streams shared by mesh deform compute and mesh forward draws.
     pub fn skin_cache(&self) -> Option<&GpuSkinCache> {
         self.skin_cache.as_ref()
+    }
+
+    /// Shared occlusion system view for per-view recording.
+    pub(crate) fn occlusion(&self) -> &OcclusionSystem {
+        &self.occlusion
+    }
+
+    /// Shared frame-resource manager view for per-view recording.
+    pub(crate) fn frame_resources(&self) -> &FrameResourceManager {
+        &self.frame_resources
+    }
+
+    /// Shared material system view for per-view recording.
+    pub(crate) fn materials(&self) -> &MaterialSystem {
+        &self.materials
+    }
+
+    /// Shared asset-transfer queues and pools for per-view recording.
+    pub(crate) fn asset_transfers(&self) -> &AssetTransferQueue {
+        &self.asset_transfers
+    }
+
+    /// Shared debug HUD view for per-view recording.
+    pub(crate) fn per_view_hud_config(&self) -> PerViewHudConfig {
+        PerViewHudConfig {
+            main_enabled: self.debug_hud.main_enabled(),
+            textures_enabled: self.debug_hud.textures_enabled(),
+        }
+    }
+
+    /// MSAA depth resolve resources snapshot for per-view recording.
+    pub(crate) fn msaa_depth_resolve(&self) -> Option<Arc<MsaaDepthResolveResources>> {
+        self.msaa_depth_resolve.clone()
     }
 
     /// Mutable skin cache for mesh deform compute and cache sweeps.
@@ -286,6 +396,11 @@ impl RenderBackend {
         self.materials.material_registry_mut()
     }
 
+    /// Merges one deferred per-view HUD payload into the live debug HUD bundle.
+    pub(crate) fn apply_per_view_hud_outputs(&mut self, outputs: &PerViewHudOutputs) {
+        self.debug_hud.apply_per_view_outputs(outputs);
+    }
+
     /// Embedded material bind groups (world Unlit, etc.) after [`Self::attach`].
     pub fn embedded_material_bind(
         &self,
@@ -321,14 +436,17 @@ impl RenderBackend {
         let RenderBackendAttachDesc {
             device,
             queue,
+            write_texture_submit_gate,
             gpu_limits,
             surface_format,
             renderer_settings,
             config_save_path,
             suppress_renderer_config_disk_writes,
         } = desc;
+        self.renderer_settings = Some(renderer_settings.clone());
         self.asset_transfers.gpu_device = Some(device.clone());
         self.asset_transfers.gpu_queue = Some(queue.clone());
+        self.asset_transfers.write_texture_submit_gate = Some(write_texture_submit_gate);
         self.asset_transfers.gpu_limits = Some(Arc::clone(&gpu_limits));
         {
             let s = renderer_settings
@@ -363,14 +481,82 @@ impl RenderBackend {
 
         self.msaa_depth_resolve = MsaaDepthResolveResources::try_new(device.as_ref()).map(Arc::new);
 
-        self.frame_graph = match crate::render_graph::build_default_main_graph() {
-            Ok(g) => Some(g),
-            Err(e) => {
-                logger::warn!("default render graph build failed: {e}");
-                None
-            }
-        };
+        let post_processing_settings = self
+            .renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok().map(|g| g.post_processing.clone()))
+            .unwrap_or_default();
+        self.rebuild_frame_graph_for_post_processing(&post_processing_settings);
         Ok(())
+    }
+
+    /// Rebuilds [`Self::frame_graph`] from `post_processing` and updates the cached signature.
+    ///
+    /// Logs at `warn` and clears [`Self::frame_graph`] on build failure so subsequent execute
+    /// calls return [`crate::render_graph::GraphExecuteError::NoFrameGraph`] instead of running
+    /// a stale graph.
+    fn rebuild_frame_graph_for_post_processing(
+        &mut self,
+        post_processing: &PostProcessingSettings,
+    ) {
+        match crate::render_graph::build_default_main_graph_with(post_processing) {
+            Ok(g) => {
+                self.frame_graph = Some(g);
+                self.frame_graph_post_processing_signature =
+                    PostProcessChainSignature::from_settings(post_processing);
+            }
+            Err(e) => {
+                logger::warn!("render graph build failed: {e}");
+                self.frame_graph = None;
+            }
+        }
+    }
+
+    /// Rebuilds [`Self::frame_graph`] when the live `[post_processing]` settings change topology.
+    ///
+    /// Reads [`Self::renderer_settings`] (no-op if unset, e.g. before [`Self::attach`]) and
+    /// derives the [`PostProcessChainSignature`]. When it differs from
+    /// [`Self::frame_graph_post_processing_signature`], rebuilds the graph so HUD edits to the
+    /// `[post_processing]` table take effect on the next frame without a renderer restart.
+    /// Parameter-only changes (no signature flip) skip the rebuild and let the per-frame
+    /// uniforms path handle them.
+    pub(crate) fn ensure_frame_graph_post_processing_in_sync(&mut self) {
+        let Some(handle) = self.renderer_settings.as_ref() else {
+            return;
+        };
+        let (live_parallelism, live_settings) = match handle.read() {
+            Ok(g) => (g.rendering.record_parallelism, g.post_processing.clone()),
+            Err(_) => return,
+        };
+        self.set_record_parallelism(live_parallelism);
+        let live_signature = PostProcessChainSignature::from_settings(&live_settings);
+        if live_signature == self.frame_graph_post_processing_signature
+            && self.frame_graph.is_some()
+        {
+            return;
+        }
+        logger::info!(
+            "post-processing settings changed (signature {:?} -> {:?}); rebuilding render graph",
+            self.frame_graph_post_processing_signature,
+            live_signature,
+        );
+        self.rebuild_frame_graph_for_post_processing(&live_settings);
+    }
+
+    /// Updates the per-view record parallelism mode from live [`crate::config::RenderingSettings`].
+    ///
+    /// On the first frame after the effective mode changes, logs the new mode at `info!`. Runtime
+    /// changes take effect on the next `execute_multi_view` call. See
+    /// [`crate::render_graph::CompiledRenderGraph::execute_multi_view`] for the parallel branch.
+    pub fn set_record_parallelism(&mut self, mode: crate::config::RecordParallelism) {
+        if self.record_parallelism != mode {
+            logger::info!(
+                "record parallelism mode change: {:?} -> {:?}",
+                self.record_parallelism,
+                mode
+            );
+            self.record_parallelism = mode;
+        }
     }
 
     /// Updates whether main HUD diagnostics run (mirrors [`crate::config::DebugSettings::debug_hud_enabled`]).
@@ -435,6 +621,14 @@ impl RenderBackend {
         self.debug_hud.set_frame_timing(snapshot);
     }
 
+    /// Pushes the latest flattened GPU pass timings into the debug HUD's **GPU passes** tab.
+    pub(crate) fn set_debug_hud_gpu_pass_timings(
+        &mut self,
+        timings: Vec<crate::profiling::GpuPassEntry>,
+    ) {
+        self.debug_hud.set_gpu_pass_timings(timings);
+    }
+
     /// Clears Stats / Shader routes payloads only (not frame timing or scene transforms).
     pub(crate) fn clear_debug_hud_stats_snapshots(&mut self) {
         self.debug_hud.clear_stats_snapshots();
@@ -483,6 +677,7 @@ impl RenderBackend {
         backbuffer: &wgpu::TextureView,
         extent: (u32, u32),
     ) -> Result<(), DebugHudEncodeError> {
+        profiling::scope!("hud::encode");
         self.debug_hud
             .encode_overlay(device, queue, encoder, backbuffer, extent)
     }
@@ -499,17 +694,18 @@ impl RenderBackend {
     pub(crate) fn split_for_graph_frame_params(&mut self) -> GraphFrameParamsSplit<'_> {
         let gpu_limits = self.gpu_limits().cloned();
         let msaa_depth_resolve = self.msaa_depth_resolve.clone();
+        let per_view_hud_config = self.per_view_hud_config();
         (
-            &mut self.occlusion,
-            &mut self.frame_resources,
-            &mut self.materials,
-            &mut self.asset_transfers,
+            &self.occlusion,
+            &self.frame_resources,
+            &self.materials,
+            &self.asset_transfers,
             self.mesh_preprocess.as_ref(),
             self.mesh_deform_scratch.as_mut(),
             self.skin_cache.as_mut(),
             gpu_limits,
             msaa_depth_resolve,
-            &mut self.debug_hud,
+            per_view_hud_config,
         )
     }
 
@@ -541,5 +737,90 @@ impl RenderBackend {
         let scratch = self.mesh_deform_scratch.as_mut()?;
         let skin = self.skin_cache.as_mut()?;
         Some((pre, scratch, skin))
+    }
+}
+
+#[cfg(test)]
+mod post_processing_rebuild_tests {
+    use std::sync::{Arc, RwLock};
+
+    use super::*;
+    use crate::config::{RendererSettings, TonemapMode, TonemapSettings};
+
+    fn settings_handle(post: PostProcessingSettings) -> RendererSettingsHandle {
+        Arc::new(RwLock::new(RendererSettings {
+            post_processing: post,
+            ..Default::default()
+        }))
+    }
+
+    /// First sync builds the graph and stores the live signature.
+    #[test]
+    fn first_sync_builds_graph_and_records_signature() {
+        let mut backend = RenderBackend::new();
+        let handle = settings_handle(PostProcessingSettings {
+            enabled: true,
+            tonemap: TonemapSettings {
+                mode: TonemapMode::AcesFitted,
+            },
+            ..Default::default()
+        });
+        backend.renderer_settings = Some(handle);
+        backend.ensure_frame_graph_post_processing_in_sync();
+        assert!(backend.frame_graph.is_some(), "graph should be built");
+        assert_eq!(
+            backend.frame_graph_post_processing_signature,
+            PostProcessChainSignature {
+                aces_tonemap: true,
+                gtao: false,
+            }
+        );
+    }
+
+    /// Toggling the master enable flips the signature and rebuilds the graph with an extra pass.
+    #[test]
+    fn signature_change_triggers_rebuild() {
+        let mut backend = RenderBackend::new();
+        let handle = settings_handle(PostProcessingSettings::default());
+        backend.renderer_settings = Some(Arc::clone(&handle));
+        backend.ensure_frame_graph_post_processing_in_sync();
+        let initial_passes = backend.frame_graph_pass_count();
+        let initial_signature = backend.frame_graph_post_processing_signature;
+
+        if let Ok(mut g) = handle.write() {
+            g.post_processing.enabled = true;
+            g.post_processing.tonemap.mode = TonemapMode::AcesFitted;
+        }
+        backend.ensure_frame_graph_post_processing_in_sync();
+
+        assert_ne!(
+            backend.frame_graph_post_processing_signature, initial_signature,
+            "signature must update after rebuild"
+        );
+        assert!(
+            backend.frame_graph_pass_count() > initial_passes,
+            "enabling ACES should add a graph pass"
+        );
+    }
+
+    /// Repeat sync without HUD edits is a no-op (no rebuild, signature and pass count unchanged).
+    #[test]
+    fn unchanged_signature_does_not_rebuild() {
+        let mut backend = RenderBackend::new();
+        let handle = settings_handle(PostProcessingSettings {
+            enabled: true,
+            tonemap: TonemapSettings {
+                mode: TonemapMode::AcesFitted,
+            },
+            ..Default::default()
+        });
+        backend.renderer_settings = Some(handle);
+        backend.ensure_frame_graph_post_processing_in_sync();
+        let signature = backend.frame_graph_post_processing_signature;
+        let pass_count = backend.frame_graph_pass_count();
+
+        backend.ensure_frame_graph_post_processing_in_sync();
+        assert_eq!(backend.frame_graph_post_processing_signature, signature);
+        assert_eq!(backend.frame_graph_pass_count(), pass_count);
     }
 }

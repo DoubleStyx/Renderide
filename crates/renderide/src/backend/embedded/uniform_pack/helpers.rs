@@ -122,3 +122,102 @@ pub(super) fn texture_property_present_pids(
     pids.iter()
         .any(|&pid| texture_property_any_kind_present_by_pid(store, lookup, pid))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lookup(mat: i32) -> MaterialPropertyLookupIds {
+        MaterialPropertyLookupIds {
+            material_asset_id: mat,
+            mesh_property_block_slot0: None,
+        }
+    }
+
+    #[test]
+    fn shader_writer_unescaped_strips_trailing_underscore_after_digit() {
+        // `Tex0_` is the escaped form of Unity `_Tex0` — writer appends `_` after digit suffix.
+        assert_eq!(shader_writer_unescaped_field_name("_Tex0_"), "_Tex0");
+    }
+
+    #[test]
+    fn shader_writer_unescaped_preserves_non_digit_tail() {
+        assert_eq!(shader_writer_unescaped_field_name("_Color_"), "_Color_");
+        assert_eq!(shader_writer_unescaped_field_name("_Color"), "_Color");
+    }
+
+    #[test]
+    fn default_vec4_known_names() {
+        assert_eq!(default_vec4_for_field("_Rect"), [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(default_vec4_for_field("_MainTex_ST"), [1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(
+            default_vec4_for_field("_EmissionColor"),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(default_vec4_for_field("_Tint0"), [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn default_vec4_unknown_falls_back_to_white() {
+        assert_eq!(default_vec4_for_field("_Unknown"), [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn default_vec4_unescaped_digit_field_resolves_to_known_default() {
+        // `_Tex0_` unescapes to `_Tex0`; not a known special case, fallback is white.
+        assert_eq!(default_vec4_for_field("_Tex0_"), [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn is_keyword_like_recognizes_upper_and_digit_tokens() {
+        assert!(is_keyword_like_field("_MSDF"));
+        assert!(is_keyword_like_field("_USE_LOD_0"));
+        assert!(!is_keyword_like_field("_MainTex"));
+        assert!(!is_keyword_like_field("_"));
+        assert!(!is_keyword_like_field(""));
+    }
+
+    #[test]
+    fn keyword_float_enabled_thresholds_on_half() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(1, 100, MaterialPropertyValue::Float(0.4));
+        store.set_material(1, 101, MaterialPropertyValue::Float(0.5));
+        store.set_material(1, 102, MaterialPropertyValue::Float(1.0));
+        assert!(!keyword_float_enabled_by_pid(&store, lookup(1), 100));
+        assert!(keyword_float_enabled_by_pid(&store, lookup(1), 101));
+        assert!(keyword_float_enabled_by_pid(&store, lookup(1), 102));
+        assert!(!keyword_float_enabled_by_pid(&store, lookup(1), 999));
+    }
+
+    #[test]
+    fn keyword_float_any_pids_short_circuits() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(1, 101, MaterialPropertyValue::Float(1.0));
+        assert!(keyword_float_enabled_any_pids(
+            &store,
+            lookup(1),
+            &[50, 60, 101],
+        ));
+        assert!(!keyword_float_enabled_any_pids(
+            &store,
+            lookup(1),
+            &[50, 60, 70],
+        ));
+    }
+
+    #[test]
+    fn first_float_by_pids_accepts_float4_x_component() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(1, 200, MaterialPropertyValue::Float4([3.5, 0.0, 0.0, 0.0]));
+        store.set_material(1, 201, MaterialPropertyValue::Float(7.0));
+        assert_eq!(
+            first_float_by_pids(&store, lookup(1), &[999, 200, 201]),
+            Some(3.5)
+        );
+        assert_eq!(
+            first_float_by_pids(&store, lookup(1), &[999, 201]),
+            Some(7.0)
+        );
+        assert_eq!(first_float_by_pids(&store, lookup(1), &[999]), None);
+    }
+}

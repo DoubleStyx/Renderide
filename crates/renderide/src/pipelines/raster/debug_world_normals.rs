@@ -77,3 +77,47 @@ pub(crate) fn create_debug_world_normals_render_pipeline(
         },
     )
 }
+
+#[cfg(test)]
+mod wgsl_dispatch_tests {
+    use super::{
+        build_debug_world_normals_wgsl, DebugWorldNormalsFamily, SHADER_PERM_MULTIVIEW_STEREO,
+    };
+    use crate::pipelines::ShaderPermutation;
+
+    /// Default permutation picks the `debug_world_normals_default` embedded stem and yields a
+    /// non-empty WGSL source.
+    #[test]
+    fn default_permutation_selects_default_stem() {
+        assert_eq!(
+            DebugWorldNormalsFamily::target_stem(ShaderPermutation(0)),
+            "debug_world_normals_default"
+        );
+        let wgsl = build_debug_world_normals_wgsl(ShaderPermutation(0)).expect("default wgsl");
+        assert!(!wgsl.is_empty());
+    }
+
+    /// Multiview permutation picks the `debug_world_normals_multiview` stem and differs from the
+    /// default permutation's WGSL.
+    #[test]
+    fn multiview_permutation_selects_multiview_stem() {
+        assert_eq!(
+            DebugWorldNormalsFamily::target_stem(SHADER_PERM_MULTIVIEW_STEREO),
+            "debug_world_normals_multiview"
+        );
+        let default_wgsl =
+            build_debug_world_normals_wgsl(ShaderPermutation(0)).expect("default wgsl");
+        let multiview_wgsl =
+            build_debug_world_normals_wgsl(SHADER_PERM_MULTIVIEW_STEREO).expect("multiview wgsl");
+        assert_ne!(default_wgsl, multiview_wgsl);
+    }
+
+    /// Unknown permutation bits fall through to the default stem.
+    #[test]
+    fn unknown_permutation_falls_back_to_default_stem() {
+        assert_eq!(
+            DebugWorldNormalsFamily::target_stem(ShaderPermutation(0xDEAD_BEEF)),
+            "debug_world_normals_default"
+        );
+    }
+}

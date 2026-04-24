@@ -10,11 +10,6 @@ struct UnlitUvRectMaterial {
     _ClipRect: vec4<f32>,
     _OuterColor: vec4<f32>,
     _InnerColor: vec4<f32>,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
-    _ZTest: f32,
     _RectClip: f32,
     _pad0: vec2<f32>,
 }

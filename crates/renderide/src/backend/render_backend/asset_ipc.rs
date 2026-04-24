@@ -176,6 +176,7 @@ impl RenderBackend {
         shm: &mut SharedMemoryAccessor,
         ipc: &mut DualQueueIpc,
     ) {
+        profiling::scope!("material::flush_batches");
         self.materials.flush_pending_material_batches(shm, ipc);
     }
 

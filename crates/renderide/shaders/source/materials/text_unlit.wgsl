@@ -2,6 +2,7 @@
 //!
 //! Keep this source in sync with `textunit.wgsl`.
 
+
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::alpha_clip_sample as acs
@@ -15,11 +16,6 @@ struct TextUnlitMaterial {
     _FaceDilate: f32,
     _FaceSoftness: f32,
     _OutlineSize: f32,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
-    _ZTest: f32,
     _TextMode: f32,
     _pad0: f32,
     _pad1: f32,
@@ -103,6 +99,7 @@ fn shade_distance_field(
     return mix(mat._BackgroundColor * vtx_color, fill_color, glyph_lerp);
 }
 
+//#material forward_base
 @fragment
 fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     let vtx_color = vout.vtx_color;

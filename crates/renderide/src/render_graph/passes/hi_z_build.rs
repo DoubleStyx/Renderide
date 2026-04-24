@@ -1,9 +1,9 @@
 //! Builds a CPU-readable hierarchical depth pyramid from the main depth attachment after the forward pass.
 
 use crate::backend::HiZBuildInput;
-use crate::render_graph::context::{PostSubmitContext, RenderPassContext};
+use crate::render_graph::context::{ComputePassCtx, PostSubmitContext};
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::pass::{PassBuilder, RenderPass};
+use crate::render_graph::pass::{ComputePass, PassBuilder};
 use crate::render_graph::resources::{
     BufferAccess, BufferHandle, ImportedTextureHandle, StorageAccess, TextureAccess,
 };
@@ -32,7 +32,7 @@ impl HiZBuildPass {
     }
 }
 
-impl RenderPass for HiZBuildPass {
+impl ComputePass for HiZBuildPass {
     fn name(&self) -> &str {
         "HiZBuild"
     }
@@ -56,35 +56,38 @@ impl RenderPass for HiZBuildPass {
         Ok(())
     }
 
-    fn execute(&mut self, ctx: &mut RenderPassContext<'_, '_, '_>) -> Result<(), RenderPassError> {
-        let Some(_depth) = ctx.depth_view else {
+    fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
+        profiling::scope!("hi_z::encode_pyramid");
+        if ctx.depth_view.is_none() {
             return Ok(());
-        };
+        }
         let Some(frame) = ctx.frame.as_mut() else {
             return Ok(());
         };
-        let Some(depth_sample_view) = frame.depth_sample_view.as_ref() else {
+        let Some(depth_sample_view) = frame.view.depth_sample_view.as_ref() else {
             return Ok(());
         };
         let mode = frame.output_depth_mode();
-        let view_id = frame.occlusion_view;
-        frame.occlusion.encode_hi_z_build_pass(
+        frame.shared.occlusion.encode_hi_z_build_pass(
             ctx.device,
             ctx.queue.as_ref(),
             ctx.encoder,
+            frame.view.hi_z_slot.as_ref(),
             HiZBuildInput {
                 depth_view: depth_sample_view,
-                extent: frame.viewport_px,
+                extent: frame.view.viewport_px,
                 mode,
-                view: view_id,
             },
+            ctx.profiler,
         );
         Ok(())
     }
 
-    fn post_submit(&mut self, ctx: &mut PostSubmitContext<'_>) -> Result<(), RenderPassError> {
-        ctx.occlusion
-            .hi_z_on_frame_submitted_for_view(ctx.device, ctx.occlusion_view);
+    fn post_submit(&mut self, _ctx: &mut PostSubmitContext<'_>) -> Result<(), RenderPassError> {
+        // Hi-Z staging-buffer `map_async` now runs from a
+        // [`wgpu::Queue::on_submitted_work_done`] callback installed in
+        // [`crate::render_graph::compiled::exec::CompiledRenderGraph::execute_multi_view`],
+        // so this post-submit hook is a no-op on the main thread.
         Ok(())
     }
 }

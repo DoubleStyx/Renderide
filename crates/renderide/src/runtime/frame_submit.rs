@@ -8,6 +8,7 @@ use crate::shared::FrameSubmitData;
 
 /// Applies a host frame submit: lock-step note, output state, camera fields, scene caches, head-output transform.
 pub(crate) fn process_frame_submit(runtime: &mut RendererRuntime, data: FrameSubmitData) {
+    profiling::scope!("scene::frame_submit");
     runtime
         .frontend
         .note_frame_submit_processed(data.frame_index);

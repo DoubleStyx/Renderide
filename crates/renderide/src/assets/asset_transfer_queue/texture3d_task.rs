@@ -20,7 +20,10 @@ enum Texture3dStage {
     /// First step: create mip-chain uploader.
     Start,
     /// Upload one mip per drain step.
-    MipChain { uploader: Texture3dMipChainUploader },
+    MipChain {
+        uploader: Texture3dMipChainUploader,
+        payload: Arc<[u8]>,
+    },
 }
 
 /// One in-flight Texture3D data upload.
@@ -59,6 +62,7 @@ impl Texture3dUploadTask {
         queue: &mut AssetTransferQueue,
         device: &Arc<wgpu::Device>,
         gpu_queue: &wgpu::Queue,
+        write_texture_submit_gate: &crate::gpu::WriteTextureSubmitGate,
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
@@ -77,15 +81,33 @@ impl Texture3dUploadTask {
                 let fmt = &self.format;
                 let upload = &self.data;
                 let start = shm.with_read_bytes(&upload.data, |raw| {
-                    Some(Texture3dMipChainUploader::new(texture, fmt, upload, raw))
+                    let uploader = Texture3dMipChainUploader::new(texture, fmt, upload, raw);
+                    let payload = match uploader {
+                        Ok(_) => {
+                            let want = upload.data.length.max(0) as usize;
+                            if raw.len() < want {
+                                return Some((
+                                    Err(TextureUploadError::from(format!(
+                                        "raw shorter than descriptor (need {want}, got {})",
+                                        raw.len()
+                                    ))),
+                                    Arc::from([] as [u8; 0]),
+                                ));
+                            }
+                            Arc::from(&raw[..want])
+                        }
+                        Err(_) => Arc::from([] as [u8; 0]),
+                    };
+                    Some((uploader, payload))
                 });
                 let Some(uploader_result) = start else {
                     logger::warn!("texture3d {id}: shared memory slice missing");
                     return StepResult::Done;
                 };
+                let (uploader_result, payload) = uploader_result;
                 match uploader_result {
                     Ok(uploader) => {
-                        self.stage = Texture3dStage::MipChain { uploader };
+                        self.stage = Texture3dStage::MipChain { uploader, payload };
                         StepResult::Continue
                     }
                     Err(e) => {
@@ -94,39 +116,27 @@ impl Texture3dUploadTask {
                     }
                 }
             }
-            Texture3dStage::MipChain { uploader } => {
+            Texture3dStage::MipChain { uploader, payload } => {
                 let fmt = &self.format;
                 let wgpu_format = self.wgpu_format;
                 let upload = &self.data;
-                let want = upload.data.length.max(0) as usize;
-                let mip_out = shm.with_read_bytes(&upload.data, |raw| {
-                    if raw.len() < want {
-                        return Some(Err(TextureUploadError::from(format!(
-                            "raw shorter than descriptor (need {want}, got {})",
-                            raw.len()
-                        ))));
-                    }
-                    let payload = &raw[..want];
-                    Some(uploader.upload_next_mip(Texture3dMipUploadStep {
-                        device: device.as_ref(),
-                        queue: gpu_queue,
-                        texture,
-                        fmt,
-                        wgpu_format,
-                        upload,
-                        payload,
-                    }))
+                let mip_result = uploader.upload_next_mip(Texture3dMipUploadStep {
+                    device: device.as_ref(),
+                    queue: gpu_queue,
+                    write_texture_submit_gate,
+                    texture,
+                    fmt,
+                    wgpu_format,
+                    upload,
+                    payload,
                 });
-                let Some(mip_result) = mip_out else {
-                    logger::warn!("texture3d {id}: shared memory slice missing");
-                    return StepResult::Done;
-                };
                 match mip_result {
                     Ok(Texture3dMipAdvance::UploadedOne) => StepResult::Continue,
                     Ok(Texture3dMipAdvance::Finished { total_uploaded }) => {
                         self.finalize_success(queue, ipc, total_uploaded);
                         StepResult::Done
                     }
+                    Ok(Texture3dMipAdvance::YieldBackground) => StepResult::YieldBackground,
                     Err(e) => {
                         logger::warn!("texture3d {id}: upload failed: {e}");
                         StepResult::Done

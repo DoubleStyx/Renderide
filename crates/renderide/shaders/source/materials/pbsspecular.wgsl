@@ -29,23 +29,13 @@ struct PbsSpecularMaterial {
     _DetailAlbedoMap_ST: vec4<f32>,
     _Cutoff: f32,
     _Glossiness: f32,
-    _GlossMapScale: f32,
     _SmoothnessTextureChannel: f32,
     _BumpScale: f32,
     _Parallax: f32,
-    _OcclusionStrength: f32,
     _DetailNormalMapScale: f32,
-    _UVSec: f32,
-    _SpecularHighlights: f32,
-    _GlossyReflections: f32,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Mode: f32,
     _ALPHATEST_ON: f32,
     _ALPHABLEND_ON: f32,
     _ALPHAPREMULTIPLY_ON: f32,
-    _OffsetFactor: f32,  // pad to 144-byte (9 × 16) boundary
 }
 
 @group(1) @binding(0)  var<uniform> mat: PbsSpecularMaterial;
@@ -79,16 +69,12 @@ fn kw(v: f32) -> bool {
     return v > 0.5;
 }
 
-fn mode_near(v: f32) -> bool {
-    return abs(mat._Mode - v) < 0.5;
-}
-
 fn alpha_test_enabled() -> bool {
-    return kw(mat._ALPHATEST_ON) || mode_near(1.0);
+    return kw(mat._ALPHATEST_ON);
 }
 
 fn alpha_premultiply_enabled() -> bool {
-    return kw(mat._ALPHAPREMULTIPLY_ON) || mode_near(3.0);
+    return kw(mat._ALPHAPREMULTIPLY_ON);
 }
 
 fn apply_premultiply(color: vec3<f32>, alpha: f32) -> vec3<f32> {
@@ -167,8 +153,7 @@ fn fs_main(
 ) -> @location(0) vec4<f32> {
     // --- UV transforms ---
     let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
-    let uv_sec  = select(uv0, uv1, mat._UVSec > 0.5);
-    let uv_det  = uvu::apply_st(uv_sec, mat._DetailAlbedoMap_ST);
+    let uv_det  = uvu::apply_st(uv0, mat._DetailAlbedoMap_ST);
 
     // --- Albedo ---
     let albedo_s   = textureSample(_MainTex, _MainTex_sampler, uv_main);
@@ -185,15 +170,14 @@ fn fs_main(
     var spec_tint  = mat._SpecColor.rgb * sg.rgb;
     // Smoothness: driven by spec gloss map (W = smoothness) or albedo alpha per _SmoothnessTextureChannel.
     let smooth_src = select(sg.w, albedo_s.a, mat._SmoothnessTextureChannel < 0.5);
-    let smoothness = mat._Glossiness * mat._GlossMapScale * smooth_src;
+    let smoothness = mat._Glossiness * smooth_src;
     let roughness  = clamp(1.0 - smoothness, 0.045, 1.0);
     // oneMinusReflectivity: energy conserved by diffuse (albedo reduced by specular contribution).
     let one_minus_reflectivity = 1.0 - max(max(spec_tint.r, spec_tint.g), spec_tint.b);
     let f0 = spec_tint;
 
     // --- Occlusion ---
-    let occ_s     = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).x;
-    let occlusion = mix(1.0, occ_s, mat._OcclusionStrength);
+    let occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).x;
 
     // --- Detail mask (alpha channel) ---
     let detail_mask_s = textureSample(_DetailMask, _DetailMask_sampler, uv_main).a;
@@ -230,24 +214,18 @@ fn fs_main(
     );
 
     let count    = rg::cluster_light_counts[cluster_id];
-    let base_idx = cluster_id * pcls::MAX_LIGHTS_PER_TILE;
     var lo       = vec3<f32>(0.0);
-    let spec_on  = mat._SpecularHighlights > 0.5;
     let i_max    = min(count, pcls::MAX_LIGHTS_PER_TILE);
     for (var i = 0u; i < i_max; i++) {
-        let li = rg::cluster_light_indices[base_idx + i];
+        let li = pcls::cluster_light_index_at(cluster_id, i);
         if li >= rg::frame.light_count {
             continue;
         }
         let light = rg::lights[li];
-        if spec_on {
-            lo = lo + brdf::direct_radiance_specular(light, world_pos, n, v, roughness, base_color, f0, one_minus_reflectivity);
-        } else {
-            lo = lo + brdf::diffuse_only_specular(light, world_pos, n, base_color, one_minus_reflectivity);
-        }
+        lo = lo + brdf::direct_radiance_specular(light, world_pos, n, v, roughness, base_color, f0, one_minus_reflectivity);
     }
 
-    let amb   = select(vec3<f32>(0.03), vec3<f32>(0.0), mat._GlossyReflections < 0.5);
+    let amb   = vec3<f32>(0.03);
     let color = (amb * base_color * occlusion + lo * occlusion) + em;
     return vec4<f32>(apply_premultiply(color, alpha), alpha);
 }

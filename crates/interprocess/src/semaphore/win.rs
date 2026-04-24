@@ -27,6 +27,7 @@ impl WinSemaphore {
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
+        // SAFETY: `name_wide` is NUL-terminated wide string; security attrs arg is null (default ACL).
         let handle = unsafe { CreateSemaphoreW(null_mut(), 0, i32::MAX, name_wide.as_ptr()) };
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
@@ -36,6 +37,8 @@ impl WinSemaphore {
 
     /// Releases one semaphore count (`ReleaseSemaphore`).
     pub(super) fn post(&self) {
+        // SAFETY: `self.0` is a live semaphore handle owned by `self`; `lpPreviousCount` null is
+        // permitted by the Win32 API.
         let rc = unsafe { ReleaseSemaphore(self.0, 1, null_mut()) };
         if rc == 0 {
             debug_assert!(
@@ -55,6 +58,7 @@ impl WinSemaphore {
         } else {
             timeout.as_millis().min(u32::MAX as u128) as u32
         };
+        // SAFETY: `self.0` is a live semaphore handle owned by `self`.
         let r = unsafe { WaitForSingleObject(self.0, ms) };
         r == WAIT_OBJECT_0
     }
@@ -63,6 +67,8 @@ impl WinSemaphore {
 impl Drop for WinSemaphore {
     fn drop(&mut self) {
         if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+            // SAFETY: `self.0` is the semaphore handle created in `open`, still live (non-null and
+            // not sentinel); closed exactly once here.
             unsafe {
                 CloseHandle(self.0);
             }
