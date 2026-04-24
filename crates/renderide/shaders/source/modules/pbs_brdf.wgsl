@@ -33,16 +33,23 @@ fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
     return f0 + (vec3<f32>(1.0) - f0) * pow5(1.0 - cos_theta);
 }
 
-/// Windowed inverse-square distance attenuation for punctual lights.
-/// `(saturate(1 - (d/r)^4))^2 / d²` (Karis/Lagarde) — exactly zero at `range`, with a wide smooth
-/// transition zone so the per-cluster cull boundary (16-px tiles) is hidden by the falloff itself.
+/// Range-coupled windowed inverse-square distance attenuation for punctual lights.
+/// `(saturate(1 - (d/r)^4))^2 / d² * 4π/r²` — Karis/Lagarde window (exactly zero at `range` with a
+/// wide smooth transition zone that hides the per-cluster cull boundary) plus a `4π/range²`
+/// range-coupling term so that `range` participates in perceived brightness. This diverges from
+/// pure Filament/Bevy inverse-square to match Resonite's BiRP-style authoring convention where
+/// `intensity` behaves as a luminous-power-like quantity spread over the light's working volume.
+/// Intensity is applied by the call site.
 fn distance_attenuation(dist: f32, range: f32) -> f32 {
     if (range <= 0.0) {
         return 0.0;
     }
-    let inv_d2 = 1.0 / max(dist * dist, 0.0001);
-    let t = clamp(1.0 - pow(dist / range, 4.0), 0.0, 1.0);
-    return inv_d2 * t * t;
+    let inv_d2 = 1.0 / max(dist * dist, 0.01 * 0.01);
+    let t = dist / range;
+    let window_inner = clamp(1.0 - t * t * t * t, 0.0, 1.0);
+    let window = window_inner * window_inner;
+    let range_boost = 4.0 * 3.14159265 / (range * range);
+    return inv_d2 * window * range_boost;
 }
 
 /// Builds an orthonormal TBN from a world-space normal (fallback when mesh tangents are unavailable).
