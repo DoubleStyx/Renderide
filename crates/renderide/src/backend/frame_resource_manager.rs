@@ -423,16 +423,20 @@ impl FrameResourceManager {
         }
     }
 
-    /// Fills the light scratch buffer from [`SceneCoordinator`] (all spaces, clustered ordering,
-    /// capped at [`super::MAX_LIGHTS`]).
+    /// Fills the light scratch buffer from [`SceneCoordinator`] (active render spaces only,
+    /// clustered ordering, capped at [`super::MAX_LIGHTS`]).
+    ///
+    /// Inactive spaces are skipped so lights from a previously focused world do not persist into
+    /// the next frame's shading. This matches how renderables, mesh deform, secondary cameras,
+    /// and the material-batch cache already filter by [`crate::scene::RenderSpaceState::is_active`].
     ///
     /// After the first successful run in a winit tick, subsequent calls are skipped until
     /// [`Self::reset_light_prep_for_tick`] runs, so secondary RT and main passes share one pack.
     /// Non-contributing lights are filtered via [`light_contributes`] before clustered ordering.
     ///
     /// Per-space [`SceneCoordinator::resolve_lights_world_into`] is read-only on the scene and is
-    /// fanned out across rayon workers when more than one render space exists. Single-space
-    /// scenes (the common case) take the serial fast path to avoid rayon overhead.
+    /// fanned out across rayon workers when more than one active render space exists.
+    /// Single-space scenes (the common case) take the serial fast path to avoid rayon overhead.
     pub fn prepare_lights_from_scene(&mut self, scene: &SceneCoordinator) {
         if self.light_prep_done_this_tick {
             return;
@@ -441,7 +445,10 @@ impl FrameResourceManager {
         self.light_scratch.clear();
         self.resolved_flatten_scratch.clear();
 
-        let space_ids: Vec<_> = scene.render_space_ids().collect();
+        let space_ids: Vec<_> = scene
+            .render_space_ids()
+            .filter(|id| scene.space(*id).map(|s| s.is_active).unwrap_or(false))
+            .collect();
         match space_ids.len() {
             0 => {}
             1 => {
@@ -578,6 +585,13 @@ fn make_cluster_params_buffer(device: &wgpu::Device, stereo: bool) -> wgpu::Buff
 mod tests {
     use super::*;
 
+    use glam::{Quat, Vec3};
+
+    use crate::scene::RenderSpaceId;
+    use crate::shared::{
+        LightData, LightType, LightsBufferRendererState, RenderTransform, ShadowType,
+    };
+
     #[test]
     fn new_manager_has_no_per_view_draw() {
         let mgr = FrameResourceManager::new();
@@ -603,5 +617,82 @@ mod tests {
         mgr.retire_per_view_per_draw(OcclusionViewId::OffscreenRenderTexture(99));
         mgr.retire_per_view_frame(OcclusionViewId::Main);
         mgr.retire_per_view_frame(OcclusionViewId::OffscreenRenderTexture(99));
+    }
+
+    fn make_light_data(color_x: f32) -> LightData {
+        LightData {
+            point: Vec3::ZERO,
+            orientation: Quat::IDENTITY,
+            color: Vec3::new(color_x, 0.0, 0.0),
+            intensity: 1.0,
+            range: 10.0,
+            angle: 45.0,
+        }
+    }
+
+    fn make_state(global_unique_id: i32) -> LightsBufferRendererState {
+        LightsBufferRendererState {
+            renderable_index: 0,
+            global_unique_id,
+            shadow_strength: 0.0,
+            shadow_near_plane: 0.0,
+            shadow_map_resolution: 0,
+            shadow_bias: 0.0,
+            shadow_normal_bias: 0.0,
+            cookie_texture_asset_id: -1,
+            light_type: LightType::Point,
+            shadow_type: ShadowType::None,
+            _padding: [0; 2],
+        }
+    }
+
+    fn seed_space_with_light(
+        scene: &mut SceneCoordinator,
+        space_id: RenderSpaceId,
+        global_unique_id: i32,
+        color_x: f32,
+    ) {
+        scene.test_seed_space_identity_worlds(space_id, vec![RenderTransform::default()], vec![-1]);
+        let cache = scene.light_cache_mut();
+        cache.store_full(global_unique_id, vec![make_light_data(color_x)]);
+        cache.apply_update(space_id.0, &[], &[0], &[make_state(global_unique_id)]);
+    }
+
+    /// Lights from inactive render spaces must not leak into the frame's GPU light buffer.
+    ///
+    /// Regression: `prepare_lights_from_scene` used to iterate every tracked render space, so
+    /// after a world switch (host marks the old space `is_active = false` but keeps it resident)
+    /// its lights persisted into the new world's shading. Every other per-space pipeline
+    /// (renderables, deform, secondary cameras, material-batch cache) filters by `is_active`;
+    /// lights must follow the same rule.
+    #[test]
+    fn prepare_lights_from_scene_skips_inactive_spaces() {
+        let mut scene = SceneCoordinator::new();
+        let space_a = RenderSpaceId(1);
+        let space_b = RenderSpaceId(2);
+        seed_space_with_light(&mut scene, space_a, 100, 1.0);
+        seed_space_with_light(&mut scene, space_b, 200, 0.5);
+
+        // Both spaces active: both lights contribute.
+        let mut mgr = FrameResourceManager::new();
+        mgr.prepare_lights_from_scene(&scene);
+        assert_eq!(mgr.frame_lights().len(), 2);
+
+        // Focus space A only.
+        scene.test_set_space_active(space_b, false);
+        mgr.reset_light_prep_for_tick();
+        mgr.prepare_lights_from_scene(&scene);
+        let packed = mgr.frame_lights();
+        assert_eq!(packed.len(), 1);
+        assert!((packed[0].color[0] - 1.0).abs() < 1e-5);
+
+        // Switch focus to space B; A's light must not carry over.
+        scene.test_set_space_active(space_a, false);
+        scene.test_set_space_active(space_b, true);
+        mgr.reset_light_prep_for_tick();
+        mgr.prepare_lights_from_scene(&scene);
+        let packed = mgr.frame_lights();
+        assert_eq!(packed.len(), 1);
+        assert!((packed[0].color[0] - 0.5).abs() < 1e-5);
     }
 }

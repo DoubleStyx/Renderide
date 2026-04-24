@@ -13,6 +13,13 @@ use super::super::world::{compute_world_matrices_for_space, WorldTransformCache}
 use super::SceneCoordinator;
 
 impl SceneCoordinator {
+    /// Overrides [`RenderSpaceState::is_active`] for a seeded space (unit tests only).
+    pub(crate) fn test_set_space_active(&mut self, id: RenderSpaceId, is_active: bool) {
+        if let Some(space) = self.spaces.get_mut(&id) {
+            space.is_active = is_active;
+        }
+    }
+
     /// Inserts a render space and solves world matrices from the given locals (for unit tests).
     pub(crate) fn test_seed_space_identity_worlds(
         &mut self,
