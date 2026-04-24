@@ -530,13 +530,16 @@ impl RenderideApp {
 
         if let (Some(bundle), Some(tick)) = (self.xr_session.as_mut(), xr_tick) {
             if !hmd_projection_ended {
-                profiling::scope!("xr::end_frame_empty");
+                profiling::scope!("xr::end_frame_if_open");
+                // `end_frame_if_open` is a no-op when the frame was already closed (e.g. by a
+                // partial `end_frame_projection`), so it's safe to call unconditionally after any
+                // failure inside `try_openxr_hmd_multiview_submit`.
                 if let Err(e) = bundle
                     .handles
                     .xr_session
-                    .end_frame_empty(tick.predicted_display_time)
+                    .end_frame_if_open(tick.predicted_display_time)
                 {
-                    logger::debug!("OpenXR end_frame_empty: {e:?}");
+                    logger::debug!("OpenXR end_frame_if_open: {e:?}");
                 }
             }
         }
@@ -584,6 +587,17 @@ impl RenderideApp {
         }
         let xr_tick = self.xr_begin_tick();
         self.lock_step_exchange();
+
+        if let Some(bundle) = self.xr_session.as_ref() {
+            if bundle.handles.xr_session.exit_requested() {
+                logger::info!("OpenXR requested exit");
+                self.exit_code = Some(0);
+                event_loop.exit();
+                self.frame_tick_epilogue(frame_start);
+                crate::profiling::emit_frame_mark();
+                return;
+            }
+        }
 
         if self.runtime.shutdown_requested() {
             logger::info!("Renderer shutdown requested by host");
