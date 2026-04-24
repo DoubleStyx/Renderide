@@ -20,6 +20,7 @@
 pub mod buffer;
 pub mod ipc;
 pub mod packing;
+pub mod packing_extras;
 pub mod shader_upload_extras;
 pub mod shared_memory_writer;
 pub mod wire_writer;

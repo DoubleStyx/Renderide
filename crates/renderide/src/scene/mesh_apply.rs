@@ -4,9 +4,11 @@ use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
 use crate::ipc::SharedMemoryAccessor;
+use crate::shared::packing_extras::SKINNED_MESH_BOUNDS_UPDATE_HOST_ROW_BYTES;
 use crate::shared::{
     BlendshapeUpdate, BlendshapeUpdateBatch, BoneAssignment, LayerType, MeshRenderablesUpdate,
-    MeshRendererState, SkinnedMeshRenderablesUpdate, MESH_RENDERER_STATE_HOST_ROW_BYTES,
+    MeshRendererState, SkinnedMeshBoundsUpdate, SkinnedMeshRenderablesUpdate,
+    MESH_RENDERER_STATE_HOST_ROW_BYTES,
 };
 
 use super::error::SceneError;
@@ -48,6 +50,11 @@ pub struct ExtractedSkinnedMeshRenderablesUpdate {
     pub blendshape_update_batches: Vec<BlendshapeUpdateBatch>,
     /// Blendshape weight delta slab keyed by [`BlendshapeUpdateBatch::blendshape_update_count`].
     pub blendshape_updates: Vec<BlendshapeUpdate>,
+    /// Per-renderer posed object-space AABB rows from the host's
+    /// [`SkinnedMeshRenderablesUpdate::bounds_updates`] buffer (terminated by
+    /// `renderable_index < 0`). Each row carries the tight per-frame AABB computed by the host's
+    /// animation evaluation and is used verbatim for CPU frustum / Hi-Z culling.
+    pub bounds_updates: Vec<SkinnedMeshBoundsUpdate>,
 }
 
 static BONE_INDEX_EMPTY_WARNED_SCENES: LazyLock<Mutex<HashSet<i32>>> =
@@ -245,6 +252,16 @@ pub(crate) fn extract_skinned_mesh_renderables_update(
             )
             .map_err(SceneError::SharedMemoryAccess)?;
     }
+    if update.bounds_updates.length > 0 {
+        let ctx_bounds = format!("skinned bounds_updates scene_id={scene_id}");
+        out.bounds_updates = shm
+            .access_copy_memory_packable_rows::<SkinnedMeshBoundsUpdate>(
+                &update.bounds_updates,
+                SKINNED_MESH_BOUNDS_UPDATE_HOST_ROW_BYTES,
+                Some(&ctx_bounds),
+            )
+            .map_err(SceneError::SharedMemoryAccess)?;
+    }
     Ok(out)
 }
 
@@ -367,6 +384,27 @@ fn apply_skinned_blendshape_weight_batches_extracted(
     }
 }
 
+/// Stores host-computed posed object-space bounds onto skinned renderables for culling.
+///
+/// The host emits one row per renderable whose [`SkinnedMeshRenderer::ComputedBounds`] changed
+/// since the previous frame; unchanged renderables retain their last posted bound. Rows are
+/// terminated by the first entry with `renderable_index < 0`.
+fn apply_skinned_posed_bounds_extracted(
+    space: &mut RenderSpaceState,
+    extracted: &ExtractedSkinnedMeshRenderablesUpdate,
+) {
+    profiling::scope!("scene::apply_skinned_posed_bounds");
+    for row in &extracted.bounds_updates {
+        if row.renderable_index < 0 {
+            break;
+        }
+        let idx = row.renderable_index as usize;
+        if let Some(entry) = space.skinned_mesh_renderers.get_mut(idx) {
+            entry.posed_object_bounds = Some(row.local_bounds);
+        }
+    }
+}
+
 /// Mutates [`RenderSpaceState`] using a pre-extracted [`ExtractedSkinnedMeshRenderablesUpdate`].
 pub(crate) fn apply_skinned_mesh_renderables_update_extracted(
     space: &mut RenderSpaceState,
@@ -380,4 +418,119 @@ pub(crate) fn apply_skinned_mesh_renderables_update_extracted(
     apply_skinned_mesh_state_rows_extracted(space, extracted);
     apply_skinned_bone_index_buffers_extracted(space, extracted, scene_id);
     apply_skinned_blendshape_weight_batches_extracted(space, extracted);
+    apply_skinned_posed_bounds_extracted(space, extracted);
+}
+
+#[cfg(test)]
+mod posed_bounds_tests {
+    //! [`apply_skinned_posed_bounds_extracted`] writes per-renderable posed bounds onto
+    //! [`SkinnedMeshRenderer::posed_object_bounds`] and honours the `renderable_index < 0`
+    //! terminator used by the host.
+
+    use glam::Vec3;
+
+    use crate::scene::mesh_renderable::SkinnedMeshRenderer;
+    use crate::scene::render_space::RenderSpaceState;
+    use crate::shared::{RenderBoundingBox, SkinnedMeshBoundsUpdate};
+
+    use super::{apply_skinned_posed_bounds_extracted, ExtractedSkinnedMeshRenderablesUpdate};
+
+    fn make_space_with(n: usize) -> RenderSpaceState {
+        let mut space = RenderSpaceState::default();
+        for _ in 0..n {
+            space
+                .skinned_mesh_renderers
+                .push(SkinnedMeshRenderer::default());
+        }
+        space
+    }
+
+    fn bounds(cx: f32, hx: f32) -> RenderBoundingBox {
+        RenderBoundingBox {
+            center: Vec3::new(cx, 0.0, 0.0),
+            extents: Vec3::new(hx, hx, hx),
+        }
+    }
+
+    fn extracted_with_rows(
+        rows: Vec<SkinnedMeshBoundsUpdate>,
+    ) -> ExtractedSkinnedMeshRenderablesUpdate {
+        ExtractedSkinnedMeshRenderablesUpdate {
+            bounds_updates: rows,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn posed_bounds_are_stored_per_renderable() {
+        let mut space = make_space_with(3);
+        let extracted = extracted_with_rows(vec![
+            SkinnedMeshBoundsUpdate {
+                renderable_index: 0,
+                local_bounds: bounds(1.0, 0.5),
+            },
+            SkinnedMeshBoundsUpdate {
+                renderable_index: 2,
+                local_bounds: bounds(2.0, 0.25),
+            },
+        ]);
+        apply_skinned_posed_bounds_extracted(&mut space, &extracted);
+        assert_eq!(
+            space.skinned_mesh_renderers[0]
+                .posed_object_bounds
+                .unwrap()
+                .center,
+            Vec3::new(1.0, 0.0, 0.0)
+        );
+        assert!(space.skinned_mesh_renderers[1]
+            .posed_object_bounds
+            .is_none());
+        assert_eq!(
+            space.skinned_mesh_renderers[2]
+                .posed_object_bounds
+                .unwrap()
+                .extents,
+            Vec3::new(0.25, 0.25, 0.25)
+        );
+    }
+
+    #[test]
+    fn negative_renderable_index_terminates_rows() {
+        let mut space = make_space_with(2);
+        let extracted = extracted_with_rows(vec![
+            SkinnedMeshBoundsUpdate {
+                renderable_index: 0,
+                local_bounds: bounds(1.0, 0.5),
+            },
+            SkinnedMeshBoundsUpdate {
+                renderable_index: -1,
+                local_bounds: bounds(99.0, 99.0),
+            },
+            SkinnedMeshBoundsUpdate {
+                renderable_index: 1,
+                local_bounds: bounds(2.0, 0.5),
+            },
+        ]);
+        apply_skinned_posed_bounds_extracted(&mut space, &extracted);
+        assert!(space.skinned_mesh_renderers[0]
+            .posed_object_bounds
+            .is_some());
+        // The terminator row must prevent the third entry from reaching renderable 1.
+        assert!(space.skinned_mesh_renderers[1]
+            .posed_object_bounds
+            .is_none());
+    }
+
+    #[test]
+    fn out_of_range_index_is_ignored() {
+        let mut space = make_space_with(1);
+        let extracted = extracted_with_rows(vec![SkinnedMeshBoundsUpdate {
+            renderable_index: 99,
+            local_bounds: bounds(1.0, 0.5),
+        }]);
+        apply_skinned_posed_bounds_extracted(&mut space, &extracted);
+        assert!(space.skinned_mesh_renderers[0]
+            .posed_object_bounds
+            .is_none());
+    }
 }

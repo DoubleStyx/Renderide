@@ -135,9 +135,8 @@ pub use frame_params::{
     WorldMeshForwardPlanSlot,
 };
 pub use frustum::{
-    mesh_bounds_degenerate_for_cull, mesh_bounds_max_half_extent, world_aabb_from_local_bounds,
-    world_aabb_from_skinned_bone_origins, world_aabb_visible_in_homogeneous_clip, Frustum, Plane,
-    HOMOGENEOUS_CLIP_EPS,
+    mesh_bounds_degenerate_for_cull, world_aabb_from_local_bounds,
+    world_aabb_visible_in_homogeneous_clip, Frustum, Plane, HOMOGENEOUS_CLIP_EPS,
 };
 pub use hi_z_cpu::{
     hi_z_pyramid_dimensions, hi_z_snapshot_from_linear_linear, mip_dimensions,
