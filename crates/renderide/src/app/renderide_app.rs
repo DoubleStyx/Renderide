@@ -41,7 +41,7 @@ use crate::present::{present_clear_frame, present_clear_frame_overlay};
 use crate::render_graph::GraphExecuteError;
 use crate::runtime::RendererRuntime;
 use crate::shared::{HeadOutputDevice, VRControllerState};
-use crate::xr::{OpenxrFrameTick, XrSessionBundle};
+use crate::xr::{synthesize_hand_states, OpenxrFrameTick, XrSessionBundle};
 use glam::{Quat, Vec3};
 
 use super::frame_loop;
@@ -413,10 +413,12 @@ impl RenderideApp {
                 self.runtime.debug_hud_last_want_capture_mouse(),
                 self.runtime.debug_hud_last_want_capture_keyboard(),
             );
+            let synthesised_hands = synthesize_hand_states(&self.cached_openxr_controllers);
             if let Some(vr) = vr_inputs_for_session(
                 self.session_output_device,
                 self.cached_head_pose,
                 &self.cached_openxr_controllers,
+                synthesised_hands,
             ) {
                 inputs.vr = Some(vr);
             }
