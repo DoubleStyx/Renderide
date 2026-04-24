@@ -198,17 +198,14 @@ impl RasterPass for GtaoPass {
         ctx.upload_batch
             .write_buffer(params_buffer, 0, bytemuck::bytes_of(&params));
 
-        let scene_color_view = input_tex.view_for_sampled_2d_array(multiview_stereo);
-        let scene_depth_view = depth_sample_view(frame.view.depth_texture, multiview_stereo);
-
         let pipeline = self
             .pipelines
             .pipeline(ctx.device, target_format, multiview_stereo);
         let bind_group = self.pipelines.bind_group(
             ctx.device,
             multiview_stereo,
-            &scene_color_view,
-            &scene_depth_view,
+            &input_tex.texture,
+            frame.view.depth_texture,
             &frame_uniform_buffer,
         );
         rpass.set_pipeline(pipeline.as_ref());
@@ -216,23 +213,6 @@ impl RasterPass for GtaoPass {
         rpass.draw(0..3, 0..1);
         Ok(())
     }
-}
-
-/// Creates a depth-only sample view matching the active multiview state.
-fn depth_sample_view(depth_texture: &wgpu::Texture, multiview_stereo: bool) -> wgpu::TextureView {
-    let (dimension, array_layer_count) = if multiview_stereo {
-        (wgpu::TextureViewDimension::D2Array, Some(2))
-    } else {
-        (wgpu::TextureViewDimension::D2, Some(1))
-    };
-    depth_texture.create_view(&wgpu::TextureViewDescriptor {
-        label: Some("gtao-depth-sample"),
-        dimension: Some(dimension),
-        base_array_layer: 0,
-        array_layer_count,
-        aspect: wgpu::TextureAspect::DepthOnly,
-        ..Default::default()
-    })
 }
 
 /// Resolves the wgpu format the GTAO color attachment is bound to this frame.

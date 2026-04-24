@@ -235,17 +235,39 @@ fn apply_dense_removals<T>(entries: &mut Vec<T>, removals: &[i32]) {
     }
 }
 
+/// Override-entry count above which the per-removal fixup sweep fans out to the rayon pool.
+///
+/// Mirrors [`crate::scene::mesh_apply::SKINNED_FIXUP_PARALLEL_MIN`] and the layer-assignment
+/// threshold: the per-entry work is a trivial branch, so rayon pays for itself only once the
+/// `removals × entries` product is large enough to amortise dispatch cost.
+const OVERRIDE_FIXUP_PARALLEL_MIN: usize = 128;
+
 fn fixup_transform_override_nodes_for_transform_removals(
     space: &mut RenderSpaceState,
     removals: &[TransformRemovalEvent],
 ) {
+    let use_parallel = space.render_transform_overrides.len() >= OVERRIDE_FIXUP_PARALLEL_MIN;
     for removal in removals {
-        for entry in &mut space.render_transform_overrides {
-            entry.node_id = fixup_transform_id(
-                entry.node_id,
-                removal.removed_index,
-                removal.last_index_before_swap,
-            );
+        if use_parallel {
+            use rayon::prelude::*;
+            space
+                .render_transform_overrides
+                .par_iter_mut()
+                .for_each(|entry| {
+                    entry.node_id = fixup_transform_id(
+                        entry.node_id,
+                        removal.removed_index,
+                        removal.last_index_before_swap,
+                    );
+                });
+        } else {
+            for entry in &mut space.render_transform_overrides {
+                entry.node_id = fixup_transform_id(
+                    entry.node_id,
+                    removal.removed_index,
+                    removal.last_index_before_swap,
+                );
+            }
         }
     }
 }
@@ -254,13 +276,28 @@ fn fixup_material_override_nodes_for_transform_removals(
     space: &mut RenderSpaceState,
     removals: &[TransformRemovalEvent],
 ) {
+    let use_parallel = space.render_material_overrides.len() >= OVERRIDE_FIXUP_PARALLEL_MIN;
     for removal in removals {
-        for entry in &mut space.render_material_overrides {
-            entry.node_id = fixup_transform_id(
-                entry.node_id,
-                removal.removed_index,
-                removal.last_index_before_swap,
-            );
+        if use_parallel {
+            use rayon::prelude::*;
+            space
+                .render_material_overrides
+                .par_iter_mut()
+                .for_each(|entry| {
+                    entry.node_id = fixup_transform_id(
+                        entry.node_id,
+                        removal.removed_index,
+                        removal.last_index_before_swap,
+                    );
+                });
+        } else {
+            for entry in &mut space.render_material_overrides {
+                entry.node_id = fixup_transform_id(
+                    entry.node_id,
+                    removal.removed_index,
+                    removal.last_index_before_swap,
+                );
+            }
         }
     }
 }

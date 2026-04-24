@@ -47,6 +47,24 @@ pub(super) struct GtaoParamsGpu {
     pub align_pad_tail: [f32; 2],
 }
 
+/// Cache key for [`GtaoPipelineCache::bind_groups`].
+///
+/// `wgpu::Texture` and `wgpu::Buffer` both implement `Eq + Hash` via their internal handles, so
+/// entries automatically follow the transient pool's / frame-resource manager's allocation
+/// lifecycle: when any of the three backing resources is dropped and recreated, the stale
+/// cache entry falls out on overflow eviction.
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct GtaoBindGroupKey {
+    /// Scene-color HDR source texture.
+    scene_color_texture: wgpu::Texture,
+    /// Scene-depth source texture (aspect view derived internally).
+    scene_depth_texture: wgpu::Texture,
+    /// Per-view frame-uniforms buffer.
+    frame_uniforms: wgpu::Buffer,
+    /// Mono vs multiview-stereo view shape.
+    multiview_stereo: bool,
+}
+
 /// GPU state shared by all GTAO pass instances (layouts + sampler + per-format pipelines + UBO).
 pub(super) struct GtaoPipelineCache {
     /// Bind-group layout for the mono pipeline (depth as `texture_depth_2d`).
@@ -61,6 +79,9 @@ pub(super) struct GtaoPipelineCache {
     mono: Mutex<HashMap<wgpu::TextureFormat, Arc<wgpu::RenderPipeline>>>,
     /// Cached pipelines keyed by output format (multiview variant).
     multiview: Mutex<HashMap<wgpu::TextureFormat, Arc<wgpu::RenderPipeline>>>,
+    /// Bind groups keyed by `(scene_color, scene_depth, frame_uniforms, multiview_stereo)`.
+    /// Normally one entry per active view (desktop / HMD / each secondary RT camera).
+    bind_groups: Mutex<HashMap<GtaoBindGroupKey, wgpu::BindGroup>>,
 }
 
 impl Default for GtaoPipelineCache {
@@ -72,6 +93,7 @@ impl Default for GtaoPipelineCache {
             params_buffer: OnceLock::new(),
             mono: Mutex::new(HashMap::new()),
             multiview: Mutex::new(HashMap::new()),
+            bind_groups: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -258,23 +280,63 @@ impl GtaoPipelineCache {
         pipeline
     }
 
-    /// Bind group for one frame's set of views + UBOs. Caller owns the returned group for the
-    /// duration of the encoded render pass.
+    /// Bind group for one frame's set of textures + UBOs, cached by
+    /// `(scene_color_texture, scene_depth_texture, frame_uniforms, multiview_stereo)`.
+    ///
+    /// Builds the per-dispatch `D2Array` color view and depth-aspect view on miss so the cached
+    /// bind group outlives any single per-frame view clone. Hit is a `HashMap` lookup +
+    /// `wgpu::BindGroup::clone` (Arc bump).
     pub(super) fn bind_group(
         &self,
         device: &wgpu::Device,
         multiview_stereo: bool,
-        scene_color_view: &wgpu::TextureView,
-        scene_depth_view: &wgpu::TextureView,
+        scene_color_texture: &wgpu::Texture,
+        scene_depth_texture: &wgpu::Texture,
         frame_uniforms: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let key = GtaoBindGroupKey {
+            scene_color_texture: scene_color_texture.clone(),
+            scene_depth_texture: scene_depth_texture.clone(),
+            frame_uniforms: frame_uniforms.clone(),
+            multiview_stereo,
+        };
+        {
+            let guard = self.bind_groups.lock();
+            if let Some(bg) = guard.get(&key) {
+                return bg.clone();
+            }
+        }
+        let color_layers = scene_color_texture.size().depth_or_array_layers.max(1);
+        let color_layer_count = if multiview_stereo {
+            2.min(color_layers)
+        } else {
+            1
+        };
+        let scene_color_view = scene_color_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("gtao_scene_color_sampled"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            array_layer_count: Some(color_layer_count),
+            ..Default::default()
+        });
+        let (depth_dim, depth_layer_count) = if multiview_stereo {
+            (wgpu::TextureViewDimension::D2Array, Some(2))
+        } else {
+            (wgpu::TextureViewDimension::D2, Some(1))
+        };
+        let scene_depth_view = scene_depth_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("gtao_scene_depth_sampled"),
+            aspect: wgpu::TextureAspect::DepthOnly,
+            dimension: Some(depth_dim),
+            array_layer_count: depth_layer_count,
+            ..Default::default()
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gtao"),
             layout: self.bind_group_layout(device, multiview_stereo),
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(scene_color_view),
+                    resource: wgpu::BindingResource::TextureView(&scene_color_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -282,7 +344,7 @@ impl GtaoPipelineCache {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(scene_depth_view),
+                    resource: wgpu::BindingResource::TextureView(&scene_depth_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -293,6 +355,22 @@ impl GtaoPipelineCache {
                     resource: self.params_buffer(device).as_entire_binding(),
                 },
             ],
-        })
+        });
+        let mut guard = self.bind_groups.lock();
+        if let Some(existing) = guard.get(&key) {
+            return existing.clone();
+        }
+        if guard.len() >= MAX_CACHED_BIND_GROUPS {
+            guard.clear();
+        }
+        guard.insert(key, bg.clone());
+        bg
     }
 }
+
+/// Upper bound for cached GTAO bind groups before the cache is flushed.
+///
+/// Expected occupancy is one entry per active view (desktop / HMD / each secondary RT camera).
+/// The cap protects against unbounded growth when views cycle during resize / MSAA / camera
+/// churn.
+const MAX_CACHED_BIND_GROUPS: usize = 16;

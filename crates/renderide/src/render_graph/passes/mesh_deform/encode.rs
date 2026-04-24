@@ -17,8 +17,6 @@ use super::snapshot::{
 
 /// GPU handles and scratch used while recording mesh deform compute on one encoder.
 pub(super) struct MeshDeformEncodeGpu<'a> {
-    /// Submission queue for buffer writes and compute.
-    pub queue: &'a wgpu::Queue,
     /// Device for bind groups and pipelines.
     pub device: &'a wgpu::Device,
     /// Limits checked before dispatch.
@@ -203,7 +201,7 @@ fn blendshape_record_scatter_compute_passes(
 ) {
     gpu.scratch
         .ensure_blendshape_params_staging(gpu.device, packed_params.len() as u64);
-    gpu.queue
+    gpu.upload_batch
         .write_buffer(&gpu.scratch.blendshape_params_staging, 0, packed_params);
 
     let Some(weight_size) = NonZeroU64::new(weight_binding_len) else {
@@ -435,7 +433,7 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
     let palette_len = palette.len() as u64;
     gpu.scratch
         .ensure_bone_byte_capacity(gpu.device, ctx.bone_cursor.saturating_add(palette_len));
-    gpu.queue
+    gpu.upload_batch
         .write_buffer(&gpu.scratch.bone_matrices, *ctx.bone_cursor, &palette);
 
     let Some(bone_binding_size) = NonZeroU64::new(palette_len) else {
@@ -461,7 +459,7 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
     let sd_cursor = *ctx.skin_dispatch_cursor;
     gpu.scratch
         .ensure_skin_dispatch_byte_capacity(gpu.device, sd_cursor.saturating_add(32));
-    gpu.queue
+    gpu.upload_batch
         .write_buffer(&gpu.scratch.skin_dispatch, sd_cursor, &skin_params);
 
     skinning_dispatch_with_uploaded_palette(SkinningPaletteDispatch {

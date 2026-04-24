@@ -245,8 +245,6 @@ impl ComputePass for MeshDeformPass {
             return Ok(());
         };
 
-        let queue: &wgpu::Queue = ctx.queue.as_ref();
-
         let mut bone_cursor = 0u64;
         let mut blend_weight_cursor = 0u64;
         let mut skin_dispatch_cursor = 0u64;
@@ -276,7 +274,6 @@ impl ComputePass for MeshDeformPass {
 
             record_mesh_deform(
                 MeshDeformEncodeGpu {
-                    queue,
                     device: ctx.device,
                     gpu_limits: ctx.gpu_limits,
                     encoder: ctx.encoder,

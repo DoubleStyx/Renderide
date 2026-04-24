@@ -50,32 +50,6 @@ pub struct ResolvedGraphTexture {
     pub layer_views: Vec<wgpu::TextureView>,
 }
 
-impl ResolvedGraphTexture {
-    /// Builds a [`wgpu::TextureView`] with [`wgpu::TextureViewDimension::D2Array`] for WGSL
-    /// `texture_2d_array` bindings that expect a D2Array view.
-    ///
-    /// The transient pool's default [`Self::view`] uses [`wgpu::TextureViewDimension::D2`] when the
-    /// backing texture has a single array layer (mono desktop). Passing that view to bindings that
-    /// expect a 2D array fails wgpu validation.
-    ///
-    /// `multiview_stereo` must match [`FrameRenderParams::multiview_stereo`] so the view spans
-    /// one layer (mono) or two (stereo).
-    pub(crate) fn view_for_sampled_2d_array(&self, multiview_stereo: bool) -> wgpu::TextureView {
-        let layers_in_texture = self.texture.size().depth_or_array_layers.max(1);
-        let array_layer_count = if multiview_stereo {
-            2.min(layers_in_texture)
-        } else {
-            1
-        };
-        self.texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("sampled_2d_array"),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            array_layer_count: Some(array_layer_count),
-            ..Default::default()
-        })
-    }
-}
-
 /// Resolved transient buffer for one graph execution scope.
 #[derive(Clone, Debug)]
 pub struct ResolvedGraphBuffer {
