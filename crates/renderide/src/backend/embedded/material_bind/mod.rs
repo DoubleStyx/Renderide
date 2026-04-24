@@ -263,6 +263,8 @@ impl EmbeddedMaterialBindResources {
         )?;
 
         let mutation_gen = store.mutation_generation(lookup);
+        let bias_sig =
+            compute_lod_bias_signature(&layout, pools, store, lookup, texture_2d_asset_id);
 
         let hit_bg = {
             let mut cache = self.bind_cache.lock();
@@ -279,6 +281,9 @@ impl EmbeddedMaterialBindResources {
                     mutation_gen,
                     store,
                     lookup,
+                    pools,
+                    primary_texture_2d: texture_2d_asset_id,
+                    bias_sig,
                 })?;
             return Ok((bind_key, bg));
         }
@@ -292,6 +297,9 @@ impl EmbeddedMaterialBindResources {
                 mutation_gen,
                 store,
                 lookup,
+                pools,
+                primary_texture_2d: texture_2d_asset_id,
+                bias_sig,
             })?;
 
         let (keepalive_views, keepalive_samplers) = self.resolve_group1_textures_and_samplers(
@@ -380,4 +388,66 @@ fn build_embedded_bind_group_entries<'a>(
 #[inline]
 pub(super) fn sampler_pairs_texture_binding(sampler_binding: u32) -> u32 {
     sampler_binding.saturating_sub(1)
+}
+
+/// Hashes current `mipmap_bias` for every bound texture referenced by the material layout.
+///
+/// Uniform packing sources `_<Tex>_LodBias` fields from texture sampler state, but
+/// [`MaterialPropertyStore::mutation_generation`] does not bump when textures update their
+/// properties, so this signature drives uniform-buffer refresh on bias changes.
+fn compute_lod_bias_signature(
+    layout: &std::sync::Arc<super::layout::StemMaterialLayout>,
+    pools: &super::texture_pools::EmbeddedTexturePools<'_>,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    primary_texture_2d: i32,
+) -> u64 {
+    use ahash::AHasher;
+    use std::hash::{Hash, Hasher};
+
+    use super::texture_resolve::{
+        resolved_texture_binding_for_host, texture_property_ids_for_binding, ResolvedTextureBinding,
+    };
+
+    let mut h = AHasher::default();
+    for entry in &layout.reflected.material_entries {
+        if !matches!(entry.ty, wgpu::BindingType::Texture { .. }) {
+            continue;
+        }
+        let Some(name) = layout.reflected.material_group1_names.get(&entry.binding) else {
+            continue;
+        };
+        let pids = texture_property_ids_for_binding(layout.ids.as_ref(), entry.binding);
+        if pids.is_empty() {
+            continue;
+        }
+        let binding = resolved_texture_binding_for_host(
+            name.as_str(),
+            pids,
+            primary_texture_2d,
+            store,
+            lookup,
+        );
+        entry.binding.hash(&mut h);
+        let bias: f32 = match binding {
+            ResolvedTextureBinding::Texture2D { asset_id } => pools
+                .texture
+                .get_texture(asset_id)
+                .map(|t| t.sampler.mipmap_bias)
+                .unwrap_or(0.0),
+            ResolvedTextureBinding::Texture3D { asset_id } => pools
+                .texture3d
+                .get_texture(asset_id)
+                .map(|t| t.sampler.mipmap_bias)
+                .unwrap_or(0.0),
+            ResolvedTextureBinding::Cubemap { asset_id } => pools
+                .cubemap
+                .get_texture(asset_id)
+                .map(|t| t.sampler.mipmap_bias)
+                .unwrap_or(0.0),
+            ResolvedTextureBinding::None | ResolvedTextureBinding::RenderTexture { .. } => 0.0,
+        };
+        bias.to_bits().hash(&mut h);
+    }
+    h.finish()
 }

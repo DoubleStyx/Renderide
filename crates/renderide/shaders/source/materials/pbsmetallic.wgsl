@@ -14,6 +14,7 @@
 #import renderide::alpha_clip_sample as acs
 #import renderide::uv_utils as uvu
 #import renderide::normal_decode as nd
+#import renderide::texture_sampling as ts
 
 struct PbsMetallicMaterial {
     _Color: vec4<f32>,
@@ -38,6 +39,15 @@ struct PbsMetallicMaterial {
     _SPECULARHIGHLIGHTS_OFF: f32,
     _GLOSSYREFLECTIONS_OFF: f32,
     _PARALLAXMAP: f32,
+    _MainTex_LodBias: f32,
+    _MetallicGlossMap_LodBias: f32,
+    _BumpMap_LodBias: f32,
+    _ParallaxMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _DetailMask_LodBias: f32,
+    _DetailAlbedoMap_LodBias: f32,
+    _DetailNormalMap_LodBias: f32,
 }
 
 @group(1) @binding(0)  var<uniform> mat: PbsMetallicMaterial;
@@ -111,7 +121,7 @@ fn uv_with_parallax(uv: vec2<f32>, world_pos: vec3<f32>) -> vec2<f32> {
     if (!kw(mat._PARALLAXMAP)) {
         return uv;
     }
-    let h = textureSample(_ParallaxMap, _ParallaxMap_sampler, uv).r;
+    let h = ts::sample_tex_2d(_ParallaxMap, _ParallaxMap_sampler, uv, mat._ParallaxMap_LodBias).r;
     let view_dir = normalize(rg::frame.camera_world_pos.xyz - world_pos);
     let view_xy = view_dir.xy / max(abs(view_dir.z), 0.25);
     return uv + (h - 0.5) * mat._Parallax * view_xy;
@@ -130,13 +140,13 @@ fn sample_normal_world(
 
     let tbn = brdf::orthonormal_tbn(n);
     var ts_n = nd::decode_ts_normal_with_placeholder_sample(
-        textureSample(_BumpMap, _BumpMap_sampler, uv_main),
+        ts::sample_tex_2d(_BumpMap, _BumpMap_sampler, uv_main, mat._BumpMap_LodBias),
         mat._BumpScale,
     );
 
     if (kw(mat._DETAIL_MULX2) && detail_mask > 0.001) {
         let ts_detail = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(_DetailNormalMap, _DetailNormalMap_sampler, uv_detail),
+            ts::sample_tex_2d(_DetailNormalMap, _DetailNormalMap_sampler, uv_detail, mat._DetailNormalMap_LodBias),
             mat._DetailNormalMapScale,
         );
         ts_n = normalize(vec3<f32>(ts_n.xy + ts_detail.xy * detail_mask, ts_n.z));
@@ -151,7 +161,7 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
     let uv_main = uv_with_parallax(uv_base, world_pos);
     let uv_detail = uvu::apply_st(uv0, mat._DetailAlbedoMap_ST);
 
-    let albedo_sample = textureSample(_MainTex, _MainTex_sampler, uv_main);
+    let albedo_sample = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     let base_alpha = mat._Color.a * albedo_sample.a;
     let clip_alpha = mat._Color.a * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_main);
     if (alpha_test_enabled() && clip_alpha <= mat._Cutoff) {
@@ -160,7 +170,7 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
 
     var base_color = mat._Color.rgb * albedo_sample.rgb;
 
-    let mg = textureSample(_MetallicGlossMap, _MetallicGlossMap_sampler, uv_main);
+    let mg = ts::sample_tex_2d(_MetallicGlossMap, _MetallicGlossMap_sampler, uv_main, mat._MetallicGlossMap_LodBias);
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     if (metallic_gloss_map_enabled()) {
@@ -173,12 +183,12 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
     metallic = clamp(metallic, 0.0, 1.0);
     let roughness = clamp(1.0 - smoothness, 0.045, 1.0);
 
-    let occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+    let occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
 
     var detail_mask = 0.0;
     if (kw(mat._DETAIL_MULX2)) {
-        detail_mask = textureSample(_DetailMask, _DetailMask_sampler, uv_main).a;
-        let detail = textureSample(_DetailAlbedoMap, _DetailAlbedoMap_sampler, uv_detail).rgb;
+        detail_mask = ts::sample_tex_2d(_DetailMask, _DetailMask_sampler, uv_main, mat._DetailMask_LodBias).a;
+        let detail = ts::sample_tex_2d(_DetailAlbedoMap, _DetailAlbedoMap_sampler, uv_detail, mat._DetailAlbedoMap_LodBias).rgb;
         base_color = base_color * mix(vec3<f32>(1.0), detail * 2.0, detail_mask);
     }
 
@@ -187,7 +197,7 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
     let emission_color = mat._EmissionColor.rgb;
     var emission = vec3<f32>(0.0);
     if (dot(emission_color, emission_color) > 1e-8) {
-        emission = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb * emission_color;
+        emission = ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb * emission_color;
     }
 
     return SurfaceData(base_color, base_alpha, metallic, roughness, occlusion, n, emission);

@@ -6,12 +6,19 @@ use crate::assets::material::{
 use crate::materials::{ReflectedRasterLayout, ReflectedUniformField, ReflectedUniformScalarKind};
 
 use super::layout::StemEmbeddedPropertyIds;
+use super::texture_pools::EmbeddedTexturePools;
+use super::texture_resolve::{
+    resolved_texture_binding_for_host, texture_property_ids_for_binding, ResolvedTextureBinding,
+};
 
 mod helpers;
 mod tables;
 
-use helpers::default_vec4_for_field;
+use helpers::{default_vec4_for_field, shader_writer_unescaped_field_name};
 use tables::inferred_keyword_float_f32;
+
+/// Suffix convention that opts a uniform field in to host `mipmap_bias` population.
+const LOD_BIAS_SUFFIX: &str = "_LodBias";
 
 fn write_f32_at(buf: &mut [u8], field: &ReflectedUniformField, v: f32) {
     let off = field.offset as usize;
@@ -30,10 +37,23 @@ fn write_f32x4_at(buf: &mut [u8], field: &ReflectedUniformField, v: &[f32; 4]) {
     }
 }
 
+/// Auxiliary inputs required to populate host-sourced uniform fields (currently `_<Tex>_LodBias`).
+///
+/// Threads resident texture pools into the packer so an f32 field following the
+/// [`LOD_BIAS_SUFFIX`] convention can resolve its bound texture and read the host-supplied
+/// [`crate::resources::Texture2dSamplerState::mipmap_bias`] (and cubemap / 3D analogues).
+pub(crate) struct UniformPackTextureContext<'a> {
+    /// Resident texture pools (2D / 3D / cubemap / render-texture).
+    pub pools: &'a EmbeddedTexturePools<'a>,
+    /// Primary 2D texture asset id for `_MainTex` / `_Tex` fallback (from [`crate::backend::embedded::texture_resolve::primary_texture_2d_asset_id`]).
+    pub primary_texture_2d: i32,
+}
+
 /// Builds CPU bytes for the reflected material uniform block.
 ///
-/// Every value comes from one of three sources, in priority order: the host's property store
-/// (for host-declared properties), [`inferred_keyword_float_f32`] for multi-compile keyword
+/// Every value comes from one of four sources, in priority order: host-sourced sampler state for
+/// fields following the [`LOD_BIAS_SUFFIX`] convention (`_<Tex>_LodBias`), the host's property
+/// store (for host-declared properties), [`inferred_keyword_float_f32`] for multi-compile keyword
 /// fields (`_NORMALMAP`, `_ALPHATEST_ON`, …) the host cannot write because FrooxEngine routes
 /// them through the `ShaderKeywords.Variant` bitmask the renderer never receives, or the
 /// `default_vec4_for_field` table / a zero for the unobservable pre-first-batch window.
@@ -42,6 +62,7 @@ pub(crate) fn build_embedded_uniform_bytes(
     ids: &StemEmbeddedPropertyIds,
     store: &MaterialPropertyStore,
     lookup: MaterialPropertyLookupIds,
+    tex_ctx: &UniformPackTextureContext<'_>,
 ) -> Option<Vec<u8>> {
     let u = reflected.material_uniform.as_ref()?;
     let mut buf = vec![0u8; u.total_size as usize];
@@ -50,17 +71,20 @@ pub(crate) fn build_embedded_uniform_bytes(
         let pid = *ids.uniform_field_ids.get(field_name)?;
         match field.kind {
             ReflectedUniformScalarKind::Vec4 => {
-                let v = if let Some(MaterialPropertyValue::Float4(c)) =
-                    store.get_merged(lookup, pid)
-                {
-                    *c
-                } else {
-                    default_vec4_for_field(helpers::shader_writer_unescaped_field_name(field_name))
-                };
+                let v =
+                    if let Some(MaterialPropertyValue::Float4(c)) = store.get_merged(lookup, pid) {
+                        *c
+                    } else {
+                        default_vec4_for_field(shader_writer_unescaped_field_name(field_name))
+                    };
                 write_f32x4_at(&mut buf, field, &v);
             }
             ReflectedUniformScalarKind::F32 => {
-                let v = if let Some(MaterialPropertyValue::Float(f)) = store.get_merged(lookup, pid)
+                let v = if let Some(bias) =
+                    lod_bias_for_field(field_name, reflected, ids, store, lookup, tex_ctx)
+                {
+                    bias
+                } else if let Some(MaterialPropertyValue::Float(f)) = store.get_merged(lookup, pid)
                 {
                     *f
                 } else if field_name == "_Cutoff" {
@@ -68,7 +92,7 @@ pub(crate) fn build_embedded_uniform_bytes(
                     0.5
                 } else {
                     inferred_keyword_float_f32(
-                        helpers::shader_writer_unescaped_field_name(field_name),
+                        shader_writer_unescaped_field_name(field_name),
                         store,
                         lookup,
                         ids,
@@ -82,6 +106,58 @@ pub(crate) fn build_embedded_uniform_bytes(
     }
 
     Some(buf)
+}
+
+/// Host `mipmap_bias` for `_<Tex>_LodBias` fields, or [`None`] if `field_name` is not a LOD-bias
+/// field or no texture is currently bound to the matching `_<Tex>` slot.
+///
+/// Fields not following the convention fall through to the store / keyword / default path.
+fn lod_bias_for_field(
+    field_name: &str,
+    reflected: &ReflectedRasterLayout,
+    ids: &StemEmbeddedPropertyIds,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> Option<f32> {
+    let unescaped = shader_writer_unescaped_field_name(field_name);
+    let tex_name = unescaped.strip_suffix(LOD_BIAS_SUFFIX)?;
+    let (&binding, host_name) = reflected
+        .material_group1_names
+        .iter()
+        .find(|(_, name)| name.as_str() == tex_name)?;
+    let tex_pids = texture_property_ids_for_binding(ids, binding);
+    if tex_pids.is_empty() {
+        return Some(0.0);
+    }
+    let resolved = resolved_texture_binding_for_host(
+        host_name.as_str(),
+        tex_pids,
+        tex_ctx.primary_texture_2d,
+        store,
+        lookup,
+    );
+    match resolved {
+        ResolvedTextureBinding::Texture2D { asset_id } => tex_ctx
+            .pools
+            .texture
+            .get_texture(asset_id)
+            .map(|t| t.sampler.mipmap_bias)
+            .or(Some(0.0)),
+        ResolvedTextureBinding::Texture3D { asset_id } => tex_ctx
+            .pools
+            .texture3d
+            .get_texture(asset_id)
+            .map(|t| t.sampler.mipmap_bias)
+            .or(Some(0.0)),
+        ResolvedTextureBinding::Cubemap { asset_id } => tex_ctx
+            .pools
+            .cubemap
+            .get_texture(asset_id)
+            .map(|t| t.sampler.mipmap_bias)
+            .or(Some(0.0)),
+        ResolvedTextureBinding::None | ResolvedTextureBinding::RenderTexture { .. } => Some(0.0),
+    }
 }
 
 #[cfg(test)]
