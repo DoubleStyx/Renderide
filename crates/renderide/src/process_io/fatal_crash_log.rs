@@ -73,10 +73,6 @@ fn install_impl(log_path: &Path) -> Result<(), String> {
     let log_fd = log_f.into_raw_fd();
     let term_fd = crate::native_stdio::duplicate_preserved_stderr_raw_fd().map(|o| o.into_raw_fd());
 
-    #[expect(
-        clippy::map_err_ignore,
-        reason = "`OnceLock::set` error returns the rejected value, not useful context here"
-    )]
     UNIX_CRASH_FDS
         .set(UnixCrashFds { log_fd, term_fd })
         .map_err(|_e| "fatal crash log fds already installed".to_string())?;
