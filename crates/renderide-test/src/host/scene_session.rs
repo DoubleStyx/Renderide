@@ -373,6 +373,7 @@ fn spawn_renderer(
     cmd.arg("-QueueCapacity")
         .arg(DEFAULT_QUEUE_CAPACITY_BYTES.to_string());
     cmd.arg("-LogLevel").arg("debug");
+    cmd.arg("--ignore-config");
     cmd.env("RENDERIDE_INTERPROCESS_DIR", backing_dir);
 
     if cfg.verbose_renderer {
@@ -382,7 +383,7 @@ fn spawn_renderer(
     }
 
     logger::info!(
-        "Spawning renderer: {} --headless --headless-output {} --headless-resolution {}x{} --headless-interval-ms {} -QueueName {} -QueueCapacity {}",
+        "Spawning renderer: {} --headless --headless-output {} --headless-resolution {}x{} --headless-interval-ms {} -QueueName {} -QueueCapacity {} --ignore-config",
         cfg.renderer_path.display(),
         cfg.output_path.display(),
         cfg.width,

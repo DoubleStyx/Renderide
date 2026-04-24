@@ -99,6 +99,18 @@ pub fn get_headless_params() -> Option<HeadlessParams> {
     parse_headless_params(&args)
 }
 
+/// Returns `true` if `--ignore-config` appears anywhere in `args` (case-insensitive).
+pub fn parse_ignore_config(args: &[String]) -> bool {
+    args.iter()
+        .any(|a| a.eq_ignore_ascii_case("--ignore-config"))
+}
+
+/// Convenience wrapper that reads from [`std::env::args`].
+pub fn get_ignore_config() -> bool {
+    let args: Vec<String> = env::args().collect();
+    parse_ignore_config(&args)
+}
+
 fn parse_wxh(value: &str) -> Option<(u32, u32)> {
     let (w_str, h_str) = value.split_once(['x', 'X'])?;
     let w: u32 = w_str.parse().ok()?;
@@ -108,11 +120,18 @@ fn parse_wxh(value: &str) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_headless_params, HeadlessParams};
+    use super::{parse_headless_params, parse_ignore_config, HeadlessParams};
     use std::path::PathBuf;
 
     fn s(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn parse_ignore_config_detects_flag() {
+        assert!(parse_ignore_config(&s(&["renderide", "--ignore-config"])));
+        assert!(parse_ignore_config(&s(&["renderide", "--IGNORE-CONFIG"])));
+        assert!(!parse_ignore_config(&s(&["renderide", "--headless"])));
     }
 
     #[test]

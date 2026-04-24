@@ -15,4 +15,4 @@ pub use renderide_shared::ipc::shared_memory::{
     compose_memory_view_name, SharedMemoryAccessor, RENDERIDE_INTERPROCESS_DIR_ENV,
 };
 
-pub use headless_config::{get_headless_params, HeadlessParams};
+pub use headless_config::{get_headless_params, get_ignore_config, HeadlessParams};

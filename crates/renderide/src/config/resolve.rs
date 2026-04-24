@@ -372,7 +372,7 @@ mod tests {
         let _iso = TestSearchIsolation::new_binary_only(binary_dir.clone());
         std::env::set_current_dir(dir.path()).expect("set cwd");
 
-        let load = crate::config::load_renderer_settings();
+        let load = crate::config::load_renderer_settings(crate::config::ConfigFilePolicy::Load);
         let path = binary_dir.join(FILE_NAME_TOML);
         assert!(
             path.is_file(),
