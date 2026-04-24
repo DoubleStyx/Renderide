@@ -14,7 +14,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
 
-use renderide::config::{load_renderer_settings, ConfigSource};
+use renderide::config::{load_renderer_settings, ConfigFilePolicy, ConfigSource};
 
 const CONFIG_VAR: &str = "RENDERIDE_CONFIG";
 const GPU_VALIDATION_VAR: &str = "RENDERIDE_GPU_VALIDATION";
@@ -76,7 +76,7 @@ fn load_renderer_settings_from_toml_and_env() {
     );
     std::env::set_var(CONFIG_VAR, &toml);
 
-    let result = load_renderer_settings();
+    let result = load_renderer_settings(ConfigFilePolicy::Load);
     assert_eq!(
         result.resolve.source,
         ConfigSource::Env,
@@ -99,7 +99,7 @@ fn load_renderer_settings_from_toml_and_env() {
 
     // --- Case 2: RENDERIDE_* env override beats the TOML value ---
     std::env::set_var(VSYNC_ENV_VAR, "false");
-    let result = load_renderer_settings();
+    let result = load_renderer_settings(ConfigFilePolicy::Load);
     assert!(
         !result.settings.rendering.vsync,
         "RENDERIDE_RENDERING__VSYNC=false must override TOML vsync=true"
@@ -108,13 +108,13 @@ fn load_renderer_settings_from_toml_and_env() {
 
     // --- Case 3: RENDERIDE_GPU_VALIDATION flips the post-extract override ---
     std::env::set_var(GPU_VALIDATION_VAR, "1");
-    let result = load_renderer_settings();
+    let result = load_renderer_settings(ConfigFilePolicy::Load);
     assert!(
         result.settings.debug.gpu_validation_layers,
         "RENDERIDE_GPU_VALIDATION=1 must force gpu_validation_layers on"
     );
     std::env::set_var(GPU_VALIDATION_VAR, "0");
-    let result = load_renderer_settings();
+    let result = load_renderer_settings(ConfigFilePolicy::Load);
     assert!(
         !result.settings.debug.gpu_validation_layers,
         "RENDERIDE_GPU_VALIDATION=0 must force gpu_validation_layers off"
@@ -124,7 +124,7 @@ fn load_renderer_settings_from_toml_and_env() {
     // --- Case 4: RENDERIDE_CONFIG pointing at a missing file falls through to search / defaults ---
     let missing = tmp.path().join("does_not_exist.toml");
     std::env::set_var(CONFIG_VAR, &missing);
-    let result = load_renderer_settings();
+    let result = load_renderer_settings(ConfigFilePolicy::Load);
     // Loader may or may not find a file via the subsequent search; the contract is that
     // RENDERIDE_CONFIG pointing at a non-existent path does not become the effective `loaded_path`.
     assert_ne!(

@@ -30,10 +30,12 @@ use std::time::{Duration, Instant};
 use logger::{LogComponent, LogLevel};
 use winit::event_loop::EventLoop;
 
-use crate::config::{load_renderer_settings, log_config_resolve_trace, settings_handle_from};
+use crate::config::{
+    load_renderer_settings, log_config_resolve_trace, settings_handle_from, ConfigFilePolicy,
+};
 use crate::connection::{get_connection_parameters, try_claim_renderer_singleton};
 use crate::frontend::InitState;
-use crate::ipc::get_headless_params;
+use crate::ipc::{get_headless_params, get_ignore_config};
 use crate::run_error::RunError;
 use crate::runtime::RendererRuntime;
 use crate::shared::{HeadOutputDevice, RendererInitData};
@@ -197,7 +199,12 @@ pub fn run() -> Result<Option<i32>, RunError> {
     // stdio forwarding so a duplicate of the preserved terminal fd exists when tee is enabled.
     crate::fatal_crash_log::install(&log_path);
 
-    let config_load = load_renderer_settings();
+    let config_file_policy = if get_ignore_config() {
+        ConfigFilePolicy::Ignore
+    } else {
+        ConfigFilePolicy::Load
+    };
+    let config_load = load_renderer_settings(config_file_policy);
     logger::set_max_level(effective_renderer_log_level(
         log_level_cli,
         config_load.settings.debug.log_verbose,

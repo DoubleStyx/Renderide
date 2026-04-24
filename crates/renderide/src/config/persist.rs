@@ -51,6 +51,17 @@ pub fn apply_renderide_gpu_validation_env(settings: &mut RendererSettings) {
     }
 }
 
+/// Controls whether the TOML config file is consulted during startup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ConfigFilePolicy {
+    /// Normal: discover, load, and (if absent) auto-create `config.toml`.
+    #[default]
+    Load,
+    /// Skip all file I/O; use struct defaults plus `RENDERIDE_*` env vars only.
+    /// Forces `suppress_config_disk_writes = true`.
+    Ignore,
+}
+
 /// Full load result: resolved path and save path for persistence.
 #[derive(Clone, Debug)]
 pub struct ConfigLoadResult {
@@ -69,12 +80,47 @@ pub type RendererSettingsHandle = Arc<std::sync::RwLock<RendererSettings>>;
 
 /// Resolves `config.toml`, merges with figment layers, and builds [`RendererSettings`].
 ///
-/// Precedence: struct defaults, then TOML file, then `RENDERIDE_*` environment variables (see module
-/// docs in `config/mod.rs`). [`apply_renderide_gpu_validation_env`] runs after extraction.
+/// Precedence: struct defaults, then TOML file (unless [`ConfigFilePolicy::Ignore`]), then
+/// `RENDERIDE_*` environment variables (see module docs in `config/mod.rs`).
+/// [`apply_renderide_gpu_validation_env`] runs after extraction.
 ///
 /// When no file exists and [`super::resolve::renderide_config_env_nonempty`] is false, writes
 /// defaults to the save path (see [`super::resolve::resolve_save_path`]) and loads that file.
-pub fn load_renderer_settings() -> ConfigLoadResult {
+/// This auto-creation is skipped when `policy` is [`ConfigFilePolicy::Ignore`].
+pub fn load_renderer_settings(policy: ConfigFilePolicy) -> ConfigLoadResult {
+    if policy == ConfigFilePolicy::Ignore {
+        if renderide_config_env_nonempty() {
+            logger::warn!(
+                "--ignore-config is active; RENDERIDE_CONFIG is also set but the file will be skipped"
+            );
+        }
+        let mut settings = match try_extract_settings(renderer_settings_figment()) {
+            Ok(s) => s,
+            Err(e) => {
+                logger::error!(
+                    "Renderer config Figment extract failed (--ignore-config, defaults+env): {e:#}"
+                );
+                RendererSettings::default()
+            }
+        };
+        apply_renderide_gpu_validation_env(&mut settings);
+        let resolve = ConfigResolveOutcome {
+            attempted_paths: vec![],
+            loaded_path: None,
+            source: ConfigSource::None,
+        };
+        let save_path = resolve_save_path(&resolve);
+        logger::info!(
+            "--ignore-config: skipping TOML file; using struct defaults + RENDERIDE_* env"
+        );
+        return ConfigLoadResult {
+            settings,
+            resolve,
+            save_path,
+            suppress_config_disk_writes: true,
+        };
+    }
+
     let mut resolve = resolve_config_path();
     let mut suppress_config_disk_writes = false;
     let mut settings = initial_settings_from_resolve(&mut suppress_config_disk_writes, &resolve);
@@ -331,6 +377,24 @@ focused_fps = 10
 "#;
         let s = load_settings_from_toml_str(toml).expect("figment extract");
         assert_eq!(s.display.focused_fps_cap, 137);
+        std::env::remove_var("RENDERIDE_DISPLAY__FOCUSED_FPS");
+    }
+
+    #[test]
+    fn ignore_config_skips_file_and_suppresses_writes() {
+        let result = load_renderer_settings(ConfigFilePolicy::Ignore);
+        assert_eq!(result.resolve.source, ConfigSource::None);
+        assert!(result.resolve.loaded_path.is_none());
+        assert!(result.resolve.attempted_paths.is_empty());
+        assert!(result.suppress_config_disk_writes);
+    }
+
+    #[test]
+    fn ignore_config_env_override_still_applies() {
+        let _guard = CONFIG_ENV_TEST_LOCK.lock().expect("lock");
+        std::env::set_var("RENDERIDE_DISPLAY__FOCUSED_FPS", "137");
+        let result = load_renderer_settings(ConfigFilePolicy::Ignore);
+        assert_eq!(result.settings.display.focused_fps_cap, 137);
         std::env::remove_var("RENDERIDE_DISPLAY__FOCUSED_FPS");
     }
 }

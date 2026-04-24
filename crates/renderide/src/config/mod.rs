@@ -40,7 +40,7 @@ mod types;
 pub use persist::{
     apply_renderide_gpu_validation_env, load_renderer_settings, log_config_resolve_trace,
     save_renderer_settings, save_renderer_settings_from_load, settings_handle_from,
-    ConfigLoadResult, RendererSettingsHandle,
+    ConfigFilePolicy, ConfigLoadResult, RendererSettingsHandle,
 };
 pub use reload::{renderer_settings_changed, ConfigFileWatcher};
 pub use resolve::{
