@@ -98,27 +98,31 @@ fn build_frame_views<'a>(
             extent_px: prep.viewport,
             color_format: prep.color_format,
         };
-        views.push(FrameView {
-            host_camera: prep.host_camera,
-            target: FrameViewTarget::OffscreenRt(ext),
-            draw_filter: Some(prep.filter.clone()),
-            prefetched_world_mesh_draws: Some(collection),
-        });
+        views.push(FrameView::for_offscreen_rt(
+            prep.host_camera,
+            ext,
+            Some(prep.filter.clone()),
+            Some(collection),
+        ));
     }
 
     if let Some((hc, main_collection)) = main {
-        views.push(FrameView {
-            host_camera: hc,
-            target: FrameViewTarget::Swapchain,
-            draw_filter: None,
-            prefetched_world_mesh_draws: Some(main_collection),
-        });
+        views.push(FrameView::for_swapchain(hc, Some(main_collection)));
     }
 
     views
 }
 
 impl RendererRuntime {
+    /// Desktop entry point: renders the main swapchain view plus any active secondary render-texture
+    /// cameras in a single submit. Used when OpenXR is not active.
+    ///
+    /// See [`Self::render_frame`] for the shared implementation that also powers the VR entry
+    /// points on [`crate::xr::XrFrameRenderer`].
+    pub fn render_desktop_frame(&mut self, gpu: &mut GpuContext) -> Result<(), GraphExecuteError> {
+        self.render_frame(gpu, true, None)
+    }
+
     /// Unified per-tick world render entry point.
     ///
     /// Collects every active secondary render-texture camera and — when `include_main_swapchain`
@@ -127,6 +131,9 @@ impl RendererRuntime {
     /// [`RenderBackend::execute_multi_view_frame`](crate::backend::RenderBackend::execute_multi_view_frame)
     /// call. Hi-Z readback has already been drained once at the top of the tick (see
     /// [`Self::drain_hi_z_readback`]), so the caller always skips the readback pass here.
+    ///
+    /// Callers should not invoke this directly; use [`Self::render_desktop_frame`] for desktop or
+    /// the [`crate::xr::XrFrameRenderer`] trait methods for VR paths.
     ///
     /// Mode selection:
     /// - Desktop (no VR): `include_main_swapchain = true`, `hmd = None`.
@@ -141,7 +148,7 @@ impl RendererRuntime {
         clippy::too_many_lines,
         reason = "per-frame entry point sequences IPC / VR / desktop / secondary views; splitting fragments the control flow"
     )]
-    pub fn render_frame(
+    pub(crate) fn render_frame(
         &mut self,
         gpu: &mut GpuContext,
         include_main_swapchain: bool,
@@ -361,18 +368,10 @@ impl RendererRuntime {
 
         // Prepend the HMD stereo view so the compiled graph records it before any
         // secondary-RT views in the same submit. The view host camera reuses
-        // [`Self::host_camera`], which the XR frame tick already populated with
-        // `stereo_view_proj` / `stereo_views` for this tick.
+        // [`Self::host_camera`], which the XR frame tick already populated with the per-eye
+        // [`crate::render_graph::StereoViewMatrices`] for this tick.
         if let Some(external) = hmd {
-            views.insert(
-                0,
-                FrameView {
-                    host_camera: self.host_camera,
-                    target: FrameViewTarget::ExternalMultiview(external),
-                    draw_filter: None,
-                    prefetched_world_mesh_draws: None,
-                },
-            );
+            views.insert(0, FrameView::for_hmd(self.host_camera, external));
         }
 
         if views.is_empty() {

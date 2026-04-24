@@ -4,7 +4,7 @@ use glam::{Mat4, Quat, Vec3};
 
 use crate::gpu::GpuContext;
 use crate::render_graph::ExternalFrameTargets;
-use crate::render_graph::GraphExecuteError;
+use crate::render_graph::{GraphExecuteError, StereoViewMatrices};
 use crate::shared::HeadOutputDevice;
 
 use super::RendererRuntime;
@@ -50,12 +50,8 @@ impl crate::xr::XrHostCameraSync for RendererRuntime {
         self.host_camera.head_output_transform = transform;
     }
 
-    fn set_stereo_view_proj(&mut self, vp: Option<(Mat4, Mat4)>) {
-        self.host_camera.stereo_view_proj = vp;
-    }
-
-    fn set_stereo_views(&mut self, views: Option<(Mat4, Mat4)>) {
-        self.host_camera.stereo_views = views;
+    fn set_stereo(&mut self, stereo: Option<StereoViewMatrices>) {
+        self.host_camera.stereo = stereo;
     }
 
     fn note_openxr_wait_frame_failed(&mut self) {
@@ -68,12 +64,15 @@ impl crate::xr::XrHostCameraSync for RendererRuntime {
 }
 
 impl crate::xr::XrFrameRenderer for RendererRuntime {
-    fn render_frame(
+    fn submit_hmd_view(
         &mut self,
         gpu: &mut GpuContext,
-        include_main_swapchain: bool,
-        hmd: Option<ExternalFrameTargets<'_>>,
+        hmd: ExternalFrameTargets<'_>,
     ) -> Result<(), GraphExecuteError> {
-        RendererRuntime::render_frame(self, gpu, include_main_swapchain, hmd)
+        RendererRuntime::render_frame(self, gpu, false, Some(hmd))
+    }
+
+    fn submit_secondary_only(&mut self, gpu: &mut GpuContext) -> Result<(), GraphExecuteError> {
+        RendererRuntime::render_frame(self, gpu, false, None)
     }
 }

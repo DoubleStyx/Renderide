@@ -1,7 +1,7 @@
 //! Centralized updates to [`crate::render_graph::HostCameraFrame`] from host [`FrameSubmitData`] and scene.
 //!
 //! OpenXR integration must use [`crate::xr::XrHostCameraSync`] for stereo / head-output writes so
-//! `stereo_view_proj` clearing when `!vr_active` stays consistent with [`apply_frame_submit_fields`].
+//! stereo clearing when `!vr_active` stays consistent with [`apply_frame_submit_fields`].
 
 use glam::Mat4;
 
@@ -17,8 +17,7 @@ pub(crate) fn apply_frame_submit_fields(host_camera: &mut HostCameraFrame, data:
     host_camera.desktop_fov_degrees = data.desktop_fov;
     host_camera.vr_active = data.vr_active;
     if !data.vr_active {
-        host_camera.stereo_view_proj = None;
-        host_camera.stereo_views = None;
+        host_camera.stereo = None;
     }
     host_camera.primary_ortho_task = data.render_tasks.iter().find_map(|t| {
         t.parameters.as_ref().and_then(|p| {

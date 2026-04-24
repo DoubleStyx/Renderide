@@ -123,8 +123,8 @@ pub fn build_world_mesh_cull_proj_params(
         reverse_z_orthographic(1.0 * aspect, 1.0, near, far)
     };
 
-    let vr_stereo = match (hc.vr_active, hc.stereo_view_proj) {
-        (true, Some(pair)) => Some(pair),
+    let vr_stereo = match (hc.vr_active, hc.stereo) {
+        (true, Some(stereo)) => Some(stereo.view_proj),
         _ => None,
     };
 
@@ -202,10 +202,15 @@ mod tests {
 
     #[test]
     fn build_world_mesh_cull_proj_params_sets_vr_stereo_only_when_active_and_pair_present() {
+        use crate::render_graph::StereoViewMatrices;
         let scene = SceneCoordinator::new();
+        let stereo = Some(StereoViewMatrices {
+            view_proj: (Mat4::IDENTITY, Mat4::IDENTITY),
+            view_only: (Mat4::IDENTITY, Mat4::IDENTITY),
+        });
         let hc = HostCameraFrame {
             vr_active: true,
-            stereo_view_proj: Some((Mat4::IDENTITY, Mat4::IDENTITY)),
+            stereo,
             ..Default::default()
         };
         let p = build_world_mesh_cull_proj_params(&scene, (1280, 720), &hc);
@@ -213,7 +218,7 @@ mod tests {
 
         let hc2 = HostCameraFrame {
             vr_active: false,
-            stereo_view_proj: Some((Mat4::IDENTITY, Mat4::IDENTITY)),
+            stereo,
             ..Default::default()
         };
         let p2 = build_world_mesh_cull_proj_params(&scene, (1280, 720), &hc2);

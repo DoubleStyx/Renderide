@@ -42,6 +42,21 @@ pub enum OcclusionViewId {
     OffscreenRenderTexture(i32),
 }
 
+/// Per-eye matrices for an OpenXR stereo multiview view.
+///
+/// Consolidates the view-projection (stage → clip) and view-only (world → view) pairs so that
+/// callers cannot set one without the other. Present only on the HMD view; non-HMD views carry
+/// [`None`] for this slot on [`HostCameraFrame::stereo`].
+#[derive(Clone, Copy, Debug)]
+pub struct StereoViewMatrices {
+    /// Per-eye view–projection (reverse-Z), mapping **stage** space to clip. World mesh passes
+    /// combine this with object transforms; the host `view_transform` is not multiplied again.
+    pub view_proj: (Mat4, Mat4),
+    /// Per-eye **view** matrices (world-to-view, handedness fix applied). Clustered lighting
+    /// decomposes view and projection per eye without re-deriving from HMD poses.
+    pub view_only: (Mat4, Mat4),
+}
+
 /// Latest camera-related fields from host [`crate::shared::FrameSubmitData`], updated each `frame_submit`.
 #[derive(Clone, Copy, Debug)]
 pub struct HostCameraFrame {
@@ -60,15 +75,10 @@ pub struct HostCameraFrame {
     /// `(orthographic_half_height, near, far)` from the first [`crate::shared::CameraRenderTask`] whose
     /// parameters use orthographic projection (overlay main-camera ortho override).
     pub primary_ortho_task: Option<(f32, f32, f32)>,
-    /// When [`Self::vr_active`] and OpenXR supplies views, per-eye view–projection (reverse-Z), mapping
-    /// **stage** space to clip. World mesh passes combine this with object transforms; the host
-    /// `view_transform` is **not** multiplied again for stereo world draws (see `world_mesh_forward`).
-    pub stereo_view_proj: Option<(Mat4, Mat4)>,
-    /// Per-eye **view** matrices (world-to-view, with handedness fix applied) when stereo is active.
-    ///
-    /// Populated alongside [`Self::stereo_view_proj`] so the clustered lighting compute pass can
-    /// decompose view and projection per eye without re-deriving from HMD poses.
-    pub stereo_views: Option<(Mat4, Mat4)>,
+    /// Per-eye stereo matrices when this frame renders the OpenXR multiview view; [`None`] on
+    /// desktop or secondary-RT views. Set together via [`StereoViewMatrices`] so the view-projection
+    /// and view-only matrices cannot drift out of sync. See [`StereoViewMatrices`] for field details.
+    pub stereo: Option<StereoViewMatrices>,
     /// Legacy Unity `HeadOutput.transform` in renderer world space.
     ///
     /// Overlay render spaces are positioned relative to this transform each frame
@@ -103,8 +113,7 @@ impl Default for HostCameraFrame {
             vr_active: false,
             output_device: HeadOutputDevice::Screen,
             primary_ortho_task: None,
-            stereo_view_proj: None,
-            stereo_views: None,
+            stereo: None,
             head_output_transform: Mat4::IDENTITY,
             secondary_camera_world_to_view: None,
             cluster_view_override: None,

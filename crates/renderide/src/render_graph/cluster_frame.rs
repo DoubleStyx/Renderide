@@ -148,7 +148,7 @@ pub fn cluster_frame_params(
 
 /// Returns per-eye cluster params when stereo view matrices and view–projections are available.
 ///
-/// Each eye gets its own `world_to_view` (from [`HostCameraFrame::stereo_views`]) and projection
+/// Each eye gets its own `world_to_view` (from [`StereoViewMatrices::view_only`]) and projection
 /// (decomposed as `vp * view.inverse()`). Returns `None` when stereo data is absent, falling back
 /// to [`cluster_frame_params`] for mono clustering.
 pub fn cluster_frame_params_stereo(
@@ -157,8 +157,9 @@ pub fn cluster_frame_params_stereo(
     viewport_px: (u32, u32),
 ) -> Option<(ClusterFrameParams, ClusterFrameParams)> {
     let common = CommonClusterInputs::compute(host_camera, scene, viewport_px)?;
-    let (sl, sr) = host_camera.stereo_view_proj?;
-    let (view_l, view_r) = host_camera.stereo_views?;
+    let stereo = host_camera.stereo?;
+    let (sl, sr) = stereo.view_proj;
+    let (view_l, view_r) = stereo.view_only;
 
     let proj_l = extract_proj(
         sl,

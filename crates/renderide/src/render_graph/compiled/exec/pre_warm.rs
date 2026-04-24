@@ -7,7 +7,7 @@ use hashbrown::HashMap;
 use super::super::super::context::GraphResolvedResources;
 use super::super::super::error::GraphExecuteError;
 use super::super::helpers;
-use super::super::{CompiledRenderGraph, FrameView, FrameViewTarget, MultiViewExecutionContext};
+use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext};
 use super::{GraphResolveKey, TransientTextureResolveSurfaceParams};
 use crate::assets::material::MaterialDictionary;
 use crate::materials::{
@@ -110,15 +110,8 @@ impl CompiledRenderGraph {
         let mut any_view_missing_prefetch = false;
         for view in views {
             let occlusion_view = view.occlusion_view_id();
-            let host_camera = view.host_camera;
-            let (viewport, stereo) = match &view.target {
-                FrameViewTarget::ExternalMultiview(ext) => {
-                    let stereo = host_camera.vr_active && host_camera.stereo_views.is_some();
-                    (ext.extent_px, stereo)
-                }
-                FrameViewTarget::OffscreenRt(ext) => (ext.extent_px, false),
-                FrameViewTarget::Swapchain => (mv_ctx.gpu.surface_extent_px(), false),
-            };
+            let viewport = view.target.extent_px(mv_ctx.gpu);
+            let stereo = view.is_multiview_stereo_active();
             let _ = mv_ctx.backend.frame_resources.per_view_frame_or_create(
                 occlusion_view,
                 mv_ctx.device,
@@ -182,15 +175,8 @@ impl CompiledRenderGraph {
         profiling::scope!("graph::pre_sync_frame_gpu");
         let mut viewports_and_stereo = Vec::with_capacity(views.len());
         for view in views {
-            let host_camera = view.host_camera;
-            let (viewport, stereo) = match &view.target {
-                FrameViewTarget::ExternalMultiview(ext) => {
-                    let stereo = host_camera.vr_active && host_camera.stereo_views.is_some();
-                    (ext.extent_px, stereo)
-                }
-                FrameViewTarget::OffscreenRt(ext) => (ext.extent_px, false),
-                FrameViewTarget::Swapchain => (mv_ctx.gpu.surface_extent_px(), false),
-            };
+            let viewport = view.target.extent_px(mv_ctx.gpu);
+            let stereo = view.is_multiview_stereo_active();
             viewports_and_stereo.push((viewport.0, viewport.1, stereo));
         }
         mv_ctx.backend.frame_resources.pre_record_sync_for_views(
@@ -270,36 +256,12 @@ fn view_pipeline_pass_desc(
 ) -> Option<(MaterialPipelineDesc, ShaderPermutation)> {
     use std::num::NonZeroU32;
     let host_camera = view.host_camera;
-    let multiview_stereo = match &view.target {
-        FrameViewTarget::ExternalMultiview(_) => {
-            host_camera.vr_active && host_camera.stereo_views.is_some()
-        }
-        FrameViewTarget::OffscreenRt(_) | FrameViewTarget::Swapchain => false,
-    };
-    let surface_format = match &view.target {
-        FrameViewTarget::ExternalMultiview(ext) => ext.surface_format,
-        FrameViewTarget::OffscreenRt(ext) => ext.color_format,
-        FrameViewTarget::Swapchain => mv_ctx.gpu.config_format(),
-    };
-    let depth_stencil_format = match &view.target {
-        FrameViewTarget::ExternalMultiview(ext) => ext.depth_texture.format(),
-        FrameViewTarget::OffscreenRt(ext) => ext.depth_texture.format(),
-        FrameViewTarget::Swapchain => {
-            let (depth_tex, _) = mv_ctx.gpu.ensure_depth_target().ok()?;
-            depth_tex.format()
-        }
-    };
-    let sample_count = match &view.target {
-        FrameViewTarget::ExternalMultiview(_) => {
-            mv_ctx.gpu.swapchain_msaa_effective_stereo().max(1)
-        }
-        FrameViewTarget::OffscreenRt(_) => 1,
-        FrameViewTarget::Swapchain => mv_ctx.gpu.swapchain_msaa_effective().max(1),
-    };
-    let use_multiview = multiview_stereo
-        && host_camera.vr_active
-        && host_camera.stereo_view_proj.is_some()
-        && mv_ctx.gpu_limits.supports_multiview;
+    let multiview_stereo = view.is_multiview_stereo_active();
+    let surface_format = view.target.color_format(mv_ctx.gpu);
+    let depth_stencil_format = view.target.depth_format(mv_ctx.gpu).ok()?;
+    let sample_count = view.target.sample_count(mv_ctx.gpu);
+    let use_multiview =
+        multiview_stereo && host_camera.stereo.is_some() && mv_ctx.gpu_limits.supports_multiview;
     let pass_desc = MaterialPipelineDesc {
         surface_format,
         depth_stencil_format: Some(depth_stencil_format),

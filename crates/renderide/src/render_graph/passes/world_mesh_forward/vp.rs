@@ -43,7 +43,8 @@ pub(crate) fn compute_per_draw_vp_triple(
         .secondary_camera_world_to_view
         .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(scene, space));
     let vr_stereo_view = Mat4::IDENTITY;
-    if let (true, Some((sl, sr))) = (hc.vr_active, hc.stereo_view_proj) {
+    if let (true, Some(stereo)) = (hc.vr_active, hc.stereo) {
+        let (sl, sr) = stereo.view_proj;
         if item.is_overlay {
             let op = projection_for_world_mesh_draw(true, overlay_proj, world_proj);
             let base_vp = op * view;

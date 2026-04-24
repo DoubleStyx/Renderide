@@ -418,7 +418,7 @@ impl ComputePass for ClusteredLightPass {
 
         let hc = frame.view.host_camera;
         let scene = frame.shared.scene;
-        let stereo = hc.vr_active && hc.stereo_views.is_some() && frame.view.multiview_stereo;
+        let stereo = hc.vr_active && hc.stereo.is_some() && frame.view.multiview_stereo;
         let view_id = frame.view.occlusion_view;
 
         let light_count = frame.shared.frame_resources.frame_light_count_u32();

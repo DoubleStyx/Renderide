@@ -290,7 +290,7 @@ impl RendererRuntime {
         if self.should_send_begin_frame() {
             self.pre_frame(inputs);
         }
-        let graph_error = self.render_frame(gpu, true, None).err();
+        let graph_error = self.render_desktop_frame(gpu).err();
         TickOutcome {
             graph_error,
             ..Default::default()

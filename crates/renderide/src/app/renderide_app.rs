@@ -453,12 +453,17 @@ impl RenderideApp {
         let gpu = self.gpu.as_mut()?;
 
         // When the HMD path submitted the stereo + secondary RT views together, skip the
-        // fallback `render_frame` to avoid a redundant second submit. Otherwise: include the
-        // main swapchain view iff VR is not active (VR without HMD submit still only renders
-        // secondary RTs; the desktop stays on the mirror clear).
+        // fallback render to avoid a redundant second submit. Otherwise: VR fallback only
+        // renders secondary RTs (the desktop stays on the mirror clear); desktop renders the
+        // main swapchain view plus any secondaries.
         if !hmd_projection_ended {
-            let include_main_swapchain = !self.runtime.vr_active();
-            if let Err(e) = self.runtime.render_frame(gpu, include_main_swapchain, None) {
+            use crate::xr::XrFrameRenderer;
+            let result = if self.runtime.vr_active() {
+                self.runtime.submit_secondary_only(gpu)
+            } else {
+                self.runtime.render_desktop_frame(gpu)
+            };
+            if let Err(e) = result {
                 Self::handle_frame_graph_error(gpu, e);
             }
         }

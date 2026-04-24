@@ -6,6 +6,7 @@ use crate::backend::RenderBackend;
 use crate::gpu::{GpuContext, GpuLimits};
 use crate::scene::SceneCoordinator;
 
+use super::error::GraphExecuteError;
 use super::frame_params::{HostCameraFrame, OcclusionViewId};
 use super::ids::{GroupId, PassId};
 use super::pass::{GroupScope, PassKind, PassNode};
@@ -86,17 +87,126 @@ pub(super) struct MultiViewExecutionContext<'a> {
     pub(super) backbuffer_view_holder: &'a Option<wgpu::TextureView>,
 }
 
-impl<'a> FrameView<'a> {
-    /// Hi-Z / occlusion slot for this view.
-    pub fn occlusion_view_id(&self) -> OcclusionViewId {
-        match &self.target {
-            FrameViewTarget::Swapchain | FrameViewTarget::ExternalMultiview(_) => {
-                OcclusionViewId::Main
-            }
-            FrameViewTarget::OffscreenRt(ext) => {
-                OcclusionViewId::OffscreenRenderTexture(ext.render_texture_asset_id)
+impl<'a> FrameViewTarget<'a> {
+    /// `true` when this target renders to a 2-layer multiview color attachment.
+    pub fn is_multiview_target(&self) -> bool {
+        matches!(self, FrameViewTarget::ExternalMultiview(_))
+    }
+
+    /// Host render-texture asset id this target writes, or [`None`] when not an offscreen RT.
+    pub fn offscreen_rt_asset_id(&self) -> Option<i32> {
+        match self {
+            FrameViewTarget::OffscreenRt(ext) => Some(ext.render_texture_asset_id),
+            FrameViewTarget::Swapchain | FrameViewTarget::ExternalMultiview(_) => None,
+        }
+    }
+
+    /// Viewport extent in pixels for this target.
+    pub fn extent_px(&self, gpu: &GpuContext) -> (u32, u32) {
+        match self {
+            FrameViewTarget::ExternalMultiview(ext) => ext.extent_px,
+            FrameViewTarget::OffscreenRt(ext) => ext.extent_px,
+            FrameViewTarget::Swapchain => gpu.surface_extent_px(),
+        }
+    }
+
+    /// Color attachment format for this target.
+    pub fn color_format(&self, gpu: &GpuContext) -> wgpu::TextureFormat {
+        match self {
+            FrameViewTarget::ExternalMultiview(ext) => ext.surface_format,
+            FrameViewTarget::OffscreenRt(ext) => ext.color_format,
+            FrameViewTarget::Swapchain => gpu.config_format(),
+        }
+    }
+
+    /// Depth attachment format for this target. Lazily allocates the swapchain depth target if
+    /// needed (the `Swapchain` case requires `&mut`).
+    pub fn depth_format(
+        &self,
+        gpu: &mut GpuContext,
+    ) -> Result<wgpu::TextureFormat, GraphExecuteError> {
+        match self {
+            FrameViewTarget::ExternalMultiview(ext) => Ok(ext.depth_texture.format()),
+            FrameViewTarget::OffscreenRt(ext) => Ok(ext.depth_texture.format()),
+            FrameViewTarget::Swapchain => {
+                #[expect(
+                    clippy::map_err_ignore,
+                    reason = "GraphExecuteError::DepthTarget is the semantic classification; inner detail is already logged upstream"
+                )]
+                let (depth_tex, _) = gpu
+                    .ensure_depth_target()
+                    .map_err(|_| GraphExecuteError::DepthTarget)?;
+                Ok(depth_tex.format())
             }
         }
+    }
+
+    /// Effective MSAA sample count for this target. Offscreen RTs are single-sampled.
+    pub fn sample_count(&self, gpu: &GpuContext) -> u32 {
+        match self {
+            FrameViewTarget::ExternalMultiview(_) => gpu.swapchain_msaa_effective_stereo().max(1),
+            FrameViewTarget::OffscreenRt(_) => 1,
+            FrameViewTarget::Swapchain => gpu.swapchain_msaa_effective().max(1),
+        }
+    }
+}
+
+impl<'a> FrameView<'a> {
+    /// Builds a view that renders the main desktop swapchain.
+    pub fn for_swapchain(
+        host_camera: HostCameraFrame,
+        prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+    ) -> Self {
+        Self {
+            host_camera,
+            target: FrameViewTarget::Swapchain,
+            draw_filter: None,
+            prefetched_world_mesh_draws,
+        }
+    }
+
+    /// Builds a view that renders an OpenXR stereo multiview pair of eye layers.
+    pub fn for_hmd(host_camera: HostCameraFrame, external: ExternalFrameTargets<'a>) -> Self {
+        Self {
+            host_camera,
+            target: FrameViewTarget::ExternalMultiview(external),
+            draw_filter: None,
+            prefetched_world_mesh_draws: None,
+        }
+    }
+
+    /// Builds a view that renders a secondary camera to a host render texture.
+    pub fn for_offscreen_rt(
+        host_camera: HostCameraFrame,
+        external: ExternalOffscreenTargets<'a>,
+        draw_filter: Option<CameraTransformDrawFilter>,
+        prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+    ) -> Self {
+        Self {
+            host_camera,
+            target: FrameViewTarget::OffscreenRt(external),
+            draw_filter,
+            prefetched_world_mesh_draws,
+        }
+    }
+
+    /// Hi-Z / occlusion slot for this view.
+    pub fn occlusion_view_id(&self) -> OcclusionViewId {
+        match self.target.offscreen_rt_asset_id() {
+            Some(id) => OcclusionViewId::OffscreenRenderTexture(id),
+            None => OcclusionViewId::Main,
+        }
+    }
+
+    /// `true` when this view both targets a multiview attachment AND the host camera carries stereo
+    /// matrices — i.e. the per-view record path should emit stereo clustering / multiview draws.
+    ///
+    /// Single source of truth; every caller that gates on "is this the stereo multiview view?"
+    /// goes through this method rather than re-deriving the AND-chain.
+    pub fn is_multiview_stereo_active(&self) -> bool {
+        self.target.is_multiview_target()
+            && self.host_camera.vr_active
+            && self.host_camera.stereo.is_some()
     }
 }
 

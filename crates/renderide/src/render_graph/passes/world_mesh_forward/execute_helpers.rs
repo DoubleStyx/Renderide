@@ -73,10 +73,8 @@ pub(super) fn resolve_pass_config(
     gpu_limits: &GpuLimits,
     sample_count: u32,
 ) -> WorldMeshForwardPipelineState {
-    let use_multiview = multiview_stereo
-        && hc.vr_active
-        && hc.stereo_view_proj.is_some()
-        && gpu_limits.supports_multiview;
+    let use_multiview =
+        multiview_stereo && hc.vr_active && hc.stereo.is_some() && gpu_limits.supports_multiview;
 
     let sc = sample_count.max(1);
 
@@ -374,7 +372,7 @@ pub(super) fn write_frame_uniforms_and_cluster(
         .secondary_camera_world_position
         .unwrap_or_else(|| hc.head_output_transform.col(3).truncate());
 
-    let stereo_cluster = use_multiview && hc.vr_active && hc.stereo_views.is_some();
+    let stereo_cluster = use_multiview && hc.vr_active && hc.stereo.is_some();
     let frame_idx = hc.frame_index as u32;
 
     let uniforms = if stereo_cluster {
@@ -707,7 +705,7 @@ fn build_per_view_frame_gpu_uniforms(
     let camera_world = hc
         .secondary_camera_world_position
         .unwrap_or_else(|| hc.head_output_transform.col(3).truncate());
-    let stereo_cluster = use_multiview && hc.vr_active && hc.stereo_views.is_some();
+    let stereo_cluster = use_multiview && hc.vr_active && hc.stereo.is_some();
     let frame_idx = hc.frame_index as u32;
     if stereo_cluster {
         if let Some((left, right)) = cluster_frame_params_stereo(&hc, frame.shared.scene, (vw, vh))

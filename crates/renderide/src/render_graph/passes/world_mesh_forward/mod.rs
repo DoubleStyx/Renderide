@@ -21,9 +21,9 @@
 //! ## VR stereo world draws
 //!
 //! OpenXR per-eye view–projection maps **stage** space to clip. For non-overlay draws with
-//! `stereo_view_proj`, identity is used instead of the host `view_transform` world-to-camera
-//! to avoid mixing stage with the host rig. Overlays keep `view` for orthographic / UI alignment.
-//! Matrix composition lives in [`vp`].
+//! [`crate::render_graph::StereoViewMatrices`], identity is used instead of the host
+//! `view_transform` world-to-camera to avoid mixing stage with the host rig. Overlays keep
+//! `view` for orthographic / UI alignment. Matrix composition lives in [`vp`].
 
 mod current_view_textures;
 mod encode;

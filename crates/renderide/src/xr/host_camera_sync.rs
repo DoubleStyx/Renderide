@@ -5,7 +5,7 @@
 use glam::{Mat4, Quat, Vec3};
 
 use crate::gpu::GpuContext;
-use crate::render_graph::{ExternalFrameTargets, GraphExecuteError};
+use crate::render_graph::{ExternalFrameTargets, GraphExecuteError, StereoViewMatrices};
 use crate::shared::HeadOutputDevice;
 
 /// Read/write hooks for per-eye matrices and head-output positioning used by OpenXR frame ticks.
@@ -24,29 +24,30 @@ pub trait XrHostCameraSync {
     fn world_from_tracking(&self, center_pose_tracking: Option<(Vec3, Quat)>) -> Mat4;
     /// Updates the head-output rig transform used for overlay alignment and host IPC replies.
     fn set_head_output_transform(&mut self, transform: Mat4);
-    /// Stores per-eye view–projection for stereo world mesh draws and clustering.
-    fn set_stereo_view_proj(&mut self, vp: Option<(Mat4, Mat4)>);
-    /// Per-eye **view-only** matrices (world-to-view, handedness-fixed) for stereo clustering.
-    fn set_stereo_views(&mut self, views: Option<(Mat4, Mat4)>);
+    /// Stores per-eye stereo matrices used by the HMD multiview view this tick.
+    fn set_stereo(&mut self, stereo: Option<StereoViewMatrices>);
     /// Hook when OpenXR `wait_frame` returns an error (recoverable; tick may skip XR work).
     fn note_openxr_wait_frame_failed(&mut self) {}
     /// Hook when OpenXR `locate_views` fails while the runtime expected rendering views.
     fn note_openxr_locate_views_failed(&mut self) {}
 }
 
-/// Per-tick unified render entry used by the OpenXR frame submit helper.
+/// Per-tick render entry points used by the OpenXR frame submit helper.
+///
+/// Split from the desktop inherent entry so the VR path does not need to encode mode selection
+/// with boolean flags. [`Self::submit_hmd_view`] renders the HMD stereo view plus any active
+/// secondary render-texture cameras in a single submit; [`Self::submit_secondary_only`] is used
+/// when HMD swapchain acquire failed but secondary RTs should still render.
 pub trait XrFrameRenderer: XrHostCameraSync {
-    /// Records and submits the compiled render graph for this tick.
-    ///
-    /// `hmd` supplies pre-acquired OpenXR stereo color + depth targets; every active secondary
-    /// render-texture camera is appended automatically. `include_main_swapchain` is `false` on
-    /// VR ticks because the HMD view replaces the main camera.
-    ///
-    /// See [`crate::runtime::RendererRuntime::render_frame`] for the inherent implementation.
-    fn render_frame(
+    /// Records and submits the compiled render graph for the HMD stereo view plus all active
+    /// secondary render-texture cameras. The HMD view replaces the main camera this tick.
+    fn submit_hmd_view(
         &mut self,
         gpu: &mut GpuContext,
-        include_main_swapchain: bool,
-        hmd: Option<ExternalFrameTargets<'_>>,
+        hmd: ExternalFrameTargets<'_>,
     ) -> Result<(), GraphExecuteError>;
+
+    /// Records and submits only the active secondary render-texture cameras. Used when the HMD
+    /// swapchain acquire failed; the desktop mirror stays on its last frame.
+    fn submit_secondary_only(&mut self, gpu: &mut GpuContext) -> Result<(), GraphExecuteError>;
 }
