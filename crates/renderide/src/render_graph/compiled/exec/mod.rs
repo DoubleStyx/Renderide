@@ -154,6 +154,9 @@ pub(super) struct PerViewRecordShared<'a> {
     /// [`crate::render_graph::passes::post_processing::gtao::GtaoPass`] can read the current
     /// slider values without rebuilding the compiled render graph.
     pub(super) live_gtao_settings: crate::config::GtaoSettings,
+    /// Live bloom settings snapshot for the frame, seeded into each view's blackboard so the
+    /// bloom passes' UBO / blend constants / pipeline variants reflect current slider values.
+    pub(super) live_bloom_settings: crate::config::BloomSettings,
 }
 
 impl GraphResolveKey {
@@ -466,6 +469,7 @@ impl CompiledRenderGraph {
             gpu_limits_arc: mv_ctx.backend.gpu_limits().cloned(),
             msaa_depth_resolve: mv_ctx.backend.msaa_depth_resolve(),
             live_gtao_settings: mv_ctx.backend.live_gtao_settings(),
+            live_bloom_settings: mv_ctx.backend.live_bloom_settings(),
         };
         let mut per_view_profiler = mv_ctx.gpu.take_gpu_profiler();
         let per_view_outputs = self.record_per_view_outputs(

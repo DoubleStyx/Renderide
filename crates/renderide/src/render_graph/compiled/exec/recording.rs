@@ -9,8 +9,9 @@ use super::super::super::context::{
 };
 use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_params::{
-    FrameSystemsShared, GtaoSettingsSlot, GtaoSettingsValue, MsaaViewsSlot, PerViewFramePlan,
-    PerViewFramePlanSlot, PerViewHudOutputsSlot, PrefetchedWorldMeshDrawsSlot,
+    BloomSettingsSlot, BloomSettingsValue, FrameSystemsShared, GtaoSettingsSlot, GtaoSettingsValue,
+    MsaaViewsSlot, PerViewFramePlan, PerViewFramePlanSlot, PerViewHudOutputsSlot,
+    PrefetchedWorldMeshDrawsSlot,
 };
 use super::super::super::pass::PassKind;
 use super::super::helpers;
@@ -83,6 +84,10 @@ impl CompiledRenderGraph {
         // every frame without rebuilding the compiled render graph (the chain signature only
         // tracks enable booleans, so parameter-only edits wouldn't otherwise reach the shader).
         view_blackboard.insert::<GtaoSettingsSlot>(GtaoSettingsValue(shared.live_gtao_settings));
+        // Same pattern for bloom: the first downsample reads `BloomSettingsSlot` to build its
+        // params UBO and the upsamples use it to compute per-mip blend constants + pick
+        // EnergyConserving vs Additive pipeline variants, so slider edits propagate next frame.
+        view_blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(shared.live_bloom_settings));
 
         {
             profiling::scope!("graph::per_view::pass_loop");

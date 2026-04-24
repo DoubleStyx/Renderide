@@ -248,6 +248,21 @@ impl RenderBackend {
             .unwrap_or_default()
     }
 
+    /// Snapshot of the live bloom settings for the current frame.
+    ///
+    /// Seeded into each view's blackboard as [`crate::render_graph::frame_params::BloomSettingsSlot`]
+    /// so the first downsample's params UBO and the upsample blend constants reflect slider
+    /// changes without rebuilding the compiled render graph. `max_mip_dimension` is the one
+    /// exception — it drives mip-chain texture sizes, so it lives on the chain signature and
+    /// triggers a rebuild instead.
+    pub(crate) fn live_bloom_settings(&self) -> crate::config::BloomSettings {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok())
+            .map(|s| s.post_processing.bloom)
+            .unwrap_or_default()
+    }
+
     /// Count of host Texture2D asset ids that have received a [`crate::shared::SetTexture2DFormat`] (CPU-side table).
     pub fn texture_format_registration_count(&self) -> usize {
         self.asset_transfers.texture_formats.len()
@@ -773,6 +788,7 @@ mod post_processing_rebuild_tests {
             PostProcessChainSignature {
                 aces_tonemap: true,
                 bloom: false,
+                bloom_max_mip_dimension: 0,
                 gtao: false,
             }
         );

@@ -35,6 +35,26 @@ pub(super) struct BloomParamsGpu {
     pub _pad: [f32; 2],
 }
 
+impl BloomParamsGpu {
+    /// Builds the GPU-side params UBO from the current bloom settings. Called each frame by
+    /// [`super::BloomDownsampleFirstPass::record`] so slider edits reach the shader without a
+    /// graph rebuild.
+    pub(super) fn from_settings(settings: &crate::config::BloomSettings) -> Self {
+        Self {
+            threshold_precomputations: threshold_precomputations(
+                settings.prefilter_threshold,
+                settings.prefilter_threshold_softness,
+            ),
+            intensity: settings.intensity.max(0.0),
+            energy_conserving: match settings.composite_mode {
+                crate::config::BloomCompositeMode::EnergyConserving => 1.0,
+                crate::config::BloomCompositeMode::Additive => 0.0,
+            },
+            _pad: [0.0, 0.0],
+        }
+    }
+}
+
 /// Pipeline variant keyed into the cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum BloomPipelineKind {

@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 
 use composite::BloomCompositePass;
 use downsample::{BloomDownsampleFirstPass, BloomDownsamplePass};
-use pipeline::{threshold_precomputations, BloomParamsGpu, BloomPipelineCache};
+use pipeline::BloomPipelineCache;
 use upsample::BloomUpsamplePass;
 
 use crate::config::{BloomCompositeMode, BloomSettings, PostProcessingSettings};
@@ -111,23 +111,10 @@ impl PostProcessEffect for BloomEffect {
             })
             .collect();
 
-        let params = BloomParamsGpu {
-            threshold_precomputations: threshold_precomputations(
-                settings.prefilter_threshold,
-                settings.prefilter_threshold_softness,
-            ),
-            intensity: settings.intensity.max(0.0),
-            energy_conserving: match settings.composite_mode {
-                BloomCompositeMode::EnergyConserving => 1.0,
-                BloomCompositeMode::Additive => 0.0,
-            },
-            _pad: [0.0, 0.0],
-        };
-
         let first_downsample = builder.add_raster_pass(Box::new(BloomDownsampleFirstPass::new(
             input,
             mip_handles[0],
-            params,
+            settings,
             pipelines,
         )));
         let mut prev = first_downsample;
@@ -144,12 +131,12 @@ impl PostProcessEffect for BloomEffect {
 
         let max_mip = (mip_count.saturating_sub(1)) as f32;
         for i in (1..(mip_count as usize)).rev() {
-            let blend = compute_blend_factor(&settings, i as f32, max_mip);
             let pass = builder.add_raster_pass(Box::new(BloomUpsamplePass::new(
                 mip_handles[i],
                 mip_handles[i - 1],
-                blend,
-                settings.composite_mode,
+                i as u32,
+                max_mip,
+                settings,
                 pipelines,
             )));
             builder.add_edge(prev, pass);
@@ -188,7 +175,7 @@ fn bloom_mip_count(max_mip_dim: u32) -> u32 {
 /// source mip being read (higher = lower frequency); `max_mip` is `mip_count - 1`. The factor
 /// is uploaded via [`wgpu::RenderPass::set_blend_constant`] and consumed by the GPU blend unit
 /// as `src * C + dst * (1-C)` (energy-conserving) or `src * C + dst` (additive).
-fn compute_blend_factor(settings: &BloomSettings, mip: f32, max_mip: f32) -> f32 {
+pub(super) fn compute_blend_factor(settings: &BloomSettings, mip: f32, max_mip: f32) -> f32 {
     let epsilon = 1.0e-6_f32;
     let max_mip = max_mip.max(epsilon);
     let curvature = settings

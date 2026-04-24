@@ -11,6 +11,12 @@ use crate::render_graph::resources::{
 use super::effect::{PostProcessEffect, PostProcessEffectId};
 
 /// Topology fingerprint for the post-processing chain at graph compile time.
+///
+/// Changes to any field force a render-graph rebuild. Non-topology parameters (intensity,
+/// threshold, composite mode, etc.) flow to the passes via per-view blackboard slots
+/// ([`crate::render_graph::frame_params::BloomSettingsSlot`],
+/// [`crate::render_graph::frame_params::GtaoSettingsSlot`]) and therefore do **not** need to be
+/// tracked here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PostProcessChainSignature {
     /// Ground-Truth Ambient Occlusion pass active.
@@ -19,16 +25,26 @@ pub struct PostProcessChainSignature {
     pub bloom: bool,
     /// Stephen Hill ACES Fitted tonemap pass active.
     pub aces_tonemap: bool,
+    /// Bloom mip 0 target height (px). Baked into the mip-chain transient texture extents at
+    /// graph-build time via [`crate::render_graph::resources::TransientExtent::BackbufferScaledMip`],
+    /// so a change here must rebuild. `0` when bloom is inactive.
+    pub bloom_max_mip_dimension: u32,
 }
 
 impl PostProcessChainSignature {
     /// Derives the signature from live [`PostProcessingSettings`].
     pub fn from_settings(settings: &PostProcessingSettings) -> Self {
         let master = settings.enabled;
+        let bloom = master && settings.bloom.enabled && settings.bloom.intensity > 0.0;
         Self {
             gtao: master && settings.gtao.enabled,
-            bloom: master && settings.bloom.enabled && settings.bloom.intensity > 0.0,
+            bloom,
             aces_tonemap: master && matches!(settings.tonemap.mode, TonemapMode::AcesFitted),
+            bloom_max_mip_dimension: if bloom {
+                settings.bloom.max_mip_dimension.max(2)
+            } else {
+                0
+            },
         }
     }
 

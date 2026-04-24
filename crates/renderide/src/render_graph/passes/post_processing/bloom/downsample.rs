@@ -4,19 +4,26 @@ use std::num::NonZeroU32;
 
 use super::helpers::{attachment_format, stereo_mask_override};
 use super::pipeline::{BloomParamsGpu, BloomPipelineCache, BloomPipelineKind};
+use crate::config::BloomSettings;
 use crate::render_graph::compiled::RenderPassTemplate;
 use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
+use crate::render_graph::frame_params::BloomSettingsSlot;
 use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::resources::{TextureAccess, TextureHandle};
 
 /// First downsample: reads the chain's HDR input, applies Karis firefly reduction (and the
 /// optional soft-knee prefilter), writes bloom mip 0. Owns the per-frame params UBO upload so
 /// every other bloom pass can just bind the already-written buffer.
+///
+/// Reads [`BloomSettingsSlot`] from the per-view blackboard at record time, so slider edits on
+/// non-topology knobs (intensity, threshold, composite mode, etc.) reach the shader without a
+/// graph rebuild. `fallback_settings` is used when the blackboard isn't populated (tests / pre-
+/// lifecycle paths).
 pub(super) struct BloomDownsampleFirstPass {
     input: TextureHandle,
     output: TextureHandle,
-    params: BloomParamsGpu,
+    fallback_settings: BloomSettings,
     pipelines: &'static BloomPipelineCache,
 }
 
@@ -24,13 +31,13 @@ impl BloomDownsampleFirstPass {
     pub(super) fn new(
         input: TextureHandle,
         output: TextureHandle,
-        params: BloomParamsGpu,
+        fallback_settings: BloomSettings,
         pipelines: &'static BloomPipelineCache,
     ) -> Self {
         Self {
             input,
             output,
-            params,
+            fallback_settings,
             pipelines,
         }
     }
@@ -94,10 +101,17 @@ impl RasterPass for BloomDownsampleFirstPass {
 
         // Upload the shared bloom params UBO once per frame via the deferred upload batch
         // (single-producer queue invariant — see `crate::render_graph::passes::post_processing::gtao`
-        // for the equivalent pattern).
+        // for the equivalent pattern). Params are built from the live blackboard slot so slider
+        // edits propagate without rebuilding the graph.
+        let settings = ctx
+            .blackboard
+            .get::<BloomSettingsSlot>()
+            .map(|slot| slot.0)
+            .unwrap_or(self.fallback_settings);
+        let params = BloomParamsGpu::from_settings(&settings);
         let params_buffer = self.pipelines.params_buffer(ctx.device);
         ctx.upload_batch
-            .write_buffer(params_buffer, 0, bytemuck::bytes_of(&self.params));
+            .write_buffer(params_buffer, 0, bytemuck::bytes_of(&params));
 
         let pipeline = self.pipelines.pipeline(
             ctx.device,
