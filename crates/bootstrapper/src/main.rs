@@ -10,6 +10,10 @@
 /// headless or display-less Linux systems leaves an actionable line in
 /// `logs/bootstrapper/*.log` instead of producing a silent "nothing happens" failure.
 ///
+/// On Linux, [`bootstrapper::vr_prompt::sanitize_linux_display_env`] runs after the logger
+/// is initialized and before the dialog so that an empty `WAYLAND_DISPLAY` (the folk
+/// "force X11" idiom) does not poison the GTK4 zenity subprocess `rfd` shells out to.
+///
 /// Exits with status `0` without spawning the Host when the user cancels the
 /// desktop vs VR dialog.
 fn main() {
@@ -35,6 +39,8 @@ fn main() {
         }
     };
     bootstrapper::panic_hook::install(log_path);
+
+    bootstrapper::vr_prompt::sanitize_linux_display_env();
 
     let Some(host_args) = bootstrapper::cli::resolve_vr_choice(host_args) else {
         logger::info!("Desktop/VR dialog cancelled; exiting without spawning Host.");

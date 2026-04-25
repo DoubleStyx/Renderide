@@ -24,7 +24,7 @@ mod paths;
 mod protocol;
 mod protocol_handlers;
 mod renderer_stub;
-mod vr_prompt;
+pub mod vr_prompt;
 mod wine_detect;
 
 pub use error::BootstrapError;

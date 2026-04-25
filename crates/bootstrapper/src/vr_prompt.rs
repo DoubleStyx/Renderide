@@ -70,6 +70,32 @@ fn linux_graphical_session_available() -> bool {
     }
 }
 
+/// Removes `DISPLAY` and `WAYLAND_DISPLAY` from the process environment when they are set
+/// to an empty string, on Linux.
+///
+/// `WAYLAND_DISPLAY=""` is sometimes used as a folk idiom for "force X11", but GTK3/GTK4
+/// (which `rfd`'s zenity backend uses) treats the variable as *present* and tries to open a
+/// Wayland display with an empty name; the connection fails and GTK does not transparently
+/// fall back to X11. Stripping empty-valued display variables makes the env match the
+/// "unset" case, so downstream GUI subprocesses (zenity, kdialog, winit, OpenXR) inherit a
+/// clean environment and select an actually-working backend.
+///
+/// No-op on non-Linux targets.
+pub fn sanitize_linux_display_env() {
+    #[cfg(target_os = "linux")]
+    {
+        for key in ["WAYLAND_DISPLAY", "DISPLAY"] {
+            if env::var_os(key).is_some_and(|v| v.is_empty()) {
+                env::remove_var(key);
+                logger::info!(
+                    "Removed empty {key} from process environment so GUI subprocesses fall back \
+                     to a working display backend.",
+                );
+            }
+        }
+    }
+}
+
 /// Whether the optional Yes/No dialog should run before spawning the Host.
 ///
 /// Returns `false` when explicit output flags are already present, `CI` is set,
@@ -359,5 +385,44 @@ mod tests {
         env::set_var("DISPLAY", "");
         env::set_var("WAYLAND_DISPLAY", "");
         assert!(!should_prompt_vr_dialog(&[]));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sanitize_removes_empty_display_vars() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        let _snap = EnvSnapshot::capture();
+        env::set_var("DISPLAY", "");
+        env::set_var("WAYLAND_DISPLAY", "");
+        sanitize_linux_display_env();
+        assert!(env::var_os("DISPLAY").is_none());
+        assert!(env::var_os("WAYLAND_DISPLAY").is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sanitize_preserves_non_empty_display_vars() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        let _snap = EnvSnapshot::capture();
+        env::set_var("DISPLAY", ":0");
+        env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        sanitize_linux_display_env();
+        assert_eq!(env::var_os("DISPLAY").as_deref(), Some(":0".as_ref()));
+        assert_eq!(
+            env::var_os("WAYLAND_DISPLAY").as_deref(),
+            Some("wayland-0".as_ref())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sanitize_only_strips_empty_var_when_other_is_set() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        let _snap = EnvSnapshot::capture();
+        env::set_var("DISPLAY", ":0");
+        env::set_var("WAYLAND_DISPLAY", "");
+        sanitize_linux_display_env();
+        assert_eq!(env::var_os("DISPLAY").as_deref(), Some(":0".as_ref()));
+        assert!(env::var_os("WAYLAND_DISPLAY").is_none());
     }
 }
