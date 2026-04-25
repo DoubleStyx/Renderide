@@ -147,8 +147,8 @@ fn apply_offset(view_dir: vec3<f32>) -> vec3<f32> {
 
     let offset_uv = dir_to_uv(view_dir);
     let offset_sample =
-        textureSampleLevel(_OffsetTex, _OffsetTex_sampler, offset_uv * mat._OffsetTex_ST.xy + mat._OffsetTex_ST.zw, 0.0).rg;
-    let offset_mask = textureSampleLevel(_OffsetMask, _OffsetMask_sampler, offset_uv, 0.0).rg;
+        textureSampleLevel(_OffsetTex, _OffsetTex_sampler, uvu::apply_st(offset_uv, mat._OffsetTex_ST), 0.0).rg;
+    let offset_mask = textureSampleLevel(_OffsetMask, _OffsetMask_sampler, uvu::flip_v(offset_uv), 0.0).rg;
     let offset = (offset_sample * 2.0 - vec2<f32>(1.0)) * offset_mask * mat._OffsetMagnitude.xy;
     return rotate_dir(view_dir, offset);
 }
@@ -173,17 +173,22 @@ fn sample_equirect(view_dir: vec3<f32>, view_layer: u32) -> vec4<f32> {
     if (uvu::kw_enabled(mat._RIGHT_EYE_ST) && view_layer != 0u) {
         st = mat._RightEye_ST;
     }
-    let sample_uv = uv * st.xy + st.zw;
+    // `uv` is procedurally derived from `view_dir` (not a Unity mesh UV), but the texture is
+    // still authored in Unity convention — bake the V-flip in once via `apply_st`.
+    let sample_uv = uvu::apply_st(uv, st);
     var c = textureSampleLevel(_MainTex, _MainTex_sampler, sample_uv, 0.0);
     if (uvu::kw_enabled(mat.SECOND_TEXTURE)) {
-        let sc = textureSampleLevel(_SecondTex, _SecondTex_sampler, sample_uv + mat._SecondTexOffset.xy, 0.0);
+        // `_SecondTexOffset` is authored in Unity texel space; preserve the relative shift after
+        // the V-flip by negating the y component.
+        let secondary_offset = vec2<f32>(mat._SecondTexOffset.x, -mat._SecondTexOffset.y);
+        let sc = textureSampleLevel(_SecondTex, _SecondTex_sampler, sample_uv + secondary_offset, 0.0);
         c = mix(c, sc, clamp(mat._TextureLerp, 0.0, 1.0));
     }
 
     if (uvu::kw_enabled(mat.TINT_TEX_DIRECT)) {
         c = c * textureSampleLevel(_TintTex, _TintTex_sampler, sample_uv, 0.0);
     } else if (uvu::kw_enabled(mat.TINT_TEX_LERP)) {
-        let tint_uv = uv * mat._TintTex_ST.xy + mat._TintTex_ST.wz;
+        let tint_uv = uvu::apply_st(uv, vec4<f32>(mat._TintTex_ST.xy, mat._TintTex_ST.w, mat._TintTex_ST.z));
         let l = textureSampleLevel(_TintTex, _TintTex_sampler, tint_uv, 0.0).r;
         c = c * mix(mat._Tint0, mat._Tint1, l);
     }

@@ -9,6 +9,16 @@ fn apply_st(uv_in: vec2<f32>, st: vec4<f32>) -> vec2<f32> {
     return vec2<f32>(uv_st.x, 1.0 - uv_st.y);
 }
 
+/// V-flip a UV coordinate for sampling Unity-authored textures.
+///
+/// Resonite uploads textures with Unity's bottom-row-first ordering, but wgpu's `textureSample`
+/// treats `V=0` as the top row. Use this helper at texture sampling sites that don't go through
+/// [`apply_st`] (e.g. procedurally-derived UVs from a view-space normal, equirect projection,
+/// matcap, or screen-space coordinates) to undo the convention mismatch.
+fn flip_v(uv: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(uv.x, 1.0 - uv.y);
+}
+
 fn kw_enabled(v: f32) -> bool {
     return v > 0.5;
 }
