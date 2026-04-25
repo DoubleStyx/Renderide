@@ -150,9 +150,9 @@ pub(super) struct PerViewRecordShared<'a> {
     pub(super) gpu_limits_arc: Option<std::sync::Arc<crate::gpu::GpuLimits>>,
     /// Optional MSAA depth-resolve resources for the frame.
     pub(super) msaa_depth_resolve: Option<std::sync::Arc<crate::gpu::MsaaDepthResolveResources>>,
-    /// Live GTAO settings snapshot for the frame, seeded into each view's blackboard so the GTAO
-    /// sub-graph passes can read the current slider values without rebuilding the compiled
-    /// render graph (except for `denoise_passes`, which is topology).
+    /// Live GTAO settings snapshot for the frame, seeded into each view's blackboard so
+    /// [`crate::render_graph::passes::post_processing::gtao::GtaoPass`] can read the current
+    /// slider values without rebuilding the compiled render graph.
     pub(super) live_gtao_settings: crate::config::GtaoSettings,
     /// Live bloom settings snapshot for the frame, seeded into each view's blackboard so the
     /// bloom passes' UBO / blend constants / pipeline variants reflect current slider values.

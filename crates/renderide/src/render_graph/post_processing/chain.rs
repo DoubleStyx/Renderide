@@ -21,10 +21,6 @@ use super::effect::{PostProcessEffect, PostProcessEffectId};
 pub struct PostProcessChainSignature {
     /// Ground-Truth Ambient Occlusion pass active.
     pub gtao: bool,
-    /// Number of bilateral denoise passes inserted between the GTAO main pass and apply pass.
-    /// Baked into the graph topology (one fragment pass per denoise iteration), so a change here
-    /// must rebuild. Clamped to `0..=3`. `0` both when GTAO is inactive and when denoise is off.
-    pub gtao_denoise_passes: u8,
     /// Dual-filter bloom pass active.
     pub bloom: bool,
     /// Stephen Hill ACES Fitted tonemap pass active.
@@ -39,15 +35,9 @@ impl PostProcessChainSignature {
     /// Derives the signature from live [`PostProcessingSettings`].
     pub fn from_settings(settings: &PostProcessingSettings) -> Self {
         let master = settings.enabled;
-        let gtao_active = master && settings.gtao.enabled;
         let bloom = master && settings.bloom.enabled && settings.bloom.intensity > 0.0;
         Self {
-            gtao: gtao_active,
-            gtao_denoise_passes: if gtao_active {
-                settings.gtao.denoise_passes.min(3)
-            } else {
-                0
-            },
+            gtao: master && settings.gtao.enabled,
             bloom,
             aces_tonemap: master && matches!(settings.tonemap.mode, TonemapMode::AcesFitted),
             bloom_max_mip_dimension: if bloom {
@@ -457,44 +447,6 @@ mod tests {
 
         s.enabled = false;
         assert!(PostProcessChainSignature::from_settings(&s).is_empty());
-    }
-
-    #[test]
-    fn signature_tracks_gtao_denoise_pass_count() {
-        let base = PostProcessingSettings {
-            enabled: true,
-            tonemap: TonemapSettings {
-                mode: crate::config::TonemapMode::None,
-            },
-            ..Default::default()
-        };
-        let mut s = base;
-        s.gtao.enabled = true;
-        s.gtao.denoise_passes = 1;
-        let sig_one = PostProcessChainSignature::from_settings(&s);
-        s.gtao.denoise_passes = 2;
-        let sig_two = PostProcessChainSignature::from_settings(&s);
-        assert_ne!(
-            sig_one, sig_two,
-            "denoise pass count is graph topology and must invalidate the signature"
-        );
-        assert_eq!(sig_one.gtao_denoise_passes, 1);
-        assert_eq!(sig_two.gtao_denoise_passes, 2);
-
-        // Out-of-range values clamp at 3 (matches XeGTAO's "soft" preset).
-        s.gtao.denoise_passes = 9;
-        assert_eq!(
-            PostProcessChainSignature::from_settings(&s).gtao_denoise_passes,
-            3
-        );
-
-        // GTAO disabled zeros the field even when the underlying setting is non-zero.
-        s.gtao.enabled = false;
-        s.gtao.denoise_passes = 2;
-        assert_eq!(
-            PostProcessChainSignature::from_settings(&s).gtao_denoise_passes,
-            0
-        );
     }
 
     #[test]

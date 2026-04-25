@@ -278,12 +278,11 @@ impl BlackboardSlot for PerViewFramePlanSlot {
 
 /// Blackboard slot for the live [`crate::config::GtaoSettings`] snapshot.
 ///
-/// Seeded each frame from [`crate::config::RendererSettings`] before per-view recording so the
-/// GTAO sub-graph passes ([`crate::render_graph::passes::post_processing::GtaoEffect`]) read the
-/// current slider values without rebuilding the compiled render graph. Most slider changes don't
-/// flip [`crate::render_graph::post_processing::chain::PostProcessChainSignature`] — this slot is
-/// the path that propagates parameter edits into the UBO. The exception is `denoise_passes`,
-/// which **is** topology and lives on the chain signature.
+/// Seeded each frame from [`crate::config::RendererSettings`] before per-view recording so
+/// [`crate::render_graph::passes::post_processing::gtao::GtaoPass`] reads the current slider
+/// values without rebuilding the compiled render graph. Slider changes don't flip
+/// [`crate::render_graph::post_processing::chain::PostProcessChainSignature`] (which tracks
+/// enable flags only) — this slot is the path that propagates parameter edits into the UBO.
 pub struct GtaoSettingsSlot;
 impl BlackboardSlot for GtaoSettingsSlot {
     type Value = GtaoSettingsValue;

@@ -9,8 +9,7 @@
 //! ladder terminating in a single composite pass.
 //!
 //! See [`crate::render_graph::passes::post_processing`] for concrete effect implementations:
-//! [`GtaoEffect`](crate::render_graph::passes::post_processing::GtaoEffect) (a multi-stage
-//! sub-graph encapsulating the main, denoise, and apply passes),
+//! [`GtaoPass`](crate::render_graph::passes::post_processing::GtaoPass),
 //! [`BloomEffect`](crate::render_graph::passes::post_processing::BloomEffect), and
 //! [`AcesTonemapPass`](crate::render_graph::passes::post_processing::AcesTonemapPass).
 

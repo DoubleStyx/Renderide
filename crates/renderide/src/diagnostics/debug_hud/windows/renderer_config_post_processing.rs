@@ -95,28 +95,6 @@ fn gtao_section(ui: &imgui::Ui, g: &mut crate::config::RendererSettings, dirty: 
     {
         *dirty = true;
     }
-    if ui
-        .slider_config("Denoise passes", 0_u8, 3_u8)
-        .build(&mut gtao.denoise_passes)
-    {
-        *dirty = true;
-    }
-    ui.text_disabled(
-        "0 = off (raw GTAO, noisier), 1 = sharp (XeGTAO default), 2 = medium, 3 = soft. \
-         Higher values smooth more grain but soften fine creases. Changing this value rebuilds \
-         the render graph because pass count is graph topology.",
-    );
-    if ui
-        .slider_config("Denoise blur beta", 0.1_f32, 4.0_f32)
-        .display_format("%.2f")
-        .build(&mut gtao.denoise_blur_beta)
-    {
-        *dirty = true;
-    }
-    ui.text_disabled(
-        "Center-pixel weight in the bilateral kernel (XeGTAO `DenoiseBlurBeta`). Higher = sharper, \
-         lower = blurrier. Intermediate passes use `beta / 5`; the final pass uses `beta`.",
-    );
 }
 
 /// Bloom tunables (dual-filter HDR scatter; pre-tonemap).

@@ -80,10 +80,9 @@ impl CompiledRenderGraph {
             per_view_frame_bg_and_buf,
             view_idx,
         );
-        // Propagate the live GTAO settings so the GTAO sub-graph passes read the current slider
-        // values every frame without rebuilding the compiled render graph for non-topology knobs
-        // (the chain signature tracks enable booleans + denoise pass count, so per-parameter
-        // edits wouldn't otherwise reach the shader).
+        // Propagate the live GTAO settings so `GtaoPass::record` reads the current slider values
+        // every frame without rebuilding the compiled render graph (the chain signature only
+        // tracks enable booleans, so parameter-only edits wouldn't otherwise reach the shader).
         view_blackboard.insert::<GtaoSettingsSlot>(GtaoSettingsValue(shared.live_gtao_settings));
         // Same pattern for bloom: the first downsample reads `BloomSettingsSlot` to build its
         // params UBO and the upsamples use it to compute per-mip blend constants + pick

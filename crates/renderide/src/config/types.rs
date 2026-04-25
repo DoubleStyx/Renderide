@@ -386,17 +386,6 @@ pub struct GtaoSettings {
     /// Gray-albedo proxy for the multi-bounce fit (paper Eq. 10). Recovers the near-field light
     /// lost by assuming fully-absorbing occluders. Set lower for darker scenes, higher for brighter.
     pub albedo_multibounce: f32,
-    /// Number of edge-aware bilateral denoise passes applied to the AO term before modulation.
-    /// `0` disables denoise entirely; `1` matches XeGTAO's "sharp" preset, `2` is "medium", and
-    /// `3` is "soft". Higher values smooth the noise produced by GTAO's stochastic horizon search
-    /// at the cost of fine detail. Each additional pass adds one fragment dispatch with a 5×5
-    /// cross-bilateral kernel keyed on a packed-edges texture written by the main pass.
-    pub denoise_passes: u8,
-    /// Center-pixel weight in the bilateral kernel — XeGTAO's `DenoiseBlurBeta`. Higher values
-    /// preserve more of the unfiltered AO term (sharper); lower values let the neighborhood
-    /// dominate (blurrier). Intermediate passes use `denoise_blur_beta / 5.0`; the final pass
-    /// uses the full value so the last filter is the strongest.
-    pub denoise_blur_beta: f32,
 }
 
 impl Default for GtaoSettings {
@@ -409,8 +398,6 @@ impl Default for GtaoSettings {
             step_count: 16,
             falloff_range: 0.5,
             albedo_multibounce: 0.0,
-            denoise_passes: 1,
-            denoise_blur_beta: 1.2,
         }
     }
 }
