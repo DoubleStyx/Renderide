@@ -35,6 +35,16 @@ pub struct ParseMaterialBatchOptions {
     /// `None` skips the capture (default for unit tests that do not exercise render-type-driven
     /// inference).
     pub render_type_property_id: Option<i32>,
+    /// Interned `_RenderQueue` property id. When `Some`,
+    /// [`MaterialPropertyUpdateType::SetRenderQueue`] opcodes write the queue value (Unity
+    /// convention: `[1000, 2450)` opaque, `[2450, 3000)` alpha-test, `[3000, ∞)` transparent)
+    /// as a synthetic [`MaterialPropertyValue::Float`] at this id. PBS material providers
+    /// (`PBS_DualSidedMaterial.cs`, `PBS_DisplaceMaterial.cs`, …) bypass `MaterialProvider.SetBlendMode`
+    /// entirely and route their `AlphaHandling` enum through this opcode plus the
+    /// `_ALPHACLIP` shader keyword. The keyword bitmask is not on the wire, so the queue
+    /// range is the only signal the renderer can use to infer alpha-test for those
+    /// materials. `None` skips the capture (default for unit tests).
+    pub render_queue_property_id: Option<i32>,
 }
 
 /// Loads a blob for a [`SharedMemoryBufferDescriptor`] (production: shared-memory mmap).
@@ -168,7 +178,17 @@ fn apply_material_batch_property_opcode<L: MaterialBatchBlobLoader + ?Sized>(
             }
             MaterialBatchTarget::PropertyBlock(_) => {}
         },
-        MaterialPropertyUpdateType::SetRenderQueue | MaterialPropertyUpdateType::SetInstancing => {}
+        MaterialPropertyUpdateType::SetInstancing => {}
+        MaterialPropertyUpdateType::SetRenderQueue => {
+            if let Some(render_queue_pid) = options.render_queue_property_id {
+                set_property_on_batch_target(
+                    store,
+                    target,
+                    render_queue_pid,
+                    MaterialPropertyValue::Float(property_id as f32),
+                );
+            }
+        }
         MaterialPropertyUpdateType::SetRenderType => {
             if let Some(render_type_pid) = options.render_type_property_id {
                 set_property_on_batch_target(
@@ -746,6 +766,41 @@ mod tests {
         assert_eq!(
             store.get_material(50, render_type_pid),
             Some(&MaterialPropertyValue::Float(1.0))
+        );
+    }
+
+    /// `SetRenderQueue` opcodes carry the queue value in `property_id` (Unity convention:
+    /// 2000 Opaque, 2450 AlphaTest, 3000 Transparent). When
+    /// [`ParseMaterialBatchOptions::render_queue_property_id`] is set the parser writes that
+    /// value as a synthetic float on the active material so the keyword inference path can
+    /// drive `_ALPHACLIP` / `_ALPHATEST_ON` for PBS materials whose `AlphaHandling` enum
+    /// only appears on the wire as a queue value.
+    #[test]
+    fn set_render_queue_writes_synthetic_render_queue_property_when_enabled() {
+        let stream: Vec<u8> = [
+            update_bytes(70, MaterialPropertyUpdateType::SelectTarget),
+            update_bytes(2450, MaterialPropertyUpdateType::SetRenderQueue),
+            update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+        ]
+        .concat();
+        let mut loader = TestLoader {
+            blobs: vec![stream.clone()],
+        };
+        let batch = MaterialsUpdateBatch {
+            material_updates: vec![desc(0, &stream)],
+            material_update_count: 1,
+            ..Default::default()
+        };
+        let mut store = MaterialPropertyStore::new();
+        let render_queue_pid: i32 = 8888;
+        let opts = ParseMaterialBatchOptions {
+            render_queue_property_id: Some(render_queue_pid),
+            ..ParseMaterialBatchOptions::default()
+        };
+        parse_materials_update_batch_into_store(&mut loader, &batch, &mut store, &opts);
+        assert_eq!(
+            store.get_material(70, render_queue_pid),
+            Some(&MaterialPropertyValue::Float(2450.0))
         );
     }
 

@@ -19,18 +19,26 @@ pub(crate) struct StemMaterialLayout {
 
 /// Pre-interned property ids used by [`super::uniform_pack::inferred_keyword_float_f32`] to
 /// probe texture presence (PBS `_NORMALMAP` / `_EMISSION` / `_SPECULARMAP` / … flags) and by
-/// the `_ALPHATEST_ON`/`_ALPHABLEND_ON` inference path that reads the on-wire
-/// [`crate::shared::MaterialRenderType`] tag (captured under the synthetic `_RenderType`
-/// property by [`crate::assets::material::parse_materials_update_batch_into_store`]) plus
-/// the `_SrcBlend` / `_DstBlend` factors for distinguishing premultiplied blends.
+/// the `_ALPHATEST_ON`/`_ALPHABLEND_ON` inference path that reads three on-wire signals,
+/// each captured as a synthetic property by
+/// [`crate::assets::material::parse_materials_update_batch_into_store`]:
+///
+/// 1. The [`crate::shared::MaterialRenderType`] tag at `_RenderType`
+///    (`MaterialProvider.SetBlendMode` family — `Unlit`, `Toon`, etc.).
+/// 2. The Unity render queue at `_RenderQueue` (PBS `AlphaHandling` family —
+///    `PBS_DualSidedMaterial.cs` and friends bypass `SetBlendMode` and the `_ALPHACLIP`
+///    keyword bitmask, signaling AlphaClip via queue 2450 and Opaque via queue 2000).
+/// 3. The legacy `_SrcBlend` / `_DstBlend` factors for distinguishing alpha-blend from
+///    premultiplied alpha within the Transparent range.
 ///
 /// FrooxEngine's `ShaderKeywords.Variant` bitmask is never sent over IPC, so every
 /// multi-compile-keyword toggle has to be inferred from what the host does send: texture
-/// bindings, numeric material properties, render-type tag, and blend factors.
+/// bindings, numeric material properties, render-type tag, render queue, and blend factors.
 pub(crate) struct EmbeddedSharedKeywordIds {
     pub(crate) blend_mode: i32,
     pub(crate) mode: i32,
     pub(crate) render_type: i32,
+    pub(crate) render_queue: i32,
     pub(crate) src_blend: i32,
     pub(crate) dst_blend: i32,
     pub(crate) lerp_tex: i32,
@@ -62,6 +70,7 @@ impl EmbeddedSharedKeywordIds {
             blend_mode: registry.intern("_BlendMode"),
             mode: registry.intern("_Mode"),
             render_type: registry.intern("_RenderType"),
+            render_queue: registry.intern("_RenderQueue"),
             src_blend: registry.intern("_SrcBlend"),
             dst_blend: registry.intern("_DstBlend"),
             lerp_tex: registry.intern("_LerpTex"),

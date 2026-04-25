@@ -104,6 +104,13 @@ const BLEND_MODE_TRANSPARENT_PREMULTIPLY: i32 = 3;
 const UNITY_BLEND_FACTOR_ONE: i32 = 1;
 /// `UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha`.
 const UNITY_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: i32 = 10;
+/// Inclusive lower bound of Unity's AlphaTest queue range (FrooxEngine writes 2450 for
+/// `AlphaHandling.AlphaClip` / `BlendMode.Cutout`).
+const RENDER_QUEUE_ALPHA_TEST_MIN: i32 = 2450;
+/// Inclusive lower bound of Unity's Transparent queue range (FrooxEngine writes 3000 for
+/// `AlphaHandling.AlphaBlend` / `BlendMode.Alpha` / `BlendMode.Transparent`). Also the
+/// exclusive upper bound of the AlphaTest range.
+const RENDER_QUEUE_TRANSPARENT_MIN: i32 = 3000;
 
 fn read_int_property(
     store: &MaterialPropertyStore,
@@ -138,11 +145,44 @@ fn premultiplied_blend_factors(
     src == Some(UNITY_BLEND_FACTOR_ONE) && dst == Some(UNITY_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
 }
 
+/// Classification of an inferred render queue value.
+///
+/// Mirrors Unity's standard queue ranges and the values FrooxEngine writes from both
+/// `MaterialProvider.SetBlendMode` (Opaque=2000/2550, Cutout=2450/2750, Transparent=3000)
+/// and the PBS `AlphaHandling` family (Opaque=2000, AlphaClip=2450, AlphaBlend=3000).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InferredQueueRange {
+    /// Below the AlphaTest threshold (Background / Geometry).
+    Opaque,
+    /// `[2450, 3000)` — Unity AlphaTest range.
+    AlphaTest,
+    /// `>= 3000` — Unity Transparent range and beyond.
+    Transparent,
+}
+
+fn render_queue_range(
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    kw: &EmbeddedSharedKeywordIds,
+) -> Option<InferredQueueRange> {
+    let queue = read_int_property(store, lookup, kw.render_queue)?;
+    if queue >= RENDER_QUEUE_TRANSPARENT_MIN {
+        Some(InferredQueueRange::Transparent)
+    } else if queue >= RENDER_QUEUE_ALPHA_TEST_MIN {
+        Some(InferredQueueRange::AlphaTest)
+    } else {
+        Some(InferredQueueRange::Opaque)
+    }
+}
+
 fn alpha_test_on_inferred(
     store: &MaterialPropertyStore,
     lookup: MaterialPropertyLookupIds,
     kw: &EmbeddedSharedKeywordIds,
 ) -> bool {
+    if render_queue_range(store, lookup, kw) == Some(InferredQueueRange::AlphaTest) {
+        return true;
+    }
     render_type_or_legacy_mode_is(
         store,
         lookup,
@@ -161,6 +201,9 @@ fn alpha_blend_on_inferred(
     if render_type == Some(RENDER_TYPE_TRANSPARENT) {
         return !premultiplied_blend_factors(store, lookup, kw);
     }
+    if render_queue_range(store, lookup, kw) == Some(InferredQueueRange::Transparent) {
+        return !premultiplied_blend_factors(store, lookup, kw);
+    }
     let legacy_mode = read_int_property(store, lookup, kw.mode);
     let legacy_blend = read_int_property(store, lookup, kw.blend_mode);
     legacy_mode == Some(BLEND_MODE_ALPHA) || legacy_blend == Some(BLEND_MODE_ALPHA)
@@ -173,6 +216,11 @@ fn alpha_premultiply_on_inferred(
 ) -> bool {
     let render_type = read_int_property(store, lookup, kw.render_type);
     if render_type == Some(RENDER_TYPE_TRANSPARENT)
+        && premultiplied_blend_factors(store, lookup, kw)
+    {
+        return true;
+    }
+    if render_queue_range(store, lookup, kw) == Some(InferredQueueRange::Transparent)
         && premultiplied_blend_factors(store, lookup, kw)
     {
         return true;

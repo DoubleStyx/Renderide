@@ -166,6 +166,7 @@ impl MaterialSystem {
         let update_batch_id = batch.update_batch_id;
         let opts = ParseMaterialBatchOptions {
             render_type_property_id: Some(self.property_id_registry.intern("_RenderType")),
+            render_queue_property_id: Some(self.property_id_registry.intern("_RenderQueue")),
             ..ParseMaterialBatchOptions::default()
         };
         parse_materials_update_batch_into_store(

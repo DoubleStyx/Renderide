@@ -303,6 +303,107 @@ mod text_uniform_packing_tests {
         );
     }
 
+    /// PBS materials (`PBS_DualSidedMaterial.cs` and friends) bypass `SetBlendMode` and
+    /// only signal `AlphaHandling.AlphaClip` by writing render queue 2450 plus the
+    /// `_ALPHACLIP` shader keyword (which is not on the wire). Queue 2450 alone must
+    /// enable the alpha-test family.
+    #[test]
+    fn render_queue_alpha_test_range_enables_alpha_test_family() {
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+        let render_queue_pid = reg.intern("_RenderQueue");
+        store.set_material(20, render_queue_pid, MaterialPropertyValue::Float(2450.0));
+
+        for field_name in ["_ALPHATEST_ON", "_ALPHATEST", "_ALPHACLIP"] {
+            assert_eq!(
+                inferred_keyword_float_f32(field_name, &store, lookup(20), &ids),
+                Some(1.0),
+                "{field_name} should enable for queue 2450 (AlphaTest range)"
+            );
+        }
+        assert_eq!(
+            inferred_keyword_float_f32("_ALPHABLEND_ON", &store, lookup(20), &ids),
+            Some(0.0)
+        );
+        assert_eq!(
+            inferred_keyword_float_f32("_ALPHAPREMULTIPLY_ON", &store, lookup(20), &ids),
+            Some(0.0)
+        );
+    }
+
+    /// Queue 2000 (Geometry / Opaque) must leave every alpha keyword off — this is the
+    /// PBS `AlphaHandling.Opaque` default.
+    #[test]
+    fn render_queue_opaque_range_disables_all_alpha_keywords() {
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+        let render_queue_pid = reg.intern("_RenderQueue");
+        store.set_material(21, render_queue_pid, MaterialPropertyValue::Float(2000.0));
+
+        for field_name in [
+            "_ALPHATEST_ON",
+            "_ALPHATEST",
+            "_ALPHACLIP",
+            "_ALPHABLEND_ON",
+            "_ALPHAPREMULTIPLY_ON",
+        ] {
+            assert_eq!(
+                inferred_keyword_float_f32(field_name, &store, lookup(21), &ids),
+                Some(0.0),
+                "{field_name} should be disabled for queue 2000 (Opaque range)"
+            );
+        }
+    }
+
+    /// Queue 3000 (Transparent) without premultiplied blend factors enables `_ALPHABLEND_ON`.
+    #[test]
+    fn render_queue_transparent_range_enables_alpha_blend() {
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+        let render_queue_pid = reg.intern("_RenderQueue");
+        store.set_material(22, render_queue_pid, MaterialPropertyValue::Float(3000.0));
+
+        assert_eq!(
+            inferred_keyword_float_f32("_ALPHABLEND_ON", &store, lookup(22), &ids),
+            Some(1.0)
+        );
+        assert_eq!(
+            inferred_keyword_float_f32("_ALPHAPREMULTIPLY_ON", &store, lookup(22), &ids),
+            Some(0.0)
+        );
+        assert_eq!(
+            inferred_keyword_float_f32("_ALPHATEST_ON", &store, lookup(22), &ids),
+            Some(0.0)
+        );
+    }
+
+    /// Queue 3000 (Transparent) with premultiplied factors `_SrcBlend = 1`,
+    /// `_DstBlend = 10` is `BlendMode.Transparent` — enables `_ALPHAPREMULTIPLY_ON`.
+    #[test]
+    fn render_queue_transparent_with_premultiplied_factors_infers_premultiply() {
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+        let render_queue_pid = reg.intern("_RenderQueue");
+        let src_blend_pid = reg.intern("_SrcBlend");
+        let dst_blend_pid = reg.intern("_DstBlend");
+        store.set_material(23, render_queue_pid, MaterialPropertyValue::Float(3000.0));
+        store.set_material(23, src_blend_pid, MaterialPropertyValue::Float(1.0));
+        store.set_material(23, dst_blend_pid, MaterialPropertyValue::Float(10.0));
+
+        assert_eq!(
+            inferred_keyword_float_f32("_ALPHAPREMULTIPLY_ON", &store, lookup(23), &ids),
+            Some(1.0)
+        );
+        assert_eq!(
+            inferred_keyword_float_f32("_ALPHABLEND_ON", &store, lookup(23), &ids),
+            Some(0.0)
+        );
+    }
+
     #[test]
     fn inferred_pbs_keyword_enables_from_texture_presence() {
         let mut store = MaterialPropertyStore::new();
