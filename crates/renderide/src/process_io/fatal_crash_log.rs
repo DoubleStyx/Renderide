@@ -27,6 +27,13 @@
 //! signal-info line alone — the Mach exception callback runs on a dedicated thread, so a plain
 //! `trace` walks the wrong stack; proper macOS support requires unwinding from
 //! `thread_get_state` and is tracked as follow-up work.
+//!
+//! **Linux alt signal stack:** libstd's per-thread altstack (~8 KB) is too small for the
+//! gimli DWARF parser inside [`backtrace::resolve`] — a fatal-signal handler running on it
+//! aborts Phase 2 partway through with no diagnostic. [`ensure_alt_signal_stack`] installs a
+//! 512 KB altstack on the main thread before [`crash_handler::CrashHandler::attach`] so
+//! Phase 2 has room to complete. Crashes on worker threads still use libstd's small altstack
+//! and may lose Phase 2 silently; Phase 1 (hex IPs) remains durable on every thread.
 
 use core::ffi::c_void;
 use std::path::Path;
@@ -57,6 +64,22 @@ const HEX_BUF_LEN: usize = 2048;
 /// the process is about to terminate.
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 static CRASH_REENTRY: AtomicBool = AtomicBool::new(false);
+
+/// Size of the alternate signal stack installed for the main thread before attaching the
+/// crash handler.
+///
+/// libstd installs a small per-thread alt signal stack (~`SIGSTKSZ`, typically 8 KB) for
+/// stack-overflow detection. `crash-handler` reuses whatever altstack is in place, but the
+/// gimli DWARF parser inside [`backtrace::resolve`] consumes more than that and would
+/// silently abort Phase 2 partway through. 512 KB is well above the resolver's worst case
+/// while staying small enough that the leaked allocation is negligible.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const ALT_SIGNAL_STACK_SIZE: usize = 512 * 1024;
+
+/// One-shot flag tracking whether [`ensure_alt_signal_stack`] has installed its larger
+/// altstack on the calling thread (the main thread, in normal startup).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+static ALT_STACK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Global state for raw [`libc::write`] targets (log file + optional terminal duplicate).
 #[cfg(unix)]
@@ -111,6 +134,13 @@ fn install_impl(log_path: &Path) -> Result<(), String> {
     UNIX_CRASH_FDS
         .set(UnixCrashFds { log_fd, term_fd })
         .map_err(|_e| "fatal crash log fds already installed".to_string())?;
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if let Err(e) = ensure_alt_signal_stack() {
+        logger::warn!(
+            "failed to install enlarged alt signal stack ({e}); fatal-crash symbolication may abort partway"
+        );
+    }
 
     // SAFETY: `CrashHandler::attach` installs a process-wide signal handler; the closure only
     // calls async-signal-safe operations (`libc::write`, `__errno_location`) and touches global
@@ -212,6 +242,42 @@ unsafe fn errno_value() -> libc::c_int {
     unsafe {
         *libc::__errno_location()
     }
+}
+
+/// Installs a [`ALT_SIGNAL_STACK_SIZE`]-byte alternate signal stack on the calling thread,
+/// replacing libstd's smaller default so [`backtrace::resolve`] has room to run inside the
+/// crash handler without silently aborting Phase 2.
+///
+/// Idempotent: subsequent calls are no-ops once the flag is set. The stack memory is leaked
+/// for the process lifetime — freeing it would invite use-after-free from the next signal.
+/// Affects only the thread that invokes this; worker threads keep libstd's default altstack
+/// and may lose Phase 2 if they crash, but Phase 1 (hex IPs) remains durable everywhere.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn ensure_alt_signal_stack() -> Result<(), String> {
+    if ALT_STACK_INSTALLED.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+    let buf = vec![0u8; ALT_SIGNAL_STACK_SIZE].into_boxed_slice();
+    let stack_ptr = Box::leak(buf).as_mut_ptr();
+
+    // SAFETY: `stack_t` is a plain integer/pointer aggregate; all-zero is a valid bit pattern.
+    let mut ss: libc::stack_t = unsafe { core::mem::zeroed() };
+    ss.ss_sp = stack_ptr.cast();
+    ss.ss_size = ALT_SIGNAL_STACK_SIZE;
+    ss.ss_flags = 0;
+
+    // SAFETY: `ss` is fully initialized above with a pointer/length to a leaked
+    // `Box<[u8]>` that lives for the process lifetime. Passing null for `oss` discards the
+    // previous altstack pointer — the previous backing memory leaks, but it was libstd's
+    // own per-thread allocation and dropping our reference to it does not invalidate it.
+    let rc = unsafe { libc::sigaltstack(&ss, core::ptr::null_mut()) };
+    if rc != 0 {
+        // Reset the flag so a future caller could retry, though in practice this never
+        // happens — if `sigaltstack` rejected our parameters once it will reject them again.
+        ALT_STACK_INSTALLED.store(false, Ordering::Release);
+        return Err(format!("sigaltstack failed (rc={rc})"));
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
