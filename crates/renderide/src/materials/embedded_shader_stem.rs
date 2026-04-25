@@ -403,4 +403,68 @@ mod tests {
             Some("pbsmultiuvspecular_default")
         );
     }
+
+    #[test]
+    fn resolves_pbsrimspecular_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSRimSpecular").as_deref(),
+            Some("pbsrimspecular_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbsrimtransparentspecular_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSRimTransparentSpecular").as_deref(),
+            Some("pbsrimtransparentspecular_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbsrimtransparentzwritespecular_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSRimTransparentZWriteSpecular").as_deref(),
+            Some("pbsrimtransparentzwritespecular_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbsslicespecular_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSSliceSpecular").as_deref(),
+            Some("pbsslicespecular_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbsslicetransparent_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSSliceTransparent").as_deref(),
+            Some("pbsslicetransparent_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbsslicetransparentspecular_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSSliceTransparentSpecular").as_deref(),
+            Some("pbsslicetransparentspecular_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbstriplanartransparent_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSTriplanarTransparent").as_deref(),
+            Some("pbstriplanartransparent_default")
+        );
+    }
+
+    #[test]
+    fn resolves_pbstriplanartransparentspecular_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("PBSTriplanarTransparentSpecular").as_deref(),
+            Some("pbstriplanartransparentspecular_default")
+        );
+    }
 }
