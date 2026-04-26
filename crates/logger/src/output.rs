@@ -83,6 +83,7 @@ pub fn init_with_mirror(
         max_level: AtomicU8::new(level_to_tag(max_level)),
     };
     let _ = LOGGER.set(logger);
+    crate::log_adapter::install(max_level);
     Ok(())
 }
 
@@ -97,6 +98,7 @@ pub fn set_max_level(level: LogLevel) {
     logger
         .max_level
         .store(level_to_tag(level), Ordering::Relaxed);
+    crate::log_adapter::set_log_crate_max_level(level);
 }
 
 /// Returns the effective max level from `logger`'s atomic tag.

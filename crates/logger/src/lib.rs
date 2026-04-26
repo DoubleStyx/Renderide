@@ -36,6 +36,7 @@
 //! logger’s internal mutex (for example inside a log macro), or you risk deadlock.
 
 mod level;
+mod log_adapter;
 mod output;
 mod panic;
 mod paths;

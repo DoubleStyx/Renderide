@@ -62,12 +62,12 @@ fn linux_graphical_session_available() -> bool {
 /// Removes `DISPLAY` and `WAYLAND_DISPLAY` from the process environment when they are set
 /// to an empty string, on Linux.
 ///
-/// `WAYLAND_DISPLAY=""` is sometimes used as a folk idiom for "force X11", but GTK3/GTK4
-/// (which `rfd`'s zenity backend uses) treats the variable as *present* and tries to open a
-/// Wayland display with an empty name; the connection fails and GTK does not transparently
-/// fall back to X11. Stripping empty-valued display variables makes the env match the
-/// "unset" case, so downstream GUI subprocesses (zenity, kdialog, winit, OpenXR) inherit a
-/// clean environment and select an actually-working backend.
+/// `WAYLAND_DISPLAY=""` is sometimes used as a folk idiom for "force X11", but GTK3
+/// (which `rfd` uses on Linux) treats the variable as *present* and tries to open a Wayland
+/// display with an empty name; the connection fails and GTK does not transparently fall back
+/// to X11. Stripping empty-valued display variables makes the env match the "unset" case, so
+/// downstream GUI consumers (the in-process GTK3 dialog, plus winit and OpenXR later in the
+/// renderer) inherit a clean environment and select an actually-working backend.
 ///
 /// No-op on non-Linux targets.
 pub fn sanitize_linux_display_env() {

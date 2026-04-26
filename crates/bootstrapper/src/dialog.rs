@@ -11,10 +11,12 @@
 //!
 //! ## Hang protection on Linux
 //!
-//! `rfd::MessageDialog::show()` uses a GTK3 or XDG portal backend on Linux and can block
-//! indefinitely when the backend cannot surface a window (headless shell, missing GTK runtime,
-//! broken portal). [`prompt_desktop_or_vr`] emits one log line before and after the blocking
-//! `show()` call, and a watchdog thread aborts the process with an actionable error (pointing at
+//! `rfd::MessageDialog::show()` uses an in-process GTK3 backend on Linux (the bootstrapper
+//! enables `rfd`'s `gtk3` feature and disables defaults to keep the older `xdg-portal` /
+//! zenity-subprocess path out of the build) and can still block when GTK cannot surface a window
+//! — headless shell, missing GTK3 runtime, or a display server that does not respond.
+//! [`prompt_desktop_or_vr`] emits one log line before and after the blocking `show()` call, and
+//! a watchdog thread aborts the process with an actionable error (pointing at
 //! [`bootstrapper::vr_prompt::ENV_SKIP_VR_DIALOG`]) if the dialog does not return within
 //! [`DIALOG_WATCHDOG_TIMEOUT`].
 
@@ -97,7 +99,7 @@ fn spawn_dialog_watchdog(completed: Arc<AtomicBool>) {
             }
             logger::error!(
                 "Desktop/VR dialog did not return within {secs}s. \
-                 The rfd GTK/XDG portal backend appears to be hung. \
+                 The rfd GTK3 backend appears to be hung. \
                  Set {ENV_SKIP_VR_DIALOG}=1 (or pass -Screen / -Device SteamVR) to bypass the dialog.",
                 secs = DIALOG_WATCHDOG_TIMEOUT.as_secs(),
             );
