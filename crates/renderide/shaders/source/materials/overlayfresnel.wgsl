@@ -9,6 +9,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::uv_utils as uvu
 #import renderide::normal_decode as nd
 
@@ -91,7 +92,7 @@ fn overlay_normal(in: VertexOutput) -> vec3<f32> {
     var n = normalize(in.world_n);
     if (mat._NORMALMAP > 0.5) {
         let uv_n = vec2<f32>(in.uv.x, 1.0 - in.uv.y);
-        let tbn = brdf::orthonormal_tbn(n);
+        let tbn = pnorm::orthonormal_tbn(n);
         let ts_n = nd::decode_ts_normal(textureSample(_NormalMap, _NormalMap_sampler, uv_n).xyz, 1.0);
         n = normalize(tbn * ts_n);
     }

@@ -102,8 +102,18 @@ pub struct HostCameraFrame {
     /// Explicit camera world position for `@group(0)` camera uniforms.
     ///
     /// Set on views that carry an explicit camera pose (currently secondary render-texture
-    /// cameras). When [`None`], callers fall back to `head_output_transform.col(3).truncate()`.
+    /// cameras). When [`None`], callers fall back to [`Self::eye_world_position`] and only
+    /// finally to `head_output_transform.col(3).truncate()`.
     pub explicit_camera_world_position: Option<Vec3>,
+    /// Eye/camera world position derived from the active main render space's `view_transform`.
+    ///
+    /// `head_output_transform` is the render-space *root* (often the world or play-area anchor),
+    /// which differs from the eye whenever the host sets `override_view_position`. Populated each
+    /// `frame_submit` for desktop and overwritten by the OpenXR head pose for VR. PBS shaders read
+    /// this through the `frame.camera_world_pos` uniform; using the root translation made
+    /// `v = normalize(cam - world_pos)` point at the space root, biasing every specular highlight
+    /// toward "the player's feet."
+    pub eye_world_position: Option<Vec3>,
     /// Skips Hi-Z temporal state and uses uncull or frustum-only paths for this view.
     pub suppress_occlusion_temporal: bool,
 }
@@ -124,6 +134,7 @@ impl Default for HostCameraFrame {
             cluster_view_override: None,
             cluster_proj_override: None,
             explicit_camera_world_position: None,
+            eye_world_position: None,
             suppress_occlusion_temporal: false,
         }
     }

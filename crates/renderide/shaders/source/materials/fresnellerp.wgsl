@@ -8,6 +8,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::uv_utils as uvu
 #import renderide::normal_decode as nd
 
@@ -113,7 +114,7 @@ fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, l: f32) -> vec3<f32> {
         let n0 = textureSample(_NormalMap0, _NormalMap0_sampler, uvu::apply_st(uv, mat._NormalMap0_ST)).xyz;
         let n1 = textureSample(_NormalMap1, _NormalMap1_sampler, uvu::apply_st(uv, mat._NormalMap1_ST)).xyz;
         let ts_n = nd::decode_ts_normal_with_placeholder(mix(n0, n1, vec3<f32>(l)), 1.0);
-        let tbn = brdf::orthonormal_tbn(n);
+        let tbn = pnorm::orthonormal_tbn(n);
         n = normalize(tbn * ts_n);
     }
     return n;

@@ -10,6 +10,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::cluster as pcls
 #import renderide::uv_utils as uvu
 
@@ -125,7 +126,7 @@ fn sample_normal_world(uv_albedo: vec2<f32>, world_n: vec3<f32>, weights: vec4<f
     let n2 = unpack_normal_xy(n23.xy, mat._NormalScale2);
     let n3 = unpack_normal_xy(n23.zw, mat._NormalScale3);
     let blended = n0 * weights.x + n1 * weights.y + n2 * weights.z + n3 * weights.w;
-    let tbn = brdf::orthonormal_tbn(n);
+    let tbn = pnorm::orthonormal_tbn(n);
     return normalize(tbn * normalize(blended));
 }
 

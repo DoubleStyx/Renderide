@@ -16,6 +16,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::cluster as pcls
 #import renderide::alpha_clip_sample as acs
 #import renderide::uv_utils as uvu
@@ -88,7 +89,7 @@ fn sample_normal_world(
     world_n: vec3<f32>,
     detail_mask: f32,
 ) -> vec3<f32> {
-    let tbn = brdf::orthonormal_tbn(world_n);
+    let tbn = pnorm::orthonormal_tbn(world_n);
     var ts_n = nd::decode_ts_normal_with_placeholder_sample(
         textureSample(_BumpMap, _BumpMap_sampler, uv_main),
         mat._BumpScale,

@@ -184,11 +184,16 @@ impl PreparedView<'_> {
         }
     }
 
-    /// Back-to-front sort origin for transparent draws; falls back to the head-output translation
-    /// when no explicit camera position was supplied by the host.
+    /// Back-to-front sort origin for transparent draws.
+    ///
+    /// Preference order matches the world-mesh forward path: explicit camera world position
+    /// (secondary RT cameras) → main-space eye position → head-output translation as a last-ditch
+    /// fallback. Sorting from the render-space *root* instead of the eye produced visually wrong
+    /// transparency ordering whenever the host enabled `override_view_position`.
     fn view_origin_world(&self) -> glam::Vec3 {
         self.host_camera
             .explicit_camera_world_position
+            .or(self.host_camera.eye_world_position)
             .unwrap_or_else(|| self.host_camera.head_output_transform.col(3).truncate())
     }
 }
@@ -736,5 +741,26 @@ mod tests {
         assert_eq!(view.view_origin_world(), glam::Vec3::new(1.0, 2.0, 3.0));
         view.host_camera.explicit_camera_world_position = Some(glam::Vec3::new(7.0, 8.0, 9.0));
         assert_eq!(view.view_origin_world(), glam::Vec3::new(7.0, 8.0, 9.0));
+    }
+
+    #[test]
+    fn prepared_view_helpers_prefer_eye_world_position_over_head_output() {
+        let runtime = build_runtime();
+        let mut view = runtime.build_main_swapchain_view(TEST_EXTENT);
+        view.host_camera.head_output_transform =
+            glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 0.0));
+        view.host_camera.eye_world_position = Some(glam::Vec3::new(4.0, 5.0, 6.0));
+        assert_eq!(
+            view.view_origin_world(),
+            glam::Vec3::new(4.0, 5.0, 6.0),
+            "eye_world_position must override the head-output (render-space root) translation \
+             so PBS view-direction math sees the eye, not the floor anchor"
+        );
+        view.host_camera.explicit_camera_world_position = Some(glam::Vec3::new(7.0, 8.0, 9.0));
+        assert_eq!(
+            view.view_origin_world(),
+            glam::Vec3::new(7.0, 8.0, 9.0),
+            "explicit_camera_world_position still wins over eye_world_position"
+        );
     }
 }

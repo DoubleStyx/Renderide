@@ -10,6 +10,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::cluster as pcls
 #import renderide::alpha_clip_sample as acs
 #import renderide::uv_utils as uvu
@@ -138,7 +139,7 @@ fn sample_normal_world(
         return n;
     }
 
-    let tbn = brdf::orthonormal_tbn(n);
+    let tbn = pnorm::orthonormal_tbn(n);
     var ts_n = nd::decode_ts_normal_with_placeholder_sample(
         ts::sample_tex_2d(_BumpMap, _BumpMap_sampler, uv_main, mat._BumpMap_LodBias),
         mat._BumpScale,
@@ -256,7 +257,7 @@ fn clustered_direct_lighting(
                 f0,
             );
         } else {
-            lo = lo + brdf::diffuse_only_metallic(light, world_pos, s.normal, s.base_color);
+            lo = lo + brdf::diffuse_only_metallic(light, world_pos, s.normal, s.base_color, s.metallic);
         }
     }
 

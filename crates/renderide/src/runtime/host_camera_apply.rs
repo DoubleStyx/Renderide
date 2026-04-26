@@ -3,7 +3,7 @@
 //! OpenXR integration must use [`crate::xr::XrHostCameraSync`] for stereo / head-output writes so
 //! stereo clearing when `!vr_active` stays consistent with [`apply_frame_submit_fields`].
 
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 
 use crate::render_graph::HostCameraFrame;
 use crate::scene::SceneCoordinator;
@@ -36,4 +36,16 @@ pub(crate) fn head_output_from_active_main_space(scene: &SceneCoordinator) -> Ma
         .active_main_space()
         .map(|space| crate::scene::render_transform_to_matrix(&space.root_transform))
         .unwrap_or(Mat4::IDENTITY)
+}
+
+/// Eye/camera world position derived from the active main render space's resolved view transform.
+///
+/// Distinct from [`head_output_from_active_main_space`] — that returns the space *root* (used for
+/// overlay positioning), this returns the *eye* (used for shader view-direction math). When the
+/// host enables `override_view_position`, the two diverge: root stays at the world/play-area
+/// anchor while the eye moves with the camera. Returns [`None`] when no main space is active.
+pub(crate) fn eye_world_position_from_active_main_space(scene: &SceneCoordinator) -> Option<Vec3> {
+    scene
+        .active_main_space()
+        .map(|space| space.view_transform.position)
 }

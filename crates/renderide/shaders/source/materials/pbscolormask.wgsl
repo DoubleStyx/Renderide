@@ -12,6 +12,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::cluster as pcls
 #import renderide::uv_utils as uvu
 #import renderide::normal_decode as nd
@@ -92,7 +93,7 @@ struct SurfaceData {
 
 /// Sample the normal map (when enabled) and transform the tangent-space normal to world space.
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
-    let tbn = brdf::orthonormal_tbn(normalize(world_n));
+    let tbn = pnorm::orthonormal_tbn(normalize(world_n));
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         ts_n = nd::decode_ts_normal_with_placeholder(

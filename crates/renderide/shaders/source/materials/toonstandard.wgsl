@@ -11,6 +11,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::cluster as pcls
 #import renderide::uv_utils as uvu
 #import renderide::normal_decode as nd
@@ -53,7 +54,7 @@ struct VertexOutput {
 
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
     let n = normalize(world_n);
-    let tbn = brdf::orthonormal_tbn(n);
+    let tbn = pnorm::orthonormal_tbn(n);
     let ts_n = nd::decode_ts_normal_with_placeholder(
         textureSample(_BumpMap, _BumpMap_sampler, uv_main).xyz,
         mat._BumpScale,

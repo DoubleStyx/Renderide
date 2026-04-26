@@ -48,6 +48,11 @@ impl crate::xr::XrHostCameraSync for RendererRuntime {
 
     fn set_head_output_transform(&mut self, transform: Mat4) {
         self.host_camera.head_output_transform = transform;
+        // In VR the head pose is also the eye pose (per-eye offsets are applied via stereo
+        // view matrices, not the camera_world_pos uniform). Mirror the translation into
+        // `eye_world_position` so PBS shaders see the actual eye for view-direction math
+        // instead of the desktop-only render-space root.
+        self.host_camera.eye_world_position = Some(transform.col(3).truncate());
     }
 
     fn set_stereo(&mut self, stereo: Option<StereoViewMatrices>) {

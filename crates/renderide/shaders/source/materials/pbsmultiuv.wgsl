@@ -15,6 +15,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::cluster as pcls
 #import renderide::alpha_clip_sample as acs
 #import renderide::uv_utils as uvu
@@ -126,7 +127,7 @@ fn pick_uv(uv0: vec2<f32>, uv1: vec2<f32>, idx: f32) -> vec2<f32> {
 
 /// Sample the normal map (when enabled) using its own UV channel + `_ST`, and place into world space.
 fn sample_normal_world(uv0: vec2<f32>, uv1: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
-    let tbn = brdf::orthonormal_tbn(normalize(world_n));
+    let tbn = pnorm::orthonormal_tbn(normalize(world_n));
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         let uv_n = uvu::apply_st(pick_uv(uv0, uv1, mat._NormalUV), mat._NormalMap_ST);

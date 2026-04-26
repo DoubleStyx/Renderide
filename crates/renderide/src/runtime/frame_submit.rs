@@ -37,6 +37,8 @@ pub(crate) fn process_frame_submit(runtime: &mut RendererRuntime, data: FrameSub
     }
     runtime.host_camera.head_output_transform =
         host_camera_apply::head_output_from_active_main_space(&runtime.scene);
+    runtime.host_camera.eye_world_position =
+        host_camera_apply::eye_world_position_from_active_main_space(&runtime.scene);
 
     logger::trace!(
         "frame_submit frame_index={} near_clip={} far_clip={} desktop_fov_deg={} vr_active={} scene_apply_ms={:.3}",

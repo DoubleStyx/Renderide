@@ -55,6 +55,21 @@ use super::vp::compute_per_draw_vp_triple;
 /// Minimum draws before parallelizing per-draw VP / model uniform packing (rayon overhead).
 const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = 256;
 
+/// Selects the camera world-space position fed into `frame.camera_world_pos` for shader view-direction math.
+///
+/// Preference order:
+/// 1. `explicit_camera_world_position` — secondary RT cameras carry their own pose.
+/// 2. `eye_world_position` — main-space eye derived from the active render space's `view_transform`.
+/// 3. `head_output_transform.col(3)` — last-ditch fallback (the render-space *root*, used by overlay
+///    positioning) for any path that has not yet propagated the eye position. Using this as the
+///    camera caused PBS specular highlights to converge at the space root (typically "the player's
+///    feet") because every fragment's `v = normalize(cam - world_pos)` then pointed at the root.
+pub(super) fn resolve_camera_world(hc: &HostCameraFrame) -> glam::Vec3 {
+    hc.explicit_camera_world_position
+        .or(hc.eye_world_position)
+        .unwrap_or_else(|| hc.head_output_transform.col(3).truncate())
+}
+
 /// Resolves multiview use, [`MaterialPipelineDesc`], and [`ShaderPermutation`].
 #[expect(
     clippy::large_types_passed_by_value,
@@ -129,9 +144,7 @@ pub(super) fn take_or_collect_world_mesh_draws<'a>(
         shader_perm,
         render_context,
         head_output_transform: hc.head_output_transform,
-        view_origin_world: hc
-            .explicit_camera_world_position
-            .unwrap_or_else(|| hc.head_output_transform.col(3).truncate()),
+        view_origin_world: resolve_camera_world(&hc),
         culling,
         transform_filter: frame.view.transform_draw_filter.as_ref(),
         material_cache: None,
@@ -371,9 +384,7 @@ pub(super) fn write_frame_uniforms_and_cluster(
 ) {
     let (vw, vh) = viewport_px;
     let light_count_u = frame_resources.frame_light_count_u32();
-    let camera_world = hc
-        .explicit_camera_world_position
-        .unwrap_or_else(|| hc.head_output_transform.col(3).truncate());
+    let camera_world = resolve_camera_world(&hc);
 
     let stereo_cluster = use_multiview && hc.vr_active && hc.stereo.is_some();
     let frame_idx = hc.frame_index as u32;
@@ -777,9 +788,7 @@ fn build_per_view_frame_gpu_uniforms(
     use bytemuck::Zeroable;
     let (vw, vh) = frame.view.viewport_px;
     let light_count = frame.shared.frame_resources.frame_light_count_u32();
-    let camera_world = hc
-        .explicit_camera_world_position
-        .unwrap_or_else(|| hc.head_output_transform.col(3).truncate());
+    let camera_world = resolve_camera_world(&hc);
     let stereo_cluster = use_multiview && hc.vr_active && hc.stereo.is_some();
     let frame_idx = hc.frame_index as u32;
     if stereo_cluster {

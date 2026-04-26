@@ -9,6 +9,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::cluster as pcls
 #import renderide::uv_utils as uvu
 #import renderide::normal_decode as nd
@@ -104,7 +105,7 @@ fn sample_normal_world(
     var n = normalize(world_n);
     let use_normal_map = uvu::kw_enabled(mat._NORMALMAP) || uvu::kw_enabled(mat._DETAIL_NORMALMAP);
     if (use_normal_map) {
-        let tbn = brdf::orthonormal_tbn(n);
+        let tbn = pnorm::orthonormal_tbn(n);
         var ts = nd::decode_ts_normal_with_placeholder(
             textureSample(_NormalMap, _NormalMap_sampler, uv_main).xyz,
             mat._NormalScale,

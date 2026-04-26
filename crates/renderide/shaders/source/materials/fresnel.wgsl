@@ -7,6 +7,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::alpha_clip_sample as acs
 #import renderide::uv_utils as uvu
 #import renderide::normal_decode as nd
@@ -97,7 +98,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var n = normalize(in.world_n);
     if (mat._NORMALMAP > 0.99) {
         let uv_n = vec2<f32>(in.uv.x, 1.0 - in.uv.y);
-        let tbn = brdf::orthonormal_tbn(n);
+        let tbn = pnorm::orthonormal_tbn(n);
         let ts_n = nd::decode_ts_normal_with_placeholder_sample(
             textureSample(_NormalMap, _NormalMap_sampler, uv_n),
             mat._NormalScale,

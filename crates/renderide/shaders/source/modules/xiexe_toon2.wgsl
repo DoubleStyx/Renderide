@@ -10,6 +10,7 @@
 #import renderide::per_draw as pd
 #import renderide::pbs::cluster as pcls
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::normal_decode as nd
 #import renderide::uv_utils as uvu
 #import renderide::alpha_clip_sample as acs
@@ -295,11 +296,11 @@ fn tangent_frame(world_n: vec3<f32>, world_tangent: vec4<f32>) -> mat3x3<f32> {
     let n = safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0));
     let t_raw = world_tangent.xyz - n * dot(world_tangent.xyz, n);
     if (dot(t_raw, t_raw) <= 1e-10) {
-        return brdf::orthonormal_tbn(n);
+        return pnorm::orthonormal_tbn(n);
     }
     let t = normalize(t_raw);
     let sign = select(1.0, -1.0, world_tangent.w < 0.0);
-    let b = safe_normalize(cross(n, t) * sign, brdf::orthonormal_tbn(n)[1]);
+    let b = safe_normalize(cross(n, t) * sign, pnorm::orthonormal_tbn(n)[1]);
     return mat3x3<f32>(t, b, n);
 }
 
@@ -365,8 +366,8 @@ fn decode_normal_world(
     front_facing: bool,
 ) -> mat3x3<f32> {
     var n = safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0));
-    var t = safe_normalize(world_t, brdf::orthonormal_tbn(n)[0]);
-    var b = safe_normalize(world_b, brdf::orthonormal_tbn(n)[1]);
+    var t = safe_normalize(world_t, pnorm::orthonormal_tbn(n)[0]);
+    var b = safe_normalize(world_b, pnorm::orthonormal_tbn(n)[1]);
 
     if (!front_facing) {
         n = -n;

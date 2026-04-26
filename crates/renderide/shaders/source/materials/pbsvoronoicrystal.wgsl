@@ -12,6 +12,7 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::cluster as pcls
 #import renderide::uv_utils as uvu
 #import renderide::normal_decode as nd
@@ -157,7 +158,7 @@ fn shade(
         mat._NormalStrength,
     );
     let n_blend_ts = mix(edge_normal_ts, cell_normal_ts, border_lerp);
-    let tbn = brdf::orthonormal_tbn(normalize(world_n));
+    let tbn = pnorm::orthonormal_tbn(normalize(world_n));
     let n = normalize(tbn * n_blend_ts);
 
     let cell_color = textureSample(_ColorGradient, _ColorGradient_sampler, cell_offset).rgb * mat._ColorTint.rgb;

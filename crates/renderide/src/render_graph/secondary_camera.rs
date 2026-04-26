@@ -74,6 +74,7 @@ pub fn host_camera_frame_for_render_texture(
         cluster_view_override: Some(world_to_view),
         cluster_proj_override: Some(world_proj),
         explicit_camera_world_position: Some(camera_world),
+        eye_world_position: base.eye_world_position,
         suppress_occlusion_temporal: false,
     }
 }
