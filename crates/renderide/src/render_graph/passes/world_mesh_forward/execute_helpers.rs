@@ -276,14 +276,12 @@ pub(super) fn pack_and_upload_per_draw_slab(
         return false;
     };
 
-    // Step 1: ensure per-view buffer capacity.
     {
         profiling::scope!("world_mesh::ensure_slot_capacity");
         let mut per_draw = per_draw_slot.lock();
         per_draw.ensure_draw_slot_capacity(device, draws.len());
     }
 
-    // Step 2: pack VP uniforms and serialise to byte slab.
     {
         let mut scratch = scratch_slot.lock();
         let (uniforms, slab) = {
@@ -293,45 +291,15 @@ pub(super) fn pack_and_upload_per_draw_slab(
         uniforms.clear();
         uniforms.resize_with(draws.len(), PaddedPerDrawUniforms::zeroed);
 
-        {
-            profiling::scope!("world_mesh::pack_vp_matrices");
-            if draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS {
-                uniforms
-                    .par_iter_mut()
-                    .zip(draws.par_iter())
-                    .for_each(|(slot, item)| {
-                        let (vp_l, vp_r, model) = compute_per_draw_vp_triple(
-                            scene,
-                            item,
-                            hc,
-                            render_context,
-                            world_proj,
-                            overlay_proj,
-                        );
-                        *slot = if vp_l == vp_r {
-                            PaddedPerDrawUniforms::new_single(vp_l, model)
-                        } else {
-                            PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
-                        };
-                    });
-            } else {
-                for (slot, item) in uniforms.iter_mut().zip(draws.iter()) {
-                    let (vp_l, vp_r, model) = compute_per_draw_vp_triple(
-                        scene,
-                        item,
-                        hc,
-                        render_context,
-                        world_proj,
-                        overlay_proj,
-                    );
-                    *slot = if vp_l == vp_r {
-                        PaddedPerDrawUniforms::new_single(vp_l, model)
-                    } else {
-                        PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
-                    };
-                }
-            }
-        }
+        pack_per_draw_vp_uniforms(
+            uniforms,
+            draws,
+            scene,
+            hc,
+            render_context,
+            world_proj,
+            overlay_proj,
+        );
 
         {
             profiling::scope!("world_mesh::serialise_slab");
@@ -346,6 +314,46 @@ pub(super) fn pack_and_upload_per_draw_slab(
         }
     }
     true
+}
+
+/// Fills `uniforms` (already sized to `draws.len()`) with packed VP + model matrices for each draw.
+///
+/// Switches to rayon when `draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS`; otherwise stays on the
+/// caller thread. Each slot is written as either a single-VP or stereo-VP variant depending on
+/// whether `compute_per_draw_vp_triple` returns identical left/right matrices.
+#[expect(
+    clippy::large_types_passed_by_value,
+    reason = "`HostCameraFrame` is Copy and threaded through the per-view frame path by value by design"
+)]
+fn pack_per_draw_vp_uniforms(
+    uniforms: &mut [PaddedPerDrawUniforms],
+    draws: &[WorldMeshDrawItem],
+    scene: &SceneCoordinator,
+    hc: HostCameraFrame,
+    render_context: RenderingContext,
+    world_proj: Mat4,
+    overlay_proj: Option<Mat4>,
+) {
+    profiling::scope!("world_mesh::pack_vp_matrices");
+    let pack_one = |slot: &mut PaddedPerDrawUniforms, item: &WorldMeshDrawItem| {
+        let (vp_l, vp_r, model) =
+            compute_per_draw_vp_triple(scene, item, hc, render_context, world_proj, overlay_proj);
+        *slot = if vp_l == vp_r {
+            PaddedPerDrawUniforms::new_single(vp_l, model)
+        } else {
+            PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
+        };
+    };
+    if draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS {
+        uniforms
+            .par_iter_mut()
+            .zip(draws.par_iter())
+            .for_each(|(slot, item)| pack_one(slot, item));
+    } else {
+        for (slot, item) in uniforms.iter_mut().zip(draws.iter()) {
+            pack_one(slot, item);
+        }
+    }
 }
 
 /// Builds [`FrameGpuUniforms`], syncs cluster viewport, and writes frame + lights.
@@ -425,8 +433,41 @@ pub(super) fn precompute_material_resolve_batches(
         return Vec::new();
     }
 
-    // Phase 1: collect batch boundaries (serial, O(draws)).
-    let mut boundaries: Vec<(usize, usize)> = Vec::new(); // (first_idx, last_idx) into draws
+    let boundaries = collect_material_batch_boundaries(draws);
+
+    // Borrow the pieces that rayon workers will share (`&` = Sync).
+    let registry = encode.materials.material_registry();
+    let embedded_bind = encode.materials.embedded_material_bind();
+    let store = encode.materials.material_property_store();
+    let pools = encode.embedded_texture_pools();
+
+    boundaries
+        .into_par_iter()
+        .map(|(first, last)| {
+            resolve_one_material_batch(
+                draws,
+                first,
+                last,
+                registry,
+                embedded_bind,
+                store,
+                &pools,
+                queue,
+                shader_perm,
+                pass_desc,
+                offscreen_write_render_texture_asset_id,
+            )
+        })
+        .collect()
+}
+
+/// Walks `draws` once and emits `(first_idx, last_idx)` runs of identical [`MaterialDrawBatchKey`].
+///
+/// `draws` is assumed pre-sorted by batch key (the world-mesh draw collector guarantees this), so
+/// each adjacent-equal run is one material batch. Returns at least one boundary when `draws` is
+/// non-empty; callers handle the empty case before calling.
+fn collect_material_batch_boundaries(draws: &[WorldMeshDrawItem]) -> Vec<(usize, usize)> {
+    let mut boundaries: Vec<(usize, usize)> = Vec::new();
     let mut current_start = 0usize;
     let mut last_key = &draws[0].batch_key;
     for (idx, item) in draws.iter().enumerate().skip(1) {
@@ -437,90 +478,100 @@ pub(super) fn precompute_material_resolve_batches(
         }
     }
     boundaries.push((current_start, draws.len() - 1));
-
-    // Borrow the pieces that rayon workers will share (`&` = Sync).
-    let registry = encode.materials.material_registry();
-    let embedded_bind = encode.materials.embedded_material_bind();
-    let store = encode.materials.material_property_store();
-    let pools = encode.embedded_texture_pools();
-
-    // Phase 2: resolve pipelines + bind groups in parallel.
     boundaries
-        .into_par_iter()
-        .map(|(first, last)| {
-            let item = &draws[first];
-            let batch_key = &item.batch_key;
+}
 
-            // Pipeline + declared-pass resolution.
-            let (pipelines, declared_passes) = if let Some(reg) = registry {
-                let pipes = reg.pipeline_for_shader_asset(
-                    batch_key.shader_asset_id,
-                    pass_desc,
-                    shader_perm,
-                    batch_key.blend_mode,
-                    batch_key.render_state,
+/// Resolves the pipeline set, declared passes, and `@group(1)` bind group for one material batch.
+///
+/// Called from a rayon worker once per `(first_idx, last_idx)` boundary returned by
+/// [`collect_material_batch_boundaries`]. All borrowed parameters are `Sync`; the cache locks
+/// inside `embedded_material_bind_group_with_cache_key` keep concurrent hits cheap.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "all args are owned by the parallel closure body extracted from precompute_material_resolve_batches"
+)]
+fn resolve_one_material_batch<'a>(
+    draws: &[WorldMeshDrawItem],
+    first: usize,
+    last: usize,
+    registry: Option<&crate::materials::MaterialRegistry>,
+    embedded_bind: Option<&crate::backend::EmbeddedMaterialBindResources>,
+    store: &crate::assets::material::MaterialPropertyStore,
+    pools: &crate::backend::EmbeddedTexturePools<'a>,
+    queue: &wgpu::Queue,
+    shader_perm: ShaderPermutation,
+    pass_desc: &MaterialPipelineDesc,
+    offscreen_write_render_texture_asset_id: Option<i32>,
+) -> PrecomputedMaterialBind {
+    let item = &draws[first];
+    let batch_key = &item.batch_key;
+
+    let (pipelines, declared_passes) = if let Some(reg) = registry {
+        let pipes = reg.pipeline_for_shader_asset(
+            batch_key.shader_asset_id,
+            pass_desc,
+            shader_perm,
+            batch_key.blend_mode,
+            batch_key.render_state,
+        );
+        let passes = declared_passes_for_pipeline_kind(&batch_key.pipeline, shader_perm);
+        match pipes {
+            Some(p) if !p.is_empty() => (Some(p), passes),
+            Some(_) => {
+                logger::trace!(
+                    "WorldMeshForward: empty pipeline for shader {:?}, skipping batch",
+                    batch_key.shader_asset_id
                 );
-                let passes = declared_passes_for_pipeline_kind(&batch_key.pipeline, shader_perm);
-                match pipes {
-                    Some(p) if !p.is_empty() => (Some(p), passes),
-                    Some(_) => {
-                        logger::trace!(
-                            "WorldMeshForward: empty pipeline for shader {:?}, skipping batch",
-                            batch_key.shader_asset_id
-                        );
-                        (None, passes)
-                    }
-                    None => {
-                        logger::trace!(
-                            "WorldMeshForward: no pipeline for shader {:?}, skipping batch",
-                            batch_key.shader_asset_id
-                        );
-                        (None, passes)
-                    }
-                }
-            } else {
-                (None, &[] as &'static [MaterialPassDesc])
-            };
-
-            // @group(1) bind group resolution (embedded stems only).
-            let bind_group = if matches!(&batch_key.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
-                if let (Some(mb), Some(reg)) = (embedded_bind, registry) {
-                    match reg.stem_for_shader_asset(batch_key.shader_asset_id) {
-                        Some(stem) => mb
-                            .embedded_material_bind_group_with_cache_key(
-                                stem,
-                                queue,
-                                store,
-                                &pools,
-                                item.lookup_ids,
-                                offscreen_write_render_texture_asset_id,
-                            )
-                            .ok()
-                            .map(|(_, bg)| bg),
-                        None => None,
-                    }
-                } else {
-                    if embedded_bind.is_none() {
-                        logger::warn!(
-                            "WorldMeshForward: embedded material bind resources unavailable; \
-                                 @group(1) uses empty bind group for embedded raster draws"
-                        );
-                    }
-                    None
-                }
-            } else {
-                None
-            };
-
-            PrecomputedMaterialBind {
-                first_draw_idx: first,
-                last_draw_idx: last,
-                bind_group,
-                pipelines,
-                declared_passes,
+                (None, passes)
             }
-        })
-        .collect()
+            None => {
+                logger::trace!(
+                    "WorldMeshForward: no pipeline for shader {:?}, skipping batch",
+                    batch_key.shader_asset_id
+                );
+                (None, passes)
+            }
+        }
+    } else {
+        (None, &[] as &'static [MaterialPassDesc])
+    };
+
+    let bind_group = if matches!(&batch_key.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
+        if let (Some(mb), Some(reg)) = (embedded_bind, registry) {
+            match reg.stem_for_shader_asset(batch_key.shader_asset_id) {
+                Some(stem) => mb
+                    .embedded_material_bind_group_with_cache_key(
+                        stem,
+                        queue,
+                        store,
+                        pools,
+                        item.lookup_ids,
+                        offscreen_write_render_texture_asset_id,
+                    )
+                    .ok()
+                    .map(|(_, bg)| bg),
+                None => None,
+            }
+        } else {
+            if embedded_bind.is_none() {
+                logger::warn!(
+                    "WorldMeshForward: embedded material bind resources unavailable; \
+                         @group(1) uses empty bind group for embedded raster draws"
+                );
+            }
+            None
+        }
+    } else {
+        None
+    };
+
+    PrecomputedMaterialBind {
+        first_draw_idx: first,
+        last_draw_idx: last,
+        bind_group,
+        pipelines,
+        declared_passes,
+    }
 }
 
 /// Returns the declared pass descriptors for `pipeline` at `shader_perm` (zero-alloc `&'static`).
@@ -559,42 +610,19 @@ pub(super) fn prepare_world_mesh_forward_frame(
     let use_multiview = pipeline.use_multiview;
     let shader_perm = pipeline.shader_perm;
 
-    let culling = if hc.suppress_occlusion_temporal {
-        None
-    } else {
-        let cull_proj =
-            build_world_mesh_cull_proj_params(frame.shared.scene, frame.view.viewport_px, &hc);
-        let depth_mode = frame.output_depth_mode();
-        let view_id = frame.view.occlusion_view;
-        let hi_z_temporal = frame.shared.occlusion.hi_z_temporal_snapshot(view_id);
-        let hi_z = frame.shared.occlusion.hi_z_cull_data(depth_mode, view_id);
-        Some(WorldMeshCullInput {
-            proj: cull_proj,
-            host_camera: &hc,
-            hi_z,
-            hi_z_temporal,
-        })
-    };
+    let culling = build_world_mesh_cull_input(frame, &hc);
 
     let collection =
         take_or_collect_world_mesh_draws(frame, blackboard, culling.as_ref(), shader_perm);
     capture_hi_z_temporal_after_collect(frame, culling.as_ref(), hc);
 
-    let hud_outputs = maybe_set_world_mesh_draw_stats(
-        frame.shared.debug_hud,
-        frame.shared.materials,
+    publish_world_mesh_hud_outputs(
+        frame,
+        blackboard,
         &collection,
-        &collection.items,
         supports_base_instance,
         shader_perm,
-        frame.view.offscreen_write_render_texture_asset_id,
     );
-    if hud_outputs.world_mesh_draw_stats.is_some()
-        || hud_outputs.world_mesh_draw_state_rows.is_some()
-        || !hud_outputs.current_view_texture_2d_asset_ids.is_empty()
-    {
-        blackboard.insert::<PerViewHudOutputsSlot>(hud_outputs);
-    }
 
     let draws = collection.items;
     let (render_context, world_proj, overlay_proj) =
@@ -645,6 +673,58 @@ pub(super) fn prepare_world_mesh_forward_frame(
         tail_raster_recorded: false,
         precomputed_batches,
     })
+}
+
+/// Builds the [`WorldMeshCullInput`] for this view, or returns `None` when the host has suppressed
+/// occlusion-temporal feedback for the frame (`HostCameraFrame::suppress_occlusion_temporal`).
+fn build_world_mesh_cull_input<'a, 'frame>(
+    frame: &FrameRenderParams<'frame>,
+    hc: &'a HostCameraFrame,
+) -> Option<WorldMeshCullInput<'a>>
+where
+    'frame: 'a,
+{
+    if hc.suppress_occlusion_temporal {
+        return None;
+    }
+    let cull_proj =
+        build_world_mesh_cull_proj_params(frame.shared.scene, frame.view.viewport_px, hc);
+    let depth_mode = frame.output_depth_mode();
+    let view_id = frame.view.occlusion_view;
+    let hi_z_temporal = frame.shared.occlusion.hi_z_temporal_snapshot(view_id);
+    let hi_z = frame.shared.occlusion.hi_z_cull_data(depth_mode, view_id);
+    Some(WorldMeshCullInput {
+        proj: cull_proj,
+        host_camera: hc,
+        hi_z,
+        hi_z_temporal,
+    })
+}
+
+/// Computes [`PerViewHudOutputs`] from the collected draws and inserts them on `blackboard` if any
+/// HUD field is non-empty (avoids planting an empty slot for the common no-HUD frame).
+fn publish_world_mesh_hud_outputs(
+    frame: &FrameRenderParams<'_>,
+    blackboard: &mut Blackboard,
+    collection: &WorldMeshDrawCollection,
+    supports_base_instance: bool,
+    shader_perm: ShaderPermutation,
+) {
+    let hud_outputs = maybe_set_world_mesh_draw_stats(
+        frame.shared.debug_hud,
+        frame.shared.materials,
+        collection,
+        &collection.items,
+        supports_base_instance,
+        shader_perm,
+        frame.view.offscreen_write_render_texture_asset_id,
+    );
+    if hud_outputs.world_mesh_draw_stats.is_some()
+        || hud_outputs.world_mesh_draw_state_rows.is_some()
+        || !hud_outputs.current_view_texture_2d_asset_ids.is_empty()
+    {
+        blackboard.insert::<PerViewHudOutputsSlot>(hud_outputs);
+    }
 }
 
 /// Writes per-view `FrameGpuUniforms` via [`FrameUploadBatch`] or falls back to the shared frame buffer.
