@@ -6,7 +6,7 @@
 //!
 //! **UI text (`_TextMode`, `_RectClip`):** When a reflected uniform field is named `_TextMode` or `_RectClip`,
 //! packing uses explicit `set_float` when present; otherwise keyword-style floats (`MSDF`, `RASTER`, `SDF`,
-//! `RECTCLIP`, case variants) are interpreted the same way as legacy FrooxEngine/Unity keyword bindings—without
+//! `RECTCLIP`, case variants) are interpreted the same way FrooxEngine/Unity keyword bindings are—without
 //! hard-coding a particular shader stem in the draw pass.
 
 mod cache;

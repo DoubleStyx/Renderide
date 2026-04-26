@@ -25,7 +25,9 @@ mod run_error;
 pub(crate) use process_io::fatal_crash_log;
 pub(crate) use process_io::native_stdio;
 
+/// Winit-driven application: startup, frame loop / pacing, and the [`app::run`] entry point.
 pub mod app;
+/// Mesh / texture / material / shader asset integration (host IPC → GPU pools).
 pub mod assets;
 /// GPU resource pools, material tables, mesh/texture uploads, preprocess pipelines — **backend** layer.
 pub mod backend;
@@ -35,6 +37,7 @@ pub mod config;
 pub mod diagnostics;
 /// Host IPC, shared memory, init, lock-step — **frontend** layer.
 pub mod frontend;
+/// wgpu device + adapter init, instance/device limits, MSAA helpers, present + VR mirror.
 pub mod gpu;
 
 /// Surface acquire and swapchain clear helpers ([`gpu::present`]).
@@ -46,24 +49,32 @@ pub mod embedded_shaders {
     include!(concat!(env!("OUT_DIR"), "/embedded_shaders.rs"));
 }
 
+/// IPC queues, shared-memory accessor, init handshake, and dual-queue dispatch.
 pub mod ipc;
 /// CLI IPC queue parameters and queue name helpers ([`ipc::connection`]).
 pub use ipc::connection;
+/// Material registry, shader routing, pipeline cache, and naga-reflection-driven layout.
 pub mod materials;
 /// Host `HeadOutputDevice` → VR / OpenXR GPU path ([`output_device::head_output_device_wants_openxr`]).
 pub mod output_device;
+/// Pipeline-primitive vocabulary: shader permutations and the null/debug raster fallback.
 pub mod pipelines;
 /// Tracy profiling integration: CPU spans, frame marks, and optional GPU timestamp queries.
 /// All items compile to nothing when the `tracy` Cargo feature is not active.
 pub mod profiling;
+/// Compiled render-graph IR, pass nodes, transient pool, parallel recording, and execution.
 pub mod render_graph;
+/// Embedded asset blobs (icons, fallback textures, etc.) bundled into the binary.
 pub mod resources;
+/// Per-tick orchestration façade ([`runtime::RendererRuntime`]) wiring frontend, scene, and backend.
 pub mod runtime;
 /// Transforms, render spaces, mesh renderables — **scene** layer (no wgpu).
 pub mod scene;
 
+/// Generated IPC structs and enums shared with the host (regenerate via `SharedTypeGenerator`).
 pub mod shared;
 
+/// OpenXR session bootstrap, swapchains, input, and per-frame integration.
 pub mod xr;
 
 /// Small set of types for embedding the renderer; import everything else via submodules

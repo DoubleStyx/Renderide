@@ -676,7 +676,10 @@ mod tests {
     fn forward_pass_uses_unity_separate_alpha_blend() {
         let pass = MaterialPassDesc {
             material_state: MaterialPassState::Forward,
-            ..default_pass(false, true)
+            ..default_pass(DefaultPassParams {
+                use_alpha_blending: false,
+                depth_write: true,
+            })
         };
 
         let materialized = materialized_pass_for_blend_mode(

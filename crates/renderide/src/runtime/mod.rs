@@ -1,14 +1,37 @@
 //! Renderer façade: orchestrates **frontend** (IPC / shared memory / lock-step), **scene** (host
 //! logical state), and **backend** (GPU pools, material store, uploads).
 //!
-//! Phase order aligns with the historical session loop: drain incoming commands first, then emit
-//! [`FrameStartData`](crate::shared::FrameStartData) when lock-step allows (see `app` `tick_frame`).
-//! [`RendererRuntime::run_asset_integration`] time-slices cooperative mesh/texture uploads ([`crate::assets::asset_transfer_queue::drain_asset_tasks`]).
+//! [`RendererRuntime`] *composes* a [`RendererFrontend`], a [`SceneCoordinator`], and a
+//! [`RenderBackend`]; it does **not** own IPC queue state, scene tables, or GPU resources directly.
+//! Each layer keeps its state private; runtime code calls through the layer's API in a fixed
+//! per-tick order. Adding new logic here usually means a new method on the right layer plus a
+//! short call from the orchestration site, not a new field on [`RendererRuntime`].
+//!
+//! # Per-tick phase order
+//!
+//! The authoritative call site is [`crate::app::renderide_app::RenderideApp::tick_frame`]; this
+//! module's methods correspond to the named phases:
+//!
+//! 1. **Wall-clock prologue** — [`RendererRuntime::tick_frame_wall_clock_begin`]; resets per-tick flags.
+//! 2. **IPC poll** — [`RendererRuntime::poll_ipc`]; drains incoming `RendererCommand`s before any work runs.
+//! 3. **Asset integration** — [`RendererRuntime::run_asset_integration`]; time-sliced cooperative
+//!    mesh/texture/material uploads via [`crate::assets::asset_transfer_queue::drain_asset_tasks`].
+//! 4. **Optional XR begin** — `xr_begin_tick` in `app/`; OpenXR `wait_frame` / `locate_views` so the
+//!    same view snapshot is visible to lock-step input.
+//! 5. **Lock-step exchange** — [`RendererRuntime::pre_frame`] emits
+//!    [`FrameStartData`](crate::shared::FrameStartData) when allowed; the gating predicate
+//!    [`crate::frontend::begin_frame::begin_frame_allowed`] keeps the lock-step *state* in
+//!    [`RendererFrontend`] (this module owns no lock-step counters).
+//! 6. **Render** — desktop multi-view or HMD path through [`crate::render_graph`].
+//! 7. **Present + HUD** — present surface, blit VR mirror, capture ImGui debug snapshots.
 //!
 //! Lock-step is driven by the `last_frame_index` field of [`FrameStartData`](crate::shared::FrameStartData)
 //! on the **outgoing** `frame_start_data` the renderer sends from [`RendererRuntime::pre_frame`].
 //! If the host sends [`RendererCommand::FrameStartData`](crate::shared::RendererCommand::FrameStartData),
 //! optional payloads are trace-logged until consumers exist.
+//!
+//! `runtime/lockstep.rs` is a pure debug helper (duplicate-frame-index trace logging only); the
+//! decision predicate and the counters live in [`crate::frontend`].
 
 mod accessors;
 mod command_dispatch;

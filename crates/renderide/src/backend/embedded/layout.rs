@@ -28,7 +28,7 @@ pub(crate) struct StemMaterialLayout {
 /// 2. The Unity render queue at `_RenderQueue` (PBS `AlphaHandling` family —
 ///    `PBS_DualSidedMaterial.cs` and friends bypass `SetBlendMode` and the `_ALPHACLIP`
 ///    keyword bitmask, signaling AlphaClip via queue 2450 and Opaque via queue 2000).
-/// 3. The legacy `_SrcBlend` / `_DstBlend` factors for distinguishing alpha-blend from
+/// 3. The `_SrcBlend` / `_DstBlend` factors for distinguishing alpha-blend from
 ///    premultiplied alpha within the Transparent range.
 ///
 /// FrooxEngine's `ShaderKeywords.Variant` bitmask is never sent over IPC, so every

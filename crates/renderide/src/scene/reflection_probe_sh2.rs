@@ -6,8 +6,8 @@
 //! frame; leaving [`ComputeResult::Scheduled`] can trigger host errors (for example invalid
 //! compute result while scheduled).
 //!
-//! This renderer does not implement SH2 extraction yet. Like the legacy `crates_old` path, we mark
-//! every task [`ComputeResult::Failed`] so the host can proceed without waiting on GPU SH2 work.
+//! This renderer does not implement SH2 extraction yet. Until it does, we mark every task
+//! [`ComputeResult::Failed`] so the host can proceed without waiting on GPU SH2 work.
 
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{ComputeResult, ReflectionProbeSH2Task, ReflectionProbeSH2Tasks};

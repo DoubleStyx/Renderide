@@ -1,7 +1,8 @@
 //! Maps winit physical keys to host [`Key`](crate::shared::Key) values.
 //!
-//! Covers the same subset as the legacy `crates_old` table; unknown [`KeyCode`](winit::keyboard::KeyCode)
-//! variants resolve to `None` so they are not added to [`super::WindowInputAccumulator::held_keys`].
+//! Covers the alphanumeric, numpad, function-key, navigation, and modifier subset the host
+//! understands; unknown [`KeyCode`](winit::keyboard::KeyCode) variants resolve to `None` so they
+//! are not added to [`super::WindowInputAccumulator::held_keys`].
 
 use winit::keyboard::{KeyCode, PhysicalKey};
 

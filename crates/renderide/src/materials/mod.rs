@@ -28,6 +28,15 @@
 //! `_BlendMode` itself is not on the wire — FrooxEngine translates `MaterialProvider.SetBlendMode`
 //! to `_SrcBlend` / `_DstBlend` factors, and [`MaterialBlendMode::from_unity_blend_factors`]
 //! reconstructs the mode here.
+//!
+//! # Relationship with [`crate::pipelines`]
+//!
+//! Pipeline primitives — [`crate::pipelines::ShaderPermutation`] (static feature flags such as
+//! multiview) and the [`crate::pipelines::raster::null`] debug fallback — live in
+//! [`crate::pipelines`]. This module *composes* those primitives into material-driven render
+//! pipelines via [`MaterialPipelineCache`], keyed by [`MaterialPipelineCacheKey`] (shader route
+//! + permutation + attachment formats + resolved render state). Build new material-side wiring
+//! here; add new permutation flags or fallback pipelines under [`crate::pipelines`].
 
 mod cache;
 mod embedded_raster_pipeline;
