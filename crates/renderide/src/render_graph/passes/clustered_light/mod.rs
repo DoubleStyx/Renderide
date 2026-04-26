@@ -36,6 +36,10 @@ use crate::render_graph::OcclusionViewId;
 use crate::scene::SceneCoordinator;
 
 /// CPU layout for the compute shader `ClusterParams` uniform (WGSL `struct` + tail pad).
+///
+/// `world_to_view_scale` carries the world-to-view linear-scale factor so the shader can convert
+/// `light.range` (world units) to view-space units before the cluster sphere/AABB test — see
+/// [`crate::render_graph::cluster_frame::ClusterFrameParams::world_to_view_scale_max`].
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ClusterParams {
@@ -52,7 +56,8 @@ struct ClusterParams {
     near_clip: f32,
     far_clip: f32,
     cluster_offset: u32,
-    _pad: [u8; 8],
+    world_to_view_scale: f32,
+    _pad: [u8; 4],
 }
 
 /// Embedded shader stem for the clustered-light compute pass (single-variant).
@@ -162,6 +167,9 @@ struct ClusterParamsDesc {
     near: f32,
     far: f32,
     cluster_offset: u32,
+    /// Max row length of the world-to-view linear part; multiplies `light.range` (world units)
+    /// to view-space units inside the compute shader's culling test.
+    world_to_view_scale: f32,
 }
 
 /// GPU and uniform state for per-eye clustered light compute dispatches.
@@ -206,6 +214,7 @@ fn run_clustered_light_eye_passes(env: ClusteredLightEyePassEnv<'_>) {
             near: cfp.near_clip,
             far: cfp.far_clip,
             cluster_offset,
+            world_to_view_scale: cfp.world_to_view_scale_max(),
         });
         write_cluster_params_padded(env.upload_batch, env.params_buffer, &params, buf_offset);
 
@@ -312,7 +321,8 @@ impl ClusteredLightPass {
             near_clip,
             far_clip: desc.far,
             cluster_offset: desc.cluster_offset,
-            _pad: [0u8; 8],
+            world_to_view_scale: desc.world_to_view_scale,
+            _pad: [0u8; 4],
         }
     }
 
@@ -527,5 +537,27 @@ impl ComputePass for ClusteredLightPass {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClusterParams, CLUSTER_PARAMS_UNIFORM_SIZE};
+
+    /// `ClusterParams` must fit within the dynamic-offset slot reserved by
+    /// `CLUSTER_PARAMS_UNIFORM_SIZE`; `write_cluster_params_padded` zero-pads the rest.
+    #[test]
+    fn cluster_params_struct_fits_uniform_slot() {
+        assert!(
+            std::mem::size_of::<ClusterParams>() as u64 <= CLUSTER_PARAMS_UNIFORM_SIZE,
+            "ClusterParams ({} bytes) exceeds CLUSTER_PARAMS_UNIFORM_SIZE ({} bytes)",
+            std::mem::size_of::<ClusterParams>(),
+            CLUSTER_PARAMS_UNIFORM_SIZE,
+        );
+        assert_eq!(
+            std::mem::size_of::<ClusterParams>() % 16,
+            0,
+            "ClusterParams must be 16-byte aligned for WGSL std140 uniform layout"
+        );
     }
 }

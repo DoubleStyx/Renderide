@@ -53,6 +53,29 @@ impl ClusterFrameParams {
         FrameGpuUniforms::proj_params_from_proj(self.proj)
     }
 
+    /// Maximum row length of the world-to-view linear part — the factor that converts a
+    /// **world-space radius** to a **view-space radius** for this view.
+    ///
+    /// When the active render space has a non-unit scale `s` (e.g. a tiny avatar with `s = 0.01`)
+    /// the world-to-view matrix carries `1/s` on its linear part, so any world position
+    /// transformed by it is scaled by `1/s` in view space. Light positions are uploaded in world
+    /// units, so the cluster compute's `light.range` must be multiplied by this factor before
+    /// being compared against the view-space cluster AABB — otherwise the culling sphere appears
+    /// `s ×` too small in view space and lights are bound to far fewer clusters than they cover,
+    /// producing tile-shaped dark seams in the lit image. Mirrors Bevy's
+    /// `view_from_world_scale.abs().max_element()` (`bevy_light/src/cluster/assign.rs`).
+    ///
+    /// Floored at `1e-6` to keep the multiplier finite for degenerate / zero matrices.
+    pub fn world_to_view_scale_max(&self) -> f32 {
+        let m = self.world_to_view;
+        m.x_axis
+            .truncate()
+            .length()
+            .max(m.y_axis.truncate().length())
+            .max(m.z_axis.truncate().length())
+            .max(1e-6)
+    }
+
     /// Builds [`FrameGpuUniforms`] for clustered PBS materials (must stay in sync with compute).
     ///
     /// `right_z_coeffs` / `right_proj_params` should be the right-eye equivalents in stereo, or
@@ -272,6 +295,58 @@ fn mat4_all_finite(m: Mat4) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
+
+    /// Builds a minimal `ClusterFrameParams` with the supplied world-to-view; other fields are
+    /// don't-cares for `world_to_view_scale_max`.
+    fn cfp_with_view(world_to_view: Mat4) -> ClusterFrameParams {
+        ClusterFrameParams {
+            near_clip: 0.1,
+            far_clip: 1000.0,
+            world_to_view,
+            proj: Mat4::IDENTITY,
+            cluster_count_x: 1,
+            cluster_count_y: 1,
+            viewport_width: 1,
+            viewport_height: 1,
+        }
+    }
+
+    /// Tiny avatar (player scale `s = 0.01`) yields a view matrix with `1/s = 100` linear scale,
+    /// so the multiplier that converts world radii to view-space radii is `100`.
+    #[test]
+    fn world_to_view_scale_max_recovers_player_inverse_scale() {
+        let world = Mat4::from_scale(Vec3::splat(0.01));
+        let view = world.inverse();
+        let cfp = cfp_with_view(view);
+        let s = cfp.world_to_view_scale_max();
+        assert!((s - 100.0).abs() < 1e-3, "expected ~100, got {s}");
+    }
+
+    #[test]
+    fn world_to_view_scale_max_handles_unit_scale() {
+        let cfp = cfp_with_view(Mat4::IDENTITY);
+        let s = cfp.world_to_view_scale_max();
+        assert!((s - 1.0).abs() < 1e-6, "expected 1.0, got {s}");
+    }
+
+    /// Non-uniform scale: world `(0.01, 0.5, 1.0)` ⇒ inverse axes lengths `(100, 2, 1)` ⇒ max 100.
+    #[test]
+    fn world_to_view_scale_max_uses_max_axis_for_nonuniform_scale() {
+        let world = Mat4::from_scale(Vec3::new(0.01, 0.5, 1.0));
+        let view = world.inverse();
+        let cfp = cfp_with_view(view);
+        let s = cfp.world_to_view_scale_max();
+        assert!((s - 100.0).abs() < 1e-3, "expected ~100, got {s}");
+    }
+
+    /// Degenerate (all-zero) view matrix must not yield `0` or `NaN` — the floor keeps it finite.
+    #[test]
+    fn world_to_view_scale_max_floors_degenerate_view() {
+        let cfp = cfp_with_view(Mat4::ZERO);
+        let s = cfp.world_to_view_scale_max();
+        assert!(s.is_finite() && s >= 1e-6, "expected ≥1e-6 finite, got {s}");
+    }
 
     #[test]
     fn cluster_z_slice_formula_matches_exponential_bounds() {

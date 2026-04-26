@@ -36,6 +36,10 @@ struct ClusterParams {
     far_clip: f32,
     /// Base offset into the cluster storage buffers (0 for eye 0 / mono, N for eye 1 in stereo).
     cluster_offset: u32,
+    /// Max row length of the world-to-view linear part. Lights are uploaded in world units, but
+    /// `pos_view = view * light.position` is in scaled view space, so `light.range` must be
+    /// multiplied by this factor to compare against the (also-scaled) cluster AABB.
+    world_to_view_scale: f32,
 }
 
 @group(0) @binding(0) var<uniform> params: ClusterParams;
@@ -159,7 +163,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
         let dir_view = (params.view * vec4f(light.direction.x, light.direction.y, light.direction.z, 0.0)).xyz;
 
         var intersects = false;
-        let cull_range = light.range * CULL_RADIUS_INFLATION;
+        // `light.range` is in world units; `pos_view` and the cluster AABB are in scaled view
+        // space. Multiply by `world_to_view_scale` (CPU-computed max row length of the
+        // world-to-view linear part) so the sphere/spot bounds are in matching units. Without
+        // this, a player avatar with non-unit scale (e.g. 0.01) culls lights with a radius that
+        // is `1/scale` too small in view space, dropping lights from clusters that should
+        // contain them and producing tile-shaped dark seams in the lit image.
+        let cull_range = light.range * params.world_to_view_scale * CULL_RADIUS_INFLATION;
         if light.light_type == 0u {
             intersects = sphere_aabb_intersect(pos_view, cull_range, aabb_min, aabb_max);
         } else if light.light_type == 1u {
