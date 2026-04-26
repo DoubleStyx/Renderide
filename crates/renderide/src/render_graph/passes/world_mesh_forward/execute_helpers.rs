@@ -762,7 +762,6 @@ struct ForwardPassBindGroups<'a> {
 /// Pipeline and embedded-bind state for one opaque or intersection subpass.
 struct ForwardPassRasterConfig {
     supports_base_instance: bool,
-    has_local_lights: bool,
 }
 
 /// Draw state for a render pass that has already been opened.
@@ -793,17 +792,7 @@ fn record_world_mesh_forward_subpass(
         empty_bg: bind_groups.empty_material.as_ref(),
         per_draw_bind_group: bind_groups.per_draw,
         supports_base_instance: cfg.supports_base_instance,
-        has_local_lights: cfg.has_local_lights,
     });
-}
-
-fn frame_has_local_lights(frame: &FrameRenderParams<'_>) -> bool {
-    frame
-        .shared
-        .frame_resources
-        .frame_lights()
-        .iter()
-        .any(|light| light.light_type != 1)
 }
 
 /// Records the opaque draw subset into a render pass already opened by the graph.
@@ -849,10 +838,8 @@ pub(super) fn record_world_mesh_forward_opaque_graph_raster(
         empty_material: &empty_bg_arc,
     };
 
-    let has_local_lights = frame_has_local_lights(frame);
     let raster_cfg = ForwardPassRasterConfig {
         supports_base_instance: prepared.supports_base_instance,
-        has_local_lights,
     };
 
     let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
@@ -917,10 +904,8 @@ pub(super) fn record_world_mesh_forward_intersection_graph_raster(
         empty_material: &empty_bg_arc,
     };
 
-    let has_local_lights = frame_has_local_lights(frame);
     let raster_cfg = ForwardPassRasterConfig {
         supports_base_instance: prepared.supports_base_instance,
-        has_local_lights,
     };
 
     let Some(gpu_limits) = frame.view.gpu_limits.clone() else {

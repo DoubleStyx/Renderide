@@ -160,7 +160,7 @@ fn fragment_linear_depth(world_pos: vec3<f32>, view_layer: u32) -> f32 {
     return -view_z;
 }
 
-//#material forward_base
+//#material forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let use_rect_clip = mat._RectClip > 0.5 && abs((mat._Rect.z - mat._Rect.x) * (mat._Rect.w - mat._Rect.y)) > 1e-6;

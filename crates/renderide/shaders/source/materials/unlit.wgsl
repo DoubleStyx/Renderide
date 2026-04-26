@@ -31,11 +31,6 @@ struct UnlitMaterial {
     _OffsetMagnitude: vec4<f32>,
     _Cutoff: f32,
     _PolarPow: f32,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
-    _ZTest: f32,
     _ALPHATEST_ON: f32,
     _ALPHABLEND_ON: f32,
 }

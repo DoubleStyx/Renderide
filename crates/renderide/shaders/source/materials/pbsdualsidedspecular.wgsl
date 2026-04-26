@@ -219,7 +219,7 @@ fn vs_main(
     return out;
 }
 
-//#material forward_base
+//#material forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
@@ -230,22 +230,7 @@ fn fs_forward_base(
     @location(3) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, world_n, front_facing);
-    let direct = clustered_direct_lighting(frag_pos.xy, world_pos, view_layer, s, true, false);
+    let direct = clustered_direct_lighting(frag_pos.xy, world_pos, view_layer, s, true, true);
     let ambient = vec3<f32>(0.03) * s.base_color * s.occlusion;
     return vec4<f32>(ambient + direct + s.emission, s.alpha);
-}
-
-//#material forward_add
-@fragment
-fn fs_forward_delta(
-    @builtin(position) frag_pos: vec4<f32>,
-    @builtin(front_facing) front_facing: bool,
-    @location(0) world_pos: vec3<f32>,
-    @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
-) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, world_n, front_facing);
-    let direct = clustered_direct_lighting(frag_pos.xy, world_pos, view_layer, s, false, true);
-    return vec4<f32>(direct, s.alpha);
 }

@@ -118,9 +118,7 @@ struct BuildPassDirective {
 /// Maps a `//#material <kind>` value to the matching [`crate::materials::PassKind`] variant name.
 fn pass_kind_variant(value: &str, file: &str, line: usize) -> Result<&'static str, BuildError> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "static" => Ok("Static"),
-        "forward_base" | "forwardbase" | "base" | "unity_forward_base" => Ok("ForwardBase"),
-        "forward_add" | "forwardadd" | "add" | "delta" | "unity_forward_add" => Ok("ForwardAdd"),
+        "forward" => Ok("Forward"),
         "outline" => Ok("Outline"),
         "stencil" => Ok("Stencil"),
         "depth_prepass" | "depthprepass" | "prepass" => Ok("DepthPrepass"),
@@ -200,7 +198,7 @@ fn parse_pass_directives(source: &str, file: &str) -> Result<Vec<BuildPassDirect
         let body = rest.trim();
         if body.is_empty() {
             return Err(BuildError::Message(format!(
-                "{file}:{line_no}: `//#material` tag requires a kind (e.g. `//#material forward_base`)"
+                "{file}:{line_no}: `//#material` tag requires a kind (e.g. `//#material forward`)"
             )));
         }
         let mut tokens = body.split_whitespace();
@@ -299,6 +297,80 @@ fn validate_entry_points(
                 "{label}: pass `{}` expected entry points {} and {} (vertex={has_vs} fragment={has_fs})",
                 pass.kind_variant, pass.vertex_entry, pass.fragment_entry
             )));
+        }
+    }
+    Ok(())
+}
+
+/// Canonical Unity pipeline-state property names that must NEVER appear in a material's
+/// `@group(1) @binding(0)` uniform struct.
+///
+/// Pipeline state (blend, depth compare/write, cull, stencil, color mask, depth bias) is consumed
+/// by [`crate::materials::MaterialPipelineCacheKey`] via
+/// [`crate::materials::MaterialBlendMode`] + [`crate::materials::MaterialRenderState`], never by
+/// shader code. Embedding any of these names in a shader uniform wastes uniform space and blurs
+/// the boundary between "what the shader needs" and "what the pipeline needs".
+///
+/// Keep this list in sync with `MaterialPipelinePropertyIds::new` in
+/// `src/materials/material_passes.rs`.
+const PIPELINE_STATE_PROPERTY_NAMES: &[&str] = &[
+    "_SrcBlend",
+    "_SrcBlendBase",
+    "_SrcBlendAdd",
+    "_DstBlend",
+    "_DstBlendBase",
+    "_DstBlendAdd",
+    "_ZWrite",
+    "_ZTest",
+    "_Cull",
+    "_Stencil",
+    "_StencilComp",
+    "_StencilOp",
+    "_StencilFail",
+    "_StencilZFail",
+    "_StencilReadMask",
+    "_StencilWriteMask",
+    "_ColorMask",
+    "_OffsetFactor",
+    "_OffsetUnits",
+];
+
+/// Rejects any material whose `@group(1) @binding(0)` uniform struct declares a member named in
+/// [`PIPELINE_STATE_PROPERTY_NAMES`]. Run after composition so imports and module merges don't
+/// hide a leak.
+fn validate_no_pipeline_state_uniform_fields(
+    module: &naga::Module,
+    label: &str,
+) -> Result<(), BuildError> {
+    for (_, var) in module.global_variables.iter() {
+        let Some(binding) = &var.binding else {
+            continue;
+        };
+        if binding.group != 1 || binding.binding != 0 {
+            continue;
+        }
+        if !matches!(var.space, naga::AddressSpace::Uniform) {
+            continue;
+        }
+        let ty = &module.types[var.ty];
+        let naga::TypeInner::Struct { ref members, .. } = ty.inner else {
+            continue;
+        };
+        for member in members {
+            let Some(name) = member.name.as_deref() else {
+                continue;
+            };
+            if PIPELINE_STATE_PROPERTY_NAMES.contains(&name) {
+                let struct_name = ty.name.as_deref().unwrap_or("<unnamed>");
+                return Err(BuildError::Message(format!(
+                    "{label}: material uniform struct `{struct_name}` declares pipeline-state \
+                     field `{name}` at @group(1) @binding(0). Pipeline-state properties \
+                     (blend, depth, cull, stencil, color mask, depth bias) flow through \
+                     MaterialBlendMode + MaterialRenderState and are baked into \
+                     MaterialPipelineCacheKey; they must never appear in a shader uniform. \
+                     Remove the field from the WGSL struct."
+                )));
+            }
         }
     }
     Ok(())
@@ -640,6 +712,14 @@ fn compose_and_emit_variants(
         &multiview_module,
         &format!("{stem} (MULTIVIEW=true)"),
         &pass_directives,
+    )?;
+    validate_no_pipeline_state_uniform_fields(
+        &default_module,
+        &format!("{stem} (MULTIVIEW=false)"),
+    )?;
+    validate_no_pipeline_state_uniform_fields(
+        &multiview_module,
+        &format!("{stem} (MULTIVIEW=true)"),
     )?;
     let default_wgsl = module_to_wgsl(&default_module, &format!("{stem} (MULTIVIEW=false)"))?;
     let multiview_wgsl = module_to_wgsl(&multiview_module, &format!("{stem} (MULTIVIEW=true)"))?;

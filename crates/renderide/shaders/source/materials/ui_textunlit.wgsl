@@ -127,7 +127,7 @@ fn shade_distance_field(
     return mix(mat._BackgroundColor * vtx_color, fill_color, glyph_lerp);
 }
 
-//#material forward_base
+//#material forward
 @fragment
 fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     let vtx_color = vout.vtx_color;

@@ -270,7 +270,7 @@ fn vs_main(
     return out;
 }
 
-//#material forward_base
+//#material forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if ((uvu::kw_enabled(mat._RectClip) || uvu::kw_enabled(mat.RECTCLIP)) && !inside_rect(in.local_xy, mat._Rect)) {

@@ -4,7 +4,7 @@ use crate::backend::mesh_deform::GpuSkinCache;
 use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::gpu::GpuLimits;
-use crate::materials::{MaterialPassDesc, MaterialPipelineSet};
+use crate::materials::MaterialPipelineSet;
 use crate::render_graph::frame_params::PrecomputedMaterialBind;
 use crate::render_graph::world_mesh_draw_prep::for_each_instance_batch;
 use crate::render_graph::WorldMeshDrawItem;
@@ -110,19 +110,6 @@ pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
     pub per_draw_bind_group: &'a wgpu::BindGroup,
     /// Whether `draw_indexed` may use non-zero `first_instance` / base instance.
     pub supports_base_instance: bool,
-    /// Whether the packed frame light buffer contains any point/spot light.
-    pub has_local_lights: bool,
-}
-
-fn should_skip_pipeline_pass(
-    declared_passes: &[crate::materials::MaterialPassDesc],
-    pass_idx: usize,
-    has_local_lights: bool,
-) -> bool {
-    !has_local_lights
-        && declared_passes.get(pass_idx).is_some_and(|pass| {
-            pass.material_state == crate::materials::MaterialPassState::UnityForwardAdd
-        })
 }
 
 /// Records one raster subpass using the pre-resolved batch table built by the prepare pass.
@@ -143,7 +130,6 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
         empty_bg,
         per_draw_bind_group,
         supports_base_instance,
-        has_local_lights,
     } = batch;
 
     let mut last_mesh = LastMeshBindState::new();
@@ -213,11 +199,7 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
             rpass,
             encode,
             &draws[first_idx],
-            ActivePipelineSelection {
-                pipelines,
-                declared_passes: pc.declared_passes,
-                has_local_lights,
-            },
+            ActivePipelineSelection { pipelines },
             &inst_range,
             &mut last_mesh,
             &mut last_pipeline,
@@ -261,19 +243,12 @@ fn bind_per_draw_slab_if_changed(
 }
 
 /// Per-batch pipeline selection for [`issue_material_pipeline_passes`].
-///
-/// Bundled so the dispatcher doesn't thread three separate arguments through.
 struct ActivePipelineSelection<'a> {
     /// Per-material pipeline objects in pass order.
     pipelines: &'a MaterialPipelineSet,
-    /// Pass descriptors declared by the material, parallel to `pipelines`.
-    declared_passes: &'a [MaterialPassDesc],
-    /// Whether the current view has any local lights requiring the lit variant.
-    has_local_lights: bool,
 }
 
-/// Walks the pipeline set for `item`, skipping pass variants that the material doesn't declare
-/// and issuing one [`draw_mesh_submesh_instanced`] per remaining pipeline.
+/// Walks the pipeline set for `item` and issues one [`draw_mesh_submesh_instanced`] per pipeline.
 ///
 /// `last_pipeline` is updated and consulted across batches so that adjacent draws sharing a
 /// pipeline (the typical case within a precomputed batch) skip the redundant `set_pipeline`.
@@ -287,14 +262,7 @@ fn issue_material_pipeline_passes(
     last_pipeline: &mut Option<*const wgpu::RenderPipeline>,
 ) {
     let skin_cache = encode.skin_cache;
-    for (pass_idx, pipeline) in pipeline_sel.pipelines.iter().enumerate() {
-        if should_skip_pipeline_pass(
-            pipeline_sel.declared_passes,
-            pass_idx,
-            pipeline_sel.has_local_lights,
-        ) {
-            continue;
-        }
+    for pipeline in pipeline_sel.pipelines.iter() {
         let pipeline_id: *const wgpu::RenderPipeline = pipeline;
         if *last_pipeline != Some(pipeline_id) {
             rpass.set_pipeline(pipeline);
@@ -534,9 +502,7 @@ pub(crate) fn draw_mesh_submesh_instanced(
 
 #[cfg(test)]
 mod tests {
-    use crate::materials::{pass_from_kind, PassKind};
-
-    use super::{instance_range_for_batch, should_skip_pipeline_pass};
+    use super::instance_range_for_batch;
 
     #[test]
     fn no_base_instance_draws_from_zero() {
@@ -546,17 +512,5 @@ mod tests {
     #[test]
     fn base_instance_uses_sorted_draw_slot() {
         assert_eq!(instance_range_for_batch(17, 3, true), 17..20);
-    }
-
-    #[test]
-    fn skips_forward_add_only_when_no_local_lights() {
-        let passes = [
-            pass_from_kind(PassKind::ForwardBase, "fs_main"),
-            pass_from_kind(PassKind::ForwardAdd, "fs_delta"),
-        ];
-
-        assert!(!should_skip_pipeline_pass(&passes, 0, false));
-        assert!(should_skip_pipeline_pass(&passes, 1, false));
-        assert!(!should_skip_pipeline_pass(&passes, 1, true));
     }
 }

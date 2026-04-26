@@ -161,7 +161,7 @@ fn shade(
     return vec4<f32>(ambient + lo * occlusion + extra, c.a);
 }
 
-//#material forward_base
+//#material forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
@@ -170,17 +170,5 @@ fn fs_forward_base(
     @location(2) uv0: vec2<f32>,
     @location(3) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return shade(frag_pos.xy, world_pos, world_n, uv0, view_layer, true, false);
-}
-
-//#material forward_add
-@fragment
-fn fs_forward_delta(
-    @builtin(position) frag_pos: vec4<f32>,
-    @location(0) world_pos: vec3<f32>,
-    @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
-) -> @location(0) vec4<f32> {
-    return shade(frag_pos.xy, world_pos, world_n, uv0, view_layer, false, true);
+    return shade(frag_pos.xy, world_pos, world_n, uv0, view_layer, true, true);
 }

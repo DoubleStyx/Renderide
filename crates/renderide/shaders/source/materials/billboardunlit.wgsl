@@ -164,7 +164,7 @@ fn texture_uv(base_uv: vec2<f32>, view_layer: u32) -> vec2<f32> {
     return uvu::apply_st(base_uv, st) + offset_shift;
 }
 
-//#material forward_base
+//#material forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv_main = texture_uv(in.uv, in.view_layer);

@@ -114,27 +114,6 @@ pub(crate) fn unity_blend_state(src: u8, dst: u8) -> Option<wgpu::BlendState> {
     })
 }
 
-/// Builds additive RGBA blend (used for ForwardAdd-style passes).
-pub(crate) fn unity_single_blend_state(src: u8, dst: u8) -> Option<wgpu::BlendState> {
-    if src == 1 && dst == 0 {
-        return None;
-    }
-    let src_factor = unity_blend_factor(src)?;
-    let dst_factor = unity_blend_factor(dst)?;
-    Some(wgpu::BlendState {
-        color: wgpu::BlendComponent {
-            src_factor,
-            dst_factor,
-            operation: wgpu::BlendOperation::Add,
-        },
-        alpha: wgpu::BlendComponent {
-            src_factor,
-            dst_factor,
-            operation: wgpu::BlendOperation::Add,
-        },
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,7 +229,6 @@ mod tests {
     fn blend_state_none_when_opaque_one_zero() {
         // `Blend One Zero` → opaque, no wgpu blend state needed.
         assert!(unity_blend_state(1, 0).is_none());
-        assert!(unity_single_blend_state(1, 0).is_none());
     }
 
     #[test]
@@ -266,18 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn single_blend_state_shares_factors_on_both_components() {
-        let bs = unity_single_blend_state(5, 10).expect("blend state");
-        assert_eq!(bs.color.src_factor, wgpu::BlendFactor::SrcAlpha);
-        assert_eq!(bs.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
-        assert_eq!(bs.alpha.src_factor, bs.color.src_factor);
-        assert_eq!(bs.alpha.dst_factor, bs.color.dst_factor);
-        assert_eq!(bs.alpha.operation, wgpu::BlendOperation::Add);
-    }
-
-    #[test]
     fn blend_state_rejects_unknown_factors() {
         assert!(unity_blend_state(11, 0).is_none());
-        assert!(unity_single_blend_state(0, 11).is_none());
     }
 }

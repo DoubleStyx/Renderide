@@ -8,7 +8,6 @@
 
 struct TestShaderMaterial {
     _Color: vec4<f32>,
-    _ZWrite: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: TestShaderMaterial;
@@ -45,6 +44,5 @@ fn vs_main(
 
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
-    let touch = mat._ZWrite * 0.0;
-    return rg::retain_globals_additive(vec4<f32>(mat._Color.rgb + vec3<f32>(touch), 1.0));
+    return rg::retain_globals_additive(vec4<f32>(mat._Color.rgb, 1.0));
 }

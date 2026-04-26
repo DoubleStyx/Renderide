@@ -110,7 +110,7 @@ fn vs_main(
     return out;
 }
 
-//#material forward_base
+//#material forward
 @fragment
 fn fs_main(
     @location(0) uv_normal: vec2<f32>,

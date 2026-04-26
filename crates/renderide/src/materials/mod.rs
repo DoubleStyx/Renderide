@@ -3,6 +3,31 @@
 //! Host material **properties** live in [`crate::assets::material::MaterialPropertyStore`] (IPC
 //! batches). **Shader program choice** (which embedded WGSL target to use) is routed via [`MaterialRouter`]
 //! from host shader asset ids updated by [`crate::assets::shader::resolve_shader_upload`].
+//!
+//! # Pipeline-state vs. shader-uniform boundary
+//!
+//! The host writes material properties as a flat `(property_id → value)` store. Each property
+//! lands in exactly one of three places:
+//!
+//! | Property kind | Examples | Resolved by | Lives in |
+//! |---|---|---|---|
+//! | Pipeline state | `_SrcBlend`, `_DstBlend`, `_ZWrite`, `_ZTest`, `_Cull`, `_Stencil*`, `_ColorMask`, `_OffsetFactor`, `_OffsetUnits` | [`MaterialBlendMode`] + [`MaterialRenderState`] | [`MaterialPipelineCacheKey`] (`wgpu::RenderPipeline` build) |
+//! | Shader uniform — value | `_Color`, `_Tint`, `_Cutoff`, `_Glossiness`, `*_ST` | Host property store, packed by reflection | `@group(1) @binding(0)` material struct |
+//! | Shader uniform — keyword | `_NORMALMAP`, `_ALPHATEST_ON`, `_ALPHABLEND_ON` | Host property OR [`crate::backend::embedded::uniform_pack`] inference (Unity routes these through `ShaderKeywords`, never on the wire) | `@group(1) @binding(0)` material struct |
+//! | Texture | `_MainTex`, `_NormalMap`, … | Host texture pools, bound by reflection | `@group(1) @binding(N)` |
+//!
+//! **Pipeline-state property names must NEVER appear in a shader's `@group(1) @binding(0)`
+//! uniform struct.** They are dead weight there: shaders never read them, but the host writes
+//! them and reflection allocates uniform space for them. The canonical list lives in
+//! [`MaterialPipelinePropertyIds::new`]; the build script in `crates/renderide/build.rs` rejects
+//! any material WGSL that violates this contract via `validate_no_pipeline_state_uniform_fields`.
+//! Two materials sharing a shader but differing in any pipeline-state property correctly resolve
+//! to distinct cached pipelines because [`MaterialPipelineCacheKey`] includes the resolved
+//! [`MaterialBlendMode`] and [`MaterialRenderState`].
+//!
+//! `_BlendMode` itself is not on the wire — FrooxEngine translates `MaterialProvider.SetBlendMode`
+//! to `_SrcBlend` / `_DstBlend` factors, and [`MaterialBlendMode::from_unity_blend_factors`]
+//! reconstructs the mode here.
 
 mod cache;
 mod embedded_raster_pipeline;

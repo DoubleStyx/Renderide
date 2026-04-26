@@ -29,16 +29,6 @@ struct UiUnlitMaterial {
     _MaskTex_ST: vec4<f32>,
     _Tint: vec4<f32>,
     _Cutoff: f32,
-    _SrcBlend: f32,
-    _DstBlend: f32,
-    _ZWrite: f32,
-    _Cull: f32,
-    _StencilComp: f32,
-    _Stencil: f32,
-    _StencilOp: f32,
-    _StencilWriteMask: f32,
-    _StencilReadMask: f32,
-    _ColorMask: f32,
     _ALPHATEST_ON: f32,
     _ALPHABLEND_ON: f32,
 }
@@ -85,7 +75,7 @@ fn vs_main(
     return out;
 }
 
-//#material forward_base
+//#material forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv_s = uvu::apply_st(in.uv, mat._MainTex_ST);

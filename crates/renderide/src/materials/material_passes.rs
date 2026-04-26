@@ -21,9 +21,7 @@ use crate::assets::material::{
     MaterialDictionary, MaterialPropertyLookupIds, MaterialPropertyValue, PropertyIdRegistry,
 };
 
-use super::material_pass_tables::{
-    unity_blend_factor, unity_blend_state, unity_single_blend_state,
-};
+use super::material_pass_tables::{unity_blend_factor, unity_blend_state};
 
 /// Const zero color-write mask for build-script-emitted pass tables.
 pub const COLOR_WRITES_NONE: wgpu::ColorWrites = wgpu::ColorWrites::empty();
@@ -75,10 +73,6 @@ impl MaterialBlendMode {
             Self::Opaque => Some((1, 0)),
             Self::UnityBlend { src, dst } => Some((src, dst)),
         }
-    }
-
-    fn unity_src_blend_factor(self) -> Option<u8> {
-        self.unity_blend_factors().map(|(src, _)| src)
     }
 
     /// Converts Unity `BlendMode` factor property values (`_SrcBlend`, `_DstBlend`).
@@ -219,10 +213,9 @@ pub enum MaterialPassState {
     /// Use the pass descriptor exactly as authored; runtime `_SrcBlend`/`_DstBlend` are ignored.
     #[default]
     Static,
-    /// Unity ForwardBase: `Blend [_SrcBlend] [_DstBlend]`, `ZWrite [_ZWrite]`.
-    UnityForwardBase,
-    /// Unity ForwardAdd: `Blend [_SrcBlend] One`, `ZWrite Off`.
-    UnityForwardAdd,
+    /// Forward pass with material-driven blend: `Blend [_SrcBlend] [_DstBlend]`, `ZWrite [_ZWrite]`.
+    /// One pass per material — directional + local lights are accumulated in a single shader call.
+    Forward,
 }
 
 /// Semantic pass kind authored as `//#material <kind>` above an `@fragment` entry point.
@@ -231,15 +224,17 @@ pub enum MaterialPassState {
 /// [`MaterialPassState`] that drives runtime blend-property overrides. Parsed in the build script;
 /// each tag produces one [`MaterialPassDesc`] via [`pass_from_kind`]. Runtime `MaterialRenderState`
 /// still overrides depth / cull / stencil / color-mask / depth-bias on top of these defaults.
+///
+/// Unity's `ForwardBase` + `ForwardAdd` split is not preserved: this renderer is clustered
+/// forward, so directional + local lights are evaluated together inside a single fragment call
+/// and a single pipeline. The remaining variants exist because they still drive a genuine
+/// second draw of the same mesh with different state (silhouette, stencil mask, depth prepass,
+/// layered overlay).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PassKind {
-    /// Opaque forward pass with no material-driven blend override; `Cull Back`, `ZWrite On`.
-    Static,
-    /// Unity ForwardBase: opaque/transparent forward pass whose blend is driven by `_SrcBlend`/`_DstBlend`.
-    ForwardBase,
-    /// Unity ForwardAdd: additive per-light pass. `ZWrite Off`; runtime `_SrcBlend` drives src, dst is `One`.
-    ForwardAdd,
-    /// Outline silhouette pass: like [`Self::Static`] but `Cull Front` so back faces of an inflated shell show.
+    /// Forward pass with material-driven blend / depth-write driven by `_SrcBlend`/`_DstBlend`/`_ZWrite`.
+    Forward,
+    /// Outline silhouette pass: `Cull Front` so back faces of an inflated shell show.
     Outline,
     /// Stencil-only pass: `Cull Front`, `ColorMask 0`, `ZWrite Off`; writes only to the stencil buffer.
     Stencil,
@@ -273,15 +268,8 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
         material_state: MaterialPassState::Static,
     };
     match kind {
-        PassKind::Static => base,
-        PassKind::ForwardBase => MaterialPassDesc {
-            material_state: MaterialPassState::UnityForwardBase,
-            ..base
-        },
-        PassKind::ForwardAdd => MaterialPassDesc {
-            depth_write: false,
-            write_mask: wgpu::ColorWrites::ALL,
-            material_state: MaterialPassState::UnityForwardAdd,
+        PassKind::Forward => MaterialPassDesc {
+            material_state: MaterialPassState::Forward,
             ..base
         },
         PassKind::Outline => MaterialPassDesc {
@@ -315,9 +303,7 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
 /// Short debug label for a [`PassKind`] used in pipeline names.
 const fn pass_kind_label(kind: PassKind) -> &'static str {
     match kind {
-        PassKind::Static => "static",
-        PassKind::ForwardBase => "forward_base",
-        PassKind::ForwardAdd => "forward_add",
+        PassKind::Forward => "forward",
         PassKind::Outline => "outline",
         PassKind::Stencil => "stencil",
         PassKind::DepthPrepass => "depth_prepass",
@@ -412,7 +398,7 @@ pub fn materialized_pass_for_blend_mode(
 ) -> MaterialPassDesc {
     match pass.material_state {
         MaterialPassState::Static => *pass,
-        MaterialPassState::UnityForwardBase => {
+        MaterialPassState::Forward => {
             let Some((src, dst)) = blend_mode.unity_blend_factors() else {
                 return *pass;
             };
@@ -425,15 +411,6 @@ pub fn materialized_pass_for_blend_mode(
                     wgpu::ColorWrites::COLOR
                 },
                 depth_write: src == 1 && dst == 0,
-                ..*pass
-            }
-        }
-        MaterialPassState::UnityForwardAdd => {
-            let src = blend_mode.unity_src_blend_factor().unwrap_or(1);
-            MaterialPassDesc {
-                blend: unity_single_blend_state(src, 1),
-                write_mask: wgpu::ColorWrites::ALL,
-                depth_write: false,
                 ..*pass
             }
         }
@@ -685,9 +662,9 @@ mod tests {
     }
 
     #[test]
-    fn unity_forward_base_uses_unity_separate_alpha_blend() {
+    fn forward_pass_uses_unity_separate_alpha_blend() {
         let pass = MaterialPassDesc {
-            material_state: MaterialPassState::UnityForwardBase,
+            material_state: MaterialPassState::Forward,
             ..default_pass(false, true)
         };
 

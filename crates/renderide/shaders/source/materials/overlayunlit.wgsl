@@ -100,7 +100,7 @@ fn alpha_over(front: vec4<f32>, behind: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(out_rgb, out_a);
 }
 
-//#material forward_base
+//#material forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let behind = sample_layer(

@@ -108,20 +108,6 @@ struct XiexeToon2Material {
 
     _VertexColorAlbedo: f32,
     _TilingMode: f32,
-    _Culling: f32,
-    _Cull: f32,
-    _ColorMask: f32,
-    _ZWrite: f32,
-    _SrcBlendBase: f32,
-    _DstBlendBase: f32,
-    _SrcBlendAdd: f32,
-    _DstBlendAdd: f32,
-
-    _Stencil: f32,
-    _StencilComp: f32,
-    _StencilOp: f32,
-    _StencilReadMask: f32,
-    _StencilWriteMask: f32,
 
     _UVSetAlbedo: f32,
     _UVSetNormal: f32,
@@ -791,7 +777,7 @@ fn apply_alpha(
     return 1.0;
 }
 
-fn fragment_forward_base(
+fn fragment_forward(
     frag_pos: vec4<f32>,
     front_facing: bool,
     world_pos: vec3<f32>,
@@ -806,29 +792,7 @@ fn fragment_forward_base(
 ) -> vec4<f32> {
     let s = sample_surface(front_facing, world_pos, world_n, world_t, world_b, uv_primary, uv_secondary, color);
     let alpha = apply_alpha(alpha_mode, frag_pos.xy, world_pos, uv_primary, s.albedo.a, s.clip_alpha);
-    var rgb = clustered_toon_lighting(frag_pos.xy, s, world_pos, view_layer, true, false, true);
-    if (alpha_mode == ALPHA_TRANSPARENT) {
-        rgb = rgb * alpha;
-    }
-    return rg::retain_globals_additive(vec4<f32>(rgb, alpha));
-}
-
-fn fragment_forward_delta(
-    frag_pos: vec4<f32>,
-    front_facing: bool,
-    world_pos: vec3<f32>,
-    world_n: vec3<f32>,
-    world_t: vec3<f32>,
-    world_b: vec3<f32>,
-    uv_primary: vec2<f32>,
-    uv_secondary: vec2<f32>,
-    color: vec4<f32>,
-    view_layer: u32,
-    alpha_mode: u32,
-) -> vec4<f32> {
-    let s = sample_surface(front_facing, world_pos, world_n, world_t, world_b, uv_primary, uv_secondary, color);
-    let alpha = apply_alpha(alpha_mode, frag_pos.xy, world_pos, uv_primary, s.albedo.a, s.clip_alpha);
-    var rgb = clustered_toon_lighting(frag_pos.xy, s, world_pos, view_layer, false, true, false);
+    var rgb = clustered_toon_lighting(frag_pos.xy, s, world_pos, view_layer, true, true, true);
     if (alpha_mode == ALPHA_TRANSPARENT) {
         rgb = rgb * alpha;
     }
