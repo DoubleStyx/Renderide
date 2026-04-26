@@ -161,11 +161,10 @@ fn cubemap_mip_src_to_upload_pixels(
             if let Some(v) = flip_compressed_mip_block_rows_y(fmt_format, w, h, mip_src) {
                 v
             } else {
-                logger::warn!(
-                    "cubemap {asset_id} face {face} mip {mip_i}: flip_y skipped for compressed {:?} (vertical flip not implemented for this block-compressed format)",
+                return Err(TextureUploadError::from(format!(
+                    "cubemap {asset_id} face {face} mip {mip_i}: flip_y unsupported for compressed {:?}; reject to avoid uploading inverted data under the engine's V-flip sampling convention",
                     fmt_format
-                );
-                mip_src.to_vec()
+                )));
             }
         } else {
             mip_src.to_vec()

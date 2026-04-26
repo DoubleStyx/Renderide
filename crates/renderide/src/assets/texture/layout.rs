@@ -171,7 +171,10 @@ fn flip_bc5_block_in_place(block: &mut [u8]) {
     flip_bc4_block_in_place(&mut block[8..16]);
 }
 
-/// Reverses vertical texel rows inside one compressed block for [`TextureFormat`] **BC1–BC5** only.
+/// Reverses vertical texel rows inside one compressed block when the format has a known in-place
+/// flip ([`TextureFormat`] **BC1–BC5**). For **BC6H**, **BC7**, **ETC2** the in-block flip is mode
+/// dependent and is intentionally skipped — the caller still reorders block rows so the macro
+/// orientation is correct, accepting a residual 4-pixel zigzag inside each block row.
 fn flip_compressed_block_in_place(block: &mut [u8], format: TextureFormat) {
     match format {
         TextureFormat::BC1 => flip_bc1_block_in_place(block),
@@ -183,11 +186,17 @@ fn flip_compressed_block_in_place(block: &mut [u8], format: TextureFormat) {
     }
 }
 
-/// Returns `true` if [`flip_compressed_mip_block_rows_y`] can flip **BC1–BC5** host mips for `flip_y`.
+/// Whether [`flip_compressed_mip_block_rows_y`] can produce a fully flipped mip for `format`.
 ///
-/// **BC6H**, **BC7**, **ETC2**, and **ASTC** use mode-dependent block layouts; callers should treat
-/// [`flip_compressed_mip_block_rows_y`] returning [`None`] as “flip not supported” after validating
-/// mip byte length.
+/// **BC1–BC5** support both block-row reordering and the in-block texel flip. **BC6H**, **BC7**, and
+/// **ETC2** use mode-dependent block layouts, so the function reorders block rows only and returns
+/// the result with a documented residual zigzag — those still resolve to `true` here because the
+/// upload path *is* able to make the texture macroscopically upright.
+///
+/// **ASTC** has block sizes from 4×4 up to 12×12 texels; a block-row-only reorder would expose
+/// up-to-12-pixel zigzag artifacts which are too visible to be considered "flipped". ASTC stays
+/// unsupported and [`flip_compressed_mip_block_rows_y`] returns [`None`] for it so callers surface
+/// a hard upload error.
 pub fn flip_compressed_mip_block_rows_y_supported(format: TextureFormat) -> bool {
     matches!(
         format,
@@ -196,19 +205,33 @@ pub fn flip_compressed_mip_block_rows_y_supported(format: TextureFormat) -> bool
             | TextureFormat::BC3
             | TextureFormat::BC4
             | TextureFormat::BC5
+            | TextureFormat::BC6H
+            | TextureFormat::BC7
+            | TextureFormat::ETC2RGB
+            | TextureFormat::ETC2RGBA1
+            | TextureFormat::ETC2RGBA8
     )
 }
 
 /// Reverses the vertical order of **block rows** in a tight-packed compressed mip (D3D-style layout:
-/// row-major blocks; see [`crate::assets::texture::decode::decode_bc1_to_rgba8`] outer `byi` loop),
-/// then reverses **texel rows inside each block** so the image is not left in a zigzag pattern.
+/// row-major blocks; see [`crate::assets::texture::decode::decode_bc1_to_rgba8`] outer `byi` loop).
 ///
-/// Supported host formats: **BC1–BC5** only. Returns [`None`] for **BC6H**, **BC7**, **ETC2**, **ASTC**,
-/// or when the mip length does not match [`mip_byte_len`].
+/// For **BC1–BC5** also reverses **texel rows inside each block** so the result is pixel-exact.
 ///
-/// Used when host data is top-down and [`crate::shared::SetTexture2DData::flip_y`] requests conversion
-/// to GPU bottom-up storage while the [`wgpu::TextureFormat`] is native block-compressed (texel row
-/// flips do not apply).
+/// For **BC6H**, **BC7**, and **ETC2** the per-block bit layout depends on a per-block mode field
+/// and a generic in-place flip is not possible without a full decoder. Those formats are flipped
+/// at block granularity only — macroscopically upright but with a residual ≤4-pixel zigzag along
+/// horizontal block edges. This is preferred to the prior silent unflipped fallback (which left
+/// the entire texture inverted under the engine's V-flip shaders) and to a hard upload error
+/// (which would make those textures disappear entirely). All 4×4-block formats are handled this
+/// way; **ASTC** (block size up to 12×12) is not handled and returns [`None`].
+///
+/// Returns [`None`] for **ASTC** and any other unsupported format, or when the mip length does not
+/// match [`mip_byte_len`].
+///
+/// Used when host data is top-down and [`crate::shared::SetTexture2DData::flip_y`] requests
+/// conversion to GPU bottom-up storage while the [`wgpu::TextureFormat`] is native block-compressed
+/// (per-texel row flips do not apply).
 pub fn flip_compressed_mip_block_rows_y(
     format: TextureFormat,
     width: u32,

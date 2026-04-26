@@ -119,12 +119,10 @@ fn mip_src_to_upload_pixels(
         if let Some(v) = flip_compressed_mip_block_rows_y(fmt_format, gw, gh, mip_src) {
             Ok(v)
         } else {
-            logger::warn!(
-                "texture {asset_id} mip {}: flip_y skipped for compressed {:?} (vertical flip not implemented for this block-compressed format)",
-                mip_index,
+            Err(TextureUploadError::from(format!(
+                "texture {asset_id} mip {mip_index}: flip_y unsupported for compressed {:?}; reject to avoid uploading inverted data under the engine's V-flip sampling convention",
                 fmt_format
-            );
-            Ok(mip_src.to_vec())
+            )))
         }
     } else {
         Ok(mip_src.to_vec())

@@ -3,8 +3,9 @@
 use glam::IVec2;
 
 use super::layout::{
-    flip_compressed_mip_block_rows_y, flip_compressed_mip_block_rows_y_supported, mip_byte_len,
-    mip_dimensions_at_level, mip_tight_bytes_per_texel, validate_mip_upload_layout,
+    block_extent, bytes_per_compressed_block, flip_compressed_mip_block_rows_y,
+    flip_compressed_mip_block_rows_y_supported, mip_byte_len, mip_dimensions_at_level,
+    mip_tight_bytes_per_texel, validate_mip_upload_layout,
 };
 use crate::shared::{SetTexture2DData, TextureFormat};
 
@@ -152,24 +153,72 @@ fn flip_bc5_double_flip_restores_mip() {
 }
 
 #[test]
-fn flip_compressed_bc6h_returns_none() {
+fn flip_compressed_bc6h_block_row_reorder_is_some() {
+    // BC6H is now flipped at block-row granularity (no in-block flip; documented zigzag).
     let len = mip_byte_len(TextureFormat::BC6H, 4, 4).unwrap() as usize;
     let mip = vec![0u8; len];
-    assert!(flip_compressed_mip_block_rows_y(TextureFormat::BC6H, 4, 4, &mip).is_none());
+    assert!(flip_compressed_mip_block_rows_y(TextureFormat::BC6H, 4, 4, &mip).is_some());
 }
 
 #[test]
-fn flip_compressed_mip_block_rows_y_supported_bc1_through_bc5_only() {
+fn flip_bc7_reorders_block_rows_without_inblock_flip() {
+    // 2×2 grid of BC7 blocks (8×8 texels). Each block is 16 bytes; tag every byte in a block
+    // with the block-row index so we can observe the reorder. The bytes inside each block must
+    // be untouched (no in-block flip available for BC7).
+    let bpb = bytes_per_compressed_block(TextureFormat::BC7).unwrap() as usize;
+    let (bw, bh) = block_extent(TextureFormat::BC7);
+    let blocks_x: u32 = 2;
+    let blocks_y: u32 = 2;
+    let w = blocks_x * bw;
+    let h = blocks_y * bh;
+    let mut src = vec![0u8; (blocks_x as usize) * (blocks_y as usize) * bpb];
+    for byi in 0..blocks_y {
+        for bxi in 0..blocks_x {
+            let off = ((byi as usize) * (blocks_x as usize) + (bxi as usize)) * bpb;
+            for (i, b) in src[off..off + bpb].iter_mut().enumerate() {
+                *b = ((byi as u8) << 4) | (bxi as u8) | ((i as u8) << 1);
+            }
+        }
+    }
+    let dst = flip_compressed_mip_block_rows_y(TextureFormat::BC7, w, h, &src).expect("flips BC7");
+    let row_stride = (blocks_x as usize) * bpb;
+    // Block-row 0 of dst must equal block-row (blocks_y-1) of src, byte-for-byte.
+    assert_eq!(&dst[0..row_stride], &src[row_stride..2 * row_stride]);
+    assert_eq!(&dst[row_stride..2 * row_stride], &src[0..row_stride]);
+}
+
+#[test]
+fn flip_compressed_astc_returns_none() {
+    // ASTC stays unsupported (block sizes up to 12×12 → too-visible zigzag without a real decoder).
+    let len = mip_byte_len(TextureFormat::ASTC8x8, 16, 16).unwrap() as usize;
+    let mip = vec![0u8; len];
+    assert!(flip_compressed_mip_block_rows_y(TextureFormat::ASTC8x8, 16, 16, &mip).is_none());
+}
+
+#[test]
+fn flip_compressed_mip_block_rows_y_supported_4x4_blocks_only() {
     assert!(flip_compressed_mip_block_rows_y_supported(
         TextureFormat::BC1
     ));
     assert!(flip_compressed_mip_block_rows_y_supported(
         TextureFormat::BC5
     ));
-    assert!(!flip_compressed_mip_block_rows_y_supported(
+    assert!(flip_compressed_mip_block_rows_y_supported(
         TextureFormat::BC6H
     ));
-    assert!(!flip_compressed_mip_block_rows_y_supported(
+    assert!(flip_compressed_mip_block_rows_y_supported(
+        TextureFormat::BC7
+    ));
+    assert!(flip_compressed_mip_block_rows_y_supported(
         TextureFormat::ETC2RGB
+    ));
+    assert!(flip_compressed_mip_block_rows_y_supported(
+        TextureFormat::ETC2RGBA8
+    ));
+    assert!(!flip_compressed_mip_block_rows_y_supported(
+        TextureFormat::ASTC4x4
+    ));
+    assert!(!flip_compressed_mip_block_rows_y_supported(
+        TextureFormat::ASTC8x8
     ));
 }
