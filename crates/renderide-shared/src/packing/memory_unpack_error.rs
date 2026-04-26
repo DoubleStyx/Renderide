@@ -18,6 +18,14 @@ pub enum MemoryUnpackError {
     /// `count * size_of::<T>()` overflowed `usize`.
     #[error("length overflow for POD access")]
     LengthOverflow,
+    /// A string field declared more UTF-16 code units than [`super::memory_unpacker::MAX_STRING_LEN`].
+    #[error("string length {requested} exceeds MAX_STRING_LEN ({max})")]
+    StringTooLong {
+        /// UTF-16 code units the wire field requested.
+        requested: usize,
+        /// Cap enforced by the unpacker.
+        max: usize,
+    },
 }
 
 impl MemoryUnpackError {

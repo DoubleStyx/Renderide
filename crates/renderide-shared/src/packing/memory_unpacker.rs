@@ -17,6 +17,24 @@ pub struct MemoryUnpacker<'a, 'pool, P: MemoryPackerEntityPool> {
     pool: &'pool mut P,
 }
 
+/// Maximum UTF-16 code units accepted by [`MemoryUnpacker::read_str`].
+///
+/// Caps speculative allocation when an attacker-influenced length prefix would otherwise
+/// drive a multi-megabyte `String` allocation per field. `1 << 20` (one mebi) code units is
+/// two megabytes of UTF-16 — comfortably above any legitimate IPC string.
+pub const MAX_STRING_LEN: usize = 1 << 20;
+
+/// Returns a `Vec::with_capacity` hint that does not exceed the unread buffer length.
+///
+/// Each element of any list reader consumes at least one wire byte, so a `count` larger than
+/// the remaining buffer cannot decode successfully — the per-element loop will surface
+/// [`MemoryUnpackError::Underrun`]. This helper keeps the speculative pre-allocation bounded
+/// by the input size so a malicious `i32::MAX` count cannot reserve gigabytes ahead of the
+/// real underrun error.
+fn alloc_hint(count: usize, remaining_bytes: usize) -> usize {
+    count.min(remaining_bytes)
+}
+
 impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     /// Starts at the beginning of `buffer`.
     pub fn new(buffer: &'a [u8], pool: &'pool mut P) -> Self {
@@ -82,6 +100,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
 
     /// Host string: UTF-16 LE code units with `i32` length. `-1` → [`None`]. Surrogate halves or
     /// invalid sequences decode to the empty string (defensive; the host typically sends valid UTF-16).
+    /// Lengths above [`MAX_STRING_LEN`] are rejected with [`MemoryUnpackError::StringTooLong`].
     pub fn read_str(&mut self) -> Result<Option<String>, MemoryUnpackError> {
         let len = self.read::<i32>()?;
         if len < 0 {
@@ -90,7 +109,14 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         if len == 0 {
             return Ok(Some(String::new()));
         }
-        let utf16: Vec<u16> = self.access::<u16>(len as usize)?;
+        let len = len as usize;
+        if len > MAX_STRING_LEN {
+            return Err(MemoryUnpackError::StringTooLong {
+                requested: len,
+                max: MAX_STRING_LEN,
+            });
+        }
+        let utf16: Vec<u16> = self.access::<u16>(len)?;
         Ok(Some(String::from_utf16(&utf16).unwrap_or_default()))
     }
 
@@ -125,7 +151,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     ) -> Result<Vec<T>, WireDecodeError> {
         let count = self.read::<i32>()?;
         let count = if count < 0 { 0 } else { count as usize };
-        let mut list = Vec::with_capacity(count);
+        let mut list = Vec::with_capacity(alloc_hint(count, self.buffer.len()));
         for _ in 0..count {
             let mut obj = self.pool.borrow::<T>();
             obj.unpack(self)?;
@@ -141,7 +167,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     {
         let count = self.read::<i32>()?;
         let count = if count < 0 { 0 } else { count as usize };
-        let mut list = Vec::with_capacity(count);
+        let mut list = Vec::with_capacity(alloc_hint(count, self.buffer.len()));
         for _ in 0..count {
             list.push(decode(self)?);
         }
@@ -159,7 +185,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     pub fn read_enum_value_list<E: EnumRepr>(&mut self) -> Result<Vec<E>, MemoryUnpackError> {
         let count = self.read::<i32>()?;
         let count = if count < 0 { 0 } else { count as usize };
-        let mut list = Vec::with_capacity(count);
+        let mut list = Vec::with_capacity(alloc_hint(count, self.buffer.len()));
         for _ in 0..count {
             list.push(E::from_i32(self.read::<i32>()?));
         }
@@ -170,7 +196,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     pub fn read_string_list(&mut self) -> Result<Vec<Option<String>>, MemoryUnpackError> {
         let count = self.read::<i32>()?;
         let count = if count < 0 { 0 } else { count as usize };
-        let mut list = Vec::with_capacity(count);
+        let mut list = Vec::with_capacity(alloc_hint(count, self.buffer.len()));
         for _ in 0..count {
             list.push(self.read_str()?);
         }
@@ -192,7 +218,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
     {
         let count = self.read::<i32>()?;
         let count = if count < 0 { 0 } else { count as usize };
-        let mut list = Vec::with_capacity(count);
+        let mut list = Vec::with_capacity(alloc_hint(count, self.buffer.len()));
         for _ in 0..count {
             list.push(sublist_reader(self)?);
         }

@@ -140,8 +140,13 @@ impl Subscriber {
         let write_offset = header.write_offset.load(Ordering::SeqCst);
         let ring = self.res.ring();
         // SAFETY: `read_offset` is produced by the publisher after a space check and the wire
-        // protocol guarantees a contiguous eight-byte `MessageHeader` at this slot.
-        let msg = unsafe { ring.message_header_at(read_offset) };
+        // protocol guarantees a contiguous eight-byte `MessageHeader` at this slot. A `None`
+        // return means the slot is misaligned (corrupted publisher); drain past every queued
+        // slot rather than dereference a misaligned pointer.
+        let Some(msg) = (unsafe { ring.message_header_at(read_offset) }) else {
+            header.read_offset.store(write_offset, Ordering::SeqCst);
+            return None;
+        };
         loop {
             match msg.state.compare_exchange(
                 STATE_READY,
@@ -160,12 +165,24 @@ impl Subscriber {
             }
         }
         let body_len = msg.body_length as i64;
+        let capacity = self.res.capacity;
+        if body_len < 0 || body_len > capacity {
+            // Corrupted slot: a sane publisher only writes message bodies whose padded length
+            // fits in the ring. Drain past every queued slot rather than reading a giant or
+            // negative body length into `Vec::with_capacity`.
+            header.read_offset.store(write_offset, Ordering::SeqCst);
+            return None;
+        }
         let padded = padded_message_length(body_len);
+        if padded > capacity {
+            header.read_offset.store(write_offset, Ordering::SeqCst);
+            return None;
+        }
         let body_offset = read_offset + MESSAGE_BODY_OFFSET;
         let body_len_usize = body_len as usize;
         let msg_result = ring.read(body_offset, body_len_usize);
         ring.clear(read_offset, padded as usize);
-        let new_read = (read_offset + padded) % (self.res.capacity * 2);
+        let new_read = (read_offset + padded) % (capacity * 2);
         header.read_offset.store(new_read, Ordering::SeqCst);
         Some(msg_result)
     }
