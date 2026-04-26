@@ -4,7 +4,7 @@
 //! in `config.toml` (and `RENDERIDE_GPU_VALIDATION`), plus `WGPU_*` env overrides via [`crate::gpu::instance_flags_for_gpu_init`].
 
 use std::ffi::c_void;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ash::khr::timeline_semaphore as khr_timeline_semaphore;
 use ash::vk::{self, Handle};
@@ -16,6 +16,32 @@ use wgpu::hal::api::Vulkan as HalVulkan;
 use wgpu::wgt;
 
 use super::input::{load_manifest, ManifestError, OpenxrInput, ProfileExtensionGates};
+
+/// Cached `vkGetInstanceProcAddr` function pointer captured from the active [`ash::Entry`].
+/// Installed by [`create_openxr_vulkan_instance`] before calling
+/// [`xr::Instance::create_vulkan_instance`]; consumed by [`vk_get_instance_proc_addr_shim`].
+static CACHED_VK_GET_INSTANCE_PROC_ADDR: OnceLock<vk::PFN_vkGetInstanceProcAddr> = OnceLock::new();
+
+/// OpenXR-shaped wrapper around the cached `vkGetInstanceProcAddr`.
+///
+/// OpenXR's `xrCreateVulkanInstanceKHR` expects a function pointer typed
+/// `unsafe extern "system" fn(*const c_void, *const c_char) -> Option<...>`, while ash exposes the
+/// same loader entry typed `unsafe extern "system" fn(vk::Instance, *const c_char) -> Option<...>`.
+/// `vk::Instance` is a `#[repr(transparent)]` pointer-sized handle so the calling convention is
+/// identical at the ABI level, but transmuting between fn-pointer types is not language-blessed.
+/// This shim instead receives the OpenXR-typed call and forwards through the cached, properly
+/// typed ash entry — no fn-pointer transmute is required.
+unsafe extern "system" fn vk_get_instance_proc_addr_shim(
+    instance: *const c_void,
+    name: *const std::os::raw::c_char,
+) -> Option<unsafe extern "system" fn()> {
+    let real = CACHED_VK_GET_INSTANCE_PROC_ADDR.get().copied()?;
+    let handle = vk::Instance::from_raw(instance as usize as u64);
+    // SAFETY: `real` is the live `vkGetInstanceProcAddr` pointer captured from a successfully
+    // loaded `ash::Entry`; OpenXR forwards the original `instance` handle and `name` pointer
+    // verbatim, so the contract for `vkGetInstanceProcAddr` is upheld.
+    unsafe { real(handle, name) }
+}
 
 /// WGPU + OpenXR objects produced by [`init_wgpu_openxr`].
 pub struct XrWgpuHandles {
@@ -320,27 +346,19 @@ fn create_openxr_vulkan_instance(
         .application_info(&vk_app_info)
         .enabled_extension_names(&extensions_cstr);
 
-    // SAFETY: transmuting `get_instance_proc_addr`'s first argument from `vk::Instance` to
-    // `*const c_void` is an ABI-compatible type pun — both are pointer-sized handles and OpenXR
-    // forwards them verbatim. `create_info` is fully initialised above and borrowed only for the
-    // call's duration. The resulting `vk::Instance` handle is loaded through `ash::Instance::load`,
-    // which ties it to `vk_entry`'s function table.
+    // Install the loader entry pointer behind the OpenXR-shaped shim; subsequent OpenXR calls
+    // forward through `vk_get_instance_proc_addr_shim` without any fn-pointer transmute.
+    let _ = CACHED_VK_GET_INSTANCE_PROC_ADDR.set(vk_entry.static_fn().get_instance_proc_addr);
+    // SAFETY: `xr_instance` and `xr_system_id` are valid; `create_info` is fully initialised
+    // above and borrowed for the call's duration only. The shim above receives the OpenXR
+    // arguments and forwards to the live `vkGetInstanceProcAddr` captured from `vk_entry`. The
+    // resulting raw `VkInstance` handle is wrapped via `ash::Instance::load` so it shares the
+    // same loader function table.
     let vk_instance = unsafe {
         let raw = xr_instance
             .create_vulkan_instance(
                 xr_system_id,
-                std::mem::transmute::<
-                    unsafe extern "system" fn(
-                        vk::Instance,
-                        *const i8,
-                    )
-                        -> Option<unsafe extern "system" fn()>,
-                    unsafe extern "system" fn(
-                        *const c_void,
-                        *const i8,
-                    )
-                        -> Option<unsafe extern "system" fn()>,
-                >(vk_entry.static_fn().get_instance_proc_addr),
+                vk_get_instance_proc_addr_shim,
                 &create_info as *const _ as *const _,
             )?
             .map_err(vk::Result::from_raw)?;

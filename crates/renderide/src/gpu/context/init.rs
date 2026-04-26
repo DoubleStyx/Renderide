@@ -165,14 +165,11 @@ impl GpuContext {
     ) -> Result<Self, GpuError> {
         let (instance, instance_flags) = build_wgpu_instance(gpu_validation_layers);
 
-        let surface = instance
+        // wgpu infers `Surface<'static>` directly from an `Arc<Window>` source, so no lifetime
+        // extension is needed; the `Arc` is then stored alongside the surface in `GpuContext`.
+        let surface_safe: wgpu::Surface<'static> = instance
             .create_surface(window.clone())
             .map_err(|e| GpuError::Surface(format!("{e:?}")))?;
-
-        // SAFETY: the window `Arc` is kept alive for the lifetime of `GpuContext` (stored in
-        // `Self`), so extending the surface's borrow to `'static` is sound — the underlying
-        // handle outlives every use of `surface_safe`.
-        let surface_safe: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
 
         let adapter = select_adapter(&instance, Some(&surface_safe), power_preference).await?;
 
@@ -362,12 +359,11 @@ impl GpuContext {
         vsync: bool,
     ) -> Result<Self, GpuError> {
         install_uncaptured_error_handler(device.as_ref());
-        let surface = instance
+        // wgpu infers `Surface<'static>` directly from an `Arc<Window>` source, so no lifetime
+        // extension is needed; the `Arc` is then stored alongside the surface in `GpuContext`.
+        let surface_safe: wgpu::Surface<'static> = instance
             .create_surface(window.clone())
             .map_err(|e| GpuError::Surface(format!("{e:?}")))?;
-        // SAFETY: the window `Arc` is owned by `GpuContext` for the rest of the process, so the
-        // borrow attached to `surface` outlives every access — the `'static` cast is sound.
-        let surface_safe: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
         let size = window.inner_size();
         let mut config = surface_safe
             .get_default_config(adapter, size.width.max(1), size.height.max(1))
