@@ -1,7 +1,7 @@
 //! Renderer config window: display, rendering, and debug settings with immediate disk sync.
 
 use crate::config::{
-    save_renderer_settings, MsaaSampleCount, PowerPreferenceSetting, SceneColorFormat,
+    save_renderer_settings, MsaaSampleCount, PowerPreferenceSetting, SceneColorFormat, VsyncMode,
 };
 
 use imgui::Drag;
@@ -43,10 +43,18 @@ fn renderer_config_rendering_section(
 ) {
     ui.text("Rendering");
     ui.indent();
-    if ui.checkbox("VSync", &mut g.rendering.vsync) {
-        *dirty = true;
+    ui.text_disabled("VSync (swapchain present mode; applies immediately, no restart).");
+    for (i, &mode) in VsyncMode::ALL.iter().enumerate() {
+        let _id = ui.push_id_int(200 + i as i32);
+        if ui
+            .selectable_config(mode.label())
+            .selected(g.rendering.vsync == mode)
+            .build()
+        {
+            g.rendering.vsync = mode;
+            *dirty = true;
+        }
     }
-    ui.text_disabled("Swapchain present mode; applies immediately (no restart).");
     ui.text_disabled("MSAA (main window forward path; clamped to GPU max).");
     for (i, &msaa) in MsaaSampleCount::ALL.iter().enumerate() {
         let _id = ui.push_id_int(i as i32);

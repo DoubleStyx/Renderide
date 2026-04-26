@@ -88,9 +88,10 @@ fn load_renderer_settings_from_toml_and_env() {
         Some(toml.as_path()),
         "resolve.loaded_path must match the fixture"
     );
-    assert!(
+    assert_eq!(
         result.settings.rendering.vsync,
-        "TOML vsync=true should be reflected in loaded settings"
+        renderide::config::VsyncMode::On,
+        "TOML vsync=true must deserialize as VsyncMode::On"
     );
     assert_eq!(
         result.settings.display.focused_fps_cap, 30,
@@ -100,9 +101,10 @@ fn load_renderer_settings_from_toml_and_env() {
     // --- Case 2: RENDERIDE_* env override beats the TOML value ---
     std::env::set_var(VSYNC_ENV_VAR, "false");
     let result = load_renderer_settings(ConfigFilePolicy::Load);
-    assert!(
-        !result.settings.rendering.vsync,
-        "RENDERIDE_RENDERING__VSYNC=false must override TOML vsync=true"
+    assert_eq!(
+        result.settings.rendering.vsync,
+        renderide::config::VsyncMode::Off,
+        "RENDERIDE_RENDERING__VSYNC=false must override TOML vsync=true to VsyncMode::Off"
     );
     std::env::remove_var(VSYNC_ENV_VAR);
 

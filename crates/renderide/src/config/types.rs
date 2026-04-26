@@ -1,6 +1,7 @@
 //! Serde/TOML schema for renderer settings (`[display]`, `[rendering]`, `[debug]`, `[post_processing]`).
 
 use crate::gpu::REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE;
+use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 use wgpu::TextureFormat;
 
@@ -32,19 +33,11 @@ impl Default for DisplaySettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenderingSettings {
-    /// Vertical sync via swapchain present mode ([`wgpu::PresentMode::AutoVsync`]); applied live
-    /// without restart (see [`crate::gpu::GpuContext::set_present_mode`]).
-    ///
-    /// Acts as the fallback when [`Self::present_mode`] is [`PresentModePref::Auto`]. Existing
-    /// `vsync = true/false` configs keep their current behavior; users who want low-latency
-    /// `Mailbox` or stutter-tolerant `FifoRelaxed` set `present_mode` explicitly.
-    pub vsync: bool,
-    /// Explicit swapchain present mode override; [`PresentModePref::Auto`] (default) defers to
-    /// [`Self::vsync`] for backward compatibility with pre-Mailbox configs. Applied live without
-    /// restart through [`crate::gpu::GpuContext::set_present_mode`]; falls back to a supported
-    /// mode at the wgpu layer when the surface doesn't advertise the requested one.
-    #[serde(rename = "present_mode", default)]
-    pub present_mode: PresentModePref,
+    /// Swapchain vsync mode ([`VsyncMode::Off`] / [`VsyncMode::On`] / [`VsyncMode::Adaptive`]);
+    /// applied live without restart through [`crate::gpu::GpuContext::set_present_mode`]. Old
+    /// `vsync = true/false` configs still load (a custom deserializer maps the booleans to
+    /// [`VsyncMode::On`] and [`VsyncMode::Off`]).
+    pub vsync: VsyncMode,
     /// Wall-clock budget per frame for cooperative mesh/texture integration ([`crate::runtime::RendererRuntime::run_asset_integration`]), in milliseconds.
     #[serde(rename = "asset_integration_budget_ms")]
     pub asset_integration_budget_ms: u32,
@@ -87,8 +80,7 @@ pub struct RenderingSettings {
 impl Default for RenderingSettings {
     fn default() -> Self {
         Self {
-            vsync: false,
-            present_mode: PresentModePref::default(),
+            vsync: VsyncMode::default(),
             asset_integration_budget_ms: 3,
             reported_max_texture_size: 0,
             render_texture_hdr_color: false,
@@ -101,70 +93,90 @@ impl Default for RenderingSettings {
 }
 
 impl RenderingSettings {
-    /// Resolves the explicit [`Self::present_mode`] override against the legacy [`Self::vsync`]
-    /// boolean. [`PresentModePref::Auto`] mirrors the historical `vsync ? AutoVsync : AutoNoVsync`
-    /// mapping; every other variant returns the directly-requested wgpu mode.
+    /// Maps [`Self::vsync`] to the wgpu present mode passed to `surface.configure`.
     ///
-    /// The wgpu layer falls back to `Fifo` if the surface doesn't advertise the requested mode,
-    /// so callers can plumb the result of this method directly into `surface.configure(..)`.
+    /// `Off` → `AutoNoVsync` (immediate, may tear), `On` → `AutoVsync` (FIFO, no tear),
+    /// `Adaptive` → `FifoRelaxed` (vsync most of the time, tears on missed deadlines). The wgpu
+    /// layer falls back to `Fifo` when the surface doesn't advertise the requested mode, so this
+    /// can be plumbed directly into `surface.configure(..)` without surface-cap probing here.
     pub fn resolved_present_mode(&self) -> wgpu::PresentMode {
-        match self.present_mode {
-            PresentModePref::Auto => {
-                if self.vsync {
-                    wgpu::PresentMode::AutoVsync
-                } else {
-                    wgpu::PresentMode::AutoNoVsync
-                }
-            }
-            PresentModePref::Off => wgpu::PresentMode::AutoNoVsync,
-            PresentModePref::Vsync => wgpu::PresentMode::AutoVsync,
-            PresentModePref::Mailbox => wgpu::PresentMode::Mailbox,
-            PresentModePref::FifoRelaxed => wgpu::PresentMode::FifoRelaxed,
+        match self.vsync {
+            VsyncMode::Off => wgpu::PresentMode::AutoNoVsync,
+            VsyncMode::On => wgpu::PresentMode::AutoVsync,
+            VsyncMode::Adaptive => wgpu::PresentMode::FifoRelaxed,
         }
     }
 }
 
-/// Swapchain present-mode preference persisted in `config.toml` as `[rendering] present_mode`.
+/// Swapchain vsync mode persisted in `config.toml` as `[rendering] vsync`.
 ///
-/// Defaults to [`Self::Auto`] so existing configs keep their `vsync = true/false` semantics;
-/// the explicit variants opt into low-latency or stutter-tolerant behaviors that the wgpu surface
-/// may downgrade to `Fifo` when unsupported.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Three values matching what desktop and VR titles typically expose: **Off** (tearing, lowest
+/// latency), **On** (vsync, no tearing, smoothest), **Adaptive** (vsync when the renderer hits
+/// the deadline, tear instead of stutter when it misses — `FifoRelaxed`). Defaults to [`Self::Off`].
+///
+/// A custom [`Deserialize`] also accepts the historical `vsync = true / false` booleans so older
+/// `config.toml` files keep loading without manual migration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PresentModePref {
-    /// Use the legacy [`RenderingSettings::vsync`] boolean.
+pub enum VsyncMode {
+    /// No vsync. Lowest latency, may tear; CPU/GPU run uncapped.
     #[default]
-    Auto,
-    /// Disable vsync regardless of `vsync` (`AutoNoVsync`).
     Off,
-    /// Force vsync (`AutoVsync`).
-    Vsync,
-    /// Triple-buffered low-latency present (`Mailbox`); falls back to `Fifo` if unsupported.
-    Mailbox,
-    /// Vsync with permitted tearing under deadline misses (`FifoRelaxed`).
-    #[serde(rename = "fifo_relaxed")]
-    FifoRelaxed,
+    /// Standard vsync (FIFO). No tearing, highest latency, drops to half-rate on misses.
+    On,
+    /// Adaptive vsync (`FifoRelaxed`): vsync until a frame misses its deadline, then tears once
+    /// instead of waiting another full vblank. Falls back to FIFO on surfaces that don't support it.
+    Adaptive,
 }
 
-impl PresentModePref {
+impl VsyncMode {
     /// All variants for ImGui pickers and config round-trips.
-    pub const ALL: [Self; 5] = [
-        Self::Auto,
-        Self::Off,
-        Self::Vsync,
-        Self::Mailbox,
-        Self::FifoRelaxed,
-    ];
+    pub const ALL: [Self; 3] = [Self::Off, Self::On, Self::Adaptive];
 
     /// Short label for the renderer config window.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Auto => "Auto (follow vsync)",
-            Self::Off => "Off (no vsync)",
-            Self::Vsync => "Vsync (FIFO)",
-            Self::Mailbox => "Mailbox (low latency)",
-            Self::FifoRelaxed => "FIFO Relaxed",
+            Self::Off => "Off",
+            Self::On => "On",
+            Self::Adaptive => "Adaptive",
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for VsyncMode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct VsyncModeVisitor;
+
+        impl<'de> Visitor<'de> for VsyncModeVisitor {
+            type Value = VsyncMode;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a vsync mode (`off` / `on` / `adaptive`) or a boolean")
+            }
+
+            fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(if v { VsyncMode::On } else { VsyncMode::Off })
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                match v.trim().to_ascii_lowercase().as_str() {
+                    "off" | "false" | "0" | "no" | "none" => Ok(VsyncMode::Off),
+                    "on" | "true" | "1" | "yes" | "vsync" | "fifo" => Ok(VsyncMode::On),
+                    "adaptive" | "fifo_relaxed" | "fiforelaxed" | "relaxed" => {
+                        Ok(VsyncMode::Adaptive)
+                    }
+                    other => Err(E::custom(format!(
+                        "unknown vsync mode `{other}`; expected `off`, `on`, or `adaptive`"
+                    ))),
+                }
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+                self.visit_str(&v)
+            }
+        }
+
+        deserializer.deserialize_any(VsyncModeVisitor)
     }
 }
 
