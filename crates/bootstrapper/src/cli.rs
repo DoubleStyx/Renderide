@@ -1,8 +1,10 @@
-//! Command-line parsing and the optional desktop vs VR dialog that precedes [`crate::run`].
+//! Command-line parsing and the optional desktop vs VR dialog wiring that precedes [`crate::run`].
 //!
-//! The desktop/VR dialog is resolved **after** the global logger has been initialized so that any
-//! `rfd` hang (see `vr_prompt` module docs) is visible in `logs/bootstrapper/*.log` rather than
-//! producing a silent "nothing happens" failure.
+//! [`resolve_vr_choice`] takes the dialog as a callback so this library never depends on `rfd`;
+//! the production callback lives in the bin-only `dialog` module
+//! (`crates/bootstrapper/src/dialog.rs`). The dialog is resolved **after** the global logger has
+//! been initialized so any backend hang (see `dialog` and `vr_prompt` module docs) is visible in
+//! `logs/bootstrapper/*.log` rather than producing a silent "nothing happens" failure.
 
 use std::env;
 
@@ -43,21 +45,31 @@ pub fn parse_host_args_tokens(args: &[String]) -> (Vec<String>, Option<LogLevel>
     (host_args, log_level)
 }
 
-/// Runs the desktop vs VR dialog if required by [`vr_prompt::should_prompt_vr_dialog`] and
-/// returns host argv augmented with the resulting `-Screen` / `-Device SteamVR` flag.
+/// Runs the desktop vs VR dialog (`prompt`) if required by
+/// [`vr_prompt::should_prompt_vr_dialog`] and returns host argv augmented with the resulting
+/// `-Screen` / `-Device SteamVR` flag.
 ///
-/// Returns [`None`] only when the dialog runs **and** the user cancels or dismisses it; in every
+/// `prompt` is invoked with no arguments and must return `Some(true)` for VR, `Some(false)` for
+/// desktop, or [`None`] if the user cancelled. The dialog implementation is supplied by the
+/// caller so this function — and the bootstrapper library as a whole — does not depend on
+/// `rfd`; the production implementation lives in the bin-only `dialog` module
+/// (`crates/bootstrapper/src/dialog.rs`). See `vr_prompt`'s module docs for why keeping `rfd`
+/// out of the library is a hard requirement on Windows.
+///
+/// Returns [`None`] only when the dialog runs **and** `prompt` returns [`None`]; in every
 /// bypass path (explicit output flag, `CI`, [`vr_prompt::ENV_SKIP_VR_DIALOG`], no Linux display)
-/// the original `host_args` are returned unchanged.
+/// the original `host_args` are returned unchanged and `prompt` is **not** called.
 ///
-/// The caller **must** have initialized the global logger before invocation because
-/// [`vr_prompt::prompt_desktop_or_vr`] emits before/after log lines and installs a watchdog that
-/// logs on timeout.
-pub fn resolve_vr_choice(host_args: Vec<String>) -> Option<Vec<String>> {
+/// The caller **must** have initialized the global logger before invocation because the
+/// production `prompt` emits before/after log lines and installs a watchdog that logs on timeout.
+pub fn resolve_vr_choice<F>(host_args: Vec<String>, prompt: F) -> Option<Vec<String>>
+where
+    F: FnOnce() -> Option<bool>,
+{
     if !vr_prompt::should_prompt_vr_dialog(&host_args) {
         return Some(host_args);
     }
-    let vr = vr_prompt::prompt_desktop_or_vr()?;
+    let vr = prompt()?;
     Some(vr_prompt::apply_host_vr_choice(host_args, vr))
 }
 
@@ -167,15 +179,21 @@ mod tests {
         }
     }
 
+    /// Closure usable as the `prompt` argument to [`resolve_vr_choice`] in bypass-path tests:
+    /// panics if invoked, asserting that the dialog must not be called.
+    fn unreachable_prompt() -> Option<bool> {
+        panic!("dialog prompt must not be invoked when bypass path is taken")
+    }
+
     #[test]
-    fn resolve_vr_choice_bypasses_dialog_on_skip_env_without_invoking_rfd() {
+    fn resolve_vr_choice_bypasses_dialog_on_skip_env() {
         let _g = ENV_LOCK.lock().expect("env lock");
         let prev_skip = env::var_os(vr_prompt::ENV_SKIP_VR_DIALOG);
         let prev_ci = env::var_os("CI");
         env::set_var(vr_prompt::ENV_SKIP_VR_DIALOG, "1");
         env::set_var("CI", "1");
-        let out =
-            resolve_vr_choice(vec!["-Invisible".to_string()]).expect("bypass path must yield Some");
+        let out = resolve_vr_choice(vec!["-Invisible".to_string()], unreachable_prompt)
+            .expect("bypass path must yield Some");
         assert_eq!(out, vec!["-Invisible".to_string()]);
         restore(vr_prompt::ENV_SKIP_VR_DIALOG, prev_skip);
         restore("CI", prev_ci);
@@ -188,8 +206,11 @@ mod tests {
         let prev_ci = env::var_os("CI");
         env::remove_var(vr_prompt::ENV_SKIP_VR_DIALOG);
         env::remove_var("CI");
-        let out = resolve_vr_choice(vec!["-Screen".to_string(), "-Invisible".to_string()])
-            .expect("explicit output flag bypasses dialog");
+        let out = resolve_vr_choice(
+            vec!["-Screen".to_string(), "-Invisible".to_string()],
+            unreachable_prompt,
+        )
+        .expect("explicit output flag bypasses dialog");
         assert_eq!(out, vec!["-Screen".to_string(), "-Invisible".to_string()]);
         restore(vr_prompt::ENV_SKIP_VR_DIALOG, prev_skip);
         restore("CI", prev_ci);

@@ -3,6 +3,8 @@
 #![warn(missing_docs)]
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod dialog;
+
 /// Parses CLI args, initializes the bootstrapper log file and panic hook, optionally prompts
 /// for desktop vs VR, then runs [`bootstrapper::run`].
 ///
@@ -13,6 +15,9 @@
 /// On Linux, [`bootstrapper::vr_prompt::sanitize_linux_display_env`] runs after the logger
 /// is initialized and before the dialog so that an empty `WAYLAND_DISPLAY` (the folk
 /// "force X11" idiom) does not poison the GTK4 zenity subprocess `rfd` shells out to.
+///
+/// The interactive dialog itself lives in the bin-only [`dialog`] module so the bootstrapper
+/// library never references `rfd` (see `dialog`'s module docs for why).
 ///
 /// Exits with status `0` without spawning the Host when the user cancels the
 /// desktop vs VR dialog.
@@ -42,7 +47,9 @@ fn main() {
 
     bootstrapper::vr_prompt::sanitize_linux_display_env();
 
-    let Some(host_args) = bootstrapper::cli::resolve_vr_choice(host_args) else {
+    let Some(host_args) =
+        bootstrapper::cli::resolve_vr_choice(host_args, dialog::prompt_desktop_or_vr)
+    else {
         logger::info!("Desktop/VR dialog cancelled; exiting without spawning Host.");
         return;
     };
