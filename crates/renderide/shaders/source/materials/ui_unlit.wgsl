@@ -75,7 +75,7 @@ fn vs_main(
     return out;
 }
 
-//#material forward
+//#pass forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv_s = uvu::apply_st(in.uv, mat._MainTex_ST);

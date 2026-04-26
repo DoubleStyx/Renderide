@@ -41,7 +41,7 @@ fn vs_main(
     return out;
 }
 
-//#material stencil
+//#pass stencil
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return rg::retain_globals_additive(vec4<f32>(0.0));

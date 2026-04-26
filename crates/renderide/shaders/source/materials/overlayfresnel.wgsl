@@ -117,7 +117,7 @@ fn apply_alpha_intensity(color_in: vec4<f32>) -> vec4<f32> {
     return color;
 }
 
-//#material overlay_behind
+//#pass overlay_behind
 @fragment
 fn fs_main_behind(in: VertexOutput) -> @location(0) vec4<f32> {
     let fresnel = fresnel_value(in, false);
@@ -129,7 +129,7 @@ fn fs_main_behind(in: VertexOutput) -> @location(0) vec4<f32> {
     return rg::retain_globals_additive(color);
 }
 
-//#material overlay_front
+//#pass overlay_front
 @fragment
 fn fs_main_front(in: VertexOutput) -> @location(0) vec4<f32> {
     let fresnel = fresnel_value(in, true);

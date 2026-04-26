@@ -42,6 +42,7 @@ fn vs_main(
     return out;
 }
 
+//#pass forward
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return rg::retain_globals_additive(vec4<f32>(mat._Color.rgb, 1.0));

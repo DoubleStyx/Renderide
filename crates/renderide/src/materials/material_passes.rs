@@ -340,16 +340,16 @@ pub struct MaterialPassDesc {
     pub material_state: MaterialPassState,
 }
 
-/// Default single-pass descriptor matching the pre-multi-pass pipeline builder.
+/// Static opaque/transparent pass descriptor with no material-driven blend overlay.
+///
+/// Only used by the null fallback raster pipeline (see
+/// [`crate::pipelines::raster::null::create_null_render_pipeline`]) — embedded material WGSL
+/// always reaches pipeline construction through their declared `//#pass` directives via
+/// [`pass_from_kind`] + [`materialized_pass_for_blend_mode`].
 ///
 /// `use_alpha_blending` picks between opaque (`ColorWrites::COLOR`, `blend: None`,
 /// `cull_mode: Some(Back)`) and transparent (`ColorWrites::ALL`, `ALPHA_BLENDING`,
-/// `cull_mode: None`). `depth_write` mirrors the old `depth_write_enabled` arg.
-///
-/// The opaque `Cull Back` default mirrors Unity's ShaderLab default for passes that declare
-/// no explicit `Cull` directive. Host materials that want different culling still override
-/// this via the `_Cull` property resolved through
-/// [`MaterialRenderState::resolved_cull_mode`](super::render_state::MaterialRenderState::resolved_cull_mode).
+/// `cull_mode: None`).
 pub const fn default_pass(use_alpha_blending: bool, depth_write: bool) -> MaterialPassDesc {
     let (blend, write_mask, cull_mode) = if use_alpha_blending {
         (
@@ -369,22 +369,6 @@ pub const fn default_pass(use_alpha_blending: bool, depth_write: bool) -> Materi
         cull_mode,
         blend,
         write_mask,
-        depth_bias_slope_scale: 0.0,
-        depth_bias_constant: 0,
-        material_state: MaterialPassState::Static,
-    }
-}
-
-fn unity_blend_pass(name: &'static str, src: u8, dst: u8, depth_write: bool) -> MaterialPassDesc {
-    MaterialPassDesc {
-        name,
-        vertex_entry: "vs_main",
-        fragment_entry: "fs_main",
-        depth_compare: crate::render_graph::MAIN_FORWARD_DEPTH_COMPARE,
-        depth_write,
-        cull_mode: Some(wgpu::Face::Back),
-        blend: unity_blend_state(src, dst),
-        write_mask: wgpu::ColorWrites::ALL,
         depth_bias_slope_scale: 0.0,
         depth_bias_constant: 0,
         material_state: MaterialPassState::Static,
@@ -413,16 +397,6 @@ pub fn materialized_pass_for_blend_mode(
                 depth_write: src == 1 && dst == 0,
                 ..*pass
             }
-        }
-    }
-}
-
-/// Default single-pass descriptor after applying a material `BlendMode` override.
-pub fn default_pass_for_blend_mode(blend_mode: MaterialBlendMode) -> MaterialPassDesc {
-    match blend_mode {
-        MaterialBlendMode::StemDefault | MaterialBlendMode::Opaque => default_pass(false, true),
-        MaterialBlendMode::UnityBlend { src, dst } => {
-            unity_blend_pass("unity_blend", src, dst, src == 1 && dst == 0)
         }
     }
 }
@@ -733,12 +707,6 @@ mod tests {
         };
         let state = material_render_state_for_lookup(&dict, lookup, &ids);
         assert_eq!(state.cull_override, MaterialCullOverride::Off);
-    }
-
-    #[test]
-    fn default_blend_mode_alpha_pass_culls_back_faces() {
-        let pass = default_pass_for_blend_mode(MaterialBlendMode::UnityBlend { src: 5, dst: 10 });
-        assert_eq!(pass.cull_mode, Some(wgpu::Face::Back));
     }
 
     #[test]

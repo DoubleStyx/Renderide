@@ -28,6 +28,42 @@
 //! `_BlendMode` itself is not on the wire — FrooxEngine translates `MaterialProvider.SetBlendMode`
 //! to `_SrcBlend` / `_DstBlend` factors, and [`MaterialBlendMode::from_unity_blend_factors`]
 //! reconstructs the mode here.
+//!
+//! # Pass system
+//!
+//! Every material WGSL under `shaders/source/materials/*.wgsl` declares one or more `//#pass <kind>`
+//! comment directives, each sitting directly above an `@fragment` entry point. The build script
+//! parses them into a static [`MaterialPassDesc`] table per stem. Each desc becomes one
+//! `wgpu::RenderPipeline`; the forward encode loop dispatches all pipelines for every draw that
+//! binds the material, in declared order.
+//!
+//! The directive does three things at once:
+//! 1. Selects which `@fragment` entry points become pipelines (and what to label them).
+//! 2. Picks a canonical render-state recipe ([`pass_from_kind`]).
+//! 3. Counts the draws per material — N directives ⇒ N pipelines ⇒ N `draw_indexed` calls.
+//!
+//! Recognized kinds:
+//!
+//! | Kind | Render-state recipe | Use case |
+//! |---|---|---|
+//! | `forward` | `Cull Back`, `ZWrite On`, blend driven by host `_SrcBlend`/`_DstBlend` at draw time | the main color draw |
+//! | `outline` | `Cull Front` | silhouette over an inflated geometry shell |
+//! | `stencil` | `Cull Front`, `ColorMask 0`, `ZWrite Off` | stencil mask draw |
+//! | `depth_prepass` | `ColorMask 0` | early-Z prepass (depth only) |
+//! | `overlay_front` | overlay blend, `ZWrite On` | layered draw on top of existing geometry |
+//! | `overlay_behind` | overlay blend, inverted depth compare | layered draw behind existing geometry |
+//!
+//! **Why kind defaults exist when the host already sends pipeline state.** The host's IPC sends
+//! one `_SrcBlend`/`_ZWrite`/`_Cull`/etc. set per material — not per pass. The directive fills the
+//! gap host properties can't fill: multi-draw structure, auxiliary-pass state (e.g. `Outline`'s
+//! `Cull Front` when the host's `_Cull` belongs to the forward pass), and state Unity doesn't
+//! have a property for (`OverlayBehind`'s inverted depth compare). For the `forward` kind, host
+//! properties win — [`MaterialBlendMode`] + [`MaterialRenderState`] overlay the kind defaults at
+//! pipeline build time. For all other kinds, kind defaults are authoritative.
+//!
+//! **Every material WGSL must declare at least one `//#pass`** — the build script rejects empty
+//! declarations. The runtime has no implicit "default forward" fallback; what you see in the
+//! WGSL is the entire pipeline topology of the material.
 
 mod cache;
 mod embedded_raster_pipeline;
@@ -66,10 +102,9 @@ pub use embedded_shader_stem::{
 /// Pipeline family descriptors, per-property GPU layout, and raster kind flags.
 pub use family::MaterialPipelineDesc;
 pub use material_passes::{
-    default_pass, default_pass_for_blend_mode, material_blend_mode_for_lookup,
-    material_blend_mode_from_maps, materialized_pass_for_blend_mode, pass_from_kind,
-    MaterialBlendMode, MaterialPassDesc, MaterialPassState, MaterialPipelinePropertyIds, PassKind,
-    COLOR_WRITES_NONE,
+    default_pass, material_blend_mode_for_lookup, material_blend_mode_from_maps,
+    materialized_pass_for_blend_mode, pass_from_kind, MaterialBlendMode, MaterialPassDesc,
+    MaterialPassState, MaterialPipelinePropertyIds, PassKind, COLOR_WRITES_NONE,
 };
 pub use material_property_binding::MaterialPropertyGpuLayout;
 pub use pipeline_build_error::PipelineBuildError;

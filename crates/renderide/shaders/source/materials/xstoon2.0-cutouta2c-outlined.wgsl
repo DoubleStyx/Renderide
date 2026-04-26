@@ -46,7 +46,7 @@ fn vs_outline(
 #endif
 }
 
-//#material outline vs=vs_outline
+//#pass outline vs=vs_outline
 @fragment
 fn fs_outline(
     @builtin(position) frag_pos: vec4<f32>,
@@ -65,7 +65,7 @@ fn fs_outline(
     );
 }
 
-//#material forward
+//#pass forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

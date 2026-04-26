@@ -76,6 +76,7 @@ fn vs_main(
     return out;
 }
 
+//#pass forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let uv_off = uvu::apply_st(in.uv, mat._OffsetTex_ST);

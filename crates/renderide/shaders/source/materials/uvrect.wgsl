@@ -55,6 +55,7 @@ fn inside_rect01(p: vec2<f32>, r: vec4<f32>) -> f32 {
     return inside_x * inside_y;
 }
 
+//#pass forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (mat._RectClip > 0.5 && inside_rect01(in.uv, mat._ClipRect) < 0.5) {

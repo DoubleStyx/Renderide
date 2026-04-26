@@ -201,7 +201,7 @@ fn shade(
     return vec4<f32>(ambient + lo + extra, 1.0);
 }
 
-//#material forward
+//#pass forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

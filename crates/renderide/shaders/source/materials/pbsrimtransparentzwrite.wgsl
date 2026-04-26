@@ -102,7 +102,7 @@ fn vs_main(
 /// Depth-only prepass: writes nothing to color (`write=none`) but populates depth so the alpha-blended
 /// main pass below can self-occlude. Touches every binding so the prepass pipeline's auto-derived
 /// bind-group layout matches the forward pass and the same material bind group binds for both.
-//#material depth_prepass
+//#pass depth_prepass
 @fragment
 fn fs_depth_only(
     @location(0) world_pos: vec3<f32>,
@@ -124,7 +124,7 @@ fn fs_depth_only(
     return rg::retain_globals_additive(vec4<f32>(touch, touch, touch, 0.0));
 }
 
-//#material forward
+//#pass forward
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,

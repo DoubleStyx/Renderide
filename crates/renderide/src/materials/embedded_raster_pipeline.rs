@@ -8,10 +8,7 @@ use crate::materials::pipeline_build_error::PipelineBuildError;
 use crate::materials::raster_pipeline::{
     create_reflective_raster_mesh_forward_pipelines, ShaderModuleBuildRefs, VertexStreamToggles,
 };
-use crate::materials::{
-    default_pass_for_blend_mode, materialized_pass_for_blend_mode, MaterialBlendMode,
-    MaterialRenderState,
-};
+use crate::materials::{materialized_pass_for_blend_mode, MaterialBlendMode, MaterialRenderState};
 use crate::pipelines::raster::SHADER_PERM_MULTIVIEW_STEREO;
 use crate::pipelines::ShaderPermutation;
 
@@ -238,24 +235,20 @@ pub(crate) fn create_embedded_render_pipelines(
     };
     let composed = embedded_composed_stem_for_permutation(stem.as_ref(), permutation);
     let declared_passes = embedded_shaders::embedded_target_passes(&composed);
-    if !declared_passes.is_empty() {
-        let materialized_passes = declared_passes
-            .iter()
-            .map(|p| materialized_pass_for_blend_mode(p, blend_mode))
-            .collect::<Vec<_>>();
-        return create_reflective_raster_mesh_forward_pipelines(
-            shader,
-            streams,
-            &materialized_passes,
-            render_state,
-        );
+    if declared_passes.is_empty() {
+        // Build script enforces that every material WGSL declares at least one `//#pass`.
+        return Err(PipelineBuildError::MissingEmbeddedShader(format!(
+            "{composed}: embedded material stem has no declared passes"
+        )));
     }
-
-    let pass = default_pass_for_blend_mode(blend_mode);
+    let materialized_passes = declared_passes
+        .iter()
+        .map(|p| materialized_pass_for_blend_mode(p, blend_mode))
+        .collect::<Vec<_>>();
     create_reflective_raster_mesh_forward_pipelines(
         shader,
         streams,
-        std::slice::from_ref(&pass),
+        &materialized_passes,
         render_state,
     )
 }

@@ -26,7 +26,7 @@ fn vs_main(
 #endif
 }
 
-//#material forward
+//#pass forward
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

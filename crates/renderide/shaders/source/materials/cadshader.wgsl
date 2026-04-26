@@ -74,13 +74,13 @@ fn vs_outline(
     return out;
 }
 
-//#material outline vs=vs_outline
+//#pass outline vs=vs_outline
 @fragment
 fn fs_outline() -> @location(0) vec4<f32> {
     return rg::retain_globals_additive(vec4<f32>(mat._OutlineColor.rgb, 0.0));
 }
 
-//#material forward
+//#pass forward
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {
     return rg::retain_globals_additive(vec4<f32>(mat._Color.rgb, 1.0));

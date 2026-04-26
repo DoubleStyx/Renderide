@@ -150,7 +150,7 @@ fn vs_main(
     return out;
 }
 
-//#material forward
+//#pass forward
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,

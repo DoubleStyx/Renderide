@@ -100,7 +100,7 @@ fn vs_main(
     return out;
 }
 
-//#material depth_prepass
+//#pass depth_prepass
 @fragment
 fn fs_depth_only(
     @location(0) world_pos: vec3<f32>,
@@ -122,7 +122,7 @@ fn fs_depth_only(
     return rg::retain_globals_additive(vec4<f32>(touch, touch, touch, 0.0));
 }
 
-//#material forward
+//#pass forward
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,

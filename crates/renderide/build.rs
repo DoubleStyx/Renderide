@@ -107,15 +107,15 @@ fn multiview_shader_defs(enable: bool) -> HashMap<String, ShaderDefValue> {
 /// One declared pass: the [`PassKind`] tag and the fragment entry point it sits above.
 #[derive(Clone, Debug)]
 struct BuildPassDirective {
-    /// Path to the [`crate::materials::PassKind`] variant (e.g. `"ForwardBase"`).
+    /// Path to the [`crate::materials::PassKind`] variant (e.g. `"Forward"`).
     kind_variant: &'static str,
-    /// Fragment entry point name the `//#material` tag sits above.
+    /// Fragment entry point name the `//#pass` tag sits above.
     fragment_entry: String,
     /// Vertex entry point for this pass. Defaults to `vs_main`; overridden via `vs=...` on the tag.
     vertex_entry: String,
 }
 
-/// Maps a `//#material <kind>` value to the matching [`crate::materials::PassKind`] variant name.
+/// Maps a `//#pass <kind>` value to the matching [`crate::materials::PassKind`] variant name.
 fn pass_kind_variant(value: &str, file: &str, line: usize) -> Result<&'static str, BuildError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "forward" => Ok("Forward"),
@@ -125,7 +125,7 @@ fn pass_kind_variant(value: &str, file: &str, line: usize) -> Result<&'static st
         "overlay_front" | "overlayfront" | "front" => Ok("OverlayFront"),
         "overlay_behind" | "overlaybehind" | "behind" => Ok("OverlayBehind"),
         _ => Err(BuildError::Message(format!(
-            "{file}:{line}: unknown `//#material` kind `{value}`"
+            "{file}:{line}: unknown `//#pass` kind `{value}`"
         ))),
     }
 }
@@ -157,7 +157,7 @@ fn next_fragment_entry_after(
                 continue;
             }
             return Err(BuildError::Message(format!(
-                "{file}:{directive_line_no}: `//#material` tag must immediately precede an `@fragment` entry point"
+                "{file}:{directive_line_no}: `//#pass` tag must immediately precede an `@fragment` entry point"
             )));
         }
         if trimmed.starts_with("//") || trimmed.is_empty() {
@@ -171,7 +171,7 @@ fn next_fragment_entry_after(
         )));
     }
     Err(BuildError::Message(format!(
-        "{file}:{directive_line_no}: `//#material` tag has no following `@fragment` entry point"
+        "{file}:{directive_line_no}: `//#pass` tag has no following `@fragment` entry point"
     )))
 }
 
@@ -192,13 +192,13 @@ fn parse_pass_directives(source: &str, file: &str) -> Result<Vec<BuildPassDirect
     let mut passes = Vec::new();
     for (line_idx, line) in lines.iter().enumerate() {
         let line_no = line_idx + 1;
-        let Some(rest) = line.trim_start().strip_prefix("//#material") else {
+        let Some(rest) = line.trim_start().strip_prefix("//#pass") else {
             continue;
         };
         let body = rest.trim();
         if body.is_empty() {
             return Err(BuildError::Message(format!(
-                "{file}:{line_no}: `//#material` tag requires a kind (e.g. `//#material forward`)"
+                "{file}:{line_no}: `//#pass` tag requires a kind (e.g. `//#pass forward`)"
             )));
         }
         let mut tokens = body.split_whitespace();
@@ -208,14 +208,14 @@ fn parse_pass_directives(source: &str, file: &str) -> Result<Vec<BuildPassDirect
         for token in tokens {
             let (key, value) = token.split_once('=').ok_or_else(|| {
                 BuildError::Message(format!(
-                    "{file}:{line_no}: expected `key=value` after kind in `//#material`, got `{token}`"
+                    "{file}:{line_no}: expected `key=value` after kind in `//#pass`, got `{token}`"
                 ))
             })?;
             match key.trim().to_ascii_lowercase().as_str() {
                 "vs" | "vertex" => vertex_entry = value.trim().to_string(),
                 _ => {
                     return Err(BuildError::Message(format!(
-                        "{file}:{line_no}: unknown `//#material` override `{key}` (only `vs=` is allowed)"
+                        "{file}:{line_no}: unknown `//#pass` override `{key}` (only `vs=` is allowed)"
                     )));
                 }
             }
@@ -668,11 +668,20 @@ fn main() {
 /// that declare themselves multiview-aware but failed to guard the `view_index` builtin.
 /// Compute-stage shaders must pass `false` because WGSL grammar forbids `@builtin(view_index)`
 /// outside fragment entry points.
+/// Per-subdirectory validation toggles for [`compose_and_emit_variants`].
+struct ComposeValidationOpts {
+    /// Enforce that the multiview-fan-out variant carries `@builtin(view_index)` and the default
+    /// variant doesn't (skip for compute shaders, which can't carry the builtin).
+    validate_view_index: bool,
+    /// Reject WGSL with no `//#pass` directives (enabled for the materials subdirectory only).
+    require_pass_directive: bool,
+}
+
 fn compose_and_emit_variants(
     shader_modules: &[(String, String)],
     source_path: &Path,
     target_dir: &Path,
-    validate_view_index: bool,
+    opts: ComposeValidationOpts,
     embedded_arms: &mut String,
     embedded_pass_arms: &mut String,
     output_stems: &mut Vec<String>,
@@ -690,6 +699,11 @@ fn compose_and_emit_variants(
         ))
     })?;
     let pass_directives = parse_pass_directives(&source, file_path)?;
+    if opts.require_pass_directive && pass_directives.is_empty() {
+        return Err(BuildError::Message(format!(
+            "{file_path}: material WGSL must declare at least one //#pass directive (e.g. //#pass forward)"
+        )));
+    }
 
     let default_module = compose_material(
         shader_modules,
@@ -741,7 +755,7 @@ fn compose_and_emit_variants(
             (format!("{stem}_default"), &default_wgsl, false),
             (format!("{stem}_multiview"), &multiview_wgsl, true),
         ] {
-            if validate_view_index {
+            if opts.validate_view_index {
                 let has = wgsl.contains("@builtin(view_index)");
                 if multiview != has {
                     return Err(BuildError::Message(format!(
@@ -828,14 +842,14 @@ fn run() -> Result<(), BuildError> {
     let mut compute_stems: Vec<String> = Vec::new();
     let mut present_stems: Vec<String> = Vec::new();
 
-    let scans: [(&str, &mut Vec<String>, bool); 5] = [
-        ("materials", &mut material_stems, true),
-        ("post", &mut post_stems, true),
-        ("backend", &mut backend_stems, true),
-        ("compute", &mut compute_stems, false),
-        ("present", &mut present_stems, true),
+    let scans: [(&str, &mut Vec<String>, bool, bool); 5] = [
+        ("materials", &mut material_stems, true, true),
+        ("post", &mut post_stems, true, false),
+        ("backend", &mut backend_stems, true, false),
+        ("compute", &mut compute_stems, false, false),
+        ("present", &mut present_stems, true, false),
     ];
-    for (subdir, stems_out, validate_view_index) in scans {
+    for (subdir, stems_out, validate_view_index, require_pass_directive) in scans {
         let dir = source_root.join(subdir);
         if !dir.is_dir() {
             continue;
@@ -845,7 +859,10 @@ fn run() -> Result<(), BuildError> {
                 &shader_modules,
                 &path,
                 &target_dir,
-                validate_view_index,
+                ComposeValidationOpts {
+                    validate_view_index,
+                    require_pass_directive,
+                },
                 &mut embedded_arms,
                 &mut embedded_pass_arms,
                 stems_out,

@@ -140,6 +140,7 @@ fn sample_set_color(
     return mix(near, far, fresnel);
 }
 
+//#pass forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let l = compute_lerp(in.uv);

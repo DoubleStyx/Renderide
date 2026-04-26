@@ -91,6 +91,7 @@ fn sample_color_lod0(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>, st: vec
     return acs::texture_rgba_base_mip(tex, samp, sample_uv);
 }
 
+//#pass forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var n = normalize(in.world_n);

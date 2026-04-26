@@ -112,6 +112,7 @@ fn vs_main(
 /// Because `world_scale` is per-axis, non-uniformly scaled meshes still show
 /// square cells in world-space — a mesh stretched 2x along X gets twice as many
 /// X-cells per unit of model-space, exactly canceling the stretch.
+//#pass forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let world_aligned = in.local_pos * in.world_scale;
