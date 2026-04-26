@@ -419,15 +419,21 @@ fn apply_skinned_bone_index_buffers_extracted(
         return;
     }
     let indexes = &extracted.bone_transform_indexes;
-    let mut index_offset = 0;
+    let mut index_offset = 0usize;
     for assignment in &extracted.bone_assignments {
         if assignment.renderable_index < 0 {
             break;
         }
         let idx = assignment.renderable_index as usize;
         let bone_count = assignment.bone_count.max(0) as usize;
-        if idx < space.skinned_mesh_renderers.len() && index_offset + bone_count <= indexes.len() {
-            let ids: Vec<i32> = indexes[index_offset..index_offset + bone_count].to_vec();
+        // `index_offset + bone_count` could wrap on 32-bit usize (release builds wrap on
+        // arithmetic overflow); use `checked_add` so a corrupted host cannot bypass the bounds
+        // check via wraparound.
+        let Some(end) = index_offset.checked_add(bone_count) else {
+            break;
+        };
+        if idx < space.skinned_mesh_renderers.len() && end <= indexes.len() {
+            let ids: Vec<i32> = indexes[index_offset..end].to_vec();
             space.skinned_mesh_renderers[idx].bone_transform_indices = ids;
             space.skinned_mesh_renderers[idx].root_bone_transform_id =
                 if assignment.root_bone_transform_id >= 0 {
@@ -436,7 +442,7 @@ fn apply_skinned_bone_index_buffers_extracted(
                     None
                 };
         }
-        index_offset += bone_count;
+        index_offset = end;
     }
 }
 
@@ -450,17 +456,28 @@ fn apply_skinned_blendshape_weight_batches_extracted(
         return;
     }
     let updates = &extracted.blendshape_updates;
-    let mut update_offset = 0;
+    let mut update_offset = 0usize;
     for batch in &extracted.blendshape_update_batches {
         if batch.renderable_index < 0 {
             break;
         }
         let idx = batch.renderable_index as usize;
         let count = batch.blendshape_update_count.max(0) as usize;
-        if idx < space.skinned_mesh_renderers.len() && update_offset + count <= updates.len() {
+        // `update_offset + count` may wrap on 32-bit usize; use `checked_add`.
+        let Some(end) = update_offset.checked_add(count) else {
+            break;
+        };
+        if idx < space.skinned_mesh_renderers.len() && end <= updates.len() {
             let weights = &mut space.skinned_mesh_renderers[idx].base.blend_shape_weights;
-            for upd in &updates[update_offset..update_offset + count] {
+            for upd in &updates[update_offset..end] {
                 let bi = upd.blendshape_index.max(0) as usize;
+                // Cap the blendshape index so a corrupted host cannot drive a multi-gigabyte
+                // `weights.resize` via an attacker-chosen index. `MAX_BLENDSHAPE_INDEX` matches
+                // the existing renderer-side cap in `assets::mesh::layout` (4096 shapes per
+                // mesh). Out-of-range entries are dropped.
+                if bi >= MAX_BLENDSHAPE_INDEX {
+                    continue;
+                }
                 let needed = bi + 1;
                 if weights.len() < needed {
                     weights.resize(needed, 0.0);
@@ -468,9 +485,16 @@ fn apply_skinned_blendshape_weight_batches_extracted(
                 weights[bi] = upd.weight;
             }
         }
-        update_offset += count;
+        update_offset = end;
     }
 }
+
+/// Maximum blendshape index accepted from IPC blendshape weight updates.
+///
+/// Matches the cap enforced by [`crate::assets::mesh::layout`] when extracting blendshape
+/// data; updates referencing higher indices are silently dropped to prevent attacker-driven
+/// `Vec::resize` on the per-renderable weight array.
+const MAX_BLENDSHAPE_INDEX: usize = 4096;
 
 /// Stores host-computed posed object-space bounds onto skinned renderables for culling.
 ///
