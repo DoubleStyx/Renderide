@@ -3,29 +3,17 @@
 //!
 //! The renderer learns the effective device from IPC `RendererInitData` after connect.
 //!
-//! # Hang protection on Linux
-//!
-//! `rfd::MessageDialog::show()` uses a GTK3 or XDG portal backend on Linux and can block
-//! indefinitely when the backend cannot surface a window (headless shell, missing GTK runtime,
-//! broken portal). To keep the bootstrapper diagnosable, [`prompt_desktop_or_vr`] is only
-//! reached after the logger has been initialized; it emits one log line before and after the
-//! blocking `show()` call, and a watchdog thread aborts the process with an actionable error
-//! (pointing at [`ENV_SKIP_VR_DIALOG`]) if the dialog does not return within
-//! [`DIALOG_WATCHDOG_TIMEOUT`]. When neither `DISPLAY` nor `WAYLAND_DISPLAY` is set on Linux,
-//! [`should_prompt_vr_dialog`] returns `false` so the dialog is skipped entirely.
+//! The interactive desktop/VR selection dialog itself lives in the bin-only `dialog` module
+//! (`crates/bootstrapper/src/dialog.rs`). Keeping the `rfd` dependency out of this library
+//! is what allows the bootstrapper lib unit-test executable to start on Windows; otherwise
+//! its static import of `comctl32.dll`'s `TaskDialogIndirect` (added by `rfd`'s
+//! `common-controls-v6` feature) would fail to resolve and abort the test exe with
+//! `STATUS_ENTRYPOINT_NOT_FOUND` (0xc0000139) before any test could run.
 
 use std::env;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 /// When set, the bootstrapper does not show the desktop vs VR dialog (automation / headless).
-pub(crate) const ENV_SKIP_VR_DIALOG: &str = "RENDERIDE_SKIP_VR_DIALOG";
-
-/// Maximum time [`prompt_desktop_or_vr`] waits for `rfd::MessageDialog::show()` to return
-/// before the watchdog thread aborts the process with an actionable log line.
-const DIALOG_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(60);
+pub const ENV_SKIP_VR_DIALOG: &str = "RENDERIDE_SKIP_VR_DIALOG";
 
 /// Strips a leading `-` (if present) and lowercases, matching `FrooxEngine`'s normalized argv tokens.
 ///
@@ -55,8 +43,9 @@ pub(crate) fn host_args_have_explicit_output_device(args: &[String]) -> bool {
 /// On Linux, returns `true` when at least one of `DISPLAY` (X11) or `WAYLAND_DISPLAY` (Wayland)
 /// is set in the environment. On other platforms returns `true` unconditionally.
 ///
-/// Used by [`should_prompt_vr_dialog`] to skip the `rfd` popup on headless / TTY launches where
-/// GTK cannot open a window and `show()` would block forever without writing any log.
+/// Used by [`should_prompt_vr_dialog`] to skip the dialog on headless / TTY launches where
+/// GTK cannot open a window and `rfd::MessageDialog::show()` would block forever without
+/// writing any log.
 fn linux_graphical_session_available() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -119,89 +108,6 @@ pub(crate) fn should_prompt_vr_dialog(host_args: &[String]) -> bool {
         return false;
     }
     true
-}
-
-/// Labels used for the custom dialog buttons; also returned by `rfd` as the
-/// `MessageDialogResult::Custom(label)` payload, so they double as match keys.
-const VR_BUTTON_LABEL: &str = "VR";
-/// Desktop-mode button label. Also the `MessageDialogResult::Custom` payload returned by `rfd`.
-const DESKTOP_BUTTON_LABEL: &str = "Desktop";
-/// Cancel button label. Also the `MessageDialogResult::Custom` payload returned by `rfd`.
-const CANCEL_BUTTON_LABEL: &str = "Cancel";
-
-/// Desktop vs VR choice: **VR** → `-Device SteamVR`, **Desktop** → `-Screen`.
-///
-/// Returns [`None`] when the user clicks **Cancel** or otherwise dismisses
-/// the dialog; callers treat this as a request to abort the launch.
-///
-/// Requires the global logger to be initialized before invocation so that the
-/// before/after log lines and the watchdog abort message reach disk. Installs a
-/// short-lived watchdog thread that aborts the process via [`std::process::exit`]
-/// with a pointer to [`ENV_SKIP_VR_DIALOG`] if `rfd::MessageDialog::show()` has
-/// not returned after [`DIALOG_WATCHDOG_TIMEOUT`].
-pub(crate) fn prompt_desktop_or_vr() -> Option<bool> {
-    let completed = Arc::new(AtomicBool::new(false));
-    spawn_dialog_watchdog(Arc::clone(&completed));
-
-    logger::info!("Showing desktop/VR selection dialog via rfd backend.");
-    let res = rfd::MessageDialog::new()
-        .set_title("Renderide")
-        .set_description("Launch Resonite in VR or desktop mode?")
-        .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
-            VR_BUTTON_LABEL.into(),
-            DESKTOP_BUTTON_LABEL.into(),
-            CANCEL_BUTTON_LABEL.into(),
-        ))
-        .show();
-    completed.store(true, Ordering::SeqCst);
-
-    match res {
-        // Native backends that honor custom labels return them verbatim.
-        rfd::MessageDialogResult::Custom(label) if label == VR_BUTTON_LABEL => {
-            logger::info!("Desktop/VR dialog returned: VR.");
-            Some(true)
-        }
-        rfd::MessageDialogResult::Custom(label) if label == DESKTOP_BUTTON_LABEL => {
-            logger::info!("Desktop/VR dialog returned: Desktop.");
-            Some(false)
-        }
-        other => {
-            logger::info!("Desktop/VR dialog cancelled or dismissed: {other:?}.");
-            None
-        }
-    }
-}
-
-/// Spawns a detached watchdog thread that logs an error and exits the process
-/// if `completed` is still `false` after [`DIALOG_WATCHDOG_TIMEOUT`].
-///
-/// The dialog thread flips `completed` to `true` once `rfd`'s `show()` returns;
-/// the watchdog checks the flag after sleeping and quietly exits its own
-/// `thread::spawn` closure if the dialog finished in time.
-fn spawn_dialog_watchdog(completed: Arc<AtomicBool>) {
-    let spawn_result = thread::Builder::new()
-        .name("rfd-dialog-watchdog".into())
-        .spawn(move || {
-            thread::sleep(DIALOG_WATCHDOG_TIMEOUT);
-            if completed.load(Ordering::SeqCst) {
-                return;
-            }
-            logger::error!(
-                "Desktop/VR dialog did not return within {secs}s. \
-                 The rfd GTK/XDG portal backend appears to be hung. \
-                 Set {ENV_SKIP_VR_DIALOG}=1 (or pass -Screen / -Device SteamVR) to bypass the dialog.",
-                secs = DIALOG_WATCHDOG_TIMEOUT.as_secs(),
-            );
-            logger::flush();
-            std::process::exit(1);
-        });
-    if let Err(e) = spawn_result {
-        // If the OS cannot spawn a watchdog thread, the dialog can still hang silently — log and
-        // continue rather than aborting; the dialog's own behavior is unchanged.
-        logger::warn!(
-            "Could not spawn rfd dialog watchdog thread: {e}. Dialog timeout is disabled."
-        );
-    }
 }
 
 /// Prepends `-Device SteamVR` or `-Screen` to the Host argv list.
