@@ -14,7 +14,7 @@ mod dialog;
 ///
 /// On Linux, [`bootstrapper::vr_prompt::sanitize_linux_display_env`] runs after the logger
 /// is initialized and before the dialog so that an empty `WAYLAND_DISPLAY` (the folk
-/// "force X11" idiom) does not poison the in-process GTK3 backend `rfd` uses for the dialog.
+/// "force X11" idiom) does not poison the GTK4 zenity subprocess `rfd` shells out to.
 ///
 /// The interactive dialog itself lives in the bin-only [`dialog`] module so the bootstrapper
 /// library never references `rfd` (see `dialog`'s module docs for why).
