@@ -3,6 +3,7 @@
 // unity-shader-name: Xiexe/Toon2.0/XSToon2.0_CutoutA2C_Masked
 
 #import renderide::xiexe::toon2 as xs
+#import renderide::xiexe::toon2::base as xb
 
 const XIEE_ALPHA_MODE: u32 = 3u;
 
@@ -18,7 +19,7 @@ fn vs_main(
     @location(3) color: vec4<f32>,
     @location(4) tangent: vec4<f32>,
     @location(5) uv1: vec2<f32>,
-) -> xs::VertexOutput {
+) -> xb::VertexOutput {
 #ifdef MULTIVIEW
     return xs::vertex_main(instance_index, view_idx, pos, n, uv0, color, tangent, uv1);
 #else

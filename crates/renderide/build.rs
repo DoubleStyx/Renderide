@@ -416,6 +416,8 @@ fn stem_to_const_ident(stem: &str) -> String {
 ///
 /// Returns `(file_path, source)` where `file_path` uses forward slashes (e.g.
 /// `shaders/source/modules/globals.wgsl`) for [`ComposableModuleDescriptor::file_path`].
+/// Modules are returned in dependency order: each module's `#import` targets appear before
+/// it. Within a single dependency level the order is alphabetical for deterministic builds.
 fn discover_shader_modules(manifest_dir: &Path) -> Result<Vec<(String, String)>, BuildError> {
     let modules_dir = manifest_dir.join("shaders/source/modules");
     let mut paths: Vec<PathBuf> = fs::read_dir(&modules_dir)
@@ -448,7 +450,121 @@ fn discover_shader_modules(manifest_dir: &Path) -> Result<Vec<(String, String)>,
         )));
     }
 
-    Ok(modules)
+    topo_sort_shader_modules(&modules)
+}
+
+/// Topologically sorts shader modules so each `#import` target is registered before its
+/// importer. naga-oil 0.22's `add_composable_module` resolves imports eagerly, so the
+/// alphabetical traversal of the modules directory must be re-ordered when import edges
+/// run against alphabetic order (e.g. `xiexe_toon2.wgsl` imports `xiexe_toon2::base` from
+/// `xiexe_toon2_base.wgsl` which sorts after it).
+///
+/// Within a single dependency depth the original alphabetical order is preserved for
+/// determinism.
+fn topo_sort_shader_modules(
+    modules: &[(String, String)],
+) -> Result<Vec<(String, String)>, BuildError> {
+    // Map `#define_import_path` → file index.
+    let mut path_to_idx: HashMap<String, usize> = HashMap::default();
+    let mut imports_per_module: Vec<Vec<String>> = Vec::with_capacity(modules.len());
+    for (i, (file_path, source)) in modules.iter().enumerate() {
+        let define = parse_define_import_path(source).ok_or_else(|| {
+            BuildError::Message(format!(
+                "module {file_path} has no `#define_import_path` directive",
+            ))
+        })?;
+        if let Some(prev) = path_to_idx.insert(define.clone(), i) {
+            return Err(BuildError::Message(format!(
+                "duplicate `#define_import_path {define}` in {file_path} and {}",
+                modules[prev].0,
+            )));
+        }
+        imports_per_module.push(parse_import_paths(source));
+    }
+
+    // Edges: child → parent (depends_on); record in-degree and adjacency.
+    let mut in_degree = vec![0usize; modules.len()];
+    let mut children_of: Vec<Vec<usize>> = vec![Vec::new(); modules.len()];
+    for (i, imports) in imports_per_module.iter().enumerate() {
+        for import_path in imports {
+            // Skip imports satisfied by external/builtin modules (e.g. unknown paths) —
+            // naga-oil itself surfaces a helpful error if those are actually unresolved.
+            if let Some(&j) = path_to_idx.get(import_path) {
+                if i == j {
+                    continue;
+                }
+                children_of[j].push(i);
+                in_degree[i] += 1;
+            }
+        }
+    }
+
+    // Kahn's algorithm with alphabetic tie-break (modules are pre-sorted by path).
+    let mut ready: Vec<usize> = (0..modules.len()).filter(|&i| in_degree[i] == 0).collect();
+    let mut sorted = Vec::with_capacity(modules.len());
+    while let Some(idx) = ready.first().copied() {
+        ready.remove(0);
+        sorted.push(idx);
+        for &child in &children_of[idx] {
+            in_degree[child] -= 1;
+            if in_degree[child] == 0 {
+                // Insert maintaining alphabetic order.
+                let pos = ready
+                    .binary_search_by(|&j| modules[j].0.cmp(&modules[child].0))
+                    .unwrap_or_else(|e| e);
+                ready.insert(pos, child);
+            }
+        }
+    }
+    if sorted.len() != modules.len() {
+        let unresolved: Vec<&str> = (0..modules.len())
+            .filter(|i| !sorted.contains(i))
+            .map(|i| modules[i].0.as_str())
+            .collect();
+        return Err(BuildError::Message(format!(
+            "shader-module import graph has a cycle; unresolved: {unresolved:?}",
+        )));
+    }
+
+    Ok(sorted.into_iter().map(|i| modules[i].clone()).collect())
+}
+
+/// Parses the first `#define_import_path <path>` directive from a WGSL source.
+fn parse_define_import_path(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("#define_import_path") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Parses every `#import <path>` (including aliased `#import <path> as <alias>` forms) from
+/// a WGSL source. Multi-line block-import syntax is not used in this codebase, so the line
+/// scanner suffices.
+fn parse_import_paths(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("#import") else {
+            continue;
+        };
+        let rest = rest.trim();
+        // Forms: `#import path`, `#import path as alias`, `#import path::{a, b}`.
+        let path = rest
+            .split_whitespace()
+            .next()
+            .map(|p| p.trim_end_matches('{').to_string());
+        if let Some(p) = path {
+            // Drop trailing `::{...` if a brace-list followed without whitespace.
+            let p = p.split("::{").next().unwrap_or(&p).to_string();
+            if !p.is_empty() {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 fn register_composable_modules(
