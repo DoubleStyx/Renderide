@@ -68,21 +68,22 @@ fn fd_lambert() -> f32 {
     return 1.0 / 3.14159265;
 }
 
-/// Range-coupled windowed inverse-square distance attenuation for punctual lights.
-/// `(saturate(1 − (d/r)^4))² · r² / d²` — Karis/Lagarde window (zero at `range` with a wide
-/// smooth transition that hides the per-cluster cull boundary) plus a `r²` range-coupling term so
-/// that increasing a light's range increases perceived brightness, matching Resonite's BiRP-style
-/// authoring convention. Intensity is applied by the call site.
+/// Normalized windowed inverse-square distance attenuation for punctual lights.
+/// `(saturate(1 − t⁴))² / max(t², ε²)` evaluated in `t = dist/range` space so the entire falloff
+/// shape stretches with the light's range slider rather than clipping a world-space inverse-square
+/// curve. Matches Unity BiRP's LUT-style behaviour where the range slider only changes how far the
+/// light reaches, not its peak brightness; the Karis/Lagarde quartic window keeps the boundary at
+/// `dist == range` smooth and exactly zero. The `ε = 0.01` floor (relative to range) caps the
+/// near-light singularity at a range-independent peak. Intensity is applied by the call site.
 fn distance_attenuation(dist: f32, range: f32) -> f32 {
     if (range <= 0.0) {
         return 0.0;
     }
-    let inv_d2 = 1.0 / max(dist * dist, 0.01 * 0.01);
     let t = dist / range;
-    let window_inner = clamp(1.0 - t * t * t * t, 0.0, 1.0);
+    let t2 = max(t * t, 0.0001);
+    let window_inner = clamp(1.0 - t2 * t2, 0.0, 1.0);
     let window = window_inner * window_inner;
-    let range_boost = range * range;
-    return inv_d2 * window * range_boost;
+    return window / t2;
 }
 
 /// Result of evaluating one punctual light at a surface point.
