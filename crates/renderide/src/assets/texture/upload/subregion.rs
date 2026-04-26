@@ -38,9 +38,14 @@ pub(super) fn hint_region_is_empty(hint: &TextureUploadHint) -> bool {
 }
 
 /// Packs a tight row-major buffer for `write_texture` from a rectangular sub-region of a full mip.
+///
+/// When `flip_y` is `true`, the source rows are read in bottom-to-top order so the produced
+/// buffer matches the GPU bottom-up storage convention; the caller adjusts the GPU `origin_y`
+/// to land at `full_height - r.y - r.h` (see [`try_write_texture2d_subregion`]).
 pub(super) fn pack_subrect_tight(
     full: &[u8],
     r: &MipSubrectCopy,
+    flip_y: bool,
 ) -> Result<Vec<u8>, TextureUploadError> {
     let row_stride = (r.full_width as usize)
         .checked_mul(r.bpp)
@@ -54,7 +59,8 @@ pub(super) fn pack_subrect_tight(
     let mut out = Vec::new();
     out.try_reserve(total).map_err(|e| e.to_string())?;
     for row in 0..r.h {
-        let y = r.y + row;
+        let src_row = if flip_y { r.h - 1 - row } else { row };
+        let y = r.y + src_row;
         if y >= r.full_height {
             return Err("subrect row out of bounds".into());
         }
@@ -149,16 +155,14 @@ fn write_texture_subregion(w: TextureWriteSubregion<'_>) -> Result<(), TextureUp
 
 /// Returns [`None`] when this path should defer to the full mip chain (criteria not met).
 ///
-/// Checked: flip, mip0-only descriptor, uncompressed host format, GPU RGBA8 family.
+/// Checked: mip0-only descriptor, uncompressed host format, GPU RGBA8 family. `flip_y` is
+/// supported here for the RGBA8 fast path; rows are reversed in [`pack_subrect_tight`].
 fn subregion_fast_path_supported(
     device: &wgpu::Device,
     upload: &SetTexture2DData,
     fmt: &SetTexture2DFormat,
     wgpu_format: wgpu::TextureFormat,
 ) -> Option<()> {
-    if upload.flip_y {
-        return None;
-    }
     if upload.start_mip_level != 0 {
         return None;
     }
@@ -281,18 +285,24 @@ pub(super) fn try_write_texture2d_subregion(
             w: rw,
             h: rh,
         },
+        ctx.upload.flip_y,
     ) {
         Ok(p) => p,
         Err(e) => return Some(Err(e)),
     };
 
+    // GPU storage is bottom-up (the engine's V-flip convention); when `flip_y` is set, the
+    // host-space `(rx, ry)..(rx+rw, ry+rh)` rectangle maps to the GPU rectangle anchored at the
+    // mirrored Y origin so the destination region corresponds to the same texels as the
+    // (now-bottom-up) packed rows produced by [`pack_subrect_tight`].
+    let origin_y = if ctx.upload.flip_y { h - ry - rh } else { ry };
     match write_texture_subregion(TextureWriteSubregion {
         queue: ctx.queue,
         write_texture_submit_gate: ctx.write_texture_submit_gate,
         texture: ctx.texture,
         mip_level: 0,
         origin_x: rx,
-        origin_y: ry,
+        origin_y,
         width: rw,
         height: rh,
         format: ctx.wgpu_format,
@@ -344,9 +354,51 @@ mod tests {
                 w: 2,
                 h: 2,
             },
+            false,
         )
         .unwrap();
         assert_eq!(out.len(), 16);
         assert!(out.iter().all(|&b| b == 1));
+    }
+
+    #[test]
+    fn pack_subrect_tight_flips_rows_when_flip_y() {
+        // 4×4 RGBA8 mip with row 0 = 0xAA, row 1 = 0xBB, row 2 = 0xCC, row 3 = 0xDD (per byte).
+        let mut v = vec![0u8; 4 * 4 * 4];
+        for y in 0..4 {
+            let val = match y {
+                0 => 0xAA,
+                1 => 0xBB,
+                2 => 0xCC,
+                _ => 0xDD,
+            };
+            for byte in &mut v[y * 16..(y + 1) * 16] {
+                *byte = val;
+            }
+        }
+        // Pack rows 1..3 (inclusive of 1, exclusive of 3) flipped.
+        let out = pack_subrect_tight(
+            &v,
+            &MipSubrectCopy {
+                full_width: 4,
+                full_height: 4,
+                bpp: 4,
+                x: 0,
+                y: 1,
+                w: 4,
+                h: 2,
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 4 * 2 * 4);
+        // Output row 0 should be source row (1 + (h-1-0)) = (1 + 1) = 2 → 0xCC.
+        for byte in &out[0..16] {
+            assert_eq!(*byte, 0xCC);
+        }
+        // Output row 1 should be source row (1 + (h-1-1)) = (1 + 0) = 1 → 0xBB.
+        for byte in &out[16..32] {
+            assert_eq!(*byte, 0xBB);
+        }
     }
 }

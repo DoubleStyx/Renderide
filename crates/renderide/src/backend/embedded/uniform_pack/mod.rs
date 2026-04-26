@@ -71,12 +71,17 @@ pub(crate) fn build_embedded_uniform_bytes(
         let pid = *ids.uniform_field_ids.get(field_name)?;
         match field.kind {
             ReflectedUniformScalarKind::Vec4 => {
-                let v =
+                let mut v =
                     if let Some(MaterialPropertyValue::Float4(c)) = store.get_merged(lookup, pid) {
                         *c
                     } else {
                         default_vec4_for_field(shader_writer_unescaped_field_name(field_name))
                     };
+                if let Some(rewritten) = rewrite_st_for_render_texture(
+                    field_name, &v, reflected, ids, store, lookup, tex_ctx,
+                ) {
+                    v = rewritten;
+                }
                 write_f32x4_at(&mut buf, field, &v);
             }
             ReflectedUniformScalarKind::F32 => {
@@ -106,6 +111,57 @@ pub(crate) fn build_embedded_uniform_bytes(
     }
 
     Some(buf)
+}
+
+/// Rewrites `_<TexName>_ST` so that the engine's shader-side V flip is undone for render textures.
+///
+/// Render textures are produced top-down by wgpu render attachments, while host-uploaded textures
+/// arrive bottom-up (Resonite/Unity convention). Material shaders apply a uniform `1.0 - v` flip
+/// in [`crate::shaders::source::modules::uv_utils::apply_st`] to reorient the latter; for the
+/// former that flip is wrong.
+///
+/// `apply_st(uv, st)` evaluates `(uv.x*st.x + st.z, 1 - (uv.y*st.y + st.w))`. Substituting
+/// `st' = (st.x, -st.y, st.z, 1 - st.w)` yields `(uv.x*st.x + st.z, uv.y*st.y + st.w)` — i.e. the
+/// V flip cancels exactly. Returns [`Some`] with the rewritten vec4 when the field is a `_ST`
+/// field whose corresponding texture binding resolves to [`ResolvedTextureBinding::RenderTexture`];
+/// [`None`] otherwise (caller writes the unmodified vec4).
+///
+/// Procedurally-derived UVs that route through `flip_v` rather than `apply_st` (matcap and
+/// 360-projection masks) are not addressed by this trick — those sites do not consume `_ST` and
+/// would need a separate per-binding flag if they are ever bound to a render texture. In practice
+/// they are bound to host-uploaded textures only.
+fn rewrite_st_for_render_texture(
+    field_name: &str,
+    value: &[f32; 4],
+    reflected: &ReflectedRasterLayout,
+    ids: &StemEmbeddedPropertyIds,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> Option<[f32; 4]> {
+    let unescaped = shader_writer_unescaped_field_name(field_name);
+    let tex_name = unescaped.strip_suffix("_ST")?;
+    let (&binding, host_name) = reflected
+        .material_group1_names
+        .iter()
+        .find(|(_, name)| name.as_str() == tex_name)?;
+    let tex_pids = texture_property_ids_for_binding(ids, binding);
+    if tex_pids.is_empty() {
+        return None;
+    }
+    let resolved = resolved_texture_binding_for_host(
+        host_name.as_str(),
+        tex_pids,
+        tex_ctx.primary_texture_2d,
+        store,
+        lookup,
+    );
+    match resolved {
+        ResolvedTextureBinding::RenderTexture { .. } => {
+            Some([value[0], -value[1], value[2], 1.0 - value[3]])
+        }
+        _ => None,
+    }
 }
 
 /// Host `mipmap_bias` for `_<Tex>_LodBias` fields, or [`None`] if `field_name` is not a LOD-bias

@@ -155,28 +155,105 @@ pub fn decode_mip_to_rgba8(
         }
         TextureFormat::BC1 => decode_bc1_to_rgba8(w, h, raw)?,
         TextureFormat::BC3 => decode_bc3_to_rgba8(w, h, raw)?,
+        TextureFormat::BC2 => decode_with_lib(w, h, raw, texture2ddecoder::decode_bc2)?,
+        TextureFormat::BC4 => decode_with_lib(w, h, raw, texture2ddecoder::decode_bc4)?,
+        TextureFormat::BC5 => decode_with_lib(w, h, raw, texture2ddecoder::decode_bc5)?,
+        TextureFormat::BC6H => decode_with_lib(w, h, raw, texture2ddecoder::decode_bc6_unsigned)?,
+        TextureFormat::BC7 => decode_with_lib(w, h, raw, texture2ddecoder::decode_bc7)?,
+        TextureFormat::ETC2RGB => decode_with_lib(w, h, raw, texture2ddecoder::decode_etc2_rgb)?,
+        TextureFormat::ETC2RGBA1 => {
+            decode_with_lib(w, h, raw, texture2ddecoder::decode_etc2_rgba1)?
+        }
+        TextureFormat::ETC2RGBA8 => {
+            decode_with_lib(w, h, raw, texture2ddecoder::decode_etc2_rgba8)?
+        }
+        TextureFormat::ASTC4x4 => decode_astc_with_block(w, h, raw, 4, 4)?,
+        TextureFormat::ASTC5x5 => decode_astc_with_block(w, h, raw, 5, 5)?,
+        TextureFormat::ASTC6x6 => decode_astc_with_block(w, h, raw, 6, 6)?,
+        TextureFormat::ASTC8x8 => decode_astc_with_block(w, h, raw, 8, 8)?,
+        TextureFormat::ASTC10x10 => decode_astc_with_block(w, h, raw, 10, 10)?,
+        TextureFormat::ASTC12x12 => decode_astc_with_block(w, h, raw, 12, 12)?,
         _ => return None,
     };
     Some(apply_optional_rgba_vertical_flip(rgba, w, h, flip_y))
 }
 
+/// `texture2ddecoder` packs each decoded texel as `u32::from_le_bytes([b, g, r, a])` (its
+/// `color::color`). On little-endian targets (all renderide platforms) this places **B** at the
+/// low byte; reorder to RGBA8 for [`wgpu::TextureFormat::Rgba8Unorm`] /
+/// [`wgpu::TextureFormat::Rgba8UnormSrgb`] uploads.
+fn bgra_u32_buf_to_rgba8(buf: &[u32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(buf.len() * 4);
+    for &px in buf {
+        out.push(((px >> 16) & 0xFF) as u8);
+        out.push(((px >> 8) & 0xFF) as u8);
+        out.push((px & 0xFF) as u8);
+        out.push(((px >> 24) & 0xFF) as u8);
+    }
+    out
+}
+
+/// Adapter for `texture2ddecoder::decode_*(data, w, h, &mut [u32])` decoders that share the
+/// generic `block_decoder!` signature (BC2/BC4/BC5/BC6H/BC7, ETC2 family).
+fn decode_with_lib<F>(w: usize, h: usize, raw: &[u8], decode: F) -> Option<Vec<u8>>
+where
+    F: FnOnce(&[u8], usize, usize, &mut [u32]) -> Result<(), &'static str>,
+{
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut buf = vec![0u32; w.checked_mul(h)?];
+    decode(raw, w, h, &mut buf).ok()?;
+    Some(bgra_u32_buf_to_rgba8(&buf))
+}
+
+/// ASTC takes additional `block_w` / `block_h` parameters; otherwise mirrors [`decode_with_lib`].
+fn decode_astc_with_block(
+    w: usize,
+    h: usize,
+    raw: &[u8],
+    block_w: usize,
+    block_h: usize,
+) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut buf = vec![0u32; w.checked_mul(h)?];
+    texture2ddecoder::decode_astc(raw, w, h, block_w, block_h, &mut buf).ok()?;
+    Some(bgra_u32_buf_to_rgba8(&buf))
+}
+
 /// Returns true if host mip bytes must be decoded to RGBA8 before [`wgpu::Queue::write_texture`].
 ///
-/// When [`wgpu::Features::TEXTURE_COMPRESSION_BC`] is enabled, **BC1** and **BC3** are uploaded as
-/// native block-compressed GPU formats instead (see [`crate::assets::texture::upload::format_resolve`]).
+/// When the device advertises the relevant [`wgpu::Features`] compression family, the host bytes
+/// are uploaded as the native block-compressed GPU format instead (see
+/// [`crate::assets::texture::upload::format_resolve`]). When the feature is missing, the format
+/// falls back to RGBA8 via [`decode_mip_to_rgba8`] so the texture renders correctly with a
+/// quality / VRAM penalty rather than a silent all-RGBA8 reinterpretation.
+///
 /// **BC3nm** normal-map channel packing is handled in shaders (`normal_decode.wgsl`,
 /// `decode_ts_normal_sample_raw`).
 pub fn needs_rgba8_decode_before_upload(device: &wgpu::Device, host: TextureFormat) -> bool {
-    use TextureFormat::{Alpha8, ARGB32, BC1, BC3, BGR565, BGRA32, R8, RGB24, RGB565};
-    let bc_native = device
-        .features()
-        .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+    use TextureFormat::{
+        ASTC10x10, ASTC12x12, ASTC4x4, ASTC5x5, ASTC6x6, ASTC8x8, Alpha8, ARGB32, BC1, BC2, BC3,
+        BC4, BC5, BC6H, BC7, BGR565, BGRA32, ETC2RGB, ETC2RGBA1, ETC2RGBA8, R8, RGB24, RGB565,
+    };
+    let feats = device.features();
+    let bc_native = feats.contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+    let etc2_native = feats.contains(wgpu::Features::TEXTURE_COMPRESSION_ETC2);
     let packed_rgb = matches!(
         host,
         RGB24 | ARGB32 | BGRA32 | R8 | Alpha8 | RGB565 | BGR565
     );
-    let bc_cpu_fallback = matches!(host, BC1 | BC3) && !bc_native;
-    packed_rgb || bc_cpu_fallback
+    let bc_cpu_fallback = matches!(host, BC1 | BC2 | BC3 | BC4 | BC5 | BC6H | BC7) && !bc_native;
+    let etc2_cpu_fallback = matches!(host, ETC2RGB | ETC2RGBA1 | ETC2RGBA8) && !etc2_native;
+    // ASTC is *always* CPU-decoded — see [`crate::assets::texture::format::map_host_format`] for
+    // the rationale (mode-dependent block layouts up to 12×12 prevent in-block flip).
+    let astc_cpu_fallback = matches!(
+        host,
+        ASTC4x4 | ASTC5x5 | ASTC6x6 | ASTC8x8 | ASTC10x10 | ASTC12x12
+    );
+    packed_rgb || bc_cpu_fallback || etc2_cpu_fallback || astc_cpu_fallback
 }
 
 fn rgb565_to_rgb8(c: u16) -> (u8, u8, u8) {
@@ -550,6 +627,38 @@ mod tests {
                 px[0], 50,
                 "R holds tangent X (was in alpha) after BC3nm swizzle"
             );
+            assert_eq!(px[3], 255);
+        }
+    }
+
+    #[test]
+    fn bc2_4x4_decode_returns_solid_red() {
+        // BC2: 8B explicit alpha (4 bits/texel) + 8B BC1 color. Alpha all 0xFF (premapped to
+        // 4-bit 0xF), BC1 indices all 0 with c0=c1=red(0xF800) → 4×4 opaque sRGB red.
+        let raw = vec![
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // explicit alpha = full
+            0x00, 0xF8, 0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, // BC1: c0=c1=red, indices 0
+        ];
+        let out = decode_mip_to_rgba8(TextureFormat::BC2, 4, 4, false, &raw).expect("ok");
+        assert_eq!(out.len(), 4 * 4 * 4);
+        for px in out.chunks_exact(4) {
+            assert!(px[0] >= 250, "R≈255");
+            assert!(px[1] < 5, "G≈0");
+            assert!(px[2] < 5, "B≈0");
+            assert_eq!(px[3], 255);
+        }
+    }
+
+    #[test]
+    fn etc2rgb_4x4_decode_returns_4x4_image() {
+        // ETC2 RGB block (8B): use individual mode with two equal sub-blocks of mid-gray. Exact
+        // pixel values aren't asserted here; the test pins the integration shape — that the format
+        // is wired and produces a 4×4×RGBA8 buffer without erroring.
+        let raw = [0u8; 8];
+        let out = decode_mip_to_rgba8(TextureFormat::ETC2RGB, 4, 4, false, &raw).expect("ok");
+        assert_eq!(out.len(), 4 * 4 * 4);
+        // Alpha must be opaque for ETC2 RGB.
+        for px in out.chunks_exact(4) {
             assert_eq!(px[3], 255);
         }
     }

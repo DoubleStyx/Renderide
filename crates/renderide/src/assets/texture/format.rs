@@ -101,22 +101,14 @@ pub fn map_host_format(host: TextureFormat, profile: ColorProfile) -> Option<wgp
                 wgpu::TextureFormat::Etc2Rgba8Unorm
             }
         }
-        ASTC4x4 => astc_wgpu(wgpu::AstcBlock::B4x4, srgb),
-        ASTC5x5 => astc_wgpu(wgpu::AstcBlock::B5x5, srgb),
-        ASTC6x6 => astc_wgpu(wgpu::AstcBlock::B6x6, srgb),
-        ASTC8x8 => astc_wgpu(wgpu::AstcBlock::B8x8, srgb),
-        ASTC10x10 => astc_wgpu(wgpu::AstcBlock::B10x10, srgb),
-        ASTC12x12 => astc_wgpu(wgpu::AstcBlock::B12x12, srgb),
+        // ASTC always routes through the RGBA8 CPU decode path. Native ASTC GPU storage cannot
+        // be vertically flipped on upload (block layout is mode-dependent at granularities up
+        // to 12×12 texels — see [`crate::assets::texture::layout::flip_compressed_mip_block_rows_y_supported`])
+        // and FrooxEngine's `Bitmap2D.FlipY=true` convention requires per-asset flips. Returning
+        // [`None`] forces the upload path to allocate `Rgba8Unorm{Srgb}` and decode each mip via
+        // [`crate::assets::texture::decode::decode_mip_to_rgba8`], which supports the V flip.
+        ASTC4x4 | ASTC5x5 | ASTC6x6 | ASTC8x8 | ASTC10x10 | ASTC12x12 => return None,
     })
-}
-
-fn astc_wgpu(block: wgpu::AstcBlock, srgb: bool) -> wgpu::TextureFormat {
-    let channel = if srgb {
-        wgpu::AstcChannel::UnormSrgb
-    } else {
-        wgpu::AstcChannel::Unorm
-    };
-    wgpu::TextureFormat::Astc { block, channel }
 }
 
 fn texture_format_supported(device: &wgpu::Device, format: wgpu::TextureFormat) -> bool {

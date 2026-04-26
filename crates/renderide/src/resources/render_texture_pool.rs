@@ -5,21 +5,20 @@
 //! also includes `COPY_SRC` so [`crate::backend::frame_gpu::FrameGpuResources::copy_scene_depth_snapshot`]
 //! can copy scene depth for intersection / frame bindings (same as main `renderide-depth`).
 //!
-//! ### Known orientation mismatch
+//! ### Orientation
 //!
 //! Host-uploaded textures arrive bottom-up (Resonite/Unity convention); material shaders apply a
 //! V-flip via [`crate::shaders::source::modules::uv_utils`]'s `apply_st` / `flip_v` to compensate
 //! for wgpu's top-down `textureSample` origin. Render textures produced by a camera pass into the
-//! `color_texture` here are **top-down** (wgpu render attachments), so a material that samples a
-//! [`GpuRenderTexture`] receives a vertically-inverted result through the same `apply_st` call.
+//! `color_texture` here are **top-down** (wgpu render attachments), so the same `apply_st` call
+//! would invert them.
 //!
-//! This is a pre-existing limitation of the engine's "store bottom-up + shader-side V-flip"
-//! convention; it surfaces only for materials that sample render textures (secondary cameras,
-//! reflection probes feeding `Reflection`, etc.). A correct fix requires either rendering with
-//! Y-inverted clip space (and reversing cull winding) or plumbing a per-binding `skip_v_flip`
-//! flag from [`crate::backend::embedded::material_bind`] into every material shader's
-//! `apply_st` site. Tracked as future work; intentionally not addressed in the BC6H/BC7
-//! flip-fix PR to keep that change small and contained.
+//! The fix lives in `rewrite_st_for_render_texture` in
+//! [`crate::backend::embedded::uniform_pack`]: when a `_<TexName>_ST` uniform's bound texture
+//! resolves to a render texture, the four components are rewritten to `(s.x, -s.y, s.z, 1 - s.w)`
+//! so the shader-side `1.0 - v` cancels itself algebraically. Procedurally-derived UVs that route
+//! through `flip_v` (matcap, 360-projection masks) are not addressed because they do not consume
+//! `_ST` and are not bound to render textures in practice.
 
 use hashbrown::HashMap;
 use std::sync::Arc;
