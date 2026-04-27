@@ -1,7 +1,7 @@
 //! Test-only helpers for building synthetic [`super::world_mesh_draw_prep::WorldMeshDrawItem`] values.
 
 use crate::assets::material::MaterialPropertyLookupIds;
-use crate::materials::RasterPipelineKind;
+use crate::materials::{RasterFrontFace, RasterPipelineKind};
 use crate::scene::RenderSpaceId;
 
 use super::world_mesh_draw_prep::{MaterialDrawBatchKey, WorldMeshDrawItem};
@@ -72,6 +72,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
             material_asset_id: mid,
             property_block_slot0: pb,
             skinned,
+            front_face: RasterFrontFace::Clockwise,
             embedded_needs_uv0: false,
             embedded_needs_color: false,
             embedded_needs_extended_vertex_streams: false,

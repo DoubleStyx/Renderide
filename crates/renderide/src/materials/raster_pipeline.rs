@@ -7,12 +7,12 @@
 use crate::backend::{empty_material_bind_group_layout, FrameGpuResources};
 use crate::materials::material_passes::{default_pass, DefaultPassParams, MaterialPassDesc};
 use crate::materials::pipeline_build_error::PipelineBuildError;
-use crate::materials::MaterialRenderState;
 use crate::materials::{
     reflect_raster_material_wgsl, reflect_vertex_shader_needs_color_stream,
     reflect_vertex_shader_needs_uv0_stream, validate_layout_against_limits,
     validate_per_draw_group2, validate_vertex_layout_against_limits, MaterialPipelineDesc,
 };
+use crate::materials::{MaterialRenderState, RasterFrontFace};
 
 /// Compiled shader module and [`MaterialPipelineDesc`] from the material cache before adding a pipeline label.
 pub(crate) struct ShaderModuleBuildRefs<'a> {
@@ -80,6 +80,8 @@ pub(crate) struct MeshForwardSharedPipelineBuild<'a> {
     pub layout: &'a wgpu::PipelineLayout,
     /// Vertex buffer layouts selected for this shader.
     pub vertex_buffers: &'a [wgpu::VertexBufferLayout<'a>],
+    /// Front-face winding for this pipeline variant.
+    pub front_face: RasterFrontFace,
 }
 
 /// Vertex stream toggles, blending, depth write, and material overrides for
@@ -95,6 +97,8 @@ pub(crate) struct ReflectiveRasterMeshForwardPipelineDesc {
     pub depth_write_enabled: bool,
     /// Runtime material overrides for color mask, stencil, and depth state.
     pub render_state: MaterialRenderState,
+    /// Front-face winding selected from the draw's model transform.
+    pub front_face: RasterFrontFace,
 }
 
 fn mesh_forward_vertex_buffer_layouts() -> [wgpu::VertexBufferLayout<'static>; 8] {
@@ -259,9 +263,7 @@ pub(crate) fn build_pipeline_from_pass(
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
-                    // Unity / host mesh winding uses clockwise front faces (D3D-style). wgpu defaults to
-                    // `FrontFace::Ccw`; without this, `Cull Back` removes Unity's outward-facing tris.
-                    front_face: wgpu::FrontFace::Cw,
+                    front_face: shared.front_face.to_wgpu(),
                     cull_mode: render_state.resolved_cull_mode(pass.cull_mode),
                     ..Default::default()
                 },
@@ -319,6 +321,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
         label,
         layout: &layout,
         vertex_buffers: &vertex_buffers,
+        front_face: raster.front_face,
     };
     Ok(build_pipeline_from_pass(
         &shared,
@@ -333,6 +336,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
     streams: VertexStreamToggles,
     passes: &[MaterialPassDesc],
     render_state: MaterialRenderState,
+    front_face: RasterFrontFace,
 ) -> Result<Vec<wgpu::RenderPipeline>, PipelineBuildError> {
     if passes.is_empty() {
         return Err(PipelineBuildError::EmptyPasses {
@@ -355,6 +359,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
         label: shader.label,
         layout: &layout,
         vertex_buffers: &vertex_buffers,
+        front_face,
     };
     Ok(passes
         .iter()

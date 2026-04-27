@@ -9,9 +9,27 @@ use super::embedded_shader_stem::embedded_default_stem_for_unity_name;
 use super::family::MaterialPipelineDesc;
 use super::material_passes::MaterialBlendMode;
 use super::pipeline_kind::RasterPipelineKind;
-use super::render_state::MaterialRenderState;
+use super::render_state::{MaterialRenderState, RasterFrontFace};
 use super::resolve_raster::resolve_raster_pipeline;
 use super::router::MaterialRouter;
+
+/// Full cache lookup request for one material pipeline variant.
+struct PipelineLookupRequest<'a> {
+    /// Host shader asset id for diagnostics, or [`None`] for direct-kind lookups.
+    shader_asset_id: Option<i32>,
+    /// Raster pipeline kind to resolve.
+    kind: &'a RasterPipelineKind,
+    /// Attachment formats and sample count.
+    desc: &'a MaterialPipelineDesc,
+    /// Shader permutation for mono vs stereo targets.
+    permutation: ShaderPermutation,
+    /// Material blend mode for pipeline materialization.
+    blend_mode: MaterialBlendMode,
+    /// Runtime material render state for pipeline materialization.
+    render_state: MaterialRenderState,
+    /// Front-face winding selected from draw transform handedness.
+    front_face: RasterFrontFace,
+}
 
 /// Owning table of material routing and pipeline cache.
 pub struct MaterialRegistry {
@@ -24,17 +42,25 @@ pub struct MaterialRegistry {
 impl MaterialRegistry {
     fn try_pipeline_with_fallback(
         &self,
-        shader_asset_id: Option<i32>,
-        kind: &RasterPipelineKind,
-        desc: &MaterialPipelineDesc,
-        permutation: ShaderPermutation,
-        blend_mode: MaterialBlendMode,
-        render_state: MaterialRenderState,
+        request: PipelineLookupRequest<'_>,
     ) -> Option<MaterialPipelineSet> {
-        let err = match self
-            .cache
-            .get_or_create(kind, desc, permutation, blend_mode, render_state)
-        {
+        let PipelineLookupRequest {
+            shader_asset_id,
+            kind,
+            desc,
+            permutation,
+            blend_mode,
+            render_state,
+            front_face,
+        } = request;
+        let err = match self.cache.get_or_create(
+            kind,
+            desc,
+            permutation,
+            blend_mode,
+            render_state,
+            front_face,
+        ) {
             Ok(p) => return Some(p),
             Err(e) => e,
         };
@@ -62,10 +88,14 @@ impl MaterialRegistry {
             }
         }
         let fallback = RasterPipelineKind::Null;
-        match self
-            .cache
-            .get_or_create(&fallback, desc, permutation, blend_mode, render_state)
-        {
+        match self.cache.get_or_create(
+            &fallback,
+            desc,
+            permutation,
+            blend_mode,
+            render_state,
+            front_face,
+        ) {
             Ok(p) => Some(p),
             Err(e2) => {
                 logger::error!("fallback Null pipeline build failed: {e2}");
@@ -133,16 +163,18 @@ impl MaterialRegistry {
         permutation: ShaderPermutation,
         blend_mode: MaterialBlendMode,
         render_state: MaterialRenderState,
+        front_face: RasterFrontFace,
     ) -> Option<MaterialPipelineSet> {
         let kind = resolve_raster_pipeline(shader_asset_id, &self.router);
-        self.try_pipeline_with_fallback(
-            Some(shader_asset_id),
-            &kind,
+        self.try_pipeline_with_fallback(PipelineLookupRequest {
+            shader_asset_id: Some(shader_asset_id),
+            kind: &kind,
             desc,
             permutation,
             blend_mode,
             render_state,
-        )
+            front_face,
+        })
     }
 
     /// Looks up a pipeline by explicit kind (for example tests or tools that do not use a host shader id).
@@ -153,8 +185,17 @@ impl MaterialRegistry {
         permutation: ShaderPermutation,
         blend_mode: MaterialBlendMode,
         render_state: MaterialRenderState,
+        front_face: RasterFrontFace,
     ) -> Option<MaterialPipelineSet> {
-        self.try_pipeline_with_fallback(None, kind, desc, permutation, blend_mode, render_state)
+        self.try_pipeline_with_fallback(PipelineLookupRequest {
+            shader_asset_id: None,
+            kind,
+            desc,
+            permutation,
+            blend_mode,
+            render_state,
+            front_face,
+        })
     }
 
     /// Low-level cache access keyed by [`RasterPipelineKind`].
@@ -165,8 +206,17 @@ impl MaterialRegistry {
         permutation: ShaderPermutation,
         blend_mode: MaterialBlendMode,
         render_state: MaterialRenderState,
+        front_face: RasterFrontFace,
     ) -> Option<MaterialPipelineSet> {
-        self.try_pipeline_with_fallback(None, kind, desc, permutation, blend_mode, render_state)
+        self.try_pipeline_with_fallback(PipelineLookupRequest {
+            shader_asset_id: None,
+            kind,
+            desc,
+            permutation,
+            blend_mode,
+            render_state,
+            front_face,
+        })
     }
 
     /// Borrow the wgpu device held by this registry.

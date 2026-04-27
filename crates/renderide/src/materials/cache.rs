@@ -17,7 +17,9 @@ use crate::materials::embedded_raster_pipeline::{
     build_embedded_wgsl, create_embedded_render_pipelines, EmbeddedRasterPipelineSource,
 };
 use crate::materials::raster_pipeline::ShaderModuleBuildRefs;
-use crate::materials::{MaterialBlendMode, MaterialRenderState, RasterPipelineKind};
+use crate::materials::{
+    MaterialBlendMode, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
+};
 use crate::pipelines::raster::null::{build_null_wgsl, create_null_render_pipeline};
 use crate::pipelines::ShaderPermutation;
 
@@ -53,6 +55,8 @@ pub struct MaterialPipelineCacheKey {
     pub blend_mode: MaterialBlendMode,
     /// Material-level stencil and color write state.
     pub render_state: MaterialRenderState,
+    /// Front-face winding for draw transforms in this pipeline bucket.
+    pub front_face: RasterFrontFace,
 }
 
 /// One or more pipelines for a material entry (one per declared `//#pass`).
@@ -99,6 +103,7 @@ impl MaterialPipelineCache {
         permutation: ShaderPermutation,
         blend_mode: MaterialBlendMode,
         render_state: MaterialRenderState,
+        front_face: RasterFrontFace,
     ) -> Result<MaterialPipelineSet, PipelineBuildError> {
         profiling::scope!("materials::get_or_create_pipeline");
         let key = MaterialPipelineCacheKey {
@@ -110,6 +115,7 @@ impl MaterialPipelineCache {
             multiview_mask: desc.multiview_mask,
             blend_mode,
             render_state,
+            front_face,
         };
         //perf xlinka: a hit is real use; promote it so hot pipelines do not get evicted.
         if let Some(hit) = self.pipelines.lock().get(&key) {
@@ -131,6 +137,7 @@ impl MaterialPipelineCache {
                     permutation,
                     blend_mode,
                     render_state,
+                    front_face,
                 },
                 ShaderModuleBuildRefs {
                     device: &device,
@@ -147,6 +154,7 @@ impl MaterialPipelineCache {
                     &module,
                     desc,
                     &wgsl,
+                    front_face,
                 )?]
             }
         };

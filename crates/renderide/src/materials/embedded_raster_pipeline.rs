@@ -9,7 +9,8 @@ use crate::materials::raster_pipeline::{
     create_reflective_raster_mesh_forward_pipelines, ShaderModuleBuildRefs, VertexStreamToggles,
 };
 use crate::materials::{
-    materialized_pass_for_blend_mode, MaterialBlendMode, MaterialRenderState, ReflectedRasterLayout,
+    materialized_pass_for_blend_mode, MaterialBlendMode, MaterialRenderState, RasterFrontFace,
+    ReflectedRasterLayout,
 };
 use crate::pipelines::raster::SHADER_PERM_MULTIVIEW_STEREO;
 use crate::pipelines::ShaderPermutation;
@@ -24,6 +25,8 @@ pub(crate) struct EmbeddedRasterPipelineSource {
     pub blend_mode: MaterialBlendMode,
     /// Runtime depth/stencil/color overrides.
     pub render_state: MaterialRenderState,
+    /// Front-face winding selected from draw transform handedness.
+    pub front_face: RasterFrontFace,
 }
 
 /// Cache key for reflection-derived metadata on a composed embedded target.
@@ -216,6 +219,7 @@ pub(crate) fn create_embedded_render_pipelines(
         permutation,
         blend_mode,
         render_state,
+        front_face,
     } = source;
     let shader = refs.with_label("embedded_raster_material");
     let streams = VertexStreamToggles {
@@ -239,6 +243,7 @@ pub(crate) fn create_embedded_render_pipelines(
         streams,
         &materialized_passes,
         render_state,
+        front_face,
     )
 }
 

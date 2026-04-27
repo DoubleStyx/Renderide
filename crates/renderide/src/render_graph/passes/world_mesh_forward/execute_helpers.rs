@@ -505,6 +505,7 @@ fn resolve_one_material_batch<'a>(
             shader_perm,
             batch_key.blend_mode,
             batch_key.render_state,
+            batch_key.front_face,
         );
         let passes = declared_passes_for_pipeline_kind(&batch_key.pipeline, shader_perm);
         match pipes {
@@ -560,6 +561,7 @@ fn resolve_one_material_batch<'a>(
     PrecomputedMaterialBind {
         first_draw_idx: first,
         last_draw_idx: last,
+        front_face: batch_key.front_face,
         bind_group,
         pipelines,
         declared_passes,

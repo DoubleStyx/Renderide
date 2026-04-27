@@ -120,7 +120,7 @@ pub use pipeline_build_error::PipelineBuildError;
 pub use pipeline_kind::RasterPipelineKind;
 pub use render_state::{
     material_render_state_for_lookup, material_render_state_from_maps, MaterialCullOverride,
-    MaterialDepthOffsetState, MaterialRenderState, MaterialStencilState,
+    MaterialDepthOffsetState, MaterialRenderState, MaterialStencilState, RasterFrontFace,
 };
 
 /// Naga reflection: composed WGSL → `wgpu` bind layouts, uniform block layout, stem fingerprints.
