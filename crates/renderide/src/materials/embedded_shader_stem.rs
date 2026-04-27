@@ -34,9 +34,18 @@ fn shader_lab_ui_path_to_asset_lookup_key(name: &str) -> Option<String> {
     None
 }
 
+/// Maps shader names whose ShaderLab label differs from the Unity asset filename.
+fn canonical_embedded_lookup_key(name: &str) -> String {
+    let key = normalize_unity_shader_lookup_key(name);
+    match key.as_str() {
+        "proceduralsky" => "proceduralskybox".to_string(),
+        _ => key,
+    }
+}
+
 /// Returns `{normalized_key}_default` when that composed target exists in the embedded table.
 pub fn embedded_default_stem_for_unity_name(name: &str) -> Option<String> {
-    let key = normalize_unity_shader_lookup_key(name);
+    let key = canonical_embedded_lookup_key(name);
     let stem = format!("{key}_default");
     if embedded_shaders::embedded_target_wgsl(&stem).is_some() {
         return Some(stem);
@@ -144,6 +153,30 @@ mod tests {
         assert_eq!(
             embedded_default_stem_for_unity_name("Projection360").as_deref(),
             Some("projection360_default")
+        );
+    }
+
+    #[test]
+    fn resolves_gradient_skybox_from_unity_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("GradientSkybox").as_deref(),
+            Some("gradientskybox_default")
+        );
+    }
+
+    #[test]
+    fn resolves_procedural_skybox_from_unity_asset_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("ProceduralSkybox").as_deref(),
+            Some("proceduralskybox_default")
+        );
+    }
+
+    #[test]
+    fn resolves_procedural_skybox_from_shader_lab_name() {
+        assert_eq!(
+            embedded_default_stem_for_unity_name("ProceduralSky").as_deref(),
+            Some("proceduralskybox_default")
         );
     }
 

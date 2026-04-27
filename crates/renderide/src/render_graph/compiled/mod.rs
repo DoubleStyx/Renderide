@@ -7,7 +7,7 @@ use crate::gpu::{GpuContext, GpuLimits};
 use crate::scene::SceneCoordinator;
 
 use super::error::GraphExecuteError;
-use super::frame_params::{HostCameraFrame, OcclusionViewId};
+use super::frame_params::{FrameViewClear, HostCameraFrame, OcclusionViewId};
 use super::ids::{GroupId, PassId};
 use super::pass::{GroupScope, PassKind, PassMergeHint, PassNode};
 use super::resources::{
@@ -65,6 +65,8 @@ pub struct FrameView<'a> {
     pub target: FrameViewTarget<'a>,
     /// Optional transform filter for secondary cameras.
     pub draw_filter: Option<CameraTransformDrawFilter>,
+    /// Background clear/skybox behavior for this view.
+    pub clear: FrameViewClear,
     /// Explicit world-mesh draw plan for this view.
     pub world_mesh_draw_plan: WorldMeshDrawPlan,
 }
@@ -175,6 +177,7 @@ impl<'a> FrameView<'a> {
             host_camera,
             target: FrameViewTarget::Swapchain,
             draw_filter: None,
+            clear: FrameViewClear::skybox(),
             world_mesh_draw_plan,
         }
     }
@@ -189,6 +192,7 @@ impl<'a> FrameView<'a> {
             host_camera,
             target: FrameViewTarget::ExternalMultiview(external),
             draw_filter: None,
+            clear: FrameViewClear::skybox(),
             world_mesh_draw_plan,
         }
     }
@@ -198,12 +202,14 @@ impl<'a> FrameView<'a> {
         host_camera: HostCameraFrame,
         external: ExternalOffscreenTargets<'a>,
         draw_filter: Option<CameraTransformDrawFilter>,
+        clear: FrameViewClear,
         world_mesh_draw_plan: WorldMeshDrawPlan,
     ) -> Self {
         Self {
             host_camera,
             target: FrameViewTarget::OffscreenRt(external),
             draw_filter,
+            clear,
             world_mesh_draw_plan,
         }
     }

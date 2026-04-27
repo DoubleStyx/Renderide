@@ -46,6 +46,7 @@ use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 
 use super::encode::{draw_subset, ForwardDrawBatch};
+use super::skybox::SkyboxRenderer;
 use super::vp::compute_per_draw_vp_triple;
 
 /// Minimum draws before parallelizing per-draw VP / model uniform packing (rayon overhead).
@@ -589,6 +590,7 @@ pub(super) fn prepare_world_mesh_forward_frame(
     gpu_limits: &GpuLimits,
     frame: &mut FrameRenderParams<'_>,
     blackboard: &mut Blackboard,
+    skybox_renderer: &SkyboxRenderer,
 ) -> Option<PreparedWorldMeshForwardFrame> {
     profiling::scope!("world_mesh::prepare_frame");
     let supports_base_instance = gpu_limits.supports_base_instance;
@@ -644,6 +646,7 @@ pub(super) fn prepare_world_mesh_forward_frame(
     }
 
     write_per_view_frame_uniforms(queue, upload_batch, frame, blackboard, use_multiview, hc);
+    let skybox = skybox_renderer.prepare(device, queue, upload_batch, frame, &pipeline);
 
     // Read the offscreen RT id before borrowing `frame` for encode_refs.
     let offscreen_write_rt = frame.view.offscreen_write_render_texture_asset_id;
@@ -672,6 +675,7 @@ pub(super) fn prepare_world_mesh_forward_frame(
         depth_snapshot_recorded: false,
         tail_raster_recorded: false,
         precomputed_batches,
+        skybox,
     })
 }
 

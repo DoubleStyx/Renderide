@@ -39,6 +39,7 @@ impl CompiledRenderGraph {
             view_idx,
             host_camera,
             draw_filter,
+            clear,
             world_mesh_draw_plan,
             resolved,
             per_view_frame_bg_and_buf,
@@ -74,7 +75,7 @@ impl CompiledRenderGraph {
         let graph_resources: &GraphResolvedResources = &resolved_resources;
 
         let mut frame_params =
-            Self::build_per_view_frame_params(shared, &resolved, &host_camera, draw_filter);
+            Self::build_per_view_frame_params(shared, &resolved, &host_camera, draw_filter, clear);
         let mut view_blackboard = self.build_per_view_blackboard(
             &frame_params,
             graph_resources,
@@ -141,6 +142,7 @@ impl CompiledRenderGraph {
         resolved: &'a ResolvedView<'a>,
         host_camera: &super::super::super::frame_params::HostCameraFrame,
         draw_filter: Option<crate::render_graph::world_mesh_draw_prep::CameraTransformDrawFilter>,
+        clear: super::super::super::frame_params::FrameViewClear,
     ) -> crate::render_graph::frame_params::FrameRenderParams<'a> {
         profiling::scope!("graph::per_view::build_frame_params");
         let hi_z_slot = shared.occlusion.ensure_hi_z_state(resolved.occlusion_view);
@@ -162,6 +164,7 @@ impl CompiledRenderGraph {
                 scene_color_format: shared.scene_color_format,
                 host_camera: *host_camera,
                 transform_draw_filter: draw_filter,
+                clear,
                 gpu_limits: shared.gpu_limits_arc.clone(),
                 msaa_depth_resolve: shared.msaa_depth_resolve.clone(),
                 hi_z_slot,
@@ -263,6 +266,7 @@ impl CompiledRenderGraph {
                 &resolved,
                 first.host_camera,
                 first.draw_filter.clone(),
+                first.clear,
             );
             // Frame-global blackboard (one per tick). MSAA views are per-view, not frame-global,
             // so no MSAA seed here. Frame-global passes (e.g. mesh deform) don't need MSAA views.

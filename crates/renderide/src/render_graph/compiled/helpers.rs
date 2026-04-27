@@ -8,8 +8,8 @@ use crate::scene::SceneCoordinator;
 
 use super::super::context::{GraphResolvedResources, RasterPassCtx, ResolvedGraphTexture};
 use super::super::error::GraphExecuteError;
-use super::super::frame_params::HostCameraFrame;
 use super::super::frame_params::{FrameRenderParams, FrameRenderParamsView, FrameSystemsShared};
+use super::super::frame_params::{FrameViewClear, HostCameraFrame};
 use super::super::pass::PassNode;
 use super::super::resources::{
     BufferSizePolicy, TextureAttachmentResolve, TextureAttachmentTarget, TextureHandle,
@@ -34,6 +34,8 @@ pub(super) struct FrameRenderParamsViewInputs<'a, 'r> {
     pub host_camera: HostCameraFrame,
     /// Optional per-camera draw-list filter applied before world-mesh recording.
     pub transform_draw_filter: Option<CameraTransformDrawFilter>,
+    /// Background clear/skybox behavior for this view.
+    pub clear: FrameViewClear,
     /// GPU capability limits, shared with passes that need to clamp against them.
     pub gpu_limits: Option<Arc<GpuLimits>>,
     /// MSAA depth resolve helpers when MSAA is active.
@@ -52,6 +54,7 @@ pub(super) fn frame_render_params_from_shared<'a>(
         scene_color_format,
         host_camera,
         transform_draw_filter,
+        clear,
         gpu_limits,
         msaa_depth_resolve,
         hi_z_slot,
@@ -82,6 +85,7 @@ pub(super) fn frame_render_params_from_shared<'a>(
             sample_count: resolved.sample_count,
             gpu_limits,
             msaa_depth_resolve,
+            clear,
             // MSAA views now live in the per-view blackboard (MsaaViewsSlot), resolved from
             // graph transient textures by the executor via resolve_forward_msaa_views_from_graph_resources.
         },
@@ -95,6 +99,7 @@ pub(super) fn frame_render_params_from_resolved<'a>(
     resolved: &ResolvedView<'a>,
     host_camera: HostCameraFrame,
     transform_draw_filter: Option<CameraTransformDrawFilter>,
+    clear: FrameViewClear,
 ) -> FrameRenderParams<'a> {
     let scene_color_format = backend.scene_color_format_wgpu();
     let (
@@ -128,6 +133,7 @@ pub(super) fn frame_render_params_from_resolved<'a>(
             scene_color_format,
             host_camera,
             transform_draw_filter,
+            clear,
             gpu_limits,
             msaa_depth_resolve,
             hi_z_slot,

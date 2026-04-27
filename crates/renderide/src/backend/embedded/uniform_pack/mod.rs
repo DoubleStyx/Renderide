@@ -39,6 +39,22 @@ fn write_f32x4_at(buf: &mut [u8], field: &ReflectedUniformField, v: &[f32; 4]) {
     }
 }
 
+/// Writes a host `float4[]` material property into a reflected uniform array field.
+fn write_f32x4_array_at(buf: &mut [u8], field: &ReflectedUniformField, values: &[[f32; 4]]) {
+    let off = field.offset as usize;
+    let max_values = (field.size as usize) / 16;
+    for (i, value) in values.iter().take(max_values).enumerate() {
+        let elem_off = off + i * 16;
+        if elem_off + 16 > buf.len() {
+            return;
+        }
+        for (component, v) in value.iter().enumerate() {
+            let component_off = elem_off + component * 4;
+            buf[component_off..component_off + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
 /// Auxiliary inputs required to populate texture-sourced uniform fields.
 ///
 /// Threads resident texture pools into the packer so f32 fields following texture suffix
@@ -107,7 +123,14 @@ pub(crate) fn build_embedded_uniform_bytes(
                 };
                 write_f32_at(&mut buf, field, v);
             }
-            ReflectedUniformScalarKind::U32 | ReflectedUniformScalarKind::Unsupported => {}
+            ReflectedUniformScalarKind::U32 => {}
+            ReflectedUniformScalarKind::Unsupported => {
+                if let Some(MaterialPropertyValue::Float4Array(values)) =
+                    store.get_merged(lookup, pid)
+                {
+                    write_f32x4_array_at(&mut buf, field, values);
+                }
+            }
         }
     }
 

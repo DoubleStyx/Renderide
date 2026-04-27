@@ -32,6 +32,7 @@ mod color_resolve;
 mod current_view_textures;
 mod encode;
 mod execute_helpers;
+mod skybox;
 mod vp;
 
 pub use color_resolve::{
@@ -58,6 +59,7 @@ use execute_helpers::{
     record_world_mesh_forward_transparent_graph_raster, resolve_forward_msaa_views,
     stencil_load_ops,
 };
+use skybox::{record_prepared_skybox, SkyboxRenderer};
 
 /// Prepares sorted world-mesh forward draw state for subsequent graph nodes.
 ///
@@ -65,7 +67,9 @@ use execute_helpers::{
 /// stores results in the per-view blackboard via [`WorldMeshForwardPlanSlot`] and
 /// [`crate::render_graph::PrecomputedMaterialBindsSlot`].
 #[derive(Debug, Default)]
-pub struct WorldMeshForwardPreparePass;
+pub struct WorldMeshForwardPreparePass {
+    skybox: SkyboxRenderer,
+}
 
 /// Graph-managed opaque/clear subpass for world-mesh forward rendering.
 #[derive(Debug)]
@@ -135,7 +139,9 @@ impl WorldMeshForwardPreparePass {
     /// but is not stored: the prepare pass operates on per-view blackboard slots rather than
     /// graph resource handles.
     pub fn new(_resources: WorldMeshForwardGraphResources) -> Self {
-        Self
+        Self {
+            skybox: SkyboxRenderer::default(),
+        }
     }
 }
 
@@ -245,6 +251,7 @@ impl CallbackPass for WorldMeshForwardPreparePass {
             ctx.gpu_limits,
             frame,
             ctx.blackboard,
+            &self.skybox,
         );
         if let Some(prepared) = prepared {
             ctx.blackboard.insert::<WorldMeshForwardPlanSlot>(prepared);
@@ -333,14 +340,18 @@ impl RasterPass for WorldMeshForwardOpaquePass {
         let Some(mut prepared) = ctx.blackboard.take::<WorldMeshForwardPlanSlot>() else {
             return Ok(());
         };
-        let recorded = record_world_mesh_forward_opaque_graph_raster(
+        let skybox_recorded = prepared
+            .skybox
+            .as_ref()
+            .is_none_or(|skybox| record_prepared_skybox(rpass, frame, skybox));
+        let mesh_recorded = record_world_mesh_forward_opaque_graph_raster(
             rpass,
             ctx.device,
             ctx.queue.as_ref(),
             frame,
             &prepared,
         );
-        prepared.opaque_recorded = recorded;
+        prepared.opaque_recorded = skybox_recorded && mesh_recorded;
         ctx.blackboard.insert::<WorldMeshForwardPlanSlot>(prepared);
         Ok(())
     }

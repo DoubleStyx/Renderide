@@ -335,6 +335,15 @@ impl EmbeddedMaterialBindResources {
         }
         Ok((bind_key, bind_group))
     }
+
+    /// Returns the reflected `@group(1)` bind-group layout for an embedded material stem.
+    pub(crate) fn embedded_material_bind_group_layout(
+        &self,
+        stem: &str,
+    ) -> Result<wgpu::BindGroupLayout, EmbeddedMaterialBindError> {
+        self.stem_layout(stem)
+            .map(|layout| layout.bind_group_layout.clone())
+    }
 }
 
 /// Second pass: assemble [`wgpu::BindGroupEntry`] list matching reflected material entry order.
