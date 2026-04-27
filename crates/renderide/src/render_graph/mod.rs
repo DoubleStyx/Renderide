@@ -483,6 +483,12 @@ fn add_main_graph_passes_and_edges(
     let forward_intersect = builder.add_raster_pass(Box::new(
         passes::WorldMeshForwardIntersectPass::new(forward_resources),
     ));
+    let color_snapshot = builder.add_compute_pass(Box::new(
+        passes::WorldMeshColorSnapshotPass::new(forward_resources),
+    ));
+    let forward_transparent = builder.add_raster_pass(Box::new(
+        passes::WorldMeshForwardTransparentPass::new(forward_resources),
+    ));
     let depth_resolve = builder.add_compute_pass(Box::new(
         passes::WorldMeshForwardDepthResolvePass::new(forward_resources),
     ));
@@ -520,18 +526,17 @@ fn add_main_graph_passes_and_edges(
     builder.add_edge(forward_prepare, forward_opaque);
     builder.add_edge(forward_opaque, depth_snapshot);
     builder.add_edge(depth_snapshot, forward_intersect);
-    builder.add_edge(forward_intersect, depth_resolve);
-    builder.add_edge(depth_resolve, hiz);
-    // Sequence the color resolve after intersect (which produced the multisampled scene color)
-    // and before the post-processing chain (which reads the resolved single-sample HDR).
     if let Some(color_resolve) = color_resolve {
         builder.add_edge(forward_intersect, color_resolve);
-        if let Some((first_post, _last_post)) = chain_output.pass_range() {
-            builder.add_edge(color_resolve, first_post);
-        } else {
-            builder.add_edge(color_resolve, compose);
-        }
+        builder.add_edge(color_resolve, color_snapshot);
+    } else {
+        builder.add_edge(forward_intersect, color_snapshot);
     }
+    builder.add_edge(color_snapshot, forward_transparent);
+    builder.add_edge(forward_transparent, depth_resolve);
+    builder.add_edge(depth_resolve, hiz);
+    // Sequence the color resolve before the grab-pass snapshot. Post-processing reads the
+    // single-sample HDR target after grab-pass transparent draws have been recorded.
     if let Some((first_post, last_post)) = chain_output.pass_range() {
         builder.add_edge(hiz, first_post);
         builder.add_edge(last_post, compose);
@@ -665,11 +670,11 @@ mod default_graph_tests {
     }
 
     #[test]
-    fn default_main_needs_surface_and_nine_passes() {
+    fn default_main_needs_surface_and_eleven_passes() {
         let g = build_main_graph(smoke_key(), &no_post()).expect("default graph");
         assert!(g.needs_surface_acquire());
-        assert_eq!(g.pass_count(), 9);
-        assert_eq!(g.compile_stats.topo_levels, 9);
+        assert_eq!(g.pass_count(), 11);
+        assert_eq!(g.compile_stats.topo_levels, 11);
         assert_eq!(g.compile_stats.transient_texture_count, 4);
     }
 

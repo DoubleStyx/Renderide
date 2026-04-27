@@ -7,10 +7,10 @@ use rayon::slice::ParallelSliceMut;
 use crate::assets::material::MaterialDictionary;
 use crate::materials::{
     embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
-    embedded_stem_needs_uv0_stream, embedded_stem_requires_intersection_pass,
-    embedded_stem_uses_alpha_blending, material_blend_mode_for_lookup,
-    material_render_state_for_lookup, resolve_raster_pipeline, MaterialPipelinePropertyIds,
-    MaterialRouter, RasterPipelineKind,
+    embedded_stem_needs_uv0_stream, embedded_stem_requires_grab_pass,
+    embedded_stem_requires_intersection_pass, embedded_stem_uses_alpha_blending,
+    material_blend_mode_for_lookup, material_render_state_for_lookup, resolve_raster_pipeline,
+    MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind,
 };
 use crate::pipelines::ShaderPermutation;
 
@@ -60,6 +60,12 @@ pub(super) fn batch_key_for_slot(
         }
         RasterPipelineKind::Null => false,
     };
+    let embedded_requires_grab_pass = match &pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            embedded_stem_requires_grab_pass(stem.as_ref(), shader_perm)
+        }
+        RasterPipelineKind::Null => false,
+    };
     let lookup_ids = crate::assets::material::MaterialPropertyLookupIds {
         material_asset_id,
         mesh_property_block_slot0: property_block_id,
@@ -70,7 +76,8 @@ pub(super) fn batch_key_for_slot(
     let alpha_blended = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => embedded_stem_uses_alpha_blending(stem.as_ref()),
         RasterPipelineKind::Null => false,
-    } || material_blend_mode.is_transparent();
+    } || material_blend_mode.is_transparent()
+        || embedded_requires_grab_pass;
     MaterialDrawBatchKey {
         pipeline,
         shader_asset_id,
@@ -81,6 +88,7 @@ pub(super) fn batch_key_for_slot(
         embedded_needs_color,
         embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass,
+        embedded_requires_grab_pass,
         render_state,
         blend_mode: material_blend_mode,
         alpha_blended,
@@ -105,6 +113,7 @@ fn batch_key_from_resolved(
         embedded_needs_color: r.embedded_needs_color,
         embedded_needs_extended_vertex_streams: r.embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass: r.embedded_requires_intersection_pass,
+        embedded_requires_grab_pass: r.embedded_requires_grab_pass,
         render_state: r.render_state,
         blend_mode: r.blend_mode,
         alpha_blended: r.alpha_blended,

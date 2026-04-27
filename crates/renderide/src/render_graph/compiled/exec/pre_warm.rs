@@ -200,16 +200,26 @@ impl CompiledRenderGraph {
         views: &[FrameView<'_>],
     ) {
         profiling::scope!("graph::pre_sync_frame_gpu");
-        let mut viewports_and_stereo = Vec::with_capacity(views.len());
+        let mut view_layouts = Vec::with_capacity(views.len());
+        let color_format = mv_ctx.backend.scene_color_format_wgpu();
         for view in views {
             let viewport = view.target.extent_px(mv_ctx.gpu);
             let stereo = view.is_multiview_stereo_active();
-            viewports_and_stereo.push((viewport.0, viewport.1, stereo));
+            let Ok(depth_format) = view.target.depth_format(mv_ctx.gpu) else {
+                continue;
+            };
+            view_layouts.push(crate::backend::PreRecordViewResourceLayout {
+                width: viewport.0,
+                height: viewport.1,
+                stereo,
+                depth_format,
+                color_format,
+            });
         }
         mv_ctx.backend.frame_resources.pre_record_sync_for_views(
             mv_ctx.device,
             mv_ctx.queue_arc.as_ref(),
-            &viewports_and_stereo,
+            &view_layouts,
         );
     }
 
@@ -320,17 +330,20 @@ fn collect_unique_pipeline_requests(
     shader_perm: ShaderPermutation,
     out: &mut Vec<PipelineCompileRequest>,
 ) {
-    let mut seen: std::collections::HashSet<(i32, MaterialBlendMode, MaterialRenderState)> =
+    let mut seen: std::collections::HashSet<(i32, MaterialBlendMode, MaterialRenderState, bool)> =
         std::collections::HashSet::new();
     for item in items {
+        let grab_pass = item.batch_key.embedded_requires_grab_pass;
         let key = (
             item.batch_key.shader_asset_id,
             item.batch_key.blend_mode,
             item.batch_key.render_state,
+            grab_pass,
         );
         if !seen.insert(key) {
             continue;
         }
+        let pass_desc = material_pipeline_pass_desc_for_item(item, pass_desc);
         out.push(PipelineCompileRequest {
             pass_desc,
             shader_perm,
@@ -338,6 +351,21 @@ fn collect_unique_pipeline_requests(
             blend_mode: key.1,
             render_state: key.2,
         });
+    }
+}
+
+/// Returns the pipeline descriptor used by the record path for one draw item.
+fn material_pipeline_pass_desc_for_item(
+    item: &crate::render_graph::world_mesh_draw_prep::WorldMeshDrawItem,
+    pass_desc: MaterialPipelineDesc,
+) -> MaterialPipelineDesc {
+    if item.batch_key.embedded_requires_grab_pass && pass_desc.sample_count > 1 {
+        MaterialPipelineDesc {
+            sample_count: 1,
+            ..pass_desc
+        }
+    } else {
+        pass_desc
     }
 }
 

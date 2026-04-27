@@ -38,7 +38,9 @@ pub use frame_gpu::{
 };
 pub use frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 pub use frame_gpu_error::FrameGpuInitError;
-pub use frame_resource_manager::{FrameGpuBindContext, FrameResourceManager, PerViewFrameState};
+pub use frame_resource_manager::{
+    FrameGpuBindContext, FrameResourceManager, PerViewFrameState, PreRecordViewResourceLayout,
+};
 pub use history_registry::{
     BufferHistorySlot, BufferHistorySpec, HistoryRegistry, HistoryRegistryError, HistoryTexture,
     TextureHistorySlot, TextureHistorySpec,

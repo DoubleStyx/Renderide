@@ -33,8 +33,8 @@ pub struct WorldMeshDrawStats {
     pub draws_hi_z_culled: usize,
     /// GPU instance batches after merge (one indexed draw each); at most `draws_total`.
     ///
-    /// Counts batches across **both** subpasses the forward pass actually issues
-    /// (regular + intersection), matching what `draw_subset` submits per frame rather
+    /// Counts batches across all subpasses the forward pass actually issues
+    /// (regular + intersection + grab-pass transparent), matching what `draw_subset` submits per frame rather
     /// than the optimistic single-pass count.
     pub instance_batch_total: usize,
     /// Subset of [`Self::instance_batch_total`] in the intersection-pass subpass
@@ -43,6 +43,9 @@ pub struct WorldMeshDrawStats {
     /// Surfaced so the HUD shows how much of the batch count comes from the partition
     /// that the regular opaque subpass cannot merge across.
     pub intersect_pass_batches: usize,
+    /// Subset of [`Self::instance_batch_total`] in the grab-pass transparent subpass
+    /// (materials whose embedded shader needs `_GrabPass` / scene-color snapshot).
+    pub transparent_pass_batches: usize,
     /// Sum of `instance_count` across all emitted batches.
     ///
     /// Equals [`Self::draws_total`] today (every sorted draw is emitted exactly once);
@@ -155,11 +158,14 @@ pub fn world_mesh_draw_stats_from_sorted(
     // counts are exactly what `draw_subset` ends up submitting.
     let plan = build_instance_plan(draws, supports_base_instance);
     let intersect_pass_batches = plan.intersect_groups.len();
-    let instance_batch_total = plan.regular_groups.len() + intersect_pass_batches;
+    let transparent_pass_batches = plan.transparent_groups.len();
+    let instance_batch_total =
+        plan.regular_groups.len() + intersect_pass_batches + transparent_pass_batches;
     let gpu_instances_emitted: usize = plan
         .regular_groups
         .iter()
         .chain(plan.intersect_groups.iter())
+        .chain(plan.transparent_groups.iter())
         .map(|g| (g.instance_range.end - g.instance_range.start) as usize)
         .sum();
     //perf xlinka: this is the real submit count when a material has multiple passes.
@@ -167,6 +173,7 @@ pub fn world_mesh_draw_stats_from_sorted(
         .regular_groups
         .iter()
         .chain(plan.intersect_groups.iter())
+        .chain(plan.transparent_groups.iter())
         .map(|group: &DrawGroup| {
             let item = &draws[group.representative_draw_idx];
             match &item.batch_key.pipeline {
@@ -192,6 +199,7 @@ pub fn world_mesh_draw_stats_from_sorted(
         draws_hi_z_culled,
         instance_batch_total,
         intersect_pass_batches,
+        transparent_pass_batches,
         gpu_instances_emitted,
         submitted_pipeline_pass_total,
     }
@@ -258,6 +266,7 @@ mod tests {
         assert_eq!(s.draws_total, 0);
         assert_eq!(s.instance_batch_total, 0);
         assert_eq!(s.intersect_pass_batches, 0);
+        assert_eq!(s.transparent_pass_batches, 0);
         assert_eq!(s.gpu_instances_emitted, 0);
         assert_eq!(s.submitted_pipeline_pass_total, 0);
     }
@@ -298,8 +307,35 @@ mod tests {
         assert_eq!(s.rigid_draws, 2);
         assert_eq!(s.instance_batch_total, 1);
         assert_eq!(s.intersect_pass_batches, 0);
+        assert_eq!(s.transparent_pass_batches, 0);
         assert_eq!(s.gpu_instances_emitted, 2);
         assert_eq!(s.submitted_pipeline_pass_total, 1);
+    }
+
+    #[test]
+    fn world_mesh_draw_stats_counts_grab_pass_batches() {
+        let mut draw = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 0,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        draw.batch_key.embedded_requires_grab_pass = true;
+        let s = world_mesh_draw_stats_from_sorted(
+            &[draw],
+            None,
+            true,
+            crate::pipelines::ShaderPermutation(0),
+        );
+        assert_eq!(s.instance_batch_total, 1);
+        assert_eq!(s.intersect_pass_batches, 0);
+        assert_eq!(s.transparent_pass_batches, 1);
+        assert_eq!(s.gpu_instances_emitted, 1);
     }
 
     #[test]

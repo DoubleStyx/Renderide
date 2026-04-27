@@ -615,6 +615,34 @@ impl FrameGpuResources {
         true
     }
 
+    /// Ensures sampled scene snapshot textures exist for the active view layout and formats.
+    ///
+    /// This must run before per-view `@group(0)` bind groups are created for graph recording: the
+    /// graph copy passes encode with `&self` and therefore cannot recreate texture views while
+    /// recording. Returns `true` when the shared frame bind group was rebuilt.
+    pub fn sync_scene_snapshot_textures(
+        &mut self,
+        device: &wgpu::Device,
+        viewport: (u32, u32),
+        depth_format: wgpu::TextureFormat,
+        color_format: wgpu::TextureFormat,
+        multiview: bool,
+    ) -> bool {
+        let before = self.snapshot_version;
+        if multiview {
+            self.ensure_scene_depth_array(device, viewport, depth_format);
+            self.ensure_scene_color_array(device, viewport, color_format);
+        } else {
+            self.ensure_scene_depth_2d(device, viewport, depth_format);
+            self.ensure_scene_color_2d(device, viewport, color_format);
+        }
+        if self.snapshot_version == before {
+            return false;
+        }
+        self.rebuild_bind_group(device);
+        true
+    }
+
     /// Copies the main depth attachment into the sampled scene-depth snapshot used by embedded
     /// materials such as `pbsintersectspecular`, then rebuilds [`Self::bind_group`] so `@group(0)`
     /// points at the updated texture view.
@@ -757,6 +785,85 @@ impl FrameGpuResources {
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: copy_aspect,
+                },
+                extent,
+            );
+        }
+    }
+
+    /// Copies the main color attachment into an already provisioned scene-color snapshot without
+    /// rebuilding any bind groups.
+    ///
+    /// Call this after [`Self::sync_scene_snapshot_textures`] has already ensured the snapshot
+    /// texture exists for the target `viewport` / `multiview` layout. This keeps graph recording
+    /// free of shared bind-group mutation while still encoding the per-view grab-pass copy.
+    pub fn encode_scene_color_snapshot_copy(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source_color: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) {
+        let width = viewport.0.max(1);
+        let height = viewport.1.max(1);
+        let format = source_color.format();
+        let extent = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: if multiview { 2 } else { 1 },
+        };
+
+        if multiview {
+            if self.scene_color_array_extent_px != (width, height)
+                || self.scene_color_array_format != format
+            {
+                logger::warn!(
+                    "scene color snapshot copy: array target not pre-synced for {}×{} {:?}; skipping copy",
+                    width,
+                    height,
+                    format
+                );
+                return;
+            }
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: source_color,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.scene_color_array.0,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                extent,
+            );
+        } else {
+            if self.scene_color_2d_extent_px != (width, height)
+                || self.scene_color_2d_format != format
+            {
+                logger::warn!(
+                    "scene color snapshot copy: 2d target not pre-synced for {}×{} {:?}; skipping copy",
+                    width,
+                    height,
+                    format
+                );
+                return;
+            }
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: source_color,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.scene_color_2d.0,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
                 },
                 extent,
             );

@@ -24,8 +24,9 @@ pub use post_processing::{
 pub use scene_color_compose::{SceneColorComposeGraphResources, SceneColorComposePass};
 pub use swapchain_clear::SwapchainClearPass;
 pub use world_mesh_forward::{
-    WorldMeshDepthSnapshotPass, WorldMeshForwardColorResolveGraphResources,
-    WorldMeshForwardColorResolvePass, WorldMeshForwardDepthResolvePass,
-    WorldMeshForwardGraphResources, WorldMeshForwardIntersectPass, WorldMeshForwardOpaquePass,
-    WorldMeshForwardPreparePass,
+    WorldMeshColorSnapshotPass, WorldMeshDepthSnapshotPass,
+    WorldMeshForwardColorResolveGraphResources, WorldMeshForwardColorResolvePass,
+    WorldMeshForwardDepthResolvePass, WorldMeshForwardGraphResources,
+    WorldMeshForwardIntersectPass, WorldMeshForwardOpaquePass, WorldMeshForwardPreparePass,
+    WorldMeshForwardTransparentPass,
 };

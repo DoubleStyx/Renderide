@@ -34,7 +34,8 @@ pub struct DrawGroup {
     pub instance_range: std::ops::Range<u32>,
 }
 
-/// Per-view instance plan: slab layout plus groups for the regular and intersection subpasses.
+/// Per-view instance plan: slab layout plus groups for regular, intersection, and grab-pass
+/// transparent subpasses.
 ///
 /// The forward pass packs the per-draw slab in `slab_layout` order — slot `i` holds the
 /// per-draw uniforms for `draws[slab_layout[i]]` — and emits each group's `instance_range`
@@ -51,6 +52,9 @@ pub struct InstancePlan {
     /// Groups emitted by the intersection-pass subpass (post depth-snapshot), in
     /// ascending `representative_draw_idx` order.
     pub intersect_groups: Vec<DrawGroup>,
+    /// Groups emitted by the grab-pass transparent subpass (post scene-color snapshot), in
+    /// ascending `representative_draw_idx` order.
+    pub transparent_groups: Vec<DrawGroup>,
 }
 
 /// Within-window key for grouping draws that share `batch_key` (already adjacent after sort)
@@ -87,6 +91,7 @@ pub fn build_instance_plan(
     let mut slab_layout: Vec<usize> = Vec::with_capacity(draws.len());
     let mut regular_groups: Vec<DrawGroup> = Vec::new();
     let mut intersect_groups: Vec<DrawGroup> = Vec::new();
+    let mut transparent_groups: Vec<DrawGroup> = Vec::new();
     let mut window_groups: HashMap<MeshSubmeshKey, usize> = HashMap::new();
     let mut group_members: Vec<Vec<usize>> = Vec::new();
     let mut group_representative: Vec<usize> = Vec::new();
@@ -101,18 +106,26 @@ pub fn build_instance_plan(
         }
 
         let intersect = key.embedded_requires_intersection_pass;
-        let window_singleton = !supports_base_instance || draws[i].skinned || key.alpha_blended;
+        let grab_pass = key.embedded_requires_grab_pass;
+        debug_assert!(
+            !(intersect && grab_pass),
+            "intersection and grab-pass subpasses are mutually exclusive"
+        );
+        let window_singleton =
+            !supports_base_instance || draws[i].skinned || key.alpha_blended || grab_pass;
 
         if window_singleton {
             // Every draw in this window becomes its own group, in sort order.
             for draw_idx in window_start..j {
                 emit_group(
                     &mut slab_layout,
-                    if intersect {
-                        &mut intersect_groups
-                    } else {
-                        &mut regular_groups
-                    },
+                    subpass_groups(
+                        &mut regular_groups,
+                        &mut intersect_groups,
+                        &mut transparent_groups,
+                        intersect,
+                        grab_pass,
+                    ),
                     draw_idx,
                     &[draw_idx],
                 );
@@ -141,11 +154,13 @@ pub fn build_instance_plan(
             for (g, members) in group_members.iter().enumerate() {
                 emit_group(
                     &mut slab_layout,
-                    if intersect {
-                        &mut intersect_groups
-                    } else {
-                        &mut regular_groups
-                    },
+                    subpass_groups(
+                        &mut regular_groups,
+                        &mut intersect_groups,
+                        &mut transparent_groups,
+                        intersect,
+                        grab_pass,
+                    ),
                     group_representative[g],
                     members,
                 );
@@ -163,11 +178,32 @@ pub fn build_instance_plan(
     debug_assert!(intersect_groups
         .windows(2)
         .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx));
+    debug_assert!(transparent_groups
+        .windows(2)
+        .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx));
 
     InstancePlan {
         slab_layout,
         regular_groups,
         intersect_groups,
+        transparent_groups,
+    }
+}
+
+/// Selects the subpass group vector for a batch window.
+fn subpass_groups<'a>(
+    regular_groups: &'a mut Vec<DrawGroup>,
+    intersect_groups: &'a mut Vec<DrawGroup>,
+    transparent_groups: &'a mut Vec<DrawGroup>,
+    intersect: bool,
+    grab_pass: bool,
+) -> &'a mut Vec<DrawGroup> {
+    if intersect {
+        intersect_groups
+    } else if grab_pass {
+        transparent_groups
+    } else {
+        regular_groups
     }
 }
 
@@ -214,6 +250,7 @@ mod tests {
         assert!(plan.slab_layout.is_empty());
         assert!(plan.regular_groups.is_empty());
         assert!(plan.intersect_groups.is_empty());
+        assert!(plan.transparent_groups.is_empty());
     }
 
     #[test]
@@ -226,6 +263,7 @@ mod tests {
         assert_eq!(plan.regular_groups[0].instance_range, 0..6);
         assert_eq!(plan.slab_layout.len(), 6);
         assert!(plan.intersect_groups.is_empty());
+        assert!(plan.transparent_groups.is_empty());
     }
 
     #[test]
@@ -250,6 +288,7 @@ mod tests {
         assert_eq!(total_instances, 5);
         assert_eq!(plan.slab_layout.len(), 5);
         assert!(plan.intersect_groups.is_empty());
+        assert!(plan.transparent_groups.is_empty());
     }
 
     #[test]
@@ -299,6 +338,51 @@ mod tests {
 
         let plan = build_instance_plan(&draws, true);
         assert_eq!(plan.regular_groups.len(), 3);
+    }
+
+    #[test]
+    fn grab_pass_window_emits_transparent_singletons() {
+        let mut draws: Vec<_> = (0..3)
+            .map(|n| {
+                let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                    material_asset_id: 1,
+                    property_block: None,
+                    skinned: false,
+                    sorting_order: 0,
+                    mesh_asset_id: 7,
+                    node_id: n,
+                    slot_index: 0,
+                    collect_order: n as usize,
+                    alpha_blended: false,
+                });
+                item.batch_key.embedded_requires_grab_pass = true;
+                item
+            })
+            .collect();
+        sort_world_mesh_draws(&mut draws);
+
+        let plan = build_instance_plan(&draws, true);
+        assert!(plan.regular_groups.is_empty());
+        assert!(plan.intersect_groups.is_empty());
+        assert_eq!(plan.transparent_groups.len(), 3);
+        for group in &plan.transparent_groups {
+            assert_eq!(group.instance_range.end - group.instance_range.start, 1);
+        }
+    }
+
+    #[test]
+    fn intersect_and_grab_pass_batches_stay_separate() {
+        let mut intersect = opaque(7, 1, 0, 0);
+        intersect.batch_key.embedded_requires_intersection_pass = true;
+        let mut grab = opaque(7, 2, 0, 1);
+        grab.batch_key.embedded_requires_grab_pass = true;
+        let mut draws = vec![intersect, grab];
+        sort_world_mesh_draws(&mut draws);
+
+        let plan = build_instance_plan(&draws, true);
+        assert!(plan.regular_groups.is_empty());
+        assert_eq!(plan.intersect_groups.len(), 1);
+        assert_eq!(plan.transparent_groups.len(), 1);
     }
 
     #[test]

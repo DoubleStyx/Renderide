@@ -85,6 +85,21 @@ pub struct FrameGpuBindContext<'a> {
     pub empty_material: Option<&'a EmptyMaterialBindGroup>,
 }
 
+/// Frame-resource layout needed before graph recording starts for one view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PreRecordViewResourceLayout {
+    /// Viewport width in physical pixels.
+    pub width: u32,
+    /// Viewport height in physical pixels.
+    pub height: u32,
+    /// Whether this view records as a two-layer multiview target.
+    pub stereo: bool,
+    /// Depth snapshot format for `_CameraDepthTexture`-style material sampling.
+    pub depth_format: wgpu::TextureFormat,
+    /// HDR scene-color snapshot format for grab-pass material sampling.
+    pub color_format: wgpu::TextureFormat,
+}
+
 /// Per-frame GPU state: shared frame/light resources, per-view cluster buffers and bind groups,
 /// per-view per-draw storage slabs, and the CPU-side packed light buffer.
 pub struct FrameResourceManager {
@@ -528,17 +543,25 @@ impl FrameResourceManager {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        viewports_and_stereo: &[(u32, u32, bool)],
+        view_layouts: &[PreRecordViewResourceLayout],
     ) {
         let mut seen = HashSet::new();
-        for &(width, height, stereo) in viewports_and_stereo {
-            if !seen.insert((width, height, stereo)) {
+        for &layout in view_layouts {
+            if !seen.insert(layout) {
                 continue;
             }
             let Some(fgpu) = self.frame_gpu_mut() else {
                 return;
             };
-            fgpu.sync_cluster_viewport(device, (width, height), stereo);
+            let viewport = (layout.width, layout.height);
+            fgpu.sync_cluster_viewport(device, viewport, layout.stereo);
+            fgpu.sync_scene_snapshot_textures(
+                device,
+                viewport,
+                layout.depth_format,
+                layout.color_format,
+                layout.stereo,
+            );
         }
         if self
             .lights_gpu_uploaded_this_tick
@@ -593,6 +616,21 @@ impl FrameResourceManager {
             return;
         };
         fgpu.encode_scene_depth_snapshot_copy(encoder, source_depth, viewport, multiview);
+    }
+
+    /// Copies the main color attachment into the scene-color snapshot that was already
+    /// provisioned by [`Self::pre_record_sync_for_views`].
+    pub fn copy_scene_color_snapshot_for_view(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source_color: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) {
+        let Some(fgpu) = self.frame_gpu.as_ref() else {
+            return;
+        };
+        fgpu.encode_scene_color_snapshot_copy(encoder, source_color, viewport, multiview);
     }
 }
 

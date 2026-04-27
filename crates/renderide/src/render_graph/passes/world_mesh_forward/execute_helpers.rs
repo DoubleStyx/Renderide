@@ -519,6 +519,16 @@ fn resolve_one_material_batch<'a>(
 ) -> PrecomputedMaterialBind {
     let item = &draws[first];
     let batch_key = &item.batch_key;
+    let grab_pass_desc;
+    let pass_desc = if batch_key.embedded_requires_grab_pass && pass_desc.sample_count > 1 {
+        grab_pass_desc = MaterialPipelineDesc {
+            sample_count: 1,
+            ..*pass_desc
+        };
+        &grab_pass_desc
+    } else {
+        pass_desc
+    };
 
     let (pipelines, declared_passes) = if let Some(reg) = registry {
         let pipes = reg.pipeline_for_shader_asset(
@@ -999,8 +1009,76 @@ pub(super) fn record_world_mesh_forward_intersection_graph_raster(
     true
 }
 
+/// Records the grab-pass transparent draw subset into a render pass already opened by the graph.
+pub(super) fn record_world_mesh_forward_transparent_graph_raster(
+    rpass: &mut wgpu::RenderPass<'_>,
+    _device: &wgpu::Device,
+    _queue: &wgpu::Queue,
+    frame: &mut FrameRenderParams<'_>,
+    prepared: &PreparedWorldMeshForwardFrame,
+) -> bool {
+    if prepared.plan.transparent_groups.is_empty() {
+        return true;
+    }
+
+    let Some(per_draw_bg) = frame
+        .shared
+        .frame_resources
+        .per_view_per_draw(frame.view.occlusion_view)
+        .map(|d| d.lock().bind_group.clone())
+    else {
+        return false;
+    };
+    let Some(frame_bg_arc) = frame
+        .shared
+        .frame_resources
+        .per_view_frame(frame.view.occlusion_view)
+        .map(|s| s.frame_bind_group.clone())
+    else {
+        return false;
+    };
+    let Some(empty_bg_arc) = frame
+        .shared
+        .frame_resources
+        .empty_material()
+        .map(|e| e.bind_group.clone())
+    else {
+        return false;
+    };
+
+    let bind_groups = ForwardPassBindGroups {
+        per_draw: per_draw_bg.as_ref(),
+        frame: &frame_bg_arc,
+        empty_material: &empty_bg_arc,
+    };
+
+    let raster_cfg = ForwardPassRasterConfig {
+        supports_base_instance: prepared.supports_base_instance,
+    };
+
+    let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
+        return false;
+    };
+    let mut encode_refs = frame.world_mesh_forward_encode_refs();
+    record_world_mesh_forward_subpass(
+        rpass,
+        ForwardSubpassDrawRecord {
+            gpu_limits: gpu_limits.as_ref(),
+            draws: &prepared.draws,
+            groups: &prepared.plan.transparent_groups,
+            precomputed: &prepared.precomputed_batches,
+            encode: &mut encode_refs,
+        },
+        &bind_groups,
+        &raster_cfg,
+    );
+    true
+}
+
+mod color_snapshot;
 mod msaa_depth;
 
+pub(super) use color_snapshot::encode_world_mesh_forward_color_snapshot;
 pub(super) use msaa_depth::{
     encode_msaa_depth_resolve_after_clear_only, encode_world_mesh_forward_depth_snapshot,
     resolve_forward_msaa_views,
