@@ -2,9 +2,6 @@
 
 use std::sync::Arc;
 
-use crate::assets::texture::{
-    Texture3dMipAdvance, Texture3dMipChainUploader, Texture3dMipUploadStep,
-};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
     RendererCommand, SetTexture3DData, SetTexture3DFormat, SetTexture3DResult,
@@ -12,20 +9,10 @@ use crate::shared::{
 };
 
 use super::integrator::StepResult;
-use super::shared_memory_payload::build_with_optional_owned_payload;
+use super::texture3d_upload_plan::{
+    Texture3dUploadCompletion, Texture3dUploadPlan, Texture3dUploadStepper,
+};
 use super::AssetTransferQueue;
-
-/// Stage for one Texture3D data upload.
-#[derive(Debug)]
-enum Texture3dStage {
-    /// First step: create mip-chain uploader.
-    Start,
-    /// Upload one mip per drain step.
-    MipChain {
-        uploader: Texture3dMipChainUploader,
-        payload: Arc<[u8]>,
-    },
-}
 
 /// One in-flight Texture3D data upload.
 #[derive(Debug)]
@@ -34,7 +21,7 @@ pub struct Texture3dUploadTask {
     /// Cached from [`AssetTransferQueue::texture3d_formats`] at enqueue time.
     format: SetTexture3DFormat,
     wgpu_format: wgpu::TextureFormat,
-    stage: Texture3dStage,
+    stepper: Texture3dUploadStepper,
 }
 
 impl Texture3dUploadTask {
@@ -48,7 +35,7 @@ impl Texture3dUploadTask {
             data,
             format,
             wgpu_format,
-            stage: Texture3dStage::Start,
+            stepper: Texture3dUploadStepper::default(),
         }
     }
 
@@ -77,58 +64,34 @@ impl Texture3dUploadTask {
         };
         let texture = tex_arc.as_ref();
 
-        match &mut self.stage {
-            Texture3dStage::Start => {
-                let fmt = &self.format;
-                let upload = &self.data;
-                let start = build_with_optional_owned_payload(
-                    shm,
-                    &upload.data,
-                    |raw| Texture3dMipChainUploader::new(texture, fmt, upload, raw),
-                    |_| true,
-                );
-                let Some(uploader_result) = start else {
-                    logger::warn!("texture3d {id}: shared memory slice missing");
-                    return StepResult::Done;
-                };
-                let payload = uploader_result.payload;
-                match uploader_result.result {
-                    Ok(uploader) => {
-                        self.stage = Texture3dStage::MipChain { uploader, payload };
-                        StepResult::Continue
-                    }
-                    Err(e) => {
-                        logger::warn!("texture3d {id}: upload init failed: {e}");
-                        StepResult::Done
-                    }
-                }
+        let completion = self.stepper.step(
+            shm,
+            Texture3dUploadPlan {
+                device: device.as_ref(),
+                queue: gpu_queue,
+                gpu_queue_access_gate,
+                texture,
+                format: &self.format,
+                wgpu_format: self.wgpu_format,
+                upload: &self.data,
+            },
+        );
+        match completion {
+            Ok(Texture3dUploadCompletion::MissingPayload) => {
+                logger::warn!("texture3d {id}: shared memory slice missing");
+                StepResult::Done
             }
-            Texture3dStage::MipChain { uploader, payload } => {
-                let fmt = &self.format;
-                let wgpu_format = self.wgpu_format;
-                let upload = &self.data;
-                let mip_result = uploader.upload_next_mip(Texture3dMipUploadStep {
-                    device: device.as_ref(),
-                    queue: gpu_queue,
-                    gpu_queue_access_gate,
-                    texture,
-                    fmt,
-                    wgpu_format,
-                    upload,
-                    payload,
-                });
-                match mip_result {
-                    Ok(Texture3dMipAdvance::UploadedOne) => StepResult::Continue,
-                    Ok(Texture3dMipAdvance::Finished { total_uploaded }) => {
-                        self.finalize_success(queue, ipc, total_uploaded);
-                        StepResult::Done
-                    }
-                    Ok(Texture3dMipAdvance::YieldBackground) => StepResult::YieldBackground,
-                    Err(e) => {
-                        logger::warn!("texture3d {id}: upload failed: {e}");
-                        StepResult::Done
-                    }
-                }
+            Ok(Texture3dUploadCompletion::Continue | Texture3dUploadCompletion::UploadedOne) => {
+                StepResult::Continue
+            }
+            Ok(Texture3dUploadCompletion::YieldBackground) => StepResult::YieldBackground,
+            Ok(Texture3dUploadCompletion::Complete { uploaded_mips }) => {
+                self.finalize_success(queue, ipc, uploaded_mips);
+                StepResult::Done
+            }
+            Err(e) => {
+                logger::warn!("texture3d {id}: upload failed: {e}");
+                StepResult::Done
             }
         }
     }

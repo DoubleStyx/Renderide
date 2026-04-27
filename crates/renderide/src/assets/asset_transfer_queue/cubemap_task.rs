@@ -2,28 +2,17 @@
 
 use std::sync::Arc;
 
-use crate::assets::texture::{
-    upload_uses_storage_v_inversion, CubemapFaceMipUploadStep, CubemapMipChainUploader,
-    MipChainAdvance,
-};
+use crate::assets::texture::upload_uses_storage_v_inversion;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
     RendererCommand, SetCubemapData, SetCubemapFormat, SetCubemapResult, TextureUpdateResultType,
 };
 
+use super::cubemap_upload_plan::{
+    CubemapUploadCompletion, CubemapUploadPlan, CubemapUploadStepper,
+};
 use super::integrator::StepResult;
-use super::shared_memory_payload::build_with_optional_owned_payload;
 use super::AssetTransferQueue;
-
-/// Stage for one cubemap data upload.
-#[derive(Debug)]
-enum CubemapStage {
-    Start,
-    Chain {
-        uploader: CubemapMipChainUploader,
-        payload: Arc<[u8]>,
-    },
-}
 
 /// One in-flight cubemap data upload.
 #[derive(Debug)]
@@ -31,7 +20,7 @@ pub struct CubemapUploadTask {
     data: SetCubemapData,
     format: SetCubemapFormat,
     wgpu_format: wgpu::TextureFormat,
-    stage: CubemapStage,
+    stepper: CubemapUploadStepper,
 }
 
 impl CubemapUploadTask {
@@ -45,7 +34,7 @@ impl CubemapUploadTask {
             data,
             format,
             wgpu_format,
-            stage: CubemapStage::Start,
+            stepper: CubemapUploadStepper::default(),
         }
     }
 
@@ -78,66 +67,39 @@ impl CubemapUploadTask {
         };
         let texture = tex_arc.as_ref();
 
-        match &mut self.stage {
-            CubemapStage::Start => {
-                let fmt = &self.format;
-                let upload = &self.data;
-                let start = build_with_optional_owned_payload(
-                    shm,
-                    &upload.data,
-                    |raw| CubemapMipChainUploader::new(texture, fmt, upload, raw),
-                    |_| true,
-                );
-                let Some(uploader_result) = start else {
-                    logger::warn!("cubemap {id}: shared memory slice missing");
-                    return StepResult::Done;
-                };
-                let payload = uploader_result.payload;
-                match uploader_result.result {
-                    Ok(uploader) => {
-                        self.stage = CubemapStage::Chain { uploader, payload };
-                        StepResult::Continue
-                    }
-                    Err(e) => {
-                        logger::warn!("cubemap {id}: upload init failed: {e}");
-                        StepResult::Done
-                    }
-                }
+        let completion = self.stepper.step(
+            shm,
+            CubemapUploadPlan {
+                device: device.as_ref(),
+                queue: gpu_queue,
+                gpu_queue_access_gate,
+                texture,
+                format: &self.format,
+                wgpu_format: self.wgpu_format,
+                upload: &self.data,
+            },
+        );
+        match completion {
+            Ok(CubemapUploadCompletion::MissingPayload) => {
+                logger::warn!("cubemap {id}: shared memory slice missing");
+                StepResult::Done
             }
-            CubemapStage::Chain { uploader, payload } => {
-                let fmt = &self.format;
-                let wgpu_format = self.wgpu_format;
-                let upload = &self.data;
-                let mip_result = uploader.upload_next_face_mip(CubemapFaceMipUploadStep {
-                    device: device.as_ref(),
-                    queue: gpu_queue,
-                    gpu_queue_access_gate,
-                    texture,
-                    fmt,
-                    wgpu_format,
-                    upload,
-                    payload,
-                });
-                match mip_result {
-                    Ok(MipChainAdvance::UploadedOne {
-                        storage_v_inverted, ..
-                    }) => {
-                        self.mark_storage_orientation(queue, storage_v_inverted);
-                        StepResult::Continue
-                    }
-                    Ok(MipChainAdvance::Finished {
-                        total_uploaded,
-                        storage_v_inverted,
-                    }) => {
-                        self.finalize_success(queue, ipc, total_uploaded, storage_v_inverted);
-                        StepResult::Done
-                    }
-                    Ok(MipChainAdvance::YieldBackground) => StepResult::YieldBackground,
-                    Err(e) => {
-                        logger::warn!("cubemap {id}: upload failed: {e}");
-                        StepResult::Done
-                    }
-                }
+            Ok(CubemapUploadCompletion::Continue) => StepResult::Continue,
+            Ok(CubemapUploadCompletion::UploadedOne { storage_v_inverted }) => {
+                self.mark_storage_orientation(queue, storage_v_inverted);
+                StepResult::Continue
+            }
+            Ok(CubemapUploadCompletion::YieldBackground) => StepResult::YieldBackground,
+            Ok(CubemapUploadCompletion::Complete {
+                uploaded_face_mips,
+                storage_v_inverted,
+            }) => {
+                self.finalize_success(queue, ipc, uploaded_face_mips, storage_v_inverted);
+                StepResult::Done
+            }
+            Err(e) => {
+                logger::warn!("cubemap {id}: upload failed: {e}");
+                StepResult::Done
             }
         }
     }

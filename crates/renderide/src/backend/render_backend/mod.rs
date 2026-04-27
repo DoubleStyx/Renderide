@@ -135,8 +135,7 @@ pub struct RenderBackend {
     /// proportional to the number of mutated materials rather than the total material count.
     pub(crate) material_batch_cache: FrameMaterialBatchCache,
     /// Registry of persistent ping-pong resources used by graph history slots
-    /// (`ImportSource::PingPong` / `BufferImportSource::PingPong`). New infrastructure; no
-    /// subsystem writes through it yet. Future TAA / SSR / cached-shadow work registers here.
+    /// (`ImportSource::PingPong` / `BufferImportSource::PingPong`).
     pub(crate) history_registry: super::HistoryRegistry,
     /// Nonblocking reflection-probe SH2 GPU projection service.
     pub(crate) reflection_probe_sh2: super::ReflectionProbeSh2System,

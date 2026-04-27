@@ -39,6 +39,7 @@ mod commands;
 mod debug_hud_frame;
 mod frame_render;
 mod frame_submit;
+mod frame_view_plan;
 mod host_camera_apply;
 mod ipc_init_dispatch;
 mod lights_ipc;
