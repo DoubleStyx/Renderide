@@ -186,7 +186,7 @@ fn shade(
         rg::frame.cluster_count_x, rg::frame.cluster_count_y, rg::frame.cluster_count_z,
         rg::frame.near_clip, rg::frame.far_clip,
     );
-    let count = rg::cluster_light_counts[cluster_id];
+    let count = pcls::cluster_light_count_at(cluster_id);
     let i_max = min(count, pcls::MAX_LIGHTS_PER_TILE);
     var lo = vec3<f32>(0.0);
     for (var i = 0u; i < i_max; i++) {

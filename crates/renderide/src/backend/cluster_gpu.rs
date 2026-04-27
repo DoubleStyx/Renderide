@@ -112,12 +112,44 @@ impl ClusterBufferCache {
         let new_max_stereo = stereo || self.cached_key.stereo;
         let cluster_count_x = new_max_w.div_ceil(TILE_SIZE);
         let cluster_count_y = new_max_h.div_ceil(TILE_SIZE);
-        let clusters_per_eye = (cluster_count_x * cluster_count_y * new_max_z) as usize;
-        let eye_multiplier = if new_max_stereo { 2 } else { 1 };
-        let total_clusters = clusters_per_eye * eye_multiplier;
-        let counts_bytes = (total_clusters * size_of::<u32>()) as u64;
-        let indices_bytes =
-            (total_clusters * (MAX_LIGHTS_PER_TILE as usize / 2) * size_of::<u32>()) as u64;
+        let Some(clusters_per_eye) = u64::from(cluster_count_x)
+            .checked_mul(u64::from(cluster_count_y))
+            .and_then(|xy| xy.checked_mul(u64::from(new_max_z)))
+        else {
+            logger::warn!(
+                "cluster buffers: cluster grid {}x{}x{} overflows u64",
+                cluster_count_x,
+                cluster_count_y,
+                new_max_z
+            );
+            return None;
+        };
+        let eye_multiplier = if new_max_stereo { 2_u64 } else { 1_u64 };
+        let Some(total_clusters) = clusters_per_eye.checked_mul(eye_multiplier) else {
+            logger::warn!(
+                "cluster buffers: clusters_per_eye={} stereo={} overflows u64",
+                clusters_per_eye,
+                new_max_stereo
+            );
+            return None;
+        };
+        let Some(counts_bytes) = total_clusters.checked_mul(size_of::<u32>() as u64) else {
+            logger::warn!(
+                "cluster buffers: total_clusters={} count byte size overflows u64",
+                total_clusters
+            );
+            return None;
+        };
+        let Some(indices_bytes) = total_clusters
+            .checked_mul(u64::from(MAX_LIGHTS_PER_TILE / 2))
+            .and_then(|words| words.checked_mul(size_of::<u32>() as u64))
+        else {
+            logger::warn!(
+                "cluster buffers: total_clusters={} index byte size overflows u64",
+                total_clusters
+            );
+            return None;
+        };
         let max_bind = limits.max_storage_buffer_binding_size();
         let max_buf = limits.max_buffer_size();
         if counts_bytes > max_bind

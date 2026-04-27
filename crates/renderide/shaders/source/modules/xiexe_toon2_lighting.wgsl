@@ -339,7 +339,7 @@ fn clustered_toon_lighting(
         rg::frame.near_clip,
         rg::frame.far_clip,
     );
-    let count = rg::cluster_light_counts[cluster_id];
+    let count = pcls::cluster_light_count_at(cluster_id);
     let i_max = min(count, pcls::MAX_LIGHTS_PER_TILE);
 
     var direct_diffuse = vec3<f32>(0.0);
@@ -429,7 +429,7 @@ fn clustered_outline_lighting(
         rg::frame.near_clip,
         rg::frame.far_clip,
     );
-    let count = rg::cluster_light_counts[cluster_id];
+    let count = pcls::cluster_light_count_at(cluster_id);
     let i_max = min(count, pcls::MAX_LIGHTS_PER_TILE);
 
     var direct = vec3<f32>(0.0);

@@ -219,7 +219,7 @@ fn fs_main(
         rg::frame.far_clip,
     );
 
-    let count = rg::cluster_light_counts[cluster_id];
+    let count = pcls::cluster_light_count_at(cluster_id);
     var lo = vec3<f32>(0.0);
     let i_max = min(count, pcls::MAX_LIGHTS_PER_TILE);
     for (var i = 0u; i < i_max; i++) {

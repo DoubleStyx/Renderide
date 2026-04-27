@@ -22,7 +22,8 @@ use crate::backend::GpuLight;
 use crate::backend::{CLUSTER_COUNT_Z, CLUSTER_PARAMS_UNIFORM_SIZE, TILE_SIZE};
 use crate::gpu::GpuLimits;
 use crate::render_graph::cluster_frame::{
-    cluster_frame_params, cluster_frame_params_stereo, ClusterFrameParams,
+    cluster_frame_params, cluster_frame_params_stereo, sanitize_cluster_clip_planes,
+    ClusterFrameParams,
 };
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
@@ -173,6 +174,8 @@ struct ClusteredLightEyePassEnv<'a> {
     pipeline: &'a wgpu::ComputePipeline,
     /// Bind group with light/cluster/params resources.
     bind_group: &'a wgpu::BindGroup,
+    /// Per-cluster light-count storage cleared before each eye dispatch.
+    cluster_light_counts: &'a wgpu::Buffer,
     /// Uniform buffer holding per-eye [`ClusterFrameParams`].
     params_buffer: &'a wgpu::Buffer,
     /// Per-eye cluster frame params (one or two entries).
@@ -189,12 +192,97 @@ struct ClusteredLightEyePassEnv<'a> {
     profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
+/// Returns the byte range for a contiguous cluster-count slice.
+fn cluster_count_clear_range(cluster_offset: u32, cluster_count: u32) -> Option<(u64, u64)> {
+    let byte_offset = u64::from(cluster_offset).checked_mul(std::mem::size_of::<u32>() as u64)?;
+    let byte_size = u64::from(cluster_count).checked_mul(std::mem::size_of::<u32>() as u64)?;
+    Some((byte_offset, byte_size))
+}
+
+/// Returns the number of clusters in one eye's grid.
+fn clusters_per_eye_for_params(params: &ClusterFrameParams) -> Option<u32> {
+    params
+        .cluster_count_x
+        .checked_mul(params.cluster_count_y)?
+        .checked_mul(CLUSTER_COUNT_Z)
+}
+
+/// Clears the shared cluster-count range when there are no active lights.
+fn clear_zero_light_cluster_counts(
+    encoder: &mut wgpu::CommandEncoder,
+    cluster_light_counts: &wgpu::Buffer,
+    clusters_per_eye: u32,
+    eye_count: usize,
+) {
+    let Some(total_clusters) = u64::from(clusters_per_eye).checked_mul(eye_count as u64) else {
+        logger::warn!(
+            "ClusteredLight: zero-light cluster clear overflows for clusters_per_eye={} eyes={}",
+            clusters_per_eye,
+            eye_count
+        );
+        return;
+    };
+    let Some(counts_bytes) = total_clusters.checked_mul(std::mem::size_of::<u32>() as u64) else {
+        logger::warn!(
+            "ClusteredLight: zero-light count clear byte size overflows for {total_clusters} clusters"
+        );
+        return;
+    };
+    encoder.clear_buffer(cluster_light_counts, 0, Some(counts_bytes));
+}
+
+/// Logs the clustered-light activation banner once per pass instance.
+fn log_clustered_light_active_once(
+    logged_active_once: &AtomicBool,
+    first_eye_params: &ClusterFrameParams,
+    light_count: u32,
+    eye_count: usize,
+) {
+    if logged_active_once
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    logger::info!(
+        "ClusteredLight active (grid {}x{}x{} lights={} eyes={})",
+        first_eye_params.cluster_count_x,
+        first_eye_params.cluster_count_y,
+        CLUSTER_COUNT_Z,
+        light_count,
+        eye_count,
+    );
+}
+
 /// Per-eye cluster compute dispatches (params upload + 3D grid).
 fn run_clustered_light_eye_passes(env: ClusteredLightEyePassEnv<'_>) {
     profiling::scope!("clustered_light::eye_passes");
     for (eye_idx, cfp) in env.eye_params.iter().enumerate() {
-        let cluster_offset = (eye_idx as u32) * env.clusters_per_eye;
+        let Some(cluster_offset) = (eye_idx as u32).checked_mul(env.clusters_per_eye) else {
+            logger::warn!(
+                "ClusteredLight: eye index {eye_idx} with {} clusters per eye overflows u32",
+                env.clusters_per_eye
+            );
+            continue;
+        };
+        let Some((count_clear_offset, count_clear_size)) =
+            cluster_count_clear_range(cluster_offset, env.clusters_per_eye)
+        else {
+            logger::warn!(
+                "ClusteredLight: count clear range overflow for offset={} clusters={}",
+                cluster_offset,
+                env.clusters_per_eye
+            );
+            continue;
+        };
+        env.encoder.clear_buffer(
+            env.cluster_light_counts,
+            count_clear_offset,
+            Some(count_clear_size),
+        );
         let buf_offset = (eye_idx as u64) * CLUSTER_PARAMS_UNIFORM_SIZE;
+        let (near, far) = cfp.sanitized_clip_planes();
         let params = ClusteredLightPass::build_params(ClusterParamsDesc {
             scene_view: cfp.world_to_view,
             proj: cfp.proj,
@@ -202,8 +290,8 @@ fn run_clustered_light_eye_passes(env: ClusteredLightEyePassEnv<'_>) {
             cluster_count_x: cfp.cluster_count_x,
             cluster_count_y: cfp.cluster_count_y,
             light_count: env.light_count,
-            near: cfp.near_clip,
-            far: cfp.far_clip,
+            near,
+            far,
             cluster_offset,
             world_to_view_scale: cfp.world_to_view_scale_max(),
         });
@@ -297,7 +385,7 @@ impl ClusteredLightPass {
 
     fn build_params(desc: ClusterParamsDesc) -> ClusterParams {
         let inv_proj = desc.proj.inverse();
-        let near_clip = desc.near.max(0.01);
+        let (near_clip, far_clip) = sanitize_cluster_clip_planes(desc.near, desc.far);
         ClusterParams {
             view: desc.scene_view.to_cols_array_2d(),
             proj: desc.proj.to_cols_array_2d(),
@@ -310,7 +398,7 @@ impl ClusteredLightPass {
             cluster_count_y: desc.cluster_count_y,
             cluster_count_z: CLUSTER_COUNT_Z,
             near_clip,
-            far_clip: desc.far,
+            far_clip,
             cluster_offset: desc.cluster_offset,
             world_to_view_scale: desc.world_to_view_scale,
             _pad: [0u8; 4],
@@ -462,14 +550,23 @@ impl ComputePass for ClusteredLightPass {
             return Ok(());
         };
 
-        let clusters_per_eye =
-            eye_params[0].cluster_count_x * eye_params[0].cluster_count_y * CLUSTER_COUNT_Z;
+        let Some(clusters_per_eye) = clusters_per_eye_for_params(&eye_params[0]) else {
+            logger::warn!(
+                "ClusteredLight: cluster grid {}x{}x{} overflows u32",
+                eye_params[0].cluster_count_x,
+                eye_params[0].cluster_count_y,
+                CLUSTER_COUNT_Z
+            );
+            return Ok(());
+        };
 
         if light_count == 0 {
-            let total_clusters = clusters_per_eye as u64 * eye_params.len() as u64;
-            let counts_bytes = total_clusters * std::mem::size_of::<u32>() as u64;
-            ctx.encoder
-                .clear_buffer(refs.cluster_light_counts, 0, Some(counts_bytes));
+            clear_zero_light_cluster_counts(
+                ctx.encoder,
+                refs.cluster_light_counts,
+                clusters_per_eye,
+                eye_params.len(),
+            );
             return Ok(());
         }
 
@@ -502,6 +599,7 @@ impl ComputePass for ClusteredLightPass {
             upload_batch: ctx.upload_batch,
             pipeline,
             bind_group: &bind_group,
+            cluster_light_counts: refs.cluster_light_counts,
             params_buffer: &params_buffer,
             eye_params: &eye_params,
             clusters_per_eye,
@@ -511,21 +609,12 @@ impl ComputePass for ClusteredLightPass {
             profiler: ctx.profiler,
         });
 
-        if self
-            .logged_active_once
-            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            let eye_count = eye_params.len();
-            logger::info!(
-                "ClusteredLight active (grid {}x{}x{} lights={} eyes={})",
-                eye_params[0].cluster_count_x,
-                eye_params[0].cluster_count_y,
-                CLUSTER_COUNT_Z,
-                light_count,
-                eye_count,
-            );
-        }
+        log_clustered_light_active_once(
+            &self.logged_active_once,
+            &eye_params[0],
+            light_count,
+            eye_params.len(),
+        );
 
         Ok(())
     }
@@ -533,7 +622,14 @@ impl ComputePass for ClusteredLightPass {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClusterParams, CLUSTER_PARAMS_UNIFORM_SIZE};
+    use glam::Mat4;
+
+    use crate::render_graph::cluster_frame::{sanitize_cluster_clip_planes, CLUSTER_NEAR_CLIP_MIN};
+
+    use super::{
+        cluster_count_clear_range, clusters_per_eye_for_params, ClusterParams, ClusterParamsDesc,
+        ClusteredLightPass, CLUSTER_PARAMS_UNIFORM_SIZE,
+    };
 
     /// `ClusterParams` must fit within the dynamic-offset slot reserved by
     /// `CLUSTER_PARAMS_UNIFORM_SIZE`; `write_cluster_params_padded` zero-pads the rest.
@@ -549,6 +645,54 @@ mod tests {
             std::mem::size_of::<ClusterParams>() % 16,
             0,
             "ClusterParams must be 16-byte aligned for WGSL std140 uniform layout"
+        );
+    }
+
+    /// Compute params apply the same cluster clip-plane sanitization as fragment lookup.
+    #[test]
+    fn cluster_params_use_shared_clip_plane_sanitization() {
+        let params = ClusteredLightPass::build_params(ClusterParamsDesc {
+            scene_view: Mat4::IDENTITY,
+            proj: Mat4::IDENTITY,
+            viewport: (1, 1),
+            cluster_count_x: 1,
+            cluster_count_y: 1,
+            light_count: 0,
+            near: 0.00001,
+            far: 10.0,
+            cluster_offset: 0,
+            world_to_view_scale: 1.0,
+        });
+        let (near, far) = sanitize_cluster_clip_planes(0.00001, 10.0);
+
+        assert_eq!(params.near_clip, near);
+        assert_eq!(params.near_clip, CLUSTER_NEAR_CLIP_MIN);
+        assert_eq!(params.far_clip, far);
+    }
+
+    /// Count clears address one `u32` per cluster.
+    #[test]
+    fn cluster_count_clear_range_uses_u32_stride() {
+        assert_eq!(cluster_count_clear_range(3, 5), Some((12, 20)));
+    }
+
+    /// Reasonable grids fit in the checked per-eye cluster count.
+    #[test]
+    fn clusters_per_eye_checked_math_handles_reasonable_grid() {
+        let params = crate::render_graph::cluster_frame::ClusterFrameParams {
+            near_clip: 0.1,
+            far_clip: 1000.0,
+            world_to_view: Mat4::IDENTITY,
+            proj: Mat4::IDENTITY,
+            cluster_count_x: 4,
+            cluster_count_y: 3,
+            viewport_width: 128,
+            viewport_height: 96,
+        };
+
+        assert_eq!(
+            clusters_per_eye_for_params(&params),
+            Some(4 * 3 * super::CLUSTER_COUNT_Z)
         );
     }
 }

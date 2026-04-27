@@ -2,6 +2,8 @@
 // `GpuLight` and `ClusterParams` layouts must match `crate::backend::GpuLight` and the
 // `ClusterParams` struct in `clustered_light.rs` (including uniform padding).
 
+#import renderide::cluster_math as cmath
+
 struct GpuLight {
     position: vec3f,
     _pad0: f32,
@@ -49,12 +51,7 @@ struct ClusterParams {
 /// slot). Each cluster is written by a single compute thread, so no atomics are required.
 @group(0) @binding(3) var<storage, read_write> cluster_light_indices: array<u32>;
 
-const MAX_LIGHTS_PER_TILE: u32 = 64u;
-
-/// Inflate the cull radius so the tile band at exactly `range` (where windowed falloff lands on zero)
-/// is also reachable from neighboring tiles — kills any residual hard step at the cluster boundary
-/// without admitting visibly more lights per tile.
-const CULL_RADIUS_INFLATION: f32 = 1.15;
+const MAX_LIGHTS_PER_TILE: u32 = cmath::MAX_LIGHTS_PER_TILE;
 
 struct TileAabb {
     min_v: vec3f,
@@ -63,24 +60,28 @@ struct TileAabb {
 
 fn ndc_to_view(ndc: vec3f) -> vec3f {
     let clip = params.inv_proj * vec4f(ndc.x, ndc.y, ndc.z, 1.0);
+    if abs(clip.w) <= 1e-8 {
+        return clip.xyz;
+    }
     return clip.xyz / clip.w;
 }
 
-fn line_intersect_z_plane(ray_point: vec3f, z_dist: f32) -> vec3f {
-    let t = z_dist / ray_point.z;
-    return ray_point * t;
+fn ndc_z_from_view_z(view_z: f32) -> f32 {
+    let clip = params.proj * vec4f(0.0, 0.0, view_z, 1.0);
+    return clip.z / clip.w;
+}
+
+fn view_point_at_ndc_xy_and_z(ndc_xy: vec2f, view_z: f32) -> vec3f {
+    return ndc_to_view(vec3f(ndc_xy.x, ndc_xy.y, ndc_z_from_view_z(view_z)));
 }
 
 fn get_cluster_aabb(cluster_x: u32, cluster_y: u32, cluster_z: u32) -> TileAabb {
     let w = params.viewport_width;
     let h = params.viewport_height;
-    let near = params.near_clip;
-    let far = params.far_clip;
-    let num_z = f32(params.cluster_count_z);
-    let z = f32(cluster_z);
-
-    let tile_near = -near * pow(far / near, z / num_z);
-    let tile_far = -near * pow(far / near, (z + 1.0) / num_z);
+    let z_bounds =
+        cmath::cluster_z_depth_bounds(cluster_z, params.cluster_count_z, params.near_clip, params.far_clip);
+    let tile_near = -z_bounds.x;
+    let tile_far = -z_bounds.y;
 
     // Use integer-pixel tile bounds (no 0.5 inset) so the AABB covers the exact pixel range that
     // `cluster_xy_from_frag` in `pbs_cluster.wgsl` assigns to this tile. A prior 0.5-pixel inset on
@@ -95,23 +96,40 @@ fn get_cluster_aabb(cluster_x: u32, cluster_y: u32, cluster_z: u32) -> TileAabb 
     let ndc_top = 1.0 - 2.0 * py_min / h;
     let ndc_bottom = 1.0 - 2.0 * py_max / h;
 
-    let v_bl = ndc_to_view(vec3f(ndc_left, ndc_bottom, 1.0));
-    let v_br = ndc_to_view(vec3f(ndc_right, ndc_bottom, 1.0));
-    let v_tl = ndc_to_view(vec3f(ndc_left, ndc_top, 1.0));
-    let v_tr = ndc_to_view(vec3f(ndc_right, ndc_top, 1.0));
+    let ndc_bl = vec2f(ndc_left, ndc_bottom);
+    let ndc_br = vec2f(ndc_right, ndc_bottom);
+    let ndc_tl = vec2f(ndc_left, ndc_top);
+    let ndc_tr = vec2f(ndc_right, ndc_top);
 
-    let p_near_bl = line_intersect_z_plane(v_bl, tile_near);
-    let p_near_br = line_intersect_z_plane(v_br, tile_near);
-    let p_near_tl = line_intersect_z_plane(v_tl, tile_near);
-    let p_near_tr = line_intersect_z_plane(v_tr, tile_near);
-    let p_far_bl = line_intersect_z_plane(v_bl, tile_far);
-    let p_far_br = line_intersect_z_plane(v_br, tile_far);
-    let p_far_tl = line_intersect_z_plane(v_tl, tile_far);
-    let p_far_tr = line_intersect_z_plane(v_tr, tile_far);
+    let p_near_bl = view_point_at_ndc_xy_and_z(ndc_bl, tile_near);
+    let p_near_br = view_point_at_ndc_xy_and_z(ndc_br, tile_near);
+    let p_near_tl = view_point_at_ndc_xy_and_z(ndc_tl, tile_near);
+    let p_near_tr = view_point_at_ndc_xy_and_z(ndc_tr, tile_near);
+    let p_far_bl = view_point_at_ndc_xy_and_z(ndc_bl, tile_far);
+    let p_far_br = view_point_at_ndc_xy_and_z(ndc_br, tile_far);
+    let p_far_tl = view_point_at_ndc_xy_and_z(ndc_tl, tile_far);
+    let p_far_tr = view_point_at_ndc_xy_and_z(ndc_tr, tile_far);
 
     var min_v = min(min(min(p_near_bl, p_near_br), min(p_near_tl, p_near_tr)), min(min(p_far_bl, p_far_br), min(p_far_tl, p_far_tr)));
     var max_v = max(max(max(p_near_bl, p_near_br), max(p_near_tl, p_near_tr)), max(max(p_far_bl, p_far_br), max(p_far_tl, p_far_tr)));
-    return TileAabb(min_v, max_v);
+    if cluster_z == 0u {
+        let camera_clip = params.proj * vec4f(0.0, 0.0, 0.0, 1.0);
+        if abs(camera_clip.w) > 1e-8 {
+            let p_zero_bl = view_point_at_ndc_xy_and_z(ndc_bl, 0.0);
+            let p_zero_br = view_point_at_ndc_xy_and_z(ndc_br, 0.0);
+            let p_zero_tl = view_point_at_ndc_xy_and_z(ndc_tl, 0.0);
+            let p_zero_tr = view_point_at_ndc_xy_and_z(ndc_tr, 0.0);
+            min_v = min(min_v, min(min(p_zero_bl, p_zero_br), min(p_zero_tl, p_zero_tr)));
+            max_v = max(max_v, max(max(p_zero_bl, p_zero_br), max(p_zero_tl, p_zero_tr)));
+        } else {
+            min_v = min(min_v, vec3f(0.0));
+            max_v = max(max_v, vec3f(0.0));
+        }
+    }
+    let extent = max_v - min_v;
+    let max_extent = max(max(max(extent.x, extent.y), extent.z), 1.0);
+    let pad = max_extent * cmath::CLUSTER_BOUNDARY_EPSILON;
+    return TileAabb(min_v - vec3f(pad), max_v + vec3f(pad));
 }
 
 fn sphere_aabb_intersect(center: vec3f, radius: f32, aabb_min: vec3f, aabb_max: vec3f) -> bool {
@@ -169,7 +187,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
         // this, a player avatar with non-unit scale (e.g. 0.01) culls lights with a radius that
         // is `1/scale` too small in view space, dropping lights from clusters that should
         // contain them and producing tile-shaped dark seams in the lit image.
-        let cull_range = light.range * params.world_to_view_scale * CULL_RADIUS_INFLATION;
+        let cull_range = max(light.range * params.world_to_view_scale, 0.0);
         if light.light_type == 0u {
             intersects = sphere_aabb_intersect(pos_view, cull_range, aabb_min, aabb_max);
         } else if light.light_type == 1u {

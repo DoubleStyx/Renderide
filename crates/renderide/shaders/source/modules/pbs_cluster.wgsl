@@ -4,10 +4,16 @@
 
 #define_import_path renderide::pbs::cluster
 
+#import renderide::cluster_math as cmath
 #import renderide::globals as rg
 
-const TILE_SIZE: u32 = 32u;
-const MAX_LIGHTS_PER_TILE: u32 = 64u;
+const TILE_SIZE: u32 = cmath::TILE_SIZE;
+const MAX_LIGHTS_PER_TILE: u32 = cmath::MAX_LIGHTS_PER_TILE;
+
+/// Fetches the light count written by clustered-light compute for `cluster_id`.
+fn cluster_light_count_at(cluster_id: u32) -> u32 {
+    return rg::cluster_light_counts[cluster_id];
+}
 
 /// Fetches the packed `u16` light index at `slot` within cluster `cluster_id`. Indices are stored
 /// 2 × `u16` per `u32` in `rg::cluster_light_indices` (low 16 bits = even slot, high 16 bits = odd
@@ -34,12 +40,7 @@ fn cluster_xy_from_frag(frag_xy: vec2<f32>, viewport_w: u32, viewport_h: u32) ->
 }
 
 fn cluster_z_from_view_z(view_z: f32, near_clip: f32, far_clip: f32, cluster_count_z: u32) -> u32 {
-    let z_count = max(cluster_count_z, 1u);
-    let near_safe = max(near_clip, 0.0001);
-    let far_safe = max(far_clip, near_safe + 0.0001);
-    let d = clamp(-view_z, near_safe, far_safe);
-    let z = log(d / near_safe) / log(far_safe / near_safe) * f32(z_count);
-    return u32(clamp(z, 0.0, f32(z_count - 1u)));
+    return cmath::cluster_z_from_view_z(view_z, near_clip, far_clip, cluster_count_z);
 }
 
 fn cluster_id_from_frag(

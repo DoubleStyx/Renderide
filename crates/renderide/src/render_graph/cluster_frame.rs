@@ -18,6 +18,45 @@ use crate::render_graph::camera::{
 use crate::render_graph::frame_params::HostCameraFrame;
 use crate::scene::SceneCoordinator;
 
+/// Minimum positive near distance used only by clustered Z slicing.
+///
+/// Keep in sync with `CLUSTER_NEAR_CLIP_MIN` in `shaders/source/modules/cluster_math.wgsl`.
+pub const CLUSTER_NEAR_CLIP_MIN: f32 = 0.0001;
+/// Minimum positive far-minus-near span used only by clustered Z slicing.
+///
+/// Keep in sync with `CLUSTER_FAR_CLIP_MIN_SPAN` in `shaders/source/modules/cluster_math.wgsl`.
+pub const CLUSTER_FAR_CLIP_MIN_SPAN: f32 = 0.0001;
+
+/// Returns clip planes sanitized exactly like the WGSL clustered-light helpers.
+pub fn sanitize_cluster_clip_planes(near_clip: f32, far_clip: f32) -> (f32, f32) {
+    let near_safe = if near_clip.is_finite() {
+        near_clip.max(CLUSTER_NEAR_CLIP_MIN)
+    } else {
+        CLUSTER_NEAR_CLIP_MIN
+    };
+    let far_safe = if far_clip.is_finite() {
+        far_clip.max(near_safe + CLUSTER_FAR_CLIP_MIN_SPAN)
+    } else {
+        near_safe + CLUSTER_FAR_CLIP_MIN_SPAN
+    };
+    (near_safe, far_safe)
+}
+
+/// Maps view-space Z to a clustered depth slice using the shared sanitized clip planes.
+#[cfg(test)]
+pub fn cluster_z_slice_from_view_z(
+    view_z: f32,
+    near_clip: f32,
+    far_clip: f32,
+    cluster_count_z: u32,
+) -> u32 {
+    let z_count = cluster_count_z.max(1);
+    let (near_safe, far_safe) = sanitize_cluster_clip_planes(near_clip, far_clip);
+    let d = (-view_z).clamp(near_safe, far_safe);
+    let z = (d / near_safe).log(far_safe / near_safe) * z_count as f32;
+    z.clamp(0.0, z_count.saturating_sub(1) as f32) as u32
+}
+
 /// Single source of truth for clustered lighting: clip planes, projection, main-space view, and grid size.
 ///
 /// Use the same value for [`FrameGpuUniforms::new_clustered`] and for building clustered light
@@ -51,6 +90,11 @@ impl ClusterFrameParams {
     /// Projection coefficients `(P[0][0], P[1][1], P[0][2], P[1][2])` for this view's projection.
     pub fn proj_params(&self) -> [f32; 4] {
         FrameGpuUniforms::proj_params_from_proj(self.proj)
+    }
+
+    /// Clip planes as the clustered compute and fragment shaders will use them for Z slicing.
+    pub fn sanitized_clip_planes(&self) -> (f32, f32) {
+        sanitize_cluster_clip_planes(self.near_clip, self.far_clip)
     }
 
     /// Maximum row length of the world-to-view linear part — the factor that converts a
@@ -361,12 +405,56 @@ mod tests {
             let d0 = near * (far / near).powf(t0);
             let d1 = near * (far / near).powf(t1);
             let mid = 0.5 * (d0 + d1);
-            let z_float = (mid / near).log(far / near) * cluster_count_z as f32;
-            let z_idx = z_float.clamp(0.0, cluster_count_z as f32 - 1.0).floor() as u32;
+            let z_idx = cluster_z_slice_from_view_z(-mid, near, far, cluster_count_z);
             assert_eq!(
                 z_idx, k,
                 "mid-depth of slice {k} should map back to slice index (got z_idx={z_idx})"
             );
         }
+    }
+
+    /// Tiny effective near clips are lifted to the same clustered near floor used by WGSL.
+    #[test]
+    fn sanitize_cluster_clip_planes_matches_shader_policy_for_tiny_near() {
+        let (near, far) = sanitize_cluster_clip_planes(0.00001, 100.0);
+        assert_eq!(near, CLUSTER_NEAR_CLIP_MIN);
+        assert_eq!(far, 100.0);
+    }
+
+    /// Far clips that collapse into near are separated by the shared minimum span.
+    #[test]
+    fn sanitize_cluster_clip_planes_keeps_far_above_near() {
+        let (near, far) = sanitize_cluster_clip_planes(0.00001, 0.00002);
+        assert_eq!(near, CLUSTER_NEAR_CLIP_MIN);
+        assert_eq!(far, CLUSTER_NEAR_CLIP_MIN + CLUSTER_FAR_CLIP_MIN_SPAN);
+    }
+
+    /// `ClusterFrameParams` exposes the sanitized planes used by compute and fragment lookup.
+    #[test]
+    fn cluster_frame_params_exposes_sanitized_cluster_planes() {
+        let cfp = ClusterFrameParams {
+            near_clip: 0.00001,
+            far_clip: 10.0,
+            world_to_view: Mat4::IDENTITY,
+            proj: Mat4::IDENTITY,
+            cluster_count_x: 1,
+            cluster_count_y: 1,
+            viewport_width: 1,
+            viewport_height: 1,
+        };
+
+        assert_eq!(cfp.sanitized_clip_planes(), (CLUSTER_NEAR_CLIP_MIN, 10.0));
+    }
+
+    /// The WGSL constants stay manually synchronized with the Rust constants.
+    #[test]
+    fn wgsl_cluster_clip_constants_match_rust() {
+        let wgsl = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shaders/source/modules/cluster_math.wgsl"
+        ));
+
+        assert!(wgsl.contains("const CLUSTER_NEAR_CLIP_MIN: f32 = 0.0001;"));
+        assert!(wgsl.contains("const CLUSTER_FAR_CLIP_MIN_SPAN: f32 = 0.0001;"));
     }
 }
