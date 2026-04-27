@@ -386,6 +386,8 @@ mod tests {
 
     use crate::assets::material::PropertyIdRegistry;
     use crate::backend::embedded::layout::{EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds};
+    use crate::resources::Texture2dSamplerState;
+    use crate::shared::{TextureFilterMode, TextureWrapMode};
 
     fn lookup(material_id: i32) -> MaterialPropertyLookupIds {
         MaterialPropertyLookupIds {
@@ -443,6 +445,27 @@ mod tests {
             },
             registry,
         )
+    }
+
+    /// Hashes the same sampler fields used by `texture_bind_signature` for 2D/render textures.
+    fn sampler_signature_for(state: &Texture2dSamplerState) -> u64 {
+        let mut hasher = AHasher::default();
+        hash_texture2d_sampler(state, &mut hasher);
+        hasher.finish()
+    }
+
+    /// Builds a 2D sampler state with the supplied U/V wrap modes.
+    fn texture2d_sampler_state(
+        wrap_u: TextureWrapMode,
+        wrap_v: TextureWrapMode,
+    ) -> Texture2dSamplerState {
+        Texture2dSamplerState {
+            filter_mode: TextureFilterMode::Bilinear,
+            aniso_level: 8,
+            wrap_u,
+            wrap_v,
+            mipmap_bias: 0.0,
+        }
     }
 
     #[test]
@@ -523,6 +546,30 @@ mod tests {
         assert_eq!(
             primary_texture_2d_asset_id(&reflected, &ids, &store, lookup(6)),
             88
+        );
+    }
+
+    /// Changing U wrap changes the sampler portion of the material bind signature.
+    #[test]
+    fn bind_signature_sampler_hash_distinguishes_render_texture_wrap_u() {
+        let repeat = texture2d_sampler_state(TextureWrapMode::Repeat, TextureWrapMode::Clamp);
+        let clamp = texture2d_sampler_state(TextureWrapMode::Clamp, TextureWrapMode::Clamp);
+
+        assert_ne!(
+            sampler_signature_for(&repeat),
+            sampler_signature_for(&clamp)
+        );
+    }
+
+    /// Changing V wrap changes the sampler portion of the material bind signature.
+    #[test]
+    fn bind_signature_sampler_hash_distinguishes_render_texture_wrap_v() {
+        let repeat = texture2d_sampler_state(TextureWrapMode::Clamp, TextureWrapMode::Repeat);
+        let clamp = texture2d_sampler_state(TextureWrapMode::Clamp, TextureWrapMode::Clamp);
+
+        assert_ne!(
+            sampler_signature_for(&repeat),
+            sampler_signature_for(&clamp)
         );
     }
 }

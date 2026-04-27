@@ -11,6 +11,14 @@
 //! The renderer does not rewrite material `_ST` values based on texture asset kind; tiling and
 //! offset remain authored material data, and shader sampling helpers apply the renderer-wide
 //! texture-origin convention uniformly.
+//!
+//! ### Wrap policy
+//!
+//! Render-texture sampler state intentionally mirrors the host's U/V wrap modes. Camera-preview
+//! targets that must avoid opposite-edge bleed should be created with
+//! [`crate::shared::TextureWrapMode::Clamp`] by the host; the renderer does not infer clamp from
+//! "is written by a camera" because repeat is valid authorable behavior for sampled render
+//! textures.
 
 use hashbrown::HashMap;
 use std::sync::Arc;
@@ -135,13 +143,7 @@ impl GpuRenderTexture {
         let depth_bytes = estimate_texture_bytes(depth_format, w, h, 1);
         let resident_bytes = color_bytes.saturating_add(depth_bytes);
 
-        let sampler = Texture2dSamplerState {
-            filter_mode: fmt.filter_mode,
-            aniso_level: fmt.aniso_level.max(0),
-            wrap_u: fmt.wrap_u,
-            wrap_v: fmt.wrap_v,
-            mipmap_bias: 0.0,
-        };
+        let sampler = sampler_state_from_render_texture_format(fmt);
 
         Some(Self {
             asset_id: fmt.asset_id,
@@ -164,6 +166,18 @@ impl GpuRenderTexture {
     }
 }
 
+/// Builds material-sampling state from the host render-texture format without changing wrap.
+fn sampler_state_from_render_texture_format(fmt: &SetRenderTextureFormat) -> Texture2dSamplerState {
+    Texture2dSamplerState {
+        filter_mode: fmt.filter_mode,
+        aniso_level: fmt.aniso_level.max(0),
+        wrap_u: fmt.wrap_u,
+        wrap_v: fmt.wrap_v,
+        mipmap_bias: 0.0,
+    }
+}
+
+/// Estimates byte cost for one mip chain of a texture format.
 fn estimate_texture_bytes(format: wgpu::TextureFormat, width: u32, height: u32, mips: u32) -> u64 {
     let bpp = match format {
         wgpu::TextureFormat::Rgba16Float => 8u64,
@@ -182,6 +196,63 @@ fn estimate_texture_bytes(format: wgpu::TextureFormat, width: u32, height: u32, 
         h = (h / 2).max(1);
     }
     total
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for host-driven render-texture sampler metadata.
+
+    use glam::IVec2;
+
+    use super::sampler_state_from_render_texture_format;
+    use crate::shared::{SetRenderTextureFormat, TextureFilterMode, TextureWrapMode};
+
+    /// Builds a format row with the supplied wrap modes.
+    fn render_texture_format(
+        wrap_u: TextureWrapMode,
+        wrap_v: TextureWrapMode,
+    ) -> SetRenderTextureFormat {
+        SetRenderTextureFormat {
+            asset_id: 42,
+            size: IVec2::new(128, 64),
+            depth: 24,
+            filter_mode: TextureFilterMode::Bilinear,
+            aniso_level: 8,
+            wrap_u,
+            wrap_v,
+        }
+    }
+
+    /// Render textures must preserve the host's U/V wrap modes instead of renderer-forcing clamp.
+    #[test]
+    fn sampler_state_preserves_host_wrap_modes() {
+        let fmt = render_texture_format(TextureWrapMode::Mirror, TextureWrapMode::Clamp);
+        let sampler = sampler_state_from_render_texture_format(&fmt);
+
+        assert_eq!(sampler.wrap_u, TextureWrapMode::Mirror);
+        assert_eq!(sampler.wrap_v, TextureWrapMode::Clamp);
+    }
+
+    /// Explicit repeat stays repeat so authorable render-texture tiling keeps working.
+    #[test]
+    fn sampler_state_preserves_explicit_repeat() {
+        let fmt = render_texture_format(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
+        let sampler = sampler_state_from_render_texture_format(&fmt);
+
+        assert_eq!(sampler.wrap_u, TextureWrapMode::Repeat);
+        assert_eq!(sampler.wrap_v, TextureWrapMode::Repeat);
+    }
+
+    /// Negative anisotropy values from the host are clamped before sampler creation.
+    #[test]
+    fn sampler_state_clamps_negative_anisotropy() {
+        let mut fmt = render_texture_format(TextureWrapMode::Clamp, TextureWrapMode::Clamp);
+        fmt.aniso_level = -4;
+
+        let sampler = sampler_state_from_render_texture_format(&fmt);
+
+        assert_eq!(sampler.aniso_level, 0);
+    }
 }
 
 /// Pool of [`GpuRenderTexture`] entries keyed by host asset id (per-type id; disambiguate with packed texture type in materials).
