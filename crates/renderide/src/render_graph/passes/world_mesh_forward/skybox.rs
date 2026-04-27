@@ -62,29 +62,42 @@ impl SkyboxFamily {
     }
 }
 
-/// Cached material skybox pipeline key.
+/// Render-target state that must match the containing skybox render pass.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct SkyboxPipelineKey {
-    /// Supported sky material family.
-    family: SkyboxFamily,
+struct SkyboxPipelineTarget {
     /// HDR scene-color format.
-    format: wgpu::TextureFormat,
+    color_format: wgpu::TextureFormat,
+    /// Depth-stencil attachment format used by the containing world pass.
+    depth_stencil_format: Option<wgpu::TextureFormat>,
     /// Raster sample count.
     sample_count: u32,
     /// Whether the target uses stereo multiview.
     multiview: bool,
 }
 
-/// Cached solid-color background pipeline key.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct ClearPipelineKey {
-    /// HDR scene-color format.
-    format: wgpu::TextureFormat,
-    /// Raster sample count.
-    sample_count: u32,
-    /// Whether the target uses stereo multiview.
-    multiview: bool,
+impl SkyboxPipelineTarget {
+    /// Builds the target descriptor from the prepared world-mesh forward pipeline state.
+    fn from_forward_state(pipeline_state: &WorldMeshForwardPipelineState) -> Self {
+        Self {
+            color_format: pipeline_state.pass_desc.surface_format,
+            depth_stencil_format: pipeline_state.pass_desc.depth_stencil_format,
+            sample_count: pipeline_state.pass_desc.sample_count,
+            multiview: pipeline_state.use_multiview,
+        }
+    }
 }
+
+/// Cached material skybox pipeline key.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct SkyboxPipelineKey {
+    /// Supported sky material family.
+    family: SkyboxFamily,
+    /// Render-target state required by wgpu pipeline/pass compatibility.
+    target: SkyboxPipelineTarget,
+}
+
+/// Cached solid-color background pipeline key.
+type ClearPipelineKey = SkyboxPipelineTarget;
 
 /// Per-view cached uniform buffer and bind group.
 struct SkyboxViewBinding {
@@ -230,14 +243,8 @@ impl SkyboxRenderer {
             .embedded_material_bind_group_layout(stem.as_str())
             .ok()?;
         let view_bind_group = self.view_bind_group(device, upload_batch, frame);
-        let pipeline = self.material_pipeline(
-            device,
-            &material_layout,
-            family,
-            pipeline_state.pass_desc.surface_format,
-            pipeline_state.pass_desc.sample_count,
-            pipeline_state.use_multiview,
-        )?;
+        let target = SkyboxPipelineTarget::from_forward_state(pipeline_state);
+        let pipeline = self.material_pipeline(device, &material_layout, family, target)?;
         Some(PreparedSkybox::Material(PreparedMaterialSkybox {
             pipeline,
             material_bind_group,
@@ -254,12 +261,8 @@ impl SkyboxRenderer {
         pipeline_state: &WorldMeshForwardPipelineState,
     ) -> Option<PreparedSkybox> {
         let view_bind_group = self.view_bind_group(device, upload_batch, frame);
-        let pipeline = self.clear_pipeline(
-            device,
-            pipeline_state.pass_desc.surface_format,
-            pipeline_state.pass_desc.sample_count,
-            pipeline_state.use_multiview,
-        )?;
+        let target = SkyboxPipelineTarget::from_forward_state(pipeline_state);
+        let pipeline = self.clear_pipeline(device, target)?;
         Some(PreparedSkybox::ClearColor(PreparedClearColorSkybox {
             pipeline,
             view_bind_group,
@@ -322,16 +325,9 @@ impl SkyboxRenderer {
         device: &wgpu::Device,
         material_layout: &wgpu::BindGroupLayout,
         family: SkyboxFamily,
-        format: wgpu::TextureFormat,
-        sample_count: u32,
-        multiview: bool,
+        target: SkyboxPipelineTarget,
     ) -> Option<Arc<wgpu::RenderPipeline>> {
-        let key = SkyboxPipelineKey {
-            family,
-            format,
-            sample_count,
-            multiview,
-        };
+        let key = SkyboxPipelineKey { family, target };
         {
             let guard = self.material_pipelines.lock();
             if let Some(pipeline) = guard.get(&key) {
@@ -339,14 +335,15 @@ impl SkyboxRenderer {
             }
         }
 
-        let source = embedded_shaders::embedded_target_wgsl(family.shader_target(multiview))?;
+        let shader_target = family.shader_target(target.multiview);
+        let source = embedded_shaders::embedded_target_wgsl(shader_target)?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(family.shader_target(multiview)),
+            label: Some(shader_target),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         let frame_layout = FrameGpuResources::bind_group_layout(device);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(family.shader_target(multiview)),
+            label: Some(shader_target),
             bind_group_layouts: &[
                 Some(&frame_layout),
                 Some(material_layout),
@@ -356,12 +353,10 @@ impl SkyboxRenderer {
         });
         let pipeline = Arc::new(create_skybox_pipeline(
             device,
-            family.shader_target(multiview),
+            shader_target,
             &shader,
             &layout,
-            format,
-            sample_count,
-            multiview,
+            target,
         ));
         let mut guard = self.material_pipelines.lock();
         if let Some(existing) = guard.get(&key) {
@@ -375,15 +370,9 @@ impl SkyboxRenderer {
     fn clear_pipeline(
         &self,
         device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        sample_count: u32,
-        multiview: bool,
+        target: SkyboxPipelineTarget,
     ) -> Option<Arc<wgpu::RenderPipeline>> {
-        let key = ClearPipelineKey {
-            format,
-            sample_count,
-            multiview,
-        };
+        let key = target;
         {
             let guard = self.clear_pipelines.lock();
             if let Some(pipeline) = guard.get(&key) {
@@ -391,25 +380,23 @@ impl SkyboxRenderer {
             }
         }
 
-        let target = "skybox_solid_color";
-        let source = embedded_shaders::embedded_target_wgsl(target)?;
+        let shader_target = "skybox_solid_color";
+        let source = embedded_shaders::embedded_target_wgsl(shader_target)?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(target),
+            label: Some(shader_target),
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(target),
+            label: Some(shader_target),
             bind_group_layouts: &[Some(self.view_layout(device))],
             immediate_size: 0,
         });
         let pipeline = Arc::new(create_skybox_pipeline(
             device,
-            target,
+            shader_target,
             &shader,
             &layout,
-            format,
-            sample_count,
-            multiview,
+            key,
         ));
         let mut guard = self.clear_pipelines.lock();
         if let Some(existing) = guard.get(&key) {
@@ -453,15 +440,13 @@ pub(super) fn record_prepared_skybox(
     }
 }
 
-/// Creates a depthless fullscreen skybox/background render pipeline.
+/// Creates a fullscreen skybox/background render pipeline compatible with the world pass.
 fn create_skybox_pipeline(
     device: &wgpu::Device,
     label: &str,
     shader: &wgpu::ShaderModule,
     layout: &wgpu::PipelineLayout,
-    format: wgpu::TextureFormat,
-    sample_count: u32,
-    multiview: bool,
+    target: SkyboxPipelineTarget,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
@@ -477,7 +462,7 @@ fn create_skybox_pipeline(
             entry_point: Some("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format,
+                format: target.color_format,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -487,13 +472,24 @@ fn create_skybox_pipeline(
             cull_mode: None,
             ..Default::default()
         },
-        depth_stencil: None,
+        depth_stencil: target
+            .depth_stencil_format
+            .map(|format| wgpu::DepthStencilState {
+                format,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
         multisample: wgpu::MultisampleState {
-            count: sample_count.max(1),
+            count: target.sample_count.max(1),
             mask: !0,
             alpha_to_coverage_enabled: false,
         },
-        multiview_mask: multiview.then(|| std::num::NonZeroU32::new(3)).flatten(),
+        multiview_mask: target
+            .multiview
+            .then(|| std::num::NonZeroU32::new(3))
+            .flatten(),
         cache: None,
     })
 }
