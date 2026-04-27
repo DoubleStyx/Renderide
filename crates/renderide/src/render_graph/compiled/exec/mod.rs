@@ -25,7 +25,9 @@ use crate::scene::SceneCoordinator;
 
 use super::super::context::{GraphResolvedResources, PostSubmitContext};
 use super::super::error::GraphExecuteError;
-use super::super::frame_params::{HostCameraFrame, OcclusionViewId, PerViewHudOutputs};
+use super::super::frame_params::{
+    FrameViewClear, HostCameraFrame, OcclusionViewId, PerViewHudOutputs,
+};
 use super::{
     CompiledRenderGraph, FrameView, FrameViewTarget, MultiViewExecutionContext, ResolvedView,
     WorldMeshDrawPlan,
@@ -112,6 +114,8 @@ pub(super) struct PerViewWorkItem {
     /// Optional secondary-camera transform filter.
     pub(super) draw_filter:
         Option<crate::render_graph::world_mesh_draw_prep::CameraTransformDrawFilter>,
+    /// Background clear/skybox behavior for this view.
+    pub(super) clear: FrameViewClear,
     /// Explicit draw plan moved out of [`FrameView`] before fan-out.
     pub(super) world_mesh_draw_plan: WorldMeshDrawPlan,
     /// Owned resolved view snapshot safe to move to a worker thread.
@@ -690,6 +694,7 @@ impl CompiledRenderGraph {
                 host_camera,
                 occlusion_view,
                 draw_filter: view.draw_filter.clone(),
+                clear: view.clear,
                 world_mesh_draw_plan: std::mem::replace(
                     &mut view.world_mesh_draw_plan,
                     WorldMeshDrawPlan::Empty,

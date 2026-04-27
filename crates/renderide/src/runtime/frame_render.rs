@@ -16,8 +16,8 @@ use crate::render_graph::{
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
     host_camera_frame_for_render_texture, CameraTransformDrawFilter, DrawCollectionContext,
     ExternalFrameTargets, ExternalOffscreenTargets, FramePreparedRenderables, FrameView,
-    FrameViewTarget, GraphExecuteError, HiZCullData, HiZTemporalState, HostCameraFrame,
-    OcclusionViewId, OutputDepthMode, WorldMeshCullInput, WorldMeshCullProjParams,
+    FrameViewClear, FrameViewTarget, GraphExecuteError, HiZCullData, HiZTemporalState,
+    HostCameraFrame, OcclusionViewId, OutputDepthMode, WorldMeshCullInput, WorldMeshCullProjParams,
     WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
 };
 use crate::scene::SceneCoordinator;
@@ -141,6 +141,8 @@ struct PreparedView<'a> {
     occlusion_view_id: OcclusionViewId,
     /// Attachment extent in pixels for this view.
     viewport_px: (u32, u32),
+    /// Background clear/skybox behavior for this view.
+    clear: FrameViewClear,
     /// Target-specific payload (HMD, secondary RT, main swapchain).
     kind: PreparedViewKind<'a>,
 }
@@ -458,6 +460,7 @@ impl RendererRuntime {
                 host_camera: prep.host_camera,
                 target: prep.target(),
                 draw_filter: prep.draw_filter.clone(),
+                clear: prep.clear,
                 world_mesh_draw_plan: draws,
             })
             .collect();
@@ -524,6 +527,7 @@ impl RendererRuntime {
                 draw_filter: None,
                 occlusion_view_id: OcclusionViewId::Main,
                 viewport_px: extent_px,
+                clear: FrameViewClear::skybox(),
                 kind: PreparedViewKind::Hmd(ext),
             });
         }
@@ -632,6 +636,7 @@ impl RendererRuntime {
                 draw_filter: Some(filter),
                 occlusion_view_id: OcclusionViewId::OffscreenRenderTexture(rt_id),
                 viewport_px: viewport,
+                clear: FrameViewClear::from_camera_state(&entry.state),
                 kind: PreparedViewKind::SecondaryRt(OffscreenRtHandles {
                     rt_id,
                     color_view,
@@ -657,6 +662,7 @@ impl RendererRuntime {
             draw_filter: None,
             occlusion_view_id: OcclusionViewId::Main,
             viewport_px: swapchain_extent_px,
+            clear: FrameViewClear::skybox(),
             kind: PreparedViewKind::MainSwapchain,
         }
     }
@@ -740,6 +746,7 @@ mod tests {
         let view = runtime.build_main_swapchain_view(TEST_EXTENT);
         assert_eq!(view.shader_permutation(), ShaderPermutation(0));
         assert_eq!(view.output_depth_mode(), OutputDepthMode::DesktopSingle);
+        assert_eq!(view.clear.mode, crate::shared::CameraClearMode::Skybox);
     }
 
     #[test]

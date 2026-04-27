@@ -26,7 +26,7 @@ use crate::materials::{
 use crate::pipelines::ShaderPermutation;
 use crate::render_graph::occlusion::HiZGpuState;
 use crate::scene::SceneCoordinator;
-use crate::shared::HeadOutputDevice;
+use crate::shared::{CameraClearMode, HeadOutputDevice};
 
 use super::blackboard::BlackboardSlot;
 use super::world_mesh_draw_prep::{
@@ -151,6 +151,73 @@ pub struct WorldMeshForwardPipelineState {
     pub shader_perm: ShaderPermutation,
 }
 
+/// Per-view background clear contract propagated from host camera state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameViewClear {
+    /// Host camera clear mode for this view.
+    pub mode: CameraClearMode,
+    /// Host background color used when [`CameraClearMode::Color`] is selected.
+    pub color: glam::Vec4,
+}
+
+impl FrameViewClear {
+    /// Main-view clear mode: render the active render-space skybox.
+    pub fn skybox() -> Self {
+        Self {
+            mode: CameraClearMode::Skybox,
+            color: glam::Vec4::ZERO,
+        }
+    }
+
+    /// Color clear mode with the supplied linear RGBA background.
+    pub fn color(color: glam::Vec4) -> Self {
+        Self {
+            mode: CameraClearMode::Color,
+            color,
+        }
+    }
+
+    /// Converts host camera state into a frame-view clear descriptor.
+    pub fn from_camera_state(state: &crate::shared::CameraState) -> Self {
+        Self {
+            mode: state.clear_mode,
+            color: state.background_color,
+        }
+    }
+}
+
+impl Default for FrameViewClear {
+    fn default() -> Self {
+        Self::skybox()
+    }
+}
+
+/// Prepared draw that fills the forward color target before world meshes.
+pub enum PreparedSkybox {
+    /// Host material-driven skybox draw.
+    Material(PreparedMaterialSkybox),
+    /// Solid color background for host cameras using `CameraClearMode::Color`.
+    ClearColor(PreparedClearColorSkybox),
+}
+
+/// Prepared material-driven skybox resources.
+pub struct PreparedMaterialSkybox {
+    /// Cached render pipeline for the skybox family and view target layout.
+    pub pipeline: std::sync::Arc<wgpu::RenderPipeline>,
+    /// `@group(1)` material bind group resolved from the host material store.
+    pub material_bind_group: std::sync::Arc<wgpu::BindGroup>,
+    /// `@group(2)` draw-local skybox view uniform bind group.
+    pub view_bind_group: std::sync::Arc<wgpu::BindGroup>,
+}
+
+/// Prepared solid-color background resources.
+pub struct PreparedClearColorSkybox {
+    /// Cached render pipeline for the color background draw.
+    pub pipeline: std::sync::Arc<wgpu::RenderPipeline>,
+    /// `@group(0)` bind group carrying the background color uniform.
+    pub view_bind_group: std::sync::Arc<wgpu::BindGroup>,
+}
+
 /// Per-view forward-pass preparation shared by future split graph nodes.
 pub struct PreparedWorldMeshForwardFrame {
     /// Sorted world mesh draw items for this view.
@@ -178,6 +245,8 @@ pub struct PreparedWorldMeshForwardFrame {
     /// last_draw_idx]` (inclusive). Both raster sub-passes (opaque and intersect) share this
     /// list; each sub-pass only reads entries whose draw-index range overlaps its own index slice.
     pub precomputed_batches: Vec<PrecomputedMaterialBind>,
+    /// Optional background draw prepared for the opaque subpass.
+    pub skybox: Option<PreparedSkybox>,
 }
 
 /// Blackboard slot for per-view MSAA attachment views resolved from transient graph resources.
@@ -408,6 +477,8 @@ pub struct FrameRenderParamsView<'a> {
     pub gpu_limits: Option<Arc<GpuLimits>>,
     /// MSAA depth resolve pipelines when supported (cloned from the backend attach path).
     pub msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
+    /// Background clear/skybox behavior for this view.
+    pub clear: FrameViewClear,
 }
 
 /// Compositor over [`FrameSystemsShared`] and [`FrameRenderParamsView`].
@@ -434,5 +505,30 @@ impl<'a> FrameRenderParams<'a> {
             self.shared.asset_transfers,
             self.shared.skin_cache,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameViewClear;
+    use crate::shared::{CameraClearMode, CameraState};
+
+    #[test]
+    fn main_view_clear_defaults_to_skybox() {
+        let clear = FrameViewClear::default();
+        assert_eq!(clear.mode, CameraClearMode::Skybox);
+        assert_eq!(clear.color, glam::Vec4::ZERO);
+    }
+
+    #[test]
+    fn secondary_view_clear_comes_from_camera_state() {
+        let state = CameraState {
+            clear_mode: CameraClearMode::Color,
+            background_color: glam::Vec4::new(0.1, 0.2, 0.3, 0.4),
+            ..CameraState::default()
+        };
+        let clear = FrameViewClear::from_camera_state(&state);
+        assert_eq!(clear.mode, CameraClearMode::Color);
+        assert_eq!(clear.color, glam::Vec4::new(0.1, 0.2, 0.3, 0.4));
     }
 }

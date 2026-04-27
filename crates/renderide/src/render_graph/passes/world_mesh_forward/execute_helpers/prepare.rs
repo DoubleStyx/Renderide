@@ -15,6 +15,7 @@ use crate::render_graph::{
     world_mesh_draw_stats_from_sorted, WorldMeshCullInput,
 };
 
+use super::super::skybox::SkyboxRenderer;
 use super::camera::{compute_view_projections, resolve_pass_config};
 use super::frame_uniforms::write_per_view_frame_uniforms;
 use super::material_resolve::precompute_material_resolve_batches;
@@ -95,6 +96,7 @@ pub(in crate::render_graph::passes::world_mesh_forward) fn prepare_world_mesh_fo
     gpu_limits: &GpuLimits,
     frame: &mut FrameRenderParams<'_>,
     blackboard: &mut Blackboard,
+    skybox_renderer: &SkyboxRenderer,
 ) -> Option<PreparedWorldMeshForwardFrame> {
     profiling::scope!("world_mesh::prepare_frame");
     let supports_base_instance = gpu_limits.supports_base_instance;
@@ -150,6 +152,7 @@ pub(in crate::render_graph::passes::world_mesh_forward) fn prepare_world_mesh_fo
     }
 
     write_per_view_frame_uniforms(queue, upload_batch, frame, blackboard, use_multiview, hc);
+    let skybox = skybox_renderer.prepare(device, queue, upload_batch, frame, &pipeline);
 
     // Read the offscreen RT id before borrowing `frame` for encode_refs.
     let offscreen_write_rt = frame.view.offscreen_write_render_texture_asset_id;
@@ -178,6 +181,7 @@ pub(in crate::render_graph::passes::world_mesh_forward) fn prepare_world_mesh_fo
         depth_snapshot_recorded: false,
         tail_raster_recorded: false,
         precomputed_batches,
+        skybox,
     })
 }
 

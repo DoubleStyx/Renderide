@@ -32,6 +32,10 @@ const MAX_IN_FLIGHT_JOBS: usize = 6;
 const MAX_PENDING_JOB_AGE_FRAMES: u32 = 120;
 /// Bytes copied back from the compute output buffer.
 const SH2_OUTPUT_BYTES: u64 = (9 * 16) as u64;
+/// Default `Projection360` field of view used by Unity material defaults.
+const PROJECTION360_DEFAULT_FOV: [f32; 4] = [std::f32::consts::TAU, std::f32::consts::PI, 0.0, 0.0];
+/// Default texture scale/offset used by Unity `_MainTex_ST` properties.
+const DEFAULT_MAIN_TEX_ST: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
 /// Uniform payload shared by SH2 projection compute kernels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -78,6 +82,28 @@ impl Sh2ProjectParams {
             gradient_color0: [[0.0; 4]; 16],
             gradient_color1: [[0.0; 4]; 16],
             gradient_params: [[0.0; 4]; 16],
+        }
+    }
+}
+
+/// Hashable `Projection360` equirectangular sampling state used by SH2 cache keys.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct Projection360EquirectKey {
+    /// `_FOV` bit pattern.
+    fov_bits: [u32; 4],
+    /// `_MainTex_ST` bit pattern.
+    main_tex_st_bits: [u32; 4],
+    /// `_MainTex_StorageVInverted` bit pattern.
+    storage_v_inverted_bits: u32,
+}
+
+impl Projection360EquirectKey {
+    /// Builds a cache-key fragment from the packed projection parameters.
+    fn from_params(params: &Sh2ProjectParams) -> Self {
+        Self {
+            fov_bits: f32x4_bits(params.color0),
+            main_tex_st_bits: f32x4_bits(params.color1),
+            storage_v_inverted_bits: params.scalars[0].to_bits(),
         }
     }
 }
@@ -132,6 +158,8 @@ pub(crate) enum Sh2SourceKey {
         sample_size: u32,
         /// Host material generation.
         material_generation: u64,
+        /// Projection360 equirectangular sampling state.
+        projection: Projection360EquirectKey,
     },
     /// Parameter-only sky material source.
     SkyParams {
@@ -154,7 +182,12 @@ enum GpuSh2Source {
     /// Cubemap sampled from the cubemap pool.
     Cubemap { asset_id: i32 },
     /// Equirectangular 2D texture sampled from the texture pool.
-    EquirectTexture2D { asset_id: i32 },
+    EquirectTexture2D {
+        /// Texture asset id.
+        asset_id: i32,
+        /// Projection360 sampling parameters.
+        params: Box<Sh2ProjectParams>,
+    },
     /// Parameter-only sky material evaluator.
     SkyParams { params: Box<Sh2ProjectParams> },
 }
@@ -501,7 +534,7 @@ impl ReflectionProbeSh2System {
                     &submit_done_tx,
                 )
             }
-            GpuSh2Source::EquirectTexture2D { asset_id } => {
+            GpuSh2Source::EquirectTexture2D { asset_id, params } => {
                 let tex = assets
                     .texture_pool
                     .get_texture(asset_id)
@@ -531,7 +564,7 @@ impl ReflectionProbeSh2System {
                         ProjectionBinding::TextureView(view.as_ref()),
                         ProjectionBinding::Sampler(&sampler),
                     ],
-                    &Sh2ProjectParams::empty(SkyParamMode::Procedural),
+                    params.as_ref(),
                     &submit_done_tx,
                 )
             }
@@ -992,33 +1025,11 @@ fn resolve_projection360_source(
     let main_cube = property_texture(store, registry, lookup, "_MainCube")
         .or_else(|| property_texture(store, registry, lookup, "_Cube"));
     if let Some((asset_id, HostTextureAssetKind::Cubemap)) = main_cube {
-        let Some(cubemap) = assets.cubemap_pool.get_texture(asset_id) else {
-            return Some((
-                Sh2SourceKey::Cubemap {
-                    render_space_id,
-                    asset_id,
-                    size: 0,
-                    resident_mips: 0,
-                    sample_size: DEFAULT_SAMPLE_SIZE,
-                    material_generation: generation,
-                },
-                Sh2ResolvedSource::Postpone,
-            ));
-        };
-        let key = Sh2SourceKey::Cubemap {
+        return Some(resolve_projection360_cubemap_source(
             render_space_id,
+            assets,
             asset_id,
-            size: cubemap.size,
-            resident_mips: cubemap.mip_levels_resident,
-            sample_size: DEFAULT_SAMPLE_SIZE,
-            material_generation: generation,
-        };
-        if cubemap.mip_levels_resident == 0 {
-            return Some((key, Sh2ResolvedSource::Postpone));
-        }
-        return Some((
-            key,
-            Sh2ResolvedSource::Gpu(GpuSh2Source::Cubemap { asset_id }),
+            generation,
         ));
     }
 
@@ -1026,68 +1037,126 @@ fn resolve_projection360_source(
         .or_else(|| property_texture(store, registry, lookup, "_Tex"));
     match main_tex {
         Some((asset_id, HostTextureAssetKind::Texture2D)) => {
-            let Some(tex) = assets.texture_pool.get_texture(asset_id) else {
-                return Some((
-                    Sh2SourceKey::EquirectTexture2D {
-                        render_space_id,
-                        asset_id,
-                        width: 0,
-                        height: 0,
-                        resident_mips: 0,
-                        sample_size: DEFAULT_SAMPLE_SIZE,
-                        material_generation: generation,
-                    },
-                    Sh2ResolvedSource::Postpone,
-                ));
-            };
-            let key = Sh2SourceKey::EquirectTexture2D {
+            Some(resolve_projection360_texture2d_source(
                 render_space_id,
+                store,
+                registry,
+                assets,
+                lookup,
                 asset_id,
-                width: tex.width,
-                height: tex.height,
-                resident_mips: tex.mip_levels_resident,
-                sample_size: DEFAULT_SAMPLE_SIZE,
-                material_generation: generation,
-            };
-            if tex.mip_levels_resident == 0 {
-                return Some((key, Sh2ResolvedSource::Postpone));
-            }
-            Some((
-                key,
-                Sh2ResolvedSource::Gpu(GpuSh2Source::EquirectTexture2D { asset_id }),
+                generation,
             ))
         }
-        Some((asset_id, HostTextureAssetKind::Cubemap)) => {
-            let Some(cubemap) = assets.cubemap_pool.get_texture(asset_id) else {
-                return Some((
-                    Sh2SourceKey::Cubemap {
-                        render_space_id,
-                        asset_id,
-                        size: 0,
-                        resident_mips: 0,
-                        sample_size: DEFAULT_SAMPLE_SIZE,
-                        material_generation: generation,
-                    },
-                    Sh2ResolvedSource::Postpone,
-                ));
-            };
-            let key = Sh2SourceKey::Cubemap {
-                render_space_id,
-                asset_id,
-                size: cubemap.size,
-                resident_mips: cubemap.mip_levels_resident,
-                sample_size: DEFAULT_SAMPLE_SIZE,
-                material_generation: generation,
-            };
-            if cubemap.mip_levels_resident == 0 {
-                return Some((key, Sh2ResolvedSource::Postpone));
-            }
-            Some((
-                key,
-                Sh2ResolvedSource::Gpu(GpuSh2Source::Cubemap { asset_id }),
-            ))
-        }
+        Some((asset_id, HostTextureAssetKind::Cubemap)) => Some(
+            resolve_projection360_cubemap_source(render_space_id, assets, asset_id, generation),
+        ),
         _ => None,
+    }
+}
+
+/// Resolves a `Projection360` cubemap binding into an SH2 source.
+fn resolve_projection360_cubemap_source(
+    render_space_id: i32,
+    assets: &crate::backend::AssetTransferQueue,
+    asset_id: i32,
+    generation: u64,
+) -> (Sh2SourceKey, Sh2ResolvedSource) {
+    let Some(cubemap) = assets.cubemap_pool.get_texture(asset_id) else {
+        return (
+            Sh2SourceKey::Cubemap {
+                render_space_id,
+                asset_id,
+                size: 0,
+                resident_mips: 0,
+                sample_size: DEFAULT_SAMPLE_SIZE,
+                material_generation: generation,
+            },
+            Sh2ResolvedSource::Postpone,
+        );
+    };
+    let key = Sh2SourceKey::Cubemap {
+        render_space_id,
+        asset_id,
+        size: cubemap.size,
+        resident_mips: cubemap.mip_levels_resident,
+        sample_size: DEFAULT_SAMPLE_SIZE,
+        material_generation: generation,
+    };
+    if cubemap.mip_levels_resident == 0 {
+        return (key, Sh2ResolvedSource::Postpone);
+    }
+    (
+        key,
+        Sh2ResolvedSource::Gpu(GpuSh2Source::Cubemap { asset_id }),
+    )
+}
+
+/// Resolves a `Projection360` equirectangular 2D binding into an SH2 source.
+fn resolve_projection360_texture2d_source(
+    render_space_id: i32,
+    store: &MaterialPropertyStore,
+    registry: &PropertyIdRegistry,
+    assets: &crate::backend::AssetTransferQueue,
+    lookup: MaterialPropertyLookupIds,
+    asset_id: i32,
+    generation: u64,
+) -> (Sh2SourceKey, Sh2ResolvedSource) {
+    let mut params = projection360_equirect_params(store, registry, lookup, false);
+    let Some(tex) = assets.texture_pool.get_texture(asset_id) else {
+        return (
+            projection360_equirect_source_key(
+                render_space_id,
+                asset_id,
+                0,
+                0,
+                0,
+                generation,
+                &params,
+            ),
+            Sh2ResolvedSource::Postpone,
+        );
+    };
+    params = projection360_equirect_params(store, registry, lookup, tex.storage_v_inverted);
+    let key = projection360_equirect_source_key(
+        render_space_id,
+        asset_id,
+        tex.width,
+        tex.height,
+        tex.mip_levels_resident,
+        generation,
+        &params,
+    );
+    if tex.mip_levels_resident == 0 {
+        return (key, Sh2ResolvedSource::Postpone);
+    }
+    (
+        key,
+        Sh2ResolvedSource::Gpu(GpuSh2Source::EquirectTexture2D {
+            asset_id,
+            params: Box::new(params),
+        }),
+    )
+}
+
+/// Builds an equirectangular source key from texture residency and Projection360 parameters.
+fn projection360_equirect_source_key(
+    render_space_id: i32,
+    asset_id: i32,
+    width: u32,
+    height: u32,
+    resident_mips: u32,
+    generation: u64,
+    params: &Sh2ProjectParams,
+) -> Sh2SourceKey {
+    Sh2SourceKey::EquirectTexture2D {
+        render_space_id,
+        asset_id,
+        width,
+        height,
+        resident_mips,
+        sample_size: DEFAULT_SAMPLE_SIZE,
+        material_generation: generation,
+        projection: Projection360EquirectKey::from_params(params),
     }
 }
 
@@ -1102,6 +1171,29 @@ fn property_texture(
     match store.get_merged(lookup, pid) {
         Some(MaterialPropertyValue::Texture(packed)) => unpack_host_texture_packed(*packed),
         _ => None,
+    }
+}
+
+/// Builds the `Projection360` equirectangular sampling payload shared with the compute shader.
+fn projection360_equirect_params(
+    store: &MaterialPropertyStore,
+    registry: &PropertyIdRegistry,
+    lookup: MaterialPropertyLookupIds,
+    storage_v_inverted: bool,
+) -> Sh2ProjectParams {
+    let mut params = Sh2ProjectParams::empty(SkyParamMode::Procedural);
+    params.color0 = property_float4(store, registry, lookup, "_FOV", PROJECTION360_DEFAULT_FOV);
+    params.color1 = property_float4(store, registry, lookup, "_MainTex_ST", DEFAULT_MAIN_TEX_ST);
+    params.scalars = [storage_v_inverted_flag(storage_v_inverted), 0.0, 0.0, 0.0];
+    params
+}
+
+/// Converts a storage-orientation boolean to the shader keyword float convention.
+fn storage_v_inverted_flag(storage_v_inverted: bool) -> f32 {
+    if storage_v_inverted {
+        1.0
+    } else {
+        0.0
     }
 }
 
@@ -1212,6 +1304,16 @@ fn vec4_bits(v: Vec4) -> [u32; 4] {
     [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), v.w.to_bits()]
 }
 
+/// Bit pattern for a packed float4.
+fn f32x4_bits(v: [f32; 4]) -> [u32; 4] {
+    [
+        v[0].to_bits(),
+        v[1].to_bits(),
+        v[2].to_bits(),
+        v[3].to_bits(),
+    ]
+}
+
 /// Hashes a route name into a stable source-key discriminator.
 fn hash_route_name(route: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1259,6 +1361,170 @@ pub fn evaluate_sh2(sh: &RenderSH2, n: Vec3) -> Vec3 {
         + sh.sh6 * (SH_C3 * (3.0 * n.z * n.z - 1.0))
         + sh.sh7 * (SH_C2 * n.x * n.z)
         + sh.sh8 * (SH_C4 * (n.x * n.x - n.y * n.y))
+}
+
+/// Applies WGSL-style positive modulo for Projection360 angle wrapping.
+#[cfg(test)]
+fn positive_fmod_scalar(v: f32, wrap: f32) -> f32 {
+    let mut r = v - (v / wrap).trunc() * wrap;
+    r += wrap;
+    r - (r / wrap).trunc() * wrap
+}
+
+/// Converts a raw texture-space direction to the pre-ST equirectangular UV convention.
+#[cfg(test)]
+fn raw_equirect_uv_for_dir(dir: Vec3) -> [f32; 2] {
+    [
+        dir.x.atan2(dir.z) / std::f32::consts::TAU + 0.5,
+        dir.y.clamp(-1.0, 1.0).acos() / std::f32::consts::PI,
+    ]
+}
+
+/// Converts a Projection360 view direction to pre-ST UVs using the visible shader formula.
+#[cfg(test)]
+fn projection360_dir_to_uv_for_test(view_dir: Vec3, params: &Sh2ProjectParams) -> [f32; 2] {
+    let angle_x = view_dir.x.atan2(view_dir.z) + params.color0[0] * 0.5 + params.color0[2];
+    let angle_y = view_dir.y.clamp(-1.0, 1.0).acos() - std::f32::consts::FRAC_PI_2
+        + params.color0[1] * 0.5
+        + params.color0[3];
+    [
+        positive_fmod_scalar(angle_x, std::f32::consts::TAU)
+            / params.color0[0].abs().max(0.000_001),
+        positive_fmod_scalar(angle_y, std::f32::consts::PI) / params.color0[1].abs().max(0.000_001),
+    ]
+}
+
+/// Applies the visible shader's `_MainTex_ST` and storage-orientation handling.
+#[cfg(test)]
+fn projection360_main_tex_uv_for_test(uv: [f32; 2], params: &Sh2ProjectParams) -> [f32; 2] {
+    let u = uv[0].clamp(0.0, 1.0) * params.color1[0] + params.color1[2];
+    let v = uv[1].clamp(0.0, 1.0) * params.color1[1] + params.color1[3];
+    if params.scalars[0] > 0.5 {
+        [u, v]
+    } else {
+        [u, 1.0 - v]
+    }
+}
+
+/// Returns the texture UV that visible Projection360 equirectangular skybox sampling uses.
+#[cfg(test)]
+fn projection360_equirect_uv_for_world_dir(world_dir: Vec3, params: &Sh2ProjectParams) -> [f32; 2] {
+    projection360_main_tex_uv_for_test(
+        projection360_dir_to_uv_for_test(-world_dir.normalize(), params),
+        params,
+    )
+}
+
+/// Returns the cubemap direction used by the visible Projection360 cubemap path.
+#[cfg(test)]
+fn projection360_cubemap_sample_dir_for_world_dir(world_dir: Vec3) -> Vec3 {
+    let view_dir = -world_dir.normalize();
+    (-view_dir).normalize()
+}
+
+/// Evaluates the GradientSkybox color using the visible shader formula.
+#[cfg(test)]
+fn gradient_sky_visible_color_for_dir(dir: Vec3, params: &Sh2ProjectParams) -> Vec3 {
+    let mut color = Vec3::from_array([params.color0[0], params.color0[1], params.color0[2]]);
+    let count = params.gradient_count.min(16) as usize;
+    for i in 0..count {
+        let dirs_spread = params.dirs_spread[i];
+        let gradient_params = params.gradient_params[i];
+        let axis = Vec3::new(dirs_spread[0], dirs_spread[1], dirs_spread[2]).normalize();
+        let spread = dirs_spread[3].abs().max(0.000_001);
+        let expv = gradient_params[1].max(0.000_001);
+        let fromv = gradient_params[2];
+        let tov = gradient_params[3];
+        let denom = (tov - fromv).abs().max(0.000_001);
+        let mut r = (0.5 - dir.dot(axis) * 0.5) / spread;
+        if r <= 1.0 {
+            r = r.max(0.0).powf(expv);
+            r = ((r - fromv) / denom).clamp(0.0, 1.0);
+            let c0 = Vec4::from_array(params.gradient_color0[i]);
+            let c1 = Vec4::from_array(params.gradient_color1[i]);
+            let c = c0.lerp(c1, r);
+            if gradient_params[0].abs() <= f32::EPSILON {
+                color = color * (1.0 - c.w) + c.truncate() * c.w;
+            } else {
+                color += c.truncate() * c.w;
+            }
+        }
+    }
+    color
+}
+
+/// Computes the cubemap texel solid-angle helper used by the GPU SH kernels.
+#[cfg(test)]
+fn sh2_area_element(x: f32, y: f32) -> f32 {
+    (x * y).atan2((x * x + y * y + 1.0).sqrt())
+}
+
+/// Computes a cube-face texel solid angle for CPU SH regression tests.
+#[cfg(test)]
+fn sh2_texel_solid_angle(x: u32, y: u32, n: u32) -> f32 {
+    let inv = 1.0 / n as f32;
+    let x0 = (x as f32 * inv) * 2.0 - 1.0;
+    let y0 = (y as f32 * inv) * 2.0 - 1.0;
+    let x1 = ((x + 1) as f32 * inv) * 2.0 - 1.0;
+    let y1 = ((y + 1) as f32 * inv) * 2.0 - 1.0;
+    (sh2_area_element(x0, y0) - sh2_area_element(x0, y1) - sh2_area_element(x1, y0)
+        + sh2_area_element(x1, y1))
+    .abs()
+}
+
+/// Returns the Unity cube-face direction for one sample location.
+#[cfg(test)]
+fn sh2_cube_dir(face: u32, x: u32, y: u32, n: u32) -> Vec3 {
+    let u = (x as f32 + 0.5) / n as f32;
+    let v = (y as f32 + 0.5) / n as f32;
+    match face {
+        0 => Vec3::new(1.0, v * -2.0 + 1.0, u * -2.0 + 1.0).normalize(),
+        1 => Vec3::new(-1.0, v * -2.0 + 1.0, u * 2.0 - 1.0).normalize(),
+        2 => Vec3::new(u * 2.0 - 1.0, 1.0, v * 2.0 - 1.0).normalize(),
+        3 => Vec3::new(u * 2.0 - 1.0, -1.0, v * -2.0 + 1.0).normalize(),
+        4 => Vec3::new(u * 2.0 - 1.0, v * -2.0 + 1.0, 1.0).normalize(),
+        _ => Vec3::new(u * -2.0 + 1.0, v * -2.0 + 1.0, -1.0).normalize(),
+    }
+}
+
+/// Accumulates one weighted radiance sample into RenderSH2 coefficients.
+#[cfg(test)]
+fn add_weighted_sh2_sample(sh: &mut RenderSH2, c: Vec3, dir: Vec3, weight: f32) {
+    sh.sh0 += c * (SH_C0 * weight);
+    sh.sh1 += c * (SH_C1 * dir.y * weight);
+    sh.sh2 += c * (SH_C1 * dir.z * weight);
+    sh.sh3 += c * (SH_C1 * dir.x * weight);
+    sh.sh4 += c * (SH_C2 * dir.x * dir.y * weight);
+    sh.sh5 += c * (SH_C2 * dir.y * dir.z * weight);
+    sh.sh6 += c * (SH_C3 * (3.0 * dir.z * dir.z - 1.0) * weight);
+    sh.sh7 += c * (SH_C2 * dir.x * dir.z * weight);
+    sh.sh8 += c * (SH_C4 * (dir.x * dir.x - dir.y * dir.y) * weight);
+}
+
+/// Projects a directional equirectangular lobe through the Projection360 `_VIEW` convention.
+#[cfg(test)]
+fn project_projection360_equirect_lobe(sample_size: u32, bright_texture_dir: Vec3) -> RenderSH2 {
+    let n = sample_size.max(1);
+    let bright_texture_dir = bright_texture_dir.normalize();
+    let mut sh = RenderSH2::default();
+    for face in 0..6 {
+        for y in 0..n {
+            for x in 0..n {
+                let world_dir = sh2_cube_dir(face, x, y, n);
+                let texture_dir = -world_dir;
+                let intensity = texture_dir.dot(bright_texture_dir).max(0.0).powf(16.0);
+                if intensity > 0.0 {
+                    add_weighted_sh2_sample(
+                        &mut sh,
+                        Vec3::splat(intensity),
+                        world_dir,
+                        sh2_texel_solid_angle(x, y, n),
+                    );
+                }
+            }
+        }
+    }
+    sh
 }
 
 /// Stride of a host SH2 task row.
@@ -1372,6 +1638,79 @@ mod tests {
         assert!((SH_C2 - 1.092_548_5).abs() < 1e-7);
         assert!((SH_C3 - 0.315_391_57).abs() < 1e-7);
         assert!((SH_C4 - 0.546_274_24).abs() < 1e-7);
+    }
+
+    #[test]
+    fn projection360_equirect_view_sampling_uses_opposite_world_direction() {
+        let mut params = Sh2ProjectParams::empty(SkyParamMode::Procedural);
+        params.color0 = PROJECTION360_DEFAULT_FOV;
+        params.color1 = DEFAULT_MAIN_TEX_ST;
+        params.scalars = [1.0, 0.0, 0.0, 0.0];
+
+        let world_dir = Vec3::X;
+        let visible_uv = projection360_equirect_uv_for_world_dir(world_dir, &params);
+        let opposite_uv = raw_equirect_uv_for_dir(-world_dir);
+        let direct_uv = raw_equirect_uv_for_dir(world_dir);
+
+        assert!((visible_uv[0] - opposite_uv[0]).abs() < 1e-6);
+        assert!((visible_uv[1] - opposite_uv[1]).abs() < 1e-6);
+        assert!((visible_uv[0] - direct_uv[0]).abs() > 0.25);
+    }
+
+    #[test]
+    fn projection360_fov_st_and_storage_affect_equirect_source_key() {
+        let mut base = Sh2ProjectParams::empty(SkyParamMode::Procedural);
+        base.color0 = PROJECTION360_DEFAULT_FOV;
+        base.color1 = DEFAULT_MAIN_TEX_ST;
+        base.scalars = [0.0, 0.0, 0.0, 0.0];
+        let base_key = Projection360EquirectKey::from_params(&base);
+
+        let mut fov = base;
+        fov.color0[2] = 0.125;
+        let mut st = base;
+        st.color1[2] = 0.25;
+        let mut storage = base;
+        storage.scalars[0] = 1.0;
+
+        assert_ne!(base_key, Projection360EquirectKey::from_params(&fov));
+        assert_ne!(base_key, Projection360EquirectKey::from_params(&st));
+        assert_ne!(base_key, Projection360EquirectKey::from_params(&storage));
+    }
+
+    #[test]
+    fn projection360_cubemap_path_keeps_world_direction() {
+        let world_dir = Vec3::new(0.25, 0.5, -1.0).normalize();
+        let sample_dir = projection360_cubemap_sample_dir_for_world_dir(world_dir);
+        assert!((sample_dir - world_dir).length() < 1e-6);
+    }
+
+    #[test]
+    fn gradient_sky_sampling_matches_visible_axes() {
+        let mut params = Sh2ProjectParams::empty(SkyParamMode::Gradient);
+        params.color0 = [0.0, 0.0, 0.0, 1.0];
+        params.gradient_count = 1;
+        params.dirs_spread[0] = [1.0, 0.0, 0.0, 1.0];
+        params.gradient_color0[0] = [1.0, 0.0, 0.0, 1.0];
+        params.gradient_color1[0] = [0.0, 0.0, 1.0, 1.0];
+        params.gradient_params[0] = [0.0, 1.0, 0.0, 1.0];
+
+        let plus_x = gradient_sky_visible_color_for_dir(Vec3::X, &params);
+        let minus_x = gradient_sky_visible_color_for_dir(-Vec3::X, &params);
+        let plus_y = gradient_sky_visible_color_for_dir(Vec3::Y, &params);
+        let plus_z = gradient_sky_visible_color_for_dir(Vec3::Z, &params);
+
+        assert!((plus_x - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-6);
+        assert!((minus_x - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-6);
+        assert!((plus_y - Vec3::new(0.5, 0.0, 0.5)).length() < 1e-6);
+        assert!((plus_z - Vec3::new(0.5, 0.0, 0.5)).length() < 1e-6);
+    }
+
+    #[test]
+    fn projection360_equirect_lobe_evaluates_strongest_in_visible_world_direction() {
+        let sh = project_projection360_equirect_lobe(24, -Vec3::X);
+        let visible_direction = evaluate_sh2(&sh, Vec3::X).x;
+        let opposite_direction = evaluate_sh2(&sh, -Vec3::X).x;
+        assert!(visible_direction > opposite_direction);
     }
 
     #[test]

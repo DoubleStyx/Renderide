@@ -76,7 +76,7 @@
 
 mod cache;
 mod embedded_raster_pipeline;
-mod embedded_shader_stem;
+pub(crate) mod embedded_shader_stem;
 mod family;
 mod material_pass_tables;
 mod material_passes;
