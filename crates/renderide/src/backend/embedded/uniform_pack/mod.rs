@@ -71,17 +71,12 @@ pub(crate) fn build_embedded_uniform_bytes(
         let pid = *ids.uniform_field_ids.get(field_name)?;
         match field.kind {
             ReflectedUniformScalarKind::Vec4 => {
-                let mut v =
+                let v =
                     if let Some(MaterialPropertyValue::Float4(c)) = store.get_merged(lookup, pid) {
                         *c
                     } else {
                         default_vec4_for_field(shader_writer_unescaped_field_name(field_name))
                     };
-                if let Some(rewritten) = rewrite_st_for_render_texture(
-                    field_name, &v, reflected, ids, store, lookup, tex_ctx,
-                ) {
-                    v = rewritten;
-                }
                 write_f32x4_at(&mut buf, field, &v);
             }
             ReflectedUniformScalarKind::F32 => {
@@ -111,57 +106,6 @@ pub(crate) fn build_embedded_uniform_bytes(
     }
 
     Some(buf)
-}
-
-/// Rewrites `_<TexName>_ST` so that the engine's shader-side V flip is undone for render textures.
-///
-/// Render textures are produced top-down by wgpu render attachments, while host-uploaded textures
-/// arrive bottom-up (Resonite/Unity convention). Material shaders apply a uniform `1.0 - v` flip
-/// in [`crate::shaders::source::modules::uv_utils::apply_st`] to reorient the latter; for the
-/// former that flip is wrong.
-///
-/// `apply_st(uv, st)` evaluates `(uv.x*st.x + st.z, 1 - (uv.y*st.y + st.w))`. Substituting
-/// `st' = (st.x, -st.y, st.z, 1 - st.w)` yields `(uv.x*st.x + st.z, uv.y*st.y + st.w)` — i.e. the
-/// V flip cancels exactly. Returns [`Some`] with the rewritten vec4 when the field is a `_ST`
-/// field whose corresponding texture binding resolves to [`ResolvedTextureBinding::RenderTexture`];
-/// [`None`] otherwise (caller writes the unmodified vec4).
-///
-/// Procedurally-derived UVs that route through `flip_v` rather than `apply_st` (matcap and
-/// 360-projection masks) are not addressed by this trick — those sites do not consume `_ST` and
-/// would need a separate per-binding flag if they are ever bound to a render texture. In practice
-/// they are bound to host-uploaded textures only.
-fn rewrite_st_for_render_texture(
-    field_name: &str,
-    value: &[f32; 4],
-    reflected: &ReflectedRasterLayout,
-    ids: &StemEmbeddedPropertyIds,
-    store: &MaterialPropertyStore,
-    lookup: MaterialPropertyLookupIds,
-    tex_ctx: &UniformPackTextureContext<'_>,
-) -> Option<[f32; 4]> {
-    let unescaped = shader_writer_unescaped_field_name(field_name);
-    let tex_name = unescaped.strip_suffix("_ST")?;
-    let (&binding, host_name) = reflected
-        .material_group1_names
-        .iter()
-        .find(|(_, name)| name.as_str() == tex_name)?;
-    let tex_pids = texture_property_ids_for_binding(ids, binding);
-    if tex_pids.is_empty() {
-        return None;
-    }
-    let resolved = resolved_texture_binding_for_host(
-        host_name.as_str(),
-        tex_pids,
-        tex_ctx.primary_texture_2d,
-        store,
-        lookup,
-    );
-    match resolved {
-        ResolvedTextureBinding::RenderTexture { .. } => {
-            Some([value[0], -value[1], value[2], 1.0 - value[3]])
-        }
-        _ => None,
-    }
 }
 
 /// Host `mipmap_bias` for `_<Tex>_LodBias` fields, or [`None`] if `field_name` is not a LOD-bias
@@ -218,17 +162,56 @@ fn lod_bias_for_field(
 
 #[cfg(test)]
 mod text_uniform_packing_tests {
+    use std::sync::Arc;
+
+    use hashbrown::HashMap;
+
     use super::tables::inferred_keyword_float_f32;
     use super::*;
     use crate::assets::material::PropertyIdRegistry;
     use crate::assets::material::{MaterialPropertyLookupIds, MaterialPropertyStore};
     use crate::backend::embedded::layout::StemEmbeddedPropertyIds;
+    use crate::materials::{ReflectedMaterialUniformBlock, ReflectedUniformScalarKind};
+    use crate::resources::{CubemapPool, RenderTexturePool, Texture3dPool, TexturePool};
 
     fn lookup(material_id: i32) -> MaterialPropertyLookupIds {
         MaterialPropertyLookupIds {
             material_asset_id: material_id,
             mesh_property_block_slot0: None,
         }
+    }
+
+    /// Builds an empty texture-pool set for uniform-packer tests that only need binding metadata.
+    fn empty_texture_pools() -> (TexturePool, Texture3dPool, CubemapPool, RenderTexturePool) {
+        (
+            TexturePool::default_pool(),
+            Texture3dPool::default_pool(),
+            CubemapPool::default_pool(),
+            RenderTexturePool::new(),
+        )
+    }
+
+    /// Extracts a packed f32x4 uniform from `bytes`.
+    fn read_f32x4(bytes: &[u8], offset: usize) -> [f32; 4] {
+        let mut out = [0.0; 4];
+        for (i, value) in out.iter_mut().enumerate() {
+            let start = offset + i * 4;
+            *value = f32::from_le_bytes(
+                bytes[start..start + 4]
+                    .try_into()
+                    .expect("uniform f32 component bytes"),
+            );
+        }
+        out
+    }
+
+    /// Packs an asset id as a host render-texture material property.
+    fn packed_render_texture(asset_id: i32) -> i32 {
+        use crate::assets::texture::HostTextureAssetKind;
+
+        let type_bits = 3u32;
+        let pack_type_shift = 32u32.saturating_sub(type_bits);
+        asset_id | ((HostTextureAssetKind::RenderTexture as i32) << pack_type_shift)
     }
 
     #[test]
@@ -458,6 +441,73 @@ mod text_uniform_packing_tests {
             inferred_keyword_float_f32("_ALPHABLEND_ON", &store, lookup(23), &ids),
             Some(0.0)
         );
+    }
+
+    /// Render-texture bindings must not rewrite Unity `_ST` values behind the shader's back.
+    #[test]
+    fn render_texture_binding_leaves_st_uniform_unchanged() {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "_MainTex_ST".to_string(),
+            ReflectedUniformField {
+                offset: 0,
+                size: 16,
+                kind: ReflectedUniformScalarKind::Vec4,
+            },
+        );
+        let mut material_group1_names = HashMap::new();
+        material_group1_names.insert(1, "_MainTex".to_string());
+        let reflected = ReflectedRasterLayout {
+            layout_fingerprint: 0,
+            material_entries: Vec::new(),
+            per_draw_entries: Vec::new(),
+            material_uniform: Some(ReflectedMaterialUniformBlock {
+                binding: 0,
+                total_size: 16,
+                fields,
+            }),
+            material_group1_names,
+            vs_max_vertex_location: None,
+            requires_intersection_pass: false,
+            requires_grab_pass: false,
+        };
+
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let mut ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+        let main_tex_st = reg.intern("_MainTex_ST");
+        let main_tex = reg.intern("_MainTex");
+        ids.uniform_field_ids
+            .insert("_MainTex_ST".to_string(), main_tex_st);
+        ids.texture_binding_property_ids
+            .insert(1, Arc::from(vec![main_tex].into_boxed_slice()));
+        store.set_material(
+            24,
+            main_tex,
+            MaterialPropertyValue::Texture(packed_render_texture(9)),
+        );
+        store.set_material(
+            24,
+            main_tex_st,
+            MaterialPropertyValue::Float4([2.0, 3.0, 0.25, 0.75]),
+        );
+
+        let (texture, texture3d, cubemap, render_texture) = empty_texture_pools();
+        let pools = EmbeddedTexturePools {
+            texture: &texture,
+            texture3d: &texture3d,
+            cubemap: &cubemap,
+            render_texture: &render_texture,
+        };
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+
+        let bytes = build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(24), &tex_ctx)
+            .expect("uniform bytes");
+
+        assert_eq!(read_f32x4(&bytes, 0), [2.0, 3.0, 0.25, 0.75]);
     }
 
     #[test]

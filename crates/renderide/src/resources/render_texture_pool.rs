@@ -7,18 +7,10 @@
 //!
 //! ### Orientation
 //!
-//! Host-uploaded textures arrive bottom-up (Resonite/Unity convention); material shaders apply a
-//! V-flip via [`crate::shaders::source::modules::uv_utils`]'s `apply_st` / `flip_v` to compensate
-//! for wgpu's top-down `textureSample` origin. Render textures produced by a camera pass into the
-//! `color_texture` here are **top-down** (wgpu render attachments), so the same `apply_st` call
-//! would invert them.
-//!
-//! The fix lives in `rewrite_st_for_render_texture` in
-//! [`crate::backend::embedded::uniform_pack`]: when a `_<TexName>_ST` uniform's bound texture
-//! resolves to a render texture, the four components are rewritten to `(s.x, -s.y, s.z, 1 - s.w)`
-//! so the shader-side `1.0 - v` cancels itself algebraically. Procedurally-derived UVs that route
-//! through `flip_v` (matcap, 360-projection masks) are not addressed because they do not consume
-//! `_ST` and are not bound to render textures in practice.
+//! Render textures are sampled through the same material UV path as host-uploaded textures.
+//! The renderer does not rewrite material `_ST` values based on texture asset kind; tiling and
+//! offset remain authored material data, and shader sampling helpers apply the renderer-wide
+//! texture-origin convention uniformly.
 
 use hashbrown::HashMap;
 use std::sync::Arc;

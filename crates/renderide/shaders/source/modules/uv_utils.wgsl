@@ -3,10 +3,9 @@
 //! Import with `#import renderide::uv_utils as uvu` (do **not** use alias `uv` — naga-oil rejects it).
 //!
 //! The `1.0 - v` flip in `apply_st` exists because host-uploaded textures arrive in Unity/Resonite
-//! bottom-up V order while wgpu samples top-down. Render textures produced by the renderer itself
-//! are top-down, so the CPU-side uniform packer rewrites their `_ST` to
-//! `(s.x, -s.y, s.z, 1.0 - s.w)`, which makes the algebra cancel inside this function. See
-//! `rewrite_st_for_render_texture` in `crates/renderide/src/backend/embedded/uniform_pack/mod.rs`.
+//! bottom-up V order while wgpu samples top-down. `_ST` values are material data and are applied
+//! as-authored regardless of whether a binding resolves to a host-uploaded texture or a render
+//! texture.
 
 #define_import_path renderide::uv_utils
 
