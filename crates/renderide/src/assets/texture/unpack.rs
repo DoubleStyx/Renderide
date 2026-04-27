@@ -38,9 +38,6 @@ fn necessary_bits(mut value: u32) -> u32 {
 ///
 /// Returns `(asset_id, kind)` when `packed` is positive and the type field is valid.
 pub fn unpack_host_texture_packed(packed: i32) -> Option<(i32, HostTextureAssetKind)> {
-    if packed <= 0 {
-        return None;
-    }
     let type_bits = necessary_bits(TEXTURE_ASSET_TYPE_COUNT);
     let pack_type_shift = 32u32.saturating_sub(type_bits);
     let unpack_mask = (u32::MAX >> type_bits) as i32;
