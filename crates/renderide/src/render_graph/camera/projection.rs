@@ -172,7 +172,7 @@ mod effective_clip_plane_tests {
 
 #[cfg(test)]
 mod projection_math_tests {
-    use glam::Vec4;
+    use glam::{Vec2, Vec3, Vec4};
     use openxr::Fovf;
     use std::f32::consts::FRAC_PI_2;
 
@@ -185,6 +185,24 @@ mod projection_math_tests {
     fn project_depth(m: &glam::Mat4, view_z: f32) -> f32 {
         let clip = m.mul_vec4(Vec4::new(0.0, 0.0, view_z, 1.0));
         clip.z / clip.w
+    }
+
+    /// Projects a point on the skybox's `view_z = -1` plane and returns NDC XY.
+    fn project_unit_depth_view_xy(m: &glam::Mat4, view_xy: Vec2) -> Vec2 {
+        let clip = m.mul_vec4(Vec4::new(view_xy.x, view_xy.y, -1.0, 1.0));
+        Vec2::new(clip.x / clip.w, clip.y / clip.w)
+    }
+
+    /// Extracts the same projection coefficients uploaded to `FrameGlobals::proj_params_*`.
+    fn skybox_proj_params_for_test(m: glam::Mat4) -> [f32; 4] {
+        [m.x_axis.x, m.y_axis.y, m.z_axis.x, m.z_axis.y]
+    }
+
+    /// Mirrors `skybox_common.wgsl::view_ray_from_ndc`.
+    fn skybox_view_ray_from_ndc_for_test(ndc: Vec2, proj_params: [f32; 4]) -> Vec3 {
+        let view_x = (ndc.x + proj_params[2]) / proj_params[0].abs().max(1e-6);
+        let view_y = (ndc.y + proj_params[3]) / proj_params[1].abs().max(1e-6);
+        Vec3::new(view_x, view_y, -1.0).normalize()
     }
 
     /// [`clamp_desktop_fov_degrees`] maps NaN to the default and clamps out-of-range inputs to the
@@ -223,6 +241,37 @@ mod projection_math_tests {
 
         assert!((project_depth(&m, -near) - 1.0).abs() < 1e-4);
         assert!(project_depth(&m, -far).abs() < 1e-4);
+    }
+
+    /// Fullscreen skybox ray reconstruction must invert asymmetric OpenXR skew with a plus sign.
+    #[test]
+    fn skybox_view_ray_roundtrips_asymmetric_openxr_projection() {
+        let fov = Fovf {
+            angle_left: -0.82,
+            angle_right: 0.68,
+            angle_down: -0.53,
+            angle_up: 0.74,
+        };
+        let m = reverse_z_perspective_openxr_fov(&fov, 0.1, 100.0);
+        let proj_params = skybox_proj_params_for_test(m);
+
+        for view_xy in [Vec2::new(-0.35, 0.22), Vec2::ZERO, Vec2::new(0.28, -0.31)] {
+            let ndc = project_unit_depth_view_xy(&m, view_xy);
+            let actual = skybox_view_ray_from_ndc_for_test(ndc, proj_params);
+            let expected = Vec3::new(view_xy.x, view_xy.y, -1.0).normalize();
+            assert!(
+                actual.dot(expected) > 0.999_99,
+                "skybox ray mismatch for {view_xy:?}: expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
+
+    /// Shader source should keep the same asymmetric-skew sign as the CPU roundtrip above.
+    #[test]
+    fn skybox_shader_uses_positive_asymmetric_skew_sign() {
+        let source = include_str!("../../../shaders/source/modules/skybox_common.wgsl");
+        assert!(source.contains("ndc.x + proj_params.z"));
+        assert!(source.contains("ndc.y + proj_params.w"));
     }
 
     /// A degenerate all-zero OpenXR FOV takes the symmetric 16:9 fallback and yields a finite
