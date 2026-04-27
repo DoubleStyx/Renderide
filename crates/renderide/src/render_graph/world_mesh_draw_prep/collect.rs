@@ -36,6 +36,11 @@ use super::super::world_mesh_cull_eval::{
     mesh_draw_passes_cpu_cull, CpuCullFailure, MeshCullTarget,
 };
 
+#[path = "collect_candidate.rs"]
+mod candidate;
+
+use candidate::{evaluate_draw_candidate, DrawCandidate};
+
 /// Renders per chunk (static or skinned slice of one render space).
 const WORLD_MESH_COLLECT_CHUNK_SIZE: usize = 128;
 
@@ -317,10 +322,7 @@ fn push_one_slot_draw(
             slot_index,
         )
         .unwrap_or(slot.material_asset_id);
-    if index_count == 0 {
-        return;
-    }
-    if material_asset_id < 0 {
+    if index_count == 0 || material_asset_id < 0 {
         return;
     }
     let mut rigid_world_matrix = None;
@@ -355,32 +357,10 @@ fn push_one_slot_draw(
             world_matrix_for_local_vertex_stream(ctx, draw.space_id, draw.renderer.node_id);
     }
     let front_face = front_face_for_world_matrix(rigid_world_matrix);
-    let lookup_ids = MaterialPropertyLookupIds {
-        material_asset_id,
-        mesh_property_block_slot0: slot.property_block_id,
-    };
-    let batch_key = batch_key_for_slot_cached(
-        material_asset_id,
-        slot.property_block_id,
-        draw.skinned,
-        front_face,
-        cache,
-        MaterialResolveCtx {
-            dict: ctx.material_dict,
-            router: ctx.material_router,
-            pipeline_property_ids: ctx.pipeline_property_ids,
-            shader_perm: ctx.shader_perm,
-        },
-    );
-    let camera_distance_sq = if batch_key.alpha_blended {
-        match rigid_world_matrix {
-            Some(m) => (m.col(3).truncate() - ctx.view_origin_world).length_squared(),
-            None => 0.0,
-        }
-    } else {
-        0.0
-    };
-    acc.out.push(WorldMeshDrawItem {
+    let alpha_distance_sq = rigid_world_matrix
+        .map(|m| (m.col(3).truncate() - ctx.view_origin_world).length_squared())
+        .unwrap_or(0.0);
+    let candidate = DrawCandidate {
         space_id: draw.space_id,
         node_id: draw.renderer.node_id,
         mesh_asset_id: draw.renderer.mesh_asset_id,
@@ -391,12 +371,19 @@ fn push_one_slot_draw(
         sorting_order: draw.renderer.sorting_order,
         skinned: draw.skinned,
         world_space_deformed,
-        collect_order: 0,
-        camera_distance_sq,
-        lookup_ids,
-        batch_key,
+        material_asset_id,
+        property_block_id: slot.property_block_id,
+    };
+    if let Some(item) = evaluate_draw_candidate(
+        ctx,
+        cache,
+        candidate,
+        front_face,
         rigid_world_matrix,
-    });
+        alpha_distance_sq,
+    ) {
+        acc.out.push(item);
+    }
 }
 
 /// Builds the chunk list: one entry per 128-renderer slice of static or skinned renderers per space.
@@ -666,25 +653,7 @@ fn append_prepared_run_draws(
     out: &mut Vec<WorldMeshDrawItem>,
 ) {
     for d in run {
-        let batch_key = batch_key_for_slot_cached(
-            d.material_asset_id,
-            d.property_block_id,
-            d.skinned,
-            state.front_face,
-            cache,
-            MaterialResolveCtx {
-                dict: ctx.material_dict,
-                router: ctx.material_router,
-                pipeline_property_ids: ctx.pipeline_property_ids,
-                shader_perm: ctx.shader_perm,
-            },
-        );
-        let camera_distance_sq = if batch_key.alpha_blended {
-            state.alpha_distance_sq
-        } else {
-            0.0
-        };
-        out.push(WorldMeshDrawItem {
+        let candidate = DrawCandidate {
             space_id: d.space_id,
             node_id: d.node_id,
             mesh_asset_id: d.mesh_asset_id,
@@ -695,12 +664,19 @@ fn append_prepared_run_draws(
             sorting_order: d.sorting_order,
             skinned: d.skinned,
             world_space_deformed: d.world_space_deformed,
-            collect_order: 0,
-            camera_distance_sq,
-            lookup_ids: d.lookup_ids,
-            batch_key,
-            rigid_world_matrix: state.rigid_world_matrix,
-        });
+            material_asset_id: d.material_asset_id,
+            property_block_id: d.property_block_id,
+        };
+        if let Some(item) = evaluate_draw_candidate(
+            ctx,
+            cache,
+            candidate,
+            state.front_face,
+            state.rigid_world_matrix,
+            state.alpha_distance_sq,
+        ) {
+            out.push(item);
+        }
     }
 }
 
@@ -955,99 +931,5 @@ fn collect_world_mesh_chunks(
 }
 
 #[cfg(test)]
-mod tests {
-    use glam::{Mat4, Quat, Vec3};
-
-    use super::*;
-    use crate::assets::material::{
-        MaterialDictionary, MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
-    };
-    use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
-    use crate::resources::MeshPool;
-    use crate::scene::{RenderSpaceId, SceneCoordinator};
-    use crate::shared::{RenderTransform, RenderingContext};
-
-    /// Builds a unit-scale transform for draw-prep tests.
-    fn identity_transform() -> RenderTransform {
-        RenderTransform {
-            position: Vec3::ZERO,
-            scale: Vec3::ONE,
-            rotation: Quat::IDENTITY,
-        }
-    }
-
-    /// Minimal prepared draw used to exercise transform-scale filtering before mesh lookup.
-    fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
-        FramePreparedDraw {
-            space_id,
-            renderable_index: 0,
-            node_id: 0,
-            mesh_asset_id: 7,
-            is_overlay: false,
-            sorting_order: 0,
-            skinned: false,
-            world_space_deformed: false,
-            slot_index: 0,
-            first_index: 0,
-            index_count: 3,
-            material_asset_id: 9,
-            property_block_id: None,
-            lookup_ids: MaterialPropertyLookupIds {
-                material_asset_id: 9,
-                mesh_property_block_slot0: None,
-            },
-        }
-    }
-
-    /// Prepared collection can collapse material-slot runs from the same source renderer.
-    #[test]
-    fn prepared_draws_share_renderer_groups_material_slots_only() {
-        let space_id = RenderSpaceId(27);
-        let first_slot = prepared_draw(space_id);
-        let mut second_slot = prepared_draw(space_id);
-        second_slot.slot_index = 1;
-        second_slot.first_index = 3;
-        second_slot.material_asset_id = 10;
-        second_slot.lookup_ids = MaterialPropertyLookupIds {
-            material_asset_id: 10,
-            mesh_property_block_slot0: None,
-        };
-        let mut next_renderer = second_slot.clone();
-        next_renderer.renderable_index = 1;
-
-        assert!(prepared_draws_share_renderer(&first_slot, &second_slot));
-        assert!(!prepared_draws_share_renderer(&second_slot, &next_renderer));
-    }
-
-    /// Unit-scale renderer nodes remain eligible for draw collection.
-    #[test]
-    fn draw_transform_scale_filter_allows_unit_scale() {
-        let mut scene = SceneCoordinator::new();
-        let space_id = RenderSpaceId(28);
-        scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
-
-        let mesh_pool = MeshPool::default_pool();
-        let store = MaterialPropertyStore::new();
-        let material_dict = MaterialDictionary::new(&store);
-        let router = MaterialRouter::new(RasterPipelineKind::Null);
-        let registry = PropertyIdRegistry::new();
-        let property_ids = MaterialPipelinePropertyIds::new(&registry);
-        let ctx = DrawCollectionContext {
-            scene: &scene,
-            mesh_pool: &mesh_pool,
-            material_dict: &material_dict,
-            material_router: &router,
-            pipeline_property_ids: &property_ids,
-            shader_perm: ShaderPermutation::default(),
-            render_context: RenderingContext::UserView,
-            head_output_transform: Mat4::IDENTITY,
-            view_origin_world: Vec3::ZERO,
-            culling: None,
-            transform_filter: None,
-            material_cache: None,
-            prepared: None,
-        };
-
-        assert!(!transform_chain_has_degenerate_scale(&ctx, space_id, 0));
-    }
-}
+#[path = "collect_tests.rs"]
+mod tests;

@@ -14,7 +14,6 @@
 
 use rayon::prelude::*;
 
-use crate::assets::material::MaterialPropertyLookupIds;
 use crate::resources::MeshPool;
 use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator};
 use crate::shared::{LayerType, RenderingContext};
@@ -60,8 +59,6 @@ pub(super) struct FramePreparedDraw {
     pub material_asset_id: i32,
     /// Per-slot property block id when present (distinct from `Some` for batching).
     pub property_block_id: Option<i32>,
-    /// Material / property-block lookup ids for [`super::sort::batch_key_for_slot_cached`].
-    pub lookup_ids: MaterialPropertyLookupIds,
 }
 
 /// Frame-scope dense list of [`FramePreparedDraw`] entries across every active render space.
@@ -342,10 +339,6 @@ fn expand_renderer_slots(
         if material_asset_id < 0 {
             continue;
         }
-        let lookup_ids = MaterialPropertyLookupIds {
-            material_asset_id,
-            mesh_property_block_slot0: slot.property_block_id,
-        };
         out.push(FramePreparedDraw {
             space_id,
             renderable_index,
@@ -360,7 +353,6 @@ fn expand_renderer_slots(
             index_count,
             material_asset_id,
             property_block_id: slot.property_block_id,
-            lookup_ids,
         });
     }
 }
