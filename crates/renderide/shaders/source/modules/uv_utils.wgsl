@@ -6,7 +6,7 @@
 //! bottom-up V order while wgpu samples top-down. Render textures produced by the renderer itself
 //! are top-down, so the CPU-side uniform packer rewrites their `_ST` to
 //! `(s.x, -s.y, s.z, 1.0 - s.w)`, which makes the algebra cancel inside this function. See
-//! `rewrite_st_for_render_texture` in `crates/renderide/src/backend/embedded/uniform_pack/mod.rs`.
+//! `rewrite_st_for_v_inverted_storage` in `crates/renderide/src/backend/embedded/uniform_pack/mod.rs`.
 
 #define_import_path renderide::uv_utils
 

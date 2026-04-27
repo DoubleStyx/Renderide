@@ -10,15 +10,15 @@ use super::super::texture_pools::EmbeddedTexturePools;
 use super::super::uniform_pack::{build_embedded_uniform_bytes, UniformPackTextureContext};
 use crate::assets::material::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
-/// Cached GPU uniform buffer, last store-mutation generation, and last bound-texture bias signature.
+/// Cached GPU uniform buffer, last store-mutation generation, and last bound-texture state signature.
 ///
-/// Bias signature tracks host `mipmap_bias` for the currently-bound textures; the store's
-/// mutation generation does not bump on texture-property updates, so buffered LOD-bias fields
-/// would otherwise become stale after a host bias write. Both must match to skip reupload.
+/// Texture-state signature tracks host `mipmap_bias` and storage orientation for currently-bound
+/// textures; the store's mutation generation does not bump on texture-property updates, so
+/// buffered texture-derived fields would otherwise become stale. Both must match to skip reupload.
 pub(super) struct CachedUniformEntry {
     pub(super) buffer: Arc<wgpu::Buffer>,
     pub(super) last_written_generation: u64,
-    pub(super) last_written_bias_sig: u64,
+    pub(super) last_written_texture_state_sig: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -40,7 +40,7 @@ pub(super) struct EmbeddedUniformBufferRequest<'a> {
     pub(super) lookup: MaterialPropertyLookupIds,
     pub(super) pools: &'a EmbeddedTexturePools<'a>,
     pub(super) primary_texture_2d: i32,
-    pub(super) bias_sig: u64,
+    pub(super) texture_state_sig: u64,
 }
 
 use super::EmbeddedMaterialBindResources;
@@ -62,7 +62,7 @@ impl EmbeddedMaterialBindResources {
             lookup,
             pools,
             primary_texture_2d,
-            bias_sig,
+            texture_state_sig,
         } = req;
         let tex_ctx = UniformPackTextureContext {
             pools,
@@ -71,7 +71,7 @@ impl EmbeddedMaterialBindResources {
         let mut uniform_cache = self.uniform_cache.lock();
         if let Some(entry) = uniform_cache.get_mut(uniform_key) {
             if entry.last_written_generation == mutation_gen
-                && entry.last_written_bias_sig == bias_sig
+                && entry.last_written_texture_state_sig == texture_state_sig
             {
                 return Ok(entry.buffer.clone());
             }
@@ -87,7 +87,7 @@ impl EmbeddedMaterialBindResources {
             })?;
             queue.write_buffer(entry.buffer.as_ref(), 0, &uniform_bytes);
             entry.last_written_generation = mutation_gen;
-            entry.last_written_bias_sig = bias_sig;
+            entry.last_written_texture_state_sig = texture_state_sig;
             return Ok(entry.buffer.clone());
         }
         let uniform_bytes = build_embedded_uniform_bytes(
@@ -111,7 +111,7 @@ impl EmbeddedMaterialBindResources {
         let entry = CachedUniformEntry {
             buffer: buf.clone(),
             last_written_generation: mutation_gen,
-            last_written_bias_sig: bias_sig,
+            last_written_texture_state_sig: texture_state_sig,
         };
         if let Some(evicted) = uniform_cache.put(*uniform_key, entry) {
             drop(evicted);

@@ -12,8 +12,8 @@ use super::super::layout::{
 };
 use super::error::TextureUploadError;
 use super::mip_write_common::{
-    choose_mip_start_bias, is_rgba8_family, uncompressed_row_bytes, write_one_mip,
-    MipUploadFormatCtx, Texture2dMipWrite,
+    choose_mip_start_bias, is_rgba8_family, mip_ctx_uses_storage_v_inversion,
+    uncompressed_row_bytes, write_one_mip, MipUploadFormatCtx, MipUploadPixels, Texture2dMipWrite,
 };
 use super::subregion::{hint_region_is_empty, try_write_texture2d_subregion};
 
@@ -25,6 +25,46 @@ struct MipChainWalkState<'a> {
     start_bias: usize,
 }
 
+/// Converts a compressed mip that requested `flip_y` into bytes or a storage-orientation hint.
+fn compressed_mip_src_to_upload_pixels(
+    ctx: MipUploadFormatCtx,
+    gw: u32,
+    gh: u32,
+    mip_src: &[u8],
+    mip_index: usize,
+) -> Result<Vec<u8>, TextureUploadError> {
+    let MipUploadFormatCtx {
+        asset_id,
+        fmt_format,
+        ..
+    } = ctx;
+    let expected_len = mip_byte_len(fmt_format, gw, gh).ok_or_else(|| {
+        TextureUploadError::from(format!(
+            "texture {asset_id} mip {}: mip byte size unknown for {:?}",
+            mip_index, fmt_format
+        ))
+    })? as usize;
+    if mip_src.len() != expected_len {
+        return Err(TextureUploadError::from(format!(
+            "texture {asset_id} mip {}: mip len {} != expected {} for {:?}",
+            mip_index,
+            mip_src.len(),
+            expected_len,
+            fmt_format
+        )));
+    }
+    if let Some(v) = flip_compressed_mip_block_rows_y(fmt_format, gw, gh, mip_src) {
+        return Ok(v);
+    }
+    if mip_ctx_uses_storage_v_inversion(ctx, true) {
+        return Ok(mip_src.to_vec());
+    }
+    Err(TextureUploadError::from(format!(
+        "texture {asset_id} mip {mip_index}: flip_y unsupported for compressed {:?}; reject to avoid uploading inverted data under the engine's V-flip sampling convention",
+        fmt_format
+    )))
+}
+
 /// Converts host mip bytes into a buffer suitable for [`write_one_mip`] (decode, optional row flip).
 fn mip_src_to_upload_pixels(
     ctx: MipUploadFormatCtx,
@@ -33,7 +73,7 @@ fn mip_src_to_upload_pixels(
     flip: bool,
     mip_src: &[u8],
     mip_index: usize,
-) -> Result<Vec<u8>, TextureUploadError> {
+) -> Result<MipUploadPixels, TextureUploadError> {
     let MipUploadFormatCtx {
         asset_id,
         fmt_format,
@@ -101,32 +141,17 @@ fn mip_src_to_upload_pixels(
         flip_mip_rows(&mut v, gw, gh, bpp_host);
         Ok(v)
     } else if flip && host_format_is_compressed(fmt_format) {
-        let expected_len = mip_byte_len(fmt_format, gw, gh).ok_or_else(|| {
-            TextureUploadError::from(format!(
-                "texture {asset_id} mip {}: mip byte size unknown for {:?}",
-                mip_index, fmt_format
-            ))
-        })? as usize;
-        if mip_src.len() != expected_len {
-            return Err(TextureUploadError::from(format!(
-                "texture {asset_id} mip {}: mip len {} != expected {} for {:?}",
-                mip_index,
-                mip_src.len(),
-                expected_len,
-                fmt_format
-            )));
-        }
-        if let Some(v) = flip_compressed_mip_block_rows_y(fmt_format, gw, gh, mip_src) {
-            Ok(v)
-        } else {
-            Err(TextureUploadError::from(format!(
-                "texture {asset_id} mip {mip_index}: flip_y unsupported for compressed {:?}; reject to avoid uploading inverted data under the engine's V-flip sampling convention",
-                fmt_format
-            )))
-        }
+        compressed_mip_src_to_upload_pixels(ctx, gw, gh, mip_src, mip_index)
     } else {
         Ok(mip_src.to_vec())
     }
+    .map(|bytes| {
+        if mip_ctx_uses_storage_v_inversion(ctx, flip) {
+            MipUploadPixels::storage_v_inverted(bytes)
+        } else {
+            MipUploadPixels::normal(bytes)
+        }
+    })
 }
 
 /// Outcome of [`validate_and_resolve_next_mip_slice`] for one [`TextureMipChainUploader`] step.
@@ -337,8 +362,9 @@ pub struct TextureMipChainUploader {
     flip: bool,
     stopped: bool,
     generating_tail: bool,
+    storage_v_inverted: bool,
     last_rgba8_mip: Option<Rgba8Mip>,
-    background_rx: Option<crossbeam_channel::Receiver<Result<Vec<u8>, TextureUploadError>>>,
+    background_rx: Option<crossbeam_channel::Receiver<Result<MipUploadPixels, TextureUploadError>>>,
     pending_mip: Option<(u32, u32, u32)>, // mip_level, gw, gh
 }
 
@@ -349,11 +375,15 @@ pub enum MipChainAdvance {
     UploadedOne {
         /// Total mips successfully written in this chain.
         total_uploaded: u32,
+        /// Whether any uploaded mip in this chain uses V-inverted storage.
+        storage_v_inverted: bool,
     },
     /// Chain complete (`total_uploaded` mips in this chain).
     Finished {
         /// Total mips successfully written in this chain.
         total_uploaded: u32,
+        /// Whether any uploaded mip in this chain uses V-inverted storage.
+        storage_v_inverted: bool,
     },
     /// Waiting on background decoding thread. Call again next tick.
     YieldBackground,
@@ -451,6 +481,7 @@ impl TextureMipChainUploader {
             flip,
             stopped: false,
             generating_tail: false,
+            storage_v_inverted: false,
             last_rgba8_mip: None,
             background_rx: None,
             pending_mip: None,
@@ -465,6 +496,7 @@ impl TextureMipChainUploader {
         if self.stopped {
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded_mips,
+                storage_v_inverted: self.storage_v_inverted,
             });
         }
 
@@ -503,16 +535,17 @@ impl TextureMipChainUploader {
                     width: gw,
                     height: gh,
                     format: step.wgpu_format,
-                    bytes: &pixels,
+                    bytes: &pixels.bytes,
                 })?;
 
                 if is_rgba8_family(step.wgpu_format) {
                     self.last_rgba8_mip = Some(Rgba8Mip {
                         width: gw,
                         height: gh,
-                        pixels,
+                        pixels: pixels.bytes,
                     });
                 }
+                self.storage_v_inverted |= pixels.storage_v_inverted;
                 self.uploaded_mips += 1;
                 self.next_i += 1;
 
@@ -520,10 +553,12 @@ impl TextureMipChainUploader {
                     self.stopped = true;
                     return Ok(Some(MipChainAdvance::Finished {
                         total_uploaded: self.uploaded_mips,
+                        storage_v_inverted: self.storage_v_inverted,
                     }));
                 }
                 Ok(Some(MipChainAdvance::UploadedOne {
                     total_uploaded: self.uploaded_mips,
+                    storage_v_inverted: self.storage_v_inverted,
                 }))
             }
             Err(crossbeam_channel::TryRecvError::Empty) => {
@@ -557,11 +592,14 @@ impl TextureMipChainUploader {
         let (mip_level, gw, gh, mip_index, mip_src_range) = match slice {
             NextMipUploadSlice::ChainDone { total_uploaded } => {
                 if self.start_base + (self.next_i as u32) < self.mipmap_count {
-                    //review: stopping here leaves undefined mips on some Unity uploads; synthesize the tail when we can.
+                    // Stopping here leaves undefined mips on some Unity uploads; synthesize the tail when we can.
                     return self.spawn_generated_tail_mip(step.wgpu_format, step.upload);
                 }
                 self.stopped = true;
-                return Ok(MipChainAdvance::Finished { total_uploaded });
+                return Ok(MipChainAdvance::Finished {
+                    total_uploaded,
+                    storage_v_inverted: self.storage_v_inverted,
+                });
             }
             NextMipUploadSlice::ChainStopped { total_uploaded } => {
                 if self.start_base + (self.next_i as u32) < self.mipmap_count
@@ -570,7 +608,10 @@ impl TextureMipChainUploader {
                     return self.spawn_generated_tail_mip(step.wgpu_format, step.upload);
                 }
                 self.stopped = true;
-                return Ok(MipChainAdvance::Finished { total_uploaded });
+                return Ok(MipChainAdvance::Finished {
+                    total_uploaded,
+                    storage_v_inverted: self.storage_v_inverted,
+                });
             }
             NextMipUploadSlice::Ready {
                 mip_level,
@@ -617,6 +658,7 @@ impl TextureMipChainUploader {
             self.stopped = true;
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded_mips,
+                storage_v_inverted: self.storage_v_inverted,
             });
         }
 
@@ -631,6 +673,7 @@ impl TextureMipChainUploader {
             );
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded_mips,
+                storage_v_inverted: self.storage_v_inverted,
             });
         }
 
@@ -638,6 +681,7 @@ impl TextureMipChainUploader {
             self.stopped = true;
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded_mips,
+                storage_v_inverted: self.storage_v_inverted,
             });
         };
 
@@ -660,7 +704,8 @@ impl TextureMipChainUploader {
         self.background_rx = Some(rx);
 
         rayon::spawn(move || {
-            let res = downsample_rgba8_box(&source.pixels, source.width, source.height, w, h);
+            let res = downsample_rgba8_box(&source.pixels, source.width, source.height, w, h)
+                .map(MipUploadPixels::normal);
             let _ = tx.send(res);
         });
 
@@ -827,7 +872,7 @@ pub fn write_texture2d_mips(ctx: &Texture2dUploadContext<'_>) -> Result<u32, Tex
                 payload: &payload,
             })? {
                 MipChainAdvance::UploadedOne { .. } => {}
-                MipChainAdvance::Finished { total_uploaded } => {
+                MipChainAdvance::Finished { total_uploaded, .. } => {
                     return Ok(total_uploaded);
                 }
                 MipChainAdvance::YieldBackground => {
@@ -835,5 +880,84 @@ pub fn write_texture2d_mips(ctx: &Texture2dUploadContext<'_>) -> Result<u32, Tex
                 }
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::mip_write_common::upload_uses_storage_v_inversion;
+    use super::*;
+    use crate::shared::TextureFormat;
+
+    fn upload_ctx(
+        fmt_format: TextureFormat,
+        wgpu_format: wgpu::TextureFormat,
+    ) -> MipUploadFormatCtx {
+        MipUploadFormatCtx {
+            asset_id: 77,
+            fmt_format,
+            wgpu_format,
+            needs_rgba8_decode: false,
+        }
+    }
+
+    #[test]
+    fn bc7_flip_y_uploads_bytes_unchanged_with_storage_orientation_hint() {
+        let raw: Vec<u8> = (0..64).collect();
+        let pixels = mip_src_to_upload_pixels(
+            upload_ctx(TextureFormat::BC7, wgpu::TextureFormat::Bc7RgbaUnorm),
+            8,
+            8,
+            true,
+            &raw,
+            0,
+        )
+        .expect("bc7 upload");
+
+        assert_eq!(pixels.bytes, raw);
+        assert!(pixels.storage_v_inverted);
+    }
+
+    #[test]
+    fn bc1_flip_y_keeps_exact_compressed_flip_path() {
+        let mut raw = vec![0u8; 32];
+        raw[..16].fill(0x11);
+        raw[16..].fill(0x22);
+        let pixels = mip_src_to_upload_pixels(
+            upload_ctx(TextureFormat::BC1, wgpu::TextureFormat::Bc1RgbaUnorm),
+            8,
+            8,
+            true,
+            &raw,
+            0,
+        )
+        .expect("bc1 upload");
+
+        assert_ne!(pixels.bytes, raw);
+        assert!(!pixels.storage_v_inverted);
+    }
+
+    #[test]
+    fn storage_orientation_helper_only_applies_to_native_affected_compression() {
+        assert!(upload_uses_storage_v_inversion(
+            TextureFormat::BC7,
+            wgpu::TextureFormat::Bc7RgbaUnorm,
+            true
+        ));
+        assert!(!upload_uses_storage_v_inversion(
+            TextureFormat::BC7,
+            wgpu::TextureFormat::Rgba8Unorm,
+            true
+        ));
+        assert!(!upload_uses_storage_v_inversion(
+            TextureFormat::BC1,
+            wgpu::TextureFormat::Bc1RgbaUnorm,
+            true
+        ));
+        assert!(!upload_uses_storage_v_inversion(
+            TextureFormat::BC7,
+            wgpu::TextureFormat::Bc7RgbaUnorm,
+            false
+        ));
     }
 }

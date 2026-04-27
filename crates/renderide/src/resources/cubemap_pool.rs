@@ -77,6 +77,8 @@ pub struct GpuCubemap {
     pub mip_levels_total: u32,
     /// Mips with authored texels uploaded so far.
     pub mip_levels_resident: u32,
+    /// Whether native compressed face bytes were left in host V orientation and need sampling compensation.
+    pub storage_v_inverted: bool,
     /// Estimated VRAM for allocated mips.
     pub resident_bytes: u64,
     /// Sampler fields for material bind groups.
@@ -155,6 +157,7 @@ impl GpuCubemap {
             size: s,
             mip_levels_total: mips,
             mip_levels_resident: 0,
+            storage_v_inverted: false,
             resident_bytes,
             sampler,
             residency,

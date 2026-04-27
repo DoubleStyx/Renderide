@@ -20,6 +20,7 @@ pub use error::TextureUploadError;
 pub use format_resolve::{
     resolve_cubemap_wgpu_format, resolve_texture2d_wgpu_format, resolve_texture3d_wgpu_format,
 };
+pub(crate) use mip_write_common::upload_uses_storage_v_inversion;
 pub use texture3d_write::{
     write_texture3d_mips, Texture3dMipAdvance, Texture3dMipChainUploader, Texture3dMipUploadStep,
     Texture3dUploadContext,

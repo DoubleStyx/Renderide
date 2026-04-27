@@ -19,6 +19,8 @@ use tables::inferred_keyword_float_f32;
 
 /// Suffix convention that opts a uniform field in to host `mipmap_bias` population.
 const LOD_BIAS_SUFFIX: &str = "_LodBias";
+/// Suffix convention that opts a uniform field in to storage V-inversion population.
+const STORAGE_V_INVERTED_SUFFIX: &str = "_StorageVInverted";
 
 fn write_f32_at(buf: &mut [u8], field: &ReflectedUniformField, v: f32) {
     let off = field.offset as usize;
@@ -37,11 +39,10 @@ fn write_f32x4_at(buf: &mut [u8], field: &ReflectedUniformField, v: &[f32; 4]) {
     }
 }
 
-/// Auxiliary inputs required to populate host-sourced uniform fields (currently `_<Tex>_LodBias`).
+/// Auxiliary inputs required to populate texture-sourced uniform fields.
 ///
-/// Threads resident texture pools into the packer so an f32 field following the
-/// [`LOD_BIAS_SUFFIX`] convention can resolve its bound texture and read the host-supplied
-/// [`crate::resources::Texture2dSamplerState::mipmap_bias`] (and cubemap / 3D analogues).
+/// Threads resident texture pools into the packer so f32 fields following texture suffix
+/// conventions can resolve their bound texture and read sampler/orientation metadata.
 pub(crate) struct UniformPackTextureContext<'a> {
     /// Resident texture pools (2D / 3D / cubemap / render-texture).
     pub pools: &'a EmbeddedTexturePools<'a>,
@@ -77,7 +78,7 @@ pub(crate) fn build_embedded_uniform_bytes(
                     } else {
                         default_vec4_for_field(shader_writer_unescaped_field_name(field_name))
                     };
-                if let Some(rewritten) = rewrite_st_for_render_texture(
+                if let Some(rewritten) = rewrite_st_for_v_inverted_storage(
                     field_name, &v, reflected, ids, store, lookup, tex_ctx,
                 ) {
                     v = rewritten;
@@ -85,7 +86,11 @@ pub(crate) fn build_embedded_uniform_bytes(
                 write_f32x4_at(&mut buf, field, &v);
             }
             ReflectedUniformScalarKind::F32 => {
-                let v = if let Some(bias) =
+                let v = if let Some(storage_v_inverted) =
+                    storage_v_inverted_for_field(field_name, reflected, ids, store, lookup, tex_ctx)
+                {
+                    storage_v_inverted
+                } else if let Some(bias) =
                     lod_bias_for_field(field_name, reflected, ids, store, lookup, tex_ctx)
                 {
                     bias
@@ -113,34 +118,18 @@ pub(crate) fn build_embedded_uniform_bytes(
     Some(buf)
 }
 
-/// Rewrites `_<TexName>_ST` so that the engine's shader-side V flip is undone for render textures.
-///
-/// Render textures are produced top-down by wgpu render attachments, while host-uploaded textures
-/// arrive bottom-up (Resonite/Unity convention). Material shaders apply a uniform `1.0 - v` flip
-/// in [`crate::shaders::source::modules::uv_utils::apply_st`] to reorient the latter; for the
-/// former that flip is wrong.
-///
-/// `apply_st(uv, st)` evaluates `(uv.x*st.x + st.z, 1 - (uv.y*st.y + st.w))`. Substituting
-/// `st' = (st.x, -st.y, st.z, 1 - st.w)` yields `(uv.x*st.x + st.z, uv.y*st.y + st.w)` — i.e. the
-/// V flip cancels exactly. Returns [`Some`] with the rewritten vec4 when the field is a `_ST`
-/// field whose corresponding texture binding resolves to [`ResolvedTextureBinding::RenderTexture`];
-/// [`None`] otherwise (caller writes the unmodified vec4).
-///
-/// Procedurally-derived UVs that route through `flip_v` rather than `apply_st` (matcap and
-/// 360-projection masks) are not addressed by this trick — those sites do not consume `_ST` and
-/// would need a separate per-binding flag if they are ever bound to a render texture. In practice
-/// they are bound to host-uploaded textures only.
-fn rewrite_st_for_render_texture(
+/// Resolves the texture binding associated with a field following a texture-name suffix convention.
+fn resolved_texture_binding_for_field_suffix(
     field_name: &str,
-    value: &[f32; 4],
+    suffix: &str,
     reflected: &ReflectedRasterLayout,
     ids: &StemEmbeddedPropertyIds,
     store: &MaterialPropertyStore,
     lookup: MaterialPropertyLookupIds,
     tex_ctx: &UniformPackTextureContext<'_>,
-) -> Option<[f32; 4]> {
+) -> Option<ResolvedTextureBinding> {
     let unescaped = shader_writer_unescaped_field_name(field_name);
-    let tex_name = unescaped.strip_suffix("_ST")?;
+    let tex_name = unescaped.strip_suffix(suffix)?;
     let (&binding, host_name) = reflected
         .material_group1_names
         .iter()
@@ -149,19 +138,123 @@ fn rewrite_st_for_render_texture(
     if tex_pids.is_empty() {
         return None;
     }
-    let resolved = resolved_texture_binding_for_host(
+    Some(resolved_texture_binding_for_host(
         host_name.as_str(),
         tex_pids,
         tex_ctx.primary_texture_2d,
         store,
         lookup,
-    );
+    ))
+}
+
+/// Returns whether a resolved texture binding has top-down or otherwise V-inverted storage.
+fn binding_storage_v_inverted_from_metadata(
+    resolved: ResolvedTextureBinding,
+    texture2d_storage_v_inverted: Option<bool>,
+    cubemap_storage_v_inverted: Option<bool>,
+) -> bool {
     match resolved {
-        ResolvedTextureBinding::RenderTexture { .. } => {
-            Some([value[0], -value[1], value[2], 1.0 - value[3]])
-        }
-        _ => None,
+        ResolvedTextureBinding::RenderTexture { .. } => true,
+        ResolvedTextureBinding::Texture2D { .. } => texture2d_storage_v_inverted.unwrap_or(false),
+        ResolvedTextureBinding::Cubemap { .. } => cubemap_storage_v_inverted.unwrap_or(false),
+        ResolvedTextureBinding::None | ResolvedTextureBinding::Texture3D { .. } => false,
     }
+}
+
+/// Returns whether a resolved texture binding has top-down or otherwise V-inverted storage.
+fn binding_storage_v_inverted(
+    resolved: ResolvedTextureBinding,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> bool {
+    let texture2d_storage_v_inverted = match resolved {
+        ResolvedTextureBinding::Texture2D { asset_id } => tex_ctx
+            .pools
+            .texture
+            .get_texture(asset_id)
+            .map(|t| t.storage_v_inverted),
+        _ => None,
+    };
+    let cubemap_storage_v_inverted = match resolved {
+        ResolvedTextureBinding::Cubemap { asset_id } => tex_ctx
+            .pools
+            .cubemap
+            .get_texture(asset_id)
+            .map(|t| t.storage_v_inverted),
+        _ => None,
+    };
+    binding_storage_v_inverted_from_metadata(
+        resolved,
+        texture2d_storage_v_inverted,
+        cubemap_storage_v_inverted,
+    )
+}
+
+/// Converts a storage V-inversion flag into the f32 convention used by generated uniforms.
+fn storage_v_inverted_flag_value(storage_v_inverted: bool) -> f32 {
+    if storage_v_inverted {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// Rewrites `_<TexName>_ST` so the shader-side V flip is undone for V-inverted storage.
+///
+/// Render textures are produced top-down by wgpu render attachments. BC6H/BC7/ETC2 textures that
+/// request `flip_y` are uploaded with their native compressed bytes unchanged and are also
+/// top-down relative to the engine's normal host-upload convention. Material shaders apply a
+/// uniform `1.0 - v` flip in [`crate::shaders::source::modules::uv_utils::apply_st`]; for those
+/// V-inverted storage cases that flip is wrong.
+///
+/// `apply_st(uv, st)` evaluates `(uv.x*st.x + st.z, 1 - (uv.y*st.y + st.w))`. Substituting
+/// `st' = (st.x, -st.y, st.z, 1 - st.w)` yields `(uv.x*st.x + st.z, uv.y*st.y + st.w)` — i.e. the
+/// V flip cancels exactly. Returns [`Some`] with the rewritten vec4 when the field is a `_ST`
+/// field whose corresponding texture binding uses V-inverted storage; [`None`] otherwise.
+///
+/// Procedurally-derived UVs that route through `flip_v` rather than `apply_st` (matcap and
+/// 360-projection masks) are not addressed by this trick — those sites do not consume `_ST` and
+/// would need a separate per-binding flag if they are ever bound to a render texture. In practice
+/// they are bound to host-uploaded textures only.
+fn rewrite_st_for_v_inverted_storage(
+    field_name: &str,
+    value: &[f32; 4],
+    reflected: &ReflectedRasterLayout,
+    ids: &StemEmbeddedPropertyIds,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> Option<[f32; 4]> {
+    let resolved = resolved_texture_binding_for_field_suffix(
+        field_name, "_ST", reflected, ids, store, lookup, tex_ctx,
+    )?;
+    if binding_storage_v_inverted(resolved, tex_ctx) {
+        Some([value[0], -value[1], value[2], 1.0 - value[3]])
+    } else {
+        None
+    }
+}
+
+/// Host storage-orientation flag for `_<Tex>_StorageVInverted` fields.
+fn storage_v_inverted_for_field(
+    field_name: &str,
+    reflected: &ReflectedRasterLayout,
+    ids: &StemEmbeddedPropertyIds,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> Option<f32> {
+    let resolved = resolved_texture_binding_for_field_suffix(
+        field_name,
+        STORAGE_V_INVERTED_SUFFIX,
+        reflected,
+        ids,
+        store,
+        lookup,
+        tex_ctx,
+    )?;
+    Some(storage_v_inverted_flag_value(binding_storage_v_inverted(
+        resolved, tex_ctx,
+    )))
 }
 
 /// Host `mipmap_bias` for `_<Tex>_LodBias` fields, or [`None`] if `field_name` is not a LOD-bias
@@ -176,23 +269,15 @@ fn lod_bias_for_field(
     lookup: MaterialPropertyLookupIds,
     tex_ctx: &UniformPackTextureContext<'_>,
 ) -> Option<f32> {
-    let unescaped = shader_writer_unescaped_field_name(field_name);
-    let tex_name = unescaped.strip_suffix(LOD_BIAS_SUFFIX)?;
-    let (&binding, host_name) = reflected
-        .material_group1_names
-        .iter()
-        .find(|(_, name)| name.as_str() == tex_name)?;
-    let tex_pids = texture_property_ids_for_binding(ids, binding);
-    if tex_pids.is_empty() {
-        return Some(0.0);
-    }
-    let resolved = resolved_texture_binding_for_host(
-        host_name.as_str(),
-        tex_pids,
-        tex_ctx.primary_texture_2d,
+    let resolved = resolved_texture_binding_for_field_suffix(
+        field_name,
+        LOD_BIAS_SUFFIX,
+        reflected,
+        ids,
         store,
         lookup,
-    );
+        tex_ctx,
+    )?;
     match resolved {
         ResolvedTextureBinding::Texture2D { asset_id } => tex_ctx
             .pools
@@ -530,5 +615,204 @@ mod text_uniform_packing_tests {
             inferred_keyword_float_f32("_ALBEDOTEX", &store, lookup(6), &ids),
             Some(1.0)
         );
+    }
+}
+
+#[cfg(test)]
+mod storage_orientation_uniform_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use hashbrown::HashMap;
+
+    use crate::assets::material::PropertyIdRegistry;
+    use crate::assets::texture::HostTextureAssetKind;
+    use crate::backend::embedded::layout::{EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds};
+    use crate::backend::embedded::texture_pools::EmbeddedTexturePools;
+    use crate::materials::ReflectedMaterialUniformBlock;
+    use crate::resources::{CubemapPool, RenderTexturePool, Texture3dPool, TexturePool};
+
+    fn lookup(material_id: i32) -> MaterialPropertyLookupIds {
+        MaterialPropertyLookupIds {
+            material_asset_id: material_id,
+            mesh_property_block_slot0: None,
+        }
+    }
+
+    fn texture_entry(
+        binding: u32,
+        view_dimension: wgpu::TextureViewDimension,
+    ) -> wgpu::BindGroupLayoutEntry {
+        wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension,
+                multisampled: false,
+            },
+            count: None,
+        }
+    }
+
+    fn reflected_with_texture_and_field(
+        texture_name: &str,
+        view_dimension: wgpu::TextureViewDimension,
+        field_name: &str,
+        field_kind: ReflectedUniformScalarKind,
+        field_size: u32,
+    ) -> (
+        ReflectedRasterLayout,
+        StemEmbeddedPropertyIds,
+        PropertyIdRegistry,
+    ) {
+        let registry = PropertyIdRegistry::new();
+        let mut material_group1_names = HashMap::new();
+        material_group1_names.insert(1, texture_name.to_string());
+        let mut fields = HashMap::new();
+        fields.insert(
+            field_name.to_string(),
+            ReflectedUniformField {
+                offset: 0,
+                size: field_size,
+                kind: field_kind,
+            },
+        );
+        let reflected = ReflectedRasterLayout {
+            layout_fingerprint: 0,
+            material_entries: vec![texture_entry(1, view_dimension)],
+            per_draw_entries: Vec::new(),
+            material_uniform: Some(ReflectedMaterialUniformBlock {
+                binding: 0,
+                total_size: field_size,
+                fields,
+            }),
+            material_group1_names,
+            vs_max_vertex_location: None,
+            requires_intersection_pass: false,
+            requires_grab_pass: false,
+        };
+        let ids = StemEmbeddedPropertyIds::build(
+            Arc::new(EmbeddedSharedKeywordIds::new(&registry)),
+            &registry,
+            &reflected,
+        );
+        (reflected, ids, registry)
+    }
+
+    fn read_f32x4(bytes: &[u8]) -> [f32; 4] {
+        [
+            f32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            f32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            f32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            f32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+        ]
+    }
+
+    fn pack_texture_id(asset_id: i32, kind: HostTextureAssetKind) -> i32 {
+        let type_bits = 3u32;
+        let pack_type_shift = 32u32.saturating_sub(type_bits);
+        asset_id | ((kind as i32) << pack_type_shift)
+    }
+
+    #[test]
+    fn storage_metadata_marks_texture2d_and_cubemap_bindings() {
+        assert!(binding_storage_v_inverted_from_metadata(
+            ResolvedTextureBinding::Texture2D { asset_id: 42 },
+            Some(true),
+            None
+        ));
+        assert!(!binding_storage_v_inverted_from_metadata(
+            ResolvedTextureBinding::Texture2D { asset_id: 42 },
+            Some(false),
+            None
+        ));
+        assert!(binding_storage_v_inverted_from_metadata(
+            ResolvedTextureBinding::Cubemap { asset_id: 55 },
+            None,
+            Some(true)
+        ));
+        assert_eq!(storage_v_inverted_flag_value(true), 1.0);
+        assert_eq!(storage_v_inverted_flag_value(false), 0.0);
+    }
+
+    #[test]
+    fn unresolved_texture2d_does_not_rewrite_st() {
+        let texture_pool = TexturePool::default_pool();
+        let texture3d_pool = Texture3dPool::default_pool();
+        let cubemap_pool = CubemapPool::default_pool();
+        let render_texture_pool = RenderTexturePool::new();
+        let pools = EmbeddedTexturePools {
+            texture: &texture_pool,
+            texture3d: &texture3d_pool,
+            cubemap: &cubemap_pool,
+            render_texture: &render_texture_pool,
+        };
+        let (reflected, ids, registry) = reflected_with_texture_and_field(
+            "_MainTex",
+            wgpu::TextureViewDimension::D2,
+            "_MainTex_ST",
+            ReflectedUniformScalarKind::Vec4,
+            16,
+        );
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(
+            7,
+            registry.intern("_MainTex"),
+            MaterialPropertyValue::Texture(42),
+        );
+        store.set_material(
+            7,
+            registry.intern("_MainTex_ST"),
+            MaterialPropertyValue::Float4([2.0, 3.0, 0.25, 0.75]),
+        );
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+
+        let bytes =
+            build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(7), &tex_ctx).unwrap();
+        assert_eq!(read_f32x4(&bytes), [2.0, 3.0, 0.25, 0.75]);
+    }
+
+    #[test]
+    fn render_texture_st_rewrite_is_preserved() {
+        let texture_pool = TexturePool::default_pool();
+        let texture3d_pool = Texture3dPool::default_pool();
+        let cubemap_pool = CubemapPool::default_pool();
+        let render_texture_pool = RenderTexturePool::new();
+        let pools = EmbeddedTexturePools {
+            texture: &texture_pool,
+            texture3d: &texture3d_pool,
+            cubemap: &cubemap_pool,
+            render_texture: &render_texture_pool,
+        };
+        let (reflected, ids, registry) = reflected_with_texture_and_field(
+            "_MainTex",
+            wgpu::TextureViewDimension::D2,
+            "_MainTex_ST",
+            ReflectedUniformScalarKind::Vec4,
+            16,
+        );
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(
+            7,
+            registry.intern("_MainTex"),
+            MaterialPropertyValue::Texture(pack_texture_id(9, HostTextureAssetKind::RenderTexture)),
+        );
+        store.set_material(
+            7,
+            registry.intern("_MainTex_ST"),
+            MaterialPropertyValue::Float4([2.0, 3.0, 0.25, 0.75]),
+        );
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+
+        let bytes =
+            build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(7), &tex_ctx).unwrap();
+        assert_eq!(read_f32x4(&bytes), [2.0, -3.0, 0.25, 0.25]);
     }
 }

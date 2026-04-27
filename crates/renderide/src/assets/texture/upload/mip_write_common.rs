@@ -2,7 +2,9 @@
 
 use crate::shared::SetTexture2DData;
 
-use super::super::layout::{host_mip_payload_byte_offset, mip_byte_len};
+use super::super::layout::{
+    compressed_flip_y_needs_storage_v_inversion, host_mip_payload_byte_offset, mip_byte_len,
+};
 use super::error::TextureUploadError;
 
 /// Format-side context shared by every mip in one texture upload (2D, cubemap, 3D).
@@ -19,6 +21,51 @@ pub(super) struct MipUploadFormatCtx {
     pub wgpu_format: wgpu::TextureFormat,
     /// Whether host bytes must be decoded to RGBA8 before upload.
     pub needs_rgba8_decode: bool,
+}
+
+/// CPU-side bytes for one mip plus the storage-orientation side effect they imply.
+#[derive(Debug)]
+pub(super) struct MipUploadPixels {
+    /// Bytes ready for [`wgpu::Queue::write_texture`].
+    pub bytes: Vec<u8>,
+    /// Whether the bytes were intentionally left in host V orientation and need shader-side compensation.
+    pub storage_v_inverted: bool,
+}
+
+impl MipUploadPixels {
+    /// Builds a normal-orientation mip upload.
+    pub fn normal(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            storage_v_inverted: false,
+        }
+    }
+
+    /// Builds an upload whose compressed block bytes must stay unmodified.
+    pub fn storage_v_inverted(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            storage_v_inverted: true,
+        }
+    }
+}
+
+/// Whether this upload should keep native compressed bytes unchanged and compensate during sampling.
+pub(crate) fn upload_uses_storage_v_inversion(
+    host_format: crate::shared::TextureFormat,
+    wgpu_format: wgpu::TextureFormat,
+    flip_y: bool,
+) -> bool {
+    flip_y
+        && wgpu_format.is_compressed()
+        && compressed_flip_y_needs_storage_v_inversion(host_format)
+}
+
+/// Whether the per-mip conversion should emit a storage V-inversion hint.
+pub(super) fn mip_ctx_uses_storage_v_inversion(ctx: MipUploadFormatCtx, flip_y: bool) -> bool {
+    flip_y
+        && !ctx.needs_rgba8_decode
+        && upload_uses_storage_v_inversion(ctx.fmt_format, ctx.wgpu_format, flip_y)
 }
 
 /// Picks the descriptor offset bias that maximizes how many mips fit in the SHM payload.

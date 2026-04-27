@@ -263,8 +263,13 @@ impl EmbeddedMaterialBindResources {
         )?;
 
         let mutation_gen = store.mutation_generation(lookup);
-        let bias_sig =
-            compute_lod_bias_signature(&layout, pools, store, lookup, texture_2d_asset_id);
+        let texture_state_sig = compute_uniform_texture_state_signature(
+            &layout,
+            pools,
+            store,
+            lookup,
+            texture_2d_asset_id,
+        );
 
         let hit_bg = {
             let mut cache = self.bind_cache.lock();
@@ -283,7 +288,7 @@ impl EmbeddedMaterialBindResources {
                     lookup,
                     pools,
                     primary_texture_2d: texture_2d_asset_id,
-                    bias_sig,
+                    texture_state_sig,
                 })?;
             return Ok((bind_key, bg));
         }
@@ -299,7 +304,7 @@ impl EmbeddedMaterialBindResources {
                 lookup,
                 pools,
                 primary_texture_2d: texture_2d_asset_id,
-                bias_sig,
+                texture_state_sig,
             })?;
 
         let (keepalive_views, keepalive_samplers) = self.resolve_group1_textures_and_samplers(
@@ -390,12 +395,12 @@ pub(super) fn sampler_pairs_texture_binding(sampler_binding: u32) -> u32 {
     sampler_binding.saturating_sub(1)
 }
 
-/// Hashes current `mipmap_bias` for every bound texture referenced by the material layout.
+/// Hashes current texture metadata used by reflected material-uniform packing.
 ///
-/// Uniform packing sources `_<Tex>_LodBias` fields from texture sampler state, but
-/// [`MaterialPropertyStore::mutation_generation`] does not bump when textures update their
-/// properties, so this signature drives uniform-buffer refresh on bias changes.
-fn compute_lod_bias_signature(
+/// Uniform packing sources `_<Tex>_LodBias` and `_<Tex>_StorageVInverted` fields from texture
+/// state, but [`MaterialPropertyStore::mutation_generation`] does not bump when textures update,
+/// so this signature drives uniform-buffer refresh on those metadata changes.
+fn compute_uniform_texture_state_signature(
     layout: &std::sync::Arc<super::layout::StemMaterialLayout>,
     pools: &super::texture_pools::EmbeddedTexturePools<'_>,
     store: &MaterialPropertyStore,
@@ -429,25 +434,27 @@ fn compute_lod_bias_signature(
             lookup,
         );
         entry.binding.hash(&mut h);
-        let bias: f32 = match binding {
+        let (bias, storage_v_inverted): (f32, bool) = match binding {
             ResolvedTextureBinding::Texture2D { asset_id } => pools
                 .texture
                 .get_texture(asset_id)
-                .map(|t| t.sampler.mipmap_bias)
-                .unwrap_or(0.0),
+                .map(|t| (t.sampler.mipmap_bias, t.storage_v_inverted))
+                .unwrap_or((0.0, false)),
             ResolvedTextureBinding::Texture3D { asset_id } => pools
                 .texture3d
                 .get_texture(asset_id)
-                .map(|t| t.sampler.mipmap_bias)
-                .unwrap_or(0.0),
+                .map(|t| (t.sampler.mipmap_bias, false))
+                .unwrap_or((0.0, false)),
             ResolvedTextureBinding::Cubemap { asset_id } => pools
                 .cubemap
                 .get_texture(asset_id)
-                .map(|t| t.sampler.mipmap_bias)
-                .unwrap_or(0.0),
-            ResolvedTextureBinding::None | ResolvedTextureBinding::RenderTexture { .. } => 0.0,
+                .map(|t| (t.sampler.mipmap_bias, t.storage_v_inverted))
+                .unwrap_or((0.0, false)),
+            ResolvedTextureBinding::RenderTexture { .. } => (0.0, true),
+            ResolvedTextureBinding::None => (0.0, false),
         };
         bias.to_bits().hash(&mut h);
+        storage_v_inverted.hash(&mut h);
     }
     h.finish()
 }

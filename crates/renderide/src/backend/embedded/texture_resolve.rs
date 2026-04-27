@@ -223,6 +223,7 @@ pub(crate) fn texture_bind_signature(
                     let resident = t.mip_levels_resident > 0;
                     resident.hash(&mut h);
                     t.mip_levels_resident.hash(&mut h);
+                    t.storage_v_inverted.hash(&mut h);
                     hash_texture2d_sampler(&t.sampler, &mut h);
                 } else {
                     false.hash(&mut h);
@@ -243,6 +244,7 @@ pub(crate) fn texture_bind_signature(
                     let resident = t.mip_levels_resident > 0;
                     resident.hash(&mut h);
                     t.mip_levels_resident.hash(&mut h);
+                    t.storage_v_inverted.hash(&mut h);
                     hash_cubemap_sampler(&t.sampler, &mut h);
                 } else {
                     false.hash(&mut h);

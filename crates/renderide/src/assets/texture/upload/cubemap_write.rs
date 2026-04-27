@@ -9,8 +9,8 @@ use super::super::layout::{
 };
 use super::error::TextureUploadError;
 use super::mip_write_common::{
-    is_rgba8_family, uncompressed_row_bytes, write_cubemap_face_mip, CubemapFaceMipWrite,
-    MipUploadFormatCtx,
+    is_rgba8_family, mip_ctx_uses_storage_v_inversion, uncompressed_row_bytes,
+    write_cubemap_face_mip, CubemapFaceMipWrite, MipUploadFormatCtx, MipUploadPixels,
 };
 use super::write_mip_chain::MipChainAdvance;
 
@@ -79,7 +79,7 @@ fn cubemap_mip_src_to_upload_pixels(
     mip_i: usize,
     face: u32,
     mip_src: &[u8],
-) -> Result<Vec<u8>, TextureUploadError> {
+) -> Result<MipUploadPixels, TextureUploadError> {
     let MipUploadFormatCtx {
         asset_id,
         fmt_format,
@@ -161,16 +161,24 @@ fn cubemap_mip_src_to_upload_pixels(
             if let Some(v) = flip_compressed_mip_block_rows_y(fmt_format, w, h, mip_src) {
                 v
             } else {
-                return Err(TextureUploadError::from(format!(
-                    "cubemap {asset_id} face {face} mip {mip_i}: flip_y unsupported for compressed {:?}; reject to avoid uploading inverted data under the engine's V-flip sampling convention",
-                    fmt_format
-                )));
+                if mip_ctx_uses_storage_v_inversion(ctx, flip) {
+                    mip_src.to_vec()
+                } else {
+                    return Err(TextureUploadError::from(format!(
+                        "cubemap {asset_id} face {face} mip {mip_i}: flip_y unsupported for compressed {:?}; reject to avoid uploading inverted data under the engine's V-flip sampling convention",
+                        fmt_format
+                    )));
+                }
             }
         } else {
             mip_src.to_vec()
         }
     };
-    Ok(pixels)
+    Ok(if mip_ctx_uses_storage_v_inversion(ctx, flip) {
+        MipUploadPixels::storage_v_inverted(pixels)
+    } else {
+        MipUploadPixels::normal(pixels)
+    })
 }
 
 /// GPU and host view for one [`CubemapMipChainUploader::upload_next_face_mip`] step.
@@ -205,7 +213,8 @@ pub struct CubemapMipChainUploader {
     mipmap_count: u32,
     face_size: u32,
     flip: bool,
-    background_rx: Option<crossbeam_channel::Receiver<Result<Vec<u8>, TextureUploadError>>>,
+    storage_v_inverted: bool,
+    background_rx: Option<crossbeam_channel::Receiver<Result<MipUploadPixels, TextureUploadError>>>,
     pending_mip: Option<(u32, u32, u32, u32)>, // face, mip_level, w, h
 }
 
@@ -280,6 +289,7 @@ impl CubemapMipChainUploader {
             mipmap_count,
             face_size,
             flip: upload.flip_y,
+            storage_v_inverted: false,
             background_rx: None,
             pending_mip: None,
         })
@@ -293,6 +303,7 @@ impl CubemapMipChainUploader {
         if self.face >= 6 {
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded,
+                storage_v_inverted: self.storage_v_inverted,
             });
         }
 
@@ -332,9 +343,10 @@ impl CubemapMipChainUploader {
                     width: w,
                     height: h,
                     format: step.wgpu_format,
-                    bytes: &pixels,
+                    bytes: &pixels.bytes,
                 })?;
 
+                self.storage_v_inverted |= pixels.storage_v_inverted;
                 self.uploaded += 1;
                 self.mip_i += 1;
                 if self.mip_i >= step.upload.mip_map_sizes.len() {
@@ -345,11 +357,13 @@ impl CubemapMipChainUploader {
                 if self.face >= 6 {
                     return Ok(Some(MipChainAdvance::Finished {
                         total_uploaded: self.uploaded,
+                        storage_v_inverted: self.storage_v_inverted,
                     }));
                 }
 
                 Ok(Some(MipChainAdvance::UploadedOne {
                     total_uploaded: self.uploaded,
+                    storage_v_inverted: self.storage_v_inverted,
                 }))
             }
             Err(crossbeam_channel::TryRecvError::Empty) => {
@@ -503,4 +517,40 @@ fn valid_cubemap_mip_prefix_len(
         }
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::TextureFormat;
+
+    fn upload_ctx(
+        fmt_format: TextureFormat,
+        wgpu_format: wgpu::TextureFormat,
+    ) -> MipUploadFormatCtx {
+        MipUploadFormatCtx {
+            asset_id: 91,
+            fmt_format,
+            wgpu_format,
+            needs_rgba8_decode: false,
+        }
+    }
+
+    #[test]
+    fn cubemap_bc7_flip_y_uploads_bytes_unchanged_with_storage_orientation_hint() {
+        let raw: Vec<u8> = (0..64).collect();
+        let pixels = cubemap_mip_src_to_upload_pixels(
+            upload_ctx(TextureFormat::BC7, wgpu::TextureFormat::Bc7RgbaUnorm),
+            8,
+            8,
+            true,
+            0,
+            3,
+            &raw,
+        )
+        .expect("bc7 cubemap upload");
+
+        assert_eq!(pixels.bytes, raw);
+        assert!(pixels.storage_v_inverted);
+    }
 }

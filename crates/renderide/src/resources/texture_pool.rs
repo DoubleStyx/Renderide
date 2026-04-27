@@ -84,6 +84,8 @@ pub struct GpuTexture2d {
     pub mip_levels_total: u32,
     /// Contiguous mips with uploaded or synthesized texels available for sampling.
     pub mip_levels_resident: u32,
+    /// Whether native compressed bytes were left in host V orientation and need sampling compensation.
+    pub storage_v_inverted: bool,
     /// Uploaded mip-level bitset; [`Self::mip_levels_resident`] is the contiguous prefix from mip 0.
     resident_mip_mask: u64,
     /// Estimated VRAM for allocated mips.
@@ -154,6 +156,7 @@ impl GpuTexture2d {
             height: h,
             mip_levels_total: mips,
             mip_levels_resident: 0,
+            storage_v_inverted: false,
             resident_mip_mask: 0,
             resident_bytes,
             sampler,

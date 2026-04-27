@@ -22,6 +22,7 @@ pub use layout::{
 pub use unpack::{
     texture2d_asset_id_from_packed, unpack_host_texture_packed, HostTextureAssetKind,
 };
+pub(crate) use upload::upload_uses_storage_v_inversion;
 pub use upload::{
     resolve_cubemap_wgpu_format, resolve_texture2d_wgpu_format, resolve_texture3d_wgpu_format,
     texture_upload_start, write_texture2d_mips, write_texture3d_mips, CubemapFaceMipUploadStep,

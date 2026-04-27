@@ -13,7 +13,7 @@
 //! `color_texture` here are **top-down** (wgpu render attachments), so the same `apply_st` call
 //! would invert them.
 //!
-//! The fix lives in `rewrite_st_for_render_texture` in
+//! The fix lives in `rewrite_st_for_v_inverted_storage` in
 //! [`crate::backend::embedded::uniform_pack`]: when a `_<TexName>_ST` uniform's bound texture
 //! resolves to a render texture, the four components are rewritten to `(s.x, -s.y, s.z, 1 - s.w)`
 //! so the shader-side `1.0 - v` cancels itself algebraically. Procedurally-derived UVs that route
