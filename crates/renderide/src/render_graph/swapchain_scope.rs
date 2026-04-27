@@ -14,7 +14,7 @@
 //! `crates/renderide/src/render_graph/compiled/exec.rs`.
 
 use crate::gpu::GpuContext;
-use crate::present::{acquire_surface_outcome, SurfaceFrameOutcome};
+use crate::present::{acquire_surface_outcome_traced, SurfaceAcquireTrace, SurfaceFrameOutcome};
 use crate::render_graph::error::GraphExecuteError;
 
 /// Outcome of [`SwapchainScope::enter`].
@@ -83,13 +83,10 @@ impl SwapchainScope {
         // doing a full `flush_driver` so non-surface batches (e.g. Hi-Z readback submits,
         // `on_submitted_work_done` callbacks) stay pipelined with frame N+1's recording.
         {
-            profiling::scope!("gpu::wait_previous_present");
+            profiling::scope!("gpu::wait_previous_present.desktop_graph");
             gpu.wait_for_previous_present();
         }
-        let outcome = {
-            profiling::scope!("gpu::get_current_texture");
-            acquire_surface_outcome(gpu)?
-        };
+        let outcome = acquire_surface_outcome_traced(gpu, SurfaceAcquireTrace::DesktopGraph)?;
         match outcome {
             SurfaceFrameOutcome::Skip | SurfaceFrameOutcome::Reconfigured => {
                 Ok(SwapchainEnterOutcome::SkipFrame)

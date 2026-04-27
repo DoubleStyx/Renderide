@@ -3,7 +3,9 @@
 use crate::present::PresentClearError;
 
 use super::ids::PassId;
-use super::resources::{BufferHandle, ImportedBufferHandle, ImportedTextureHandle, TextureHandle};
+use super::resources::{
+    BufferHandle, HistorySlotId, ImportedBufferHandle, ImportedTextureHandle, TextureHandle,
+};
 
 /// Setup-time validation errors reported by a [`super::RenderPass`].
 #[derive(Debug, thiserror::Error)]
@@ -166,6 +168,10 @@ pub enum GraphExecuteError {
     #[error(transparent)]
     TransientPool(#[from] super::transient_pool::TransientPoolError),
 
+    /// History registry rejected a slot registration.
+    #[error(transparent)]
+    HistoryRegistry(#[from] crate::backend::HistoryRegistryError),
+
     /// Per-view recording looked up a transient-resource key that the pre-resolve step did not populate.
     ///
     /// Raised as an internal invariant violation when [`super::compiled::CompiledRenderGraph`]
@@ -173,4 +179,74 @@ pub enum GraphExecuteError {
     /// inserted an entry for every unique [`super::compiled::GraphResolveKey`].
     #[error("per-view record missing pre-resolved transient resources")]
     MissingTransientResources,
+
+    /// A graph ping-pong texture import referenced a history slot that was not registered.
+    #[error("history texture slot `{slot}` was not registered for graph import `{import_label}`")]
+    MissingHistoryTexture {
+        /// Slot id referenced by the import.
+        slot: &'static str,
+        /// Import declaration label.
+        import_label: &'static str,
+    },
+
+    /// A graph ping-pong buffer import referenced a history slot that was not registered.
+    #[error("history buffer slot `{slot}` was not registered for graph import `{import_label}`")]
+    MissingHistoryBuffer {
+        /// Slot id referenced by the import.
+        slot: &'static str,
+        /// Import declaration label.
+        import_label: &'static str,
+    },
+
+    /// A registered history texture slot was selected before its two halves were allocated.
+    #[error("history texture slot `{slot}` has no allocated {half} half")]
+    UnallocatedHistoryTexture {
+        /// Slot id referenced by the import.
+        slot: &'static str,
+        /// Selected half, either "current" or "previous".
+        half: &'static str,
+    },
+
+    /// A registered history buffer slot was selected before its two halves were allocated.
+    #[error("history buffer slot `{slot}` has no allocated {half} half")]
+    UnallocatedHistoryBuffer {
+        /// Slot id referenced by the import.
+        slot: &'static str,
+        /// Selected half, either "current" or "previous".
+        half: &'static str,
+    },
+}
+
+impl GraphExecuteError {
+    /// Builds a missing texture-history error from a strongly typed slot id.
+    pub(crate) fn missing_history_texture(slot: HistorySlotId, import_label: &'static str) -> Self {
+        Self::MissingHistoryTexture {
+            slot: slot.name(),
+            import_label,
+        }
+    }
+
+    /// Builds a missing buffer-history error from a strongly typed slot id.
+    pub(crate) fn missing_history_buffer(slot: HistorySlotId, import_label: &'static str) -> Self {
+        Self::MissingHistoryBuffer {
+            slot: slot.name(),
+            import_label,
+        }
+    }
+
+    /// Builds an unallocated texture-history error from a strongly typed slot id.
+    pub(crate) fn unallocated_history_texture(slot: HistorySlotId, half: &'static str) -> Self {
+        Self::UnallocatedHistoryTexture {
+            slot: slot.name(),
+            half,
+        }
+    }
+
+    /// Builds an unallocated buffer-history error from a strongly typed slot id.
+    pub(crate) fn unallocated_history_buffer(slot: HistorySlotId, half: &'static str) -> Self {
+        Self::UnallocatedHistoryBuffer {
+            slot: slot.name(),
+            half,
+        }
+    }
 }

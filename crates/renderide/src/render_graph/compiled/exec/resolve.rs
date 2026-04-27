@@ -3,6 +3,7 @@
 
 use hashbrown::HashMap;
 
+use crate::backend::{HistoryRegistry, HistoryResourceScope};
 use crate::gpu::GpuContext;
 
 use super::super::super::context::{
@@ -12,8 +13,9 @@ use super::super::super::context::{
 use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_params::OcclusionViewId;
 use super::super::super::resources::{
-    BackendFrameBufferKind, BufferImportSource, FrameTargetRole, ImportSource,
-    ImportedBufferHandle, ImportedTextureHandle, SubresourceHandle, TextureHandle,
+    BackendFrameBufferKind, BufferImportSource, FrameTargetRole, HistorySlotId, ImportSource,
+    ImportedBufferDecl, ImportedBufferHandle, ImportedTextureDecl, ImportedTextureHandle,
+    SubresourceHandle, TextureHandle,
 };
 use super::super::super::transient_pool::{BufferKey, TextureKey, TransientPool};
 use super::super::helpers;
@@ -134,8 +136,9 @@ impl CompiledRenderGraph {
     pub(super) fn resolve_imported_textures(
         &self,
         resolved: &ResolvedView<'_>,
+        history: &HistoryRegistry,
         resources: &mut GraphResolvedResources,
-    ) {
+    ) -> Result<(), GraphExecuteError> {
         profiling::scope!("render::resolve_imported_textures");
         for (idx, import) in self.imported_textures.iter().enumerate() {
             let view = match &import.source {
@@ -145,7 +148,20 @@ impl CompiledRenderGraph {
                 ImportSource::FrameTarget(FrameTargetRole::DepthAttachment) => {
                     Some(resolved.depth_view.clone())
                 }
-                ImportSource::External | ImportSource::PingPong(_) => None,
+                ImportSource::External => None,
+                ImportSource::PingPong(slot) => {
+                    let scope = history_scope_for_texture(*slot, resolved);
+                    let texture_slot =
+                        history.texture_slot_scoped(*slot, scope).ok_or_else(|| {
+                            GraphExecuteError::missing_history_texture(*slot, import.label)
+                        })?;
+                    let guard = texture_slot.lock();
+                    let (half_idx, half_name) = texture_history_half(import, history);
+                    let texture = guard.half(half_idx).ok_or_else(|| {
+                        GraphExecuteError::unallocated_history_texture(*slot, half_name)
+                    })?;
+                    Some(texture.view.clone())
+                }
             };
             if let Some(view) = view {
                 resources.set_imported_texture(
@@ -154,6 +170,7 @@ impl CompiledRenderGraph {
                 );
             }
         }
+        Ok(())
     }
 
     /// Resolves subresource views declared on [`super::super::CompiledRenderGraph::subresources`]
@@ -188,9 +205,10 @@ impl CompiledRenderGraph {
     pub(super) fn resolve_imported_buffers(
         &self,
         frame_resources: &crate::backend::FrameResourceManager,
+        history: &HistoryRegistry,
         resolved: &ResolvedView<'_>,
         resources: &mut GraphResolvedResources,
-    ) {
+    ) -> Result<(), GraphExecuteError> {
         profiling::scope!("render::resolve_imported_buffers");
         let frame_gpu = frame_resources.frame_gpu();
         // All views share one cluster buffer; safe under single-submit because each view's
@@ -219,7 +237,20 @@ impl CompiledRenderGraph {
                         .per_view_per_draw(resolved.occlusion_view)
                         .map(|per_draw| per_draw.lock().per_draw_storage.clone())
                 }
-                BufferImportSource::External | BufferImportSource::PingPong(_) => None,
+                BufferImportSource::External => None,
+                BufferImportSource::PingPong(slot) => {
+                    let scope = history_scope_for_buffer(*slot, resolved);
+                    let buffer_slot =
+                        history.buffer_slot_scoped(*slot, scope).ok_or_else(|| {
+                            GraphExecuteError::missing_history_buffer(*slot, import.label)
+                        })?;
+                    let guard = buffer_slot.lock();
+                    let (half_idx, half_name) = buffer_history_half(import, history);
+                    let buffer = guard.half(half_idx).ok_or_else(|| {
+                        GraphExecuteError::unallocated_history_buffer(*slot, half_name)
+                    })?;
+                    Some(buffer.clone())
+                }
             };
             if let Some(buffer) = buffer {
                 resources.set_imported_buffer(
@@ -228,6 +259,7 @@ impl CompiledRenderGraph {
                 );
             }
         }
+        Ok(())
     }
 
     /// Resolves a [`FrameViewTarget`] into a [`ResolvedView`] with color/depth attachments.
@@ -312,5 +344,53 @@ impl CompiledRenderGraph {
             occlusion_view: resolved.occlusion_view,
             sample_count: resolved.sample_count,
         })
+    }
+}
+
+/// Resolves a texture history slot's scope for the current view.
+fn history_scope_for_texture(
+    slot: HistorySlotId,
+    resolved: &ResolvedView<'_>,
+) -> HistoryResourceScope {
+    if slot == HistorySlotId::HI_Z {
+        HistoryResourceScope::View(resolved.occlusion_view)
+    } else {
+        HistoryResourceScope::Global
+    }
+}
+
+/// Resolves a buffer history slot's scope for the current view.
+fn history_scope_for_buffer(
+    slot: HistorySlotId,
+    resolved: &ResolvedView<'_>,
+) -> HistoryResourceScope {
+    if slot == HistorySlotId::HI_Z {
+        HistoryResourceScope::View(resolved.occlusion_view)
+    } else {
+        HistoryResourceScope::Global
+    }
+}
+
+/// Selects the ping-pong half for a texture import based on declared access intent.
+fn texture_history_half(
+    import: &ImportedTextureDecl,
+    history: &HistoryRegistry,
+) -> (usize, &'static str) {
+    if import.initial_access.writes() || import.final_access.writes() {
+        (history.current_index(), "current")
+    } else {
+        (history.previous_index(), "previous")
+    }
+}
+
+/// Selects the ping-pong half for a buffer import based on declared access intent.
+fn buffer_history_half(
+    import: &ImportedBufferDecl,
+    history: &HistoryRegistry,
+) -> (usize, &'static str) {
+    if import.initial_access.writes() || import.final_access.writes() {
+        (history.current_index(), "current")
+    } else {
+        (history.previous_index(), "previous")
     }
 }

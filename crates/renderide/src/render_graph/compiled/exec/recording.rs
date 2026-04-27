@@ -64,12 +64,13 @@ impl CompiledRenderGraph {
                 logger::warn!("pre-resolve: missing transient resources for view key {key:?}");
                 GraphExecuteError::MissingTransientResources
             })?;
-            self.resolve_imported_textures(&resolved, &mut resolved_resources);
+            self.resolve_imported_textures(&resolved, shared.history, &mut resolved_resources)?;
             self.resolve_imported_buffers(
                 shared.frame_resources,
+                shared.history,
                 &resolved,
                 &mut resolved_resources,
-            );
+            )?;
             resolved_resources
         };
         let graph_resources: &GraphResolvedResources = &resolved_resources;
@@ -256,8 +257,17 @@ impl CompiledRenderGraph {
                 backend,
                 gpu_limits,
             )?;
-            self.resolve_imported_textures(&resolved, resolved_resources);
-            self.resolve_imported_buffers(&backend.frame_resources, &resolved, resolved_resources);
+            self.resolve_imported_textures(
+                &resolved,
+                backend.history_registry(),
+                resolved_resources,
+            )?;
+            self.resolve_imported_buffers(
+                &backend.frame_resources,
+                backend.history_registry(),
+                &resolved,
+                resolved_resources,
+            )?;
             let graph_resources: &GraphResolvedResources = &*resolved_resources;
 
             let mut frame_params = helpers::frame_render_params_from_resolved(

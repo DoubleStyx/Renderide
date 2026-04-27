@@ -9,9 +9,14 @@ use super::super::super::error::GraphExecuteError;
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext};
 use super::{GraphResolveKey, TransientTextureResolveSurfaceParams};
+use crate::backend::{HistoryResourceScope, TextureHistorySpec};
 use crate::materials::MaterialPipelineDesc;
 use crate::pipelines::ShaderPermutation;
+use crate::render_graph::occlusion::HIZ_MAX_MIPS;
 use crate::render_graph::world_mesh_draw_prep::PipelineVariantKey;
+use crate::render_graph::{
+    hi_z_pyramid_dimensions, mip_levels_for_extent, HistorySlotId, OutputDepthMode,
+};
 
 impl CompiledRenderGraph {
     /// Prepares shared frame resources, per-view resource slots, mesh streams, and material
@@ -23,6 +28,7 @@ impl CompiledRenderGraph {
         profiling::scope!("graph::prepare_view_resources");
         Self::pre_sync_shared_frame_resources_for_views(mv_ctx, views);
         Self::pre_warm_per_view_resources_for_views(mv_ctx, views)?;
+        Self::register_history_resources_for_views(mv_ctx, views)?;
         Self::pre_warm_pipeline_cache_for_views(mv_ctx, views);
         Ok(())
     }
@@ -141,6 +147,38 @@ impl CompiledRenderGraph {
         Ok(())
     }
 
+    /// Registers view-scoped history resources required by ping-pong graph imports.
+    ///
+    /// Hi-Z still owns CPU snapshots and readback policy through [`crate::backend::OcclusionSystem`],
+    /// but its graph-declared persistent pyramid now has a registry-backed lifetime keyed by
+    /// [`HistorySlotId::HI_Z`] plus the view's [`crate::render_graph::OcclusionViewId`].
+    pub(super) fn register_history_resources_for_views(
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &[FrameView<'_>],
+    ) -> Result<(), GraphExecuteError> {
+        profiling::scope!("graph::register_history_resources");
+        for view in views {
+            let viewport = view.target.extent_px(mv_ctx.gpu);
+            let mode = OutputDepthMode::from_multiview_stereo(view.is_multiview_stereo_active());
+            let Some(spec) = hi_z_history_spec(viewport, mode) else {
+                continue;
+            };
+            mv_ctx
+                .backend
+                .history_registry_mut()
+                .register_texture_scoped(
+                    HistorySlotId::HI_Z,
+                    HistoryResourceScope::View(view.occlusion_view_id()),
+                    spec,
+                )?;
+        }
+        mv_ctx
+            .backend
+            .history_registry()
+            .ensure_resources(mv_ctx.device);
+        Ok(())
+    }
+
     /// Pre-synchronizes shared frame resources for every unique per-view layout before recording.
     ///
     /// This hoists the shared `FrameGpuResources::sync_cluster_viewport` and one-time lights upload
@@ -237,6 +275,35 @@ impl CompiledRenderGraph {
         }
         Ok(())
     }
+}
+
+/// Builds the registry spec for the current view's Hi-Z pyramid texture.
+fn hi_z_history_spec(
+    full_extent_px: (u32, u32),
+    mode: OutputDepthMode,
+) -> Option<TextureHistorySpec> {
+    let (bw, bh) = hi_z_pyramid_dimensions(full_extent_px.0, full_extent_px.1);
+    if bw == 0 || bh == 0 {
+        return None;
+    }
+    Some(TextureHistorySpec {
+        label: "hi_z_history",
+        format: wgpu::TextureFormat::R32Float,
+        extent: wgpu::Extent3d {
+            width: bw,
+            height: bh,
+            depth_or_array_layers: match mode {
+                OutputDepthMode::DesktopSingle => 1,
+                OutputDepthMode::StereoArray { .. } => 2,
+            },
+        },
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        mip_level_count: mip_levels_for_extent(bw, bh, HIZ_MAX_MIPS).max(1),
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+    })
 }
 
 /// Resolves the view's surface / depth / sample-count / multiview attributes into the

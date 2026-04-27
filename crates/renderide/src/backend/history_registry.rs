@@ -7,17 +7,16 @@
 //! `current()`; the next frame swaps and writes the other half. This structure keeps both halves
 //! alive across frames so the read of last frame's data is just a lookup, not a re-copy.
 //!
-//! This registry is new infrastructure — no subsystem writes through it yet. The existing Hi-Z
-//! pyramid keeps its bespoke per-view state on [`crate::backend::OcclusionSystem`]; future
-//! migration onto the registry is a follow-up. The registry exists so a future TAA, SSR, or
-//! cached-shadow subsystem can declare its history requirements in one place.
+//! Hi-Z registers view-scoped texture history here while keeping CPU snapshots and readback policy
+//! on [`crate::backend::OcclusionSystem`]. Future TAA, SSR, or cached-shadow systems can declare
+//! their persistent resources through the same owner instead of hand-rolling ping-pong pairs.
 
 use std::sync::Arc;
 
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 
-use crate::render_graph::HistorySlotId;
+use crate::render_graph::{HistorySlotId, OcclusionViewId};
 
 /// Errors returned by [`HistoryRegistry`] registration APIs.
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +32,31 @@ pub enum HistoryRegistryError {
         /// Kind the slot is already registered as ("texture" or "buffer").
         other_kind: &'static str,
     },
+}
+
+/// Scope for a persistent history slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HistoryResourceScope {
+    /// One global resource pair shared by all views.
+    Global,
+    /// One resource pair for one logical occlusion/render view.
+    View(OcclusionViewId),
+}
+
+/// Concrete key used by the registry's texture and buffer maps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct HistoryResourceKey {
+    /// Stable subsystem slot id.
+    id: HistorySlotId,
+    /// Resource ownership scope.
+    scope: HistoryResourceScope,
+}
+
+impl HistoryResourceKey {
+    /// Builds a concrete history key.
+    const fn new(id: HistorySlotId, scope: HistoryResourceScope) -> Self {
+        Self { id, scope }
+    }
 }
 
 /// Texture history slot declaration.
@@ -155,8 +179,8 @@ impl BufferHistorySlot {
 /// next [`HistoryRegistry::ensure_resources`].
 #[derive(Default)]
 pub struct HistoryRegistry {
-    textures: HashMap<HistorySlotId, Arc<Mutex<TextureHistorySlot>>>,
-    buffers: HashMap<HistorySlotId, Arc<Mutex<BufferHistorySlot>>>,
+    textures: HashMap<HistoryResourceKey, Arc<Mutex<TextureHistorySlot>>>,
+    buffers: HashMap<HistoryResourceKey, Arc<Mutex<BufferHistorySlot>>>,
     frame_counter: u64,
 }
 
@@ -174,13 +198,24 @@ impl HistoryRegistry {
         id: HistorySlotId,
         spec: TextureHistorySpec,
     ) -> Result<(), HistoryRegistryError> {
-        if self.buffers.contains_key(&id) {
+        self.register_texture_scoped(id, HistoryResourceScope::Global, spec)
+    }
+
+    /// Registers a texture slot under `id` and `scope`. See [`Self::register_texture`].
+    pub fn register_texture_scoped(
+        &mut self,
+        id: HistorySlotId,
+        scope: HistoryResourceScope,
+        spec: TextureHistorySpec,
+    ) -> Result<(), HistoryRegistryError> {
+        let key = HistoryResourceKey::new(id, scope);
+        if self.buffers.contains_key(&key) {
             return Err(HistoryRegistryError::KindMismatch {
                 id,
                 other_kind: "buffer",
             });
         }
-        match self.textures.get(&id) {
+        match self.textures.get(&key) {
             Some(existing) => {
                 let mut guard = existing.lock();
                 if !texture_specs_equivalent(&guard.spec, &spec) {
@@ -190,7 +225,7 @@ impl HistoryRegistry {
             }
             None => {
                 self.textures.insert(
-                    id,
+                    key,
                     Arc::new(Mutex::new(TextureHistorySlot {
                         spec,
                         pair: [None, None],
@@ -209,13 +244,24 @@ impl HistoryRegistry {
         id: HistorySlotId,
         spec: BufferHistorySpec,
     ) -> Result<(), HistoryRegistryError> {
-        if self.textures.contains_key(&id) {
+        self.register_buffer_scoped(id, HistoryResourceScope::Global, spec)
+    }
+
+    /// Registers a buffer slot under `id` and `scope`. See [`Self::register_buffer`].
+    pub fn register_buffer_scoped(
+        &mut self,
+        id: HistorySlotId,
+        scope: HistoryResourceScope,
+        spec: BufferHistorySpec,
+    ) -> Result<(), HistoryRegistryError> {
+        let key = HistoryResourceKey::new(id, scope);
+        if self.textures.contains_key(&key) {
             return Err(HistoryRegistryError::KindMismatch {
                 id,
                 other_kind: "texture",
             });
         }
-        match self.buffers.get(&id) {
+        match self.buffers.get(&key) {
             Some(existing) => {
                 let mut guard = existing.lock();
                 if !buffer_specs_equivalent(&guard.spec, &spec) {
@@ -225,7 +271,7 @@ impl HistoryRegistry {
             }
             None => {
                 self.buffers.insert(
-                    id,
+                    key,
                     Arc::new(Mutex::new(BufferHistorySlot {
                         spec,
                         pair: [None, None],
@@ -240,7 +286,17 @@ impl HistoryRegistry {
     /// reallocated on the next [`HistoryRegistry::ensure_resources`]. Returns `false` when no
     /// slot was registered under `id`.
     pub fn update_texture_spec(&mut self, id: HistorySlotId, spec: TextureHistorySpec) -> bool {
-        match self.textures.get(&id) {
+        self.update_texture_spec_scoped(id, HistoryResourceScope::Global, spec)
+    }
+
+    /// Updates the spec for a scoped texture slot. See [`Self::update_texture_spec`].
+    pub fn update_texture_spec_scoped(
+        &mut self,
+        id: HistorySlotId,
+        scope: HistoryResourceScope,
+        spec: TextureHistorySpec,
+    ) -> bool {
+        match self.textures.get(&HistoryResourceKey::new(id, scope)) {
             Some(slot) => {
                 let mut guard = slot.lock();
                 guard.spec = spec;
@@ -253,7 +309,17 @@ impl HistoryRegistry {
 
     /// Updates the spec for an already-registered buffer slot. See [`Self::update_texture_spec`].
     pub fn update_buffer_spec(&mut self, id: HistorySlotId, spec: BufferHistorySpec) -> bool {
-        match self.buffers.get(&id) {
+        self.update_buffer_spec_scoped(id, HistoryResourceScope::Global, spec)
+    }
+
+    /// Updates the spec for a scoped buffer slot. See [`Self::update_buffer_spec`].
+    pub fn update_buffer_spec_scoped(
+        &mut self,
+        id: HistorySlotId,
+        scope: HistoryResourceScope,
+        spec: BufferHistorySpec,
+    ) -> bool {
+        match self.buffers.get(&HistoryResourceKey::new(id, scope)) {
             Some(slot) => {
                 let mut guard = slot.lock();
                 guard.spec = spec;
@@ -266,12 +332,34 @@ impl HistoryRegistry {
 
     /// Returns the shared handle for a texture slot, or [`None`] when unregistered.
     pub fn texture_slot(&self, id: HistorySlotId) -> Option<Arc<Mutex<TextureHistorySlot>>> {
-        self.textures.get(&id).cloned()
+        self.texture_slot_scoped(id, HistoryResourceScope::Global)
+    }
+
+    /// Returns the shared handle for a scoped texture slot, or [`None`] when unregistered.
+    pub fn texture_slot_scoped(
+        &self,
+        id: HistorySlotId,
+        scope: HistoryResourceScope,
+    ) -> Option<Arc<Mutex<TextureHistorySlot>>> {
+        self.textures
+            .get(&HistoryResourceKey::new(id, scope))
+            .cloned()
     }
 
     /// Returns the shared handle for a buffer slot, or [`None`] when unregistered.
     pub fn buffer_slot(&self, id: HistorySlotId) -> Option<Arc<Mutex<BufferHistorySlot>>> {
-        self.buffers.get(&id).cloned()
+        self.buffer_slot_scoped(id, HistoryResourceScope::Global)
+    }
+
+    /// Returns the shared handle for a scoped buffer slot, or [`None`] when unregistered.
+    pub fn buffer_slot_scoped(
+        &self,
+        id: HistorySlotId,
+        scope: HistoryResourceScope,
+    ) -> Option<Arc<Mutex<BufferHistorySlot>>> {
+        self.buffers
+            .get(&HistoryResourceKey::new(id, scope))
+            .cloned()
     }
 
     /// Allocates every slot's resources against `device` if they are not already present.
@@ -401,6 +489,36 @@ mod tests {
         assert!(reg.texture_slot(SLOT_A).is_some());
         assert!(reg.buffer_slot(SLOT_B).is_some());
         assert!(reg.texture_slot(SLOT_B).is_none());
+    }
+
+    #[test]
+    fn scoped_texture_slots_do_not_alias_global_or_other_views() {
+        let mut reg = HistoryRegistry::new();
+        reg.register_texture(SLOT_A, tex_spec()).unwrap();
+        reg.register_texture_scoped(
+            SLOT_A,
+            HistoryResourceScope::View(OcclusionViewId::Main),
+            tex_spec(),
+        )
+        .unwrap();
+        reg.register_texture_scoped(
+            SLOT_A,
+            HistoryResourceScope::View(OcclusionViewId::OffscreenRenderTexture(7)),
+            tex_spec(),
+        )
+        .unwrap();
+
+        assert_eq!(reg.texture_slot_count(), 3);
+        assert!(reg.texture_slot(SLOT_A).is_some());
+        assert!(reg
+            .texture_slot_scoped(SLOT_A, HistoryResourceScope::View(OcclusionViewId::Main))
+            .is_some());
+        assert!(reg
+            .texture_slot_scoped(
+                SLOT_A,
+                HistoryResourceScope::View(OcclusionViewId::OffscreenRenderTexture(7)),
+            )
+            .is_some());
     }
 
     #[test]

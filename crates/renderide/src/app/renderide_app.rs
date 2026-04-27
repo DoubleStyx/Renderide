@@ -40,7 +40,10 @@ use crate::frontend::input::{
 };
 use crate::gpu::GpuContext;
 use crate::output_device::head_output_device_wants_openxr;
-use crate::present::{present_clear_frame, present_clear_frame_overlay};
+use crate::present::{
+    present_clear_frame, present_clear_frame_overlay_traced, SurfaceAcquireTrace,
+    SurfaceSubmitTrace,
+};
 use crate::render_graph::GraphExecuteError;
 use crate::runtime::RendererRuntime;
 use crate::shared::{HeadOutputDevice, VRControllerState};
@@ -548,18 +551,28 @@ impl RenderideApp {
                         },
                     ) {
                         logger::debug!("VR mirror blit failed: {e:?}");
-                        if let Err(pe) = present_clear_frame_overlay(gpu, |enc, view, g| {
-                            self.runtime
-                                .encode_debug_hud_overlay_on_surface(g, enc, view)
-                        }) {
+                        if let Err(pe) = present_clear_frame_overlay_traced(
+                            gpu,
+                            SurfaceAcquireTrace::VrClear,
+                            SurfaceSubmitTrace::VrClear,
+                            |enc, view, g| {
+                                self.runtime
+                                    .encode_debug_hud_overlay_on_surface(g, enc, view)
+                            },
+                        ) {
                             logger::warn!("present_clear_frame after mirror blit: {pe:?}");
                         }
                     }
                 }
-            } else if let Err(e) = present_clear_frame_overlay(gpu, |enc, view, g| {
-                self.runtime
-                    .encode_debug_hud_overlay_on_surface(g, enc, view)
-            }) {
+            } else if let Err(e) = present_clear_frame_overlay_traced(
+                gpu,
+                SurfaceAcquireTrace::VrClear,
+                SurfaceSubmitTrace::VrClear,
+                |enc, view, g| {
+                    self.runtime
+                        .encode_debug_hud_overlay_on_surface(g, enc, view)
+                },
+            ) {
                 logger::debug!("VR mirror clear (no HMD frame): {e:?}");
             }
         }

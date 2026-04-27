@@ -43,8 +43,8 @@ pub use frame_resource_manager::{
     FrameGpuBindContext, FrameResourceManager, PerViewFrameState, PreRecordViewResourceLayout,
 };
 pub use history_registry::{
-    BufferHistorySlot, BufferHistorySpec, HistoryRegistry, HistoryRegistryError, HistoryTexture,
-    TextureHistorySlot, TextureHistorySpec,
+    BufferHistorySlot, BufferHistorySpec, HistoryRegistry, HistoryRegistryError,
+    HistoryResourceScope, HistoryTexture, TextureHistorySlot, TextureHistorySpec,
 };
 pub use light_gpu::{
     order_lights_for_clustered_shading, order_lights_for_clustered_shading_in_place, GpuLight,

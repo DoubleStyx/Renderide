@@ -2,27 +2,26 @@
 //! render-texture cameras, and the main desktop view, then dispatches the compiled render graph
 //! in a single submit.
 
-use std::sync::Arc;
-
 use rayon::prelude::*;
 
 use crate::assets::material::MaterialDictionary;
 use crate::backend::OcclusionSystem;
 use crate::gpu::GpuContext;
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
-use crate::pipelines::{ShaderPermutation, SHADER_PERM_MULTIVIEW_STEREO};
+use crate::pipelines::ShaderPermutation;
 use crate::render_graph::{
     build_world_mesh_cull_proj_params, camera_state_enabled,
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
-    host_camera_frame_for_render_texture, CameraTransformDrawFilter, DrawCollectionContext,
-    ExternalFrameTargets, ExternalOffscreenTargets, FramePreparedRenderables, FrameView,
-    FrameViewClear, FrameViewTarget, GraphExecuteError, HiZCullData, HiZTemporalState,
-    HostCameraFrame, OcclusionViewId, OutputDepthMode, PrefetchedWorldMeshViewDraws,
-    WorldMeshCullInput, WorldMeshCullProjParams, WorldMeshDrawCollectParallelism,
-    WorldMeshDrawPlan,
+    host_camera_frame_for_render_texture, DrawCollectionContext, ExternalFrameTargets,
+    FramePreparedRenderables, FrameView, FrameViewClear, GraphExecuteError, HiZCullData,
+    HiZTemporalState, OcclusionViewId, PrefetchedWorldMeshViewDraws, WorldMeshCullInput,
+    WorldMeshCullProjParams, WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
 };
 use crate::scene::SceneCoordinator;
 
+use super::frame_view_plan::{
+    FrameViewPlan, FrameViewPlanTarget, HeadlessOffscreenSnapshot, OffscreenRtHandles,
+};
 use super::RendererRuntime;
 
 /// Which combination of views the compiled render graph records for one tick.
@@ -51,167 +50,7 @@ impl FrameRenderMode<'_> {
     }
 }
 
-/// Cheap-clone snapshot of [`crate::gpu::PrimaryOffscreenTargets`] used by the headless render path
-/// to satisfy the borrow checker: clones are cheap (`wgpu::Texture` and `wgpu::TextureView` are
-/// internally `Arc`-backed) and let the substitution borrow from a stack-local instead of a
-/// long-lived `&mut gpu`. Without this split, holding `&gpu.primary_offscreen` while passing
-/// `&mut gpu` to the next call is a borrow error.
-struct HeadlessOffscreenSnapshot {
-    /// Color attachment view for the substituted offscreen target.
-    color_view: wgpu::TextureView,
-    /// Backing depth texture for the substituted offscreen target.
-    depth_texture: wgpu::Texture,
-    /// Depth view over the substituted depth texture.
-    depth_view: wgpu::TextureView,
-    /// Pixel extent of the primary offscreen attachments.
-    extent_px: (u32, u32),
-    /// Color attachment format matching the primary offscreen target.
-    color_format: wgpu::TextureFormat,
-}
-
-impl HeadlessOffscreenSnapshot {
-    /// Lazily allocates the headless primary targets if needed and snapshots cheap clones of
-    /// their handles. Returns [`None`] when `gpu` is windowed.
-    fn from_gpu(gpu: &mut GpuContext) -> Option<Self> {
-        let targets = gpu.primary_offscreen_targets()?;
-        Some(Self {
-            color_view: targets.color_view.clone(),
-            depth_texture: targets.depth_texture.clone(),
-            depth_view: targets.depth_view.clone(),
-            extent_px: targets.extent_px,
-            color_format: targets.color_format,
-        })
-    }
-
-    /// Replaces every [`FrameViewTarget::Swapchain`] in `views` with an
-    /// [`FrameViewTarget::OffscreenRt`] backed by this snapshot's owned handles. The borrowed
-    /// references are valid for as long as `&self` outlives `views`, which is enforced by the
-    /// `'a` lifetime.
-    fn substitute_swapchain_views<'a>(&'a self, views: &mut [FrameView<'a>]) {
-        for view in views.iter_mut() {
-            if matches!(view.target, FrameViewTarget::Swapchain) {
-                view.target = FrameViewTarget::OffscreenRt(ExternalOffscreenTargets {
-                    render_texture_asset_id: -1,
-                    color_view: &self.color_view,
-                    depth_texture: &self.depth_texture,
-                    depth_view: &self.depth_view,
-                    extent_px: self.extent_px,
-                    color_format: self.color_format,
-                });
-            }
-        }
-    }
-}
-
-/// Render-texture attachment handles owned by one prepared secondary view so the underlying
-/// `Arc<TextureView>` / `Arc<Texture>` stay alive for the duration of the tick.
-struct OffscreenRtHandles {
-    /// Host render texture asset id writing this pass; used to suppress self-sampling.
-    rt_id: i32,
-    /// Color attachment view for this render texture.
-    color_view: Arc<wgpu::TextureView>,
-    /// Depth attachment backing texture.
-    depth_texture: Arc<wgpu::Texture>,
-    /// Depth attachment view.
-    depth_view: Arc<wgpu::TextureView>,
-    /// Color attachment format (must match pipeline targets).
-    color_format: wgpu::TextureFormat,
-}
-
-/// Target-specific payload for a [`PreparedView`].
-enum PreparedViewKind<'a> {
-    /// HMD stereo multiview view; targets are external (pre-acquired by the XR driver).
-    Hmd(ExternalFrameTargets<'a>),
-    /// Secondary render-texture camera; owns the RT color/depth handles for the tick.
-    SecondaryRt(OffscreenRtHandles),
-    /// Main desktop swapchain view.
-    MainSwapchain,
-}
-
-/// One CPU-prepared view ready to become a [`FrameView`] for the compiled render graph.
-///
-/// Built by [`RendererRuntime::collect_prepared_views`] for every active view in the tick —
-/// HMD stereo multiview, secondary render-texture cameras, and the main desktop swapchain —
-/// so the per-view draw and cull pipelines downstream do not need to branch on view kind.
-struct PreparedView<'a> {
-    /// Per-view camera parameters (clip planes, matrices, stereo, overrides).
-    host_camera: HostCameraFrame,
-    /// Optional selective/exclude filter; present for secondary cameras only.
-    draw_filter: Option<CameraTransformDrawFilter>,
-    /// Hi-Z / occlusion slot identity for this view.
-    occlusion_view_id: OcclusionViewId,
-    /// Attachment extent in pixels for this view.
-    viewport_px: (u32, u32),
-    /// Background clear/skybox behavior for this view.
-    clear: FrameViewClear,
-    /// Target-specific payload (HMD, secondary RT, main swapchain).
-    kind: PreparedViewKind<'a>,
-}
-
-impl PreparedView<'_> {
-    /// Builds the [`FrameViewTarget`] for this view, borrowing from `self` when target handles
-    /// live on the prepared view (secondary RT path).
-    fn target(&self) -> FrameViewTarget<'_> {
-        match &self.kind {
-            PreparedViewKind::Hmd(ext) => {
-                FrameViewTarget::ExternalMultiview(ExternalFrameTargets {
-                    color_view: ext.color_view,
-                    depth_texture: ext.depth_texture,
-                    depth_view: ext.depth_view,
-                    extent_px: ext.extent_px,
-                    surface_format: ext.surface_format,
-                })
-            }
-            PreparedViewKind::SecondaryRt(handles) => {
-                FrameViewTarget::OffscreenRt(ExternalOffscreenTargets {
-                    render_texture_asset_id: handles.rt_id,
-                    color_view: handles.color_view.as_ref(),
-                    depth_texture: handles.depth_texture.as_ref(),
-                    depth_view: handles.depth_view.as_ref(),
-                    extent_px: self.viewport_px,
-                    color_format: handles.color_format,
-                })
-            }
-            PreparedViewKind::MainSwapchain => FrameViewTarget::Swapchain,
-        }
-    }
-
-    /// Back-to-front sort origin for transparent draws.
-    ///
-    /// Preference order matches the world-mesh forward path: explicit camera world position
-    /// (secondary RT cameras) → main-space eye position → head-output translation as a last-ditch
-    /// fallback. Sorting from the render-space *root* instead of the eye produced visually wrong
-    /// transparency ordering whenever the host enabled `override_view_position`.
-    fn view_origin_world(&self) -> glam::Vec3 {
-        self.host_camera
-            .explicit_camera_world_position
-            .or(self.host_camera.eye_world_position)
-            .unwrap_or_else(|| self.host_camera.head_output_transform.col(3).truncate())
-    }
-
-    /// `true` when this prepared view records the OpenXR stereo multiview draw path.
-    fn is_multiview_stereo_active(&self) -> bool {
-        matches!(self.kind, PreparedViewKind::Hmd(_))
-            && self.host_camera.vr_active
-            && self.host_camera.stereo.is_some()
-    }
-
-    /// Shader permutation used by CPU draw collection and material metadata for this view.
-    fn shader_permutation(&self) -> ShaderPermutation {
-        if self.is_multiview_stereo_active() {
-            SHADER_PERM_MULTIVIEW_STEREO
-        } else {
-            ShaderPermutation(0)
-        }
-    }
-
-    /// Depth output layout used for Hi-Z and occlusion data sampled during CPU culling.
-    fn output_depth_mode(&self) -> OutputDepthMode {
-        OutputDepthMode::from_multiview_stereo(self.is_multiview_stereo_active())
-    }
-}
-
-/// Frustum + Hi-Z cull inputs for one prepared view.
+/// Frustum + Hi-Z cull inputs for one planned view.
 struct ViewCullSnapshot {
     /// Projection parameters matching the view's camera/viewport.
     proj: WorldMeshCullProjParams,
@@ -253,7 +92,7 @@ struct FrameCollectionContext<'a> {
 /// compiled graph never has to infer whether draws were intentionally omitted or merely missing.
 fn collect_view_draws(
     ctx: &FrameCollectionContext<'_>,
-    prepared: &[PreparedView<'_>],
+    prepared: &[FrameViewPlan<'_>],
     cull_snapshots: &[Option<ViewCullSnapshot>],
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::collect_view_draws");
@@ -300,7 +139,7 @@ fn collect_view_draws(
 /// Selects the per-view inner-walk parallelism tier for a tick based on how many views will
 /// collect draws. Keeps rayon from oversubscribing when several views each spawn worker-level
 /// parallelism.
-fn select_inner_parallelism(prepared: &[PreparedView<'_>]) -> WorldMeshDrawCollectParallelism {
+fn select_inner_parallelism(prepared: &[FrameViewPlan<'_>]) -> WorldMeshDrawCollectParallelism {
     if prepared.len() > 1 {
         WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
     } else {
@@ -316,7 +155,7 @@ fn select_inner_parallelism(prepared: &[PreparedView<'_>]) -> WorldMeshDrawColle
 fn cull_snapshot_for_view(
     scene: &SceneCoordinator,
     occlusion: &OcclusionSystem,
-    prep: &PreparedView<'_>,
+    prep: &FrameViewPlan<'_>,
 ) -> Option<ViewCullSnapshot> {
     if prep.host_camera.suppress_occlusion_temporal {
         return None;
@@ -461,13 +300,7 @@ impl RendererRuntime {
         let mut views: Vec<FrameView<'_>> = prepared
             .iter()
             .zip(view_draws)
-            .map(|(prep, draws)| FrameView {
-                host_camera: prep.host_camera,
-                target: prep.target(),
-                draw_filter: prep.draw_filter.clone(),
-                clear: prep.clear,
-                world_mesh_draw_plan: draws,
-            })
+            .map(|(prep, draws)| prep.to_frame_view(draws))
             .collect();
 
         if let Some(snapshot) = headless_snapshot.as_ref() {
@@ -513,7 +346,7 @@ impl RendererRuntime {
         &mut self,
         mode: FrameRenderMode<'a>,
         swapchain_extent_px: (u32, u32),
-    ) -> Vec<PreparedView<'a>> {
+    ) -> Vec<FrameViewPlan<'a>> {
         let (includes_main, hmd_target) = match mode {
             FrameRenderMode::DesktopPlusSecondaries => (true, None),
             FrameRenderMode::VrWithHmd(ext) => (false, Some(ext)),
@@ -523,17 +356,17 @@ impl RendererRuntime {
         let mut secondary_views = self.collect_secondary_rt_views();
         let est_capacity =
             usize::from(hmd_target.is_some()) + secondary_views.len() + usize::from(includes_main);
-        let mut views: Vec<PreparedView<'a>> = Vec::with_capacity(est_capacity);
+        let mut views: Vec<FrameViewPlan<'a>> = Vec::with_capacity(est_capacity);
 
         if let Some(ext) = hmd_target {
             let extent_px = ext.extent_px;
-            views.push(PreparedView {
+            views.push(FrameViewPlan {
                 host_camera: self.host_camera,
                 draw_filter: None,
                 occlusion_view_id: OcclusionViewId::Main,
                 viewport_px: extent_px,
                 clear: FrameViewClear::skybox(),
-                kind: PreparedViewKind::Hmd(ext),
+                target: FrameViewPlanTarget::Hmd(ext),
             });
         }
 
@@ -551,7 +384,7 @@ impl RendererRuntime {
     ///
     /// Reuses [`RendererRuntime::secondary_view_tasks_scratch`] for the depth-sort scratch buffer
     /// so a frame with secondary cameras does not allocate a fresh `Vec` for the sort each tick.
-    fn collect_secondary_rt_views<'a>(&mut self) -> Vec<PreparedView<'a>> {
+    fn collect_secondary_rt_views<'a>(&mut self) -> Vec<FrameViewPlan<'a>> {
         let mut tasks = std::mem::take(&mut self.secondary_view_tasks_scratch);
         tasks.clear();
         let result = self.collect_secondary_rt_views_using(&mut tasks);
@@ -564,7 +397,7 @@ impl RendererRuntime {
     fn collect_secondary_rt_views_using<'a>(
         &self,
         tasks: &mut Vec<(crate::scene::RenderSpaceId, f32, usize)>,
-    ) -> Vec<PreparedView<'a>> {
+    ) -> Vec<FrameViewPlan<'a>> {
         for sid in self.scene.render_space_ids() {
             let Some(space) = self.scene.space(sid) else {
                 continue;
@@ -584,7 +417,7 @@ impl RendererRuntime {
         }
         tasks.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mut views: Vec<PreparedView<'a>> = Vec::with_capacity(tasks.len());
+        let mut views: Vec<FrameViewPlan<'a>> = Vec::with_capacity(tasks.len());
         for (sid, _, cam_idx) in tasks.drain(..) {
             let Some(space) = self.scene.space(sid) else {
                 continue;
@@ -636,13 +469,13 @@ impl RendererRuntime {
             if !entry.selective_transform_ids.is_empty() {
                 hc.suppress_occlusion_temporal = true;
             }
-            views.push(PreparedView {
+            views.push(FrameViewPlan {
                 host_camera: hc,
                 draw_filter: Some(filter),
                 occlusion_view_id: OcclusionViewId::OffscreenRenderTexture(rt_id),
                 viewport_px: viewport,
                 clear: FrameViewClear::from_camera_state(&entry.state),
-                kind: PreparedViewKind::SecondaryRt(OffscreenRtHandles {
+                target: FrameViewPlanTarget::SecondaryRt(OffscreenRtHandles {
                     rt_id,
                     color_view,
                     depth_texture,
@@ -654,21 +487,21 @@ impl RendererRuntime {
         views
     }
 
-    /// Builds the main desktop swapchain [`PreparedView`] from the cached [`Self::host_camera`].
+    /// Builds the main desktop swapchain [`FrameViewPlan`] from the cached [`Self::host_camera`].
     ///
     /// `swapchain_extent_px` must be the current GPU surface extent: it feeds
     /// [`build_world_mesh_cull_proj_params`] on the pre-dispatch CPU cull path. A stale or zero
     /// extent produces a degenerate frustum and random scene-object culling. The render graph
     /// resolves its own rendering extent from [`FrameViewTarget::Swapchain::extent_px`] at record
     /// time — that is a separate concern from cull math, which has already run by then.
-    fn build_main_swapchain_view<'a>(&self, swapchain_extent_px: (u32, u32)) -> PreparedView<'a> {
-        PreparedView {
+    fn build_main_swapchain_view<'a>(&self, swapchain_extent_px: (u32, u32)) -> FrameViewPlan<'a> {
+        FrameViewPlan {
             host_camera: self.host_camera,
             draw_filter: None,
             occlusion_view_id: OcclusionViewId::Main,
             viewport_px: swapchain_extent_px,
             clear: FrameViewClear::skybox(),
-            kind: PreparedViewKind::MainSwapchain,
+            target: FrameViewPlanTarget::MainSwapchain,
         }
     }
 }
@@ -683,6 +516,7 @@ mod tests {
     use super::*;
     use crate::config::{RendererSettings, RendererSettingsHandle};
     use crate::connection::ConnectionParams;
+    use crate::render_graph::OutputDepthMode;
 
     fn build_runtime() -> RendererRuntime {
         let settings: RendererSettingsHandle =
@@ -702,7 +536,10 @@ mod tests {
         let views =
             runtime.collect_prepared_views(FrameRenderMode::DesktopPlusSecondaries, TEST_EXTENT);
         assert_eq!(views.len(), 1);
-        assert!(matches!(views[0].kind, PreparedViewKind::MainSwapchain));
+        assert!(matches!(
+            views[0].target,
+            FrameViewPlanTarget::MainSwapchain
+        ));
         assert_eq!(views[0].occlusion_view_id, OcclusionViewId::Main);
         assert!(views[0].draw_filter.is_none());
     }
@@ -729,7 +566,7 @@ mod tests {
         assert_eq!(main.host_camera.desktop_fov_degrees, 75.0);
     }
 
-    /// Pins the contract from the April 2026 cull regression: the main desktop `PreparedView`
+    /// Pins the contract from the April 2026 cull regression: the main desktop `FrameViewPlan`
     /// must carry the swapchain extent supplied to `collect_prepared_views`. A zero or stale
     /// extent produces a degenerate `build_world_mesh_cull_proj_params` frustum and flickering
     /// scene-object culling.
@@ -740,7 +577,7 @@ mod tests {
             runtime.collect_prepared_views(FrameRenderMode::DesktopPlusSecondaries, (1280, 720));
         let main = views
             .iter()
-            .find(|v| matches!(v.kind, PreparedViewKind::MainSwapchain))
+            .find(|v| matches!(v.target, FrameViewPlanTarget::MainSwapchain))
             .expect("DesktopPlusSecondaries yields a MainSwapchain view");
         assert_eq!(main.viewport_px, (1280, 720));
     }

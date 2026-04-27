@@ -30,6 +30,7 @@ impl RenderBackend {
         if !skip_hi_z_begin_readback {
             self.occlusion.hi_z_begin_frame_readback(gpu.device());
         }
+        self.history_registry.advance_frame();
         // Live HUD edits to `[post_processing]` only take effect when the graph is rebuilt; check
         // each tick so signature flips (effect added or removed) take effect on the next frame.
         // Parameter-only edits do not flip the signature and avoid the rebuild cost.

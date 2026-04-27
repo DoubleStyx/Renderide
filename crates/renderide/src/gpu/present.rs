@@ -1,7 +1,7 @@
 //! Swapchain presentation: surface acquire helpers and a minimal clear pass (no mesh or UI draws).
 //!
 //! Serves as the minimal integration test for surface acquire, encoder submission, and present.
-//! The render graph reuses [`acquire_surface_outcome`] and [`record_swapchain_clear_pass`].
+//! The render graph reuses [`acquire_surface_outcome_traced`] and [`record_swapchain_clear_pass`].
 
 use crate::gpu::GpuContext;
 
@@ -32,6 +32,30 @@ pub enum SurfaceFrameOutcome {
     Acquired(wgpu::SurfaceTexture),
 }
 
+/// Static Tracy labels for desktop surface acquisition sites.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceAcquireTrace {
+    /// Render graph acquisition for the main desktop backbuffer.
+    DesktopGraph,
+    /// VR mirror acquisition for blitting the latest HMD eye to the desktop window.
+    VrMirror,
+    /// VR clear/fallback acquisition when no mirror image is available or mirror blit fails.
+    VrClear,
+    /// Generic clear acquisition used outside the VR-specific fallback path.
+    ClearFallback,
+}
+
+/// Static Tracy labels for desktop surface submit sites.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceSubmitTrace {
+    /// VR mirror submit for the desktop mirror blit.
+    VrMirror,
+    /// VR clear/fallback submit when no mirror image is available or mirror blit fails.
+    VrClear,
+    /// Generic clear submit used outside the VR-specific fallback path.
+    ClearFallback,
+}
+
 /// Acquires the next surface texture with the same policy as [`present_clear_frame`].
 ///
 /// Uses the window stored inside `gpu` for surface recovery, so callers do not need to thread
@@ -54,6 +78,54 @@ pub fn acquire_surface_outcome(
             Ok(SurfaceFrameOutcome::Reconfigured)
         }
         Err(e) => Err(PresentClearError { status: e }),
+    }
+}
+
+/// Acquires the next surface texture under a source-specific Tracy scope.
+pub fn acquire_surface_outcome_traced(
+    gpu: &mut GpuContext,
+    trace: SurfaceAcquireTrace,
+) -> Result<SurfaceFrameOutcome, PresentClearError> {
+    match trace {
+        SurfaceAcquireTrace::DesktopGraph => {
+            profiling::scope!("gpu::surface_acquire.desktop_graph");
+            acquire_surface_outcome(gpu)
+        }
+        SurfaceAcquireTrace::VrMirror => {
+            profiling::scope!("gpu::surface_acquire.vr_mirror");
+            acquire_surface_outcome(gpu)
+        }
+        SurfaceAcquireTrace::VrClear => {
+            profiling::scope!("gpu::surface_acquire.vr_clear");
+            acquire_surface_outcome(gpu)
+        }
+        SurfaceAcquireTrace::ClearFallback => {
+            profiling::scope!("gpu::surface_acquire.clear_fallback");
+            acquire_surface_outcome(gpu)
+        }
+    }
+}
+
+/// Submits command buffers with a presentable surface texture under a source-specific Tracy scope.
+pub fn submit_surface_frame_traced(
+    gpu: &mut GpuContext,
+    command_buffers: Vec<wgpu::CommandBuffer>,
+    frame: wgpu::SurfaceTexture,
+    trace: SurfaceSubmitTrace,
+) {
+    match trace {
+        SurfaceSubmitTrace::VrMirror => {
+            profiling::scope!("gpu::surface_submit.vr_mirror");
+            gpu.submit_frame_batch(command_buffers, Some(frame), None);
+        }
+        SurfaceSubmitTrace::VrClear => {
+            profiling::scope!("gpu::surface_submit.vr_clear");
+            gpu.submit_frame_batch(command_buffers, Some(frame), None);
+        }
+        SurfaceSubmitTrace::ClearFallback => {
+            profiling::scope!("gpu::surface_submit.clear_fallback");
+            gpu.submit_frame_batch(command_buffers, Some(frame), None);
+        }
     }
 }
 
@@ -96,7 +168,26 @@ where
     F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
     E: std::fmt::Display,
 {
-    let frame = match acquire_surface_outcome(gpu)? {
+    present_clear_frame_overlay_traced(
+        gpu,
+        SurfaceAcquireTrace::ClearFallback,
+        SurfaceSubmitTrace::ClearFallback,
+        overlay,
+    )
+}
+
+/// Clears the swapchain, composites an overlay, and presents under source-specific Tracy scopes.
+pub fn present_clear_frame_overlay_traced<F, E>(
+    gpu: &mut GpuContext,
+    acquire_trace: SurfaceAcquireTrace,
+    submit_trace: SurfaceSubmitTrace,
+    overlay: F,
+) -> Result<(), PresentClearError>
+where
+    F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
+    E: std::fmt::Display,
+{
+    let frame = match acquire_surface_outcome_traced(gpu, acquire_trace)? {
         SurfaceFrameOutcome::Skip | SurfaceFrameOutcome::Reconfigured => return Ok(()),
         SurfaceFrameOutcome::Acquired(f) => f,
     };
@@ -118,6 +209,6 @@ where
     // `submit_tracked_frame_commands` (which only enqueues on the driver) destroys the surface
     // texture, which makes the driver's deferred `Queue::submit` reject the command buffer:
     // "Texture with '<Surface Texture>' label has been destroyed".
-    gpu.submit_frame_batch(vec![encoder.finish()], Some(frame), None);
+    submit_surface_frame_traced(gpu, vec![encoder.finish()], frame, submit_trace);
     Ok(())
 }

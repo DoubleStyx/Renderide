@@ -1,7 +1,10 @@
 //! Staging texture and submit/present paths for the VR desktop mirror.
 
 use crate::gpu::GpuContext;
-use crate::present::{acquire_surface_outcome, PresentClearError, SurfaceFrameOutcome};
+use crate::present::{
+    acquire_surface_outcome_traced, submit_surface_frame_traced, PresentClearError,
+    SurfaceAcquireTrace, SurfaceFrameOutcome, SurfaceSubmitTrace,
+};
 use crate::xr::XR_COLOR_FORMAT;
 
 use super::cover::cover_uv_params;
@@ -195,7 +198,7 @@ impl VrMirrorBlitResources {
             return Ok(());
         }
 
-        let frame = match acquire_surface_outcome(gpu)? {
+        let frame = match acquire_surface_outcome_traced(gpu, SurfaceAcquireTrace::VrMirror)? {
             SurfaceFrameOutcome::Skip | SurfaceFrameOutcome::Reconfigured => return Ok(()),
             SurfaceFrameOutcome::Acquired(f) => f,
         };
@@ -264,7 +267,12 @@ impl VrMirrorBlitResources {
         // on the driver) destroys the surface texture, after which the driver's deferred
         // `Queue::submit` rejects the command buffer with: "Texture with '<Surface Texture>'
         // label has been destroyed".
-        gpu.submit_frame_batch(vec![encoder.finish()], Some(frame), None);
+        submit_surface_frame_traced(
+            gpu,
+            vec![encoder.finish()],
+            frame,
+            SurfaceSubmitTrace::VrMirror,
+        );
         Ok(())
     }
 }

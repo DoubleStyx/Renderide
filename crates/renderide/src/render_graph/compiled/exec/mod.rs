@@ -138,6 +138,8 @@ pub(super) struct PerViewRecordShared<'a> {
     pub(super) occlusion: &'a crate::backend::OcclusionSystem,
     /// Shared frame resources for bind groups, lights, and per-view slabs.
     pub(super) frame_resources: &'a crate::backend::FrameResourceManager,
+    /// Persistent history resources resolved for ping-pong graph imports.
+    pub(super) history: &'a crate::backend::HistoryRegistry,
     /// Shared material system for pipeline and bind lookups.
     pub(super) materials: &'a crate::backend::MaterialSystem,
     /// Shared asset pools for meshes and textures.
@@ -456,6 +458,7 @@ impl CompiledRenderGraph {
             queue_arc: mv_ctx.queue_arc,
             occlusion: mv_ctx.backend.occlusion(),
             frame_resources: mv_ctx.backend.frame_resources(),
+            history: mv_ctx.backend.history_registry(),
             materials: mv_ctx.backend.materials(),
             asset_transfers: mv_ctx.backend.asset_transfers(),
             mesh_preprocess: mv_ctx.backend.mesh_preprocess(),
