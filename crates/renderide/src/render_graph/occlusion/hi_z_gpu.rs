@@ -326,12 +326,6 @@ pub(crate) struct HiZGpuScratch {
     pub extent: (u32, u32),
     /// Total mip count (mip0 through `mip_levels - 1`).
     pub mip_levels: u32,
-    /// Desktop / stereo-left pyramid texture.
-    pub pyramid: wgpu::Texture,
-    /// Per-mip views for the desktop / stereo-left pyramid.
-    pub views: Vec<wgpu::TextureView>,
-    /// Stereo-right pyramid (texture + per-mip views), populated only in stereo modes.
-    pub pyramid_r: Option<(wgpu::Texture, Vec<wgpu::TextureView>)>,
     /// Triple-buffered staging for async readback.
     pub staging_desktop: [wgpu::Buffer; HIZ_STAGING_RING],
     /// Triple-buffered staging for the stereo-right pyramid.
@@ -352,6 +346,10 @@ pub(crate) struct HiZBindGroupCache {
     /// `depth_view` last bound into the mip0 slots. Mip0 bindings are rebuilt when this changes
     /// (e.g. depth target reallocation between frames).
     mip0_depth_view: Option<wgpu::TextureView>,
+    /// Mip0 view last used as the desktop/left pyramid output.
+    pyramid_left_mip0_view: Option<wgpu::TextureView>,
+    /// Mip0 view last used as the stereo-right pyramid output.
+    pyramid_right_mip0_view: Option<wgpu::TextureView>,
     /// Mip0 bind group for desktop (non-stereo) dispatches.
     mip0_desktop: Option<wgpu::BindGroup>,
     /// Mip0 bind groups for stereo dispatches, indexed by array layer (`[layer0, layer1]`).
@@ -369,6 +367,8 @@ impl HiZBindGroupCache {
         let n = (mip_levels.saturating_sub(1)) as usize;
         Self {
             mip0_depth_view: None,
+            pyramid_left_mip0_view: None,
+            pyramid_right_mip0_view: None,
             mip0_desktop: None,
             mip0_stereo: [None, None],
             downsample_desktop: vec![None; n],
@@ -383,6 +383,29 @@ impl HiZBindGroupCache {
             self.mip0_depth_view = Some(depth_view.clone());
             self.mip0_desktop = None;
             self.mip0_stereo = [None, None];
+        }
+    }
+
+    /// Drops bind groups that reference the destination pyramid when the ping-pong half changes.
+    pub(crate) fn invalidate_pyramid_if_target_changed(
+        &mut self,
+        left_mip0_view: &wgpu::TextureView,
+        right_mip0_view: Option<&wgpu::TextureView>,
+    ) {
+        if self.pyramid_left_mip0_view.as_ref() == Some(left_mip0_view)
+            && self.pyramid_right_mip0_view.as_ref() == right_mip0_view
+        {
+            return;
+        }
+        self.pyramid_left_mip0_view = Some(left_mip0_view.clone());
+        self.pyramid_right_mip0_view = right_mip0_view.cloned();
+        self.mip0_desktop = None;
+        self.mip0_stereo = [None, None];
+        for slot in &mut self.downsample_desktop {
+            *slot = None;
+        }
+        for slot in &mut self.downsample_right {
+            *slot = None;
         }
     }
 
@@ -483,50 +506,12 @@ impl HiZGpuScratch {
             return None;
         }
 
-        let make_pyramid = || -> (wgpu::Texture, Vec<wgpu::TextureView>) {
-            let tex = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("hi_z_pyramid"),
-                size: wgpu::Extent3d {
-                    width: bw,
-                    height: bh,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: mip_levels,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R32Float,
-                usage: wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let mut views = Vec::with_capacity(mip_levels as usize);
-            for m in 0..mip_levels {
-                let v = tex.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("hi_z_pyramid_mip"),
-                    format: Some(wgpu::TextureFormat::R32Float),
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    aspect: wgpu::TextureAspect::All,
-                    base_mip_level: m,
-                    mip_level_count: Some(1),
-                    base_array_layer: 0,
-                    array_layer_count: None,
-                    ..Default::default()
-                });
-                views.push(v);
-            }
-            (tex, views)
-        };
-
-        let (pyramid, views) = make_pyramid();
         let staging_desktop = make_staging_ring(device, staging_size, "hi_z_staging_desktop");
 
-        let (pyramid_r, staging_r) = if stereo {
-            let (t, v) = make_pyramid();
-            let buf = make_staging_ring(device, staging_size, "hi_z_staging_r");
-            (Some((t, v)), Some(buf))
+        let staging_r = if stereo {
+            Some(make_staging_ring(device, staging_size, "hi_z_staging_r"))
         } else {
-            (None, None)
+            None
         };
 
         let layer_uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -546,9 +531,6 @@ impl HiZGpuScratch {
         Some(Self {
             extent: (bw, bh),
             mip_levels,
-            pyramid,
-            views,
-            pyramid_r,
             staging_desktop,
             staging_r,
             layer_uniform,

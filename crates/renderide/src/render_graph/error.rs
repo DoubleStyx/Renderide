@@ -114,6 +114,26 @@ pub enum RenderPassError {
     /// Clustered-light compute bind group was not created after cache update.
     #[error("clustered light compute bind group missing after prepare")]
     ClusteredLightBindGroupMissing,
+
+    /// A compute/copy pass expected a resolved imported texture but none was available.
+    #[error("pass `{pass}` requires imported texture `{resource}` but it was not resolved")]
+    MissingImportedTexture {
+        /// Pass name from [`super::RenderPass::name`].
+        pass: String,
+        /// Human-readable imported resource label.
+        resource: &'static str,
+    },
+
+    /// A compute/copy pass expected a ping-pong history texture but got a non-history import.
+    #[error(
+        "pass `{pass}` requires history texture `{resource}` but the import has no history backing"
+    )]
+    MissingImportedHistoryTexture {
+        /// Pass name from [`super::RenderPass::name`].
+        pass: String,
+        /// Human-readable imported resource label.
+        resource: &'static str,
+    },
 }
 
 /// Frame-level failure when recording or presenting the compiled graph.

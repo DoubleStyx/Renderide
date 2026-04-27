@@ -11,7 +11,9 @@ use glam::Mat4;
 use lru::LruCache;
 use parking_lot::Mutex;
 
-use crate::render_graph::occlusion::{encode_hi_z_build, HiZBuildRecord, HiZGpuState};
+use crate::render_graph::occlusion::{
+    encode_hi_z_build, HiZBuildRecord, HiZGpuState, HiZHistoryTarget,
+};
 use crate::render_graph::OcclusionViewId;
 use crate::render_graph::{
     capture_hi_z_temporal, HiZCullData, HiZTemporalState, OutputDepthMode, WorldMeshCullProjParams,
@@ -32,6 +34,10 @@ const OFFSCREEN_HIZ_LRU_CAP_NZ: NonZeroUsize = {
 pub(crate) struct HiZBuildInput<'a> {
     /// Depth attachment view (desktop 2D or multiview array) sampled for mip0.
     pub depth_view: &'a wgpu::TextureView,
+    /// Registry-owned ping-pong history texture that receives the pyramid.
+    pub history_texture: &'a wgpu::Texture,
+    /// Registry-owned per-layer/per-mip views for [`Self::history_texture`].
+    pub history_mip_views: &'a crate::backend::HistoryTextureMipViews,
     /// Full framebuffer extent in pixels (matches the depth attachment).
     pub extent: (u32, u32),
     /// Desktop single-view vs stereo depth array layout.
@@ -126,6 +132,10 @@ impl OcclusionSystem {
         encode_hi_z_build(
             record,
             input.depth_view,
+            HiZHistoryTarget {
+                texture: input.history_texture,
+                mip_views: input.history_mip_views,
+            },
             input.extent,
             input.mode,
             &mut state,

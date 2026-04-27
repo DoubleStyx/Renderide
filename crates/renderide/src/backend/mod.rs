@@ -21,6 +21,7 @@ mod material_system;
 pub mod mesh_deform;
 mod occlusion;
 mod per_draw_resources;
+mod per_view_resource_map;
 mod reflection_probe_sh2;
 mod render_backend;
 
@@ -44,7 +45,8 @@ pub use frame_resource_manager::{
 };
 pub use history_registry::{
     BufferHistorySlot, BufferHistorySpec, HistoryRegistry, HistoryRegistryError,
-    HistoryResourceScope, HistoryTexture, TextureHistorySlot, TextureHistorySpec,
+    HistoryResourceScope, HistoryTexture, HistoryTextureMipViews, TextureHistorySlot,
+    TextureHistorySpec,
 };
 pub use light_gpu::{
     order_lights_for_clustered_shading, order_lights_for_clustered_shading_in_place, GpuLight,

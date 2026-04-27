@@ -21,6 +21,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::backend::HistoryTextureMipViews;
 use crate::gpu::GpuLimits;
 
 use super::blackboard::Blackboard;
@@ -69,6 +70,17 @@ pub struct ResolvedGraphBuffer {
 pub struct ResolvedImportedTexture {
     /// Texture view available to graph-owned pass descriptors.
     pub view: wgpu::TextureView,
+    /// Backing history texture and subresource views when this import resolves a ping-pong slot.
+    pub history: Option<ResolvedImportedHistoryTexture>,
+}
+
+/// Resolved ping-pong texture import with backing texture access for explicit subresource writes.
+#[derive(Clone, Debug)]
+pub struct ResolvedImportedHistoryTexture {
+    /// Backing ping-pong texture for the selected current or previous half.
+    pub texture: wgpu::Texture,
+    /// Per-layer/per-mip views created by the history registry for this texture half.
+    pub mip_views: HistoryTextureMipViews,
 }
 
 /// Imported buffer resolved from backend frame resources or external state.

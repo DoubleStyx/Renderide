@@ -2,6 +2,7 @@
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::backend::HistoryTextureMipViews;
 use crate::render_graph::{
     hi_z_pyramid_dimensions, mip_dimensions, mip_levels_for_extent, OutputDepthMode,
 };
@@ -33,13 +34,14 @@ enum DepthBinding {
     D2Array { layer: u32 },
 }
 
-/// Which pyramid (desktop / stereo-left vs stereo-right) the current mip0 + downsample call
-/// should target. Controls which cache slots [`HiZBindGroupCache`] reuses or rebuilds.
+/// Which history texture layer the current mip0 + downsample call should target.
+///
+/// Controls which cache slots [`HiZBindGroupCache`] reuses or rebuilds.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PyramidSide {
     /// Desktop (non-stereo) or stereo-left pyramid.
     DesktopOrLeft,
-    /// Stereo-right pyramid (only populated when `pyramid_r` is present).
+    /// Stereo-right layer in a stereo history pyramid.
     Right,
 }
 
@@ -93,7 +95,7 @@ fn reset_and_prepare_hi_z_scratch(
     let stereo = matches!(mode, OutputDepthMode::StereoArray { .. });
     let mip_levels = mip_levels_for_extent(bw, bh, HIZ_MAX_MIPS);
     if state.scratch.as_ref().map(|s| (s.extent, s.mip_levels)) != Some(((bw, bh), mip_levels))
-        || state.scratch.as_ref().map(|s| s.pyramid_r.is_some()) != Some(stereo)
+        || state.scratch.as_ref().map(|s| s.staging_r.is_some()) != Some(stereo)
     {
         state.scratch = HiZGpuScratch::new(device, limits, (bw, bh), stereo);
         state.clear_pending();
@@ -119,6 +121,22 @@ pub struct HiZBuildRecord<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
 }
 
+/// Registry-owned Hi-Z pyramid selected for this view and ping-pong half.
+pub struct HiZHistoryTarget<'a> {
+    /// Backing history texture that receives mip writes and is copied to readback staging.
+    pub texture: &'a wgpu::Texture,
+    /// Per-layer/per-mip texture views for writing the current view's pyramid.
+    pub mip_views: &'a HistoryTextureMipViews,
+}
+
+/// Per-layer mip chains selected from a registry-owned Hi-Z history texture.
+struct HiZHistoryViews<'a> {
+    /// Desktop or stereo-left mip chain.
+    left: &'a [wgpu::TextureView],
+    /// Stereo-right mip chain when the depth target is a two-layer array.
+    right: Option<&'a [wgpu::TextureView]>,
+}
+
 /// Records Hi-Z build + copy-to-staging into the state's current readback slot.
 ///
 /// Claims the staging slot at encode time so two consecutive frames can never aim the
@@ -133,6 +151,7 @@ pub struct HiZBuildRecord<'a> {
 pub fn encode_hi_z_build(
     record: HiZBuildRecord<'_>,
     depth_view: &wgpu::TextureView,
+    history: HiZHistoryTarget<'_>,
     extent: (u32, u32),
     mode: OutputDepthMode,
     state: &mut HiZGpuState,
@@ -155,14 +174,21 @@ pub fn encode_hi_z_build(
 
     let (bw, bh) = scratch.extent;
     let pipes = HiZPipelines::get(device);
+    let Some(history_views) = resolve_history_views(history.mip_views, mode, scratch.mip_levels)
+    else {
+        return;
+    };
 
     scratch
         .bind_groups
         .invalidate_mip0_if_depth_changed(depth_view);
+    scratch.bind_groups.invalidate_pyramid_if_target_changed(
+        &history_views.left[0],
+        history_views.right.map(|views| &views[0]),
+    );
 
     match mode {
         OutputDepthMode::DesktopSingle => {
-            let views_clone: Vec<wgpu::TextureView> = scratch.views.clone();
             dispatch_mip0_and_downsample(HiZMip0EncodeContext {
                 device,
                 queue,
@@ -170,30 +196,20 @@ pub fn encode_hi_z_build(
                 depth_view,
                 scratch,
                 pipes,
-                pyramid_views: &views_clone,
+                pyramid_views: history_views.left,
                 depth_bind: DepthBinding::D2,
                 side: PyramidSide::DesktopOrLeft,
                 profiler,
             });
-            copy_pyramid_to_staging(
-                encoder,
-                &scratch.pyramid,
-                bw,
-                bh,
-                scratch.mip_levels,
-                &scratch.staging_desktop[ws],
-            );
+            copy_current_layer_to_staging(encoder, history.texture, 0, bw, bh, scratch, ws);
         }
         OutputDepthMode::StereoArray { .. } => {
-            if scratch.pyramid_r.is_none() || scratch.staging_r.is_none() {
+            if scratch.staging_r.is_none() {
                 return;
             }
-            let views_left: Vec<wgpu::TextureView> = scratch.views.clone();
-            let views_right: Vec<wgpu::TextureView> = scratch
-                .pyramid_r
-                .as_ref()
-                .map(|(_, v)| v.clone())
-                .unwrap_or_default();
+            let Some(views_right) = history_views.right else {
+                return;
+            };
             dispatch_mip0_and_downsample(HiZMip0EncodeContext {
                 device,
                 queue,
@@ -201,7 +217,7 @@ pub fn encode_hi_z_build(
                 depth_view,
                 scratch,
                 pipes,
-                pyramid_views: &views_left,
+                pyramid_views: history_views.left,
                 depth_bind: DepthBinding::D2Array { layer: 0 },
                 side: PyramidSide::DesktopOrLeft,
                 profiler,
@@ -213,29 +229,68 @@ pub fn encode_hi_z_build(
                 depth_view,
                 scratch,
                 pipes,
-                pyramid_views: &views_right,
+                pyramid_views: views_right,
                 depth_bind: DepthBinding::D2Array { layer: 1 },
                 side: PyramidSide::Right,
                 profiler,
             });
-            copy_pyramid_to_staging(
-                encoder,
-                &scratch.pyramid,
-                bw,
-                bh,
-                scratch.mip_levels,
-                &scratch.staging_desktop[ws],
-            );
-            if let (Some((pyr_r, _)), Some(staging_r)) =
-                (scratch.pyramid_r.as_ref(), scratch.staging_r.as_ref())
-            {
-                copy_pyramid_to_staging(encoder, pyr_r, bw, bh, scratch.mip_levels, &staging_r[ws]);
+            copy_current_layer_to_staging(encoder, history.texture, 0, bw, bh, scratch, ws);
+            if let Some(staging_r) = scratch.staging_r.as_ref() {
+                copy_pyramid_to_staging(
+                    encoder,
+                    history.texture,
+                    1,
+                    bw,
+                    bh,
+                    scratch.mip_levels,
+                    &staging_r[ws],
+                );
             }
         }
     }
 
     let claimed_ws = state.claim_encoded_slot();
     debug_assert_eq!(claimed_ws, ws);
+}
+
+/// Resolves the history texture layer/mip chains required by the current depth mode.
+fn resolve_history_views(
+    mip_views: &HistoryTextureMipViews,
+    mode: OutputDepthMode,
+    required_mips: u32,
+) -> Option<HiZHistoryViews<'_>> {
+    let Some(left) = history_layer_mip_views(mip_views, 0, required_mips) else {
+        logger::warn!("hi_z history texture missing layer 0 mip views; skipping encode");
+        return None;
+    };
+    let right = match mode {
+        OutputDepthMode::DesktopSingle => None,
+        OutputDepthMode::StereoArray { .. } => {
+            match history_layer_mip_views(mip_views, 1, required_mips) {
+                Some(views) => Some(views),
+                None => {
+                    logger::warn!(
+                        "hi_z stereo history texture missing layer 1 mip views; skipping encode"
+                    );
+                    return None;
+                }
+            }
+        }
+    };
+    Some(HiZHistoryViews { left, right })
+}
+
+/// Returns the mip view chain for `layer` when it covers every mip the current encode needs.
+fn history_layer_mip_views(
+    mip_views: &HistoryTextureMipViews,
+    layer: u32,
+    required_mips: u32,
+) -> Option<&[wgpu::TextureView]> {
+    let views = mip_views.layer_mip_views(layer)?;
+    if views.len() < required_mips as usize {
+        return None;
+    }
+    Some(&views[..required_mips as usize])
 }
 
 /// Fills Hi-Z mip0 from a depth texture (desktop 2D view or one layer of a stereo depth array).
@@ -457,9 +512,32 @@ fn dispatch_mip0_and_downsample(mut args: HiZMip0EncodeContext<'_>) {
     });
 }
 
+/// Copies the current write slot for one history layer into readback staging.
+fn copy_current_layer_to_staging(
+    encoder: &mut wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    array_layer: u32,
+    base_w: u32,
+    base_h: u32,
+    scratch: &HiZGpuScratch,
+    write_slot: usize,
+) {
+    copy_pyramid_to_staging(
+        encoder,
+        texture,
+        array_layer,
+        base_w,
+        base_h,
+        scratch.mip_levels,
+        &scratch.staging_desktop[write_slot],
+    );
+}
+
+/// Copies all mips for one history texture array layer into the selected readback staging buffer.
 fn copy_pyramid_to_staging(
     encoder: &mut wgpu::CommandEncoder,
     texture: &wgpu::Texture,
+    array_layer: u32,
     base_w: u32,
     base_h: u32,
     mip_levels: u32,
@@ -473,7 +551,11 @@ fn copy_pyramid_to_staging(
             wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: mip,
-                origin: wgpu::Origin3d::ZERO,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: array_layer,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {

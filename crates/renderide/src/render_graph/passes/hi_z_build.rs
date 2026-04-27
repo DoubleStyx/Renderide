@@ -4,9 +4,7 @@ use crate::backend::HiZBuildInput;
 use crate::render_graph::context::{ComputePassCtx, PostSubmitContext};
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder};
-use crate::render_graph::resources::{
-    BufferAccess, BufferHandle, ImportedTextureHandle, StorageAccess, TextureAccess,
-};
+use crate::render_graph::resources::{ImportedTextureHandle, StorageAccess, TextureAccess};
 
 /// Compute + copy pass that samples main depth and stages mips for next-frame occlusion.
 #[derive(Debug)]
@@ -21,8 +19,6 @@ pub struct HiZBuildGraphResources {
     pub depth: ImportedTextureHandle,
     /// Imported ping-pong Hi-Z pyramid output.
     pub hi_z_current: ImportedTextureHandle,
-    /// Transient staging/readback buffer.
-    pub readback_staging: BufferHandle,
 }
 
 impl HiZBuildPass {
@@ -52,7 +48,6 @@ impl ComputePass for HiZBuildPass {
                 access: StorageAccess::WriteOnly,
             },
         );
-        b.write_buffer(self.resources.readback_staging, BufferAccess::CopyDst);
         Ok(())
     }
 
@@ -67,6 +62,19 @@ impl ComputePass for HiZBuildPass {
         let Some(depth_sample_view) = frame.view.depth_sample_view.as_ref() else {
             return Ok(());
         };
+        let hi_z_history = ctx
+            .graph_resources
+            .and_then(|resources| resources.imported_texture(self.resources.hi_z_current))
+            .ok_or_else(|| RenderPassError::MissingImportedTexture {
+                pass: self.name().to_owned(),
+                resource: "hi_z_current",
+            })?
+            .history
+            .clone()
+            .ok_or_else(|| RenderPassError::MissingImportedHistoryTexture {
+                pass: self.name().to_owned(),
+                resource: "hi_z_current",
+            })?;
         let mode = frame.output_depth_mode();
         frame.shared.occlusion.encode_hi_z_build_pass(
             crate::render_graph::occlusion::HiZBuildRecord {
@@ -78,6 +86,8 @@ impl ComputePass for HiZBuildPass {
             frame.view.hi_z_slot.as_ref(),
             HiZBuildInput {
                 depth_view: depth_sample_view,
+                history_texture: &hi_z_history.texture,
+                history_mip_views: &hi_z_history.mip_views,
                 extent: frame.view.viewport_px,
                 mode,
             },

@@ -89,13 +89,50 @@ pub struct BufferHistorySpec {
     pub usage: wgpu::BufferUsages,
 }
 
-/// One half of a ping-pong texture pair: a texture plus its default view.
+/// Per-layer/per-mip views created for one texture-history allocation.
+#[derive(Clone, Debug)]
+pub struct HistoryTextureMipViews {
+    /// Views grouped as `layers[layer][mip]`.
+    layers: Arc<[Arc<[wgpu::TextureView]>]>,
+    /// Number of mip levels represented by every layer.
+    mip_level_count: u32,
+}
+
+impl HistoryTextureMipViews {
+    /// Returns the number of array layers represented by this view table.
+    pub fn layer_count(&self) -> u32 {
+        self.layers.len() as u32
+    }
+
+    /// Returns the number of mip views represented for every layer.
+    pub fn mip_level_count(&self) -> u32 {
+        self.mip_level_count
+    }
+
+    /// Returns all mip views for one array layer.
+    pub fn layer_mip_views(&self, layer: u32) -> Option<&[wgpu::TextureView]> {
+        self.layers.get(layer as usize).map(|views| views.as_ref())
+    }
+}
+
+/// Pure shape data for texture-history view tables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistoryTextureViewShape {
+    /// Number of array layers that should receive per-mip D2 views.
+    pub layer_count: u32,
+    /// Number of mip levels represented per layer.
+    pub mip_level_count: u32,
+}
+
+/// One half of a ping-pong texture pair: a texture plus reusable views.
 #[derive(Clone)]
 pub struct HistoryTexture {
     /// Allocated texture.
     pub texture: wgpu::Texture,
     /// Default full-resource view.
     pub view: wgpu::TextureView,
+    /// Per-layer/per-mip views for passes that write or sample explicit subresources.
+    pub mip_views: HistoryTextureMipViews,
 }
 
 /// Ping-pong texture history slot.
@@ -119,7 +156,12 @@ impl TextureHistorySlot {
                     view_formats: &[],
                 });
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                *slot = Some(HistoryTexture { texture, view });
+                let mip_views = create_texture_history_mip_views(&texture, &self.spec);
+                *slot = Some(HistoryTexture {
+                    texture,
+                    view,
+                    mip_views,
+                });
             }
         }
     }
@@ -418,6 +460,48 @@ fn buffer_specs_equivalent(a: &BufferHistorySpec, b: &BufferHistorySpec) -> bool
     a.label == b.label && a.size == b.size && a.usage == b.usage
 }
 
+/// Computes the per-layer/per-mip view table shape for a texture history spec.
+fn texture_history_view_shape(spec: &TextureHistorySpec) -> HistoryTextureViewShape {
+    let layer_count = match spec.dimension {
+        wgpu::TextureDimension::D2 => spec.extent.depth_or_array_layers.max(1),
+        wgpu::TextureDimension::D1 | wgpu::TextureDimension::D3 => 0,
+    };
+    HistoryTextureViewShape {
+        layer_count,
+        mip_level_count: spec.mip_level_count.max(1),
+    }
+}
+
+/// Creates D2 per-mip views for every array layer of a texture history allocation.
+fn create_texture_history_mip_views(
+    texture: &wgpu::Texture,
+    spec: &TextureHistorySpec,
+) -> HistoryTextureMipViews {
+    let shape = texture_history_view_shape(spec);
+    let mut layers = Vec::with_capacity(shape.layer_count as usize);
+    for layer in 0..shape.layer_count {
+        let mut mips = Vec::with_capacity(shape.mip_level_count as usize);
+        for mip in 0..shape.mip_level_count {
+            mips.push(texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("history_texture_mip_layer_view"),
+                format: Some(spec.format),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                aspect: wgpu::TextureAspect::All,
+                base_mip_level: mip,
+                mip_level_count: Some(1),
+                base_array_layer: layer,
+                array_layer_count: Some(1),
+                ..Default::default()
+            }));
+        }
+        layers.push(Arc::<[wgpu::TextureView]>::from(mips));
+    }
+    HistoryTextureMipViews {
+        layers: Arc::<[Arc<[wgpu::TextureView]>]>::from(layers),
+        mip_level_count: shape.mip_level_count,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +645,36 @@ mod tests {
         assert_eq!(guard.spec().extent.width, 200);
         assert!(guard.half(0).is_none());
         assert!(guard.half(1).is_none());
+    }
+
+    #[test]
+    fn texture_history_view_shape_tracks_d2_layers_and_mips() {
+        let mut spec = tex_spec();
+        spec.extent.depth_or_array_layers = 2;
+        spec.mip_level_count = 6;
+
+        assert_eq!(
+            texture_history_view_shape(&spec),
+            HistoryTextureViewShape {
+                layer_count: 2,
+                mip_level_count: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn texture_history_view_shape_skips_non_d2_subresource_tables() {
+        let mut spec = tex_spec();
+        spec.dimension = wgpu::TextureDimension::D3;
+        spec.extent.depth_or_array_layers = 4;
+        spec.mip_level_count = 3;
+
+        assert_eq!(
+            texture_history_view_shape(&spec),
+            HistoryTextureViewShape {
+                layer_count: 0,
+                mip_level_count: 3,
+            }
+        );
     }
 }

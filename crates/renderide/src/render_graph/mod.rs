@@ -190,7 +190,6 @@ struct MainGraphHandles {
     per_draw_slab: ImportedBufferHandle,
     frame_uniforms: ImportedBufferHandle,
     cluster_params: BufferHandle,
-    hi_z_readback: BufferHandle,
     /// Single-sample HDR scene color (forward resolve target + compose input).
     scene_color_hdr: TextureHandle,
     /// Multisampled HDR scene color for forward when MSAA is active.
@@ -328,7 +327,7 @@ fn import_main_graph_buffers(builder: &mut GraphBuilder) -> MainGraphBufferImpor
     }
 }
 
-/// Declares cluster/Hi-Z staging buffers and HDR forward transients for [`build_main_graph`].
+/// Declares cluster buffers and HDR forward transients for [`build_main_graph`].
 ///
 /// Forward MSAA depth targets use [`TransientArrayLayers::Frame`] (not a fixed layer count from
 /// [`GraphCacheKey::multiview_stereo`]) so the same compiled graph can run mono desktop and stereo
@@ -336,7 +335,6 @@ fn import_main_graph_buffers(builder: &mut GraphBuilder) -> MainGraphBufferImpor
 fn create_main_graph_transient_resources(
     builder: &mut GraphBuilder,
 ) -> (
-    BufferHandle,
     BufferHandle,
     TextureHandle,
     TextureHandle,
@@ -347,12 +345,6 @@ fn create_main_graph_transient_resources(
         label: "cluster_params",
         size_policy: BufferSizePolicy::Fixed(crate::backend::CLUSTER_PARAMS_UNIFORM_SIZE * 2),
         base_usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        alias: true,
-    });
-    let hi_z_readback = builder.create_buffer(TransientBufferDesc {
-        label: "hi_z_readback_staging",
-        size_policy: BufferSizePolicy::PerViewport { bytes_per_px: 4 },
-        base_usage: wgpu::BufferUsages::COPY_DST,
         alias: true,
     });
     // Use [`TransientExtent::Backbuffer`] for forward MSAA targets: [`build_default_main_graph`]
@@ -410,7 +402,6 @@ fn create_main_graph_transient_resources(
     );
     (
         cluster_params,
-        hi_z_readback,
         scene_color_hdr,
         scene_color_hdr_msaa,
         forward_msaa_depth,
@@ -424,7 +415,6 @@ fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGraphHandles {
     let buf = import_main_graph_buffers(builder);
     let (
         cluster_params,
-        hi_z_readback,
         scene_color_hdr,
         scene_color_hdr_msaa,
         forward_msaa_depth,
@@ -440,7 +430,6 @@ fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGraphHandles {
         per_draw_slab: buf.per_draw_slab,
         frame_uniforms: buf.frame_uniforms,
         cluster_params,
-        hi_z_readback,
         scene_color_hdr,
         scene_color_hdr_msaa,
         forward_msaa_depth,
@@ -511,7 +500,6 @@ fn add_main_graph_passes_and_edges(
         passes::HiZBuildGraphResources {
             depth: h.depth,
             hi_z_current: h.hi_z_current,
-            readback_staging: h.hi_z_readback,
         },
     )));
 

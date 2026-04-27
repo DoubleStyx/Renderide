@@ -8,7 +8,7 @@ use crate::gpu::GpuContext;
 
 use super::super::super::context::{
     GraphResolvedResources, ResolvedGraphBuffer, ResolvedGraphTexture, ResolvedImportedBuffer,
-    ResolvedImportedTexture,
+    ResolvedImportedHistoryTexture, ResolvedImportedTexture,
 };
 use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_params::OcclusionViewId;
@@ -141,12 +141,19 @@ impl CompiledRenderGraph {
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("render::resolve_imported_textures");
         for (idx, import) in self.imported_textures.iter().enumerate() {
-            let view = match &import.source {
-                ImportSource::FrameTarget(FrameTargetRole::ColorAttachment) => {
-                    resolved.backbuffer.cloned()
-                }
+            let resolved_import = match &import.source {
+                ImportSource::FrameTarget(FrameTargetRole::ColorAttachment) => resolved
+                    .backbuffer
+                    .cloned()
+                    .map(|view| ResolvedImportedTexture {
+                        view,
+                        history: None,
+                    }),
                 ImportSource::FrameTarget(FrameTargetRole::DepthAttachment) => {
-                    Some(resolved.depth_view.clone())
+                    Some(ResolvedImportedTexture {
+                        view: resolved.depth_view.clone(),
+                        history: None,
+                    })
                 }
                 ImportSource::External => None,
                 ImportSource::PingPong(slot) => {
@@ -160,14 +167,17 @@ impl CompiledRenderGraph {
                     let texture = guard.half(half_idx).ok_or_else(|| {
                         GraphExecuteError::unallocated_history_texture(*slot, half_name)
                     })?;
-                    Some(texture.view.clone())
+                    Some(ResolvedImportedTexture {
+                        view: texture.view.clone(),
+                        history: Some(ResolvedImportedHistoryTexture {
+                            texture: texture.texture.clone(),
+                            mip_views: texture.mip_views.clone(),
+                        }),
+                    })
                 }
             };
-            if let Some(view) = view {
-                resources.set_imported_texture(
-                    ImportedTextureHandle(idx as u32),
-                    ResolvedImportedTexture { view },
-                );
+            if let Some(resolved_import) = resolved_import {
+                resources.set_imported_texture(ImportedTextureHandle(idx as u32), resolved_import);
             }
         }
         Ok(())
