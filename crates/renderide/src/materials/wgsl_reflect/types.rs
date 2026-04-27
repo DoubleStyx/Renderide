@@ -40,7 +40,7 @@ pub struct ReflectedMaterialUniformBlock {
 }
 
 /// Result of `reflect_raster_material_wgsl` in the parent `wgsl_reflect` module.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ReflectedRasterLayout {
     /// Stable hash of material + per-draw bind group layout shapes (tests, diagnostics, future cache versioning).
     pub layout_fingerprint: u64,

@@ -4,8 +4,7 @@
 //! horizons analytically (Eq. 5–7), applies the multi-bounce fit (Eq. 10), and writes modulated
 //! HDR to the post-processing chain output.
 //!
-//! The per-pixel horizon search mirrors Intel's XeGTAO reference
-//! (`references_external/XeGTAO/Source/Rendering/Shaders/XeGTAO.hlsli`): direction is
+//! The per-pixel horizon search mirrors Intel's XeGTAO reference shader: direction is
 //! orthogonalised against the view vector, the slice-plane normal `axis_vec` is explicitly
 //! normalised before projecting the surface normal, horizon cosines are initialised at the
 //! tangent-plane bound `cos(n ± π/2)`, each candidate is smoothly faded toward that bound by a

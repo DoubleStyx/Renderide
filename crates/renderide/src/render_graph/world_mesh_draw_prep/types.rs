@@ -249,6 +249,18 @@ pub struct WorldMeshDrawCollection {
     pub draws_hi_z_culled: usize,
 }
 
+impl WorldMeshDrawCollection {
+    /// Builds an empty draw collection that explicitly suppresses in-graph scene collection.
+    pub fn empty() -> Self {
+        Self {
+            items: Vec::new(),
+            draws_pre_cull: 0,
+            draws_culled: 0,
+            draws_hi_z_culled: 0,
+        }
+    }
+}
+
 /// One indexed draw after pairing a material slot with a mesh submesh range.
 #[derive(Clone, Debug)]
 pub struct WorldMeshDrawItem {

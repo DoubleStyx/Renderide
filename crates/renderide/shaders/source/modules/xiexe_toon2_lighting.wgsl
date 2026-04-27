@@ -5,8 +5,8 @@
 //! ramp-driven half-Lambert diffuse, GGX direct specular, rim, shadow rim, subsurface,
 //! and matcap/PBR indirect specular.
 //!
-//! Math follows the upstream `references_external/.../XSLightingFunctions.cginc` &
-//! `XSLighting.cginc` rather than re-using the project's Filament BRDF, so a few
+//! Math follows the upstream Xiexe Toon lighting include files rather than re-using the
+//! project's Filament BRDF, so a few
 //! upstream quirks are intentionally preserved verbatim:
 //!
 //! - `_ShadowSharpness` snap is on the shadow attenuation, not the half-Lambert remap

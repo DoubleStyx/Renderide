@@ -9,13 +9,8 @@ use super::super::super::error::GraphExecuteError;
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext};
 use super::{GraphResolveKey, TransientTextureResolveSurfaceParams};
-use crate::assets::material::MaterialDictionary;
-use crate::materials::{
-    embedded_stem_needs_extended_vertex_streams, resolve_raster_pipeline, MaterialBlendMode,
-    MaterialPipelineDesc, MaterialRenderState, RasterPipelineKind,
-};
+use crate::materials::{MaterialBlendMode, MaterialPipelineDesc, MaterialRenderState};
 use crate::pipelines::ShaderPermutation;
-use crate::render_graph::world_mesh_draw_prep::FramePreparedRenderables;
 
 /// Pending cache warm-up request fanned out to the rayon pool by
 /// [`CompiledRenderGraph::pre_warm_pipeline_cache_for_views`].
@@ -33,6 +28,19 @@ struct PipelineCompileRequest {
 }
 
 impl CompiledRenderGraph {
+    /// Prepares shared frame resources, per-view resource slots, mesh streams, and material
+    /// pipelines for every view before command recording begins.
+    pub(super) fn prepare_view_resources_for_views(
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &[FrameView<'_>],
+    ) -> Result<(), GraphExecuteError> {
+        profiling::scope!("graph::prepare_view_resources");
+        Self::pre_sync_shared_frame_resources_for_views(mv_ctx, views);
+        Self::pre_warm_per_view_resources_for_views(mv_ctx, views)?;
+        Self::pre_warm_pipeline_cache_for_views(mv_ctx, views);
+        Ok(())
+    }
+
     /// Warms the [`crate::materials::MaterialRegistry`] pipeline cache for every prefetched draw
     /// before the per-view record loop begins.
     ///
@@ -40,12 +48,6 @@ impl CompiledRenderGraph {
     /// surface format, depth format, sample count, and multiview mask so cache keys match the
     /// keys the record path will request.
     ///
-    /// Deferred (lazy-collect) views — notably the OpenXR stereo HMD view — have no prefetched
-    /// items at this stage but render the same scene as the prefetched views. The second pass
-    /// below stamps the deferred views' `pass_desc` / `shader_perm` over the union of items from
-    /// every prefetched view so HMD-format cache entries warm in parallel with desktop entries
-    /// and the first VR frame after a scene load doesn't hitch on cold pipeline compilation
-    /// inside the recording phase.
     pub(super) fn pre_warm_pipeline_cache_for_views(
         mv_ctx: &mut MultiViewExecutionContext<'_>,
         views: &[FrameView<'_>],
@@ -56,42 +58,20 @@ impl CompiledRenderGraph {
         }
 
         let mut compile_requests: Vec<PipelineCompileRequest> = Vec::new();
-        let mut deferred_pass_descs: Vec<(MaterialPipelineDesc, ShaderPermutation)> = Vec::new();
         for view in views {
             let Some((pass_desc, shader_perm)) = view_pipeline_pass_desc(mv_ctx, view) else {
                 continue;
             };
-            match view.prefetched_world_mesh_draws.as_ref() {
-                Some(collection) if !collection.items.is_empty() => {
-                    collect_unique_pipeline_requests(
-                        &collection.items,
-                        pass_desc,
-                        shader_perm,
-                        &mut compile_requests,
-                    );
-                }
-                _ => {
-                    deferred_pass_descs.push((pass_desc, shader_perm));
-                }
-            }
-        }
-
-        if !deferred_pass_descs.is_empty() {
-            for view in views {
-                let Some(collection) = view.prefetched_world_mesh_draws.as_ref() else {
-                    continue;
-                };
-                if collection.items.is_empty() {
-                    continue;
-                }
-                for &(pass_desc, shader_perm) in &deferred_pass_descs {
-                    collect_unique_pipeline_requests(
-                        &collection.items,
-                        pass_desc,
-                        shader_perm,
-                        &mut compile_requests,
-                    );
-                }
+            let Some(collection) = view.world_mesh_draw_plan.as_prefetched() else {
+                continue;
+            };
+            if !collection.items.is_empty() {
+                collect_unique_pipeline_requests(
+                    &collection.items,
+                    pass_desc,
+                    shader_perm,
+                    &mut compile_requests,
+                );
             }
         }
 
@@ -134,7 +114,6 @@ impl CompiledRenderGraph {
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::pre_warm_per_view");
         let mut mesh_ids_needing_extended_streams = std::collections::HashSet::new();
-        let mut any_view_missing_prefetch = false;
         for view in views {
             let occlusion_view = view.occlusion_view_id();
             let viewport = view.target.extent_px(mv_ctx.gpu);
@@ -154,7 +133,7 @@ impl CompiledRenderGraph {
                 .backend
                 .frame_resources
                 .per_view_per_draw_scratch_or_create(occlusion_view);
-            if let Some(collection) = view.prefetched_world_mesh_draws.as_ref() {
+            if let Some(collection) = view.world_mesh_draw_plan.as_prefetched() {
                 for item in &collection.items {
                     if item.batch_key.embedded_needs_extended_vertex_streams
                         && item.mesh_asset_id >= 0
@@ -162,24 +141,7 @@ impl CompiledRenderGraph {
                         mesh_ids_needing_extended_streams.insert(item.mesh_asset_id);
                     }
                 }
-            } else {
-                any_view_missing_prefetch = true;
             }
-        }
-        if any_view_missing_prefetch {
-            // Entry points that hand the graph a [`FrameView`] without prefetched draws — notably
-            // the OpenXR stereo view assembled in
-            // [`crate::runtime::RendererRuntime::render_frame`] — otherwise leave the mesh set
-            // above empty, so `ensure_extended_vertex_streams` never runs for materials whose
-            // vertex shader reads `@location(4)` or higher. The per-view record path uses an
-            // immutable `&MeshPool` and cannot upload those streams itself; a miss there silently
-            // drops the draw. Mirror the scene walk that
-            // [`crate::runtime::secondary_cameras`] performs for desktop multi-view, scoped to
-            // the main render context, and pre-warm the same streams here.
-            collect_fallback_extended_stream_mesh_ids(
-                mv_ctx,
-                &mut mesh_ids_needing_extended_streams,
-            );
         }
         for mesh_asset_id in mesh_ids_needing_extended_streams {
             let _ = mv_ctx
@@ -225,10 +187,8 @@ impl CompiledRenderGraph {
 
     /// Pre-resolves transient textures and buffers for every view's [`GraphResolveKey`].
     ///
-    /// Hoists the transient-pool allocation out of the per-view record loop so that the loop
-    /// itself no longer calls `backend.transient_pool_mut()`. This is a prerequisite for parallel
-    /// per-view recording (Milestone E): concurrent workers cannot share `&mut` access to the
-    /// pool, but they can share `&` access to the resulting `transient_by_key` map.
+    /// Hoists transient-pool allocation out of the per-view record loop so recording can read the
+    /// resulting `transient_by_key` map without mutating the shared pool.
     ///
     /// Imported textures/buffers still resolve per-view inside the record loop because their
     /// bindings (backbuffer, per-view cluster refs) differ across views that share a key.
@@ -366,52 +326,5 @@ fn material_pipeline_pass_desc_for_item(
         }
     } else {
         pass_desc
-    }
-}
-
-/// Fallback scene walk that mirrors [`crate::runtime::secondary_cameras::RendererRuntime::render_frame`]'s
-/// frame-scope renderable expansion, scoped to the scene's active main render context.
-///
-/// Invoked by [`CompiledRenderGraph::pre_warm_per_view_resources_for_views`] when at least one
-/// view arrives without prefetched world-mesh draws. Uploads tangent / UV1..3 streams for every
-/// mesh whose resolved material stem has a vertex shader that reads `@location(4)` or higher so
-/// the per-view record path's read-only [`crate::resources::MeshPool`] finds those streams ready
-/// instead of silently skipping the draw. Today this is exercised by the OpenXR stereo view
-/// assembled in [`crate::runtime::RendererRuntime::render_frame`]; any other caller that passes
-/// `prefetched_world_mesh_draws: None` will also reuse this fallback.
-fn collect_fallback_extended_stream_mesh_ids(
-    mv_ctx: &MultiViewExecutionContext<'_>,
-    out: &mut std::collections::HashSet<i32>,
-) {
-    profiling::scope!("graph::pre_warm_per_view_fallback_scene_walk");
-    let Some(reg) = mv_ctx.backend.materials.material_registry() else {
-        return;
-    };
-    let router = &reg.router;
-    let property_store = mv_ctx.backend.materials.material_property_store();
-    let dict = MaterialDictionary::new(property_store);
-    let render_context = mv_ctx.scene.active_main_render_context();
-    let mesh_pool = &mv_ctx.backend.asset_transfers.mesh_pool;
-    let prepared =
-        FramePreparedRenderables::build_for_frame(mv_ctx.scene, mesh_pool, render_context);
-    if prepared.is_empty() {
-        return;
-    }
-    for (mesh_asset_id, material_asset_id) in prepared.mesh_material_pairs() {
-        if mesh_asset_id < 0 {
-            continue;
-        }
-        let shader_asset_id = dict
-            .shader_asset_for_material(material_asset_id)
-            .unwrap_or(-1);
-        let needs = match resolve_raster_pipeline(shader_asset_id, router) {
-            RasterPipelineKind::EmbeddedStem(stem) => {
-                embedded_stem_needs_extended_vertex_streams(stem.as_ref(), ShaderPermutation(0))
-            }
-            RasterPipelineKind::Null => false,
-        };
-        if needs {
-            out.insert(mesh_asset_id);
-        }
     }
 }

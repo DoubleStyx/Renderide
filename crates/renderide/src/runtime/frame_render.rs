@@ -10,7 +10,7 @@ use crate::assets::material::MaterialDictionary;
 use crate::backend::OcclusionSystem;
 use crate::gpu::GpuContext;
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
-use crate::pipelines::ShaderPermutation;
+use crate::pipelines::{ShaderPermutation, SHADER_PERM_MULTIVIEW_STEREO};
 use crate::render_graph::{
     build_world_mesh_cull_proj_params, camera_state_enabled,
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
@@ -18,7 +18,7 @@ use crate::render_graph::{
     ExternalFrameTargets, ExternalOffscreenTargets, FramePreparedRenderables, FrameView,
     FrameViewTarget, GraphExecuteError, HiZCullData, HiZTemporalState, HostCameraFrame,
     OcclusionViewId, OutputDepthMode, WorldMeshCullInput, WorldMeshCullProjParams,
-    WorldMeshDrawCollectParallelism,
+    WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
 };
 use crate::scene::SceneCoordinator;
 
@@ -117,15 +117,6 @@ struct OffscreenRtHandles {
     color_format: wgpu::TextureFormat,
 }
 
-/// Whether a view drives CPU-side draw collection before the render graph executes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum DrawPrefetch {
-    /// Collect + cull draws before dispatch; attach as `prefetched_world_mesh_draws` on `FrameView`.
-    Prefetched,
-    /// Let the render graph perform its own CPU collection internally (HMD stereo multiview path).
-    Deferred,
-}
-
 /// Target-specific payload for a [`PreparedView`].
 enum PreparedViewKind<'a> {
     /// HMD stereo multiview view; targets are external (pre-acquired by the XR driver).
@@ -150,8 +141,6 @@ struct PreparedView<'a> {
     occlusion_view_id: OcclusionViewId,
     /// Attachment extent in pixels for this view.
     viewport_px: (u32, u32),
-    /// Whether draws are prefetched CPU-side or deferred to the render graph.
-    prefetch: DrawPrefetch,
     /// Target-specific payload (HMD, secondary RT, main swapchain).
     kind: PreparedViewKind<'a>,
 }
@@ -196,6 +185,27 @@ impl PreparedView<'_> {
             .or(self.host_camera.eye_world_position)
             .unwrap_or_else(|| self.host_camera.head_output_transform.col(3).truncate())
     }
+
+    /// `true` when this prepared view records the OpenXR stereo multiview draw path.
+    fn is_multiview_stereo_active(&self) -> bool {
+        matches!(self.kind, PreparedViewKind::Hmd(_))
+            && self.host_camera.vr_active
+            && self.host_camera.stereo.is_some()
+    }
+
+    /// Shader permutation used by CPU draw collection and material metadata for this view.
+    fn shader_permutation(&self) -> ShaderPermutation {
+        if self.is_multiview_stereo_active() {
+            SHADER_PERM_MULTIVIEW_STEREO
+        } else {
+            ShaderPermutation(0)
+        }
+    }
+
+    /// Depth output layout used for Hi-Z and occlusion data sampled during CPU culling.
+    fn output_depth_mode(&self) -> OutputDepthMode {
+        OutputDepthMode::from_multiview_stereo(self.is_multiview_stereo_active())
+    }
 }
 
 /// Frustum + Hi-Z cull inputs for one prepared view.
@@ -226,7 +236,7 @@ struct FrameCollectionContext<'a> {
     pipeline_property_ids: MaterialPipelinePropertyIds,
     /// Mono/stereo/overlay render context applied this tick.
     render_context: crate::shared::RenderingContext,
-    /// Persistent material batch cache, refreshed once at the start of [`RendererRuntime::render_frame`].
+    /// Persistent mono material batch cache, refreshed once at the start of [`RendererRuntime::render_frame`].
     material_cache: &'a crate::render_graph::FrameMaterialBatchCache,
     /// Dense per-frame walk of renderables pre-expanded once before per-view collection.
     prepared: &'a FramePreparedRenderables,
@@ -234,23 +244,23 @@ struct FrameCollectionContext<'a> {
     inner_parallelism: WorldMeshDrawCollectParallelism,
 }
 
-/// Collects and sorts world-mesh draws for every [`DrawPrefetch::Prefetched`] view in parallel.
+/// Collects and sorts world-mesh draws for every prepared view in parallel.
 ///
-/// Returns one entry per prepared view preserving input order; [`DrawPrefetch::Deferred`] views
-/// yield [`None`] so the render graph falls back to its in-pass collection.
+/// Returns one explicit [`WorldMeshDrawPlan`] per prepared view, preserving input order so the
+/// compiled graph never has to infer whether draws were intentionally omitted or merely missing.
 fn collect_view_draws(
     ctx: &FrameCollectionContext<'_>,
     prepared: &[PreparedView<'_>],
     cull_snapshots: &[Option<ViewCullSnapshot>],
-) -> Vec<Option<crate::render_graph::WorldMeshDrawCollection>> {
+) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::collect_view_draws");
     prepared
         .par_iter()
         .zip(cull_snapshots.par_iter())
         .map(|(prep, snap)| {
-            if prep.prefetch == DrawPrefetch::Deferred {
-                return None;
-            }
+            let shader_perm = prep.shader_permutation();
+            let material_cache =
+                (shader_perm == ShaderPermutation(0)).then_some(ctx.material_cache);
             let dict = MaterialDictionary::new(ctx.property_store);
             let culling = snap.as_ref().map(|s| WorldMeshCullInput {
                 proj: s.proj,
@@ -258,20 +268,20 @@ fn collect_view_draws(
                 hi_z: s.hi_z.clone(),
                 hi_z_temporal: s.hi_z_temporal.clone(),
             });
-            Some(collect_and_sort_world_mesh_draws_with_parallelism(
+            WorldMeshDrawPlan::Prefetched(collect_and_sort_world_mesh_draws_with_parallelism(
                 &DrawCollectionContext {
                     scene: ctx.scene,
                     mesh_pool: ctx.mesh_pool,
                     material_dict: &dict,
                     material_router: ctx.router,
                     pipeline_property_ids: &ctx.pipeline_property_ids,
-                    shader_perm: ShaderPermutation(0),
+                    shader_perm,
                     render_context: ctx.render_context,
                     head_output_transform: prep.host_camera.head_output_transform,
                     view_origin_world: prep.view_origin_world(),
                     culling: culling.as_ref(),
                     transform_filter: prep.draw_filter.as_ref(),
-                    material_cache: Some(ctx.material_cache),
+                    material_cache,
                     prepared: Some(ctx.prepared),
                 },
                 ctx.inner_parallelism,
@@ -281,14 +291,10 @@ fn collect_view_draws(
 }
 
 /// Selects the per-view inner-walk parallelism tier for a tick based on how many views will
-/// prefetch draws. Keeps rayon from oversubscribing when several views each spawn worker-level
+/// collect draws. Keeps rayon from oversubscribing when several views each spawn worker-level
 /// parallelism.
 fn select_inner_parallelism(prepared: &[PreparedView<'_>]) -> WorldMeshDrawCollectParallelism {
-    let prefetch_count = prepared
-        .iter()
-        .filter(|p| p.prefetch == DrawPrefetch::Prefetched)
-        .count();
-    if prefetch_count > 1 {
+    if prepared.len() > 1 {
         WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
     } else {
         WorldMeshDrawCollectParallelism::Full
@@ -297,19 +303,19 @@ fn select_inner_parallelism(prepared: &[PreparedView<'_>]) -> WorldMeshDrawColle
 
 /// Builds frustum + Hi-Z cull inputs for one prepared view.
 ///
-/// Returns [`None`] when the view either skips prefetch (HMD) or has explicitly suppressed
-/// temporal occlusion (selective secondary cameras). Safe to call in parallel across views:
+/// Returns [`None`] when the view has explicitly suppressed temporal occlusion (selective
+/// secondary cameras). Safe to call in parallel across views:
 /// [`OcclusionSystem`] is `Sync` because its internal readback channel uses `crossbeam_channel`.
 fn cull_snapshot_for_view(
     scene: &SceneCoordinator,
     occlusion: &OcclusionSystem,
     prep: &PreparedView<'_>,
 ) -> Option<ViewCullSnapshot> {
-    if prep.prefetch == DrawPrefetch::Deferred || prep.host_camera.suppress_occlusion_temporal {
+    if prep.host_camera.suppress_occlusion_temporal {
         return None;
     }
     let proj = build_world_mesh_cull_proj_params(scene, prep.viewport_px, &prep.host_camera);
-    let depth_mode = OutputDepthMode::DesktopSingle;
+    let depth_mode = prep.output_depth_mode();
     Some(ViewCullSnapshot {
         proj,
         hi_z: occlusion.hi_z_cull_data(depth_mode, prep.occlusion_view_id),
@@ -452,7 +458,7 @@ impl RendererRuntime {
                 host_camera: prep.host_camera,
                 target: prep.target(),
                 draw_filter: prep.draw_filter.clone(),
-                prefetched_world_mesh_draws: draws,
+                world_mesh_draw_plan: draws,
             })
             .collect();
 
@@ -518,7 +524,6 @@ impl RendererRuntime {
                 draw_filter: None,
                 occlusion_view_id: OcclusionViewId::Main,
                 viewport_px: extent_px,
-                prefetch: DrawPrefetch::Deferred,
                 kind: PreparedViewKind::Hmd(ext),
             });
         }
@@ -627,7 +632,6 @@ impl RendererRuntime {
                 draw_filter: Some(filter),
                 occlusion_view_id: OcclusionViewId::OffscreenRenderTexture(rt_id),
                 viewport_px: viewport,
-                prefetch: DrawPrefetch::Prefetched,
                 kind: PreparedViewKind::SecondaryRt(OffscreenRtHandles {
                     rt_id,
                     color_view,
@@ -653,7 +657,6 @@ impl RendererRuntime {
             draw_filter: None,
             occlusion_view_id: OcclusionViewId::Main,
             viewport_px: swapchain_extent_px,
-            prefetch: DrawPrefetch::Prefetched,
             kind: PreparedViewKind::MainSwapchain,
         }
     }
@@ -690,7 +693,6 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert!(matches!(views[0].kind, PreparedViewKind::MainSwapchain));
         assert_eq!(views[0].occlusion_view_id, OcclusionViewId::Main);
-        assert_eq!(views[0].prefetch, DrawPrefetch::Prefetched);
         assert!(views[0].draw_filter.is_none());
     }
 
@@ -730,6 +732,14 @@ mod tests {
             .find(|v| matches!(v.kind, PreparedViewKind::MainSwapchain))
             .expect("DesktopPlusSecondaries yields a MainSwapchain view");
         assert_eq!(main.viewport_px, (1280, 720));
+    }
+
+    #[test]
+    fn main_view_uses_default_shader_permutation_and_depth_mode() {
+        let runtime = build_runtime();
+        let view = runtime.build_main_swapchain_view(TEST_EXTENT);
+        assert_eq!(view.shader_permutation(), ShaderPermutation(0));
+        assert_eq!(view.output_depth_mode(), OutputDepthMode::DesktopSingle);
     }
 
     #[test]

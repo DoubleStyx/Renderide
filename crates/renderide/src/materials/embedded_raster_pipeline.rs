@@ -8,7 +8,9 @@ use crate::materials::pipeline_build_error::PipelineBuildError;
 use crate::materials::raster_pipeline::{
     create_reflective_raster_mesh_forward_pipelines, ShaderModuleBuildRefs, VertexStreamToggles,
 };
-use crate::materials::{materialized_pass_for_blend_mode, MaterialBlendMode, MaterialRenderState};
+use crate::materials::{
+    materialized_pass_for_blend_mode, MaterialBlendMode, MaterialRenderState, ReflectedRasterLayout,
+};
 use crate::pipelines::raster::SHADER_PERM_MULTIVIEW_STEREO;
 use crate::pipelines::ShaderPermutation;
 
@@ -24,34 +26,84 @@ pub(crate) struct EmbeddedRasterPipelineSource {
     pub render_state: MaterialRenderState,
 }
 
-fn embedded_uv0_stream_cache() -> &'static Mutex<HashMap<String, bool>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+/// Cache key for reflection-derived metadata on a composed embedded target.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct EmbeddedStemMetadataKey {
+    /// Base material stem before permutation composition.
+    base_stem: String,
+    /// Shader permutation used to select the composed target.
+    permutation: ShaderPermutation,
+}
+
+/// Reflection-derived metadata used by draw collection, pre-warm, and pipeline setup.
+#[derive(Clone, Debug)]
+struct EmbeddedStemMetadata {
+    /// Reflected WGSL layout when the composed target exists and validates.
+    reflected: Option<ReflectedRasterLayout>,
+    /// Number of declared material passes submitted for this target.
+    pass_count: usize,
+    /// Whether any declared pass has a blend state.
+    uses_alpha_blending: bool,
+}
+
+impl EmbeddedStemMetadata {
+    /// Highest reflected vertex input location on `vs_main`.
+    fn vs_max_vertex_location(&self) -> Option<u32> {
+        self.reflected.as_ref()?.vs_max_vertex_location
+    }
+
+    /// Whether `vs_main` needs the given vertex location or higher.
+    fn needs_vertex_location(&self, min_location: u32) -> bool {
+        self.vs_max_vertex_location()
+            .is_some_and(|loc| loc >= min_location)
+    }
+
+    /// Whether reflection found a grab-pass marker field.
+    fn requires_grab_pass(&self) -> bool {
+        self.reflected
+            .as_ref()
+            .is_some_and(|r| r.requires_grab_pass)
+    }
+
+    /// Whether reflection found an intersection-pass marker field.
+    fn requires_intersection_pass(&self) -> bool {
+        self.reflected
+            .as_ref()
+            .is_some_and(|r| r.requires_intersection_pass)
+    }
+}
+
+fn embedded_stem_metadata_cache(
+) -> &'static Mutex<HashMap<EmbeddedStemMetadataKey, EmbeddedStemMetadata>> {
+    static CACHE: OnceLock<Mutex<HashMap<EmbeddedStemMetadataKey, EmbeddedStemMetadata>>> =
+        OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn embedded_color_stream_cache() -> &'static Mutex<HashMap<String, bool>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
+/// Returns cached metadata for an embedded material stem and permutation.
+fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> EmbeddedStemMetadata {
+    let key = EmbeddedStemMetadataKey {
+        base_stem: base_stem.to_string(),
+        permutation,
+    };
+    let mut guard = embedded_stem_metadata_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(metadata) = guard.get(&key) {
+        return metadata.clone();
+    }
 
-fn embedded_extended_vertex_stream_cache() -> &'static Mutex<HashMap<String, bool>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn embedded_intersection_pass_cache() -> &'static Mutex<HashMap<String, bool>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn embedded_grab_pass_cache() -> &'static Mutex<HashMap<String, bool>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn embedded_alpha_blending_cache() -> &'static Mutex<HashMap<String, bool>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
+    let reflected = embedded_shaders::embedded_target_wgsl(&composed)
+        .and_then(|wgsl| crate::materials::wgsl_reflect::reflect_raster_material_wgsl(wgsl).ok());
+    let passes = embedded_shaders::embedded_target_passes(&composed);
+    let metadata = EmbeddedStemMetadata {
+        reflected,
+        pass_count: passes.len().max(1),
+        uses_alpha_blending: passes.iter().any(|p| p.blend.is_some()),
+    };
+    guard.insert(key, metadata.clone());
+    metadata
 }
 
 /// `true` when composed embedded WGSL's `vs_main` uses `@location(2)` or higher (UV0 vertex stream).
@@ -62,19 +114,7 @@ fn embedded_alpha_blending_cache() -> &'static Mutex<HashMap<String, bool>> {
 /// Results are memoized per `(base_stem, permutation)` so draw collection and other hot paths do not
 /// re-run naga reflection once per mesh draw.
 pub fn embedded_stem_needs_uv0_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
-    let key = format!("{base_stem}:{}", permutation.0);
-    let mut guard = embedded_uv0_stream_cache()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(v) = guard.get(&key) {
-        return *v;
-    }
-    let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
-    let v = embedded_shaders::embedded_target_wgsl(&composed)
-        .map(embedded_wgsl_needs_uv0_stream)
-        .unwrap_or(false);
-    guard.insert(key, v);
-    v
+    embedded_stem_metadata(base_stem, permutation).needs_vertex_location(2)
 }
 
 /// `true` when `vs_main` reflection reports a highest vertex `@location` index ≥ 2 (UV at `location(2)`).
@@ -84,19 +124,7 @@ pub fn embedded_wgsl_needs_uv0_stream(wgsl_source: &str) -> bool {
 
 /// `true` when composed embedded WGSL's `vs_main` uses `@location(3)` or higher (vertex color stream).
 pub fn embedded_stem_needs_color_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
-    let key = format!("{base_stem}:{}", permutation.0);
-    let mut guard = embedded_color_stream_cache()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(v) = guard.get(&key) {
-        return *v;
-    }
-    let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
-    let v = embedded_shaders::embedded_target_wgsl(&composed)
-        .map(embedded_wgsl_needs_color_stream)
-        .unwrap_or(false);
-    guard.insert(key, v);
-    v
+    embedded_stem_metadata(base_stem, permutation).needs_vertex_location(3)
 }
 
 /// `true` when `vs_main` reflection reports a highest vertex `@location` index >= 3 (color at `location(3)`).
@@ -109,19 +137,7 @@ pub fn embedded_stem_needs_extended_vertex_streams(
     base_stem: &str,
     permutation: ShaderPermutation,
 ) -> bool {
-    let key = format!("{base_stem}:{}", permutation.0);
-    let mut guard = embedded_extended_vertex_stream_cache()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(v) = guard.get(&key) {
-        return *v;
-    }
-    let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
-    let v = embedded_shaders::embedded_target_wgsl(&composed)
-        .map(embedded_wgsl_needs_extended_vertex_streams)
-        .unwrap_or(false);
-    guard.insert(key, v);
-    v
+    embedded_stem_metadata(base_stem, permutation).needs_vertex_location(4)
 }
 
 /// `true` when `vs_main` reflection reports a highest vertex `@location` index >= 4.
@@ -134,10 +150,7 @@ pub fn embedded_wgsl_needs_extended_vertex_streams(wgsl_source: &str) -> bool {
 
 /// Number of raster passes that will be submitted for one embedded draw batch.
 pub fn embedded_stem_pipeline_pass_count(base_stem: &str, permutation: ShaderPermutation) -> usize {
-    let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
-    embedded_shaders::embedded_target_passes(&composed)
-        .len()
-        .max(1)
+    embedded_stem_metadata(base_stem, permutation).pass_count
 }
 
 /// `true` when reflection reports a grab-pass material (uniform field `_GrabPass`).
@@ -149,19 +162,7 @@ pub fn embedded_wgsl_requires_grab_pass(wgsl_source: &str) -> bool {
 ///
 /// Memoized per `(base_stem, permutation)` like [`embedded_stem_needs_uv0_stream`].
 pub fn embedded_stem_requires_grab_pass(base_stem: &str, permutation: ShaderPermutation) -> bool {
-    let key = format!("{base_stem}:{}", permutation.0);
-    let mut guard = embedded_grab_pass_cache()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(v) = guard.get(&key) {
-        return *v;
-    }
-    let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
-    let v = embedded_shaders::embedded_target_wgsl(&composed)
-        .map(embedded_wgsl_requires_grab_pass)
-        .unwrap_or(false);
-    guard.insert(key, v);
-    v
+    embedded_stem_metadata(base_stem, permutation).requires_grab_pass()
 }
 
 /// `true` when reflection reports `_IntersectColor` in the material uniform (intersection forward subpass).
@@ -176,19 +177,7 @@ pub fn embedded_stem_requires_intersection_pass(
     base_stem: &str,
     permutation: ShaderPermutation,
 ) -> bool {
-    let key = format!("{base_stem}:{}", permutation.0);
-    let mut guard = embedded_intersection_pass_cache()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(v) = guard.get(&key) {
-        return *v;
-    }
-    let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
-    let v = embedded_shaders::embedded_target_wgsl(&composed)
-        .map(embedded_wgsl_requires_intersection_pass)
-        .unwrap_or(false);
-    guard.insert(key, v);
-    v
+    embedded_stem_metadata(base_stem, permutation).requires_intersection_pass()
 }
 
 /// Composed target stem for an embedded base stem (e.g. `unlit_default` → `unlit_multiview`).
@@ -256,19 +245,7 @@ pub(crate) fn create_embedded_render_pipelines(
 /// Returns whether the embedded material stem declares alpha blending (any `//#pass` directive
 /// with non-None blend state). Memoized per base stem.
 pub fn embedded_stem_uses_alpha_blending(base_stem: &str) -> bool {
-    let key = base_stem.to_string();
-    let mut guard = embedded_alpha_blending_cache()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(v) = guard.get(&key) {
-        return *v;
-    }
-    let composed = embedded_composed_stem_for_permutation(base_stem, ShaderPermutation(0));
-    let v = embedded_shaders::embedded_target_passes(&composed)
-        .iter()
-        .any(|p| p.blend.is_some());
-    guard.insert(key, v);
-    v
+    embedded_stem_metadata(base_stem, ShaderPermutation(0)).uses_alpha_blending
 }
 
 #[cfg(test)]
@@ -319,6 +296,69 @@ mod tests {
         assert!(!embedded_stem_needs_extended_vertex_streams(
             "ui_textunlit_default",
             SHADER_PERM_MULTIVIEW_STEREO,
+        ));
+    }
+
+    #[test]
+    fn metadata_flags_cover_common_material_classes() {
+        let mono = ShaderPermutation(0);
+        assert_eq!(embedded_stem_pipeline_pass_count("null_default", mono), 1);
+        assert!(!embedded_stem_requires_grab_pass("null_default", mono));
+        assert!(!embedded_stem_requires_intersection_pass(
+            "null_default",
+            mono
+        ));
+        assert!(!embedded_stem_needs_color_stream("null_default", mono));
+
+        assert!(embedded_stem_needs_color_stream(
+            "ui_textunlit_default",
+            mono
+        ));
+        assert!(!embedded_stem_needs_extended_vertex_streams(
+            "ui_textunlit_default",
+            mono
+        ));
+
+        assert!(embedded_stem_needs_extended_vertex_streams(
+            "ui_circlesegment_default",
+            mono
+        ));
+        assert!(embedded_stem_needs_extended_vertex_streams(
+            "ui_circlesegment_default",
+            SHADER_PERM_MULTIVIEW_STEREO
+        ));
+
+        assert!(embedded_stem_requires_grab_pass("blur_default", mono));
+        assert!(embedded_stem_requires_grab_pass(
+            "blur_default",
+            SHADER_PERM_MULTIVIEW_STEREO
+        ));
+        assert!(!embedded_stem_requires_intersection_pass(
+            "blur_default",
+            mono
+        ));
+
+        assert!(embedded_stem_requires_intersection_pass(
+            "pbsintersect_default",
+            mono
+        ));
+        assert!(!embedded_stem_requires_grab_pass(
+            "pbsintersect_default",
+            mono
+        ));
+
+        assert_eq!(
+            embedded_stem_pipeline_pass_count("xstoon2.0_default", mono),
+            1
+        );
+        assert!(embedded_stem_needs_extended_vertex_streams(
+            "xstoon2.0_default",
+            mono
+        ));
+        assert!(!embedded_stem_requires_grab_pass("xstoon2.0_default", mono));
+        assert!(!embedded_stem_requires_intersection_pass(
+            "xstoon2.0_default",
+            mono
         ));
     }
 }

@@ -7,7 +7,6 @@ use bytemuck::Zeroable;
 use glam::Mat4;
 use rayon::prelude::*;
 
-use crate::assets::material::MaterialDictionary;
 use crate::backend::mesh_deform::PaddedPerDrawUniforms;
 use crate::backend::FrameResourceManager;
 use crate::backend::MaterialSystem;
@@ -19,7 +18,7 @@ use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::gpu::GpuLimits;
 use crate::materials::{
     embedded_composed_stem_for_permutation, MaterialPassDesc, MaterialPipelineDesc,
-    MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind,
+    RasterPipelineKind,
 };
 use crate::pipelines::{ShaderPermutation, SHADER_PERM_MULTIVIEW_STEREO};
 use crate::render_graph::blackboard::Blackboard;
@@ -36,10 +35,7 @@ use crate::render_graph::frame_params::{
     PrecomputedMaterialBind, PrefetchedWorldMeshDrawsSlot,
 };
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
-use crate::render_graph::world_mesh_draw_prep::{
-    collect_and_sort_world_mesh_draws, DrawCollectionContext, WorldMeshDrawCollection,
-    WorldMeshDrawItem,
-};
+use crate::render_graph::world_mesh_draw_prep::{WorldMeshDrawCollection, WorldMeshDrawItem};
 use crate::render_graph::{
     build_world_mesh_cull_proj_params, clamp_desktop_fov_degrees, WorldMeshCullInput,
 };
@@ -108,44 +104,14 @@ pub(super) fn resolve_pass_config(
     }
 }
 
-/// Uses prefetched draws from the blackboard or collects and sorts scene draws.
-pub(super) fn take_or_collect_world_mesh_draws<'a>(
-    frame: &mut FrameRenderParams<'a>,
-    blackboard: &mut Blackboard,
-    culling: Option<&WorldMeshCullInput<'_>>,
-    shader_perm: ShaderPermutation,
-) -> WorldMeshDrawCollection {
-    profiling::scope!("world_mesh::take_or_collect_draws");
-    let hc = frame.view.host_camera;
-    let render_context = frame.shared.scene.active_main_render_context();
+/// Takes the explicit draw plan seeded into the per-view blackboard.
+pub(super) fn take_world_mesh_draws(blackboard: &mut Blackboard) -> WorldMeshDrawCollection {
+    profiling::scope!("world_mesh::take_draw_plan");
     if let Some(prefetched) = blackboard.take::<PrefetchedWorldMeshDrawsSlot>() {
         return prefetched;
     }
-    let fallback_router = MaterialRouter::new(RasterPipelineKind::Null);
-    let router_ref = frame
-        .shared
-        .materials
-        .material_registry()
-        .map(|r| &r.router)
-        .unwrap_or(&fallback_router);
-    let pipeline_property_ids =
-        MaterialPipelinePropertyIds::new(frame.shared.materials.property_id_registry());
-    let dict = MaterialDictionary::new(frame.shared.materials.material_property_store());
-    collect_and_sort_world_mesh_draws(&DrawCollectionContext {
-        scene: frame.shared.scene,
-        mesh_pool: &frame.shared.asset_transfers.mesh_pool,
-        material_dict: &dict,
-        material_router: router_ref,
-        pipeline_property_ids: &pipeline_property_ids,
-        shader_perm,
-        render_context,
-        head_output_transform: hc.head_output_transform,
-        view_origin_world: resolve_camera_world(&hc),
-        culling,
-        transform_filter: frame.view.transform_draw_filter.as_ref(),
-        material_cache: None,
-        prepared: None,
-    })
+    logger::warn!("WorldMeshForward: missing per-view draw plan; rendering no world-mesh draws");
+    WorldMeshDrawCollection::empty()
 }
 
 /// Copies Hi-Z temporal state for the next frame when culling is active.
@@ -262,8 +228,7 @@ pub(super) struct SlabPackInputs<'a> {
 /// Slot `i` holds the per-draw uniforms for `draws[plan.slab_layout[i]]`, so the GPU
 /// `instance_index` reaches the right row when `draw_indexed` walks each
 /// [`super::super::super::world_mesh_draw_prep::DrawGroup::instance_range`]. The slab itself
-/// stays one contiguous storage buffer per view; only the order of writes changes from the
-/// pre-refactor "slab[i] = draws[i]" layout.
+/// stays one contiguous storage buffer per view.
 ///
 /// Uses the per-view [`crate::backend::PerDrawResources`] identified by
 /// [`FrameRenderParams::occlusion_view`], growing it as needed. Writes at byte offset 0 of the
@@ -636,8 +601,7 @@ pub(super) fn prepare_world_mesh_forward_frame(
 
     let culling = build_world_mesh_cull_input(frame, &hc);
 
-    let collection =
-        take_or_collect_world_mesh_draws(frame, blackboard, culling.as_ref(), shader_perm);
+    let collection = take_world_mesh_draws(blackboard);
     capture_hi_z_temporal_after_collect(frame, culling.as_ref(), hc);
 
     publish_world_mesh_hud_outputs(
@@ -856,6 +820,31 @@ struct ForwardSubpassDrawRecord<'a, 'c, 'd> {
     encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
 }
 
+/// World-mesh forward subpass selection.
+#[derive(Clone, Copy, Debug)]
+enum ForwardSubpassKind {
+    /// Opaque and alpha-cutout draws before scene-depth snapshotting.
+    Opaque,
+    /// Intersection material draws after the depth snapshot.
+    Intersection,
+    /// Transparent and grab-pass tail draws.
+    Transparent,
+}
+
+impl ForwardSubpassKind {
+    /// Returns the pre-built draw groups for this subpass.
+    fn groups(
+        self,
+        plan: &crate::render_graph::world_mesh_draw_prep::InstancePlan,
+    ) -> &[crate::render_graph::world_mesh_draw_prep::DrawGroup] {
+        match self {
+            Self::Opaque => &plan.regular_groups,
+            Self::Intersection => &plan.intersect_groups,
+            Self::Transparent => &plan.transparent_groups,
+        }
+    }
+}
+
 fn record_world_mesh_forward_subpass(
     rpass: &mut wgpu::RenderPass<'_>,
     sub: ForwardSubpassDrawRecord<'_, '_, '_>,
@@ -877,15 +866,15 @@ fn record_world_mesh_forward_subpass(
     });
 }
 
-/// Records the opaque draw subset into a render pass already opened by the graph.
-pub(super) fn record_world_mesh_forward_opaque_graph_raster(
+/// Records one world-mesh forward subset into a render pass already opened by the graph.
+fn record_world_mesh_forward_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
-    _device: &wgpu::Device,
-    _queue: &wgpu::Queue,
     frame: &mut FrameRenderParams<'_>,
     prepared: &PreparedWorldMeshForwardFrame,
+    subpass: ForwardSubpassKind,
 ) -> bool {
-    if prepared.plan.regular_groups.is_empty() {
+    let groups = subpass.groups(&prepared.plan);
+    if groups.is_empty() {
         return true;
     }
 
@@ -933,7 +922,7 @@ pub(super) fn record_world_mesh_forward_opaque_graph_raster(
         ForwardSubpassDrawRecord {
             gpu_limits: gpu_limits.as_ref(),
             draws: &prepared.draws,
-            groups: &prepared.plan.regular_groups,
+            groups,
             precomputed: &prepared.precomputed_batches,
             encode: &mut encode_refs,
         },
@@ -941,6 +930,17 @@ pub(super) fn record_world_mesh_forward_opaque_graph_raster(
         &raster_cfg,
     );
     true
+}
+
+/// Records the opaque draw subset into a render pass already opened by the graph.
+pub(super) fn record_world_mesh_forward_opaque_graph_raster(
+    rpass: &mut wgpu::RenderPass<'_>,
+    _device: &wgpu::Device,
+    _queue: &wgpu::Queue,
+    frame: &mut FrameRenderParams<'_>,
+    prepared: &PreparedWorldMeshForwardFrame,
+) -> bool {
+    record_world_mesh_forward_graph_raster(rpass, frame, prepared, ForwardSubpassKind::Opaque)
 }
 
 /// Records the intersection draw subset into a render pass already opened by the graph.
@@ -951,62 +951,7 @@ pub(super) fn record_world_mesh_forward_intersection_graph_raster(
     frame: &mut FrameRenderParams<'_>,
     prepared: &PreparedWorldMeshForwardFrame,
 ) -> bool {
-    if prepared.plan.intersect_groups.is_empty() {
-        return true;
-    }
-
-    let Some(per_draw_bg) = frame
-        .shared
-        .frame_resources
-        .per_view_per_draw(frame.view.occlusion_view)
-        .map(|d| d.lock().bind_group.clone())
-    else {
-        return false;
-    };
-    let Some(frame_bg_arc) = frame
-        .shared
-        .frame_resources
-        .per_view_frame(frame.view.occlusion_view)
-        .map(|s| s.frame_bind_group.clone())
-    else {
-        return false;
-    };
-    let Some(empty_bg_arc) = frame
-        .shared
-        .frame_resources
-        .empty_material()
-        .map(|e| e.bind_group.clone())
-    else {
-        return false;
-    };
-
-    let bind_groups = ForwardPassBindGroups {
-        per_draw: per_draw_bg.as_ref(),
-        frame: &frame_bg_arc,
-        empty_material: &empty_bg_arc,
-    };
-
-    let raster_cfg = ForwardPassRasterConfig {
-        supports_base_instance: prepared.supports_base_instance,
-    };
-
-    let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
-        return false;
-    };
-    let mut encode_refs = frame.world_mesh_forward_encode_refs();
-    record_world_mesh_forward_subpass(
-        rpass,
-        ForwardSubpassDrawRecord {
-            gpu_limits: gpu_limits.as_ref(),
-            draws: &prepared.draws,
-            groups: &prepared.plan.intersect_groups,
-            precomputed: &prepared.precomputed_batches,
-            encode: &mut encode_refs,
-        },
-        &bind_groups,
-        &raster_cfg,
-    );
-    true
+    record_world_mesh_forward_graph_raster(rpass, frame, prepared, ForwardSubpassKind::Intersection)
 }
 
 /// Records the grab-pass transparent draw subset into a render pass already opened by the graph.
@@ -1017,62 +962,7 @@ pub(super) fn record_world_mesh_forward_transparent_graph_raster(
     frame: &mut FrameRenderParams<'_>,
     prepared: &PreparedWorldMeshForwardFrame,
 ) -> bool {
-    if prepared.plan.transparent_groups.is_empty() {
-        return true;
-    }
-
-    let Some(per_draw_bg) = frame
-        .shared
-        .frame_resources
-        .per_view_per_draw(frame.view.occlusion_view)
-        .map(|d| d.lock().bind_group.clone())
-    else {
-        return false;
-    };
-    let Some(frame_bg_arc) = frame
-        .shared
-        .frame_resources
-        .per_view_frame(frame.view.occlusion_view)
-        .map(|s| s.frame_bind_group.clone())
-    else {
-        return false;
-    };
-    let Some(empty_bg_arc) = frame
-        .shared
-        .frame_resources
-        .empty_material()
-        .map(|e| e.bind_group.clone())
-    else {
-        return false;
-    };
-
-    let bind_groups = ForwardPassBindGroups {
-        per_draw: per_draw_bg.as_ref(),
-        frame: &frame_bg_arc,
-        empty_material: &empty_bg_arc,
-    };
-
-    let raster_cfg = ForwardPassRasterConfig {
-        supports_base_instance: prepared.supports_base_instance,
-    };
-
-    let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
-        return false;
-    };
-    let mut encode_refs = frame.world_mesh_forward_encode_refs();
-    record_world_mesh_forward_subpass(
-        rpass,
-        ForwardSubpassDrawRecord {
-            gpu_limits: gpu_limits.as_ref(),
-            draws: &prepared.draws,
-            groups: &prepared.plan.transparent_groups,
-            precomputed: &prepared.precomputed_batches,
-            encode: &mut encode_refs,
-        },
-        &bind_groups,
-        &raster_cfg,
-    );
-    true
+    record_world_mesh_forward_graph_raster(rpass, frame, prepared, ForwardSubpassKind::Transparent)
 }
 
 mod color_snapshot;

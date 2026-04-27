@@ -7,8 +7,7 @@
 //! 1. [`WorldMeshForwardPreparePass`] — **[`CallbackPass`]** that collects + sorts draws, packs
 //!    per-draw VP/model uniforms (rayon-parallel above the existing threshold), and uploads the
 //!    per-draw slab and frame uniforms via `Queue::write_buffer`. Stores the prepared state in
-//!    [`crate::render_graph::frame_params::FrameRenderParams::prepared_world_mesh_forward`] for
-//!    downstream passes. (Phase 2 will move this to the typed blackboard.)
+//!    [`WorldMeshForwardPlanSlot`] for downstream passes.
 //! 2. [`WorldMeshForwardOpaquePass`] — **[`RasterPass`]** that opens the HDR color + depth
 //!    attachments with `LoadOp::Clear` and records opaque draws.
 //! 3. [`WorldMeshDepthSnapshotPass`] — **[`ComputePass`]** that resolves MSAA depth (when active)
@@ -44,7 +43,7 @@ use std::num::NonZeroU32;
 use crate::render_graph::compiled::{DepthAttachmentTemplate, RenderPassTemplate};
 use crate::render_graph::context::{CallbackCtx, ComputePassCtx, RasterPassCtx};
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::{PrefetchedWorldMeshDrawsSlot, WorldMeshForwardPlanSlot};
+use crate::render_graph::frame_params::WorldMeshForwardPlanSlot;
 use crate::render_graph::pass::{CallbackPass, ComputePass, PassBuilder, RasterPass};
 use crate::render_graph::resources::{
     BufferAccess, ImportedBufferHandle, ImportedTextureHandle, StorageAccess, TextureAccess,
@@ -238,18 +237,6 @@ impl CallbackPass for WorldMeshForwardPreparePass {
                 pass: self.name().to_string(),
             });
         };
-
-        // Transfer prefetched draws from blackboard to frame params so the prepare helper
-        // can use them (it calls `take_or_collect_world_mesh_draws` which checks frame params).
-        // Phase 5+ will move this entirely into the blackboard via `PrefetchedWorldMeshDrawsSlot`.
-        if let Some(prefetched) = ctx.blackboard.take::<PrefetchedWorldMeshDrawsSlot>() {
-            // Temporarily stash in the blackboard slot so execute_helpers.rs can pick it up.
-            // Since execute_helpers currently reads from frame (which we moved away from),
-            // pass it directly to prepare_world_mesh_forward_frame via a new blackboard-aware path.
-            // For now: use the `prefetched_world_mesh_draws` slot that prepare_frame reads.
-            ctx.blackboard
-                .insert::<PrefetchedWorldMeshDrawsSlot>(prefetched);
-        }
 
         let prepared = prepare_world_mesh_forward_frame(
             ctx.device,

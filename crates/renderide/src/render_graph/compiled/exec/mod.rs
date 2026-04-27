@@ -2,11 +2,11 @@
 //!
 //! ## Submit model
 //!
-//! Multi-view execution issues **one submit for frame-global work** (optional) plus
-//! **one submit per view** for per-view passes. This ordering guarantees that
-//! per-view `Queue::write_buffer` uploads (per-draw slab, frame uniforms, cluster params) are
-//! visible to that view's GPU commands. Each view owns its own per-draw slab buffer, so views
-//! never compete for per-draw storage capacity.
+//! Multi-view execution records optional frame-global work plus one command buffer per view, then
+//! submits the whole batch through a single [`wgpu::Queue::submit`] call. Per-view
+//! `Queue::write_buffer` uploads (per-draw slab, frame uniforms, cluster params) are drained
+//! before submit, so each view's GPU commands see coherent buffer contents. Each view owns its
+//! own per-draw slab buffer, so views never compete for per-draw storage capacity.
 //!
 //! ## Pass dispatch
 //!
@@ -26,9 +26,9 @@ use crate::scene::SceneCoordinator;
 use super::super::context::{GraphResolvedResources, PostSubmitContext};
 use super::super::error::GraphExecuteError;
 use super::super::frame_params::{HostCameraFrame, OcclusionViewId, PerViewHudOutputs};
-use super::super::world_mesh_draw_prep::WorldMeshDrawCollection;
 use super::{
     CompiledRenderGraph, FrameView, FrameViewTarget, MultiViewExecutionContext, ResolvedView,
+    WorldMeshDrawPlan,
 };
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
@@ -112,8 +112,8 @@ pub(super) struct PerViewWorkItem {
     /// Optional secondary-camera transform filter.
     pub(super) draw_filter:
         Option<crate::render_graph::world_mesh_draw_prep::CameraTransformDrawFilter>,
-    /// Optional prefetched draws moved out of [`FrameView`] before fan-out.
-    pub(super) prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+    /// Explicit draw plan moved out of [`FrameView`] before fan-out.
+    pub(super) world_mesh_draw_plan: WorldMeshDrawPlan,
     /// Owned resolved view snapshot safe to move to a worker thread.
     pub(super) resolved: OwnedResolvedView,
     /// Optional per-view `@group(0)` bind group and uniform buffer.
@@ -333,27 +333,19 @@ impl CompiledRenderGraph {
 
         let mut transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources> = HashMap::new();
 
-        // Pre-resolve transient textures and buffers for every unique view key before any per-view
-        // recording begins. Milestone D hoists `backend.transient_pool_mut()` access out of the
-        // per-view loop so that the loop becomes read-only against `transient_by_key` (except for
-        // per-view imported overlays, which mutate disjoint entries today and will be split per-view
-        // in Milestone E).
+        // Pre-resolve transient textures and buffers for every unique view key before any
+        // per-view recording begins. The record loop then reads `transient_by_key` without
+        // touching the shared transient pool.
         self.pre_resolve_transients_for_views(&mut mv_ctx, views, &mut transient_by_key)?;
 
         // Deferred `queue.write_buffer` sink shared by frame-global and per-view record paths.
         // Drained onto the main thread after all recording completes and before submit.
         let upload_batch = super::super::frame_upload_batch::FrameUploadBatch::new();
 
-        // ── Pre-sync shared frame resources, then pre-warm per-view resources and pipelines ──
-        //
-        // Shared frame resources are synchronized once per unique view layout before any per-view
-        // bind groups are created so those bind groups see the correct snapshot textures. After
-        // that, per-view frame state, per-draw resources, per-view scratch, Hi-Z slots, mesh
-        // extended streams, and material pipelines are all warmed up front so the later per-view
-        // record path can run with read-only shared state plus per-view interior mutability.
-        Self::pre_sync_shared_frame_resources_for_views(&mut mv_ctx, views);
-        Self::pre_warm_per_view_resources_for_views(&mut mv_ctx, views)?;
-        Self::pre_warm_pipeline_cache_for_views(&mut mv_ctx, views);
+        // Shared frame resources, per-view slots, mesh extended streams, and material pipelines
+        // are warmed up front so later per-view recording can run with read-only shared state
+        // plus per-view interior mutability.
+        Self::prepare_view_resources_for_views(&mut mv_ctx, views)?;
 
         // ── Frame-global pass (optional) ─────────────────────────────────────────────────────
         let frame_global_cmd = self.encode_frame_global_passes(
@@ -698,7 +690,10 @@ impl CompiledRenderGraph {
                 host_camera,
                 occlusion_view,
                 draw_filter: view.draw_filter.clone(),
-                prefetched_world_mesh_draws: view.prefetched_world_mesh_draws.take(),
+                world_mesh_draw_plan: std::mem::replace(
+                    &mut view.world_mesh_draw_plan,
+                    WorldMeshDrawPlan::Empty,
+                ),
                 resolved: Self::resolve_owned_view_from_target(
                     &view.target,
                     mv_ctx.gpu,

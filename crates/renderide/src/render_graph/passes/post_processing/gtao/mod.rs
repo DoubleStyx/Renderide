@@ -156,7 +156,7 @@ impl RasterPass for GtaoPass {
 
         // Bind the per-view frame-uniforms buffer when the per-view plan is populated (the
         // default render path). The imported `frame_uniforms` handle resolves to the shared
-        // `FrameResourceManager` buffer, which is only written in the legacy fallback path —
+        // `FrameResourceManager` buffer, which is only written by the shared-frame path —
         // binding it in per-view mode would leave the shader reading zeros and producing NaN
         // through `linearize_depth` / `view_pos_from_uv`, which `saturate` collapses to 0.
         let per_view_buffer = ctx

@@ -231,9 +231,7 @@ fn alpha_premultiply_on_inferred(
         || legacy_blend == Some(BLEND_MODE_TRANSPARENT_PREMULTIPLY)
 }
 
-// `default_f32_for_field` was deleted. After the WGSL orphan-field cleanup (Categories A + B in
-// the plan at /home/doublestyx/.claude/plans/), every uniform field reaching `build_embedded_uniform_bytes`
-// is one of:
+// Every uniform field reaching `build_embedded_uniform_bytes` is one of:
 //   1. A host-declared property — `MaterialPropertyStore` always has a value by the time the
 //      renderer reads (first material batch pushes every `Sync<X>` via `MaterialUpdateWriter` per
 //      `MaterialProviderBase.cs:48-51`).

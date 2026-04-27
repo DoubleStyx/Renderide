@@ -15,7 +15,9 @@ use super::super::super::frame_params::{
 };
 use super::super::super::pass::PassKind;
 use super::super::helpers;
-use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext, ResolvedView};
+use super::super::{
+    CompiledRenderGraph, FrameView, MultiViewExecutionContext, ResolvedView, WorldMeshDrawPlan,
+};
 use super::{
     GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem,
     TransientTextureResolveSurfaceParams,
@@ -37,7 +39,7 @@ impl CompiledRenderGraph {
             view_idx,
             host_camera,
             draw_filter,
-            prefetched_world_mesh_draws,
+            world_mesh_draw_plan,
             resolved,
             per_view_frame_bg_and_buf,
             ..
@@ -76,7 +78,7 @@ impl CompiledRenderGraph {
         let mut view_blackboard = self.build_per_view_blackboard(
             &frame_params,
             graph_resources,
-            prefetched_world_mesh_draws,
+            world_mesh_draw_plan,
             per_view_frame_bg_and_buf,
             view_idx,
         );
@@ -167,14 +169,12 @@ impl CompiledRenderGraph {
         )
     }
 
-    /// Builds the per-view [`Blackboard`] seeded with MSAA views, prefetched draws, and the frame plan.
+    /// Builds the per-view [`Blackboard`] seeded with MSAA views, draw plan, and the frame plan.
     fn build_per_view_blackboard(
         &self,
         frame_params: &crate::render_graph::frame_params::FrameRenderParams<'_>,
         graph_resources: &GraphResolvedResources,
-        prefetched_world_mesh_draws: Option<
-            crate::render_graph::world_mesh_draw_prep::WorldMeshDrawCollection,
-        >,
+        world_mesh_draw_plan: WorldMeshDrawPlan,
         per_view_frame_bg_and_buf: Option<(std::sync::Arc<wgpu::BindGroup>, wgpu::Buffer)>,
         view_idx: usize,
     ) -> Blackboard {
@@ -187,8 +187,15 @@ impl CompiledRenderGraph {
         ) {
             view_blackboard.insert::<MsaaViewsSlot>(msaa_views);
         }
-        if let Some(draws) = prefetched_world_mesh_draws {
-            view_blackboard.insert::<PrefetchedWorldMeshDrawsSlot>(draws);
+        match world_mesh_draw_plan {
+            WorldMeshDrawPlan::Prefetched(draws) => {
+                view_blackboard.insert::<PrefetchedWorldMeshDrawsSlot>(draws);
+            }
+            WorldMeshDrawPlan::Empty => {
+                view_blackboard.insert::<PrefetchedWorldMeshDrawsSlot>(
+                    crate::render_graph::world_mesh_draw_prep::WorldMeshDrawCollection::empty(),
+                );
+            }
         }
         // Seed per-view frame plan so the prepare pass can write frame uniforms to the
         // correct per-view buffer and bind the right @group(0) bind group.

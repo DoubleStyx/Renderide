@@ -65,8 +65,26 @@ pub struct FrameView<'a> {
     pub target: FrameViewTarget<'a>,
     /// Optional transform filter for secondary cameras.
     pub draw_filter: Option<CameraTransformDrawFilter>,
-    /// When set, the world-mesh forward path skips CPU draw collection for this view.
-    pub prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+    /// Explicit world-mesh draw plan for this view.
+    pub world_mesh_draw_plan: WorldMeshDrawPlan,
+}
+
+/// Explicit world-mesh draw policy for a [`FrameView`].
+pub enum WorldMeshDrawPlan {
+    /// Use the supplied collection and skip in-graph CPU scene collection.
+    Prefetched(WorldMeshDrawCollection),
+    /// Render no world-mesh draws for this view.
+    Empty,
+}
+
+impl WorldMeshDrawPlan {
+    /// Returns the prefetched collection when this plan carries one.
+    pub fn as_prefetched(&self) -> Option<&WorldMeshDrawCollection> {
+        match self {
+            Self::Prefetched(draws) => Some(draws),
+            Self::Empty => None,
+        }
+    }
 }
 
 /// Borrows shared across frame-global and per-view [`CompiledRenderGraph::execute_multi_view`] passes.
@@ -151,23 +169,27 @@ impl<'a> FrameView<'a> {
     /// Builds a view that renders the main desktop swapchain.
     pub fn for_swapchain(
         host_camera: HostCameraFrame,
-        prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+        world_mesh_draw_plan: WorldMeshDrawPlan,
     ) -> Self {
         Self {
             host_camera,
             target: FrameViewTarget::Swapchain,
             draw_filter: None,
-            prefetched_world_mesh_draws,
+            world_mesh_draw_plan,
         }
     }
 
     /// Builds a view that renders an OpenXR stereo multiview pair of eye layers.
-    pub fn for_hmd(host_camera: HostCameraFrame, external: ExternalFrameTargets<'a>) -> Self {
+    pub fn for_hmd(
+        host_camera: HostCameraFrame,
+        external: ExternalFrameTargets<'a>,
+        world_mesh_draw_plan: WorldMeshDrawPlan,
+    ) -> Self {
         Self {
             host_camera,
             target: FrameViewTarget::ExternalMultiview(external),
             draw_filter: None,
-            prefetched_world_mesh_draws: None,
+            world_mesh_draw_plan,
         }
     }
 
@@ -176,13 +198,13 @@ impl<'a> FrameView<'a> {
         host_camera: HostCameraFrame,
         external: ExternalOffscreenTargets<'a>,
         draw_filter: Option<CameraTransformDrawFilter>,
-        prefetched_world_mesh_draws: Option<WorldMeshDrawCollection>,
+        world_mesh_draw_plan: WorldMeshDrawPlan,
     ) -> Self {
         Self {
             host_camera,
             target: FrameViewTarget::OffscreenRt(external),
             draw_filter,
-            prefetched_world_mesh_draws,
+            world_mesh_draw_plan,
         }
     }
 
@@ -361,11 +383,10 @@ pub struct CompiledGroup {
 /// [`CompiledRenderGraph::execute_multi_view_frame_global_passes`]. Host/scene context and
 /// resource resolution for that encoder use the **first** [`FrameView`] only.
 ///
-/// ## Submit model (Phase 4 target)
+/// ## Submit model
 ///
-/// The executor currently issues one submit per view plus one for frame-global work. Phase 4
-/// (per-view ring upload) collapses this to a single `Queue::submit` per tick by pre-planning
-/// ring buffer layouts and writing all per-view data before the single submit.
+/// The executor records frame-global work plus one command buffer per view, drains deferred
+/// uploads on the main thread, and submits the assembled batch once per tick.
 pub struct CompiledRenderGraph {
     /// Ordered pass nodes in execution order (culled, sorted).
     pub(super) passes: Vec<PassNode>,

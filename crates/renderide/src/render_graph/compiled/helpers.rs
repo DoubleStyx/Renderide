@@ -186,11 +186,6 @@ pub(super) fn resolve_forward_msaa_views_from_graph_resources(
     }
 }
 
-// Note: surface acquisition + present-on-drop now live in
-// [`super::super::swapchain_scope::SwapchainScope`] (Phase 8). The legacy
-// `SurfaceTexturePresentGuard` / `MultiViewSwapchainAcquire` / `acquire_swapchain_for_multi_view_if_needed`
-// helpers were removed; callers use `SwapchainScope::enter` instead.
-
 pub(super) fn resolve_transient_extent(
     extent: TransientExtent,
     viewport_px: (u32, u32),

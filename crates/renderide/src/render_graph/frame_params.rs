@@ -3,11 +3,10 @@
 //! Cross-pass per-view state that is too large or too volatile to live on the pass struct lives
 //! in the per-view [`crate::render_graph::blackboard::Blackboard`] via typed slots defined here.
 //!
-//! [`FrameRenderParams`] is a thin compositor over [`FrameSystemsShared`] (once-per-frame mutable
-//! system handles) and [`FrameRenderParamsView`] (per-view surface state). This separation is the
-//! prerequisite for per-view parallel recording (Phase 4 milestone E): the shared handles will
-//! gain interior mutability, and contexts will bind them directly without going through
-//! [`FrameRenderParams`].
+//! [`FrameRenderParams`] is a thin compositor over [`FrameSystemsShared`] (once-per-frame system
+//! handles) and [`FrameRenderParamsView`] (per-view surface state). This separation keeps the
+//! record path focused on view-local data while shared systems are borrowed through explicit
+//! fields.
 
 use std::sync::Arc;
 
@@ -344,9 +343,7 @@ pub struct PerViewFramePlan {
 
 /// System handles shared across all views within a frame.
 ///
-/// Fields hold mutable references during milestones B–D. Phase 4 milestone E converts
-/// mutation-at-record-time fields to interior-mut wrappers (`Mutex` / atomics) so that
-/// multiple rayon workers can safely record different views concurrently.
+/// Shared systems borrowed by render graph passes while recording one frame.
 pub struct FrameSystemsShared<'a> {
     /// World caches and mesh renderables after [`SceneCoordinator::flush_world_caches`].
     pub scene: &'a SceneCoordinator,
@@ -409,11 +406,10 @@ pub struct FrameRenderParamsView<'a> {
     pub msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
 }
 
-/// Transitional compositor over [`FrameSystemsShared`] and [`FrameRenderParamsView`].
+/// Compositor over [`FrameSystemsShared`] and [`FrameRenderParamsView`].
 ///
 /// Built with disjoint borrows from [`crate::backend::RenderBackend`] so passes do not take a
-/// full backend handle. Removed after Phase 4 milestone E when the parallel path constructs
-/// each sub-struct independently without this wrapper.
+/// full backend handle.
 pub struct FrameRenderParams<'a> {
     /// System handles shared across all views for this frame.
     pub shared: FrameSystemsShared<'a>,

@@ -1,6 +1,6 @@
 //! Compile-time validated **render graph** with typed handles, setup-time access declarations,
 //! pass culling, and transient alias planning. Per-frame command recording may use **several**
-//! [`wgpu::CommandEncoder`]s and **several** [`wgpu::Queue::submit`] calls in one tick (see
+//! [`wgpu::CommandEncoder`]s, then submit the assembled command buffers once for the tick (see
 //! [`CompiledRenderGraph::execute_multi_view`]).
 //!
 //! **Hi-Z-related code:** CPU helpers for mip layout, depth readback unpacking, and screen-space
@@ -22,9 +22,9 @@
 //!   [`CompiledRenderGraph::execute`] / [`CompiledRenderGraph::execute_multi_view`] may acquire the
 //!   swapchain once when any pass writes the logical `backbuffer` resource, then present after the
 //!   last GPU work for that frame. Encoding is **not** "one encoder for the whole graph":
-//!   multi-view runs [`PassPhase::FrameGlobal`] passes in a dedicated encoder + submit, then
-//!   **one encoder + submit per [`FrameView`]** for [`PassPhase::PerView`] passes so per-view
-//!   [`wgpu::Queue::write_buffer`] updates are visible before each view's commands; see
+//!   multi-view records [`PassPhase::FrameGlobal`] passes in a dedicated encoder, then
+//!   **one encoder per [`FrameView`]** for [`PassPhase::PerView`] passes. Deferred
+//!   [`wgpu::Queue::write_buffer`] updates are drained before the single submit; see
 //!   [`CompiledRenderGraph::execute_multi_view`]. Before the per-view loop, transient resources,
 //!   per-view per-draw / frame state ([`crate::backend::FrameResourceManager`]), and the material
 //!   pipeline cache are pre-warmed once across all views so the per-view record path no longer
@@ -121,6 +121,7 @@ pub use cluster_frame::{cluster_frame_params, cluster_frame_params_stereo, Clust
 pub use compiled::{
     ColorAttachmentTemplate, CompileStats, CompiledRenderGraph, DepthAttachmentTemplate, DotFormat,
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewTarget, RenderPassTemplate,
+    WorldMeshDrawPlan,
 };
 pub use context::{
     CallbackCtx, ComputePassCtx, CopyPassCtx, GraphRasterPassContext, GraphResolvedResources,

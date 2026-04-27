@@ -6,6 +6,9 @@
 //! [`crate::backend::frame_resource_manager::PerViewFrameState`] and reference these shared
 //! cluster buffers (safe under single-submit ordering — see [`ClusterBufferCache`]).
 
+mod empty_material;
+mod scene_snapshot;
+
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
@@ -15,6 +18,11 @@ use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::gpu::GpuLimits;
 
 use super::frame_gpu_error::FrameGpuInitError;
+pub use empty_material::{empty_material_bind_group_layout, EmptyMaterialBindGroup};
+pub use scene_snapshot::FrameSceneSnapshotTextureViews;
+use scene_snapshot::{
+    SceneSnapshotKind, SceneSnapshotLayout, SceneSnapshotSet, DEFAULT_SCENE_COLOR_FORMAT,
+};
 
 /// GPU buffers and bind groups for `@group(0)` frame globals (camera, lights, cluster lists,
 /// and sampled scene snapshots).
@@ -35,24 +43,8 @@ pub struct FrameGpuResources {
     /// references this one cache (see [`ClusterBufferCache`] for the ordering argument that
     /// makes sharing safe under single-submit semantics).
     pub cluster_cache: ClusterBufferCache,
-    /// Sampled single-view scene depth snapshot for materials that need `_CameraDepthTexture`.
-    scene_depth_2d: (wgpu::Texture, wgpu::TextureView),
-    scene_depth_2d_extent_px: (u32, u32),
-    scene_depth_2d_format: wgpu::TextureFormat,
-    /// Sampled multiview scene depth snapshot (`D2Array`, 2 layers).
-    scene_depth_array: (wgpu::Texture, wgpu::TextureView),
-    scene_depth_array_extent_px: (u32, u32),
-    scene_depth_array_format: wgpu::TextureFormat,
-    /// Sampled single-view scene color snapshot (grab pass) for materials like `blur_perobject`.
-    scene_color_2d: (wgpu::Texture, wgpu::TextureView),
-    scene_color_2d_extent_px: (u32, u32),
-    scene_color_2d_format: wgpu::TextureFormat,
-    /// Sampled multiview scene color snapshot (`D2Array`, 2 layers).
-    scene_color_array: (wgpu::Texture, wgpu::TextureView),
-    scene_color_array_extent_px: (u32, u32),
-    scene_color_array_format: wgpu::TextureFormat,
-    /// Shared linear-clamp sampler for sampling [`Self::scene_color_2d`] / [`Self::scene_color_array`].
-    scene_color_sampler: wgpu::Sampler,
+    /// Scene depth/color snapshots sampled by embedded material shaders.
+    scene_snapshots: SceneSnapshotSet,
     /// Global `@group(0)` bind group (global frame uniform + shared lights/snapshots).
     ///
     /// Per-view passes bind the per-view bind group from
@@ -68,23 +60,6 @@ pub struct FrameGpuResources {
     pub(super) snapshot_version: u64,
 }
 
-/// Default scene color snapshot format used when no grab pass has been triggered yet.
-const DEFAULT_SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-
-/// Sampled scene depth/color snapshot views and sampler for [`FrameGpuResources`] `@group(0)` bindings 4–8.
-pub struct FrameSceneSnapshotTextureViews<'a> {
-    /// Single-view depth snapshot (`binding(4)`).
-    pub scene_depth_2d: &'a wgpu::TextureView,
-    /// Multiview depth snapshot (`binding(5)`).
-    pub scene_depth_array: &'a wgpu::TextureView,
-    /// Single-view color snapshot (`binding(6)`).
-    pub scene_color_2d: &'a wgpu::TextureView,
-    /// Multiview color snapshot (`binding(7)`).
-    pub scene_color_array: &'a wgpu::TextureView,
-    /// Shared sampler for scene color (`binding(8)`).
-    pub scene_color_sampler: &'a wgpu::Sampler,
-}
-
 /// Viewport and view layout for [`FrameGpuResources::copy_scene_color_snapshot`].
 pub struct SceneColorSnapshotCopyParams {
     /// Extent in pixels used for snapshot textures and copy.
@@ -93,20 +68,6 @@ pub struct SceneColorSnapshotCopyParams {
     pub multiview: bool,
     /// Cluster buffer stereo layout passed to [`FrameGpuResources::rebuild_bind_group`].
     pub stereo_cluster: bool,
-}
-
-/// [`wgpu::TextureAspect`] for [`wgpu::CommandEncoder::copy_texture_to_texture`] when copying depth
-/// textures.
-///
-/// Combined depth-stencil formats require [`wgpu::TextureAspect::All`] on both source and destination
-/// so the copy covers the full plane (wgpu: copy source aspects must refer to all aspects of the
-/// source texture format).
-fn depth_copy_aspect_for_texture_to_texture(format: wgpu::TextureFormat) -> wgpu::TextureAspect {
-    if format.has_stencil_aspect() {
-        wgpu::TextureAspect::All
-    } else {
-        wgpu::TextureAspect::DepthOnly
-    }
 }
 
 impl FrameGpuResources {
@@ -260,63 +221,6 @@ impl FrameGpuResources {
         }))
     }
 
-    fn create_depth_snapshot_2d(
-        device: &wgpu::Device,
-        extent_px: (u32, u32),
-        format: wgpu::TextureFormat,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("frame_scene_depth_2d"),
-            size: wgpu::Extent3d {
-                width: extent_px.0.max(1),
-                height: extent_px.1.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("frame_scene_depth_2d_view"),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            aspect: wgpu::TextureAspect::DepthOnly,
-            ..Default::default()
-        });
-        (tex, view)
-    }
-
-    fn create_depth_snapshot_array(
-        device: &wgpu::Device,
-        extent_px: (u32, u32),
-        format: wgpu::TextureFormat,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("frame_scene_depth_array"),
-            size: wgpu::Extent3d {
-                width: extent_px.0.max(1),
-                height: extent_px.1.max(1),
-                depth_or_array_layers: 2,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("frame_scene_depth_array_view"),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            array_layer_count: Some(2),
-            aspect: wgpu::TextureAspect::DepthOnly,
-            ..Default::default()
-        });
-        (tex, view)
-    }
-
     fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
         let Some(refs) = self.cluster_cache.current_refs() else {
             logger::warn!("FrameGpu: cluster buffers missing; skipping bind group rebuild");
@@ -327,169 +231,8 @@ impl FrameGpuResources {
             &self.frame_uniform,
             &self.lights_buffer,
             refs,
-            FrameSceneSnapshotTextureViews {
-                scene_depth_2d: &self.scene_depth_2d.1,
-                scene_depth_array: &self.scene_depth_array.1,
-                scene_color_2d: &self.scene_color_2d.1,
-                scene_color_array: &self.scene_color_array.1,
-                scene_color_sampler: &self.scene_color_sampler,
-            },
+            self.scene_snapshots.views(),
         );
-    }
-
-    fn ensure_scene_depth_2d(
-        &mut self,
-        device: &wgpu::Device,
-        extent_px: (u32, u32),
-        format: wgpu::TextureFormat,
-    ) {
-        let want = (extent_px.0.max(1), extent_px.1.max(1));
-        let max_dim = self.limits.max_texture_dimension_2d();
-        if want.0 > max_dim || want.1 > max_dim {
-            logger::warn!(
-                "scene depth 2d snapshot: extent {}×{} exceeds max_texture_dimension_2d ({max_dim}); keeping previous texture",
-                want.0,
-                want.1
-            );
-            return;
-        }
-        if self.scene_depth_2d_extent_px == want && self.scene_depth_2d_format == format {
-            return;
-        }
-        self.scene_depth_2d = Self::create_depth_snapshot_2d(device, want, format);
-        self.scene_depth_2d_extent_px = want;
-        self.scene_depth_2d_format = format;
-        self.snapshot_version = self.snapshot_version.wrapping_add(1);
-    }
-
-    fn ensure_scene_depth_array(
-        &mut self,
-        device: &wgpu::Device,
-        extent_px: (u32, u32),
-        format: wgpu::TextureFormat,
-    ) {
-        let want = (extent_px.0.max(1), extent_px.1.max(1));
-        let max_dim = self.limits.max_texture_dimension_2d();
-        if want.0 > max_dim || want.1 > max_dim {
-            logger::warn!(
-                "scene depth array snapshot: extent {}×{} exceeds max_texture_dimension_2d ({max_dim}); keeping previous texture",
-                want.0,
-                want.1
-            );
-            return;
-        }
-        if self.scene_depth_array_extent_px == want && self.scene_depth_array_format == format {
-            return;
-        }
-        self.scene_depth_array = Self::create_depth_snapshot_array(device, want, format);
-        self.scene_depth_array_extent_px = want;
-        self.scene_depth_array_format = format;
-        self.snapshot_version = self.snapshot_version.wrapping_add(1);
-    }
-
-    fn create_color_snapshot_2d(
-        device: &wgpu::Device,
-        extent_px: (u32, u32),
-        format: wgpu::TextureFormat,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("frame_scene_color_2d"),
-            size: wgpu::Extent3d {
-                width: extent_px.0.max(1),
-                height: extent_px.1.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("frame_scene_color_2d_view"),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            ..Default::default()
-        });
-        (tex, view)
-    }
-
-    fn create_color_snapshot_array(
-        device: &wgpu::Device,
-        extent_px: (u32, u32),
-        format: wgpu::TextureFormat,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("frame_scene_color_array"),
-            size: wgpu::Extent3d {
-                width: extent_px.0.max(1),
-                height: extent_px.1.max(1),
-                depth_or_array_layers: 2,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("frame_scene_color_array_view"),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            array_layer_count: Some(2),
-            ..Default::default()
-        });
-        (tex, view)
-    }
-
-    fn ensure_scene_color_2d(
-        &mut self,
-        device: &wgpu::Device,
-        extent_px: (u32, u32),
-        format: wgpu::TextureFormat,
-    ) {
-        let want = (extent_px.0.max(1), extent_px.1.max(1));
-        let max_dim = self.limits.max_texture_dimension_2d();
-        if want.0 > max_dim || want.1 > max_dim {
-            logger::warn!(
-                "scene color 2d snapshot: extent {}×{} exceeds max_texture_dimension_2d ({max_dim}); keeping previous texture",
-                want.0,
-                want.1
-            );
-            return;
-        }
-        if self.scene_color_2d_extent_px == want && self.scene_color_2d_format == format {
-            return;
-        }
-        self.scene_color_2d = Self::create_color_snapshot_2d(device, want, format);
-        self.scene_color_2d_extent_px = want;
-        self.scene_color_2d_format = format;
-        self.snapshot_version = self.snapshot_version.wrapping_add(1);
-    }
-
-    fn ensure_scene_color_array(
-        &mut self,
-        device: &wgpu::Device,
-        extent_px: (u32, u32),
-        format: wgpu::TextureFormat,
-    ) {
-        let want = (extent_px.0.max(1), extent_px.1.max(1));
-        let max_dim = self.limits.max_texture_dimension_2d();
-        if want.0 > max_dim || want.1 > max_dim {
-            logger::warn!(
-                "scene color array snapshot: extent {}×{} exceeds max_texture_dimension_2d ({max_dim}); keeping previous texture",
-                want.0,
-                want.1
-            );
-            return;
-        }
-        if self.scene_color_array_extent_px == want && self.scene_color_array_format == format {
-            return;
-        }
-        self.scene_color_array = Self::create_color_snapshot_array(device, want, format);
-        self.scene_color_array_extent_px = want;
-        self.scene_color_array_format = format;
-        self.snapshot_version = self.snapshot_version.wrapping_add(1);
     }
 
     /// Allocates frame uniform, lights storage, minimal cluster grid `(1×1×Z)`; builds [`Self::bind_group`].
@@ -524,53 +267,20 @@ impl FrameGpuResources {
             .ok_or(FrameGpuInitError::ClusterGetBuffersFailed)?;
         let scene_depth_format =
             crate::render_graph::main_forward_depth_stencil_format(device.features());
-        let scene_depth_2d = Self::create_depth_snapshot_2d(device, (1, 1), scene_depth_format);
-        let scene_depth_array =
-            Self::create_depth_snapshot_array(device, (1, 1), scene_depth_format);
-        let scene_color_2d =
-            Self::create_color_snapshot_2d(device, (1, 1), DEFAULT_SCENE_COLOR_FORMAT);
-        let scene_color_array =
-            Self::create_color_snapshot_array(device, (1, 1), DEFAULT_SCENE_COLOR_FORMAT);
-        let scene_color_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("frame_scene_color_sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
+        let scene_snapshots =
+            SceneSnapshotSet::new(device, scene_depth_format, DEFAULT_SCENE_COLOR_FORMAT);
         let bind_group = Self::create_bind_group(
             device,
             &frame_uniform,
             &lights_buffer,
             refs,
-            FrameSceneSnapshotTextureViews {
-                scene_depth_2d: &scene_depth_2d.1,
-                scene_depth_array: &scene_depth_array.1,
-                scene_color_2d: &scene_color_2d.1,
-                scene_color_array: &scene_color_array.1,
-                scene_color_sampler: &scene_color_sampler,
-            },
+            scene_snapshots.views(),
         );
         Ok(Self {
             frame_uniform,
             lights_buffer,
             cluster_cache,
-            scene_depth_2d,
-            scene_depth_2d_extent_px: (1, 1),
-            scene_depth_2d_format: scene_depth_format,
-            scene_depth_array,
-            scene_depth_array_extent_px: (1, 1),
-            scene_depth_array_format: scene_depth_format,
-            scene_color_2d,
-            scene_color_2d_extent_px: (1, 1),
-            scene_color_2d_format: DEFAULT_SCENE_COLOR_FORMAT,
-            scene_color_array,
-            scene_color_array_extent_px: (1, 1),
-            scene_color_array_format: DEFAULT_SCENE_COLOR_FORMAT,
-            scene_color_sampler,
+            scene_snapshots,
             bind_group,
             cluster_bind_version,
             limits,
@@ -628,17 +338,27 @@ impl FrameGpuResources {
         color_format: wgpu::TextureFormat,
         multiview: bool,
     ) -> bool {
-        let before = self.snapshot_version;
-        if multiview {
-            self.ensure_scene_depth_array(device, viewport, depth_format);
-            self.ensure_scene_color_array(device, viewport, color_format);
-        } else {
-            self.ensure_scene_depth_2d(device, viewport, depth_format);
-            self.ensure_scene_color_2d(device, viewport, color_format);
-        }
-        if self.snapshot_version == before {
+        let layout = SceneSnapshotLayout::from_multiview(multiview);
+        let depth_changed = self.scene_snapshots.ensure(
+            device,
+            self.limits.as_ref(),
+            SceneSnapshotKind::Depth,
+            layout,
+            viewport,
+            depth_format,
+        );
+        let color_changed = self.scene_snapshots.ensure(
+            device,
+            self.limits.as_ref(),
+            SceneSnapshotKind::Color,
+            layout,
+            viewport,
+            color_format,
+        );
+        if !(depth_changed || color_changed) {
             return false;
         }
+        self.snapshot_version = self.snapshot_version.wrapping_add(1);
         self.rebuild_bind_group(device);
         true
     }
@@ -660,55 +380,33 @@ impl FrameGpuResources {
         let max_dim = self.limits.max_texture_dimension_2d();
         if width > max_dim || height > max_dim {
             logger::warn!(
-                "copy_scene_depth_snapshot: viewport {}×{} exceeds max_texture_dimension_2d ({max_dim}); skipping copy",
+                "copy_scene_depth_snapshot: viewport {}x{} exceeds max_texture_dimension_2d ({max_dim}); skipping copy",
                 width,
                 height
             );
             return;
         }
-        let extent = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: if multiview { 2 } else { 1 },
-        };
         let format = source_depth.format();
-        let copy_aspect = depth_copy_aspect_for_texture_to_texture(format);
-        if multiview {
-            self.ensure_scene_depth_array(device, (width, height), format);
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: source_depth,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: copy_aspect,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.scene_depth_array.0,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: copy_aspect,
-                },
-                extent,
-            );
-        } else {
-            self.ensure_scene_depth_2d(device, (width, height), format);
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: source_depth,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: copy_aspect,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.scene_depth_2d.0,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: copy_aspect,
-                },
-                extent,
-            );
+        let layout = SceneSnapshotLayout::from_multiview(multiview);
+        let changed = self.scene_snapshots.ensure(
+            device,
+            self.limits.as_ref(),
+            SceneSnapshotKind::Depth,
+            layout,
+            (width, height),
+            format,
+        );
+        self.scene_snapshots.encode_copy(
+            encoder,
+            source_depth,
+            SceneSnapshotKind::Depth,
+            layout,
+            (width, height),
+        );
+        if changed {
+            self.snapshot_version = self.snapshot_version.wrapping_add(1);
+            self.rebuild_bind_group(device);
         }
-        self.rebuild_bind_group(device);
     }
 
     /// Copies the main depth attachment into an already provisioned scene-depth snapshot without
@@ -726,69 +424,13 @@ impl FrameGpuResources {
     ) {
         let width = viewport.0.max(1);
         let height = viewport.1.max(1);
-        let format = source_depth.format();
-        let copy_aspect = depth_copy_aspect_for_texture_to_texture(format);
-        let extent = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: if multiview { 2 } else { 1 },
-        };
-
-        if multiview {
-            if self.scene_depth_array_extent_px != (width, height)
-                || self.scene_depth_array_format != format
-            {
-                logger::warn!(
-                    "scene depth snapshot copy: array target not pre-synced for {}×{} {:?}; skipping copy",
-                    width,
-                    height,
-                    format
-                );
-                return;
-            }
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: source_depth,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: copy_aspect,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.scene_depth_array.0,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: copy_aspect,
-                },
-                extent,
-            );
-        } else {
-            if self.scene_depth_2d_extent_px != (width, height)
-                || self.scene_depth_2d_format != format
-            {
-                logger::warn!(
-                    "scene depth snapshot copy: 2d target not pre-synced for {}×{} {:?}; skipping copy",
-                    width,
-                    height,
-                    format
-                );
-                return;
-            }
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: source_depth,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: copy_aspect,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.scene_depth_2d.0,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: copy_aspect,
-                },
-                extent,
-            );
-        }
+        self.scene_snapshots.encode_copy(
+            encoder,
+            source_depth,
+            SceneSnapshotKind::Depth,
+            SceneSnapshotLayout::from_multiview(multiview),
+            (width, height),
+        );
     }
 
     /// Copies the main color attachment into an already provisioned scene-color snapshot without
@@ -806,68 +448,13 @@ impl FrameGpuResources {
     ) {
         let width = viewport.0.max(1);
         let height = viewport.1.max(1);
-        let format = source_color.format();
-        let extent = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: if multiview { 2 } else { 1 },
-        };
-
-        if multiview {
-            if self.scene_color_array_extent_px != (width, height)
-                || self.scene_color_array_format != format
-            {
-                logger::warn!(
-                    "scene color snapshot copy: array target not pre-synced for {}×{} {:?}; skipping copy",
-                    width,
-                    height,
-                    format
-                );
-                return;
-            }
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: source_color,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.scene_color_array.0,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                extent,
-            );
-        } else {
-            if self.scene_color_2d_extent_px != (width, height)
-                || self.scene_color_2d_format != format
-            {
-                logger::warn!(
-                    "scene color snapshot copy: 2d target not pre-synced for {}×{} {:?}; skipping copy",
-                    width,
-                    height,
-                    format
-                );
-                return;
-            }
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: source_color,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.scene_color_2d.0,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                extent,
-            );
-        }
+        self.scene_snapshots.encode_copy(
+            encoder,
+            source_color,
+            SceneSnapshotKind::Color,
+            SceneSnapshotLayout::from_multiview(multiview),
+            (width, height),
+        );
     }
 
     /// Copies the main color attachment into the sampled scene-color snapshot used by grab-pass
@@ -890,54 +477,33 @@ impl FrameGpuResources {
         let max_dim = self.limits.max_texture_dimension_2d();
         if width > max_dim || height > max_dim {
             logger::warn!(
-                "copy_scene_color_snapshot: viewport {}×{} exceeds max_texture_dimension_2d ({max_dim}); skipping copy",
+                "copy_scene_color_snapshot: viewport {}x{} exceeds max_texture_dimension_2d ({max_dim}); skipping copy",
                 width,
                 height
             );
             return;
         }
         let format = source_color.format();
-        let extent = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: if multiview { 2 } else { 1 },
-        };
-        if multiview {
-            self.ensure_scene_color_array(device, (width, height), format);
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: source_color,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.scene_color_array.0,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                extent,
-            );
-        } else {
-            self.ensure_scene_color_2d(device, (width, height), format);
-            encoder.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: source_color,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.scene_color_2d.0,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                extent,
-            );
+        let layout = SceneSnapshotLayout::from_multiview(multiview);
+        let changed = self.scene_snapshots.ensure(
+            device,
+            self.limits.as_ref(),
+            SceneSnapshotKind::Color,
+            layout,
+            (width, height),
+            format,
+        );
+        self.scene_snapshots.encode_copy(
+            encoder,
+            source_color,
+            SceneSnapshotKind::Color,
+            layout,
+            (width, height),
+        );
+        if changed {
+            self.snapshot_version = self.snapshot_version.wrapping_add(1);
+            self.rebuild_bind_group(device);
         }
-        self.rebuild_bind_group(device);
     }
 
     /// Builds a per-view `@group(0)` bind group using this view's own `frame_uniform` and
@@ -956,13 +522,7 @@ impl FrameGpuResources {
             frame_uniform,
             &self.lights_buffer,
             cluster_refs,
-            FrameSceneSnapshotTextureViews {
-                scene_depth_2d: &self.scene_depth_2d.1,
-                scene_depth_array: &self.scene_depth_array.1,
-                scene_color_2d: &self.scene_color_2d.1,
-                scene_color_array: &self.scene_color_array.1,
-                scene_color_sampler: &self.scene_color_sampler,
-            },
+            self.scene_snapshots.views(),
         )
     }
 
@@ -1000,42 +560,5 @@ impl FrameGpuResources {
             let zero = [0u8; std::mem::size_of::<GpuLight>()];
             queue.write_buffer(lights_buffer, 0, &zero);
         }
-    }
-}
-
-/// Empty `@group(1)` layout for materials that declare no per-material bindings yet.
-pub fn empty_material_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("empty_material_slot"),
-        entries: &[],
-    })
-}
-
-/// Single reusable empty bind group for [`empty_material_bind_group_layout`].
-pub fn empty_material_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("empty_material_bind_group"),
-        layout,
-        entries: &[],
-    })
-}
-
-/// Cached empty material bind group layout + instance (one per device attach).
-pub struct EmptyMaterialBindGroup {
-    /// Shared layout for the empty `@group(1)` placeholder.
-    pub layout: wgpu::BindGroupLayout,
-    /// Bind group with no entries (material slot unused).
-    pub bind_group: Arc<wgpu::BindGroup>,
-}
-
-impl EmptyMaterialBindGroup {
-    /// Builds layout and bind group for `@group(1)` placeholder.
-    pub fn new(device: &wgpu::Device) -> Self {
-        let layout = empty_material_bind_group_layout(device);
-        let bind_group = Arc::new(empty_material_bind_group(device, &layout));
-        Self { layout, bind_group }
     }
 }

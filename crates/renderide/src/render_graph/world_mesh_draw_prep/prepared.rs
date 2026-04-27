@@ -168,11 +168,6 @@ impl FramePreparedRenderables {
     }
 
     /// Iterator of `(mesh_asset_id, material_asset_id)` pairs for every prepared draw.
-    ///
-    /// Used by the compiled render graph's pre-warm pass to upload per-mesh vertex streams for
-    /// materials that need them (e.g. tangent / UV1..3) when the calling path does not populate
-    /// [`crate::render_graph::compiled::FrameView::prefetched_world_mesh_draws`] — notably the
-    /// OpenXR multiview path.
     #[inline]
     pub fn mesh_material_pairs(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
         self.draws
