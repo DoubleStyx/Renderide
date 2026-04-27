@@ -187,6 +187,8 @@ fn clustered_direct_lighting(
     let v = normalize(cam - world_pos);
     let f0 = mix(vec3<f32>(0.04), s.base_color, s.metallic);
 
+    let aa_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+
     let cluster_id = pcls::cluster_id_from_frag(
         frag_xy,
         world_pos,
@@ -220,7 +222,7 @@ fn clustered_direct_lighting(
             world_pos,
             s.normal,
             v,
-            s.roughness,
+            aa_roughness,
             s.metallic,
             s.base_color,
             f0,

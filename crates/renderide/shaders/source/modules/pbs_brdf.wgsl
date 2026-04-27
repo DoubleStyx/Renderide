@@ -24,6 +24,40 @@
 /// fp16 sparkles and division-by-near-zero artefacts; matches Filament `MIN_ROUGHNESS` for desktop.
 const MIN_ALPHA: f32 = 0.002025;
 
+/// Variance scale for [`filter_perceptual_roughness`]. Matches Filament's default
+/// `_specularAntiAliasingVariance`.
+const SPECULAR_AA_VARIANCE: f32 = 0.25;
+
+/// Maximum kernel-roughness widening for [`filter_perceptual_roughness`]. Matches Filament's
+/// default `_specularAntiAliasingThreshold`; caps the filter so very high curvature doesn't drive
+/// the entire surface to a fully-rough lobe.
+const SPECULAR_AA_THRESHOLD: f32 = 0.18;
+
+/// Tokuyoshi & Kaplanyan 2019 "Improved Geometric Specular Antialiasing".
+///
+/// Widens the GGX lobe by the screen-space variance of the surface normal so that sub-pixel
+/// normal jitter does not alias into the specular highlight. MSAA can only multisample geometric
+/// coverage; the fragment shader still runs once per pixel, so a narrow specular lobe evaluated
+/// at the pixel centre will sparkle on curved metals regardless of MSAA tier. This filter widens
+/// `α` per pixel based on `dpdx`/`dpdy` of the world normal, producing a softer pre-filtered lobe
+/// where the normal is changing fast.
+///
+/// `perceptual_roughness` is `1 − smoothness` (this module's standard input), and the returned
+/// value is also perceptual — call sites can drop-in replace their existing `roughness` and the
+/// downstream BRDF squares to `α` once as before.
+///
+/// Fragment-only (uses derivatives). Call once before the cluster light loop so the derivatives
+/// evaluate at uniform control flow and the widened roughness is shared across all light samples.
+fn filter_perceptual_roughness(perceptual_roughness: f32, world_n: vec3<f32>) -> f32 {
+    let du = dpdx(world_n);
+    let dv = dpdy(world_n);
+    let variance = SPECULAR_AA_VARIANCE * (dot(du, du) + dot(dv, dv));
+    let alpha = perceptual_roughness * perceptual_roughness;
+    let kernel = min(2.0 * variance, SPECULAR_AA_THRESHOLD);
+    let alpha2 = clamp(alpha * alpha + kernel, 0.0, 1.0);
+    return sqrt(sqrt(alpha2));
+}
+
 /// `(1 − x)^5` — used by Schlick Fresnel.
 fn pow5(x: f32) -> f32 {
     let x2 = x * x;

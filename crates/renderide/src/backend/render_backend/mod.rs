@@ -103,6 +103,10 @@ pub struct RenderBackend {
     /// detect HUD edits to `[post_processing]` that change graph topology (effect added or
     /// removed). Parameter-only tweaks that do not flip the signature avoid a rebuild.
     frame_graph_post_processing_signature: PostProcessChainSignature,
+    /// Effective MSAA sample count the cached [`Self::frame_graph`] was built against. Tracked so
+    /// changes to `[rendering] msaa` invalidate the graph (the HDR-aware MSAA color resolve pass
+    /// is only present when the count is `> 1`).
+    frame_graph_msaa_sample_count: u8,
     /// Scratch buffers for mesh deformation compute (after [`Self::attach`]).
     mesh_deform_scratch: Option<MeshDeformScratch>,
     /// Arena-backed deformed vertex streams (after [`Self::attach`]); sibling to [`Self::frame_resources`] for borrow splitting.
@@ -195,6 +199,7 @@ impl RenderBackend {
             mesh_preprocess: None,
             frame_graph: None,
             frame_graph_post_processing_signature: PostProcessChainSignature::default(),
+            frame_graph_msaa_sample_count: 1,
             mesh_deform_scratch: None,
             skin_cache: None,
             msaa_depth_resolve: None,
@@ -498,29 +503,37 @@ impl RenderBackend {
 
         self.msaa_depth_resolve = MsaaDepthResolveResources::try_new(device.as_ref()).map(Arc::new);
 
-        let post_processing_settings = self
+        let (post_processing_settings, msaa_sample_count) = self
             .renderer_settings
             .as_ref()
-            .and_then(|h| h.read().ok().map(|g| g.post_processing.clone()))
-            .unwrap_or_default();
-        self.rebuild_frame_graph_for_post_processing(&post_processing_settings);
+            .and_then(|h| {
+                h.read()
+                    .ok()
+                    .map(|g| (g.post_processing.clone(), g.rendering.msaa.as_count() as u8))
+            })
+            .unwrap_or_else(|| (PostProcessingSettings::default(), 1));
+        self.rebuild_frame_graph(&post_processing_settings, msaa_sample_count);
         Ok(())
     }
 
-    /// Rebuilds [`Self::frame_graph`] from `post_processing` and updates the cached signature.
+    /// Rebuilds [`Self::frame_graph`] from `post_processing` and `msaa_sample_count`, and updates
+    /// the cached signature + MSAA count.
     ///
     /// Logs at `warn` and clears [`Self::frame_graph`] on build failure so subsequent execute
     /// calls return [`crate::render_graph::GraphExecuteError::NoFrameGraph`] instead of running
     /// a stale graph.
-    fn rebuild_frame_graph_for_post_processing(
+    fn rebuild_frame_graph(
         &mut self,
         post_processing: &PostProcessingSettings,
+        msaa_sample_count: u8,
     ) {
-        match crate::render_graph::build_default_main_graph_with(post_processing) {
+        match crate::render_graph::build_default_main_graph_with(post_processing, msaa_sample_count)
+        {
             Ok(g) => {
                 self.frame_graph = Some(g);
                 self.frame_graph_post_processing_signature =
                     PostProcessChainSignature::from_settings(post_processing);
+                self.frame_graph_msaa_sample_count = msaa_sample_count;
             }
             Err(e) => {
                 logger::warn!("render graph build failed: {e}");
@@ -541,23 +554,30 @@ impl RenderBackend {
         let Some(handle) = self.renderer_settings.as_ref() else {
             return;
         };
-        let (live_parallelism, live_settings) = match handle.read() {
-            Ok(g) => (g.rendering.record_parallelism, g.post_processing.clone()),
+        let (live_parallelism, live_settings, live_msaa) = match handle.read() {
+            Ok(g) => (
+                g.rendering.record_parallelism,
+                g.post_processing.clone(),
+                g.rendering.msaa.as_count() as u8,
+            ),
             Err(_) => return,
         };
         self.set_record_parallelism(live_parallelism);
         let live_signature = PostProcessChainSignature::from_settings(&live_settings);
         if live_signature == self.frame_graph_post_processing_signature
+            && live_msaa == self.frame_graph_msaa_sample_count
             && self.frame_graph.is_some()
         {
             return;
         }
         logger::info!(
-            "post-processing settings changed (signature {:?} -> {:?}); rebuilding render graph",
+            "graph inputs changed (post-processing {:?} -> {:?}, msaa {}× -> {}×); rebuilding render graph",
             self.frame_graph_post_processing_signature,
             live_signature,
+            self.frame_graph_msaa_sample_count,
+            live_msaa,
         );
-        self.rebuild_frame_graph_for_post_processing(&live_settings);
+        self.rebuild_frame_graph(&live_settings, live_msaa);
     }
 
     /// Updates the per-view record parallelism mode from live [`crate::config::RenderingSettings`].

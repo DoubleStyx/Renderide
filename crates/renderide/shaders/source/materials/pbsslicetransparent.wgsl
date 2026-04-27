@@ -242,6 +242,8 @@ fn fs_main(
     let cam = rg::frame.camera_world_pos.xyz;
     let v = normalize(cam - world_pos);
 
+    let aa_roughness = brdf::filter_perceptual_roughness(roughness, n);
+
     let cluster_id = pcls::cluster_id_from_frag(
         frag_pos.xy,
         world_pos,
@@ -271,7 +273,7 @@ fn fs_main(
             world_pos,
             n,
             v,
-            roughness,
+            aa_roughness,
             metallic,
             base_color,
             f0,

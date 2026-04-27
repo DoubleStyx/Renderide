@@ -202,6 +202,8 @@ fn shade(
     let cam = rg::frame.camera_world_pos.xyz;
     let v = normalize(cam - world_pos);
 
+    let aa_roughness = brdf::filter_perceptual_roughness(roughness, n);
+
     let cluster_id = pcls::cluster_id_from_frag(
         frag_xy,
         world_pos,
@@ -231,7 +233,7 @@ fn shade(
             continue;
         }
         lo = lo + brdf::direct_radiance_specular(
-            light, world_pos, n, v, roughness, base_color, f0, one_minus_reflectivity,
+            light, world_pos, n, v, aa_roughness, base_color, f0, one_minus_reflectivity,
         );
     }
 

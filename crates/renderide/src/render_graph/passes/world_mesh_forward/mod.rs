@@ -25,10 +25,15 @@
 //! `view_transform` world-to-camera to avoid mixing stage with the host rig. Overlays keep
 //! `view` for orthographic / UI alignment. Matrix composition lives in [`vp`].
 
+mod color_resolve;
 mod current_view_textures;
 mod encode;
 mod execute_helpers;
 mod vp;
+
+pub use color_resolve::{
+    WorldMeshForwardColorResolveGraphResources, WorldMeshForwardColorResolvePass,
+};
 
 use std::num::NonZeroU32;
 
@@ -392,6 +397,11 @@ impl RasterPass for WorldMeshForwardIntersectPass {
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         {
             let mut r = b.raster();
+            // No `resolve_target` here: when MSAA is active, the multisampled buffer is preserved
+            // and resolved by [`WorldMeshForwardColorResolvePass`] using the Karis HDR-aware
+            // bracket. wgpu's automatic linear average underestimates very bright samples at
+            // contrast edges, producing visible aliasing where bright/dark samples meet (e.g.
+            // specular sparks against dark surfaces) — the custom resolve fixes that.
             r.frame_sampled_color(
                 self.resources.scene_color_hdr,
                 self.resources.scene_color_hdr_msaa,
@@ -399,7 +409,7 @@ impl RasterPass for WorldMeshForwardIntersectPass {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
-                Some(self.resources.scene_color_hdr),
+                Option::<ImportedTextureHandle>::None,
             );
             r.frame_sampled_depth(
                 self.resources.depth,

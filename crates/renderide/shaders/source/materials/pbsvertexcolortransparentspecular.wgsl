@@ -153,6 +153,8 @@ fn clustered_direct_lighting(
     let cam = rg::frame.camera_world_pos.xyz;
     let v = normalize(cam - world_pos);
 
+    let aa_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+
     let cluster_id = pcls::cluster_id_from_frag(
         frag_xy,
         world_pos,
@@ -182,7 +184,7 @@ fn clustered_direct_lighting(
             continue;
         }
         lo = lo + brdf::direct_radiance_specular(
-            light, world_pos, s.normal, v, s.roughness, s.base_color, s.f0, s.one_minus_reflectivity,
+            light, world_pos, s.normal, v, aa_roughness, s.base_color, s.f0, s.one_minus_reflectivity,
         );
     }
     return lo;

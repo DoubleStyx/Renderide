@@ -131,6 +131,8 @@ fn fs_main(
     let rim = pow(max(1.0 - clamp(dot(v, n), 0.0, 1.0), 0.0), max(mat._RimPower, 1e-4));
     let rim_emission = mat._RimColor.rgb * rim;
 
+    let aa_roughness = brdf::filter_perceptual_roughness(roughness, n);
+
     let cluster_id = pcls::cluster_id_from_frag(
         frag_pos.xy,
         world_pos,
@@ -155,7 +157,7 @@ fn fs_main(
             continue;
         }
         let light = rg::lights[li];
-        lo = lo + brdf::direct_radiance_metallic(light, world_pos, n, v, roughness, metallic, base_color, f0);
+        lo = lo + brdf::direct_radiance_metallic(light, world_pos, n, v, aa_roughness, metallic, base_color, f0);
     }
 
     let amb = vec3<f32>(0.03);

@@ -176,6 +176,8 @@ fn shade(
     let cam = rg::frame.camera_world_pos.xyz;
     let v = normalize(cam - world_pos);
 
+    let aa_roughness = brdf::filter_perceptual_roughness(roughness, n);
+
     let cluster_id = pcls::cluster_id_from_frag(
         frag_xy, world_pos, rg::frame.view_space_z_coeffs, rg::frame.view_space_z_coeffs_right,
         view_layer, rg::frame.viewport_width, rg::frame.viewport_height,
@@ -196,7 +198,7 @@ fn shade(
             continue;
         }
         lo = lo + brdf::direct_radiance_specular(
-            light, world_pos, n, v, roughness, base_color, f0, one_minus_reflectivity,
+            light, world_pos, n, v, aa_roughness, base_color, f0, one_minus_reflectivity,
         );
     }
     let ambient = select(vec3<f32>(0.0), vec3<f32>(0.03) * base_color * occlusion, include_directional);
