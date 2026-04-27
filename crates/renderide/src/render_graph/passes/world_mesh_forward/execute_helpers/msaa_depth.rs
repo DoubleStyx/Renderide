@@ -36,6 +36,7 @@ pub(crate) fn encode_world_mesh_forward_depth_snapshot(
         .shared
         .frame_resources
         .copy_scene_depth_snapshot_for_view(
+            frame.view.occlusion_view,
             encoder,
             frame.view.depth_texture,
             frame.view.viewport_px,

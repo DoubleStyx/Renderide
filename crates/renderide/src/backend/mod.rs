@@ -35,7 +35,7 @@ pub use embedded::{
 };
 pub use frame_gpu::{
     empty_material_bind_group_layout, EmptyMaterialBindGroup, FrameGpuResources,
-    FrameSceneSnapshotTextureViews, SceneColorSnapshotCopyParams,
+    FrameSceneSnapshotTextureViews,
 };
 pub use frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 pub use frame_gpu_error::FrameGpuInitError;

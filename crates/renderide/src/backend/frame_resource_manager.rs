@@ -19,7 +19,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use parking_lot::Mutex;
 
 use crate::backend::cluster_gpu::{ClusterBufferRefs, CLUSTER_PARAMS_UNIFORM_SIZE};
@@ -27,7 +27,10 @@ use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::gpu::GpuLimits;
 use crate::render_graph::OcclusionViewId;
 
-use super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources, SceneSnapshotSyncParams};
+use super::frame_gpu::{
+    EmptyMaterialBindGroup, FrameGpuResources, PerViewSceneSnapshotSyncParams,
+    PerViewSceneSnapshots,
+};
 use super::frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 use super::light_gpu::{order_lights_for_clustered_shading_in_place, GpuLight, MAX_LIGHTS};
 use super::mesh_deform::PaddedPerDrawUniforms;
@@ -50,17 +53,17 @@ use crate::scene::{light_contributes, ResolvedLight, SceneCoordinator};
 pub struct PerViewFrameState {
     /// Per-view `@group(0)` frame uniform buffer written by the prepare pass each frame.
     pub frame_uniform_buffer: wgpu::Buffer,
-    /// Per-view `@group(0)` bind group referencing [`Self::frame_uniform_buffer`] and the
-    /// shared cluster buffers alongside shared lights and scene snapshots.
+    /// Per-view `@group(0)` bind group referencing [`Self::frame_uniform_buffer`], shared
+    /// lights/cluster buffers, and view-local scene snapshots.
     pub frame_bind_group: Arc<wgpu::BindGroup>,
     /// Per-view uniform buffer for `ClusterParams` (camera matrix, projection, viewport, etc.).
     ///
     /// Sized `CLUSTER_PARAMS_UNIFORM_SIZE × eye_multiplier`. Must be per-view — see struct doc.
     pub cluster_params_buffer: wgpu::Buffer,
+    /// View-local depth/color snapshots sampled by embedded material helper passes.
+    scene_snapshots: PerViewSceneSnapshots,
     /// Shared [`ClusterBufferCache::version`] at which [`Self::frame_bind_group`] was last built.
     last_cluster_version: u64,
-    /// [`FrameGpuResources::snapshot_version`] at which [`Self::frame_bind_group`] was last built.
-    last_snapshot_version: u64,
     /// Stereo flag at which [`Self::cluster_params_buffer`] was last allocated.
     last_stereo: bool,
 }
@@ -104,10 +107,54 @@ pub struct PreRecordViewResourceLayout {
     pub needs_color_snapshot: bool,
 }
 
+/// Unique shared-cluster pre-record layout after removing view-local snapshot fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ClusterPreRecordLayout {
+    /// Viewport width in physical pixels.
+    width: u32,
+    /// Viewport height in physical pixels.
+    height: u32,
+    /// Whether cluster buffers need two-eye storage.
+    stereo: bool,
+}
+
+/// Converts a view resource layout into the view-local scene snapshot sync request.
+fn per_view_snapshot_sync_params(
+    layout: PreRecordViewResourceLayout,
+) -> PerViewSceneSnapshotSyncParams {
+    PerViewSceneSnapshotSyncParams {
+        viewport: (layout.width, layout.height),
+        depth_format: layout.depth_format,
+        color_format: layout.color_format,
+        multiview: layout.stereo,
+        needs_depth_snapshot: layout.needs_depth_snapshot,
+        needs_color_snapshot: layout.needs_color_snapshot,
+    }
+}
+
+/// Returns stable unique cluster layouts while preserving first-seen view order.
+fn unique_cluster_pre_record_layouts(
+    view_layouts: &[PreRecordViewResourceLayout],
+) -> Vec<ClusterPreRecordLayout> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for layout in view_layouts {
+        let cluster = ClusterPreRecordLayout {
+            width: layout.width,
+            height: layout.height,
+            stereo: layout.stereo,
+        };
+        if seen.insert(cluster) {
+            out.push(cluster);
+        }
+    }
+    out
+}
+
 /// Per-frame GPU state: shared frame/light resources, per-view cluster buffers and bind groups,
 /// per-view per-draw storage slabs, and the CPU-side packed light buffer.
 pub struct FrameResourceManager {
-    /// Shared `@group(0)` frame globals (lights buffer, snapshot textures, bind group layout).
+    /// Shared `@group(0)` frame globals (lights, fallback snapshots, bind group layout).
     pub(crate) frame_gpu: Option<FrameGpuResources>,
     /// Placeholder `@group(1)` for materials without per-material bindings.
     pub(crate) empty_material: Option<EmptyMaterialBindGroup>,
@@ -288,8 +335,8 @@ impl FrameResourceManager {
     /// Returns the per-view frame state for `view_id`, creating it lazily if it does not exist.
     ///
     /// Grows the shared cluster buffers (on [`FrameGpuResources`]) to cover this view's
-    /// `viewport` / `stereo` when needed and rebuilds the `@group(0)` bind group whenever the
-    /// shared cluster version or snapshot version changes.
+    /// layout in `layout` when needed and rebuilds the `@group(0)` bind group whenever the
+    /// shared cluster buffers or this view's snapshots change.
     ///
     /// Returns `None` when the manager has not been attached (no GPU resources available) or
     /// when cluster buffers cannot be allocated for the given viewport.
@@ -297,11 +344,13 @@ impl FrameResourceManager {
         &mut self,
         view_id: OcclusionViewId,
         device: &wgpu::Device,
-        viewport: (u32, u32),
-        stereo: bool,
+        layout: PreRecordViewResourceLayout,
     ) -> Option<&mut PerViewFrameState> {
         profiling::scope!("render::ensure_per_view_frame");
-        let _ = self.limits.as_ref()?; // confirm attached
+        let limits = Arc::clone(self.limits.as_ref()?);
+        let viewport = (layout.width, layout.height);
+        let stereo = layout.stereo;
+        let snapshot_sync = per_view_snapshot_sync_params(layout);
 
         let per_view_frame = &mut self.per_view_frame;
         let frame_gpu_opt = &mut self.frame_gpu;
@@ -309,7 +358,6 @@ impl FrameResourceManager {
         // Grow the shared cluster buffers to cover this view if needed; `sync_cluster_viewport`
         // is grow-only so repeated calls from different views consolidate to the max envelope.
         fgpu.sync_cluster_viewport(device, viewport, stereo);
-        let snapshot_ver = fgpu.snapshot_version;
         let cluster_ver = fgpu.cluster_cache.version;
         let placeholder_bg = fgpu.bind_group.clone();
 
@@ -321,10 +369,20 @@ impl FrameResourceManager {
                 mapped_at_creation: false,
             });
             let cluster_params_buffer = make_cluster_params_buffer(device, stereo);
+            let mut scene_snapshots =
+                PerViewSceneSnapshots::new(device, layout.depth_format, layout.color_format);
+            scene_snapshots.sync(device, limits.as_ref(), snapshot_sync);
             let frame_bind_group = fgpu
                 .cluster_cache
                 .current_refs()
-                .map(|refs| fgpu.build_per_view_bind_group(device, &frame_uniform_buffer, refs))
+                .map(|refs| {
+                    fgpu.build_per_view_bind_group(
+                        device,
+                        &frame_uniform_buffer,
+                        refs,
+                        scene_snapshots.views(),
+                    )
+                })
                 .unwrap_or_else(|| placeholder_bg);
             logger::debug!("per-view frame state: allocating for view {view_id:?}");
             per_view_frame.insert(
@@ -333,8 +391,8 @@ impl FrameResourceManager {
                     frame_uniform_buffer,
                     frame_bind_group,
                     cluster_params_buffer,
+                    scene_snapshots,
                     last_cluster_version: cluster_ver,
-                    last_snapshot_version: snapshot_ver,
                     last_stereo: stereo,
                 },
             );
@@ -348,17 +406,22 @@ impl FrameResourceManager {
             entry.last_stereo = true;
         }
 
-        let needs_rebuild = cluster_ver != entry.last_cluster_version
-            || snapshot_ver != entry.last_snapshot_version;
+        let snapshots_changed = entry
+            .scene_snapshots
+            .sync(device, limits.as_ref(), snapshot_sync);
+        let needs_rebuild = cluster_ver != entry.last_cluster_version || snapshots_changed;
 
         if needs_rebuild {
             if let Some(refs) = fgpu.cluster_cache.current_refs() {
-                let new_bg =
-                    fgpu.build_per_view_bind_group(device, &entry.frame_uniform_buffer, refs);
+                let new_bg = fgpu.build_per_view_bind_group(
+                    device,
+                    &entry.frame_uniform_buffer,
+                    refs,
+                    entry.scene_snapshots.views(),
+                );
                 entry.frame_bind_group = new_bg;
             }
             entry.last_cluster_version = cluster_ver;
-            entry.last_snapshot_version = snapshot_ver;
         }
 
         per_view_frame.get_mut(&view_id)
@@ -541,7 +604,7 @@ impl FrameResourceManager {
         }
     }
 
-    /// Pre-synchronizes the shared cluster viewport for every unique view layout before per-view
+    /// Pre-synchronizes shared cluster buffers for every unique view layout before per-view
     /// recording starts and uploads the packed lights buffer at most once for the tick.
     pub fn pre_record_sync_for_views(
         &mut self,
@@ -549,39 +612,11 @@ impl FrameResourceManager {
         queue: &wgpu::Queue,
         view_layouts: &[PreRecordViewResourceLayout],
     ) {
-        let mut unique_layouts = HashMap::new();
-        for &layout in view_layouts {
-            let key = (
-                layout.width,
-                layout.height,
-                layout.stereo,
-                layout.depth_format,
-                layout.color_format,
-            );
-            let needs = unique_layouts.entry(key).or_insert((false, false));
-            needs.0 |= layout.needs_depth_snapshot;
-            needs.1 |= layout.needs_color_snapshot;
-        }
-
-        for ((width, height, stereo, depth_format, color_format), (needs_depth, needs_color)) in
-            unique_layouts
-        {
+        for layout in unique_cluster_pre_record_layouts(view_layouts) {
             let Some(fgpu) = self.frame_gpu_mut() else {
                 return;
             };
-            let viewport = (width, height);
-            fgpu.sync_cluster_viewport(device, viewport, stereo);
-            fgpu.sync_scene_snapshot_textures(
-                device,
-                SceneSnapshotSyncParams {
-                    viewport,
-                    depth_format,
-                    color_format,
-                    multiview: stereo,
-                    needs_depth_snapshot: needs_depth,
-                    needs_color_snapshot: needs_color,
-                },
-            );
+            fgpu.sync_cluster_viewport(device, (layout.width, layout.height), layout.stereo);
         }
         if self
             .lights_gpu_uploaded_this_tick
@@ -623,34 +658,42 @@ impl FrameResourceManager {
         self.frame_gpu_mut()
     }
 
-    /// Copies the main depth attachment into the scene-depth snapshot that was already
-    /// provisioned by [`Self::pre_record_sync_for_views`].
+    /// Copies the main depth attachment into this view's scene-depth snapshot.
+    ///
+    /// The snapshot must already have been provisioned by [`Self::per_view_frame_or_create`].
     pub fn copy_scene_depth_snapshot_for_view(
         &self,
+        view_id: OcclusionViewId,
         encoder: &mut wgpu::CommandEncoder,
         source_depth: &wgpu::Texture,
         viewport: (u32, u32),
         multiview: bool,
     ) {
-        let Some(fgpu) = self.frame_gpu.as_ref() else {
+        let Some(state) = self.per_view_frame.get(&view_id) else {
             return;
         };
-        fgpu.encode_scene_depth_snapshot_copy(encoder, source_depth, viewport, multiview);
+        state
+            .scene_snapshots
+            .encode_depth_copy(encoder, source_depth, viewport, multiview);
     }
 
-    /// Copies the main color attachment into the scene-color snapshot that was already
-    /// provisioned by [`Self::pre_record_sync_for_views`].
+    /// Copies the main color attachment into this view's scene-color snapshot.
+    ///
+    /// The snapshot must already have been provisioned by [`Self::per_view_frame_or_create`].
     pub fn copy_scene_color_snapshot_for_view(
         &self,
+        view_id: OcclusionViewId,
         encoder: &mut wgpu::CommandEncoder,
         source_color: &wgpu::Texture,
         viewport: (u32, u32),
         multiview: bool,
     ) {
-        let Some(fgpu) = self.frame_gpu.as_ref() else {
+        let Some(state) = self.per_view_frame.get(&view_id) else {
             return;
         };
-        fgpu.encode_scene_color_snapshot_copy(encoder, source_color, viewport, multiview);
+        state
+            .scene_snapshots
+            .encode_color_copy(encoder, source_color, viewport, multiview);
     }
 }
 
@@ -678,6 +721,25 @@ mod tests {
         LightData, LightType, LightsBufferRendererState, RenderTransform, ShadowType,
     };
 
+    /// Builds a pre-record layout for pure frame-resource planning tests.
+    fn pre_record_layout(
+        width: u32,
+        height: u32,
+        stereo: bool,
+        needs_depth_snapshot: bool,
+        needs_color_snapshot: bool,
+    ) -> PreRecordViewResourceLayout {
+        PreRecordViewResourceLayout {
+            width,
+            height,
+            stereo,
+            depth_format: wgpu::TextureFormat::Depth32Float,
+            color_format: wgpu::TextureFormat::Rgba16Float,
+            needs_depth_snapshot,
+            needs_color_snapshot,
+        }
+    }
+
     #[test]
     fn new_manager_has_no_per_view_draw() {
         let mgr = FrameResourceManager::new();
@@ -694,6 +756,49 @@ mod tests {
         assert!(mgr
             .per_view_frame(OcclusionViewId::OffscreenRenderTexture(42))
             .is_none());
+    }
+
+    /// Shared pre-record work deduplicates only the cluster allocation shape, not snapshot needs.
+    #[test]
+    fn cluster_pre_record_layouts_ignore_snapshot_fields() {
+        let dashboard = pre_record_layout(512, 256, false, false, true);
+        let dashboard_depth = pre_record_layout(512, 256, false, true, false);
+        let main = pre_record_layout(1920, 1080, false, false, false);
+
+        let layouts = unique_cluster_pre_record_layouts(&[dashboard, dashboard_depth, main]);
+
+        assert_eq!(
+            layouts,
+            vec![
+                ClusterPreRecordLayout {
+                    width: 512,
+                    height: 256,
+                    stereo: false,
+                },
+                ClusterPreRecordLayout {
+                    width: 1920,
+                    height: 1080,
+                    stereo: false,
+                },
+            ]
+        );
+    }
+
+    /// Snapshot sync requests stay per-view, so an unrelated view cannot become the grab winner.
+    #[test]
+    fn per_view_snapshot_sync_params_preserve_grab_need_per_view() {
+        let dashboard = pre_record_layout(512, 256, false, false, true);
+        let main = pre_record_layout(1920, 1080, false, false, false);
+
+        let dashboard_sync = per_view_snapshot_sync_params(dashboard);
+        let main_sync = per_view_snapshot_sync_params(main);
+
+        assert_eq!(dashboard_sync.viewport, (512, 256));
+        assert!(dashboard_sync.needs_color_snapshot);
+        assert!(!dashboard_sync.needs_depth_snapshot);
+        assert_eq!(main_sync.viewport, (1920, 1080));
+        assert!(!main_sync.needs_color_snapshot);
+        assert!(!main_sync.needs_depth_snapshot);
     }
 
     #[test]

@@ -1,10 +1,11 @@
 //! Per-frame `@group(0)` resources: scene uniform, lights storage, shared cluster buffers, and
-//! scene snapshot textures.
+//! fallback scene snapshot textures.
 //!
 //! Cluster buffers ([`ClusterBufferCache`]) and the `@group(0)` layout live here and are
 //! **shared across every view**; per-view uniform buffers and bind groups live in
 //! [`crate::backend::frame_resource_manager::PerViewFrameState`] and reference these shared
-//! cluster buffers (safe under single-submit ordering — see [`ClusterBufferCache`]).
+//! cluster buffers plus view-local scene snapshots (safe under single-submit ordering — see
+//! [`ClusterBufferCache`]).
 
 mod empty_material;
 mod scene_snapshot;
@@ -25,7 +26,7 @@ use scene_snapshot::{
 };
 
 /// GPU buffers and bind groups for `@group(0)` frame globals (camera, lights, cluster lists,
-/// and sampled scene snapshots).
+/// and fallback sampled scene snapshots).
 ///
 /// `@group(0)` bind groups are per-view and are owned by
 /// [`crate::backend::frame_resource_manager::PerViewFrameState`], keyed by
@@ -43,7 +44,10 @@ pub struct FrameGpuResources {
     /// references this one cache (see [`ClusterBufferCache`] for the ordering argument that
     /// makes sharing safe under single-submit semantics).
     pub cluster_cache: ClusterBufferCache,
-    /// Scene depth/color snapshots sampled by embedded material shaders.
+    /// Fallback scene depth/color snapshots sampled by the global bind group.
+    ///
+    /// Actual render views use per-view snapshots owned by
+    /// [`crate::backend::frame_resource_manager::PerViewFrameState`].
     scene_snapshots: SceneSnapshotSet,
     /// Global `@group(0)` bind group (global frame uniform + shared lights/snapshots).
     ///
@@ -52,26 +56,17 @@ pub struct FrameGpuResources {
     pub bind_group: Arc<wgpu::BindGroup>,
     cluster_bind_version: u64,
     limits: Arc<GpuLimits>,
-    /// Monotonically increasing counter; incremented each time a scene snapshot texture is
-    /// recreated due to a size or format change.
-    ///
-    /// [`crate::backend::frame_resource_manager::PerViewFrameState`] tracks the version at which
-    /// it last rebuilt its `@group(0)` bind group and rebuilds when this diverges.
-    pub(super) snapshot_version: u64,
 }
 
-/// Viewport and view layout for [`FrameGpuResources::copy_scene_color_snapshot`].
-pub struct SceneColorSnapshotCopyParams {
-    /// Extent in pixels used for snapshot textures and copy.
-    pub viewport: (u32, u32),
-    /// When true, copy into the `D2Array` scene color snapshot (two layers).
-    pub multiview: bool,
-    /// Cluster buffer stereo layout passed to [`FrameGpuResources::rebuild_bind_group`].
-    pub stereo_cluster: bool,
+/// Per-view scene snapshot ownership for one render view.
+pub(super) struct PerViewSceneSnapshots {
+    /// Depth/color snapshot textures bound through this view's `@group(0)`.
+    set: SceneSnapshotSet,
 }
 
-/// Requested scene snapshot shape and families for pre-record synchronization.
-pub struct SceneSnapshotSyncParams {
+/// Requested per-view scene snapshot shape and families for pre-record synchronization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PerViewSceneSnapshotSyncParams {
     /// Extent in pixels used for any requested snapshot texture.
     pub viewport: (u32, u32),
     /// Depth snapshot format for `_CameraDepthTexture`-style material sampling.
@@ -84,6 +79,87 @@ pub struct SceneSnapshotSyncParams {
     pub needs_depth_snapshot: bool,
     /// Whether the color snapshot family should be grown for this layout.
     pub needs_color_snapshot: bool,
+}
+
+impl PerViewSceneSnapshots {
+    /// Creates fallback `1x1` snapshots for one render view.
+    pub(super) fn new(
+        device: &wgpu::Device,
+        depth_format: wgpu::TextureFormat,
+        color_format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
+            set: SceneSnapshotSet::new(device, depth_format, color_format),
+        }
+    }
+
+    /// Returns the snapshot views used when building this view's `@group(0)` bind group.
+    pub(super) fn views(&self) -> FrameSceneSnapshotTextureViews<'_> {
+        self.set.views()
+    }
+
+    /// Ensures requested per-view snapshot textures exist before command recording starts.
+    pub(super) fn sync(
+        &mut self,
+        device: &wgpu::Device,
+        limits: &GpuLimits,
+        params: PerViewSceneSnapshotSyncParams,
+    ) -> bool {
+        let layout = SceneSnapshotLayout::from_multiview(params.multiview);
+        let depth_changed = params.needs_depth_snapshot
+            && self.set.ensure(
+                device,
+                limits,
+                SceneSnapshotKind::Depth,
+                layout,
+                params.viewport,
+                params.depth_format,
+            );
+        let color_changed = params.needs_color_snapshot
+            && self.set.ensure(
+                device,
+                limits,
+                SceneSnapshotKind::Color,
+                layout,
+                params.viewport,
+                params.color_format,
+            );
+        depth_changed || color_changed
+    }
+
+    /// Encodes a copy into this view's scene-depth snapshot.
+    pub(super) fn encode_depth_copy(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source_depth: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) {
+        self.set.encode_copy(
+            encoder,
+            source_depth,
+            SceneSnapshotKind::Depth,
+            SceneSnapshotLayout::from_multiview(multiview),
+            viewport,
+        );
+    }
+
+    /// Encodes a copy into this view's scene-color snapshot.
+    pub(super) fn encode_color_copy(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source_color: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) {
+        self.set.encode_copy(
+            encoder,
+            source_color,
+            SceneSnapshotKind::Color,
+            SceneSnapshotLayout::from_multiview(multiview),
+            viewport,
+        );
+    }
 }
 
 impl FrameGpuResources {
@@ -300,7 +376,6 @@ impl FrameGpuResources {
             bind_group,
             cluster_bind_version,
             limits,
-            snapshot_version: 0,
         })
     }
 
@@ -341,189 +416,8 @@ impl FrameGpuResources {
         true
     }
 
-    /// Ensures requested sampled scene snapshot textures exist for the active view layout and formats.
-    ///
-    /// This must run before per-view `@group(0)` bind groups are created for graph recording: the
-    /// graph copy passes encode with `&self` and therefore cannot recreate texture views while
-    /// recording. Unrequested snapshot families keep their existing fallback views. Returns `true`
-    /// when the shared frame bind group was rebuilt.
-    pub fn sync_scene_snapshot_textures(
-        &mut self,
-        device: &wgpu::Device,
-        params: SceneSnapshotSyncParams,
-    ) -> bool {
-        let layout = SceneSnapshotLayout::from_multiview(params.multiview);
-        let depth_changed = params.needs_depth_snapshot
-            && self.scene_snapshots.ensure(
-                device,
-                self.limits.as_ref(),
-                SceneSnapshotKind::Depth,
-                layout,
-                params.viewport,
-                params.depth_format,
-            );
-        let color_changed = params.needs_color_snapshot
-            && self.scene_snapshots.ensure(
-                device,
-                self.limits.as_ref(),
-                SceneSnapshotKind::Color,
-                layout,
-                params.viewport,
-                params.color_format,
-            );
-        if !(depth_changed || color_changed) {
-            return false;
-        }
-        self.snapshot_version = self.snapshot_version.wrapping_add(1);
-        self.rebuild_bind_group(device);
-        true
-    }
-
-    /// Copies the main depth attachment into the sampled scene-depth snapshot used by embedded
-    /// materials such as `pbsintersectspecular`, then rebuilds [`Self::bind_group`] so `@group(0)`
-    /// points at the updated texture view.
-    pub fn copy_scene_depth_snapshot(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        source_depth: &wgpu::Texture,
-        viewport: (u32, u32),
-        multiview: bool,
-        _stereo_cluster: bool,
-    ) {
-        let width = viewport.0.max(1);
-        let height = viewport.1.max(1);
-        let max_dim = self.limits.max_texture_dimension_2d();
-        if width > max_dim || height > max_dim {
-            logger::warn!(
-                "copy_scene_depth_snapshot: viewport {}x{} exceeds max_texture_dimension_2d ({max_dim}); skipping copy",
-                width,
-                height
-            );
-            return;
-        }
-        let format = source_depth.format();
-        let layout = SceneSnapshotLayout::from_multiview(multiview);
-        let changed = self.scene_snapshots.ensure(
-            device,
-            self.limits.as_ref(),
-            SceneSnapshotKind::Depth,
-            layout,
-            (width, height),
-            format,
-        );
-        self.scene_snapshots.encode_copy(
-            encoder,
-            source_depth,
-            SceneSnapshotKind::Depth,
-            layout,
-            (width, height),
-        );
-        if changed {
-            self.snapshot_version = self.snapshot_version.wrapping_add(1);
-            self.rebuild_bind_group(device);
-        }
-    }
-
-    /// Copies the main depth attachment into an already provisioned scene-depth snapshot without
-    /// rebuilding any bind groups.
-    ///
-    /// Call this after [`Self::sync_cluster_viewport`] has already ensured the snapshot texture
-    /// exists for the target `viewport` / `multiview` layout. This keeps per-view recording free of
-    /// shared bind-group mutation while still encoding the per-view depth copy.
-    pub fn encode_scene_depth_snapshot_copy(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        source_depth: &wgpu::Texture,
-        viewport: (u32, u32),
-        multiview: bool,
-    ) {
-        let width = viewport.0.max(1);
-        let height = viewport.1.max(1);
-        self.scene_snapshots.encode_copy(
-            encoder,
-            source_depth,
-            SceneSnapshotKind::Depth,
-            SceneSnapshotLayout::from_multiview(multiview),
-            (width, height),
-        );
-    }
-
-    /// Copies the main color attachment into an already provisioned scene-color snapshot without
-    /// rebuilding any bind groups.
-    ///
-    /// Call this after [`Self::sync_scene_snapshot_textures`] has already ensured the snapshot
-    /// texture exists for the target `viewport` / `multiview` layout. This keeps graph recording
-    /// free of shared bind-group mutation while still encoding the per-view grab-pass copy.
-    pub fn encode_scene_color_snapshot_copy(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        source_color: &wgpu::Texture,
-        viewport: (u32, u32),
-        multiview: bool,
-    ) {
-        let width = viewport.0.max(1);
-        let height = viewport.1.max(1);
-        self.scene_snapshots.encode_copy(
-            encoder,
-            source_color,
-            SceneSnapshotKind::Color,
-            SceneSnapshotLayout::from_multiview(multiview),
-            (width, height),
-        );
-    }
-
-    /// Copies the main color attachment into the sampled scene-color snapshot used by grab-pass
-    /// materials such as `blur_perobject`, then rebuilds [`Self::bind_group`] so `@group(0)`
-    /// points at the updated texture view.
-    pub fn copy_scene_color_snapshot(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        source_color: &wgpu::Texture,
-        params: SceneColorSnapshotCopyParams,
-    ) {
-        let SceneColorSnapshotCopyParams {
-            viewport,
-            multiview,
-            stereo_cluster: _stereo_cluster,
-        } = params;
-        let width = viewport.0.max(1);
-        let height = viewport.1.max(1);
-        let max_dim = self.limits.max_texture_dimension_2d();
-        if width > max_dim || height > max_dim {
-            logger::warn!(
-                "copy_scene_color_snapshot: viewport {}x{} exceeds max_texture_dimension_2d ({max_dim}); skipping copy",
-                width,
-                height
-            );
-            return;
-        }
-        let format = source_color.format();
-        let layout = SceneSnapshotLayout::from_multiview(multiview);
-        let changed = self.scene_snapshots.ensure(
-            device,
-            self.limits.as_ref(),
-            SceneSnapshotKind::Color,
-            layout,
-            (width, height),
-            format,
-        );
-        self.scene_snapshots.encode_copy(
-            encoder,
-            source_color,
-            SceneSnapshotKind::Color,
-            layout,
-            (width, height),
-        );
-        if changed {
-            self.snapshot_version = self.snapshot_version.wrapping_add(1);
-            self.rebuild_bind_group(device);
-        }
-    }
-
     /// Builds a per-view `@group(0)` bind group using this view's own `frame_uniform` and
-    /// `cluster_refs`, but sharing lights storage and scene snapshot textures from [`Self`].
+    /// `cluster_refs`, sharing only the scene-global lights storage from [`Self`].
     ///
     /// Called by [`crate::backend::frame_resource_manager::PerViewFrameState`] whenever the view's
     /// cluster buffers or snapshot textures change.
@@ -532,13 +426,14 @@ impl FrameGpuResources {
         device: &wgpu::Device,
         frame_uniform: &wgpu::Buffer,
         cluster_refs: ClusterBufferRefs<'_>,
+        snapshots: FrameSceneSnapshotTextureViews<'_>,
     ) -> Arc<wgpu::BindGroup> {
         Self::create_bind_group(
             device,
             frame_uniform,
             &self.lights_buffer,
             cluster_refs,
-            self.scene_snapshots.views(),
+            snapshots,
         )
     }
 

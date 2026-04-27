@@ -112,11 +112,23 @@ impl CompiledRenderGraph {
             let occlusion_view = view.occlusion_view_id();
             let viewport = view.target.extent_px(mv_ctx.gpu);
             let stereo = view.is_multiview_stereo_active();
+            let Ok(depth_format) = view.target.depth_format(mv_ctx.gpu) else {
+                continue;
+            };
+            let helper_needs = view.world_mesh_draw_plan.helper_needs();
+            let layout = crate::backend::PreRecordViewResourceLayout {
+                width: viewport.0,
+                height: viewport.1,
+                stereo,
+                depth_format,
+                color_format: mv_ctx.backend.scene_color_format_wgpu(),
+                needs_depth_snapshot: helper_needs.depth_snapshot,
+                needs_color_snapshot: helper_needs.color_snapshot,
+            };
             let _ = mv_ctx.backend.frame_resources.per_view_frame_or_create(
                 occlusion_view,
                 mv_ctx.device,
-                viewport,
-                stereo,
+                layout,
             );
             let _ = mv_ctx.backend.occlusion.ensure_hi_z_state(occlusion_view);
             let _ = mv_ctx
