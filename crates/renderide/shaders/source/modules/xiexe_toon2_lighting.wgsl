@@ -40,6 +40,7 @@
 #import renderide::xiexe::toon2::surface as xsurf
 #import renderide::globals as rg
 #import renderide::pbs::cluster as pcls
+#import renderide::birp::light as bl
 #import renderide::sh2_ambient as shamb
 
 /// SH-probe sample used for xiexe's uncoloured indirect-diffuse term.
@@ -50,35 +51,6 @@ fn indirect_diffuse(s: xb::SurfaceData) -> vec3<f32> {
 /// `UNITY_SPECCUBE_LOD_STEPS` on PC/console. Matcap LOD selection in
 /// `XSLightingFunctions.cginc:227` uses `(1 − smoothness) · UNITY_SPECCUBE_LOD_STEPS`.
 const SPECCUBE_LOD_STEPS: f32 = 6.0;
-
-/// Quadratic coefficient used by Unity BiRP's normalized punctual-light attenuation LUT.
-const BIRP_ATTENUATION_QUADRATIC: f32 = 25.0;
-
-/// Temporary direct-light multiplier used to match BiRP-authored scene brightness.
-const INTENSITY_BOOST: f32 = 2.0;
-
-/// Quartic window that masks punctual attenuation to zero at the light range.
-fn birp_range_fade(t: f32) -> f32 {
-    let t2 = t * t;
-    let t4 = t2 * t2;
-    let fade = clamp(1.0 - t4, 0.0, 1.0);
-    return fade * fade;
-}
-
-/// Unity BiRP-style distance attenuation for punctual lights.
-/// `1 / (1 + 25·t²)` with `t = dist/range` approximates the Built-in RP attenuation LUT while
-/// keeping the light's peak brightness independent of range. The quartic range window prevents
-/// clustered lights from leaking past their declared range. [`INTENSITY_BOOST`] compensates for
-/// observed scene parity.
-fn punctual_attenuation(intensity: f32, dist: f32, range: f32) -> f32 {
-    if (range <= 0.0) {
-        return 0.0;
-    }
-    let t = dist / range;
-    let t2 = t * t;
-    let lut = 1.0 / (1.0 + BIRP_ATTENUATION_QUADRATIC * t2);
-    return intensity * lut * birp_range_fade(t) * INTENSITY_BOOST;
-}
 
 /// Resolves a single `rg::GpuLight` into a `LightSample` (direction toward the light,
 /// color, attenuation, directional flag).
@@ -96,7 +68,7 @@ fn sample_light(light: rg::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
     let to_light = light.position.xyz - world_pos;
     let dist = length(to_light);
     let l = xb::safe_normalize(to_light, vec3<f32>(0.0, 1.0, 0.0));
-    var attenuation = punctual_attenuation(light.intensity, dist, light.range);
+    var attenuation = bl::punctual_attenuation(light.intensity, dist, light.range);
     if (light.light_type == 2u) {
         let spot_cos = dot(-l, xb::safe_normalize(light.direction.xyz, vec3<f32>(0.0, -1.0, 0.0)));
         let inner_cos = min(light.spot_cos_half_angle + 0.1, 1.0);

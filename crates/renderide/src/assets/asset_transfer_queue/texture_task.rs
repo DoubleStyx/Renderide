@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::assets::texture::{
     texture_upload_start, upload_uses_storage_v_inversion, MipChainAdvance, Texture2dUploadContext,
-    TextureDataStart, TextureMipChainUploader, TextureMipUploadStep, TextureUploadError,
+    TextureDataStart, TextureMipChainUploader, TextureMipUploadStep,
 };
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
@@ -13,6 +13,7 @@ use crate::shared::{
 };
 
 use super::integrator::StepResult;
+use super::shared_memory_payload::build_with_optional_owned_payload;
 use super::AssetTransferQueue;
 
 /// Stage for one texture data upload.
@@ -82,42 +83,29 @@ impl TextureUploadTask {
                 let fmt = &self.format;
                 let wgpu_format = self.wgpu_format;
                 let upload = &self.data;
-                let start = shm.with_read_bytes(&upload.data, |raw| {
-                    let start = texture_upload_start(&Texture2dUploadContext {
-                        device: device.as_ref(),
-                        queue: gpu_queue,
-                        write_texture_submit_gate,
-                        texture,
-                        fmt,
-                        wgpu_format,
-                        upload,
-                        raw,
-                    });
-                    let payload = match start {
-                        Ok(TextureDataStart::MipChain(_)) => {
-                            let want = upload.data.length.max(0) as usize;
-                            if raw.len() < want {
-                                return Some((
-                                    Err(TextureUploadError::from(format!(
-                                        "raw shorter than descriptor (need {want}, got {})",
-                                        raw.len()
-                                    ))),
-                                    Arc::from([] as [u8; 0]),
-                                ));
-                            }
-                            // Keep the bytes owned while the cooperative mip task spans frames.
-                            Arc::from(&raw[..want])
-                        }
-                        _ => Arc::from([] as [u8; 0]),
-                    };
-                    Some((start, payload))
-                });
+                let start = build_with_optional_owned_payload(
+                    shm,
+                    &upload.data,
+                    |raw| {
+                        texture_upload_start(&Texture2dUploadContext {
+                            device: device.as_ref(),
+                            queue: gpu_queue,
+                            write_texture_submit_gate,
+                            texture,
+                            fmt,
+                            wgpu_format,
+                            upload,
+                            raw,
+                        })
+                    },
+                    |start| matches!(start, TextureDataStart::MipChain(_)),
+                );
                 let Some(start) = start else {
                     logger::warn!("texture {id}: shared memory slice missing");
                     return StepResult::Done;
                 };
-                let (start, payload) = start;
-                match start {
+                let payload = start.payload;
+                match start.result {
                     Ok(TextureDataStart::SubregionComplete(uploaded_mips)) => {
                         self.finalize_success(queue, ipc, uploaded_mips, storage_v_inverted);
                         StepResult::Done

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::assets::texture::{
-    Texture3dMipAdvance, Texture3dMipChainUploader, Texture3dMipUploadStep, TextureUploadError,
+    Texture3dMipAdvance, Texture3dMipChainUploader, Texture3dMipUploadStep,
 };
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
@@ -12,6 +12,7 @@ use crate::shared::{
 };
 
 use super::integrator::StepResult;
+use super::shared_memory_payload::build_with_optional_owned_payload;
 use super::AssetTransferQueue;
 
 /// Stage for one Texture3D data upload.
@@ -80,32 +81,18 @@ impl Texture3dUploadTask {
             Texture3dStage::Start => {
                 let fmt = &self.format;
                 let upload = &self.data;
-                let start = shm.with_read_bytes(&upload.data, |raw| {
-                    let uploader = Texture3dMipChainUploader::new(texture, fmt, upload, raw);
-                    let payload = match uploader {
-                        Ok(_) => {
-                            let want = upload.data.length.max(0) as usize;
-                            if raw.len() < want {
-                                return Some((
-                                    Err(TextureUploadError::from(format!(
-                                        "raw shorter than descriptor (need {want}, got {})",
-                                        raw.len()
-                                    ))),
-                                    Arc::from([] as [u8; 0]),
-                                ));
-                            }
-                            Arc::from(&raw[..want])
-                        }
-                        Err(_) => Arc::from([] as [u8; 0]),
-                    };
-                    Some((uploader, payload))
-                });
+                let start = build_with_optional_owned_payload(
+                    shm,
+                    &upload.data,
+                    |raw| Texture3dMipChainUploader::new(texture, fmt, upload, raw),
+                    |_| true,
+                );
                 let Some(uploader_result) = start else {
                     logger::warn!("texture3d {id}: shared memory slice missing");
                     return StepResult::Done;
                 };
-                let (uploader_result, payload) = uploader_result;
-                match uploader_result {
+                let payload = uploader_result.payload;
+                match uploader_result.result {
                     Ok(uploader) => {
                         self.stage = Texture3dStage::MipChain { uploader, payload };
                         StepResult::Continue

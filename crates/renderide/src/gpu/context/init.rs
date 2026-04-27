@@ -4,13 +4,13 @@ use std::sync::{Arc, Mutex};
 
 use winit::window::Window;
 
-use super::super::frame_cpu_gpu_timing::FrameCpuGpuTiming;
+use super::super::frame_cpu_gpu_timing::{FrameCpuGpuTiming, FrameCpuGpuTimingHandle};
 use super::super::instance_limits::instance_flags_for_gpu_init;
 use super::super::limits::GpuLimits;
 use super::{
     adapter_render_features_intersection, install_uncaptured_error_handler,
     msaa_supported_sample_counts, msaa_supported_sample_counts_stereo, request_device_for_adapter,
-    GpuContext, GpuError,
+    GpuContext, GpuError, PrimaryOffscreenTargets,
 };
 use crate::config::VsyncMode;
 
@@ -150,6 +150,161 @@ async fn select_adapter(
     Ok(adapter)
 }
 
+/// MSAA sample-count support for desktop and stereo forward targets.
+struct MsaaSupport {
+    /// Desktop swapchain/offscreen MSAA tiers.
+    desktop: Vec<u32>,
+    /// Stereo 2D-array MSAA tiers.
+    stereo: Vec<u32>,
+}
+
+impl MsaaSupport {
+    /// Discovers MSAA support for a color/depth pair and logs path-specific fallbacks.
+    fn discover(
+        adapter: &wgpu::Adapter,
+        color_format: wgpu::TextureFormat,
+        depth_stencil_format: wgpu::TextureFormat,
+        features: wgpu::Features,
+        log_prefix: &str,
+    ) -> Self {
+        let desktop = msaa_supported_sample_counts(adapter, color_format, depth_stencil_format);
+        if desktop.is_empty() {
+            logger::warn!(
+                "{log_prefix}: adapter reported no supported MSAA sample counts (1× is always \
+                 supported by spec); MSAA disabled for the desktop swapchain"
+            );
+        }
+        let stereo = msaa_supported_sample_counts_stereo(
+            adapter,
+            color_format,
+            depth_stencil_format,
+            features,
+        );
+        if stereo.is_empty() {
+            logger::warn!(
+                "{log_prefix}: adapter reported no supported MSAA sample counts for stereo; \
+                 MSAA disabled for the HMD multiview path"
+            );
+        }
+        Self { desktop, stereo }
+    }
+
+    /// Maximum desktop tier, or `1` when MSAA is unavailable.
+    fn desktop_max(&self) -> u32 {
+        self.desktop.last().copied().unwrap_or(1)
+    }
+
+    /// Maximum stereo tier, or `1` when stereo MSAA is unavailable.
+    fn stereo_max(&self) -> u32 {
+        self.stereo.last().copied().unwrap_or(1)
+    }
+}
+
+/// Runtime handles derived from a queue and shared by all GPU construction paths.
+struct GpuRuntimeHandles {
+    /// Shared queue handle stored on [`GpuContext`].
+    queue: Arc<wgpu::Queue>,
+    /// Driver-thread submit gate paired with [`Self::queue`].
+    write_texture_submit_gate: super::super::WriteTextureSubmitGate,
+    /// Dedicated submit/present worker.
+    driver_thread: super::super::driver_thread::DriverThread,
+    /// CPU/GPU frame timing accumulator.
+    frame_timing: FrameCpuGpuTimingHandle,
+    /// Latest flattened GPU pass timings for the HUD.
+    latest_gpu_pass_timings: Arc<Mutex<Vec<crate::profiling::GpuPassEntry>>>,
+}
+
+impl GpuRuntimeHandles {
+    /// Builds the driver-thread and timing handles for a queue.
+    fn new(queue: Arc<wgpu::Queue>) -> Self {
+        let write_texture_submit_gate = super::super::WriteTextureSubmitGate::new();
+        let driver_thread = super::super::driver_thread::DriverThread::new(
+            Arc::clone(&queue),
+            write_texture_submit_gate.clone(),
+        );
+        Self {
+            queue,
+            write_texture_submit_gate,
+            driver_thread,
+            frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
+            latest_gpu_pass_timings: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+/// Inputs that differ between the three [`GpuContext`] construction paths.
+struct GpuContextParts {
+    /// Dedicated GPU-submission thread.
+    driver_thread: super::super::driver_thread::DriverThread,
+    /// Adapter metadata captured at construction.
+    adapter_info: wgpu::AdapterInfo,
+    /// MSAA support lists for desktop and stereo paths.
+    msaa: MsaaSupport,
+    /// Effective limits and derived caps.
+    limits: Arc<GpuLimits>,
+    /// Logical device.
+    device: Arc<wgpu::Device>,
+    /// Submission queue.
+    queue: Arc<wgpu::Queue>,
+    /// Shared write-texture/submit gate.
+    write_texture_submit_gate: super::super::WriteTextureSubmitGate,
+    /// Optional window-backed surface.
+    surface: Option<wgpu::Surface<'static>>,
+    /// Active surface/offscreen configuration.
+    config: wgpu::SurfaceConfiguration,
+    /// Surface present modes.
+    supported_present_modes: Vec<wgpu::PresentMode>,
+    /// Optional window owner.
+    window: Option<Arc<Window>>,
+    /// Optional GPU profiler.
+    gpu_profiler: Option<crate::profiling::GpuProfilerHandle>,
+    /// CPU/GPU timing accumulator.
+    frame_timing: FrameCpuGpuTimingHandle,
+    /// Latest flattened GPU pass timings.
+    latest_gpu_pass_timings: Arc<Mutex<Vec<crate::profiling::GpuPassEntry>>>,
+}
+
+/// Builds the common [`GpuContext`] field set once all path-specific resources are ready.
+fn assemble_context(parts: GpuContextParts) -> GpuContext {
+    GpuContext {
+        driver_thread: parts.driver_thread,
+        adapter_info: parts.adapter_info,
+        msaa_supported_sample_counts: parts.msaa.desktop,
+        msaa_supported_sample_counts_stereo: parts.msaa.stereo,
+        swapchain_msaa_effective: 1,
+        swapchain_msaa_requested_stereo: 1,
+        swapchain_msaa_effective_stereo: 1,
+        limits: parts.limits,
+        device: parts.device,
+        queue: parts.queue,
+        write_texture_submit_gate: parts.write_texture_submit_gate,
+        surface: parts.surface,
+        config: parts.config,
+        supported_present_modes: parts.supported_present_modes,
+        window: parts.window,
+        depth_attachment: None,
+        depth_extent_px: (0, 0),
+        primary_offscreen: Option::<PrimaryOffscreenTargets>::None,
+        frame_timing: parts.frame_timing,
+        gpu_profiler: parts.gpu_profiler,
+        latest_gpu_pass_timings: parts.latest_gpu_pass_timings,
+    }
+}
+
+/// Attempts to create the Tracy GPU profiler and logs a path-specific fallback when unavailable.
+fn try_gpu_profiler(
+    adapter: &wgpu::Adapter,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    unavailable_message: &str,
+) -> Option<crate::profiling::GpuProfilerHandle> {
+    let gpu_profiler = crate::profiling::GpuProfilerHandle::try_new(adapter, device, queue);
+    if cfg!(feature = "tracy") && gpu_profiler.is_none() {
+        logger::warn!("{unavailable_message}");
+    }
+    gpu_profiler
+}
+
 impl GpuContext {
     /// Asynchronously builds GPU state for `window`.
     ///
@@ -196,31 +351,13 @@ impl GpuContext {
         let adapter_info = adapter.get_info();
         let depth_stencil_format =
             crate::render_graph::main_forward_depth_stencil_format(required_features);
-        let msaa_supported_sample_counts =
-            msaa_supported_sample_counts(&adapter, config.format, depth_stencil_format);
-        if msaa_supported_sample_counts.is_empty() {
-            logger::warn!(
-                "GPU: adapter reported no supported MSAA sample counts (1× is always supported \
-                 by spec); MSAA disabled for the desktop swapchain"
-            );
-        }
-        let msaa_max = msaa_supported_sample_counts.last().copied().unwrap_or(1);
-        let msaa_supported_sample_counts_stereo = msaa_supported_sample_counts_stereo(
+        let msaa = MsaaSupport::discover(
             &adapter,
             config.format,
             depth_stencil_format,
             required_features,
+            "GPU",
         );
-        if msaa_supported_sample_counts_stereo.is_empty() {
-            logger::warn!(
-                "GPU: adapter reported no supported MSAA sample counts for stereo; MSAA \
-                 disabled for the HMD multiview path"
-            );
-        }
-        let msaa_max_stereo = msaa_supported_sample_counts_stereo
-            .last()
-            .copied()
-            .unwrap_or(1);
         logger::info!(
             "GPU: adapter={} backend={:?} vsync={:?} present_mode={:?} \
              supported_present_modes={:?} desired_maximum_frame_latency={} instance_flags={:?} \
@@ -233,49 +370,36 @@ impl GpuContext {
             supported_present_modes,
             config.desired_maximum_frame_latency,
             instance_flags,
-            msaa_supported_sample_counts,
-            msaa_max,
-            msaa_supported_sample_counts_stereo,
-            msaa_max_stereo
+            &msaa.desktop,
+            msaa.desktop_max(),
+            &msaa.stereo,
+            msaa.stereo_max()
         );
 
-        let gpu_profiler =
-            crate::profiling::GpuProfilerHandle::try_new(&adapter, device.as_ref(), &queue);
-        if cfg!(feature = "tracy") && gpu_profiler.is_none() {
-            logger::warn!(
-                "GPU profiler unavailable: adapter lacks TIMESTAMP_QUERY; \
-                 Tracy GPU timeline will be empty (CPU spans still work)"
-            );
-        }
-        let queue = Arc::new(queue);
-        let write_texture_submit_gate = super::super::WriteTextureSubmitGate::new();
-        let driver_thread = super::super::driver_thread::DriverThread::new(
-            Arc::clone(&queue),
-            write_texture_submit_gate.clone(),
+        let gpu_profiler = try_gpu_profiler(
+            &adapter,
+            device.as_ref(),
+            &queue,
+            "GPU profiler unavailable: adapter lacks TIMESTAMP_QUERY; \
+             Tracy GPU timeline will be empty (CPU spans still work)",
         );
-        Ok(Self {
-            driver_thread,
+        let runtime = GpuRuntimeHandles::new(Arc::new(queue));
+        Ok(assemble_context(GpuContextParts {
+            driver_thread: runtime.driver_thread,
             adapter_info,
-            msaa_supported_sample_counts,
-            msaa_supported_sample_counts_stereo,
-            swapchain_msaa_effective: 1,
-            swapchain_msaa_requested_stereo: 1,
-            swapchain_msaa_effective_stereo: 1,
+            msaa,
             limits,
             device,
-            queue,
-            write_texture_submit_gate,
+            queue: runtime.queue,
+            write_texture_submit_gate: runtime.write_texture_submit_gate,
             surface: Some(surface_safe),
             config,
             supported_present_modes,
             window: Some(window),
-            depth_attachment: None,
-            depth_extent_px: (0, 0),
-            primary_offscreen: None,
-            frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
             gpu_profiler,
-            latest_gpu_pass_timings: Arc::new(Mutex::new(Vec::new())),
-        })
+            frame_timing: runtime.frame_timing,
+            latest_gpu_pass_timings: runtime.latest_gpu_pass_timings,
+        }))
     }
 
     /// Builds a GPU stack with **no surface** for headless offscreen rendering (CI / golden tests).
@@ -316,13 +440,12 @@ impl GpuContext {
         let adapter_info = adapter.get_info();
         let depth_stencil_format =
             crate::render_graph::main_forward_depth_stencil_format(required_features);
-        let msaa_supported_sample_counts =
-            msaa_supported_sample_counts(&adapter, format, depth_stencil_format);
-        let msaa_supported_sample_counts_stereo = msaa_supported_sample_counts_stereo(
+        let msaa = MsaaSupport::discover(
             &adapter,
             format,
             depth_stencil_format,
             required_features,
+            "GPU (headless)",
         );
         logger::info!(
             "GPU (headless): adapter={} backend={:?} extent={}x{} format={:?} instance_flags={:?}",
@@ -333,43 +456,30 @@ impl GpuContext {
             config.format,
             instance_flags,
         );
-        let gpu_profiler =
-            crate::profiling::GpuProfilerHandle::try_new(&adapter, device.as_ref(), &queue);
-        if cfg!(feature = "tracy") && gpu_profiler.is_none() {
-            logger::warn!(
-                "GPU profiler unavailable (headless): adapter lacks TIMESTAMP_QUERY; \
-                 Tracy GPU timeline will be empty (CPU spans still work)"
-            );
-        }
-        let queue = Arc::new(queue);
-        let write_texture_submit_gate = super::super::WriteTextureSubmitGate::new();
-        let driver_thread = super::super::driver_thread::DriverThread::new(
-            Arc::clone(&queue),
-            write_texture_submit_gate.clone(),
+        let gpu_profiler = try_gpu_profiler(
+            &adapter,
+            device.as_ref(),
+            &queue,
+            "GPU profiler unavailable (headless): adapter lacks TIMESTAMP_QUERY; \
+             Tracy GPU timeline will be empty (CPU spans still work)",
         );
-        Ok(Self {
-            driver_thread,
+        let runtime = GpuRuntimeHandles::new(Arc::new(queue));
+        Ok(assemble_context(GpuContextParts {
+            driver_thread: runtime.driver_thread,
             adapter_info,
-            msaa_supported_sample_counts,
-            msaa_supported_sample_counts_stereo,
-            swapchain_msaa_effective: 1,
-            swapchain_msaa_requested_stereo: 1,
-            swapchain_msaa_effective_stereo: 1,
+            msaa,
             limits,
             device,
-            queue,
-            write_texture_submit_gate,
+            queue: runtime.queue,
+            write_texture_submit_gate: runtime.write_texture_submit_gate,
             surface: None,
             config,
             supported_present_modes: Vec::new(),
             window: None,
-            depth_attachment: None,
-            depth_extent_px: (0, 0),
-            primary_offscreen: None,
-            frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
             gpu_profiler,
-            latest_gpu_pass_timings: Arc::new(Mutex::new(Vec::new())),
-        })
+            frame_timing: runtime.frame_timing,
+            latest_gpu_pass_timings: runtime.latest_gpu_pass_timings,
+        }))
     }
 
     /// Builds GPU state using an existing wgpu instance/device from OpenXR bootstrap (mirror window).
@@ -403,31 +513,13 @@ impl GpuContext {
         let limits = GpuLimits::try_new(device.as_ref(), adapter)?;
         let depth_stencil_format =
             crate::render_graph::main_forward_depth_stencil_format(device.features());
-        let msaa_supported_sample_counts =
-            msaa_supported_sample_counts(adapter, config.format, depth_stencil_format);
-        if msaa_supported_sample_counts.is_empty() {
-            logger::warn!(
-                "GPU (OpenXR path): adapter reported no supported MSAA sample counts (1× is \
-                 always supported by spec); MSAA disabled for the desktop mirror"
-            );
-        }
-        let msaa_max = msaa_supported_sample_counts.last().copied().unwrap_or(1);
-        let msaa_supported_sample_counts_stereo = msaa_supported_sample_counts_stereo(
+        let msaa = MsaaSupport::discover(
             adapter,
             config.format,
             depth_stencil_format,
             device.features(),
+            "GPU (OpenXR path)",
         );
-        if msaa_supported_sample_counts_stereo.is_empty() {
-            logger::warn!(
-                "GPU (OpenXR path): adapter reported no supported MSAA sample counts for stereo; \
-                 MSAA disabled for the HMD multiview path"
-            );
-        }
-        let msaa_max_stereo = msaa_supported_sample_counts_stereo
-            .last()
-            .copied()
-            .unwrap_or(1);
         logger::info!(
             "GPU (OpenXR path): adapter={} backend={:?} vsync={:?} present_mode={:?} \
              supported_present_modes={:?} desired_maximum_frame_latency={} \
@@ -439,47 +531,35 @@ impl GpuContext {
             config.present_mode,
             supported_present_modes,
             config.desired_maximum_frame_latency,
-            msaa_supported_sample_counts,
-            msaa_max,
-            msaa_supported_sample_counts_stereo,
-            msaa_max_stereo
+            &msaa.desktop,
+            msaa.desktop_max(),
+            &msaa.stereo,
+            msaa.stereo_max()
         );
-        let gpu_profiler =
-            crate::profiling::GpuProfilerHandle::try_new(adapter, device.as_ref(), queue.as_ref());
-        if cfg!(feature = "tracy") && gpu_profiler.is_none() {
-            logger::warn!(
-                "GPU profiler unavailable (OpenXR path): adapter lacks \
-                 TIMESTAMP_QUERY; Tracy GPU timeline will be empty"
-            );
-        }
-        let write_texture_submit_gate = super::super::WriteTextureSubmitGate::new();
-        let driver_thread = super::super::driver_thread::DriverThread::new(
-            Arc::clone(&queue),
-            write_texture_submit_gate.clone(),
+        let gpu_profiler = try_gpu_profiler(
+            adapter,
+            device.as_ref(),
+            queue.as_ref(),
+            "GPU profiler unavailable (OpenXR path): adapter lacks \
+             TIMESTAMP_QUERY; Tracy GPU timeline will be empty",
         );
-        Ok(Self {
-            driver_thread,
+        let runtime = GpuRuntimeHandles::new(queue);
+        Ok(assemble_context(GpuContextParts {
+            driver_thread: runtime.driver_thread,
             adapter_info,
-            msaa_supported_sample_counts,
-            msaa_supported_sample_counts_stereo,
-            swapchain_msaa_effective: 1,
-            swapchain_msaa_requested_stereo: 1,
-            swapchain_msaa_effective_stereo: 1,
+            msaa,
             limits,
             device,
-            queue,
-            write_texture_submit_gate,
+            queue: runtime.queue,
+            write_texture_submit_gate: runtime.write_texture_submit_gate,
             surface: Some(surface_safe),
             config,
             supported_present_modes,
             window: Some(window),
-            depth_attachment: None,
-            depth_extent_px: (0, 0),
-            primary_offscreen: None,
-            frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
             gpu_profiler,
-            latest_gpu_pass_timings: Arc::new(Mutex::new(Vec::new())),
-        })
+            frame_timing: runtime.frame_timing,
+            latest_gpu_pass_timings: runtime.latest_gpu_pass_timings,
+        }))
     }
 }
 

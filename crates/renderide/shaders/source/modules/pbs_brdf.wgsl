@@ -17,6 +17,7 @@
 //! Import with `#import renderide::pbs::brdf`. Depends on [`renderide::globals`] for [`GpuLight`].
 
 #import renderide::globals as rg
+#import renderide::birp::light as bl
 
 #define_import_path renderide::pbs::brdf
 
@@ -32,12 +33,6 @@ const SPECULAR_AA_VARIANCE: f32 = 0.25;
 /// default `_specularAntiAliasingThreshold`; caps the filter so very high curvature doesn't drive
 /// the entire surface to a fully-rough lobe.
 const SPECULAR_AA_THRESHOLD: f32 = 0.18;
-
-/// Quadratic coefficient used by Unity BiRP's normalized punctual-light attenuation LUT.
-const BIRP_ATTENUATION_QUADRATIC: f32 = 25.0;
-
-/// Temporary direct-light multiplier used to match BiRP-authored scene brightness.
-const INTENSITY_BOOST: f32 = 2.0;
 
 /// Tokuyoshi & Kaplanyan 2019 "Improved Geometric Specular Antialiasing".
 ///
@@ -108,27 +103,11 @@ fn fd_lambert() -> f32 {
     return 1.0 / 3.14159265;
 }
 
-/// Quartic window that masks punctual attenuation to zero at the light range.
-fn birp_range_fade(t: f32) -> f32 {
-    let t2 = t * t;
-    let t4 = t2 * t2;
-    let fade = clamp(1.0 - t4, 0.0, 1.0);
-    return fade * fade;
-}
-
 /// Unity BiRP-style distance attenuation for punctual lights.
-/// The main LUT curve is well-approximated by `1 / (1 + 25·t²)` with `t = dist/range`, so the range
-/// slider stretches the falloff without changing peak brightness. The quartic range window keeps
-/// clustered shading bounded at `dist == range`.
-/// Intensity is applied by the call site; [`INTENSITY_BOOST`] compensates for observed scene parity.
+///
+/// Preserved as the `renderide::pbs::brdf` entry point for material shaders that already call it.
 fn distance_attenuation(dist: f32, range: f32) -> f32 {
-    if (range <= 0.0) {
-        return 0.0;
-    }
-    let t = dist / range;
-    let t2 = t * t;
-    let lut = 1.0 / (1.0 + BIRP_ATTENUATION_QUADRATIC * t2);
-    return lut * birp_range_fade(t) * INTENSITY_BOOST;
+    return bl::distance_attenuation(dist, range);
 }
 
 /// Result of evaluating one punctual light at a surface point.

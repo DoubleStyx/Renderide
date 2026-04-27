@@ -1,5 +1,6 @@
 //! Encode indexed draws and material bind groups for graph-managed world-mesh forward passes.
 
+use crate::assets::mesh::GpuMesh;
 use crate::backend::mesh_deform::GpuSkinCache;
 use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::backend::WorldMeshForwardEncodeRefs;
@@ -11,6 +12,7 @@ use crate::render_graph::WorldMeshDrawItem;
 use crate::resources::MeshPool;
 
 /// Embedded material vertex stream requirements for one draw (matches pipeline reflection flags).
+#[derive(Clone, Copy)]
 pub(crate) struct EmbeddedVertexStreamFlags {
     /// UV0 stream at `@location(2)`.
     pub embedded_uv: bool,
@@ -21,6 +23,7 @@ pub(crate) struct EmbeddedVertexStreamFlags {
 }
 
 /// GPU mesh pool and optional skin cache for [`draw_mesh_submesh_instanced`].
+#[derive(Clone, Copy)]
 pub(crate) struct WorldMeshDrawGpuRefs<'a> {
     /// Resident meshes and vertex buffers.
     pub mesh_pool: &'a MeshPool,
@@ -38,8 +41,11 @@ pub(crate) struct WorldMeshDrawGpuRefs<'a> {
 /// of the mesh pool / skin cache (both outlive any single render pass).
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct BufferBindId {
+    /// Stable buffer object identity for this render pass.
     ptr: usize,
+    /// Byte offset for ranged binds, or zero for full-buffer binds.
     byte_offset: u64,
+    /// Byte length for ranged binds, or [`None`] for full-buffer binds.
     byte_len: Option<u64>,
 }
 
@@ -75,6 +81,7 @@ pub(crate) struct LastMeshBindState {
 }
 
 impl LastMeshBindState {
+    /// Builds empty bind-state tracking for a fresh render pass.
     fn new() -> Self {
         Self {
             vertex: [None; 8],
@@ -343,10 +350,7 @@ macro_rules! bind_vertex_if_changed {
     }};
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "hot draw path keeps bind/set decisions inline for register reuse"
-)]
+/// Binds mesh streams and issues one indexed draw for `item` over `instances`.
 pub(crate) fn draw_mesh_submesh_instanced(
     rpass: &mut wgpu::RenderPass<'_>,
     item: &WorldMeshDrawItem,
@@ -355,95 +359,133 @@ pub(crate) fn draw_mesh_submesh_instanced(
     instances: std::ops::Range<u32>,
     last_mesh: &mut LastMeshBindState,
 ) {
-    if item.mesh_asset_id < 0 || item.node_id < 0 || item.index_count == 0 {
-        return;
-    }
-    let EmbeddedVertexStreamFlags {
-        embedded_uv,
-        embedded_color,
-        embedded_extended_vertex_streams,
-    } = streams;
-    if embedded_extended_vertex_streams
-        && !gpu
-            .mesh_pool
-            .get_mesh(item.mesh_asset_id)
-            .is_some_and(|mesh| mesh.extended_vertex_streams_ready())
-    {
-        logger::trace!(
-            "WorldMeshForward: extended vertex streams missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
-            item.mesh_asset_id
-        );
-        return;
-    }
-    let Some(mesh) = gpu.mesh_pool.get_mesh(item.mesh_asset_id) else {
+    let Some(mesh) = resident_draw_mesh(item, gpu, streams) else {
         return;
     };
-    if !mesh.debug_streams_ready() {
-        return;
-    }
     let Some(normals_bind) = mesh.normals_buffer.as_deref() else {
         return;
     };
 
-    let use_deformed = item.world_space_deformed;
-    let use_blend_only = mesh.num_blendshapes > 0;
-    let needs_cache_stream = use_deformed || use_blend_only;
+    if !bind_primary_vertex_streams(rpass, item, gpu, mesh, normals_bind, last_mesh) {
+        return;
+    }
+    if !bind_optional_vertex_streams(rpass, mesh, streams, last_mesh) {
+        return;
+    }
 
-    if needs_cache_stream {
-        let Some(cache) = gpu.skin_cache else {
-            return;
-        };
-        let key = (item.space_id, item.node_id);
-        let Some(entry) = cache.lookup(&key) else {
-            logger::trace!(
-                "world mesh forward: skin cache miss for space {:?} node {}",
-                item.space_id,
-                item.node_id
-            );
-            return;
-        };
-        let pos_buf = cache.positions_arena();
-        let pos_range = entry.positions.byte_range();
-        bind_vertex_if_changed!(
-            rpass,
-            0,
-            pos_buf.slice(pos_range.start..pos_range.end),
-            BufferBindId::ranged(pos_buf, pos_range.start, pos_range.end),
-            last_mesh.vertex
+    bind_index_buffer_if_changed(rpass, mesh, last_mesh);
+
+    let first = item.first_index;
+    let end = first.saturating_add(item.index_count);
+    rpass.draw_indexed(first..end, 0, instances);
+}
+
+/// Returns the resident mesh for a drawable item after validating required stream readiness.
+fn resident_draw_mesh<'a>(
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'a>,
+    streams: EmbeddedVertexStreamFlags,
+) -> Option<&'a GpuMesh> {
+    if item.mesh_asset_id < 0 || item.node_id < 0 || item.index_count == 0 {
+        return None;
+    }
+    let mesh = gpu.mesh_pool.get_mesh(item.mesh_asset_id)?;
+    if streams.embedded_extended_vertex_streams && !mesh.extended_vertex_streams_ready() {
+        logger::trace!(
+            "WorldMeshForward: extended vertex streams missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
+            item.mesh_asset_id
         );
-        if use_deformed {
-            let Some(nrm_r) = entry.normals.as_ref() else {
-                return;
-            };
-            let nrm_buf = cache.normals_arena();
-            let nrm_range = nrm_r.byte_range();
-            bind_vertex_if_changed!(
-                rpass,
-                1,
-                nrm_buf.slice(nrm_range.start..nrm_range.end),
-                BufferBindId::ranged(nrm_buf, nrm_range.start, nrm_range.end),
-                last_mesh.vertex
-            );
-        } else {
-            bind_vertex_if_changed!(
-                rpass,
-                1,
-                normals_bind.slice(..),
-                BufferBindId::full(normals_bind),
-                last_mesh.vertex
-            );
-        }
+        return None;
+    }
+    mesh.debug_streams_ready().then_some(mesh)
+}
+
+/// Binds position and normal streams, choosing static mesh buffers or the deformation cache.
+fn bind_primary_vertex_streams(
+    rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'_>,
+    mesh: &GpuMesh,
+    normals_bind: &wgpu::Buffer,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    if item.world_space_deformed || mesh.num_blendshapes > 0 {
+        bind_deformed_primary_streams(rpass, item, gpu, normals_bind, last_mesh)
     } else {
-        let Some(pos) = mesh.positions_buffer.as_deref() else {
-            return;
+        bind_static_primary_streams(rpass, mesh, normals_bind, last_mesh)
+    }
+}
+
+/// Binds static mesh position and normal streams.
+fn bind_static_primary_streams(
+    rpass: &mut wgpu::RenderPass<'_>,
+    mesh: &GpuMesh,
+    normals_bind: &wgpu::Buffer,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    let Some(pos) = mesh.positions_buffer.as_deref() else {
+        return false;
+    };
+    bind_vertex_if_changed!(
+        rpass,
+        0,
+        pos.slice(..),
+        BufferBindId::full(pos),
+        last_mesh.vertex
+    );
+    bind_vertex_if_changed!(
+        rpass,
+        1,
+        normals_bind.slice(..),
+        BufferBindId::full(normals_bind),
+        last_mesh.vertex
+    );
+    true
+}
+
+/// Binds deformation-cache position and normal streams.
+fn bind_deformed_primary_streams(
+    rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'_>,
+    normals_bind: &wgpu::Buffer,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    let Some(cache) = gpu.skin_cache else {
+        return false;
+    };
+    let key = (item.space_id, item.node_id);
+    let Some(entry) = cache.lookup(&key) else {
+        logger::trace!(
+            "world mesh forward: skin cache miss for space {:?} node {}",
+            item.space_id,
+            item.node_id
+        );
+        return false;
+    };
+    let pos_buf = cache.positions_arena();
+    let pos_range = entry.positions.byte_range();
+    bind_vertex_if_changed!(
+        rpass,
+        0,
+        pos_buf.slice(pos_range.start..pos_range.end),
+        BufferBindId::ranged(pos_buf, pos_range.start, pos_range.end),
+        last_mesh.vertex
+    );
+    if item.world_space_deformed {
+        let Some(nrm_r) = entry.normals.as_ref() else {
+            return false;
         };
+        let nrm_buf = cache.normals_arena();
+        let nrm_range = nrm_r.byte_range();
         bind_vertex_if_changed!(
             rpass,
-            0,
-            pos.slice(..),
-            BufferBindId::full(pos),
+            1,
+            nrm_buf.slice(nrm_range.start..nrm_range.end),
+            BufferBindId::ranged(nrm_buf, nrm_range.start, nrm_range.end),
             last_mesh.vertex
         );
+    } else {
         bind_vertex_if_changed!(
             rpass,
             1,
@@ -452,9 +494,19 @@ pub(crate) fn draw_mesh_submesh_instanced(
             last_mesh.vertex
         );
     }
-    if embedded_uv || embedded_color || embedded_extended_vertex_streams {
+    true
+}
+
+/// Binds UV, color, tangent, and extra UV streams required by the material reflection.
+fn bind_optional_vertex_streams(
+    rpass: &mut wgpu::RenderPass<'_>,
+    mesh: &GpuMesh,
+    streams: EmbeddedVertexStreamFlags,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    if streams.embedded_uv || streams.embedded_color || streams.embedded_extended_vertex_streams {
         let Some(uv) = mesh.uv0_buffer.as_deref() else {
-            return;
+            return false;
         };
         bind_vertex_if_changed!(
             rpass,
@@ -464,9 +516,9 @@ pub(crate) fn draw_mesh_submesh_instanced(
             last_mesh.vertex
         );
     }
-    if embedded_color || embedded_extended_vertex_streams {
+    if streams.embedded_color || streams.embedded_extended_vertex_streams {
         let Some(color) = mesh.color_buffer.as_deref() else {
-            return;
+            return false;
         };
         bind_vertex_if_changed!(
             rpass,
@@ -476,14 +528,14 @@ pub(crate) fn draw_mesh_submesh_instanced(
             last_mesh.vertex
         );
     }
-    if embedded_extended_vertex_streams {
+    if streams.embedded_extended_vertex_streams {
         let (Some(tangent), Some(uv1), Some(uv2), Some(uv3)) = (
             mesh.tangent_buffer.as_deref(),
             mesh.uv1_buffer.as_deref(),
             mesh.uv2_buffer.as_deref(),
             mesh.uv3_buffer.as_deref(),
         ) else {
-            return;
+            return false;
         };
         bind_vertex_if_changed!(
             rpass,
@@ -514,7 +566,15 @@ pub(crate) fn draw_mesh_submesh_instanced(
             last_mesh.vertex
         );
     }
+    true
+}
 
+/// Binds the mesh index buffer when it differs from the last submitted index stream.
+fn bind_index_buffer_if_changed(
+    rpass: &mut wgpu::RenderPass<'_>,
+    mesh: &GpuMesh,
+    last_mesh: &mut LastMeshBindState,
+) {
     let index_key = (
         mesh.index_buffer.as_ref() as *const wgpu::Buffer as usize,
         mesh.index_format,
@@ -523,10 +583,6 @@ pub(crate) fn draw_mesh_submesh_instanced(
         rpass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
         last_mesh.index = Some(index_key);
     }
-
-    let first = item.first_index;
-    let end = first.saturating_add(item.index_count);
-    rpass.draw_indexed(first..end, 0, instances);
 }
 
 #[cfg(test)]

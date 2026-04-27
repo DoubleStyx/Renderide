@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::assets::texture::{
     upload_uses_storage_v_inversion, CubemapFaceMipUploadStep, CubemapMipChainUploader,
-    MipChainAdvance, TextureUploadError,
+    MipChainAdvance,
 };
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
@@ -12,6 +12,7 @@ use crate::shared::{
 };
 
 use super::integrator::StepResult;
+use super::shared_memory_payload::build_with_optional_owned_payload;
 use super::AssetTransferQueue;
 
 /// Stage for one cubemap data upload.
@@ -81,33 +82,18 @@ impl CubemapUploadTask {
             CubemapStage::Start => {
                 let fmt = &self.format;
                 let upload = &self.data;
-                let start = shm.with_read_bytes(&upload.data, |raw| {
-                    let uploader = CubemapMipChainUploader::new(texture, fmt, upload, raw);
-                    let payload = match uploader {
-                        Ok(_) => {
-                            let want = upload.data.length.max(0) as usize;
-                            if raw.len() < want {
-                                return Some((
-                                    Err(TextureUploadError::from(format!(
-                                        "raw shorter than descriptor (need {want}, got {})",
-                                        raw.len()
-                                    ))),
-                                    Arc::from([] as [u8; 0]),
-                                ));
-                            }
-                            // Keep the bytes owned while the cooperative face/mip task spans frames.
-                            Arc::from(&raw[..want])
-                        }
-                        Err(_) => Arc::from([] as [u8; 0]),
-                    };
-                    Some((uploader, payload))
-                });
+                let start = build_with_optional_owned_payload(
+                    shm,
+                    &upload.data,
+                    |raw| CubemapMipChainUploader::new(texture, fmt, upload, raw),
+                    |_| true,
+                );
                 let Some(uploader_result) = start else {
                     logger::warn!("cubemap {id}: shared memory slice missing");
                     return StepResult::Done;
                 };
-                let (uploader_result, payload) = uploader_result;
-                match uploader_result {
+                let payload = uploader_result.payload;
+                match uploader_result.result {
                     Ok(uploader) => {
                         self.stage = CubemapStage::Chain { uploader, payload };
                         StepResult::Continue
