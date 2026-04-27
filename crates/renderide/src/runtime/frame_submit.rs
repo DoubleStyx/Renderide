@@ -21,6 +21,7 @@ pub(crate) fn process_frame_submit(runtime: &mut RendererRuntime, data: FrameSub
 
     let start = Instant::now();
     let mut apply_failed = false;
+    let mut rendered_reflection_probes = Vec::new();
     if let Some(ref mut shm) = runtime.frontend.shared_memory_mut() {
         if let Err(e) = runtime.scene.apply_frame_submit(shm, &data) {
             logger::error!("scene apply_frame_submit failed: {e}");
@@ -30,7 +31,18 @@ pub(crate) fn process_frame_submit(runtime: &mut RendererRuntime, data: FrameSub
             logger::error!("scene flush_world_caches failed: {e}");
             apply_failed = true;
         }
+        if !apply_failed {
+            runtime
+                .backend
+                .answer_reflection_probe_sh2_tasks(shm, &runtime.scene, &data);
+            rendered_reflection_probes = runtime
+                .scene
+                .take_supported_reflection_probe_render_results();
+        }
     }
+    runtime
+        .frontend
+        .enqueue_rendered_reflection_probes(rendered_reflection_probes);
     if apply_failed {
         runtime.frame_submit_apply_failures = runtime.frame_submit_apply_failures.saturating_add(1);
         runtime.frontend.set_fatal_error(true);

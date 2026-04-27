@@ -33,6 +33,11 @@ use super::super::mesh_apply::{
     fixup_static_meshes_for_transform_removals, ExtractedMeshRenderablesUpdate,
     ExtractedSkinnedMeshRenderablesUpdate,
 };
+use super::super::reflection_probe::{
+    apply_reflection_probe_renderables_update_extracted,
+    extract_reflection_probe_renderables_update, fixup_reflection_probes_for_transform_removals,
+    ExtractedReflectionProbeRenderablesUpdate,
+};
 use super::super::render_overrides::{
     apply_render_material_overrides_update_extracted,
     apply_render_transform_overrides_update_extracted, extract_render_material_overrides_update,
@@ -54,6 +59,8 @@ pub struct ExtractedRenderSpaceUpdate {
     pub space_id: RenderSpaceId,
     /// Camera-renderable update payload.
     pub cameras: Option<ExtractedCameraRenderablesUpdate>,
+    /// Reflection-probe renderable update payload.
+    pub reflection_probes: Option<ExtractedReflectionProbeRenderablesUpdate>,
     /// Dense transform-table update payload.
     pub transforms: Option<ExtractedTransformsUpdate>,
     /// Static mesh-renderable update payload.
@@ -82,6 +89,12 @@ pub fn extract_render_space_update(
     let space_id = RenderSpaceId(update.id);
     let cameras = match update.cameras_update.as_ref() {
         Some(cu) => Some(extract_camera_renderables_update(shm, cu, update.id)?),
+        None => None,
+    };
+    let reflection_probes = match update.reflection_probes_update.as_ref() {
+        Some(rpu) => Some(extract_reflection_probe_renderables_update(
+            shm, rpu, update.id,
+        )?),
         None => None,
     };
     let transforms = match update.transforms_update.as_ref() {
@@ -115,6 +128,7 @@ pub fn extract_render_space_update(
     Ok(ExtractedRenderSpaceUpdate {
         space_id,
         cameras,
+        reflection_probes,
         transforms,
         meshes,
         skinned_meshes,
@@ -172,6 +186,12 @@ pub fn apply_extracted_render_space_update(
     fixup_cameras_for_transform_removals(space, transform_removals);
     if let Some(ref cu) = extracted.cameras {
         super::super::camera_apply::apply_camera_renderables_update_extracted(space, cu);
+    }
+    fixup_reflection_probes_for_transform_removals(space, transform_removals);
+    if let Some(ref rpu) = extracted.reflection_probes {
+        apply_reflection_probe_renderables_update_extracted(space, rpu);
+    } else {
+        space.pending_reflection_probe_render_changes.clear();
     }
 
     fixup_static_meshes_for_transform_removals(space, transform_removals);

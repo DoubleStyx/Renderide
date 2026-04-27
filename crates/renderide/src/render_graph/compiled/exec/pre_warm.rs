@@ -9,7 +9,9 @@ use super::super::super::error::GraphExecuteError;
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext};
 use super::{GraphResolveKey, TransientTextureResolveSurfaceParams};
-use crate::materials::{MaterialBlendMode, MaterialPipelineDesc, MaterialRenderState};
+use crate::materials::{
+    MaterialBlendMode, MaterialPipelineDesc, MaterialRenderState, RasterFrontFace,
+};
 use crate::pipelines::ShaderPermutation;
 
 /// Pending cache warm-up request fanned out to the rayon pool by
@@ -25,6 +27,8 @@ struct PipelineCompileRequest {
     blend_mode: MaterialBlendMode,
     /// Material-level stencil/color-write state for this cache key.
     render_state: MaterialRenderState,
+    /// Front-face winding for this cache key.
+    front_face: RasterFrontFace,
 }
 
 impl CompiledRenderGraph {
@@ -95,6 +99,7 @@ impl CompiledRenderGraph {
                 req.shader_perm,
                 req.blend_mode,
                 req.render_state,
+                req.front_face,
             );
         });
     }
@@ -281,7 +286,7 @@ fn view_pipeline_pass_desc(
     Some((pass_desc, shader_perm))
 }
 
-/// Appends unique `(shader_asset_id, blend_mode, render_state)` permutations from `items` to
+/// Appends unique `(shader_asset_id, blend_mode, render_state, front_face)` permutations from `items` to
 /// `out`, stamped with the view's `pass_desc` and `shader_perm`. Duplicates within this view
 /// are elided; the LRU cache handles cross-view dedup.
 fn collect_unique_pipeline_requests(
@@ -290,14 +295,20 @@ fn collect_unique_pipeline_requests(
     shader_perm: ShaderPermutation,
     out: &mut Vec<PipelineCompileRequest>,
 ) {
-    let mut seen: std::collections::HashSet<(i32, MaterialBlendMode, MaterialRenderState, bool)> =
-        std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<(
+        i32,
+        MaterialBlendMode,
+        MaterialRenderState,
+        RasterFrontFace,
+        bool,
+    )> = std::collections::HashSet::new();
     for item in items {
         let grab_pass = item.batch_key.embedded_requires_grab_pass;
         let key = (
             item.batch_key.shader_asset_id,
             item.batch_key.blend_mode,
             item.batch_key.render_state,
+            item.batch_key.front_face,
             grab_pass,
         );
         if !seen.insert(key) {
@@ -310,6 +321,7 @@ fn collect_unique_pipeline_requests(
             shader_asset_id: key.0,
             blend_mode: key.1,
             render_state: key.2,
+            front_face: key.3,
         });
     }
 }

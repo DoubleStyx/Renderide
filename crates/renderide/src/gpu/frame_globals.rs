@@ -3,7 +3,14 @@
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 
-/// Uniform block matching WGSL `FrameGlobals` (128-byte size, 16-byte aligned).
+use crate::shared::RenderSH2;
+
+/// Diffuse fallback used before host ambient SH arrives.
+const FALLBACK_AMBIENT_COLOR: f32 = 0.03;
+/// Zeroth-order SH basis constant used for fallback packing.
+const SH_C0: f32 = 0.282_094_8;
+
+/// Uniform block matching WGSL `FrameGlobals` (272-byte size, 16-byte aligned).
 ///
 /// Encodes camera position, per-eye coefficients for view-space Z from world position, clustered
 /// grid dimensions, clip planes, light count, viewport size, per-eye projection coefficients for
@@ -49,6 +56,8 @@ pub struct FrameGpuUniforms {
     /// reserved padding so the struct aligns to a 16-byte boundary without tripping naga-oil's
     /// composable-identifier substitution rules (numeric-suffix names are rejected).
     pub frame_tail: [u32; 4],
+    /// Ambient SH2 coefficients (`RenderSH2` order), padded to WGSL `vec4<f32>` slots.
+    pub ambient_sh: [[f32; 4]; 9],
 }
 
 /// Inputs for [`FrameGpuUniforms::new_clustered`] (clustered forward + lighting).
@@ -82,6 +91,8 @@ pub struct ClusteredFrameGlobalsParams {
     pub proj_params_right: [f32; 4],
     /// Monotonic frame index (wraps `HostCameraFrame::frame_index`).
     pub frame_index: u32,
+    /// Ambient SH2 coefficients for the active main render space.
+    pub ambient_sh: [[f32; 4]; 9],
 }
 
 impl FrameGpuUniforms {
@@ -127,8 +138,52 @@ impl FrameGpuUniforms {
             proj_params_left: params.proj_params_left,
             proj_params_right: params.proj_params_right,
             frame_tail: [params.frame_index, 0, 0, 0],
+            ambient_sh: params.ambient_sh,
         }
     }
+
+    /// Pads host SH2 coefficients into WGSL-friendly vec4 slots.
+    pub fn ambient_sh_from_render_sh2(sh: &RenderSH2) -> [[f32; 4]; 9] {
+        if render_sh2_is_zero(sh) {
+            let sh0 = FALLBACK_AMBIENT_COLOR * (4.0 * std::f32::consts::PI * SH_C0);
+            return [
+                [sh0, sh0, sh0, 0.0],
+                [0.0; 4],
+                [0.0; 4],
+                [0.0; 4],
+                [0.0; 4],
+                [0.0; 4],
+                [0.0; 4],
+                [0.0; 4],
+                [0.0; 4],
+            ];
+        }
+        [
+            [sh.sh0.x, sh.sh0.y, sh.sh0.z, 0.0],
+            [sh.sh1.x, sh.sh1.y, sh.sh1.z, 0.0],
+            [sh.sh2.x, sh.sh2.y, sh.sh2.z, 0.0],
+            [sh.sh3.x, sh.sh3.y, sh.sh3.z, 0.0],
+            [sh.sh4.x, sh.sh4.y, sh.sh4.z, 0.0],
+            [sh.sh5.x, sh.sh5.y, sh.sh5.z, 0.0],
+            [sh.sh6.x, sh.sh6.y, sh.sh6.z, 0.0],
+            [sh.sh7.x, sh.sh7.y, sh.sh7.z, 0.0],
+            [sh.sh8.x, sh.sh8.y, sh.sh8.z, 0.0],
+        ]
+    }
+}
+
+/// Returns true when the host SH payload is still the all-zero default.
+fn render_sh2_is_zero(sh: &RenderSH2) -> bool {
+    let energy = sh.sh0.abs().element_sum()
+        + sh.sh1.abs().element_sum()
+        + sh.sh2.abs().element_sum()
+        + sh.sh3.abs().element_sum()
+        + sh.sh4.abs().element_sum()
+        + sh.sh5.abs().element_sum()
+        + sh.sh6.abs().element_sum()
+        + sh.sh7.abs().element_sum()
+        + sh.sh8.abs().element_sum();
+    energy < 1e-8
 }
 
 #[cfg(test)]
@@ -136,8 +191,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_globals_size_128() {
-        assert_eq!(std::mem::size_of::<FrameGpuUniforms>(), 128);
+    fn frame_globals_size_272() {
+        assert_eq!(std::mem::size_of::<FrameGpuUniforms>(), 272);
         assert_eq!(std::mem::size_of::<FrameGpuUniforms>() % 16, 0);
     }
 
@@ -195,6 +250,7 @@ mod tests {
             proj_params_left: [1.5, 2.5, 0.0, 0.0],
             proj_params_right: [1.5, 2.5, 0.1, -0.2],
             frame_index: 7,
+            ambient_sh: [[0.0; 4]; 9],
         });
         assert_eq!(u.camera_world_pos, [1.0, 2.0, 3.0, 0.0]);
         assert_eq!(u.view_space_z_coeffs, [0.1, 0.2, 0.3, 0.4]);
@@ -210,5 +266,28 @@ mod tests {
         assert_eq!(u.proj_params_left, [1.5, 2.5, 0.0, 0.0]);
         assert_eq!(u.proj_params_right, [1.5, 2.5, 0.1, -0.2]);
         assert_eq!(u.frame_tail, [7, 0, 0, 0]);
+        assert_eq!(u.ambient_sh, [[0.0; 4]; 9]);
+    }
+
+    #[test]
+    fn render_sh2_packs_into_vec4_slots() {
+        let sh = RenderSH2 {
+            sh0: glam::Vec3::new(1.0, 2.0, 3.0),
+            sh8: glam::Vec3::new(4.0, 5.0, 6.0),
+            ..RenderSH2::default()
+        };
+
+        let packed = FrameGpuUniforms::ambient_sh_from_render_sh2(&sh);
+
+        assert_eq!(packed[0], [1.0, 2.0, 3.0, 0.0]);
+        assert_eq!(packed[8], [4.0, 5.0, 6.0, 0.0]);
+    }
+
+    #[test]
+    fn zero_render_sh2_packs_startup_fallback() {
+        let packed = FrameGpuUniforms::ambient_sh_from_render_sh2(&RenderSH2::default());
+
+        assert!(packed[0][0] > 0.0);
+        assert_eq!(packed[1], [0.0; 4]);
     }
 }

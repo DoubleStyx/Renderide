@@ -6,7 +6,9 @@ use std::borrow::Cow;
 use glam::Mat4;
 
 use crate::assets::material::MaterialPropertyLookupIds;
-use crate::materials::{MaterialBlendMode, MaterialRenderState, RasterPipelineKind};
+use crate::materials::{
+    MaterialBlendMode, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
+};
 use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator, StaticMeshRenderer};
 
 /// Selective / exclude transform lists for secondary cameras (Unity `CameraRenderer.Render` semantics).
@@ -213,6 +215,8 @@ pub struct MaterialDrawBatchKey {
     pub property_block_slot0: Option<i32>,
     /// Skinned deform path uses different vertex buffers.
     pub skinned: bool,
+    /// Front-face winding selected from the draw's model transform.
+    pub front_face: RasterFrontFace,
     /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether the active [`crate::pipelines::ShaderPermutation`]
     /// requires a UV0 vertex stream (computed once per draw item, not per frame in the raster pass).
     pub embedded_needs_uv0: bool,

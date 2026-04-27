@@ -6,6 +6,7 @@
 // unity-shader-name: PBSRimTransparentZWrite
 
 #import renderide::globals as rg
+#import renderide::sh2_ambient as shamb
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
 #import renderide::pbs::normal as pnorm
@@ -209,7 +210,7 @@ fn fs_main(
         );
     }
 
-    let amb = vec3<f32>(0.03);
+    let amb = shamb::ambient_probe(n);
     let color = (amb * base_color * occlusion + lo) + emission + rim_emission;
     return vec4<f32>(color, alpha);
 }

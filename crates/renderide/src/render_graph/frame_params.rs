@@ -20,7 +20,9 @@ use crate::backend::MaterialSystem;
 use crate::backend::OcclusionSystem;
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
-use crate::materials::{MaterialPassDesc, MaterialPipelineDesc, MaterialPipelineSet};
+use crate::materials::{
+    MaterialPassDesc, MaterialPipelineDesc, MaterialPipelineSet, RasterFrontFace,
+};
 use crate::pipelines::ShaderPermutation;
 use crate::render_graph::occlusion::HiZGpuState;
 use crate::scene::SceneCoordinator;
@@ -246,6 +248,8 @@ pub struct PrecomputedMaterialBind {
     pub first_draw_idx: usize,
     /// Last draw index (inclusive) covered by this entry.
     pub last_draw_idx: usize,
+    /// Front-face winding used by the resolved pipeline set.
+    pub front_face: RasterFrontFace,
     /// Resolved `@group(1)` bind group for this batch's material, or `None` for the empty fallback.
     pub bind_group: Option<std::sync::Arc<wgpu::BindGroup>>,
     /// Resolved pipeline set for this batch, or `None` when the pipeline is unavailable (skip draws).

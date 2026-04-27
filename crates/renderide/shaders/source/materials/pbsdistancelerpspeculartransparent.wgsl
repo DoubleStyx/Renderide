@@ -8,6 +8,7 @@
 // unity-shader-name: PBSDistanceLerpSpecularTransparent
 
 #import renderide::globals as rg
+#import renderide::sh2_ambient as shamb
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
 #import renderide::pbs::normal as pnorm
@@ -240,7 +241,7 @@ fn shade(
 
     let emission_tex = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     let emission = mat._EmissionColor.rgb * emission_tex + point_emission;
-    let ambient = select(vec3<f32>(0.0), vec3<f32>(0.03) * base_color * occlusion, include_directional);
+    let ambient = select(vec3<f32>(0.0), shamb::ambient_probe(n) * base_color * occlusion, include_directional);
     let color = ambient + lo + emission;
     return vec4<f32>(color, alpha);
 }

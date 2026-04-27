@@ -1,11 +1,14 @@
 //! Per–render-space state mirrored from [`crate::shared::RenderSpaceUpdate`].
 
 use super::render_overrides::{RenderMaterialOverrideEntry, RenderTransformOverrideEntry};
-use crate::shared::{LayerType, RenderSpaceUpdate, RenderTransform};
+use crate::shared::{
+    LayerType, ReflectionProbeChangeRenderTask, RenderSH2, RenderSpaceUpdate, RenderTransform,
+};
 
 use super::camera_apply::CameraRenderableEntry;
 use super::ids::RenderSpaceId;
 use super::mesh_renderable::{SkinnedMeshRenderer, StaticMeshRenderer};
+use super::reflection_probe::ReflectionProbeEntry;
 
 /// One host layer component / assignment anchored to a transform node.
 #[derive(Debug, Clone, Copy)]
@@ -40,6 +43,10 @@ pub struct RenderSpaceState {
     pub override_view_position: bool,
     /// `RenderSpaceUpdate.view_position_is_external`
     pub view_position_is_external: bool,
+    /// `RenderSpaceUpdate.skybox_material_asset_id`.
+    pub skybox_material_asset_id: i32,
+    /// `RenderSpaceUpdate.ambient_light`.
+    pub ambient_light: RenderSH2,
     /// Space root TRS from host.
     pub root_transform: RenderTransform,
     /// Resolved eye / root TRS for view (`override_view_position` selects overridden view).
@@ -54,6 +61,10 @@ pub struct RenderSpaceState {
     pub skinned_mesh_renderers: Vec<SkinnedMeshRenderer>,
     /// Host camera components (secondary cameras, render texture targets).
     pub cameras: Vec<CameraRenderableEntry>,
+    /// Host reflection probe components.
+    pub reflection_probes: Vec<ReflectionProbeEntry>,
+    /// Changed reflection-probe render requests from the most recent update.
+    pub pending_reflection_probe_render_changes: Vec<ReflectionProbeChangeRenderTask>,
     /// Host layer components. Resolved onto mesh renderers each frame by closest ancestor.
     pub layer_assignments: Vec<LayerAssignmentEntry>,
     /// Render-context-local transform substitutions from the host.
@@ -69,6 +80,8 @@ impl RenderSpaceState {
         self.is_overlay = update.is_overlay;
         self.is_private = update.is_private;
         self.view_position_is_external = update.view_position_is_external;
+        self.skybox_material_asset_id = update.skybox_material_asset_id;
+        self.ambient_light = update.ambient_light;
         self.override_view_position = update.override_view_position;
         self.root_transform = update.root_transform;
         self.view_transform = if update.override_view_position {
@@ -88,6 +101,8 @@ impl Default for RenderSpaceState {
             is_private: false,
             override_view_position: false,
             view_position_is_external: false,
+            skybox_material_asset_id: -1,
+            ambient_light: RenderSH2::default(),
             root_transform: RenderTransform::default(),
             view_transform: RenderTransform::default(),
             nodes: Vec::new(),
@@ -95,6 +110,8 @@ impl Default for RenderSpaceState {
             static_mesh_renderers: Vec::new(),
             skinned_mesh_renderers: Vec::new(),
             cameras: Vec::new(),
+            reflection_probes: Vec::new(),
+            pending_reflection_probe_render_changes: Vec::new(),
             layer_assignments: Vec::new(),
             render_transform_overrides: Vec::new(),
             render_material_overrides: Vec::new(),
@@ -165,6 +182,25 @@ mod tests {
         assert!(state.is_overlay);
         assert!(state.is_private);
         assert!(state.view_position_is_external);
+    }
+
+    #[test]
+    fn apply_update_header_copies_skybox_and_ambient() {
+        let mut state = RenderSpaceState::default();
+        let ambient = RenderSH2 {
+            sh0: Vec3::new(1.0, 2.0, 3.0),
+            ..RenderSH2::default()
+        };
+        let update = RenderSpaceUpdate {
+            skybox_material_asset_id: 42,
+            ambient_light: ambient,
+            ..RenderSpaceUpdate::default()
+        };
+
+        state.apply_update_header(&update);
+
+        assert_eq!(state.skybox_material_asset_id, 42);
+        assert_eq!(state.ambient_light.sh0, ambient.sh0);
     }
 
     #[test]

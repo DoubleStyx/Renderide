@@ -11,7 +11,7 @@ use crate::materials::raster_pipeline::{
 use crate::materials::PipelineBuildError;
 use crate::materials::{
     reflect_raster_material_wgsl, validate_per_draw_group2, MaterialPipelineDesc,
-    MaterialRenderState,
+    MaterialRenderState, RasterFrontFace,
 };
 use crate::pipelines::ShaderPermutation;
 
@@ -69,6 +69,7 @@ pub(crate) fn create_null_render_pipeline(
     module: &wgpu::ShaderModule,
     desc: &MaterialPipelineDesc,
     wgsl_source: &str,
+    front_face: RasterFrontFace,
 ) -> Result<wgpu::RenderPipeline, PipelineBuildError> {
     create_reflective_raster_mesh_forward_pipeline(
         device,
@@ -83,6 +84,7 @@ pub(crate) fn create_null_render_pipeline(
             use_alpha_blending: false,
             depth_write_enabled: true,
             render_state: MaterialRenderState::default(),
+            front_face,
         },
     )
 }

@@ -36,7 +36,7 @@ pub use types::{
 #[cfg(test)]
 mod tests {
     use super::{resolved_material_slots, sort_world_mesh_draws, MaterialDrawBatchKey};
-    use crate::materials::RasterPipelineKind;
+    use crate::materials::{RasterFrontFace, RasterPipelineKind};
     use crate::render_graph::test_fixtures::{dummy_world_mesh_draw_item, DummyDrawItemSpec};
     use crate::scene::{MeshMaterialSlot, StaticMeshRenderer};
 
@@ -138,6 +138,7 @@ mod tests {
             material_asset_id: 1,
             property_block_slot0: None,
             skinned: false,
+            front_face: RasterFrontFace::Clockwise,
             embedded_needs_uv0: false,
             embedded_needs_color: false,
             embedded_needs_extended_vertex_streams: false,
@@ -153,6 +154,7 @@ mod tests {
             material_asset_id: 1,
             property_block_slot0: Some(99),
             skinned: false,
+            front_face: RasterFrontFace::Clockwise,
             embedded_needs_uv0: false,
             embedded_needs_color: false,
             embedded_needs_extended_vertex_streams: false,

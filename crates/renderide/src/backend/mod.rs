@@ -21,6 +21,7 @@ mod material_system;
 pub mod mesh_deform;
 mod occlusion;
 mod per_draw_resources;
+mod reflection_probe_sh2;
 mod render_backend;
 
 pub use crate::assets::AssetTransferQueue;
@@ -58,6 +59,7 @@ pub use mesh_deform::{
 pub(crate) use occlusion::HiZBuildInput;
 pub use occlusion::OcclusionSystem;
 pub use per_draw_resources::PerDrawResources;
+pub(crate) use reflection_probe_sh2::ReflectionProbeSh2System;
 pub(crate) use render_backend::WorldMeshForwardEncodeRefs;
 pub use render_backend::{
     RenderBackend, RenderBackendAttachDesc, RenderBackendAttachError, MAX_ASSET_INTEGRATION_QUEUED,

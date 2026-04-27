@@ -198,6 +198,11 @@ impl RendererRuntime {
         self.backend.occlusion.hi_z_begin_frame_readback(device);
     }
 
+    /// Advances nonblocking GPU services that feed host-visible async results.
+    pub fn maintain_nonblocking_gpu_jobs(&mut self, gpu: &GpuContext) {
+        self.backend.maintain_reflection_probe_sh2_jobs(gpu);
+    }
+
     /// Whether the next tick should build [`InputState`] and call [`Self::pre_frame`].
     pub fn should_send_begin_frame(&self) -> bool {
         self.frontend.should_send_begin_frame()
@@ -342,6 +347,7 @@ impl RendererRuntime {
             };
         }
         self.run_asset_integration();
+        self.maintain_nonblocking_gpu_jobs(gpu);
         if self.should_send_begin_frame() {
             self.pre_frame(inputs);
         }
@@ -359,6 +365,7 @@ impl RendererRuntime {
     /// in this method so VR cannot drift from desktop / headless lock-step semantics.
     pub fn tick_one_frame_lockstep_only(
         &mut self,
+        gpu: Option<&GpuContext>,
         inputs: crate::shared::InputState,
     ) -> TickOutcome {
         profiling::scope!("tick::one_frame_lockstep_only");
@@ -376,6 +383,9 @@ impl RendererRuntime {
             };
         }
         self.run_asset_integration();
+        if let Some(gpu) = gpu {
+            self.maintain_nonblocking_gpu_jobs(gpu);
+        }
         if self.should_send_begin_frame() {
             self.pre_frame(inputs);
         }

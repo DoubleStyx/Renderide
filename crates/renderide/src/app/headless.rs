@@ -92,7 +92,7 @@ pub fn run_headless(
             o
         } else {
             profiling::scope!("headless::lockstep_tick");
-            runtime.tick_one_frame_lockstep_only(InputState::default())
+            runtime.tick_one_frame_lockstep_only(Some(&gpu), InputState::default())
         };
         if outcome.shutdown_requested {
             logger::info!("Headless: host shutdown requested, exiting");

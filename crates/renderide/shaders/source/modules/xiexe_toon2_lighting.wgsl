@@ -28,9 +28,7 @@
 //! - `calcEmission` returns `i.emissionMap` directly (`XSLightingFunctions.cginc:388–407`);
 //!   the `_EmissionToDiffuse` and `_ScaleWithLight` blends are commented out.
 //!
-//! Approximations needed because we don't have Unity's per-frame probe state:
-//! - `indirectDiffuse` (Unity `ShadeSH9`) → constant `vec3(0.03)`. Uncoloured because
-//!   the upstream value is the SH probe sample, not the albedo-tinted ambient.
+//! Approximations needed because we don't have Unity's per-frame specular probe state:
 //! - PBR indirect specular (Unity `unity_SpecCube`) → ambient-tinted metallic blend.
 //!   Matcap mode follows the reference exactly except for `_LightColor0`, which we
 //!   approximate as the dominant light's `color · attenuation` tracked across the
@@ -43,12 +41,12 @@
 #import renderide::globals as rg
 #import renderide::pbs::cluster as pcls
 #import renderide::birp::light as bl
+#import renderide::sh2_ambient as shamb
 
-/// SH-probe approximation. xiexe's `calcIndirectDiffuse` returns `ShadeSH9((0,1,0,1))`,
-/// which is the upward-facing probe sample. Without a probe pipeline we fall back to a
-/// small uncoloured constant; downstream tints (`* albedo`, `* diffuseColor`) are added
-/// by the call sites that need them.
-const INDIRECT_DIFFUSE: vec3<f32> = vec3<f32>(0.03);
+/// SH-probe sample used for xiexe's uncoloured indirect-diffuse term.
+fn indirect_diffuse(s: xb::SurfaceData) -> vec3<f32> {
+    return shamb::ambient_probe(s.normal);
+}
 
 /// `UNITY_SPECCUBE_LOD_STEPS` on PC/console. Matcap LOD selection in
 /// `XSLightingFunctions.cginc:227` uses `(1 − smoothness) · UNITY_SPECCUBE_LOD_STEPS`.
@@ -178,8 +176,9 @@ fn rim_light(
     let sharp = max(xb::mat._RimSharpness, 0.001);
     var rim = xb::saturate(1.0 - vdn) * pow(xb::saturate(ndl), max(xb::mat._RimThreshold, 0.0));
     rim = smoothstep(xb::mat._RimRange - sharp, xb::mat._RimRange + sharp, rim);
-    var col = rim * xb::mat._RimIntensity * (light.color * light.attenuation + INDIRECT_DIFFUSE);
-    col = col * mix(vec3<f32>(1.0), vec3<f32>(light.attenuation) + INDIRECT_DIFFUSE, clamp(xb::mat._RimAttenEffect, 0.0, 1.0));
+    let indirect = indirect_diffuse(s);
+    var col = rim * xb::mat._RimIntensity * (light.color * light.attenuation + indirect);
+    col = col * mix(vec3<f32>(1.0), vec3<f32>(light.attenuation) + indirect, clamp(xb::mat._RimAttenEffect, 0.0, 1.0));
     col = col * xb::mat._RimColor.rgb;
     col = col * mix(vec3<f32>(1.0), s.diffuse_color, clamp(xb::mat._RimAlbedoTint, 0.0, 1.0));
     col = col * mix(vec3<f32>(1.0), env_map, clamp(xb::mat._RimCubemapTint, 0.0, 1.0));
@@ -194,14 +193,15 @@ fn shadow_rim(s: xb::SurfaceData, view_dir: vec3<f32>, ndl: f32) -> vec3<f32> {
     let sharp = max(xb::mat._ShadowRimSharpness, 0.001);
     var rim = xb::saturate(1.0 - vdn) * pow(xb::saturate(1.0 - ndl), max(xb::mat._ShadowRimThreshold * 2.0, 0.0));
     rim = smoothstep(xb::mat._ShadowRimRange - sharp, xb::mat._ShadowRimRange + sharp, rim);
-    let tint = xb::mat._ShadowRim.rgb * mix(vec3<f32>(1.0), s.diffuse_color, clamp(xb::mat._ShadowRimAlbedoTint, 0.0, 1.0)) + INDIRECT_DIFFUSE * 0.1;
+    let indirect = indirect_diffuse(s);
+    let tint = xb::mat._ShadowRim.rgb * mix(vec3<f32>(1.0), s.diffuse_color, clamp(xb::mat._ShadowRimAlbedoTint, 0.0, 1.0)) + indirect * 0.1;
     return mix(vec3<f32>(1.0), tint, rim);
 }
 
 /// Stylised subsurface scattering. Reproduces the original xiexe construction:
 /// `H = normalize(L + N · _SSDistortion)`, `vdh = pow(saturate(dot(V, -H)), _SSPower)`,
 /// modulated by attenuation, half-Lambert, thickness, and `_SSColor · _SSScale · albedo`.
-/// Uses `INDIRECT_DIFFUSE` (uncoloured SH stand-in) for the additive term, matching
+/// Uses the frame SH2 probe for the additive term, matching
 /// `calcSubsurfaceScattering` in `XSLightingFunctions.cginc:362–386`.
 fn subsurface(
     s: xb::SurfaceData,
@@ -215,7 +215,7 @@ fn subsurface(
     let attenuation = xb::saturate(light.attenuation * (ndl * 0.5 + 0.5));
     let h = xb::safe_normalize(light.direction + s.normal * xb::mat._SSDistortion, s.normal);
     let vdh = pow(xb::saturate(dot(view_dir, -h)), max(xb::mat._SSPower, 0.001));
-    let scatter = xb::mat._SSColor.rgb * (vdh + INDIRECT_DIFFUSE) * attenuation * xb::mat._SSScale * s.thickness;
+    let scatter = xb::mat._SSColor.rgb * (vdh + indirect_diffuse(s)) * attenuation * xb::mat._SSScale * s.thickness;
     return max(vec3<f32>(0.0), light.color * scatter * s.albedo.rgb);
 }
 
@@ -238,9 +238,9 @@ fn matcap_uv(view_dir: vec3<f32>, n: vec3<f32>) -> vec2<f32> {
 ///   cluster walk (we don't have Unity's "main directional" handle).
 ///
 /// - PBR fallback — upstream samples `unity_SpecCube` probes (lines 237–266); we don't
-///   have probes, so fall back to an ambient-tinted metallic blend that preserves
-///   `lerp(indirectSpecular, metallicColor, pow(vdn, 0.05))` shape with `INDIRECT_DIFFUSE`
-///   standing in for the probe sample. Approximation, not strict parity.
+///   have specular probes, so fall back to an ambient-tinted metallic blend that preserves
+///   `lerp(indirectSpecular, metallicColor, pow(vdn, 0.05))` shape with diffuse SH standing
+///   in for the probe sample. Approximation, not strict parity.
 ///
 /// Final `lerp(spec, spec · ramp, metallicSmoothness.w)` darkens the result by the toon
 /// ramp proportional to perceptual roughness (`metallicSmoothness.w` is `(1 − gloss) ·
@@ -255,12 +255,12 @@ fn indirect_specular(
     if (xb::matcap_enabled()) {
         let uv = matcap_uv(view_dir, s.normal);
         spec = textureSampleLevel(xb::_Matcap, xb::_Matcap_sampler, uv, (1.0 - s.smoothness) * SPECCUBE_LOD_STEPS).rgb * xb::mat._MatcapTint.rgb;
-        spec = spec * (INDIRECT_DIFFUSE + dominant_light_col_atten * 0.5);
+        spec = spec * (indirect_diffuse(s) + dominant_light_col_atten * 0.5);
     } else {
-        // Probe approximation — see header note. `INDIRECT_DIFFUSE` is the SH stand-in;
+        // Probe approximation — see header note. Diffuse SH is the specular-probe stand-in;
         // the `lerp(probe, metallicColor, pow(vdn, 0.05))` shape is preserved.
         let vdn = max(abs(dot(view_dir, s.normal)), 1e-4);
-        let probe = INDIRECT_DIFFUSE;
+        let probe = indirect_diffuse(s);
         let metallic_color = probe * mix(vec3<f32>(0.05), s.diffuse_color, s.metallic);
         spec = mix(probe, metallic_color, pow(vdn, 0.05));
     }
@@ -360,7 +360,7 @@ fn clustered_toon_lighting(
     var diffuse = direct_diffuse;
     if (base_pass) {
         // `i.albedo * indirectDiffuse` from `calcDiffuse` — added once on the base pass.
-        diffuse = diffuse + s.albedo.rgb * INDIRECT_DIFFUSE;
+        diffuse = diffuse + s.albedo.rgb * indirect_diffuse(s);
     }
 
     var col = diffuse * strongest_shadow;
@@ -380,7 +380,7 @@ fn clustered_toon_lighting(
 ///   `outlineColor = ol · saturate(att · NdotL) · lightCol + indirectDiffuse · ol`
 /// where `ol = _OutlineColor (· diffuse if _OutlineAlbedoTint)`. Returns the *light
 /// modulator* (without `ol`); the caller multiplies by `ol`. The "indirect diffuse"
-/// approximation is `INDIRECT_DIFFUSE` (the same constant used elsewhere in this module).
+/// approximation is the same SH2 indirect-diffuse sample used elsewhere in this module.
 fn clustered_outline_lighting(
     frag_xy: vec2<f32>,
     s: xb::SurfaceData,
@@ -414,5 +414,5 @@ fn clustered_outline_lighting(
         let ndl = xb::saturate(dot(s.normal, light.direction));
         direct = direct + xb::saturate(light.attenuation * ndl) * light.color;
     }
-    return direct + INDIRECT_DIFFUSE;
+    return direct + indirect_diffuse(s);
 }

@@ -9,8 +9,9 @@ use std::collections::HashSet;
 use glam::Mat4;
 
 use crate::ipc::SharedMemoryAccessor;
-use crate::shared::FrameSubmitData;
-use crate::shared::RenderingContext;
+use crate::shared::{
+    FrameSubmitData, ReflectionProbeChangeRenderResult, RenderSH2, RenderingContext,
+};
 
 use super::error::SceneError;
 use super::ids::RenderSpaceId;
@@ -39,15 +40,6 @@ fn warn_if_multiple_active_non_overlay_spaces(data: &FrameSubmitData) {
         logger::warn!(
             "FrameSubmitData: {active_non_overlay} active non-overlay render spaces (expected at most one for main camera parity)"
         );
-    }
-}
-
-/// Best-effort reflection probe SH2 host task markers (Unity `RenderSpace.HandleUpdate` preamble).
-fn mark_reflection_probe_sh2_task_failures(shm: &mut SharedMemoryAccessor, data: &FrameSubmitData) {
-    for update in &data.render_spaces {
-        if let Some(ref sh2) = update.reflection_probe_sh2_taks {
-            super::reflection_probe_sh2::mark_reflection_probe_sh2_tasks_failed(shm, sh2);
-        }
     }
 }
 
@@ -150,6 +142,26 @@ impl SceneCoordinator {
             .values()
             .filter(|s| s.is_active && !s.is_overlay)
             .min_by_key(|s| s.id.0)
+    }
+
+    /// Ambient SH2 from the active non-overlay render space.
+    pub fn active_main_ambient_light(&self) -> RenderSH2 {
+        self.active_main_space()
+            .map(|s| s.ambient_light)
+            .unwrap_or_default()
+    }
+
+    /// Drains host-visible reflection-probe render completions for supported probe kinds.
+    pub fn take_supported_reflection_probe_render_results(
+        &mut self,
+    ) -> Vec<ReflectionProbeChangeRenderResult> {
+        let mut out = Vec::new();
+        for space in self.spaces.values_mut() {
+            out.extend(
+                super::reflection_probe::drain_supported_reflection_probe_render_results(space),
+            );
+        }
+        out
     }
 
     /// Current head-output render context for the main view.
@@ -307,7 +319,6 @@ impl SceneCoordinator {
     ) -> Result<(), SceneError> {
         profiling::scope!("scene::apply_frame_submit");
         warn_if_multiple_active_non_overlay_spaces(data);
-        mark_reflection_probe_sh2_task_failures(shm, data);
 
         // Clear last frame's per-space removal events; Phase B refills them, Phase C consumes.
         // Retain the per-space `Vec` allocations to keep the steady-state path allocation-free.

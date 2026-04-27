@@ -53,6 +53,24 @@ struct FrameGlobals {
     /// Packed tail: `.x` is the monotonic frame index (for temporal / jittered screen-space
     /// effects); `.yzw` are reserved padding to keep the trailing `vec4` slot aligned to 16 bytes.
     frame_tail: vec4<u32>,
+    /// Ambient SH2 coefficient 0, padded to a vec4 slot.
+    ambient_sh_a: vec4<f32>,
+    /// Ambient SH2 coefficient 1, padded to a vec4 slot.
+    ambient_sh_b: vec4<f32>,
+    /// Ambient SH2 coefficient 2, padded to a vec4 slot.
+    ambient_sh_c: vec4<f32>,
+    /// Ambient SH2 coefficient 3, padded to a vec4 slot.
+    ambient_sh_d: vec4<f32>,
+    /// Ambient SH2 coefficient 4, padded to a vec4 slot.
+    ambient_sh_e: vec4<f32>,
+    /// Ambient SH2 coefficient 5, padded to a vec4 slot.
+    ambient_sh_f: vec4<f32>,
+    /// Ambient SH2 coefficient 6, padded to a vec4 slot.
+    ambient_sh_g: vec4<f32>,
+    /// Ambient SH2 coefficient 7, padded to a vec4 slot.
+    ambient_sh_h: vec4<f32>,
+    /// Ambient SH2 coefficient 8, padded to a vec4 slot.
+    ambient_sh_i: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameGlobals;

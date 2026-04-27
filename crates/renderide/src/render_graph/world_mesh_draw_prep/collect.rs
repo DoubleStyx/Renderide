@@ -15,7 +15,7 @@ use glam::{Mat4, Vec3};
 use rayon::prelude::*;
 
 use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
-use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter};
+use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterFrontFace};
 use crate::pipelines::ShaderPermutation;
 use crate::resources::MeshPool;
 use crate::scene::{
@@ -61,6 +61,32 @@ pub(crate) struct OverlayDeformCullFlags {
     pub is_overlay: bool,
     /// Skinned mesh with world-space deform from the skin cache.
     pub world_space_deformed: bool,
+}
+
+/// Resolves the draw's world matrix when the selected vertex stream is still local-space.
+#[inline]
+fn world_matrix_for_local_vertex_stream(
+    ctx: &DrawCollectionContext<'_>,
+    space_id: RenderSpaceId,
+    node_id: i32,
+) -> Option<Mat4> {
+    if node_id < 0 {
+        return None;
+    }
+    ctx.scene.world_matrix_for_render_context(
+        space_id,
+        node_id as usize,
+        ctx.render_context,
+        ctx.head_output_transform,
+    )
+}
+
+/// Resolves the raster front face for the model matrix used by the forward vertex shader.
+#[inline]
+fn front_face_for_world_matrix(world_matrix: Option<Mat4>) -> RasterFrontFace {
+    world_matrix
+        .map(RasterFrontFace::from_model_matrix)
+        .unwrap_or_default()
 }
 
 /// Read-only scene, material, and cull state shared across all spaces during draw collection.
@@ -279,37 +305,38 @@ fn push_one_slot_draw(
     if material_asset_id < 0 {
         return;
     }
-    let rigid_world_matrix = if draw.skinned {
-        None
-    } else if let Some(c) = ctx.culling {
-        acc.cull_stats.0 += 1;
-        let target = MeshCullTarget {
-            scene: ctx.scene,
-            space_id: draw.space_id,
-            mesh: draw.mesh,
-            skinned: draw.skinned,
-            skinned_renderer: draw.skinned_renderer,
-            node_id: draw.renderer.node_id,
-        };
-        match mesh_draw_passes_cpu_cull(&target, is_overlay, c, ctx.render_context) {
-            Err(CpuCullFailure::Frustum) => {
-                acc.cull_stats.1 += 1;
-                return;
+    let mut rigid_world_matrix = None;
+    if !draw.skinned {
+        if let Some(c) = ctx.culling {
+            acc.cull_stats.0 += 1;
+            let target = MeshCullTarget {
+                scene: ctx.scene,
+                space_id: draw.space_id,
+                mesh: draw.mesh,
+                skinned: draw.skinned,
+                skinned_renderer: draw.skinned_renderer,
+                node_id: draw.renderer.node_id,
+            };
+            match mesh_draw_passes_cpu_cull(&target, is_overlay, c, ctx.render_context) {
+                Err(CpuCullFailure::Frustum) => {
+                    acc.cull_stats.1 += 1;
+                    return;
+                }
+                Err(CpuCullFailure::HiZ) => {
+                    acc.cull_stats.2 += 1;
+                    return;
+                }
+                Ok(m) => {
+                    rigid_world_matrix = m;
+                }
             }
-            Err(CpuCullFailure::HiZ) => {
-                acc.cull_stats.2 += 1;
-                return;
-            }
-            Ok(m) => m,
         }
-    } else {
-        ctx.scene.world_matrix_for_render_context(
-            draw.space_id,
-            draw.renderer.node_id as usize,
-            ctx.render_context,
-            ctx.head_output_transform,
-        )
-    };
+    }
+    if !world_space_deformed && rigid_world_matrix.is_none() {
+        rigid_world_matrix =
+            world_matrix_for_local_vertex_stream(ctx, draw.space_id, draw.renderer.node_id);
+    }
+    let front_face = front_face_for_world_matrix(rigid_world_matrix);
     let lookup_ids = MaterialPropertyLookupIds {
         material_asset_id,
         mesh_property_block_slot0: slot.property_block_id,
@@ -318,6 +345,7 @@ fn push_one_slot_draw(
         material_asset_id,
         slot.property_block_id,
         draw.skinned,
+        front_face,
         cache,
         MaterialResolveCtx {
             dict: ctx.material_dict,
@@ -525,7 +553,8 @@ fn collect_prepared_chunk(
             None
         };
 
-        let rigid_world_matrix = if let Some(c) = ctx.culling {
+        let mut rigid_world_matrix = None;
+        if let Some(c) = ctx.culling {
             cull_stats.0 += 1;
             let target = MeshCullTarget {
                 scene: ctx.scene,
@@ -544,23 +573,21 @@ fn collect_prepared_chunk(
                     cull_stats.2 += 1;
                     continue;
                 }
-                Ok(m) => m,
+                Ok(m) => {
+                    rigid_world_matrix = m;
+                }
             }
-        } else if d.skinned {
-            None
-        } else {
-            ctx.scene.world_matrix_for_render_context(
-                d.space_id,
-                d.node_id as usize,
-                ctx.render_context,
-                ctx.head_output_transform,
-            )
-        };
+        }
+        if !d.world_space_deformed && rigid_world_matrix.is_none() {
+            rigid_world_matrix = world_matrix_for_local_vertex_stream(ctx, d.space_id, d.node_id);
+        }
+        let front_face = front_face_for_world_matrix(rigid_world_matrix);
 
         let batch_key = batch_key_for_slot_cached(
             d.material_asset_id,
             d.property_block_id,
             d.skinned,
+            front_face,
             cache,
             MaterialResolveCtx {
                 dict: ctx.material_dict,

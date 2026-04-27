@@ -5,11 +5,48 @@
 
 use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
 
+use glam::{Mat3, Mat4};
+
 use super::material_pass_tables::{
     froox_ztest_depth_compare_function, unity_color_writes, unity_compare_function,
     unity_stencil_operation,
 };
 use super::material_passes::{first_float_from_maps, MaterialPipelinePropertyIds, PropertyMapRef};
+
+/// Raster front-face winding selected for a draw's effective model transform.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RasterFrontFace {
+    /// Unity/D3D-style clockwise mesh winding.
+    #[default]
+    Clockwise,
+    /// Counter-clockwise winding for mirrored transforms with a negative determinant.
+    CounterClockwise,
+}
+
+impl RasterFrontFace {
+    /// Conservative determinant threshold below which a transform is treated as degenerate.
+    const MIN_DETERMINANT: f32 = 1e-20;
+
+    /// Resolves a front-face winding from the upper 3×3 determinant of a draw model matrix.
+    #[must_use]
+    pub fn from_model_matrix(model: Mat4) -> Self {
+        let det = Mat3::from_mat4(model).determinant();
+        if det.is_finite() && det < -Self::MIN_DETERMINANT {
+            Self::CounterClockwise
+        } else {
+            Self::Clockwise
+        }
+    }
+
+    /// Converts the renderer's draw-facing front-face tag into a wgpu primitive setting.
+    #[must_use]
+    pub fn to_wgpu(self) -> wgpu::FrontFace {
+        match self {
+            Self::Clockwise => wgpu::FrontFace::Cw,
+            Self::CounterClockwise => wgpu::FrontFace::Ccw,
+        }
+    }
+}
 
 /// Unity `Cull` / `CullMode` material override for raster pipeline keys and [`MaterialRenderState::resolved_cull_mode`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -284,6 +321,70 @@ pub fn material_render_state_for_lookup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raster_front_face_uses_clockwise_for_positive_scale() {
+        let model = Mat4::from_scale(glam::Vec3::new(2.0, 3.0, 4.0));
+        assert_eq!(
+            RasterFrontFace::from_model_matrix(model),
+            RasterFrontFace::Clockwise
+        );
+        assert_eq!(RasterFrontFace::Clockwise.to_wgpu(), wgpu::FrontFace::Cw);
+    }
+
+    #[test]
+    fn raster_front_face_flips_for_single_negative_axis() {
+        let model = Mat4::from_scale(glam::Vec3::new(-1.0, 2.0, 3.0));
+        assert_eq!(
+            RasterFrontFace::from_model_matrix(model),
+            RasterFrontFace::CounterClockwise
+        );
+        assert_eq!(
+            RasterFrontFace::CounterClockwise.to_wgpu(),
+            wgpu::FrontFace::Ccw
+        );
+    }
+
+    #[test]
+    fn raster_front_face_keeps_clockwise_for_double_negative_axes() {
+        let model = Mat4::from_scale(glam::Vec3::new(-1.0, -2.0, 3.0));
+        assert_eq!(
+            RasterFrontFace::from_model_matrix(model),
+            RasterFrontFace::Clockwise
+        );
+    }
+
+    #[test]
+    fn raster_front_face_keeps_clockwise_for_degenerate_or_non_finite_matrices() {
+        let degenerate = Mat4::from_scale(glam::Vec3::new(-1.0e-12, 1.0e-12, 1.0e-12));
+        assert_eq!(
+            RasterFrontFace::from_model_matrix(degenerate),
+            RasterFrontFace::Clockwise
+        );
+
+        let non_finite = Mat4::from_cols_array(&[
+            f32::NAN,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]);
+        assert_eq!(
+            RasterFrontFace::from_model_matrix(non_finite),
+            RasterFrontFace::Clockwise
+        );
+    }
 
     #[test]
     fn depth_offset_rejects_all_zero() {

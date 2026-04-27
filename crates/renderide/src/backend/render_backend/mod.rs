@@ -139,6 +139,8 @@ pub struct RenderBackend {
     /// (`ImportSource::PingPong` / `BufferImportSource::PingPong`). New infrastructure; no
     /// subsystem writes through it yet. Future TAA / SSR / cached-shadow work registers here.
     pub(crate) history_registry: super::HistoryRegistry,
+    /// Nonblocking reflection-probe SH2 GPU projection service.
+    pub(crate) reflection_probe_sh2: super::ReflectionProbeSh2System,
 }
 
 /// Disjoint borrows of [`MaterialSystem`], [`AssetTransferQueue`], and the GPU skin cache for world mesh forward encoding.
@@ -211,6 +213,7 @@ impl RenderBackend {
             record_parallelism: crate::config::RecordParallelism::PerViewParallel,
             material_batch_cache: FrameMaterialBatchCache::new(),
             history_registry: super::HistoryRegistry::new(),
+            reflection_probe_sh2: super::ReflectionProbeSh2System::new(),
         }
     }
 
@@ -374,6 +377,28 @@ impl RenderBackend {
     /// Host render texture targets (secondary cameras, material sampling).
     pub fn render_texture_pool(&self) -> &RenderTexturePool {
         &self.asset_transfers.render_texture_pool
+    }
+
+    /// Answers host SH2 task rows for the latest frame submit without blocking GPU readback.
+    pub(crate) fn answer_reflection_probe_sh2_tasks(
+        &mut self,
+        shm: &mut crate::ipc::SharedMemoryAccessor,
+        scene: &crate::scene::SceneCoordinator,
+        data: &crate::shared::FrameSubmitData,
+    ) {
+        self.reflection_probe_sh2.answer_frame_submit_tasks(
+            shm,
+            scene,
+            &self.materials,
+            &self.asset_transfers,
+            data,
+        );
+    }
+
+    /// Advances nonblocking SH2 GPU jobs and schedules queued projection work.
+    pub(crate) fn maintain_reflection_probe_sh2_jobs(&mut self, gpu: &crate::gpu::GpuContext) {
+        self.reflection_probe_sh2
+            .maintain_gpu_jobs(gpu, &self.asset_transfers);
     }
 
     /// Borrowed view of all texture pools used for embedded material `@group(1)` bind resolution.

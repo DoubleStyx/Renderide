@@ -227,6 +227,7 @@ fn emit_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::materials::RasterFrontFace;
     use crate::render_graph::test_fixtures::{dummy_world_mesh_draw_item, DummyDrawItemSpec};
     use crate::render_graph::world_mesh_draw_prep::sort_world_mesh_draws;
 
@@ -262,6 +263,24 @@ mod tests {
         assert_eq!(plan.regular_groups.len(), 1);
         assert_eq!(plan.regular_groups[0].instance_range, 0..6);
         assert_eq!(plan.slab_layout.len(), 6);
+        assert!(plan.intersect_groups.is_empty());
+        assert!(plan.transparent_groups.is_empty());
+    }
+
+    #[test]
+    fn mirrored_opaque_draws_split_instance_groups() {
+        let normal = opaque(7, 1, 0, 0);
+        let mut mirrored = opaque(7, 1, 0, 1);
+        mirrored.batch_key.front_face = RasterFrontFace::CounterClockwise;
+        let mut draws = vec![normal, mirrored];
+        sort_world_mesh_draws(&mut draws);
+
+        let plan = build_instance_plan(&draws, true);
+        assert_eq!(plan.regular_groups.len(), 2);
+        for group in &plan.regular_groups {
+            assert_eq!(group.instance_range.end - group.instance_range.start, 1);
+        }
+        assert_eq!(plan.slab_layout.len(), 2);
         assert!(plan.intersect_groups.is_empty());
         assert!(plan.transparent_groups.is_empty());
     }

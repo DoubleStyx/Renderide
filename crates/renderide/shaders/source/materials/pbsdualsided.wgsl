@@ -7,6 +7,7 @@
 // unity-shader-name: PBSDualSided
 
 #import renderide::globals as rg
+#import renderide::sh2_ambient as shamb
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
 #import renderide::pbs::normal as pnorm
@@ -259,6 +260,6 @@ fn fs_forward_base(
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, world_n, front_facing, color);
     let direct = clustered_direct_lighting(frag_pos.xy, world_pos, view_layer, s, true, true);
-    let ambient = vec3<f32>(0.03) * s.base_color * s.occlusion;
+    let ambient = shamb::ambient_diffuse(s.normal, s.base_color, s.occlusion);
     return vec4<f32>(ambient + direct + s.emission, s.alpha);
 }

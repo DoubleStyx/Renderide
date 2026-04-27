@@ -176,6 +176,7 @@ impl MaterialSystem {
         let opts = ParseMaterialBatchOptions {
             render_type_property_id: Some(self.property_id_registry.intern("_RenderType")),
             render_queue_property_id: Some(self.property_id_registry.intern("_RenderQueue")),
+            persist_extended_payloads: true,
             ..ParseMaterialBatchOptions::default()
         };
 

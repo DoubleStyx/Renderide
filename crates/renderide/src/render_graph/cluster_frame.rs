@@ -88,6 +88,7 @@ impl ClusterFrameParams {
         right_z_coeffs: [f32; 4],
         right_proj_params: [f32; 4],
         frame_index: u32,
+        ambient_sh: [[f32; 4]; 9],
     ) -> FrameGpuUniforms {
         FrameGpuUniforms::new_clustered(ClusteredFrameGlobalsParams {
             camera_world_pos,
@@ -104,6 +105,7 @@ impl ClusterFrameParams {
             proj_params_left: self.proj_params(),
             proj_params_right: right_proj_params,
             frame_index,
+            ambient_sh,
         })
     }
 }

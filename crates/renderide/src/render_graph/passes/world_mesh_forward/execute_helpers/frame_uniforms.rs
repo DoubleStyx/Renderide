@@ -75,6 +75,8 @@ fn build_frame_gpu_uniforms(
 ) -> FrameGpuUniforms {
     let (vw, vh) = viewport_px;
     let camera_world = resolve_camera_world(&hc);
+    let ambient_sh =
+        FrameGpuUniforms::ambient_sh_from_render_sh2(&scene.active_main_ambient_light());
     let stereo_cluster = use_multiview && hc.vr_active && hc.stereo.is_some();
     let frame_idx = hc.frame_index as u32;
     if stereo_cluster {
@@ -85,13 +87,14 @@ fn build_frame_gpu_uniforms(
                 right.view_space_z_coeffs(),
                 right.proj_params(),
                 frame_idx,
+                ambient_sh,
             );
         }
     }
     if let Some(mono) = cluster_frame_params(&hc, scene, (vw, vh)) {
         let z = mono.view_space_z_coeffs();
         let p = mono.proj_params();
-        return mono.frame_gpu_uniforms(camera_world, light_count, z, p, frame_idx);
+        return mono.frame_gpu_uniforms(camera_world, light_count, z, p, frame_idx, ambient_sh);
     }
     FrameGpuUniforms::zeroed()
 }

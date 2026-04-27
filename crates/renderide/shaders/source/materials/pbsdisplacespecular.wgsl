@@ -7,6 +7,7 @@
 // unity-shader-name: PBSDisplaceSpecular
 
 #import renderide::globals as rg
+#import renderide::sh2_ambient as shamb
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
 #import renderide::pbs::normal as pnorm
@@ -202,7 +203,7 @@ fn shade(
             light, world_pos, n, v, aa_roughness, base_color, f0, one_minus_reflectivity,
         );
     }
-    let ambient = select(vec3<f32>(0.0), vec3<f32>(0.03) * base_color * occlusion, include_directional);
+    let ambient = select(vec3<f32>(0.0), shamb::ambient_probe(n) * base_color * occlusion, include_directional);
     let extra = select(vec3<f32>(0.0), emission, include_directional);
     return vec4<f32>(ambient + lo + extra, c.a);
 }

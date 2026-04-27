@@ -14,6 +14,7 @@
 // unity-shader-name: PBSSpecular
 
 #import renderide::globals as rg
+#import renderide::sh2_ambient as shamb
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
 #import renderide::pbs::normal as pnorm
@@ -230,7 +231,7 @@ fn fs_main(
         lo = lo + brdf::direct_radiance_specular(light, world_pos, n, v, aa_roughness, base_color, f0, one_minus_reflectivity);
     }
 
-    let amb   = vec3<f32>(0.03);
+    let amb = shamb::ambient_probe(n);
     let color = (amb * base_color * occlusion + lo) + em;
     return vec4<f32>(apply_premultiply(color, alpha), alpha);
 }

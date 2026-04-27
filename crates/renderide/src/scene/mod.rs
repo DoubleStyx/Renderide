@@ -47,9 +47,9 @@
 //!
 //! ## Reflection probes
 //!
-//! [`RenderSpaceUpdate::reflection_probe_sh2_taks`](crate::shared::RenderSpaceUpdate) is completed in
-//! shared memory by marking each task [`ComputeResult::Failed`](crate::shared::ComputeResult) until
-//! SH2 extraction is implemented (module `reflection_probe_sh2`).
+//! [`RenderSpaceUpdate::reflection_probe_sh2_taks`](crate::shared::RenderSpaceUpdate) is completed
+//! by the backend SH2 service after scene state has been applied, so host rows are never left in
+//! [`ComputeResult::Scheduled`](crate::shared::ComputeResult).
 
 mod camera_apply;
 mod coordinator;
@@ -62,7 +62,7 @@ mod mesh_apply;
 mod mesh_material_row;
 mod mesh_renderable;
 mod pose;
-mod reflection_probe_sh2;
+mod reflection_probe;
 mod render_overrides;
 mod render_space;
 mod transforms_apply;
@@ -75,6 +75,10 @@ pub use ids::{RenderSpaceId, TransformIndex};
 pub use lights::{light_casts_shadows, light_contributes, CachedLight, LightCache, ResolvedLight};
 pub use math::render_transform_to_matrix;
 pub use mesh_renderable::{MeshMaterialSlot, SkinnedMeshRenderer, StaticMeshRenderer};
+pub use reflection_probe::{
+    reflection_probe_hdr, reflection_probe_skybox_only, reflection_probe_use_box_projection,
+    ReflectionProbeEntry,
+};
 pub use render_space::{LayerAssignmentEntry, RenderSpaceState};
 pub use transforms_apply::TransformRemovalEvent;
 pub use world::WorldTransformCache;

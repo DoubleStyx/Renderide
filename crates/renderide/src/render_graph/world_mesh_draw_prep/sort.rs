@@ -4,15 +4,13 @@ use std::cmp::Ordering;
 
 use rayon::slice::ParallelSliceMut;
 
-use crate::assets::material::MaterialDictionary;
 use crate::materials::{
     embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
     embedded_stem_needs_uv0_stream, embedded_stem_requires_grab_pass,
     embedded_stem_requires_intersection_pass, embedded_stem_uses_alpha_blending,
     material_blend_mode_for_lookup, material_render_state_for_lookup, resolve_raster_pipeline,
-    MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind,
+    RasterFrontFace, RasterPipelineKind,
 };
-use crate::pipelines::ShaderPermutation;
 
 use super::material_batch_cache::{
     FrameMaterialBatchCache, MaterialResolveCtx, ResolvedMaterialBatch,
@@ -27,42 +25,41 @@ pub(super) fn batch_key_for_slot(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
-    dict: &MaterialDictionary<'_>,
-    router: &MaterialRouter,
-    pipeline_property_ids: &MaterialPipelinePropertyIds,
-    shader_perm: ShaderPermutation,
+    front_face: RasterFrontFace,
+    ctx: MaterialResolveCtx<'_>,
 ) -> MaterialDrawBatchKey {
-    let shader_asset_id = dict
+    let shader_asset_id = ctx
+        .dict
         .shader_asset_for_material(material_asset_id)
         .unwrap_or(-1);
-    let pipeline = resolve_raster_pipeline(shader_asset_id, router);
+    let pipeline = resolve_raster_pipeline(shader_asset_id, ctx.router);
     let embedded_needs_uv0 = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => {
-            embedded_stem_needs_uv0_stream(stem.as_ref(), shader_perm)
+            embedded_stem_needs_uv0_stream(stem.as_ref(), ctx.shader_perm)
         }
         RasterPipelineKind::Null => false,
     };
     let embedded_needs_color = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => {
-            embedded_stem_needs_color_stream(stem.as_ref(), shader_perm)
+            embedded_stem_needs_color_stream(stem.as_ref(), ctx.shader_perm)
         }
         RasterPipelineKind::Null => false,
     };
     let embedded_needs_extended_vertex_streams = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => {
-            embedded_stem_needs_extended_vertex_streams(stem.as_ref(), shader_perm)
+            embedded_stem_needs_extended_vertex_streams(stem.as_ref(), ctx.shader_perm)
         }
         RasterPipelineKind::Null => false,
     };
     let embedded_requires_intersection_pass = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => {
-            embedded_stem_requires_intersection_pass(stem.as_ref(), shader_perm)
+            embedded_stem_requires_intersection_pass(stem.as_ref(), ctx.shader_perm)
         }
         RasterPipelineKind::Null => false,
     };
     let embedded_requires_grab_pass = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => {
-            embedded_stem_requires_grab_pass(stem.as_ref(), shader_perm)
+            embedded_stem_requires_grab_pass(stem.as_ref(), ctx.shader_perm)
         }
         RasterPipelineKind::Null => false,
     };
@@ -71,8 +68,9 @@ pub(super) fn batch_key_for_slot(
         mesh_property_block_slot0: property_block_id,
     };
     let material_blend_mode =
-        material_blend_mode_for_lookup(dict, lookup_ids, pipeline_property_ids);
-    let render_state = material_render_state_for_lookup(dict, lookup_ids, pipeline_property_ids);
+        material_blend_mode_for_lookup(ctx.dict, lookup_ids, ctx.pipeline_property_ids);
+    let render_state =
+        material_render_state_for_lookup(ctx.dict, lookup_ids, ctx.pipeline_property_ids);
     let alpha_blended = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => embedded_stem_uses_alpha_blending(stem.as_ref()),
         RasterPipelineKind::Null => false,
@@ -84,6 +82,7 @@ pub(super) fn batch_key_for_slot(
         material_asset_id,
         property_block_slot0: property_block_id,
         skinned,
+        front_face,
         embedded_needs_uv0,
         embedded_needs_color,
         embedded_needs_extended_vertex_streams,
@@ -101,6 +100,7 @@ fn batch_key_from_resolved(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
+    front_face: RasterFrontFace,
     r: &ResolvedMaterialBatch,
 ) -> MaterialDrawBatchKey {
     MaterialDrawBatchKey {
@@ -109,6 +109,7 @@ fn batch_key_from_resolved(
         material_asset_id,
         property_block_slot0: property_block_id,
         skinned,
+        front_face,
         embedded_needs_uv0: r.embedded_needs_uv0,
         embedded_needs_color: r.embedded_needs_color,
         embedded_needs_extended_vertex_streams: r.embedded_needs_extended_vertex_streams,
@@ -128,20 +129,25 @@ pub(super) fn batch_key_for_slot_cached(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
+    front_face: RasterFrontFace,
     cache: &FrameMaterialBatchCache,
     ctx: MaterialResolveCtx<'_>,
 ) -> MaterialDrawBatchKey {
     if let Some(resolved) = cache.get(material_asset_id, property_block_id) {
-        batch_key_from_resolved(material_asset_id, property_block_id, skinned, resolved)
+        batch_key_from_resolved(
+            material_asset_id,
+            property_block_id,
+            skinned,
+            front_face,
+            resolved,
+        )
     } else {
         batch_key_for_slot(
             material_asset_id,
             property_block_id,
             skinned,
-            ctx.dict,
-            ctx.router,
-            ctx.pipeline_property_ids,
-            ctx.shader_perm,
+            front_face,
+            ctx,
         )
     }
 }

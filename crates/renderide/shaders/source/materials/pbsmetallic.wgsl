@@ -8,6 +8,7 @@
 // unity-shader-name: PBSMetallic
 
 #import renderide::globals as rg
+#import renderide::sh2_ambient as shamb
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
 #import renderide::pbs::normal as pnorm
@@ -320,7 +321,7 @@ fn fs_forward_base(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, uv1, world_pos, world_n);
-    let ambient = select(vec3<f32>(0.0), vec3<f32>(0.03), glossy_reflections_enabled());
+    let ambient = select(vec3<f32>(0.0), shamb::ambient_probe(s.normal), glossy_reflections_enabled());
     let direct = clustered_direct_lighting(frag_pos.xy, world_pos, view_layer, s, true, true);
     let color = (ambient * s.base_color * s.occlusion) + direct + s.emission;
     return vec4<f32>(apply_premultiply(color, s.alpha), s.alpha);

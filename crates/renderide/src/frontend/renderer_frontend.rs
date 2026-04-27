@@ -5,8 +5,8 @@ use std::time::Instant;
 use crate::connection::{ConnectionParams, InitError};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
-    FrameStartData, InputState, OutputState, RenderDecouplingConfig, RendererCommand,
-    RendererInitData,
+    FrameStartData, InputState, OutputState, ReflectionProbeChangeRenderResult,
+    RenderDecouplingConfig, RendererCommand, RendererInitData,
 };
 
 use super::begin_frame::begin_frame_allowed;
@@ -52,6 +52,8 @@ pub struct RendererFrontend {
     /// to start a fresh window) and incremented once per completed tick by
     /// [`Self::note_render_tick_complete`]. Mirrors Renderite.Unity `Stats.RenderedFramesSinceLast`.
     rendered_frames_since_last: i32,
+    /// Reflection probes that finished rendering and need to be reported in the next begin-frame.
+    pending_rendered_reflection_probes: Vec<ReflectionProbeChangeRenderResult>,
 }
 
 impl RendererFrontend {
@@ -84,6 +86,7 @@ impl RendererFrontend {
             smoothed_fps: None,
             decoupling: DecouplingState::default(),
             rendered_frames_since_last: 0,
+            pending_rendered_reflection_probes: Vec::new(),
         }
     }
 
@@ -289,6 +292,14 @@ impl RendererFrontend {
         )
     }
 
+    /// Appends reflection-probe render completion rows for the next outgoing [`FrameStartData`].
+    pub fn enqueue_rendered_reflection_probes(
+        &mut self,
+        probes: impl IntoIterator<Item = ReflectionProbeChangeRenderResult>,
+    ) {
+        self.pending_rendered_reflection_probes.extend(probes);
+    }
+
     /// Lock-step begin-frame: send [`FrameStartData`] with `inputs` when [`Self::should_send_begin_frame`].
     ///
     /// Call only when [`Self::should_send_begin_frame`] is true so [`InputState`] is not dropped on the floor.
@@ -306,10 +317,12 @@ impl RendererFrontend {
             &mut self.smoothed_fps,
             rendered_frames_since_last,
         );
+        let rendered_reflection_probes = self.pending_rendered_reflection_probes.clone();
         let frame_start = FrameStartData {
             last_frame_index: self.last_frame_index,
             performance,
             inputs: Some(inputs),
+            rendered_reflection_probes,
             ..Default::default()
         };
         if let Some(ref mut ipc) = self.ipc {
@@ -320,6 +333,7 @@ impl RendererFrontend {
                 return;
             }
         }
+        self.pending_rendered_reflection_probes.clear();
         self.last_frame_data_processed = false;
         self.decoupling.record_frame_start_sent(Instant::now());
         if bootstrap {

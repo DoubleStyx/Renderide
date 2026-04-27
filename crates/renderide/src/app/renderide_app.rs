@@ -627,6 +627,9 @@ impl RenderideApp {
             profiling::scope!("tick::asset_integration");
             self.runtime.run_asset_integration();
         }
+        if let Some(gpu) = self.gpu.as_ref() {
+            self.runtime.maintain_nonblocking_gpu_jobs(gpu);
+        }
         // OpenXR `xrWaitFrame` legitimately blocks on the runtime's compositor pacing, which can
         // exceed the watchdog hitch threshold during normal operation; pause the heartbeat for
         // the duration of the XR begin-tick so it doesn't trip false-positive reports.
