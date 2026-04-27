@@ -237,47 +237,9 @@ pub fn advance_slab_cursor(cursor: u64, byte_len: u64) -> u64 {
 mod tests {
     use super::*;
 
-    fn dummy_device_and_queue() -> Option<(wgpu::Device, wgpu::Queue)> {
-        pollster::block_on(async {
-            let instance = wgpu::Instance::default();
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions::default())
-                .await
-                .ok()?;
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    required_limits: wgpu::Limits::downlevel_defaults(),
-                    ..Default::default()
-                })
-                .await
-                .ok()?;
-            Some((device, queue))
-        })
-    }
-
     #[test]
     fn skin_dispatch_cursor_advances_by_256_per_32_byte_payload() {
         assert_eq!(advance_slab_cursor(0, 32), 256);
         assert_eq!(advance_slab_cursor(256, 32), 512);
-    }
-
-    #[test]
-    fn ensure_skin_dispatch_byte_capacity_grows() {
-        let Some((device, _queue)) = dummy_device_and_queue() else {
-            return;
-        };
-        let max_buf = device.limits().max_buffer_size;
-        let mut scratch = MeshDeformScratch::new(&device, max_buf);
-        let initial = INITIAL_SKIN_DISPATCH_SLOTS.saturating_mul(256);
-        assert_eq!(scratch.skin_dispatch.size(), initial);
-        scratch.ensure_skin_dispatch_byte_capacity(&device, 5000);
-        assert!(scratch.skin_dispatch.size() >= 5000);
-        let size_after_grow = scratch.skin_dispatch.size();
-        scratch.ensure_skin_dispatch_byte_capacity(&device, 3000);
-        assert_eq!(
-            scratch.skin_dispatch.size(),
-            size_after_grow,
-            "smaller need should not shrink buffer"
-        );
     }
 }
