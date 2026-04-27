@@ -54,11 +54,37 @@ fn cube_dir(face: u32, x: u32, y: u32, n: u32) -> vec3<f32> {
     return normalize(vec3<f32>(u * -2.0 + 1.0, v * -2.0 + 1.0, -1.0));
 }
 
-fn equirect_uv(dir: vec3<f32>) -> vec2<f32> {
-    return vec2<f32>(
-        atan2(dir.x, dir.z) / TAU + 0.5,
-        acos(clamp(dir.y, -1.0, 1.0)) / PI,
+fn positive_fmod(v: vec2<f32>, wrap: vec2<f32>) -> vec2<f32> {
+    var r = v - trunc(v / wrap) * wrap;
+    r = r + wrap;
+    return r - trunc(r / wrap) * wrap;
+}
+
+fn projection360_dir_to_uv(view_dir: vec3<f32>) -> vec2<f32> {
+    var angle = vec2<f32>(
+        atan2(view_dir.x, view_dir.z),
+        acos(clamp(dot(view_dir, vec3<f32>(0.0, 1.0, 0.0)), -1.0, 1.0)) - PI * 0.5,
     );
+    angle = angle + params.color0.xy * 0.5 + params.color0.zw;
+    angle = positive_fmod(angle, vec2<f32>(TAU, PI));
+    return angle / max(abs(params.color0.xy), vec2<f32>(0.000001));
+}
+
+fn projection360_main_tex_uv(uv: vec2<f32>) -> vec2<f32> {
+    let uv_st = uv * params.color1.xy + params.color1.zw;
+    if (params.scalars.x > 0.5) {
+        return uv_st;
+    }
+    return vec2<f32>(uv_st.x, 1.0 - uv_st.y);
+}
+
+fn projection360_equirect_uv(world_dir: vec3<f32>) -> vec2<f32> {
+    let uv = clamp(
+        projection360_dir_to_uv(-world_dir),
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
+    return projection360_main_tex_uv(uv);
 }
 
 fn add_coeffs(base: u32, c: vec3<f32>, dir: vec3<f32>, weight: f32) {
@@ -89,7 +115,7 @@ fn main(@builtin(local_invocation_id) local_id: vec3<u32>) {
         let y = rem / n;
         let x = rem - y * n;
         let dir = cube_dir(face, x, y, n);
-        let color = textureSampleLevel(source_tex, source_sampler, equirect_uv(dir), 0.0).rgb;
+        let color = textureSampleLevel(source_tex, source_sampler, projection360_equirect_uv(dir), 0.0).rgb;
         add_coeffs(base, color, dir, texel_solid_angle(x, y, n));
         i = i + WORKGROUP_SIZE;
     }

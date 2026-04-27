@@ -62,17 +62,27 @@ fn sample_procedural(dir: vec3<f32>) -> vec3<f32> {
 }
 
 fn sample_gradient(dir: vec3<f32>) -> vec3<f32> {
-    var color = max(params.color0.rgb, vec3<f32>(0.0));
+    var color = params.color0.rgb;
     let count = min(params.gradient_count, 16u);
     for (var i = 0u; i < count; i = i + 1u) {
-        let row = params.dirs_spread[i];
-        let axis = normalize(row.xyz + vec3<f32>(0.0, 0.00001, 0.0));
-        let spread = clamp(abs(row.w), 0.0001, 2.0);
-        let d = clamp(dot(dir, axis) * 0.5 + 0.5, 0.0, 1.0);
-        let shaped = pow(d, 1.0 / spread);
-        let grad = mix(params.gradient_color0[i].rgb, params.gradient_color1[i].rgb, shaped);
-        let amount = clamp(params.gradient_params[i].x, 0.0, 1.0);
-        color = mix(color, grad, amount);
+        let dirs_spread = params.dirs_spread[i];
+        let gradient_params = params.gradient_params[i];
+        let spread = max(abs(dirs_spread.w), 0.000001);
+        let expv = max(gradient_params.y, 0.000001);
+        let fromv = gradient_params.z;
+        let tov = gradient_params.w;
+        let denom = max(abs(tov - fromv), 0.000001);
+        var r = (0.5 - dot(dir, normalize(dirs_spread.xyz)) * 0.5) / spread;
+        if (r <= 1.0) {
+            r = pow(max(r, 0.0), expv);
+            r = clamp((r - fromv) / denom, 0.0, 1.0);
+            let c = mix(params.gradient_color0[i], params.gradient_color1[i], r);
+            if (gradient_params.x == 0.0) {
+                color = color * (1.0 - c.a) + c.rgb * c.a;
+            } else {
+                color = color + c.rgb * c.a;
+            }
+        }
     }
     return color;
 }
