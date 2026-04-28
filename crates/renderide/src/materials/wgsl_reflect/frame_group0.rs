@@ -29,11 +29,11 @@ pub(super) fn validate_frame_group0(
         if rb.group != 0 {
             continue;
         }
-        if rb.binding > 10 {
+        if rb.binding > 12 {
             return Err(ReflectError::UnsupportedBinding {
                 group: 0,
                 binding: rb.binding,
-                reason: "only bindings 0..=10 are supported for raster frame globals".into(),
+                reason: "only bindings 0..=12 are supported for raster frame globals".into(),
             });
         }
         let (space, data_ty) = resource_data_ty(module, gv);
@@ -54,9 +54,15 @@ pub(super) fn validate_frame_group0(
                 validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
             }
             (9, AddressSpace::Handle) => {
-                validate_frame_skybox_specular_binding(module, data_ty, rb.binding)?;
+                validate_frame_skybox_specular_cube_binding(module, data_ty, rb.binding)?;
             }
             (10, AddressSpace::Handle) => {
+                validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
+            }
+            (11, AddressSpace::Handle) => {
+                validate_frame_skybox_specular_equirect_binding(module, data_ty, rb.binding)?;
+            }
+            (12, AddressSpace::Handle) => {
                 validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
             }
             (0, AddressSpace::Uniform) => {
@@ -94,7 +100,7 @@ pub(super) fn validate_frame_group0(
     }
 }
 
-fn validate_frame_skybox_specular_binding(
+fn validate_frame_skybox_specular_cube_binding(
     module: &Module,
     data_ty: naga::Handle<naga::Type>,
     binding: u32,
@@ -118,6 +124,34 @@ fn validate_frame_skybox_specular_binding(
             group: 0,
             binding,
             reason: "expected sampled cube texture handle".into(),
+        }),
+    }
+}
+
+fn validate_frame_skybox_specular_equirect_binding(
+    module: &Module,
+    data_ty: naga::Handle<naga::Type>,
+    binding: u32,
+) -> Result<(), ReflectError> {
+    match &module.types[data_ty].inner {
+        TypeInner::Image {
+            dim: ImageDimension::D2,
+            arrayed: false,
+            class:
+                ImageClass::Sampled {
+                    kind: ScalarKind::Float,
+                    multi: false,
+                },
+        } => Ok(()),
+        TypeInner::Image { .. } => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: "expected texture_2d<f32>".into(),
+        }),
+        _ => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: "expected sampled 2D texture handle".into(),
         }),
     }
 }

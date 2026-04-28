@@ -1,16 +1,23 @@
-//! Resolves the active skybox cubemap used as frame-global indirect specular.
+//! Resolves the active skybox source used as frame-global indirect specular.
 
 use crate::assets::asset_transfer_queue::AssetTransferQueue;
 use crate::assets::material::{
     MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue, PropertyIdRegistry,
 };
 use crate::assets::texture::{unpack_host_texture_packed, HostTextureAssetKind};
-use crate::backend::frame_gpu::SkyboxSpecularEnvironmentSource;
+use crate::backend::frame_gpu::{
+    SkyboxSpecularCubemapSource, SkyboxSpecularEnvironmentSource, SkyboxSpecularEquirectSource,
+};
 use crate::backend::MaterialSystem;
 use crate::materials::RasterPipelineKind;
 use crate::scene::SceneCoordinator;
 
-/// Resolves the active main render space's cubemap-backed skybox into a frame-global specular source.
+/// Default `Projection360` field of view used by Unity material defaults.
+const PROJECTION360_DEFAULT_FOV: [f32; 4] = [std::f32::consts::TAU, std::f32::consts::PI, 0.0, 0.0];
+/// Default texture scale/offset used by Unity `_MainTex_ST` properties.
+const DEFAULT_MAIN_TEX_ST: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
+
+/// Resolves the active main render space's skybox into a frame-global specular source.
 pub(crate) fn resolve_active_main_skybox_specular_environment(
     scene: &SceneCoordinator,
     materials: &MaterialSystem,
@@ -20,7 +27,10 @@ pub(crate) fn resolve_active_main_skybox_specular_environment(
     let store = materials.material_property_store();
     let shader_asset_id = store.shader_asset_for_material(material_asset_id)?;
     let route_name = shader_route_name(materials, shader_asset_id)?;
-    if !skybox_route_supports_specular_cubemap(&route_name) {
+    if !skybox_route_supports_specular(&route_name) {
+        logger::trace!(
+            "skybox specular: unsupported active skybox route '{route_name}' for material {material_asset_id}"
+        );
         return None;
     }
 
@@ -28,20 +38,7 @@ pub(crate) fn resolve_active_main_skybox_specular_environment(
         material_asset_id,
         mesh_property_block_slot0: None,
     };
-    let asset_id =
-        resolve_projection360_cubemap_asset_id(store, materials.property_id_registry(), lookup)?;
-    let cubemap = assets.cubemap_pool.get_texture(asset_id)?;
-    if cubemap.mip_levels_resident == 0 {
-        return None;
-    }
-
-    Some(SkyboxSpecularEnvironmentSource {
-        asset_id,
-        view: cubemap.view.clone(),
-        sampler: cubemap.sampler.clone(),
-        mip_levels_resident: cubemap.mip_levels_resident,
-        storage_v_inverted: cubemap.storage_v_inverted,
-    })
+    resolve_projection360_source(store, materials.property_id_registry(), assets, lookup)
 }
 
 /// Returns the skybox material id from the active non-overlay render space.
@@ -66,29 +63,114 @@ fn shader_route_name(materials: &MaterialSystem, shader_asset_id: i32) -> Option
         })
 }
 
-/// True for the cubemap-capable skybox route handled by this v1 environment binding.
-fn skybox_route_supports_specular_cubemap(route_name: &str) -> bool {
+/// True for the Projection360 skybox route handled by this v1 environment binding.
+fn skybox_route_supports_specular(route_name: &str) -> bool {
     route_name.to_ascii_lowercase().contains("projection360")
 }
 
-/// Resolves the primary cubemap asset id from a Projection360 skybox material.
-fn resolve_projection360_cubemap_asset_id(
+/// Resolves the primary Projection360 source from a skybox material.
+fn resolve_projection360_source(
     store: &MaterialPropertyStore,
     registry: &PropertyIdRegistry,
+    assets: &AssetTransferQueue,
     lookup: MaterialPropertyLookupIds,
-) -> Option<i32> {
+) -> Option<SkyboxSpecularEnvironmentSource> {
     let main_cube = property_texture(store, registry, lookup, "_MainCube")
         .or_else(|| property_texture(store, registry, lookup, "_Cube"));
     if let Some((asset_id, HostTextureAssetKind::Cubemap)) = main_cube {
-        return Some(asset_id);
+        return resolve_projection360_cubemap_source(assets, asset_id);
+    }
+    if let Some((asset_id, kind)) = main_cube {
+        logger::trace!(
+            "skybox specular: Projection360 _MainCube asset {asset_id} has unsupported kind {kind:?}"
+        );
     }
 
     match property_texture(store, registry, lookup, "_MainTex")
         .or_else(|| property_texture(store, registry, lookup, "_Tex"))
     {
-        Some((asset_id, HostTextureAssetKind::Cubemap)) => Some(asset_id),
-        _ => None,
+        Some((asset_id, HostTextureAssetKind::Texture2D)) => {
+            resolve_projection360_equirect_source(store, registry, assets, lookup, asset_id)
+        }
+        Some((asset_id, HostTextureAssetKind::Cubemap)) => {
+            resolve_projection360_cubemap_source(assets, asset_id)
+        }
+        Some((asset_id, kind)) => {
+            logger::trace!(
+                "skybox specular: Projection360 _MainTex asset {asset_id} has unsupported kind {kind:?}"
+            );
+            None
+        }
+        None => {
+            logger::trace!("skybox specular: Projection360 skybox has no _MainCube or _MainTex");
+            None
+        }
     }
+}
+
+/// Resolves a resident Projection360 cubemap source.
+fn resolve_projection360_cubemap_source(
+    assets: &AssetTransferQueue,
+    asset_id: i32,
+) -> Option<SkyboxSpecularEnvironmentSource> {
+    let Some(cubemap) = assets.cubemap_pool.get_texture(asset_id) else {
+        logger::trace!("skybox specular: cubemap asset {asset_id} is not allocated yet");
+        return None;
+    };
+    if cubemap.mip_levels_resident == 0 {
+        logger::trace!("skybox specular: cubemap asset {asset_id} has no resident mips");
+        return None;
+    }
+    Some(SkyboxSpecularEnvironmentSource::Cubemap(
+        SkyboxSpecularCubemapSource {
+            asset_id,
+            view: cubemap.view.clone(),
+            sampler: cubemap.sampler.clone(),
+            mip_levels_resident: cubemap.mip_levels_resident,
+            storage_v_inverted: cubemap.storage_v_inverted,
+        },
+    ))
+}
+
+/// Resolves a resident Projection360 equirectangular Texture2D source.
+fn resolve_projection360_equirect_source(
+    store: &MaterialPropertyStore,
+    registry: &PropertyIdRegistry,
+    assets: &AssetTransferQueue,
+    lookup: MaterialPropertyLookupIds,
+    asset_id: i32,
+) -> Option<SkyboxSpecularEnvironmentSource> {
+    let Some(texture) = assets.texture_pool.get_texture(asset_id) else {
+        logger::trace!("skybox specular: equirect Texture2D asset {asset_id} is not allocated yet");
+        return None;
+    };
+    if texture.mip_levels_resident == 0 {
+        logger::trace!("skybox specular: equirect Texture2D asset {asset_id} has no resident mips");
+        return None;
+    }
+    Some(SkyboxSpecularEnvironmentSource::Projection360Equirect(
+        SkyboxSpecularEquirectSource {
+            asset_id,
+            view: texture.view.clone(),
+            sampler: texture.sampler.clone(),
+            mip_levels_resident: texture.mip_levels_resident,
+            storage_v_inverted: texture.storage_v_inverted,
+            equirect_fov: property_float4(
+                store,
+                registry,
+                lookup,
+                "_FOV",
+                PROJECTION360_DEFAULT_FOV,
+            ),
+            equirect_st: property_float4(
+                store,
+                registry,
+                lookup,
+                "_MainTex_ST",
+                DEFAULT_MAIN_TEX_ST,
+            ),
+        },
+    ))
 }
 
 /// Reads a packed texture property by host name.
@@ -102,6 +184,21 @@ fn property_texture(
     match store.get_merged(lookup, pid) {
         Some(MaterialPropertyValue::Texture(packed)) => unpack_host_texture_packed(*packed),
         _ => None,
+    }
+}
+
+/// Reads a float4 material property by host name.
+fn property_float4(
+    store: &MaterialPropertyStore,
+    registry: &PropertyIdRegistry,
+    lookup: MaterialPropertyLookupIds,
+    name: &str,
+    fallback: [f32; 4],
+) -> [f32; 4] {
+    let pid = registry.intern(name);
+    match store.get_merged(lookup, pid) {
+        Some(MaterialPropertyValue::Float4(v)) => *v,
+        _ => fallback,
     }
 }
 
@@ -149,8 +246,8 @@ mod tests {
         );
 
         assert_eq!(
-            resolve_projection360_cubemap_asset_id(&store, &registry, lookup),
-            Some(42)
+            resolve_projection360_source_kind(&store, &registry, lookup),
+            Some((42, HostTextureAssetKind::Cubemap))
         );
     }
 
@@ -165,13 +262,29 @@ mod tests {
         );
 
         assert_eq!(
-            resolve_projection360_cubemap_asset_id(&store, &registry, lookup),
-            Some(13)
+            resolve_projection360_source_kind(&store, &registry, lookup),
+            Some((13, HostTextureAssetKind::Cubemap))
         );
     }
 
     #[test]
-    fn projection360_rejects_non_cubemap_textures() {
+    fn projection360_accepts_texture2d_main_tex() {
+        let registry = PropertyIdRegistry::new();
+        let (mut store, lookup) = store_and_lookup(9);
+        store.set_material(
+            lookup.material_asset_id,
+            registry.intern("_MainTex"),
+            MaterialPropertyValue::Texture(pack_host_texture(15, HostTextureAssetKind::Texture2D)),
+        );
+
+        assert_eq!(
+            resolve_projection360_source_kind(&store, &registry, lookup),
+            Some((15, HostTextureAssetKind::Texture2D))
+        );
+    }
+
+    #[test]
+    fn projection360_rejects_unsupported_main_cube_without_main_tex() {
         let registry = PropertyIdRegistry::new();
         let (mut store, lookup) = store_and_lookup(9);
         store.set_material(
@@ -181,19 +294,41 @@ mod tests {
         );
 
         assert_eq!(
-            resolve_projection360_cubemap_asset_id(&store, &registry, lookup),
+            resolve_projection360_source_kind(&store, &registry, lookup),
             None
         );
     }
 
     #[test]
-    fn only_projection360_routes_support_v1_specular_cubemaps() {
-        assert!(skybox_route_supports_specular_cubemap(
+    fn only_projection360_routes_support_v1_specular() {
+        assert!(skybox_route_supports_specular(
             "skybox_projection360_default"
         ));
-        assert!(!skybox_route_supports_specular_cubemap(
+        assert!(!skybox_route_supports_specular(
             "skybox_gradientskybox_default"
         ));
+    }
+
+    /// Resolves only the property-level source kind for unit tests that do not allocate GPU assets.
+    fn resolve_projection360_source_kind(
+        store: &MaterialPropertyStore,
+        registry: &PropertyIdRegistry,
+        lookup: MaterialPropertyLookupIds,
+    ) -> Option<(i32, HostTextureAssetKind)> {
+        let main_cube = property_texture(store, registry, lookup, "_MainCube")
+            .or_else(|| property_texture(store, registry, lookup, "_Cube"));
+        if let Some((asset_id, HostTextureAssetKind::Cubemap)) = main_cube {
+            return Some((asset_id, HostTextureAssetKind::Cubemap));
+        }
+        let main_tex = property_texture(store, registry, lookup, "_MainTex")
+            .or_else(|| property_texture(store, registry, lookup, "_Tex"));
+        match main_tex {
+            Some((
+                asset_id,
+                kind @ (HostTextureAssetKind::Texture2D | HostTextureAssetKind::Cubemap),
+            )) => Some((asset_id, kind)),
+            _ => None,
+        }
     }
 
     #[test]

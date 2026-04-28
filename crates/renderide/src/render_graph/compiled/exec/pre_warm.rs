@@ -34,7 +34,7 @@ impl CompiledRenderGraph {
         Ok(())
     }
 
-    /// Resolves the active main skybox cubemap before per-view `@group(0)` bind groups are cached.
+    /// Resolves the active main skybox specular source before per-view `@group(0)` bind groups are cached.
     pub(super) fn pre_sync_skybox_specular_environment(mv_ctx: &mut MultiViewExecutionContext<'_>) {
         profiling::scope!("graph::pre_sync_skybox_specular");
         let source = crate::backend::resolve_active_main_skybox_specular_environment(

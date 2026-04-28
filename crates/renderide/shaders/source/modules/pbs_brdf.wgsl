@@ -24,6 +24,14 @@
 /// Lower bound on linear roughness `α`. Below this the GGX lobe becomes a near-delta that produces
 /// fp16 sparkles and division-by-near-zero artefacts; matches Filament `MIN_ROUGHNESS` for desktop.
 const MIN_ALPHA: f32 = 0.002025;
+/// Skybox specular source tag for cubemap sampling.
+const SKYBOX_SPECULAR_SOURCE_CUBEMAP: f32 = 1.0;
+/// Skybox specular source tag for Projection360 equirect Texture2D sampling.
+const SKYBOX_SPECULAR_SOURCE_PROJECTION360_EQUIRECT: f32 = 2.0;
+/// Pi.
+const PI: f32 = 3.14159265359;
+/// Tau.
+const TAU: f32 = 6.28318530718;
 
 /// Variance scale for [`filter_perceptual_roughness`]. Matches Filament's default
 /// `_specularAntiAliasingVariance`.
@@ -123,6 +131,65 @@ fn skybox_specular_lod(perceptual_roughness: f32) -> f32 {
     return clamp(rg::frame.skybox_specular.x * r * (2.0 - r), 0.0, rg::frame.skybox_specular.x);
 }
 
+/// Positive floating-point modulo for Projection360 angular wrapping.
+fn skybox_specular_positive_fmod(v: vec2<f32>, wrap: vec2<f32>) -> vec2<f32> {
+    var r = v - trunc(v / wrap) * wrap;
+    r = r + wrap;
+    return r - trunc(r / wrap) * wrap;
+}
+
+/// Maps Projection360's view direction into unscaled equirectangular UVs.
+fn skybox_specular_projection360_dir_to_uv(view_dir: vec3<f32>) -> vec2<f32> {
+    var angle = vec2<f32>(
+        atan2(view_dir.x, view_dir.z),
+        acos(clamp(dot(view_dir, vec3<f32>(0.0, 1.0, 0.0)), -1.0, 1.0)) - PI * 0.5,
+    );
+    angle = angle + rg::frame.skybox_specular_equirect_fov.xy * 0.5 + rg::frame.skybox_specular_equirect_fov.zw;
+    angle = skybox_specular_positive_fmod(angle, vec2<f32>(TAU, PI));
+    return angle / max(abs(rg::frame.skybox_specular_equirect_fov.xy), vec2<f32>(0.000001));
+}
+
+/// Applies Projection360 `_MainTex_ST` and host storage orientation to equirectangular UVs.
+fn skybox_specular_projection360_main_tex_uv(uv: vec2<f32>) -> vec2<f32> {
+    let uv_st = uv * rg::frame.skybox_specular_equirect_st.xy + rg::frame.skybox_specular_equirect_st.zw;
+    if (rg::frame.skybox_specular.z > 0.5) {
+        return uv_st;
+    }
+    return vec2<f32>(uv_st.x, 1.0 - uv_st.y);
+}
+
+/// Maps a world-space reflection direction to Projection360 `_MainTex` UVs.
+fn skybox_specular_projection360_equirect_uv(world_dir: vec3<f32>) -> vec2<f32> {
+    let uv = clamp(
+        skybox_specular_projection360_dir_to_uv(-world_dir),
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
+    return skybox_specular_projection360_main_tex_uv(uv);
+}
+
+/// Samples the selected frame-global skybox specular source.
+fn sample_skybox_specular_radiance(dir: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
+    let lod = skybox_specular_lod(perceptual_roughness);
+    if (abs(rg::frame.skybox_specular.w - SKYBOX_SPECULAR_SOURCE_PROJECTION360_EQUIRECT) < 0.5) {
+        return textureSampleLevel(
+            rg::skybox_specular_equirect,
+            rg::skybox_specular_equirect_sampler,
+            skybox_specular_projection360_equirect_uv(dir),
+            lod,
+        ).rgb;
+    }
+    if (abs(rg::frame.skybox_specular.w - SKYBOX_SPECULAR_SOURCE_CUBEMAP) < 0.5) {
+        return textureSampleLevel(
+            rg::skybox_specular,
+            rg::skybox_specular_sampler,
+            skybox_specular_storage_dir(dir),
+            lod,
+        ).rgb;
+    }
+    return vec3<f32>(0.0);
+}
+
 /// Samples frame-global skybox indirect specular with Schlick Fresnel and material occlusion.
 fn indirect_specular(
     n: vec3<f32>,
@@ -136,13 +203,8 @@ fn indirect_specular(
         return vec3<f32>(0.0);
     }
     let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
-    let dir = skybox_specular_storage_dir(skybox_specular_dominant_dir(n, v, perceptual_roughness));
-    let radiance = textureSampleLevel(
-        rg::skybox_specular,
-        rg::skybox_specular_sampler,
-        dir,
-        skybox_specular_lod(perceptual_roughness),
-    ).rgb;
+    let dir = skybox_specular_dominant_dir(n, v, perceptual_roughness);
+    let radiance = sample_skybox_specular_radiance(dir, perceptual_roughness);
     let f = f_schlick(f0, f90_from_f0(f0), n_dot_v);
     return radiance * f * max(occlusion, 0.0);
 }
