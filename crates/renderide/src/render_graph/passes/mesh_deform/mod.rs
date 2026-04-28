@@ -11,14 +11,16 @@ use std::fmt;
 use parking_lot::Mutex;
 use rayon::prelude::*;
 
-use crate::backend::mesh_deform::EntryNeed;
+use crate::backend::mesh_deform::{EntryNeed, SkinCacheKey, SkinCacheRendererKind};
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder, PassPhase};
 use crate::resources::MeshPool;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
-use self::encode::{record_mesh_deform, MeshDeformEncodeGpu, MeshDeformRecordInputs};
+use self::encode::{
+    record_mesh_deform, MeshDeformEncodeGpu, MeshDeformRecordInputs, MeshDeformRecordStats,
+};
 use self::snapshot::{
     deform_needs_blend_snapshot, deform_needs_skin_mesh, deform_needs_skin_snapshot,
     gpu_mesh_needs_deform_dispatch, MeshDeformSnapshot,
@@ -72,13 +74,26 @@ impl Default for MeshDeformPass {
 
 struct DeformWorkItem {
     space_id: RenderSpaceId,
-    /// [`crate::scene::StaticMeshRenderer::node_id`] for GPU skin cache key.
-    node_id: i32,
+    /// Stable renderer identity for GPU skin cache ownership.
+    skin_cache_key: SkinCacheKey,
     mesh: MeshDeformSnapshot,
     skinned: Option<Vec<i32>>,
     /// [`crate::scene::StaticMeshRenderer::node_id`] (SMR) for skinning fallbacks when a bone is unmapped.
     smr_node_id: i32,
     blend_weights: Vec<f32>,
+}
+
+/// Upload cursor state shared across all deform dispatches recorded for a frame.
+#[derive(Default)]
+struct MeshDeformRecordCursors {
+    /// Current byte offset in the bone palette upload buffer.
+    bone: u64,
+    /// Current byte offset in the blendshape weight upload buffer.
+    blend_weight: u64,
+    /// Current byte offset in the packed blendshape parameter upload buffer.
+    blend_param: u64,
+    /// Current index in the skin dispatch staging buffer.
+    skin_dispatch: u64,
 }
 
 /// Collects deform work items for one render space (read-only scene + mesh pool).
@@ -102,12 +117,16 @@ fn collect_deform_work_for_space(
         let Some(m) = mesh_pool.get_mesh(r.mesh_asset_id) else {
             continue;
         };
-        if !gpu_mesh_needs_deform_dispatch(m, None) {
+        if !gpu_mesh_needs_deform_dispatch(m, None, &r.blend_shape_weights) {
             continue;
         }
         work.push(DeformWorkItem {
             space_id,
-            node_id: r.node_id,
+            skin_cache_key: SkinCacheKey::new(
+                space_id,
+                SkinCacheRendererKind::Static,
+                r.instance_id,
+            ),
             mesh: MeshDeformSnapshot::from_mesh(m, false),
             skinned: None,
             smr_node_id: -1,
@@ -123,13 +142,17 @@ fn collect_deform_work_for_space(
             continue;
         };
         let bone_ix = skinned.bone_transform_indices.as_slice();
-        if !gpu_mesh_needs_deform_dispatch(m, Some(bone_ix)) {
+        if !gpu_mesh_needs_deform_dispatch(m, Some(bone_ix), &r.blend_shape_weights) {
             continue;
         }
         let clone_bind = deform_needs_skin_mesh(m, Some(bone_ix));
         work.push(DeformWorkItem {
             space_id,
-            node_id: r.node_id,
+            skin_cache_key: SkinCacheKey::new(
+                space_id,
+                SkinCacheRendererKind::Skinned,
+                r.instance_id,
+            ),
             mesh: MeshDeformSnapshot::from_mesh(m, clone_bind),
             skinned: Some(skinned.bone_transform_indices.clone()),
             smr_node_id: r.node_id,
@@ -190,6 +213,33 @@ fn collect_deform_work_into_scratch(
     }
 }
 
+/// Emits mesh-deform Tracy plots and user-visible warnings for cache allocation pressure.
+fn report_mesh_deform_stats(
+    work_item_count: u64,
+    dispatch_stats: MeshDeformRecordStats,
+    skipped_allocations: u64,
+    skin_cache: &crate::backend::mesh_deform::GpuSkinCache,
+) {
+    let cache_stats = skin_cache.frame_stats();
+    crate::profiling::plot_mesh_deform(crate::profiling::MeshDeformProfileSample {
+        work_items: work_item_count,
+        blend_dispatches: dispatch_stats.blend_dispatches,
+        skin_dispatches: dispatch_stats.skin_dispatches,
+        skipped_allocations,
+        cache_reuses: cache_stats.reuses,
+        cache_allocations: cache_stats.allocations,
+        cache_grows: cache_stats.grows,
+        cache_evictions: cache_stats.evictions,
+        cache_current_frame_eviction_refusals: cache_stats.current_frame_eviction_refusals,
+    });
+    if skipped_allocations > 0 {
+        logger::warn!(
+            "mesh deform: skipped {} work items because the skin cache could not allocate without evicting current-frame entries",
+            skipped_allocations
+        );
+    }
+}
+
 impl MeshDeformPass {
     /// Creates a mesh deform pass with empty scratch buffers (filled lazily on first execute).
     pub fn new() -> Self {
@@ -227,8 +277,6 @@ impl ComputePass for MeshDeformPass {
 
         let mesh_pool = &frame.shared.asset_transfers.mesh_pool;
 
-        // Lock the scratch buffers. This is a FrameGlobal pass running on the main thread,
-        // so the lock is never contended.
         let mut scratch = self.scratch.lock();
         collect_deform_work_into_scratch(&mut scratch, frame.shared.scene, mesh_pool);
 
@@ -245,34 +293,35 @@ impl ComputePass for MeshDeformPass {
             return Ok(());
         };
 
-        let mut bone_cursor = 0u64;
-        let mut blend_weight_cursor = 0u64;
-        let mut skin_dispatch_cursor = 0u64;
+        let mut cursors = MeshDeformRecordCursors::default();
         let render_context = frame.shared.scene.active_main_render_context();
         let head_output_transform = frame.view.host_camera.head_output_transform;
 
         profiling::scope!("mesh_deform::dispatch");
         let work_items: Vec<_> = scratch.work.drain(..).collect();
+        let work_item_count = work_items.len() as u64;
+        let (mut dispatch_stats, mut skipped_allocations) =
+            (MeshDeformRecordStats::default(), 0u64);
         drop(scratch);
         for item in work_items {
             let need = EntryNeed {
-                needs_blend: deform_needs_blend_snapshot(&item.mesh),
+                needs_blend: deform_needs_blend_snapshot(&item.mesh, &item.blend_weights),
                 needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),
             };
-            let key = (item.space_id, item.node_id);
             let Some((cache_entry, positions_arena, normals_arena, temp_arena)) = skin_cache
                 .get_or_alloc_with_arenas(
                     ctx.device,
                     ctx.encoder,
-                    key,
+                    item.skin_cache_key,
                     need,
                     item.mesh.vertex_count,
                 )
             else {
+                skipped_allocations = skipped_allocations.saturating_add(1);
                 continue;
             };
 
-            record_mesh_deform(
+            let stats = record_mesh_deform(
                 MeshDeformEncodeGpu {
                     device: ctx.device,
                     gpu_limits: ctx.gpu_limits,
@@ -291,18 +340,31 @@ impl ComputePass for MeshDeformPass {
                     render_context,
                     head_output_transform,
                     blend_weights: &item.blend_weights,
-                    bone_cursor: &mut bone_cursor,
-                    blend_weight_cursor: &mut blend_weight_cursor,
-                    skin_dispatch_cursor: &mut skin_dispatch_cursor,
+                    bone_cursor: &mut cursors.bone,
+                    blend_weight_cursor: &mut cursors.blend_weight,
+                    blend_param_cursor: &mut cursors.blend_param,
+                    skin_dispatch_cursor: &mut cursors.skin_dispatch,
                     skin_cache_entry: cache_entry,
                     positions_arena,
                     normals_arena,
                     temp_arena,
                 },
             );
+            dispatch_stats.blend_dispatches = dispatch_stats
+                .blend_dispatches
+                .saturating_add(stats.blend_dispatches);
+            dispatch_stats.skin_dispatches = dispatch_stats
+                .skin_dispatches
+                .saturating_add(stats.skin_dispatches);
         }
 
         let fc = skin_cache.frame_counter();
+        report_mesh_deform_stats(
+            work_item_count,
+            dispatch_stats,
+            skipped_allocations,
+            skin_cache,
+        );
         skin_cache.sweep_stale(fc.saturating_sub(2));
 
         frame

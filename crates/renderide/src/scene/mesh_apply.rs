@@ -229,7 +229,9 @@ pub(crate) fn apply_mesh_renderables_update_extracted(
         }
     }
     for &node_id in extracted.additions.iter().take_while(|&&i| i >= 0) {
+        let instance_id = space.allocate_mesh_renderer_instance_id();
         space.static_mesh_renderers.push(StaticMeshRenderer {
+            instance_id,
             node_id,
             layer: LayerType::Hidden,
             ..Default::default()
@@ -356,8 +358,10 @@ fn apply_skinned_removals_and_additions_extracted(
         }
     }
     for &node_id in extracted.additions.iter().take_while(|&&i| i >= 0) {
+        let instance_id = space.allocate_mesh_renderer_instance_id();
         space.skinned_mesh_renderers.push(SkinnedMeshRenderer {
             base: StaticMeshRenderer {
+                instance_id,
                 node_id,
                 layer: LayerType::Hidden,
                 ..Default::default()
@@ -644,6 +648,115 @@ mod posed_bounds_tests {
         assert!(space.skinned_mesh_renderers[0]
             .posed_object_bounds
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod renderer_instance_id_tests {
+    //! Regression coverage for renderer-local identity across dense table reindexing.
+
+    use crate::scene::mesh_renderable::MeshRendererInstanceId;
+    use crate::scene::render_space::RenderSpaceState;
+
+    use super::{
+        apply_mesh_renderables_update_extracted, apply_skinned_removals_and_additions_extracted,
+        ExtractedMeshRenderablesUpdate, ExtractedSkinnedMeshRenderablesUpdate,
+    };
+
+    #[test]
+    fn static_instance_ids_are_fresh_and_survive_swap_remove() {
+        let mut space = RenderSpaceState::default();
+        apply_mesh_renderables_update_extracted(
+            &mut space,
+            &ExtractedMeshRenderablesUpdate {
+                additions: vec![10, 11, 12, -1],
+                ..Default::default()
+            },
+            1,
+        );
+        let ids: Vec<_> = space
+            .static_mesh_renderers
+            .iter()
+            .map(|renderer| renderer.instance_id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                MeshRendererInstanceId(1),
+                MeshRendererInstanceId(2),
+                MeshRendererInstanceId(3),
+            ]
+        );
+
+        apply_mesh_renderables_update_extracted(
+            &mut space,
+            &ExtractedMeshRenderablesUpdate {
+                removals: vec![1, -1],
+                additions: vec![13, -1],
+                ..Default::default()
+            },
+            1,
+        );
+        let ids: Vec<_> = space
+            .static_mesh_renderers
+            .iter()
+            .map(|renderer| renderer.instance_id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                MeshRendererInstanceId(1),
+                MeshRendererInstanceId(3),
+                MeshRendererInstanceId(4),
+            ]
+        );
+    }
+
+    #[test]
+    fn skinned_instance_ids_are_fresh_and_survive_swap_remove() {
+        let mut space = RenderSpaceState::default();
+        apply_skinned_removals_and_additions_extracted(
+            &mut space,
+            &ExtractedSkinnedMeshRenderablesUpdate {
+                additions: vec![20, 21, 22, -1],
+                ..Default::default()
+            },
+        );
+        let ids: Vec<_> = space
+            .skinned_mesh_renderers
+            .iter()
+            .map(|renderer| renderer.base.instance_id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                MeshRendererInstanceId(1),
+                MeshRendererInstanceId(2),
+                MeshRendererInstanceId(3),
+            ]
+        );
+
+        apply_skinned_removals_and_additions_extracted(
+            &mut space,
+            &ExtractedSkinnedMeshRenderablesUpdate {
+                removals: vec![1, -1],
+                additions: vec![23, -1],
+                ..Default::default()
+            },
+        );
+        let ids: Vec<_> = space
+            .skinned_mesh_renderers
+            .iter()
+            .map(|renderer| renderer.base.instance_id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                MeshRendererInstanceId(1),
+                MeshRendererInstanceId(3),
+                MeshRendererInstanceId(4),
+            ]
+        );
     }
 }
 

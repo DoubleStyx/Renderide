@@ -15,7 +15,7 @@
 use rayon::prelude::*;
 
 use crate::resources::MeshPool;
-use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator};
+use crate::scene::{MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{LayerType, RenderingContext};
 
 use super::types::stacked_material_submesh_range;
@@ -36,6 +36,8 @@ pub(super) struct FramePreparedDraw {
     /// Index into the static or skinned renderer list (selected by [`Self::skinned`]), used by
     /// per-view cull to build [`super::super::world_mesh_cull_eval::MeshCullTarget`].
     pub renderable_index: usize,
+    /// Renderer-local identity used for persistent GPU skin-cache ownership.
+    pub instance_id: MeshRendererInstanceId,
     /// Scene node id for rigid transform lookup and filter-mask indexing.
     pub node_id: i32,
     /// Resident mesh asset id (always matches `mesh_pool.get_mesh(...)` being `Some`).
@@ -49,6 +51,8 @@ pub(super) struct FramePreparedDraw {
     /// Cached result of [`crate::assets::mesh::GpuMesh::supports_world_space_skin_deform`] for
     /// skinned renderers (resolved once per frame against the mesh's bone layout).
     pub world_space_deformed: bool,
+    /// Cached result of [`crate::assets::mesh::GpuMesh::supports_active_blendshape_deform`].
+    pub blendshape_deformed: bool,
     /// Material-slot index within the renderer's slot / primary fallback list.
     pub slot_index: usize,
     /// First index in the mesh index buffer for the selected submesh range.
@@ -183,6 +187,8 @@ struct RenderableExpansion<'a> {
     space_id: RenderSpaceId,
     /// Index of the renderable within its kind-specific list (static or skinned).
     renderable_index: usize,
+    /// Renderer-local identity that survives dense table reindexing.
+    instance_id: MeshRendererInstanceId,
     /// Renderer record (shared base for static and skinned variants).
     renderer: &'a crate::scene::StaticMeshRenderer,
     /// GPU mesh resolved from the mesh pool.
@@ -191,6 +197,8 @@ struct RenderableExpansion<'a> {
     skinned: bool,
     /// Whether the skinned mesh deforms into world space via the skin cache.
     world_space_deformed: bool,
+    /// Whether the mesh has active blendshape weights this frame.
+    blendshape_deformed: bool,
 }
 
 /// Expands every valid renderer (static and skinned) in `space_id` into `out`.
@@ -232,10 +240,12 @@ fn expand_space_into(
             RenderableExpansion {
                 space_id,
                 renderable_index,
+                instance_id: r.instance_id,
                 renderer: r,
                 mesh,
                 skinned: false,
                 world_space_deformed: false,
+                blendshape_deformed: mesh.supports_active_blendshape_deform(&r.blend_shape_weights),
             },
         );
     }
@@ -260,6 +270,7 @@ fn expand_space_into(
         }
         let world_space_deformed =
             mesh.supports_world_space_skin_deform(Some(sk.bone_transform_indices.as_slice()));
+        let blendshape_deformed = mesh.supports_active_blendshape_deform(&r.blend_shape_weights);
         expand_renderer_slots(
             out,
             scene,
@@ -267,10 +278,12 @@ fn expand_space_into(
             RenderableExpansion {
                 space_id,
                 renderable_index,
+                instance_id: r.instance_id,
                 renderer: r,
                 mesh,
                 skinned: true,
                 world_space_deformed,
+                blendshape_deformed,
             },
         );
     }
@@ -290,10 +303,12 @@ fn expand_renderer_slots(
     let RenderableExpansion {
         space_id,
         renderable_index,
+        instance_id,
         renderer,
         mesh,
         skinned,
         world_space_deformed,
+        blendshape_deformed,
     } = renderable;
     let fallback_slot;
     let slots: &[MeshMaterialSlot] = if !renderer.material_slots.is_empty() {
@@ -342,12 +357,14 @@ fn expand_renderer_slots(
         out.push(FramePreparedDraw {
             space_id,
             renderable_index,
+            instance_id,
             node_id: renderer.node_id,
             mesh_asset_id: renderer.mesh_asset_id,
             is_overlay,
             sorting_order: renderer.sorting_order,
             skinned,
             world_space_deformed,
+            blendshape_deformed,
             slot_index,
             first_index,
             index_count,

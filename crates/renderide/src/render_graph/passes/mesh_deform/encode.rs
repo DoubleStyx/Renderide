@@ -4,6 +4,7 @@ use std::num::NonZeroU64;
 
 use glam::Mat4;
 
+use crate::assets::mesh::select_blendshape_frame_coefficients;
 use crate::backend::advance_slab_cursor;
 use crate::backend::mesh_deform::plan_blendshape_scatter_chunks;
 use crate::backend::mesh_deform::SkinCacheEntry;
@@ -56,6 +57,8 @@ pub(super) struct MeshDeformRecordInputs<'a, 'b> {
     pub bone_cursor: &'b mut u64,
     /// Running offset into the blend weight staging slab.
     pub blend_weight_cursor: &'b mut u64,
+    /// Running offset into the blendshape scatter-param staging slab.
+    pub blend_param_cursor: &'b mut u64,
     /// Running offset into the skin-dispatch uniform slab (256 B steps per dispatch).
     pub skin_dispatch_cursor: &'b mut u64,
     /// Resolved cache line for this instance’s deform outputs.
@@ -65,25 +68,39 @@ pub(super) struct MeshDeformRecordInputs<'a, 'b> {
     pub temp_arena: &'a wgpu::Buffer,
 }
 
+/// Compute dispatch counts emitted while recording one deform work item.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct MeshDeformRecordStats {
+    /// Sparse blendshape scatter dispatches.
+    pub blend_dispatches: u64,
+    /// Linear skinning dispatches.
+    pub skin_dispatches: u64,
+}
+
 pub(super) fn record_mesh_deform(
     mut gpu: MeshDeformEncodeGpu<'_>,
     inputs: MeshDeformRecordInputs<'_, '_>,
-) {
+) -> MeshDeformRecordStats {
     profiling::scope!("mesh_deform::record");
-    let Some(deform_guard) =
-        validate_deform_preconditions(inputs.mesh, inputs.bone_transform_indices, gpu.gpu_limits)
-    else {
-        return;
+    let Some(deform_guard) = validate_deform_preconditions(
+        inputs.mesh,
+        inputs.bone_transform_indices,
+        inputs.blend_weights,
+        gpu.gpu_limits,
+    ) else {
+        return MeshDeformRecordStats::default();
     };
 
     let blend_then_skin = deform_guard.needs_blend && deform_guard.needs_skin;
+    let mut stats = MeshDeformRecordStats::default();
 
     if deform_guard.needs_blend {
-        record_blendshape_deform(
+        stats.blend_dispatches = record_blendshape_deform(
             &mut gpu,
             inputs.mesh,
             inputs.blend_weights,
             inputs.blend_weight_cursor,
+            inputs.blend_param_cursor,
             BlendshapeCacheCtx {
                 cache_entry: inputs.skin_cache_entry,
                 positions_arena: inputs.positions_arena,
@@ -93,8 +110,8 @@ pub(super) fn record_mesh_deform(
         );
     }
 
-    if deform_guard.needs_skin {
-        record_skinning_deform(
+    if deform_guard.needs_skin
+        && record_skinning_deform(
             &mut gpu,
             SkinningDeformContext {
                 scene: inputs.scene,
@@ -113,8 +130,11 @@ pub(super) fn record_mesh_deform(
                 temp_arena: inputs.temp_arena,
                 skin_dispatch_cursor: inputs.skin_dispatch_cursor,
             },
-        );
+        )
+    {
+        stats.skin_dispatches = 1;
     }
+    stats
 }
 
 /// Early-out state for [`record_mesh_deform`].
@@ -129,6 +149,7 @@ struct DeformValidate {
 fn validate_deform_preconditions(
     mesh: &MeshDeformSnapshot,
     bone_transform_indices: Option<&[i32]>,
+    blend_weights: &[f32],
     gpu_limits: &GpuLimits,
 ) -> Option<DeformValidate> {
     mesh.positions_buffer.as_ref()?;
@@ -136,7 +157,7 @@ fn validate_deform_preconditions(
     if vc == 0 {
         return None;
     }
-    let needs_blend = deform_needs_blend_snapshot(mesh);
+    let needs_blend = deform_needs_blend_snapshot(mesh, blend_weights);
     let needs_skin = deform_needs_skin_snapshot(mesh, bone_transform_indices);
 
     if !needs_blend && !needs_skin {
@@ -189,6 +210,35 @@ struct SkinningDeformContext<'a, 'b> {
     skin_dispatch_cursor: &'b mut u64,
 }
 
+/// Reserved staging range for packed blendshape scatter params.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BlendshapeParamReservation {
+    /// Byte offset inside [`crate::backend::MeshDeformScratch::blendshape_params_staging`].
+    offset: u64,
+    /// Number of bytes occupied by this mesh's packed scatter params.
+    byte_len: u64,
+    /// Cursor value to use for the next mesh's reservation.
+    next_cursor: u64,
+}
+
+/// Reserves a non-overlapping packed-param range in the frame-global staging slab.
+fn reserve_blendshape_param_range(
+    cursor: u64,
+    byte_len: u64,
+) -> Option<BlendshapeParamReservation> {
+    if byte_len == 0 {
+        return None;
+    }
+    let aligned_len = byte_len.checked_add(255)? & !255;
+    cursor.checked_add(byte_len)?;
+    let next_cursor = cursor.checked_add(aligned_len)?;
+    Some(BlendshapeParamReservation {
+        offset: cursor,
+        byte_len,
+        next_cursor,
+    })
+}
+
 /// Records compute passes that scatter blendshape deltas using packed params and per-dispatch
 /// workgroups stored in [`crate::backend::MeshDeformScratch::packed_scatter_params`] /
 /// [`crate::backend::MeshDeformScratch::scatter_dispatch_wgs`].
@@ -198,24 +248,38 @@ fn blendshape_record_scatter_compute_passes(
     sparse: &wgpu::Buffer,
     weight_binding_len: u64,
     blend_weight_cursor: &mut u64,
-) {
+    blend_param_cursor: &mut u64,
+) -> u64 {
+    let Some(param_reservation) = reserve_blendshape_param_range(
+        *blend_param_cursor,
+        gpu.scratch.packed_scatter_params.len() as u64,
+    ) else {
+        *blend_weight_cursor = advance_slab_cursor(*blend_weight_cursor, weight_binding_len);
+        return 0;
+    };
     gpu.scratch.ensure_blendshape_params_staging(
         gpu.device,
-        gpu.scratch.packed_scatter_params.len() as u64,
+        param_reservation
+            .offset
+            .saturating_add(param_reservation.byte_len),
     );
     gpu.upload_batch.write_buffer(
         &gpu.scratch.blendshape_params_staging,
-        0,
+        param_reservation.offset,
         &gpu.scratch.packed_scatter_params,
     );
+    *blend_param_cursor = param_reservation.next_cursor;
 
     let Some(weight_size) = NonZeroU64::new(weight_binding_len) else {
         *blend_weight_cursor = advance_slab_cursor(*blend_weight_cursor, weight_binding_len);
-        return;
+        return 0;
     };
 
+    let dispatch_count = gpu.scratch.scatter_dispatch_wgs.len() as u64;
     for (i, &scatter_wg) in gpu.scratch.scatter_dispatch_wgs.iter().enumerate() {
-        let src_off = (i as u64).saturating_mul(32);
+        let src_off = param_reservation
+            .offset
+            .saturating_add((i as u64).saturating_mul(32));
         gpu.encoder.copy_buffer_to_buffer(
             &gpu.scratch.blendshape_params_staging,
             src_off,
@@ -272,6 +336,7 @@ fn blendshape_record_scatter_compute_passes(
     }
 
     *blend_weight_cursor = advance_slab_cursor(*blend_weight_cursor, weight_binding_len);
+    dispatch_count
 }
 
 /// Fills [`crate::backend::MeshDeformScratch::blend_weight_bytes`] with the per-shape weights and
@@ -323,33 +388,47 @@ fn pack_blendshape_scatter_params(
 
     for s in 0..shape_count {
         let w = blend_weights.get(s as usize).copied().unwrap_or(0.0);
-        if w == 0.0 {
-            continue;
-        }
-        let (first, cnt) = mesh.blendshape_sparse_ranges[s as usize];
-        if cnt == 0 {
-            continue;
-        }
-        for (sparse_base, sparse_count) in plan_blendshape_scatter_chunks(first, cnt, max_wg) {
-            let wg = workgroup_count(sparse_count);
-            if !gpu.gpu_limits.compute_dispatch_fits(wg, 1, 1) {
-                logger::warn!(
-                    "mesh deform: blendshape scatter dispatch {}×1×1 exceeds max_compute_workgroups_per_dimension ({})",
-                    wg,
-                    max_wg
-                );
-                return false;
+        for coefficient in select_blendshape_frame_coefficients(
+            s,
+            w,
+            &mesh.blendshape_shape_frame_spans,
+            &mesh.blendshape_frame_ranges,
+        )
+        .into_iter()
+        .flatten()
+        {
+            let Some(range) = mesh
+                .blendshape_frame_ranges
+                .get(coefficient.frame_range_index)
+            else {
+                continue;
+            };
+            if range.entry_count == 0 {
+                continue;
             }
-            gpu.scratch
-                .packed_scatter_params
-                .extend_from_slice(&build_scatter_params(
-                    vc,
-                    s,
-                    sparse_base,
-                    sparse_count,
-                    base_dst_e,
-                ));
-            gpu.scratch.scatter_dispatch_wgs.push(wg);
+            for (sparse_base, sparse_count) in
+                plan_blendshape_scatter_chunks(range.first_entry, range.entry_count, max_wg)
+            {
+                let wg = workgroup_count(sparse_count);
+                if !gpu.gpu_limits.compute_dispatch_fits(wg, 1, 1) {
+                    logger::warn!(
+                        "mesh deform: blendshape scatter dispatch {}×1×1 exceeds max_compute_workgroups_per_dimension ({})",
+                        wg,
+                        max_wg
+                    );
+                    return false;
+                }
+                gpu.scratch
+                    .packed_scatter_params
+                    .extend_from_slice(&build_scatter_params(
+                        vc,
+                        sparse_base,
+                        sparse_count,
+                        base_dst_e,
+                        coefficient.effective_weight,
+                    ));
+                gpu.scratch.scatter_dispatch_wgs.push(wg);
+            }
         }
     }
     true
@@ -361,8 +440,9 @@ fn record_blendshape_deform(
     mesh: &MeshDeformSnapshot,
     blend_weights: &[f32],
     blend_weight_cursor: &mut u64,
+    blend_param_cursor: &mut u64,
     ctx: BlendshapeCacheCtx<'_>,
-) {
+) -> u64 {
     profiling::scope!("mesh_deform::record_blendshape");
     let BlendshapeCacheCtx {
         cache_entry,
@@ -371,28 +451,28 @@ fn record_blendshape_deform(
         blend_then_skin,
     } = ctx;
     let Some(ref positions) = mesh.positions_buffer else {
-        return;
+        return 0;
     };
     let Some(ref sparse) = mesh.blendshape_sparse_buffer else {
-        return;
+        return 0;
     };
     let vc = mesh.vertex_count;
     let shape_count = mesh.num_blendshapes;
     if shape_count == 0 {
-        return;
+        return 0;
     }
-    if mesh.blendshape_sparse_ranges.len() != shape_count as usize {
+    if mesh.blendshape_shape_frame_spans.len() != shape_count as usize {
         logger::warn!(
-            "mesh deform: blendshape_sparse_ranges len {} != num_blendshapes {}",
-            mesh.blendshape_sparse_ranges.len(),
+            "mesh deform: blendshape_shape_frame_spans len {} != num_blendshapes {}",
+            mesh.blendshape_shape_frame_spans.len(),
             shape_count
         );
-        return;
+        return 0;
     }
 
     let (dst_buf, dst_off, base_dst_e) = if blend_then_skin {
         let Some(t) = cache_entry.temp.as_ref() else {
-            return;
+            return 0;
         };
         (temp_arena, t.offset_bytes, t.first_element_index(16))
     } else {
@@ -408,12 +488,12 @@ fn record_blendshape_deform(
 
     let max_wg = gpu.gpu_limits.max_compute_workgroups_per_dimension();
     if !pack_blendshape_scatter_params(gpu, mesh, blend_weights, base_dst_e, max_wg) {
-        return;
+        return 0;
     }
 
     if gpu.scratch.packed_scatter_params.is_empty() {
         *blend_weight_cursor = advance_slab_cursor(*blend_weight_cursor, weight_binding_len);
-        return;
+        return 0;
     }
 
     blendshape_record_scatter_compute_passes(
@@ -422,29 +502,33 @@ fn record_blendshape_deform(
         sparse.as_ref(),
         weight_binding_len,
         blend_weight_cursor,
-    );
+        blend_param_cursor,
+    )
 }
 
 /// Linear blend skinning compute after optional blendshape pass.
-fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeformContext<'_, '_>) {
+fn record_skinning_deform(
+    gpu: &mut MeshDeformEncodeGpu<'_>,
+    ctx: SkinningDeformContext<'_, '_>,
+) -> bool {
     profiling::scope!("mesh_deform::record_skinning");
     let Some(ref positions) = ctx.mesh.positions_buffer else {
-        return;
+        return false;
     };
     let Some(ref src_n) = ctx.mesh.normals_buffer else {
-        return;
+        return false;
     };
     let Some(ref bone_idx) = ctx.mesh.bone_indices_buffer else {
-        return;
+        return false;
     };
     let Some(ref bone_wt) = ctx.mesh.bone_weights_vec4_buffer else {
-        return;
+        return false;
     };
     let Some(indices) = ctx.bone_transform_indices else {
-        return;
+        return false;
     };
     let Some(nrm_range) = ctx.cache_entry.normals.as_ref() else {
-        return;
+        return false;
     };
 
     let bone_count_u = ctx.mesh.skinning_bind_matrices.len() as u32;
@@ -459,7 +543,7 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
         render_context: ctx.render_context,
         head_output_transform: ctx.head_output_transform,
     }) else {
-        return;
+        return false;
     };
     let mut palette: Vec<u8> = vec![0u8; palette_mats.len() * 64];
     for (bi, pal) in palette_mats.iter().enumerate() {
@@ -474,12 +558,12 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
         .write_buffer(&gpu.scratch.bone_matrices, *ctx.bone_cursor, &palette);
 
     let Some(bone_binding_size) = NonZeroU64::new(palette_len) else {
-        return;
+        return false;
     };
 
     let (src_for_skin, base_src_pos_e) = if ctx.needs_blend {
         let Some(t) = ctx.cache_entry.temp.as_ref() else {
-            return;
+            return false;
         };
         (ctx.temp_arena, t.first_element_index(16))
     } else {
@@ -519,6 +603,7 @@ fn record_skinning_deform(gpu: &mut MeshDeformEncodeGpu<'_>, ctx: SkinningDeform
 
     *ctx.bone_cursor = advance_slab_cursor(*ctx.bone_cursor, palette_len);
     *ctx.skin_dispatch_cursor = advance_slab_cursor(sd_cursor, 32);
+    true
 }
 
 /// Buffers and offsets for one skinning dispatch after the bone palette is uploaded to `scratch`.
@@ -623,17 +708,17 @@ fn workgroup_count(count: u32) -> u32 {
 /// `source/compute/mesh_blendshape.wgsl` `Params` (32 bytes).
 fn build_scatter_params(
     vertex_count: u32,
-    shape_index: u32,
     sparse_base: u32,
     sparse_count: u32,
     base_dst_e: u32,
+    effective_weight: f32,
 ) -> [u8; 32] {
     let mut o = [0u8; 32];
     o[0..4].copy_from_slice(&vertex_count.to_le_bytes());
-    o[4..8].copy_from_slice(&shape_index.to_le_bytes());
-    o[8..12].copy_from_slice(&sparse_base.to_le_bytes());
-    o[12..16].copy_from_slice(&sparse_count.to_le_bytes());
-    o[16..20].copy_from_slice(&base_dst_e.to_le_bytes());
+    o[4..8].copy_from_slice(&sparse_base.to_le_bytes());
+    o[8..12].copy_from_slice(&sparse_count.to_le_bytes());
+    o[12..16].copy_from_slice(&base_dst_e.to_le_bytes());
+    o[16..20].copy_from_slice(&effective_weight.to_le_bytes());
     o
 }
 
@@ -652,4 +737,31 @@ fn pack_skin_dispatch_params(
     o[12..16].copy_from_slice(&base_dst_pos_e.to_le_bytes());
     o[16..20].copy_from_slice(&base_dst_nrm_e.to_le_bytes());
     o
+}
+
+#[cfg(test)]
+mod tests {
+    //! CPU-only tests for mesh-deform encode helpers.
+
+    use super::*;
+
+    #[test]
+    fn blendshape_param_reservations_do_not_overlap_across_meshes() {
+        let first = reserve_blendshape_param_range(0, 64).expect("first reservation");
+        let second =
+            reserve_blendshape_param_range(first.next_cursor, 96).expect("second reservation");
+
+        assert_eq!(first.offset, 0);
+        assert_eq!(first.next_cursor, 256);
+        assert_eq!(second.offset, 256);
+        assert_eq!(second.next_cursor, 512);
+        assert!(first.offset + first.byte_len <= second.offset);
+    }
+
+    #[test]
+    fn blendshape_param_reservation_rejects_empty_or_overflowing_ranges() {
+        assert!(reserve_blendshape_param_range(0, 0).is_none());
+        assert!(reserve_blendshape_param_range(u64::MAX, 32).is_none());
+        assert!(reserve_blendshape_param_range(u64::MAX - 127, 1).is_none());
+    }
 }

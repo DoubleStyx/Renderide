@@ -29,12 +29,14 @@ pub(super) const PREPARED_CHUNK_SIZE: usize = 128;
 pub(super) fn prepared_draws_share_renderer(a: &FramePreparedDraw, b: &FramePreparedDraw) -> bool {
     a.space_id == b.space_id
         && a.renderable_index == b.renderable_index
+        && a.instance_id == b.instance_id
         && a.node_id == b.node_id
         && a.mesh_asset_id == b.mesh_asset_id
         && a.is_overlay == b.is_overlay
         && a.sorting_order == b.sorting_order
         && a.skinned == b.skinned
         && a.world_space_deformed == b.world_space_deformed
+        && a.blendshape_deformed == b.blendshape_deformed
 }
 
 /// Per-renderer view-local state shared by every material slot in a prepared run.
@@ -168,6 +170,8 @@ fn append_prepared_run_draws(
         let candidate = DrawCandidate {
             space_id: d.space_id,
             node_id: d.node_id,
+            renderable_index: d.renderable_index,
+            instance_id: d.instance_id,
             mesh_asset_id: d.mesh_asset_id,
             slot_index: d.slot_index,
             first_index: d.first_index,
@@ -176,6 +180,7 @@ fn append_prepared_run_draws(
             sorting_order: d.sorting_order,
             skinned: d.skinned,
             world_space_deformed: d.world_space_deformed,
+            blendshape_deformed: d.blendshape_deformed,
             material_asset_id: d.material_asset_id,
             property_block_id: d.property_block_id,
         };

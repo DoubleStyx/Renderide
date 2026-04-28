@@ -36,6 +36,8 @@ pub(crate) struct OverlayDeformCullFlags {
     pub is_overlay: bool,
     /// Skinned mesh with world-space deform from the skin cache.
     pub world_space_deformed: bool,
+    /// Mesh has active blendshape weights and uses cache-backed positions.
+    pub blendshape_deformed: bool,
 }
 
 /// One static or skinned mesh renderer with its resolved [`crate::assets::mesh::GpuMesh`] and submesh index ranges.
@@ -46,6 +48,8 @@ struct StaticMeshDrawSource<'a> {
     renderer: &'a StaticMeshRenderer,
     /// Renderer index inside its static or skinned list.
     renderable_index: usize,
+    /// Renderer-local identity that survives dense table reindexing.
+    instance_id: crate::scene::MeshRendererInstanceId,
     /// Whether this source comes from the skinned renderer list.
     skinned: bool,
     /// Skinned renderer data when [`Self::skinned`] is true.
@@ -170,6 +174,9 @@ fn push_draws_for_renderer(
             draw.skinned_renderer
                 .map(|skinned| skinned.bone_transform_indices.as_slice()),
         );
+    let blendshape_deformed = draw
+        .mesh
+        .supports_active_blendshape_deform(&draw.renderer.blend_shape_weights);
 
     for (slot_index, slot) in slots.iter().enumerate() {
         let Some((first_index, index_count)) =
@@ -190,6 +197,7 @@ fn push_draws_for_renderer(
             OverlayDeformCullFlags {
                 is_overlay,
                 world_space_deformed,
+                blendshape_deformed,
             },
             cache,
         );
@@ -214,6 +222,7 @@ fn push_one_slot_draw(
     let OverlayDeformCullFlags {
         is_overlay,
         world_space_deformed,
+        blendshape_deformed,
     } = flags;
     let material_asset_id = ctx
         .scene
@@ -266,6 +275,8 @@ fn push_one_slot_draw(
     let candidate = DrawCandidate {
         space_id: draw.space_id,
         node_id: draw.renderer.node_id,
+        renderable_index: draw.renderable_index,
+        instance_id: draw.instance_id,
         mesh_asset_id: draw.renderer.mesh_asset_id,
         slot_index,
         first_index,
@@ -274,6 +285,7 @@ fn push_one_slot_draw(
         sorting_order: draw.renderer.sorting_order,
         skinned: draw.skinned,
         world_space_deformed,
+        blendshape_deformed,
         material_asset_id,
         property_block_id: slot.property_block_id,
     };
@@ -373,6 +385,7 @@ pub(super) fn collect_chunk(
                         space_id: spec.space_id,
                         renderer: r,
                         renderable_index,
+                        instance_id: r.instance_id,
                         skinned: false,
                         skinned_renderer: None,
                         mesh,
@@ -402,6 +415,7 @@ pub(super) fn collect_chunk(
                         space_id: spec.space_id,
                         renderer: r,
                         renderable_index,
+                        instance_id: r.instance_id,
                         skinned: true,
                         skinned_renderer: Some(skinned),
                         mesh,

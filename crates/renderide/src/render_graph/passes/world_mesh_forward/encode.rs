@@ -1,8 +1,8 @@
 //! Encode indexed draws and material bind groups for graph-managed world-mesh forward passes.
 
 use crate::assets::mesh::GpuMesh;
-use crate::backend::mesh_deform::GpuSkinCache;
 use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
+use crate::backend::mesh_deform::{GpuSkinCache, SkinCacheKey};
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::gpu::GpuLimits;
 use crate::materials::MaterialPipelineSet;
@@ -414,7 +414,7 @@ fn bind_primary_vertex_streams(
     normals_bind: &wgpu::Buffer,
     last_mesh: &mut LastMeshBindState,
 ) -> bool {
-    if item.world_space_deformed || mesh.num_blendshapes > 0 {
+    if item.world_space_deformed || item.blendshape_deformed {
         bind_deformed_primary_streams(rpass, item, gpu, normals_bind, last_mesh)
     } else {
         bind_static_primary_streams(rpass, mesh, normals_bind, last_mesh)
@@ -459,11 +459,13 @@ fn bind_deformed_primary_streams(
     let Some(cache) = gpu.skin_cache else {
         return false;
     };
-    let key = (item.space_id, item.node_id);
-    let Some(entry) = cache.lookup(&key) else {
+    let key = SkinCacheKey::from_draw_parts(item.space_id, item.skinned, item.instance_id);
+    let Some(entry) = cache.lookup_current(&key) else {
         logger::trace!(
-            "world mesh forward: skin cache miss for space {:?} node {}",
+            "world mesh forward: current skin cache miss for space {:?} renderable {} instance {:?} node {}",
             item.space_id,
+            item.renderable_index,
+            item.instance_id,
             item.node_id
         );
         return false;

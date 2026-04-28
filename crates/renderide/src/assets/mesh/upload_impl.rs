@@ -17,7 +17,7 @@ use super::layout::{
     extract_blendshape_offsets, extract_float3_position_normal_as_vec4_streams,
     split_bone_weights_tail_for_gpu, synthetic_bone_data_for_blendshape_only,
     uv0_float2_stream_bytes, vertex_float2_stream_bytes, vertex_float4_stream_bytes,
-    MeshBufferLayout,
+    BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout,
 };
 
 /// Tangent plus UV1–UV3 optional vertex buffers from extended stream upload.
@@ -512,10 +512,12 @@ pub(super) fn upload_bone_and_skin_buffers(
 pub(super) struct BlendshapeBuffersUpload {
     /// Storage buffer of packed sparse position deltas (padded when empty; see `BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES`).
     pub sparse_buffer: Option<Arc<wgpu::Buffer>>,
-    /// Storage buffer of per-shape `(first_entry, entry_count)` descriptor rows.
+    /// Storage buffer of per-frame `(first_entry, entry_count)` descriptor rows.
     pub shape_descriptor_buffer: Option<Arc<wgpu::Buffer>>,
-    /// Copy of descriptor rows for CPU-side scatter dispatch (mirrors [`super::gpu_mesh::GpuMesh::blendshape_sparse_ranges`]).
-    pub sparse_ranges: Vec<(u32, u32)>,
+    /// Copy of frame rows for CPU-side scatter dispatch.
+    pub frame_ranges: Vec<BlendshapeFrameRange>,
+    /// Per-shape spans into [`Self::frame_ranges`].
+    pub shape_frame_spans: Vec<BlendshapeFrameSpan>,
     /// Logical blendshape slot count for weight indexing.
     pub num_blendshapes: u32,
 }
@@ -544,7 +546,8 @@ pub(super) fn upload_blendshape_buffer(
         return BlendshapeBuffersUpload {
             sparse_buffer: None,
             shape_descriptor_buffer: None,
-            sparse_ranges: Vec::new(),
+            frame_ranges: Vec::new(),
+            shape_frame_spans: Vec::new(),
             num_blendshapes: 0,
         };
     }
@@ -554,7 +557,8 @@ pub(super) fn upload_blendshape_buffer(
         return BlendshapeBuffersUpload {
             sparse_buffer: None,
             shape_descriptor_buffer: None,
-            sparse_ranges: Vec::new(),
+            frame_ranges: Vec::new(),
+            shape_frame_spans: Vec::new(),
             num_blendshapes: 0,
         };
     };
@@ -572,7 +576,8 @@ pub(super) fn upload_blendshape_buffer(
         return BlendshapeBuffersUpload {
             sparse_buffer: None,
             shape_descriptor_buffer: None,
-            sparse_ranges: Vec::new(),
+            frame_ranges: Vec::new(),
+            shape_frame_spans: Vec::new(),
             num_blendshapes: 0,
         };
     }
@@ -597,7 +602,8 @@ pub(super) fn upload_blendshape_buffer(
     BlendshapeBuffersUpload {
         sparse_buffer: Some(Arc::new(sparse_buf)),
         shape_descriptor_buffer: Some(Arc::new(desc_buf)),
-        sparse_ranges: pack.shape_ranges,
+        frame_ranges: pack.frame_ranges,
+        shape_frame_spans: pack.shape_frame_spans,
         num_blendshapes: n_u32,
     }
 }

@@ -9,7 +9,9 @@ use crate::assets::material::MaterialPropertyLookupIds;
 use crate::materials::{
     MaterialBlendMode, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
 };
-use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator, StaticMeshRenderer};
+use crate::scene::{
+    MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, StaticMeshRenderer,
+};
 
 /// Selective / exclude transform lists for secondary cameras (Unity `CameraRenderer.Render` semantics).
 #[derive(Clone, Debug, Default)]
@@ -272,6 +274,10 @@ pub struct WorldMeshDrawItem {
     pub space_id: RenderSpaceId,
     /// Scene graph node id for this drawable.
     pub node_id: i32,
+    /// Dense renderer index inside the static or skinned renderer table selected by [`Self::skinned`].
+    pub renderable_index: usize,
+    /// Renderer-local identity that survives dense table reindexing.
+    pub instance_id: MeshRendererInstanceId,
     /// Resident mesh asset id in [`crate::resources::MeshPool`].
     pub mesh_asset_id: i32,
     /// Renderer material slot index. Stacked materials can reuse a later submesh range.
@@ -293,6 +299,8 @@ pub struct WorldMeshDrawItem {
     /// Skinned renderers that fall back to raw or blend-only local streams still need their renderer
     /// transform, otherwise they appear at the render-space origin.
     pub world_space_deformed: bool,
+    /// Whether this draw reads blendshape-deformed positions from the GPU skin cache.
+    pub blendshape_deformed: bool,
     /// Stable insertion order before sorting; used for transparent UI/text.
     pub collect_order: usize,
     /// Approximate camera distance used for transparent back-to-front sorting.

@@ -25,7 +25,7 @@ pub struct MeshDeformScratch {
     pub bone_matrices: wgpu::Buffer,
     /// 32-byte uniform for sparse blendshape scatter (`source/compute/mesh_blendshape.wgsl` `Params`).
     pub blendshape_params: wgpu::Buffer,
-    /// Upload + copy source for packed scatter `Params` before `copy_buffer_to_buffer` into `blendshape_params`.
+    /// Upload + copy source slab for packed scatter `Params` before `copy_buffer_to_buffer` into `blendshape_params`.
     pub blendshape_params_staging: wgpu::Buffer,
     /// `f32` weight per blendshape; subranges use 256-byte-aligned offsets between meshes.
     pub blendshape_weights: wgpu::Buffer,

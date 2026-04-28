@@ -14,7 +14,7 @@ use super::layout::{
     color_float4_stream_bytes, extract_bind_poses, extract_blendshape_offsets,
     extract_float3_position_normal_as_vec4_streams, split_bone_weights_tail_for_gpu,
     synthetic_bone_data_for_blendshape_only, uv0_float2_stream_bytes, vertex_float2_stream_bytes,
-    vertex_float4_stream_bytes, MeshBufferLayout,
+    vertex_float4_stream_bytes, BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout,
 };
 
 use crate::gpu::GpuLimits;
@@ -78,10 +78,12 @@ pub struct GpuMesh {
     pub bind_poses_buffer: Option<Arc<wgpu::Buffer>>,
     /// Sparse packed position deltas (`vertex_index`, `delta.xyz`) for all shapes ([`crate::assets::mesh::BLENDSHAPE_SPARSE_ENTRY_SIZE`] bytes/entry).
     pub blendshape_sparse_buffer: Option<Arc<wgpu::Buffer>>,
-    /// Per-shape `(first_entry, entry_count)` rows (`u32` pairs) mirroring [`Self::blendshape_sparse_ranges`].
+    /// Per-frame `(first_entry, entry_count)` rows (`u32` pairs) mirroring [`Self::blendshape_frame_ranges`].
     pub blendshape_shape_descriptor_buffer: Option<Arc<wgpu::Buffer>>,
-    /// CPU copy of each shape’s sparse range for scatter dispatch (length equals [`Self::num_blendshapes`] when blendshapes are present).
-    pub blendshape_sparse_ranges: Vec<(u32, u32)>,
+    /// CPU copy of each sparse frame range for scatter dispatch.
+    pub blendshape_frame_ranges: Vec<BlendshapeFrameRange>,
+    /// Per-shape spans into [`Self::blendshape_frame_ranges`].
+    pub blendshape_shape_frame_spans: Vec<BlendshapeFrameSpan>,
     /// Number of logical blendshape slots (`max(blendshape_index)+1`).
     pub num_blendshapes: u32,
     /// Decomposed position stream (`vec4<f32>` per vertex) for compute + debug raster.
@@ -144,7 +146,10 @@ pub(super) fn blendshape_and_deform_buffers_match_for_in_place(
         if db.size() != extracted.shape_descriptor_bytes.len() as u64 {
             return false;
         }
-        if mesh.blendshape_sparse_ranges != extracted.shape_ranges {
+        if mesh.blendshape_frame_ranges != extracted.frame_ranges {
+            return false;
+        }
+        if mesh.blendshape_shape_frame_spans != extracted.shape_frame_spans {
             return false;
         }
         if mesh.num_blendshapes != n_blend {
@@ -153,7 +158,8 @@ pub(super) fn blendshape_and_deform_buffers_match_for_in_place(
     } else if mesh.num_blendshapes > 0
         || mesh.blendshape_sparse_buffer.is_some()
         || mesh.blendshape_shape_descriptor_buffer.is_some()
-        || !mesh.blendshape_sparse_ranges.is_empty()
+        || !mesh.blendshape_frame_ranges.is_empty()
+        || !mesh.blendshape_shape_frame_spans.is_empty()
     {
         return false;
     }
@@ -557,7 +563,8 @@ impl GpuMesh {
             bind_poses_buffer: bone_skin.bind_poses_buffer,
             blendshape_sparse_buffer: blend_up.sparse_buffer,
             blendshape_shape_descriptor_buffer: blend_up.shape_descriptor_buffer,
-            blendshape_sparse_ranges: blend_up.sparse_ranges,
+            blendshape_frame_ranges: blend_up.frame_ranges,
+            blendshape_shape_frame_spans: blend_up.shape_frame_spans,
             num_blendshapes,
             positions_buffer: derived.positions_buffer,
             normals_buffer: derived.normals_buffer,

@@ -5,7 +5,7 @@ use crate::assets::mesh::{BlendshapeGpuPack, BLENDSHAPE_SPARSE_ENTRY_SIZE};
 /// Minimum storage buffer size used when a mesh has blendshapes but zero sparse bytes (padding).
 pub const BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES: u64 = 16;
 
-/// Returns `false` when sparse or shape-descriptor payloads cannot exist on the device or be bound
+/// Returns `false` when sparse or frame-descriptor payloads cannot exist on the device or be bound
 /// as a single storage read (typical WebGPU path).
 pub fn blendshape_sparse_buffers_fit_device(
     pack: &BlendshapeGpuPack,
@@ -53,7 +53,10 @@ pub fn plan_blendshape_scatter_chunks(
 mod tests {
     use super::*;
 
-    use crate::assets::mesh::{BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE, BLENDSHAPE_SPARSE_ENTRY_SIZE};
+    use crate::assets::mesh::{
+        BlendshapeFrameRange, BlendshapeFrameSpan, BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE,
+        BLENDSHAPE_SPARSE_ENTRY_SIZE,
+    };
 
     #[test]
     fn scatter_chunks_cover_all_entries() {
@@ -72,7 +75,17 @@ mod tests {
         let pack = BlendshapeGpuPack {
             sparse_deltas: vec![0u8; BLENDSHAPE_SPARSE_ENTRY_SIZE],
             shape_descriptor_bytes: vec![0u8; BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE],
-            shape_ranges: vec![(0, 1)],
+            frame_ranges: vec![BlendshapeFrameRange {
+                shape_index: 0,
+                frame_index: 0,
+                frame_weight: 1.0,
+                first_entry: 0,
+                entry_count: 1,
+            }],
+            shape_frame_spans: vec![BlendshapeFrameSpan {
+                first_frame: 0,
+                frame_count: 1,
+            }],
             num_blendshapes: 1,
         };
         assert!(blendshape_sparse_buffers_fit_device(&pack, 1024, 1024));

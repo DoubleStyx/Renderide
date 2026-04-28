@@ -6,7 +6,7 @@ use super::*;
 use crate::assets::material::{MaterialDictionary, MaterialPropertyStore, PropertyIdRegistry};
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
 use crate::resources::MeshPool;
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{RenderTransform, RenderingContext};
 
 /// Builds a unit-scale transform for draw-prep tests.
@@ -23,12 +23,14 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
     FramePreparedDraw {
         space_id,
         renderable_index: 0,
+        instance_id: MeshRendererInstanceId(11),
         node_id: 0,
         mesh_asset_id: 7,
         is_overlay: false,
         sorting_order: 0,
         skinned: false,
         world_space_deformed: false,
+        blendshape_deformed: false,
         slot_index: 0,
         first_index: 0,
         index_count: 3,
@@ -48,6 +50,7 @@ fn prepared_draws_share_renderer_groups_material_slots_only() {
     second_slot.material_asset_id = 10;
     let mut next_renderer = second_slot.clone();
     next_renderer.renderable_index = 1;
+    next_renderer.instance_id = MeshRendererInstanceId(12);
 
     assert!(prepared_draws_share_renderer(&first_slot, &second_slot));
     assert!(!prepared_draws_share_renderer(&second_slot, &next_renderer));

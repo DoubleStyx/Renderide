@@ -74,7 +74,9 @@ pub use error::SceneError;
 pub use ids::{RenderSpaceId, TransformIndex};
 pub use lights::{light_casts_shadows, light_contributes, CachedLight, LightCache, ResolvedLight};
 pub use math::render_transform_to_matrix;
-pub use mesh_renderable::{MeshMaterialSlot, SkinnedMeshRenderer, StaticMeshRenderer};
+pub use mesh_renderable::{
+    MeshMaterialSlot, MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer,
+};
 pub use reflection_probe::{
     reflection_probe_hdr, reflection_probe_skybox_only, reflection_probe_use_box_projection,
     ReflectionProbeEntry,

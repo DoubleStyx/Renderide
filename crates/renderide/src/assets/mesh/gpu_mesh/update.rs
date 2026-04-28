@@ -11,7 +11,7 @@ use super::super::gpu_mesh_hints::{
     mesh_upload_hint_touches_vertex_streams, validated_submesh_ranges, wgpu_index_format,
 };
 use super::super::layout::{
-    compute_index_count, compute_vertex_stride, extract_bind_poses,
+    blendshape_deform_is_active, compute_index_count, compute_vertex_stride, extract_bind_poses,
     synthetic_bone_data_for_blendshape_only, MeshBufferLayout,
 };
 use super::super::upload_impl::{
@@ -47,6 +47,16 @@ impl GpuMesh {
             && self.bone_indices_buffer.is_some()
             && self.bone_weights_vec4_buffer.is_some()
             && !self.skinning_bind_matrices.is_empty()
+    }
+
+    /// Returns whether the mesh has valid sparse blendshape data and at least one active shape.
+    pub fn supports_active_blendshape_deform(&self, blend_weights: &[f32]) -> bool {
+        blendshape_deform_is_active(
+            self.num_blendshapes,
+            &self.blendshape_shape_frame_spans,
+            &self.blendshape_frame_ranges,
+            blend_weights,
+        ) && self.blendshape_sparse_buffer.is_some()
     }
 
     /// Creates tangent / UV1-3 streams the first time an embedded shader needs them.
@@ -135,7 +145,8 @@ impl GpuMesh {
         let no_gpu_blend = self.blendshape_sparse_buffer.is_none()
             && self.blendshape_shape_descriptor_buffer.is_none()
             && self.num_blendshapes == 0
-            && self.blendshape_sparse_ranges.is_empty();
+            && self.blendshape_frame_ranges.is_empty()
+            && self.blendshape_shape_frame_spans.is_empty();
 
         let data_static = data.bone_count == 0 && !use_blendshapes;
         let gpu_static =
@@ -281,10 +292,7 @@ impl GpuMesh {
                 .collect();
         }
 
-        let has_extended_gpu_streams = self.tangent_buffer.is_some()
-            && self.uv1_buffer.is_some()
-            && self.uv2_buffer.is_some()
-            && self.uv3_buffer.is_some();
+        let has_extended_gpu_streams = self.extended_vertex_streams_ready();
         let extended_vertex_stream_source = if write_vertex && !has_extended_gpu_streams {
             extended_vertex_stream_source_from_raw(raw, data, layout)
         } else if write_vertex {
@@ -309,7 +317,8 @@ impl GpuMesh {
             bind_poses_buffer: self.bind_poses_buffer.clone(),
             blendshape_sparse_buffer: self.blendshape_sparse_buffer.clone(),
             blendshape_shape_descriptor_buffer: self.blendshape_shape_descriptor_buffer.clone(),
-            blendshape_sparse_ranges: self.blendshape_sparse_ranges.clone(),
+            blendshape_frame_ranges: self.blendshape_frame_ranges.clone(),
+            blendshape_shape_frame_spans: self.blendshape_shape_frame_spans.clone(),
             num_blendshapes: self.num_blendshapes,
             positions_buffer: self.positions_buffer.clone(),
             normals_buffer: self.normals_buffer.clone(),

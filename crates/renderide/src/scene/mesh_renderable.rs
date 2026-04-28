@@ -7,6 +7,13 @@
 
 use crate::shared::{LayerType, MotionVectorMode, RenderBoundingBox, ShadowCastMode};
 
+/// Renderer-local identity that survives dense table reindexing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct MeshRendererInstanceId(
+    /// Monotonic renderer-local value assigned by the owning render space.
+    pub u64,
+);
+
 /// One submesh slot: material asset id and optional per-slot property block.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MeshMaterialSlot {
@@ -19,6 +26,8 @@ pub struct MeshMaterialSlot {
 /// Static mesh draw instance.
 #[derive(Debug, Clone)]
 pub struct StaticMeshRenderer {
+    /// Renderer-local identity assigned when the renderer entry is created.
+    pub instance_id: MeshRendererInstanceId,
     /// Dense transform index this renderer attaches to (`node_id`).
     pub node_id: i32,
     /// Draw layer (opaque vs overlay vs hidden).
@@ -44,6 +53,7 @@ pub struct StaticMeshRenderer {
 impl Default for StaticMeshRenderer {
     fn default() -> Self {
         Self {
+            instance_id: MeshRendererInstanceId::default(),
             node_id: -1,
             layer: LayerType::Hidden,
             mesh_asset_id: -1,

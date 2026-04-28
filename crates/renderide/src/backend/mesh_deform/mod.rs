@@ -20,4 +20,6 @@ pub use per_draw_uniforms::{
 };
 pub use range_alloc::Range;
 pub use scratch::{advance_slab_cursor, MeshDeformScratch};
-pub use skin_cache::{EntryNeed, GpuSkinCache, SkinCacheEntry, SkinCacheKey};
+pub use skin_cache::{
+    EntryNeed, GpuSkinCache, SkinCacheEntry, SkinCacheKey, SkinCacheRendererKind,
+};

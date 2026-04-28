@@ -1,13 +1,13 @@
-// Sparse weighted blendshape position deltas. Each entry is one influenced vertex for one shape;
-// the encoder dispatches one scatter pass per active shape (optionally chunked by entry count).
+// Sparse weighted blendshape position deltas. Each entry is one influenced vertex for one frame;
+// the encoder dispatches one scatter pass per selected Unity frame (optionally chunked by entry count).
 
 struct Params {
     vertex_count: u32,
-    shape_index: u32,
     sparse_base: u32,
     sparse_count: u32,
     /// Element offset into `out_pos` for this instance’s subrange (GPU skin cache arena).
     base_dst_e: u32,
+    effective_weight: f32,
     _p1: u32,
     _p2: u32,
     _p3: u32,
@@ -31,7 +31,7 @@ fn blendshape_scatter_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= params.sparse_count) {
         return;
     }
-    let wi = weights[params.shape_index];
+    let wi = params.effective_weight;
     if (wi == 0.0) {
         return;
     }

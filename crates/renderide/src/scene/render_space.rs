@@ -7,7 +7,7 @@ use crate::shared::{
 
 use super::camera_apply::CameraRenderableEntry;
 use super::ids::RenderSpaceId;
-use super::mesh_renderable::{SkinnedMeshRenderer, StaticMeshRenderer};
+use super::mesh_renderable::{MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer};
 use super::reflection_probe::ReflectionProbeEntry;
 
 /// One host layer component / assignment anchored to a transform node.
@@ -59,6 +59,8 @@ pub struct RenderSpaceState {
     pub static_mesh_renderers: Vec<StaticMeshRenderer>,
     /// Skinned mesh renderables; separate dense table from static.
     pub skinned_mesh_renderers: Vec<SkinnedMeshRenderer>,
+    /// Next renderer-local identity assigned to static or skinned mesh additions.
+    pub next_mesh_renderer_instance_id: MeshRendererInstanceId,
     /// Host camera components (secondary cameras, render texture targets).
     pub cameras: Vec<CameraRenderableEntry>,
     /// Host reflection probe components.
@@ -90,6 +92,14 @@ impl RenderSpaceState {
             update.root_transform
         };
     }
+
+    /// Allocates a renderer-local identity for a new static or skinned mesh renderable.
+    pub(crate) fn allocate_mesh_renderer_instance_id(&mut self) -> MeshRendererInstanceId {
+        let id = self.next_mesh_renderer_instance_id;
+        self.next_mesh_renderer_instance_id =
+            MeshRendererInstanceId(self.next_mesh_renderer_instance_id.0.saturating_add(1));
+        id
+    }
 }
 
 impl Default for RenderSpaceState {
@@ -109,6 +119,7 @@ impl Default for RenderSpaceState {
             node_parents: Vec::new(),
             static_mesh_renderers: Vec::new(),
             skinned_mesh_renderers: Vec::new(),
+            next_mesh_renderer_instance_id: MeshRendererInstanceId(1),
             cameras: Vec::new(),
             reflection_probes: Vec::new(),
             pending_reflection_probe_render_changes: Vec::new(),

@@ -2,7 +2,7 @@
 
 use crate::assets::material::MaterialPropertyLookupIds;
 use crate::materials::{RasterFrontFace, RasterPipelineKind};
-use crate::scene::RenderSpaceId;
+use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 
 use super::world_mesh_draw_prep::{MaterialDrawBatchKey, WorldMeshDrawItem};
 
@@ -52,6 +52,8 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
     WorldMeshDrawItem {
         space_id: RenderSpaceId(0),
         node_id: node,
+        renderable_index: node.max(0) as usize,
+        instance_id: MeshRendererInstanceId(node.max(0) as u64 + 1),
         mesh_asset_id: mesh,
         slot_index: slot,
         first_index: 0,
@@ -60,6 +62,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         sorting_order: sort,
         skinned,
         world_space_deformed: skinned,
+        blendshape_deformed: false,
         collect_order,
         camera_distance_sq: 0.0,
         lookup_ids: MaterialPropertyLookupIds {
