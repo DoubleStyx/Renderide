@@ -80,7 +80,7 @@ pub(super) fn frame_render_params_from_shared<'a>(
             transform_draw_filter,
             offscreen_write_render_texture_asset_id: resolved
                 .offscreen_write_render_texture_asset_id,
-            occlusion_view: resolved.occlusion_view,
+            view_id: resolved.view_id,
             hi_z_slot,
             sample_count: resolved.sample_count,
             gpu_limits,
@@ -114,7 +114,7 @@ pub(super) fn frame_render_params_from_resolved<'a>(
         msaa_depth_resolve,
         debug_hud,
     ) = backend.split_for_graph_frame_params();
-    let hi_z_slot = occlusion.ensure_hi_z_state(resolved.occlusion_view);
+    let hi_z_slot = occlusion.ensure_hi_z_state(resolved.view_id);
     frame_render_params_from_shared(
         FrameSystemsShared {
             scene,

@@ -43,7 +43,7 @@ pub(super) struct SlabPackInputs<'a> {
 /// stays one contiguous storage buffer per view.
 ///
 /// Uses the per-view [`crate::backend::PerDrawResources`] identified by
-/// [`FrameRenderParams::occlusion_view`], growing it as needed. Writes at byte offset 0 of the
+/// [`FrameRenderParams::view_id`], growing it as needed. Writes at byte offset 0 of the
 /// view's own buffer. Returns `false` if per-draw resources cannot be created (not yet attached).
 #[expect(
     clippy::significant_drop_tightening,
@@ -65,7 +65,7 @@ pub(super) fn pack_and_upload_per_draw_slab(
         "slab_layout must cover every sorted draw exactly once"
     );
 
-    let view_id = frame.view.occlusion_view;
+    let view_id = frame.view.view_id;
     let scene = frame.shared.scene;
     let hc = frame.view.host_camera;
 

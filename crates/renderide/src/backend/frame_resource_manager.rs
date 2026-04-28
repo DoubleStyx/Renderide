@@ -10,11 +10,11 @@
 //!
 //! Per-view cluster buffers are each view's own independent storage so that views cannot stomp
 //! one another's clustered light lists under single-submit semantics. Per-view state is keyed by
-//! [`OcclusionViewId`] and created lazily on first use; retired explicitly when a secondary RT
+//! [`ViewId`] and created lazily on first use; retired explicitly when a secondary RT
 //! camera is destroyed.
 //!
 //! Per-draw resources follow the same ownership model: one grow-on-demand slab per
-//! [`OcclusionViewId`], created lazily so no view can exhaust another view's per-draw capacity.
+//! [`ViewId`], created lazily so no view can exhaust another view's per-draw capacity.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -25,7 +25,7 @@ use parking_lot::Mutex;
 use crate::backend::cluster_gpu::{ClusterBufferRefs, CLUSTER_PARAMS_UNIFORM_SIZE};
 use crate::gpu::frame_globals::{FrameGpuUniforms, SkyboxSpecularUniformParams};
 use crate::gpu::GpuLimits;
-use crate::render_graph::OcclusionViewId;
+use crate::render_graph::ViewId;
 
 use super::frame_gpu::{
     EmptyMaterialBindGroup, FrameGpuResources, PerViewSceneSnapshotSyncParams,
@@ -163,12 +163,12 @@ pub struct FrameResourceManager {
     pub(crate) empty_material: Option<EmptyMaterialBindGroup>,
     /// Per-view cluster buffers, frame uniform buffer, and `@group(0)` bind group.
     ///
-    /// Created lazily on first use per [`OcclusionViewId`]; retired when a secondary RT camera
+    /// Created lazily on first use per [`ViewId`]; retired when a secondary RT camera
     /// is destroyed via [`Self::retire_per_view_frame`].
     per_view_frame: PerViewResourceMap<PerViewFrameState>,
     /// One grow-on-demand per-draw slab per stable render-view identity.
     ///
-    /// Created lazily; keyed by [`OcclusionViewId`] so secondary RT cameras never compete
+    /// Created lazily; keyed by [`ViewId`] so secondary RT cameras never compete
     /// with the main view (or each other) for buffer space.
     per_view_draw: PerViewResourceMap<Mutex<PerDrawResources>>,
     /// Shared `@group(2)` bind group layout, reflected once at attach time.
@@ -347,7 +347,7 @@ impl FrameResourceManager {
     /// when cluster buffers cannot be allocated for the given viewport.
     pub fn per_view_frame_or_create(
         &mut self,
-        view_id: OcclusionViewId,
+        view_id: ViewId,
         device: &wgpu::Device,
         layout: PreRecordViewResourceLayout,
     ) -> Option<&mut PerViewFrameState> {
@@ -470,7 +470,7 @@ impl FrameResourceManager {
     }
 
     /// Returns the per-view frame state for `view_id`, or `None` if not yet created.
-    pub fn per_view_frame(&self, view_id: OcclusionViewId) -> Option<&PerViewFrameState> {
+    pub fn per_view_frame(&self, view_id: ViewId) -> Option<&PerViewFrameState> {
         self.per_view_frame.get(view_id)
     }
 
@@ -478,10 +478,15 @@ impl FrameResourceManager {
     ///
     /// Call alongside [`Self::retire_per_view_per_draw`] when a secondary RT camera is destroyed.
     /// Has no effect if the view was never allocated.
-    pub fn retire_per_view_frame(&mut self, view_id: OcclusionViewId) {
+    pub fn retire_per_view_frame(&mut self, view_id: ViewId) {
         if self.per_view_frame.retire(view_id) {
             logger::debug!("per-view frame state: retired for view {view_id:?}");
         }
+    }
+
+    /// Number of live per-view frame-state entries.
+    pub fn per_view_frame_count(&self) -> usize {
+        self.per_view_frame.len()
     }
 
     /// Returns the per-draw slab for the given view, creating it if it does not yet exist.
@@ -489,7 +494,7 @@ impl FrameResourceManager {
     /// Returns `None` when the manager has not been attached (no device limits / layout available).
     pub fn per_view_per_draw_or_create(
         &mut self,
-        view_id: OcclusionViewId,
+        view_id: ViewId,
         device: &wgpu::Device,
     ) -> Option<&Mutex<PerDrawResources>> {
         profiling::scope!("render::ensure_per_view_per_draw");
@@ -503,26 +508,31 @@ impl FrameResourceManager {
     }
 
     /// Returns the per-draw slab for the given view, or `None` if it has not been created yet.
-    pub fn per_view_per_draw(&self, view_id: OcclusionViewId) -> Option<&Mutex<PerDrawResources>> {
+    pub fn per_view_per_draw(&self, view_id: ViewId) -> Option<&Mutex<PerDrawResources>> {
         self.per_view_draw.get(view_id)
     }
 
     /// Frees the per-draw slab for a view that is no longer active (e.g. render-texture camera destroyed).
     ///
     /// Has no effect if the view was never allocated.
-    pub fn retire_per_view_per_draw(&mut self, view_id: OcclusionViewId) {
+    pub fn retire_per_view_per_draw(&mut self, view_id: ViewId) {
         if self.per_view_draw.retire(view_id) {
             logger::debug!("per-draw slab: retired slab for view {view_id:?}");
         }
     }
 
+    /// Number of live per-view per-draw slabs.
+    pub fn per_view_per_draw_count(&self) -> usize {
+        self.per_view_draw.len()
+    }
+
     /// Returns the per-view scratch slot used for per-draw uniform packing, creating it on first use.
     ///
-    /// Keyed per [`OcclusionViewId`] so parallel per-view recording cannot alias the same scratch
+    /// Keyed per [`ViewId`] so parallel per-view recording cannot alias the same scratch
     /// across rayon workers.
     pub fn per_view_per_draw_scratch_or_create(
         &mut self,
-        view_id: OcclusionViewId,
+        view_id: ViewId,
     ) -> &Mutex<PerViewPerDrawScratch> {
         profiling::scope!("render::ensure_per_view_per_draw_scratch");
         self.per_view_per_draw_scratch
@@ -535,7 +545,7 @@ impl FrameResourceManager {
     /// Returns the per-view scratch slot, or `None` if it has not been created yet.
     pub fn per_view_per_draw_scratch(
         &self,
-        view_id: OcclusionViewId,
+        view_id: ViewId,
     ) -> Option<&Mutex<PerViewPerDrawScratch>> {
         self.per_view_per_draw_scratch.get(view_id)
     }
@@ -544,10 +554,22 @@ impl FrameResourceManager {
     ///
     /// Call alongside [`Self::retire_per_view_per_draw`] and [`Self::retire_per_view_frame`] when a
     /// secondary RT camera is destroyed. Has no effect if the view was never allocated.
-    pub fn retire_per_view_per_draw_scratch(&mut self, view_id: OcclusionViewId) {
+    pub fn retire_per_view_per_draw_scratch(&mut self, view_id: ViewId) {
         if self.per_view_per_draw_scratch.retire(view_id) {
             logger::debug!("per-draw slab scratch: retired for view {view_id:?}");
         }
+    }
+
+    /// Number of live per-view CPU scratch slots.
+    pub fn per_view_per_draw_scratch_count(&self) -> usize {
+        self.per_view_per_draw_scratch.len()
+    }
+
+    /// Retires all view-scoped frame resources for `view_id`.
+    pub fn retire_view(&mut self, view_id: ViewId) {
+        self.retire_per_view_frame(view_id);
+        self.retire_per_view_per_draw(view_id);
+        self.retire_per_view_per_draw_scratch(view_id);
     }
 
     /// Fills the light scratch buffer from [`SceneCoordinator`] (active render spaces only,
@@ -690,7 +712,7 @@ impl FrameResourceManager {
     /// The snapshot must already have been provisioned by [`Self::per_view_frame_or_create`].
     pub fn copy_scene_depth_snapshot_for_view(
         &self,
-        view_id: OcclusionViewId,
+        view_id: ViewId,
         encoder: &mut wgpu::CommandEncoder,
         source_depth: &wgpu::Texture,
         viewport: (u32, u32),
@@ -709,7 +731,7 @@ impl FrameResourceManager {
     /// The snapshot must already have been provisioned by [`Self::per_view_frame_or_create`].
     pub fn copy_scene_color_snapshot_for_view(
         &self,
-        view_id: OcclusionViewId,
+        view_id: ViewId,
         encoder: &mut wgpu::CommandEncoder,
         source_color: &wgpu::Texture,
         viewport: (u32, u32),
@@ -770,19 +792,17 @@ mod tests {
     #[test]
     fn new_manager_has_no_per_view_draw() {
         let mgr = FrameResourceManager::new();
-        assert!(mgr.per_view_per_draw(OcclusionViewId::Main).is_none());
-        assert!(mgr
-            .per_view_per_draw(OcclusionViewId::OffscreenRenderTexture(42))
-            .is_none());
+        let secondary = ViewId::secondary_camera(RenderSpaceId(42), 0);
+        assert!(mgr.per_view_per_draw(ViewId::Main).is_none());
+        assert!(mgr.per_view_per_draw(secondary).is_none());
     }
 
     #[test]
     fn new_manager_has_no_per_view_frame() {
         let mgr = FrameResourceManager::new();
-        assert!(mgr.per_view_frame(OcclusionViewId::Main).is_none());
-        assert!(mgr
-            .per_view_frame(OcclusionViewId::OffscreenRenderTexture(42))
-            .is_none());
+        let secondary = ViewId::secondary_camera(RenderSpaceId(42), 0);
+        assert!(mgr.per_view_frame(ViewId::Main).is_none());
+        assert!(mgr.per_view_frame(secondary).is_none());
     }
 
     /// Shared pre-record work deduplicates only the cluster allocation shape, not snapshot needs.
@@ -831,10 +851,12 @@ mod tests {
     #[test]
     fn retire_nonexistent_is_noop() {
         let mut mgr = FrameResourceManager::new();
-        mgr.retire_per_view_per_draw(OcclusionViewId::Main);
-        mgr.retire_per_view_per_draw(OcclusionViewId::OffscreenRenderTexture(99));
-        mgr.retire_per_view_frame(OcclusionViewId::Main);
-        mgr.retire_per_view_frame(OcclusionViewId::OffscreenRenderTexture(99));
+        let secondary = ViewId::secondary_camera(RenderSpaceId(99), 0);
+        mgr.retire_per_view_per_draw(ViewId::Main);
+        mgr.retire_per_view_per_draw(secondary);
+        mgr.retire_per_view_frame(ViewId::Main);
+        mgr.retire_per_view_frame(secondary);
+        mgr.retire_view(secondary);
     }
 
     fn make_light_data(color_x: f32) -> LightData {

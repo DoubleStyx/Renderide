@@ -36,6 +36,7 @@ use super::material_system::MaterialSystem;
 use super::occlusion::OcclusionSystem;
 use super::FrameGpuBindingsError;
 use super::FrameResourceManager;
+use super::ViewResourceRegistry;
 
 /// Disjoint backend slices assembled into [`crate::render_graph::FrameRenderParams`].
 type GraphFrameParamsSplit<'a> = (
@@ -54,7 +55,7 @@ type GraphFrameParamsSplit<'a> = (
 pub use crate::assets::asset_transfer_queue::{
     MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
 };
-pub(crate) use frame_packet::FrameDrawSetup;
+pub(crate) use frame_packet::ExtractedFrameShared;
 
 /// GPU attach failed for frame binds (`@group(0/1/2)`) or embedded materials (`@group(1)`).
 #[derive(Debug, Error)]
@@ -135,6 +136,8 @@ pub struct RenderBackend {
     pub(crate) history_registry: super::HistoryRegistry,
     /// Nonblocking reflection-probe SH2 GPU projection service.
     pub(crate) reflection_probe_sh2: super::ReflectionProbeSh2System,
+    /// Retained logical-view ownership for every backend cache that lives beyond one frame.
+    view_resources: ViewResourceRegistry,
 }
 
 /// Disjoint borrows of [`MaterialSystem`], [`AssetTransferQueue`], and the GPU skin cache for world mesh forward encoding.
@@ -208,6 +211,7 @@ impl RenderBackend {
             material_batch_cache: FrameMaterialBatchCache::new(),
             history_registry: super::HistoryRegistry::new(),
             reflection_probe_sh2: super::ReflectionProbeSh2System::new(),
+            view_resources: ViewResourceRegistry::new(),
         }
     }
 
@@ -308,11 +312,6 @@ impl RenderBackend {
     /// Shared asset-transfer queues and pools for per-view recording.
     pub(crate) fn asset_transfers(&self) -> &AssetTransferQueue {
         &self.asset_transfers
-    }
-
-    /// Mutable asset-transfer queues and pools for runtime IPC handlers and tests.
-    pub(crate) fn asset_transfers_mut(&mut self) -> &mut AssetTransferQueue {
-        &mut self.asset_transfers
     }
 
     /// Shared debug HUD view for per-view recording.
@@ -682,6 +681,27 @@ impl RenderBackend {
     /// Mutable render-graph transient resource pool.
     pub(crate) fn transient_pool_mut(&mut self) -> &mut TransientPool {
         &mut self.transient_pool
+    }
+
+    /// Synchronizes backend view-scoped resource ownership against the runtime's active view list.
+    pub(crate) fn sync_active_views<I>(&mut self, active_views: I)
+    where
+        I: IntoIterator<Item = crate::render_graph::ViewId>,
+    {
+        let retired = self.view_resources.sync_active_views(active_views);
+        if retired.is_empty() {
+            return;
+        }
+        logger::debug!(
+            "retiring {} inactive view-scoped resource sets",
+            retired.len()
+        );
+        self.frame_graph_cache.release_view_resources(&retired);
+        for view_id in retired {
+            self.frame_resources.retire_view(view_id);
+            self.history_registry.retire_view(view_id);
+            let _ = self.occlusion.retire_view(view_id);
+        }
     }
 
     /// Disjoint mutable borrows and attach-time snapshots for [`crate::render_graph::FrameRenderParams`].

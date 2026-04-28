@@ -12,12 +12,12 @@ use crate::shared::RenderingContext;
 
 use super::{OcclusionSystem, RenderBackend};
 
-/// Frame-global draw-prep snapshot produced by [`RenderBackend::prepare_frame_draw_setup`].
+/// Immutable backend-owned extraction snapshot produced by [`RenderBackend::extract_frame_shared`].
 ///
 /// This is the runtime/backend hand-off for CPU-side world-mesh draw collection: the runtime owns
 /// view planning while the backend owns material routing, resolved-material caching, prepared
 /// renderables, and occlusion state.
-pub(crate) struct FrameDrawSetup<'a> {
+pub(crate) struct ExtractedFrameShared<'a> {
     /// Scene after cache flush for world-matrix lookups and cull evaluation.
     pub(crate) scene: &'a SceneCoordinator,
     /// Mesh GPU asset pool queried for bounds and skinning metadata during draw collection.
@@ -53,12 +53,12 @@ impl RenderBackend {
 
     /// Refreshes backend-owned draw-prep state and returns the immutable frame setup used by the
     /// runtime's per-view draw collection stage.
-    pub(crate) fn prepare_frame_draw_setup<'a>(
+    pub(crate) fn extract_frame_shared<'a>(
         &'a mut self,
         scene: &'a SceneCoordinator,
         render_context: RenderingContext,
         inner_parallelism: WorldMeshDrawCollectParallelism,
-    ) -> FrameDrawSetup<'a> {
+    ) -> ExtractedFrameShared<'a> {
         let property_store = self.materials.material_property_store();
         let router = self
             .materials
@@ -89,7 +89,7 @@ impl RenderBackend {
             )
         };
 
-        FrameDrawSetup {
+        ExtractedFrameShared {
             scene,
             mesh_pool: &self.asset_transfers.mesh_pool,
             property_store,

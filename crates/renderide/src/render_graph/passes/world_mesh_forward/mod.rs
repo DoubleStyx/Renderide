@@ -269,6 +269,10 @@ impl CallbackPass for WorldMeshForwardPreparePass {
         }
         Ok(())
     }
+
+    fn release_view_resources(&mut self, retired_views: &[crate::render_graph::ViewId]) {
+        self.skybox.release_view_resources(retired_views);
+    }
 }
 
 impl RasterPass for WorldMeshForwardOpaquePass {

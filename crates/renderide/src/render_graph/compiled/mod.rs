@@ -8,8 +8,7 @@ use crate::scene::SceneCoordinator;
 
 use super::error::GraphExecuteError;
 use super::frame_params::{
-    FrameViewClear, HostCameraFrame, OcclusionViewId, PrefetchedWorldMeshViewDraws,
-    WorldMeshHelperNeeds,
+    FrameViewClear, HostCameraFrame, PrefetchedWorldMeshViewDraws, ViewId, WorldMeshHelperNeeds,
 };
 use super::ids::{GroupId, PassId};
 use super::pass::{GroupScope, PassKind, PassMergeHint, PassNode};
@@ -62,6 +61,8 @@ pub enum FrameViewTarget<'a> {
 
 /// One view to render in a multi-view frame.
 pub struct FrameView<'a> {
+    /// Stable logical identity for view-scoped resources and temporal state.
+    pub view_id: ViewId,
     /// Clip planes, FOV, and matrix overrides for this view.
     pub host_camera: HostCameraFrame,
     /// Color/depth destination.
@@ -191,6 +192,7 @@ impl<'a> FrameView<'a> {
         world_mesh_draw_plan: WorldMeshDrawPlan,
     ) -> Self {
         Self {
+            view_id: ViewId::Main,
             host_camera,
             target: FrameViewTarget::Swapchain,
             draw_filter: None,
@@ -206,6 +208,7 @@ impl<'a> FrameView<'a> {
         world_mesh_draw_plan: WorldMeshDrawPlan,
     ) -> Self {
         Self {
+            view_id: ViewId::Main,
             host_camera,
             target: FrameViewTarget::ExternalMultiview(external),
             draw_filter: None,
@@ -216,6 +219,7 @@ impl<'a> FrameView<'a> {
 
     /// Builds a view that renders a secondary camera to a host render texture.
     pub fn for_offscreen_rt(
+        view_id: ViewId,
         host_camera: HostCameraFrame,
         external: ExternalOffscreenTargets<'a>,
         draw_filter: Option<CameraTransformDrawFilter>,
@@ -223,6 +227,7 @@ impl<'a> FrameView<'a> {
         world_mesh_draw_plan: WorldMeshDrawPlan,
     ) -> Self {
         Self {
+            view_id,
             host_camera,
             target: FrameViewTarget::OffscreenRt(external),
             draw_filter,
@@ -231,12 +236,9 @@ impl<'a> FrameView<'a> {
         }
     }
 
-    /// Hi-Z / occlusion slot for this view.
-    pub fn occlusion_view_id(&self) -> OcclusionViewId {
-        match self.target.offscreen_rt_asset_id() {
-            Some(id) => OcclusionViewId::OffscreenRenderTexture(id),
-            None => OcclusionViewId::Main,
-        }
+    /// Stable logical identity for this view.
+    pub fn view_id(&self) -> ViewId {
+        self.view_id
     }
 
     /// `true` when this view both targets a multiview attachment AND the host camera carries stereo
@@ -248,6 +250,18 @@ impl<'a> FrameView<'a> {
         self.target.is_multiview_target()
             && self.host_camera.vr_active
             && self.host_camera.stereo.is_some()
+    }
+}
+
+impl CompiledRenderGraph {
+    /// Releases any pass-local view-scoped caches for views that are no longer active.
+    pub(crate) fn release_view_resources(&mut self, retired_views: &[ViewId]) {
+        if retired_views.is_empty() {
+            return;
+        }
+        for pass in &mut self.passes {
+            pass.release_view_resources(retired_views);
+        }
     }
 }
 
@@ -450,7 +464,7 @@ pub(super) struct ResolvedView<'a> {
     pub(super) viewport_px: (u32, u32),
     pub(super) multiview_stereo: bool,
     pub(super) offscreen_write_render_texture_asset_id: Option<i32>,
-    pub(super) occlusion_view: OcclusionViewId,
+    pub(super) view_id: ViewId,
     pub(super) sample_count: u32,
     // MSAA views are now in the per-view blackboard (MsaaViewsSlot), resolved from graph
     // transient textures by the executor. ResolvedView no longer carries them.

@@ -36,7 +36,7 @@ use scene_snapshot::{
 ///
 /// `@group(0)` bind groups are per-view and are owned by
 /// [`crate::backend::frame_resource_manager::PerViewFrameState`], keyed by
-/// [`crate::render_graph::OcclusionViewId`], and built using
+/// [`crate::render_graph::ViewId`], and built using
 /// [`Self::build_per_view_bind_group`]. Every per-view bind group references the **same**
 /// shared cluster buffers from [`Self::cluster_cache`].
 pub struct FrameGpuResources {

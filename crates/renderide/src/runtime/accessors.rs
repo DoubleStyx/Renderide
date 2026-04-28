@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-use crate::assets::AssetTransferQueue;
 use crate::config::RendererSettingsHandle;
 use crate::connection::InitError;
 use crate::diagnostics::DebugHudInput;
@@ -66,58 +65,6 @@ impl RendererRuntime {
     /// Whether the host last reported VR mode as active (see [`crate::render_graph::HostCameraFrame::vr_active`]).
     pub fn vr_active(&self) -> bool {
         self.host_camera.vr_active
-    }
-
-    /// Mesh pool and VRAM accounting (draw prep, debugging).
-    pub fn mesh_pool(&self) -> &crate::resources::MeshPool {
-        self.backend.mesh_pool()
-    }
-
-    /// Mutable mesh pool (eviction experiments).
-    pub fn mesh_pool_mut(&mut self) -> &mut crate::resources::MeshPool {
-        self.backend.mesh_pool_mut()
-    }
-
-    /// Resident Texture2D table (bind-group prep).
-    pub fn texture_pool(&self) -> &crate::resources::TexturePool {
-        self.backend.texture_pool()
-    }
-
-    /// Mutable texture pool.
-    pub fn texture_pool_mut(&mut self) -> &mut crate::resources::TexturePool {
-        self.backend.texture_pool_mut()
-    }
-
-    /// Mesh/texture upload queues, pools, and IPC budgets ([`AssetTransferQueue`]).
-    pub fn asset_transfers_mut(&mut self) -> &mut AssetTransferQueue {
-        self.backend.asset_transfers_mut()
-    }
-
-    /// Material property store (host uniforms, textures, shader asset bindings).
-    pub fn material_property_store(&self) -> &crate::assets::material::MaterialPropertyStore {
-        self.backend.material_property_store()
-    }
-
-    /// Mutable store for tests and tooling.
-    pub fn material_property_store_mut(
-        &mut self,
-    ) -> &mut crate::assets::material::MaterialPropertyStore {
-        self.backend.material_property_store_mut()
-    }
-
-    /// Property name interning for material batches.
-    pub fn property_id_registry(&self) -> &crate::assets::material::PropertyIdRegistry {
-        self.backend.property_id_registry()
-    }
-
-    /// Registered material families and pipeline cache (after GPU attach).
-    pub fn material_registry(&self) -> Option<&crate::materials::MaterialRegistry> {
-        self.backend.material_registry()
-    }
-
-    /// Mutable registry (pipeline cache and shader routes).
-    pub fn material_registry_mut(&mut self) -> Option<&mut crate::materials::MaterialRegistry> {
-        self.backend.material_registry_mut()
     }
 
     /// Host [`RendererInitData`] after connect, before [`Self::take_pending_init`] consumes it.

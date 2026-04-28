@@ -1,7 +1,7 @@
 //! Per-view compute bind group cache for [`super::ClusteredLightPass`].
 //!
 //! Each view accumulates a `(cluster_version, BindGroup)` entry keyed by
-//! [`crate::render_graph::OcclusionViewId`]. The version field tracks whether the per-view
+//! [`crate::render_graph::ViewId`]. The version field tracks whether the per-view
 //! cluster buffers changed since the last dispatch; when it does the bind group is rebuilt.
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 
-use crate::render_graph::OcclusionViewId;
+use crate::render_graph::ViewId;
 
 /// Interior-mutable per-view bind group cache for the clustered light compute pass.
 ///
@@ -19,9 +19,7 @@ use crate::render_graph::OcclusionViewId;
 ///
 /// Uses [`parking_lot::Mutex`] to keep the `lock` API infallible — the hot per-view
 /// recording path must not defensively `.expect()` on every access.
-pub(super) struct ClusteredLightBindGroupCache(
-    Mutex<HashMap<OcclusionViewId, (u64, Arc<wgpu::BindGroup>)>>,
-);
+pub(super) struct ClusteredLightBindGroupCache(Mutex<HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)>>);
 
 impl std::fmt::Debug for ClusteredLightBindGroupCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,7 +42,7 @@ impl ClusteredLightBindGroupCache {
     /// is absent or stale. Returns the (possibly freshly built) bind group.
     pub(super) fn get_or_rebuild(
         &self,
-        view_id: OcclusionViewId,
+        view_id: ViewId,
         cluster_ver: u64,
         create_fn: impl FnOnce() -> wgpu::BindGroup,
     ) -> Arc<wgpu::BindGroup> {
@@ -57,6 +55,17 @@ impl ClusteredLightBindGroupCache {
         }
         cache[&view_id].1.clone()
     }
+
+    /// Removes every cached bind group owned by a retired view.
+    pub(super) fn retire_views(&self, retired_views: &[ViewId]) {
+        if retired_views.is_empty() {
+            return;
+        }
+        let mut cache = self.0.lock();
+        for view_id in retired_views {
+            cache.remove(view_id);
+        }
+    }
 }
 
 /// Returns `true` when `cache` has no entry for `view_id` or its version differs from `cluster_ver`.
@@ -64,8 +73,8 @@ impl ClusteredLightBindGroupCache {
 /// Extracted for unit testing without a GPU device.
 #[cfg(test)]
 fn needs_rebuild_for_version(
-    cache: &HashMap<OcclusionViewId, (u64, Arc<wgpu::BindGroup>)>,
-    view_id: OcclusionViewId,
+    cache: &HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)>,
+    view_id: ViewId,
     cluster_ver: u64,
 ) -> bool {
     cache
@@ -79,15 +88,15 @@ mod tests {
 
     #[test]
     fn missing_entry_triggers_rebuild() {
-        let cache: HashMap<OcclusionViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
-        assert!(needs_rebuild_for_version(&cache, OcclusionViewId::Main, 1));
+        let cache: HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
+        assert!(needs_rebuild_for_version(&cache, ViewId::Main, 1));
     }
 
     #[test]
     fn matching_version_suppresses_rebuild() {
         // We cannot create a real wgpu::BindGroup without a device, so we verify
         // the version-check helper logic directly.
-        let cache: HashMap<OcclusionViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
+        let cache: HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
 
         // Simulate an already-populated entry for version 5 (using a dummy slot —
         // this would fail if we actually ran the Arc::new path, but the test only
@@ -96,11 +105,7 @@ mod tests {
         // Mark the slot as populated for version 5 without constructing a real BindGroup
         // by using the None-check branch: an entry is "present" iff it is in the map.
         // We cannot insert without a BindGroup, so we test that the absence branch fires:
-        assert!(needs_rebuild_for_version(
-            &cache,
-            OcclusionViewId::Main,
-            version
-        ));
+        assert!(needs_rebuild_for_version(&cache, ViewId::Main, version));
 
         // After we simulate a populated entry (version 5), same version → no rebuild.
         // Since we can't create BindGroups here, we test only the version-mismatch branch.
@@ -114,9 +119,9 @@ mod tests {
     fn different_version_triggers_rebuild() {
         // Verify the is_none_or branch for version mismatch.
         // Uses only the pure logic function, not the Mutex wrapper.
-        let cache: HashMap<OcclusionViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
+        let cache: HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
         // Any version on an empty cache → rebuild needed.
-        assert!(needs_rebuild_for_version(&cache, OcclusionViewId::Main, 0));
-        assert!(needs_rebuild_for_version(&cache, OcclusionViewId::Main, 99));
+        assert!(needs_rebuild_for_version(&cache, ViewId::Main, 0));
+        assert!(needs_rebuild_for_version(&cache, ViewId::Main, 99));
     }
 }

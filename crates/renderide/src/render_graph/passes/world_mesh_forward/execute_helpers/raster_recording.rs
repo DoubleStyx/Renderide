@@ -114,7 +114,7 @@ fn record_world_mesh_forward_graph_raster(
     let Some(per_draw_bg) = frame
         .shared
         .frame_resources
-        .per_view_per_draw(frame.view.occlusion_view)
+        .per_view_per_draw(frame.view.view_id)
         .map(|d| d.lock().bind_group.clone())
     else {
         return false;
@@ -122,7 +122,7 @@ fn record_world_mesh_forward_graph_raster(
     let Some(frame_bg_arc) = frame
         .shared
         .frame_resources
-        .per_view_frame(frame.view.occlusion_view)
+        .per_view_frame(frame.view.view_id)
         .map(|s| s.frame_bind_group.clone())
     else {
         return false;

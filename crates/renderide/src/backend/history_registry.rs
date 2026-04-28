@@ -16,7 +16,7 @@ use std::sync::Arc;
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 
-use crate::render_graph::{HistorySlotId, OcclusionViewId};
+use crate::render_graph::{HistorySlotId, ViewId};
 
 /// Errors returned by [`HistoryRegistry`] registration APIs.
 #[derive(Debug, thiserror::Error)]
@@ -40,7 +40,7 @@ pub enum HistoryResourceScope {
     /// One global resource pair shared by all views.
     Global,
     /// One resource pair for one logical occlusion/render view.
-    View(OcclusionViewId),
+    View(ViewId),
 }
 
 /// Concrete key used by the registry's texture and buffer maps.
@@ -444,6 +444,17 @@ impl HistoryRegistry {
     pub fn buffer_slot_count(&self) -> usize {
         self.buffers.len()
     }
+
+    /// Retires every texture and buffer slot that belongs to `scope`.
+    pub fn retire_scope(&mut self, scope: HistoryResourceScope) {
+        self.textures.retain(|key, _| key.scope != scope);
+        self.buffers.retain(|key, _| key.scope != scope);
+    }
+
+    /// Retires every texture and buffer slot scoped to one logical view.
+    pub fn retire_view(&mut self, view_id: ViewId) {
+        self.retire_scope(HistoryResourceScope::View(view_id));
+    }
 }
 
 fn texture_specs_equivalent(a: &TextureHistorySpec, b: &TextureHistorySpec) -> bool {
@@ -505,6 +516,7 @@ fn create_texture_history_mip_views(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::RenderSpaceId;
 
     fn tex_spec() -> TextureHistorySpec {
         TextureHistorySpec {
@@ -532,6 +544,11 @@ mod tests {
 
     const SLOT_A: HistorySlotId = HistorySlotId::new("test_a");
     const SLOT_B: HistorySlotId = HistorySlotId::new("test_b");
+
+    /// Builds a secondary-camera view id for history-registry tests.
+    fn secondary_view(render_space_id: i32, renderable_index: i32) -> ViewId {
+        ViewId::secondary_camera(RenderSpaceId(render_space_id), renderable_index)
+    }
 
     #[test]
     fn texture_slot_registration_is_idempotent() {
@@ -579,15 +596,11 @@ mod tests {
     fn scoped_texture_slots_do_not_alias_global_or_other_views() {
         let mut reg = HistoryRegistry::new();
         reg.register_texture(SLOT_A, tex_spec()).unwrap();
+        reg.register_texture_scoped(SLOT_A, HistoryResourceScope::View(ViewId::Main), tex_spec())
+            .unwrap();
         reg.register_texture_scoped(
             SLOT_A,
-            HistoryResourceScope::View(OcclusionViewId::Main),
-            tex_spec(),
-        )
-        .unwrap();
-        reg.register_texture_scoped(
-            SLOT_A,
-            HistoryResourceScope::View(OcclusionViewId::OffscreenRenderTexture(7)),
+            HistoryResourceScope::View(secondary_view(7, 0)),
             tex_spec(),
         )
         .unwrap();
@@ -595,13 +608,38 @@ mod tests {
         assert_eq!(reg.texture_slot_count(), 3);
         assert!(reg.texture_slot(SLOT_A).is_some());
         assert!(reg
-            .texture_slot_scoped(SLOT_A, HistoryResourceScope::View(OcclusionViewId::Main))
+            .texture_slot_scoped(SLOT_A, HistoryResourceScope::View(ViewId::Main))
             .is_some());
         assert!(reg
-            .texture_slot_scoped(
-                SLOT_A,
-                HistoryResourceScope::View(OcclusionViewId::OffscreenRenderTexture(7)),
-            )
+            .texture_slot_scoped(SLOT_A, HistoryResourceScope::View(secondary_view(7, 0)))
+            .is_some());
+    }
+
+    /// Retiring a view-scoped history resource leaves global and unrelated view scopes intact.
+    #[test]
+    fn retire_view_removes_only_matching_scope() {
+        let mut reg = HistoryRegistry::new();
+        let retired = secondary_view(7, 0);
+        let surviving = secondary_view(7, 1);
+        reg.register_texture(SLOT_A, tex_spec()).unwrap();
+        reg.register_texture_scoped(SLOT_A, HistoryResourceScope::View(retired), tex_spec())
+            .unwrap();
+        reg.register_buffer_scoped(SLOT_B, HistoryResourceScope::View(retired), buf_spec())
+            .unwrap();
+        reg.register_texture_scoped(SLOT_A, HistoryResourceScope::View(surviving), tex_spec())
+            .unwrap();
+
+        reg.retire_view(retired);
+
+        assert!(reg.texture_slot(SLOT_A).is_some());
+        assert!(reg
+            .texture_slot_scoped(SLOT_A, HistoryResourceScope::View(retired))
+            .is_none());
+        assert!(reg
+            .buffer_slot_scoped(SLOT_B, HistoryResourceScope::View(retired))
+            .is_none());
+        assert!(reg
+            .texture_slot_scoped(SLOT_A, HistoryResourceScope::View(surviving))
             .is_some());
     }
 

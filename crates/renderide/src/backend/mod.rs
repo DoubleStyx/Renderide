@@ -25,6 +25,7 @@ mod per_view_resource_map;
 mod reflection_probe_sh2;
 mod render_backend;
 mod skybox_specular;
+mod view_resource_registry;
 
 pub use crate::assets::AssetTransferQueue;
 pub use cluster_gpu::{
@@ -63,9 +64,10 @@ pub(crate) use occlusion::HiZBuildInput;
 pub use occlusion::OcclusionSystem;
 pub use per_draw_resources::PerDrawResources;
 pub(crate) use reflection_probe_sh2::ReflectionProbeSh2System;
-pub(crate) use render_backend::{FrameDrawSetup, WorldMeshForwardEncodeRefs};
+pub(crate) use render_backend::{ExtractedFrameShared, WorldMeshForwardEncodeRefs};
 pub use render_backend::{
     RenderBackend, RenderBackendAttachDesc, RenderBackendAttachError, MAX_ASSET_INTEGRATION_QUEUED,
     MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
 };
 pub(crate) use skybox_specular::resolve_active_main_skybox_specular_environment;
+pub(crate) use view_resource_registry::ViewResourceRegistry;

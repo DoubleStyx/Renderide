@@ -146,7 +146,7 @@ impl CompiledRenderGraph {
         clear: super::super::super::frame_params::FrameViewClear,
     ) -> crate::render_graph::frame_params::FrameRenderParams<'a> {
         profiling::scope!("graph::per_view::build_frame_params");
-        let hi_z_slot = shared.occlusion.ensure_hi_z_state(resolved.occlusion_view);
+        let hi_z_slot = shared.occlusion.ensure_hi_z_state(resolved.view_id);
         helpers::frame_render_params_from_shared(
             FrameSystemsShared {
                 scene: shared.scene,
@@ -248,8 +248,12 @@ impl CompiledRenderGraph {
         let pass_profiler = gpu.take_gpu_profiler();
 
         {
-            let resolved =
-                Self::resolve_view_from_target(&first.target, gpu, backbuffer_view_holder)?;
+            let resolved = Self::resolve_view_from_target(
+                first.view_id(),
+                &first.target,
+                gpu,
+                backbuffer_view_holder,
+            )?;
             let resolved_resources = self.resolve_frame_global_transients(
                 &resolved,
                 transient_by_key,

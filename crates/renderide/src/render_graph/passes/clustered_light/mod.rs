@@ -33,7 +33,7 @@ use crate::render_graph::pass::{ComputePass, PassBuilder};
 use crate::render_graph::resources::{
     BufferAccess, BufferHandle, ImportedBufferHandle, StorageAccess,
 };
-use crate::render_graph::OcclusionViewId;
+use crate::render_graph::ViewId;
 use crate::scene::SceneCoordinator;
 
 /// CPU layout for the compute shader `ClusterParams` uniform (WGSL `struct` + tail pad).
@@ -412,7 +412,7 @@ impl ClusteredLightPass {
     fn ensure_cluster_compute_bind_group(
         &self,
         device: &wgpu::Device,
-        view_id: OcclusionViewId,
+        view_id: ViewId,
         cluster_ver: u64,
         bufs: ClusterComputeBuffers<'_>,
         bgl: &wgpu::BindGroupLayout,
@@ -499,6 +499,10 @@ impl ComputePass for ClusteredLightPass {
         Ok(())
     }
 
+    fn release_view_resources(&mut self, retired_views: &[ViewId]) {
+        self.bind_group_cache.retire_views(retired_views);
+    }
+
     fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("clustered_light::record_dispatch");
         let Some(frame) = ctx.frame.as_mut() else {
@@ -513,7 +517,7 @@ impl ComputePass for ClusteredLightPass {
         let hc = frame.view.host_camera;
         let scene = frame.shared.scene;
         let stereo = hc.vr_active && hc.stereo.is_some() && frame.view.multiview_stereo;
-        let view_id = frame.view.occlusion_view;
+        let view_id = frame.view.view_id;
 
         let light_count = frame.shared.frame_resources.frame_light_count_u32();
 

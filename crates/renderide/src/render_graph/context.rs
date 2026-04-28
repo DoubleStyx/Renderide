@@ -383,7 +383,7 @@ pub struct PostSubmitContext<'a> {
     /// Hi-Z readback and temporal bookkeeping for this view after submit.
     pub occlusion: &'a mut crate::backend::OcclusionSystem,
     /// Which occlusion view this submit covered.
-    pub occlusion_view: super::OcclusionViewId,
+    pub view_id: super::ViewId,
     /// Host camera snapshot for the view.
     pub host_camera: super::HostCameraFrame,
 }

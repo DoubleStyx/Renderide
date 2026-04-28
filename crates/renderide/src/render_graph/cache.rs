@@ -5,6 +5,7 @@ use wgpu::TextureFormat;
 use super::compiled::CompiledRenderGraph;
 use super::error::GraphBuildError;
 use super::post_processing::PostProcessChainSignature;
+use super::ViewId;
 
 /// Inputs that invalidate a compiled main graph (extent, MSAA, multiview, surface format,
 /// post-processing chain topology).
@@ -80,6 +81,16 @@ impl GraphCache {
     /// Restores the graph after [`Self::take_graph`].
     pub fn restore_graph(&mut self, graph: CompiledRenderGraph) {
         self.graph = Some(graph);
+    }
+
+    /// Releases view-scoped pass caches for views that are no longer active.
+    pub fn release_view_resources(&mut self, retired_views: &[ViewId]) {
+        if retired_views.is_empty() {
+            return;
+        }
+        if let Some(graph) = self.graph.as_mut() {
+            graph.release_view_resources(retired_views);
+        }
     }
 
     /// Pass count for diagnostics when a graph is cached.

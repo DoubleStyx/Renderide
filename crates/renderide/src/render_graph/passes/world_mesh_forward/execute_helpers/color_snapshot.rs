@@ -29,7 +29,7 @@ pub(crate) fn encode_world_mesh_forward_color_snapshot(
         .shared
         .frame_resources
         .copy_scene_color_snapshot_for_view(
-            frame.view.occlusion_view,
+            frame.view.view_id,
             encoder,
             &source_color.texture,
             frame.view.viewport_px,

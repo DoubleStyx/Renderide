@@ -11,7 +11,7 @@ use super::super::super::context::{
     ResolvedImportedHistoryTexture, ResolvedImportedTexture,
 };
 use super::super::super::error::GraphExecuteError;
-use super::super::super::frame_params::OcclusionViewId;
+use super::super::super::frame_params::ViewId;
 use super::super::super::resources::{
     BackendFrameBufferKind, BufferImportSource, FrameTargetRole, HistorySlotId, ImportSource,
     ImportedBufferDecl, ImportedBufferHandle, ImportedTextureDecl, ImportedTextureHandle,
@@ -250,7 +250,7 @@ impl CompiledRenderGraph {
                     .map(|refs| refs.cluster_light_indices.clone()),
                 BufferImportSource::BackendFrameResource(BackendFrameBufferKind::PerDrawSlab) => {
                     frame_resources
-                        .per_view_per_draw(resolved.occlusion_view)
+                        .per_view_per_draw(resolved.view_id)
                         .map(|per_draw| per_draw.lock().per_draw_storage.clone())
                 }
                 BufferImportSource::External => None,
@@ -285,6 +285,7 @@ impl CompiledRenderGraph {
 
     /// Resolves a [`FrameViewTarget`] into a [`ResolvedView`] with color/depth attachments.
     pub(super) fn resolve_view_from_target<'a>(
+        view_id: ViewId,
         target: &'a FrameViewTarget<'a>,
         gpu: &'a mut GpuContext,
         backbuffer_view_holder: &'a Option<wgpu::TextureView>,
@@ -309,7 +310,7 @@ impl CompiledRenderGraph {
                     viewport_px,
                     multiview_stereo: false,
                     offscreen_write_render_texture_asset_id: None,
-                    occlusion_view: OcclusionViewId::Main,
+                    view_id: ViewId::Main,
                     sample_count,
                 })
             }
@@ -323,7 +324,7 @@ impl CompiledRenderGraph {
                     viewport_px: ext.extent_px,
                     multiview_stereo: true,
                     offscreen_write_render_texture_asset_id: None,
-                    occlusion_view: OcclusionViewId::Main,
+                    view_id: ViewId::Main,
                     sample_count,
                 })
             }
@@ -335,9 +336,7 @@ impl CompiledRenderGraph {
                 viewport_px: ext.extent_px,
                 multiview_stereo: false,
                 offscreen_write_render_texture_asset_id: Some(ext.render_texture_asset_id),
-                occlusion_view: OcclusionViewId::OffscreenRenderTexture(
-                    ext.render_texture_asset_id,
-                ),
+                view_id,
                 sample_count: 1,
             }),
         }
@@ -345,11 +344,13 @@ impl CompiledRenderGraph {
 
     /// Same as [`Self::resolve_view_from_target`] but owns its color/depth handles.
     pub(super) fn resolve_owned_view_from_target(
+        view_id: ViewId,
         target: &FrameViewTarget<'_>,
         gpu: &mut GpuContext,
         backbuffer_view_holder: &Option<wgpu::TextureView>,
     ) -> Result<OwnedResolvedView, GraphExecuteError> {
-        let resolved = Self::resolve_view_from_target(target, gpu, backbuffer_view_holder)?;
+        let resolved =
+            Self::resolve_view_from_target(view_id, target, gpu, backbuffer_view_holder)?;
         Ok(OwnedResolvedView {
             depth_texture: resolved.depth_texture.clone(),
             depth_view: resolved.depth_view.clone(),
@@ -359,7 +360,7 @@ impl CompiledRenderGraph {
             multiview_stereo: resolved.multiview_stereo,
             offscreen_write_render_texture_asset_id: resolved
                 .offscreen_write_render_texture_asset_id,
-            occlusion_view: resolved.occlusion_view,
+            view_id: resolved.view_id,
             sample_count: resolved.sample_count,
         })
     }
@@ -371,7 +372,7 @@ fn history_scope_for_texture(
     resolved: &ResolvedView<'_>,
 ) -> HistoryResourceScope {
     if slot == HistorySlotId::HI_Z {
-        HistoryResourceScope::View(resolved.occlusion_view)
+        HistoryResourceScope::View(resolved.view_id)
     } else {
         HistoryResourceScope::Global
     }
@@ -383,7 +384,7 @@ fn history_scope_for_buffer(
     resolved: &ResolvedView<'_>,
 ) -> HistoryResourceScope {
     if slot == HistorySlotId::HI_Z {
-        HistoryResourceScope::View(resolved.occlusion_view)
+        HistoryResourceScope::View(resolved.view_id)
     } else {
         HistoryResourceScope::Global
     }

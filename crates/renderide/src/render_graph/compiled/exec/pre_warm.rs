@@ -124,7 +124,7 @@ impl CompiledRenderGraph {
         profiling::scope!("graph::pre_warm_per_view");
         let mut mesh_ids_needing_extended_streams = std::collections::HashSet::new();
         for view in views {
-            let occlusion_view = view.occlusion_view_id();
+            let view_id = view.view_id();
             let viewport = view.target.extent_px(mv_ctx.gpu);
             let stereo = view.is_multiview_stereo_active();
             let Ok(depth_format) = view.target.depth_format(mv_ctx.gpu) else {
@@ -141,19 +141,19 @@ impl CompiledRenderGraph {
                 needs_color_snapshot: helper_needs.color_snapshot,
             };
             let _ = mv_ctx.backend.frame_resources.per_view_frame_or_create(
-                occlusion_view,
+                view_id,
                 mv_ctx.device,
                 layout,
             );
-            let _ = mv_ctx.backend.occlusion.ensure_hi_z_state(occlusion_view);
+            let _ = mv_ctx.backend.occlusion.ensure_hi_z_state(view_id);
             let _ = mv_ctx
                 .backend
                 .frame_resources
-                .per_view_per_draw_or_create(occlusion_view, mv_ctx.device);
+                .per_view_per_draw_or_create(view_id, mv_ctx.device);
             let _ = mv_ctx
                 .backend
                 .frame_resources
-                .per_view_per_draw_scratch_or_create(occlusion_view);
+                .per_view_per_draw_scratch_or_create(view_id);
             if let Some(collection) = view.world_mesh_draw_plan.as_prefetched() {
                 for item in &collection.items {
                     if item.batch_key.embedded_needs_extended_vertex_streams
@@ -178,7 +178,7 @@ impl CompiledRenderGraph {
     ///
     /// Hi-Z still owns CPU snapshots and readback policy through [`crate::backend::OcclusionSystem`],
     /// but its graph-declared persistent pyramid now has a registry-backed lifetime keyed by
-    /// [`HistorySlotId::HI_Z`] plus the view's [`crate::render_graph::OcclusionViewId`].
+    /// [`HistorySlotId::HI_Z`] plus the view's [`crate::render_graph::ViewId`].
     pub(super) fn register_history_resources_for_views(
         mv_ctx: &mut MultiViewExecutionContext<'_>,
         views: &[FrameView<'_>],
@@ -195,7 +195,7 @@ impl CompiledRenderGraph {
                 .history_registry_mut()
                 .register_texture_scoped(
                     HistorySlotId::HI_Z,
-                    HistoryResourceScope::View(view.occlusion_view_id()),
+                    HistoryResourceScope::View(view.view_id()),
                     spec,
                 )?;
         }
@@ -257,6 +257,7 @@ impl CompiledRenderGraph {
         profiling::scope!("render::pre_resolve_transients");
         for view in views {
             let resolved = Self::resolve_view_from_target(
+                view.view_id(),
                 &view.target,
                 mv_ctx.gpu,
                 mv_ctx.backbuffer_view_holder,

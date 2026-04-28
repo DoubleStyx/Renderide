@@ -17,7 +17,7 @@ use crate::render_graph::frame_params::{
     WorldMeshForwardPipelineState,
 };
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
-use crate::render_graph::OcclusionViewId;
+use crate::render_graph::ViewId;
 use crate::shared::CameraClearMode;
 
 /// Minimum binding size for [`SkyboxViewUniforms`].
@@ -153,7 +153,7 @@ pub(super) struct SkyboxRenderer {
     view_layout: OnceLock<wgpu::BindGroupLayout>,
     material_pipelines: Mutex<HashMap<SkyboxPipelineKey, Arc<wgpu::RenderPipeline>>>,
     clear_pipelines: Mutex<HashMap<ClearPipelineKey, Arc<wgpu::RenderPipeline>>>,
-    view_bindings: Mutex<HashMap<OcclusionViewId, SkyboxViewBinding>>,
+    view_bindings: Mutex<HashMap<ViewId, SkyboxViewBinding>>,
 }
 
 impl std::fmt::Debug for SkyboxRenderer {
@@ -174,6 +174,17 @@ impl Default for SkyboxRenderer {
 }
 
 impl SkyboxRenderer {
+    /// Removes draw-local uniform bindings for views that are no longer active.
+    pub(super) fn release_view_resources(&self, retired_views: &[ViewId]) {
+        if retired_views.is_empty() {
+            return;
+        }
+        let mut bindings = self.view_bindings.lock();
+        for view_id in retired_views {
+            bindings.remove(view_id);
+        }
+    }
+
     /// Prepares the background draw for this view, if any.
     pub(super) fn prepare(
         &self,
@@ -295,7 +306,7 @@ impl SkyboxRenderer {
         upload_batch: &FrameUploadBatch,
         frame: &FrameRenderParams<'_>,
     ) -> Arc<wgpu::BindGroup> {
-        let view_id = frame.view.occlusion_view;
+        let view_id = frame.view.view_id;
         let uniforms = SkyboxViewUniforms::from_frame(frame);
         let (buffer, bind_group) = {
             let mut bindings = self.view_bindings.lock();
@@ -426,7 +437,7 @@ pub(super) fn record_prepared_skybox(
             let Some(frame_bg) = frame
                 .shared
                 .frame_resources
-                .per_view_frame(frame.view.occlusion_view)
+                .per_view_frame(frame.view.view_id)
                 .map(|s| s.frame_bind_group.clone())
             else {
                 return false;

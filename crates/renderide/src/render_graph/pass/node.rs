@@ -228,6 +228,16 @@ impl PassNode {
             Self::Callback(p) => p.post_submit(ctx),
         }
     }
+
+    /// Releases view-scoped caches for views that are no longer active.
+    pub(crate) fn release_view_resources(&mut self, retired_views: &[crate::render_graph::ViewId]) {
+        match self {
+            Self::Raster(p) => p.release_view_resources(retired_views),
+            Self::Compute(p) => p.release_view_resources(retired_views),
+            Self::Copy(p) => p.release_view_resources(retired_views),
+            Self::Callback(p) => p.release_view_resources(retired_views),
+        }
+    }
 }
 
 // SAFETY: every variant payload (`RasterPass`, `ComputePass`, …) is a `Box<dyn Trait + Send>`;

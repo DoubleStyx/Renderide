@@ -25,9 +25,7 @@ use crate::scene::SceneCoordinator;
 
 use super::super::context::{GraphResolvedResources, PostSubmitContext};
 use super::super::error::GraphExecuteError;
-use super::super::frame_params::{
-    FrameViewClear, HostCameraFrame, OcclusionViewId, PerViewHudOutputs,
-};
+use super::super::frame_params::{FrameViewClear, HostCameraFrame, PerViewHudOutputs, ViewId};
 use super::{
     CompiledRenderGraph, FrameView, FrameViewTarget, MultiViewExecutionContext, ResolvedView,
     WorldMeshDrawPlan,
@@ -54,7 +52,7 @@ pub(super) struct PerViewEncodeOutput {
 /// Completed per-view recording result, including ordering metadata for single-submit assembly.
 pub(super) struct PerViewRecordOutput {
     /// Stable occlusion slot used by post-submit hooks.
-    pub(super) occlusion_view: OcclusionViewId,
+    pub(super) view_id: ViewId,
     /// Host camera snapshot paired with the view.
     pub(super) host_camera: HostCameraFrame,
     /// Encoded GPU work for the view.
@@ -81,7 +79,7 @@ pub(super) struct OwnedResolvedView {
     /// Optional offscreen render-texture asset id being written this pass.
     pub(super) offscreen_write_render_texture_asset_id: Option<i32>,
     /// Stable occlusion slot for the view.
-    pub(super) occlusion_view: OcclusionViewId,
+    pub(super) view_id: ViewId,
     /// Effective sample count for the view.
     pub(super) sample_count: u32,
 }
@@ -97,7 +95,7 @@ impl OwnedResolvedView {
             viewport_px: self.viewport_px,
             multiview_stereo: self.multiview_stereo,
             offscreen_write_render_texture_asset_id: self.offscreen_write_render_texture_asset_id,
-            occlusion_view: self.occlusion_view,
+            view_id: self.view_id,
             sample_count: self.sample_count,
         }
     }
@@ -110,7 +108,7 @@ pub(super) struct PerViewWorkItem {
     /// Host camera snapshot for the view.
     pub(super) host_camera: HostCameraFrame,
     /// Stable occlusion slot used by post-submit hooks.
-    pub(super) occlusion_view: OcclusionViewId,
+    pub(super) view_id: ViewId,
     /// Optional secondary-camera transform filter.
     pub(super) draw_filter:
         Option<crate::render_graph::world_mesh_draw_prep::CameraTransformDrawFilter>,
@@ -195,7 +193,7 @@ struct RecordedPerViewBatch {
     /// One command buffer per view in input order.
     per_view_cmds: Vec<wgpu::CommandBuffer>,
     /// Per-view occlusion slot + host camera pairs used for Hi-Z callbacks and post-submit hooks.
-    per_view_occlusion_info: Vec<(OcclusionViewId, HostCameraFrame)>,
+    per_view_occlusion_info: Vec<(ViewId, HostCameraFrame)>,
     /// HUD payloads to apply after submit, parallel to `per_view_cmds`.
     per_view_hud_outputs: Vec<Option<PerViewHudOutputs>>,
     /// Optional command buffer that resolves per-view GPU profiler queries.
@@ -233,7 +231,7 @@ struct SubmitFrameInputs<'a> {
     /// HUD payloads to apply after submit, parallel to `per_view_cmds`.
     per_view_hud_outputs: Vec<Option<PerViewHudOutputs>>,
     /// Per-view occlusion slot + host camera pairs used for Hi-Z callbacks.
-    per_view_occlusion_info: &'a [(OcclusionViewId, HostCameraFrame)],
+    per_view_occlusion_info: &'a [(ViewId, HostCameraFrame)],
     /// Swapchain scope whose acquired texture (if any) is taken on submit.
     swapchain_scope: &'a mut super::super::swapchain_scope::SwapchainScope,
     /// Optional swapchain backbuffer view for the HUD encoder.
@@ -294,7 +292,7 @@ impl CompiledRenderGraph {
     /// Per-view `Queue::write_buffer` calls (per-draw slab, frame uniforms, cluster params) happen
     /// during per-view callback passes. Since all writes are issued BEFORE the single submit, wgpu
     /// guarantees they are visible to every GPU command in that submit. Each view owns its own
-    /// per-draw slab buffer (keyed by [`OcclusionViewId`]), so views never compete for buffer
+    /// per-draw slab buffer (keyed by [`ViewId`]), so views never compete for buffer
     /// space.
     ///
     /// ## Per-view frame plan
@@ -483,12 +481,12 @@ impl CompiledRenderGraph {
             n_views,
         )?;
         let mut per_view_cmds: Vec<wgpu::CommandBuffer> = Vec::with_capacity(n_views);
-        let mut per_view_occlusion_info: Vec<(OcclusionViewId, HostCameraFrame)> =
+        let mut per_view_occlusion_info: Vec<(ViewId, HostCameraFrame)> =
             Vec::with_capacity(n_views);
         let mut per_view_hud_outputs: Vec<Option<PerViewHudOutputs>> = Vec::with_capacity(n_views);
         for output in per_view_outputs {
             per_view_cmds.push(output.command_buffer);
-            per_view_occlusion_info.push((output.occlusion_view, output.host_camera));
+            per_view_occlusion_info.push((output.view_id, output.host_camera));
             per_view_hud_outputs.push(output.hud_outputs);
         }
         let per_view_profiler_cmd = per_view_profiler.as_mut().map(|profiler| {
@@ -597,8 +595,8 @@ impl CompiledRenderGraph {
         // buffer.
         let hi_z_callbacks: Vec<Box<dyn FnOnce() + Send + 'static>> = per_view_occlusion_info
             .iter()
-            .filter_map(|(occlusion_view, _hc)| {
-                let state = mv_ctx.backend.occlusion.ensure_hi_z_state(*occlusion_view);
+            .filter_map(|(view_id, _hc)| {
+                let state = mv_ctx.backend.occlusion.ensure_hi_z_state(*view_id);
                 let ws = state.lock().take_encoded_slot()?;
                 let cb: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
                     profiling::scope!("hi_z::on_submitted_callback");
@@ -630,7 +628,7 @@ impl CompiledRenderGraph {
         mv_ctx: &mut MultiViewExecutionContext<'_>,
         views: &[FrameView<'_>],
         device: &wgpu::Device,
-        per_view_occlusion_info: &[(OcclusionViewId, HostCameraFrame)],
+        per_view_occlusion_info: &[(ViewId, HostCameraFrame)],
     ) -> Result<(), GraphExecuteError> {
         // Frame-global post-submit (uses first view's occlusion slot).
         if let Some((first_occlusion, first_hc)) = per_view_occlusion_info.first().copied() {
@@ -638,7 +636,7 @@ impl CompiledRenderGraph {
             let mut post_ctx = PostSubmitContext {
                 device,
                 occlusion: &mut mv_ctx.backend.occlusion,
-                occlusion_view: first_occlusion,
+                view_id: first_occlusion,
                 host_camera: first_hc,
             };
             for &pass_idx in self.schedule.frame_global_pass_indices() {
@@ -651,14 +649,12 @@ impl CompiledRenderGraph {
         // Per-view post-submit.
         {
             profiling::scope!("graph::post_submit_per_view");
-            for (view, (occlusion_view, host_camera)) in
-                views.iter().zip(per_view_occlusion_info.iter())
-            {
+            for (view, (view_id, host_camera)) in views.iter().zip(per_view_occlusion_info.iter()) {
                 let _ = view;
                 let mut post_ctx = PostSubmitContext {
                     device,
                     occlusion: &mut mv_ctx.backend.occlusion,
-                    occlusion_view: *occlusion_view,
+                    view_id: *view_id,
                     host_camera: *host_camera,
                 };
                 for &pass_idx in self.schedule.per_view_pass_indices() {
@@ -680,12 +676,12 @@ impl CompiledRenderGraph {
         profiling::scope!("graph::prepare_per_view_work_items");
         let mut work_items = Vec::with_capacity(views.len());
         for (view_idx, view) in views.iter_mut().enumerate() {
-            let occlusion_view = view.occlusion_view_id();
+            let view_id = view.view_id();
             let host_camera = view.host_camera;
             let per_view_frame_bg_and_buf = mv_ctx
                 .backend
                 .frame_resources
-                .per_view_frame(occlusion_view)
+                .per_view_frame(view_id)
                 .map(|state| {
                     (
                         state.frame_bind_group.clone(),
@@ -695,7 +691,7 @@ impl CompiledRenderGraph {
             work_items.push(PerViewWorkItem {
                 view_idx,
                 host_camera,
-                occlusion_view,
+                view_id,
                 draw_filter: view.draw_filter.clone(),
                 clear: view.clear,
                 world_mesh_draw_plan: std::mem::replace(
@@ -703,6 +699,7 @@ impl CompiledRenderGraph {
                     WorldMeshDrawPlan::Empty,
                 ),
                 resolved: Self::resolve_owned_view_from_target(
+                    view_id,
                     &view.target,
                     mv_ctx.gpu,
                     mv_ctx.backbuffer_view_holder,
@@ -752,7 +749,7 @@ impl CompiledRenderGraph {
                             return;
                         }
                         let view_idx = work_item.view_idx;
-                        let occlusion_view = work_item.occlusion_view;
+                        let view_id = work_item.view_id;
                         let host_camera = work_item.host_camera;
                         match graph.record_one_view(
                             shared,
@@ -763,7 +760,7 @@ impl CompiledRenderGraph {
                         ) {
                             Ok(encoded) => {
                                 results.lock()[view_idx] = Some(PerViewRecordOutput {
-                                    occlusion_view,
+                                    view_id,
                                     host_camera,
                                     command_buffer: encoded.command_buffer,
                                     hud_outputs: encoded.hud_outputs,
@@ -791,7 +788,7 @@ impl CompiledRenderGraph {
             profiling::scope!("graph::per_view_serial");
             let mut outputs = Vec::with_capacity(n_views);
             for work_item in per_view_work_items {
-                let occlusion_view = work_item.occlusion_view;
+                let view_id = work_item.view_id;
                 let host_camera = work_item.host_camera;
                 let encoded = graph.record_one_view(
                     per_view_shared,
@@ -801,7 +798,7 @@ impl CompiledRenderGraph {
                     profiler,
                 )?;
                 outputs.push(PerViewRecordOutput {
-                    occlusion_view,
+                    view_id,
                     host_camera,
                     command_buffer: encoded.command_buffer,
                     hud_outputs: encoded.hud_outputs,

@@ -14,6 +14,7 @@
 
 use crate::render_graph::context::{CallbackCtx, PostSubmitContext};
 use crate::render_graph::error::{RenderPassError, SetupError};
+use crate::render_graph::ViewId;
 
 use super::builder::PassBuilder;
 use super::node::PassPhase;
@@ -48,6 +49,11 @@ pub trait CallbackPass: Send + Sync {
     fn phase(&self) -> PassPhase {
         PassPhase::PerView
     }
+
+    /// Releases any cached state owned by views that are no longer active.
+    ///
+    /// Default is a no-op for passes that keep no view-scoped resources across frames.
+    fn release_view_resources(&mut self, _retired_views: &[ViewId]) {}
 
     /// Runs after the encoder containing passes from the same phase group is submitted.
     ///

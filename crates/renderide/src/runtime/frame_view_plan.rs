@@ -10,8 +10,7 @@ use crate::gpu::GpuContext;
 use crate::pipelines::{ShaderPermutation, SHADER_PERM_MULTIVIEW_STEREO};
 use crate::render_graph::{
     CameraTransformDrawFilter, ExternalFrameTargets, ExternalOffscreenTargets, FrameView,
-    FrameViewClear, FrameViewTarget, HostCameraFrame, OcclusionViewId, OutputDepthMode,
-    WorldMeshDrawPlan,
+    FrameViewClear, FrameViewTarget, HostCameraFrame, OutputDepthMode, ViewId, WorldMeshDrawPlan,
 };
 
 /// Cheap-clone snapshot of [`crate::gpu::PrimaryOffscreenTargets`] used by the headless render path.
@@ -98,8 +97,8 @@ pub(super) struct FrameViewPlan<'a> {
     pub(super) host_camera: HostCameraFrame,
     /// Optional selective/exclude filter; present for secondary cameras only.
     pub(super) draw_filter: Option<CameraTransformDrawFilter>,
-    /// Hi-Z / occlusion slot identity for this view.
-    pub(super) occlusion_view_id: OcclusionViewId,
+    /// Stable logical identity for view-scoped resources and temporal state.
+    pub(super) view_id: ViewId,
     /// Attachment extent in pixels for this view.
     pub(super) viewport_px: (u32, u32),
     /// Background clear/skybox behavior for this view.
@@ -138,6 +137,7 @@ impl FrameViewPlan<'_> {
     /// Converts this view plan plus an explicit draw plan into the render-graph execution input.
     pub(super) fn to_frame_view(&self, world_mesh_draw_plan: WorldMeshDrawPlan) -> FrameView<'_> {
         FrameView {
+            view_id: self.view_id,
             host_camera: self.host_camera,
             target: self.target(),
             draw_filter: self.draw_filter.clone(),

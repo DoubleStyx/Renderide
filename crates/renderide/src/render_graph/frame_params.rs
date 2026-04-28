@@ -25,7 +25,7 @@ use crate::materials::{
 };
 use crate::pipelines::ShaderPermutation;
 use crate::render_graph::occlusion::HiZGpuState;
-use crate::scene::SceneCoordinator;
+use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::{CameraClearMode, HeadOutputDevice};
 
 use super::blackboard::BlackboardSlot;
@@ -36,13 +36,39 @@ use super::world_mesh_draw_prep::{
 };
 use super::OutputDepthMode;
 
-/// Identifies which Hi-Z / occlusion slot a view uses (main vs host render texture).
+/// Stable logical identity for one secondary camera view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum OcclusionViewId {
-    /// Main window or OpenXR multiview (shared Hi-Z GPU state in [`crate::backend::OcclusionSystem`]).
+pub struct SecondaryCameraId {
+    /// Render space containing the camera.
+    pub render_space_id: RenderSpaceId,
+    /// Dense host camera renderable index within the render space.
+    pub renderable_index: i32,
+}
+
+impl SecondaryCameraId {
+    /// Builds a secondary-camera id from the host render-space and dense camera row.
+    pub const fn new(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
+        Self {
+            render_space_id,
+            renderable_index,
+        }
+    }
+}
+
+/// Identifies one logical render view for view-scoped resources and temporal state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ViewId {
+    /// Main window or OpenXR multiview (shared primary-view state).
     Main,
-    /// Secondary camera writing to a host render texture (per-RT Hi-Z state).
-    OffscreenRenderTexture(i32),
+    /// Secondary camera, tracked independently from the render target asset it writes.
+    SecondaryCamera(SecondaryCameraId),
+}
+
+impl ViewId {
+    /// Builds the stable logical identity for one secondary camera view.
+    pub const fn secondary_camera(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
+        Self::SecondaryCamera(SecondaryCameraId::new(render_space_id, renderable_index))
+    }
 }
 
 /// Per-eye matrices for an OpenXR stereo multiview view.
@@ -526,8 +552,8 @@ pub struct FrameRenderParamsView<'a> {
     /// When rendering a secondary camera to a host render texture, the asset id of the color
     /// target being written. Materials must not sample that texture in the same pass.
     pub offscreen_write_render_texture_asset_id: Option<i32>,
-    /// Which Hi-Z pyramid / temporal slot this view reads and writes.
-    pub occlusion_view: OcclusionViewId,
+    /// Which logical view this frame state belongs to.
+    pub view_id: ViewId,
     /// Mutex-wrapped Hi-Z state resolved for this view before per-view recording starts.
     pub hi_z_slot: Arc<Mutex<HiZGpuState>>,
     /// Effective raster sample count for mesh forward (1 = off). Clamped to the GPU max for this view.

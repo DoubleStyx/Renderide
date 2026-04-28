@@ -4,15 +4,15 @@
 
 use rayon::prelude::*;
 
-use crate::backend::{FrameDrawSetup, RenderBackend};
+use crate::backend::{ExtractedFrameShared, RenderBackend};
 use crate::gpu::GpuContext;
 use crate::render_graph::{
     build_world_mesh_cull_proj_params, camera_state_enabled,
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
     host_camera_frame_for_render_texture, DrawCollectionContext, ExternalFrameTargets, FrameView,
-    FrameViewClear, GraphExecuteError, HiZCullData, HiZTemporalState, OcclusionViewId,
-    PrefetchedWorldMeshViewDraws, WorldMeshCullInput, WorldMeshCullProjParams,
-    WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
+    FrameViewClear, GraphExecuteError, HiZCullData, HiZTemporalState, PrefetchedWorldMeshViewDraws,
+    ViewId, WorldMeshCullInput, WorldMeshCullProjParams, WorldMeshDrawCollectParallelism,
+    WorldMeshDrawPlan,
 };
 
 use super::frame_view_plan::{
@@ -51,14 +51,14 @@ impl FrameRenderMode<'_> {
 /// This is the runtime's cleaned-up extraction boundary: prepared views live beside the backend's
 /// read-only draw-prep view so later stages no longer need to reach back into mutable runtime or
 /// backend state.
-struct FrameExtract<'views, 'backend> {
+struct ExtractedFrame<'views, 'backend> {
     /// Ordered per-frame view plans and any headless output substitution snapshot.
     prepared_views: PreparedViews<'views>,
     /// Backend-owned draw-prep view assembled once for the frame.
-    draw_setup: FrameDrawSetup<'backend>,
+    shared: ExtractedFrameShared<'backend>,
 }
 
-impl<'views> FrameExtract<'views, '_> {
+impl<'views> ExtractedFrame<'views, '_> {
     /// Returns `true` when no view should be rendered this tick.
     fn is_empty(&self) -> bool {
         self.prepared_views.is_empty()
@@ -66,19 +66,19 @@ impl<'views> FrameExtract<'views, '_> {
 
     /// Collects and packages explicit world-mesh draw plans for each prepared view.
     fn prepare_draws(self) -> PreparedDraws<'views> {
-        let FrameExtract {
+        let ExtractedFrame {
             prepared_views,
-            draw_setup,
+            shared,
         } = self;
         let cull_snapshots: Vec<Option<ViewCullSnapshot>> = {
             profiling::scope!("render::gather_view_cull_snapshots");
             prepared_views
                 .plans()
                 .par_iter()
-                .map(|prep| cull_snapshot_for_view(&draw_setup, prep))
+                .map(|prep| cull_snapshot_for_view(&shared, prep))
                 .collect()
         };
-        let view_draws = collect_view_draws(&draw_setup, prepared_views.plans(), &cull_snapshots);
+        let view_draws = collect_view_draws(&shared, prepared_views.plans(), &cull_snapshots);
         PreparedDraws {
             prepared_views,
             view_draws,
@@ -178,7 +178,7 @@ struct ViewCullSnapshot {
 /// Returns one explicit [`WorldMeshDrawPlan`] per prepared view, preserving input order so the
 /// compiled graph never has to infer whether draws were intentionally omitted or merely missing.
 fn collect_view_draws(
-    setup: &FrameDrawSetup<'_>,
+    setup: &ExtractedFrameShared<'_>,
     prepared: &[FrameViewPlan<'_>],
     cull_snapshots: &[Option<ViewCullSnapshot>],
 ) -> Vec<WorldMeshDrawPlan> {
@@ -234,13 +234,29 @@ fn select_inner_parallelism(prepared: &[FrameViewPlan<'_>]) -> WorldMeshDrawColl
     }
 }
 
+/// Returns the stable logical identity for one secondary camera view.
+fn secondary_camera_view_id(
+    render_space_id: crate::scene::RenderSpaceId,
+    renderable_index: i32,
+    camera_index: usize,
+) -> ViewId {
+    ViewId::secondary_camera(
+        render_space_id,
+        if renderable_index >= 0 {
+            renderable_index
+        } else {
+            camera_index as i32
+        },
+    )
+}
+
 /// Builds frustum + Hi-Z cull inputs for one prepared view.
 ///
 /// Returns [`None`] when the view has explicitly suppressed temporal occlusion (selective
 /// secondary cameras). Safe to call in parallel across views:
 /// [`OcclusionSystem`] is `Sync` because its internal readback channel uses `crossbeam_channel`.
 fn cull_snapshot_for_view(
-    setup: &FrameDrawSetup<'_>,
+    setup: &ExtractedFrameShared<'_>,
     prep: &FrameViewPlan<'_>,
 ) -> Option<ViewCullSnapshot> {
     if prep.host_camera.suppress_occlusion_temporal {
@@ -250,12 +266,8 @@ fn cull_snapshot_for_view(
     let depth_mode = prep.output_depth_mode();
     Some(ViewCullSnapshot {
         proj,
-        hi_z: setup
-            .occlusion
-            .hi_z_cull_data(depth_mode, prep.occlusion_view_id),
-        hi_z_temporal: setup
-            .occlusion
-            .hi_z_temporal_snapshot(prep.occlusion_view_id),
+        hi_z: setup.occlusion.hi_z_cull_data(depth_mode, prep.view_id),
+        hi_z_temporal: setup.occlusion.hi_z_temporal_snapshot(prep.view_id),
     })
 }
 
@@ -345,22 +357,24 @@ impl RendererRuntime {
         &mut self,
         gpu: &mut GpuContext,
         mode: FrameRenderMode<'a>,
-    ) -> FrameExtract<'a, '_> {
+    ) -> ExtractedFrame<'a, '_> {
         let prepared_views = {
             profiling::scope!("render::prepare_views");
             self.prepare_frame_views(gpu, mode)
         };
-        let draw_setup = {
-            profiling::scope!("render::prepare_frame_draw_setup");
-            self.backend.prepare_frame_draw_setup(
+        self.backend
+            .sync_active_views(prepared_views.plans().iter().map(|view| view.view_id));
+        let shared = {
+            profiling::scope!("render::extract_frame_shared");
+            self.backend.extract_frame_shared(
                 &self.scene,
                 self.scene.active_main_render_context(),
                 select_inner_parallelism(prepared_views.plans()),
             )
         };
-        FrameExtract {
+        ExtractedFrame {
             prepared_views,
-            draw_setup,
+            shared,
         }
     }
 
@@ -420,7 +434,7 @@ impl RendererRuntime {
             views.push(FrameViewPlan {
                 host_camera: self.host_camera,
                 draw_filter: None,
-                occlusion_view_id: OcclusionViewId::Main,
+                view_id: ViewId::Main,
                 viewport_px: extent_px,
                 clear: FrameViewClear::skybox(),
                 target: FrameViewPlanTarget::Hmd(ext),
@@ -529,7 +543,7 @@ impl RendererRuntime {
             views.push(FrameViewPlan {
                 host_camera: hc,
                 draw_filter: Some(filter),
-                occlusion_view_id: OcclusionViewId::OffscreenRenderTexture(rt_id),
+                view_id: secondary_camera_view_id(sid, entry.renderable_index, cam_idx),
                 viewport_px: viewport,
                 clear: FrameViewClear::from_camera_state(&entry.state),
                 target: FrameViewPlanTarget::SecondaryRt(OffscreenRtHandles {
@@ -555,7 +569,7 @@ impl RendererRuntime {
         FrameViewPlan {
             host_camera: self.host_camera,
             draw_filter: None,
-            occlusion_view_id: OcclusionViewId::Main,
+            view_id: ViewId::Main,
             viewport_px: swapchain_extent_px,
             clear: FrameViewClear::skybox(),
             target: FrameViewPlanTarget::MainSwapchain,
@@ -598,7 +612,7 @@ mod tests {
             views[0].target,
             FrameViewPlanTarget::MainSwapchain
         ));
-        assert_eq!(views[0].occlusion_view_id, OcclusionViewId::Main);
+        assert_eq!(views[0].view_id, ViewId::Main);
         assert!(views[0].draw_filter.is_none());
     }
 
@@ -647,6 +661,24 @@ mod tests {
         assert_eq!(view.shader_permutation(), ShaderPermutation(0));
         assert_eq!(view.output_depth_mode(), OutputDepthMode::DesktopSingle);
         assert_eq!(view.clear.mode, crate::shared::CameraClearMode::Skybox);
+    }
+
+    /// Secondary view identity follows camera identity even when cameras share a render target.
+    #[test]
+    fn secondary_camera_view_ids_do_not_alias_shared_render_targets() {
+        let first = secondary_camera_view_id(crate::scene::RenderSpaceId(9), 12, 0);
+        let second = secondary_camera_view_id(crate::scene::RenderSpaceId(9), 13, 1);
+        let fallback = secondary_camera_view_id(crate::scene::RenderSpaceId(9), -1, 2);
+
+        assert_ne!(first, second);
+        assert_ne!(first, fallback);
+        assert_eq!(
+            fallback,
+            ViewId::SecondaryCamera(crate::render_graph::SecondaryCameraId::new(
+                crate::scene::RenderSpaceId(9),
+                2
+            ))
+        );
     }
 
     #[test]
