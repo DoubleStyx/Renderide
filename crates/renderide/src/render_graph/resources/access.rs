@@ -1,6 +1,8 @@
 //! Resource access declarations used by render-graph ordering and validation.
 
-use super::handles::{BufferResourceHandle, ResourceHandle, TextureResourceHandle};
+use super::handles::{
+    BufferResourceHandle, ResourceHandle, SubresourceHandle, TextureResourceHandle,
+};
 
 /// Read/write intent for storage resources.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -204,6 +206,21 @@ impl ResourceAccess {
     ) -> Self {
         Self {
             resource: ResourceHandle::Texture(handle),
+            access: AccessKind::Texture(access),
+            reads,
+            writes,
+        }
+    }
+
+    /// Builds a transient texture subresource access declaration.
+    pub(crate) fn texture_subresource(
+        handle: SubresourceHandle,
+        access: TextureAccess,
+        reads: bool,
+        writes: bool,
+    ) -> Self {
+        Self {
+            resource: ResourceHandle::TextureSubresource(handle),
             access: AccessKind::Texture(access),
             reads,
             writes,

@@ -4,7 +4,7 @@ pub mod parallel_apply;
 mod world_queries;
 
 use hashbrown::HashMap;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use glam::Mat4;
 
@@ -48,7 +48,7 @@ mod tests;
 
 /// Scene registry: one entry per host render space, Unity `RenderingManager` dictionary semantics.
 pub struct SceneCoordinator {
-    spaces: HashMap<RenderSpaceId, RenderSpaceState>,
+    spaces: BTreeMap<RenderSpaceId, RenderSpaceState>,
     world_caches: HashMap<RenderSpaceId, WorldTransformCache>,
     world_dirty: HashSet<RenderSpaceId>,
     light_cache: LightCache,
@@ -75,7 +75,7 @@ impl SceneCoordinator {
     /// Empty registry.
     pub fn new() -> Self {
         Self {
-            spaces: HashMap::new(),
+            spaces: BTreeMap::new(),
             world_caches: HashMap::new(),
             world_dirty: HashSet::new(),
             light_cache: LightCache::new(),
@@ -95,7 +95,7 @@ impl SceneCoordinator {
         &mut self.light_cache
     }
 
-    /// Render space ids currently present (stable order not guaranteed).
+    /// Render space ids currently present, ordered by host id for deterministic traversal.
     pub fn render_space_ids(&self) -> impl Iterator<Item = RenderSpaceId> + '_ {
         self.spaces.keys().copied()
     }
@@ -254,7 +254,7 @@ impl SceneCoordinator {
             return Ok(());
         }
 
-        // `&self.spaces` is a shared borrow across rayon workers; `HashMap::get` is `Sync` for
+        // `&self.spaces` is a shared borrow across rayon workers; `BTreeMap::get` is `Sync` for
         // `Sync` keys and values. Each task owns its own cache.
         let spaces = &self.spaces;
         let results: Vec<(RenderSpaceId, Result<WorldTransformCache, SceneError>)> = work

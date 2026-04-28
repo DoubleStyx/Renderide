@@ -14,10 +14,9 @@ impl TextureHandle {
 /// A named view into a subrange (mip levels, array layers) of a transient texture.
 ///
 /// Subresource handles are graph-time declarations; the concrete [`wgpu::TextureView`] is created
-/// on demand at execute time and cached per-range by the graph resources context. They do not
-/// participate in dependency analysis today — accesses that touch a subresource are recorded
-/// against the parent [`TextureHandle`], so an overlapping read + write on different mip slices
-/// of the same parent is conservatively serialized.
+/// on demand at execute time and cached per-range by the graph resources context. Passes may
+/// declare reads and writes against a subresource so the graph can order overlapping mip/layer
+/// ranges without forcing unrelated slices of the parent texture to serialize.
 ///
 /// Motivating consumers: bloom / SSR mip-chain passes that sample mip N and write mip N+1;
 /// future CSM shadow atlas slice writes; per-mip Hi-Z pyramid builds.
@@ -29,6 +28,75 @@ impl SubresourceHandle {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+}
+
+/// Mip and array-layer span used for overlap-aware texture dependency analysis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct TextureSubresourceRange {
+    /// First mip level in the span.
+    pub(crate) base_mip_level: u32,
+    /// Number of mip levels in the span.
+    pub(crate) mip_level_count: u32,
+    /// First array layer in the span.
+    pub(crate) base_array_layer: u32,
+    /// Number of array layers in the span.
+    pub(crate) array_layer_count: u32,
+}
+
+impl TextureSubresourceRange {
+    /// Returns a span covering every mip and layer in a transient texture declaration.
+    pub(crate) fn full(mip_levels: u32, array_layers: u32) -> Self {
+        Self {
+            base_mip_level: 0,
+            mip_level_count: mip_levels,
+            base_array_layer: 0,
+            array_layer_count: array_layers,
+        }
+    }
+
+    /// Returns whether this span overlaps `other`.
+    pub(crate) fn overlaps(self, other: Self) -> bool {
+        ranges_overlap(
+            self.base_mip_level,
+            self.mip_level_count,
+            other.base_mip_level,
+            other.mip_level_count,
+        ) && ranges_overlap(
+            self.base_array_layer,
+            self.array_layer_count,
+            other.base_array_layer,
+            other.array_layer_count,
+        )
+    }
+
+    /// Returns whether this span fully covers `other`.
+    pub(crate) fn covers(self, other: Self) -> bool {
+        range_covers(
+            self.base_mip_level,
+            self.mip_level_count,
+            other.base_mip_level,
+            other.mip_level_count,
+        ) && range_covers(
+            self.base_array_layer,
+            self.array_layer_count,
+            other.base_array_layer,
+            other.array_layer_count,
+        )
+    }
+}
+
+/// Returns whether two half-open ranges overlap.
+fn ranges_overlap(a_start: u32, a_count: u32, b_start: u32, b_count: u32) -> bool {
+    let a_end = a_start.saturating_add(a_count);
+    let b_end = b_start.saturating_add(b_count);
+    a_start < b_end && b_start < a_end
+}
+
+/// Returns whether the first half-open range covers the second half-open range.
+fn range_covers(a_start: u32, a_count: u32, b_start: u32, b_count: u32) -> bool {
+    let a_end = a_start.saturating_add(a_count);
+    let b_end = b_start.saturating_add(b_count);
+    a_start <= b_start && a_end >= b_end
 }
 
 /// Descriptor for a subresource view rooted at a transient texture.
@@ -49,6 +117,16 @@ pub struct TransientSubresourceDesc {
 }
 
 impl TransientSubresourceDesc {
+    /// Returns the dependency-analysis range represented by this view.
+    pub(crate) fn range(self) -> TextureSubresourceRange {
+        TextureSubresourceRange {
+            base_mip_level: self.base_mip_level,
+            mip_level_count: self.mip_level_count,
+            base_array_layer: self.base_array_layer,
+            array_layer_count: self.array_layer_count,
+        }
+    }
+
     /// Creates a descriptor targeting a single mip of the parent's default array layer(s).
     pub fn single_mip(parent: TextureHandle, label: &'static str, mip_level: u32) -> Self {
         Self {
@@ -195,6 +273,8 @@ impl From<ImportedBufferHandle> for BufferResourceHandle {
 pub(crate) enum ResourceHandle {
     /// Texture resource key.
     Texture(TextureResourceHandle),
+    /// Subrange of a graph-owned transient texture.
+    TextureSubresource(SubresourceHandle),
     /// Buffer resource key.
     Buffer(BufferResourceHandle),
 }

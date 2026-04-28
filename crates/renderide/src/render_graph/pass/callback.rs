@@ -2,14 +2,15 @@
 //!
 //! A callback pass has no encoder and records no GPU commands. It runs as a CPU callback during
 //! graph execution, typically to:
-//! - Perform draw collection, CPU culling, uniform packing, and [`wgpu::Queue::write_buffer`]
-//!   uploads (e.g. the world-mesh forward plan pass).
+//! - Perform draw collection, CPU culling, uniform packing, and deferred buffer uploads through
+//!   [`CallbackCtx::write_buffer`] (e.g. the world-mesh forward plan pass).
 //! - Mutate the per-view [`super::super::blackboard::Blackboard`] with data subsequent raster or
 //!   compute passes will consume.
 //!
 //! Declaring a pass as callback (via `builder.callback()` in `setup`) means the graph compiler
-//! expects no resource accesses — the pass is cull-exempt by default since its side effects (Queue
-//! writes, blackboard mutations) are not visible through graph resource declarations.
+//! expects no resource accesses — the pass is usually cull-exempt because its side effects
+//! (upload recorder writes, blackboard mutations) are not visible through graph resource
+//! declarations.
 
 use crate::render_graph::context::{CallbackCtx, PostSubmitContext};
 use crate::render_graph::error::{RenderPassError, SetupError};
@@ -35,8 +36,9 @@ pub trait CallbackPass: Send + Sync {
 
     /// Runs as a CPU callback during graph execution.
     ///
-    /// No encoder is provided. The pass may issue [`wgpu::Queue::write_buffer`] calls via
-    /// `ctx.queue`, read scene data via `ctx.frame`, and mutate `ctx.blackboard`.
+    /// No encoder is provided. The pass may record buffer uploads via
+    /// [`CallbackCtx::write_buffer`], read scene data via `ctx.frame`, and mutate
+    /// `ctx.blackboard`.
     ///
     /// Takes `&self` so per-view passes can be recorded on rayon workers concurrently.
     /// Passes that hold mutable recording state must use interior mutability (e.g. `Mutex`).

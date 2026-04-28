@@ -301,7 +301,7 @@ pub struct PreparedWorldMeshForwardFrame {
     /// One entry per unique `MaterialDrawBatchKey` run in `draws`, covering `[first_draw_idx,
     /// last_draw_idx]` (inclusive). Both raster sub-passes (opaque and intersect) share this
     /// list; each sub-pass only reads entries whose draw-index range overlaps its own index slice.
-    pub precomputed_batches: Vec<PrecomputedMaterialBind>,
+    pub precomputed_batches: Vec<MaterialBatchPacket>,
     /// Optional background draw prepared for the opaque subpass.
     pub skybox: Option<PreparedSkybox>,
 }
@@ -385,9 +385,6 @@ pub struct MaterialBatchPacket {
     /// Material pass descriptors parallel to `pipelines` (zero-alloc static reference).
     pub declared_passes: &'static [MaterialPassDesc],
 }
-
-/// Backwards-compatible name for [`MaterialBatchPacket`] while forward-recording call sites migrate.
-pub type PrecomputedMaterialBind = MaterialBatchPacket;
 
 /// Blackboard slot for per-view HUD data collected during recording and merged on the main thread.
 pub struct PerViewHudOutputsSlot;

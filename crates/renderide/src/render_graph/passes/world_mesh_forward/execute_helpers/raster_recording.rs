@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::gpu::GpuLimits;
 use crate::render_graph::frame_params::{
-    FrameRenderParams, PrecomputedMaterialBind, PreparedWorldMeshForwardFrame,
+    FrameRenderParams, MaterialBatchPacket, PreparedWorldMeshForwardFrame,
 };
 use crate::render_graph::world_mesh_draw_prep::WorldMeshDrawItem;
 
@@ -48,7 +48,7 @@ struct ForwardSubpassDrawRecord<'a, 'c, 'd> {
     /// Instance groups for the selected forward subpass.
     groups: &'c [crate::render_graph::world_mesh_draw_prep::DrawGroup],
     /// Pre-resolved material pipelines and bind groups.
-    precomputed: &'c [PrecomputedMaterialBind],
+    precomputed: &'c [MaterialBatchPacket],
     /// Mesh pool and skin cache ([`WorldMeshForwardEncodeRefs`]).
     encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
 }

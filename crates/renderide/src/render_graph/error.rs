@@ -4,7 +4,8 @@ use crate::present::PresentClearError;
 
 use super::ids::PassId;
 use super::resources::{
-    BufferHandle, HistorySlotId, ImportedBufferHandle, ImportedTextureHandle, TextureHandle,
+    BufferHandle, HistorySlotId, ImportedBufferHandle, ImportedTextureHandle, SubresourceHandle,
+    TextureHandle,
 };
 
 /// Setup-time validation errors reported by a [`super::RenderPass`].
@@ -37,6 +38,10 @@ pub enum SetupError {
     /// A pass referenced an imported buffer handle unknown to the graph.
     #[error("unknown imported buffer handle {0:?}")]
     UnknownImportedBuffer(ImportedBufferHandle),
+
+    /// A pass referenced a transient texture subresource handle unknown to the graph.
+    #[error("unknown transient texture subresource handle {0:?}")]
+    UnknownSubresource(SubresourceHandle),
 
     /// Pass-specific setup failure.
     #[error("{0}")]
@@ -84,6 +89,15 @@ pub enum GraphBuildError {
     PassOwnershipInvariant {
         /// Short invariant description.
         message: &'static str,
+    },
+
+    /// A declared texture subresource points outside its parent texture.
+    #[error("invalid texture subresource {handle:?}: {reason}")]
+    InvalidSubresource {
+        /// Invalid subresource handle.
+        handle: SubresourceHandle,
+        /// Short validation reason.
+        reason: &'static str,
     },
 }
 

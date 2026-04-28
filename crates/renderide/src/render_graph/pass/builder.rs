@@ -14,7 +14,7 @@ use super::setup::{PassSetup, RasterColorAttachmentSetup, RasterDepthAttachmentS
 use crate::render_graph::error::SetupError;
 use crate::render_graph::resources::{
     BufferAccess, BufferHandle, BufferResourceHandle, ImportedBufferHandle, ImportedTextureHandle,
-    ResourceAccess, StorageAccess, TextureAccess, TextureAttachmentResolve,
+    ResourceAccess, StorageAccess, SubresourceHandle, TextureAccess, TextureAttachmentResolve,
     TextureAttachmentTarget, TextureHandle, TextureResourceHandle,
 };
 
@@ -116,6 +116,21 @@ impl<'a> PassBuilder<'a> {
             access,
             reads,
             writes,
+        ));
+    }
+
+    /// Declares a read from a transient texture subresource.
+    pub fn read_texture_subresource(&mut self, handle: SubresourceHandle, access: TextureAccess) {
+        self.accesses.push(ResourceAccess::texture_subresource(
+            handle, access, true, false,
+        ));
+    }
+
+    /// Declares a write to a transient texture subresource.
+    pub fn write_texture_subresource(&mut self, handle: SubresourceHandle, access: TextureAccess) {
+        let reads = access.reads();
+        self.accesses.push(ResourceAccess::texture_subresource(
+            handle, access, reads, true,
         ));
     }
 

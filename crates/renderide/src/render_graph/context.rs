@@ -246,7 +246,7 @@ pub struct RasterPassCtx<'a, 'frame> {
     pub device: &'a wgpu::Device,
     /// Effective limits for this frame.
     pub gpu_limits: &'a GpuLimits,
-    /// Submission queue (internally synchronized by wgpu).
+    /// Submission queue for resource creation paths that still require wgpu queue access.
     pub queue: &'a Arc<wgpu::Queue>,
     /// Swapchain view when the frame acquired the surface; [`None`] for offscreen-only graphs.
     pub backbuffer: Option<&'a wgpu::TextureView>,
@@ -276,6 +276,13 @@ pub struct RasterPassCtx<'a, 'frame> {
     pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
+impl RasterPassCtx<'_, '_> {
+    /// Records a deferred buffer upload through the graph-owned upload recorder.
+    pub fn write_buffer(&self, buffer: &wgpu::Buffer, offset: u64, data: &[u8]) {
+        self.upload_batch.write_buffer(buffer, offset, data);
+    }
+}
+
 /// Context for [`super::pass::ComputePass::record`].
 ///
 /// The pass receives the raw [`wgpu::CommandEncoder`] and dispatches compute workgroups or
@@ -285,7 +292,7 @@ pub struct ComputePassCtx<'a, 'encoder, 'frame> {
     pub device: &'a wgpu::Device,
     /// Effective limits for this frame.
     pub gpu_limits: &'a GpuLimits,
-    /// Submission queue.
+    /// Submission queue for resource creation paths that still require wgpu queue access.
     pub queue: &'a Arc<wgpu::Queue>,
     /// Active command encoder for this recording slice.
     pub encoder: &'encoder mut wgpu::CommandEncoder,
@@ -316,6 +323,13 @@ pub struct ComputePassCtx<'a, 'encoder, 'frame> {
     pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
+impl ComputePassCtx<'_, '_, '_> {
+    /// Records a deferred buffer upload through the graph-owned upload recorder.
+    pub fn write_buffer(&self, buffer: &wgpu::Buffer, offset: u64, data: &[u8]) {
+        self.upload_batch.write_buffer(buffer, offset, data);
+    }
+}
+
 /// Context for [`super::pass::CopyPass::record`].
 ///
 /// Structurally identical to [`ComputePassCtx`]; separated by type to distinguish copy-only
@@ -324,14 +338,14 @@ pub type CopyPassCtx<'a, 'encoder, 'frame> = ComputePassCtx<'a, 'encoder, 'frame
 
 /// Context for [`super::pass::CallbackPass::run`].
 ///
-/// No encoder is provided. The pass runs as a CPU callback, which may issue
-/// [`wgpu::Queue::write_buffer`] calls via `queue` and mutate `blackboard`.
+/// No encoder is provided. The pass runs as a CPU callback, records uploads through
+/// [`Self::write_buffer`], and mutates `blackboard`.
 pub struct CallbackCtx<'a, 'frame> {
     /// WGPU device.
     pub device: &'a wgpu::Device,
     /// Effective limits for this frame.
     pub gpu_limits: &'a GpuLimits,
-    /// Submission queue for `write_buffer` calls.
+    /// Submission queue for resource creation paths that still require wgpu queue access.
     pub queue: &'a Arc<wgpu::Queue>,
     /// Scene + backend frame params for this view (serial path; `None` in parallel path).
     pub frame: Option<&'frame mut FrameRenderParams<'a>>,
@@ -346,6 +360,13 @@ pub struct CallbackCtx<'a, 'frame> {
     pub graph_resources: Option<&'a GraphResolvedResources>,
     /// Per-scope typed blackboard (read/write; the primary output of callback passes).
     pub blackboard: &'frame mut Blackboard,
+}
+
+impl CallbackCtx<'_, '_> {
+    /// Records a deferred buffer upload through the graph-owned upload recorder.
+    pub fn write_buffer(&self, buffer: &wgpu::Buffer, offset: u64, data: &[u8]) {
+        self.upload_batch.write_buffer(buffer, offset, data);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -368,13 +389,13 @@ pub struct PostSubmitContext<'a> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Legacy context type aliases (kept for test compatibility; callers should migrate)
+// Compatibility context types (kept for test compatibility; callers should migrate)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Legacy encoder-driven pass context. Prefer [`ComputePassCtx`] for new code.
+/// Compatibility encoder-driven pass context. Prefer [`ComputePassCtx`] for new code.
 ///
 /// Kept as an alias for incremental migration of tests and helper functions that reference the
-/// old type. Will be removed when all callers are updated.
+/// compatibility type. Will be removed when all callers are updated.
 pub struct RenderPassContext<'a, 'encoder, 'frame> {
     /// WGPU device.
     pub device: &'a wgpu::Device,
@@ -394,7 +415,7 @@ pub struct RenderPassContext<'a, 'encoder, 'frame> {
     pub graph_resources: Option<&'a GraphResolvedResources>,
 }
 
-/// Legacy graph-raster pass context. Prefer [`RasterPassCtx`] for new code.
+/// Compatibility graph-raster pass context. Prefer [`RasterPassCtx`] for new code.
 ///
 /// Kept for incremental migration of tests and setup/compose pass helpers.
 pub struct GraphRasterPassContext<'a, 'frame> {

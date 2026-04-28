@@ -7,12 +7,12 @@ mod transient;
 
 pub(crate) use access::{AccessKind, ResourceAccess};
 pub use access::{BufferAccess, StorageAccess, TextureAccess};
-pub(crate) use handles::ResourceHandle;
 pub use handles::{
     BufferHandle, BufferResourceHandle, ImportedBufferHandle, ImportedTextureHandle,
     SubresourceHandle, TextureAttachmentResolve, TextureAttachmentTarget, TextureHandle,
     TextureResourceHandle, TransientSubresourceDesc,
 };
+pub(crate) use handles::{ResourceHandle, TextureSubresourceRange};
 pub use imports::{
     BackendFrameBufferKind, BufferImportSource, FrameTargetRole, HistorySlotId, ImportSource,
     ImportedBufferDecl, ImportedTextureDecl,

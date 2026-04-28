@@ -6,7 +6,9 @@ use std::collections::HashSet;
 use super::super::error::GraphBuildError;
 use super::super::ids::{GroupId, PassId};
 use super::super::pass::GroupScope;
-use super::super::resources::{BufferResourceHandle, ResourceHandle, TextureResourceHandle};
+use super::super::resources::{
+    BufferResourceHandle, ResourceHandle, TextureResourceHandle, TextureSubresourceRange,
+};
 use super::decl::SetupEntry;
 use super::GraphBuilder;
 
@@ -98,52 +100,188 @@ pub(super) fn add_resource_edges(
     setups: &[SetupEntry],
     edges: &mut HashSet<(usize, usize)>,
 ) -> Result<(), GraphBuildError> {
-    let mut by_resource: HashMap<ResourceHandle, Vec<(usize, bool, bool)>> = HashMap::new();
+    let mut by_domain: HashMap<ResourceDomain, Vec<ResourceAccessEvent>> = HashMap::new();
     for (pass_idx, setup) in setups.iter().enumerate() {
         for access in &setup.setup.accesses {
-            by_resource.entry(access.resource).or_default().push((
+            let event = ResourceAccessEvent::new(
+                builder,
                 pass_idx,
+                access.resource,
                 access.reads(),
                 access.writes(),
-            ));
+            );
+            by_domain.entry(event.domain).or_default().push(event);
         }
     }
 
-    for (resource, mut accesses) in by_resource {
-        accesses.sort_by_key(|(pass_idx, _, _)| *pass_idx);
+    for (domain, mut accesses) in by_domain {
+        accesses.sort_by_key(|access| access.pass_idx);
         accesses.dedup();
-        let mut last_writer: Option<usize> = None;
-        let mut readers: HashSet<usize> = HashSet::new();
-        for (pass_idx, reads, writes) in accesses {
-            if reads {
-                if let Some(writer) = last_writer {
-                    if writer != pass_idx {
-                        edges.insert((writer, pass_idx));
+        let mut writers: Vec<ResourceAccessEvent> = Vec::new();
+        let mut readers: Vec<ResourceAccessEvent> = Vec::new();
+        for access in accesses {
+            let pass_idx = access.pass_idx;
+            if access.reads {
+                let mut found_writer = false;
+                for writer in writers
+                    .iter()
+                    .filter(|writer| writer.footprint.overlaps(access.footprint))
+                {
+                    found_writer = true;
+                    if writer.pass_idx != pass_idx {
+                        edges.insert((writer.pass_idx, pass_idx));
                     }
-                } else if !resource.is_imported() {
+                }
+                if !found_writer && !domain.is_imported() {
                     return Err(GraphBuildError::MissingDependency {
                         pass: PassId(pass_idx),
-                        resource: resource_label(builder, resource),
+                        resource: domain_label(builder, domain),
                     });
                 }
-                readers.insert(pass_idx);
+                readers.push(access);
             }
-            if writes {
-                if let Some(writer) = last_writer {
-                    if writer != pass_idx {
-                        edges.insert((writer, pass_idx));
+            if access.writes {
+                for writer in writers
+                    .iter()
+                    .filter(|writer| writer.footprint.overlaps(access.footprint))
+                {
+                    if writer.pass_idx != pass_idx {
+                        edges.insert((writer.pass_idx, pass_idx));
                     }
                 }
-                for reader in readers.drain() {
-                    if reader != pass_idx {
-                        edges.insert((reader, pass_idx));
+                for reader in readers
+                    .iter()
+                    .filter(|reader| reader.footprint.overlaps(access.footprint))
+                {
+                    if reader.pass_idx != pass_idx {
+                        edges.insert((reader.pass_idx, pass_idx));
                     }
                 }
-                last_writer = Some(pass_idx);
+                readers.retain(|reader| !access.footprint.overlaps(reader.footprint));
+                writers.retain(|writer| !access.footprint.covers(writer.footprint));
+                writers.push(access);
             }
         }
     }
     Ok(())
+}
+
+/// Parent resource domain used for overlap-aware dependency synthesis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ResourceDomain {
+    /// Transient texture domain.
+    TransientTexture(super::super::resources::TextureHandle),
+    /// Imported texture domain.
+    ImportedTexture(super::super::resources::ImportedTextureHandle),
+    /// Buffer domain.
+    Buffer(BufferResourceHandle),
+}
+
+impl ResourceDomain {
+    /// Returns whether this domain is externally owned.
+    fn is_imported(self) -> bool {
+        matches!(
+            self,
+            Self::ImportedTexture(_) | Self::Buffer(BufferResourceHandle::Imported(_))
+        )
+    }
+}
+
+/// Access footprint within a resource domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ResourceFootprint {
+    /// Entire domain.
+    Full,
+    /// Texture mip/layer subrange.
+    TextureSubresource(TextureSubresourceRange),
+}
+
+impl ResourceFootprint {
+    /// Returns whether this footprint overlaps `other`.
+    fn overlaps(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Full, _) | (_, Self::Full) => true,
+            (Self::TextureSubresource(a), Self::TextureSubresource(b)) => a.overlaps(b),
+        }
+    }
+
+    /// Returns whether this footprint fully covers `other`.
+    fn covers(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Full, _) => true,
+            (_, Self::Full) => false,
+            (Self::TextureSubresource(a), Self::TextureSubresource(b)) => a.covers(b),
+        }
+    }
+}
+
+/// One pass access projected into a parent domain plus an overlap footprint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ResourceAccessEvent {
+    /// Pass declaration index.
+    pass_idx: usize,
+    /// Parent domain used for dependency checks.
+    domain: ResourceDomain,
+    /// Full-resource or texture-subresource span touched by the pass.
+    footprint: ResourceFootprint,
+    /// Whether the access reads prior contents.
+    reads: bool,
+    /// Whether the access writes contents.
+    writes: bool,
+}
+
+impl ResourceAccessEvent {
+    /// Builds an access event from a setup declaration.
+    fn new(
+        builder: &GraphBuilder,
+        pass_idx: usize,
+        resource: ResourceHandle,
+        reads: bool,
+        writes: bool,
+    ) -> Self {
+        match resource {
+            ResourceHandle::Texture(TextureResourceHandle::Transient(handle)) => {
+                let desc = &builder.textures[handle.index()];
+                let layers = match desc.array_layers {
+                    super::super::resources::TransientArrayLayers::Fixed(layers) => layers.max(1),
+                    super::super::resources::TransientArrayLayers::Frame => 2,
+                };
+                Self {
+                    pass_idx,
+                    domain: ResourceDomain::TransientTexture(handle),
+                    footprint: ResourceFootprint::TextureSubresource(
+                        TextureSubresourceRange::full(desc.mip_levels.max(1), layers),
+                    ),
+                    reads,
+                    writes,
+                }
+            }
+            ResourceHandle::Texture(TextureResourceHandle::Imported(handle)) => Self {
+                pass_idx,
+                domain: ResourceDomain::ImportedTexture(handle),
+                footprint: ResourceFootprint::Full,
+                reads,
+                writes,
+            },
+            ResourceHandle::TextureSubresource(handle) => {
+                let desc = builder.subresources[handle.index()];
+                Self {
+                    pass_idx,
+                    domain: ResourceDomain::TransientTexture(desc.parent),
+                    footprint: ResourceFootprint::TextureSubresource(desc.range()),
+                    reads,
+                    writes,
+                }
+            }
+            ResourceHandle::Buffer(handle) => Self {
+                pass_idx,
+                domain: ResourceDomain::Buffer(handle),
+                footprint: ResourceFootprint::Full,
+                reads,
+                writes,
+            },
+        }
+    }
 }
 
 fn resource_label(builder: &GraphBuilder, resource: ResourceHandle) -> String {
@@ -168,5 +306,24 @@ fn resource_label(builder: &GraphBuilder, resource: ResourceHandle) -> String {
             .get(h.index())
             .map(|d| d.label.to_string())
             .unwrap_or_else(|| format!("imported_buffer#{}", h.index())),
+        ResourceHandle::TextureSubresource(h) => builder
+            .subresources
+            .get(h.index())
+            .map(|d| d.label.to_string())
+            .unwrap_or_else(|| format!("subresource#{}", h.index())),
+    }
+}
+
+fn domain_label(builder: &GraphBuilder, domain: ResourceDomain) -> String {
+    match domain {
+        ResourceDomain::TransientTexture(h) => resource_label(
+            builder,
+            ResourceHandle::Texture(TextureResourceHandle::Transient(h)),
+        ),
+        ResourceDomain::ImportedTexture(h) => resource_label(
+            builder,
+            ResourceHandle::Texture(TextureResourceHandle::Imported(h)),
+        ),
+        ResourceDomain::Buffer(h) => resource_label(builder, ResourceHandle::Buffer(h)),
     }
 }

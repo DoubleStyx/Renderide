@@ -172,8 +172,7 @@ impl RasterPass for WorldMeshForwardColorResolvePass {
             _pad: [0; 3],
         };
         let params_ubo = self.pipelines.params_ubo(ctx.device);
-        ctx.queue
-            .write_buffer(params_ubo, 0, bytemuck::bytes_of(&params));
+        ctx.write_buffer(params_ubo, 0, bytemuck::bytes_of(&params));
 
         // Build per-frame bind group(s) over the multisampled source. WGSL has no
         // `texture_multisampled_2d_array` in naga 29, so the stereo path binds two single-layer

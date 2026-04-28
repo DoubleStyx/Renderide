@@ -64,9 +64,9 @@ use skybox::{record_prepared_skybox, SkyboxRenderer};
 
 /// Prepares sorted world-mesh forward draw state for subsequent graph nodes.
 ///
-/// The pass is a [`CallbackPass`] (no encoder); it issues `Queue::write_buffer` uploads and
-/// stores results in the per-view blackboard via [`WorldMeshForwardPlanSlot`] and
-/// [`crate::render_graph::PrecomputedMaterialBindsSlot`].
+/// The pass is a [`CallbackPass`] (no encoder); it records deferred uploads and stores one
+/// [`crate::render_graph::PreparedWorldMeshForwardFrame`] in the per-view blackboard via
+/// [`WorldMeshForwardPlanSlot`].
 #[derive(Debug, Default)]
 pub struct WorldMeshForwardPreparePass {
     skybox: SkyboxRenderer,

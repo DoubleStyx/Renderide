@@ -131,9 +131,9 @@ pub use context::{
 };
 pub use error::{GraphBuildError, GraphExecuteError, RenderPassError, SetupError};
 pub use frame_params::{
-    FrameRenderParams, FrameViewClear, HostCameraFrame, OcclusionViewId, PerViewFramePlan,
-    PerViewFramePlanSlot, PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot,
-    PrecomputedMaterialBind, PrefetchedWorldMeshDrawsSlot, PrefetchedWorldMeshViewDraws,
+    FrameRenderParams, FrameViewClear, HostCameraFrame, MaterialBatchPacket, OcclusionViewId,
+    PerViewFramePlan, PerViewFramePlanSlot, PerViewHudConfig, PerViewHudOutputs,
+    PerViewHudOutputsSlot, PrefetchedWorldMeshDrawsSlot, PrefetchedWorldMeshViewDraws,
     PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedSkybox,
     PreparedWorldMeshForwardFrame, StereoViewMatrices, WorldMeshForwardPipelineState,
     WorldMeshForwardPlanSlot, WorldMeshHelperNeeds,

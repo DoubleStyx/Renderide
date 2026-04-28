@@ -10,6 +10,7 @@ pub(super) fn validate_handles(
     setup: &PassSetup,
     texture_count: usize,
     buffer_count: usize,
+    subresource_count: usize,
     imported_texture_count: usize,
     imported_buffer_count: usize,
 ) -> Result<(), SetupError> {
@@ -18,6 +19,7 @@ pub(super) fn validate_handles(
             access.resource,
             texture_count,
             buffer_count,
+            subresource_count,
             imported_texture_count,
             imported_buffer_count,
         )?;
@@ -30,6 +32,7 @@ pub(super) fn validate_handles(
                 ResourceHandle::Texture(*resolve_to),
                 texture_count,
                 buffer_count,
+                subresource_count,
                 imported_texture_count,
                 imported_buffer_count,
             )?;
@@ -42,6 +45,7 @@ fn validate_resource_handle(
     resource: ResourceHandle,
     texture_count: usize,
     buffer_count: usize,
+    subresource_count: usize,
     imported_texture_count: usize,
     imported_buffer_count: usize,
 ) -> Result<(), SetupError> {
@@ -63,6 +67,9 @@ fn validate_resource_handle(
             if h.index() >= imported_buffer_count =>
         {
             Err(SetupError::UnknownImportedBuffer(h))
+        }
+        ResourceHandle::TextureSubresource(h) if h.index() >= subresource_count => {
+            Err(SetupError::UnknownSubresource(h))
         }
         _ => Ok(()),
     }

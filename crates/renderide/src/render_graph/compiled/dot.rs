@@ -78,6 +78,14 @@ impl CompiledRenderGraph {
                 "  \"tex_i{idx}\" [label=\"{label}\\n(imported tex)\" shape=oval style=\"filled\" fillcolor=\"#e8e8ff\"];"
             );
         }
+        let _ = writeln!(out, "  // texture subresources");
+        for (idx, desc) in self.subresources.iter().enumerate() {
+            let label = escape_label(desc.label);
+            let _ = writeln!(
+                out,
+                "  \"tex_sub{idx}\" [label=\"{label}\\n(subresource)\" shape=oval style=\"dashed\"];"
+            );
+        }
         let _ = writeln!(out, "  // transient buffers");
         for (idx, compiled) in self.transient_buffers.iter().enumerate() {
             let label = escape_label(compiled.desc.label);
@@ -148,6 +156,7 @@ fn emit_access_edge(
         ResourceHandle::Texture(TextureResourceHandle::Imported(h)) => {
             format!("tex_i{}", h.index())
         }
+        ResourceHandle::TextureSubresource(h) => format!("tex_sub{}", h.index()),
         ResourceHandle::Buffer(BufferResourceHandle::Transient(h)) => format!("buf_t{}", h.index()),
         ResourceHandle::Buffer(BufferResourceHandle::Imported(h)) => format!("buf_i{}", h.index()),
     };

@@ -3,11 +3,14 @@
 use hashbrown::HashMap;
 
 use super::super::compiled::{CompiledBufferResource, CompiledTextureResource, ResourceLifetime};
-use super::super::resources::{TransientBufferDesc, TransientTextureDesc};
+use super::super::resources::{
+    ResourceHandle, TransientBufferDesc, TransientSubresourceDesc, TransientTextureDesc,
+};
 use super::decl::{BufferAliasKey, SetupEntry, TextureAliasKey};
 
 pub(super) fn compile_textures(
     descs: &[TransientTextureDesc],
+    subresources: &[TransientSubresourceDesc],
     setups: &[SetupEntry],
     retained_ord: &HashMap<usize, usize>,
 ) -> (Vec<CompiledTextureResource>, usize) {
@@ -27,7 +30,7 @@ pub(super) fn compile_textures(
             continue;
         };
         for access in &entry.setup.accesses {
-            let Some(handle) = access.resource.transient_texture() else {
+            let Some(handle) = transient_texture_for_access(access.resource, subresources) else {
                 continue;
             };
             let resource = &mut resources[handle.index()];
@@ -40,6 +43,20 @@ pub(super) fn compile_textures(
 
     let slot_count = assign_texture_slots(&mut resources);
     (resources, slot_count)
+}
+
+/// Resolves a texture access to the parent transient texture that owns lifetime and usage.
+fn transient_texture_for_access(
+    resource: ResourceHandle,
+    subresources: &[TransientSubresourceDesc],
+) -> Option<super::super::resources::TextureHandle> {
+    match resource {
+        ResourceHandle::Texture(_) => resource.transient_texture(),
+        ResourceHandle::TextureSubresource(handle) => {
+            subresources.get(handle.index()).map(|desc| desc.parent)
+        }
+        ResourceHandle::Buffer(_) => None,
+    }
 }
 
 pub(super) fn compile_buffers(

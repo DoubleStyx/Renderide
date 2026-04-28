@@ -27,7 +27,8 @@ use super::pass::{
 use super::resources::{
     BufferHandle, FrameTargetRole, ImportSource, ImportedBufferDecl, ImportedBufferHandle,
     ImportedTextureDecl, ImportedTextureHandle, ResourceHandle, SubresourceHandle, TextureHandle,
-    TextureResourceHandle, TransientBufferDesc, TransientSubresourceDesc, TransientTextureDesc,
+    TextureResourceHandle, TransientArrayLayers, TransientBufferDesc, TransientSubresourceDesc,
+    TransientTextureDesc,
 };
 use super::schedule::{FrameSchedule, ScheduleStep};
 
@@ -95,13 +96,10 @@ impl GraphBuilder {
     /// on the graph-resources context. Resolve one at encode time via
     /// [`crate::render_graph::GraphResolvedResources::subresource_view`].
     ///
-    /// ## Dependency analysis
-    ///
-    /// Subresources do not participate in dependency analysis today — they are a view-provisioning
-    /// layer only. Passes that read or write a subresource should declare a matching access on
-    /// the parent [`TextureHandle`] so lifetime and alias planning remain correct. A future
-    /// revision may teach the builder to do overlap-aware tracking; for now the conservative path
-    /// just works.
+    /// Passes can declare reads and writes against the returned handle with
+    /// [`PassBuilder::read_texture_subresource`] and
+    /// [`PassBuilder::write_texture_subresource`]. The graph then orders only overlapping
+    /// mip/layer ranges and keeps the parent texture alive for lifetime and alias planning.
     pub fn create_subresource(&mut self, desc: TransientSubresourceDesc) -> SubresourceHandle {
         let handle = SubresourceHandle(self.subresources.len() as u32);
         self.subresources.push(desc);
@@ -219,6 +217,7 @@ impl GraphBuilder {
 
     /// Compiles setup declarations into an immutable graph.
     pub fn build(mut self) -> Result<CompiledRenderGraph, GraphBuildError> {
+        self.validate_subresource_decls()?;
         let n = self.passes.len();
         if n == 0 {
             return Ok(self.empty_graph());
@@ -252,7 +251,7 @@ impl GraphBuilder {
 
         let retained_ord = retained_ordinals(&ordered);
         let (compiled_textures, texture_slots) =
-            compile_textures(&self.textures, &setups, &retained_ord);
+            compile_textures(&self.textures, &self.subresources, &setups, &retained_ord);
         let (compiled_buffers, buffer_slots) =
             compile_buffers(&self.buffers, &setups, &retained_ord);
         let pass_info = compile_pass_info(&setups, &ordered);
@@ -348,6 +347,7 @@ impl GraphBuilder {
     fn collect_setup(&mut self) -> Result<Vec<SetupEntry>, GraphBuildError> {
         let texture_count = self.textures.len();
         let buffer_count = self.buffers.len();
+        let subresource_count = self.subresources.len();
         let imported_texture_count = self.imports_tex.len();
         let imported_buffer_count = self.imports_buf.len();
 
@@ -373,6 +373,7 @@ impl GraphBuilder {
                 &setup,
                 texture_count,
                 buffer_count,
+                subresource_count,
                 imported_texture_count,
                 imported_buffer_count,
             )
@@ -389,6 +390,66 @@ impl GraphBuilder {
             });
         }
         Ok(setups)
+    }
+
+    /// Validates subresource declarations before pass setup starts using their handles.
+    fn validate_subresource_decls(&self) -> Result<(), GraphBuildError> {
+        for (idx, subresource) in self.subresources.iter().enumerate() {
+            let handle = SubresourceHandle(idx as u32);
+            let Some(parent) = self.textures.get(subresource.parent.index()) else {
+                return Err(GraphBuildError::InvalidSubresource {
+                    handle,
+                    reason: "parent texture handle is unknown",
+                });
+            };
+            if subresource.mip_level_count == 0 {
+                return Err(GraphBuildError::InvalidSubresource {
+                    handle,
+                    reason: "mip level count must be at least one",
+                });
+            }
+            if subresource.array_layer_count == 0 {
+                return Err(GraphBuildError::InvalidSubresource {
+                    handle,
+                    reason: "array layer count must be at least one",
+                });
+            }
+            let Some(mip_end) = subresource
+                .base_mip_level
+                .checked_add(subresource.mip_level_count)
+            else {
+                return Err(GraphBuildError::InvalidSubresource {
+                    handle,
+                    reason: "mip range overflows u32",
+                });
+            };
+            if mip_end > parent.mip_levels.max(1) {
+                return Err(GraphBuildError::InvalidSubresource {
+                    handle,
+                    reason: "mip range exceeds parent texture mip count",
+                });
+            }
+            let max_layers = match parent.array_layers {
+                TransientArrayLayers::Fixed(layers) => layers.max(1),
+                TransientArrayLayers::Frame => 2,
+            };
+            let Some(layer_end) = subresource
+                .base_array_layer
+                .checked_add(subresource.array_layer_count)
+            else {
+                return Err(GraphBuildError::InvalidSubresource {
+                    handle,
+                    reason: "array layer range overflows u32",
+                });
+            };
+            if layer_end > max_layers {
+                return Err(GraphBuildError::InvalidSubresource {
+                    handle,
+                    reason: "array layer range exceeds parent texture layer count",
+                });
+            }
+        }
+        Ok(())
     }
 }
 

@@ -6,7 +6,7 @@ use crate::backend::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::gpu::GpuLimits;
 use crate::materials::MaterialPipelineSet;
-use crate::render_graph::frame_params::PrecomputedMaterialBind;
+use crate::render_graph::frame_params::MaterialBatchPacket;
 use crate::render_graph::world_mesh_draw_prep::DrawGroup;
 use crate::render_graph::WorldMeshDrawItem;
 use crate::resources::MeshPool;
@@ -105,7 +105,7 @@ pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
     /// Full sorted world mesh draw list for the view (read by representative index).
     pub draws: &'c [WorldMeshDrawItem],
     /// Pre-resolved pipelines and bind groups; one entry per unique batch-key run in `draws`.
-    pub precomputed: &'c [PrecomputedMaterialBind],
+    pub precomputed: &'c [MaterialBatchPacket],
     /// Mesh pool and skin cache for vertex/index binding.
     pub encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
     /// Device limits snapshot (storage-offset alignment for `@group(2)`).
