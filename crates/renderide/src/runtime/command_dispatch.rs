@@ -52,6 +52,15 @@ pub(super) fn dispatch_running_command(runtime: &mut RendererRuntime, cmd: Rende
                 .on_set_render_texture_format(f, runtime.frontend.ipc_mut());
         }
         RendererCommand::UnloadRenderTexture(u) => runtime.backend.on_unload_render_texture(u),
+        RendererCommand::VideoTextureLoad(l) => runtime.backend.on_video_texture_load(l),
+        RendererCommand::VideoTextureUpdate(u) => runtime.backend.on_video_texture_update(u),
+        RendererCommand::VideoTextureProperties(p) => {
+            runtime.backend.on_video_texture_properties(p)
+        }
+        RendererCommand::VideoTextureStartAudioTrack(s) => {
+            runtime.backend.on_video_texture_start_audio_track(s)
+        }
+        RendererCommand::UnloadVideoTexture(u) => runtime.backend.on_unload_video_texture(u),
         RendererCommand::FreeSharedMemoryView(f) => {
             release_shared_memory_view(runtime, f.buffer_id);
         }

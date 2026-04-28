@@ -452,6 +452,7 @@ fn compute_uniform_texture_state_signature(
                 .map(|t| (t.sampler.mipmap_bias, t.storage_v_inverted))
                 .unwrap_or((0.0, false)),
             ResolvedTextureBinding::RenderTexture { .. } => (0.0, true),
+            ResolvedTextureBinding::VideoTexture { .. } => (0.0, false),
             ResolvedTextureBinding::None => (0.0, false),
         };
         bias.to_bits().hash(&mut h);

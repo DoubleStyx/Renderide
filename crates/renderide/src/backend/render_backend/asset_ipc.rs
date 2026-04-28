@@ -6,8 +6,10 @@ use crate::shared::{
     MaterialsUpdateBatch, MeshUnload, MeshUploadData, SetCubemapData, SetCubemapFormat,
     SetCubemapProperties, SetRenderTextureFormat, SetTexture2DData, SetTexture2DFormat,
     SetTexture2DProperties, SetTexture3DData, SetTexture3DFormat, SetTexture3DProperties,
-    UnloadCubemap, UnloadRenderTexture, UnloadTexture2D, UnloadTexture3D,
+    UnloadCubemap, UnloadRenderTexture, UnloadTexture2D, UnloadTexture3D, UnloadVideoTexture,
+    VideoTextureLoad, VideoTextureStartAudioTrack, VideoTextureUpdate,
 };
+use renderide_shared::VideoTextureProperties;
 
 use crate::assets::asset_transfer_queue::{self as asset_uploads};
 
@@ -153,6 +155,31 @@ impl RenderBackend {
     /// Handle [`UnloadRenderTexture`](crate::shared::UnloadRenderTexture).
     pub fn on_unload_render_texture(&mut self, u: UnloadRenderTexture) {
         asset_uploads::on_unload_render_texture(&mut self.asset_transfers, u);
+    }
+
+    /// Handle [`VideoTextureLoad`](crate::shared::VideoTextureLoad).
+    pub fn on_video_texture_load(&mut self, l: VideoTextureLoad) {
+        asset_uploads::on_video_texture_load(&mut self.asset_transfers, l);
+    }
+
+    /// Handle [`VideoTextureUpdate`](crate::shared::VideoTextureUpdate).
+    pub fn on_video_texture_update(&mut self, u: VideoTextureUpdate) {
+        asset_uploads::on_video_texture_update(&mut self.asset_transfers, u);
+    }
+
+    /// Handle [`VideoTextureStartAudioTrack`](crate::shared::VideoTextureStartAudioTrack).
+    pub fn on_video_texture_properties(&mut self, p: VideoTextureProperties) {
+        asset_uploads::on_video_texture_properties(&mut self.asset_transfers, p);
+    }
+
+    /// Handle [`VideoTextureStartAudioTrack`](crate::shared::VideoTextureStartAudioTrack).
+    pub fn on_video_texture_start_audio_track(&mut self, s: VideoTextureStartAudioTrack) {
+        asset_uploads::on_video_texture_start_audio_track(&mut self.asset_transfers, s);
+    }
+
+    /// Handle [`UnloadVideoTexture`](crate::shared::UnloadVideoTexture).
+    pub fn on_unload_video_texture(&mut self, u: UnloadVideoTexture) {
+        asset_uploads::on_unload_video_texture(&mut self.asset_transfers, u);
     }
 
     /// Ingest mesh bytes from shared memory; notifies host when `ipc` is set.

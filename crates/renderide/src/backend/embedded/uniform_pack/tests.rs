@@ -11,7 +11,9 @@ mod text_uniform_packing_tests {
     use crate::assets::material::{MaterialPropertyLookupIds, MaterialPropertyStore};
     use crate::backend::embedded::layout::StemEmbeddedPropertyIds;
     use crate::materials::{ReflectedMaterialUniformBlock, ReflectedUniformScalarKind};
-    use crate::resources::{CubemapPool, RenderTexturePool, Texture3dPool, TexturePool};
+    use crate::resources::{
+        CubemapPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
+    };
 
     fn lookup(material_id: i32) -> MaterialPropertyLookupIds {
         MaterialPropertyLookupIds {
@@ -21,12 +23,19 @@ mod text_uniform_packing_tests {
     }
 
     /// Builds an empty texture-pool set for uniform-packer tests that only need binding metadata.
-    fn empty_texture_pools() -> (TexturePool, Texture3dPool, CubemapPool, RenderTexturePool) {
+    fn empty_texture_pools() -> (
+        TexturePool,
+        Texture3dPool,
+        CubemapPool,
+        RenderTexturePool,
+        VideoTexturePool,
+    ) {
         (
             TexturePool::default_pool(),
             Texture3dPool::default_pool(),
             CubemapPool::default_pool(),
             RenderTexturePool::new(),
+            VideoTexturePool::new(),
         )
     }
 
@@ -331,12 +340,13 @@ mod text_uniform_packing_tests {
             MaterialPropertyValue::Float4([2.0, 3.0, 0.25, 0.75]),
         );
 
-        let (texture, texture3d, cubemap, render_texture) = empty_texture_pools();
+        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
         let pools = EmbeddedTexturePools {
             texture: &texture,
             texture3d: &texture3d,
             cubemap: &cubemap,
             render_texture: &render_texture,
+            video_texture: &video_texture,
         };
         let tex_ctx = UniformPackTextureContext {
             pools: &pools,
@@ -433,7 +443,9 @@ mod storage_orientation_uniform_tests {
     use crate::backend::embedded::layout::{EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds};
     use crate::backend::embedded::texture_pools::EmbeddedTexturePools;
     use crate::materials::ReflectedMaterialUniformBlock;
-    use crate::resources::{CubemapPool, RenderTexturePool, Texture3dPool, TexturePool};
+    use crate::resources::{
+        CubemapPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
+    };
 
     fn lookup(material_id: i32) -> MaterialPropertyLookupIds {
         MaterialPropertyLookupIds {
@@ -610,11 +622,13 @@ mod storage_orientation_uniform_tests {
         let texture3d_pool = Texture3dPool::default_pool();
         let cubemap_pool = CubemapPool::default_pool();
         let render_texture_pool = RenderTexturePool::new();
+        let video_texture_pool = VideoTexturePool::new();
         let pools = EmbeddedTexturePools {
             texture: &texture_pool,
             texture3d: &texture3d_pool,
             cubemap: &cubemap_pool,
             render_texture: &render_texture_pool,
+            video_texture: &video_texture_pool,
         };
         let (reflected, ids, registry) = reflected_with_texture_and_field(
             "_MainTex",
@@ -650,11 +664,13 @@ mod storage_orientation_uniform_tests {
         let texture3d_pool = Texture3dPool::default_pool();
         let cubemap_pool = CubemapPool::default_pool();
         let render_texture_pool = RenderTexturePool::new();
+        let video_texture_pool = VideoTexturePool::new();
         let pools = EmbeddedTexturePools {
             texture: &texture_pool,
             texture3d: &texture3d_pool,
             cubemap: &cubemap_pool,
             render_texture: &render_texture_pool,
+            video_texture: &video_texture_pool,
         };
         let (reflected, ids, registry) = reflected_with_texture_and_fields(
             "_MainTex",
@@ -697,11 +713,13 @@ mod storage_orientation_uniform_tests {
         let texture3d_pool = Texture3dPool::default_pool();
         let cubemap_pool = CubemapPool::default_pool();
         let render_texture_pool = RenderTexturePool::new();
+        let video_texture_pool = VideoTexturePool::new();
         let pools = EmbeddedTexturePools {
             texture: &texture_pool,
             texture3d: &texture3d_pool,
             cubemap: &cubemap_pool,
             render_texture: &render_texture_pool,
+            video_texture: &video_texture_pool,
         };
         let (reflected, ids, registry) = reflected_with_texture_and_field(
             "_MainTex",

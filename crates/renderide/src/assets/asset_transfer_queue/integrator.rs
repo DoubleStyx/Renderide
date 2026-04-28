@@ -224,6 +224,15 @@ pub fn drain_asset_tasks(
             );
         }
     }
+
+    {
+        profiling::scope!("asset::video_texture_poll_events");
+        let mut video_textures = std::mem::take(&mut asset.video_players);
+        for player in video_textures.values_mut() {
+            player.process_events(asset, ipc);
+        }
+        asset.video_players = video_textures;
+    }
 }
 
 /// Drains all queued tasks without a time limit (used on GPU attach before first frame).

@@ -177,7 +177,8 @@ fn binding_storage_v_inverted_from_metadata(
         ResolvedTextureBinding::Cubemap { .. } => cubemap_storage_v_inverted.unwrap_or(false),
         ResolvedTextureBinding::None
         | ResolvedTextureBinding::Texture3D { .. }
-        | ResolvedTextureBinding::RenderTexture { .. } => false,
+        | ResolvedTextureBinding::RenderTexture { .. }
+        | ResolvedTextureBinding::VideoTexture { .. } => false,
     }
 }
 
@@ -252,7 +253,8 @@ fn binding_lod_bias_from_metadata(
         ResolvedTextureBinding::Cubemap { .. } => cubemap_mipmap_bias.unwrap_or(0.0),
         ResolvedTextureBinding::None
         | ResolvedTextureBinding::Texture3D { .. }
-        | ResolvedTextureBinding::RenderTexture { .. } => 0.0,
+        | ResolvedTextureBinding::RenderTexture { .. }
+        | ResolvedTextureBinding::VideoTexture { .. } => 0.0,
     }
 }
 

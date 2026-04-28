@@ -275,6 +275,12 @@ impl EmbeddedMaterialBindResources {
                     .filter(|t| t.is_sampleable())
                     .map(|t| t.color_view.clone())
             }
+            (wgpu::TextureViewDimension::D2, ResolvedTextureBinding::VideoTexture { asset_id }) => {
+                if asset_id < 0 {
+                    return None;
+                }
+                pools.video_texture.get(asset_id).map(|t| t.view.clone())
+            }
             _ => None,
         }
     }
@@ -349,6 +355,12 @@ impl EmbeddedMaterialBindResources {
                         })
                     })
                 }
+            }
+            ResolvedTextureBinding::VideoTexture { asset_id } => {
+                pools.video_texture.get(asset_id).map(|tex| {
+                    let key = EmbeddedSamplerCacheKey::texture2d(&tex.sampler, 1);
+                    self.cached_sampler(key, || sampler_from_state(&self.device, &tex.sampler, 1))
+                })
             }
         };
         sampled.unwrap_or_else(|| self.default_sampler.clone())

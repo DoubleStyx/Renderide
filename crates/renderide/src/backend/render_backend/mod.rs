@@ -28,7 +28,9 @@ use crate::render_graph::{
     FrameMaterialBatchCache, GraphCache, PerViewHudConfig, PerViewHudOutputs, TransientPool,
     WorldMeshDrawStateRow, WorldMeshDrawStats,
 };
-use crate::resources::{CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool};
+use crate::resources::{
+    CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
+};
 
 use super::debug_hud_bundle::DebugHudBundle;
 use super::embedded::{EmbeddedMaterialBindError, EmbeddedTexturePools};
@@ -179,6 +181,7 @@ impl<'a> WorldMeshForwardEncodeRefs<'a> {
             texture3d: &self.asset_transfers.texture3d_pool,
             cubemap: &self.asset_transfers.cubemap_pool,
             render_texture: &self.asset_transfers.render_texture_pool,
+            video_texture: &self.asset_transfers.video_texture_pool,
         }
     }
 }
@@ -377,6 +380,11 @@ impl RenderBackend {
         &self.asset_transfers.render_texture_pool
     }
 
+    /// Resident video texture table.
+    pub fn video_texture_pool(&self) -> &VideoTexturePool {
+        &self.asset_transfers.video_texture_pool
+    }
+
     /// Answers host SH2 task rows for the latest frame submit without blocking GPU readback.
     pub(crate) fn answer_reflection_probe_sh2_tasks(
         &mut self,
@@ -406,6 +414,7 @@ impl RenderBackend {
             texture3d: self.texture3d_pool(),
             cubemap: self.cubemap_pool(),
             render_texture: self.render_texture_pool(),
+            video_texture: self.video_texture_pool(),
         }
     }
 

@@ -23,6 +23,7 @@ pub mod mesh;
 pub mod shader;
 pub mod texture;
 pub mod util;
+pub mod video;
 
 pub use asset_transfer_queue::AssetTransferQueue;
 pub use shader::{resolve_shader_upload, ResolvedShaderUpload};

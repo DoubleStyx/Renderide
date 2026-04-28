@@ -21,13 +21,16 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::gpu::GpuLimits;
-use crate::resources::{CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool};
+use crate::resources::{
+    CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
+};
 use crate::shared::{
     MeshUploadData, SetCubemapData, SetCubemapFormat, SetCubemapProperties, SetRenderTextureFormat,
     SetTexture2DData, SetTexture2DFormat, SetTexture2DProperties, SetTexture3DData,
     SetTexture3DFormat, SetTexture3DProperties,
 };
 
+use crate::assets::video::player::VideoPlayer;
 pub use integrator::{
     drain_asset_tasks, drain_asset_tasks_unbounded, AssetIntegrator, AssetTask, StepResult,
     MAX_ASSET_INTEGRATION_QUEUED,
@@ -37,9 +40,11 @@ pub use uploads::{
     on_set_cubemap_properties, on_set_render_texture_format, on_set_texture_2d_data,
     on_set_texture_2d_format, on_set_texture_2d_properties, on_set_texture_3d_data,
     on_set_texture_3d_format, on_set_texture_3d_properties, on_unload_cubemap,
-    on_unload_render_texture, on_unload_texture_2d, on_unload_texture_3d,
-    try_cubemap_upload_with_device, try_process_mesh_upload, try_texture3d_upload_with_device,
-    try_texture_upload_with_device, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
+    on_unload_render_texture, on_unload_texture_2d, on_unload_texture_3d, on_unload_video_texture,
+    on_video_texture_load, on_video_texture_properties, on_video_texture_start_audio_track,
+    on_video_texture_update, try_cubemap_upload_with_device, try_process_mesh_upload,
+    try_texture3d_upload_with_device, try_texture_upload_with_device, MAX_PENDING_MESH_UPLOADS,
+    MAX_PENDING_TEXTURE_UPLOADS,
 };
 
 /// Pending mesh/texture payloads, CPU texture tables, GPU device/queue, resident pools, and [`AssetIntegrator`].
@@ -54,6 +59,10 @@ pub struct AssetTransferQueue {
     pub(crate) cubemap_pool: CubemapPool,
     /// Resident host render textures (color + optional depth).
     pub(crate) render_texture_pool: RenderTexturePool,
+    /// Resident video textures.
+    pub(crate) video_texture_pool: VideoTexturePool,
+    /// Holder for [`VideoPlayer`] instances.
+    pub(crate) video_players: HashMap<i32, VideoPlayer>,
     /// Latest [`SetRenderTextureFormat`] per asset.
     pub(crate) render_texture_formats: HashMap<i32, SetRenderTextureFormat>,
     /// Latest [`SetTexture2DFormat`] per asset (required before data upload).
@@ -140,6 +149,8 @@ impl AssetTransferQueue {
             cubemap_pool: CubemapPool::default_pool(),
             render_texture_pool: RenderTexturePool::new(),
             render_texture_formats: HashMap::new(),
+            video_players: HashMap::new(),
+            video_texture_pool: VideoTexturePool::new(),
             texture_formats: HashMap::new(),
             texture_properties: HashMap::new(),
             texture3d_formats: HashMap::new(),
