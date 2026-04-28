@@ -68,19 +68,28 @@ pub(super) fn current_os_tid() -> i64 {
     {
         let mut tid: u64 = 0;
         // SAFETY: `pthread_threadid_np(0, ..)` queries the calling thread's id; pointer must be
-        // a valid writable u64, which `&mut tid` is.
+        // a valid writable u64, which `addr_of_mut!(tid)` provides without creating a borrow.
         unsafe {
-            libc::pthread_threadid_np(0, &mut tid);
+            libc::pthread_threadid_np(0, core::ptr::addr_of_mut!(tid));
         }
         tid as i64
     }
 }
 
-/// Returns the calling thread's `pthread_t` cast to `usize`. The value is opaque — only used as
-/// the first argument to `pthread_kill` from the watchdog thread.
+/// Returns the calling thread's macOS `pthread_t` encoded as `usize`.
+///
+/// Linux and Android targets capture through `tgkill` using [`current_os_tid`], so they do not
+/// need to preserve the opaque `pthread_t` value.
 pub(super) fn current_pthread_handle() -> usize {
-    // SAFETY: `pthread_self()` returns the calling thread's pthread; safe in any context.
-    unsafe { libc::pthread_self() as usize }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `pthread_self()` returns the calling thread's pthread; safe in any context.
+        unsafe { libc::pthread_self() }
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        0
+    }
 }
 
 /// Signal handler installed for `SIGUSR2`. Walks the current thread's stack into the static
@@ -216,7 +225,8 @@ fn send_capture_signal(os_tid: i64, pthread_handle: usize) -> i32 {
         // `pthread_handle` was captured at heartbeat registration via `pthread_self()` and the
         // value stays valid for the lifetime of that thread; sending SIGUSR2 to a thread that
         // exited returns ESRCH, surfaced here as a non-zero rc.
-        unsafe { libc::pthread_kill(pthread_handle as libc::pthread_t, libc::SIGUSR2) }
+        let thread: libc::pthread_t = pthread_handle;
+        unsafe { libc::pthread_kill(thread, libc::SIGUSR2) }
     }
 }
 

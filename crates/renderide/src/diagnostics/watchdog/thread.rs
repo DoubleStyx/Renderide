@@ -127,7 +127,7 @@ fn current_os_tid() -> i64 {
     }
 }
 
-/// Returns the calling thread's `pthread_t` cast to `usize`, or `0` on Windows / unknown.
+/// Returns the calling thread's macOS `pthread_t` encoded as `usize`, or `0` when unused.
 fn current_pthread_handle() -> usize {
     #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
     {

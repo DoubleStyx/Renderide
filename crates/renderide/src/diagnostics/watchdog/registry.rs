@@ -35,8 +35,8 @@ pub(super) struct HeartbeatSlot {
         )
     )]
     pub(super) os_tid: i64,
-    /// `pthread_t` cast to `usize` on POSIX so the watchdog thread can call `pthread_kill` to
-    /// deliver `SIGUSR2`. `0` on platforms where signal-based capture is not used.
+    /// macOS `pthread_t` encoded as `usize` so the watchdog thread can call `pthread_kill` to
+    /// deliver `SIGUSR2`. `0` on platforms where `pthread_kill` capture is not used.
     #[cfg_attr(
         not(any(target_os = "linux", target_os = "android", target_os = "macos")),
         expect(
