@@ -2,6 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// How the config file path was chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigSource {
@@ -58,8 +61,7 @@ pub(crate) static TEST_WORKSPACE_ROOTS_OVERRIDE: std::sync::Mutex<Option<Vec<Pat
 
 /// When true, [`search_candidates`] stops after binary and workspace candidates (no cwd / parent crawl).
 #[cfg(test)]
-pub(crate) static TEST_EXTRA_SEARCH_CANDIDATES_DISABLED: std::sync::Mutex<bool> =
-    std::sync::Mutex::new(false);
+pub(crate) static TEST_EXTRA_SEARCH_CANDIDATES_DISABLED: AtomicBool = AtomicBool::new(false);
 
 /// When set by unit tests, [`binary_output_dir`] returns this path instead of `current_exe()`'s parent.
 #[cfg(test)]
@@ -145,10 +147,8 @@ fn search_candidates() -> Vec<PathBuf> {
 
     #[cfg(test)]
     {
-        if let Ok(g) = TEST_EXTRA_SEARCH_CANDIDATES_DISABLED.lock() {
-            if *g {
-                return v;
-            }
+        if TEST_EXTRA_SEARCH_CANDIDATES_DISABLED.load(Ordering::Relaxed) {
+            return v;
         }
     }
 
@@ -295,7 +295,7 @@ mod tests {
     impl TestSearchIsolation {
         /// Isolates resolution to a fake binary output directory (no workspace / cwd crawl).
         fn new_binary_only(binary_dir: PathBuf) -> Self {
-            *TEST_EXTRA_SEARCH_CANDIDATES_DISABLED.lock().unwrap() = true;
+            TEST_EXTRA_SEARCH_CANDIDATES_DISABLED.store(true, Ordering::Relaxed);
             *TEST_WORKSPACE_ROOTS_OVERRIDE.lock().unwrap() = Some(Vec::new());
             *TEST_BINARY_DIR_OVERRIDE.lock().unwrap() = Some(binary_dir);
             let old_cwd = std::env::current_dir().expect("cwd");
@@ -306,7 +306,7 @@ mod tests {
     impl Drop for TestSearchIsolation {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.old_cwd);
-            *TEST_EXTRA_SEARCH_CANDIDATES_DISABLED.lock().unwrap() = false;
+            TEST_EXTRA_SEARCH_CANDIDATES_DISABLED.store(false, Ordering::Relaxed);
             *TEST_WORKSPACE_ROOTS_OVERRIDE.lock().unwrap() = None;
             *TEST_BINARY_DIR_OVERRIDE.lock().unwrap() = None;
         }

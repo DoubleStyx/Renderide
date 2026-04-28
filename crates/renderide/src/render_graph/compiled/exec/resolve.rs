@@ -162,17 +162,23 @@ impl CompiledRenderGraph {
                         history.texture_slot_scoped(*slot, scope).ok_or_else(|| {
                             GraphExecuteError::missing_history_texture(*slot, import.label)
                         })?;
-                    let guard = texture_slot.lock();
                     let (half_idx, half_name) = texture_history_half(import, history);
-                    let texture = guard.half(half_idx).ok_or_else(|| {
-                        GraphExecuteError::unallocated_history_texture(*slot, half_name)
-                    })?;
+                    let (view, texture, mip_views) = {
+                        let guard = texture_slot.lock();
+                        let texture = guard.half(half_idx).ok_or_else(|| {
+                            GraphExecuteError::unallocated_history_texture(*slot, half_name)
+                        })?;
+                        let resolved_texture = (
+                            texture.view.clone(),
+                            texture.texture.clone(),
+                            texture.mip_views.clone(),
+                        );
+                        drop(guard);
+                        resolved_texture
+                    };
                     Some(ResolvedImportedTexture {
-                        view: texture.view.clone(),
-                        history: Some(ResolvedImportedHistoryTexture {
-                            texture: texture.texture.clone(),
-                            mip_views: texture.mip_views.clone(),
-                        }),
+                        view,
+                        history: Some(ResolvedImportedHistoryTexture { texture, mip_views }),
                     })
                 }
             };
@@ -254,12 +260,17 @@ impl CompiledRenderGraph {
                         history.buffer_slot_scoped(*slot, scope).ok_or_else(|| {
                             GraphExecuteError::missing_history_buffer(*slot, import.label)
                         })?;
-                    let guard = buffer_slot.lock();
                     let (half_idx, half_name) = buffer_history_half(import, history);
-                    let buffer = guard.half(half_idx).ok_or_else(|| {
-                        GraphExecuteError::unallocated_history_buffer(*slot, half_name)
-                    })?;
-                    Some(buffer.clone())
+                    let buffer = {
+                        let guard = buffer_slot.lock();
+                        guard
+                            .half(half_idx)
+                            .ok_or_else(|| {
+                                GraphExecuteError::unallocated_history_buffer(*slot, half_name)
+                            })?
+                            .clone()
+                    };
+                    Some(buffer)
                 }
             };
             if let Some(buffer) = buffer {

@@ -297,26 +297,31 @@ impl SkyboxRenderer {
     ) -> Arc<wgpu::BindGroup> {
         let view_id = frame.view.occlusion_view;
         let uniforms = SkyboxViewUniforms::from_frame(frame);
-        let mut bindings = self.view_bindings.lock();
-        let entry = bindings.entry(view_id).or_insert_with(|| {
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("skybox_view_uniform"),
-                size: SKYBOX_VIEW_UNIFORM_SIZE,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
+        let (buffer, bind_group) = {
+            let mut bindings = self.view_bindings.lock();
+            let entry = bindings.entry(view_id).or_insert_with(|| {
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("skybox_view_uniform"),
+                    size: SKYBOX_VIEW_UNIFORM_SIZE,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("skybox_view"),
+                    layout: self.view_layout(device),
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    }],
+                }));
+                SkyboxViewBinding { buffer, bind_group }
             });
-            let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("skybox_view"),
-                layout: self.view_layout(device),
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                }],
-            }));
-            SkyboxViewBinding { buffer, bind_group }
-        });
-        upload_batch.write_buffer(&entry.buffer, 0, bytemuck::bytes_of(&uniforms));
-        Arc::clone(&entry.bind_group)
+            let resolved = (entry.buffer.clone(), Arc::clone(&entry.bind_group));
+            drop(bindings);
+            resolved
+        };
+        upload_batch.write_buffer(&buffer, 0, bytemuck::bytes_of(&uniforms));
+        bind_group
     }
 
     /// Returns a cached material skybox pipeline for the view target state.
@@ -363,6 +368,7 @@ impl SkyboxRenderer {
             return Some(Arc::clone(existing));
         }
         guard.insert(key, Arc::clone(&pipeline));
+        drop(guard);
         Some(pipeline)
     }
 
@@ -403,6 +409,7 @@ impl SkyboxRenderer {
             return Some(Arc::clone(existing));
         }
         guard.insert(key, Arc::clone(&pipeline));
+        drop(guard);
         Some(pipeline)
     }
 }

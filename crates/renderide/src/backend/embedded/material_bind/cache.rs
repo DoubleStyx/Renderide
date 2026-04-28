@@ -205,9 +205,8 @@ impl EmbeddedMaterialBindResources {
         }
         //perf xlinka: sampler objects are cheap-ish, but bind misses can make lots of them.
         let sampler = Arc::new(create());
-        if let Some(evicted) = self.sampler_cache.lock().put(key, sampler.clone()) {
-            drop(evicted);
-        }
+        let evicted = self.sampler_cache.lock().put(key, sampler.clone());
+        drop(evicted);
         sampler
     }
 }

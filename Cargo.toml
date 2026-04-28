@@ -159,3 +159,9 @@ index_refutable_slice = "warn"
 
 # discipline
 map_err_ignore = "warn"
+large_enum_variant = "warn"
+mutex_atomic = "warn"
+mutex_integer = "warn"
+await_holding_lock = "warn"
+significant_drop_in_scrutinee = "warn"
+significant_drop_tightening = "warn"

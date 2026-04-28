@@ -641,10 +641,13 @@ mod tests {
         changed.extent.width = 200;
         reg.register_texture(SLOT_A, changed).unwrap();
         let slot = reg.texture_slot(SLOT_A).unwrap();
-        let guard = slot.lock();
-        assert_eq!(guard.spec().extent.width, 200);
-        assert!(guard.half(0).is_none());
-        assert!(guard.half(1).is_none());
+        {
+            let guard = slot.lock();
+            assert_eq!(guard.spec().extent.width, 200);
+            assert!(guard.half(0).is_none());
+            assert!(guard.half(1).is_none());
+            drop(guard);
+        }
     }
 
     #[test]

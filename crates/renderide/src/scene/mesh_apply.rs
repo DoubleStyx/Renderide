@@ -410,8 +410,8 @@ fn apply_skinned_bone_index_buffers_extracted(
         return;
     }
     if extracted.bone_transform_indexes.is_empty() {
-        let mut warned = BONE_INDEX_EMPTY_WARNED_SCENES.lock();
-        if warned.insert(scene_id) {
+        let should_warn = BONE_INDEX_EMPTY_WARNED_SCENES.lock().insert(scene_id);
+        if should_warn {
             logger::warn!(
                 "Skinned update: bone_assignments present but bone_transform_indexes empty (scene_id={scene_id}); skipping bone index application"
             );
