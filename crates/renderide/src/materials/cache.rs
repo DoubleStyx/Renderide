@@ -29,12 +29,10 @@ use super::pipeline_build_error::PipelineBuildError;
 /// Maximum raster pipelines retained (LRU eviction).
 const MAX_CACHED_PIPELINES: usize = 512;
 
-const MAX_CACHED_PIPELINES_NZ: NonZeroUsize = {
-    match NonZeroUsize::new(MAX_CACHED_PIPELINES) {
-        Some(n) => n,
-        None => panic!("MAX_CACHED_PIPELINES must be non-zero"),
-    }
-};
+/// Non-zero raster pipeline cache capacity.
+fn max_cached_pipelines() -> NonZeroUsize {
+    NonZeroUsize::new(MAX_CACHED_PIPELINES).unwrap_or(NonZeroUsize::MIN)
+}
 
 /// Key for [`MaterialPipelineCache`] lookups (no WGSL parse — see module docs).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -79,7 +77,7 @@ impl MaterialPipelineCache {
         Self {
             device,
             limits,
-            pipelines: Mutex::new(LruCache::new(MAX_CACHED_PIPELINES_NZ)),
+            pipelines: Mutex::new(LruCache::new(max_cached_pipelines())),
         }
     }
 

@@ -30,9 +30,8 @@ use crate::assets::material::{
 };
 
 use cache::{
-    EmbeddedSamplerCacheKey, TextureDebugCacheKey, MAX_CACHED_EMBEDDED_BIND_GROUPS_NZ,
-    MAX_CACHED_EMBEDDED_SAMPLERS_NZ, MAX_CACHED_EMBEDDED_UNIFORMS_NZ,
-    MAX_CACHED_TEXTURE_DEBUG_IDS_NZ,
+    max_cached_embedded_bind_groups, max_cached_embedded_samplers, max_cached_embedded_uniforms,
+    max_cached_texture_debug_ids, EmbeddedSamplerCacheKey, TextureDebugCacheKey,
 };
 use uniform::{CachedUniformEntry, EmbeddedUniformBufferRequest, MaterialUniformCacheKey};
 
@@ -138,10 +137,10 @@ impl EmbeddedMaterialBindResources {
             property_registry,
             shared_keyword_ids,
             stem_cache: Mutex::new(HashMap::new()),
-            bind_cache: Mutex::new(LruCache::new(MAX_CACHED_EMBEDDED_BIND_GROUPS_NZ)),
-            uniform_cache: Mutex::new(LruCache::new(MAX_CACHED_EMBEDDED_UNIFORMS_NZ)),
-            sampler_cache: Mutex::new(LruCache::new(MAX_CACHED_EMBEDDED_SAMPLERS_NZ)),
-            texture_debug_cache: Mutex::new(LruCache::new(MAX_CACHED_TEXTURE_DEBUG_IDS_NZ)),
+            bind_cache: Mutex::new(LruCache::new(max_cached_embedded_bind_groups())),
+            uniform_cache: Mutex::new(LruCache::new(max_cached_embedded_uniforms())),
+            sampler_cache: Mutex::new(LruCache::new(max_cached_embedded_samplers())),
+            texture_debug_cache: Mutex::new(LruCache::new(max_cached_texture_debug_ids())),
         })
     }
 

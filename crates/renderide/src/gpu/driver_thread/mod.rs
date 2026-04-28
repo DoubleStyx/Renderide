@@ -67,7 +67,7 @@ impl DriverThread {
     pub fn new(
         queue: Arc<wgpu::Queue>,
         gpu_queue_access_gate: crate::gpu::GpuQueueAccessGate,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
         let ring = Arc::new(BoundedRing::<DriverMessage>::new(RING_CAPACITY));
         let errors = Arc::new(DriverErrorState::default());
         let surface_counters = Arc::new(SurfaceCounters::default());
@@ -75,10 +75,6 @@ impl DriverThread {
         let ring_clone = Arc::clone(&ring);
         let errors_clone = Arc::clone(&errors);
         let counters_clone = Arc::clone(&surface_counters);
-        #[expect(
-            clippy::expect_used,
-            reason = "renderer-driver thread spawn failure at startup is unrecoverable"
-        )]
         let handle = thread::Builder::new()
             .name("renderer-driver".to_string())
             .spawn(move || {
@@ -89,15 +85,14 @@ impl DriverThread {
                     errors_clone,
                     counters_clone,
                 );
-            })
-            .expect("spawn renderer-driver thread");
+            })?;
 
-        Self {
+        Ok(Self {
             ring,
             errors,
             surface_counters,
             handle: Some(handle),
-        }
+        })
     }
 
     /// Enqueues a batch for the driver thread to submit and present. Blocks while the

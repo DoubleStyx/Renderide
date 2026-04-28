@@ -2,15 +2,12 @@
 
 use crate::shared::{SetCubemapData, SetCubemapFormat};
 
-use super::super::decode::{decode_mip_to_rgba8, flip_mip_rows, needs_rgba8_decode_before_upload};
-use super::super::layout::{
-    flip_compressed_mip_block_rows_y, host_format_is_compressed, mip_byte_len,
-    mip_dimensions_at_level, mip_tight_bytes_per_texel,
-};
+use super::super::decode::needs_rgba8_decode_before_upload;
+use super::super::layout::{mip_byte_len, mip_dimensions_at_level};
 use super::error::TextureUploadError;
 use super::mip_write_common::{
-    is_rgba8_family, mip_ctx_uses_storage_v_inversion, uncompressed_row_bytes,
-    write_cubemap_face_mip, CubemapFaceMipWrite, MipUploadFormatCtx, MipUploadPixels,
+    mip_src_to_upload_pixels as shared_mip_src_to_upload_pixels, write_cubemap_face_mip,
+    CubemapFaceMipWrite, MipUploadFormatCtx, MipUploadLabel, MipUploadPixels,
 };
 use super::write_mip_chain::MipChainAdvance;
 
@@ -80,105 +77,14 @@ fn cubemap_mip_src_to_upload_pixels(
     face: u32,
     mip_src: &[u8],
 ) -> Result<MipUploadPixels, TextureUploadError> {
-    let MipUploadFormatCtx {
-        asset_id,
-        fmt_format,
-        wgpu_format,
-        needs_rgba8_decode,
-    } = ctx;
-    let pixels = if is_rgba8_family(wgpu_format) {
-        if needs_rgba8_decode || host_format_is_compressed(fmt_format) {
-            decode_mip_to_rgba8(fmt_format, w, h, flip, mip_src).ok_or_else(|| {
-                TextureUploadError::from(format!(
-                    "RGBA decode failed for cubemap face {face} mip {mip_i}"
-                ))
-            })?
-        } else if flip {
-            let mut v = mip_src.to_vec();
-            let bpp = mip_tight_bytes_per_texel(v.len(), w, h).ok_or_else(|| {
-                format!(
-                    "cubemap mip {mip_i}: RGBA8 upload len {} not divisible by {}×{} texels",
-                    v.len(),
-                    w,
-                    h
-                )
-            })?;
-            if bpp != 4 {
-                return Err(TextureUploadError::from(format!(
-                    "cubemap mip {mip_i}: RGBA8 family expects 4 bytes per texel, got {bpp}"
-                )));
-            }
-            flip_mip_rows(&mut v, w, h, bpp);
-            v
-        } else {
-            mip_src.to_vec()
-        }
-    } else {
-        if needs_rgba8_decode {
-            return Err(TextureUploadError::from(format!(
-                "host {:?} must use RGBA decode but GPU format is {:?}",
-                fmt_format, wgpu_format
-            )));
-        }
-        if flip && !host_format_is_compressed(fmt_format) {
-            let mut v = mip_src.to_vec();
-            let bpp_host = mip_tight_bytes_per_texel(v.len(), w, h).ok_or_else(|| {
-                TextureUploadError::from(format!(
-                    "cubemap mip {mip_i}: len {} not divisible by {}×{} texels (flip_y)",
-                    v.len(),
-                    w,
-                    h
-                ))
-            })?;
-            if let Ok(bpp_gpu) = uncompressed_row_bytes(wgpu_format) {
-                if bpp_host != bpp_gpu {
-                    logger::warn!(
-                        "cubemap {} face {face} mip {mip_i}: host texel stride {} B != GPU {:?} stride {} B",
-                        asset_id,
-                        bpp_host,
-                        wgpu_format,
-                        bpp_gpu
-                    );
-                }
-            }
-            flip_mip_rows(&mut v, w, h, bpp_host);
-            v
-        } else if flip && host_format_is_compressed(fmt_format) {
-            let expected_len = mip_byte_len(fmt_format, w, h).ok_or_else(|| {
-                TextureUploadError::from(format!(
-                    "cubemap {asset_id} face {face} mip {mip_i}: mip byte size unknown for {:?}",
-                    fmt_format
-                ))
-            })? as usize;
-            if mip_src.len() != expected_len {
-                return Err(TextureUploadError::from(format!(
-                    "cubemap {asset_id} face {face} mip {mip_i}: mip len {} != expected {} for {:?}",
-                    mip_src.len(),
-                    expected_len,
-                    fmt_format
-                )));
-            }
-            if let Some(v) = flip_compressed_mip_block_rows_y(fmt_format, w, h, mip_src) {
-                v
-            } else {
-                if mip_ctx_uses_storage_v_inversion(ctx, flip) {
-                    mip_src.to_vec()
-                } else {
-                    return Err(TextureUploadError::from(format!(
-                        "cubemap {asset_id} face {face} mip {mip_i}: flip_y unsupported for compressed {:?}; reject to avoid uploading inverted data under the engine's V-flip sampling convention",
-                        fmt_format
-                    )));
-                }
-            }
-        } else {
-            mip_src.to_vec()
-        }
-    };
-    Ok(if mip_ctx_uses_storage_v_inversion(ctx, flip) {
-        MipUploadPixels::storage_v_inverted(pixels)
-    } else {
-        MipUploadPixels::normal(pixels)
-    })
+    shared_mip_src_to_upload_pixels(
+        ctx,
+        w,
+        h,
+        flip,
+        mip_src,
+        MipUploadLabel::cubemap(face, mip_i),
+    )
 }
 
 /// GPU and host view for one [`CubemapMipChainUploader::upload_next_face_mip`] step.

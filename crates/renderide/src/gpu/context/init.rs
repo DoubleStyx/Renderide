@@ -216,19 +216,20 @@ struct GpuRuntimeHandles {
 
 impl GpuRuntimeHandles {
     /// Builds the driver-thread and timing handles for a queue.
-    fn new(queue: Arc<wgpu::Queue>) -> Self {
+    fn new(queue: Arc<wgpu::Queue>) -> Result<Self, GpuError> {
         let gpu_queue_access_gate = super::super::GpuQueueAccessGate::new();
         let driver_thread = super::super::driver_thread::DriverThread::new(
             Arc::clone(&queue),
             gpu_queue_access_gate.clone(),
-        );
-        Self {
+        )
+        .map_err(GpuError::DriverThreadSpawn)?;
+        Ok(Self {
             queue,
             gpu_queue_access_gate,
             driver_thread,
             frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
             latest_gpu_pass_timings: Arc::new(Mutex::new(Vec::new())),
-        }
+        })
     }
 }
 
@@ -383,7 +384,7 @@ impl GpuContext {
             "GPU profiler unavailable: adapter lacks TIMESTAMP_QUERY; \
              Tracy GPU timeline will be empty (CPU spans still work)",
         );
-        let runtime = GpuRuntimeHandles::new(Arc::new(queue));
+        let runtime = GpuRuntimeHandles::new(Arc::new(queue))?;
         Ok(assemble_context(GpuContextParts {
             driver_thread: runtime.driver_thread,
             adapter_info,
@@ -463,7 +464,7 @@ impl GpuContext {
             "GPU profiler unavailable (headless): adapter lacks TIMESTAMP_QUERY; \
              Tracy GPU timeline will be empty (CPU spans still work)",
         );
-        let runtime = GpuRuntimeHandles::new(Arc::new(queue));
+        let runtime = GpuRuntimeHandles::new(Arc::new(queue))?;
         Ok(assemble_context(GpuContextParts {
             driver_thread: runtime.driver_thread,
             adapter_info,
@@ -543,7 +544,7 @@ impl GpuContext {
             "GPU profiler unavailable (OpenXR path): adapter lacks \
              TIMESTAMP_QUERY; Tracy GPU timeline will be empty",
         );
-        let runtime = GpuRuntimeHandles::new(queue);
+        let runtime = GpuRuntimeHandles::new(queue)?;
         Ok(assemble_context(GpuContextParts {
             driver_thread: runtime.driver_thread,
             adapter_info,

@@ -98,6 +98,26 @@ fn f90_from_f0(f0: vec3<f32>) -> f32 {
     return clamp(dot(f0, vec3<f32>(50.0 / 3.0)), 0.0, 1.0);
 }
 
+/// Unity Standard metallic workflow F0 tint.
+fn metallic_f0(base_color: vec3<f32>, metallic: f32) -> vec3<f32> {
+    return mix(vec3<f32>(0.04), base_color, metallic);
+}
+
+/// Unity Standard SpecularSetup F0 tint.
+fn specular_f0(specular_color: vec3<f32>) -> vec3<f32> {
+    return clamp(specular_color, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+/// Unity's diffuse-energy discount for SpecularSetup materials.
+fn specular_one_minus_reflectivity(f0: vec3<f32>) -> f32 {
+    return 1.0 - max(max(f0.r, f0.g), f0.b);
+}
+
+/// Converts Unity smoothness to perceptual roughness used by this PBS module.
+fn perceptual_roughness_from_smoothness(smoothness: f32) -> f32 {
+    return clamp(1.0 - smoothness, 0.045, 1.0);
+}
+
 /// Lambertian diffuse normalization (`1/π`).
 fn fd_lambert() -> f32 {
     return 1.0 / 3.14159265;

@@ -10,6 +10,7 @@
 #import renderide::sh2_ambient as shamb
 #import renderide::per_draw as pd
 #import renderide::pbs::brdf as brdf
+#import renderide::pbs::displace as pdisp
 #import renderide::pbs::normal as pnorm
 #import renderide::pbs::cluster as pcls
 #import renderide::alpha_clip_sample as acs
@@ -92,22 +93,29 @@ fn vs_main(
     @location(2) uv0: vec2<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);
-    var displaced = pos.xyz;
-    var uv = uv0;
-
-    if (uvu::kw_enabled(mat.VERTEX_OFFSET)) {
-        let uv_off = uvu::apply_st(uv0, mat._VertexOffsetMap_ST);
-        let h = textureSampleLevel(_VertexOffsetMap, _VertexOffsetMap_sampler, uv_off, 0.0).r;
-        displaced = displaced + n.xyz * (h * mat._VertexOffsetMagnitude + mat._VertexOffsetBias);
-    }
-    if (uvu::kw_enabled(mat.UV_OFFSET)) {
-        let s = textureSampleLevel(_UVOffsetMap, _UVOffsetMap_sampler, uv0, 0.0).rg;
-        uv = uv + (s * mat._UVOffsetMagnitude + vec2<f32>(mat._UVOffsetBias));
-    }
-    if (uvu::kw_enabled(mat.OBJECT_POS_OFFSET) || uvu::kw_enabled(mat.VERTEX_POS_OFFSET)) {
-        let off = textureSampleLevel(_PositionOffsetMap, _PositionOffsetMap_sampler, uv0, 0.0).rgb;
-        displaced = displaced + off * mat._PositionOffsetMagnitude.xyz;
-    }
+    let displaced_uv = pdisp::apply_vertex_offsets(
+        pos.xyz,
+        n.xyz,
+        uv0,
+        uvu::kw_enabled(mat.VERTEX_OFFSET),
+        uvu::kw_enabled(mat.UV_OFFSET),
+        uvu::kw_enabled(mat.OBJECT_POS_OFFSET),
+        uvu::kw_enabled(mat.VERTEX_POS_OFFSET),
+        mat._VertexOffsetMap_ST,
+        mat._PositionOffsetMagnitude.xyz,
+        mat._VertexOffsetMagnitude,
+        mat._VertexOffsetBias,
+        mat._UVOffsetMagnitude,
+        mat._UVOffsetBias,
+        _VertexOffsetMap,
+        _VertexOffsetMap_sampler,
+        _UVOffsetMap,
+        _UVOffsetMap_sampler,
+        _PositionOffsetMap,
+        _PositionOffsetMap_sampler,
+    );
+    let displaced = displaced_uv.position;
+    let uv = displaced_uv.uv;
 
     let world_p = d.model * vec4<f32>(displaced, 1.0);
     let wn = normalize(d.normal_matrix * n.xyz);
@@ -158,10 +166,10 @@ fn shade(
     if (uvu::kw_enabled(mat._SPECULARMAP)) {
         spec = textureSample(_SpecularMap, _SpecularMap_sampler, uv_main);
     }
-    let f0 = clamp(spec.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let f0 = brdf::specular_f0(spec.rgb);
     let smoothness = clamp(spec.a, 0.0, 1.0);
-    let roughness = clamp(1.0 - smoothness, 0.045, 1.0);
-    let one_minus_reflectivity = 1.0 - max(max(f0.r, f0.g), f0.b);
+    let roughness = brdf::perceptual_roughness_from_smoothness(smoothness);
+    let one_minus_reflectivity = brdf::specular_one_minus_reflectivity(f0);
 
     var occlusion = 1.0;
     if (uvu::kw_enabled(mat._OCCLUSION)) {

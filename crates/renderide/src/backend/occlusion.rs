@@ -23,12 +23,10 @@ use crate::scene::SceneCoordinator;
 /// Maximum distinct host render-texture occlusion pyramids retained ([`OcclusionSystem::offscreen`] LRU).
 const OFFSCREEN_HIZ_LRU_CAP: usize = 64;
 
-const OFFSCREEN_HIZ_LRU_CAP_NZ: NonZeroUsize = {
-    match NonZeroUsize::new(OFFSCREEN_HIZ_LRU_CAP) {
-        Some(n) => n,
-        None => panic!("OFFSCREEN_HIZ_LRU_CAP must be non-zero"),
-    }
-};
+/// Non-zero LRU capacity used by [`OcclusionSystem::offscreen`].
+fn offscreen_hiz_lru_cap() -> NonZeroUsize {
+    NonZeroUsize::new(OFFSCREEN_HIZ_LRU_CAP).unwrap_or(NonZeroUsize::MIN)
+}
 
 /// Depth source, layout, and logical view for [`OcclusionSystem::encode_hi_z_build_pass`].
 pub(crate) struct HiZBuildInput<'a> {
@@ -63,7 +61,7 @@ impl OcclusionSystem {
     pub fn new() -> Self {
         Self {
             main: Arc::new(Mutex::new(HiZGpuState::default())),
-            offscreen: Mutex::new(LruCache::new(OFFSCREEN_HIZ_LRU_CAP_NZ)),
+            offscreen: Mutex::new(LruCache::new(offscreen_hiz_lru_cap())),
         }
     }
 

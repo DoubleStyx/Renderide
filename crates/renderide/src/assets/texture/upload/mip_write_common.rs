@@ -2,8 +2,11 @@
 
 use crate::shared::SetTexture2DData;
 
+use super::super::decode::{decode_mip_to_rgba8, flip_mip_rows};
 use super::super::layout::{
-    compressed_flip_y_needs_storage_v_inversion, host_mip_payload_byte_offset, mip_byte_len,
+    compressed_flip_y_needs_storage_v_inversion, flip_compressed_mip_block_rows_y,
+    host_format_is_compressed, host_mip_payload_byte_offset, mip_byte_len,
+    mip_tight_bytes_per_texel,
 };
 use super::error::TextureUploadError;
 
@@ -46,6 +49,63 @@ impl MipUploadPixels {
         Self {
             bytes,
             storage_v_inverted: true,
+        }
+    }
+}
+
+/// Texture family being converted for upload diagnostics.
+#[derive(Copy, Clone, Debug)]
+pub(super) enum MipUploadKind {
+    /// Texture2D mip-chain upload.
+    Texture2d,
+    /// Cubemap face upload.
+    Cubemap {
+        /// Cubemap face index.
+        face: u32,
+    },
+}
+
+/// Per-mip label used to keep shared conversion diagnostics clear.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct MipUploadLabel {
+    /// Upload family.
+    pub kind: MipUploadKind,
+    /// Mip index inside the texture or cubemap face.
+    pub mip_index: usize,
+}
+
+impl MipUploadLabel {
+    /// Builds a label for a Texture2D mip.
+    pub fn texture2d(mip_index: usize) -> Self {
+        Self {
+            kind: MipUploadKind::Texture2d,
+            mip_index,
+        }
+    }
+
+    /// Builds a label for one cubemap face mip.
+    pub fn cubemap(face: u32, mip_index: usize) -> Self {
+        Self {
+            kind: MipUploadKind::Cubemap { face },
+            mip_index,
+        }
+    }
+
+    /// Asset-qualified diagnostic label.
+    fn asset_mip(self, asset_id: i32) -> String {
+        match self.kind {
+            MipUploadKind::Texture2d => format!("texture {asset_id} mip {}", self.mip_index),
+            MipUploadKind::Cubemap { face } => {
+                format!("cubemap {asset_id} face {face} mip {}", self.mip_index)
+            }
+        }
+    }
+
+    /// Short diagnostic label when the asset id is already obvious.
+    fn short_mip(self) -> String {
+        match self.kind {
+            MipUploadKind::Texture2d => format!("mip {}", self.mip_index),
+            MipUploadKind::Cubemap { .. } => format!("cubemap mip {}", self.mip_index),
         }
     }
 }
@@ -156,6 +216,132 @@ pub(super) fn uncompressed_row_bytes(f: wgpu::TextureFormat) -> Result<usize, Te
         .block_copy_size(None)
         .ok_or_else(|| TextureUploadError::from(format!("wgpu format {f:?} has no block size")))?;
     Ok(bsz as usize)
+}
+
+/// Converts a compressed mip that requested `flip_y` into bytes or a storage-orientation hint.
+fn compressed_mip_src_to_upload_pixels(
+    ctx: MipUploadFormatCtx,
+    width: u32,
+    height: u32,
+    mip_src: &[u8],
+    label: MipUploadLabel,
+) -> Result<Vec<u8>, TextureUploadError> {
+    let expected_len = mip_byte_len(ctx.fmt_format, width, height).ok_or_else(|| {
+        TextureUploadError::from(format!(
+            "{}: mip byte size unknown for {:?}",
+            label.asset_mip(ctx.asset_id),
+            ctx.fmt_format
+        ))
+    })? as usize;
+    if mip_src.len() != expected_len {
+        return Err(TextureUploadError::from(format!(
+            "{}: mip len {} != expected {} for {:?}",
+            label.asset_mip(ctx.asset_id),
+            mip_src.len(),
+            expected_len,
+            ctx.fmt_format
+        )));
+    }
+    if let Some(v) = flip_compressed_mip_block_rows_y(ctx.fmt_format, width, height, mip_src) {
+        return Ok(v);
+    }
+    if mip_ctx_uses_storage_v_inversion(ctx, true) {
+        return Ok(mip_src.to_vec());
+    }
+    Err(TextureUploadError::from(format!(
+        "{}: flip_y unsupported for compressed {:?}; reject to avoid uploading inverted data under the engine's V-flip sampling convention",
+        label.asset_mip(ctx.asset_id),
+        ctx.fmt_format
+    )))
+}
+
+/// Converts host mip bytes into a buffer suitable for a full-mip texture upload.
+pub(super) fn mip_src_to_upload_pixels(
+    ctx: MipUploadFormatCtx,
+    width: u32,
+    height: u32,
+    flip_y: bool,
+    mip_src: &[u8],
+    label: MipUploadLabel,
+) -> Result<MipUploadPixels, TextureUploadError> {
+    let MipUploadFormatCtx {
+        asset_id,
+        fmt_format,
+        wgpu_format,
+        needs_rgba8_decode,
+    } = ctx;
+    if is_rgba8_family(wgpu_format) {
+        if needs_rgba8_decode || host_format_is_compressed(fmt_format) {
+            decode_mip_to_rgba8(fmt_format, width, height, flip_y, mip_src).ok_or_else(|| {
+                TextureUploadError::from(format!(
+                    "RGBA decode failed for {} ({:?})",
+                    label.asset_mip(asset_id),
+                    fmt_format
+                ))
+            })
+        } else if flip_y {
+            let mut v = mip_src.to_vec();
+            let bpp = mip_tight_bytes_per_texel(v.len(), width, height).ok_or_else(|| {
+                TextureUploadError::from(format!(
+                    "{}: RGBA8 upload len {} not divisible by {}×{} texels",
+                    label.short_mip(),
+                    v.len(),
+                    width,
+                    height
+                ))
+            })?;
+            if bpp != 4 {
+                return Err(TextureUploadError::from(format!(
+                    "{}: RGBA8 family expects 4 bytes per texel, got {bpp}",
+                    label.short_mip()
+                )));
+            }
+            flip_mip_rows(&mut v, width, height, bpp);
+            Ok(v)
+        } else {
+            Ok(mip_src.to_vec())
+        }
+    } else if needs_rgba8_decode {
+        Err(TextureUploadError::from(format!(
+            "host {:?} must use RGBA decode but GPU format is {:?}",
+            fmt_format, wgpu_format
+        )))
+    } else if flip_y && !host_format_is_compressed(fmt_format) {
+        let mut v = mip_src.to_vec();
+        let bpp_host = mip_tight_bytes_per_texel(v.len(), width, height).ok_or_else(|| {
+            TextureUploadError::from(format!(
+                "{}: len {} not divisible by {}×{} texels (cannot infer row stride for flip_y)",
+                label.short_mip(),
+                v.len(),
+                width,
+                height
+            ))
+        })?;
+        if let Ok(bpp_gpu) = uncompressed_row_bytes(wgpu_format) {
+            if bpp_host != bpp_gpu {
+                logger::warn!(
+                    "{}: host texel stride {} B != GPU {:?} stride {} B; flip_y uses host packing",
+                    label.asset_mip(asset_id),
+                    bpp_host,
+                    wgpu_format,
+                    bpp_gpu
+                );
+            }
+        }
+        flip_mip_rows(&mut v, width, height, bpp_host);
+        Ok(v)
+    } else if flip_y && host_format_is_compressed(fmt_format) {
+        compressed_mip_src_to_upload_pixels(ctx, width, height, mip_src, label)
+    } else {
+        Ok(mip_src.to_vec())
+    }
+    .map(|bytes| {
+        if mip_ctx_uses_storage_v_inversion(ctx, flip_y) {
+            MipUploadPixels::storage_v_inverted(bytes)
+        } else {
+            MipUploadPixels::normal(bytes)
+        }
+    })
 }
 
 /// Descriptor for [`write_one_mip`]: one mip of a 2D texture via [`wgpu::Queue::write_texture`].

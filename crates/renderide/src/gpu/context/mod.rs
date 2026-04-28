@@ -256,6 +256,9 @@ pub enum GpuError {
     /// Surface could not be created from the window.
     #[error("create_surface failed: {0}")]
     Surface(String),
+    /// Dedicated renderer-driver thread could not be spawned.
+    #[error("driver thread spawn failed: {0}")]
+    DriverThreadSpawn(#[source] std::io::Error),
     /// No default surface configuration for this adapter.
     #[error("surface unsupported")]
     SurfaceUnsupported,

@@ -21,30 +21,25 @@ pub(super) const MAX_CACHED_EMBEDDED_SAMPLERS: usize = 512;
 /// LRU cap for texture HUD asset-id scans.
 pub(super) const MAX_CACHED_TEXTURE_DEBUG_IDS: usize = 512;
 
-pub(super) const MAX_CACHED_EMBEDDED_BIND_GROUPS_NZ: NonZeroUsize = {
-    match NonZeroUsize::new(MAX_CACHED_EMBEDDED_BIND_GROUPS) {
-        Some(n) => n,
-        None => panic!("MAX_CACHED_EMBEDDED_BIND_GROUPS must be non-zero"),
-    }
-};
-pub(super) const MAX_CACHED_EMBEDDED_UNIFORMS_NZ: NonZeroUsize = {
-    match NonZeroUsize::new(MAX_CACHED_EMBEDDED_UNIFORMS) {
-        Some(n) => n,
-        None => panic!("MAX_CACHED_EMBEDDED_UNIFORMS must be non-zero"),
-    }
-};
-pub(super) const MAX_CACHED_EMBEDDED_SAMPLERS_NZ: NonZeroUsize = {
-    match NonZeroUsize::new(MAX_CACHED_EMBEDDED_SAMPLERS) {
-        Some(n) => n,
-        None => panic!("MAX_CACHED_EMBEDDED_SAMPLERS must be non-zero"),
-    }
-};
-pub(super) const MAX_CACHED_TEXTURE_DEBUG_IDS_NZ: NonZeroUsize = {
-    match NonZeroUsize::new(MAX_CACHED_TEXTURE_DEBUG_IDS) {
-        Some(n) => n,
-        None => panic!("MAX_CACHED_TEXTURE_DEBUG_IDS must be non-zero"),
-    }
-};
+/// Non-zero bind-group cache capacity.
+pub(super) fn max_cached_embedded_bind_groups() -> NonZeroUsize {
+    NonZeroUsize::new(MAX_CACHED_EMBEDDED_BIND_GROUPS).unwrap_or(NonZeroUsize::MIN)
+}
+
+/// Non-zero uniform-buffer cache capacity.
+pub(super) fn max_cached_embedded_uniforms() -> NonZeroUsize {
+    NonZeroUsize::new(MAX_CACHED_EMBEDDED_UNIFORMS).unwrap_or(NonZeroUsize::MIN)
+}
+
+/// Non-zero sampler cache capacity.
+pub(super) fn max_cached_embedded_samplers() -> NonZeroUsize {
+    NonZeroUsize::new(MAX_CACHED_EMBEDDED_SAMPLERS).unwrap_or(NonZeroUsize::MIN)
+}
+
+/// Non-zero texture debug-id cache capacity.
+pub(super) fn max_cached_texture_debug_ids() -> NonZeroUsize {
+    NonZeroUsize::new(MAX_CACHED_TEXTURE_DEBUG_IDS).unwrap_or(NonZeroUsize::MIN)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(super) struct EmbeddedSamplerCacheKey {
