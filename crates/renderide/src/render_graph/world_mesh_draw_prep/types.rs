@@ -288,7 +288,8 @@ pub struct WorldMeshDrawItem {
     pub skinned: bool,
     /// Whether the position/normal stream selected by the forward pass is already in world space.
     ///
-    /// Real GPU skinning outputs world-space vertices and therefore uses an identity model matrix.
+    /// Real GPU skinning outputs world-space vertices and therefore usually uses an identity model matrix.
+    /// Null fallback draws keep the real model matrix for checker anchoring and compensate during VP packing.
     /// Skinned renderers that fall back to raw or blend-only local streams still need their renderer
     /// transform, otherwise they appear at the render-space origin.
     pub world_space_deformed: bool,

@@ -8,6 +8,12 @@ pub const PER_DRAW_UNIFORM_STRIDE: usize = 256;
 /// Initial number of draw slots allocated for [`crate::backend::PerDrawResources`].
 pub const INITIAL_PER_DRAW_UNIFORM_SLOTS: usize = 256;
 
+/// Metadata flag stored in [`PaddedPerDrawUniforms::_pad`] when the bound position stream is already world-space.
+pub const PER_DRAW_POSITION_STREAM_WORLD_SPACE_FLAG: f32 = 1.0;
+
+/// Metadata flag offset inside [`PaddedPerDrawUniforms::_pad`].
+const PER_DRAW_POSITION_STREAM_WORLD_SPACE_PAD_SLOT: usize = 0;
+
 /// Column-major `mat3x3` with WGSL storage layout: each column is `vec3` padded to 16 bytes.
 ///
 /// Matches [`mat3x3<f32>`](https://www.w3.org/TR/WGSL/#alignment-and-size) in storage (`vec3` stride 16).
@@ -30,6 +36,19 @@ impl WgslMat3x3 {
         col2: [0.0, 0.0, 1.0, 0.0],
     };
 
+    /// Packs a glam [`Mat3`] into WGSL column-major storage layout.
+    #[must_use]
+    pub fn from_mat3(matrix: Mat3) -> Self {
+        let c0 = matrix.x_axis;
+        let c1 = matrix.y_axis;
+        let c2 = matrix.z_axis;
+        Self {
+            col0: [c0.x, c0.y, c0.z, 0.0],
+            col1: [c1.x, c1.y, c1.z, 0.0],
+            col2: [c2.x, c2.y, c2.z, 0.0],
+        }
+    }
+
     /// `transpose(inverse(M))` for the upper 3×3 of `model`, packed for WGSL `normal_matrix`.
     ///
     /// For singular or near-singular linear parts, returns identity to avoid NaNs in the shader.
@@ -41,14 +60,7 @@ impl WgslMat3x3 {
             return Self::IDENTITY;
         }
         let nm = m3.inverse().transpose();
-        let c0 = nm.x_axis;
-        let c1 = nm.y_axis;
-        let c2 = nm.z_axis;
-        Self {
-            col0: [c0.x, c0.y, c0.z, 0.0],
-            col1: [c1.x, c1.y, c1.z, 0.0],
-            col2: [c2.x, c2.y, c2.z, 0.0],
-        }
+        Self::from_mat3(nm)
     }
 }
 
@@ -56,29 +68,44 @@ impl WgslMat3x3 {
 ///
 /// Matches composed `shaders/target/null_*.wgsl` (`PerDrawUniforms` at `@group(2)`).
 ///
-/// **Contract:** [`Self::view_proj_left`] and [`Self::view_proj_right`] store **projection × view**
-/// (PV) only. They must **not** include the mesh world matrix. Vertex shaders compute
-/// `clip = view_proj * (model * local_pos)`; premultiplying `model` into the view–projection
-/// would apply it twice for static meshes.
+/// **Contract:** [`Self::view_proj_left`] and [`Self::view_proj_right`] normally store
+/// **projection × view** (PV) only. Vertex shaders compute `clip = view_proj * (model * local_pos)`;
+/// premultiplying `model` into the view–projection would apply it twice for static meshes. The
+/// null fallback's world-space-deformed path is the narrow exception: it stores `PV * inverse(model)`
+/// so the shader can keep the real model matrix for checker anchoring without double-transforming
+/// already-world-space vertices.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PaddedPerDrawUniforms {
-    /// Column-major PV for the left eye (or the only view on desktop); excludes object `model`.
+    /// Column-major view-projection for the left eye (or the only view on desktop).
+    ///
+    /// Normally excludes object `model`; see [`Self`] for the null fallback exception.
     pub view_proj_left: [f32; 16],
-    /// Column-major PV for the right eye (duplicated when single-view); excludes object `model`.
+    /// Column-major view-projection for the right eye (duplicated when single-view).
+    ///
+    /// Normally excludes object `model`; see [`Self`] for the null fallback exception.
     pub view_proj_right: [f32; 16],
-    /// Column-major world matrix from the scene (identity for skinned meshes with world-space positions).
+    /// Column-major world matrix from the scene.
+    ///
+    /// This is identity for most skinned meshes with world-space positions, except the null fallback
+    /// keeps the real model matrix and compensates in [`Self::view_proj_left`] / [`Self::view_proj_right`].
     pub model: [f32; 16],
-    /// Inverse transpose of the upper 3×3 of [`Self::model`] for correct normals under non-uniform scale.
+    /// Inverse transpose of the upper 3×3 of [`Self::model`] for normal transforms.
     pub normal_matrix: WgslMat3x3,
-    /// Padding to [`PER_DRAW_UNIFORM_STRIDE`] bytes.
+    /// Metadata plus padding to [`PER_DRAW_UNIFORM_STRIDE`] bytes.
+    ///
+    /// Slot 0 is [`PER_DRAW_POSITION_STREAM_WORLD_SPACE_FLAG`] when the vertex position stream is
+    /// already world-space. Consumers either branch on it or bake the required correction into other
+    /// per-draw fields.
+    /// Remaining slots are reserved and must stay zero until explicitly assigned.
     pub _pad: [f32; 4],
 }
 
 impl PaddedPerDrawUniforms {
     /// Single-view path: duplicates PV `view_proj` into both eye slots.
     ///
-    /// `view_proj` must be **PV only** (see [`Self`]).
+    /// `view_proj` is the matrix left-multiplied with `model * position`; it is normally **PV only**
+    /// except for the null fallback exception described on [`Self`].
     #[inline]
     pub fn new_single(view_proj: Mat4, model: Mat4) -> Self {
         let vp = view_proj.to_cols_array();
@@ -93,7 +120,8 @@ impl PaddedPerDrawUniforms {
 
     /// Stereo path: separate per-eye PV (multiview or single-view shader using left only).
     ///
-    /// Both arguments must be **PV only** (see [`Self`]).
+    /// Both arguments are normally **PV only** except for the null fallback exception described on
+    /// [`Self`].
     #[inline]
     pub fn new_stereo(view_proj_left: Mat4, view_proj_right: Mat4, model: Mat4) -> Self {
         Self {
@@ -103,6 +131,25 @@ impl PaddedPerDrawUniforms {
             normal_matrix: WgslMat3x3::from_model_upper_3x3(model),
             _pad: [0.0; 4],
         }
+    }
+
+    /// Returns a copy with the position-stream space metadata set for shaders that need it.
+    #[inline]
+    #[must_use]
+    pub fn with_position_stream_world_space(mut self, enabled: bool) -> Self {
+        self._pad[PER_DRAW_POSITION_STREAM_WORLD_SPACE_PAD_SLOT] = if enabled {
+            PER_DRAW_POSITION_STREAM_WORLD_SPACE_FLAG
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// Whether the metadata says the bound vertex position stream is already in world space.
+    #[inline]
+    #[must_use]
+    pub fn position_stream_world_space(&self) -> bool {
+        self._pad[PER_DRAW_POSITION_STREAM_WORLD_SPACE_PAD_SLOT] > 0.5
     }
 }
 
@@ -166,7 +213,7 @@ mod tests {
     fn slab_roundtrip_bytes() {
         let vp = Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 3.0));
         let m = Mat4::from_scale(glam::Vec3::new(4.0, 5.0, 6.0));
-        let slot = PaddedPerDrawUniforms::new_single(vp, m);
+        let slot = PaddedPerDrawUniforms::new_single(vp, m).with_position_stream_world_space(true);
         let mut buf = vec![0u8; PER_DRAW_UNIFORM_STRIDE * 2];
         write_per_draw_uniform_slab(
             &[
@@ -180,6 +227,14 @@ mod tests {
         assert_eq!(a.view_proj_right, vp.to_cols_array());
         assert_eq!(a.model, m.to_cols_array());
         assert_eq!(a.normal_matrix, WgslMat3x3::from_model_upper_3x3(m));
+        assert!(a.position_stream_world_space());
+        assert_eq!(
+            a._pad[PER_DRAW_POSITION_STREAM_WORLD_SPACE_PAD_SLOT],
+            PER_DRAW_POSITION_STREAM_WORLD_SPACE_FLAG
+        );
+        let b: &PaddedPerDrawUniforms =
+            bytemuck::from_bytes(&buf[PER_DRAW_UNIFORM_STRIDE..PER_DRAW_UNIFORM_STRIDE * 2]);
+        assert!(!b.position_stream_world_space());
     }
 
     #[test]

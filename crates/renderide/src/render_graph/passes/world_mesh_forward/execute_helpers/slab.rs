@@ -12,7 +12,7 @@ use crate::render_graph::world_mesh_draw_prep::WorldMeshDrawItem;
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 
-use super::super::vp::compute_per_draw_vp_triple;
+use super::super::vp::compute_per_draw_vp_matrices;
 
 /// Minimum draws before parallelizing per-draw VP / model uniform packing (rayon overhead).
 const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = 256;
@@ -118,7 +118,7 @@ pub(super) fn pack_and_upload_per_draw_slab(
 ///
 /// Switches to rayon when the draw count crosses [`PER_DRAW_VP_PARALLEL_MIN_DRAWS`]; otherwise
 /// stays on the caller thread. Each slot is written as either a single-VP or stereo-VP variant
-/// depending on whether `compute_per_draw_vp_triple` returns identical left/right matrices.
+/// depending on whether `compute_per_draw_vp_matrices` returns identical left/right matrices.
 fn pack_per_draw_vp_uniforms(
     uniforms: &mut [PaddedPerDrawUniforms],
     inputs: &SlabPackInputs<'_>,
@@ -127,7 +127,7 @@ fn pack_per_draw_vp_uniforms(
 ) {
     profiling::scope!("world_mesh::pack_vp_matrices");
     let pack_one = |slot: &mut PaddedPerDrawUniforms, item: &WorldMeshDrawItem| {
-        let (vp_l, vp_r, model) = compute_per_draw_vp_triple(
+        let matrices = compute_per_draw_vp_matrices(
             scene,
             item,
             hc,
@@ -135,11 +135,16 @@ fn pack_per_draw_vp_uniforms(
             inputs.world_proj,
             inputs.overlay_proj,
         );
-        *slot = if vp_l == vp_r {
-            PaddedPerDrawUniforms::new_single(vp_l, model)
+        let packed = if matrices.view_proj_left == matrices.view_proj_right {
+            PaddedPerDrawUniforms::new_single(matrices.view_proj_left, matrices.model)
         } else {
-            PaddedPerDrawUniforms::new_stereo(vp_l, vp_r, model)
+            PaddedPerDrawUniforms::new_stereo(
+                matrices.view_proj_left,
+                matrices.view_proj_right,
+                matrices.model,
+            )
         };
+        *slot = packed.with_position_stream_world_space(matrices.position_stream_world_space);
     };
     if inputs.draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS {
         uniforms

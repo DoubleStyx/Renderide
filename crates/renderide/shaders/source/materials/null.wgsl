@@ -17,6 +17,11 @@
 //! produces invisibly small or invisibly large cells across the wide range of
 //! mesh authoring conventions in Resonite content.
 //!
+//! Rigid streams use `local_pos * extract_scale(model)` for checker coordinates.
+//! World-space deformed streams keep the real model matrix in per-draw data and
+//! use the packed stream-space flag to project incoming world positions back
+//! onto the model axes for checker coordinates.
+//!
 //! Imports `renderide::globals` so composed targets declare the full `@group(0)`
 //! frame bind layout that the renderer enforces in reflection; `retain_globals_additive`
 //! keeps each binding referenced after naga-oil import pruning.
@@ -24,19 +29,13 @@
 #import renderide::globals as rg
 #import renderide::per_draw as pd
 
-/// Vertex-to-fragment payload: clip-space position, model-space position, and
-/// per-axis world-space scale used to normalize cell spacing in the fragment stage.
+/// Vertex-to-fragment payload: clip-space position and model-anchored physical
+/// checker coordinates.
 struct VertexOutput {
     /// Clip-space position consumed by the rasterizer.
     @builtin(position) clip_pos: vec4<f32>,
-    /// Model-space position of the vertex; the fragment stage projects it into the checker grid.
-    @location(0) local_pos: vec3<f32>,
-    /// Per-axis world-space scale extracted from the model matrix. Used to convert
-    /// model-space distances into world-space distances for consistent cell sizing.
-    /// Stored as a varying because the model matrix is per-draw, and we want the
-    /// vertex stage to do the matrix work once rather than the fragment stage doing
-    /// it per-pixel.
-    @location(1) world_scale: vec3<f32>,
+    /// Signed distance along each model axis, expressed in world-space meters.
+    @location(0) model_axis_meters: vec3<f32>,
 }
 
 /// Edge length of each checker cell in world-space meters.
@@ -51,26 +50,57 @@ const COLOR_DARK: vec3<f32> = vec3<f32>(0.01, 0.01, 0.01);
 const COLOR_LIGHT: vec3<f32> = vec3<f32>(0.25, 0.25, 0.25);
 
 /// Extract the per-axis world-space scale from a 4x4 model matrix.
-///
-/// Each of the first three columns of the model matrix represents the world-space
-/// direction and magnitude of one model-space basis vector. The length of each
-/// column gives the scale along that axis. This handles uniform scale, non-uniform
-/// scale, and rotation correctly — rotation alone preserves column length, so
-/// pure rotation returns scale (1, 1, 1) as expected.
-///
-/// Note: this assumes the model matrix has no shear. Resonite's transform system
-/// is a standard TRS hierarchy without shear, so this assumption holds for all
-/// expected content.
 fn extract_scale(m: mat4x4<f32>) -> vec3<f32> {
     return vec3<f32>(
         length(m[0].xyz),
-                     length(m[1].xyz),
-                     length(m[2].xyz),
+        length(m[1].xyz),
+        length(m[2].xyz),
     );
 }
 
-/// Vertex stage: project to clip space, forward model-space position for the checker
-/// projection, and forward per-axis world-space scale for cell-size normalization.
+/// Returns a stable axis direction for a model matrix column.
+fn model_axis_direction(column: vec3<f32>) -> vec3<f32> {
+    return column / max(length(column), 0.000001);
+}
+
+/// Converts the vertex position into model-anchored physical checker coordinates.
+fn model_axis_meters_for_checker(d: pd::PerDrawUniforms, pos: vec4<f32>) -> vec3<f32> {
+    let local_stream_meters = pos.xyz * extract_scale(d.model);
+    let world_delta = pos.xyz - d.model[3].xyz;
+    let axis_x = model_axis_direction(d.model[0].xyz);
+    let axis_y = model_axis_direction(d.model[1].xyz);
+    let axis_z = model_axis_direction(d.model[2].xyz);
+    let world_stream_meters = vec3<f32>(
+        dot(axis_x, world_delta),
+        dot(axis_y, world_delta),
+        dot(axis_z, world_delta),
+    );
+    let stream_is_world = select(0.0, 1.0, pd::position_stream_is_world_space(d));
+    return local_stream_meters + ((world_stream_meters - local_stream_meters) * stream_is_world);
+}
+
+/// Resolves the model-applied position used for clip-space projection.
+///
+/// World-space deformed null draws pack `view_proj * inverse(model)` on the CPU,
+/// so this same model multiply clips both local rigid streams and world-space streams correctly.
+fn model_applied_position_for_clip(d: pd::PerDrawUniforms, pos: vec4<f32>) -> vec4<f32> {
+    return d.model * vec4<f32>(pos.xyz, 1.0);
+}
+
+/// Returns `true` when a model-anchored physical position falls in a light checker voxel.
+fn checker_voxel_is_light(model_axis_meters: vec3<f32>) -> bool {
+    let cell = floor(model_axis_meters / CELL_SIZE_WORLD);
+    let parity = (i32(cell.x) + i32(cell.y) + i32(cell.z)) & 1;
+    return parity == 0;
+}
+
+/// Checker color selected from the 3D voxel containing `model_axis_meters`.
+fn checker_color(model_axis_meters: vec3<f32>) -> vec3<f32> {
+    return select(COLOR_DARK, COLOR_LIGHT, checker_voxel_is_light(model_axis_meters));
+}
+
+/// Vertex stage: project to clip space and forward model-anchored physical
+/// coordinates for checker voxel selection.
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
@@ -81,7 +111,7 @@ fn vs_main(
            @location(1) _n: vec4<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);
-    let world_p = d.model * vec4<f32>(pos.xyz, 1.0);
+    let clip_input = model_applied_position_for_clip(d, pos);
 
     #ifdef MULTIVIEW
     var vp: mat4x4<f32>;
@@ -95,29 +125,25 @@ fn vs_main(
     #endif
 
     var out: VertexOutput;
-    out.clip_pos = vp * world_p;
-    out.local_pos = pos.xyz;
-    out.world_scale = extract_scale(d.model);
+    out.clip_pos = vp * clip_input;
+    out.model_axis_meters = model_axis_meters_for_checker(d, pos);
     return out;
 }
 
 /// Fragment stage: select the dark or light cell color from the parity of the
-/// scale-normalized model-space cell index.
+/// model-anchored physical cell index.
 ///
-/// `local_pos * world_scale` converts model-space coordinates into a virtual
-/// "world-aligned model-space" where one unit equals one meter. Dividing by
-/// `CELL_SIZE_WORLD` then expresses position in cell-count units, and `floor`
-/// gives the integer cell index whose parity drives the checker pattern.
+/// `model_axis_meters` is already expressed in a virtual model-axis coordinate
+/// system where one unit equals one meter. Dividing by `CELL_SIZE_WORLD` then
+/// expresses position in cell-count units, and `floor` gives the integer cell
+/// index whose parity drives the checker pattern.
 ///
-/// Because `world_scale` is per-axis, non-uniformly scaled meshes still show
-/// square cells in world-space — a mesh stretched 2x along X gets twice as many
-/// X-cells per unit of model-space, exactly canceling the stretch.
+/// Because the vertex stage projects onto model axes, non-uniformly scaled
+/// meshes still show square cells in world-space: a mesh stretched 2x along X
+/// gets twice as many X-cells per unit of model-space, exactly canceling the stretch.
 //#pass forward
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let world_aligned = in.local_pos * in.world_scale;
-    let cell = floor(world_aligned / CELL_SIZE_WORLD);
-    let parity = (i32(cell.x) + i32(cell.y) + i32(cell.z)) & 1;
-    let c = select(COLOR_DARK, COLOR_LIGHT, parity == 0);
+    let c = checker_color(in.model_axis_meters);
     return rg::retain_globals_additive(vec4<f32>(c, 1.0));
 }

@@ -91,7 +91,7 @@ pub struct HostCameraFrame {
     ///
     /// Set on any view that carries its own camera pose (currently secondary render-texture
     /// cameras). When [`None`], mesh forward and culling paths derive the view matrix from the
-    /// active render space. When [`Some`], [`super::passes::world_mesh_forward::vp::compute_per_draw_vp_triple`]
+    /// active render space. When [`Some`], [`super::passes::world_mesh_forward::vp::compute_per_draw_vp_matrices`]
     /// matches the offscreen projection, and CPU frustum + Hi-Z temporal culling
     /// ([`super::world_mesh_cull`]) use the same world-to-view as the depth pyramid author pass.
     pub explicit_world_to_view: Option<Mat4>,
