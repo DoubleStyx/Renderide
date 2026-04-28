@@ -4,9 +4,8 @@
 
 use rayon::prelude::*;
 
-use crate::backend::FrameDrawSetup;
+use crate::backend::{FrameDrawSetup, RenderBackend};
 use crate::gpu::GpuContext;
-use crate::materials::{MaterialRouter, RasterPipelineKind};
 use crate::render_graph::{
     build_world_mesh_cull_proj_params, camera_state_enabled,
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
@@ -47,16 +46,56 @@ impl FrameRenderMode<'_> {
     }
 }
 
+/// Immutable runtime-owned extraction packet built before per-view draw collection starts.
+///
+/// This is the runtime's cleaned-up extraction boundary: prepared views live beside the backend's
+/// read-only draw-prep view so later stages no longer need to reach back into mutable runtime or
+/// backend state.
+struct FrameExtract<'views, 'backend> {
+    /// Ordered per-frame view plans and any headless output substitution snapshot.
+    prepared_views: PreparedViews<'views>,
+    /// Backend-owned draw-prep view assembled once for the frame.
+    draw_setup: FrameDrawSetup<'backend>,
+}
+
+impl<'views> FrameExtract<'views, '_> {
+    /// Returns `true` when no view should be rendered this tick.
+    fn is_empty(&self) -> bool {
+        self.prepared_views.is_empty()
+    }
+
+    /// Collects and packages explicit world-mesh draw plans for each prepared view.
+    fn prepare_draws(self) -> PreparedDraws<'views> {
+        let FrameExtract {
+            prepared_views,
+            draw_setup,
+        } = self;
+        let cull_snapshots: Vec<Option<ViewCullSnapshot>> = {
+            profiling::scope!("render::gather_view_cull_snapshots");
+            prepared_views
+                .plans()
+                .par_iter()
+                .map(|prep| cull_snapshot_for_view(&draw_setup, prep))
+                .collect()
+        };
+        let view_draws = collect_view_draws(&draw_setup, prepared_views.plans(), &cull_snapshots);
+        PreparedDraws {
+            prepared_views,
+            view_draws,
+        }
+    }
+}
+
 /// Prepared per-frame view list plus any headless swapchain substitution resources needed to
 /// turn it into executable graph views.
-struct PreparedFrameViews<'a> {
+struct PreparedViews<'a> {
     /// Ordered list of planned views for this tick.
     prepared: Vec<FrameViewPlan<'a>>,
     /// Headless main-target replacement captured before backend execution borrows the GPU.
     headless_snapshot: Option<HeadlessOffscreenSnapshot>,
 }
 
-impl<'a> PreparedFrameViews<'a> {
+impl<'a> PreparedViews<'a> {
     /// Returns `true` when no view should be rendered this tick.
     fn is_empty(&self) -> bool {
         self.prepared.is_empty()
@@ -85,11 +124,43 @@ impl<'a> PreparedFrameViews<'a> {
     }
 }
 
-/// One collected world-mesh draw plan per prepared view, in the same order as
-/// [`PreparedFrameViews::prepared`].
-struct CollectedFrameDraws {
+/// Immutable per-view draw packet built after culling and draw sorting.
+struct PreparedDraws<'a> {
+    /// Ordered per-frame view plans and headless output substitution snapshot.
+    prepared_views: PreparedViews<'a>,
     /// Explicit draw plan for every prepared view.
     view_draws: Vec<WorldMeshDrawPlan>,
+}
+
+impl<'a> PreparedDraws<'a> {
+    /// Promotes prepared views plus explicit draws into the final submit packet.
+    fn into_submit_frame(self) -> SubmitFrame<'a> {
+        SubmitFrame {
+            prepared_views: self.prepared_views,
+            view_draws: self.view_draws,
+        }
+    }
+}
+
+/// Final immutable runtime packet handed to backend execution for one frame.
+struct SubmitFrame<'a> {
+    /// Ordered per-frame view plans and headless output substitution snapshot.
+    prepared_views: PreparedViews<'a>,
+    /// Explicit draw plan for every prepared view.
+    view_draws: Vec<WorldMeshDrawPlan>,
+}
+
+impl SubmitFrame<'_> {
+    /// Executes the final submit packet while the prepared view owners are still alive.
+    fn execute(
+        self,
+        gpu: &mut GpuContext,
+        scene: &crate::scene::SceneCoordinator,
+        backend: &mut RenderBackend,
+    ) -> Result<(), GraphExecuteError> {
+        let mut views = self.prepared_views.build_execution_views(self.view_draws);
+        backend.execute_multi_view_frame(gpu, scene, &mut views, true)
+    }
 }
 
 /// Frustum + Hi-Z cull inputs for one planned view.
@@ -188,25 +259,6 @@ fn cull_snapshot_for_view(
     })
 }
 
-/// Collects world-mesh draw plans for every prepared view using the backend-owned frame draw
-/// setup assembled for the current tick.
-fn collect_frame_draws(
-    prepared_views: &PreparedFrameViews<'_>,
-    draw_setup: &FrameDrawSetup<'_>,
-) -> CollectedFrameDraws {
-    let cull_snapshots: Vec<Option<ViewCullSnapshot>> = {
-        profiling::scope!("render::gather_view_cull_snapshots");
-        prepared_views
-            .plans()
-            .par_iter()
-            .map(|prep| cull_snapshot_for_view(draw_setup, prep))
-            .collect()
-    };
-    CollectedFrameDraws {
-        view_draws: collect_view_draws(draw_setup, prepared_views.plans(), &cull_snapshots),
-    }
-}
-
 impl RendererRuntime {
     /// Desktop entry point: renders the main swapchain view plus any active secondary render-texture
     /// cameras in a single submit. Used when OpenXR is not active.
@@ -244,28 +296,22 @@ impl RendererRuntime {
         self.sync_debug_hud_diagnostics_from_settings();
         self.setup_msaa_for_mode(gpu, &mode);
 
-        let prepared_views = {
-            profiling::scope!("render::collect_prepared_views");
-            self.prepare_frame_views(gpu, mode)
+        let frame_extract = {
+            profiling::scope!("render::extract_frame");
+            self.extract_frame(gpu, mode)
         };
-        if prepared_views.is_empty() {
+        if frame_extract.is_empty() {
             return Ok(());
         }
 
-        let collected_draws = {
-            let fallback_router = MaterialRouter::new(RasterPipelineKind::Null);
-            let draw_setup = self.backend.prepare_frame_draw_setup(
-                &self.scene,
-                self.scene.active_main_render_context(),
-                select_inner_parallelism(prepared_views.plans()),
-                &fallback_router,
-            );
-            collect_frame_draws(&prepared_views, &draw_setup)
+        let prepared_draws = {
+            profiling::scope!("render::prepare_draws");
+            frame_extract.prepare_draws()
         };
-
-        let mut views = prepared_views.build_execution_views(collected_draws.view_draws);
-        self.backend
-            .execute_multi_view_frame(gpu, &self.scene, &mut views, true)
+        let submit_frame = prepared_draws.into_submit_frame();
+        let scene = &self.scene;
+        let backend = &mut self.backend;
+        submit_frame.execute(gpu, scene, backend)
     }
 
     /// Applies the MSAA tier for the active mode and evicts transient textures keyed by stale
@@ -292,13 +338,39 @@ impl RendererRuntime {
         }
     }
 
+    /// Builds the explicit frame extraction packet for this tick, including prepared views,
+    /// backend draw-prep state, and any headless main-target substitution resources that must
+    /// outlive graph-view creation.
+    fn extract_frame<'a>(
+        &mut self,
+        gpu: &mut GpuContext,
+        mode: FrameRenderMode<'a>,
+    ) -> FrameExtract<'a, '_> {
+        let prepared_views = {
+            profiling::scope!("render::prepare_views");
+            self.prepare_frame_views(gpu, mode)
+        };
+        let draw_setup = {
+            profiling::scope!("render::prepare_frame_draw_setup");
+            self.backend.prepare_frame_draw_setup(
+                &self.scene,
+                self.scene.active_main_render_context(),
+                select_inner_parallelism(prepared_views.plans()),
+            )
+        };
+        FrameExtract {
+            prepared_views,
+            draw_setup,
+        }
+    }
+
     /// Builds the explicit prepared-view stage for this tick, including any headless main-target
     /// substitution resources that must outlive graph-view creation.
     fn prepare_frame_views<'a>(
         &mut self,
         gpu: &mut GpuContext,
         mode: FrameRenderMode<'a>,
-    ) -> PreparedFrameViews<'a> {
+    ) -> PreparedViews<'a> {
         let includes_main = mode.includes_main_swapchain();
         // Capture the swapchain extent before the per-view collection. The main desktop view's
         // CPU cull projection (`build_world_mesh_cull_proj_params`) runs against this extent
@@ -314,7 +386,7 @@ impl RendererRuntime {
                 None
             }
         };
-        PreparedFrameViews {
+        PreparedViews {
             prepared,
             headless_snapshot,
         }

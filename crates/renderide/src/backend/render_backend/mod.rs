@@ -8,6 +8,8 @@
 
 mod asset_ipc;
 mod execute;
+mod frame_packet;
+mod graph_cache;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -16,21 +18,17 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::assets::asset_transfer_queue::{self as asset_uploads, AssetTransferQueue};
-use crate::assets::material::{MaterialDictionary, MaterialPropertyStore};
+use crate::assets::material::MaterialPropertyStore;
 use crate::backend::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::config::{PostProcessingSettings, RendererSettingsHandle, SceneColorFormat};
 use crate::diagnostics::{DebugHudEncodeError, DebugHudInput, SceneTransformsSnapshot};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
-use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter};
-use crate::pipelines::ShaderPermutation;
+use crate::materials::{MaterialRouter, RasterPipelineKind};
 use crate::render_graph::{
-    FrameMaterialBatchCache, FramePreparedRenderables, GraphCache, GraphCacheKey, PerViewHudConfig,
-    PerViewHudOutputs, TransientPool, WorldMeshDrawCollectParallelism, WorldMeshDrawStateRow,
-    WorldMeshDrawStats,
+    FrameMaterialBatchCache, GraphCache, PerViewHudConfig, PerViewHudOutputs, TransientPool,
+    WorldMeshDrawStateRow, WorldMeshDrawStats,
 };
 use crate::resources::{CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool};
-use crate::scene::SceneCoordinator;
-use crate::shared::RenderingContext;
 
 use super::debug_hud_bundle::DebugHudBundle;
 use super::embedded::{EmbeddedMaterialBindError, EmbeddedTexturePools};
@@ -56,34 +54,7 @@ type GraphFrameParamsSplit<'a> = (
 pub use crate::assets::asset_transfer_queue::{
     MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
 };
-
-/// Frame-global draw-prep snapshot produced by [`RenderBackend::prepare_frame_draw_setup`].
-///
-/// This is the runtime/backend hand-off for CPU-side world-mesh draw collection: the runtime owns
-/// view planning while the backend owns material routing, resolved-material caching, prepared
-/// renderables, and occlusion state.
-pub(crate) struct FrameDrawSetup<'a> {
-    /// Scene after cache flush for world-matrix lookups and cull evaluation.
-    pub(crate) scene: &'a SceneCoordinator,
-    /// Mesh GPU asset pool queried for bounds and skinning metadata during draw collection.
-    pub(crate) mesh_pool: &'a MeshPool,
-    /// Property store backing [`crate::assets::material::MaterialDictionary::new`].
-    pub(crate) property_store: &'a MaterialPropertyStore,
-    /// Resolved raster pipeline selection for embedded materials.
-    pub(crate) router: &'a MaterialRouter,
-    /// Registry of renderer-side property ids used by the pipeline selector.
-    pub(crate) pipeline_property_ids: MaterialPipelinePropertyIds,
-    /// Mono/stereo/overlay render context applied this tick.
-    pub(crate) render_context: RenderingContext,
-    /// Persistent mono material batch cache refreshed once at frame start.
-    pub(crate) material_cache: &'a FrameMaterialBatchCache,
-    /// Dense per-frame walk of renderables pre-expanded once before per-view collection.
-    pub(crate) prepared_renderables: FramePreparedRenderables,
-    /// Shared occlusion state used for Hi-Z snapshots and temporal cull data.
-    pub(crate) occlusion: &'a OcclusionSystem,
-    /// Rayon parallelism tier for each view's inner walk.
-    pub(crate) inner_parallelism: WorldMeshDrawCollectParallelism,
-}
+pub(crate) use frame_packet::FrameDrawSetup;
 
 /// GPU attach failed for frame binds (`@group(0/1/2)`) or embedded materials (`@group(1)`).
 #[derive(Debug, Error)]
@@ -123,6 +94,8 @@ pub struct RenderBackend {
     pub(crate) materials: MaterialSystem,
     /// Mesh/texture upload queues, budgets, format tables, pools, and GPU device/queue for uploads.
     pub(crate) asset_transfers: AssetTransferQueue,
+    /// Fallback router used before any embedded-material registry is available.
+    null_material_router: MaterialRouter,
     /// Optional mesh skinning / blendshape compute pipelines (after [`Self::attach`]).
     mesh_preprocess: Option<MeshPreprocessPipelines>,
     /// Cached compiled frame graph keyed by the shared render-graph cache inputs.
@@ -219,6 +192,7 @@ impl RenderBackend {
         Self {
             materials: MaterialSystem::new(),
             asset_transfers: AssetTransferQueue::new(),
+            null_material_router: MaterialRouter::new(RasterPipelineKind::Null),
             mesh_preprocess: None,
             frame_graph_cache: GraphCache::default(),
             mesh_deform_scratch: None,
@@ -289,69 +263,6 @@ impl RenderBackend {
             .and_then(|h| h.read().ok())
             .map(|s| s.post_processing.bloom)
             .unwrap_or_default()
-    }
-
-    /// Prepares clustered-light frame resources from the current scene once for the tick.
-    pub(crate) fn prepare_lights_from_scene(&mut self, scene: &SceneCoordinator) {
-        self.frame_resources.prepare_lights_from_scene(scene);
-    }
-
-    /// Drains completed Hi-Z readbacks into CPU snapshots at the top of the tick.
-    pub(crate) fn hi_z_begin_frame_readback(&mut self, device: &wgpu::Device) {
-        self.occlusion.hi_z_begin_frame_readback(device);
-    }
-
-    /// Refreshes backend-owned draw-prep state and returns the immutable frame setup used by the
-    /// runtime's per-view draw collection stage.
-    pub(crate) fn prepare_frame_draw_setup<'a>(
-        &'a mut self,
-        scene: &'a SceneCoordinator,
-        render_context: RenderingContext,
-        inner_parallelism: WorldMeshDrawCollectParallelism,
-        fallback_router: &'a MaterialRouter,
-    ) -> FrameDrawSetup<'a> {
-        let property_store = self.materials.material_property_store();
-        let router = self
-            .materials
-            .material_registry()
-            .map(|registry| &registry.router)
-            .unwrap_or(fallback_router);
-        let pipeline_property_ids =
-            MaterialPipelinePropertyIds::new(self.materials.property_id_registry());
-
-        {
-            profiling::scope!("render::build_frame_material_cache");
-            let dict = MaterialDictionary::new(property_store);
-            self.material_batch_cache.refresh_for_frame(
-                scene,
-                &dict,
-                router,
-                &pipeline_property_ids,
-                ShaderPermutation(0),
-            );
-        }
-
-        let prepared_renderables = {
-            profiling::scope!("render::build_frame_prepared_renderables");
-            FramePreparedRenderables::build_for_frame(
-                scene,
-                &self.asset_transfers.mesh_pool,
-                render_context,
-            )
-        };
-
-        FrameDrawSetup {
-            scene,
-            mesh_pool: &self.asset_transfers.mesh_pool,
-            property_store,
-            router,
-            pipeline_property_ids,
-            render_context,
-            material_cache: &self.material_batch_cache,
-            prepared_renderables,
-            occlusion: &self.occlusion,
-            inner_parallelism,
-        }
     }
 
     /// Count of host Texture2D asset ids that have received a [`crate::shared::SetTexture2DFormat`] (CPU-side table).
@@ -551,63 +462,6 @@ impl RenderBackend {
         self.frame_graph_cache.topo_levels()
     }
 
-    /// Builds the cache key for the compiled main frame graph from the current backend state.
-    ///
-    /// The main graph intentionally uses a placeholder surface extent and mono flag today:
-    /// transient extents and frame-array layers resolve at execute time, so one compiled graph
-    /// is valid for both desktop and stereo targets. If future graph topology diverges on those
-    /// inputs, this helper is the single place to tighten the key.
-    fn frame_graph_cache_key_for(
-        &self,
-        post_processing: &PostProcessingSettings,
-        msaa_sample_count: u8,
-    ) -> GraphCacheKey {
-        GraphCacheKey {
-            surface_extent: (1, 1),
-            msaa_sample_count,
-            multiview_stereo: false,
-            surface_format: self
-                .surface_format
-                .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb),
-            scene_color_format: self.scene_color_format_wgpu(),
-            post_processing:
-                crate::render_graph::post_processing::PostProcessChainSignature::from_settings(
-                    post_processing,
-                ),
-        }
-    }
-
-    /// Ensures the compiled main frame graph matches the supplied graph-shaping settings.
-    ///
-    /// Graph-build failures are logged and leave the cache empty so the runtime can surface a
-    /// recoverable [`crate::render_graph::GraphExecuteError::NoFrameGraph`] path.
-    fn sync_frame_graph_cache(
-        &mut self,
-        post_processing: &PostProcessingSettings,
-        msaa_sample_count: u8,
-    ) {
-        let key = self.frame_graph_cache_key_for(post_processing, msaa_sample_count);
-        let previous_key = self.frame_graph_cache.last_key();
-        if let Some(previous_key) = previous_key.filter(|previous| *previous != key) {
-            logger::info!(
-                "graph inputs changed (post-processing {:?} -> {:?}, msaa {}x -> {}x, surface {:?} -> {:?}, scene color {:?} -> {:?}); rebuilding render graph",
-                previous_key.post_processing,
-                key.post_processing,
-                previous_key.msaa_sample_count,
-                key.msaa_sample_count,
-                previous_key.surface_format,
-                key.surface_format,
-                previous_key.scene_color_format,
-                key.scene_color_format,
-            );
-        }
-        if let Err(error) = self.frame_graph_cache.ensure(key, || {
-            crate::render_graph::build_main_graph(key, post_processing)
-        }) {
-            logger::warn!("render graph build failed: {error}");
-        }
-    }
-
     /// Call after [`crate::gpu::GpuContext`] is created so mesh/texture uploads can use the GPU.
     ///
     /// Wires device/queue into uploads, allocates frame binds and materials, and builds the default graph.
@@ -681,32 +535,9 @@ impl RenderBackend {
                     .map(|g| (g.post_processing.clone(), g.rendering.msaa.as_count() as u8))
             })
             .unwrap_or_else(|| (PostProcessingSettings::default(), 1));
-        self.sync_frame_graph_cache(&post_processing_settings, msaa_sample_count);
+        let shape = self.frame_graph_shape_for(&post_processing_settings, msaa_sample_count, false);
+        self.sync_frame_graph_cache(&post_processing_settings, shape);
         Ok(())
-    }
-
-    /// Rebuilds the cached frame graph when live graph-shaping settings change.
-    ///
-    /// Reads [`Self::renderer_settings`] (no-op if unset, e.g. before [`Self::attach`]) and
-    /// derives the [`PostProcessChainSignature`]. When it differs from
-    /// the cached [`PostProcessChainSignature`], rebuilds the graph so HUD edits to the
-    /// `[post_processing]` table take effect on the next frame without a renderer restart.
-    /// Parameter-only changes (no signature flip) skip the rebuild and let the per-frame
-    /// uniforms path handle them.
-    pub(crate) fn ensure_frame_graph_in_sync(&mut self) {
-        let Some(handle) = self.renderer_settings.as_ref() else {
-            return;
-        };
-        let (live_parallelism, live_settings, live_msaa) = match handle.read() {
-            Ok(g) => (
-                g.rendering.record_parallelism,
-                g.post_processing.clone(),
-                g.rendering.msaa.as_count() as u8,
-            ),
-            Err(_) => return,
-        };
-        self.set_record_parallelism(live_parallelism);
-        self.sync_frame_graph_cache(&live_settings, live_msaa);
     }
 
     /// Updates the per-view record parallelism mode from live [`crate::config::RenderingSettings`].
@@ -912,7 +743,7 @@ mod post_processing_rebuild_tests {
 
     use super::*;
     use crate::config::{RendererSettings, TonemapMode, TonemapSettings};
-    use crate::render_graph::post_processing::PostProcessChainSignature;
+    use crate::render_graph::{post_processing::PostProcessChainSignature, GraphCacheKey};
 
     fn settings_handle(post: PostProcessingSettings) -> RendererSettingsHandle {
         Arc::new(RwLock::new(RendererSettings {
@@ -941,7 +772,7 @@ mod post_processing_rebuild_tests {
             ..Default::default()
         });
         backend.renderer_settings = Some(handle);
-        backend.ensure_frame_graph_in_sync();
+        backend.ensure_frame_graph_in_sync(false);
         assert!(
             backend.frame_graph_pass_count() > 0,
             "graph should be built"
@@ -966,7 +797,7 @@ mod post_processing_rebuild_tests {
             ..Default::default()
         });
         backend.renderer_settings = Some(Arc::clone(&handle));
-        backend.ensure_frame_graph_in_sync();
+        backend.ensure_frame_graph_in_sync(false);
         let initial_passes = backend.frame_graph_pass_count();
         let initial_signature = cached_graph_key(&backend).post_processing;
 
@@ -974,7 +805,7 @@ mod post_processing_rebuild_tests {
             g.post_processing.enabled = true;
             g.post_processing.tonemap.mode = TonemapMode::AcesFitted;
         }
-        backend.ensure_frame_graph_in_sync();
+        backend.ensure_frame_graph_in_sync(false);
 
         assert_ne!(
             cached_graph_key(&backend).post_processing,
@@ -999,12 +830,29 @@ mod post_processing_rebuild_tests {
             ..Default::default()
         });
         backend.renderer_settings = Some(handle);
-        backend.ensure_frame_graph_in_sync();
+        backend.ensure_frame_graph_in_sync(false);
         let signature = cached_graph_key(&backend).post_processing;
         let pass_count = backend.frame_graph_pass_count();
 
-        backend.ensure_frame_graph_in_sync();
+        backend.ensure_frame_graph_in_sync(false);
         assert_eq!(cached_graph_key(&backend).post_processing, signature);
         assert_eq!(backend.frame_graph_pass_count(), pass_count);
+    }
+
+    /// Switching between mono and stereo multiview should flip the graph key in one place so the
+    /// runtime does not rely on implicit backend assumptions when VR starts or stops.
+    #[test]
+    fn multiview_change_updates_graph_key() {
+        let mut backend = RenderBackend::new();
+        backend.renderer_settings = Some(settings_handle(PostProcessingSettings::default()));
+
+        backend.ensure_frame_graph_in_sync(false);
+        let mono_key = cached_graph_key(&backend);
+        backend.ensure_frame_graph_in_sync(true);
+        let stereo_key = cached_graph_key(&backend);
+
+        assert!(!mono_key.multiview_stereo);
+        assert!(stereo_key.multiview_stereo);
+        assert_ne!(mono_key, stereo_key);
     }
 }

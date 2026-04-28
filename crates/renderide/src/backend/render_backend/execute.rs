@@ -34,7 +34,8 @@ impl RenderBackend {
         // Live HUD edits to `[post_processing]` only take effect when the graph is rebuilt; check
         // each tick so signature flips (effect added or removed) take effect on the next frame.
         // Parameter-only edits do not flip the signature and avoid the rebuild cost.
-        self.ensure_frame_graph_in_sync();
+        let multiview_stereo = views.iter().any(FrameView::is_multiview_stereo_active);
+        self.ensure_frame_graph_in_sync(multiview_stereo);
         let Some(mut graph) = self.frame_graph_cache.take_graph() else {
             return Err(GraphExecuteError::NoFrameGraph);
         };
