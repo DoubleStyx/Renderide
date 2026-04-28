@@ -53,7 +53,6 @@ unsafe_op_in_unsafe_fn = "warn"
 variant_size_differences = "warn"
 
 [workspace.lints.clippy]
-# bug-catchers
 undocumented_unsafe_blocks = "warn"
 unwrap_used = "warn"
 expect_used = "warn"
@@ -64,11 +63,7 @@ unimplemented = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
 mem_forget = "warn"
-
-# discipline
 allow_attributes = "warn"
-
-# mechanical cleanup
 assigning_clones = "warn"
 semicolon_if_nothing_returned = "warn"
 manual_let_else = "warn"
@@ -97,8 +92,6 @@ unnecessary_debug_formatting = "warn"
 unnecessary_join = "warn"
 unnecessary_semicolon = "warn"
 unused_async = "warn"
-
-# resource-management
 rc_buffer = "warn"
 unused_result_ok = "warn"
 large_types_passed_by_value = "warn"
@@ -111,8 +104,6 @@ iter_not_returning_iterator = "warn"
 iter_without_into_iter = "warn"
 maybe_infinite_iter = "warn"
 zero_sized_map_values = "warn"
-
-# additional bug-catchers
 redundant_clone = "warn"
 as_ptr_cast_mut = "warn"
 borrow_as_ptr = "warn"
@@ -133,8 +124,6 @@ should_panic_without_expect = "warn"
 unchecked_time_subtraction = "warn"
 unsafe_derive_deserialize = "warn"
 unicode_not_nfc = "warn"
-
-# zero-cost sentinels
 path_buf_push_overwrite = "warn"
 same_functions_in_if_condition = "warn"
 invalid_upcast_comparisons = "warn"
@@ -156,6 +145,10 @@ option_option = "warn"
 create_dir = "warn"
 needless_bitwise_bool = "warn"
 index_refutable_slice = "warn"
-
-# discipline
 map_err_ignore = "warn"
+large_enum_variant = "warn"
+mutex_atomic = "warn"
+mutex_integer = "warn"
+await_holding_lock = "warn"
+significant_drop_in_scrutinee = "warn"
+significant_drop_tightening = "warn"
