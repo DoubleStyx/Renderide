@@ -26,11 +26,26 @@ impl CompiledRenderGraph {
         views: &[FrameView<'_>],
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::prepare_view_resources");
+        Self::pre_sync_skybox_specular_environment(mv_ctx);
         Self::pre_sync_shared_frame_resources_for_views(mv_ctx, views);
         Self::pre_warm_per_view_resources_for_views(mv_ctx, views)?;
         Self::register_history_resources_for_views(mv_ctx, views)?;
         Self::pre_warm_pipeline_cache_for_views(mv_ctx, views);
         Ok(())
+    }
+
+    /// Resolves the active main skybox specular source before per-view `@group(0)` bind groups are cached.
+    pub(super) fn pre_sync_skybox_specular_environment(mv_ctx: &mut MultiViewExecutionContext<'_>) {
+        profiling::scope!("graph::pre_sync_skybox_specular");
+        let source = crate::backend::resolve_active_main_skybox_specular_environment(
+            mv_ctx.scene,
+            &mv_ctx.backend.materials,
+            &mv_ctx.backend.asset_transfers,
+        );
+        let _ = mv_ctx
+            .backend
+            .frame_resources
+            .sync_skybox_specular_environment(mv_ctx.device, source);
     }
 
     /// Warms the [`crate::materials::MaterialRegistry`] pipeline cache for every prefetched draw

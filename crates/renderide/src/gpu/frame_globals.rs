@@ -10,11 +10,39 @@ const FALLBACK_AMBIENT_COLOR: f32 = 0.03;
 /// Zeroth-order SH basis constant used for fallback packing.
 const SH_C0: f32 = 0.282_094_8;
 
-/// Uniform block matching WGSL `FrameGlobals` (272-byte size, 16-byte aligned).
+/// Default `Projection360` field of view used by Unity material defaults.
+const PROJECTION360_DEFAULT_FOV: [f32; 4] = [std::f32::consts::TAU, std::f32::consts::PI, 0.0, 0.0];
+/// Default texture scale/offset used by Unity `_MainTex_ST` properties.
+const DEFAULT_MAIN_TEX_ST: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
+
+/// Frame-global skybox specular source encoded in [`FrameGpuUniforms::skybox_specular`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkyboxSpecularSourceKind {
+    /// No resident indirect-specular source is bound.
+    Disabled,
+    /// `@group(0) @binding(9)` is a cubemap source.
+    Cubemap,
+    /// `@group(0) @binding(11)` is a Projection360 equirectangular `Texture2D` source.
+    Projection360Equirect,
+}
+
+impl SkyboxSpecularSourceKind {
+    /// Numeric tag consumed by WGSL.
+    pub const fn to_f32(self) -> f32 {
+        match self {
+            Self::Disabled => 0.0,
+            Self::Cubemap => 1.0,
+            Self::Projection360Equirect => 2.0,
+        }
+    }
+}
+
+/// Uniform block matching WGSL `FrameGlobals` (320-byte size, 16-byte aligned).
 ///
 /// Encodes camera position, per-eye coefficients for view-space Z from world position, clustered
 /// grid dimensions, clip planes, light count, viewport size, per-eye projection coefficients for
-/// screen-space-to-view unprojection, and a monotonic frame index for temporal / jittered effects.
+/// screen-space-to-view unprojection, a monotonic frame index for temporal / jittered effects,
+/// skybox specular environment sampling parameters, and ambient SH2.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FrameGpuUniforms {
@@ -56,8 +84,98 @@ pub struct FrameGpuUniforms {
     /// reserved padding so the struct aligns to a 16-byte boundary without tripping naga-oil's
     /// composable-identifier substitution rules (numeric-suffix names are rejected).
     pub frame_tail: [u32; 4],
+    /// Skybox specular parameters: `.x` max resident LOD, `.y` enabled flag, `.z` storage-V
+    /// inversion flag, `.w` [`SkyboxSpecularSourceKind`] tag.
+    pub skybox_specular: [f32; 4],
+    /// Projection360 equirectangular `_FOV` parameters for `Texture2D` skybox specular sampling.
+    pub skybox_specular_equirect_fov: [f32; 4],
+    /// Projection360 equirectangular `_MainTex_ST` parameters for skybox specular sampling.
+    pub skybox_specular_equirect_st: [f32; 4],
     /// Ambient SH2 coefficients (`RenderSH2` order), padded to WGSL `vec4<f32>` slots.
     pub ambient_sh: [[f32; 4]; 9],
+}
+
+/// CPU-side parameters packed into [`FrameGpuUniforms::skybox_specular`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyboxSpecularUniformParams {
+    /// Highest resident source mip available for roughness-driven sampling.
+    pub max_lod: f32,
+    /// Whether the frame has a resident skybox source bound for indirect specular.
+    pub enabled: bool,
+    /// Whether the source storage orientation needs V-axis compensation in shader sampling.
+    pub storage_v_inverted: bool,
+    /// Source texture kind selected by the active skybox material.
+    pub source_kind: SkyboxSpecularSourceKind,
+    /// Projection360 equirectangular `_FOV` parameters.
+    pub equirect_fov: [f32; 4],
+    /// Projection360 equirectangular `_MainTex_ST` parameters.
+    pub equirect_st: [f32; 4],
+}
+
+impl SkyboxSpecularUniformParams {
+    /// Disabled skybox specular environment.
+    pub const fn disabled() -> Self {
+        Self {
+            max_lod: 0.0,
+            enabled: false,
+            storage_v_inverted: false,
+            source_kind: SkyboxSpecularSourceKind::Disabled,
+            equirect_fov: PROJECTION360_DEFAULT_FOV,
+            equirect_st: DEFAULT_MAIN_TEX_ST,
+        }
+    }
+
+    /// Builds enabled parameters from a resident cubemap mip count and storage orientation flag.
+    pub fn from_resident_mips(mip_levels_resident: u32, storage_v_inverted: bool) -> Self {
+        Self::from_cubemap_resident_mips(mip_levels_resident, storage_v_inverted)
+    }
+
+    /// Builds enabled parameters from a resident cubemap mip count and storage orientation flag.
+    pub fn from_cubemap_resident_mips(mip_levels_resident: u32, storage_v_inverted: bool) -> Self {
+        Self {
+            max_lod: mip_levels_resident.saturating_sub(1) as f32,
+            enabled: mip_levels_resident > 0,
+            storage_v_inverted,
+            source_kind: if mip_levels_resident > 0 {
+                SkyboxSpecularSourceKind::Cubemap
+            } else {
+                SkyboxSpecularSourceKind::Disabled
+            },
+            equirect_fov: PROJECTION360_DEFAULT_FOV,
+            equirect_st: DEFAULT_MAIN_TEX_ST,
+        }
+    }
+
+    /// Builds enabled parameters from a resident Projection360 equirect texture.
+    pub fn from_equirect_resident_mips(
+        mip_levels_resident: u32,
+        storage_v_inverted: bool,
+        equirect_fov: [f32; 4],
+        equirect_st: [f32; 4],
+    ) -> Self {
+        Self {
+            max_lod: mip_levels_resident.saturating_sub(1) as f32,
+            enabled: mip_levels_resident > 0,
+            storage_v_inverted,
+            source_kind: if mip_levels_resident > 0 {
+                SkyboxSpecularSourceKind::Projection360Equirect
+            } else {
+                SkyboxSpecularSourceKind::Disabled
+            },
+            equirect_fov,
+            equirect_st,
+        }
+    }
+
+    /// Packs parameters into the `vec4<f32>` layout consumed by WGSL.
+    pub fn to_vec4(self) -> [f32; 4] {
+        [
+            self.max_lod,
+            if self.enabled { 1.0 } else { 0.0 },
+            if self.storage_v_inverted { 1.0 } else { 0.0 },
+            self.source_kind.to_f32(),
+        ]
+    }
 }
 
 /// Inputs for [`FrameGpuUniforms::new_clustered`] (clustered forward + lighting).
@@ -91,6 +209,8 @@ pub struct ClusteredFrameGlobalsParams {
     pub proj_params_right: [f32; 4],
     /// Monotonic frame index (wraps `HostCameraFrame::frame_index`).
     pub frame_index: u32,
+    /// Skybox indirect specular sampling parameters.
+    pub skybox_specular: SkyboxSpecularUniformParams,
     /// Ambient SH2 coefficients for the active main render space.
     pub ambient_sh: [[f32; 4]; 9],
 }
@@ -138,6 +258,9 @@ impl FrameGpuUniforms {
             proj_params_left: params.proj_params_left,
             proj_params_right: params.proj_params_right,
             frame_tail: [params.frame_index, 0, 0, 0],
+            skybox_specular: params.skybox_specular.to_vec4(),
+            skybox_specular_equirect_fov: params.skybox_specular.equirect_fov,
+            skybox_specular_equirect_st: params.skybox_specular.equirect_st,
             ambient_sh: params.ambient_sh,
         }
     }
@@ -191,8 +314,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_globals_size_272() {
-        assert_eq!(std::mem::size_of::<FrameGpuUniforms>(), 272);
+    fn frame_globals_size_320() {
+        assert_eq!(std::mem::size_of::<FrameGpuUniforms>(), 320);
         assert_eq!(std::mem::size_of::<FrameGpuUniforms>() % 16, 0);
     }
 
@@ -250,6 +373,7 @@ mod tests {
             proj_params_left: [1.5, 2.5, 0.0, 0.0],
             proj_params_right: [1.5, 2.5, 0.1, -0.2],
             frame_index: 7,
+            skybox_specular: SkyboxSpecularUniformParams::from_resident_mips(6, true),
             ambient_sh: [[0.0; 4]; 9],
         });
         assert_eq!(u.camera_world_pos, [1.0, 2.0, 3.0, 0.0]);
@@ -266,7 +390,31 @@ mod tests {
         assert_eq!(u.proj_params_left, [1.5, 2.5, 0.0, 0.0]);
         assert_eq!(u.proj_params_right, [1.5, 2.5, 0.1, -0.2]);
         assert_eq!(u.frame_tail, [7, 0, 0, 0]);
+        assert_eq!(u.skybox_specular, [5.0, 1.0, 1.0, 1.0]);
+        assert_eq!(u.skybox_specular_equirect_fov, PROJECTION360_DEFAULT_FOV);
+        assert_eq!(u.skybox_specular_equirect_st, DEFAULT_MAIN_TEX_ST);
         assert_eq!(u.ambient_sh, [[0.0; 4]; 9]);
+    }
+
+    #[test]
+    fn skybox_specular_params_pack_disabled_cubemap_and_equirect() {
+        assert_eq!(
+            SkyboxSpecularUniformParams::disabled().to_vec4(),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            SkyboxSpecularUniformParams::from_resident_mips(6, true).to_vec4(),
+            [5.0, 1.0, 1.0, 1.0]
+        );
+        assert_eq!(
+            SkyboxSpecularUniformParams::from_resident_mips(0, true).to_vec4(),
+            [0.0, 0.0, 1.0, 0.0]
+        );
+        let equirect =
+            SkyboxSpecularUniformParams::from_equirect_resident_mips(3, true, [1.0; 4], [2.0; 4]);
+        assert_eq!(equirect.to_vec4(), [2.0, 1.0, 1.0, 2.0]);
+        assert_eq!(equirect.equirect_fov, [1.0; 4]);
+        assert_eq!(equirect.equirect_st, [2.0; 4]);
     }
 
     #[test]

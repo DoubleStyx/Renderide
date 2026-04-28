@@ -4,7 +4,7 @@ mod embedded_material_bind_error;
 mod layout;
 mod material_bind;
 mod texture_pools;
-mod texture_resolve;
+pub(crate) mod texture_resolve;
 mod uniform_pack;
 
 pub use embedded_material_bind_error::EmbeddedMaterialBindError;

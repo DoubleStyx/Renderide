@@ -1,9 +1,10 @@
 //! Shared per-frame bindings (`@group(0)`) for all raster materials.
 //! Import with `#import renderide::globals` from `source/materials/*.wgsl`.
 //!
-//! Composed materials must reference every binding below (e.g. a no-op `cluster_light_counts` /
-//! `cluster_light_indices` touch in the fragment shader if unused); the composer drops unused globals,
-//! which breaks the fixed [`FrameGpuResources`] bind group layout at pipeline creation.
+//! Composed materials that do not otherwise touch lighting storage must retain `lights`,
+//! `cluster_light_counts`, and `cluster_light_indices` (e.g. through `retain_globals_additive`);
+//! the composer drops unused globals, which breaks the fixed [`FrameGpuResources`] bind group
+//! layout at pipeline creation for storage-backed frame resources.
 //!
 //! CPU packing must match [`crate::gpu::frame_globals::FrameGpuUniforms`],
 //! [`crate::backend::light_gpu::GpuLight`], and [`crate::backend::cluster_gpu`] cluster buffers.
@@ -53,6 +54,12 @@ struct FrameGlobals {
     /// Packed tail: `.x` is the monotonic frame index (for temporal / jittered screen-space
     /// effects); `.yzw` are reserved padding to keep the trailing `vec4` slot aligned to 16 bytes.
     frame_tail: vec4<u32>,
+    /// Skybox indirect specular: `.x` max resident LOD, `.y` enabled flag, `.z` storage-V inverted flag, `.w` source kind.
+    skybox_specular: vec4<f32>,
+    /// Projection360 equirectangular `_FOV` for source kind 2.
+    skybox_specular_equirect_fov: vec4<f32>,
+    /// Projection360 equirectangular `_MainTex_ST` for source kind 2.
+    skybox_specular_equirect_st: vec4<f32>,
     /// Ambient SH2 coefficient 0, padded to a vec4 slot.
     ambient_sh_a: vec4<f32>,
     /// Ambient SH2 coefficient 1, padded to a vec4 slot.
@@ -82,6 +89,10 @@ struct FrameGlobals {
 @group(0) @binding(6) var scene_color: texture_2d<f32>;
 @group(0) @binding(7) var scene_color_array: texture_2d_array<f32>;
 @group(0) @binding(8) var scene_color_sampler: sampler;
+@group(0) @binding(9) var skybox_specular: texture_cube<f32>;
+@group(0) @binding(10) var skybox_specular_sampler: sampler;
+@group(0) @binding(11) var skybox_specular_equirect: texture_2d<f32>;
+@group(0) @binding(12) var skybox_specular_equirect_sampler: sampler;
 
 /// Adds infinitesimal terms tied to lights/cluster storage so every frame binding stays referenced
 /// when a material would otherwise not touch storage (naga-oil drops unused globals).

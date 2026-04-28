@@ -256,8 +256,19 @@ fn shade(
 
     let emission_tex = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     let emission = mat._EmissionColor.rgb * emission_tex + point_emission;
-    let ambient = select(vec3<f32>(0.0), shamb::ambient_probe(n) * base_color * occlusion, include_directional);
-    let color = ambient + lo + emission;
+    let ambient_probe = select(vec3<f32>(0.0), shamb::ambient_probe(n), include_directional);
+    let ambient = brdf::indirect_diffuse_metallic(
+        ambient_probe,
+        base_color,
+        metallic,
+        occlusion,
+    );
+    let indirect_specular = select(
+        vec3<f32>(0.0),
+        brdf::indirect_specular(n, v, aa_roughness, f0, occlusion, true),
+        include_directional,
+    );
+    let color = ambient + indirect_specular + lo + emission;
     return vec4<f32>(color, alpha);
 }
 

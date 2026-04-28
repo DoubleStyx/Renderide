@@ -282,7 +282,13 @@ fn fs_main(
         );
     }
 
-    let amb = shamb::ambient_probe(n);
-    let color = amb * base_color * occlusion + lo + edge_emission;
+    let ambient = brdf::indirect_diffuse_metallic(
+        shamb::ambient_probe(n),
+        base_color,
+        metallic,
+        occlusion,
+    );
+    let indirect_specular = brdf::indirect_specular(n, v, aa_roughness, f0, occlusion, true);
+    let color = ambient + indirect_specular + lo + edge_emission;
     return vec4<f32>(color, alpha);
 }

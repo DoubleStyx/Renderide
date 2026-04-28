@@ -41,14 +41,15 @@ pub struct FrameGpuBindings {
 
 impl FrameGpuBindings {
     /// Allocates frame globals, empty material bind group, and the per-draw bind group layout
-    /// in one step.
+    /// in one step, initializing fallback frame textures through `queue`.
     ///
     /// On error, nothing is returned; callers must not treat any partial state as attached.
     pub fn try_new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         limits: Arc<GpuLimits>,
     ) -> Result<Self, FrameGpuBindingsError> {
-        let frame_gpu = FrameGpuResources::new(device, Arc::clone(&limits))?;
+        let frame_gpu = FrameGpuResources::new(device, queue, Arc::clone(&limits))?;
         let empty_material = EmptyMaterialBindGroup::new(device);
         let per_draw_bind_group_layout = Arc::new(NullFamily::per_draw_bind_group_layout(device)?);
         Ok(Self {

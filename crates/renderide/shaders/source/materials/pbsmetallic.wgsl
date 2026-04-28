@@ -321,8 +321,23 @@ fn fs_forward_base(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, uv1, world_pos, world_n);
-    let ambient = select(vec3<f32>(0.0), shamb::ambient_probe(s.normal), glossy_reflections_enabled());
     let direct = clustered_direct_lighting(frag_pos.xy, world_pos, view_layer, s, true, true);
-    let color = (ambient * s.base_color * s.occlusion) + direct + s.emission;
+    let view_dir = normalize(rg::frame.camera_world_pos.xyz - world_pos);
+    let f0 = brdf::metallic_f0(s.base_color, s.metallic);
+    let ambient = brdf::indirect_diffuse_metallic(
+        shamb::ambient_probe(s.normal),
+        s.base_color,
+        s.metallic,
+        s.occlusion,
+    );
+    let indirect_specular = brdf::indirect_specular(
+        s.normal,
+        view_dir,
+        s.roughness,
+        f0,
+        s.occlusion,
+        glossy_reflections_enabled(),
+    );
+    let color = ambient + indirect_specular + direct + s.emission;
     return vec4<f32>(apply_premultiply(color, s.alpha), s.alpha);
 }

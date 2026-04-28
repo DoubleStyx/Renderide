@@ -24,6 +24,7 @@ mod per_draw_resources;
 mod per_view_resource_map;
 mod reflection_probe_sh2;
 mod render_backend;
+mod skybox_specular;
 
 pub use crate::assets::AssetTransferQueue;
 pub use cluster_gpu::{
@@ -67,3 +68,4 @@ pub use render_backend::{
     RenderBackend, RenderBackendAttachDesc, RenderBackendAttachError, MAX_ASSET_INTEGRATION_QUEUED,
     MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
 };
+pub(crate) use skybox_specular::resolve_active_main_skybox_specular_environment;

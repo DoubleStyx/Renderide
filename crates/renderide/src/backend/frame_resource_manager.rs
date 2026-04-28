@@ -23,13 +23,13 @@ use hashbrown::HashSet;
 use parking_lot::Mutex;
 
 use crate::backend::cluster_gpu::{ClusterBufferRefs, CLUSTER_PARAMS_UNIFORM_SIZE};
-use crate::gpu::frame_globals::FrameGpuUniforms;
+use crate::gpu::frame_globals::{FrameGpuUniforms, SkyboxSpecularUniformParams};
 use crate::gpu::GpuLimits;
 use crate::render_graph::OcclusionViewId;
 
 use super::frame_gpu::{
     EmptyMaterialBindGroup, FrameGpuResources, PerViewSceneSnapshotSyncParams,
-    PerViewSceneSnapshots,
+    PerViewSceneSnapshots, SkyboxSpecularEnvironmentSource,
 };
 use super::frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 use super::light_gpu::{order_lights_for_clustered_shading_in_place, GpuLight, MAX_LIGHTS};
@@ -65,6 +65,8 @@ pub struct PerViewFrameState {
     scene_snapshots: PerViewSceneSnapshots,
     /// Shared [`ClusterBufferCache::version`] at which [`Self::frame_bind_group`] was last built.
     last_cluster_version: u64,
+    /// Skybox specular environment version at which [`Self::frame_bind_group`] was last built.
+    last_skybox_specular_version: u64,
     /// Stereo flag at which [`Self::cluster_params_buffer`] was last allocated.
     last_stereo: bool,
 }
@@ -230,14 +232,16 @@ impl FrameResourceManager {
     /// Allocates GPU resources for this manager. Called from [`super::RenderBackend::attach`].
     ///
     /// On success, `@group(0)` / `@group(1)` / `@group(2)` layout are present.
+    /// `queue` initializes fallback sampled textures used by group-0 bindings.
     /// Per-view per-draw slabs and per-view cluster buffers are created lazily on first use.
     /// On error, frame bind fields remain unset (no partial attach).
     pub fn attach(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         limits: Arc<GpuLimits>,
     ) -> Result<(), FrameGpuBindingsError> {
-        let binds = FrameGpuBindings::try_new(device, Arc::clone(&limits))?;
+        let binds = FrameGpuBindings::try_new(device, queue, Arc::clone(&limits))?;
         self.frame_gpu = Some(binds.frame_gpu);
         self.empty_material = Some(binds.empty_material);
         self.per_draw_bind_group_layout = Some(binds.per_draw_bind_group_layout);
@@ -337,7 +341,7 @@ impl FrameResourceManager {
     ///
     /// Grows the shared cluster buffers (on [`FrameGpuResources`]) to cover this view's
     /// layout in `layout` when needed and rebuilds the `@group(0)` bind group whenever the
-    /// shared cluster buffers or this view's snapshots change.
+    /// shared cluster buffers, skybox specular environment, or this view's snapshots change.
     ///
     /// Returns `None` when the manager has not been attached (no GPU resources available) or
     /// when cluster buffers cannot be allocated for the given viewport.
@@ -360,6 +364,7 @@ impl FrameResourceManager {
         // is grow-only so repeated calls from different views consolidate to the max envelope.
         fgpu.sync_cluster_viewport(device, viewport, stereo);
         let cluster_ver = fgpu.cluster_cache.version;
+        let skybox_specular_version = fgpu.skybox_specular_version();
         let placeholder_bg = fgpu.bind_group.clone();
 
         if !per_view_frame.contains_key(view_id) {
@@ -392,6 +397,7 @@ impl FrameResourceManager {
                 cluster_params_buffer,
                 scene_snapshots,
                 last_cluster_version: cluster_ver,
+                last_skybox_specular_version: skybox_specular_version,
                 last_stereo: stereo,
             };
             let _ = per_view_frame.get_or_insert_with(view_id, || state);
@@ -408,7 +414,9 @@ impl FrameResourceManager {
         let snapshots_changed = entry
             .scene_snapshots
             .sync(device, limits.as_ref(), snapshot_sync);
-        let needs_rebuild = cluster_ver != entry.last_cluster_version || snapshots_changed;
+        let needs_rebuild = cluster_ver != entry.last_cluster_version
+            || skybox_specular_version != entry.last_skybox_specular_version
+            || snapshots_changed;
 
         if needs_rebuild {
             if let Some(refs) = fgpu.cluster_cache.current_refs() {
@@ -421,9 +429,30 @@ impl FrameResourceManager {
                 entry.frame_bind_group = new_bg;
             }
             entry.last_cluster_version = cluster_ver;
+            entry.last_skybox_specular_version = skybox_specular_version;
         }
 
         per_view_frame.get_mut(view_id)
+    }
+
+    /// Uniform parameters for the frame-global skybox specular environment.
+    pub fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams {
+        self.frame_gpu
+            .as_ref()
+            .map(FrameGpuResources::skybox_specular_uniform_params)
+            .unwrap_or_else(SkyboxSpecularUniformParams::disabled)
+    }
+
+    /// Synchronizes the frame-global skybox specular environment binding.
+    pub fn sync_skybox_specular_environment(
+        &mut self,
+        device: &wgpu::Device,
+        source: Option<SkyboxSpecularEnvironmentSource>,
+    ) -> bool {
+        self.frame_gpu
+            .as_mut()
+            .map(|fgpu| fgpu.sync_skybox_specular_environment(device, source))
+            .unwrap_or(false)
     }
 
     /// Refs to the shared cluster buffers (see [`ClusterBufferCache`]). All views share these.

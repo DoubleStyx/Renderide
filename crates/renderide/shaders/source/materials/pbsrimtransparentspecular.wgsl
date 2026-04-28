@@ -155,7 +155,13 @@ fn fs_main(
         lo = lo + brdf::direct_radiance_specular(light, world_pos, n, v, aa_roughness, base_color, f0, one_minus_reflectivity);
     }
 
-    let amb = shamb::ambient_probe(n);
-    let color = (amb * base_color * occlusion + lo) + emission + rim_emission;
+    let ambient = brdf::indirect_diffuse_specular(
+        shamb::ambient_probe(n),
+        base_color,
+        one_minus_reflectivity,
+        occlusion,
+    );
+    let indirect_specular = brdf::indirect_specular(n, v, aa_roughness, f0, occlusion, true);
+    let color = (ambient + indirect_specular + lo) + emission + rim_emission;
     return vec4<f32>(color, alpha);
 }

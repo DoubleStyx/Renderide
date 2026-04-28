@@ -10,13 +10,19 @@
 mod empty_material;
 mod scene_snapshot;
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use crate::backend::cluster_gpu::{ClusterBufferCache, ClusterBufferRefs, CLUSTER_COUNT_Z};
+use crate::backend::embedded::texture_resolve::{sampler_from_cubemap_state, sampler_from_state};
 use crate::backend::light_gpu::{GpuLight, MAX_LIGHTS};
-use crate::gpu::frame_globals::FrameGpuUniforms;
+use crate::gpu::frame_globals::{
+    FrameGpuUniforms, SkyboxSpecularSourceKind, SkyboxSpecularUniformParams,
+};
 use crate::gpu::GpuLimits;
+use crate::resources::{CubemapSamplerState, Texture2dSamplerState};
 
 use super::frame_gpu_error::FrameGpuInitError;
 pub use empty_material::{empty_material_bind_group_layout, EmptyMaterialBindGroup};
@@ -26,7 +32,7 @@ use scene_snapshot::{
 };
 
 /// GPU buffers and bind groups for `@group(0)` frame globals (camera, lights, cluster lists,
-/// and fallback sampled scene snapshots).
+/// fallback sampled scene snapshots, and skybox indirect specular).
 ///
 /// `@group(0)` bind groups are per-view and are owned by
 /// [`crate::backend::frame_resource_manager::PerViewFrameState`], keyed by
@@ -49,6 +55,32 @@ pub struct FrameGpuResources {
     /// Actual render views use per-view snapshots owned by
     /// [`crate::backend::frame_resource_manager::PerViewFrameState`].
     scene_snapshots: SceneSnapshotSet,
+    /// Zero cubemap kept alive for frames without a resident cubemap skybox environment.
+    _skybox_specular_fallback_texture: Arc<wgpu::Texture>,
+    /// Zero cubemap view used by `@group(0) @binding(9)` when indirect specular is disabled.
+    skybox_specular_fallback_view: Arc<wgpu::TextureView>,
+    /// Fallback sampler used by `@group(0) @binding(10)` when indirect specular is disabled.
+    skybox_specular_fallback_sampler: Arc<wgpu::Sampler>,
+    /// Zero equirect texture kept alive for frames without a resident equirect skybox environment.
+    _skybox_specular_equirect_fallback_texture: Arc<wgpu::Texture>,
+    /// Zero equirect view used by `@group(0) @binding(11)` when indirect specular is disabled.
+    skybox_specular_equirect_fallback_view: Arc<wgpu::TextureView>,
+    /// Fallback sampler used by `@group(0) @binding(12)` when indirect specular is disabled.
+    skybox_specular_equirect_fallback_sampler: Arc<wgpu::Sampler>,
+    /// Current cubemap view bound as the frame-global indirect specular environment.
+    skybox_specular_view: Arc<wgpu::TextureView>,
+    /// Current sampler paired with [`Self::skybox_specular_view`].
+    skybox_specular_sampler: Arc<wgpu::Sampler>,
+    /// Current equirect view bound as the frame-global indirect specular environment.
+    skybox_specular_equirect_view: Arc<wgpu::TextureView>,
+    /// Current sampler paired with [`Self::skybox_specular_equirect_view`].
+    skybox_specular_equirect_sampler: Arc<wgpu::Sampler>,
+    /// Uniform parameters describing the currently bound skybox specular source.
+    skybox_specular_params: SkyboxSpecularUniformParams,
+    /// Stable key for the current skybox specular binding.
+    skybox_specular_key: SkyboxSpecularEnvironmentKey,
+    /// Monotonic version incremented whenever the skybox specular binding changes.
+    skybox_specular_version: u64,
     /// Global `@group(0)` bind group (global frame uniform + shared lights/snapshots).
     ///
     /// Per-view passes bind the per-view bind group from
@@ -56,6 +88,145 @@ pub struct FrameGpuResources {
     pub bind_group: Arc<wgpu::BindGroup>,
     cluster_bind_version: u64,
     limits: Arc<GpuLimits>,
+}
+
+/// Resident skybox source that can be bound as frame-global indirect specular.
+pub enum SkyboxSpecularEnvironmentSource {
+    /// A resident cubemap source sampled through `@group(0) @binding(9)`.
+    Cubemap(SkyboxSpecularCubemapSource),
+    /// A resident Projection360 equirect source sampled through `@group(0) @binding(11)`.
+    Projection360Equirect(SkyboxSpecularEquirectSource),
+}
+
+impl SkyboxSpecularEnvironmentSource {
+    /// Builds uniform parameters for this source.
+    fn uniform_params(&self) -> SkyboxSpecularUniformParams {
+        match self {
+            Self::Cubemap(source) => SkyboxSpecularUniformParams::from_cubemap_resident_mips(
+                source.mip_levels_resident,
+                source.storage_v_inverted,
+            ),
+            Self::Projection360Equirect(source) => {
+                SkyboxSpecularUniformParams::from_equirect_resident_mips(
+                    source.mip_levels_resident,
+                    source.storage_v_inverted,
+                    source.equirect_fov,
+                    source.equirect_st,
+                )
+            }
+        }
+    }
+}
+
+/// Resident cubemap source that can be bound as frame-global indirect specular.
+pub struct SkyboxSpecularCubemapSource {
+    /// Host cubemap asset id.
+    pub asset_id: i32,
+    /// Resident full cube texture view.
+    pub view: Arc<wgpu::TextureView>,
+    /// Host sampler settings copied from the cubemap pool.
+    pub sampler: CubemapSamplerState,
+    /// Resident mip count available for roughness-driven LOD sampling.
+    pub mip_levels_resident: u32,
+    /// Whether shader sampling needs V-axis storage compensation.
+    pub storage_v_inverted: bool,
+}
+
+/// Resident Projection360 equirectangular source that can be bound as frame-global indirect specular.
+pub struct SkyboxSpecularEquirectSource {
+    /// Host Texture2D asset id.
+    pub asset_id: i32,
+    /// Resident full 2D texture view.
+    pub view: Arc<wgpu::TextureView>,
+    /// Host sampler settings copied from the Texture2D pool.
+    pub sampler: Texture2dSamplerState,
+    /// Resident mip count available for roughness-driven LOD sampling.
+    pub mip_levels_resident: u32,
+    /// Whether shader sampling needs V-axis storage compensation.
+    pub storage_v_inverted: bool,
+    /// Projection360 `_FOV` material parameters.
+    pub equirect_fov: [f32; 4],
+    /// Projection360 `_MainTex_ST` material parameters.
+    pub equirect_st: [f32; 4],
+}
+
+/// Identity key for invalidating frame-global skybox specular bind groups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SkyboxSpecularEnvironmentKey {
+    /// Active source kind, or disabled for the fallback.
+    source_kind: SkyboxSpecularSourceKind,
+    /// Host texture asset id, or `-1` for the fallback.
+    asset_id: i32,
+    /// Raw texture-view pointer identity so same-id replacement still invalidates.
+    view_identity: usize,
+    /// Resident mip count included in the sampler LOD clamp and shader roughness range.
+    mip_levels_resident: u32,
+    /// Storage orientation flag consumed by WGSL.
+    storage_v_inverted: bool,
+    /// Hash of host sampler fields used to rebuild the wgpu sampler.
+    sampler_signature: u64,
+}
+
+/// Texture/sampler resources bound to the frame-global skybox specular slots.
+#[derive(Clone, Copy)]
+struct SkyboxSpecularBindGroupResources<'a> {
+    /// Cubemap source bound at `@group(0) @binding(9)`.
+    cubemap_view: &'a wgpu::TextureView,
+    /// Cubemap sampler bound at `@group(0) @binding(10)`.
+    cubemap_sampler: &'a wgpu::Sampler,
+    /// Projection360 equirect source bound at `@group(0) @binding(11)`.
+    equirect_view: &'a wgpu::TextureView,
+    /// Projection360 equirect sampler bound at `@group(0) @binding(12)`.
+    equirect_sampler: &'a wgpu::Sampler,
+}
+
+impl Default for SkyboxSpecularEnvironmentKey {
+    fn default() -> Self {
+        Self {
+            source_kind: SkyboxSpecularSourceKind::Disabled,
+            asset_id: -1,
+            view_identity: 0,
+            mip_levels_resident: 0,
+            storage_v_inverted: false,
+            sampler_signature: 0,
+        }
+    }
+}
+
+impl SkyboxSpecularEnvironmentKey {
+    /// Builds a key for a resident skybox cubemap source.
+    fn from_cubemap_source(source: &SkyboxSpecularCubemapSource) -> Self {
+        Self {
+            source_kind: SkyboxSpecularSourceKind::Cubemap,
+            asset_id: source.asset_id,
+            view_identity: Arc::as_ptr(&source.view) as usize,
+            mip_levels_resident: source.mip_levels_resident,
+            storage_v_inverted: source.storage_v_inverted,
+            sampler_signature: cubemap_sampler_signature(&source.sampler),
+        }
+    }
+
+    /// Builds a key for a resident Projection360 equirect source.
+    fn from_equirect_source(source: &SkyboxSpecularEquirectSource) -> Self {
+        Self {
+            source_kind: SkyboxSpecularSourceKind::Projection360Equirect,
+            asset_id: source.asset_id,
+            view_identity: Arc::as_ptr(&source.view) as usize,
+            mip_levels_resident: source.mip_levels_resident,
+            storage_v_inverted: source.storage_v_inverted,
+            sampler_signature: texture2d_sampler_signature(&source.sampler),
+        }
+    }
+
+    /// Builds a key for any resident skybox source.
+    fn from_source(source: &SkyboxSpecularEnvironmentSource) -> Self {
+        match source {
+            SkyboxSpecularEnvironmentSource::Cubemap(source) => Self::from_cubemap_source(source),
+            SkyboxSpecularEnvironmentSource::Projection360Equirect(source) => {
+                Self::from_equirect_source(source)
+            }
+        }
+    }
 }
 
 /// Per-view scene snapshot ownership for one render view.
@@ -162,102 +333,299 @@ impl PerViewSceneSnapshots {
     }
 }
 
+/// Hashes cubemap sampler fields that affect the wgpu sampler descriptor.
+fn cubemap_sampler_signature(state: &CubemapSamplerState) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (state.filter_mode as i32).hash(&mut hasher);
+    state.aniso_level.hash(&mut hasher);
+    state.mipmap_bias.to_bits().hash(&mut hasher);
+    (state.wrap_u as i32).hash(&mut hasher);
+    (state.wrap_v as i32).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Hashes Texture2D sampler fields that affect the wgpu sampler descriptor.
+fn texture2d_sampler_signature(state: &Texture2dSamplerState) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (state.filter_mode as i32).hash(&mut hasher);
+    state.aniso_level.hash(&mut hasher);
+    state.mipmap_bias.to_bits().hash(&mut hasher);
+    (state.wrap_u as i32).hash(&mut hasher);
+    (state.wrap_v as i32).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Allocates and initializes the black cubemap used when no skybox specular environment exists.
+fn create_black_skybox_specular_fallback(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (
+    Arc<wgpu::Texture>,
+    Arc<wgpu::TextureView>,
+    Arc<wgpu::Sampler>,
+) {
+    let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("frame_skybox_specular_black_cube"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 6,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    }));
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: texture.as_ref(),
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[0u8; 24],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 6,
+        },
+    );
+    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("frame_skybox_specular_black_cube_view"),
+        dimension: Some(wgpu::TextureViewDimension::Cube),
+        ..Default::default()
+    }));
+    let sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("frame_skybox_specular_black_cube_sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        lod_min_clamp: 0.0,
+        lod_max_clamp: 0.0,
+        ..Default::default()
+    }));
+    (texture, view, sampler)
+}
+
+/// Allocates and initializes the black equirect Texture2D used when no skybox specular environment exists.
+fn create_black_skybox_specular_equirect_fallback(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (
+    Arc<wgpu::Texture>,
+    Arc<wgpu::TextureView>,
+    Arc<wgpu::Sampler>,
+) {
+    let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("frame_skybox_specular_black_equirect"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    }));
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: texture.as_ref(),
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[0u8; 4],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("frame_skybox_specular_black_equirect_view"),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        ..Default::default()
+    }));
+    let sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("frame_skybox_specular_black_equirect_sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        lod_min_clamp: 0.0,
+        lod_max_clamp: 0.0,
+        ..Default::default()
+    }));
+    (texture, view, sampler)
+}
+
+/// Appends uniform/storage entries that every clustered frame bind group owns.
+fn append_frame_buffer_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
+    entries.extend([
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(std::mem::size_of::<FrameGpuUniforms>() as u64),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(std::mem::size_of::<GpuLight>() as u64),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(4),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(4),
+            },
+            count: None,
+        },
+    ]);
+}
+
+/// Appends per-view depth/color snapshot entries used by grab-pass material sampling.
+fn append_scene_snapshot_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
+    entries.extend([
+        wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 5,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 6,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 7,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 8,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+    ]);
+}
+
+/// Appends the frame-global skybox texture and filtering sampler entries for indirect specular.
+fn append_skybox_specular_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
+    entries.extend([
+        wgpu::BindGroupLayoutEntry {
+            binding: 9,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::Cube,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 10,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 11,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 12,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+    ]);
+}
+
 impl FrameGpuResources {
     /// Layout for `@group(0)`: uniform frame + lights + cluster counts + cluster indices +
-    /// single-view / multiview scene depth snapshots.
+    /// scene snapshots + skybox specular sources.
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        let mut entries = Vec::with_capacity(13);
+        append_frame_buffer_layout_entries(&mut entries);
+        append_scene_snapshot_layout_entries(&mut entries);
+        append_skybox_specular_layout_entries(&mut entries);
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("frame_globals"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(
-                            std::mem::size_of::<FrameGpuUniforms>() as u64
-                        ),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(std::mem::size_of::<GpuLight>() as u64),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(4),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(4),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 8,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
+            entries: &entries,
         })
     }
 
@@ -267,6 +635,7 @@ impl FrameGpuResources {
         lights_buffer: &wgpu::Buffer,
         refs: ClusterBufferRefs<'_>,
         snapshots: FrameSceneSnapshotTextureViews<'_>,
+        skybox_specular: SkyboxSpecularBindGroupResources<'_>,
     ) -> Arc<wgpu::BindGroup> {
         let layout = Self::bind_group_layout(device);
         Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -309,8 +678,34 @@ impl FrameGpuResources {
                     binding: 8,
                     resource: wgpu::BindingResource::Sampler(snapshots.scene_color_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(skybox_specular.cubemap_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::Sampler(skybox_specular.cubemap_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(skybox_specular.equirect_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::Sampler(skybox_specular.equirect_sampler),
+                },
             ],
         }))
+    }
+
+    /// Returns the currently selected skybox specular bind-group resources.
+    fn skybox_specular_bind_group_resources(&self) -> SkyboxSpecularBindGroupResources<'_> {
+        SkyboxSpecularBindGroupResources {
+            cubemap_view: self.skybox_specular_view.as_ref(),
+            cubemap_sampler: self.skybox_specular_sampler.as_ref(),
+            equirect_view: self.skybox_specular_equirect_view.as_ref(),
+            equirect_sampler: self.skybox_specular_equirect_sampler.as_ref(),
+        }
     }
 
     fn rebuild_bind_group(&mut self, device: &wgpu::Device) {
@@ -324,13 +719,19 @@ impl FrameGpuResources {
             &self.lights_buffer,
             refs,
             self.scene_snapshots.views(),
+            self.skybox_specular_bind_group_resources(),
         );
     }
 
-    /// Allocates frame uniform, lights storage, minimal cluster grid `(1×1×Z)`; builds [`Self::bind_group`].
+    /// Allocates frame uniform, lights storage, minimal cluster grid `(1×1×Z)`, and fallback
+    /// sampled textures; builds [`Self::bind_group`].
     ///
     /// Returns an error when the initial cluster buffer cache could not be populated (zero viewport or internal mismatch).
-    pub fn new(device: &wgpu::Device, limits: Arc<GpuLimits>) -> Result<Self, FrameGpuInitError> {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        limits: Arc<GpuLimits>,
+    ) -> Result<Self, FrameGpuInitError> {
         let lights_size = (MAX_LIGHTS * std::mem::size_of::<GpuLight>()) as u64;
         if lights_size > limits.max_storage_buffer_binding_size()
             || lights_size > limits.max_buffer_size()
@@ -361,18 +762,51 @@ impl FrameGpuResources {
             crate::render_graph::main_forward_depth_stencil_format(device.features());
         let scene_snapshots =
             SceneSnapshotSet::new(device, scene_depth_format, DEFAULT_SCENE_COLOR_FORMAT);
+        let (
+            skybox_specular_fallback_texture,
+            skybox_specular_fallback_view,
+            skybox_specular_fallback_sampler,
+        ) = create_black_skybox_specular_fallback(device, queue);
+        let (
+            skybox_specular_equirect_fallback_texture,
+            skybox_specular_equirect_fallback_view,
+            skybox_specular_equirect_fallback_sampler,
+        ) = create_black_skybox_specular_equirect_fallback(device, queue);
+        let skybox_specular_view = skybox_specular_fallback_view.clone();
+        let skybox_specular_sampler = skybox_specular_fallback_sampler.clone();
+        let skybox_specular_equirect_view = skybox_specular_equirect_fallback_view.clone();
+        let skybox_specular_equirect_sampler = skybox_specular_equirect_fallback_sampler.clone();
         let bind_group = Self::create_bind_group(
             device,
             &frame_uniform,
             &lights_buffer,
             refs,
             scene_snapshots.views(),
+            SkyboxSpecularBindGroupResources {
+                cubemap_view: skybox_specular_view.as_ref(),
+                cubemap_sampler: skybox_specular_sampler.as_ref(),
+                equirect_view: skybox_specular_equirect_view.as_ref(),
+                equirect_sampler: skybox_specular_equirect_sampler.as_ref(),
+            },
         );
         Ok(Self {
             frame_uniform,
             lights_buffer,
             cluster_cache,
             scene_snapshots,
+            _skybox_specular_fallback_texture: skybox_specular_fallback_texture,
+            skybox_specular_fallback_view,
+            skybox_specular_fallback_sampler,
+            _skybox_specular_equirect_fallback_texture: skybox_specular_equirect_fallback_texture,
+            skybox_specular_equirect_fallback_view,
+            skybox_specular_equirect_fallback_sampler,
+            skybox_specular_view,
+            skybox_specular_sampler,
+            skybox_specular_equirect_view,
+            skybox_specular_equirect_sampler,
+            skybox_specular_params: SkyboxSpecularUniformParams::disabled(),
+            skybox_specular_key: SkyboxSpecularEnvironmentKey::default(),
+            skybox_specular_version: 0,
             bind_group,
             cluster_bind_version,
             limits,
@@ -434,7 +868,81 @@ impl FrameGpuResources {
             &self.lights_buffer,
             cluster_refs,
             snapshots,
+            self.skybox_specular_bind_group_resources(),
         )
+    }
+
+    /// Current skybox specular environment version for per-view bind-group invalidation.
+    pub fn skybox_specular_version(&self) -> u64 {
+        self.skybox_specular_version
+    }
+
+    /// Uniform parameters for the currently bound skybox specular environment.
+    pub fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams {
+        self.skybox_specular_params
+    }
+
+    /// Synchronizes the frame-global skybox specular source and rebuilds bind groups when needed.
+    pub fn sync_skybox_specular_environment(
+        &mut self,
+        device: &wgpu::Device,
+        source: Option<SkyboxSpecularEnvironmentSource>,
+    ) -> bool {
+        let Some(source) = source else {
+            if self.skybox_specular_key == SkyboxSpecularEnvironmentKey::default() {
+                return false;
+            }
+            self.skybox_specular_view = self.skybox_specular_fallback_view.clone();
+            self.skybox_specular_sampler = self.skybox_specular_fallback_sampler.clone();
+            self.skybox_specular_equirect_view =
+                self.skybox_specular_equirect_fallback_view.clone();
+            self.skybox_specular_equirect_sampler =
+                self.skybox_specular_equirect_fallback_sampler.clone();
+            self.skybox_specular_params = SkyboxSpecularUniformParams::disabled();
+            self.skybox_specular_key = SkyboxSpecularEnvironmentKey::default();
+            self.skybox_specular_version = self.skybox_specular_version.wrapping_add(1);
+            self.rebuild_bind_group(device);
+            return true;
+        };
+
+        let new_key = SkyboxSpecularEnvironmentKey::from_source(&source);
+        let new_params = source.uniform_params();
+        if new_key == self.skybox_specular_key {
+            self.skybox_specular_params = new_params;
+            return false;
+        }
+
+        match source {
+            SkyboxSpecularEnvironmentSource::Cubemap(source) => {
+                let sampler = Arc::new(sampler_from_cubemap_state(
+                    device,
+                    &source.sampler,
+                    source.mip_levels_resident,
+                ));
+                self.skybox_specular_view = source.view;
+                self.skybox_specular_sampler = sampler;
+                self.skybox_specular_equirect_view =
+                    self.skybox_specular_equirect_fallback_view.clone();
+                self.skybox_specular_equirect_sampler =
+                    self.skybox_specular_equirect_fallback_sampler.clone();
+            }
+            SkyboxSpecularEnvironmentSource::Projection360Equirect(source) => {
+                let sampler = Arc::new(sampler_from_state(
+                    device,
+                    &source.sampler,
+                    source.mip_levels_resident,
+                ));
+                self.skybox_specular_view = self.skybox_specular_fallback_view.clone();
+                self.skybox_specular_sampler = self.skybox_specular_fallback_sampler.clone();
+                self.skybox_specular_equirect_view = source.view;
+                self.skybox_specular_equirect_sampler = sampler;
+            }
+        }
+        self.skybox_specular_params = new_params;
+        self.skybox_specular_key = new_key;
+        self.skybox_specular_version = self.skybox_specular_version.wrapping_add(1);
+        self.rebuild_bind_group(device);
+        true
     }
 
     /// Uploads [`FrameGpuUniforms`] only (packed lights unchanged).

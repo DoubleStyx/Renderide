@@ -10,7 +10,9 @@ use glam::Mat4;
 
 use crate::backend::CLUSTER_COUNT_Z;
 use crate::backend::TILE_SIZE;
-use crate::gpu::frame_globals::{ClusteredFrameGlobalsParams, FrameGpuUniforms};
+use crate::gpu::frame_globals::{
+    ClusteredFrameGlobalsParams, FrameGpuUniforms, SkyboxSpecularUniformParams,
+};
 use crate::render_graph::camera::{
     clamp_desktop_fov_degrees, effective_head_output_clip_planes, reverse_z_perspective,
     view_matrix_from_render_transform,
@@ -81,6 +83,25 @@ pub struct ClusterFrameParams {
     pub viewport_height: u32,
 }
 
+/// Per-frame values layered on top of [`ClusterFrameParams`] when packing [`FrameGpuUniforms`].
+#[derive(Clone, Copy, Debug)]
+pub struct FrameGpuUniformBuildParams {
+    /// World-space camera position for the current view.
+    pub camera_world_pos: glam::Vec3,
+    /// Number of resident lights written to the frame lights buffer.
+    pub light_count: u32,
+    /// Right-eye view-space-Z coefficients, or the mono coefficients for non-stereo frames.
+    pub right_z_coeffs: [f32; 4],
+    /// Right-eye projection parameters, or the mono parameters for non-stereo frames.
+    pub right_proj_params: [f32; 4],
+    /// Monotonic host frame index used by temporal effects.
+    pub frame_index: u32,
+    /// Packed skybox indirect-specular state for shader sampling.
+    pub skybox_specular: SkyboxSpecularUniformParams,
+    /// Skybox-derived SH2 irradiance coefficients for indirect diffuse.
+    pub ambient_sh: [[f32; 4]; 9],
+}
+
 impl ClusterFrameParams {
     /// Coefficients for `dot(coeffs.xyz, world) + coeffs.w` → view-space Z (third row of world-to-view).
     pub fn view_space_z_coeffs(&self) -> [f32; 4] {
@@ -122,34 +143,26 @@ impl ClusterFrameParams {
 
     /// Builds [`FrameGpuUniforms`] for clustered PBS materials (must stay in sync with compute).
     ///
-    /// `right_z_coeffs` / `right_proj_params` should be the right-eye equivalents in stereo, or
-    /// equal to the left/mono coefficients in desktop mode. `frame_index` is the monotonic host
-    /// frame index used by temporal / jittered screen-space effects.
-    pub fn frame_gpu_uniforms(
-        &self,
-        camera_world_pos: glam::Vec3,
-        light_count: u32,
-        right_z_coeffs: [f32; 4],
-        right_proj_params: [f32; 4],
-        frame_index: u32,
-        ambient_sh: [[f32; 4]; 9],
-    ) -> FrameGpuUniforms {
+    /// Right-eye fields in `params` should be the right-eye equivalents in stereo, or equal to the
+    /// left/mono coefficients in desktop mode.
+    pub fn frame_gpu_uniforms(&self, params: FrameGpuUniformBuildParams) -> FrameGpuUniforms {
         FrameGpuUniforms::new_clustered(ClusteredFrameGlobalsParams {
-            camera_world_pos,
+            camera_world_pos: params.camera_world_pos,
             view_space_z_coeffs: self.view_space_z_coeffs(),
-            view_space_z_coeffs_right: right_z_coeffs,
+            view_space_z_coeffs_right: params.right_z_coeffs,
             cluster_count_x: self.cluster_count_x,
             cluster_count_y: self.cluster_count_y,
             cluster_count_z: CLUSTER_COUNT_Z,
             near_clip: self.near_clip,
             far_clip: self.far_clip,
-            light_count,
+            light_count: params.light_count,
             viewport_width: self.viewport_width.max(1),
             viewport_height: self.viewport_height.max(1),
             proj_params_left: self.proj_params(),
-            proj_params_right: right_proj_params,
-            frame_index,
-            ambient_sh,
+            proj_params_right: params.right_proj_params,
+            frame_index: params.frame_index,
+            skybox_specular: params.skybox_specular,
+            ambient_sh: params.ambient_sh,
         })
     }
 }

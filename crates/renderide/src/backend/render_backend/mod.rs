@@ -489,7 +489,7 @@ impl RenderBackend {
         let max_buffer_size = gpu_limits.max_buffer_size();
         self.mesh_deform_scratch = Some(MeshDeformScratch::new(device.as_ref(), max_buffer_size));
         self.frame_resources
-            .attach(device.as_ref(), Arc::clone(&gpu_limits))?;
+            .attach(device.as_ref(), queue.as_ref(), Arc::clone(&gpu_limits))?;
         self.skin_cache = Some(GpuSkinCache::new(device.as_ref(), max_buffer_size));
         self.debug_hud.attach(
             device.as_ref(),

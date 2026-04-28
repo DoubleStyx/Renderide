@@ -140,8 +140,19 @@ fn shade(
             light, world_pos, n, v, aa_roughness, metallic, base_color, f0,
         );
     }
-    let ambient = select(vec3<f32>(0.0), shamb::ambient_probe(n) * base_color, include_directional);
-    return vec4<f32>(ambient + lo, strength);
+    let ambient_probe = select(vec3<f32>(0.0), shamb::ambient_probe(n), include_directional);
+    let ambient = brdf::indirect_diffuse_metallic(
+        ambient_probe,
+        base_color,
+        metallic,
+        1.0,
+    );
+    let indirect_specular = select(
+        vec3<f32>(0.0),
+        brdf::indirect_specular(n, v, aa_roughness, f0, 1.0, true),
+        include_directional,
+    );
+    return vec4<f32>(ambient + indirect_specular + lo, strength);
 }
 
 //#pass forward

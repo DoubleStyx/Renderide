@@ -24,6 +24,14 @@
 /// Lower bound on linear roughness `α`. Below this the GGX lobe becomes a near-delta that produces
 /// fp16 sparkles and division-by-near-zero artefacts; matches Filament `MIN_ROUGHNESS` for desktop.
 const MIN_ALPHA: f32 = 0.002025;
+/// Skybox specular source tag for cubemap sampling.
+const SKYBOX_SPECULAR_SOURCE_CUBEMAP: f32 = 1.0;
+/// Skybox specular source tag for Projection360 equirect Texture2D sampling.
+const SKYBOX_SPECULAR_SOURCE_PROJECTION360_EQUIRECT: f32 = 2.0;
+/// Pi.
+const PI: f32 = 3.14159265359;
+/// Tau.
+const TAU: f32 = 6.28318530718;
 
 /// Variance scale for [`filter_perceptual_roughness`]. Matches Filament's default
 /// `_specularAntiAliasingVariance`.
@@ -96,6 +104,129 @@ fn f_schlick(f0: vec3<f32>, f90: f32, v_dot_h: f32) -> vec3<f32> {
 /// Filament's `f90` from `f0`. `50·(1/3) ≈ 16.67`; saturated so very dark dielectrics don't go to white.
 fn f90_from_f0(f0: vec3<f32>) -> f32 {
     return clamp(dot(f0, vec3<f32>(50.0 / 3.0)), 0.0, 1.0);
+}
+
+/// Cubemap direction fixup matching Projection360 skybox storage-orientation compensation.
+fn skybox_specular_storage_dir(dir: vec3<f32>) -> vec3<f32> {
+    if (rg::frame.skybox_specular.z <= 0.5) {
+        return dir;
+    }
+    let a = abs(dir);
+    if (a.y >= a.x && a.y >= a.z) {
+        return vec3<f32>(dir.x, dir.y, -dir.z);
+    }
+    return vec3<f32>(dir.x, -dir.y, dir.z);
+}
+
+/// Filament-style dominant reflection direction for rough environment sampling.
+fn skybox_specular_dominant_dir(n: vec3<f32>, v: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
+    let r = reflect(-v, n);
+    let blend = perceptual_roughness * perceptual_roughness;
+    return normalize(mix(r, n, blend));
+}
+
+/// Roughness-to-cubemap LOD mapping from Filament's IBL path.
+fn skybox_specular_lod(perceptual_roughness: f32) -> f32 {
+    let r = clamp(perceptual_roughness, 0.0, 1.0);
+    return clamp(rg::frame.skybox_specular.x * r * (2.0 - r), 0.0, rg::frame.skybox_specular.x);
+}
+
+/// Positive floating-point modulo for Projection360 angular wrapping.
+fn skybox_specular_positive_fmod(v: vec2<f32>, wrap: vec2<f32>) -> vec2<f32> {
+    var r = v - trunc(v / wrap) * wrap;
+    r = r + wrap;
+    return r - trunc(r / wrap) * wrap;
+}
+
+/// Maps Projection360's view direction into unscaled equirectangular UVs.
+fn skybox_specular_projection360_dir_to_uv(view_dir: vec3<f32>) -> vec2<f32> {
+    var angle = vec2<f32>(
+        atan2(view_dir.x, view_dir.z),
+        acos(clamp(dot(view_dir, vec3<f32>(0.0, 1.0, 0.0)), -1.0, 1.0)) - PI * 0.5,
+    );
+    angle = angle + rg::frame.skybox_specular_equirect_fov.xy * 0.5 + rg::frame.skybox_specular_equirect_fov.zw;
+    angle = skybox_specular_positive_fmod(angle, vec2<f32>(TAU, PI));
+    return angle / max(abs(rg::frame.skybox_specular_equirect_fov.xy), vec2<f32>(0.000001));
+}
+
+/// Applies Projection360 `_MainTex_ST` and host storage orientation to equirectangular UVs.
+fn skybox_specular_projection360_main_tex_uv(uv: vec2<f32>) -> vec2<f32> {
+    let uv_st = uv * rg::frame.skybox_specular_equirect_st.xy + rg::frame.skybox_specular_equirect_st.zw;
+    if (rg::frame.skybox_specular.z > 0.5) {
+        return uv_st;
+    }
+    return vec2<f32>(uv_st.x, 1.0 - uv_st.y);
+}
+
+/// Maps a world-space reflection direction to Projection360 `_MainTex` UVs.
+fn skybox_specular_projection360_equirect_uv(world_dir: vec3<f32>) -> vec2<f32> {
+    let uv = clamp(
+        skybox_specular_projection360_dir_to_uv(-world_dir),
+        vec2<f32>(0.0),
+        vec2<f32>(1.0),
+    );
+    return skybox_specular_projection360_main_tex_uv(uv);
+}
+
+/// Samples the selected frame-global skybox specular source.
+fn sample_skybox_specular_radiance(dir: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
+    let lod = skybox_specular_lod(perceptual_roughness);
+    if (abs(rg::frame.skybox_specular.w - SKYBOX_SPECULAR_SOURCE_PROJECTION360_EQUIRECT) < 0.5) {
+        return textureSampleLevel(
+            rg::skybox_specular_equirect,
+            rg::skybox_specular_equirect_sampler,
+            skybox_specular_projection360_equirect_uv(dir),
+            lod,
+        ).rgb;
+    }
+    if (abs(rg::frame.skybox_specular.w - SKYBOX_SPECULAR_SOURCE_CUBEMAP) < 0.5) {
+        return textureSampleLevel(
+            rg::skybox_specular,
+            rg::skybox_specular_sampler,
+            skybox_specular_storage_dir(dir),
+            lod,
+        ).rgb;
+    }
+    return vec3<f32>(0.0);
+}
+
+/// Samples frame-global skybox indirect specular with Schlick Fresnel and material occlusion.
+fn indirect_specular(
+    n: vec3<f32>,
+    v: vec3<f32>,
+    perceptual_roughness: f32,
+    f0: vec3<f32>,
+    occlusion: f32,
+    enabled: bool,
+) -> vec3<f32> {
+    if (!enabled || rg::frame.skybox_specular.y <= 0.5) {
+        return vec3<f32>(0.0);
+    }
+    let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
+    let dir = skybox_specular_dominant_dir(n, v, perceptual_roughness);
+    let radiance = sample_skybox_specular_radiance(dir, perceptual_roughness);
+    let f = f_schlick(f0, f90_from_f0(f0), n_dot_v);
+    return radiance * f * max(occlusion, 0.0);
+}
+
+/// Indirect diffuse term for Unity Standard metallic materials.
+fn indirect_diffuse_metallic(
+    ambient: vec3<f32>,
+    base_color: vec3<f32>,
+    metallic: f32,
+    occlusion: f32,
+) -> vec3<f32> {
+    return ambient * base_color * (1.0 - clamp(metallic, 0.0, 1.0)) * occlusion;
+}
+
+/// Indirect diffuse term for Unity Standard specular materials.
+fn indirect_diffuse_specular(
+    ambient: vec3<f32>,
+    base_color: vec3<f32>,
+    one_minus_reflectivity: f32,
+    occlusion: f32,
+) -> vec3<f32> {
+    return ambient * base_color * clamp(one_minus_reflectivity, 0.0, 1.0) * occlusion;
 }
 
 /// Unity Standard metallic workflow F0 tint.

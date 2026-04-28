@@ -3,7 +3,7 @@
 //! Holds the cluster light walk used by both the forward (`clustered_toon_lighting`) and
 //! outline (`clustered_outline_lighting`) paths, plus the per-light stylised terms:
 //! ramp-driven half-Lambert diffuse, GGX direct specular, rim, shadow rim, subsurface,
-//! and matcap/PBR indirect specular.
+//! and matcap/skybox indirect specular.
 //!
 //! Math follows the upstream Xiexe Toon lighting include files rather than re-using the
 //! project's Filament BRDF, so a few
@@ -28,8 +28,8 @@
 //! - `calcEmission` returns `i.emissionMap` directly (`XSLightingFunctions.cginc:388–407`);
 //!   the `_EmissionToDiffuse` and `_ScaleWithLight` blends are commented out.
 //!
-//! Approximations needed because we don't have Unity's per-frame specular probe state:
-//! - PBR indirect specular (Unity `unity_SpecCube`) → ambient-tinted metallic blend.
+//! Approximations needed because Unity's local specular probe blending is not wired yet:
+//! - PBR indirect specular (Unity `unity_SpecCube`) samples the frame-global skybox cubemap.
 //!   Matcap mode follows the reference exactly except for `_LightColor0`, which we
 //!   approximate as the dominant light's `color · attenuation` tracked across the
 //!   cluster walk.
@@ -40,6 +40,7 @@
 #import renderide::xiexe::toon2::surface as xsurf
 #import renderide::globals as rg
 #import renderide::pbs::cluster as pcls
+#import renderide::pbs::brdf as brdf
 #import renderide::birp::light as bl
 #import renderide::sh2_ambient as shamb
 
@@ -237,10 +238,8 @@ fn matcap_uv(view_dir: vec3<f32>, n: vec3<f32>) -> vec2<f32> {
 ///   approximated as the dominant light's `color · attenuation` tracked across the
 ///   cluster walk (we don't have Unity's "main directional" handle).
 ///
-/// - PBR fallback — upstream samples `unity_SpecCube` probes (lines 237–266); we don't
-///   have specular probes, so fall back to an ambient-tinted metallic blend that preserves
-///   `lerp(indirectSpecular, metallicColor, pow(vdn, 0.05))` shape with diffuse SH standing
-///   in for the probe sample. Approximation, not strict parity.
+/// - PBR fallback — upstream samples `unity_SpecCube` probes (lines 237–266). The renderer
+///   currently binds the active skybox cubemap as the global specular environment.
 ///
 /// Final `lerp(spec, spec · ramp, metallicSmoothness.w)` darkens the result by the toon
 /// ramp proportional to perceptual roughness (`metallicSmoothness.w` is `(1 − gloss) ·
@@ -257,10 +256,9 @@ fn indirect_specular(
         spec = textureSampleLevel(xb::_Matcap, xb::_Matcap_sampler, uv, (1.0 - s.smoothness) * SPECCUBE_LOD_STEPS).rgb * xb::mat._MatcapTint.rgb;
         spec = spec * (indirect_diffuse(s) + dominant_light_col_atten * 0.5);
     } else {
-        // Probe approximation — see header note. Diffuse SH is the specular-probe stand-in;
-        // the `lerp(probe, metallicColor, pow(vdn, 0.05))` shape is preserved.
         let vdn = max(abs(dot(view_dir, s.normal)), 1e-4);
-        let probe = indirect_diffuse(s);
+        let f0 = mix(vec3<f32>(0.04), s.diffuse_color, s.metallic);
+        let probe = brdf::indirect_specular(s.normal, view_dir, s.roughness, f0, 1.0, true);
         let metallic_color = probe * mix(vec3<f32>(0.05), s.diffuse_color, s.metallic);
         spec = mix(probe, metallic_color, pow(vdn, 0.05));
     }

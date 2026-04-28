@@ -5,7 +5,9 @@ use bytemuck::Zeroable;
 use crate::backend::FrameResourceManager;
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::render_graph::blackboard::Blackboard;
-use crate::render_graph::cluster_frame::{cluster_frame_params, cluster_frame_params_stereo};
+use crate::render_graph::cluster_frame::{
+    cluster_frame_params, cluster_frame_params_stereo, FrameGpuUniformBuildParams,
+};
 use crate::render_graph::frame_params::{FrameRenderParams, HostCameraFrame, PerViewFramePlanSlot};
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
 use crate::scene::SceneCoordinator;
@@ -22,7 +24,14 @@ pub(super) fn write_frame_uniforms_and_cluster(
     use_multiview: bool,
 ) {
     let light_count_u = frame_resources.frame_light_count_u32();
-    let uniforms = build_frame_gpu_uniforms(hc, scene, viewport_px, light_count_u, use_multiview);
+    let uniforms = build_frame_gpu_uniforms(
+        hc,
+        scene,
+        viewport_px,
+        light_count_u,
+        use_multiview,
+        frame_resources.skybox_specular_uniform_params(),
+    );
 
     frame_resources.write_frame_uniform_and_lights_from_scratch(queue, &uniforms);
 }
@@ -47,6 +56,10 @@ pub(super) fn write_per_view_frame_uniforms(
             frame.view.viewport_px,
             frame.shared.frame_resources.frame_light_count_u32(),
             use_multiview,
+            frame
+                .shared
+                .frame_resources
+                .skybox_specular_uniform_params(),
         );
         upload_batch.write_buffer(
             &frame_plan.frame_uniform_buffer,
@@ -72,6 +85,7 @@ fn build_frame_gpu_uniforms(
     viewport_px: (u32, u32),
     light_count: u32,
     use_multiview: bool,
+    skybox_specular: crate::gpu::frame_globals::SkyboxSpecularUniformParams,
 ) -> FrameGpuUniforms {
     let (vw, vh) = viewport_px;
     let camera_world = resolve_camera_world(&hc);
@@ -81,20 +95,29 @@ fn build_frame_gpu_uniforms(
     let frame_idx = hc.frame_index as u32;
     if stereo_cluster {
         if let Some((left, right)) = cluster_frame_params_stereo(&hc, scene, (vw, vh)) {
-            return left.frame_gpu_uniforms(
-                camera_world,
+            return left.frame_gpu_uniforms(FrameGpuUniformBuildParams {
+                camera_world_pos: camera_world,
                 light_count,
-                right.view_space_z_coeffs(),
-                right.proj_params(),
-                frame_idx,
+                right_z_coeffs: right.view_space_z_coeffs(),
+                right_proj_params: right.proj_params(),
+                frame_index: frame_idx,
+                skybox_specular,
                 ambient_sh,
-            );
+            });
         }
     }
     if let Some(mono) = cluster_frame_params(&hc, scene, (vw, vh)) {
         let z = mono.view_space_z_coeffs();
         let p = mono.proj_params();
-        return mono.frame_gpu_uniforms(camera_world, light_count, z, p, frame_idx, ambient_sh);
+        return mono.frame_gpu_uniforms(FrameGpuUniformBuildParams {
+            camera_world_pos: camera_world,
+            light_count,
+            right_z_coeffs: z,
+            right_proj_params: p,
+            frame_index: frame_idx,
+            skybox_specular,
+            ambient_sh,
+        });
     }
     FrameGpuUniforms::zeroed()
 }

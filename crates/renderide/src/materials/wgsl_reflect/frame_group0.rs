@@ -29,11 +29,11 @@ pub(super) fn validate_frame_group0(
         if rb.group != 0 {
             continue;
         }
-        if rb.binding > 8 {
+        if rb.binding > 12 {
             return Err(ReflectError::UnsupportedBinding {
                 group: 0,
                 binding: rb.binding,
-                reason: "only bindings 0..=8 are supported for raster frame globals".into(),
+                reason: "only bindings 0..=12 are supported for raster frame globals".into(),
             });
         }
         let (space, data_ty) = resource_data_ty(module, gv);
@@ -51,6 +51,18 @@ pub(super) fn validate_frame_group0(
                 validate_frame_color_texture_binding(module, data_ty, true, rb.binding)?;
             }
             (8, AddressSpace::Handle) => {
+                validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
+            }
+            (9, AddressSpace::Handle) => {
+                validate_frame_skybox_specular_cube_binding(module, data_ty, rb.binding)?;
+            }
+            (10, AddressSpace::Handle) => {
+                validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
+            }
+            (11, AddressSpace::Handle) => {
+                validate_frame_skybox_specular_equirect_binding(module, data_ty, rb.binding)?;
+            }
+            (12, AddressSpace::Handle) => {
                 validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
             }
             (0, AddressSpace::Uniform) => {
@@ -85,6 +97,62 @@ pub(super) fn validate_frame_group0(
             got2: b2_stride,
             got3: b3_stride,
         })
+    }
+}
+
+fn validate_frame_skybox_specular_cube_binding(
+    module: &Module,
+    data_ty: naga::Handle<naga::Type>,
+    binding: u32,
+) -> Result<(), ReflectError> {
+    match &module.types[data_ty].inner {
+        TypeInner::Image {
+            dim: ImageDimension::Cube,
+            arrayed: false,
+            class:
+                ImageClass::Sampled {
+                    kind: ScalarKind::Float,
+                    multi: false,
+                },
+        } => Ok(()),
+        TypeInner::Image { .. } => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: "expected texture_cube<f32>".into(),
+        }),
+        _ => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: "expected sampled cube texture handle".into(),
+        }),
+    }
+}
+
+fn validate_frame_skybox_specular_equirect_binding(
+    module: &Module,
+    data_ty: naga::Handle<naga::Type>,
+    binding: u32,
+) -> Result<(), ReflectError> {
+    match &module.types[data_ty].inner {
+        TypeInner::Image {
+            dim: ImageDimension::D2,
+            arrayed: false,
+            class:
+                ImageClass::Sampled {
+                    kind: ScalarKind::Float,
+                    multi: false,
+                },
+        } => Ok(()),
+        TypeInner::Image { .. } => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: "expected texture_2d<f32>".into(),
+        }),
+        _ => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: "expected sampled 2D texture handle".into(),
+        }),
     }
 }
 
