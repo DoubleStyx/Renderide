@@ -71,7 +71,10 @@ impl SharedMemoryView {
         // SAFETY: `(start, end)` was validated against `self.len`, which is the mapping size, and
         // `self.view.Value` is the non-null mapping base. Borrow lives no longer than `&self`.
         Some(unsafe {
-            std::slice::from_raw_parts(self.view.Value.add(start) as *const u8, end - start)
+            std::slice::from_raw_parts(
+                self.view.Value.add(start).cast::<u8>().cast_const(),
+                end - start,
+            )
         })
     }
 
@@ -84,7 +87,7 @@ impl SharedMemoryView {
         // SAFETY: same bounds-checked region as `slice`, but `&mut self` guarantees unique access
         // on the Rust side; cross-process exclusivity is enforced by the IPC protocol.
         Some(unsafe {
-            std::slice::from_raw_parts_mut(self.view.Value.add(start) as *mut u8, end - start)
+            std::slice::from_raw_parts_mut(self.view.Value.add(start).cast::<u8>(), end - start)
         })
     }
 
@@ -98,7 +101,7 @@ impl SharedMemoryView {
             return;
         }
         // SAFETY: `start + range_len <= self.len`; `self.view.Value` is the live mapping base.
-        let base = unsafe { self.view.Value.add(start) as *const std::ffi::c_void };
+        let base = unsafe { self.view.Value.add(start).cast_const() };
         // SAFETY: `base` and `range_len` describe a subrange of the mapping.
         unsafe {
             let _ = FlushViewOfFile(base, range_len);

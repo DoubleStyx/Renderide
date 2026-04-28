@@ -273,7 +273,7 @@ mod platform {
             // SAFETY: caller-facing bounds are checked by `write` in the outer struct; `self.view`
             // is the mapping base; `&mut self` ensures no other writer is active here.
             unsafe {
-                let dst = self.view.Value.add(offset) as *mut u8;
+                let dst = self.view.Value.add(offset).cast::<u8>();
                 std::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
             }
             Ok(())
@@ -286,7 +286,7 @@ mod platform {
             // SAFETY: `offset + len <= self.len` is the caller's contract (the outer `flush_range`
             // bounds-checks); `self.view.Value` is the non-null live mapping base.
             unsafe {
-                let base = self.view.Value.add(offset) as *const std::ffi::c_void;
+                let base = self.view.Value.add(offset).cast_const();
                 let _ = FlushViewOfFile(base, len);
             }
         }

@@ -56,7 +56,7 @@ impl PlatformGroup {
             SetInformationJobObject(
                 job,
                 JobObjectExtendedLimitInformation,
-                &info as *const _ as *const _,
+                (&raw const info).cast(),
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             )
         };

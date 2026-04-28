@@ -16,7 +16,6 @@ pub(crate) fn wine_get_version() -> Option<String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (); // Non-Linux targets are never the Wine-on-Linux stack.
         None
     }
 }

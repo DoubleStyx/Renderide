@@ -275,7 +275,7 @@ fn try_redirect_windows_stream(
     unsafe {
         let mut read_h: HANDLE = INVALID_HANDLE_VALUE;
         let mut write_h: HANDLE = INVALID_HANDLE_VALUE;
-        if CreatePipe(&mut read_h, &mut write_h, ptr::null(), 0) == 0 {
+        if CreatePipe(&raw mut read_h, &raw mut write_h, ptr::null(), 0) == 0 {
             return Err(format!("CreatePipe: {}", std::io::Error::last_os_error()));
         }
 
