@@ -61,6 +61,12 @@ impl GraphCache {
         Ok(())
     }
 
+    /// Cache key of the last successfully compiled graph, if any.
+    #[must_use]
+    pub fn last_key(&self) -> Option<GraphCacheKey> {
+        self.last_key
+    }
+
     /// Takes the compiled graph out for recording (matches prior `frame_graph.take()`).
     ///
     /// Graph execution borrows this cache, [`crate::backend::RenderBackend`] (orchestration, transient pool,

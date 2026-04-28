@@ -90,7 +90,7 @@ impl RendererRuntime {
 
     /// Mesh/texture upload queues, pools, and IPC budgets ([`AssetTransferQueue`]).
     pub fn asset_transfers_mut(&mut self) -> &mut AssetTransferQueue {
-        &mut self.backend.asset_transfers
+        self.backend.asset_transfers_mut()
     }
 
     /// Material property store (host uniforms, textures, shader asset bindings).

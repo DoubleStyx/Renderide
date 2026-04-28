@@ -4,20 +4,17 @@
 
 use rayon::prelude::*;
 
-use crate::assets::material::MaterialDictionary;
-use crate::backend::OcclusionSystem;
+use crate::backend::FrameDrawSetup;
 use crate::gpu::GpuContext;
-use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
-use crate::pipelines::ShaderPermutation;
+use crate::materials::{MaterialRouter, RasterPipelineKind};
 use crate::render_graph::{
     build_world_mesh_cull_proj_params, camera_state_enabled,
     collect_and_sort_world_mesh_draws_with_parallelism, draw_filter_from_camera_entry,
-    host_camera_frame_for_render_texture, DrawCollectionContext, ExternalFrameTargets,
-    FramePreparedRenderables, FrameView, FrameViewClear, GraphExecuteError, HiZCullData,
-    HiZTemporalState, OcclusionViewId, PrefetchedWorldMeshViewDraws, WorldMeshCullInput,
-    WorldMeshCullProjParams, WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
+    host_camera_frame_for_render_texture, DrawCollectionContext, ExternalFrameTargets, FrameView,
+    FrameViewClear, GraphExecuteError, HiZCullData, HiZTemporalState, OcclusionViewId,
+    PrefetchedWorldMeshViewDraws, WorldMeshCullInput, WorldMeshCullProjParams,
+    WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
 };
-use crate::scene::SceneCoordinator;
 
 use super::frame_view_plan::{
     FrameViewPlan, FrameViewPlanTarget, HeadlessOffscreenSnapshot, OffscreenRtHandles,
@@ -50,6 +47,51 @@ impl FrameRenderMode<'_> {
     }
 }
 
+/// Prepared per-frame view list plus any headless swapchain substitution resources needed to
+/// turn it into executable graph views.
+struct PreparedFrameViews<'a> {
+    /// Ordered list of planned views for this tick.
+    prepared: Vec<FrameViewPlan<'a>>,
+    /// Headless main-target replacement captured before backend execution borrows the GPU.
+    headless_snapshot: Option<HeadlessOffscreenSnapshot>,
+}
+
+impl<'a> PreparedFrameViews<'a> {
+    /// Returns `true` when no view should be rendered this tick.
+    fn is_empty(&self) -> bool {
+        self.prepared.is_empty()
+    }
+
+    /// Shared slice of the ordered planned views.
+    fn plans(&self) -> &[FrameViewPlan<'a>] {
+        &self.prepared
+    }
+
+    /// Builds executable graph views from the prepared plans and collected draw plans.
+    fn build_execution_views<'b>(&'b self, draw_plans: Vec<WorldMeshDrawPlan>) -> Vec<FrameView<'b>>
+    where
+        'a: 'b,
+    {
+        let mut views: Vec<FrameView<'b>> = self
+            .prepared
+            .iter()
+            .zip(draw_plans)
+            .map(|(prep, draws)| prep.to_frame_view(draws))
+            .collect();
+        if let Some(snapshot) = self.headless_snapshot.as_ref() {
+            snapshot.substitute_swapchain_views(&mut views);
+        }
+        views
+    }
+}
+
+/// One collected world-mesh draw plan per prepared view, in the same order as
+/// [`PreparedFrameViews::prepared`].
+struct CollectedFrameDraws {
+    /// Explicit draw plan for every prepared view.
+    view_draws: Vec<WorldMeshDrawPlan>,
+}
+
 /// Frustum + Hi-Z cull inputs for one planned view.
 struct ViewCullSnapshot {
     /// Projection parameters matching the view's camera/viewport.
@@ -60,95 +102,12 @@ struct ViewCullSnapshot {
     hi_z_temporal: Option<HiZTemporalState>,
 }
 
-/// Narrow immutable frame extract shared by every per-view draw-collection call.
-///
-/// Grouped into one struct so the `par_iter().map(...)` closure in [`RendererRuntime::render_frame`]
-/// can close over a single reference rather than shuttling seven individual bindings through the
-/// rayon worker boundary.
-struct RenderFrameExtract<'a> {
-    /// Scene after cache flush — used for world-matrix lookups and cull evaluation.
-    scene: &'a SceneCoordinator,
-    /// Mesh GPU asset pool, queried for bounds and skinning metadata during draw collection.
-    mesh_pool: &'a crate::resources::MeshPool,
-    /// Property store backing `MaterialDictionary::new` plus pipeline lookup.
-    property_store: &'a crate::assets::material::MaterialPropertyStore,
-    /// Resolved raster pipeline selection for embedded materials.
-    router: &'a MaterialRouter,
-    /// Registry of renderer-side property ids used by the pipeline selector.
-    pipeline_property_ids: MaterialPipelinePropertyIds,
-    /// Mono/stereo/overlay render context applied this tick.
-    render_context: crate::shared::RenderingContext,
-    /// Persistent mono material batch cache, refreshed once at the start of [`RendererRuntime::render_frame`].
-    material_cache: &'a crate::render_graph::FrameMaterialBatchCache,
-    /// Dense per-frame walk of renderables pre-expanded once before per-view collection.
-    prepared: FramePreparedRenderables,
-    /// Rayon parallelism tier for each view's inner walk.
-    inner_parallelism: WorldMeshDrawCollectParallelism,
-}
-
-/// Inputs needed to build one [`RenderFrameExtract`] before per-view draw collection.
-struct RenderFrameExtractInput<'a> {
-    /// Scene after runtime updates have been applied for this tick.
-    scene: &'a SceneCoordinator,
-    /// Mesh GPU asset pool used while preparing renderables.
-    mesh_pool: &'a crate::resources::MeshPool,
-    /// Material property store used to build the per-frame material dictionary.
-    property_store: &'a crate::assets::material::MaterialPropertyStore,
-    /// Resolved raster pipeline selection for embedded materials.
-    router: &'a MaterialRouter,
-    /// Registry of renderer-side property ids used by the pipeline selector.
-    pipeline_property_ids: MaterialPipelinePropertyIds,
-    /// Active render context used by prepared renderable extraction.
-    render_context: crate::shared::RenderingContext,
-    /// Rayon parallelism tier for each view's inner draw walk.
-    inner_parallelism: WorldMeshDrawCollectParallelism,
-}
-
-/// Builds the narrow frame extract consumed by per-view draw collection.
-fn build_render_frame_extract<'a>(
-    input: RenderFrameExtractInput<'a>,
-    material_cache: &'a mut crate::render_graph::FrameMaterialBatchCache,
-) -> RenderFrameExtract<'a> {
-    {
-        profiling::scope!("render::build_frame_material_cache");
-        let dict = MaterialDictionary::new(input.property_store);
-        material_cache.refresh_for_frame(
-            input.scene,
-            &dict,
-            input.router,
-            &input.pipeline_property_ids,
-            ShaderPermutation(0),
-        );
-    }
-
-    let prepared = {
-        profiling::scope!("render::build_frame_prepared_renderables");
-        FramePreparedRenderables::build_for_frame(
-            input.scene,
-            input.mesh_pool,
-            input.render_context,
-        )
-    };
-
-    RenderFrameExtract {
-        scene: input.scene,
-        mesh_pool: input.mesh_pool,
-        property_store: input.property_store,
-        router: input.router,
-        pipeline_property_ids: input.pipeline_property_ids,
-        render_context: input.render_context,
-        material_cache,
-        prepared,
-        inner_parallelism: input.inner_parallelism,
-    }
-}
-
 /// Collects and sorts world-mesh draws for every prepared view in parallel.
 ///
 /// Returns one explicit [`WorldMeshDrawPlan`] per prepared view, preserving input order so the
 /// compiled graph never has to infer whether draws were intentionally omitted or merely missing.
 fn collect_view_draws(
-    ctx: &RenderFrameExtract<'_>,
+    setup: &FrameDrawSetup<'_>,
     prepared: &[FrameViewPlan<'_>],
     cull_snapshots: &[Option<ViewCullSnapshot>],
 ) -> Vec<WorldMeshDrawPlan> {
@@ -158,9 +117,9 @@ fn collect_view_draws(
         .zip(cull_snapshots.par_iter())
         .map(|(prep, snap)| {
             let shader_perm = prep.shader_permutation();
-            let material_cache =
-                (shader_perm == ShaderPermutation(0)).then_some(ctx.material_cache);
-            let dict = MaterialDictionary::new(ctx.property_store);
+            let material_cache = (shader_perm == crate::pipelines::ShaderPermutation(0))
+                .then_some(setup.material_cache);
+            let dict = crate::assets::material::MaterialDictionary::new(setup.property_store);
             let cull_proj = snap.as_ref().map(|s| s.proj);
             let culling = snap.as_ref().map(|s| WorldMeshCullInput {
                 proj: s.proj,
@@ -170,21 +129,21 @@ fn collect_view_draws(
             });
             let collection = collect_and_sort_world_mesh_draws_with_parallelism(
                 &DrawCollectionContext {
-                    scene: ctx.scene,
-                    mesh_pool: ctx.mesh_pool,
+                    scene: setup.scene,
+                    mesh_pool: setup.mesh_pool,
                     material_dict: &dict,
-                    material_router: ctx.router,
-                    pipeline_property_ids: &ctx.pipeline_property_ids,
+                    material_router: setup.router,
+                    pipeline_property_ids: &setup.pipeline_property_ids,
                     shader_perm,
-                    render_context: ctx.render_context,
+                    render_context: setup.render_context,
                     head_output_transform: prep.host_camera.head_output_transform,
                     view_origin_world: prep.view_origin_world(),
                     culling: culling.as_ref(),
                     transform_filter: prep.draw_filter.as_ref(),
                     material_cache,
-                    prepared: Some(&ctx.prepared),
+                    prepared: Some(&setup.prepared_renderables),
                 },
-                ctx.inner_parallelism,
+                setup.inner_parallelism,
             );
             WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
                 collection, cull_proj,
@@ -210,20 +169,42 @@ fn select_inner_parallelism(prepared: &[FrameViewPlan<'_>]) -> WorldMeshDrawColl
 /// secondary cameras). Safe to call in parallel across views:
 /// [`OcclusionSystem`] is `Sync` because its internal readback channel uses `crossbeam_channel`.
 fn cull_snapshot_for_view(
-    scene: &SceneCoordinator,
-    occlusion: &OcclusionSystem,
+    setup: &FrameDrawSetup<'_>,
     prep: &FrameViewPlan<'_>,
 ) -> Option<ViewCullSnapshot> {
     if prep.host_camera.suppress_occlusion_temporal {
         return None;
     }
-    let proj = build_world_mesh_cull_proj_params(scene, prep.viewport_px, &prep.host_camera);
+    let proj = build_world_mesh_cull_proj_params(setup.scene, prep.viewport_px, &prep.host_camera);
     let depth_mode = prep.output_depth_mode();
     Some(ViewCullSnapshot {
         proj,
-        hi_z: occlusion.hi_z_cull_data(depth_mode, prep.occlusion_view_id),
-        hi_z_temporal: occlusion.hi_z_temporal_snapshot(prep.occlusion_view_id),
+        hi_z: setup
+            .occlusion
+            .hi_z_cull_data(depth_mode, prep.occlusion_view_id),
+        hi_z_temporal: setup
+            .occlusion
+            .hi_z_temporal_snapshot(prep.occlusion_view_id),
     })
+}
+
+/// Collects world-mesh draw plans for every prepared view using the backend-owned frame draw
+/// setup assembled for the current tick.
+fn collect_frame_draws(
+    prepared_views: &PreparedFrameViews<'_>,
+    draw_setup: &FrameDrawSetup<'_>,
+) -> CollectedFrameDraws {
+    let cull_snapshots: Vec<Option<ViewCullSnapshot>> = {
+        profiling::scope!("render::gather_view_cull_snapshots");
+        prepared_views
+            .plans()
+            .par_iter()
+            .map(|prep| cull_snapshot_for_view(draw_setup, prep))
+            .collect()
+    };
+    CollectedFrameDraws {
+        view_draws: collect_view_draws(draw_setup, prepared_views.plans(), &cull_snapshots),
+    }
 }
 
 impl RendererRuntime {
@@ -258,93 +239,33 @@ impl RendererRuntime {
         profiling::scope!("render::render_frame");
         {
             profiling::scope!("render::prepare_lights_from_scene");
-            self.backend
-                .frame_resources
-                .prepare_lights_from_scene(&self.scene);
+            self.backend.prepare_lights_from_scene(&self.scene);
         }
         self.sync_debug_hud_diagnostics_from_settings();
         self.setup_msaa_for_mode(gpu, &mode);
 
-        let includes_main = mode.includes_main_swapchain();
-        // Capture the swapchain extent before the per-view collection. The main desktop view's
-        // CPU cull projection (`build_world_mesh_cull_proj_params`) runs against this extent
-        // before the render graph dispatches, so passing a stale/zero value produces a degenerate
-        // frustum and randomly culls scene objects.
-        let swapchain_extent_px = gpu.surface_extent_px();
-        let prepared = {
+        let prepared_views = {
             profiling::scope!("render::collect_prepared_views");
-            self.collect_prepared_views(mode, swapchain_extent_px)
+            self.prepare_frame_views(gpu, mode)
         };
-        if prepared.is_empty() {
+        if prepared_views.is_empty() {
             return Ok(());
         }
 
-        let scene_ref: &SceneCoordinator = &self.scene;
-        let fallback_router = MaterialRouter::new(RasterPipelineKind::Null);
-        let render_context = scene_ref.active_main_render_context();
-        // Direct field access enables the split-borrow against `material_batch_cache` below —
-        // routing through `self.backend.material_property_store()` would borrow the whole
-        // `RenderBackend` and block the subsequent `&mut material_batch_cache`.
-        let property_store = self.backend.materials.material_property_store();
-        let router_ref = self
-            .backend
-            .materials
-            .material_registry()
-            .map(|r| &r.router)
-            .unwrap_or(&fallback_router);
-        let pipeline_property_ids =
-            MaterialPipelinePropertyIds::new(self.backend.materials.property_id_registry());
-        let mesh_pool = &self.backend.asset_transfers.mesh_pool;
-        let occlusion_ref: &OcclusionSystem = &self.backend.occlusion;
-        let inner_parallelism = select_inner_parallelism(&prepared);
-
-        let view_draws = {
-            let extract = build_render_frame_extract(
-                RenderFrameExtractInput {
-                    scene: scene_ref,
-                    mesh_pool,
-                    property_store,
-                    router: router_ref,
-                    pipeline_property_ids,
-                    render_context,
-                    inner_parallelism,
-                },
-                &mut self.backend.material_batch_cache,
+        let collected_draws = {
+            let fallback_router = MaterialRouter::new(RasterPipelineKind::Null);
+            let draw_setup = self.backend.prepare_frame_draw_setup(
+                &self.scene,
+                self.scene.active_main_render_context(),
+                select_inner_parallelism(prepared_views.plans()),
+                &fallback_router,
             );
-            let cull_snapshots: Vec<Option<ViewCullSnapshot>> = {
-                profiling::scope!("render::gather_view_cull_snapshots");
-                prepared
-                    .par_iter()
-                    .map(|prep| cull_snapshot_for_view(scene_ref, occlusion_ref, prep))
-                    .collect()
-            };
-            collect_view_draws(&extract, &prepared, &cull_snapshots)
+            collect_frame_draws(&prepared_views, &draw_setup)
         };
 
-        // Headless substitution: snapshot persistent offscreen handles BEFORE building views so
-        // we can borrow from a local instead of a long-lived `&mut gpu` (which would conflict
-        // with the `&mut gpu` we hand to `execute_multi_view_frame`).
-        let headless_snapshot = {
-            profiling::scope!("render::headless_snapshot");
-            if includes_main && gpu.is_headless() {
-                HeadlessOffscreenSnapshot::from_gpu(gpu)
-            } else {
-                None
-            }
-        };
-
-        let mut views: Vec<FrameView<'_>> = prepared
-            .iter()
-            .zip(view_draws)
-            .map(|(prep, draws)| prep.to_frame_view(draws))
-            .collect();
-
-        if let Some(snapshot) = headless_snapshot.as_ref() {
-            snapshot.substitute_swapchain_views(&mut views);
-        }
-
+        let mut views = prepared_views.build_execution_views(collected_draws.view_draws);
         self.backend
-            .execute_multi_view_frame(gpu, scene_ref, &mut views, true)
+            .execute_multi_view_frame(gpu, &self.scene, &mut views, true)
     }
 
     /// Applies the MSAA tier for the active mode and evicts transient textures keyed by stale
@@ -368,6 +289,34 @@ impl RendererRuntime {
                 prev_stereo,
                 gpu.swapchain_msaa_effective_stereo(),
             );
+        }
+    }
+
+    /// Builds the explicit prepared-view stage for this tick, including any headless main-target
+    /// substitution resources that must outlive graph-view creation.
+    fn prepare_frame_views<'a>(
+        &mut self,
+        gpu: &mut GpuContext,
+        mode: FrameRenderMode<'a>,
+    ) -> PreparedFrameViews<'a> {
+        let includes_main = mode.includes_main_swapchain();
+        // Capture the swapchain extent before the per-view collection. The main desktop view's
+        // CPU cull projection (`build_world_mesh_cull_proj_params`) runs against this extent
+        // before the render graph dispatches, so passing a stale/zero value produces a degenerate
+        // frustum and randomly culls scene objects.
+        let swapchain_extent_px = gpu.surface_extent_px();
+        let prepared = self.collect_prepared_views(mode, swapchain_extent_px);
+        let headless_snapshot = {
+            profiling::scope!("render::headless_snapshot");
+            if includes_main && gpu.is_headless() {
+                HeadlessOffscreenSnapshot::from_gpu(gpu)
+            } else {
+                None
+            }
+        };
+        PreparedFrameViews {
+            prepared,
+            headless_snapshot,
         }
     }
 
@@ -552,6 +501,7 @@ mod tests {
     use super::*;
     use crate::config::{RendererSettings, RendererSettingsHandle};
     use crate::connection::ConnectionParams;
+    use crate::pipelines::ShaderPermutation;
     use crate::render_graph::OutputDepthMode;
 
     fn build_runtime() -> RendererRuntime {
