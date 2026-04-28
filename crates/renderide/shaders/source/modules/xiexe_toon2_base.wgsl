@@ -106,17 +106,17 @@ struct XiexeToon2Material {
     _Glossiness: f32,
     /// Reflectivity weight applied to indirect specular.
     _Reflectivity: f32,
-    /// Clear-coat layer strength (reserved; passed through for future use).
+    /// Clear-coat layer strength multiplier.
     _ClearcoatStrength: f32,
     /// Clear-coat smoothness.
     _ClearcoatSmoothness: f32,
-    /// Reflection mode: 0 = PBR, 2 = matcap (the only branches currently implemented).
+    /// Reflection mode: 0 = PBR, 1 = baked cubemap, 2 = matcap, 3 = off.
     _ReflectionMode: f32,
-    /// Reflection blend mode: 0 = additive, 1 = subtractive, 2 = multiplicative.
+    /// Reflection blend mode: 0 = additive, 1 = multiplicative, 2 = subtractive.
     _ReflectionBlendMode: f32,
     /// Clear-coat enable flag.
     _ClearCoat: f32,
-    /// Light-scaling flag for indirect lighting normalisation (passthrough).
+    /// Emission light-scaling flag (`0 = scale with light`, `1 = keep emission unscaled`).
     _ScaleWithLight: f32,
     /// Lerp factor that blends emission toward `emission * albedo`.
     _EmissionToDiffuse: f32,
@@ -346,6 +346,8 @@ struct SurfaceData {
     clip_alpha: f32,
     /// Saturation-adjusted diffuse color (RGB only).
     diffuse_color: vec3<f32>,
+    /// Geometry normal after dual-sided back-face correction but before normal-map perturbation.
+    raw_normal: vec3<f32>,
     /// Final perturbed world-space normal (post-detail blend, post-back-face flip).
     normal: vec3<f32>,
     /// World-space tangent matching `normal` after re-orthonormalisation.
@@ -358,11 +360,17 @@ struct SurfaceData {
     roughness: f32,
     /// Raw smoothness (for matcap LOD selection).
     smoothness: f32,
-    /// Reflectivity weight × `_ReflectivityMask.r`.
+    /// Effective clear-coat strength after `_ClearcoatStrength * metallicGlossMap.b`.
+    clearcoat_strength: f32,
+    /// Effective clear-coat smoothness after `_ClearcoatSmoothness * metallicGlossMap.g`.
+    clearcoat_smoothness: f32,
+    /// Scalar reflectivity control used for the dielectric Fresnel floor.
     reflectivity: f32,
+    /// `_ReflectivityMask.r`, used when blending indirect specular into the surface.
+    reflectivity_mask: f32,
     /// AO color tint, lerped from `_OcclusionColor` to white by AO sample.
     occlusion: vec3<f32>,
-    /// Emission color (post-`_EmissionToDiffuse` blend).
+    /// Base emission sample before `_EmissionToDiffuse` / `_ScaleWithLight` are applied.
     emission: vec3<f32>,
     /// Ramp-mask row used as the V coordinate when sampling `_Ramp`.
     ramp_mask: f32,
@@ -398,6 +406,12 @@ fn saturate(v: f32) -> f32 {
 /// Component-wise `clamp([0, 1])` for a `vec3`.
 fn saturate_vec(v: vec3<f32>) -> vec3<f32> {
     return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+/// `(1 − x)^5` — shared by Fresnel helpers in the stylised specular and reflection paths.
+fn pow5(x: f32) -> f32 {
+    let x2 = x * x;
+    return x2 * x2 * x;
 }
 
 /// Normalises `v`, falling back to `fallback` if the squared length is at-or-below epsilon.
@@ -456,8 +470,38 @@ fn thickness_enabled() -> bool {
 }
 
 /// True when matcap mode is selected via the `MATCAP` keyword or `_ReflectionMode == 2`.
+///
+/// The keyword path is kept because Resonite's `XiexeToonMaterial` drives matcap through a
+/// texture-presence keyword even when it does not populate `_ReflectionMode` explicitly.
 fn matcap_enabled() -> bool {
     return kw(mat.MATCAP) || abs(mat._ReflectionMode - 2.0) < 0.5;
+}
+
+/// True when the reflection mode explicitly disables indirect specular and no matcap keyword is set.
+fn reflection_disabled() -> bool {
+    return !kw(mat.MATCAP) && abs(mat._ReflectionMode - 3.0) < 0.5;
+}
+
+/// True when the shader should use the skybox/PBR reflection branch.
+///
+/// The legacy "baked cubemap" mode has no dedicated cubemap binding in the XSToon2 contract, so
+/// both mode `0` and mode `1` fall back to the renderer's frame-global skybox specular source.
+fn reflection_uses_pbr() -> bool {
+    return !reflection_disabled() && !matcap_enabled();
+}
+
+/// True when the legacy clear-coat controls should add the secondary lobe.
+fn clearcoat_enabled() -> bool {
+    return kw(mat._ClearCoat) && mat._ClearcoatStrength > 1e-4 && mat._ClearcoatSmoothness > 1e-4;
+}
+
+/// True when emission should be dimmed by scene brightness.
+///
+/// Legacy Resonite-authored XSToon2 materials never populated `_ScaleWithLight`; keeping the
+/// sensitivity check avoids unexpectedly changing those materials while still honoring imported
+/// content that explicitly enables the feature.
+fn scale_with_light_enabled() -> bool {
+    return mat._ScaleWithLight < 0.5 && mat._ScaleWithLightSensitivity > 1e-4;
 }
 
 /// True when vertex-color albedo tinting is enabled via either keyword spelling.

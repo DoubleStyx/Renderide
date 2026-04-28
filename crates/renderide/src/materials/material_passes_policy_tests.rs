@@ -127,3 +127,41 @@ fn pbsrim_zwrite_stems_keep_depth_prepass_before_forward() {
         assert!(forward.blend.is_some(), "{stem}");
     }
 }
+
+/// Verifies the XSToon family keeps its expected forward / outline / stencil topology.
+#[test]
+fn xstoon_stems_keep_expected_outline_and_stencil_pass_order() {
+    for stem in [
+        "xstoon2.0-outlined_default",
+        "xstoon2.0_outlined_default",
+        "xstoon2.0-dithered-outlined_default",
+        "xstoon2.0-cutouta2c-outlined_default",
+    ] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 2, "{stem} should declare outline + forward");
+        assert_eq!(passes[0].name, "outline", "{stem}");
+        assert_eq!(passes[1].name, "forward", "{stem}");
+    }
+
+    for stem in [
+        "xstoon2.0_default",
+        "xstoon2.0-cutout_default",
+        "xstoon2.0-cutouta2c_default",
+        "xstoon2.0-cutouta2cmasked_default",
+        "xstoon2.0-dithered_default",
+        "xstoon2.0-fade_default",
+        "xstoon2.0-transparent_default",
+    ] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(
+            passes.len(),
+            1,
+            "{stem} should declare a single forward pass"
+        );
+        assert_eq!(passes[0].name, "forward", "{stem}");
+    }
+
+    let stencil_passes = crate::embedded_shaders::embedded_target_passes("xstoonstenciler_default");
+    assert_eq!(stencil_passes.len(), 1, "xstoonstenciler_default");
+    assert_eq!(stencil_passes[0].name, "stencil", "xstoonstenciler_default");
+}

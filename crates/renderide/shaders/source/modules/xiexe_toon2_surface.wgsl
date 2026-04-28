@@ -63,7 +63,8 @@ fn vertex_main(
 /// extruded shell whose geometric normals already face outward.
 fn decode_normal_world(
     uv_normal: vec2<f32>,
-    uv_detail: vec2<f32>,
+    uv_detail_normal: vec2<f32>,
+    uv_detail_mask: vec2<f32>,
     world_n: vec3<f32>,
     world_t: vec3<f32>,
     world_b: vec3<f32>,
@@ -85,9 +86,9 @@ fn decode_normal_world(
             textureSample(xb::_BumpMap, xb::_BumpMap_sampler, uv_normal).xyz,
             xb::mat._BumpScale,
         );
-        let detail_mask = textureSample(xb::_DetailMask, xb::_DetailMask_sampler, uv_detail).r;
+        let detail_mask = textureSample(xb::_DetailMask, xb::_DetailMask_sampler, uv_detail_mask).r;
         let detail_ts = nd::decode_ts_normal_with_placeholder(
-            textureSample(xb::_DetailNormalMap, xb::_DetailNormalMap_sampler, uv_detail).xyz,
+            textureSample(xb::_DetailNormalMap, xb::_DetailNormalMap_sampler, uv_detail_normal).xyz,
             xb::mat._DetailNormalMapScale,
         );
         let blended_ts = xb::safe_normalize(
@@ -123,6 +124,7 @@ fn sample_surface(
     let uv_albedo = uvu::apply_st_for_storage(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetAlbedo), xb::mat._MainTex_ST, xb::mat._MainTex_StorageVInverted);
     let uv_normal = uvu::apply_st_for_storage(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetNormal), xb::mat._BumpMap_ST, xb::mat._BumpMap_StorageVInverted);
     let uv_detail_normal = uvu::apply_st_for_storage(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetDetNormal), xb::mat._DetailNormalMap_ST, xb::mat._DetailNormalMap_StorageVInverted);
+    let uv_detail_mask = uvu::apply_st(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetDetMask), xb::mat._DetailMask_ST);
     let uv_metallic = uvu::apply_st_for_storage(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetMetallic), xb::mat._MetallicGlossMap_ST, xb::mat._MetallicGlossMap_StorageVInverted);
     let uv_emission = uvu::apply_st_for_storage(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetEmission), xb::mat._EmissionMap_ST, xb::mat._EmissionMap_StorageVInverted);
     let uv_occlusion = uvu::apply_st_for_storage(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetOcclusion), xb::mat._OcclusionMap_ST, xb::mat._OcclusionMap_StorageVInverted);
@@ -140,10 +142,16 @@ fn sample_surface(
     // `XSFrag.cginc:81` (`o.diffuseColor = o.albedo.rgb` *before* the metallic discount)
     // followed by `BRDF_XSLighting:35` (saturation pass).
     let diffuse_color = xb::maybe_saturate_color(albedo.rgb);
+    let raw_normal = select(
+        xb::safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0)),
+        -xb::safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0)),
+        flip_back_face && !front_facing,
+    );
 
     let tbn = decode_normal_world(
         uv_normal,
         uv_detail_normal,
+        uv_detail_mask,
         world_n,
         world_t,
         world_b,
@@ -160,6 +168,8 @@ fn sample_surface(
     }
     var roughness = 1.0 - smoothness;
     roughness = clamp(roughness * (1.7 - 0.7 * roughness), 0.045, 1.0);
+    let clearcoat_strength = clamp(xb::mat._ClearcoatStrength * mg.b, 0.0, 1.0);
+    let clearcoat_smoothness = clamp(xb::mat._ClearcoatSmoothness * mg.g, 0.0, 1.0);
 
     // Direct-lighting albedo is the metallic-discounted tinted base — `BRDF_XSLighting:33`
     // does `i.albedo.rgb *= (1 - metallic)` before the lighting walk so a perfect metal
@@ -167,8 +177,8 @@ fn sample_surface(
     // so applying `(1 - metallic)` after the desaturation is equivalent to before.
     albedo = vec4<f32>(diffuse_color * (1.0 - metallic), albedo.a);
 
-    var reflectivity = clamp(xb::mat._Reflectivity, 0.0, 4.0);
-    reflectivity = reflectivity * textureSample(xb::_ReflectivityMask, xb::_ReflectivityMask_sampler, uv_reflectivity).r;
+    let reflectivity = clamp(xb::mat._Reflectivity, 0.0, 1.0);
+    let reflectivity_mask = textureSample(xb::_ReflectivityMask, xb::_ReflectivityMask_sampler, uv_reflectivity).r;
 
     var occlusion = vec3<f32>(1.0);
     if (xb::occlusion_enabled()) {
@@ -178,10 +188,7 @@ fn sample_surface(
 
     var emission = vec3<f32>(0.0);
     if (xb::emission_map_enabled()) {
-        // `calcEmission` (`XSLightingFunctions.cginc:388–407`) returns `i.emissionMap`
-        // directly; the `_EmissionToDiffuse` blend is commented out in the reference and
-        // is a no-op here for parity.
-        emission = textureSample(xb::_EmissionMap, xb::_EmissionMap_sampler, uv_emission).rgb * xb::mat._EmissionColor.rgb;
+        emission = textureSample(xb::_EmissionMap, xb::_EmissionMap_sampler, uv_emission).rgb;
     }
 
     var ramp_mask = 0.0;
@@ -200,13 +207,17 @@ fn sample_surface(
         albedo,
         clip_alpha,
         diffuse_color,
+        raw_normal,
         tbn[2],
         tbn[0],
         tbn[1],
         metallic,
         roughness,
         smoothness,
+        clearcoat_strength,
+        clearcoat_smoothness,
         reflectivity,
+        reflectivity_mask,
         occlusion,
         emission,
         ramp_mask,
