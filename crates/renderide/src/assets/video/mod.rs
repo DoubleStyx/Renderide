@@ -12,6 +12,8 @@ pub mod player;
 pub mod player;
 
 #[cfg(feature = "video-textures")]
+mod audio_sink;
+#[cfg(feature = "video-textures")]
 mod cpu_copy;
 
 #[cfg(feature = "video-textures")]

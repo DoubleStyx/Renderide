@@ -1,12 +1,12 @@
 //! The [`VideoPlayer`] holds the GStreamer pipeline and handles incoming updates from host.
 
-use crate::assets::video::cpu_copy::CpuCopyVideoSink;
-use crate::assets::video::WgpuGstVideoSink;
+use super::audio_sink::ResoniteAudioSink;
+use super::cpu_copy::CpuCopyVideoSink;
+use super::WgpuGstVideoSink;
 use crate::assets::AssetTransferQueue;
 use glam::IVec2;
 use gstreamer::prelude::{ElementExt, ElementExtManual};
-use gstreamer_app::AppSink;
-use interprocess::{QueueFactory, QueueOptions};
+
 use renderide_shared::ipc::DualQueueIpc;
 use renderide_shared::{
     RendererCommand, VideoAudioTrack, VideoTextureClockErrorState, VideoTextureLoad,
@@ -19,7 +19,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Fallback audio rate used when the host sends an invalid sample rate.
-const DEFAULT_AUDIO_SAMPLE_RATE: i32 = 48_000;
+pub(self) const DEFAULT_AUDIO_SAMPLE_RATE: i32 = 48_000;
 
 /// Poll interval for applying host playback updates to GStreamer.
 const UPDATE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
@@ -37,7 +37,7 @@ pub struct VideoPlayer {
     /// GStreamer playbin pipeline for this video texture.
     pipeline: gstreamer::Element,
     /// AppSink used to forward decoded audio samples to the host.
-    audio_sink: AppSink,
+    audio_sink: ResoniteAudioSink,
     /// Active decoded-video sink backend.
     video_sink: Box<dyn WgpuGstVideoSink + Send>,
     /// Audio sample rate requested by the host audio system.
@@ -69,19 +69,7 @@ impl VideoPlayer {
             return None;
         }
 
-        let audio_sink = AppSink::builder()
-            .caps(
-                &gstreamer::Caps::builder("audio/x-raw")
-                    .field("format", "F32LE")
-                    .field("rate", audio_sample_rate)
-                    .field("channels", 2i32)
-                    .field("layout", "interleaved")
-                    .build(),
-            )
-            .max_buffers(1)
-            .drop(true)
-            .sync(true)
-            .build();
+        let audio_sink = ResoniteAudioSink::new(id, audio_sample_rate);
 
         // GStreamer-backed video textures currently use the CPU-copy sink on all platforms.
         let video_sink = Box::new(CpuCopyVideoSink::new(id, device, queue));
@@ -100,7 +88,7 @@ impl VideoPlayer {
 
         let pipeline = match gstreamer::ElementFactory::make("playbin")
             .property("uri", &uri)
-            .property("audio-sink", &audio_sink)
+            .property("audio-sink", audio_sink.appsink())
             .property("video-sink", video_sink.appsink())
             .build()
         {
@@ -154,50 +142,9 @@ impl VideoPlayer {
             return;
         };
 
-        let Some(queue_capacity) = positive_queue_capacity(s.queue_capacity) else {
-            logger::warn!(
-                "video texture {id}: invalid audio queue capacity {}",
-                s.queue_capacity
-            );
-            return;
-        };
-
-        let options = match QueueOptions::new(&queue_name, queue_capacity) {
-            Ok(o) => o,
-            Err(e) => {
-                logger::error!("video texture {}: failed to build QueueOptions: {e}", id);
-                return;
-            }
-        };
-
-        let mut publisher = match QueueFactory::new().create_publisher(options) {
-            Ok(p) => p,
-            Err(e) => {
-                logger::error!("video texture {}: failed to create publisher: {e}", id);
-                return;
-            }
-        };
-
-        use gstreamer_app::AppSinkCallbacks;
-        self.audio_sink.set_callbacks(
-            AppSinkCallbacks::builder()
-                .new_sample(move |appsink| {
-                    let Ok(sample) = appsink.pull_sample() else {
-                        return Err(gstreamer::FlowError::Eos);
-                    };
-                    let Some(buffer) = sample.buffer() else {
-                        return Ok(gstreamer::FlowSuccess::Ok);
-                    };
-                    let Ok(map) = buffer.map_readable() else {
-                        return Ok(gstreamer::FlowSuccess::Ok);
-                    };
-                    if !publisher.try_enqueue(map.as_slice()) {
-                        logger::trace!("video texture {id}: audio queue is full");
-                    }
-                    Ok(gstreamer::FlowSuccess::Ok)
-                })
-                .build(),
-        );
+        if let Err(e) = self.audio_sink.attach_queue(&queue_name, s.queue_capacity) {
+            logger::warn!("video texture {id}: failed to attach audio queue: {e}");
+        }
     }
 
     /// Schedules a video player state update from [`VideoTextureUpdate`].
@@ -384,11 +331,6 @@ fn normalized_audio_sample_rate(sample_rate: i32) -> i32 {
     }
 }
 
-/// Converts host audio queue capacity to the signed queue API type.
-fn positive_queue_capacity(queue_capacity: i32) -> Option<i64> {
-    (queue_capacity > 0).then_some(i64::from(queue_capacity))
-}
-
 /// Returns `true` when `source` already has a URI scheme.
 fn is_uri_source(source: &str) -> bool {
     source.contains("://")
@@ -536,13 +478,6 @@ mod tests {
             DEFAULT_AUDIO_SAMPLE_RATE
         );
         assert_eq!(normalized_audio_sample_rate(44_100), 44_100);
-    }
-
-    #[test]
-    fn invalid_audio_queue_capacity_is_rejected() {
-        assert_eq!(positive_queue_capacity(0), None);
-        assert_eq!(positive_queue_capacity(-1), None);
-        assert_eq!(positive_queue_capacity(64), Some(64));
     }
 
     #[test]
