@@ -90,6 +90,7 @@ impl FrameUploadBatch {
     /// [`wgpu::Queue::submit`]. After this returns the batch is empty.
     pub fn drain_and_flush(&self, queue: &wgpu::Queue) {
         let RecordedUploads { writes, bytes } = std::mem::take(&mut *self.recorded.lock());
+        crate::profiling::plot_frame_upload_batch(writes.len(), bytes.len());
         for write in writes {
             match write {
                 QueueWrite::Buffer {

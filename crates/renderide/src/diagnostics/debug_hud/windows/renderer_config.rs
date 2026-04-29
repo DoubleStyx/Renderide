@@ -1,7 +1,8 @@
 //! Renderer config window: display, rendering, and debug settings with immediate disk sync.
 
 use crate::config::{
-    save_renderer_settings, MsaaSampleCount, PowerPreferenceSetting, SceneColorFormat, VsyncMode,
+    save_renderer_settings, ClusterAssignmentMode, MsaaSampleCount, PowerPreferenceSetting,
+    SceneColorFormat, VsyncMode,
 };
 
 use imgui::Drag;
@@ -78,6 +79,18 @@ fn renderer_config_rendering_section(
             .build()
         {
             g.rendering.scene_color_format = fmt;
+            *dirty = true;
+        }
+    }
+    ui.text_disabled("Clustered-light assignment backend.");
+    for (i, &mode) in ClusterAssignmentMode::ALL.iter().enumerate() {
+        let _id = ui.push_id_int(300 + i as i32);
+        if ui
+            .selectable_config(mode.label())
+            .selected(g.rendering.cluster_assignment == mode)
+            .build()
+        {
+            g.rendering.cluster_assignment = mode;
             *dirty = true;
         }
     }

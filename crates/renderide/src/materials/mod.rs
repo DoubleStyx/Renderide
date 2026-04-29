@@ -92,7 +92,10 @@ mod wgsl;
 mod wgsl_reflect;
 
 /// Pipeline cache keyed by shader route / layout fingerprint.
-pub use cache::{MaterialPipelineCache, MaterialPipelineCacheKey, MaterialPipelineSet};
+pub use cache::{
+    MaterialPipelineCache, MaterialPipelineCacheKey, MaterialPipelineCacheStats,
+    MaterialPipelineSet,
+};
 
 /// Unity shader asset names → embedded WGSL stems and permutation flags.
 pub use embedded_raster_pipeline::{

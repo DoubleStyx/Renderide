@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::pipelines::ShaderPermutation;
 
-use super::cache::{MaterialPipelineCache, MaterialPipelineSet};
+use super::cache::{MaterialPipelineCache, MaterialPipelineCacheStats, MaterialPipelineSet};
 use super::family::MaterialPipelineDesc;
 use super::material_passes::MaterialBlendMode;
 use super::pipeline_kind::RasterPipelineKind;
@@ -211,6 +211,11 @@ impl MaterialRegistry {
     /// Borrow the wgpu device held by this registry.
     pub fn device(&self) -> &Arc<wgpu::Device> {
         &self.device
+    }
+
+    /// Diagnostic snapshot of the material pipeline cache.
+    pub fn pipeline_cache_stats(&self) -> MaterialPipelineCacheStats {
+        self.cache.stats()
     }
 
     /// Shader routes for the debug HUD (`shader_asset_id`, [`RasterPipelineKind`], optional AssetBundle shader asset name), sorted.

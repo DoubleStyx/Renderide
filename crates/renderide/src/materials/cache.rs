@@ -8,6 +8,7 @@
 //! The cache is LRU-bounded to avoid unbounded growth when many format/permutation combinations appear.
 
 use std::num::{NonZeroU32, NonZeroUsize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use lru::LruCache;
@@ -69,6 +70,45 @@ pub struct MaterialPipelineCache {
     device: Arc<wgpu::Device>,
     limits: Arc<crate::gpu::GpuLimits>,
     pipelines: Mutex<LruCache<MaterialPipelineCacheKey, MaterialPipelineSet>>,
+    stats: MaterialPipelineCacheStatsAtomic,
+}
+
+/// Snapshot of material pipeline cache counters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaterialPipelineCacheStats {
+    /// Cache hits that returned an already-built pipeline set.
+    pub hits: u64,
+    /// Cache misses that had to compose WGSL and build pipelines.
+    pub misses: u64,
+    /// Newly inserted pipeline sets.
+    pub insertions: u64,
+    /// LRU evictions caused by cache capacity pressure.
+    pub evictions: u64,
+}
+
+/// Atomic backing counters for [`MaterialPipelineCacheStats`].
+#[derive(Debug, Default)]
+struct MaterialPipelineCacheStatsAtomic {
+    /// Cache hits that returned an already-built pipeline set.
+    hits: AtomicU64,
+    /// Cache misses that had to compose WGSL and build pipelines.
+    misses: AtomicU64,
+    /// Newly inserted pipeline sets.
+    insertions: AtomicU64,
+    /// LRU evictions caused by cache capacity pressure.
+    evictions: AtomicU64,
+}
+
+impl MaterialPipelineCacheStatsAtomic {
+    /// Captures a relaxed diagnostic snapshot.
+    fn snapshot(&self) -> MaterialPipelineCacheStats {
+        MaterialPipelineCacheStats {
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            insertions: self.insertions.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl MaterialPipelineCache {
@@ -78,6 +118,7 @@ impl MaterialPipelineCache {
             device,
             limits,
             pipelines: Mutex::new(LruCache::new(max_cached_pipelines())),
+            stats: MaterialPipelineCacheStatsAtomic::default(),
         }
     }
 
@@ -89,6 +130,11 @@ impl MaterialPipelineCache {
     /// Effective device limits used to validate reflected material layouts.
     pub fn limits(&self) -> &Arc<crate::gpu::GpuLimits> {
         &self.limits
+    }
+
+    /// Returns a diagnostic snapshot of cache hit/miss/eviction counters.
+    pub fn stats(&self) -> MaterialPipelineCacheStats {
+        self.stats.snapshot()
     }
 
     /// Returns or builds the pipeline set for `kind`, `desc`, and `permutation`.
@@ -117,8 +163,10 @@ impl MaterialPipelineCache {
         };
         //perf xlinka: a hit is real use; promote it so hot pipelines do not get evicted.
         if let Some(hit) = self.pipelines.lock().get(&key) {
+            self.stats.hits.fetch_add(1, Ordering::Relaxed);
             return Ok(hit.clone());
         }
+        self.stats.misses.fetch_add(1, Ordering::Relaxed);
         let wgsl = match kind {
             RasterPipelineKind::EmbeddedStem(stem) => build_embedded_wgsl(stem, permutation)?,
             RasterPipelineKind::Null => build_null_wgsl(permutation)?,
@@ -159,10 +207,13 @@ impl MaterialPipelineCache {
         let set: MaterialPipelineSet = Arc::from(pipelines.into_boxed_slice());
         let mut cache = self.pipelines.lock();
         if let Some(existing) = cache.get(&key) {
+            self.stats.hits.fetch_add(1, Ordering::Relaxed);
             return Ok(existing.clone());
         }
+        self.stats.insertions.fetch_add(1, Ordering::Relaxed);
         if let Some(evicted) = cache.put(key, set.clone()) {
             drop(evicted);
+            self.stats.evictions.fetch_add(1, Ordering::Relaxed);
             logger::trace!("MaterialPipelineCache: evicted LRU pipeline entry");
         }
         drop(cache);

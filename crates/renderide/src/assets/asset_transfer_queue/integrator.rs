@@ -2,10 +2,11 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::gpu::GpuLimits;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
+use crate::profiling::{plot_asset_integration, AssetIntegrationProfileSample};
 
 use super::cubemap_task::CubemapUploadTask;
 use super::mesh_task::MeshUploadTask;
@@ -15,6 +16,9 @@ use super::AssetTransferQueue;
 
 /// Maximum combined queued integration tasks (high + normal). Beyond this, new tasks are dropped with a warning.
 pub const MAX_ASSET_INTEGRATION_QUEUED: usize = 2048;
+
+/// Minimum extra wall-clock slice granted to high-priority integration before yielding.
+const MIN_HIGH_PRIORITY_EMERGENCY_BUDGET: Duration = Duration::from_millis(1);
 
 /// One cooperative upload (mesh or texture data).
 #[derive(Debug)]
@@ -131,8 +135,120 @@ fn step_asset_task(
     }
 }
 
-/// Runs integration steps: **all** high-priority tasks complete with **no** wall-clock limit, then
-/// normal-priority tasks until `normal_deadline` (Renderite-style: urgent work is not time-sliced).
+/// Returns the emergency ceiling for high-priority tasks in a bounded drain.
+fn high_priority_emergency_deadline(start: Instant, normal_deadline: Instant) -> Instant {
+    let normal_budget = match normal_deadline.checked_duration_since(start) {
+        Some(duration) => duration,
+        None => Duration::ZERO,
+    };
+    let emergency_budget = normal_budget.max(MIN_HIGH_PRIORITY_EMERGENCY_BUDGET);
+    let base_deadline = normal_deadline.max(start);
+    match base_deadline.checked_add(emergency_budget) {
+        Some(deadline) => deadline,
+        None => base_deadline,
+    }
+}
+
+/// Emits current asset integration queue pressure to the profiler.
+fn plot_asset_integrator_backlog(
+    asset: &AssetTransferQueue,
+    high_priority_budget_exhausted: bool,
+    normal_priority_budget_exhausted: bool,
+) {
+    plot_asset_integration(AssetIntegrationProfileSample {
+        high_priority_queued: asset.integrator.high_priority.len(),
+        normal_priority_queued: asset.integrator.normal_priority.len(),
+        high_priority_budget_exhausted,
+        normal_priority_budget_exhausted,
+    });
+}
+
+/// Drains urgent upload tasks until empty, background-yielded, or the emergency ceiling is hit.
+fn drain_high_priority_asset_tasks(
+    asset: &mut AssetTransferQueue,
+    gpu: &AssetUploadGpuContext<'_>,
+    shm: &mut SharedMemoryAccessor,
+    ipc: &mut Option<&mut DualQueueIpc>,
+    high_priority_deadline: Instant,
+) -> bool {
+    profiling::scope!("asset::high_priority_drain");
+    let mut yielded = 0;
+    loop {
+        if Instant::now() >= high_priority_deadline {
+            return !asset.integrator.high_priority.is_empty();
+        }
+        let Some(mut task) = asset.integrator.high_priority.pop_front() else {
+            return false;
+        };
+        let step_result = step_asset_task(asset, gpu, shm, ipc, &mut task);
+        match step_result {
+            StepResult::Continue => {
+                asset.integrator.push_front(task, true);
+                yielded = 0;
+            }
+            StepResult::YieldBackground => {
+                asset.integrator.high_priority.push_back(task);
+                yielded += 1;
+                if yielded >= asset.integrator.high_priority.len() {
+                    return false;
+                }
+            }
+            StepResult::Done => {
+                yielded = 0;
+            }
+        }
+    }
+}
+
+/// Drains normal upload tasks until empty, background-yielded, or the frame budget is hit.
+fn drain_normal_priority_asset_tasks(
+    asset: &mut AssetTransferQueue,
+    gpu: &AssetUploadGpuContext<'_>,
+    shm: &mut SharedMemoryAccessor,
+    ipc: &mut Option<&mut DualQueueIpc>,
+    normal_deadline: Instant,
+) -> bool {
+    profiling::scope!("asset::normal_priority_drain");
+    let mut yielded = 0;
+    loop {
+        if Instant::now() >= normal_deadline {
+            return !asset.integrator.normal_priority.is_empty();
+        }
+        let Some(mut task) = asset.integrator.normal_priority.pop_front() else {
+            return false;
+        };
+        let step_result = step_asset_task(asset, gpu, shm, ipc, &mut task);
+        match step_result {
+            StepResult::Continue => {
+                asset.integrator.push_front(task, false);
+                yielded = 0;
+            }
+            StepResult::YieldBackground => {
+                asset.integrator.normal_priority.push_back(task);
+                yielded += 1;
+                if yielded >= asset.integrator.normal_priority.len() {
+                    return false;
+                }
+            }
+            StepResult::Done => {
+                yielded = 0;
+            }
+        }
+    }
+}
+
+/// Polls video texture players after upload integration.
+fn poll_video_texture_events(asset: &mut AssetTransferQueue, ipc: &mut Option<&mut DualQueueIpc>) {
+    profiling::scope!("asset::video_texture_poll_events");
+    let mut video_textures = std::mem::take(&mut asset.video_players);
+    for player in video_textures.values_mut() {
+        player.process_events(asset, ipc);
+    }
+    asset.video_players = video_textures;
+}
+
+/// Runs integration steps: high-priority tasks get an emergency ceiling, then normal-priority tasks
+/// run until `normal_deadline`.
 pub fn drain_asset_tasks(
     asset: &mut AssetTransferQueue,
     shm: &mut SharedMemoryAccessor,
@@ -140,16 +256,22 @@ pub fn drain_asset_tasks(
     normal_deadline: Instant,
 ) {
     profiling::scope!("asset::drain_tasks");
+    let drain_start = Instant::now();
+    let high_priority_deadline = high_priority_emergency_deadline(drain_start, normal_deadline);
     let Some(device) = asset.gpu_device.clone() else {
+        plot_asset_integrator_backlog(asset, false, false);
         return;
     };
     let Some(gpu_limits) = asset.gpu_limits.clone() else {
+        plot_asset_integrator_backlog(asset, false, false);
         return;
     };
     let Some(queue_arc) = asset.gpu_queue.clone() else {
+        plot_asset_integrator_backlog(asset, false, false);
         return;
     };
     let Some(gate) = asset.gpu_queue_access_gate.clone() else {
+        plot_asset_integrator_backlog(asset, false, false);
         return;
     };
     let gpu = AssetUploadGpuContext {
@@ -159,80 +281,35 @@ pub fn drain_asset_tasks(
         gpu_queue_access_gate: &gate,
     };
 
-    {
-        profiling::scope!("asset::high_priority_drain");
-        let mut yielded = 0;
-        while let Some(mut task) = asset.integrator.high_priority.pop_front() {
-            let step_result = step_asset_task(asset, &gpu, shm, ipc, &mut task);
-            match step_result {
-                StepResult::Continue => {
-                    asset.integrator.push_front(task, true);
-                    yielded = 0;
-                }
-                StepResult::YieldBackground => {
-                    asset.integrator.high_priority.push_back(task);
-                    yielded += 1;
-                    if yielded >= asset.integrator.high_priority.len() {
-                        break;
-                    }
-                }
-                StepResult::Done => {
-                    yielded = 0;
-                }
-            }
-        }
+    let high_priority_budget_exhausted =
+        drain_high_priority_asset_tasks(asset, &gpu, shm, ipc, high_priority_deadline);
+    if high_priority_budget_exhausted {
+        logger::trace!(
+            "asset integrator: high-priority emergency budget exhausted with {} task(s) pending",
+            asset.integrator.high_priority.len()
+        );
     }
 
-    {
-        profiling::scope!("asset::normal_priority_drain");
-        let mut yielded = 0;
-        let mut budget_exhausted = false;
-        loop {
-            if Instant::now() >= normal_deadline {
-                budget_exhausted = !asset.integrator.normal_priority.is_empty();
-                break;
-            }
-            let Some(mut task) = asset.integrator.normal_priority.pop_front() else {
-                break;
-            };
-            let step_result = step_asset_task(asset, &gpu, shm, ipc, &mut task);
-            match step_result {
-                StepResult::Continue => {
-                    asset.integrator.push_front(task, false);
-                    yielded = 0;
-                }
-                StepResult::YieldBackground => {
-                    asset.integrator.normal_priority.push_back(task);
-                    yielded += 1;
-                    if yielded >= asset.integrator.normal_priority.len() {
-                        break;
-                    }
-                }
-                StepResult::Done => {
-                    yielded = 0;
-                }
-            }
-        }
-        if budget_exhausted {
-            // Tasks pending after wall-clock deadline. Not necessarily a bug — asset arrival can
-            // outpace integration on busy frames — but persistent backlog growth indicates the
-            // budget is too tight or a task is stuck. Per-frame at trace level so it does not
-            // spam the default-level log.
-            logger::trace!(
-                "asset integrator: normal-priority budget exhausted with {} task(s) pending",
-                asset.integrator.normal_priority.len()
-            );
-        }
+    let normal_priority_budget_exhausted =
+        drain_normal_priority_asset_tasks(asset, &gpu, shm, ipc, normal_deadline);
+    if normal_priority_budget_exhausted {
+        // Tasks pending after wall-clock deadline. Not necessarily a bug — asset arrival can
+        // outpace integration on busy frames — but persistent backlog growth indicates the
+        // budget is too tight or a task is stuck. Per-frame at trace level so it does not
+        // spam the default-level log.
+        logger::trace!(
+            "asset integrator: normal-priority budget exhausted with {} task(s) pending",
+            asset.integrator.normal_priority.len()
+        );
     }
 
-    {
-        profiling::scope!("asset::video_texture_poll_events");
-        let mut video_textures = std::mem::take(&mut asset.video_players);
-        for player in video_textures.values_mut() {
-            player.process_events(asset, ipc);
-        }
-        asset.video_players = video_textures;
-    }
+    plot_asset_integrator_backlog(
+        asset,
+        high_priority_budget_exhausted,
+        normal_priority_budget_exhausted,
+    );
+
+    poll_video_texture_events(asset, ipc);
 }
 
 /// Drains all queued tasks without a time limit (used on GPU attach before first frame).
@@ -241,6 +318,40 @@ pub fn drain_asset_tasks_unbounded(
     shm: &mut SharedMemoryAccessor,
     ipc: &mut Option<&mut DualQueueIpc>,
 ) {
-    let far_future = Instant::now() + std::time::Duration::from_secs(3600);
+    let far_future = Instant::now() + Duration::from_secs(3600);
     drain_asset_tasks(asset, shm, ipc, far_future);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn high_priority_emergency_deadline_extends_normal_budget() {
+        let start = Instant::now();
+        let normal_deadline = start + Duration::from_millis(3);
+
+        let deadline = high_priority_emergency_deadline(start, normal_deadline);
+
+        assert_eq!(
+            deadline.checked_duration_since(normal_deadline),
+            Some(Duration::from_millis(3))
+        );
+    }
+
+    #[test]
+    fn high_priority_emergency_deadline_has_minimum_budget_when_normal_deadline_elapsed() {
+        let start = Instant::now();
+        let normal_deadline = match start.checked_sub(Duration::from_millis(5)) {
+            Some(deadline) => deadline,
+            None => start,
+        };
+
+        let deadline = high_priority_emergency_deadline(start, normal_deadline);
+
+        assert_eq!(
+            deadline.checked_duration_since(start),
+            Some(MIN_HIGH_PRIORITY_EMERGENCY_BUDGET)
+        );
+    }
 }

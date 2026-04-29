@@ -14,6 +14,7 @@
 //! (`bevy_pbr/src/render/mesh.rs`, `bevy_render/src/batching/mod.rs::GetBatchData`).
 
 use hashbrown::HashMap;
+use std::ops::Range;
 
 use super::WorldMeshDrawItem;
 
@@ -88,105 +89,243 @@ pub fn build_instance_plan(
         return InstancePlan::default();
     }
 
-    let mut slab_layout: Vec<usize> = Vec::with_capacity(draws.len());
-    let mut regular_groups: Vec<DrawGroup> = Vec::new();
-    let mut intersect_groups: Vec<DrawGroup> = Vec::new();
-    let mut transparent_groups: Vec<DrawGroup> = Vec::new();
-    let mut window_groups: HashMap<MeshSubmeshKey, usize> = HashMap::new();
-    let mut group_members: Vec<Vec<usize>> = Vec::new();
-    let mut group_representative: Vec<usize> = Vec::new();
-
+    let mut builder = InstancePlanBuilder::with_capacity(draws.len());
     let mut i = 0usize;
     while i < draws.len() {
-        let window_start = i;
-        let key = &draws[i].batch_key;
-        let mut j = i + 1;
-        while j < draws.len() && &draws[j].batch_key == key {
-            j += 1;
-        }
-
-        let intersect = key.embedded_requires_intersection_pass;
-        let grab_pass = key.embedded_requires_grab_pass;
-        debug_assert!(
-            !(intersect && grab_pass),
-            "intersection and grab-pass subpasses are mutually exclusive"
-        );
-        let window_singleton =
-            !supports_base_instance || draws[i].skinned || key.alpha_blended || grab_pass;
-
-        if window_singleton {
-            // Every draw in this window becomes its own group, in sort order.
-            for draw_idx in window_start..j {
-                emit_group(
-                    &mut slab_layout,
-                    subpass_groups(
-                        &mut regular_groups,
-                        &mut intersect_groups,
-                        &mut transparent_groups,
-                        intersect,
-                        grab_pass,
-                    ),
-                    draw_idx,
-                    &[draw_idx],
-                );
-            }
-        } else {
-            // Group same `(mesh, first_index, index_count)` draws within this window.
-            window_groups.clear();
-            group_members.clear();
-            group_representative.clear();
-            for (offset, item) in draws[window_start..j].iter().enumerate() {
-                let draw_idx = window_start + offset;
-                let mk = MeshSubmeshKey {
-                    mesh_asset_id: item.mesh_asset_id,
-                    first_index: item.first_index,
-                    index_count: item.index_count,
-                };
-                if let Some(&g) = window_groups.get(&mk) {
-                    group_members[g].push(draw_idx);
-                } else {
-                    let g = group_members.len();
-                    window_groups.insert(mk, g);
-                    group_representative.push(draw_idx);
-                    group_members.push(vec![draw_idx]);
-                }
-            }
-            for (g, members) in group_members.iter().enumerate() {
-                emit_group(
-                    &mut slab_layout,
-                    subpass_groups(
-                        &mut regular_groups,
-                        &mut intersect_groups,
-                        &mut transparent_groups,
-                        intersect,
-                        grab_pass,
-                    ),
-                    group_representative[g],
-                    members,
-                );
-            }
-        }
-
-        i = j;
+        let window = next_batch_window(draws, i, supports_base_instance);
+        i = window.range.end;
+        builder.process_window(draws, window);
     }
 
-    // The cross-window walk visits regular and intersect groups interleaved by sort order,
-    // so each list is already in ascending `representative_draw_idx` order — no resort.
-    debug_assert!(regular_groups
-        .windows(2)
-        .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx));
-    debug_assert!(intersect_groups
-        .windows(2)
-        .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx));
-    debug_assert!(transparent_groups
-        .windows(2)
-        .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx));
+    builder.finish()
+}
 
-    InstancePlan {
-        slab_layout,
-        regular_groups,
-        intersect_groups,
-        transparent_groups,
+/// Mutable output and scratch buffers used while building one [`InstancePlan`].
+struct InstancePlanBuilder {
+    /// Per-draw slab order emitted for the frame.
+    slab_layout: Vec<usize>,
+    /// Regular forward draw groups.
+    regular_groups: Vec<DrawGroup>,
+    /// Intersection-pass draw groups.
+    intersect_groups: Vec<DrawGroup>,
+    /// Grab-pass transparent draw groups.
+    transparent_groups: Vec<DrawGroup>,
+    /// Reusable grouping scratch for one batch-key window.
+    scratch: InstancePlanScratch,
+}
+
+impl InstancePlanBuilder {
+    /// Creates a builder sized for `draw_count` sorted draws.
+    fn with_capacity(draw_count: usize) -> Self {
+        Self {
+            slab_layout: Vec::with_capacity(draw_count),
+            regular_groups: Vec::new(),
+            intersect_groups: Vec::new(),
+            transparent_groups: Vec::new(),
+            scratch: InstancePlanScratch::default(),
+        }
+    }
+
+    /// Emits all groups for one same-batch-key window.
+    fn process_window(&mut self, draws: &[WorldMeshDrawItem], window: BatchWindow) {
+        if window.singleton {
+            self.emit_singletons(window);
+        } else {
+            self.emit_grouped_window(draws, window);
+        }
+    }
+
+    /// Emits one GPU draw group per source draw.
+    fn emit_singletons(&mut self, window: BatchWindow) {
+        let target = subpass_groups(
+            &mut self.regular_groups,
+            &mut self.intersect_groups,
+            &mut self.transparent_groups,
+            window.intersect,
+            window.grab_pass,
+        );
+        for draw_idx in window.range {
+            emit_group(&mut self.slab_layout, target, draw_idx, &[draw_idx]);
+        }
+    }
+
+    /// Groups non-transparent same-batch-key draws by mesh/submesh before emission.
+    fn emit_grouped_window(&mut self, draws: &[WorldMeshDrawItem], window: BatchWindow) {
+        self.scratch.rebuild(draws, window.range.clone());
+        let target = subpass_groups(
+            &mut self.regular_groups,
+            &mut self.intersect_groups,
+            &mut self.transparent_groups,
+            window.intersect,
+            window.grab_pass,
+        );
+        for group_idx in 0..self.scratch.group_counts.len() {
+            let start = self.scratch.group_offsets[group_idx];
+            let end = self.scratch.group_offsets[group_idx + 1];
+            let members = &self.scratch.group_members[start..end];
+            emit_group(
+                &mut self.slab_layout,
+                target,
+                self.scratch.group_representative[group_idx],
+                members,
+            );
+        }
+    }
+
+    /// Produces the final plan after debug-validating group order.
+    fn finish(self) -> InstancePlan {
+        // The cross-window walk visits regular and intersect groups interleaved by sort order,
+        // so each list is already in ascending `representative_draw_idx` order — no resort.
+        debug_assert!(self
+            .regular_groups
+            .windows(2)
+            .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx));
+        debug_assert!(self
+            .intersect_groups
+            .windows(2)
+            .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx));
+        debug_assert!(self
+            .transparent_groups
+            .windows(2)
+            .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx));
+
+        InstancePlan {
+            slab_layout: self.slab_layout,
+            regular_groups: self.regular_groups,
+            intersect_groups: self.intersect_groups,
+            transparent_groups: self.transparent_groups,
+        }
+    }
+}
+
+/// Reusable temporary storage for grouping one batch-key window.
+#[derive(Default)]
+struct InstancePlanScratch {
+    /// Map from mesh/submesh key to compact group index.
+    window_groups: HashMap<MeshSubmeshKey, usize>,
+    /// Member count per compact group.
+    group_counts: Vec<usize>,
+    /// Prefix-sum offsets into [`Self::group_members`].
+    group_offsets: Vec<usize>,
+    /// Mutable write cursors while filling [`Self::group_members`].
+    group_write_offsets: Vec<usize>,
+    /// Flat draw-index storage for every group in the current window.
+    group_members: Vec<usize>,
+    /// Representative sorted draw index per compact group.
+    group_representative: Vec<usize>,
+}
+
+impl InstancePlanScratch {
+    /// Rebuilds all scratch buffers for the supplied window.
+    fn rebuild(&mut self, draws: &[WorldMeshDrawItem], range: Range<usize>) {
+        self.clear_window();
+        self.count_groups(draws, range.clone());
+        self.build_offsets();
+        self.fill_members(draws, range);
+    }
+
+    /// Clears previous-window scratch without releasing capacity.
+    fn clear_window(&mut self) {
+        self.window_groups.clear();
+        self.group_counts.clear();
+        self.group_offsets.clear();
+        self.group_write_offsets.clear();
+        self.group_members.clear();
+        self.group_representative.clear();
+    }
+
+    /// Counts each mesh/submesh group in first-seen order.
+    fn count_groups(&mut self, draws: &[WorldMeshDrawItem], range: Range<usize>) {
+        for (offset, item) in draws[range.clone()].iter().enumerate() {
+            let draw_idx = range.start + offset;
+            let mk = mesh_submesh_key(item);
+            if let Some(&group_idx) = self.window_groups.get(&mk) {
+                self.group_counts[group_idx] += 1;
+            } else {
+                let group_idx = self.group_counts.len();
+                self.window_groups.insert(mk, group_idx);
+                self.group_representative.push(draw_idx);
+                self.group_counts.push(1);
+            }
+        }
+    }
+
+    /// Builds prefix offsets and resets write cursors for the current group counts.
+    fn build_offsets(&mut self) {
+        self.group_offsets.reserve(self.group_counts.len() + 1);
+        self.group_offsets.push(0);
+        let mut next_offset = 0usize;
+        for &count in &self.group_counts {
+            next_offset += count;
+            self.group_offsets.push(next_offset);
+        }
+        self.group_members.resize(next_offset, 0);
+        self.group_write_offsets
+            .extend_from_slice(&self.group_offsets[..self.group_counts.len()]);
+    }
+
+    /// Fills the flat member buffer using the offsets computed by [`Self::build_offsets`].
+    fn fill_members(&mut self, draws: &[WorldMeshDrawItem], range: Range<usize>) {
+        for (offset, item) in draws[range.clone()].iter().enumerate() {
+            let Some(&group_idx) = self.window_groups.get(&mesh_submesh_key(item)) else {
+                continue;
+            };
+            let write = self.group_write_offsets[group_idx];
+            self.group_members[write] = range.start + offset;
+            self.group_write_offsets[group_idx] += 1;
+        }
+    }
+}
+
+/// Same-batch-key draw window and its subpass routing metadata.
+#[derive(Clone, Debug)]
+struct BatchWindow {
+    /// Draw index range covered by this window.
+    range: Range<usize>,
+    /// Whether the window belongs to the intersection subpass.
+    intersect: bool,
+    /// Whether the window belongs to the grab-pass transparent subpass.
+    grab_pass: bool,
+    /// Whether every draw must remain a singleton group.
+    singleton: bool,
+}
+
+/// Returns the next same-batch-key window starting at `start`.
+fn next_batch_window(
+    draws: &[WorldMeshDrawItem],
+    start: usize,
+    supports_base_instance: bool,
+) -> BatchWindow {
+    let key = &draws[start].batch_key;
+    let mut end = start + 1;
+    while end < draws.len() && &draws[end].batch_key == key {
+        end += 1;
+    }
+
+    let intersect = key.embedded_requires_intersection_pass;
+    let grab_pass = key.embedded_requires_grab_pass;
+    debug_assert!(
+        !(intersect && grab_pass),
+        "intersection and grab-pass subpasses are mutually exclusive"
+    );
+
+    BatchWindow {
+        range: start..end,
+        intersect,
+        grab_pass,
+        singleton: !supports_base_instance
+            || draws[start].skinned
+            || key.alpha_blended
+            || grab_pass,
+    }
+}
+
+/// Builds the grouping key for one draw item.
+fn mesh_submesh_key(item: &WorldMeshDrawItem) -> MeshSubmeshKey {
+    MeshSubmeshKey {
+        mesh_asset_id: item.mesh_asset_id,
+        first_index: item.first_index,
+        index_count: item.index_count,
     }
 }
 

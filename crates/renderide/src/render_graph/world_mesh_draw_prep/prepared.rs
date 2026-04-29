@@ -72,6 +72,8 @@ pub(super) struct FramePreparedDraw {
 /// applies frustum / Hi-Z culling, and emits [`super::types::WorldMeshDrawItem`]s — no scene
 /// walk, no repeated mesh-pool lookup, no repeated material-override resolution.
 pub struct FramePreparedRenderables {
+    /// Active render spaces captured while building this frame snapshot.
+    pub(super) active_space_ids: Vec<RenderSpaceId>,
     /// Dense expanded draws. Order is deterministic: render spaces in
     /// [`SceneCoordinator::render_space_ids`] order, then static renderers (ascending index),
     /// then skinned renderers (ascending index), then material slots in ascending index.
@@ -87,6 +89,7 @@ impl FramePreparedRenderables {
     /// mesh is non-resident.
     pub fn empty(render_context: RenderingContext) -> Self {
         Self {
+            active_space_ids: Vec::new(),
             draws: Vec::new(),
             render_context,
         }
@@ -124,6 +127,7 @@ impl FramePreparedRenderables {
                 active_space_ids[0],
             );
             return Self {
+                active_space_ids,
                 draws,
                 render_context,
             };
@@ -144,6 +148,7 @@ impl FramePreparedRenderables {
             draws.append(&mut local);
         }
         Self {
+            active_space_ids,
             draws,
             render_context,
         }
@@ -167,6 +172,12 @@ impl FramePreparedRenderables {
     #[inline]
     pub fn render_context(&self) -> RenderingContext {
         self.render_context
+    }
+
+    /// Active render spaces captured by this prepared snapshot.
+    #[inline]
+    pub fn active_space_ids(&self) -> &[RenderSpaceId] {
+        &self.active_space_ids
     }
 
     /// Iterator of `(mesh_asset_id, material_asset_id)` pairs for every prepared draw.

@@ -20,7 +20,8 @@ pub use post_processing::{
     TonemapSettings,
 };
 pub use rendering::{
-    MsaaSampleCount, RecordParallelism, RenderingSettings, SceneColorFormat, VsyncMode,
+    ClusterAssignmentMode, MsaaSampleCount, RecordParallelism, RenderingSettings, SceneColorFormat,
+    VsyncMode,
 };
 pub use watchdog::{WatchdogAction, WatchdogSettings};
 

@@ -534,16 +534,31 @@ impl RenderBackend {
 
         self.msaa_depth_resolve = MsaaDepthResolveResources::try_new(device.as_ref()).map(Arc::new);
 
-        let (post_processing_settings, msaa_sample_count) = self
+        let (post_processing_settings, msaa_sample_count, cluster_assignment) = self
             .renderer_settings
             .as_ref()
             .and_then(|h| {
-                h.read()
-                    .ok()
-                    .map(|g| (g.post_processing.clone(), g.rendering.msaa.as_count() as u8))
+                h.read().ok().map(|g| {
+                    (
+                        g.post_processing.clone(),
+                        g.rendering.msaa.as_count() as u8,
+                        g.rendering.cluster_assignment,
+                    )
+                })
             })
-            .unwrap_or_else(|| (PostProcessingSettings::default(), 1));
-        let shape = self.frame_graph_shape_for(&post_processing_settings, msaa_sample_count, false);
+            .unwrap_or_else(|| {
+                (
+                    PostProcessingSettings::default(),
+                    1,
+                    crate::config::ClusterAssignmentMode::default(),
+                )
+            });
+        let shape = self.frame_graph_shape_for(
+            &post_processing_settings,
+            msaa_sample_count,
+            false,
+            cluster_assignment,
+        );
         self.sync_frame_graph_cache(&post_processing_settings, shape);
         Ok(())
     }

@@ -145,8 +145,14 @@ pub fn collect_and_sort_world_mesh_draws_with_parallelism(
     parallelism: WorldMeshDrawCollectParallelism,
 ) -> WorldMeshDrawCollection {
     profiling::scope!("mesh::collect_and_sort");
-    let space_ids: Vec<RenderSpaceId> = ctx.scene.render_space_ids().collect();
-    let cap_hint = estimate_active_renderable_count(&space_ids, ctx);
+    let owned_space_ids;
+    let space_ids: &[RenderSpaceId] = if let Some(prepared) = ctx.prepared {
+        prepared.active_space_ids()
+    } else {
+        owned_space_ids = ctx.scene.render_space_ids().collect::<Vec<_>>();
+        &owned_space_ids
+    };
+    let cap_hint = estimate_active_renderable_count(space_ids, ctx);
 
     let owned_cache;
     let cache: &FrameMaterialBatchCache = match ctx.material_cache {
@@ -164,9 +170,9 @@ pub fn collect_and_sort_world_mesh_draws_with_parallelism(
             &owned_cache
         }
     };
-    let filter_masks = build_per_space_filter_masks(&space_ids, ctx);
+    let filter_masks = build_per_space_filter_masks(space_ids, ctx);
 
-    let per_chunk = collect_world_mesh_chunks(ctx, parallelism, cache, &filter_masks, &space_ids);
+    let per_chunk = collect_world_mesh_chunks(ctx, parallelism, cache, &filter_masks, space_ids);
 
     let mut out = Vec::with_capacity(cap_hint);
     let mut cull_stats = (0usize, 0usize, 0usize);

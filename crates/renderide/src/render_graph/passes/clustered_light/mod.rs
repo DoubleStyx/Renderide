@@ -7,6 +7,7 @@
 //! loaded from the embedded shader registry at pipeline creation time).
 
 mod cache;
+mod froxel_cpu;
 
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,9 +18,11 @@ use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 
 use cache::ClusteredLightBindGroupCache;
+use froxel_cpu::{FroxelLightPlanner, AUTO_CPU_FROXEL_LIGHT_THRESHOLD};
 
 use crate::backend::GpuLight;
 use crate::backend::{CLUSTER_COUNT_Z, CLUSTER_PARAMS_UNIFORM_SIZE, TILE_SIZE};
+use crate::config::ClusterAssignmentMode;
 use crate::gpu::GpuLimits;
 use crate::render_graph::cluster_frame::{
     cluster_frame_params, cluster_frame_params_stereo, sanitize_cluster_clip_planes,
@@ -27,7 +30,7 @@ use crate::render_graph::cluster_frame::{
 };
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::HostCameraFrame;
+use crate::render_graph::frame_params::{HostCameraFrame, PerViewFramePlanSlot};
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
 use crate::render_graph::pass::{ComputePass, PassBuilder};
 use crate::render_graph::resources::{
@@ -192,6 +195,72 @@ struct ClusteredLightEyePassEnv<'a> {
     profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
+/// Prepared work selected by clustered-light recording.
+enum ClusteredLightRecordAction {
+    /// Nothing to record for this view.
+    Skip,
+    /// CPU assignment already uploaded the cluster buffers.
+    Done,
+    /// Clear cluster counts because the frame has no lights.
+    ClearZero(ClusteredLightClearData),
+    /// Run the existing GPU scan compute path.
+    GpuScan(ClusteredLightGpuScanData),
+}
+
+/// Data needed to clear empty per-cluster light counts.
+struct ClusteredLightClearData {
+    /// Shared cluster-count buffer.
+    cluster_light_counts: wgpu::Buffer,
+    /// Number of clusters produced per eye.
+    clusters_per_eye: u32,
+    /// Number of eyes represented by this view.
+    eye_count: usize,
+}
+
+/// Inputs for CPU froxel assignment and upload.
+struct CpuFroxelRecordData<'a> {
+    /// Deferred upload sink for compatible cluster buffers.
+    upload_batch: &'a FrameUploadBatch,
+    /// CPU-side light rows packed during frame preparation.
+    lights: &'a [GpuLight],
+    /// Shared cluster-count buffer.
+    cluster_light_counts: &'a wgpu::Buffer,
+    /// Shared packed cluster-index buffer.
+    cluster_light_indices: &'a wgpu::Buffer,
+    /// Per-eye cluster frame params.
+    eye_params: &'a [ClusterFrameParams],
+    /// Number of clusters produced per eye.
+    clusters_per_eye: u32,
+    /// Graph view id.
+    view_id: ViewId,
+    /// Scene light count.
+    light_count: u32,
+}
+
+/// Data needed to run the GPU clustered-light scan.
+struct ClusteredLightGpuScanData {
+    /// Graph view id.
+    view_id: ViewId,
+    /// Shared cluster-buffer cache version.
+    cluster_ver: u64,
+    /// Shared cluster-count buffer.
+    cluster_light_counts: wgpu::Buffer,
+    /// Shared packed cluster-index buffer.
+    cluster_light_indices: wgpu::Buffer,
+    /// Per-view cluster params uniform buffer.
+    params_buffer: wgpu::Buffer,
+    /// Frame light storage buffer.
+    lights_buffer: wgpu::Buffer,
+    /// Per-eye cluster frame params.
+    eye_params: Vec<ClusterFrameParams>,
+    /// Number of clusters produced per eye.
+    clusters_per_eye: u32,
+    /// Scene light count.
+    light_count: u32,
+    /// Target viewport size in pixels.
+    viewport: (u32, u32),
+}
+
 /// Returns the byte range for a contiguous cluster-count slice.
 fn cluster_count_clear_range(cluster_offset: u32, cluster_count: u32) -> Option<(u64, u64)> {
     let byte_offset = u64::from(cluster_offset).checked_mul(std::mem::size_of::<u32>() as u64)?;
@@ -354,8 +423,12 @@ fn clustered_light_eye_params_for_viewport(
 #[derive(Debug)]
 pub struct ClusteredLightPass {
     resources: ClusteredLightGraphResources,
+    /// Assignment backend selected when this graph was compiled.
+    assignment_mode: ClusterAssignmentMode,
     /// Logged once on first successful dispatch; uses an atomic to allow `record(&self, …)`.
     logged_active_once: AtomicBool,
+    /// Logged once when CPU froxel mode is requested for a view that cannot safely use it.
+    logged_cpu_fallback_once: AtomicBool,
     /// Per-view compute bind group cache: invalidated when the per-view cluster buffer version changes.
     bind_group_cache: ClusteredLightBindGroupCache,
 }
@@ -375,10 +448,15 @@ pub struct ClusteredLightGraphResources {
 
 impl ClusteredLightPass {
     /// Creates a clustered light pass (pipeline is created lazily on first execute).
-    pub fn new(resources: ClusteredLightGraphResources) -> Self {
+    pub fn new(
+        resources: ClusteredLightGraphResources,
+        assignment_mode: ClusterAssignmentMode,
+    ) -> Self {
         Self {
             resources,
+            assignment_mode,
             logged_active_once: AtomicBool::new(false),
+            logged_cpu_fallback_once: AtomicBool::new(false),
             bind_group_cache: ClusteredLightBindGroupCache::new(),
         }
     }
@@ -447,6 +525,213 @@ impl ClusteredLightPass {
                 })
             })
     }
+
+    /// Returns whether this pass should use CPU froxel assignment for the current view.
+    fn should_use_cpu_froxel(&self, view_idx: usize, stereo: bool, light_count: u32) -> bool {
+        match self.assignment_mode {
+            ClusterAssignmentMode::GpuScan => false,
+            ClusterAssignmentMode::Auto => {
+                view_idx == 0 && stereo && light_count >= AUTO_CPU_FROXEL_LIGHT_THRESHOLD
+            }
+            ClusterAssignmentMode::CpuFroxel => {
+                if view_idx == 0 {
+                    true
+                } else {
+                    self.log_cpu_froxel_fallback(view_idx);
+                    false
+                }
+            }
+        }
+    }
+
+    /// Logs the shared-buffer ordering fallback once.
+    fn log_cpu_froxel_fallback(&self, view_idx: usize) {
+        if self
+            .logged_cpu_fallback_once
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            logger::warn!(
+                "ClusteredLight: CPU froxel assignment requested for view index {view_idx}, but only view 0 can safely use pre-submit CPU writes with the current shared cluster buffers; falling back to GPU scan for later views"
+            );
+        }
+    }
+
+    /// Selects and prepares the clustered-light work for the current graph view.
+    fn prepare_record_action(
+        &self,
+        ctx: &mut ComputePassCtx<'_, '_, '_>,
+    ) -> ClusteredLightRecordAction {
+        let Some(frame) = ctx.frame.as_mut() else {
+            return ClusteredLightRecordAction::Skip;
+        };
+
+        let (vw, vh) = frame.view.viewport_px;
+        if vw == 0 || vh == 0 || frame.shared.frame_resources.frame_gpu().is_none() {
+            return ClusteredLightRecordAction::Skip;
+        }
+
+        let hc = frame.view.host_camera;
+        let scene = frame.shared.scene;
+        let stereo = hc.vr_active && hc.stereo.is_some() && frame.view.multiview_stereo;
+        let view_id = frame.view.view_id;
+        let view_idx = ctx
+            .blackboard
+            .get::<PerViewFramePlanSlot>()
+            .map_or(0, |plan| plan.view_idx);
+        let light_count = frame.shared.frame_resources.frame_light_count_u32();
+
+        let Some(refs) = frame.shared.frame_resources.shared_cluster_buffer_refs() else {
+            logger::trace!("ClusteredLight: shared cluster buffers missing for {view_id:?}");
+            return ClusteredLightRecordAction::Skip;
+        };
+        let cluster_light_counts = (*refs.cluster_light_counts).clone();
+        let cluster_light_indices = (*refs.cluster_light_indices).clone();
+        let cluster_ver = frame.shared.frame_resources.shared_cluster_version();
+
+        let Some(params_buffer) = frame
+            .shared
+            .frame_resources
+            .per_view_frame(view_id)
+            .map(|s| s.cluster_params_buffer.clone())
+        else {
+            logger::trace!("ClusteredLight: per-view params buffer missing for {view_id:?}");
+            return ClusteredLightRecordAction::Skip;
+        };
+
+        let viewport = (vw, vh);
+        let Some(eye_params) =
+            clustered_light_eye_params_for_viewport(stereo, &hc, scene, viewport)
+        else {
+            return ClusteredLightRecordAction::Skip;
+        };
+        let Some(clusters_per_eye) = clusters_per_eye_for_params(&eye_params[0]) else {
+            logger::warn!(
+                "ClusteredLight: cluster grid {}x{}x{} overflows u32",
+                eye_params[0].cluster_count_x,
+                eye_params[0].cluster_count_y,
+                CLUSTER_COUNT_Z
+            );
+            return ClusteredLightRecordAction::Skip;
+        };
+
+        if self.should_use_cpu_froxel(view_idx, stereo, light_count)
+            && self.try_record_cpu_froxel(CpuFroxelRecordData {
+                upload_batch: ctx.upload_batch,
+                lights: frame.shared.frame_resources.frame_lights(),
+                cluster_light_counts: &cluster_light_counts,
+                cluster_light_indices: &cluster_light_indices,
+                eye_params: &eye_params,
+                clusters_per_eye,
+                view_id,
+                light_count,
+            })
+        {
+            return ClusteredLightRecordAction::Done;
+        }
+
+        if light_count == 0 {
+            return ClusteredLightRecordAction::ClearZero(ClusteredLightClearData {
+                cluster_light_counts,
+                clusters_per_eye,
+                eye_count: eye_params.len(),
+            });
+        }
+
+        let Some(lights_buffer) = frame
+            .shared
+            .frame_resources
+            .frame_gpu()
+            .map(|fgpu| fgpu.lights_buffer.clone())
+        else {
+            return ClusteredLightRecordAction::Skip;
+        };
+
+        ClusteredLightRecordAction::GpuScan(ClusteredLightGpuScanData {
+            view_id,
+            cluster_ver,
+            cluster_light_counts,
+            cluster_light_indices,
+            params_buffer,
+            lights_buffer,
+            eye_params,
+            clusters_per_eye,
+            light_count,
+            viewport,
+        })
+    }
+
+    /// Attempts CPU light-centric froxel assignment and uploads compatible cluster buffers.
+    fn try_record_cpu_froxel(&self, data: CpuFroxelRecordData<'_>) -> bool {
+        let Some(assignments) =
+            FroxelLightPlanner::build(data.lights, data.eye_params, data.clusters_per_eye)
+        else {
+            logger::warn!(
+                "ClusteredLight: CPU froxel assignment failed for {:?}; falling back to GPU scan",
+                data.view_id
+            );
+            return false;
+        };
+
+        profiling::scope!("clustered_light::cpu_froxel_upload");
+        data.upload_batch.write_buffer(
+            data.cluster_light_counts,
+            0,
+            bytemuck::cast_slice(&assignments.counts),
+        );
+        if !assignments.indices.is_empty() {
+            data.upload_batch.write_buffer(
+                data.cluster_light_indices,
+                0,
+                bytemuck::cast_slice(&assignments.indices),
+            );
+        }
+        logger::trace!(
+            "ClusteredLight: CPU froxel assignment view={view_id:?} lights={} eyes={} memberships={} overflowed={}",
+            data.light_count,
+            data.eye_params.len(),
+            assignments.stats.assigned_memberships,
+            assignments.stats.overflowed_memberships,
+            view_id = data.view_id
+        );
+        true
+    }
+
+    /// Records the existing GPU scan path for clustered-light assignment.
+    fn record_gpu_scan(
+        &self,
+        ctx: &mut ComputePassCtx<'_, '_, '_>,
+        data: &ClusteredLightGpuScanData,
+    ) {
+        let (pipeline, bgl) = ensure_compute_pipeline(ctx.device);
+        let bind_group = self.ensure_cluster_compute_bind_group(
+            ctx.device,
+            data.view_id,
+            data.cluster_ver,
+            ClusterComputeBuffers {
+                params: &data.params_buffer,
+                lights: &data.lights_buffer,
+                counts: &data.cluster_light_counts,
+                indices: &data.cluster_light_indices,
+            },
+            bgl,
+        );
+
+        run_clustered_light_eye_passes(ClusteredLightEyePassEnv {
+            encoder: ctx.encoder,
+            upload_batch: ctx.upload_batch,
+            pipeline,
+            bind_group: &bind_group,
+            cluster_light_counts: &data.cluster_light_counts,
+            params_buffer: &data.params_buffer,
+            eye_params: &data.eye_params,
+            clusters_per_eye: data.clusters_per_eye,
+            light_count: data.light_count,
+            viewport: data.viewport,
+            gpu_limits: ctx.gpu_limits,
+            profiler: ctx.profiler,
+        });
+    }
 }
 
 /// Buffer refs needed to build the clustered-light compute bind group.
@@ -505,120 +790,26 @@ impl ComputePass for ClusteredLightPass {
 
     fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("clustered_light::record_dispatch");
-        let Some(frame) = ctx.frame.as_mut() else {
-            return Ok(());
-        };
-
-        let (vw, vh) = frame.view.viewport_px;
-        if vw == 0 || vh == 0 {
-            return Ok(());
+        match self.prepare_record_action(ctx) {
+            ClusteredLightRecordAction::Skip | ClusteredLightRecordAction::Done => {}
+            ClusteredLightRecordAction::ClearZero(data) => {
+                clear_zero_light_cluster_counts(
+                    ctx.encoder,
+                    &data.cluster_light_counts,
+                    data.clusters_per_eye,
+                    data.eye_count,
+                );
+            }
+            ClusteredLightRecordAction::GpuScan(data) => {
+                self.record_gpu_scan(ctx, &data);
+                log_clustered_light_active_once(
+                    &self.logged_active_once,
+                    &data.eye_params[0],
+                    data.light_count,
+                    data.eye_params.len(),
+                );
+            }
         }
-
-        let hc = frame.view.host_camera;
-        let scene = frame.shared.scene;
-        let stereo = hc.vr_active && hc.stereo.is_some() && frame.view.multiview_stereo;
-        let view_id = frame.view.view_id;
-
-        let light_count = frame.shared.frame_resources.frame_light_count_u32();
-
-        if frame.shared.frame_resources.frame_gpu().is_none() {
-            return Ok(());
-        }
-
-        // All views share one cluster buffer (see `ClusterBufferCache` docs). Safe under
-        // single-submit ordering: each view's compute→raster pair completes before the next
-        // view's compute overwrites.
-        let Some(refs) = frame.shared.frame_resources.shared_cluster_buffer_refs() else {
-            logger::trace!("ClusteredLight: shared cluster buffers missing for {view_id:?}");
-            return Ok(());
-        };
-        let cluster_ver = frame.shared.frame_resources.shared_cluster_version();
-        // `params_buffer` must be per-view: multiple views write their own `ClusterParams`
-        // (camera matrix, projection, etc.) into it via `FrameUploadBatch`. A shared buffer
-        // would race — last write wins, corrupting every view except the last one recorded.
-        let Some(params_buffer) = frame
-            .shared
-            .frame_resources
-            .per_view_frame(view_id)
-            .map(|s| s.cluster_params_buffer.clone())
-        else {
-            logger::trace!("ClusteredLight: per-view params buffer missing for {view_id:?}");
-            return Ok(());
-        };
-
-        let viewport = (vw, vh);
-
-        let Some(eye_params) =
-            clustered_light_eye_params_for_viewport(stereo, &hc, scene, viewport)
-        else {
-            return Ok(());
-        };
-
-        let Some(clusters_per_eye) = clusters_per_eye_for_params(&eye_params[0]) else {
-            logger::warn!(
-                "ClusteredLight: cluster grid {}x{}x{} overflows u32",
-                eye_params[0].cluster_count_x,
-                eye_params[0].cluster_count_y,
-                CLUSTER_COUNT_Z
-            );
-            return Ok(());
-        };
-
-        if light_count == 0 {
-            clear_zero_light_cluster_counts(
-                ctx.encoder,
-                refs.cluster_light_counts,
-                clusters_per_eye,
-                eye_params.len(),
-            );
-            return Ok(());
-        }
-
-        // Resolve lights buffer from shared frame GPU resources.
-        let Some(lights_buffer) = frame
-            .shared
-            .frame_resources
-            .frame_gpu()
-            .map(|fgpu| fgpu.lights_buffer.clone())
-        else {
-            return Ok(());
-        };
-
-        let (pipeline, bgl) = ensure_compute_pipeline(ctx.device);
-        let bind_group = self.ensure_cluster_compute_bind_group(
-            ctx.device,
-            view_id,
-            cluster_ver,
-            ClusterComputeBuffers {
-                params: &params_buffer,
-                lights: &lights_buffer,
-                counts: refs.cluster_light_counts,
-                indices: refs.cluster_light_indices,
-            },
-            bgl,
-        );
-
-        run_clustered_light_eye_passes(ClusteredLightEyePassEnv {
-            encoder: ctx.encoder,
-            upload_batch: ctx.upload_batch,
-            pipeline,
-            bind_group: &bind_group,
-            cluster_light_counts: refs.cluster_light_counts,
-            params_buffer: &params_buffer,
-            eye_params: &eye_params,
-            clusters_per_eye,
-            light_count,
-            viewport,
-            gpu_limits: ctx.gpu_limits,
-            profiler: ctx.profiler,
-        });
-
-        log_clustered_light_active_once(
-            &self.logged_active_once,
-            &eye_params[0],
-            light_count,
-            eye_params.len(),
-        );
 
         Ok(())
     }

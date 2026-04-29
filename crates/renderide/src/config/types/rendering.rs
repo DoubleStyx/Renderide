@@ -51,6 +51,15 @@ pub struct RenderingSettings {
     /// all per-view pass nodes to be `Send` (enforced by trait bounds).
     #[serde(rename = "record_parallelism", default)]
     pub record_parallelism: RecordParallelism,
+    /// Clustered-light assignment backend used before the world forward pass.
+    ///
+    /// [`ClusterAssignmentMode::GpuScan`] preserves the original compute path that scans every
+    /// light for every froxel. [`ClusterAssignmentMode::CpuFroxel`] uses a light-centric CPU
+    /// assignment path where it is safe for the shared cluster buffers.
+    /// [`ClusterAssignmentMode::Auto`] keeps the compute path for ordinary scenes and enables the
+    /// CPU path for the first stereo view when the light count is high enough to justify it.
+    #[serde(rename = "cluster_assignment", default)]
+    pub cluster_assignment: ClusterAssignmentMode,
 }
 
 impl Default for RenderingSettings {
@@ -64,6 +73,7 @@ impl Default for RenderingSettings {
             msaa: MsaaSampleCount::default(),
             scene_color_format: SceneColorFormat::default(),
             record_parallelism: RecordParallelism::default(),
+            cluster_assignment: ClusterAssignmentMode::default(),
         }
     }
 }
@@ -211,6 +221,34 @@ pub enum RecordParallelism {
     PerViewParallel,
 }
 
+/// Clustered-light assignment backend for the per-view light list pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClusterAssignmentMode {
+    /// Select the safest fast path for the current view. Currently uses CPU froxel assignment for
+    /// the first stereo view only when the scene has many lights, otherwise falls back to GPU scan.
+    #[default]
+    Auto,
+    /// Preserve the original compute shader path: one compute thread per froxel scans all lights.
+    GpuScan,
+    /// Use CPU light-centric froxel assignment where the shared cluster-buffer ordering permits it.
+    CpuFroxel,
+}
+
+impl ClusterAssignmentMode {
+    /// All variants for ImGui pickers and config round-trips.
+    pub const ALL: [Self; 3] = [Self::Auto, Self::GpuScan, Self::CpuFroxel];
+
+    /// Short label for the renderer config window.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::GpuScan => "GPU scan",
+            Self::CpuFroxel => "CPU froxel",
+        }
+    }
+}
+
 /// Intermediate scene color format for the forward pass (pre-compose, pre-post-processing).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -318,7 +356,7 @@ impl MsaaSampleCount {
 
 #[cfg(test)]
 mod tests {
-    use super::{MsaaSampleCount, SceneColorFormat};
+    use super::{ClusterAssignmentMode, MsaaSampleCount, SceneColorFormat};
     use crate::config::types::RendererSettings;
     use wgpu::TextureFormat;
 
@@ -421,6 +459,17 @@ mod tests {
             back.rendering.scene_color_format,
             SceneColorFormat::Rg11b10Float
         );
+    }
+
+    #[test]
+    fn cluster_assignment_toml_roundtrip() {
+        for mode in ClusterAssignmentMode::ALL {
+            let mut s = RendererSettings::default();
+            s.rendering.cluster_assignment = mode;
+            let toml = toml::to_string(&s).expect("serialize");
+            let back: RendererSettings = toml::from_str(&toml).expect("deserialize");
+            assert_eq!(back.rendering.cluster_assignment, mode);
+        }
     }
 }
 

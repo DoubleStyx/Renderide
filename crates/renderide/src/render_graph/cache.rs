@@ -2,6 +2,8 @@
 
 use wgpu::TextureFormat;
 
+use crate::config::ClusterAssignmentMode;
+
 use super::compiled::CompiledRenderGraph;
 use super::error::GraphBuildError;
 use super::post_processing::PostProcessChainSignature;
@@ -25,6 +27,8 @@ pub struct GraphCacheKey {
     /// effect parameters that only update uniforms do not flip this signature; only adding or
     /// removing a pass invalidates the cached graph.
     pub post_processing: PostProcessChainSignature,
+    /// Clustered-light assignment backend compiled into the cluster pass.
+    pub cluster_assignment: ClusterAssignmentMode,
 }
 
 /// Holds the last successfully built graph and its cache key.
@@ -122,6 +126,7 @@ mod tests {
             surface_format: TextureFormat::Bgra8UnormSrgb,
             scene_color_format: TextureFormat::Rgba16Float,
             post_processing: sig,
+            cluster_assignment: ClusterAssignmentMode::Auto,
         }
     }
 

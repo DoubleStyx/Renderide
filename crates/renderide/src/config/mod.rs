@@ -52,8 +52,8 @@ pub use resolve::{
     resolve_config_path, resolve_save_path, ConfigResolveOutcome, ConfigSource, FILE_NAME_TOML,
 };
 pub use types::{
-    BloomCompositeMode, BloomSettings, DebugSettings, DisplaySettings, GtaoSettings,
-    MsaaSampleCount, PostProcessingSettings, PowerPreferenceSetting, RecordParallelism,
-    RendererSettings, RenderingSettings, SceneColorFormat, TonemapMode, TonemapSettings, VsyncMode,
-    WatchdogAction, WatchdogSettings,
+    BloomCompositeMode, BloomSettings, ClusterAssignmentMode, DebugSettings, DisplaySettings,
+    GtaoSettings, MsaaSampleCount, PostProcessingSettings, PowerPreferenceSetting,
+    RecordParallelism, RendererSettings, RenderingSettings, SceneColorFormat, TonemapMode,
+    TonemapSettings, VsyncMode, WatchdogAction, WatchdogSettings,
 };

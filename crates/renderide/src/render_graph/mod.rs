@@ -442,6 +442,7 @@ fn add_main_graph_passes_and_edges(
     h: MainGraphHandles,
     post_processing: &crate::config::PostProcessingSettings,
     msaa_sample_count: u8,
+    cluster_assignment: crate::config::ClusterAssignmentMode,
 ) -> Result<CompiledRenderGraph, GraphBuildError> {
     let deform = builder.add_compute_pass(Box::new(passes::MeshDeformPass::new()));
     let clustered = builder.add_compute_pass(Box::new(passes::ClusteredLightPass::new(
@@ -451,6 +452,7 @@ fn add_main_graph_passes_and_edges(
             cluster_light_indices: h.cluster_light_indices,
             params: h.cluster_params,
         },
+        cluster_assignment,
     )));
     let forward_resources = passes::WorldMeshForwardGraphResources {
         scene_color_hdr: h.scene_color_hdr,
@@ -595,8 +597,13 @@ pub fn build_main_graph(
         handles.forward_msaa_depth,
         handles.forward_msaa_depth_r32,
     ];
-    let mut graph =
-        add_main_graph_passes_and_edges(builder, handles, post_processing, key.msaa_sample_count)?;
+    let mut graph = add_main_graph_passes_and_edges(
+        builder,
+        handles,
+        post_processing,
+        key.msaa_sample_count,
+        key.cluster_assignment,
+    )?;
     graph.main_graph_msaa_transient_handles = Some(msaa_handles);
     Ok(graph)
 }
@@ -624,6 +631,7 @@ pub fn build_default_main_graph_with(
         surface_format: wgpu::TextureFormat::Bgra8UnormSrgb,
         scene_color_format: wgpu::TextureFormat::Rgba16Float,
         post_processing: post_processing::PostProcessChainSignature::from_settings(post_processing),
+        cluster_assignment: crate::config::ClusterAssignmentMode::Auto,
     };
     build_main_graph(key, post_processing)
 }
@@ -646,6 +654,7 @@ mod default_graph_tests {
             surface_format: TextureFormat::Bgra8UnormSrgb,
             scene_color_format: TextureFormat::Rgba16Float,
             post_processing: PostProcessChainSignature::default(),
+            cluster_assignment: crate::config::ClusterAssignmentMode::Auto,
         }
     }
 

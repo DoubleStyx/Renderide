@@ -17,6 +17,37 @@ use super::material_batch_cache::{
 };
 use super::types::{MaterialDrawBatchKey, WorldMeshDrawItem};
 
+/// Compact ordering prefix for the hot draw-sort comparator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DrawSortKey {
+    /// Overlay draws sort after main-world draws.
+    pub overlay: bool,
+    /// Alpha-blended draws sort after opaque draws and then use transparent ordering.
+    pub alpha_blended: bool,
+    /// Coarse front-to-back bucket for opaque draws.
+    pub opaque_depth_bucket: u16,
+}
+
+impl DrawSortKey {
+    /// Builds the sort-key prefix for a draw item.
+    fn from_draw(item: &WorldMeshDrawItem) -> Self {
+        Self {
+            overlay: item.is_overlay,
+            alpha_blended: item.batch_key.alpha_blended,
+            opaque_depth_bucket: opaque_depth_bucket(item.camera_distance_sq),
+        }
+    }
+}
+
+/// Maps camera-distance squared into a coarse logarithmic front-to-back bucket.
+fn opaque_depth_bucket(distance_sq: f32) -> u16 {
+    if !distance_sq.is_finite() || distance_sq <= 0.0 {
+        return 0;
+    }
+    let distance = distance_sq.sqrt().max(1e-4);
+    ((distance.log2() + 16.0).floor().clamp(0.0, 255.0)) as u16
+}
+
 /// Builds a [`MaterialDrawBatchKey`] for one material slot from dictionary + router state.
 ///
 /// This is the full per-draw computation path. Used for cache warm-up and as a fallback for
@@ -157,6 +188,38 @@ pub(super) fn batch_key_for_slot_cached(
 /// Shared by [`sort_world_mesh_draws`] (parallel) and [`sort_world_mesh_draws_serial`].
 #[inline]
 pub(super) fn cmp_world_mesh_draw_items(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
+    let a_sort = DrawSortKey::from_draw(a);
+    let b_sort = DrawSortKey::from_draw(b);
+    a_sort
+        .overlay
+        .cmp(&b_sort.overlay)
+        .then(a_sort.alpha_blended.cmp(&b_sort.alpha_blended))
+        .then_with(
+            || match (a.batch_key.alpha_blended, b.batch_key.alpha_blended) {
+                (false, false) => a_sort
+                    .opaque_depth_bucket
+                    .cmp(&b_sort.opaque_depth_bucket)
+                    .then_with(|| a.batch_key.cmp(&b.batch_key))
+                    .then(b.sorting_order.cmp(&a.sorting_order))
+                    .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
+                    .then(a.node_id.cmp(&b.node_id))
+                    .then(a.slot_index.cmp(&b.slot_index)),
+                (true, true) => a
+                    .sorting_order
+                    .cmp(&b.sorting_order)
+                    .then_with(|| b.camera_distance_sq.total_cmp(&a.camera_distance_sq))
+                    .then(a.collect_order.cmp(&b.collect_order)),
+                _ => Ordering::Equal,
+            },
+        )
+}
+
+/// Pre-depth-bucket ordering retained for regression tests that need to isolate batch-key order.
+#[cfg(test)]
+fn cmp_world_mesh_draw_items_without_depth_bucket(
+    a: &WorldMeshDrawItem,
+    b: &WorldMeshDrawItem,
+) -> Ordering {
     a.is_overlay
         .cmp(&b.is_overlay)
         .then(a.batch_key.alpha_blended.cmp(&b.batch_key.alpha_blended))
@@ -181,10 +244,87 @@ pub(super) fn cmp_world_mesh_draw_items(a: &WorldMeshDrawItem, b: &WorldMeshDraw
 
 /// Sorts opaque draws for batching and alpha UI/text draws in stable canvas order.
 pub fn sort_world_mesh_draws(items: &mut [WorldMeshDrawItem]) {
+    profiling::scope!("mesh::sort_world_mesh_draws");
     items.par_sort_unstable_by(cmp_world_mesh_draw_items);
 }
 
 /// Same ordering as [`sort_world_mesh_draws`] without rayon (for nested parallel batches).
 pub(super) fn sort_world_mesh_draws_serial(items: &mut [WorldMeshDrawItem]) {
+    profiling::scope!("mesh::sort_world_mesh_draws_serial");
     items.sort_unstable_by(cmp_world_mesh_draw_items);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render_graph::test_fixtures::{dummy_world_mesh_draw_item, DummyDrawItemSpec};
+
+    #[test]
+    fn opaque_sort_prefers_nearer_depth_bucket_before_batch_key() {
+        let mut near = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 2,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 2,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        near.camera_distance_sq = 1.0;
+        let mut far = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 1,
+            alpha_blended: false,
+        });
+        far.camera_distance_sq = 4096.0;
+
+        assert_eq!(
+            cmp_world_mesh_draw_items(&near, &far),
+            Ordering::Less,
+            "near opaque draws should sort before lower material ids when depth buckets differ"
+        );
+        assert_eq!(
+            cmp_world_mesh_draw_items_without_depth_bucket(&near, &far),
+            Ordering::Greater,
+            "the regression setup must differ from pure batch-key ordering"
+        );
+    }
+
+    #[test]
+    fn transparent_sort_remains_back_to_front() {
+        let mut near = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: true,
+        });
+        near.camera_distance_sq = 1.0;
+        let mut far = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 2,
+            slot_index: 0,
+            collect_order: 1,
+            alpha_blended: true,
+        });
+        far.camera_distance_sq = 4096.0;
+
+        assert_eq!(cmp_world_mesh_draw_items(&far, &near), Ordering::Less);
+    }
 }

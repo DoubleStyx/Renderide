@@ -160,6 +160,69 @@ pub fn plot_world_mesh_subpass(batches: usize, draws: usize) {
     }
 }
 
+/// Records deferred queue-write traffic for one frame.
+#[inline]
+pub fn plot_frame_upload_batch(writes: usize, bytes: usize) {
+    #[cfg(feature = "tracy")]
+    {
+        tracy_client::plot!("frame_upload::writes", writes as f64);
+        tracy_client::plot!("frame_upload::bytes", bytes as f64);
+    }
+    #[cfg(not(feature = "tracy"))]
+    {
+        let _ = (writes, bytes);
+    }
+}
+
+/// Asset-integration backlog and budget-exhaustion counters for one drain.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AssetIntegrationProfileSample {
+    /// High-priority tasks still queued after the drain.
+    pub high_priority_queued: usize,
+    /// Normal-priority tasks still queued after the drain.
+    pub normal_priority_queued: usize,
+    /// Whether the high-priority emergency ceiling stopped the drain.
+    pub high_priority_budget_exhausted: bool,
+    /// Whether the normal-priority frame budget stopped the drain.
+    pub normal_priority_budget_exhausted: bool,
+}
+
+/// Records asset-integration backlog and budget pressure for the current frame.
+#[inline]
+pub fn plot_asset_integration(sample: AssetIntegrationProfileSample) {
+    #[cfg(feature = "tracy")]
+    {
+        tracy_client::plot!(
+            "asset_integration::high_priority_queued",
+            sample.high_priority_queued as f64
+        );
+        tracy_client::plot!(
+            "asset_integration::normal_priority_queued",
+            sample.normal_priority_queued as f64
+        );
+        tracy_client::plot!(
+            "asset_integration::high_priority_budget_exhausted",
+            if sample.high_priority_budget_exhausted {
+                1.0
+            } else {
+                0.0
+            }
+        );
+        tracy_client::plot!(
+            "asset_integration::normal_priority_budget_exhausted",
+            if sample.normal_priority_budget_exhausted {
+                1.0
+            } else {
+                0.0
+            }
+        );
+    }
+    #[cfg(not(feature = "tracy"))]
+    {
+        let _ = sample;
+    }
+}
+
 /// Mesh-deform workload and cache pressure counters for one frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MeshDeformProfileSample {
