@@ -69,9 +69,9 @@ fn render_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
     row(
         ui,
         ("CPU", CPU_HEAD_COLOR),
-        (format!("{:5.1}%", t.host_cpu_usage_percent), VALUE_COLOR),
-        Some(("frame", LABEL_COLOR)),
-        Some((format!("{cpu_ms} ms"), VALUE_COLOR)),
+        (format!("{cpu_ms} ms"), VALUE_COLOR),
+        Some(("util", LABEL_COLOR)),
+        Some((format!("{:5.1}%", t.host_cpu_usage_percent), VALUE_COLOR)),
     );
 
     let gpu_ms = ms_or_dash(t.gpu_frame_ms);
