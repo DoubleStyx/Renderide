@@ -107,33 +107,52 @@ impl FramePreparedRenderables {
         mesh_pool: &MeshPool,
         render_context: RenderingContext,
     ) -> Self {
-        profiling::scope!("mesh::prepared_renderables_build_for_frame");
-        let active_space_ids: Vec<RenderSpaceId> = scene
-            .render_space_ids()
-            .filter(|id| scene.space(*id).map(|s| s.is_active).unwrap_or(false))
-            .collect();
+        let mut out = Self::empty(render_context);
+        out.rebuild_for_frame(scene, mesh_pool, render_context);
+        out
+    }
 
-        if active_space_ids.is_empty() {
-            return Self::empty(render_context);
+    /// Rebuilds this snapshot in place, reusing the `draws` and `active_space_ids` Vec
+    /// capacities across frames. Same semantics and parallelization as [`Self::build_for_frame`].
+    ///
+    /// Pooling matters because every frame produces a fresh dense list of every renderable's
+    /// material slots — typically hundreds to thousands of entries. Allocating and freeing the
+    /// backing buffer each frame shows up in `extract_frame_shared` zone profiles; clearing in
+    /// place keeps the allocation count flat in steady state.
+    pub fn rebuild_for_frame(
+        &mut self,
+        scene: &SceneCoordinator,
+        mesh_pool: &MeshPool,
+        render_context: RenderingContext,
+    ) {
+        profiling::scope!("mesh::prepared_renderables_build_for_frame");
+        self.render_context = render_context;
+        self.active_space_ids.clear();
+        self.draws.clear();
+
+        self.active_space_ids.extend(
+            scene
+                .render_space_ids()
+                .filter(|id| scene.space(*id).map(|s| s.is_active).unwrap_or(false)),
+        );
+
+        if self.active_space_ids.is_empty() {
+            return;
         }
 
-        if active_space_ids.len() == 1 {
-            let mut draws = Vec::new();
+        if self.active_space_ids.len() == 1 {
             expand_space_into(
-                &mut draws,
+                &mut self.draws,
                 scene,
                 mesh_pool,
                 render_context,
-                active_space_ids[0],
+                self.active_space_ids[0],
             );
-            return Self {
-                active_space_ids,
-                draws,
-                render_context,
-            };
+            return;
         }
 
-        let per_space: Vec<Vec<FramePreparedDraw>> = active_space_ids
+        let per_space: Vec<Vec<FramePreparedDraw>> = self
+            .active_space_ids
             .par_iter()
             .map(|&space_id| {
                 let mut local = Vec::new();
@@ -143,14 +162,9 @@ impl FramePreparedRenderables {
             .collect();
 
         let total: usize = per_space.iter().map(Vec::len).sum();
-        let mut draws = Vec::with_capacity(total);
+        self.draws.reserve(total);
         for mut local in per_space {
-            draws.append(&mut local);
-        }
-        Self {
-            active_space_ids,
-            draws,
-            render_context,
+            self.draws.append(&mut local);
         }
     }
 

@@ -133,6 +133,10 @@ pub struct RenderBackend {
     /// [`crate::materials::MaterialRouter`] generation counters, so steady-state refresh cost is
     /// proportional to the number of mutated materials rather than the total material count.
     pub(crate) material_batch_cache: FrameMaterialBatchCache,
+    /// Pooled prepared-renderables snapshot, rebuilt in place each frame to retain the
+    /// underlying `Vec` capacities across frames. Built fresh by
+    /// [`Self::extract_frame_shared`] before per-view draw collection consumes it.
+    pub(crate) prepared_renderables: crate::render_graph::FramePreparedRenderables,
     /// Registry of persistent ping-pong resources used by graph history slots
     /// (`ImportSource::PingPong` / `BufferImportSource::PingPong`).
     pub(crate) history_registry: super::HistoryRegistry,
@@ -212,6 +216,9 @@ impl RenderBackend {
             renderer_settings: None,
             record_parallelism: crate::config::RecordParallelism::PerViewParallel,
             material_batch_cache: FrameMaterialBatchCache::new(),
+            prepared_renderables: crate::render_graph::FramePreparedRenderables::empty(
+                crate::shared::RenderingContext::default(),
+            ),
             history_registry: super::HistoryRegistry::new(),
             reflection_probe_sh2: super::ReflectionProbeSh2System::new(),
             view_resources: ViewResourceRegistry::new(),

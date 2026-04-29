@@ -183,6 +183,13 @@ fn collect_view_draws(
     cull_snapshots: &[Option<ViewCullSnapshot>],
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::collect_view_draws");
+    // The MaterialDictionary wraps the property store with read-only views; building it once
+    // and sharing across views avoids N redundant constructions inside the rayon par_iter.
+    // It's `Sync` because everything inside is `&` borrows of frame-shared state.
+    let dict = {
+        profiling::scope!("collect::shared_dictionary");
+        crate::assets::material::MaterialDictionary::new(setup.property_store)
+    };
     prepared
         .par_iter()
         .zip(cull_snapshots.par_iter())
@@ -190,7 +197,6 @@ fn collect_view_draws(
             let shader_perm = prep.shader_permutation();
             let material_cache = (shader_perm == crate::pipelines::ShaderPermutation(0))
                 .then_some(setup.material_cache);
-            let dict = crate::assets::material::MaterialDictionary::new(setup.property_store);
             let cull_proj = snap.as_ref().map(|s| s.proj);
             let culling = snap.as_ref().map(|s| WorldMeshCullInput {
                 proj: s.proj,
@@ -212,7 +218,7 @@ fn collect_view_draws(
                     culling: culling.as_ref(),
                     transform_filter: prep.draw_filter.as_ref(),
                     material_cache,
-                    prepared: Some(&setup.prepared_renderables),
+                    prepared: Some(setup.prepared_renderables),
                 },
                 setup.inner_parallelism,
             );

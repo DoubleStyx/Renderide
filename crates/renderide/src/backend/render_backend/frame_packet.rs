@@ -33,7 +33,8 @@ pub(crate) struct ExtractedFrameShared<'a> {
     /// Persistent mono material batch cache refreshed once at frame start.
     pub(crate) material_cache: &'a FrameMaterialBatchCache,
     /// Dense per-frame walk of renderables pre-expanded once before per-view collection.
-    pub(crate) prepared_renderables: FramePreparedRenderables,
+    /// Borrowed from the backend-owned pool so the underlying `Vec`s retain capacity.
+    pub(crate) prepared_renderables: &'a FramePreparedRenderables,
     /// Shared occlusion state used for Hi-Z snapshots and temporal cull data.
     pub(crate) occlusion: &'a OcclusionSystem,
     /// Rayon parallelism tier for each view's inner walk.
@@ -80,14 +81,14 @@ impl RenderBackend {
             );
         }
 
-        let prepared_renderables = {
+        {
             profiling::scope!("render::build_frame_prepared_renderables");
-            FramePreparedRenderables::build_for_frame(
+            self.prepared_renderables.rebuild_for_frame(
                 scene,
                 &self.asset_transfers.mesh_pool,
                 render_context,
-            )
-        };
+            );
+        }
 
         ExtractedFrameShared {
             scene,
@@ -97,7 +98,7 @@ impl RenderBackend {
             pipeline_property_ids,
             render_context,
             material_cache: &self.material_batch_cache,
-            prepared_renderables,
+            prepared_renderables: &self.prepared_renderables,
             occlusion: &self.occlusion,
             inner_parallelism,
         }

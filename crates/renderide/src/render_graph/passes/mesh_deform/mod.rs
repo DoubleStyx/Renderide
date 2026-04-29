@@ -298,12 +298,14 @@ impl ComputePass for MeshDeformPass {
         let head_output_transform = frame.view.host_camera.head_output_transform;
 
         profiling::scope!("mesh_deform::dispatch");
-        let work_items: Vec<_> = scratch.work.drain(..).collect();
-        let work_item_count = work_items.len() as u64;
+        // Iterate `scratch.work` in place under the lock and clear afterwards: previous code
+        // did `drain(..).collect()` which heap-allocated a fresh Vec per frame just to drop
+        // the lock early. The mutex is uncontended in practice (the pass runs single-threaded
+        // before per-view fan-out), and clearing keeps the buffer's capacity for next frame.
+        let work_item_count = scratch.work.len() as u64;
         let (mut dispatch_stats, mut skipped_allocations) =
             (MeshDeformRecordStats::default(), 0u64);
-        drop(scratch);
-        for item in work_items {
+        for item in &scratch.work {
             let need = EntryNeed {
                 needs_blend: deform_needs_blend_snapshot(&item.mesh, &item.blend_weights),
                 needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),
@@ -357,6 +359,8 @@ impl ComputePass for MeshDeformPass {
                 .skin_dispatches
                 .saturating_add(stats.skin_dispatches);
         }
+        scratch.work.clear();
+        drop(scratch);
 
         let fc = skin_cache.frame_counter();
         report_mesh_deform_stats(

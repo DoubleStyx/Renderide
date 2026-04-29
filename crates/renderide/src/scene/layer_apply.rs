@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
+use hashbrown::HashMap;
 use parking_lot::Mutex;
 
 use crate::ipc::SharedMemoryAccessor;
@@ -115,9 +116,26 @@ pub(crate) fn apply_layer_update_extracted(
 const LAYER_RESOLVE_PARALLEL_MIN: usize = 256;
 
 pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState) {
-    profiling::scope!("scene::resolve_mesh_layers");
+    profiling::scope!("scene::apply::layer_resolve");
     let node_parents = &space.node_parents;
-    let layer_assignments = &space.layer_assignments;
+
+    // Build a node_id → layer index for this resolve. The previous code did
+    // `layer_assignments.iter().rev().find()` per ancestor walk, which made each renderable
+    // O(scene_depth × assignment_count). Constructing the index up front collapses the per-
+    // renderable cost to O(scene_depth) regardless of assignment count. The forward `insert`
+    // matches the prior `iter().rev().find()` "latest assignment wins" semantics: when the
+    // host re-emits a LayerAssignmentEntry for an existing node_id, the later push overwrites.
+    let layer_for_node: HashMap<i32, LayerType> = {
+        profiling::scope!("scene::apply::layer_resolve::build_index");
+        let mut map = HashMap::with_capacity(space.layer_assignments.len());
+        for entry in &space.layer_assignments {
+            if entry.node_id >= 0 {
+                map.insert(entry.node_id, entry.layer);
+            }
+        }
+        map
+    };
+
     let total = space.static_mesh_renderers.len() + space.skinned_mesh_renderers.len();
 
     // Collect node ids whose layer resolution falls through to the default; logged after the
@@ -128,7 +146,7 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
     if total >= LAYER_RESOLVE_PARALLEL_MIN {
         use rayon::prelude::*;
         space.static_mesh_renderers.par_iter_mut().for_each(|r| {
-            match resolve_layer_for_node(node_parents, layer_assignments, r.node_id) {
+            match resolve_layer_for_node(node_parents, &layer_for_node, r.node_id) {
                 Some(layer) => r.layer = layer,
                 None => {
                     r.layer = LayerType::default();
@@ -137,7 +155,7 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
             }
         });
         space.skinned_mesh_renderers.par_iter_mut().for_each(|r| {
-            match resolve_layer_for_node(node_parents, layer_assignments, r.base.node_id) {
+            match resolve_layer_for_node(node_parents, &layer_for_node, r.base.node_id) {
                 Some(layer) => r.base.layer = layer,
                 None => {
                     r.base.layer = LayerType::default();
@@ -147,7 +165,7 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
         });
     } else {
         for renderer in &mut space.static_mesh_renderers {
-            match resolve_layer_for_node(node_parents, layer_assignments, renderer.node_id) {
+            match resolve_layer_for_node(node_parents, &layer_for_node, renderer.node_id) {
                 Some(layer) => renderer.layer = layer,
                 None => {
                     renderer.layer = LayerType::default();
@@ -156,7 +174,7 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
             }
         }
         for renderer in &mut space.skinned_mesh_renderers {
-            match resolve_layer_for_node(node_parents, layer_assignments, renderer.base.node_id) {
+            match resolve_layer_for_node(node_parents, &layer_for_node, renderer.base.node_id) {
                 Some(layer) => renderer.base.layer = layer,
                 None => {
                     renderer.base.layer = LayerType::default();
@@ -173,7 +191,7 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
 
 fn resolve_layer_for_node(
     node_parents: &[i32],
-    layer_assignments: &[LayerAssignmentEntry],
+    layer_for_node: &HashMap<i32, LayerType>,
     node_id: i32,
 ) -> Option<LayerType> {
     if node_id < 0 {
@@ -182,12 +200,8 @@ fn resolve_layer_for_node(
 
     let mut cursor = node_id;
     for _ in 0..node_parents.len() {
-        if let Some(entry) = layer_assignments
-            .iter()
-            .rev()
-            .find(|entry| entry.node_id == cursor)
-        {
-            return Some(entry.layer);
+        if let Some(layer) = layer_for_node.get(&cursor) {
+            return Some(*layer);
         }
         let parent = *node_parents.get(cursor as usize)?;
         if parent < 0 || parent == cursor || parent as usize >= node_parents.len() {
