@@ -28,6 +28,7 @@
 #import renderide::xiexe::toon2::lighting as xl
 #import renderide::globals as rg
 #import renderide::per_draw as pd
+#import renderide::uv_utils as uvu
 
 /// Outline vertex transform. Samples `_OutlineMask` at UV0 (Unity-faithful), extrudes
 /// the vertex along its object-space normal by `_OutlineWidth · 0.01 · mask · dist_scale`,
@@ -48,7 +49,7 @@ fn vertex_outline(
     let base_world = d.model * vec4<f32>(pos.xyz, 1.0);
     // Outline mask is authored against UV0 in Unity (`IN[i].uv` in XSGeom.cginc),
     // independent of `_UVSetAlbedo`. Sampling at `uv_primary` directly preserves that.
-    let mask = textureSampleLevel(xb::_OutlineMask, xb::_OutlineMask_sampler, uv_primary, 0.0).r;
+    let mask = textureSampleLevel(xb::_OutlineMask, xb::_OutlineMask_sampler, uvu::flip_v(uv_primary), 0.0).r;
     let dist_scale = min(distance(base_world.xyz, rg::camera_world_pos_for_view(view_idx)) * 3.0, 1.0);
     let outline_width = max(xb::mat._OutlineWidth, 0.0) * 0.01 * mask * dist_scale;
     let outline_pos = vec4<f32>(pos.xyz + xb::safe_normalize(n.xyz, vec3<f32>(0.0, 1.0, 0.0)) * outline_width, 1.0);
