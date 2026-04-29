@@ -196,11 +196,13 @@ impl RendererRuntime {
     ///
     /// Call at the top of the render-views phase so both the HMD and desktop paths share one drain.
     pub fn drain_hi_z_readback(&mut self, device: &wgpu::Device) {
+        profiling::scope!("tick::drain_hi_z_readback");
         self.backend.hi_z_begin_frame_readback(device);
     }
 
     /// Advances nonblocking GPU services that feed host-visible async results.
     pub fn maintain_nonblocking_gpu_jobs(&mut self, gpu: &GpuContext) {
+        profiling::scope!("tick::maintain_nonblocking_gpu_jobs");
         self.backend.maintain_reflection_probe_sh2_jobs(gpu);
     }
 

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::assets::mesh::{
     compute_and_validate_mesh_layout, mesh_upload_input_fingerprint, try_upload_mesh_from_raw,
+    GpuMesh,
 };
 use crate::gpu::GpuLimits;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
@@ -55,101 +56,153 @@ impl MeshUploadTask {
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         let asset_id = self.data.asset_id;
-        match &mut self.stage {
-            MeshStage::PendingLayout => {
-                if self.data.buffer.length <= 0 {
-                    return StepResult::Done;
-                }
-                let input_fp = mesh_upload_input_fingerprint(&self.data);
-                let layout = if let Some(l) =
-                    queue.mesh_pool.get_cached_mesh_layout(asset_id, input_fp)
-                {
-                    l
-                } else {
-                    let Some(l) = compute_and_validate_mesh_layout(&self.data) else {
-                        logger::error!("mesh {asset_id}: invalid mesh layout or buffer descriptor");
-                        return StepResult::Done;
-                    };
-                    queue
-                        .mesh_pool
-                        .set_cached_mesh_layout(asset_id, input_fp, l);
-                    l
-                };
-
-                let data = self.data.clone();
-                let existing = queue.mesh_pool.get_mesh(asset_id).cloned();
-                let raw_len = data.buffer.length.max(0) as usize;
-
-                let raw_arc = shm.with_read_bytes(&data.buffer, |raw| {
-                    if raw.len() < raw_len {
-                        logger::error!(
-                            "mesh {asset_id}: raw too short (need {}, got {})",
-                            raw_len,
-                            raw.len()
-                        );
-                        return None;
-                    }
-                    Some(Arc::from(&raw[..raw_len]))
-                });
-
-                let Some(raw) = raw_arc else {
-                    return StepResult::Done;
-                };
-
-                let (tx, rx) = crossbeam_channel::bounded(1);
-
-                let device_clone = Arc::clone(device);
-                let gpu_limits_clone = Arc::clone(gpu_limits);
-                let gpu_queue_clone = Arc::clone(gpu_queue);
-
-                rayon::spawn(move || {
-                    let mesh = try_upload_mesh_from_raw(
-                        device_clone.as_ref(),
-                        gpu_limits_clone.as_ref(),
-                        Some(gpu_queue_clone.as_ref()),
-                        &raw,
-                        &data,
-                        existing,
-                        &layout,
-                    );
-                    let _ = tx.send(mesh);
-                });
-
-                self.stage = MeshStage::Decoding { rx };
-                StepResult::YieldBackground
-            }
-            MeshStage::Decoding { rx } => match rx.try_recv() {
-                Ok(upload_result) => {
-                    let Some(mesh) = upload_result else {
-                        logger::error!(
-                            "mesh {asset_id}: upload failed or rejected — host callback not completed (no MeshUploadResult sent)"
-                        );
-                        return StepResult::Done;
-                    };
-                    let existed_before = queue.mesh_pool.insert_mesh(mesh);
-                    if let Some(ipc) = ipc.as_mut() {
-                        use crate::shared::{MeshUploadResult, RendererCommand};
-                        let _ = ipc.send_background(RendererCommand::MeshUploadResult(
-                            MeshUploadResult {
-                                asset_id,
-                                instance_changed: !existed_before,
-                            },
-                        ));
-                    }
-                    logger::trace!(
-                        "mesh {} uploaded via integrator (replaced={} resident_bytes≈{})",
-                        asset_id,
-                        existed_before,
-                        queue.mesh_pool.accounting().total_resident_bytes()
-                    );
-                    StepResult::Done
-                }
-                Err(crossbeam_channel::TryRecvError::Empty) => StepResult::YieldBackground,
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    logger::error!("mesh {asset_id}: background decode thread panicked");
-                    StepResult::Done
-                }
-            },
+        if matches!(self.stage, MeshStage::PendingLayout) {
+            return self.start_pending_layout(queue, device, gpu_limits, gpu_queue, shm);
         }
+        if let MeshStage::Decoding { rx } = &mut self.stage {
+            return Self::poll_background_upload(asset_id, rx, queue, ipc);
+        }
+        StepResult::Done
+    }
+
+    /// Starts layout resolution, shared-memory capture, and background GPU upload.
+    fn start_pending_layout(
+        &mut self,
+        queue: &mut AssetTransferQueue,
+        device: &Arc<wgpu::Device>,
+        gpu_limits: &Arc<GpuLimits>,
+        gpu_queue: &Arc<wgpu::Queue>,
+        shm: &mut SharedMemoryAccessor,
+    ) -> StepResult {
+        profiling::scope!("asset::mesh_pending_layout");
+        let asset_id = self.data.asset_id;
+        if self.data.buffer.length <= 0 {
+            return StepResult::Done;
+        }
+        let Some(layout) = self.resolve_layout(queue) else {
+            return StepResult::Done;
+        };
+
+        let data = self.data.clone();
+        let existing = queue.mesh_pool.get_mesh(asset_id).cloned();
+        let raw_len = data.buffer.length.max(0) as usize;
+        let raw_arc = Self::copy_mesh_payload(shm, &data, raw_len);
+        let Some(raw) = raw_arc else {
+            return StepResult::Done;
+        };
+
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let device_clone = Arc::clone(device);
+        let gpu_limits_clone = Arc::clone(gpu_limits);
+        let gpu_queue_clone = Arc::clone(gpu_queue);
+        rayon::spawn(move || {
+            profiling::scope!("asset::mesh_upload_background");
+            let mesh = try_upload_mesh_from_raw(
+                device_clone.as_ref(),
+                gpu_limits_clone.as_ref(),
+                Some(gpu_queue_clone.as_ref()),
+                &raw,
+                &data,
+                existing,
+                &layout,
+            );
+            let _ = tx.send(mesh);
+        });
+
+        self.stage = MeshStage::Decoding { rx };
+        StepResult::YieldBackground
+    }
+
+    /// Resolves and caches the mesh buffer layout for the upload.
+    fn resolve_layout(
+        &self,
+        queue: &mut AssetTransferQueue,
+    ) -> Option<crate::assets::mesh::MeshBufferLayout> {
+        profiling::scope!("asset::mesh_layout");
+        let asset_id = self.data.asset_id;
+        let input_fp = mesh_upload_input_fingerprint(&self.data);
+        if let Some(l) = queue.mesh_pool.get_cached_mesh_layout(asset_id, input_fp) {
+            return Some(l);
+        }
+        let Some(l) = compute_and_validate_mesh_layout(&self.data) else {
+            logger::error!("mesh {asset_id}: invalid mesh layout or buffer descriptor");
+            return None;
+        };
+        queue
+            .mesh_pool
+            .set_cached_mesh_layout(asset_id, input_fp, l);
+        Some(l)
+    }
+
+    /// Copies the shared-memory mesh payload into an owned slice for background upload.
+    fn copy_mesh_payload(
+        shm: &mut SharedMemoryAccessor,
+        data: &MeshUploadData,
+        raw_len: usize,
+    ) -> Option<Arc<[u8]>> {
+        profiling::scope!("asset::mesh_shared_memory_read");
+        let asset_id = data.asset_id;
+        shm.with_read_bytes(&data.buffer, |raw| {
+            if raw.len() < raw_len {
+                logger::error!(
+                    "mesh {asset_id}: raw too short (need {}, got {})",
+                    raw_len,
+                    raw.len()
+                );
+                return None;
+            }
+            Some(Arc::from(&raw[..raw_len]))
+        })
+    }
+
+    /// Polls the background upload and integrates the resident mesh plus host callback.
+    fn poll_background_upload(
+        asset_id: i32,
+        rx: &crossbeam_channel::Receiver<Option<GpuMesh>>,
+        queue: &mut AssetTransferQueue,
+        ipc: &mut Option<&mut DualQueueIpc>,
+    ) -> StepResult {
+        profiling::scope!("asset::mesh_upload_poll");
+        match rx.try_recv() {
+            Ok(upload_result) => {
+                Self::finalize_background_upload(asset_id, upload_result, queue, ipc)
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => StepResult::YieldBackground,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                logger::error!("mesh {asset_id}: background decode thread panicked");
+                StepResult::Done
+            }
+        }
+    }
+
+    /// Stores a completed background upload and sends the host result.
+    fn finalize_background_upload(
+        asset_id: i32,
+        upload_result: Option<GpuMesh>,
+        queue: &mut AssetTransferQueue,
+        ipc: &mut Option<&mut DualQueueIpc>,
+    ) -> StepResult {
+        let Some(mesh) = upload_result else {
+            logger::error!(
+                "mesh {asset_id}: upload failed or rejected — host callback not completed (no MeshUploadResult sent)"
+            );
+            return StepResult::Done;
+        };
+        profiling::scope!("asset::mesh_upload_finalize");
+        let existed_before = queue.mesh_pool.insert_mesh(mesh);
+        if let Some(ipc) = ipc.as_mut() {
+            use crate::shared::{MeshUploadResult, RendererCommand};
+            let _ = ipc.send_background(RendererCommand::MeshUploadResult(MeshUploadResult {
+                asset_id,
+                instance_changed: !existed_before,
+            }));
+        }
+        logger::trace!(
+            "mesh {} uploaded via integrator (replaced={} resident_bytes≈{})",
+            asset_id,
+            existed_before,
+            queue.mesh_pool.accounting().total_resident_bytes()
+        );
+        StepResult::Done
     }
 }

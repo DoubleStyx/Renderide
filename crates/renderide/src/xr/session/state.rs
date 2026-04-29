@@ -158,6 +158,7 @@ impl XrSessionState {
     /// dropped return value (as at [`crate::xr::app_integration::openxr_begin_frame_tick`]) no
     /// longer silently strands the app in a terminating session.
     pub fn poll_events(&mut self) -> Result<bool, xr::sys::Result> {
+        profiling::scope!("xr::session_poll_events");
         loop {
             // Bind the next event in an inner scope so its borrow on `self.event_storage` ends
             // before we invoke any `&mut self` state-change side-effects below.
@@ -288,6 +289,7 @@ impl XrSessionState {
         }
         let state = self.frame_wait.wait()?;
         {
+            profiling::scope!("xr::frame_stream_begin");
             let _gate = gpu_queue_access_gate.lock();
             self.frame_stream.begin()?;
         }
@@ -301,6 +303,7 @@ impl XrSessionState {
         predicted_display_time: xr::Time,
         gpu_queue_access_gate: &crate::gpu::GpuQueueAccessGate,
     ) -> Result<(), xr::sys::Result> {
+        profiling::scope!("xr::end_frame_empty");
         let wd = EndFrameWatchdog::arm(END_FRAME_WATCHDOG_TIMEOUT, "end_frame_empty");
         let res = {
             let _gate = gpu_queue_access_gate.lock();

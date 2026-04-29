@@ -77,6 +77,7 @@ fn cubemap_mip_src_to_upload_pixels(
     face: u32,
     mip_src: &[u8],
 ) -> Result<MipUploadPixels, TextureUploadError> {
+    profiling::scope!("asset::cubemap_convert_mip_pixels");
     shared_mip_src_to_upload_pixels(
         ctx,
         w,
@@ -132,6 +133,7 @@ impl CubemapMipChainUploader {
         upload: &SetCubemapData,
         raw: &[u8],
     ) -> Result<Self, TextureUploadError> {
+        profiling::scope!("asset::cubemap_mip_chain_new");
         let want = upload.data.length.max(0) as usize;
         if raw.len() < want {
             return Err(TextureUploadError::from(format!(
@@ -206,6 +208,7 @@ impl CubemapMipChainUploader {
         &mut self,
         step: CubemapFaceMipUploadStep<'_>,
     ) -> Result<MipChainAdvance, TextureUploadError> {
+        profiling::scope!("asset::cubemap_mip_chain_step");
         if self.face >= 6 {
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded,
@@ -230,6 +233,7 @@ impl CubemapMipChainUploader {
         let Some(rx) = &self.background_rx else {
             return Ok(None);
         };
+        profiling::scope!("asset::cubemap_poll_decoded_mip");
         match rx.try_recv() {
             Ok(res) => {
                 self.background_rx = None;
@@ -286,6 +290,7 @@ impl CubemapMipChainUploader {
         &mut self,
         step: &CubemapFaceMipUploadStep<'_>,
     ) -> Result<MipChainAdvance, TextureUploadError> {
+        profiling::scope!("asset::cubemap_spawn_mip_decode");
         let mip_i = self.mip_i;
         debug_assert!(mip_i < step.upload.mip_map_sizes.len());
 
@@ -343,6 +348,7 @@ impl CubemapMipChainUploader {
         let flip = self.flip;
         let face = self.face;
         rayon::spawn(move || {
+            profiling::scope!("asset::cubemap_decode_mip");
             let mip_src = &payload_arc[mip_src_range];
             let res = cubemap_mip_src_to_upload_pixels(ctx, w, h, flip, mip_i, face, mip_src);
             let _ = tx.send(res);

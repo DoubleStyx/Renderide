@@ -66,6 +66,7 @@ impl SharedMemoryAccessor {
         descriptor: &SharedMemoryBufferDescriptor,
         f: impl FnOnce(&[u8]) -> Option<R>,
     ) -> Option<R> {
+        profiling::scope!("shared_memory::with_read_bytes");
         if descriptor.length <= 0 {
             return None;
         }
@@ -76,13 +77,16 @@ impl SharedMemoryAccessor {
 
     /// Releases a cached view (e.g. after [`RendererCommand::FreeSharedMemoryView`](crate::shared::RendererCommand::FreeSharedMemoryView)).
     pub fn release_view(&mut self, buffer_id: i32) {
+        profiling::scope!("shared_memory::release_view");
         self.views.remove(&buffer_id);
     }
 
     fn get_view(&mut self, d: &SharedMemoryBufferDescriptor) -> Option<&mut SharedMemoryView> {
+        profiling::scope!("shared_memory::get_view");
         let capacity = required_view_capacity(d)?;
         let buffer_id = d.buffer_id;
         if !self.views.contains_key(&buffer_id) {
+            profiling::scope!("shared_memory::map_view");
             let view = SharedMemoryView::new(&self.prefix, buffer_id, capacity).ok()?;
             self.views.insert(buffer_id, view);
         }
@@ -114,6 +118,7 @@ impl SharedMemoryAccessor {
         descriptor: &SharedMemoryBufferDescriptor,
         context: Option<&str>,
     ) -> Result<Vec<T>, String> {
+        profiling::scope!("shared_memory::access_copy");
         let prefix_err = |msg: &str| {
             if let Some(ctx) = context {
                 format!("{ctx}: {msg}")
@@ -200,6 +205,7 @@ impl SharedMemoryAccessor {
         element_stride: usize,
         context: Option<&str>,
     ) -> Result<Vec<T>, String> {
+        profiling::scope!("shared_memory::access_packable_rows");
         let prefix_err = |msg: &str| {
             if let Some(ctx) = context {
                 format!("{ctx}: {msg}")
@@ -284,6 +290,7 @@ impl SharedMemoryAccessor {
     where
         F: FnOnce(&mut [T]),
     {
+        profiling::scope!("shared_memory::access_mut");
         if descriptor.length <= 0 {
             return false;
         }
@@ -307,8 +314,11 @@ impl SharedMemoryAccessor {
             return false;
         }
         f(&mut slice[..count]);
-        bytes.copy_from_slice(bytemuck::cast_slice(slice));
-        view.flush_range(descriptor.offset, descriptor.length);
+        {
+            profiling::scope!("shared_memory::flush_mut");
+            bytes.copy_from_slice(bytemuck::cast_slice(slice));
+            view.flush_range(descriptor.offset, descriptor.length);
+        }
         true
     }
 
@@ -317,6 +327,7 @@ impl SharedMemoryAccessor {
     where
         F: FnOnce(&mut [u8]),
     {
+        profiling::scope!("shared_memory::access_mut_bytes");
         if descriptor.length <= 0 {
             return false;
         }
@@ -327,7 +338,10 @@ impl SharedMemoryAccessor {
             return false;
         };
         f(bytes);
-        view.flush_range(descriptor.offset, descriptor.length);
+        {
+            profiling::scope!("shared_memory::flush_mut_bytes");
+            view.flush_range(descriptor.offset, descriptor.length);
+        }
         true
     }
 }

@@ -419,6 +419,7 @@ impl<'a> ChainCursor<'a> {
     }
 
     fn advance<L: MaterialBatchBlobLoader + ?Sized>(&mut self, loader: &mut L) -> bool {
+        profiling::scope!("material::batch_blob_advance");
         while self.descriptor_index < self.descriptors.len() {
             let desc = &self.descriptors[self.descriptor_index];
             self.descriptor_index += 1;

@@ -267,6 +267,7 @@ pub(super) fn mip_src_to_upload_pixels(
     mip_src: &[u8],
     label: MipUploadLabel,
 ) -> Result<MipUploadPixels, TextureUploadError> {
+    profiling::scope!("asset::texture_convert_mip_pixels");
     let MipUploadFormatCtx {
         asset_id,
         fmt_format,
@@ -370,6 +371,7 @@ pub(super) struct Texture2dMipWrite<'a> {
 
 /// Writes one full 2D mip level.
 pub(super) fn write_one_mip(write: &Texture2dMipWrite<'_>) -> Result<(), TextureUploadError> {
+    profiling::scope!("asset::texture_write_mip");
     let Texture2dMipWrite {
         queue,
         gpu_queue_access_gate,
@@ -425,6 +427,7 @@ pub struct Texture3dVolumeMipWrite<'a> {
 pub fn write_texture3d_volume_mip(
     write: &Texture3dVolumeMipWrite<'_>,
 ) -> Result<(), TextureUploadError> {
+    profiling::scope!("asset::texture3d_write_volume_mip");
     let Texture3dVolumeMipWrite {
         queue,
         gpu_queue_access_gate,
@@ -479,6 +482,7 @@ pub struct CubemapFaceMipWrite<'a> {
 
 /// Writes one face x one mip of a cubemap (`D2` texture with six array layers).
 pub fn write_cubemap_face_mip(write: &CubemapFaceMipWrite<'_>) -> Result<(), TextureUploadError> {
+    profiling::scope!("asset::cubemap_write_face_mip");
     let CubemapFaceMipWrite {
         queue,
         gpu_queue_access_gate,
@@ -565,6 +569,7 @@ pub(super) fn copy_extent_for_mip(
 pub(super) fn write_texture_region(
     write: TextureRegionWrite<'_>,
 ) -> Result<(), TextureUploadError> {
+    profiling::scope!("asset::texture_write_region");
     let size = copy_extent_for_mip(
         write.format,
         write.width,

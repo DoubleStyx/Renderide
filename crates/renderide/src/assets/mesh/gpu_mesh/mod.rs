@@ -507,9 +507,13 @@ impl GpuMesh {
         data: &MeshUploadData,
         layout: &MeshBufferLayout,
     ) -> Option<Self> {
+        profiling::scope!("asset::mesh_full_gpu_upload");
         let max_buf = gpu_limits.max_buffer_size();
-        if !validate_mesh_upload_layout(raw, data, layout, gpu_limits) {
-            return None;
+        {
+            profiling::scope!("asset::mesh_validate_upload_layout");
+            if !validate_mesh_upload_layout(raw, data, layout, gpu_limits) {
+                return None;
+            }
         }
 
         let use_blendshapes =
@@ -519,8 +523,10 @@ impl GpuMesh {
         let vc_usize = data.vertex_count.max(0) as usize;
 
         let derived = extract_derived_vertex_streams(device, raw, data, layout, &core);
-        let extended_vertex_stream_source =
-            extended_vertex_stream_source_from_raw(raw, data, layout);
+        let extended_vertex_stream_source = {
+            profiling::scope!("asset::mesh_capture_extended_stream_source");
+            extended_vertex_stream_source_from_raw(raw, data, layout)
+        };
 
         let bone_skin =
             upload_bone_and_skin_buffers(device, raw, data, layout, use_blendshapes, vc_usize)?;
@@ -536,16 +542,22 @@ impl GpuMesh {
         );
         let num_blendshapes = blend_up.num_blendshapes;
 
-        let submeshes = validated_submesh_ranges(&data.submeshes, core.index_count_u32);
+        let submeshes = {
+            profiling::scope!("asset::mesh_validate_submesh_ranges");
+            validated_submesh_ranges(&data.submeshes, core.index_count_u32)
+        };
 
-        let resident_bytes = resident_bytes_for_mesh_upload(
-            &core.vb,
-            &core.ib,
-            &derived,
-            &bone_skin,
-            &blend_up.sparse_buffer,
-            &blend_up.shape_descriptor_buffer,
-        );
+        let resident_bytes = {
+            profiling::scope!("asset::mesh_resident_byte_count");
+            resident_bytes_for_mesh_upload(
+                &core.vb,
+                &core.ib,
+                &derived,
+                &bone_skin,
+                &blend_up.sparse_buffer,
+                &blend_up.shape_descriptor_buffer,
+            )
+        };
 
         Some(Self {
             asset_id: data.asset_id,

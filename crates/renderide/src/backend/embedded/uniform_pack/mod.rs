@@ -82,6 +82,7 @@ pub(crate) fn build_embedded_uniform_bytes(
     lookup: MaterialPropertyLookupIds,
     tex_ctx: &UniformPackTextureContext<'_>,
 ) -> Option<Vec<u8>> {
+    profiling::scope!("materials::embedded_uniform_pack");
     let u = reflected.material_uniform.as_ref()?;
     let mut buf = vec![0u8; u.total_size as usize];
 

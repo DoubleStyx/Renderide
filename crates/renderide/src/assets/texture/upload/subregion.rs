@@ -49,6 +49,7 @@ pub(super) fn pack_subrect_tight(
     r: &MipSubrectCopy,
     flip_y: bool,
 ) -> Result<Vec<u8>, TextureUploadError> {
+    profiling::scope!("asset::texture_pack_subregion");
     let row_stride = (r.full_width as usize)
         .checked_mul(r.bpp)
         .ok_or_else(|| TextureUploadError::from("row_stride overflow"))?;
@@ -107,6 +108,7 @@ struct TextureWriteSubregion<'a> {
 
 /// Writes a tight sub-rectangle of texels into `texture` at the given mip and origin.
 fn write_texture_subregion(w: TextureWriteSubregion<'_>) -> Result<(), TextureUploadError> {
+    profiling::scope!("asset::texture_write_subregion");
     write_texture_region(TextureRegionWrite {
         queue: w.queue,
         gpu_queue_access_gate: w.gpu_queue_access_gate,
@@ -217,6 +219,7 @@ fn subregion_rect_from_hint(
 pub(super) fn try_write_texture2d_subregion(
     ctx: &Texture2dUploadContext<'_>,
 ) -> Option<Result<u32, TextureUploadError>> {
+    profiling::scope!("asset::texture_try_subregion");
     subregion_fast_path_supported(ctx.device, ctx.upload, ctx.fmt, ctx.wgpu_format)?;
 
     let want = ctx.upload.data.length.max(0) as usize;

@@ -12,6 +12,7 @@ use super::layout::{
 
 /// Computes [`MeshBufferLayout`] from [`MeshUploadData`] and validates bone region lengths.
 pub fn compute_and_validate_mesh_layout(data: &MeshUploadData) -> Option<MeshBufferLayout> {
+    profiling::scope!("asset::mesh_compute_layout");
     if data.buffer.length <= 0 {
         return None;
     }
@@ -65,6 +66,7 @@ pub fn try_upload_mesh_from_raw(
     existing: Option<GpuMesh>,
     layout: &MeshBufferLayout,
 ) -> Option<GpuMesh> {
+    profiling::scope!("asset::mesh_upload_raw");
     if raw.len() < layout.total_buffer_length {
         logger::error!(
             "mesh {}: raw too short (need {}, got {})",
@@ -79,14 +81,18 @@ pub fn try_upload_mesh_from_raw(
     let hint = data.upload_hint.flags;
 
     if let (Some(queue), Some(existing)) = (queue, existing) {
-        if existing.compatible_for_in_place_update(data, layout, raw) {
-            if let Some(mesh) = existing.write_in_place(queue, raw, data, layout, hint) {
-                logger::trace!(
-                    "mesh {}: in-place upload (layout_fp={:#x})",
-                    data.asset_id,
-                    layout_fp
-                );
-                return Some(mesh);
+        {
+            profiling::scope!("asset::mesh_in_place_compatibility");
+            if existing.compatible_for_in_place_update(data, layout, raw) {
+                profiling::scope!("asset::mesh_in_place_upload");
+                if let Some(mesh) = existing.write_in_place(queue, raw, data, layout, hint) {
+                    logger::trace!(
+                        "mesh {}: in-place upload (layout_fp={:#x})",
+                        data.asset_id,
+                        layout_fp
+                    );
+                    return Some(mesh);
+                }
             }
         }
     }

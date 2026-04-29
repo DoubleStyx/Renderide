@@ -55,6 +55,7 @@ impl EmbeddedMaterialBindResources {
         lookup: MaterialPropertyLookupIds,
         offscreen_write_render_texture_asset_id: Option<i32>,
     ) -> Result<EmbeddedBindInputResolution, EmbeddedMaterialBindError> {
+        profiling::scope!("materials::embedded_resolve_bind_inputs");
         let layout = self.stem_layout(stem)?;
         let sh = stem_hash(stem);
 
@@ -102,6 +103,7 @@ impl EmbeddedMaterialBindResources {
         lookup: MaterialPropertyLookupIds,
         offscreen_write_render_texture_asset_id: Option<i32>,
     ) -> Result<EmbeddedGroup1TexturesAndSamplers, EmbeddedMaterialBindError> {
+        profiling::scope!("materials::embedded_resolve_textures_samplers");
         let mut keepalive_views: Vec<Arc<wgpu::TextureView>> = Vec::new();
         let mut keepalive_samplers: Vec<Arc<wgpu::Sampler>> = Vec::new();
         for entry in &layout.reflected.material_entries {

@@ -90,6 +90,7 @@ impl CubemapUploadStepper {
         shm: &mut SharedMemoryAccessor,
         plan: CubemapUploadPlan<'_>,
     ) -> Result<CubemapUploadCompletion, TextureUploadError> {
+        profiling::scope!("asset::cubemap_upload_step");
         match &mut self.stage {
             CubemapUploadStage::Start => self.start(shm, plan),
             CubemapUploadStage::Chain { uploader, payload } => {
@@ -104,6 +105,7 @@ impl CubemapUploadStepper {
         shm: &mut SharedMemoryAccessor,
         plan: CubemapUploadPlan<'_>,
     ) -> Result<CubemapUploadCompletion, TextureUploadError> {
+        profiling::scope!("asset::cubemap_upload_start");
         let start = build_with_optional_owned_payload(
             shm,
             &plan.upload.data,
@@ -127,6 +129,7 @@ impl CubemapUploadStepper {
         payload: &Arc<[u8]>,
         plan: CubemapUploadPlan<'_>,
     ) -> Result<CubemapUploadCompletion, TextureUploadError> {
+        profiling::scope!("asset::cubemap_upload_next_face_mip");
         match uploader.upload_next_face_mip(CubemapFaceMipUploadStep {
             device: plan.device,
             queue: plan.queue,

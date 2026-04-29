@@ -136,6 +136,7 @@ pub(super) fn create_core_vertex_index_buffers(
     data: &MeshUploadData,
     layout: &MeshBufferLayout,
 ) -> CoreBuffers {
+    profiling::scope!("asset::mesh_create_core_buffers");
     let vertex_stride = compute_vertex_stride(&data.vertex_attributes).max(1) as u32;
     let vertex_stride_us = vertex_stride as usize;
     let index_count = compute_index_count(&data.submeshes);
@@ -351,6 +352,7 @@ pub(super) fn extract_derived_vertex_streams(
     layout: &MeshBufferLayout,
     core: &CoreBuffers,
 ) -> DerivedStreams {
+    profiling::scope!("asset::mesh_extract_derived_streams");
     let vc_usize = data.vertex_count.max(0) as usize;
     let vertex_slice = &raw[..layout.vertex_size];
     let (positions_buffer, normals_buffer) =
@@ -377,6 +379,7 @@ fn upload_skeleton_bone_buffers(
     layout: &MeshBufferLayout,
     vc_usize: usize,
 ) -> Option<BoneSkinUpload> {
+    profiling::scope!("asset::mesh_upload_skeleton_buffers");
     let bp_raw = &raw[layout.bind_poses_start..layout.bind_poses_start + layout.bind_poses_length];
     let bind_poses_arr = extract_bind_poses(bp_raw, data.bone_count as usize)?;
     let bp_bytes: Vec<u8> = bind_poses_arr
@@ -438,6 +441,7 @@ fn upload_synthetic_blend_bone_buffers(
     data: &MeshUploadData,
     vc_usize: usize,
 ) -> BoneSkinUpload {
+    profiling::scope!("asset::mesh_upload_synthetic_bone_buffers");
     let (bind_poses_arr, bone_counts, bone_weights) =
         synthetic_bone_data_for_blendshape_only(data.vertex_count);
     let bp_bytes: Vec<u8> = bind_poses_arr
@@ -493,6 +497,7 @@ pub(super) fn upload_bone_and_skin_buffers(
     use_blendshapes: bool,
     vc_usize: usize,
 ) -> Option<BoneSkinUpload> {
+    profiling::scope!("asset::mesh_upload_bone_skin_buffers");
     if data.bone_count > 0 {
         upload_skeleton_bone_buffers(device, raw, data, layout, vc_usize)
     } else if use_blendshapes && data.vertex_count > 0 {
@@ -542,6 +547,7 @@ pub(super) fn upload_blendshape_buffer(
     use_blendshapes: bool,
     max_buf: u64,
 ) -> BlendshapeBuffersUpload {
+    profiling::scope!("asset::mesh_upload_blendshape_buffers");
     if !use_blendshapes {
         return BlendshapeBuffersUpload {
             sparse_buffer: None,

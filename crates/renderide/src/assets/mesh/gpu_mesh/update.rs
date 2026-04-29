@@ -61,6 +61,7 @@ impl GpuMesh {
 
     /// Creates tangent / UV1-3 streams the first time an embedded shader needs them.
     pub(crate) fn ensure_extended_vertex_streams(&mut self, device: &wgpu::Device) -> bool {
+        profiling::scope!("asset::mesh_ensure_extended_vertex_streams");
         if self.extended_vertex_streams_ready() {
             return true;
         }
@@ -111,6 +112,7 @@ impl GpuMesh {
         layout: &MeshBufferLayout,
         raw: &[u8],
     ) -> bool {
+        profiling::scope!("asset::mesh_check_in_place_update");
         if raw.len() < layout.total_buffer_length {
             return false;
         }
@@ -228,6 +230,7 @@ impl GpuMesh {
         layout: &MeshBufferLayout,
         hint: MeshUploadHintFlag,
     ) -> Option<GpuMesh> {
+        profiling::scope!("asset::mesh_write_in_place");
         let vertex_stride = compute_vertex_stride(&data.vertex_attributes).max(1) as u32;
         let vc_usize = data.vertex_count.max(0) as usize;
         let vertex_stride_us = vertex_stride as usize;

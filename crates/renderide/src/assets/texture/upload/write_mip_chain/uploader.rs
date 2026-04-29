@@ -106,6 +106,7 @@ impl TextureMipChainUploader {
         upload: &SetTexture2DData,
         raw: &[u8],
     ) -> Result<Self, TextureUploadError> {
+        profiling::scope!("asset::texture2d_mip_chain_new");
         let want = upload.data.length.max(0) as usize;
         if raw.len() < want {
             return Err(TextureUploadError::from(format!(
@@ -174,6 +175,7 @@ impl TextureMipChainUploader {
         &mut self,
         step: TextureMipUploadStep<'_>,
     ) -> Result<MipChainAdvance, TextureUploadError> {
+        profiling::scope!("asset::texture2d_mip_chain_step");
         if self.stopped {
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded_mips,
@@ -198,6 +200,7 @@ impl TextureMipChainUploader {
         let Some(rx) = &self.background_rx else {
             return Ok(None);
         };
+        profiling::scope!("asset::texture2d_poll_decoded_mip");
         match rx.try_recv() {
             Ok(res) => {
                 self.background_rx = None;
@@ -256,6 +259,7 @@ impl TextureMipChainUploader {
         &mut self,
         step: &TextureMipUploadStep<'_>,
     ) -> Result<MipChainAdvance, TextureUploadError> {
+        profiling::scope!("asset::texture2d_spawn_mip_decode");
         let chain = MipChainWalkState {
             fmt: step.fmt,
             upload: step.upload,
@@ -321,6 +325,7 @@ impl TextureMipChainUploader {
         let flip = self.flip;
         let payload_arc = Arc::clone(step.payload);
         rayon::spawn(move || {
+            profiling::scope!("asset::texture_decode_mip");
             let mip_src = &payload_arc[mip_src_range];
             let res = mip_src_to_upload_pixels(ctx, gw, gh, flip, mip_src, mip_index);
             let _ = tx.send(res);
@@ -335,6 +340,7 @@ impl TextureMipChainUploader {
         wgpu_format: wgpu::TextureFormat,
         upload: &SetTexture2DData,
     ) -> Result<MipChainAdvance, TextureUploadError> {
+        profiling::scope!("asset::texture2d_spawn_tail_mip");
         let mip_level = self.start_base + self.next_i as u32;
         if mip_level >= self.mipmap_count {
             self.stopped = true;
@@ -386,6 +392,7 @@ impl TextureMipChainUploader {
         self.background_rx = Some(rx);
 
         rayon::spawn(move || {
+            profiling::scope!("asset::texture_downsample_tail_mip");
             let res = downsample_rgba8_box(&source.pixels, source.width, source.height, w, h)
                 .map(MipUploadPixels::normal);
             let _ = tx.send(res);
@@ -429,6 +436,7 @@ pub struct Texture2dUploadContext<'a> {
 pub fn texture_upload_start(
     ctx: &Texture2dUploadContext<'_>,
 ) -> Result<TextureDataStart, TextureUploadError> {
+    profiling::scope!("asset::texture_upload_start");
     if ctx.upload.hint.has_region != 0 {
         if hint_region_is_empty(&ctx.upload.hint) {
             logger::trace!(
@@ -465,6 +473,7 @@ pub fn texture_upload_start(
 
 /// Uploads mips from `ctx.raw` (exact shared-memory descriptor window) into `ctx.texture` using `ctx.wgpu_format`.
 pub fn write_texture2d_mips(ctx: &Texture2dUploadContext<'_>) -> Result<u32, TextureUploadError> {
+    profiling::scope!("asset::texture2d_write_mips");
     let want = ctx.upload.data.length.max(0) as usize;
     if ctx.raw.len() < want {
         return Err(TextureUploadError::from(format!(

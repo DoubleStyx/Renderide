@@ -81,6 +81,7 @@ impl Texture3dUploadStepper {
         shm: &mut SharedMemoryAccessor,
         plan: Texture3dUploadPlan<'_>,
     ) -> Result<Texture3dUploadCompletion, TextureUploadError> {
+        profiling::scope!("asset::texture3d_upload_step");
         match &mut self.stage {
             Texture3dUploadStage::Start => self.start(shm, plan),
             Texture3dUploadStage::MipChain { uploader, payload } => {
@@ -95,6 +96,7 @@ impl Texture3dUploadStepper {
         shm: &mut SharedMemoryAccessor,
         plan: Texture3dUploadPlan<'_>,
     ) -> Result<Texture3dUploadCompletion, TextureUploadError> {
+        profiling::scope!("asset::texture3d_upload_start");
         let start = build_with_optional_owned_payload(
             shm,
             &plan.upload.data,
@@ -118,6 +120,7 @@ impl Texture3dUploadStepper {
         payload: &Arc<[u8]>,
         plan: Texture3dUploadPlan<'_>,
     ) -> Result<Texture3dUploadCompletion, TextureUploadError> {
+        profiling::scope!("asset::texture3d_upload_next_mip");
         match uploader.upload_next_mip(Texture3dMipUploadStep {
             device: plan.device,
             queue: plan.queue,

@@ -52,6 +52,7 @@ impl EmbeddedMaterialBindResources {
         &self,
         req: EmbeddedUniformBufferRequest<'_>,
     ) -> Result<Arc<wgpu::Buffer>, EmbeddedMaterialBindError> {
+        profiling::scope!("materials::embedded_uniform_buffer");
         let EmbeddedUniformBufferRequest {
             queue,
             stem,
@@ -73,8 +74,10 @@ impl EmbeddedMaterialBindResources {
             if entry.last_written_generation == mutation_gen
                 && entry.last_written_texture_state_sig == texture_state_sig
             {
+                profiling::scope!("materials::embedded_uniform_cache_hit");
                 return Ok(entry.buffer.clone());
             }
+            profiling::scope!("materials::embedded_uniform_refresh");
             let uniform_bytes = build_embedded_uniform_bytes(
                 &layout.reflected,
                 layout.ids.as_ref(),
@@ -90,6 +93,7 @@ impl EmbeddedMaterialBindResources {
             entry.last_written_texture_state_sig = texture_state_sig;
             return Ok(entry.buffer.clone());
         }
+        profiling::scope!("materials::embedded_uniform_create");
         let uniform_bytes = build_embedded_uniform_bytes(
             &layout.reflected,
             layout.ids.as_ref(),

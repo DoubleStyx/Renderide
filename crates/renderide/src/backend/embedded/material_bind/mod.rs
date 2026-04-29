@@ -241,6 +241,7 @@ impl EmbeddedMaterialBindResources {
         lookup: MaterialPropertyLookupIds,
         offscreen_write_render_texture_asset_id: Option<i32>,
     ) -> Result<(MaterialBindCacheKey, Arc<wgpu::BindGroup>), EmbeddedMaterialBindError> {
+        profiling::scope!("materials::embedded_bind_group");
         let EmbeddedBindInputResolution {
             layout,
             uniform_key,
@@ -255,19 +256,24 @@ impl EmbeddedMaterialBindResources {
         )?;
 
         let mutation_gen = store.mutation_generation(lookup);
-        let texture_state_sig = compute_uniform_texture_state_signature(
-            &layout,
-            pools,
-            store,
-            lookup,
-            texture_2d_asset_id,
-        );
+        let texture_state_sig = {
+            profiling::scope!("materials::embedded_uniform_texture_signature");
+            compute_uniform_texture_state_signature(
+                &layout,
+                pools,
+                store,
+                lookup,
+                texture_2d_asset_id,
+            )
+        };
 
         let hit_bg = {
+            profiling::scope!("materials::embedded_bind_cache_lookup");
             let mut cache = self.bind_cache.lock();
             cache.get(&bind_key).cloned()
         };
         if let Some(bg) = hit_bg {
+            profiling::scope!("materials::embedded_bind_cache_hit");
             // Bind group is unchanged; still refresh the uniform slab if the material store mutated.
             let _uniform_buf =
                 self.get_or_create_embedded_uniform_buffer(EmbeddedUniformBufferRequest {
@@ -285,6 +291,7 @@ impl EmbeddedMaterialBindResources {
             return Ok((bind_key, bg));
         }
 
+        profiling::scope!("materials::embedded_bind_cache_miss");
         let uniform_buf =
             self.get_or_create_embedded_uniform_buffer(EmbeddedUniformBufferRequest {
                 queue,
@@ -315,11 +322,14 @@ impl EmbeddedMaterialBindResources {
             &keepalive_samplers,
         )?;
 
-        let bind_group = Arc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("embedded_material_bind"),
-            layout: &layout.bind_group_layout,
-            entries: &entries,
-        }));
+        let bind_group = {
+            profiling::scope!("materials::embedded_create_bind_group");
+            Arc::new(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("embedded_material_bind"),
+                layout: &layout.bind_group_layout,
+                entries: &entries,
+            }))
+        };
         let evicted = self.bind_cache.lock().put(bind_key, bind_group.clone());
         if let Some(evicted) = evicted {
             drop(evicted);
@@ -345,6 +355,7 @@ fn build_embedded_bind_group_entries<'a>(
     keepalive_views: &'a [Arc<wgpu::TextureView>],
     keepalive_samplers: &'a [Arc<wgpu::Sampler>],
 ) -> Result<Vec<wgpu::BindGroupEntry<'a>>, EmbeddedMaterialBindError> {
+    profiling::scope!("materials::embedded_build_bind_entries");
     let mut view_i = 0usize;
     let mut samp_i = 0usize;
     let mut entries: Vec<wgpu::BindGroupEntry<'a>> =

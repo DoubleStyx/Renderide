@@ -107,6 +107,7 @@ fn texture3d_mip_to_upload_pixels(
     geom: Texture3dMipGeom,
     mip_src: &[u8],
 ) -> Result<Vec<u8>, TextureUploadError> {
+    profiling::scope!("asset::texture3d_convert_mip_pixels");
     let MipUploadFormatCtx {
         asset_id,
         fmt_format,
@@ -211,6 +212,7 @@ impl Texture3dMipChainUploader {
         upload: &SetTexture3DData,
         raw: &[u8],
     ) -> Result<Self, TextureUploadError> {
+        profiling::scope!("asset::texture3d_mip_chain_new");
         let want = upload.data.length.max(0) as usize;
         if raw.len() < want {
             return Err(TextureUploadError::from(format!(
@@ -282,6 +284,7 @@ impl Texture3dMipChainUploader {
         &mut self,
         step: Texture3dMipUploadStep<'_>,
     ) -> Result<Texture3dMipAdvance, TextureUploadError> {
+        profiling::scope!("asset::texture3d_mip_chain_step");
         let Texture3dMipUploadStep {
             device,
             queue,
@@ -300,6 +303,7 @@ impl Texture3dMipChainUploader {
         }
 
         if let Some(rx) = &self.background_rx {
+            profiling::scope!("asset::texture3d_poll_decoded_mip");
             match rx.try_recv() {
                 Ok(res) => {
                     self.background_rx = None;
@@ -343,6 +347,7 @@ impl Texture3dMipChainUploader {
             }
         }
 
+        profiling::scope!("asset::texture3d_spawn_mip_decode");
         let (w, h, d, mip_src, slice_bytes, vol_bytes) = texture3d_mip_volume_payload_slice(
             self.base_w,
             self.base_h,
@@ -381,6 +386,7 @@ impl Texture3dMipChainUploader {
             vol_bytes,
         };
         rayon::spawn(move || {
+            profiling::scope!("asset::texture3d_decode_mip");
             let mip_src = &payload_arc[mip_src_range];
             let res = texture3d_mip_to_upload_pixels(ctx, geom, mip_src);
             let _ = tx.send(res);
@@ -413,6 +419,7 @@ pub struct Texture3dUploadContext<'a> {
 
 /// Runs the full mip chain upload for 3D data (non-cooperative path).
 pub fn write_texture3d_mips(ctx: &Texture3dUploadContext<'_>) -> Result<u32, TextureUploadError> {
+    profiling::scope!("asset::texture3d_write_mips");
     let want = ctx.upload.data.length.max(0) as usize;
     if ctx.raw.len() < want {
         return Err(TextureUploadError::from(format!(

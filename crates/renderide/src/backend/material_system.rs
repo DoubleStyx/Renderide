@@ -139,6 +139,7 @@ impl MaterialSystem {
         shm: &mut SharedMemoryAccessor,
         ipc: &mut DualQueueIpc,
     ) {
+        profiling::scope!("material::flush_pending_batches");
         let batches: Vec<MaterialsUpdateBatch> = self.pending_material_batches.drain(..).collect();
         for batch in batches {
             self.apply_materials_update_batch(batch, shm, ipc);
@@ -172,6 +173,7 @@ impl MaterialSystem {
         shm: &mut SharedMemoryAccessor,
         ipc: &mut DualQueueIpc,
     ) {
+        profiling::scope!("material::apply_update_batch");
         let update_batch_id = batch.update_batch_id;
         let opts = ParseMaterialBatchOptions {
             render_type_property_id: Some(self.property_id_registry.intern("_RenderType")),
@@ -195,6 +197,7 @@ impl MaterialSystem {
         );
 
         if batch.instance_changed_buffer.length > 0 {
+            profiling::scope!("material::write_instance_changed_bits");
             let descriptor = batch.instance_changed_buffer;
             let written = shm.access_mut::<u32, _>(&descriptor, |slab| {
                 let mut bits = BitSpanMut::new(slab);
