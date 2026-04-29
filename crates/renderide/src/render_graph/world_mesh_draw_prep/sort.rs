@@ -8,6 +8,7 @@ use crate::materials::{
     embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
     embedded_stem_needs_uv0_stream, embedded_stem_requires_grab_pass,
     embedded_stem_requires_intersection_pass, embedded_stem_uses_alpha_blending,
+    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
     material_blend_mode_for_lookup, material_render_state_for_lookup, resolve_raster_pipeline,
     RasterFrontFace, RasterPipelineKind,
 };
@@ -94,6 +95,18 @@ pub(super) fn batch_key_for_slot(
         }
         RasterPipelineKind::Null => false,
     };
+    let embedded_uses_scene_depth_snapshot = match &pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            embedded_stem_uses_scene_depth_snapshot(stem.as_ref(), ctx.shader_perm)
+        }
+        RasterPipelineKind::Null => false,
+    };
+    let embedded_uses_scene_color_snapshot = match &pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            embedded_stem_uses_scene_color_snapshot(stem.as_ref(), ctx.shader_perm)
+        }
+        RasterPipelineKind::Null => false,
+    };
     let lookup_ids = crate::assets::material::MaterialPropertyLookupIds {
         material_asset_id,
         mesh_property_block_slot0: property_block_id,
@@ -119,6 +132,8 @@ pub(super) fn batch_key_for_slot(
         embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass,
         embedded_requires_grab_pass,
+        embedded_uses_scene_depth_snapshot,
+        embedded_uses_scene_color_snapshot,
         render_state,
         blend_mode: material_blend_mode,
         alpha_blended,
@@ -146,6 +161,8 @@ fn batch_key_from_resolved(
         embedded_needs_extended_vertex_streams: r.embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass: r.embedded_requires_intersection_pass,
         embedded_requires_grab_pass: r.embedded_requires_grab_pass,
+        embedded_uses_scene_depth_snapshot: r.embedded_uses_scene_depth_snapshot,
+        embedded_uses_scene_color_snapshot: r.embedded_uses_scene_color_snapshot,
         render_state: r.render_state,
         blend_mode: r.blend_mode,
         alpha_blended: r.alpha_blended,

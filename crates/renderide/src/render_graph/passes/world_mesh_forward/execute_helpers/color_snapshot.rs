@@ -1,7 +1,9 @@
 //! Scene-color snapshot helper for the graph-managed world-mesh forward pass.
 
 use crate::render_graph::context::GraphResolvedResources;
-use crate::render_graph::frame_params::{FrameRenderParams, PreparedWorldMeshForwardFrame};
+use crate::render_graph::frame_params::{
+    FrameRenderParams, PreparedWorldMeshForwardFrame, WorldMeshHelperNeeds,
+};
 
 use super::super::WorldMeshForwardGraphResources;
 
@@ -14,7 +16,7 @@ pub(crate) fn encode_world_mesh_forward_color_snapshot(
     prepared: &PreparedWorldMeshForwardFrame,
     resources: WorldMeshForwardGraphResources,
 ) -> bool {
-    if prepared.plan.transparent_groups.is_empty() {
+    if !color_snapshot_recording_needed(prepared.helper_needs) {
         return false;
     }
     if frame.shared.frame_resources.frame_gpu().is_none() {
@@ -36,4 +38,28 @@ pub(crate) fn encode_world_mesh_forward_color_snapshot(
             prepared.pipeline.use_multiview,
         );
     true
+}
+
+/// Returns whether the scene-color snapshot copy should be recorded for this view.
+fn color_snapshot_recording_needed(helper_needs: WorldMeshHelperNeeds) -> bool {
+    helper_needs.color_snapshot
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::render_graph::frame_params::WorldMeshHelperNeeds;
+
+    use super::color_snapshot_recording_needed;
+
+    #[test]
+    fn color_snapshot_recording_follows_helper_needs() {
+        assert!(!color_snapshot_recording_needed(WorldMeshHelperNeeds {
+            depth_snapshot: true,
+            color_snapshot: false,
+        }));
+        assert!(color_snapshot_recording_needed(WorldMeshHelperNeeds {
+            depth_snapshot: false,
+            color_snapshot: true,
+        }));
+    }
 }

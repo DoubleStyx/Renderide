@@ -542,6 +542,8 @@ mod tests {
                 material_uniform: None,
                 material_group1_names,
                 vs_max_vertex_location: None,
+                uses_scene_depth_snapshot: false,
+                uses_scene_color_snapshot: false,
                 requires_intersection_pass: false,
                 requires_grab_pass: false,
             },

@@ -74,6 +74,20 @@ impl EmbeddedStemMetadata {
             .as_ref()
             .is_some_and(|r| r.requires_intersection_pass)
     }
+
+    /// Whether reflection found a live scene-depth snapshot binding.
+    fn uses_scene_depth_snapshot(&self) -> bool {
+        self.reflected
+            .as_ref()
+            .is_some_and(|r| r.uses_scene_depth_snapshot)
+    }
+
+    /// Whether reflection found a live scene-color snapshot binding.
+    fn uses_scene_color_snapshot(&self) -> bool {
+        self.reflected
+            .as_ref()
+            .is_some_and(|r| r.uses_scene_color_snapshot)
+    }
 }
 
 fn embedded_stem_metadata_cache(
@@ -181,6 +195,36 @@ pub fn embedded_stem_requires_intersection_pass(
     permutation: ShaderPermutation,
 ) -> bool {
     embedded_stem_metadata(base_stem, permutation).requires_intersection_pass()
+}
+
+/// `true` when reflection reports that the WGSL declares a scene-depth snapshot binding.
+pub fn embedded_wgsl_uses_scene_depth_snapshot(wgsl_source: &str) -> bool {
+    crate::materials::wgsl_reflect::reflect_raster_material_uses_scene_depth_snapshot(wgsl_source)
+}
+
+/// `true` when the composed embedded target declares a scene-depth snapshot binding.
+///
+/// Memoized per `(base_stem, permutation)` like [`embedded_stem_needs_uv0_stream`].
+pub fn embedded_stem_uses_scene_depth_snapshot(
+    base_stem: &str,
+    permutation: ShaderPermutation,
+) -> bool {
+    embedded_stem_metadata(base_stem, permutation).uses_scene_depth_snapshot()
+}
+
+/// `true` when reflection reports that the WGSL declares a scene-color snapshot binding.
+pub fn embedded_wgsl_uses_scene_color_snapshot(wgsl_source: &str) -> bool {
+    crate::materials::wgsl_reflect::reflect_raster_material_uses_scene_color_snapshot(wgsl_source)
+}
+
+/// `true` when the composed embedded target declares a scene-color snapshot binding.
+///
+/// Memoized per `(base_stem, permutation)` like [`embedded_stem_needs_uv0_stream`].
+pub fn embedded_stem_uses_scene_color_snapshot(
+    base_stem: &str,
+    permutation: ShaderPermutation,
+) -> bool {
+    embedded_stem_metadata(base_stem, permutation).uses_scene_color_snapshot()
 }
 
 /// Composed target stem for an embedded base stem (e.g. `unlit_default` → `unlit_multiview`).
@@ -313,6 +357,14 @@ mod tests {
             "null_default",
             mono
         ));
+        assert!(!embedded_stem_uses_scene_depth_snapshot(
+            "null_default",
+            mono
+        ));
+        assert!(!embedded_stem_uses_scene_color_snapshot(
+            "null_default",
+            mono
+        ));
         assert!(!embedded_stem_needs_color_stream("null_default", mono));
 
         assert!(embedded_stem_needs_color_stream(
@@ -342,12 +394,42 @@ mod tests {
             "blur_default",
             mono
         ));
+        assert!(embedded_stem_uses_scene_depth_snapshot(
+            "blur_default",
+            mono
+        ));
+        assert!(embedded_stem_uses_scene_color_snapshot(
+            "blur_default",
+            mono
+        ));
+
+        assert!(embedded_stem_requires_grab_pass("refract_default", mono));
+        assert!(!embedded_stem_requires_intersection_pass(
+            "refract_default",
+            mono
+        ));
+        assert!(embedded_stem_uses_scene_depth_snapshot(
+            "refract_default",
+            mono
+        ));
+        assert!(embedded_stem_uses_scene_color_snapshot(
+            "refract_default",
+            mono
+        ));
 
         assert!(embedded_stem_requires_intersection_pass(
             "pbsintersect_default",
             mono
         ));
         assert!(!embedded_stem_requires_grab_pass(
+            "pbsintersect_default",
+            mono
+        ));
+        assert!(embedded_stem_uses_scene_depth_snapshot(
+            "pbsintersect_default",
+            mono
+        ));
+        assert!(!embedded_stem_uses_scene_color_snapshot(
             "pbsintersect_default",
             mono
         ));
@@ -362,6 +444,14 @@ mod tests {
         ));
         assert!(!embedded_stem_requires_grab_pass("xstoon2.0_default", mono));
         assert!(!embedded_stem_requires_intersection_pass(
+            "xstoon2.0_default",
+            mono
+        ));
+        assert!(!embedded_stem_uses_scene_depth_snapshot(
+            "xstoon2.0_default",
+            mono
+        ));
+        assert!(!embedded_stem_uses_scene_color_snapshot(
             "xstoon2.0_default",
             mono
         ));

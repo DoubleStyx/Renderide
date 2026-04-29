@@ -260,8 +260,8 @@ impl WorldMeshHelperNeeds {
     pub fn from_collection(collection: &WorldMeshDrawCollection) -> Self {
         let mut needs = Self::default();
         for item in &collection.items {
-            needs.depth_snapshot |= item.batch_key.embedded_requires_intersection_pass;
-            needs.color_snapshot |= item.batch_key.embedded_requires_grab_pass;
+            needs.depth_snapshot |= item.batch_key.embedded_uses_scene_depth_snapshot;
+            needs.color_snapshot |= item.batch_key.embedded_uses_scene_color_snapshot;
             if needs.depth_snapshot && needs.color_snapshot {
                 break;
             }
@@ -314,6 +314,8 @@ pub struct PreparedWorldMeshForwardFrame {
     pub plan: InstancePlan,
     /// Pipeline format/sample/multiview state.
     pub pipeline: WorldMeshForwardPipelineState,
+    /// Scene snapshot helper work needed by the prepared draw list.
+    pub helper_needs: WorldMeshHelperNeeds,
     /// Whether indexed draws may use base instance.
     pub supports_base_instance: bool,
     /// Whether the opaque/clear forward subpass was already recorded by a split graph node.
@@ -620,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn helper_needs_are_derived_from_collected_material_flags() {
+    fn helper_needs_are_derived_from_scene_snapshot_usage_flags() {
         let regular = dummy_world_mesh_draw_item(DummyDrawItemSpec {
             material_asset_id: 1,
             property_block: None,
@@ -632,10 +634,11 @@ mod tests {
             collect_order: 0,
             alpha_blended: false,
         });
-        let mut intersection = regular.clone();
-        intersection.batch_key.embedded_requires_intersection_pass = true;
-        let mut grab = regular.clone();
-        grab.batch_key.embedded_requires_grab_pass = true;
+        let mut depth = regular.clone();
+        depth.batch_key.embedded_uses_scene_depth_snapshot = true;
+        let mut color = regular.clone();
+        color.batch_key.embedded_requires_grab_pass = true;
+        color.batch_key.embedded_uses_scene_color_snapshot = true;
 
         let collection = WorldMeshDrawCollection {
             items: vec![regular.clone()],
@@ -649,8 +652,26 @@ mod tests {
         );
 
         let collection = WorldMeshDrawCollection {
-            items: vec![regular, intersection, grab],
+            items: vec![regular.clone(), depth, color],
             draws_pre_cull: 3,
+            draws_culled: 0,
+            draws_hi_z_culled: 0,
+        };
+        assert_eq!(
+            WorldMeshHelperNeeds::from_collection(&collection),
+            WorldMeshHelperNeeds {
+                depth_snapshot: true,
+                color_snapshot: true,
+            }
+        );
+
+        let mut refract_like = regular;
+        refract_like.batch_key.embedded_requires_grab_pass = true;
+        refract_like.batch_key.embedded_uses_scene_depth_snapshot = true;
+        refract_like.batch_key.embedded_uses_scene_color_snapshot = true;
+        let collection = WorldMeshDrawCollection {
+            items: vec![refract_like],
+            draws_pre_cull: 1,
             draws_culled: 0,
             draws_hi_z_culled: 0,
         };

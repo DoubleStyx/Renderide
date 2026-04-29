@@ -20,6 +20,7 @@ use crate::materials::{
     embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
     embedded_stem_needs_uv0_stream, embedded_stem_requires_grab_pass,
     embedded_stem_requires_intersection_pass, embedded_stem_uses_alpha_blending,
+    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
     material_blend_mode_from_maps, material_render_state_from_maps, resolve_raster_pipeline,
     MaterialBlendMode, MaterialPipelinePropertyIds, MaterialRenderState, MaterialRouter,
     RasterPipelineKind,
@@ -65,6 +66,10 @@ pub(super) struct ResolvedMaterialBatch {
     pub embedded_requires_intersection_pass: bool,
     /// Whether the material requires the grab-pass transparent subpass with a scene-color snapshot.
     pub embedded_requires_grab_pass: bool,
+    /// Whether the active shader permutation declares a scene-depth snapshot binding.
+    pub embedded_uses_scene_depth_snapshot: bool,
+    /// Whether the active shader permutation declares a scene-color snapshot binding.
+    pub embedded_uses_scene_color_snapshot: bool,
     /// Resolved material blend mode.
     pub blend_mode: MaterialBlendMode,
     /// Runtime color, stencil, and depth state for this material/property-block pair.
@@ -335,6 +340,8 @@ fn resolve_material_batch(
         embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass,
         embedded_requires_grab_pass,
+        embedded_uses_scene_depth_snapshot,
+        embedded_uses_scene_color_snapshot,
         embedded_uses_alpha_blending,
     ) = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => {
@@ -345,10 +352,12 @@ fn resolve_material_batch(
                 embedded_stem_needs_extended_vertex_streams(s, shader_perm),
                 embedded_stem_requires_intersection_pass(s, shader_perm),
                 embedded_stem_requires_grab_pass(s, shader_perm),
+                embedded_stem_uses_scene_depth_snapshot(s, shader_perm),
+                embedded_stem_uses_scene_color_snapshot(s, shader_perm),
                 embedded_stem_uses_alpha_blending(s),
             )
         }
-        RasterPipelineKind::Null => (false, false, false, false, false, false),
+        RasterPipelineKind::Null => (false, false, false, false, false, false, false, false),
     };
     let lookup_ids = MaterialPropertyLookupIds {
         material_asset_id,
@@ -370,6 +379,8 @@ fn resolve_material_batch(
         embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass,
         embedded_requires_grab_pass,
+        embedded_uses_scene_depth_snapshot,
+        embedded_uses_scene_color_snapshot,
         blend_mode,
         render_state,
         alpha_blended,

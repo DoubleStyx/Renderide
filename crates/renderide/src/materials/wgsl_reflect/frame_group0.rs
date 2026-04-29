@@ -9,6 +9,35 @@ use crate::gpu::frame_globals::FrameGpuUniforms;
 use super::resource::{resource_data_ty, storage_array_element_stride};
 use super::types::ReflectError;
 
+/// Snapshot textures declared by the reflected material through frame-global bindings.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct FrameSnapshotUsage {
+    /// Whether the material declares `scene_depth` or `scene_depth_array`.
+    pub depth: bool,
+    /// Whether the material declares `scene_color` or `scene_color_array`.
+    pub color: bool,
+}
+
+/// Reflects scene snapshot texture use from the material's live group-0 bindings.
+pub(super) fn reflect_frame_snapshot_usage(module: &Module) -> FrameSnapshotUsage {
+    let mut usage = FrameSnapshotUsage::default();
+    for (_, gv) in module.global_variables.iter() {
+        let Some(rb) = gv.binding else {
+            continue;
+        };
+        if rb.group != 0 {
+            continue;
+        }
+        match rb.binding {
+            4 | 5 => usage.depth = true,
+            6 | 7 => usage.color = true,
+            _ => {}
+        }
+    }
+    usage
+}
+
+/// Validates group-0 frame-global bindings against the renderer's fixed bind-group layout.
 pub(super) fn validate_frame_group0(
     module: &Module,
     layouter: &Layouter,

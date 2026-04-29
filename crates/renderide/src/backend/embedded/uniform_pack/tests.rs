@@ -316,6 +316,8 @@ mod text_uniform_packing_tests {
             }),
             material_group1_names,
             vs_max_vertex_location: None,
+            uses_scene_depth_snapshot: false,
+            uses_scene_color_snapshot: false,
             requires_intersection_pass: false,
             requires_grab_pass: false,
         };
@@ -506,6 +508,8 @@ mod storage_orientation_uniform_tests {
             }),
             material_group1_names,
             vs_max_vertex_location: None,
+            uses_scene_depth_snapshot: false,
+            uses_scene_color_snapshot: false,
             requires_intersection_pass: false,
             requires_grab_pass: false,
         };

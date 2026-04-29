@@ -40,8 +40,8 @@ fn vs_main(
 #endif
 }
 
-fn refract_offset(uv0: vec2<f32>, world_n: vec3<f32>) -> vec2<f32> {
-    var n = normalize(world_n);
+fn refract_offset(uv0: vec2<f32>, view_n: vec3<f32>, clip_recip_w: f32) -> vec2<f32> {
+    var n = normalize(view_n);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         let ts = nd::decode_ts_normal_with_placeholder_sample(
             textureSample(_NormalMap, _NormalMap_sampler, uvu::apply_st(uv0, mat._NormalMap_ST)),
@@ -49,7 +49,26 @@ fn refract_offset(uv0: vec2<f32>, world_n: vec3<f32>) -> vec2<f32> {
         );
         n = normalize(vec3<f32>(n.xy + ts.xy, n.z));
     }
-    return n.xy * mat._RefractionStrength;
+    return n.xy * clip_recip_w * mat._RefractionStrength;
+}
+
+fn refracted_screen_uv(
+    screen_uv: vec2<f32>,
+    uv0: vec2<f32>,
+    view_n: vec3<f32>,
+    frag_pos: vec4<f32>,
+    world_pos: vec3<f32>,
+    view_layer: u32,
+) -> vec2<f32> {
+    let fade = sds::depth_fade(frag_pos, world_pos, view_layer, mat._DepthDivisor);
+    let offset = refract_offset(uv0, view_n, frag_pos.w) * fade * fm::screen_vignette(screen_uv);
+    let grab_uv = screen_uv - offset;
+    let sampled_depth = sds::scene_linear_depth_at_uv(grab_uv, view_layer);
+    let fragment_depth = sds::fragment_linear_depth(world_pos, view_layer);
+    if (sampled_depth > fragment_depth + mat._DepthBias) {
+        return screen_uv;
+    }
+    return grab_uv;
 }
 
 //#pass forward
@@ -60,10 +79,12 @@ fn fs_main(
     @location(1) world_pos: vec3<f32>,
     @location(2) world_n: vec3<f32>,
     @location(3) @interpolate(flat) view_layer: u32,
+    @location(4) view_n: vec3<f32>,
 ) -> @location(0) vec4<f32> {
     let screen_uv = gp::frag_screen_uv(frag_pos);
-    let fade = sds::depth_fade(frag_pos, world_pos, view_layer, max(mat._DepthDivisor, 1.0));
-    let offset = refract_offset(uv0, world_n) * fade * fm::screen_vignette(screen_uv);
-    let color = gp::sample_scene_color(screen_uv - offset, view_layer);
+    let color = gp::sample_scene_color(
+        refracted_screen_uv(screen_uv, uv0, view_n, frag_pos, world_pos, view_layer),
+        view_layer,
+    );
     return rg::retain_globals_additive(color);
 }

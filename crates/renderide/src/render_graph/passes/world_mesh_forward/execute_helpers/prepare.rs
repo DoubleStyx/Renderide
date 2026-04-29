@@ -113,6 +113,7 @@ pub(in crate::render_graph::passes::world_mesh_forward) fn prepare_world_mesh_fo
     let shader_perm = pipeline.shader_perm;
 
     let prefetched = take_world_mesh_draws(blackboard);
+    let helper_needs = prefetched.helper_needs;
     capture_hi_z_temporal_after_collect(frame, prefetched.cull_proj, hc);
 
     publish_world_mesh_hud_outputs(
@@ -174,6 +175,7 @@ pub(in crate::render_graph::passes::world_mesh_forward) fn prepare_world_mesh_fo
         draws,
         plan,
         pipeline,
+        helper_needs,
         supports_base_instance,
         opaque_recorded: false,
         depth_snapshot_recorded: false,

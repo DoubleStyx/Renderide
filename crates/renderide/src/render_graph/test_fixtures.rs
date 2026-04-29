@@ -81,6 +81,8 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
             embedded_needs_extended_vertex_streams: false,
             embedded_requires_intersection_pass: false,
             embedded_requires_grab_pass: false,
+            embedded_uses_scene_depth_snapshot: false,
+            embedded_uses_scene_color_snapshot: false,
             render_state: Default::default(),
             blend_mode: Default::default(),
             alpha_blended,
