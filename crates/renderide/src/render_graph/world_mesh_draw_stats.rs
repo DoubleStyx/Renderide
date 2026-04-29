@@ -44,7 +44,7 @@ pub struct WorldMeshDrawStats {
     /// that the regular opaque subpass cannot merge across.
     pub intersect_pass_batches: usize,
     /// Subset of [`Self::instance_batch_total`] in the grab-pass transparent subpass
-    /// (materials whose embedded shader needs `_GrabPass` / scene-color snapshot).
+    /// (materials whose embedded shader samples the scene-color snapshot).
     pub transparent_pass_batches: usize,
     /// Sum of `instance_count` across all emitted batches.
     ///
@@ -325,7 +325,7 @@ mod tests {
             collect_order: 0,
             alpha_blended: false,
         });
-        draw.batch_key.embedded_requires_grab_pass = true;
+        draw.batch_key.embedded_uses_scene_color_snapshot = true;
         let s = world_mesh_draw_stats_from_sorted(
             &[draw],
             None,

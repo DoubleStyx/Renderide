@@ -325,7 +325,7 @@ mod tests {
 
     /// Final resolve only runs when the grab-pass transparent tail can change MSAA scene color.
     #[test]
-    fn final_color_resolve_raster_needed_requires_grab_pass_work() {
+    fn final_color_resolve_raster_needed_when_grab_pass_active() {
         assert!(!color_resolve_raster_needed(
             WorldMeshForwardColorResolveStage::FinalSceneColor,
             4,

@@ -303,7 +303,7 @@ fn next_batch_window(
     }
 
     let intersect = key.embedded_requires_intersection_pass;
-    let grab_pass = key.embedded_requires_grab_pass;
+    let grab_pass = key.embedded_uses_scene_color_snapshot;
     debug_assert!(
         !(intersect && grab_pass),
         "intersection and grab-pass subpasses are mutually exclusive"
@@ -535,7 +535,8 @@ mod tests {
                     collect_order: n as usize,
                     alpha_blended: false,
                 });
-                item.batch_key.embedded_requires_grab_pass = true;
+                item.batch_key.embedded_uses_scene_color_snapshot = true;
+                item.batch_key.alpha_blended = true;
                 item
             })
             .collect();
@@ -555,7 +556,8 @@ mod tests {
         let mut intersect = opaque(7, 1, 0, 0);
         intersect.batch_key.embedded_requires_intersection_pass = true;
         let mut grab = opaque(7, 2, 0, 1);
-        grab.batch_key.embedded_requires_grab_pass = true;
+        grab.batch_key.embedded_uses_scene_color_snapshot = true;
+        grab.batch_key.alpha_blended = true;
         let mut draws = vec![intersect, grab];
         sort_world_mesh_draws(&mut draws);
 

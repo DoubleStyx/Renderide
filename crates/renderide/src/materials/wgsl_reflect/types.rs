@@ -62,11 +62,6 @@ pub struct ReflectedRasterLayout {
     ///
     /// Derived from reflection only (no shader stem string checks in the render graph).
     pub requires_intersection_pass: bool,
-    /// `true` when the material declares a grab-pass marker (e.g. `_GrabPass` uniform field),
-    /// triggering a scene color snapshot before this material is drawn.
-    ///
-    /// Derived from reflection only (no shader stem string checks in the render graph).
-    pub requires_grab_pass: bool,
 }
 
 /// Errors from `reflect_raster_material_wgsl` in the parent `wgsl_reflect` module.

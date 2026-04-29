@@ -19,15 +19,6 @@ pub(super) fn material_uniform_requires_intersection_subpass(
         .is_some_and(|u| u.fields.contains_key("_IntersectColor"))
 }
 
-/// `true` when `@group(1)` uniform struct includes `_GrabPass` (scene-color snapshot materials like blur).
-pub(super) fn material_uniform_requires_grab_pass_subpass(
-    material_uniform: &Option<ReflectedMaterialUniformBlock>,
-) -> bool {
-    material_uniform
-        .as_ref()
-        .is_some_and(|u| u.fields.contains_key("_GrabPass"))
-}
-
 pub(super) fn reflect_group1_global_binding_names(module: &Module) -> HashMap<u32, String> {
     let mut out = HashMap::new();
     for (_, gv) in module.global_variables.iter() {

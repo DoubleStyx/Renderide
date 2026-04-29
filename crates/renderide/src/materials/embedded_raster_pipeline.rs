@@ -61,13 +61,6 @@ impl EmbeddedStemMetadata {
             .is_some_and(|loc| loc >= min_location)
     }
 
-    /// Whether reflection found a grab-pass marker field.
-    fn requires_grab_pass(&self) -> bool {
-        self.reflected
-            .as_ref()
-            .is_some_and(|r| r.requires_grab_pass)
-    }
-
     /// Whether reflection found an intersection-pass marker field.
     fn requires_intersection_pass(&self) -> bool {
         self.reflected
@@ -168,18 +161,6 @@ pub fn embedded_wgsl_needs_extended_vertex_streams(wgsl_source: &str) -> bool {
 /// Number of raster passes that will be submitted for one embedded draw batch.
 pub fn embedded_stem_pipeline_pass_count(base_stem: &str, permutation: ShaderPermutation) -> usize {
     embedded_stem_metadata(base_stem, permutation).pass_count
-}
-
-/// `true` when reflection reports a grab-pass material (uniform field `_GrabPass`).
-pub fn embedded_wgsl_requires_grab_pass(wgsl_source: &str) -> bool {
-    crate::materials::wgsl_reflect::reflect_raster_material_requires_grab_pass(wgsl_source)
-}
-
-/// `true` when the composed embedded target uses a grab pass (reflection of `_GrabPass`).
-///
-/// Memoized per `(base_stem, permutation)` like [`embedded_stem_needs_uv0_stream`].
-pub fn embedded_stem_requires_grab_pass(base_stem: &str, permutation: ShaderPermutation) -> bool {
-    embedded_stem_metadata(base_stem, permutation).requires_grab_pass()
 }
 
 /// `true` when reflection reports `_IntersectColor` in the material uniform (intersection forward subpass).
@@ -352,16 +333,15 @@ mod tests {
     fn metadata_flags_cover_common_material_classes() {
         let mono = ShaderPermutation(0);
         assert_eq!(embedded_stem_pipeline_pass_count("null_default", mono), 1);
-        assert!(!embedded_stem_requires_grab_pass("null_default", mono));
+        assert!(!embedded_stem_uses_scene_color_snapshot(
+            "null_default",
+            mono
+        ));
         assert!(!embedded_stem_requires_intersection_pass(
             "null_default",
             mono
         ));
         assert!(!embedded_stem_uses_scene_depth_snapshot(
-            "null_default",
-            mono
-        ));
-        assert!(!embedded_stem_uses_scene_color_snapshot(
             "null_default",
             mono
         ));
@@ -385,8 +365,11 @@ mod tests {
             SHADER_PERM_MULTIVIEW_STEREO
         ));
 
-        assert!(embedded_stem_requires_grab_pass("blur_default", mono));
-        assert!(embedded_stem_requires_grab_pass(
+        assert!(embedded_stem_uses_scene_color_snapshot(
+            "blur_default",
+            mono
+        ));
+        assert!(embedded_stem_uses_scene_color_snapshot(
             "blur_default",
             SHADER_PERM_MULTIVIEW_STEREO
         ));
@@ -398,12 +381,11 @@ mod tests {
             "blur_default",
             mono
         ));
+
         assert!(embedded_stem_uses_scene_color_snapshot(
-            "blur_default",
+            "refract_default",
             mono
         ));
-
-        assert!(embedded_stem_requires_grab_pass("refract_default", mono));
         assert!(!embedded_stem_requires_intersection_pass(
             "refract_default",
             mono
@@ -412,24 +394,16 @@ mod tests {
             "refract_default",
             mono
         ));
-        assert!(embedded_stem_uses_scene_color_snapshot(
-            "refract_default",
-            mono
-        ));
 
         assert!(embedded_stem_requires_intersection_pass(
             "pbsintersect_default",
             mono
         ));
-        assert!(!embedded_stem_requires_grab_pass(
+        assert!(!embedded_stem_uses_scene_color_snapshot(
             "pbsintersect_default",
             mono
         ));
         assert!(embedded_stem_uses_scene_depth_snapshot(
-            "pbsintersect_default",
-            mono
-        ));
-        assert!(!embedded_stem_uses_scene_color_snapshot(
             "pbsintersect_default",
             mono
         ));
@@ -442,16 +416,15 @@ mod tests {
             "xstoon2.0_default",
             mono
         ));
-        assert!(!embedded_stem_requires_grab_pass("xstoon2.0_default", mono));
+        assert!(!embedded_stem_uses_scene_color_snapshot(
+            "xstoon2.0_default",
+            mono
+        ));
         assert!(!embedded_stem_requires_intersection_pass(
             "xstoon2.0_default",
             mono
         ));
         assert!(!embedded_stem_uses_scene_depth_snapshot(
-            "xstoon2.0_default",
-            mono
-        ));
-        assert!(!embedded_stem_uses_scene_color_snapshot(
             "xstoon2.0_default",
             mono
         ));

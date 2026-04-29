@@ -10,8 +10,6 @@
 struct FiltersPixelateMaterial {
     _Resolution: vec4<f32>,
     _ResolutionTex_ST: vec4<f32>,
-    _GrabPass: f32,
-    _pad0: vec3<f32>,
 }
 
 @group(1) @binding(0) var<uniform> mat: FiltersPixelateMaterial;

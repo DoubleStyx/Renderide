@@ -347,7 +347,7 @@ mod tests {
         item.batch_key.shader_asset_id = 42;
         item.batch_key.blend_mode = MaterialBlendMode::Opaque;
         item.batch_key.front_face = RasterFrontFace::CounterClockwise;
-        item.batch_key.embedded_requires_grab_pass = true;
+        item.batch_key.embedded_uses_scene_color_snapshot = true;
 
         let key = PipelineVariantKey::for_draw_item(&item, base_desc(), ShaderPermutation(1));
         assert_eq!(key.sample_count, 4);

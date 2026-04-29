@@ -637,7 +637,6 @@ mod tests {
         let mut depth = regular.clone();
         depth.batch_key.embedded_uses_scene_depth_snapshot = true;
         let mut color = regular.clone();
-        color.batch_key.embedded_requires_grab_pass = true;
         color.batch_key.embedded_uses_scene_color_snapshot = true;
 
         let collection = WorldMeshDrawCollection {
@@ -666,7 +665,6 @@ mod tests {
         );
 
         let mut refract_like = regular;
-        refract_like.batch_key.embedded_requires_grab_pass = true;
         refract_like.batch_key.embedded_uses_scene_depth_snapshot = true;
         refract_like.batch_key.embedded_uses_scene_color_snapshot = true;
         let collection = WorldMeshDrawCollection {

@@ -101,11 +101,10 @@ pub use cache::{
 pub use embedded_raster_pipeline::{
     embedded_composed_stem_for_permutation, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream,
-    embedded_stem_pipeline_pass_count, embedded_stem_requires_grab_pass,
-    embedded_stem_requires_intersection_pass, embedded_stem_uses_alpha_blending,
-    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
-    embedded_wgsl_needs_color_stream, embedded_wgsl_needs_extended_vertex_streams,
-    embedded_wgsl_needs_uv0_stream, embedded_wgsl_requires_grab_pass,
+    embedded_stem_pipeline_pass_count, embedded_stem_requires_intersection_pass,
+    embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
+    embedded_stem_uses_scene_depth_snapshot, embedded_wgsl_needs_color_stream,
+    embedded_wgsl_needs_extended_vertex_streams, embedded_wgsl_needs_uv0_stream,
     embedded_wgsl_requires_intersection_pass, embedded_wgsl_uses_scene_color_snapshot,
     embedded_wgsl_uses_scene_depth_snapshot,
 };
@@ -128,7 +127,7 @@ pub use render_state::{
 
 /// Naga reflection: composed WGSL → `wgpu` bind layouts, uniform block layout, stem fingerprints.
 pub use wgsl_reflect::{
-    reflect_raster_material_requires_grab_pass, reflect_raster_material_requires_intersection_pass,
+    reflect_raster_material_requires_intersection_pass,
     reflect_raster_material_uses_scene_color_snapshot,
     reflect_raster_material_uses_scene_depth_snapshot, reflect_raster_material_wgsl,
     reflect_vertex_shader_needs_color_stream, reflect_vertex_shader_needs_uv0_stream,

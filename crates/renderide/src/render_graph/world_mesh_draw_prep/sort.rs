@@ -6,11 +6,10 @@ use rayon::slice::ParallelSliceMut;
 
 use crate::materials::{
     embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
-    embedded_stem_needs_uv0_stream, embedded_stem_requires_grab_pass,
-    embedded_stem_requires_intersection_pass, embedded_stem_uses_alpha_blending,
-    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
-    material_blend_mode_for_lookup, material_render_state_for_lookup, resolve_raster_pipeline,
-    RasterFrontFace, RasterPipelineKind,
+    embedded_stem_needs_uv0_stream, embedded_stem_requires_intersection_pass,
+    embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
+    embedded_stem_uses_scene_depth_snapshot, material_blend_mode_for_lookup,
+    material_render_state_for_lookup, resolve_raster_pipeline, RasterFrontFace, RasterPipelineKind,
 };
 
 use super::material_batch_cache::{
@@ -89,12 +88,6 @@ pub(super) fn batch_key_for_slot(
         }
         RasterPipelineKind::Null => false,
     };
-    let embedded_requires_grab_pass = match &pipeline {
-        RasterPipelineKind::EmbeddedStem(stem) => {
-            embedded_stem_requires_grab_pass(stem.as_ref(), ctx.shader_perm)
-        }
-        RasterPipelineKind::Null => false,
-    };
     let embedded_uses_scene_depth_snapshot = match &pipeline {
         RasterPipelineKind::EmbeddedStem(stem) => {
             embedded_stem_uses_scene_depth_snapshot(stem.as_ref(), ctx.shader_perm)
@@ -119,7 +112,7 @@ pub(super) fn batch_key_for_slot(
         RasterPipelineKind::EmbeddedStem(stem) => embedded_stem_uses_alpha_blending(stem.as_ref()),
         RasterPipelineKind::Null => false,
     } || material_blend_mode.is_transparent()
-        || embedded_requires_grab_pass;
+        || embedded_uses_scene_color_snapshot;
     MaterialDrawBatchKey {
         pipeline,
         shader_asset_id,
@@ -131,7 +124,6 @@ pub(super) fn batch_key_for_slot(
         embedded_needs_color,
         embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass,
-        embedded_requires_grab_pass,
         embedded_uses_scene_depth_snapshot,
         embedded_uses_scene_color_snapshot,
         render_state,
@@ -160,7 +152,6 @@ fn batch_key_from_resolved(
         embedded_needs_color: r.embedded_needs_color,
         embedded_needs_extended_vertex_streams: r.embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass: r.embedded_requires_intersection_pass,
-        embedded_requires_grab_pass: r.embedded_requires_grab_pass,
         embedded_uses_scene_depth_snapshot: r.embedded_uses_scene_depth_snapshot,
         embedded_uses_scene_color_snapshot: r.embedded_uses_scene_color_snapshot,
         render_state: r.render_state,

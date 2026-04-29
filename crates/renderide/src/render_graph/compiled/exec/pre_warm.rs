@@ -384,7 +384,7 @@ fn collect_unique_pipeline_requests(
         bool,
     )> = std::collections::HashSet::new();
     for item in items {
-        let grab_pass = item.batch_key.embedded_requires_grab_pass;
+        let grab_pass = item.batch_key.embedded_uses_scene_color_snapshot;
         let key = (
             item.batch_key.shader_asset_id,
             item.batch_key.blend_mode,

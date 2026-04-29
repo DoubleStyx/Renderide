@@ -16,9 +16,7 @@ struct FiltersBlurMaterial {
     _Iterations: f32,
     _RefractionStrength: f32,
     _DepthDivisor: f32,
-    _GrabPass: f32,
     _NORMALMAP: f32,
-    _pad0: vec3<f32>,
 }
 
 @group(1) @binding(0) var<uniform> mat: FiltersBlurMaterial;

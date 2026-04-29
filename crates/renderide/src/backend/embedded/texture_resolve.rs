@@ -545,7 +545,6 @@ mod tests {
                 uses_scene_depth_snapshot: false,
                 uses_scene_color_snapshot: false,
                 requires_intersection_pass: false,
-                requires_grab_pass: false,
             },
             StemEmbeddedPropertyIds {
                 shared: Arc::new(EmbeddedSharedKeywordIds::new(&registry)),

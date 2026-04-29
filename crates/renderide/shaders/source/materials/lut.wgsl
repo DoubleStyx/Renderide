@@ -8,9 +8,9 @@
 
 struct FiltersLutMaterial {
     _Lerp: f32,
-    _GrabPass: f32,
     _LUT_LodBias: f32,
     _SecondaryLUT_LodBias: f32,
+    _pad0: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: FiltersLutMaterial;

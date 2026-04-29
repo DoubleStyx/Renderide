@@ -18,12 +18,11 @@ use hashbrown::HashMap;
 use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
     embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
-    embedded_stem_needs_uv0_stream, embedded_stem_requires_grab_pass,
-    embedded_stem_requires_intersection_pass, embedded_stem_uses_alpha_blending,
-    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
-    material_blend_mode_from_maps, material_render_state_from_maps, resolve_raster_pipeline,
-    MaterialBlendMode, MaterialPipelinePropertyIds, MaterialRenderState, MaterialRouter,
-    RasterPipelineKind,
+    embedded_stem_needs_uv0_stream, embedded_stem_requires_intersection_pass,
+    embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
+    embedded_stem_uses_scene_depth_snapshot, material_blend_mode_from_maps,
+    material_render_state_from_maps, resolve_raster_pipeline, MaterialBlendMode,
+    MaterialPipelinePropertyIds, MaterialRenderState, MaterialRouter, RasterPipelineKind,
 };
 use crate::pipelines::ShaderPermutation;
 use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator, StaticMeshRenderer};
@@ -64,11 +63,10 @@ pub(super) struct ResolvedMaterialBatch {
     pub embedded_needs_extended_vertex_streams: bool,
     /// Whether the material requires a second forward subpass with a depth snapshot.
     pub embedded_requires_intersection_pass: bool,
-    /// Whether the material requires the grab-pass transparent subpass with a scene-color snapshot.
-    pub embedded_requires_grab_pass: bool,
     /// Whether the active shader permutation declares a scene-depth snapshot binding.
     pub embedded_uses_scene_depth_snapshot: bool,
-    /// Whether the active shader permutation declares a scene-color snapshot binding.
+    /// Whether the active shader permutation declares a scene-color snapshot binding
+    /// (drives grab-pass transparent subpass routing).
     pub embedded_uses_scene_color_snapshot: bool,
     /// Resolved material blend mode.
     pub blend_mode: MaterialBlendMode,
@@ -339,7 +337,6 @@ fn resolve_material_batch(
         embedded_needs_color,
         embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass,
-        embedded_requires_grab_pass,
         embedded_uses_scene_depth_snapshot,
         embedded_uses_scene_color_snapshot,
         embedded_uses_alpha_blending,
@@ -351,13 +348,12 @@ fn resolve_material_batch(
                 embedded_stem_needs_color_stream(s, shader_perm),
                 embedded_stem_needs_extended_vertex_streams(s, shader_perm),
                 embedded_stem_requires_intersection_pass(s, shader_perm),
-                embedded_stem_requires_grab_pass(s, shader_perm),
                 embedded_stem_uses_scene_depth_snapshot(s, shader_perm),
                 embedded_stem_uses_scene_color_snapshot(s, shader_perm),
                 embedded_stem_uses_alpha_blending(s),
             )
         }
-        RasterPipelineKind::Null => (false, false, false, false, false, false, false, false),
+        RasterPipelineKind::Null => (false, false, false, false, false, false, false),
     };
     let lookup_ids = MaterialPropertyLookupIds {
         material_asset_id,
@@ -369,8 +365,9 @@ fn resolve_material_batch(
     let (mat_map, pb_map) = dict.fetch_property_maps(lookup_ids);
     let blend_mode = material_blend_mode_from_maps(mat_map, pb_map, pipeline_property_ids);
     let render_state = material_render_state_from_maps(mat_map, pb_map, pipeline_property_ids);
-    let alpha_blended =
-        embedded_uses_alpha_blending || blend_mode.is_transparent() || embedded_requires_grab_pass;
+    let alpha_blended = embedded_uses_alpha_blending
+        || blend_mode.is_transparent()
+        || embedded_uses_scene_color_snapshot;
     ResolvedMaterialBatch {
         shader_asset_id,
         pipeline,
@@ -378,7 +375,6 @@ fn resolve_material_batch(
         embedded_needs_color,
         embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass,
-        embedded_requires_grab_pass,
         embedded_uses_scene_depth_snapshot,
         embedded_uses_scene_color_snapshot,
         blend_mode,

@@ -231,14 +231,11 @@ pub struct MaterialDrawBatchKey {
     /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether reflection reports `_IntersectColor`
     /// in the material uniform (second forward subpass with depth snapshot).
     pub embedded_requires_intersection_pass: bool,
-    /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether reflection reports
-    /// `_GrabPass` in the material uniform (transparent forward subpass with a scene-color snapshot).
-    pub embedded_requires_grab_pass: bool,
     /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether the shader samples
     /// the scene-depth snapshot through frame globals.
     pub embedded_uses_scene_depth_snapshot: bool,
     /// When [`Self::pipeline`] is [`RasterPipelineKind::EmbeddedStem`], whether the shader samples
-    /// the scene-color snapshot through frame globals.
+    /// the scene-color snapshot through frame globals (transparent forward subpass).
     pub embedded_uses_scene_color_snapshot: bool,
     /// Runtime color, stencil, and depth state for this material/property-block pair.
     pub render_state: MaterialRenderState,

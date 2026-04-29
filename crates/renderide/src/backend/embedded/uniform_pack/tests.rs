@@ -319,7 +319,6 @@ mod text_uniform_packing_tests {
             uses_scene_depth_snapshot: false,
             uses_scene_color_snapshot: false,
             requires_intersection_pass: false,
-            requires_grab_pass: false,
         };
 
         let mut store = MaterialPropertyStore::new();
@@ -511,7 +510,6 @@ mod storage_orientation_uniform_tests {
             uses_scene_depth_snapshot: false,
             uses_scene_color_snapshot: false,
             requires_intersection_pass: false,
-            requires_grab_pass: false,
         };
         let ids = StemEmbeddedPropertyIds::build(
             Arc::new(EmbeddedSharedKeywordIds::new(&registry)),
