@@ -8,7 +8,9 @@
 
 use crate::assets::AssetTransferQueue;
 use renderide_shared::ipc::DualQueueIpc;
-use renderide_shared::{VideoTextureLoad, VideoTextureStartAudioTrack, VideoTextureUpdate};
+use renderide_shared::{
+    VideoTextureClockErrorState, VideoTextureLoad, VideoTextureStartAudioTrack, VideoTextureUpdate,
+};
 use std::sync::Arc;
 
 /// Stand-in for the real GStreamer-backed player. Cannot be constructed.
@@ -50,6 +52,11 @@ impl VideoPlayer {
         _queue: &mut AssetTransferQueue,
         _ipc: &mut Option<&mut DualQueueIpc>,
     ) {
+        match self._never {}
+    }
+
+    /// No-op stand-in for the GStreamer-backed implementation. The stub never produces samples.
+    pub fn sample_clock_error(&self) -> Option<VideoTextureClockErrorState> {
         match self._never {}
     }
 }

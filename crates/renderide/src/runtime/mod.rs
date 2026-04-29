@@ -256,7 +256,18 @@ impl RendererRuntime {
     }
 
     /// If connected and init is complete, sends [`FrameStartData`](crate::shared::FrameStartData) when we are ready for the next host frame.
+    ///
+    /// Drains per-tick video clock-error samples produced by the asset integrator into the
+    /// frontend so the next outgoing [`FrameStartData`](crate::shared::FrameStartData::video_clock_errors)
+    /// carries them. The drain runs unconditionally because the frontend itself decides whether
+    /// the begin-frame send fires; if the send is skipped, samples accumulate harmlessly until the
+    /// next allowed send.
     pub fn pre_frame(&mut self, inputs: InputState) {
+        let video_clock_errors = self
+            .backend
+            .asset_transfers
+            .take_pending_video_clock_errors();
+        self.frontend.enqueue_video_clock_errors(video_clock_errors);
         self.frontend.pre_frame(inputs);
     }
 

@@ -29,7 +29,8 @@ use crate::resources::{
 use crate::shared::{
     MeshUploadData, SetCubemapData, SetCubemapFormat, SetCubemapProperties, SetRenderTextureFormat,
     SetTexture2DData, SetTexture2DFormat, SetTexture2DProperties, SetTexture3DData,
-    SetTexture3DFormat, SetTexture3DProperties, VideoTextureLoad, VideoTextureProperties,
+    SetTexture3DFormat, SetTexture3DProperties, VideoTextureClockErrorState, VideoTextureLoad,
+    VideoTextureProperties,
 };
 
 use crate::assets::video::player::VideoPlayer;
@@ -65,6 +66,11 @@ pub struct AssetTransferQueue {
     pub(crate) video_texture_pool: VideoTexturePool,
     /// Holder for [`VideoPlayer`] instances.
     pub(crate) video_players: HashMap<i32, VideoPlayer>,
+    /// Per-frame accumulator of [`VideoTextureClockErrorState`] sampled from active video players.
+    ///
+    /// Filled by the asset integrator's video-texture polling step and drained by the runtime
+    /// before [`crate::frontend::RendererFrontend::pre_frame`] sends [`crate::shared::FrameStartData`].
+    pub(crate) pending_video_clock_errors: Vec<VideoTextureClockErrorState>,
     /// Latest [`VideoTextureLoad`] messages received before GPU attach.
     pub(crate) pending_video_texture_loads: HashMap<i32, VideoTextureLoad>,
     /// Latest [`VideoTextureProperties`] per video texture asset.
@@ -158,6 +164,15 @@ impl AssetTransferQueue {
             })
     }
 
+    /// Drains the per-frame accumulator of video clock-error samples for transmission to the host.
+    ///
+    /// The runtime calls this once per tick before [`crate::frontend::RendererFrontend::pre_frame`]
+    /// so the next [`crate::shared::FrameStartData`] carries the latest drift snapshot per active
+    /// video player.
+    pub fn take_pending_video_clock_errors(&mut self) -> Vec<VideoTextureClockErrorState> {
+        std::mem::take(&mut self.pending_video_clock_errors)
+    }
+
     /// Ensures a GPU video texture placeholder exists and returns it for mutation.
     pub(crate) fn ensure_video_texture_with_props(
         &mut self,
@@ -195,6 +210,7 @@ impl AssetTransferQueue {
             render_texture_pool: RenderTexturePool::new(),
             render_texture_formats: HashMap::new(),
             video_players: HashMap::new(),
+            pending_video_clock_errors: Vec::new(),
             pending_video_texture_loads: HashMap::new(),
             video_texture_pool: VideoTexturePool::new(),
             video_texture_properties: HashMap::new(),

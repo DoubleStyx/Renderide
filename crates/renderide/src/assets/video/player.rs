@@ -9,13 +9,14 @@ use gstreamer_app::AppSink;
 use interprocess::{QueueFactory, QueueOptions};
 use renderide_shared::ipc::DualQueueIpc;
 use renderide_shared::{
-    RendererCommand, VideoAudioTrack, VideoTextureLoad, VideoTextureReady,
-    VideoTextureStartAudioTrack, VideoTextureUpdate,
+    RendererCommand, VideoAudioTrack, VideoTextureClockErrorState, VideoTextureLoad,
+    VideoTextureReady, VideoTextureStartAudioTrack, VideoTextureUpdate,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Fallback audio rate used when the host sends an invalid sample rate.
 const DEFAULT_AUDIO_SAMPLE_RATE: i32 = 48_000;
@@ -43,6 +44,12 @@ pub struct VideoPlayer {
     audio_sample_rate: i32,
     /// Stores the latest [`VideoTextureUpdate`] until it gets processed by the update thread.
     pending_update: Arc<Mutex<Option<VideoTextureUpdate>>>,
+    /// Most recently received host update, retained even after the worker thread applies it so
+    /// [`Self::sample_clock_error`] can keep reporting drift each frame against
+    /// [`VideoTextureUpdate::decoded_time`] until the host sends another update. Mirrors
+    /// `_update` in `UnityVideoTextureBehaviour`, which is re-armed each frame with the same
+    /// last-received instance.
+    last_update: Arc<Mutex<Option<VideoTextureUpdate>>>,
     /// Shared shutdown flag checked by the update thread.
     shutdown: Arc<AtomicBool>,
 }
@@ -110,6 +117,7 @@ impl VideoPlayer {
         }
 
         let pending_update: Arc<Mutex<Option<VideoTextureUpdate>>> = Arc::new(Mutex::new(None));
+        let last_update: Arc<Mutex<Option<VideoTextureUpdate>>> = Arc::new(Mutex::new(None));
         let shutdown: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
         Self::spawn_update_thread(
@@ -125,6 +133,7 @@ impl VideoPlayer {
             video_sink,
             audio_sample_rate,
             pending_update,
+            last_update,
             shutdown,
         })
     }
@@ -192,7 +201,19 @@ impl VideoPlayer {
     }
 
     /// Schedules a video player state update from [`VideoTextureUpdate`].
+    ///
+    /// Also stores the update as the latest snapshot for [`Self::sample_clock_error`]. The
+    /// `decoded_time` field is set by the IPC unpack at receive time, so retaining the same
+    /// update across multiple frames is correct: `(now - decoded_time)` keeps growing until the
+    /// host sends a fresh update, matching Renderite.Unity's `_update` reuse behaviour.
     pub fn handle_update(&mut self, u: VideoTextureUpdate) {
+        match self.last_update.lock() {
+            Ok(mut slot) => *slot = Some(u.clone()),
+            Err(_) => logger::warn!(
+                "video texture {}: last-update lock poisoned; clock-error sample skipped",
+                self.asset_id
+            ),
+        }
         match self.pending_update.lock() {
             Ok(mut pending_update) => *pending_update = Some(u),
             Err(_) => logger::warn!(
@@ -299,6 +320,32 @@ impl VideoPlayer {
         });
     }
 
+    /// Samples this player's clock error against the host's most recently received playback request.
+    ///
+    /// Mirrors `UnityVideoTextureBehaviour`: the error is `pipeline_position − adjusted_host_position`,
+    /// where the adjusted position advances unconditionally at real-time from
+    /// [`VideoTextureUpdate::decoded_time`] (set by the IPC unpack at receive time). Returns `None`
+    /// until at least one update has arrived or when the pipeline position cannot be queried.
+    pub fn sample_clock_error(&self) -> Option<VideoTextureClockErrorState> {
+        let update = match self.last_update.lock() {
+            Ok(slot) => slot.clone()?,
+            Err(_) => {
+                logger::warn!(
+                    "video texture {}: last-update lock poisoned; skipping clock error sample",
+                    self.asset_id
+                );
+                return None;
+            }
+        };
+        let current = query_position_seconds(&self.pipeline)?;
+        let now_nanos = unix_nanos_now();
+        let adjusted = adjusted_host_position(&update, now_nanos);
+        Some(VideoTextureClockErrorState {
+            asset_id: self.asset_id,
+            current_clock_error: (current - adjusted) as f32,
+        })
+    }
+
     fn send_ready(
         &self,
         ipc: &mut Option<&mut DualQueueIpc>,
@@ -401,6 +448,27 @@ fn clock_time_from_seconds(seconds: f64) -> gstreamer::ClockTime {
     }
     let nanos = (seconds * 1_000_000_000.0).min(u64::MAX as f64) as u64;
     gstreamer::ClockTime::from_nseconds(nanos)
+}
+
+/// Returns the host-expected playback position right now, given the last received update.
+///
+/// Faithful port of `VideoTextureUpdate.AdjustedPosition` in `Renderite.Shared`:
+/// `position + (now - decoded_time).total_seconds()`, with no play-state guard. Even while paused,
+/// the host expects the renderer to keep refreshing this value off the most recent `decoded_time`,
+/// which the IPC unpack stamps at receive time. `now_nanos` and `decoded_time` are both nanoseconds
+/// since the UNIX epoch.
+fn adjusted_host_position(update: &VideoTextureUpdate, now_nanos: i128) -> f64 {
+    let elapsed_nanos = now_nanos - update.decoded_time;
+    update.position + (elapsed_nanos as f64) / 1_000_000_000.0
+}
+
+/// Returns the current wall-clock time as nanoseconds since the UNIX epoch, matching the encoding
+/// the IPC unpack uses for [`VideoTextureUpdate::decoded_time`].
+fn unix_nanos_now() -> i128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i128)
+        .unwrap_or(0)
 }
 
 /// Queries current playback position in seconds.
@@ -517,5 +585,46 @@ mod tests {
         assert_eq!(track.index, 0);
         assert_eq!(track.channel_count, 2);
         assert_eq!(track.name, None);
+    }
+
+    fn update_decoded_at(position: f64, play: bool, decoded_nanos: i128) -> VideoTextureUpdate {
+        VideoTextureUpdate {
+            position,
+            play,
+            decoded_time: decoded_nanos,
+            ..VideoTextureUpdate::default()
+        }
+    }
+
+    const HALF_SECOND_NS: i128 = 500_000_000;
+    const ONE_SECOND_NS: i128 = 1_000_000_000;
+
+    #[test]
+    fn adjusted_host_position_advances_unconditionally_when_playing() {
+        let u = update_decoded_at(10.0, true, 0);
+        assert!((adjusted_host_position(&u, HALF_SECOND_NS) - 10.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn adjusted_host_position_advances_even_when_paused() {
+        // Mirrors C# `VideoTextureUpdate.AdjustedPosition`, which has no play-state guard. The
+        // host re-sends paused updates frequently so elapsed-since-decoded stays bounded.
+        let u = update_decoded_at(10.0, false, 0);
+        assert!((adjusted_host_position(&u, HALF_SECOND_NS) - 10.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn adjusted_host_position_zero_elapsed_returns_position() {
+        let u = update_decoded_at(7.25, true, ONE_SECOND_NS);
+        assert_eq!(adjusted_host_position(&u, ONE_SECOND_NS), 7.25);
+    }
+
+    #[test]
+    fn adjusted_host_position_handles_negative_elapsed() {
+        // If wall-clock goes backwards, elapsed becomes negative and the adjusted position retreats,
+        // matching the C# `(DateTime.UtcNow - decodedTime).TotalSeconds` literal port.
+        let u = update_decoded_at(4.0, true, ONE_SECOND_NS);
+        let earlier = ONE_SECOND_NS - HALF_SECOND_NS;
+        assert!((adjusted_host_position(&u, earlier) - 3.5).abs() < 1e-9);
     }
 }

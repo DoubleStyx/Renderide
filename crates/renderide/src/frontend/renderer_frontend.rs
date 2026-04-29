@@ -6,7 +6,7 @@ use crate::connection::{ConnectionParams, InitError};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{
     FrameStartData, InputState, OutputState, ReflectionProbeChangeRenderResult,
-    RenderDecouplingConfig, RendererCommand, RendererInitData,
+    RenderDecouplingConfig, RendererCommand, RendererInitData, VideoTextureClockErrorState,
 };
 
 use super::begin_frame::begin_frame_allowed;
@@ -54,6 +54,11 @@ pub struct RendererFrontend {
     rendered_frames_since_last: i32,
     /// Reflection probes that finished rendering and need to be reported in the next begin-frame.
     pending_rendered_reflection_probes: Vec<ReflectionProbeChangeRenderResult>,
+    /// Video texture clock-error samples accumulated since the last [`FrameStartData`] send.
+    ///
+    /// Cloned into [`FrameStartData::video_clock_errors`] in [`Self::pre_frame`] and cleared after a
+    /// successful primary-queue enqueue, mirroring [`Self::pending_rendered_reflection_probes`].
+    pending_video_clock_errors: Vec<VideoTextureClockErrorState>,
 }
 
 impl RendererFrontend {
@@ -87,6 +92,7 @@ impl RendererFrontend {
             decoupling: DecouplingState::default(),
             rendered_frames_since_last: 0,
             pending_rendered_reflection_probes: Vec::new(),
+            pending_video_clock_errors: Vec::new(),
         }
     }
 
@@ -300,6 +306,18 @@ impl RendererFrontend {
         self.pending_rendered_reflection_probes.extend(probes);
     }
 
+    /// Appends video texture clock-error samples for the next outgoing [`FrameStartData`].
+    ///
+    /// One sample per active [`crate::assets::video::player::VideoPlayer`] per tick is enough; the
+    /// host overwrites [`FrooxEngine::VideoTexture::CurrentClockError`] on each receive, so older
+    /// rows in the same frame batch would just be replaced before protoflux observes them.
+    pub fn enqueue_video_clock_errors(
+        &mut self,
+        errors: impl IntoIterator<Item = VideoTextureClockErrorState>,
+    ) {
+        self.pending_video_clock_errors.extend(errors);
+    }
+
     /// Lock-step begin-frame: send [`FrameStartData`] with `inputs` when [`Self::should_send_begin_frame`].
     ///
     /// Call only when [`Self::should_send_begin_frame`] is true so [`InputState`] is not dropped on the floor.
@@ -318,12 +336,13 @@ impl RendererFrontend {
             rendered_frames_since_last,
         );
         let rendered_reflection_probes = self.pending_rendered_reflection_probes.clone();
+        let video_clock_errors = self.pending_video_clock_errors.clone();
         let frame_start = FrameStartData {
             last_frame_index: self.last_frame_index,
             performance,
             inputs: Some(inputs),
             rendered_reflection_probes,
-            ..Default::default()
+            video_clock_errors,
         };
         if let Some(ref mut ipc) = self.ipc {
             if !ipc.send_primary(RendererCommand::FrameStartData(frame_start)) {
@@ -334,6 +353,7 @@ impl RendererFrontend {
             }
         }
         self.pending_rendered_reflection_probes.clear();
+        self.pending_video_clock_errors.clear();
         self.last_frame_data_processed = false;
         self.decoupling.record_frame_start_sent(Instant::now());
         if bootstrap {
