@@ -15,6 +15,7 @@ mod frame_gpu;
 mod frame_gpu_bindings;
 mod frame_gpu_error;
 mod frame_resource_manager;
+mod gpu_jobs;
 mod history_registry;
 mod light_gpu;
 mod material_property_reader;
@@ -45,6 +46,10 @@ pub use frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 pub use frame_gpu_error::FrameGpuInitError;
 pub use frame_resource_manager::{
     FrameGpuBindContext, FrameResourceManager, PerViewFrameState, PreRecordViewResourceLayout,
+};
+pub(crate) use gpu_jobs::{
+    GpuJobResources, GpuReadbackJobs, GpuReadbackOutcomes, GpuSubmitJobTracker, GpuSubmitOutcomes,
+    ReadbackJobLifecycle, SubmitJobLifecycle, SubmittedGpuJob, SubmittedReadbackJob,
 };
 pub use history_registry::{
     BufferHistorySlot, BufferHistorySpec, HistoryRegistry, HistoryRegistryError,
