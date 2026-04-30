@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn prepare_command_cmd_round_trip() {
         let g = ChildLifetimeGroup::new().expect("group");
-        let mut cmd = std::process::Command::new("cmd.exe");
+        let mut cmd = Command::new("cmd.exe");
         cmd.arg("/c").arg("exit").arg("0");
         g.prepare_command(&mut cmd);
         assert!(cmd.status().expect("status").success());
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn register_spawned_with_exiting_child_windows() {
         let g = ChildLifetimeGroup::new().expect("group");
-        let mut cmd = std::process::Command::new("cmd.exe");
+        let mut cmd = Command::new("cmd.exe");
         cmd.arg("/c").arg("exit").arg("0");
         g.prepare_command(&mut cmd);
         let mut child = cmd.spawn().expect("spawn");

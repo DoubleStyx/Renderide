@@ -14,10 +14,10 @@ pub fn base_paths() -> Vec<PathBuf> {
         if let Ok(steam) = env::var("STEAM_PATH") {
             bases.push(PathBuf::from(steam));
         }
-        if let Ok(path) = path_from_registry() {
-            if !bases.iter().any(|b| b == &path) {
-                bases.push(path);
-            }
+        if let Ok(path) = path_from_registry()
+            && !bases.iter().any(|b| b == &path)
+        {
+            bases.push(path);
         }
         for env_var in ["ProgramFiles(x86)", "ProgramFiles"] {
             if let Ok(pf) = env::var(env_var) {
@@ -96,10 +96,10 @@ fn path_from_registry() -> Result<PathBuf, std::io::Error> {
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     for key_path in &[r"SOFTWARE\WOW6432Node\Valve\Steam", r"SOFTWARE\Valve\Steam"] {
-        if let Ok(steam_key) = hklm.open_subkey(key_path) {
-            if let Ok(install_path) = steam_key.get_value::<String, &str>("InstallPath") {
-                return Ok(PathBuf::from(install_path));
-            }
+        if let Ok(steam_key) = hklm.open_subkey(key_path)
+            && let Ok(install_path) = steam_key.get_value::<String, &str>("InstallPath")
+        {
+            return Ok(PathBuf::from(install_path));
         }
     }
     Err(std::io::Error::new(
