@@ -47,7 +47,6 @@ use std::num::NonZeroU32;
 use crate::render_graph::compiled::{DepthAttachmentTemplate, RenderPassTemplate};
 use crate::render_graph::context::{CallbackCtx, ComputePassCtx, RasterPassCtx};
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::WorldMeshForwardPlanSlot;
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::pass::{CallbackPass, ComputePass, PassBuilder, RasterPass};
 use crate::render_graph::resources::{
@@ -55,6 +54,7 @@ use crate::render_graph::resources::{
     TextureHandle,
 };
 use crate::world_mesh::InstancePlan;
+use crate::world_mesh::WorldMeshForwardPlanSlot;
 
 use execute_helpers::{
     encode_msaa_depth_resolve_after_clear_only, encode_world_mesh_forward_color_snapshot,
@@ -69,7 +69,7 @@ use skybox::{SkyboxRenderer, record_prepared_skybox};
 /// Prepares sorted world-mesh forward draw state for subsequent graph nodes.
 ///
 /// The pass is a [`CallbackPass`] (no encoder); it records deferred uploads and stores one
-/// [`crate::render_graph::PreparedWorldMeshForwardFrame`] in the per-view blackboard via
+/// [`crate::world_mesh::PreparedWorldMeshForwardFrame`] in the per-view blackboard via
 /// [`WorldMeshForwardPlanSlot`].
 #[derive(Debug, Default)]
 pub struct WorldMeshForwardPreparePass {

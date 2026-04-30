@@ -8,6 +8,7 @@ pub(crate) mod cull;
 pub(crate) mod cull_eval;
 pub(crate) mod draw_prep;
 pub(crate) mod draw_stats;
+pub mod forward_state;
 pub(crate) mod frustum;
 
 pub use cluster_frame::{ClusterFrameParams, cluster_frame_params, cluster_frame_params_stereo};
@@ -25,6 +26,10 @@ pub use draw_prep::{
 pub use draw_stats::{
     WorldMeshDrawStateRow, WorldMeshDrawStats, world_mesh_draw_state_rows_from_sorted,
     world_mesh_draw_stats_from_sorted,
+};
+pub use forward_state::{
+    PrefetchedWorldMeshDrawsSlot, PrefetchedWorldMeshViewDraws, PreparedWorldMeshForwardFrame,
+    WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot, WorldMeshHelperNeeds,
 };
 pub use frustum::{
     Frustum, HOMOGENEOUS_CLIP_EPS, Plane, mesh_bounds_degenerate_for_cull,

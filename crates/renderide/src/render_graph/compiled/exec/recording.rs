@@ -11,7 +11,6 @@ use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_params::{
     BloomSettingsSlot, BloomSettingsValue, FrameSystemsShared, GtaoSettingsSlot, GtaoSettingsValue,
     MsaaViewsSlot, PerViewFramePlan, PerViewFramePlanSlot, PerViewHudOutputsSlot,
-    PrefetchedWorldMeshDrawsSlot,
 };
 use super::super::super::pass::PassKind;
 use super::super::helpers;
@@ -22,6 +21,7 @@ use super::{
     GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem,
     TransientTextureResolveSurfaceParams,
 };
+use crate::world_mesh::PrefetchedWorldMeshDrawsSlot;
 
 impl CompiledRenderGraph {
     /// Records the per-view pass phase into one command buffer for `work_item`.
@@ -185,7 +185,7 @@ impl CompiledRenderGraph {
             }
             WorldMeshDrawPlan::Empty => {
                 view_blackboard.insert::<PrefetchedWorldMeshDrawsSlot>(
-                    crate::render_graph::PrefetchedWorldMeshViewDraws::empty(),
+                    crate::world_mesh::PrefetchedWorldMeshViewDraws::empty(),
                 );
             }
         }

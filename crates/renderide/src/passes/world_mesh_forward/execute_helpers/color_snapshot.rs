@@ -1,9 +1,8 @@
 //! Scene-color snapshot helper for the graph-managed world-mesh forward pass.
 
 use crate::render_graph::context::GraphResolvedResources;
-use crate::render_graph::frame_params::{
-    FrameRenderParams, PreparedWorldMeshForwardFrame, WorldMeshHelperNeeds,
-};
+use crate::render_graph::frame_params::FrameRenderParams;
+use crate::world_mesh::{PreparedWorldMeshForwardFrame, WorldMeshHelperNeeds};
 
 use super::super::WorldMeshForwardGraphResources;
 
@@ -47,7 +46,7 @@ fn color_snapshot_recording_needed(helper_needs: WorldMeshHelperNeeds) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::render_graph::frame_params::WorldMeshHelperNeeds;
+    use crate::world_mesh::WorldMeshHelperNeeds;
 
     use super::color_snapshot_recording_needed;
 

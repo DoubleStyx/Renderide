@@ -7,11 +7,11 @@ use crate::materials::ShaderPermutation;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::frame_params::{
     FrameRenderParams, PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot,
-    PrefetchedWorldMeshDrawsSlot, PrefetchedWorldMeshViewDraws, PreparedWorldMeshForwardFrame,
 };
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
 use crate::world_mesh::draw_prep::{WorldMeshDrawCollection, WorldMeshDrawItem};
 use crate::world_mesh::{
+    PrefetchedWorldMeshDrawsSlot, PrefetchedWorldMeshViewDraws, PreparedWorldMeshForwardFrame,
     WorldMeshCullProjParams, world_mesh_draw_state_rows_from_sorted,
     world_mesh_draw_stats_from_sorted,
 };

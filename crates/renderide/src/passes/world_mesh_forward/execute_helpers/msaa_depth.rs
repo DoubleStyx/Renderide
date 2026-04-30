@@ -6,9 +6,8 @@ use crate::gpu::{
 };
 use crate::profiling::GpuProfilerHandle;
 use crate::render_graph::context::{GraphResolvedResources, ResolvedGraphTexture};
-use crate::render_graph::frame_params::{
-    FrameRenderParams, PreparedWorldMeshForwardFrame, WorldMeshHelperNeeds,
-};
+use crate::render_graph::frame_params::FrameRenderParams;
+use crate::world_mesh::{PreparedWorldMeshForwardFrame, WorldMeshHelperNeeds};
 
 use super::super::WorldMeshForwardGraphResources;
 
@@ -208,7 +207,7 @@ fn first_two_depth_sample_layer_views(
 
 #[cfg(test)]
 mod tests {
-    use crate::render_graph::frame_params::WorldMeshHelperNeeds;
+    use crate::world_mesh::WorldMeshHelperNeeds;
 
     use super::depth_snapshot_recording_needed;
 
