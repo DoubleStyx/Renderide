@@ -6,6 +6,7 @@ description = "Cloudtoid-compatible shared-memory queue for host/renderer IPC"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+logger = { path = "../logger" }
 memmap2 = "0.9"
 thiserror = "2"
 

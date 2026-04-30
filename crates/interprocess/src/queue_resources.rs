@@ -1,6 +1,7 @@
 //! Shared backing mapping, capacity, semaphore, and Unix `destroy_on_dispose` cleanup for both queue ends.
 
 use std::fs;
+use std::io;
 
 use crate::error::OpenError;
 use crate::layout::QueueHeader;
@@ -19,17 +20,29 @@ pub(crate) struct QueueResources {
     sem: Semaphore,
     /// When `true`, best-effort unlink of the backing `.qu` path on drop (Unix file-backed queues only).
     destroy_on_dispose: bool,
+    /// Logical queue name (matches the mapping/semaphore name); used in diagnostic log lines.
+    queue_name: String,
 }
 
 impl QueueResources {
     /// Creates or opens the mapping and paired semaphore described by `options`.
     pub(crate) fn open(options: QueueOptions) -> Result<Self, OpenError> {
+        let queue_name = options.memory_view_name.clone();
+        let capacity = options.capacity;
+        let destroy_on_dispose = options.destroy_on_dispose;
         let (mapping, sem) = SharedMapping::open_queue(&options)?;
+        logger::info!(
+            "interprocess: opened queue '{}' (capacity {} B, destroy_on_dispose={})",
+            queue_name,
+            capacity,
+            destroy_on_dispose
+        );
         Ok(Self {
             mapping,
-            capacity: options.capacity,
+            capacity,
             sem,
-            destroy_on_dispose: options.destroy_on_dispose,
+            destroy_on_dispose,
+            queue_name,
         })
     }
 
@@ -74,7 +87,18 @@ impl Drop for QueueResources {
     fn drop(&mut self) {
         if self.destroy_on_dispose {
             if let Some(path) = self.mapping.backing_file_path() {
-                let _ = fs::remove_file(path);
+                match fs::remove_file(path) {
+                    Ok(()) => logger::info!(
+                        "interprocess: unlinked queue backing file for '{}'",
+                        self.queue_name
+                    ),
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                    Err(err) => logger::warn!(
+                        "interprocess: failed to unlink queue backing file for '{}': {}",
+                        self.queue_name,
+                        err
+                    ),
+                }
             }
         }
     }

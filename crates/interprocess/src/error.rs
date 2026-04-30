@@ -9,7 +9,11 @@ use thiserror::Error;
 /// Wraps [`std::io::Error`] so filesystem, mapping, and semaphore failures share one surface type.
 #[derive(Debug, Error)]
 #[error(transparent)]
-pub struct OpenError(#[from] pub io::Error);
+pub struct OpenError(
+    /// Underlying I/O error from the file mapping or semaphore syscall.
+    #[from]
+    pub io::Error,
+);
 
 #[cfg(test)]
 mod tests {

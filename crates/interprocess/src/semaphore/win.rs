@@ -11,13 +11,16 @@ use windows_sys::Win32::System::Threading::{
     CreateSemaphoreW, ReleaseSemaphore, WaitForSingleObject, INFINITE,
 };
 
+use super::WIN_WAIT_INFINITE_THRESHOLD;
 use crate::naming;
 
 /// Win32 semaphore handle from `CreateSemaphoreW` (`Global\CT.IP.{name}`).
-pub(super) struct WinSemaphore(
+pub(super) struct WinSemaphore {
     /// Raw semaphore handle; closed on drop.
-    windows_sys::Win32::Foundation::HANDLE,
-);
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    /// Logical queue name (matches the mapping name); used in diagnostic log lines.
+    queue_name: String,
+}
 
 impl WinSemaphore {
     /// Creates or opens the named global semaphore (initial count `0`, max `i32::MAX`).
@@ -32,20 +35,25 @@ impl WinSemaphore {
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self(handle))
+        Ok(Self {
+            handle,
+            queue_name: memory_view_name.to_string(),
+        })
     }
 
     /// Releases one semaphore count (`ReleaseSemaphore`).
     pub(super) fn post(&self) {
-        // SAFETY: `self.0` is a live semaphore handle owned by `self`; `lpPreviousCount` null is
-        // permitted by the Win32 API.
-        let rc = unsafe { ReleaseSemaphore(self.0, 1, null_mut()) };
+        // SAFETY: `self.handle` is a live semaphore handle owned by `self`; `lpPreviousCount` null
+        // is permitted by the Win32 API.
+        let rc = unsafe { ReleaseSemaphore(self.handle, 1, null_mut()) };
         if rc == 0 {
-            debug_assert!(
-                false,
-                "ReleaseSemaphore failed: {:?}",
-                io::Error::last_os_error()
+            let err = io::Error::last_os_error();
+            logger::warn!(
+                "interprocess: ReleaseSemaphore failed for queue '{}': {}",
+                self.queue_name,
+                err
             );
+            debug_assert!(false, "ReleaseSemaphore failed: {:?}", err);
         }
     }
 
@@ -53,24 +61,29 @@ impl WinSemaphore {
     pub(super) fn wait_timeout(&self, timeout: Duration) -> bool {
         let ms = if timeout.is_zero() {
             0u32
-        } else if timeout.as_secs() > 60 * 60 * 24 * 7 {
+        } else if timeout >= WIN_WAIT_INFINITE_THRESHOLD {
             INFINITE
         } else {
             timeout.as_millis().min(u32::MAX as u128) as u32
         };
-        // SAFETY: `self.0` is a live semaphore handle owned by `self`.
-        let r = unsafe { WaitForSingleObject(self.0, ms) };
+        // SAFETY: `self.handle` is a live semaphore handle owned by `self`.
+        let r = unsafe { WaitForSingleObject(self.handle, ms) };
         r == WAIT_OBJECT_0
     }
 }
 
 impl Drop for WinSemaphore {
     fn drop(&mut self) {
-        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
-            // SAFETY: `self.0` is the semaphore handle created in `open`, still live (non-null and
-            // not sentinel); closed exactly once here.
-            unsafe {
-                CloseHandle(self.0);
+        if !self.handle.is_null() && self.handle != INVALID_HANDLE_VALUE {
+            // SAFETY: `self.handle` is the semaphore handle created in `open`, still live (non-null
+            // and not sentinel); closed exactly once here.
+            let rc = unsafe { CloseHandle(self.handle) };
+            if rc == 0 {
+                logger::warn!(
+                    "interprocess: CloseHandle on semaphore failed for queue '{}': {}",
+                    self.queue_name,
+                    io::Error::last_os_error()
+                );
             }
         }
     }

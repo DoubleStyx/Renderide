@@ -15,6 +15,15 @@ use windows_sys::Win32::System::Memory::{
     PAGE_READWRITE,
 };
 
+/// Maximum number of bootstrap-race retries for [`create_or_open_file_mapping`].
+const MAP_RETRY_ATTEMPTS: usize = 14;
+
+/// Initial sleep, in milliseconds, between bootstrap-race retries.
+const MAP_RETRY_INITIAL_MS: u64 = 10;
+
+/// Upper bound on the bootstrap-race retry sleep, in milliseconds.
+const MAP_RETRY_MAX_MS: u64 = 1_000;
+
 /// RAII for `CreateFileMappingW` / `OpenFileMappingW` plus `MapViewOfFile`.
 pub(super) struct WindowsMapping {
     /// Handle from `CreateFileMappingW` or `OpenFileMappingW`.
@@ -23,6 +32,8 @@ pub(super) struct WindowsMapping {
     view: windows_sys::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS,
     /// Byte length of the view (header plus ring).
     len: usize,
+    /// Logical queue name (matches the semaphore name); used in diagnostic log lines.
+    queue_name: String,
 }
 
 impl WindowsMapping {
@@ -47,15 +58,25 @@ impl Drop for WindowsMapping {
         if !self.view.Value.is_null() {
             // SAFETY: `self.view` was returned by `MapViewOfFile` and is owned by `self`; unmapped
             // exactly once on drop.
-            unsafe {
-                UnmapViewOfFile(self.view);
+            let rc = unsafe { UnmapViewOfFile(self.view) };
+            if rc == 0 {
+                logger::warn!(
+                    "interprocess: UnmapViewOfFile failed for queue '{}': {}",
+                    self.queue_name,
+                    io::Error::last_os_error()
+                );
             }
         }
         if !self.map_handle.is_null() && self.map_handle != INVALID_HANDLE_VALUE {
             // SAFETY: `self.map_handle` was opened in `open_queue` and is owned by `self`; closed
             // exactly once on drop.
-            unsafe {
-                CloseHandle(self.map_handle);
+            let rc = unsafe { CloseHandle(self.map_handle) };
+            if rc == 0 {
+                logger::warn!(
+                    "interprocess: CloseHandle on mapping failed for queue '{}': {}",
+                    self.queue_name,
+                    io::Error::last_os_error()
+                );
             }
         }
     }
@@ -98,6 +119,7 @@ pub(super) fn open_queue(options: &QueueOptions) -> Result<(WindowsMapping, Sema
             map_handle,
             view,
             len: storage_size,
+            queue_name: options.memory_view_name.clone(),
         },
         sem,
     ))
@@ -108,13 +130,13 @@ pub(super) fn open_queue(options: &QueueOptions) -> Result<(WindowsMapping, Sema
 /// Two processes often race during bootstrap: one creates the section while the other opens it.
 /// `CreateFileMappingW` fails with `ERROR_ALREADY_EXISTS` when the object already exists; the
 /// caller then falls back to `OpenFileMappingW`. Transient failures while the creator finishes
-/// mapping setup are absorbed by retrying with bounded exponential sleep (10 ms initial, 1 s cap,
-/// 14 attempts).
+/// mapping setup are absorbed by retrying with bounded exponential sleep
+/// ([`MAP_RETRY_INITIAL_MS`] initial, [`MAP_RETRY_MAX_MS`] cap, [`MAP_RETRY_ATTEMPTS`] attempts).
 fn create_or_open_file_mapping(
     name: &[u16],
     size: usize,
 ) -> Result<windows_sys::Win32::Foundation::HANDLE, OpenError> {
-    let mut wait_retries: usize = 14;
+    let mut wait_retries: usize = MAP_RETRY_ATTEMPTS;
     let mut wait_sleep_ms: u64 = 0;
 
     loop {
@@ -152,10 +174,10 @@ fn create_or_open_file_mapping(
         };
 
         if wait_sleep_ms == 0 {
-            wait_sleep_ms = 10;
+            wait_sleep_ms = MAP_RETRY_INITIAL_MS;
         } else {
             std::thread::sleep(std::time::Duration::from_millis(wait_sleep_ms));
-            wait_sleep_ms = (wait_sleep_ms * 2).min(1000);
+            wait_sleep_ms = (wait_sleep_ms * 2).min(MAP_RETRY_MAX_MS);
         }
     }
 }
