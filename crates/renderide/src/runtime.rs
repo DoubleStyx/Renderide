@@ -35,6 +35,7 @@
 
 mod accessors;
 mod debug_hud_frame;
+mod frame_extract;
 pub(crate) mod frame_render;
 mod frame_view_plan;
 mod lockstep;
