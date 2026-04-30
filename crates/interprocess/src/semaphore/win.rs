@@ -53,7 +53,7 @@ impl WinSemaphore {
                 self.queue_name,
                 err
             );
-            debug_assert!(false, "ReleaseSemaphore failed: {:?}", err);
+            debug_assert!(false, "ReleaseSemaphore failed: {err:?}");
         }
     }
 
