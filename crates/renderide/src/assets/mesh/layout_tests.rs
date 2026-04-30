@@ -204,6 +204,60 @@ fn vertex_float2_extracts_uv1_stream() {
 }
 
 #[test]
+fn vertex_float2_extracts_uv2_stream() {
+    let attrs = [
+        VertexAttributeDescriptor {
+            attribute: VertexAttributeType::Position,
+            format: VertexAttributeFormat::Float32,
+            dimensions: 3,
+        },
+        VertexAttributeDescriptor {
+            attribute: VertexAttributeType::UV2,
+            format: VertexAttributeFormat::Float32,
+            dimensions: 2,
+        },
+    ];
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&0.0f32.to_le_bytes());
+    raw.extend_from_slice(&0.0f32.to_le_bytes());
+    raw.extend_from_slice(&0.0f32.to_le_bytes());
+    raw.extend_from_slice(&3.75f32.to_le_bytes());
+    raw.extend_from_slice(&4.5f32.to_le_bytes());
+
+    let out = vertex_float2_stream_bytes(&raw, 1, 20, &attrs, VertexAttributeType::UV2)
+        .expect("uv2 stream");
+    let uv: [f32; 2] = bytemuck::pod_read_unaligned(&out[..8]);
+    assert_eq!(uv, [3.75, 4.5]);
+}
+
+#[test]
+fn vertex_float2_extracts_uv3_stream() {
+    let attrs = [
+        VertexAttributeDescriptor {
+            attribute: VertexAttributeType::Position,
+            format: VertexAttributeFormat::Float32,
+            dimensions: 3,
+        },
+        VertexAttributeDescriptor {
+            attribute: VertexAttributeType::UV3,
+            format: VertexAttributeFormat::Float32,
+            dimensions: 2,
+        },
+    ];
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&0.0f32.to_le_bytes());
+    raw.extend_from_slice(&0.0f32.to_le_bytes());
+    raw.extend_from_slice(&0.0f32.to_le_bytes());
+    raw.extend_from_slice(&5.25f32.to_le_bytes());
+    raw.extend_from_slice(&6.125f32.to_le_bytes());
+
+    let out = vertex_float2_stream_bytes(&raw, 1, 20, &attrs, VertexAttributeType::UV3)
+        .expect("uv3 stream");
+    let uv: [f32; 2] = bytemuck::pod_read_unaligned(&out[..8]);
+    assert_eq!(uv, [5.25, 6.125]);
+}
+
+#[test]
 fn vertex_float4_defaults_when_tangent_missing() {
     let attrs = [VertexAttributeDescriptor {
         attribute: VertexAttributeType::Position,

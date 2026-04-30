@@ -114,6 +114,120 @@ fn count_occurrences(src: &str, needle: &str) -> usize {
     src.match_indices(needle).count()
 }
 
+fn is_wgsl_ident_byte(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphanumeric()
+}
+
+fn storage_orientation_stems(src: &str) -> Vec<String> {
+    const SUFFIX: &str = "_StorageVInverted";
+    let bytes = src.as_bytes();
+    let mut stems = Vec::new();
+    for (suffix_start, _) in src.match_indices(SUFFIX) {
+        let mut stem_start = suffix_start;
+        while stem_start > 0 && is_wgsl_ident_byte(bytes[stem_start - 1]) {
+            stem_start -= 1;
+        }
+        if stem_start < suffix_start {
+            stems.push(src[stem_start..suffix_start].to_owned());
+        }
+    }
+    stems.sort();
+    stems.dedup();
+    stems
+}
+
+fn declared_storage_orientation_stems(src: &str) -> Vec<String> {
+    let mut stems = Vec::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || !trimmed.contains("_StorageVInverted") {
+            continue;
+        }
+        let Some((name, ty)) = trimmed.split_once(':') else {
+            continue;
+        };
+        if !ty.trim_start().starts_with("f32") {
+            continue;
+        }
+        let name = name.trim().trim_end_matches(',');
+        let Some(stem) = name.strip_suffix("_StorageVInverted") else {
+            continue;
+        };
+        stems.push(stem.to_owned());
+    }
+    stems.sort();
+    stems.dedup();
+    stems
+}
+
+fn group1_texture_names(src: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("@group(1)") || !trimmed.contains("texture_") {
+            continue;
+        }
+        let Some(var_start) = trimmed.find("var ") else {
+            continue;
+        };
+        let after_var = &trimmed[var_start + "var ".len()..];
+        let Some((name, _)) = after_var.split_once(':') else {
+            continue;
+        };
+        names.push(name.trim().to_owned());
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn non_comment_lines(src: &str) -> impl Iterator<Item = &str> {
+    src.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+}
+
+fn storage_orientation_flag_used_by_shader_code(src: &str, stem: &str) -> bool {
+    let mat_ref = format!("mat.{stem}_StorageVInverted");
+    let module_mat_ref = format!("xb::mat.{stem}_StorageVInverted");
+    non_comment_lines(src).any(|line| line.contains(&mat_ref) || line.contains(&module_mat_ref))
+}
+
+fn call_snippets<'a>(src: &'a str, callee: &str) -> Vec<&'a str> {
+    let mut snippets = Vec::new();
+    let mut offset = 0usize;
+    while let Some(relative_start) = src[offset..].find(callee) {
+        let start = offset + relative_start;
+        let end = src[start..].find(';').map_or_else(
+            || (start + 400).min(src.len()),
+            |relative_end| start + relative_end,
+        );
+        snippets.push(&src[start..end]);
+        offset = start + callee.len();
+    }
+    snippets
+}
+
+fn plain_apply_st_uses_st(src: &str, stem: &str) -> bool {
+    let mat_st = format!("mat.{stem}_ST");
+    let module_mat_st = format!("xb::mat.{stem}_ST");
+    call_snippets(src, "apply_st(")
+        .iter()
+        .any(|snippet| snippet.contains(&mat_st) || snippet.contains(&module_mat_st))
+}
+
+fn storage_aware_apply_st_uses_flag(src: &str, stem: &str) -> bool {
+    let mat_st = format!("mat.{stem}_ST");
+    let module_mat_st = format!("xb::mat.{stem}_ST");
+    let mat_flag = format!("mat.{stem}_StorageVInverted");
+    let module_mat_flag = format!("xb::mat.{stem}_StorageVInverted");
+    call_snippets(src, "apply_st_for_storage(")
+        .iter()
+        .any(|snippet| {
+            (snippet.contains(&mat_st) || snippet.contains(&module_mat_st))
+                && (snippet.contains(&mat_flag) || snippet.contains(&module_mat_flag))
+        })
+}
+
 #[test]
 fn every_sampling_material_applies_v_flip() -> Result<(), Box<dyn std::error::Error>> {
     let dir = materials_dir();
@@ -178,20 +292,10 @@ fn material_storage_orientation_flags_are_used_in_shader_code()
     let mut offenders: Vec<String> = Vec::new();
     for path in wgsl_files_in(&dir)? {
         let src = std::fs::read_to_string(&path)?;
-        for stem in [
-            "_MainTex",
-            "_MainTex1",
-            "_MainTex2",
-            "_Tex",
-            "_MainTexture",
-            "_Albedo",
-            "_MainCube",
-            "_SecondCube",
-        ] {
-            let flag = format!("{stem}_StorageVInverted");
-            if src.contains(&flag) && count_occurrences(&src, &flag) < 2 {
+        for stem in declared_storage_orientation_stems(&src) {
+            if !storage_orientation_flag_used_by_shader_code(&src, &stem) {
                 offenders.push(format!(
-                    "{} declares {flag} but never uses it",
+                    "{} declares {stem}_StorageVInverted but never uses it",
                     path.file_name().unwrap().to_string_lossy()
                 ));
             }
@@ -215,41 +319,13 @@ fn explicit_storage_orientation_stems_do_not_use_plain_apply_st()
     for dir in [materials_dir(), modules_dir()] {
         for path in wgsl_files_in(&dir)? {
             let src = std::fs::read_to_string(&path)?;
-            for stem in [
-                "_MainTex",
-                "_MainTex1",
-                "_MainTex2",
-                "_Tex",
-                "_MainTexture",
-                "_Albedo",
-                "_BumpMap",
-                "_DetailNormalMap",
-                "_MetallicGlossMap",
-                "_EmissionMap",
-                "_OcclusionMap",
-                "_ThicknessMap",
-                "_ReflectivityMask",
-                "_SpecularMap",
-            ] {
+            for stem in storage_orientation_stems(&src) {
                 let flag = format!("{stem}_StorageVInverted");
-                if !src.contains(&flag) {
-                    continue;
-                }
-                let mat_st = format!("mat.{stem}_ST");
-                let xb_mat_st = format!("xb::mat.{stem}_ST");
-                for (line_index, line) in src.lines().enumerate() {
-                    if line.contains("apply_st_for_storage") {
-                        continue;
-                    }
-                    if line.contains("apply_st(")
-                        && (line.contains(&mat_st) || line.contains(&xb_mat_st))
-                    {
-                        offenders.push(format!(
-                            "{}:{} uses plain apply_st for {stem} despite {flag}",
-                            path.file_name().unwrap().to_string_lossy(),
-                            line_index + 1
-                        ));
-                    }
+                if plain_apply_st_uses_st(&src, &stem) {
+                    offenders.push(format!(
+                        "{} uses plain apply_st for {stem} despite {flag}",
+                        path.file_name().unwrap().to_string_lossy()
+                    ));
                 }
             }
         }
@@ -259,6 +335,38 @@ fn explicit_storage_orientation_stems_do_not_use_plain_apply_st()
         offenders.sort();
         panic!(
             "explicit storage orientation fields must use apply_st_for_storage to avoid double/missing V compensation:\n  - {}",
+            offenders.join("\n  - ")
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn multiuv_textures_use_matching_storage_orientation_flags()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = materials_dir();
+    let mut offenders: Vec<String> = Vec::new();
+    for file_name in ["pbsmultiuv.wgsl", "pbsmultiuvspecular.wgsl"] {
+        let path = dir.join(file_name);
+        let src = std::fs::read_to_string(&path)?;
+        for texture in group1_texture_names(&src) {
+            let flag = format!("{texture}_StorageVInverted");
+            if !declared_storage_orientation_stems(&src).contains(&texture) {
+                offenders.push(format!("{file_name} declares {texture} without {flag}"));
+                continue;
+            }
+            if !storage_aware_apply_st_uses_flag(&src, &texture) {
+                offenders.push(format!(
+                    "{file_name} does not feed {flag} into apply_st_for_storage for {texture}_ST"
+                ));
+            }
+        }
+    }
+
+    if !offenders.is_empty() {
+        offenders.sort();
+        panic!(
+            "MultiUV texture bindings must each have matching storage-aware V-flip plumbing:\n  - {}",
             offenders.join("\n  - ")
         );
     }

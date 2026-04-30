@@ -36,6 +36,17 @@ struct WorldUv2VertexOutput {
     @location(4) @interpolate(flat) view_layer: u32,
 }
 
+struct WorldUv4VertexOutput {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) world_pos: vec3<f32>,
+    @location(1) world_n: vec3<f32>,
+    @location(2) uv_a: vec2<f32>,
+    @location(3) uv_b: vec2<f32>,
+    @location(4) uv_c: vec2<f32>,
+    @location(5) uv_d: vec2<f32>,
+    @location(6) @interpolate(flat) view_layer: u32,
+}
+
 struct WorldColorVertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
@@ -178,6 +189,32 @@ fn world_uv2_vertex_main(
     out.world_n = world_normal(draw, n);
     out.primary_uv = primary_uv;
     out.secondary_uv = secondary_uv;
+    out.view_layer = view_idx;
+    return out;
+}
+
+fn world_uv4_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    uv_a: vec2<f32>,
+    uv_b: vec2<f32>,
+    uv_c: vec2<f32>,
+    uv_d: vec2<f32>,
+) -> WorldUv4VertexOutput {
+    let draw = pd::get_draw(instance_index);
+    let world_p = world_position(draw, pos);
+    let vp = select_view_proj(draw, view_idx);
+
+    var out: WorldUv4VertexOutput;
+    out.clip_pos = vp * world_p;
+    out.world_pos = world_p.xyz;
+    out.world_n = world_normal(draw, n);
+    out.uv_a = uv_a;
+    out.uv_b = uv_b;
+    out.uv_c = uv_c;
+    out.uv_d = uv_d;
     out.view_layer = view_idx;
     return out;
 }

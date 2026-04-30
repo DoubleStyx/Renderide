@@ -1,11 +1,12 @@
 //! Unity surface shader `Shader "PBSMultiUV"`: metallic Standard lighting where each texture
 //! independently selects which mesh UV channel to sample and carries its own `_ST` tile/offset.
 //!
-//! Unity supports four UV channels (`texcoord` … `texcoord3`) selected by `_AlbedoUV`,
-//! `_NormalUV`, `_EmissionUV`, etc. This renderer plumbs through UV0 and UV1; per-texture
-//! `_*UV` values `< 1.0` resolve to UV0 and `>= 1.0` resolve to UV1, so meshes that author
-//! against UV0/UV1 work end-to-end. UV2 / UV3 fall back to UV1 — supporting them requires
-//! plumbing additional vertex streams through the per-draw layout, which is tracked separately.
+//! All four Unity UV channels (`texcoord` … `texcoord3`) are wired through. Per-texture `_*UV`
+//! values `< 1.0` resolve to UV0, `< 2.0` to UV1, `< 3.0` to UV2, and `>= 3.0` to UV3.
+//!
+//! Each per-binding texture also carries its own `_<Tex>_StorageVInverted` flag so native
+//! compressed (BC) uploads that intentionally arrive top-down can opt out of the V-flip the
+//! same way albedo already does.
 //!
 //! Mirrors the keyword surface (`_DUAL_ALBEDO`, `_EMISSIONTEX`, `_DUAL_EMISSIONTEX`, `_NORMALMAP`,
 //! `_METALLICMAP`, `_OCCLUSION`, `_ALPHACLIP`).
@@ -30,19 +31,32 @@ struct PbsMultiUVMaterial {
     _SecondaryEmissionColor: vec4<f32>,
     /// Albedo tile/offset.
     _MainTex_ST: vec4<f32>,
+    /// Storage-V-inverted flag for `_MainTex` (non-zero ⇒ skip the final V-flip).
     _MainTex_StorageVInverted: f32,
     /// Secondary albedo tile/offset (used when `_DUAL_ALBEDO` is enabled).
     _SecondaryAlbedo_ST: vec4<f32>,
+    /// Storage-V-inverted flag for `_SecondaryAlbedo`.
+    _SecondaryAlbedo_StorageVInverted: f32,
     /// Normal map tile/offset.
     _NormalMap_ST: vec4<f32>,
+    /// Storage-V-inverted flag for `_NormalMap`.
+    _NormalMap_StorageVInverted: f32,
     /// Emission map tile/offset.
     _EmissionMap_ST: vec4<f32>,
+    /// Storage-V-inverted flag for `_EmissionMap`.
+    _EmissionMap_StorageVInverted: f32,
     /// Secondary emission map tile/offset.
     _SecondaryEmissionMap_ST: vec4<f32>,
+    /// Storage-V-inverted flag for `_SecondaryEmissionMap`.
+    _SecondaryEmissionMap_StorageVInverted: f32,
     /// Metallic map tile/offset.
     _MetallicMap_ST: vec4<f32>,
+    /// Storage-V-inverted flag for `_MetallicMap`.
+    _MetallicMap_StorageVInverted: f32,
     /// Occlusion map tile/offset.
     _OcclusionMap_ST: vec4<f32>,
+    /// Storage-V-inverted flag for `_OcclusionMap`.
+    _OcclusionMap_StorageVInverted: f32,
     /// Tangent-space normal scale (`Normal Scale`).
     _NormalScale: f32,
     /// Smoothness fallback when `_METALLICMAP` is disabled.
@@ -51,7 +65,7 @@ struct PbsMultiUVMaterial {
     _Metallic: f32,
     /// Alpha-clip threshold; applied only when `_ALPHACLIP` is enabled.
     _AlphaClip: f32,
-    /// UV-channel selector for `_MainTex` (Unity index, `>=1` rounds to UV1).
+    /// UV-channel selector for `_MainTex` (Unity index 0..3 ⇒ UV0..UV3).
     _AlbedoUV: f32,
     /// UV-channel selector for `_SecondaryAlbedo`.
     _SecondaryAlbedoUV: f32,
@@ -108,18 +122,30 @@ struct SurfaceData {
     emission: vec3<f32>,
 }
 
-/// Pick UV0 vs UV1 by a `_*UV` index uniform: `< 1.0` → UV0, `>= 1.0` → UV1. UV2 / UV3 are
-/// not yet wired into this renderer, so any value above 1.0 collapses to UV1.
-fn pick_uv(uv0: vec2<f32>, uv1: vec2<f32>, idx: f32) -> vec2<f32> {
-    return select(uv0, uv1, idx >= 1.0);
+/// Pick UV0..UV3 by a `_*UV` index uniform: `< 1.0` → UV0, `< 2.0` → UV1, `< 3.0` → UV2,
+/// `>= 3.0` → UV3.
+fn pick_uv(uv0: vec2<f32>, uv1: vec2<f32>, uv2: vec2<f32>, uv3: vec2<f32>, idx: f32) -> vec2<f32> {
+    let lo = select(uv0, uv1, idx >= 1.0);
+    let hi = select(uv2, uv3, idx >= 3.0);
+    return select(lo, hi, idx >= 2.0);
 }
 
 /// Sample the normal map (when enabled) using its own UV channel + `_ST`, and place into world space.
-fn sample_normal_world(uv0: vec2<f32>, uv1: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
+fn sample_normal_world(
+    uv0: vec2<f32>,
+    uv1: vec2<f32>,
+    uv2: vec2<f32>,
+    uv3: vec2<f32>,
+    world_n: vec3<f32>,
+) -> vec3<f32> {
     let tbn = pnorm::orthonormal_tbn(normalize(world_n));
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
-        let uv_n = uvu::apply_st(pick_uv(uv0, uv1, mat._NormalUV), mat._NormalMap_ST);
+        let uv_n = uvu::apply_st_for_storage(
+            pick_uv(uv0, uv1, uv2, uv3, mat._NormalUV),
+            mat._NormalMap_ST,
+            mat._NormalMap_StorageVInverted,
+        );
         ts_n = nd::decode_ts_normal_with_placeholder(
             textureSample(_NormalMap, _NormalMap_sampler, uv_n).xyz,
             mat._NormalScale,
@@ -129,13 +155,26 @@ fn sample_normal_world(uv0: vec2<f32>, uv1: vec2<f32>, world_n: vec3<f32>) -> ve
 }
 
 /// Resolve the [`SurfaceData`] for a fragment, mirroring Unity's `surf` for `PBSMultiUV`.
-fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_n: vec3<f32>) -> SurfaceData {
-    let uv_albedo = uvu::apply_st_for_storage(pick_uv(uv0, uv1, mat._AlbedoUV), mat._MainTex_ST, mat._MainTex_StorageVInverted);
+fn sample_surface(
+    uv0: vec2<f32>,
+    uv1: vec2<f32>,
+    uv2: vec2<f32>,
+    uv3: vec2<f32>,
+    world_n: vec3<f32>,
+) -> SurfaceData {
+    let uv_albedo = uvu::apply_st_for_storage(
+        pick_uv(uv0, uv1, uv2, uv3, mat._AlbedoUV),
+        mat._MainTex_ST,
+        mat._MainTex_StorageVInverted,
+    );
 
     var c = mat._Color * textureSample(_MainTex, _MainTex_sampler, uv_albedo);
     if (uvu::kw_enabled(mat._DUAL_ALBEDO)) {
-        let uv_albedo2 =
-            uvu::apply_st(pick_uv(uv0, uv1, mat._SecondaryAlbedoUV), mat._SecondaryAlbedo_ST);
+        let uv_albedo2 = uvu::apply_st_for_storage(
+            pick_uv(uv0, uv1, uv2, uv3, mat._SecondaryAlbedoUV),
+            mat._SecondaryAlbedo_ST,
+            mat._SecondaryAlbedo_StorageVInverted,
+        );
         c = c * textureSample(_SecondaryAlbedo, _SecondaryAlbedo_sampler, uv_albedo2);
     }
     let clip_alpha = mat._Color.a * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_albedo);
@@ -146,7 +185,11 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_n: vec3<f32>) -> Surface
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     if (uvu::kw_enabled(mat._METALLICMAP)) {
-        let uv_metal = uvu::apply_st(pick_uv(uv0, uv1, mat._MetallicUV), mat._MetallicMap_ST);
+        let uv_metal = uvu::apply_st_for_storage(
+            pick_uv(uv0, uv1, uv2, uv3, mat._MetallicUV),
+            mat._MetallicMap_ST,
+            mat._MetallicMap_StorageVInverted,
+        );
         let m = textureSample(_MetallicMap, _MetallicMap_sampler, uv_metal);
         metallic = m.r;
         smoothness = m.a;
@@ -156,18 +199,29 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_n: vec3<f32>) -> Surface
 
     var occlusion = 1.0;
     if (uvu::kw_enabled(mat._OCCLUSION)) {
-        let uv_occ = uvu::apply_st(pick_uv(uv0, uv1, mat._OcclusionUV), mat._OcclusionMap_ST);
+        let uv_occ = uvu::apply_st_for_storage(
+            pick_uv(uv0, uv1, uv2, uv3, mat._OcclusionUV),
+            mat._OcclusionMap_ST,
+            mat._OcclusionMap_StorageVInverted,
+        );
         occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_occ).r;
     }
 
     var emission = mat._EmissionColor.rgb;
     if (uvu::kw_enabled(mat._EMISSIONTEX) || uvu::kw_enabled(mat._DUAL_EMISSIONTEX)) {
-        let uv_em = uvu::apply_st(pick_uv(uv0, uv1, mat._EmissionUV), mat._EmissionMap_ST);
+        let uv_em = uvu::apply_st_for_storage(
+            pick_uv(uv0, uv1, uv2, uv3, mat._EmissionUV),
+            mat._EmissionMap_ST,
+            mat._EmissionMap_StorageVInverted,
+        );
         emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_em).rgb;
     }
     if (uvu::kw_enabled(mat._DUAL_EMISSIONTEX)) {
-        let uv_em2 =
-            uvu::apply_st(pick_uv(uv0, uv1, mat._SecondaryEmissionUV), mat._SecondaryEmissionMap_ST);
+        let uv_em2 = uvu::apply_st_for_storage(
+            pick_uv(uv0, uv1, uv2, uv3, mat._SecondaryEmissionUV),
+            mat._SecondaryEmissionMap_ST,
+            mat._SecondaryEmissionMap_StorageVInverted,
+        );
         let secondary =
             textureSample(_SecondaryEmissionMap, _SecondaryEmissionMap_sampler, uv_em2).rgb;
         emission = emission + secondary * mat._SecondaryEmissionColor.rgb;
@@ -179,12 +233,12 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_n: vec3<f32>) -> Surface
         metallic,
         roughness,
         occlusion,
-        sample_normal_world(uv0, uv1, world_n),
+        sample_normal_world(uv0, uv1, uv2, uv3, world_n),
         emission,
     );
 }
 
-/// Vertex stage: forward world position, world-space normal, and both UV0 and UV1 streams.
+/// Vertex stage: forward world position, world-space normal, and all four UV streams.
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
@@ -195,15 +249,17 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(5) uv1: vec2<f32>,
-) -> mv::WorldUv2VertexOutput {
+    @location(6) uv2: vec2<f32>,
+    @location(7) uv3: vec2<f32>,
+) -> mv::WorldUv4VertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, uv0, uv1);
+    return mv::world_uv4_vertex_main(instance_index, view_idx, pos, n, uv0, uv1, uv2, uv3);
 #else
-    return mv::world_uv2_vertex_main(instance_index, 0u, pos, n, uv0, uv1);
+    return mv::world_uv4_vertex_main(instance_index, 0u, pos, n, uv0, uv1, uv2, uv3);
 #endif
 }
 
-/// Forward-base pass: ambient + directional lighting + emission.
+/// Forward-base pass: clustered lighting (ambient + directional + local lights) + emission.
 //#pass forward
 @fragment
 fn fs_forward_base(
@@ -212,9 +268,11 @@ fn fs_forward_base(
     @location(1) world_n: vec3<f32>,
     @location(2) uv0: vec2<f32>,
     @location(3) uv1: vec2<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(4) uv2: vec2<f32>,
+    @location(5) uv3: vec2<f32>,
+    @location(6) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, uv1, world_n);
+    let s = sample_surface(uv0, uv1, uv2, uv3, world_n);
     let surface = psurf::metallic(
         s.base_color,
         s.alpha,
@@ -235,5 +293,3 @@ fn fs_forward_base(
         s.alpha,
     );
 }
-
-/// Forward-add pass: additive accumulation of local (point/spot) lights.
