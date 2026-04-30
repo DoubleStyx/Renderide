@@ -1,28 +1,29 @@
 //! CPU hierarchical-Z occlusion test (reverse-Z depth buffer).
 //!
-//! Hi-Z pyramids come from the **previous** frame; tests must use [`HiZTemporalState`] view–projection
-//! from the frame that produced that depth, not the current frame.
+//! Hi-Z pyramids come from the **previous** frame; tests must use [`crate::world_mesh::HiZTemporalState`]
+//! view–projection from the frame that produced that depth, not the current frame.
 //!
 //! Set `RENDERIDE_HIZ_TRACE=1` to emit [`logger::trace`] lines when a draw is classified as fully
 //! occluded (can be verbose).
 
+mod footprint;
+mod sampling;
+
 use std::env;
 use std::sync::LazyLock;
 
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec3};
 
-use super::hi_z_cpu::{HiZCpuSnapshot, mip_byte_offset_floats, mip_dimensions};
+use super::snapshot::HiZCpuSnapshot;
 use crate::world_mesh::cull::WorldMeshCullProjParams;
+use footprint::project_aabb_to_screen;
+use sampling::{hiz_min_in_2x2, mip_extent, select_hi_z_mip};
 
 /// Small bias to reduce mip / quantization flicker at occlusion boundaries (reverse-Z).
 const HI_Z_BIAS: f32 = 5e-5;
 
 /// Extra reverse-Z slack before declaring full occlusion (reduces view-dependent popping at depth edges).
 const HI_Z_OCCLUSION_MARGIN: f32 = 5e-4;
-
-/// Caps Hi-Z mip used for the occlusion test so coarse mips do not swing the decision when the
-/// footprint crosses discrete mip boundaries.
-const HI_Z_OCCLUSION_MAX_MIP: u32 = 2;
 
 fn hiz_trace_enabled() -> bool {
     static FLAG: LazyLock<bool> = LazyLock::new(|| {
@@ -31,25 +32,8 @@ fn hiz_trace_enabled() -> bool {
     *FLAG
 }
 
-/// Picks a mip level from an approximate footprint (in **base** Hi-Z texels, not full viewport pixels).
-///
-/// Matches the previous single-center-sample Hi-Z path: coarser mips for larger screen extents.
-#[inline]
-fn hi_z_mip_for_pixel_extent(extent_base_px: f32) -> u32 {
-    if !extent_base_px.is_finite() || extent_base_px <= 1.0 {
-        return 0;
-    }
-    let mut e = extent_base_px.max(1.0);
-    let mut level = 0u32;
-    while e > 2.0 && level < 15 {
-        e *= 0.5;
-        level += 1;
-    }
-    level
-}
-
 /// Builds view–projection matrices for Hi-Z tests (same rules as frustum culling, using **previous**
-/// frame data from [`super::HiZTemporalState`]).
+/// frame data from [`crate::world_mesh::HiZTemporalState`]).
 pub fn hi_z_view_proj_matrices(
     prev: &WorldMeshCullProjParams,
     prev_view: Mat4,
@@ -83,62 +67,23 @@ pub fn mesh_fully_occluded_in_hiz(
     world_min: Vec3,
     world_max: Vec3,
 ) -> bool {
-    let corners = aabb_corners(world_min, world_max);
-    let mut max_ndc_z = f32::MIN;
-    let mut min_ndc_x = f32::MAX;
-    let mut max_ndc_x = f32::MIN;
-    let mut min_ndc_y = f32::MAX;
-    let mut max_ndc_y = f32::MIN;
-
-    for c in &corners {
-        let clip = view_proj * *c;
-        if !clip.w.is_finite() || clip.w <= 0.0 {
-            return false;
-        }
-        let inv_w = 1.0 / clip.w;
-        let ndc_x = clip.x * inv_w;
-        let ndc_y = clip.y * inv_w;
-        let ndc_z = clip.z * inv_w;
-        if !ndc_x.is_finite() || !ndc_y.is_finite() || !ndc_z.is_finite() {
-            return false;
-        }
-        max_ndc_z = max_ndc_z.max(ndc_z);
-        min_ndc_x = min_ndc_x.min(ndc_x);
-        max_ndc_x = max_ndc_x.max(ndc_x);
-        min_ndc_y = min_ndc_y.min(ndc_y);
-        max_ndc_y = max_ndc_y.max(ndc_y);
-    }
+    let Some(footprint) = project_aabb_to_screen(view_proj, world_min, world_max) else {
+        return false;
+    };
 
     let base_w = snapshot.base_width.max(1) as f32;
     let base_h = snapshot.base_height.max(1) as f32;
-
-    let u0 = min_ndc_x.mul_add(0.5, 0.5);
-    let u1 = max_ndc_x.mul_add(0.5, 0.5);
-    let v0 = 1.0 - max_ndc_y.mul_add(0.5, 0.5);
-    let v1 = 1.0 - min_ndc_y.mul_add(0.5, 0.5);
-
-    let px_min = u0.min(u1);
-    let px_max = u0.max(u1);
-    let py_min = v0.min(v1);
-    let py_max = v0.max(v1);
-
-    // px_max >= px_min and py_max >= py_min by construction (min/max of two values).
-    let du_base = (px_max - px_min) * base_w;
-    let dv_base = (py_max - py_min) * base_h;
+    let du_base = (footprint.uv_max.0 - footprint.uv_min.0) * base_w;
+    let dv_base = (footprint.uv_max.1 - footprint.uv_min.1) * base_h;
     let extent_base = du_base.max(dv_base).max(1.0);
-    let mip = hi_z_mip_for_pixel_extent(extent_base)
-        .min(HI_Z_OCCLUSION_MAX_MIP)
-        .min(snapshot.mip_levels.saturating_sub(1));
+    let mip = select_hi_z_mip(extent_base, snapshot.mip_levels);
 
-    let Some((mw, mh)) = mip_dimensions(snapshot.base_width, snapshot.base_height, mip) else {
+    let Some((mw, mh)) = mip_extent(snapshot, mip) else {
         return false;
     };
-    if mw == 0 || mh == 0 {
-        return false;
-    }
 
-    let uc = ((px_min + px_max) * 0.5).clamp(0.0, 1.0);
-    let vc = ((py_min + py_max) * 0.5).clamp(0.0, 1.0);
+    let uc = ((footprint.uv_min.0 + footprint.uv_max.0) * 0.5).clamp(0.0, 1.0);
+    let vc = ((footprint.uv_min.1 + footprint.uv_max.1) * 0.5).clamp(0.0, 1.0);
     let sx = ((uc * mw as f32).floor() as u32).min(mw.saturating_sub(1));
     let sy = ((vc * mh as f32).floor() as u32).min(mh.saturating_sub(1));
 
@@ -147,62 +92,17 @@ pub fn mesh_fully_occluded_in_hiz(
     };
 
     // Reverse-Z: farther = smaller NDC Z. Fully occluded if the closest AABB point is still farther than the occluder.
-    let occluded = max_ndc_z + HI_Z_BIAS + HI_Z_OCCLUSION_MARGIN < hiz_min;
+    let occluded = footprint.max_ndc_z + HI_Z_BIAS + HI_Z_OCCLUSION_MARGIN < hiz_min;
     if occluded && hiz_trace_enabled() {
         logger::trace!(
             "Hi-Z full occluder: mip={} extent_base={} max_ndc_z={} hiz_min_2x2={}",
             mip,
             extent_base,
-            max_ndc_z,
+            footprint.max_ndc_z,
             hiz_min
         );
     }
     occluded
-}
-
-/// Minimum depth in a 2×2 block anchored at `(sx, sy)` (clamped), reverse-Z.
-///
-/// Using the **minimum** (farthest surface in the neighborhood) is visibility-conservative: fewer
-/// false-positive culls when a single texel spikes closer than its neighbors.
-#[inline]
-fn hiz_min_in_2x2(
-    snapshot: &HiZCpuSnapshot,
-    mip: u32,
-    sx: u32,
-    sy: u32,
-    mw: u32,
-    mh: u32,
-) -> Option<f32> {
-    let mip_base = mip_byte_offset_floats(snapshot.base_width, snapshot.base_height, mip);
-    let mut vmin = f32::MAX;
-    let mut any = false;
-    for dy in 0..=1u32 {
-        for dx in 0..=1u32 {
-            let x = (sx + dx).min(mw.saturating_sub(1));
-            let y = (sy + dy).min(mh.saturating_sub(1));
-            let idx = mip_base + (y * mw + x) as usize;
-            if let Some(&v) = snapshot.mips.get(idx)
-                && v.is_finite()
-            {
-                vmin = vmin.min(v);
-                any = true;
-            }
-        }
-    }
-    any.then_some(vmin)
-}
-
-fn aabb_corners(min: Vec3, max: Vec3) -> [Vec4; 8] {
-    [
-        Vec4::new(min.x, min.y, min.z, 1.0),
-        Vec4::new(max.x, min.y, min.z, 1.0),
-        Vec4::new(min.x, max.y, min.z, 1.0),
-        Vec4::new(max.x, max.y, min.z, 1.0),
-        Vec4::new(min.x, min.y, max.z, 1.0),
-        Vec4::new(max.x, min.y, max.z, 1.0),
-        Vec4::new(min.x, max.y, max.z, 1.0),
-        Vec4::new(max.x, max.y, max.z, 1.0),
-    ]
 }
 
 /// Stereo Hi-Z policy: keep the draw unless **both** eyes report full occlusion (matches frustum OR across eyes).
@@ -216,23 +116,6 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-
-    #[test]
-    fn hi_z_mip_for_pixel_extent_levels() {
-        assert_eq!(hi_z_mip_for_pixel_extent(1.0), 0);
-        assert_eq!(hi_z_mip_for_pixel_extent(2.0), 0);
-        assert_eq!(hi_z_mip_for_pixel_extent(2.1), 1);
-        assert_eq!(hi_z_mip_for_pixel_extent(4.0), 1);
-        assert_eq!(hi_z_mip_for_pixel_extent(8.0), 2);
-    }
-
-    #[test]
-    fn raw_mip_extent_can_exceed_occlusion_cap() {
-        assert!(
-            hi_z_mip_for_pixel_extent(1024.0) > HI_Z_OCCLUSION_MAX_MIP,
-            "large footprints choose deep mips; mesh_fully_occluded_in_hiz caps with HI_Z_OCCLUSION_MAX_MIP"
-        );
-    }
 
     /// Borderline depth: without [`HI_Z_OCCLUSION_MARGIN`] the object could be classified occluded;
     /// margin requires a clearer gap (reduces popping).

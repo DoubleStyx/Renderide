@@ -60,12 +60,10 @@ impl OcclusionSystem {
             ViewId::Main => self.main.clone(),
             ViewId::SecondaryCamera(_) => {
                 let mut offscreen = self.offscreen.lock();
-                if let Some(existing) = offscreen.get(&view) {
-                    return existing.clone();
-                }
-                let slot = Arc::new(Mutex::new(HiZGpuState::default()));
-                offscreen.insert(view, slot.clone());
-                slot
+                offscreen
+                    .entry(view)
+                    .or_insert_with(|| Arc::new(Mutex::new(HiZGpuState::default())))
+                    .clone()
             }
         }
     }

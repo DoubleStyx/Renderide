@@ -4,10 +4,13 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::backend::HistoryTextureMipViews;
 use crate::gpu::OutputDepthMode;
-use crate::occlusion::{hi_z_pyramid_dimensions, mip_dimensions, mip_levels_for_extent};
+use crate::occlusion::cpu::pyramid::{
+    hi_z_pyramid_dimensions, mip_dimensions, mip_levels_for_extent,
+};
 
-use super::hi_z_gpu::{HIZ_MAX_MIPS, HiZGpuScratch, HiZGpuState};
-use super::hi_z_pipelines::HiZPipelines;
+use super::pipelines::HiZPipelines;
+use super::scratch::{HIZ_MAX_MIPS, HiZGpuScratch};
+use super::state::HiZGpuState;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -35,7 +38,7 @@ enum DepthBinding {
 
 /// Which history texture layer the current mip0 + downsample call should target.
 ///
-/// Controls which cache slots [`HiZBindGroupCache`] reuses or rebuilds.
+/// Controls which cache slots [`super::scratch::HiZBindGroupCache`] reuses or rebuilds.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PyramidSide {
     /// Desktop (non-stereo) or stereo-left pyramid.
@@ -66,46 +69,6 @@ struct HiZMip0EncodeContext<'a> {
     side: PyramidSide,
     /// GPU profiler for per-dispatch pass-level timestamp queries; [`None`] when disabled.
     profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
-}
-
-/// Resets slot validity, invalidates cache, ensures [`HiZGpuScratch`] matches `extent` / stereo layout.
-///
-/// Returns `false` when encoding must abort (zero extent, missing scratch, or GPU not ready).
-fn reset_and_prepare_hi_z_scratch(
-    device: &wgpu::Device,
-    limits: &crate::gpu::GpuLimits,
-    extent: (u32, u32),
-    mode: OutputDepthMode,
-    state: &mut HiZGpuState,
-) -> bool {
-    state.clear_encoded_slot();
-    state.invalidate_if_needed(extent, mode);
-
-    let (full_w, full_h) = extent;
-    if full_w == 0 || full_h == 0 {
-        return false;
-    }
-
-    let (bw, bh) = hi_z_pyramid_dimensions(full_w, full_h);
-    if bw == 0 || bh == 0 {
-        return false;
-    }
-
-    let stereo = matches!(mode, OutputDepthMode::StereoArray { .. });
-    let mip_levels = mip_levels_for_extent(bw, bh, HIZ_MAX_MIPS);
-    if state.scratch.as_ref().map(|s| (s.extent, s.mip_levels)) != Some(((bw, bh), mip_levels))
-        || state.scratch.as_ref().map(|s| s.staging_r.is_some()) != Some(stereo)
-    {
-        state.scratch = HiZGpuScratch::new(device, limits, (bw, bh), stereo);
-        state.clear_pending();
-        state.set_secondary_readback_enabled(stereo);
-    }
-    state.set_secondary_readback_enabled(stereo);
-    let Some(scratch_ref) = state.scratch.as_ref() else {
-        return false;
-    };
-
-    state.can_encode_hi_z(scratch_ref)
 }
 
 /// GPU handles recorded into for one [`encode_hi_z_build`] call (device + limits + queue + encoder).
@@ -162,22 +125,110 @@ pub fn encode_hi_z_build(
         queue,
         encoder,
     } = record;
-    if !reset_and_prepare_hi_z_scratch(device, limits, extent, mode, state) {
+    if !prepare_scratch(device, limits, extent, mode, state) {
         return;
     }
 
     let ws = state.next_write_slot();
-    let Some(scratch) = state.scratch.as_mut() else {
+    let Some(scratch) = state.scratch_mut() else {
         return;
     };
-
-    let (bw, bh) = scratch.extent;
     let pipes = HiZPipelines::get(device);
     let Some(history_views) = resolve_history_views(history.mip_views, mode, scratch.mip_levels)
     else {
         return;
     };
 
+    invalidate_caches_for_targets(scratch, depth_view, &history_views);
+
+    let mut ctx = RecordCtx {
+        device,
+        queue,
+        encoder,
+        depth_view,
+        scratch,
+        pipes,
+        history_texture: history.texture,
+        ws,
+        profiler,
+    };
+    let recorded = match mode {
+        OutputDepthMode::DesktopSingle => record_desktop_pyramid(&mut ctx, &history_views),
+        OutputDepthMode::StereoArray { .. } => record_stereo_pyramids(&mut ctx, &history_views),
+    };
+
+    if !recorded {
+        return;
+    }
+    let claimed_ws = state.claim_encoded_slot();
+    debug_assert_eq!(claimed_ws, ws);
+}
+
+/// Common GPU/IPC handles threaded into per-side pyramid recording. Bundles the eight values
+/// that would otherwise blow past clippy's `too_many_arguments` threshold and keeps the
+/// desktop / stereo branches readable.
+struct RecordCtx<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    encoder: &'a mut wgpu::CommandEncoder,
+    depth_view: &'a wgpu::TextureView,
+    scratch: &'a mut HiZGpuScratch,
+    pipes: &'a HiZPipelines,
+    history_texture: &'a wgpu::Texture,
+    ws: usize,
+    profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+}
+
+/// Resets slot validity, invalidates cache, ensures [`HiZGpuScratch`] matches `extent` / stereo layout.
+///
+/// Returns `false` when encoding must abort (zero extent, missing scratch, or GPU not ready).
+fn prepare_scratch(
+    device: &wgpu::Device,
+    limits: &crate::gpu::GpuLimits,
+    extent: (u32, u32),
+    mode: OutputDepthMode,
+    state: &mut HiZGpuState,
+) -> bool {
+    state.clear_encoded_slot();
+    state.invalidate_if_needed(extent, mode);
+
+    let (full_w, full_h) = extent;
+    if full_w == 0 || full_h == 0 {
+        return false;
+    }
+
+    let (bw, bh) = hi_z_pyramid_dimensions(full_w, full_h);
+    if bw == 0 || bh == 0 {
+        return false;
+    }
+
+    let stereo = matches!(mode, OutputDepthMode::StereoArray { .. });
+    let mip_levels = mip_levels_for_extent(bw, bh, HIZ_MAX_MIPS);
+    let needs_new = match state.scratch() {
+        Some(scratch) => {
+            (scratch.extent, scratch.mip_levels) != ((bw, bh), mip_levels)
+                || scratch.is_stereo() != stereo
+        }
+        None => true,
+    };
+    if needs_new {
+        state.replace_scratch(HiZGpuScratch::new(device, limits, (bw, bh), stereo));
+        state.set_secondary_readback_enabled(stereo);
+    }
+    state.set_secondary_readback_enabled(stereo);
+    let Some(scratch_ref) = state.scratch() else {
+        return false;
+    };
+
+    state.can_encode_hi_z(scratch_ref)
+}
+
+/// Drops cached bind groups whose source views (depth attachment / pyramid target) have changed.
+fn invalidate_caches_for_targets(
+    scratch: &mut HiZGpuScratch,
+    depth_view: &wgpu::TextureView,
+    history_views: &HiZHistoryViews<'_>,
+) {
     scratch
         .bind_groups
         .invalidate_mip0_if_depth_changed(depth_view);
@@ -185,71 +236,6 @@ pub fn encode_hi_z_build(
         &history_views.left[0],
         history_views.right.map(|views| &views[0]),
     );
-
-    match mode {
-        OutputDepthMode::DesktopSingle => {
-            dispatch_mip0_and_downsample(HiZMip0EncodeContext {
-                device,
-                queue,
-                encoder,
-                depth_view,
-                scratch,
-                pipes,
-                pyramid_views: history_views.left,
-                depth_bind: DepthBinding::D2,
-                side: PyramidSide::DesktopOrLeft,
-                profiler,
-            });
-            copy_current_layer_to_staging(encoder, history.texture, 0, bw, bh, scratch, ws);
-        }
-        OutputDepthMode::StereoArray { .. } => {
-            if scratch.staging_r.is_none() {
-                return;
-            }
-            let Some(views_right) = history_views.right else {
-                return;
-            };
-            dispatch_mip0_and_downsample(HiZMip0EncodeContext {
-                device,
-                queue,
-                encoder,
-                depth_view,
-                scratch,
-                pipes,
-                pyramid_views: history_views.left,
-                depth_bind: DepthBinding::D2Array { layer: 0 },
-                side: PyramidSide::DesktopOrLeft,
-                profiler,
-            });
-            dispatch_mip0_and_downsample(HiZMip0EncodeContext {
-                device,
-                queue,
-                encoder,
-                depth_view,
-                scratch,
-                pipes,
-                pyramid_views: views_right,
-                depth_bind: DepthBinding::D2Array { layer: 1 },
-                side: PyramidSide::Right,
-                profiler,
-            });
-            copy_current_layer_to_staging(encoder, history.texture, 0, bw, bh, scratch, ws);
-            if let Some(staging_r) = scratch.staging_r.as_ref() {
-                copy_pyramid_to_staging(
-                    encoder,
-                    history.texture,
-                    1,
-                    bw,
-                    bh,
-                    scratch.mip_levels,
-                    &staging_r[ws],
-                );
-            }
-        }
-    }
-
-    let claimed_ws = state.claim_encoded_slot();
-    debug_assert_eq!(claimed_ws, ws);
 }
 
 /// Resolves the history texture layer/mip chains required by the current depth mode.
@@ -289,6 +275,90 @@ fn history_layer_mip_views(
         return None;
     }
     Some(&views[..required_mips as usize])
+}
+
+fn record_desktop_pyramid(ctx: &mut RecordCtx<'_>, history_views: &HiZHistoryViews<'_>) -> bool {
+    record_pyramid_side(
+        ctx,
+        history_views.left,
+        DepthBinding::D2,
+        PyramidSide::DesktopOrLeft,
+    );
+    copy_layer_to_staging(ctx, 0, false);
+    true
+}
+
+fn record_stereo_pyramids(ctx: &mut RecordCtx<'_>, history_views: &HiZHistoryViews<'_>) -> bool {
+    if !ctx.scratch.is_stereo() {
+        return false;
+    }
+    let Some(views_right) = history_views.right else {
+        return false;
+    };
+
+    record_pyramid_side(
+        ctx,
+        history_views.left,
+        DepthBinding::D2Array { layer: 0 },
+        PyramidSide::DesktopOrLeft,
+    );
+    record_pyramid_side(
+        ctx,
+        views_right,
+        DepthBinding::D2Array { layer: 1 },
+        PyramidSide::Right,
+    );
+
+    copy_layer_to_staging(ctx, 0, false);
+    copy_layer_to_staging(ctx, 1, true);
+    true
+}
+
+/// Records mip0 + downsample dispatches for one pyramid layer chain.
+fn record_pyramid_side(
+    ctx: &mut RecordCtx<'_>,
+    pyramid_views: &[wgpu::TextureView],
+    depth_bind: DepthBinding,
+    side: PyramidSide,
+) {
+    dispatch_mip0_and_downsample(HiZMip0EncodeContext {
+        device: ctx.device,
+        queue: ctx.queue,
+        encoder: ctx.encoder,
+        depth_view: ctx.depth_view,
+        scratch: ctx.scratch,
+        pipes: ctx.pipes,
+        pyramid_views,
+        depth_bind,
+        side,
+        profiler: ctx.profiler,
+    });
+}
+
+/// Copies the active write-slot pyramid for `array_layer` into its staging ring entry.
+///
+/// `right_eye` selects the stereo-right staging ring; the desktop / stereo-left layer always
+/// targets `staging_desktop`.
+fn copy_layer_to_staging(ctx: &mut RecordCtx<'_>, array_layer: u32, right_eye: bool) {
+    let (bw, bh) = ctx.scratch.extent;
+    let mip_levels = ctx.scratch.mip_levels;
+    let staging = if right_eye {
+        let Some(staging_r) = ctx.scratch.staging_right() else {
+            return;
+        };
+        &staging_r[ctx.ws]
+    } else {
+        &ctx.scratch.staging_desktop[ctx.ws]
+    };
+    copy_pyramid_to_staging(
+        ctx.encoder,
+        ctx.history_texture,
+        array_layer,
+        bw,
+        bh,
+        mip_levels,
+        staging,
+    );
 }
 
 /// Fills Hi-Z mip0 from a depth texture (desktop 2D view or one layer of a stereo depth array).
@@ -508,27 +578,6 @@ fn dispatch_mip0_and_downsample(mut args: HiZMip0EncodeContext<'_>) {
         side: args.side,
         profiler: args.profiler,
     });
-}
-
-/// Copies the current write slot for one history layer into readback staging.
-fn copy_current_layer_to_staging(
-    encoder: &mut wgpu::CommandEncoder,
-    texture: &wgpu::Texture,
-    array_layer: u32,
-    base_w: u32,
-    base_h: u32,
-    scratch: &HiZGpuScratch,
-    write_slot: usize,
-) {
-    copy_pyramid_to_staging(
-        encoder,
-        texture,
-        array_layer,
-        base_w,
-        base_h,
-        scratch.mip_levels,
-        &scratch.staging_desktop[write_slot],
-    );
 }
 
 /// Copies all mips for one history texture array layer into the selected readback staging buffer.

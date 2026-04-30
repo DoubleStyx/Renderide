@@ -16,7 +16,7 @@ use crate::scene::{RenderSpaceId, SceneCoordinator};
 
 use crate::camera::{HostCameraFrame, WorldProjectionSet, view_matrix_from_render_transform};
 use crate::occlusion::HiZCullData;
-use crate::occlusion::hi_z_cpu::hi_z_pyramid_dimensions;
+use crate::occlusion::hi_z_pyramid_dimensions;
 
 /// View and projection snapshot from the **frame that produced** the Hi-Z depth buffer (used for
 /// CPU occlusion tests against the previous frame’s pyramid).
@@ -34,7 +34,7 @@ pub struct HiZTemporalState {
     /// stores the same explicit world-to-view snapshot, matching the single view used to render
     /// that pass's depth pyramid.
     pub prev_view_by_space: Arc<HashMap<RenderSpaceId, Mat4>>,
-    /// Hi-Z mip0 size in texels (downscaled from full depth; see [`crate::occlusion::hi_z_cpu::hi_z_pyramid_dimensions`]).
+    /// Hi-Z mip0 size in texels (downscaled from full depth; see [`crate::occlusion::hi_z_pyramid_dimensions`]).
     pub depth_viewport_px: (u32, u32),
 }
 
@@ -124,7 +124,7 @@ mod tests {
     };
     use crate::camera::HostCameraFrame;
     use crate::camera::view_matrix_from_render_transform;
-    use crate::occlusion::hi_z_cpu::hi_z_pyramid_dimensions;
+    use crate::occlusion::hi_z_pyramid_dimensions;
 
     #[test]
     fn capture_hi_z_temporal_secondary_override_fills_all_spaces() {

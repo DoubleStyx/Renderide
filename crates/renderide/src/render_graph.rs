@@ -4,8 +4,8 @@
 //! [`CompiledRenderGraph::execute_multi_view`]).
 //!
 //! **Hi-Z-related code:** CPU helpers for mip layout, depth readback unpacking, and screen-space
-//! occlusion tests live in [`hi_z_cpu`] and [`hi_z_occlusion`]. GPU pyramid build, staging, and
-//! pipelines are under [`crate::render_graph::occlusion`].
+//! occlusion tests live in [`crate::occlusion::cpu`]. GPU pyramid build, staging, and pipelines
+//! live in [`crate::occlusion::gpu`].
 //!
 //! ## Portability
 //!

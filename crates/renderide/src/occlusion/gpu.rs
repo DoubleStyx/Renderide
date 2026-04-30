@@ -2,11 +2,13 @@
 //!
 //! Used by [`crate::occlusion::OcclusionSystem`] and [`crate::passes::HiZBuildPass`].
 
-mod hi_z_encode;
-mod hi_z_gpu;
-mod hi_z_pipelines;
+mod encode;
+mod pipelines;
+mod readback;
 mod readback_ring;
+mod scratch;
+mod state;
 
-pub use hi_z_encode::{HiZBuildRecord, HiZHistoryTarget, encode_hi_z_build};
-pub(crate) use hi_z_gpu::HIZ_MAX_MIPS;
-pub use hi_z_gpu::HiZGpuState;
+pub use encode::{HiZBuildRecord, HiZHistoryTarget, encode_hi_z_build};
+pub(crate) use scratch::HIZ_MAX_MIPS;
+pub use state::HiZGpuState;
