@@ -2,8 +2,8 @@
 
 use std::time::Instant;
 
-use super::RendererRuntime;
 use super::host_camera_apply;
+use crate::runtime::RendererRuntime;
 use crate::shared::FrameSubmitData;
 
 /// Applies a host frame submit: lock-step note, output state, camera fields, scene caches, head-output transform.

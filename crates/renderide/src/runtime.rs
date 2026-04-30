@@ -34,19 +34,15 @@
 //! decision predicate and the counters live in [`crate::frontend`].
 
 mod accessors;
-mod command_dispatch;
-mod commands;
 mod debug_hud_frame;
 mod frame_render;
-mod frame_submit;
 mod frame_view_plan;
-mod host_camera_apply;
-mod ipc_init_dispatch;
-mod lights_ipc;
 mod lockstep;
-mod renderer_command_kind;
-mod shader_material_ipc;
 mod xr_impls;
+
+// IPC dispatch (RendererCommand routing, frame submit, lights/shader/material IPC, init handshake)
+// extracted to `crate::frontend::dispatch`. Dispatch reaches into RendererRuntime's `pub(crate)`
+// surface directly; runtime no longer re-exports the routing fns.
 
 use hashbrown::HashMap;
 use std::path::PathBuf;
@@ -86,22 +82,22 @@ pub struct TickOutcome {
 
 /// Facade: [`RendererFrontend`] + [`SceneCoordinator`] + [`RenderBackend`] + ingestion helpers.
 pub struct RendererRuntime {
-    frontend: RendererFrontend,
-    backend: RenderBackend,
+    pub(crate) frontend: RendererFrontend,
+    pub(crate) backend: RenderBackend,
     /// Render spaces and dense transform / mesh state from [`FrameSubmitData`](crate::shared::FrameSubmitData).
-    scene: SceneCoordinator,
+    pub(crate) scene: SceneCoordinator,
     /// Last host clip / FOV / VR / ortho task state for [`crate::render_graph::FrameRenderParams`].
     pub host_camera: HostCameraFrame,
     /// Process-wide renderer settings (shared with the debug HUD and the frame loop).
-    settings: RendererSettingsHandle,
+    pub(crate) settings: RendererSettingsHandle,
     /// Target path for persisting [`Self::settings`] from the ImGui config window.
-    config_save_path: PathBuf,
+    pub(crate) config_save_path: PathBuf,
     /// Throttled host CPU/RAM sampling for the debug HUD.
     host_hud: crate::diagnostics::HostHudGatherer,
     /// Rolling per-frame wall time history that feeds the Frame timing sparkline.
     frame_time_history: crate::diagnostics::FrameTimeHistory,
     /// [`FrameSubmitData::render_tasks`] length from the last applied frame submit (HUD).
-    last_submit_render_task_count: usize,
+    pub(crate) last_submit_render_task_count: usize,
     /// Cached full [`wgpu::AllocatorReport`] for the **GPU memory** HUD tab (refreshed on a timer).
     allocator_report_hud: Option<crate::diagnostics::GpuAllocatorReportHud>,
     /// Wall clock when a **GPU memory** tab refresh was last attempted (typically every 2s while the main debug HUD runs).
@@ -109,18 +105,19 @@ pub struct RendererRuntime {
     /// Set when [`Self::run_asset_integration`] completed for the current winit tick (cleared in [`Self::tick_frame_wall_clock_begin`]).
     did_integrate_this_tick: bool,
     /// Count of failed [`SceneCoordinator::apply_frame_submit`] or [`SceneCoordinator::flush_world_caches`] after a host submit (HUD / drift).
-    frame_submit_apply_failures: u64,
+    pub(crate) frame_submit_apply_failures: u64,
     /// Count of OpenXR `wait_frame` errors since startup (recoverable).
     xr_wait_frame_failures: u64,
     /// Count of OpenXR `locate_views` errors when `should_render` was true (recoverable).
     xr_locate_views_failures: u64,
     /// Running counts of post-init [`RendererCommand`] variants seen without a running handler.
-    unhandled_ipc_command_counts: HashMap<&'static str, u64>,
+    pub(crate) unhandled_ipc_command_counts: HashMap<&'static str, u64>,
     /// When `true`, ImGui and [`crate::config::save_renderer_settings_from_load`] must not overwrite `config.toml`.
-    suppress_renderer_config_disk_writes: bool,
+    pub(crate) suppress_renderer_config_disk_writes: bool,
     /// In-flight shader uploads whose [`crate::assets::resolve_shader_upload`] is running on the
     /// rayon pool; drained by [`Self::poll_ipc`] before this tick's IPC batch is dispatched.
-    pending_shader_resolutions: Vec<shader_material_ipc::PendingShaderResolution>,
+    pub(crate) pending_shader_resolutions:
+        Vec<crate::frontend::dispatch::shader_material_ipc::PendingShaderResolution>,
     /// Reusable per-frame scratch for [`Self::collect_secondary_rt_views`]. Holds
     /// `(render_space_id, camera_depth, camera_index)` tuples for sorting; cleared and refilled
     /// each tick so secondary-RT scenes don't allocate a fresh `Vec` per frame.
@@ -321,16 +318,19 @@ impl RendererRuntime {
     /// first, then frame submits, then the rest (see [`RendererFrontend::poll_commands`]).
     pub fn poll_ipc(&mut self) {
         profiling::scope!("ipc::poll_batch");
-        shader_material_ipc::drain_pending_shader_resolutions(
+        crate::frontend::dispatch::shader_material_ipc::drain_pending_shader_resolutions(
             &mut self.pending_shader_resolutions,
             &mut self.backend,
             &mut self.frontend,
         );
         let mut batch = self.frontend.poll_commands();
         for cmd in batch.drain(..) {
-            let _tag = renderer_command_kind::renderer_command_variant_tag(&cmd);
+            let _tag =
+                crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag(
+                    &cmd,
+                );
             profiling::scope!("ipc::dispatch", _tag);
-            ipc_init_dispatch::dispatch_ipc_command(self, cmd);
+            crate::frontend::dispatch::ipc_init::dispatch_ipc_command(self, cmd);
         }
         self.frontend.recycle_command_batch(batch);
     }
@@ -404,7 +404,7 @@ impl RendererRuntime {
         TickOutcome::default()
     }
 
-    pub(super) fn on_init_data(&mut self, d: RendererInitData) {
+    pub(crate) fn on_init_data(&mut self, d: RendererInitData) {
         self.host_camera.output_device = d.output_device;
         if let Some(ref prefix) = d.shared_memory_prefix {
             self.frontend
@@ -418,8 +418,12 @@ impl RendererRuntime {
         self.frontend.set_pending_init(d.clone());
         if let Some(ref mut ipc) = self.frontend.ipc_mut() {
             let settings = self.settings.read().map(|g| g.clone()).unwrap_or_default();
-            if !ipc_init_dispatch::send_renderer_init_result(ipc, d.output_device, &settings, None)
-            {
+            if !crate::frontend::dispatch::ipc_init::send_renderer_init_result(
+                ipc,
+                d.output_device,
+                &settings,
+                None,
+            ) {
                 logger::error!(
                     "IPC: RendererInitResult was not sent (primary queue full); stopping init handshake"
                 );
@@ -430,40 +434,51 @@ impl RendererRuntime {
         self.frontend.on_init_received();
     }
 
-    pub(super) fn handle_running_command(&mut self, cmd: RendererCommand) {
-        commands::handle_running_command(self, cmd);
+    pub(crate) fn handle_running_command(&mut self, cmd: RendererCommand) {
+        crate::frontend::dispatch::commands::handle_running_command(self, cmd);
     }
 
-    fn on_shader_upload(&mut self, upload: ShaderUpload) {
-        shader_material_ipc::on_shader_upload(&mut self.pending_shader_resolutions, upload);
+    pub(crate) fn on_shader_upload(&mut self, upload: ShaderUpload) {
+        crate::frontend::dispatch::shader_material_ipc::on_shader_upload(
+            &mut self.pending_shader_resolutions,
+            upload,
+        );
     }
 
-    fn on_shader_unload(&mut self, unload: ShaderUnload) {
-        shader_material_ipc::on_shader_unload(&mut self.backend, unload);
+    pub(crate) fn on_shader_unload(&mut self, unload: ShaderUnload) {
+        crate::frontend::dispatch::shader_material_ipc::on_shader_unload(&mut self.backend, unload);
     }
 
-    fn on_materials_update_batch(&mut self, batch: MaterialsUpdateBatch) {
-        shader_material_ipc::on_materials_update_batch(
+    pub(crate) fn on_materials_update_batch(&mut self, batch: MaterialsUpdateBatch) {
+        crate::frontend::dispatch::shader_material_ipc::on_materials_update_batch(
             &mut self.frontend,
             &mut self.backend,
             batch,
         );
     }
 
-    fn on_lights_buffer_renderer_submission(&mut self, sub: LightsBufferRendererSubmission) {
+    pub(crate) fn on_lights_buffer_renderer_submission(
+        &mut self,
+        sub: LightsBufferRendererSubmission,
+    ) {
         let buffer_id = sub.lights_buffer_unique_id;
         let (shm, ipc) = self.frontend.transport_pair_mut();
         let Some(shm) = shm else {
             logger::warn!("lights_buffer_renderer_submission: no shared memory (id={buffer_id})");
             return;
         };
-        lights_ipc::apply_lights_buffer_submission(&mut self.scene, shm, ipc, sub);
+        crate::frontend::dispatch::lights_ipc::apply_lights_buffer_submission(
+            &mut self.scene,
+            shm,
+            ipc,
+            sub,
+        );
     }
 
-    fn on_frame_submit(&mut self, data: FrameSubmitData) {
+    pub(crate) fn on_frame_submit(&mut self, data: FrameSubmitData) {
         let prev_frame_index = self.host_camera.frame_index;
         lockstep::trace_duplicate_frame_index_if_interesting(data.frame_index, prev_frame_index);
-        frame_submit::process_frame_submit(self, data);
+        crate::frontend::dispatch::frame_submit::process_frame_submit(self, data);
     }
 }
 

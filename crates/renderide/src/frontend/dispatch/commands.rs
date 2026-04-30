@@ -2,10 +2,10 @@
 
 use crate::shared::RendererCommand;
 
-use super::RendererRuntime;
 use super::command_dispatch;
+use crate::runtime::RendererRuntime;
 
 /// Handles IPC commands in the normal running state ([`crate::frontend::InitState::Finalized`]).
-pub(super) fn handle_running_command(runtime: &mut RendererRuntime, cmd: RendererCommand) {
+pub(crate) fn handle_running_command(runtime: &mut RendererRuntime, cmd: RendererCommand) {
     command_dispatch::dispatch_running_command(runtime, cmd);
 }

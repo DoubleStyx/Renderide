@@ -5,7 +5,7 @@
 use crate::shared::RendererCommand;
 
 /// Returns a stable tag for logging and unhandled-command counters when the enum grows.
-pub(super) fn renderer_command_variant_tag(cmd: &RendererCommand) -> &'static str {
+pub(crate) fn renderer_command_variant_tag(cmd: &RendererCommand) -> &'static str {
     match cmd {
         RendererCommand::RendererInitData(_) => "RendererInitData",
         RendererCommand::RendererInitResult(_) => "RendererInitResult",

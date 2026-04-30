@@ -12,6 +12,7 @@
 
 mod begin_frame;
 mod decoupling;
+pub(crate) mod dispatch;
 mod frame_start_performance;
 mod init_state;
 mod renderer_frontend;

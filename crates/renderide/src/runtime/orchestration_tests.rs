@@ -15,9 +15,9 @@ use crate::shared::{
 };
 
 use super::RendererRuntime;
-use super::commands::handle_running_command;
-use super::frame_submit::process_frame_submit;
-use super::ipc_init_dispatch::dispatch_ipc_command;
+use crate::frontend::dispatch::commands::handle_running_command;
+use crate::frontend::dispatch::frame_submit::process_frame_submit;
+use crate::frontend::dispatch::ipc_init::dispatch_ipc_command;
 
 fn test_settings_handle() -> RendererSettingsHandle {
     Arc::new(std::sync::RwLock::new(RendererSettings::default()))

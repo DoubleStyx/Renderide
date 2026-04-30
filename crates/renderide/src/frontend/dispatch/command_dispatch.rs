@@ -9,8 +9,8 @@ use crate::shared::{
     SetTexture3DData, SetTexture3DFormat, SetTexture3DProperties,
 };
 
-use super::RendererRuntime;
 use super::renderer_command_kind::renderer_command_variant_tag;
+use crate::runtime::RendererRuntime;
 
 /// Logs structured fields from a host [`FrameStartData`] payload (lock-step / diagnostics only).
 fn log_frame_start_data_trace(fs: &FrameStartData) {
@@ -25,7 +25,7 @@ fn log_frame_start_data_trace(fs: &FrameStartData) {
 }
 
 /// Routes a post-handshake [`RendererCommand`] to the appropriate runtime / backend handler.
-pub(super) fn dispatch_running_command(runtime: &mut RendererRuntime, cmd: RendererCommand) {
+pub(crate) fn dispatch_running_command(runtime: &mut RendererRuntime, cmd: RendererCommand) {
     match cmd {
         RendererCommand::KeepAlive(_) => {}
         RendererCommand::RendererShutdown(_) | RendererCommand::RendererShutdownRequest(_) => {
