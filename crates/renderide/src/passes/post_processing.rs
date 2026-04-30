@@ -12,7 +12,11 @@
 mod aces_tonemap;
 mod bloom;
 mod gtao;
+pub mod settings_slot;
 
 pub use aces_tonemap::{AcesTonemapEffect, AcesTonemapGraphResources, AcesTonemapPass};
 pub use bloom::BloomEffect;
 pub use gtao::{GtaoEffect, GtaoGraphResources, GtaoPass};
+pub use settings_slot::{
+    BloomSettingsSlot, BloomSettingsValue, GtaoSettingsSlot, GtaoSettingsValue,
+};

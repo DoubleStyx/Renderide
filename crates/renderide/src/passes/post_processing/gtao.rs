@@ -22,11 +22,12 @@ use crate::config::{GtaoSettings, PostProcessingSettings};
 use crate::passes::helpers::{
     color_attachment, missing_frame_params, missing_pass_resource, read_fragment_sampled_texture,
 };
+use crate::passes::post_processing::settings_slot::GtaoSettingsSlot;
 use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::compiled::RenderPassTemplate;
 use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::{GtaoSettingsSlot, PerViewFramePlanSlot};
+use crate::render_graph::frame_params::PerViewFramePlanSlot;
 use crate::render_graph::gpu_cache::raster_stereo_mask_override;
 use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::post_processing::{EffectPasses, PostProcessEffect, PostProcessEffectId};

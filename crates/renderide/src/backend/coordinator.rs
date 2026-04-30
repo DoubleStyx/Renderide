@@ -256,7 +256,7 @@ impl RenderBackend {
 
     /// Snapshot of the live GTAO settings for the current frame.
     ///
-    /// Seeded into each view's blackboard as [`crate::render_graph::frame_params::GtaoSettingsSlot`]
+    /// Seeded into each view's blackboard as [`crate::passes::post_processing::settings_slot::GtaoSettingsSlot`]
     /// so the shader UBO reflects slider changes without rebuilding the compiled render graph
     /// (the chain signature only tracks enable booleans, so parameter edits wouldn't otherwise
     /// reach the pass).
@@ -270,7 +270,7 @@ impl RenderBackend {
 
     /// Snapshot of the live bloom settings for the current frame.
     ///
-    /// Seeded into each view's blackboard as [`crate::render_graph::frame_params::BloomSettingsSlot`]
+    /// Seeded into each view's blackboard as [`crate::passes::post_processing::settings_slot::BloomSettingsSlot`]
     /// so the first downsample's params UBO and the upsample blend constants reflect slider
     /// changes without rebuilding the compiled render graph. The effective `max_mip_dimension`
     /// is the one exception — it drives mip-chain texture sizes, so it lives on the chain

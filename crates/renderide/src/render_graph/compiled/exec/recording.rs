@@ -9,8 +9,7 @@ use super::super::super::context::{
 };
 use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_params::{
-    BloomSettingsSlot, BloomSettingsValue, FrameSystemsShared, GtaoSettingsSlot, GtaoSettingsValue,
-    MsaaViewsSlot, PerViewFramePlan, PerViewFramePlanSlot,
+    FrameSystemsShared, MsaaViewsSlot, PerViewFramePlan, PerViewFramePlanSlot,
 };
 use super::super::super::pass::PassKind;
 use super::super::helpers;
@@ -22,6 +21,9 @@ use super::{
     TransientTextureResolveSurfaceParams,
 };
 use crate::diagnostics::PerViewHudOutputsSlot;
+use crate::passes::post_processing::settings_slot::{
+    BloomSettingsSlot, BloomSettingsValue, GtaoSettingsSlot, GtaoSettingsValue,
+};
 use crate::world_mesh::PrefetchedWorldMeshDrawsSlot;
 
 impl CompiledRenderGraph {

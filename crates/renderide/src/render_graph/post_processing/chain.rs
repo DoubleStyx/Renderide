@@ -14,8 +14,8 @@ use super::effect::{PostProcessEffect, PostProcessEffectId};
 ///
 /// Changes to any field force a render-graph rebuild. Non-topology parameters (intensity,
 /// threshold, composite mode, etc.) flow to the passes via per-view blackboard slots
-/// ([`crate::render_graph::frame_params::BloomSettingsSlot`],
-/// [`crate::render_graph::frame_params::GtaoSettingsSlot`]) and therefore do **not** need to be
+/// ([`crate::passes::post_processing::settings_slot::BloomSettingsSlot`],
+/// [`crate::passes::post_processing::settings_slot::GtaoSettingsSlot`]) and therefore do **not** need to be
 /// tracked here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PostProcessChainSignature {

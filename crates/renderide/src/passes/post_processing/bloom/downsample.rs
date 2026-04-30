@@ -9,10 +9,10 @@ use crate::config::BloomSettings;
 use crate::passes::helpers::{
     color_attachment, missing_frame_params, missing_pass_resource, read_fragment_sampled_texture,
 };
+use crate::passes::post_processing::settings_slot::BloomSettingsSlot;
 use crate::render_graph::compiled::RenderPassTemplate;
 use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::BloomSettingsSlot;
 use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::resources::TextureHandle;
 
