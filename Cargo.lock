@@ -1620,6 +1620,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "libc",
+ "logger",
  "memmap2",
  "sha2",
  "tempfile",

@@ -14,11 +14,15 @@ use base64::prelude::*;
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 
+use super::MAX_WAIT_DURATION;
+
 /// Handle to a POSIX named semaphore created with [`PosixSemaphore::open`].
-pub(super) struct PosixSemaphore(
+pub(super) struct PosixSemaphore {
     /// Opaque `sem_t` pointer returned by `sem_open`.
-    *mut libc::sem_t,
-);
+    handle: *mut libc::sem_t,
+    /// Logical queue name (matches the mapping name); used in diagnostic log lines.
+    queue_name: String,
+}
 
 impl PosixSemaphore {
     /// Opens or creates the semaphore with mode `0o777` and initial value `0`.
@@ -50,15 +54,24 @@ impl PosixSemaphore {
         if h == libc::SEM_FAILED {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self(h))
+        Ok(Self {
+            handle: h,
+            queue_name: memory_view_name.to_string(),
+        })
     }
 
     /// Increments the semaphore (wake one waiter).
     pub(super) fn post(&self) {
-        // SAFETY: `self.0` is a non-`SEM_FAILED` pointer returned by `sem_open` in `open`.
-        let rc = unsafe { libc::sem_post(self.0) };
+        // SAFETY: `self.handle` is a non-`SEM_FAILED` pointer returned by `sem_open` in `open`.
+        let rc = unsafe { libc::sem_post(self.handle) };
         if rc != 0 {
-            debug_assert!(false, "sem_post: {:?}", io::Error::last_os_error());
+            let err = io::Error::last_os_error();
+            logger::warn!(
+                "interprocess: sem_post failed for queue '{}': {}",
+                self.queue_name,
+                err
+            );
+            debug_assert!(false, "sem_post: {:?}", err);
         }
     }
 
@@ -80,8 +93,8 @@ impl PosixSemaphore {
     /// Non-blocking wait; returns `true` if the semaphore was acquired.
     fn try_wait(&self) -> bool {
         loop {
-            // SAFETY: `self.0` is a live `sem_open` handle owned by `self`.
-            let rc = unsafe { libc::sem_trywait(self.0) };
+            // SAFETY: `self.handle` is a live `sem_open` handle owned by `self`.
+            let rc = unsafe { libc::sem_trywait(self.handle) };
             if rc == 0 {
                 return true;
             }
@@ -92,7 +105,11 @@ impl PosixSemaphore {
             if err == libc::EAGAIN || err == libc::EBUSY {
                 return false;
             }
-            // Unexpected failure — treat as not acquired.
+            logger::warn!(
+                "interprocess: sem_trywait unexpected errno {} for queue '{}'",
+                err,
+                self.queue_name
+            );
             return false;
         }
     }
@@ -109,8 +126,8 @@ impl PosixSemaphore {
         if unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, core::ptr::addr_of_mut!(ts)) } != 0 {
             return false;
         }
-        let cap_ns: u128 = 1_000_000_000u128 * 60 * 60 * 24 * 365;
-        let add_ns = i128::try_from(timeout.as_nanos().min(cap_ns)).unwrap_or(i128::MAX / 4);
+        let clamped = timeout.min(MAX_WAIT_DURATION);
+        let add_ns = clamped.as_nanos() as i128;
         let cur_ns = ts.tv_sec as i128 * 1_000_000_000i128 + ts.tv_nsec as i128;
         let deadline_ns = cur_ns.saturating_add(add_ns);
         let d_sec = deadline_ns.div_euclid(1_000_000_000);
@@ -121,8 +138,8 @@ impl PosixSemaphore {
         ts.tv_sec = d_sec as libc::time_t;
         ts.tv_nsec = d_nsec as libc::c_long;
         loop {
-            // SAFETY: `self.0` is a live sem handle; `&ts` is a valid absolute timespec.
-            let rc = unsafe { libc::sem_timedwait(self.0, core::ptr::addr_of!(ts)) };
+            // SAFETY: `self.handle` is a live sem handle; `&ts` is a valid absolute timespec.
+            let rc = unsafe { libc::sem_timedwait(self.handle, core::ptr::addr_of!(ts)) };
             if rc == 0 {
                 return true;
             }
@@ -133,6 +150,11 @@ impl PosixSemaphore {
             if err == libc::ETIMEDOUT {
                 return false;
             }
+            logger::warn!(
+                "interprocess: sem_timedwait unexpected errno {} for queue '{}'",
+                err,
+                self.queue_name
+            );
             return false;
         }
     }
@@ -155,8 +177,15 @@ impl PosixSemaphore {
 
 impl Drop for PosixSemaphore {
     fn drop(&mut self) {
-        // SAFETY: `self.0` is a live sem handle owned by `self`; dropping closes it exactly once.
-        let _ = unsafe { libc::sem_close(self.0) };
+        // SAFETY: `self.handle` is a live sem handle owned by `self`; dropped exactly once.
+        let rc = unsafe { libc::sem_close(self.handle) };
+        if rc != 0 {
+            logger::warn!(
+                "interprocess: sem_close failed for queue '{}': {}",
+                self.queue_name,
+                io::Error::last_os_error()
+            );
+        }
     }
 }
 

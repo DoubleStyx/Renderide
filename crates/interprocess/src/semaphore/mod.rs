@@ -8,6 +8,18 @@ mod win;
 use std::io;
 use std::time::Duration;
 
+/// Longest interval the POSIX wait helper sleeps for in a single `sem_timedwait` call.
+///
+/// Clamping the requested timeout keeps `clock_gettime` arithmetic far below `i128::MAX`, so the
+/// nanosecond conversion to `i128` is exact without a defensive fallback.
+#[cfg(unix)]
+pub(super) const MAX_WAIT_DURATION: Duration = Duration::from_secs(60 * 60 * 24 * 365);
+
+/// Threshold above which the Windows wait helper switches to `WaitForSingleObject(INFINITE)`
+/// instead of converting the timeout to milliseconds.
+#[cfg(windows)]
+pub(super) const WIN_WAIT_INFINITE_THRESHOLD: Duration = Duration::from_secs(60 * 60 * 24 * 7);
+
 /// Cross-process wakeup primitive paired with the queue mapping (post on enqueue, wait while idle).
 ///
 /// On Unix this is a POSIX named semaphore; on Windows, a global semaphore under `Global\CT.IP.{name}`.
