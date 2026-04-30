@@ -16,6 +16,8 @@
 //! `bloom_multiview` targets — the multiview variant substitutes `@builtin(view_index)` for
 //! array sampling so the left/right stereo layers are scattered independently.
 
+#import renderide::fullscreen as fs
+
 /// Per-frame bloom parameters shared across all four entry points.
 struct BloomUniforms {
     /// `[threshold, threshold - knee, 2 * knee, 0.25 / (knee + 1e-4)]`, precomputed on CPU
@@ -37,20 +39,9 @@ struct BloomUniforms {
 /// Composite-only: bloom mip 0 sampled during the final combine.
 @group(1) @binding(0) var bloom_texture: texture_2d_array<f32>;
 
-/// Fullscreen-triangle vertex output (UV covers [0, 1]²).
-struct VsOut {
-    @builtin(position) clip_pos: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-}
-
 @vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
-    let x = f32((vid << 1u) & 2u);
-    let y = f32(vid & 2u);
-    var out: VsOut;
-    out.clip_pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-    out.uv = vec2<f32>(x, y);
-    return out;
+fn vs_main(@builtin(vertex_index) vid: u32) -> fs::FullscreenVertexOutput {
+    return fs::vertex_main(vid);
 }
 
 // Rec. 709 luminance (linear space).
@@ -146,11 +137,11 @@ fn sample_tent_3x3(uv: vec2<f32>, view: u32) -> vec3<f32> {
 
 #ifdef MULTIVIEW
 @fragment
-fn fs_downsample_first(in: VsOut, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
+fn fs_downsample_first(in: fs::FullscreenVertexOutput, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
     var groups = sample_13_groups(in.uv, view);
 #else
 @fragment
-fn fs_downsample_first(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_downsample_first(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     var groups = sample_13_groups(in.uv, 0u);
 #endif
     groups.g0 *= karis_average(groups.g0);
@@ -169,36 +160,36 @@ fn fs_downsample_first(in: VsOut) -> @location(0) vec4<f32> {
 
 #ifdef MULTIVIEW
 @fragment
-fn fs_downsample(in: VsOut, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
+fn fs_downsample(in: fs::FullscreenVertexOutput, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
     return vec4<f32>(sample_plain_13_tap(in.uv, view), 1.0);
 }
 #else
 @fragment
-fn fs_downsample(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_downsample(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(sample_plain_13_tap(in.uv, 0u), 1.0);
 }
 #endif
 
 #ifdef MULTIVIEW
 @fragment
-fn fs_upsample(in: VsOut, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
+fn fs_upsample(in: fs::FullscreenVertexOutput, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
     return vec4<f32>(sample_tent_3x3(in.uv, view), 1.0);
 }
 #else
 @fragment
-fn fs_upsample(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_upsample(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(sample_tent_3x3(in.uv, 0u), 1.0);
 }
 #endif
 
 #ifdef MULTIVIEW
 @fragment
-fn fs_composite(in: VsOut, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
+fn fs_composite(in: fs::FullscreenVertexOutput, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
     let scene = textureSample(src_texture, src_sampler, in.uv, view);
     let bloom = textureSample(bloom_texture, src_sampler, in.uv, view).rgb;
 #else
 @fragment
-fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_composite(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureSample(src_texture, src_sampler, in.uv, 0u);
     let bloom = textureSample(bloom_texture, src_sampler, in.uv, 0u).rgb;
 #endif

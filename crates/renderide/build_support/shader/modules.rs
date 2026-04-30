@@ -18,12 +18,8 @@ pub(super) fn discover_shader_modules(
     manifest_dir: &Path,
 ) -> Result<ShaderModuleSources, BuildError> {
     let modules_dir = manifest_dir.join("shaders/modules");
-    let mut paths: Vec<PathBuf> = fs::read_dir(&modules_dir)
-        .map_err(|e| BuildError::Message(format!("read {}: {e}", modules_dir.display())))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "wgsl"))
-        .collect();
+    let mut paths = Vec::new();
+    collect_wgsl_paths(&modules_dir, &mut paths)?;
     paths.sort();
 
     let mut modules = Vec::with_capacity(paths.len());
@@ -49,6 +45,26 @@ pub(super) fn discover_shader_modules(
     }
 
     topo_sort_shader_modules(&modules)
+}
+
+/// Recursively collects WGSL module files under `dir`.
+fn collect_wgsl_paths(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), BuildError> {
+    for entry in fs::read_dir(dir)
+        .map_err(|e| BuildError::Message(format!("read {}: {e}", dir.display())))?
+    {
+        let entry =
+            entry.map_err(|e| BuildError::Message(format!("read {} entry: {e}", dir.display())))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| BuildError::Message(format!("stat {}: {e}", path.display())))?;
+        if file_type.is_dir() {
+            collect_wgsl_paths(&path, out)?;
+        } else if file_type.is_file() && path.extension().is_some_and(|x| x == "wgsl") {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 /// Topologically sorts shader modules so each `#import` target is registered before its importer.
@@ -190,6 +206,36 @@ mod tests {
             .map(|(path, _)| path.as_str())
             .collect::<Vec<_>>();
         assert_eq!(paths, ["shaders/modules/a.wgsl", "shaders/modules/b.wgsl"]);
+        Ok(())
+    }
+
+    /// Import topo sort still handles modules stored in nested filesystem paths.
+    #[test]
+    fn topo_sort_accepts_nested_module_paths() -> Result<(), BuildError> {
+        let modules = vec![
+            (
+                "shaders/modules/pbs/lighting.wgsl".to_string(),
+                "#define_import_path renderide::pbs::lighting\n#import renderide::pbs::surface as surface\n"
+                    .to_string(),
+            ),
+            (
+                "shaders/modules/pbs/surface.wgsl".to_string(),
+                "#define_import_path renderide::pbs::surface\n".to_string(),
+            ),
+        ];
+
+        let sorted = topo_sort_shader_modules(&modules)?;
+        let paths = sorted
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                "shaders/modules/pbs/surface.wgsl",
+                "shaders/modules/pbs/lighting.wgsl"
+            ]
+        );
         Ok(())
     }
 }

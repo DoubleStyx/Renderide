@@ -5,22 +5,14 @@
 //! `aces_tonemap_multiview` (stereo, `view_index` selects array layer) targets — see the build
 //! script's post-shader composition loop and [`crate::embedded_shaders`].
 
+#import renderide::fullscreen as fs
+
 @group(0) @binding(0) var scene_color_hdr: texture_2d_array<f32>;
 @group(0) @binding(1) var scene_color_sampler: sampler;
 
-struct VsOut {
-    @builtin(position) clip_pos: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-}
-
 @vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
-    let x = f32((vid << 1u) & 2u);
-    let y = f32(vid & 2u);
-    var out: VsOut;
-    out.clip_pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-    out.uv = vec2<f32>(x, y);
-    return out;
+fn vs_main(@builtin(vertex_index) vid: u32) -> fs::FullscreenVertexOutput {
+    return fs::vertex_main(vid);
 }
 
 // sRGB -> AP1, RRT_SAT.
@@ -58,14 +50,14 @@ fn aces_fitted(color_linear: vec3<f32>) -> vec3<f32> {
 
 #ifdef MULTIVIEW
 @fragment
-fn fs_main(in: VsOut, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
+fn fs_main(in: fs::FullscreenVertexOutput, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
     let hdr = textureSample(scene_color_hdr, scene_color_sampler, in.uv, view);
     let ldr = aces_fitted(hdr.rgb);
     return vec4<f32>(ldr, hdr.a);
 }
 #else
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_main(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let hdr = textureSample(scene_color_hdr, scene_color_sampler, in.uv, 0u);
     let ldr = aces_fitted(hdr.rgb);
     return vec4<f32>(ldr, hdr.a);

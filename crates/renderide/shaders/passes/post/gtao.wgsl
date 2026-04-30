@@ -25,6 +25,8 @@
 //! - `@binding(3)` `FrameGlobals` uniform (per-eye proj coefficients + near/far + frame index).
 //! - `@binding(4)` `GtaoParams` uniform (user-tunable radius/intensity/steps).
 
+#import renderide::fullscreen as fs
+
 @group(0) @binding(0) var scene_color_hdr: texture_2d_array<f32>;
 @group(0) @binding(1) var linear_clamp: sampler;
 
@@ -74,19 +76,9 @@ struct GtaoParams {
 
 @group(0) @binding(4) var<uniform> gtao: GtaoParams;
 
-struct VsOut {
-    @builtin(position) clip_pos: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-}
-
 @vertex
-fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
-    let x = f32((vid << 1u) & 2u);
-    let y = f32(vid & 2u);
-    var out: VsOut;
-    out.clip_pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-    out.uv = vec2<f32>(x, y);
-    return out;
+fn vs_main(@builtin(vertex_index) vid: u32) -> fs::FullscreenVertexOutput {
+    return fs::vertex_main(vid);
 }
 
 /// Raw depth at integer pixel coords for the current view layer.
@@ -360,7 +352,7 @@ fn compute_gtao(
 
 #ifdef MULTIVIEW
 @fragment
-fn fs_main(in: VsOut, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
+fn fs_main(in: fs::FullscreenVertexOutput, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
     let pix = vec2<i32>(in.clip_pos.xy);
     let ao = compute_gtao(pix, in.uv, view);
     let hdr = textureSample(scene_color_hdr, linear_clamp, in.uv, view);
@@ -368,7 +360,7 @@ fn fs_main(in: VsOut, @builtin(view_index) view: u32) -> @location(0) vec4<f32> 
 }
 #else
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_main(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let pix = vec2<i32>(in.clip_pos.xy);
     let ao = compute_gtao(pix, in.uv, 0u);
     let hdr = textureSample(scene_color_hdr, linear_clamp, in.uv, 0u);

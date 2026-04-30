@@ -2,17 +2,11 @@
 // `#ifdef MULTIVIEW` selects the per-eye array layer via `@builtin(view_index)` and a
 // `texture_2d_array<f32>` source; the non-multiview path uses a plain `texture_2d<f32>`.
 
-struct VsOut {
-    @builtin(position) pos: vec4f,
-}
+#import renderide::fullscreen as fs
 
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
-    let x = f32((vi << 1u) & 2u);
-    let y = f32(vi & 2u);
-    var o: VsOut;
-    o.pos = vec4f(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-    return o;
+fn vs_main(@builtin(vertex_index) vi: u32) -> fs::FullscreenClipOutput {
+    return fs::vertex_clip_main(vi);
 }
 
 #ifdef MULTIVIEW

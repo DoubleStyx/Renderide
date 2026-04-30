@@ -12,12 +12,10 @@
 //! `_UVSec` selects UV0 or UV1 for the detail set.
 
 
-#import renderide::globals as rg
-#import renderide::sh2_ambient as shamb
-#import renderide::per_draw as pd
-#import renderide::pbs::brdf as brdf
+#import renderide::mesh::vertex as mv
 #import renderide::pbs::normal as pnorm
-#import renderide::pbs::cluster as pcls
+#import renderide::pbs::lighting as plight
+#import renderide::pbs::surface as psurf
 #import renderide::alpha_clip_sample as acs
 #import renderide::uv_utils as uvu
 #import renderide::normal_decode as nd
@@ -57,15 +55,6 @@ struct PbsSpecularMaterial {
 @group(1) @binding(14) var _DetailNormalMap_sampler: sampler;
 @group(1) @binding(15) var _DetailMask: texture_2d<f32>;
 @group(1) @binding(16) var _DetailMask_sampler: sampler;
-
-struct VertexOutput {
-    @builtin(position) clip_pos: vec4<f32>,
-    @location(0) world_pos: vec3<f32>,
-    @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) uv1: vec2<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
-}
 
 fn kw(v: f32) -> bool {
     return v > 0.5;
@@ -116,32 +105,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
-) -> VertexOutput {
-    let d = pd::get_draw(instance_index);
-    let world_p = d.model * vec4<f32>(pos.xyz, 1.0);
-    let wn = normalize(d.normal_matrix * n.xyz);
+) -> mv::WorldUv2VertexOutput {
 #ifdef MULTIVIEW
-    var vp: mat4x4<f32>;
-    if (view_idx == 0u) {
-        vp = d.view_proj_left;
-    } else {
-        vp = d.view_proj_right;
-    }
+    return mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, uv0, uv0);
 #else
-    let vp = d.view_proj_left;
+    return mv::world_uv2_vertex_main(instance_index, 0u, pos, n, uv0, uv0);
 #endif
-    var out: VertexOutput;
-    out.clip_pos  = vp * world_p;
-    out.world_pos = world_p.xyz;
-    out.world_n   = wn;
-    out.uv0 = uv0;
-    out.uv1 = uv0;
-#ifdef MULTIVIEW
-    out.view_layer = view_idx;
-#else
-    out.view_layer = 0u;
-#endif
-    return out;
 }
 
 //#pass forward
@@ -197,46 +166,21 @@ fn fs_main(
     let detail_blend = mix(vec3<f32>(1.0), detail * 2.0, detail_mask_s);
     base_color = base_color * detail_blend;
 
-    // --- Lighting ---
-    let cam = rg::camera_world_pos_for_view(view_layer);
-    let v   = normalize(cam - world_pos);
-
-    let aa_roughness = brdf::filter_perceptual_roughness(roughness, n);
-
-    let cluster_id = pcls::cluster_id_from_frag(
+    let surface = psurf::specular(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        em,
+    );
+    let color = plight::shade_specular_clustered(
         frag_pos.xy,
         world_pos,
-        rg::frame.view_space_z_coeffs,
-        rg::frame.view_space_z_coeffs_right,
         view_layer,
-        rg::frame.viewport_width,
-        rg::frame.viewport_height,
-        rg::frame.cluster_count_x,
-        rg::frame.cluster_count_y,
-        rg::frame.cluster_count_z,
-        rg::frame.near_clip,
-        rg::frame.far_clip,
+        surface,
+        plight::default_lighting_options(),
     );
-
-    let count = pcls::cluster_light_count_at(cluster_id);
-    var lo       = vec3<f32>(0.0);
-    let i_max    = min(count, pcls::MAX_LIGHTS_PER_TILE);
-    for (var i = 0u; i < i_max; i++) {
-        let li = pcls::cluster_light_index_at(cluster_id, i);
-        if li >= rg::frame.light_count {
-            continue;
-        }
-        let light = rg::lights[li];
-        lo = lo + brdf::direct_radiance_specular(light, world_pos, n, v, aa_roughness, base_color, f0, one_minus_reflectivity);
-    }
-
-    let ambient = brdf::indirect_diffuse_specular(
-        shamb::ambient_probe(n),
-        base_color,
-        one_minus_reflectivity,
-        occlusion,
-    );
-    let indirect_specular = brdf::indirect_specular(n, v, aa_roughness, f0, occlusion, true);
-    let color = (ambient + indirect_specular + lo) + em;
     return vec4<f32>(apply_premultiply(color, alpha), alpha);
 }
