@@ -15,7 +15,7 @@ use crate::materials::{
     MaterialRegistry, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
     embedded_composed_stem_for_permutation,
 };
-use crate::render_graph::frame_params::MaterialBatchPacket;
+use crate::world_mesh::MaterialBatchPacket;
 
 use super::types::WorldMeshDrawItem;
 

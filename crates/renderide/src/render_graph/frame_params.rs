@@ -18,7 +18,6 @@ use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::materials::MaterialSystem;
-use crate::materials::{MaterialPassDesc, MaterialPipelineSet, RasterFrontFace};
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::occlusion::OcclusionSystem;
 use crate::occlusion::gpu::HiZGpuState;
@@ -28,7 +27,6 @@ use crate::shared::CameraClearMode;
 use super::OutputDepthMode;
 use super::blackboard::BlackboardSlot;
 use crate::world_mesh::draw_prep::CameraTransformDrawFilter;
-use crate::world_mesh::draw_prep::PipelineVariantKey;
 
 /// Per-view background clear contract propagated from host camera state.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -106,29 +104,6 @@ pub struct MsaaViews {
     pub msaa_stereo_depth_layer_views: Option<[wgpu::TextureView; 2]>,
     /// Per-eye single-layer views of stereo R32Float resolve targets.
     pub msaa_stereo_r32_layer_views: Option<[wgpu::TextureView; 2]>,
-}
-
-/// One resolved per-batch draw packet covering a contiguous range of sorted draws with the same
-/// [`crate::render_graph::MaterialDrawBatchKey`].
-///
-/// Populated by the prepare pass (parallel rayon fan-out) so the recording loop can drive
-/// pipeline and bind-group state entirely from this table — no LRU lookups during `RenderPass`.
-#[derive(Clone)]
-pub struct MaterialBatchPacket {
-    /// First draw index (into the sorted draw list) covered by this entry.
-    pub first_draw_idx: usize,
-    /// Last draw index (inclusive) covered by this entry.
-    pub last_draw_idx: usize,
-    /// Exact pipeline variant requested for this batch.
-    pub(crate) pipeline_key: PipelineVariantKey,
-    /// Front-face winding used by the resolved pipeline set.
-    pub front_face: RasterFrontFace,
-    /// Resolved `@group(1)` bind group for this batch's material, or `None` for the empty fallback.
-    pub bind_group: Option<Arc<wgpu::BindGroup>>,
-    /// Resolved pipeline set for this batch, or `None` when the pipeline is unavailable (skip draws).
-    pub pipelines: Option<MaterialPipelineSet>,
-    /// Material pass descriptors parallel to `pipelines` (zero-alloc static reference).
-    pub declared_passes: &'static [MaterialPassDesc],
 }
 
 /// Blackboard slot for per-view frame bind group and uniform buffer.

@@ -3,7 +3,7 @@
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::materials::MaterialPipelineDesc;
 use crate::materials::ShaderPermutation;
-use crate::render_graph::frame_params::MaterialBatchPacket;
+use crate::world_mesh::MaterialBatchPacket;
 use crate::world_mesh::draw_prep::{MaterialDrawResolver, WorldMeshDrawItem};
 
 /// Resolves per-batch pipeline sets and `@group(1)` bind groups for the sorted draw list.

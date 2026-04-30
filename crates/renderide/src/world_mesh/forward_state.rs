@@ -2,9 +2,9 @@
 //! pipeline state, and the blackboard slots that move them between graph passes.
 
 use crate::materials::{MaterialPipelineDesc, ShaderPermutation};
-use crate::render_graph::MaterialBatchPacket;
 use crate::render_graph::blackboard::BlackboardSlot;
 use crate::skybox::PreparedSkybox;
+use crate::world_mesh::MaterialBatchPacket;
 use crate::world_mesh::cull::WorldMeshCullProjParams;
 use crate::world_mesh::draw_prep::{InstancePlan, WorldMeshDrawCollection, WorldMeshDrawItem};
 

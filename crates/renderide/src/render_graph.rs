@@ -96,9 +96,7 @@ pub use context::{
     ResolvedImportedBuffer, ResolvedImportedTexture,
 };
 pub use error::{GraphBuildError, GraphExecuteError, RenderPassError, SetupError};
-pub use frame_params::{
-    FrameRenderParams, FrameViewClear, MaterialBatchPacket, PerViewFramePlan, PerViewFramePlanSlot,
-};
+pub use frame_params::{FrameRenderParams, FrameViewClear, PerViewFramePlan, PerViewFramePlanSlot};
 pub use ids::{GroupId, PassId};
 pub use output_depth_mode::{OutputDepthMode, OutputDepthModeError};
 pub use pass::{

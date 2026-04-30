@@ -3,6 +3,7 @@
 //! Pure-CPU subsystem that consumes scene state and Hi-Z snapshots and produces a sorted draw list
 //! for the render-graph world-mesh forward pass. Owns no GPU resources.
 
+pub mod batch_packet;
 pub(crate) mod cluster_frame;
 pub(crate) mod cull;
 pub(crate) mod cull_eval;
@@ -11,6 +12,7 @@ pub(crate) mod draw_stats;
 pub mod forward_state;
 pub(crate) mod frustum;
 
+pub use batch_packet::MaterialBatchPacket;
 pub use cluster_frame::{ClusterFrameParams, cluster_frame_params, cluster_frame_params_stereo};
 pub use cull::{
     HiZTemporalState, WorldMeshCullInput, WorldMeshCullProjParams,

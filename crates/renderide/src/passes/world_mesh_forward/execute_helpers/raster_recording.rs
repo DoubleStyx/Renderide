@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::gpu::GpuLimits;
-use crate::render_graph::frame_params::{FrameRenderParams, MaterialBatchPacket};
-use crate::world_mesh::PreparedWorldMeshForwardFrame;
+use crate::render_graph::frame_params::FrameRenderParams;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
+use crate::world_mesh::{MaterialBatchPacket, PreparedWorldMeshForwardFrame};
 
 use super::super::encode::{ForwardDrawBatch, draw_subset};
 
