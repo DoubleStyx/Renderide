@@ -65,8 +65,7 @@ impl RenderBackend {
             .materials
             .material_registry()
             .map_or(&self.null_material_router, |registry| &registry.router);
-        let pipeline_property_ids =
-            MaterialPipelinePropertyIds::new(self.materials.property_id_registry());
+        let pipeline_property_ids = self.materials.pipeline_property_resolver().resolve();
 
         {
             profiling::scope!("render::build_frame_material_cache");

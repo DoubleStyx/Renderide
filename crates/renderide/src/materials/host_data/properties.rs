@@ -96,11 +96,16 @@ pub type PropertyMapPair<'a> = (
     Option<&'a HashMap<i32, MaterialPropertyValue>>,
 );
 
+fn bump_generation(map: &mut HashMap<i32, u64>, key: i32) {
+    let g = map.entry(key).or_insert(0);
+    *g = g.wrapping_add(1);
+}
+
 /// Stores material and property-block maps from IPC batches (separate key spaces).
 #[derive(Debug, Default)]
 pub struct MaterialPropertyStore {
-    pub(super) material_properties: HashMap<i32, HashMap<i32, MaterialPropertyValue>>,
-    pub(super) property_block_properties: HashMap<i32, HashMap<i32, MaterialPropertyValue>>,
+    material_properties: HashMap<i32, HashMap<i32, MaterialPropertyValue>>,
+    property_block_properties: HashMap<i32, HashMap<i32, MaterialPropertyValue>>,
     shader_asset_by_material: HashMap<i32, i32>,
     /// Bumped on any mutation affecting [`Self::get_merged`] for that material id (embedded bind skips).
     material_mutation_generation: HashMap<i32, u64>,
@@ -154,19 +159,11 @@ impl MaterialPropertyStore {
     }
 
     fn bump_material_generation(&mut self, material_id: i32) {
-        let g = self
-            .material_mutation_generation
-            .entry(material_id)
-            .or_insert(0);
-        *g = g.wrapping_add(1);
+        bump_generation(&mut self.material_mutation_generation, material_id);
     }
 
     fn bump_property_block_generation(&mut self, block_id: i32) {
-        let g = self
-            .property_block_mutation_generation
-            .entry(block_id)
-            .or_insert(0);
-        *g = g.wrapping_add(1);
+        bump_generation(&mut self.property_block_mutation_generation, block_id);
     }
 
     /// Sets a property on a host **material** asset.

@@ -2,13 +2,13 @@
 
 use std::sync::Arc;
 
+use super::super::bind_kind::TextureBindKind;
 use super::super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::super::layout::{StemMaterialLayout, stem_hash};
 use super::super::texture_pools::EmbeddedTexturePools;
 use super::super::texture_resolve::{
-    ResolvedTextureBinding, primary_texture_2d_asset_id, resolved_texture_binding_for_host,
-    sampler_from_cubemap_state, sampler_from_state, sampler_from_texture3d_state,
-    texture_bind_signature, texture_property_ids_for_binding,
+    ResolvedTextureBinding, create_sampler, primary_texture_2d_asset_id,
+    resolved_texture_binding_for_host, texture_bind_signature, texture_property_ids_for_binding,
 };
 use super::cache::{EmbeddedSamplerCacheKey, MaterialBindCacheKey};
 use super::uniform::MaterialUniformCacheKey;
@@ -144,7 +144,7 @@ impl EmbeddedMaterialBindResources {
                     keepalive_views.push(tex_view);
                 }
                 wgpu::BindingType::Sampler(_) => {
-                    let tex_binding = super::sampler_pairs_texture_binding(b);
+                    let tex_binding = super::assemble::sampler_pairs_texture_binding(b);
                     let host_name = layout
                         .reflected
                         .material_group1_names
@@ -186,10 +186,10 @@ impl EmbeddedMaterialBindResources {
         view_dimension: wgpu::TextureViewDimension,
     ) -> Arc<wgpu::TextureView> {
         match view_dimension {
-            wgpu::TextureViewDimension::D3 => self.white_texture3d_view.clone(),
+            wgpu::TextureViewDimension::D3 => self.white_3d.view.clone(),
             //review: keep a cube fallback here; wgpu rejects a 2D white texture for texture_cube bindings.
-            wgpu::TextureViewDimension::Cube => self.white_cubemap_view.clone(),
-            _ => self.white_texture_view.clone(),
+            wgpu::TextureViewDimension::Cube => self.white_cube.view.clone(),
+            _ => self.white_2d.view.clone(),
         }
     }
 
@@ -305,7 +305,12 @@ impl EmbeddedMaterialBindResources {
                             tex.mip_levels_resident,
                         );
                         self.cached_sampler(key, || {
-                            sampler_from_state(&self.device, &tex.sampler, tex.mip_levels_resident)
+                            create_sampler(
+                                &self.device,
+                                &tex.sampler,
+                                TextureBindKind::Tex2D,
+                                tex.mip_levels_resident,
+                            )
                         })
                     })
                 }
@@ -320,9 +325,10 @@ impl EmbeddedMaterialBindResources {
                             tex.mip_levels_resident,
                         );
                         self.cached_sampler(key, || {
-                            sampler_from_texture3d_state(
+                            create_sampler(
                                 &self.device,
                                 &tex.sampler,
+                                TextureBindKind::Tex3D,
                                 tex.mip_levels_resident,
                             )
                         })
@@ -337,9 +343,10 @@ impl EmbeddedMaterialBindResources {
                         let key =
                             EmbeddedSamplerCacheKey::cubemap(&tex.sampler, tex.mip_levels_resident);
                         self.cached_sampler(key, || {
-                            sampler_from_cubemap_state(
+                            create_sampler(
                                 &self.device,
                                 &tex.sampler,
+                                TextureBindKind::Cube,
                                 tex.mip_levels_resident,
                             )
                         })
@@ -353,7 +360,7 @@ impl EmbeddedMaterialBindResources {
                     pools.render_texture.get(asset_id).map(|tex| {
                         let key = EmbeddedSamplerCacheKey::texture2d(&tex.sampler, 1);
                         self.cached_sampler(key, || {
-                            sampler_from_state(&self.device, &tex.sampler, 1)
+                            create_sampler(&self.device, &tex.sampler, TextureBindKind::Tex2D, 1)
                         })
                     })
                 }
@@ -361,7 +368,9 @@ impl EmbeddedMaterialBindResources {
             ResolvedTextureBinding::VideoTexture { asset_id } => {
                 pools.video_texture.get(asset_id).map(|tex| {
                     let key = EmbeddedSamplerCacheKey::texture2d(&tex.sampler, 1);
-                    self.cached_sampler(key, || sampler_from_state(&self.device, &tex.sampler, 1))
+                    self.cached_sampler(key, || {
+                        create_sampler(&self.device, &tex.sampler, TextureBindKind::Tex2D, 1)
+                    })
                 })
             }
         };

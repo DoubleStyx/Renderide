@@ -18,7 +18,7 @@ use crate::backend::cluster_gpu::{CLUSTER_COUNT_Z, ClusterBufferCache, ClusterBu
 use crate::backend::light_gpu::{GpuLight, MAX_LIGHTS};
 use crate::gpu::GpuLimits;
 use crate::gpu::frame_globals::{FrameGpuUniforms, SkyboxSpecularUniformParams};
-use crate::materials::embedded::texture_resolve::{sampler_from_cubemap_state, sampler_from_state};
+use crate::materials::embedded::texture_resolve::{TextureBindKind, create_sampler};
 
 use super::frame_gpu_error::FrameGpuInitError;
 pub use empty_material::{EmptyMaterialBindGroup, empty_material_bind_group_layout};
@@ -632,9 +632,10 @@ impl FrameGpuResources {
 
         match source {
             SkyboxSpecularEnvironmentSource::Cubemap(source) => {
-                let sampler = Arc::new(sampler_from_cubemap_state(
+                let sampler = Arc::new(create_sampler(
                     device,
                     &source.sampler,
+                    TextureBindKind::Cube,
                     source.mip_levels_resident,
                 ));
                 self.skybox_specular_view = source.view;
@@ -645,9 +646,10 @@ impl FrameGpuResources {
                     self.skybox_specular_equirect_fallback_sampler.clone();
             }
             SkyboxSpecularEnvironmentSource::GeneratedCubemap(source) => {
-                let sampler = Arc::new(sampler_from_cubemap_state(
+                let sampler = Arc::new(create_sampler(
                     device,
                     &source.sampler,
+                    TextureBindKind::Cube,
                     source.mip_levels_resident,
                 ));
                 self.skybox_specular_view = source.view;
@@ -658,9 +660,10 @@ impl FrameGpuResources {
                     self.skybox_specular_equirect_fallback_sampler.clone();
             }
             SkyboxSpecularEnvironmentSource::Projection360Equirect(source) => {
-                let sampler = Arc::new(sampler_from_state(
+                let sampler = Arc::new(create_sampler(
                     device,
                     &source.sampler,
+                    TextureBindKind::Tex2D,
                     source.mip_levels_resident,
                 ));
                 self.skybox_specular_view = self.skybox_specular_fallback_view.clone();

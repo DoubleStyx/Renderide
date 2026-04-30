@@ -12,7 +12,7 @@ use crate::materials::raster_pipeline::{
 };
 use crate::materials::{
     MaterialBlendMode, MaterialRenderState, RasterFrontFace, ReflectedRasterLayout,
-    materialized_pass_for_blend_mode,
+    SnapshotRequirements, materialized_pass_for_blend_mode,
 };
 
 /// Host material identity and blend/render state for embedded raster pipeline creation (separate from WGSL build inputs).
@@ -60,26 +60,61 @@ impl EmbeddedStemMetadata {
         self.vs_max_vertex_location()
             .is_some_and(|loc| loc >= min_location)
     }
+}
 
-    /// Whether reflection found an intersection-pass marker field.
-    fn requires_intersection_pass(&self) -> bool {
-        self.reflected
-            .as_ref()
-            .is_some_and(|r| r.requires_intersection_pass)
+/// Reflection-derived metadata snapshot for one composed embedded material target.
+///
+/// Hot paths (draw collection, pre-warm, pipeline setup) call [`Self::for_stem`] once and then
+/// query as many flags as they need without re-running naga reflection or hashing through the
+/// metadata cache. The free `embedded_stem_*` / `embedded_wgsl_*` functions are thin shims over
+/// this type.
+#[derive(Clone, Debug)]
+pub struct EmbeddedStemQuery {
+    metadata: EmbeddedStemMetadata,
+}
+
+impl EmbeddedStemQuery {
+    /// Builds a query for the composed target of `(base_stem, permutation)`.
+    pub fn for_stem(base_stem: &str, permutation: ShaderPermutation) -> Self {
+        Self {
+            metadata: embedded_stem_metadata(base_stem, permutation),
+        }
     }
 
-    /// Whether reflection found a live scene-depth snapshot binding.
-    fn uses_scene_depth_snapshot(&self) -> bool {
-        self.reflected
-            .as_ref()
-            .is_some_and(|r| r.uses_scene_depth_snapshot)
+    /// `true` when `vs_main` uses `@location(2)` or higher (UV0 stream).
+    pub fn needs_uv0_stream(&self) -> bool {
+        self.metadata.needs_vertex_location(2)
     }
 
-    /// Whether reflection found a live scene-color snapshot binding.
-    fn uses_scene_color_snapshot(&self) -> bool {
-        self.reflected
+    /// `true` when `vs_main` uses `@location(3)` or higher (color stream).
+    pub fn needs_color_stream(&self) -> bool {
+        self.metadata.needs_vertex_location(3)
+    }
+
+    /// `true` when `vs_main` uses `@location(4)` or higher (extended vertex streams).
+    pub fn needs_extended_vertex_streams(&self) -> bool {
+        self.metadata.needs_vertex_location(4)
+    }
+
+    /// Number of raster passes that will be submitted for one embedded draw batch.
+    pub fn pipeline_pass_count(&self) -> usize {
+        self.metadata.pass_count
+    }
+
+    /// `true` when any declared pass has a blend state (transparent material).
+    pub fn uses_alpha_blending(&self) -> bool {
+        self.metadata.uses_alpha_blending
+    }
+
+    /// Unified scene-snapshot requirement flags, or [`SnapshotRequirements::default`] when the
+    /// stem failed to reflect.
+    pub fn snapshot_requirements(&self) -> SnapshotRequirements {
+        self.metadata
+            .reflected
             .as_ref()
-            .is_some_and(|r| r.uses_scene_color_snapshot)
+            .map_or(SnapshotRequirements::default(), |r| {
+                r.snapshot_requirements()
+            })
     }
 }
 
@@ -117,14 +152,8 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
 }
 
 /// `true` when composed embedded WGSL's `vs_main` uses `@location(2)` or higher (UV0 vertex stream).
-///
-/// Uses the same embedded source and reflection as the embedded raster pipeline for the given
-/// [`ShaderPermutation`], independent of [`crate::materials::EmbeddedMaterialBindResources`].
-///
-/// Results are memoized per `(base_stem, permutation)` so draw collection and other hot paths do not
-/// re-run naga reflection once per mesh draw.
 pub fn embedded_stem_needs_uv0_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
-    embedded_stem_metadata(base_stem, permutation).needs_vertex_location(2)
+    EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv0_stream()
 }
 
 /// `true` when `vs_main` reflection reports a highest vertex `@location` index ≥ 2 (UV at `location(2)`).
@@ -134,7 +163,7 @@ pub fn embedded_wgsl_needs_uv0_stream(wgsl_source: &str) -> bool {
 
 /// `true` when composed embedded WGSL's `vs_main` uses `@location(3)` or higher (vertex color stream).
 pub fn embedded_stem_needs_color_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
-    embedded_stem_metadata(base_stem, permutation).needs_vertex_location(3)
+    EmbeddedStemQuery::for_stem(base_stem, permutation).needs_color_stream()
 }
 
 /// `true` when `vs_main` reflection reports a highest vertex `@location` index >= 3 (color at `location(3)`).
@@ -147,7 +176,7 @@ pub fn embedded_stem_needs_extended_vertex_streams(
     base_stem: &str,
     permutation: ShaderPermutation,
 ) -> bool {
-    embedded_stem_metadata(base_stem, permutation).needs_vertex_location(4)
+    EmbeddedStemQuery::for_stem(base_stem, permutation).needs_extended_vertex_streams()
 }
 
 /// `true` when `vs_main` reflection reports a highest vertex `@location` index >= 4.
@@ -160,7 +189,7 @@ pub fn embedded_wgsl_needs_extended_vertex_streams(wgsl_source: &str) -> bool {
 
 /// Number of raster passes that will be submitted for one embedded draw batch.
 pub fn embedded_stem_pipeline_pass_count(base_stem: &str, permutation: ShaderPermutation) -> usize {
-    embedded_stem_metadata(base_stem, permutation).pass_count
+    EmbeddedStemQuery::for_stem(base_stem, permutation).pipeline_pass_count()
 }
 
 /// `true` when reflection reports `_IntersectColor` in the material uniform (intersection forward subpass).
@@ -168,14 +197,14 @@ pub fn embedded_wgsl_requires_intersection_pass(wgsl_source: &str) -> bool {
     crate::materials::wgsl_reflect::reflect_raster_material_requires_intersection_pass(wgsl_source)
 }
 
-/// `true` when the composed embedded target uses an intersection subpass (reflection of `_IntersectColor`).
-///
-/// Memoized per `(base_stem, permutation)` like [`embedded_stem_needs_uv0_stream`].
+/// `true` when the composed embedded target uses an intersection subpass.
 pub fn embedded_stem_requires_intersection_pass(
     base_stem: &str,
     permutation: ShaderPermutation,
 ) -> bool {
-    embedded_stem_metadata(base_stem, permutation).requires_intersection_pass()
+    EmbeddedStemQuery::for_stem(base_stem, permutation)
+        .snapshot_requirements()
+        .requires_intersection_pass
 }
 
 /// `true` when reflection reports that the WGSL declares a scene-depth snapshot binding.
@@ -184,13 +213,13 @@ pub fn embedded_wgsl_uses_scene_depth_snapshot(wgsl_source: &str) -> bool {
 }
 
 /// `true` when the composed embedded target declares a scene-depth snapshot binding.
-///
-/// Memoized per `(base_stem, permutation)` like [`embedded_stem_needs_uv0_stream`].
 pub fn embedded_stem_uses_scene_depth_snapshot(
     base_stem: &str,
     permutation: ShaderPermutation,
 ) -> bool {
-    embedded_stem_metadata(base_stem, permutation).uses_scene_depth_snapshot()
+    EmbeddedStemQuery::for_stem(base_stem, permutation)
+        .snapshot_requirements()
+        .uses_scene_depth
 }
 
 /// `true` when reflection reports that the WGSL declares a scene-color snapshot binding.
@@ -199,13 +228,13 @@ pub fn embedded_wgsl_uses_scene_color_snapshot(wgsl_source: &str) -> bool {
 }
 
 /// `true` when the composed embedded target declares a scene-color snapshot binding.
-///
-/// Memoized per `(base_stem, permutation)` like [`embedded_stem_needs_uv0_stream`].
 pub fn embedded_stem_uses_scene_color_snapshot(
     base_stem: &str,
     permutation: ShaderPermutation,
 ) -> bool {
-    embedded_stem_metadata(base_stem, permutation).uses_scene_color_snapshot()
+    EmbeddedStemQuery::for_stem(base_stem, permutation)
+        .snapshot_requirements()
+        .uses_scene_color
 }
 
 /// Composed target stem for an embedded base stem (e.g. `unlit_default` → `unlit_multiview`).
@@ -275,7 +304,7 @@ pub(crate) fn create_embedded_render_pipelines(
 /// Returns whether the embedded material stem declares alpha blending (any `//#pass` directive
 /// with non-None blend state). Memoized per base stem.
 pub fn embedded_stem_uses_alpha_blending(base_stem: &str) -> bool {
-    embedded_stem_metadata(base_stem, ShaderPermutation(0)).uses_alpha_blending
+    EmbeddedStemQuery::for_stem(base_stem, ShaderPermutation(0)).uses_alpha_blending()
 }
 
 #[cfg(test)]

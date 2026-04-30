@@ -135,23 +135,7 @@ fn texture_property_aliases(name: &str) -> &'static [&'static str] {
     }
 }
 
-pub(crate) fn shader_writer_unescaped_property_name(name: &str) -> &str {
-    let name = name
-        .split_once("X_naga_oil_mod_")
-        .map_or(name, |(base, _)| base);
-    let Some(stripped) = name.strip_suffix('_') else {
-        return name;
-    };
-    if stripped
-        .chars()
-        .next_back()
-        .is_some_and(|c| c.is_ascii_digit())
-    {
-        stripped
-    } else {
-        name
-    }
-}
+pub(crate) use crate::materials::shader_writer::unescape_property_name as shader_writer_unescaped_property_name;
 
 impl StemEmbeddedPropertyIds {
     pub(crate) fn build(
@@ -259,37 +243,9 @@ pub(crate) fn build_stem_material_layout(
 mod tests {
     use std::sync::Arc;
 
-    use super::{
-        EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds, shader_writer_unescaped_property_name,
-    };
+    use super::{EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds};
     use crate::materials::host_data::PropertyIdRegistry;
     use crate::materials::reflect_raster_material_wgsl;
-
-    #[test]
-    fn shader_writer_escape_strips_digit_suffix_underscore() {
-        assert_eq!(shader_writer_unescaped_property_name("_Tint0_"), "_Tint0");
-        assert_eq!(shader_writer_unescaped_property_name("_Color1_"), "_Color1");
-        assert_eq!(
-            shader_writer_unescaped_property_name("_MainTex_ST"),
-            "_MainTex_ST"
-        );
-    }
-
-    #[test]
-    fn shader_writer_escape_strips_naga_oil_module_suffix() {
-        assert_eq!(
-            shader_writer_unescaped_property_name(
-                "_MainTexX_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ4GSZLYMU5DU5DPN5XDEX"
-            ),
-            "_MainTex"
-        );
-        assert_eq!(
-            shader_writer_unescaped_property_name(
-                "_Tint0_X_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ4GSZLYMU5DU5DPN5XDEX"
-            ),
-            "_Tint0"
-        );
-    }
 
     #[test]
     fn xiexe_module_textures_resolve_to_unmangled_property_ids() {

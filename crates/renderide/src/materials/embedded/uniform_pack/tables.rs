@@ -30,84 +30,75 @@ pub(super) fn inferred_keyword_float_f32(
     }
 
     let kw = ids.shared.as_ref();
-    match field_name {
-        "_ALPHATEST_ON" | "_ALPHATEST" | "_ALPHACLIP" => {
-            return Some(if alpha_test_on_inferred(store, lookup, kw) {
-                1.0
-            } else {
-                0.0
-            });
-        }
-        "_ALPHABLEND_ON" => {
-            return Some(if alpha_blend_on_inferred(store, lookup, kw) {
-                1.0
-            } else {
-                0.0
-            });
-        }
-        "_ALPHAPREMULTIPLY_ON" => {
-            return Some(if alpha_premultiply_on_inferred(store, lookup, kw) {
-                1.0
-            } else {
-                0.0
-            });
-        }
-        "OUTSIDE_CLIP" | "OUTSIDE_COLOR" | "OUTSIDE_CLAMP" | "_PERSPECTIVE" | "CUBEMAP"
-        | "CUBEMAP_LOD" | "SECOND_TEXTURE" | "_OFFSET" | "_CLAMP_INTENSITY" | "TINT_TEX_DIRECT"
-        | "TINT_TEX_LERP" => {
-            if let Some(value) = projection360_keyword_inferred(field_name, store, lookup, ids) {
-                return Some(value);
-            }
-        }
-        "_MUL_RGB_BY_ALPHA" => {
-            return Some(if mul_rgb_by_alpha_inferred(store, lookup, kw) {
-                1.0
-            } else {
-                0.0
-            });
-        }
-        _ => {}
+    if let Some(value) = blend_keyword_inferred(field_name, store, lookup, kw) {
+        return Some(value);
+    }
+    if is_projection360_keyword(field_name)
+        && let Some(value) = projection360_keyword_inferred(field_name, store, lookup, ids)
+    {
+        return Some(value);
     }
 
-    let inferred = match field_name {
-        "_LERPTEX" => texture_property_present_pids(store, lookup, &[kw.lerp_tex]),
-        "_ALBEDOTEX" => texture_property_present_pids(store, lookup, &[kw.main_tex, kw.main_tex1]),
-        "_EMISSION" | "_EMISSIONTEX" => {
-            texture_property_present_pids(store, lookup, &[kw.emission_map, kw.emission_map1])
-        }
-        "_NORMALMAP" => texture_property_present_pids(
-            store,
-            lookup,
-            &[kw.normal_map, kw.normal_map1, kw.bump_map],
-        ),
-        "_SPECULARMAP" => texture_property_present_pids(
-            store,
-            lookup,
-            &[kw.specular_map, kw.specular_map1, kw.spec_gloss_map],
-        ),
-        "_METALLICGLOSSMAP" => {
-            texture_property_present_pids(store, lookup, &[kw.metallic_gloss_map])
-        }
-        "_METALLICMAP" => texture_property_present_pids(
-            store,
-            lookup,
-            &[kw.metallic_map, kw.metallic_map1, kw.metallic_gloss_map],
-        ),
-        "_DETAIL_MULX2" => texture_property_present_pids(
-            store,
-            lookup,
-            &[kw.detail_albedo_map, kw.detail_normal_map, kw.detail_mask],
-        ),
-        "_PARALLAXMAP" => texture_property_present_pids(store, lookup, &[kw.parallax_map]),
-        "_OCCLUSION" => texture_property_present_pids(
-            store,
-            lookup,
-            &[kw.occlusion, kw.occlusion1, kw.occlusion_map],
-        ),
-        _ if is_keyword_like_field(field_name) => false,
-        _ => return None,
+    let inferred = match texture_keyword_pids(field_name, kw) {
+        Some(pids) => texture_property_present_pids(store, lookup, &pids),
+        None if is_keyword_like_field(field_name) => false,
+        None => return None,
     };
     Some(if inferred { 1.0 } else { 0.0 })
+}
+
+/// True for any keyword name that participates in `Projection360` keyword inference.
+fn is_projection360_keyword(field_name: &str) -> bool {
+    matches!(
+        field_name,
+        "OUTSIDE_CLIP"
+            | "OUTSIDE_COLOR"
+            | "OUTSIDE_CLAMP"
+            | "_PERSPECTIVE"
+            | "CUBEMAP"
+            | "CUBEMAP_LOD"
+            | "SECOND_TEXTURE"
+            | "_OFFSET"
+            | "_CLAMP_INTENSITY"
+            | "TINT_TEX_DIRECT"
+            | "TINT_TEX_LERP"
+    )
+}
+
+/// Resolves alpha-test/alpha-blend/alpha-premultiply/`_MUL_RGB_BY_ALPHA` keywords from host blend
+/// state. Returns `None` for unrelated keyword names.
+fn blend_keyword_inferred(
+    field_name: &str,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    kw: &EmbeddedSharedKeywordIds,
+) -> Option<f32> {
+    let value = match field_name {
+        "_ALPHATEST_ON" | "_ALPHATEST" | "_ALPHACLIP" => alpha_test_on_inferred(store, lookup, kw),
+        "_ALPHABLEND_ON" => alpha_blend_on_inferred(store, lookup, kw),
+        "_ALPHAPREMULTIPLY_ON" => alpha_premultiply_on_inferred(store, lookup, kw),
+        "_MUL_RGB_BY_ALPHA" => mul_rgb_by_alpha_inferred(store, lookup, kw),
+        _ => return None,
+    };
+    Some(if value { 1.0 } else { 0.0 })
+}
+
+/// Returns the host property ids whose presence drives the texture-presence keyword for
+/// `field_name`, or `None` for keywords not driven by texture presence.
+fn texture_keyword_pids(field_name: &str, kw: &EmbeddedSharedKeywordIds) -> Option<Vec<i32>> {
+    Some(match field_name {
+        "_LERPTEX" => vec![kw.lerp_tex],
+        "_ALBEDOTEX" => vec![kw.main_tex, kw.main_tex1],
+        "_EMISSION" | "_EMISSIONTEX" => vec![kw.emission_map, kw.emission_map1],
+        "_NORMALMAP" => vec![kw.normal_map, kw.normal_map1, kw.bump_map],
+        "_SPECULARMAP" => vec![kw.specular_map, kw.specular_map1, kw.spec_gloss_map],
+        "_METALLICGLOSSMAP" => vec![kw.metallic_gloss_map],
+        "_METALLICMAP" => vec![kw.metallic_map, kw.metallic_map1, kw.metallic_gloss_map],
+        "_DETAIL_MULX2" => vec![kw.detail_albedo_map, kw.detail_normal_map, kw.detail_mask],
+        "_PARALLAXMAP" => vec![kw.parallax_map],
+        "_OCCLUSION" => vec![kw.occlusion, kw.occlusion1, kw.occlusion_map],
+        _ => return None,
+    })
 }
 
 /// Discriminant of [`crate::shared::MaterialRenderType::TransparentCutout`] on the wire.

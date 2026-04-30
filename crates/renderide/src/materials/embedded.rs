@@ -1,5 +1,6 @@
 //! Embedded raster materials: WGSL reflection, texture resolution, uniform packing, and `@group(1)` bind groups.
 
+mod bind_kind;
 mod embedded_material_bind_error;
 mod layout;
 mod material_bind;

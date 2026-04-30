@@ -9,9 +9,12 @@
 //! `RECTCLIP`, case variants) are interpreted the same way FrooxEngine/Unity keyword bindings are—without
 //! hard-coding a particular shader stem in the draw pass.
 
+mod assemble;
 mod cache;
 mod resolve;
+mod texture_signature;
 mod uniform;
+mod white_texture;
 
 pub(crate) use cache::MaterialBindCacheKey;
 
@@ -21,6 +24,7 @@ use std::sync::Arc;
 use lru::LruCache;
 use parking_lot::Mutex;
 
+use super::bind_kind::TextureBindKind;
 use super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::layout::{EmbeddedSharedKeywordIds, StemMaterialLayout};
 use super::texture_pools::EmbeddedTexturePools;
@@ -29,23 +33,23 @@ use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
 };
 
+use assemble::build_embedded_bind_group_entries;
 use cache::{
     EmbeddedSamplerCacheKey, TextureDebugCacheKey, max_cached_embedded_bind_groups,
     max_cached_embedded_samplers, max_cached_embedded_uniforms, max_cached_texture_debug_ids,
 };
+use texture_signature::compute_uniform_texture_state_signature;
 use uniform::{CachedUniformEntry, EmbeddedUniformBufferRequest, MaterialUniformCacheKey};
+use white_texture::{WhiteTexture, create_white, upload_white};
 
 use resolve::EmbeddedBindInputResolution;
 
 /// GPU resources shared by embedded material bind groups (layouts, default texture, sampler).
 pub struct EmbeddedMaterialBindResources {
     device: Arc<wgpu::Device>,
-    white_texture: Arc<wgpu::Texture>,
-    white_texture_view: Arc<wgpu::TextureView>,
-    white_texture3d: Arc<wgpu::Texture>,
-    white_texture3d_view: Arc<wgpu::TextureView>,
-    white_cubemap_texture: Arc<wgpu::Texture>,
-    white_cubemap_view: Arc<wgpu::TextureView>,
+    white_2d: WhiteTexture,
+    white_3d: WhiteTexture,
+    white_cube: WhiteTexture,
     default_sampler: Arc<wgpu::Sampler>,
     property_registry: Arc<PropertyIdRegistry>,
     shared_keyword_ids: Arc<EmbeddedSharedKeywordIds>,
@@ -62,63 +66,9 @@ impl EmbeddedMaterialBindResources {
         device: Arc<wgpu::Device>,
         property_registry: Arc<PropertyIdRegistry>,
     ) -> Result<Self, EmbeddedMaterialBindError> {
-        let white_texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("embedded_default_white"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        }));
-        let white_texture_view =
-            Arc::new(white_texture.create_view(&wgpu::TextureViewDescriptor::default()));
-        let white_texture3d = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("embedded_default_white_3d"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        }));
-        let white_texture3d_view =
-            Arc::new(white_texture3d.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("embedded_default_white_3d_view"),
-                dimension: Some(wgpu::TextureViewDimension::D3),
-                ..Default::default()
-            }));
-        let white_cubemap_texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("embedded_default_white_cube"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 6,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        }));
-        let white_cubemap_view = Arc::new(white_cubemap_texture.create_view(
-            &wgpu::TextureViewDescriptor {
-                label: Some("embedded_default_white_cube_view"),
-                dimension: Some(wgpu::TextureViewDimension::Cube),
-                ..Default::default()
-            },
-        ));
+        let white_2d = create_white(device.as_ref(), TextureBindKind::Tex2D);
+        let white_3d = create_white(device.as_ref(), TextureBindKind::Tex3D);
+        let white_cube = create_white(device.as_ref(), TextureBindKind::Cube);
 
         let default_sampler = Arc::new(default_embedded_sampler(device.as_ref()));
 
@@ -127,12 +77,9 @@ impl EmbeddedMaterialBindResources {
 
         Ok(Self {
             device,
-            white_texture,
-            white_texture_view,
-            white_texture3d,
-            white_texture3d_view,
-            white_cubemap_texture,
-            white_cubemap_view,
+            white_2d,
+            white_3d,
+            white_cube,
             default_sampler,
             property_registry,
             shared_keyword_ids,
@@ -144,68 +91,11 @@ impl EmbeddedMaterialBindResources {
         })
     }
 
-    /// Uploads white texel into the placeholder texture (call once after creation with queue).
+    /// Uploads white texel into every placeholder texture (call once after creation with queue).
     pub fn write_default_white(&self, queue: &wgpu::Queue) {
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: self.white_texture.as_ref(),
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[255u8, 255, 255, 255],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: self.white_texture3d.as_ref(),
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[255u8, 255, 255, 255],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: self.white_cubemap_texture.as_ref(),
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[
-                255u8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-                255, 255, 255, 255, 255, 255, 255, 255,
-            ],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 6,
-            },
-        );
+        upload_white(queue, &self.white_2d, TextureBindKind::Tex2D);
+        upload_white(queue, &self.white_3d, TextureBindKind::Tex3D);
+        upload_white(queue, &self.white_cube, TextureBindKind::Cube);
     }
 
     /// Returns or builds a `@group(1)` bind group for the composed embedded `stem` (e.g. `unlit_default`).
@@ -346,127 +236,4 @@ impl EmbeddedMaterialBindResources {
         self.stem_layout(stem)
             .map(|layout| layout.bind_group_layout.clone())
     }
-}
-
-/// Second pass: assemble [`wgpu::BindGroupEntry`] list matching reflected material entry order.
-fn build_embedded_bind_group_entries<'a>(
-    layout: &'a Arc<StemMaterialLayout>,
-    uniform_buf: &'a Arc<wgpu::Buffer>,
-    keepalive_views: &'a [Arc<wgpu::TextureView>],
-    keepalive_samplers: &'a [Arc<wgpu::Sampler>],
-) -> Result<Vec<wgpu::BindGroupEntry<'a>>, EmbeddedMaterialBindError> {
-    profiling::scope!("materials::embedded_build_bind_entries");
-    let mut view_i = 0usize;
-    let mut samp_i = 0usize;
-    let mut entries: Vec<wgpu::BindGroupEntry<'a>> =
-        Vec::with_capacity(layout.reflected.material_entries.len());
-    for entry in &layout.reflected.material_entries {
-        let b = entry.binding;
-        match entry.ty {
-            wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                ..
-            } => {
-                entries.push(wgpu::BindGroupEntry {
-                    binding: b,
-                    resource: uniform_buf.as_entire_binding(),
-                });
-            }
-            wgpu::BindingType::Texture { .. } => {
-                let tv = keepalive_views
-                    .get(view_i)
-                    .ok_or_else(|| format!("internal: texture view index {view_i}"))?;
-                view_i += 1;
-                entries.push(wgpu::BindGroupEntry {
-                    binding: b,
-                    resource: wgpu::BindingResource::TextureView(tv.as_ref()),
-                });
-            }
-            wgpu::BindingType::Sampler(_) => {
-                let s = keepalive_samplers
-                    .get(samp_i)
-                    .ok_or_else(|| format!("internal: sampler index {samp_i}"))?;
-                samp_i += 1;
-                entries.push(wgpu::BindGroupEntry {
-                    binding: b,
-                    resource: wgpu::BindingResource::Sampler(s.as_ref()),
-                });
-            }
-            _ => {
-                return Err(EmbeddedMaterialBindError::from(format!(
-                    "unsupported binding type for @binding({b})"
-                )));
-            }
-        }
-    }
-    Ok(entries)
-}
-
-#[inline]
-pub(super) fn sampler_pairs_texture_binding(sampler_binding: u32) -> u32 {
-    sampler_binding.saturating_sub(1)
-}
-
-/// Hashes current texture metadata used by reflected material-uniform packing.
-///
-/// Uniform packing sources `_<Tex>_LodBias` and `_<Tex>_StorageVInverted` fields from texture
-/// state, but [`MaterialPropertyStore::mutation_generation`] does not bump when textures update,
-/// so this signature drives uniform-buffer refresh on those metadata changes.
-fn compute_uniform_texture_state_signature(
-    layout: &Arc<StemMaterialLayout>,
-    pools: &EmbeddedTexturePools<'_>,
-    store: &MaterialPropertyStore,
-    lookup: MaterialPropertyLookupIds,
-    primary_texture_2d: i32,
-) -> u64 {
-    use ahash::AHasher;
-    use std::hash::{Hash, Hasher};
-
-    use super::texture_resolve::{
-        ResolvedTextureBinding, resolved_texture_binding_for_host, texture_property_ids_for_binding,
-    };
-
-    let mut h = AHasher::default();
-    for entry in &layout.reflected.material_entries {
-        if !matches!(entry.ty, wgpu::BindingType::Texture { .. }) {
-            continue;
-        }
-        let Some(name) = layout.reflected.material_group1_names.get(&entry.binding) else {
-            continue;
-        };
-        let pids = texture_property_ids_for_binding(layout.ids.as_ref(), entry.binding);
-        if pids.is_empty() {
-            continue;
-        }
-        let binding = resolved_texture_binding_for_host(
-            name.as_str(),
-            pids,
-            primary_texture_2d,
-            store,
-            lookup,
-        );
-        entry.binding.hash(&mut h);
-        let (bias, storage_v_inverted): (f32, bool) = match binding {
-            ResolvedTextureBinding::Texture2D { asset_id } => {
-                pools.texture.get(asset_id).map_or((0.0, false), |t| {
-                    (t.sampler.mipmap_bias, t.storage_v_inverted)
-                })
-            }
-            ResolvedTextureBinding::Texture3D { asset_id } => pools
-                .texture3d
-                .get(asset_id)
-                .map_or((0.0, false), |t| (t.sampler.mipmap_bias, false)),
-            ResolvedTextureBinding::Cubemap { asset_id } => {
-                pools.cubemap.get(asset_id).map_or((0.0, false), |t| {
-                    (t.sampler.mipmap_bias, t.storage_v_inverted)
-                })
-            }
-            ResolvedTextureBinding::RenderTexture { .. } => (0.0, true),
-            ResolvedTextureBinding::VideoTexture { .. } => (0.0, false),
-            ResolvedTextureBinding::None => (0.0, false),
-        };
-        bias.to_bits().hash(&mut h);
-        storage_v_inverted.hash(&mut h);
-    }
-    h.finish()
 }

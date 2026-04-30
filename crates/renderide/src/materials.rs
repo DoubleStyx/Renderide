@@ -86,12 +86,15 @@ mod material_property_binding;
 mod null_pipeline;
 mod pipeline_build_error;
 mod pipeline_kind;
+mod pipeline_property_resolver;
 pub(crate) mod raster_pipeline;
 mod registry;
 mod render_state;
 mod resolve_raster;
 mod router;
 pub mod shader_permutation;
+mod shader_writer;
+mod snapshot_requirements;
 mod system;
 mod wgsl;
 mod wgsl_reflect;
@@ -109,7 +112,7 @@ pub use embedded::{
 
 /// Unity shader asset names → embedded WGSL stems and permutation flags.
 pub use embedded_raster_pipeline::{
-    embedded_composed_stem_for_permutation, embedded_stem_needs_color_stream,
+    EmbeddedStemQuery, embedded_composed_stem_for_permutation, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream,
     embedded_stem_pipeline_pass_count, embedded_stem_requires_intersection_pass,
     embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
@@ -149,6 +152,10 @@ pub use wgsl_reflect::{
 /// Null/fallback raster family used when host pipeline build fails.
 pub use null_pipeline::NullFamily;
 
+/// Cached resolver that interns [`MaterialPipelinePropertyIds`] once per
+/// [`crate::materials::host_data::PropertyIdRegistry`].
+pub use pipeline_property_resolver::PipelinePropertyResolver;
+
 /// Shader route table, optional material asset registry, and WGSL composition patches.
 pub use registry::MaterialRegistry;
 pub use resolve_raster::resolve_raster_pipeline;
@@ -156,5 +163,8 @@ pub use router::{MaterialRouter, ShaderRouteEntry};
 
 /// Static shader feature flags (multiview, etc.) keyed into the pipeline cache.
 pub use shader_permutation::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
+
+/// Unified scene-snapshot requirement flags surfaced by reflected raster materials.
+pub use snapshot_requirements::SnapshotRequirements;
 pub use system::{MAX_PENDING_MATERIAL_BATCHES, MaterialSystem};
 pub use wgsl::{WgslPatch, compose_wgsl};

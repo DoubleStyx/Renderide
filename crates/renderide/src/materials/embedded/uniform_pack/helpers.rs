@@ -39,20 +39,7 @@ pub(super) fn first_float_by_pids(
         })
 }
 
-pub(super) fn shader_writer_unescaped_field_name(field_name: &str) -> &str {
-    let Some(stripped) = field_name.strip_suffix('_') else {
-        return field_name;
-    };
-    if stripped
-        .chars()
-        .next_back()
-        .is_some_and(|c| c.is_ascii_digit())
-    {
-        stripped
-    } else {
-        field_name
-    }
-}
+pub(super) use crate::materials::shader_writer::strip_writer_digit_escape as shader_writer_unescaped_field_name;
 
 pub(super) fn default_vec4_for_field(field_name: &str) -> [f32; 4] {
     let field_name = shader_writer_unescaped_field_name(field_name);
@@ -132,18 +119,6 @@ mod tests {
             material_asset_id: mat,
             mesh_property_block_slot0: None,
         }
-    }
-
-    #[test]
-    fn shader_writer_unescaped_strips_trailing_underscore_after_digit() {
-        // `Tex0_` is the escaped form of Unity `_Tex0` — writer appends `_` after digit suffix.
-        assert_eq!(shader_writer_unescaped_field_name("_Tex0_"), "_Tex0");
-    }
-
-    #[test]
-    fn shader_writer_unescaped_preserves_non_digit_tail() {
-        assert_eq!(shader_writer_unescaped_field_name("_Color_"), "_Color_");
-        assert_eq!(shader_writer_unescaped_field_name("_Color"), "_Color");
     }
 
     #[test]

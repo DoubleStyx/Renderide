@@ -101,82 +101,9 @@ pub(crate) struct ReflectiveRasterMeshForwardPipelineDesc {
     pub front_face: RasterFrontFace,
 }
 
-fn mesh_forward_vertex_buffer_layouts() -> [wgpu::VertexBufferLayout<'static>; 8] {
-    [
-        wgpu::VertexBufferLayout {
-            array_stride: 16,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Float32x4,
-            }],
-        },
-        wgpu::VertexBufferLayout {
-            array_stride: 16,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 1,
-                format: wgpu::VertexFormat::Float32x4,
-            }],
-        },
-        wgpu::VertexBufferLayout {
-            array_stride: 8,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 2,
-                format: wgpu::VertexFormat::Float32x2,
-            }],
-        },
-        wgpu::VertexBufferLayout {
-            array_stride: 16,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 3,
-                format: wgpu::VertexFormat::Float32x4,
-            }],
-        },
-        wgpu::VertexBufferLayout {
-            array_stride: 16,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 4,
-                format: wgpu::VertexFormat::Float32x4,
-            }],
-        },
-        wgpu::VertexBufferLayout {
-            array_stride: 8,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 5,
-                format: wgpu::VertexFormat::Float32x2,
-            }],
-        },
-        wgpu::VertexBufferLayout {
-            array_stride: 8,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 6,
-                format: wgpu::VertexFormat::Float32x2,
-            }],
-        },
-        wgpu::VertexBufferLayout {
-            array_stride: 8,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 7,
-                format: wgpu::VertexFormat::Float32x2,
-            }],
-        },
-    ]
-}
+mod vertex_layouts;
+
+use vertex_layouts::mesh_forward_vertex_buffer_layouts;
 
 fn pipeline_layout_and_vertex_buffers(
     device: &wgpu::Device,

@@ -11,6 +11,7 @@ use crate::materials::host_data::{
     parse_materials_update_batch_into_store_with_instance_changed,
 };
 
+use crate::materials::PipelinePropertyResolver;
 use crate::materials::embedded::{EmbeddedMaterialBindError, EmbeddedMaterialBindResources};
 use crate::shared::bit_span::BitSpanMut;
 use crate::shared::{MaterialsUpdateBatch, MaterialsUpdateBatchResult, RendererCommand};
@@ -24,6 +25,8 @@ pub struct MaterialSystem {
     material_property_store: MaterialPropertyStore,
     /// Stable ids for [`crate::shared::MaterialPropertyIdRequest`] / batch `property_id` keys.
     property_id_registry: Arc<PropertyIdRegistry>,
+    /// Cached `MaterialPipelinePropertyIds` over `property_id_registry`.
+    pipeline_property_resolver: PipelinePropertyResolver,
     /// Batches received before shared memory is ready.
     pending_material_batches: VecDeque<MaterialsUpdateBatch>,
     /// GPU material families, router, and pipeline cache (after GPU attach).
@@ -43,9 +46,13 @@ impl Default for MaterialSystem {
 impl MaterialSystem {
     /// Empty store and registry; no GPU resources until [`Self::try_attach_gpu`].
     pub fn new() -> Self {
+        let property_id_registry = Arc::new(PropertyIdRegistry::new());
+        let pipeline_property_resolver =
+            PipelinePropertyResolver::new(Arc::clone(&property_id_registry));
         Self {
             material_property_store: MaterialPropertyStore::new(),
-            property_id_registry: Arc::new(PropertyIdRegistry::new()),
+            property_id_registry,
+            pipeline_property_resolver,
             pending_material_batches: VecDeque::new(),
             material_registry: None,
             pending_shader_routes: HashMap::new(),
@@ -93,6 +100,13 @@ impl MaterialSystem {
     /// Property name interning for material batches.
     pub fn property_id_registry(&self) -> &PropertyIdRegistry {
         self.property_id_registry.as_ref()
+    }
+
+    /// Cached resolver for [`crate::materials::MaterialPipelinePropertyIds`] over the same
+    /// registry. Hot paths (`frame_packet`, draw collection) clone this once instead of
+    /// re-interning ~14 property names per frame.
+    pub fn pipeline_property_resolver(&self) -> &PipelinePropertyResolver {
+        &self.pipeline_property_resolver
     }
 
     /// Registered material families and pipeline cache (after GPU attach).

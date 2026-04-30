@@ -64,6 +64,17 @@ pub struct ReflectedRasterLayout {
     pub requires_intersection_pass: bool,
 }
 
+impl ReflectedRasterLayout {
+    /// Returns the unified scene-snapshot requirement flags for this layout.
+    pub fn snapshot_requirements(&self) -> super::super::SnapshotRequirements {
+        super::super::SnapshotRequirements {
+            uses_scene_color: self.uses_scene_color_snapshot,
+            uses_scene_depth: self.uses_scene_depth_snapshot,
+            requires_intersection_pass: self.requires_intersection_pass,
+        }
+    }
+}
+
 /// Errors from `reflect_raster_material_wgsl` in the parent `wgsl_reflect` module.
 #[derive(Debug, Error)]
 pub enum ReflectError {
