@@ -20,6 +20,7 @@ use thiserror::Error;
 use crate::assets::asset_transfer_queue::{self as asset_uploads, AssetTransferQueue};
 use crate::config::{PostProcessingSettings, RendererSettingsHandle, SceneColorFormat};
 use crate::diagnostics::{DebugHudEncodeError, DebugHudInput, SceneTransformsSnapshot};
+use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::gpu_pools::{
     CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
@@ -27,7 +28,7 @@ use crate::gpu_pools::{
 use crate::materials::host_data::MaterialPropertyStore;
 use crate::materials::{MaterialRouter, RasterPipelineKind};
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
-use crate::render_graph::{GraphCache, PerViewHudConfig, PerViewHudOutputs, TransientPool};
+use crate::render_graph::{GraphCache, TransientPool};
 use crate::world_mesh::{FrameMaterialBatchCache, WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 use super::FrameGpuBindingsError;

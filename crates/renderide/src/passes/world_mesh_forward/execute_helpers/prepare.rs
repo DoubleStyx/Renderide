@@ -1,13 +1,12 @@
 //! Prepare callback helpers for world-mesh forward passes.
 
 use crate::camera::HostCameraFrame;
+use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot};
 use crate::gpu::GpuLimits;
 use crate::materials::MaterialSystem;
 use crate::materials::ShaderPermutation;
 use crate::render_graph::blackboard::Blackboard;
-use crate::render_graph::frame_params::{
-    FrameRenderParams, PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot,
-};
+use crate::render_graph::frame_params::FrameRenderParams;
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
 use crate::world_mesh::draw_prep::{WorldMeshDrawCollection, WorldMeshDrawItem};
 use crate::world_mesh::{

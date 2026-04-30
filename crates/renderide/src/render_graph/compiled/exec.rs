@@ -25,12 +25,13 @@ use crate::scene::SceneCoordinator;
 
 use super::super::context::{GraphResolvedResources, PostSubmitContext};
 use super::super::error::GraphExecuteError;
-use super::super::frame_params::{FrameViewClear, PerViewHudOutputs};
+use super::super::frame_params::FrameViewClear;
 use super::{
     CompiledRenderGraph, FrameView, FrameViewTarget, MultiViewExecutionContext, ResolvedView,
     WorldMeshDrawPlan,
 };
 use crate::camera::{HostCameraFrame, ViewId};
+use crate::diagnostics::PerViewHudOutputs;
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -147,7 +148,7 @@ pub(super) struct PerViewRecordShared<'a> {
     /// Optional read-only skin cache for deformed forward draws.
     pub(super) skin_cache: Option<&'a crate::mesh_deform::GpuSkinCache>,
     /// Read-only HUD capture switches for deferred per-view diagnostics.
-    pub(super) debug_hud: crate::render_graph::PerViewHudConfig,
+    pub(super) debug_hud: crate::diagnostics::PerViewHudConfig,
     /// Scene-color format selected for the frame.
     pub(super) scene_color_format: wgpu::TextureFormat,
     /// GPU limits snapshot cloned into per-view frame params.

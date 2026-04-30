@@ -6,9 +6,8 @@ use std::path::PathBuf;
 use crate::config::RendererSettingsHandle;
 use crate::diagnostics::{
     DebugHud, DebugHudEncodeError, DebugHudInput, FrameDiagnosticsSnapshot, FrameTimingHudSnapshot,
-    RendererInfoSnapshot, SceneTransformsSnapshot, TextureDebugSnapshot,
+    PerViewHudOutputs, RendererInfoSnapshot, SceneTransformsSnapshot, TextureDebugSnapshot,
 };
-use crate::render_graph::PerViewHudOutputs;
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 /// ImGui overlay, input/timing state, and mesh-draw stats for the diagnostics HUD.

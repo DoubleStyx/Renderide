@@ -11,6 +11,7 @@ mod frame_diagnostics_snapshot;
 mod frame_timing_hud_snapshot;
 mod host_hud;
 mod hud_input;
+pub mod per_view;
 mod renderer_info_snapshot;
 mod scene_transforms_snapshot;
 mod texture_debug_snapshot;
@@ -27,6 +28,7 @@ pub use frame_timing_hud_snapshot::{
 };
 pub use host_hud::HostHudGatherer;
 pub use hud_input::{DebugHudInput, sanitize_input_state_for_imgui_host};
+pub use per_view::{PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot};
 pub use renderer_info_snapshot::{RendererInfoSnapshot, RendererInfoSnapshotCapture};
 pub use scene_transforms_snapshot::{
     RenderSpaceTransformsSnapshot, SceneTransformsSnapshot, TransformRow, WorldTransformSample,
