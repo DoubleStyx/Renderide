@@ -115,34 +115,10 @@ public sealed class PackEmitterTests
         using var sw = new StringWriter(CultureInfo.InvariantCulture);
         var fields = new List<FieldDescriptor>
         {
-            new()
-            {
-                CSharpName = "B",
-                RustName = "b",
-                RustType = "u8",
-                Kind = FieldKind.Bool,
-            },
-            new()
-            {
-                CSharpName = "E",
-                RustName = "e",
-                RustType = "MyEnum",
-                Kind = FieldKind.Enum,
-            },
-            new()
-            {
-                CSharpName = "R",
-                RustName = "r",
-                RustType = "Thing",
-                Kind = FieldKind.ObjectRequired,
-            },
-            new()
-            {
-                CSharpName = "P",
-                RustName = "p",
-                RustType = "u32",
-                Kind = FieldKind.Pod,
-            },
+            Ir.PodField("b", "u8", FieldKind.Bool),
+            Ir.PodField("e", "MyEnum", FieldKind.Enum),
+            Ir.PodField("r", "Thing", FieldKind.ObjectRequired),
+            Ir.PodField("p", "u32"),
         };
 
         using (var w = new RustWriter(sw))
@@ -163,27 +139,9 @@ public sealed class PackEmitterTests
         using var sw = new StringWriter(CultureInfo.InvariantCulture);
         var fields = new List<FieldDescriptor>
         {
-            new()
-            {
-                CSharpName = "B",
-                RustName = "b",
-                RustType = "u8",
-                Kind = FieldKind.Bool,
-            },
-            new()
-            {
-                CSharpName = "E",
-                RustName = "e",
-                RustType = "MyEnum",
-                Kind = FieldKind.FlagsEnum,
-            },
-            new()
-            {
-                CSharpName = "P",
-                RustName = "p",
-                RustType = "u32",
-                Kind = FieldKind.Pod,
-            },
+            Ir.PodField("b", "u8", FieldKind.Bool),
+            Ir.PodField("e", "MyEnum", FieldKind.FlagsEnum),
+            Ir.PodField("p", "u32"),
         };
 
         using (var w = new RustWriter(sw))
@@ -201,16 +159,7 @@ public sealed class PackEmitterTests
     public void UnpackObjectLine_strips_option_wrapper()
     {
         Logger logger = CreateLogger();
-        var fields = new List<FieldDescriptor>
-        {
-            new()
-            {
-                CSharpName = "Obj",
-                RustName = "obj",
-                RustType = "Option<FooBar>",
-                Kind = FieldKind.Object,
-            },
-        };
+        var fields = new List<FieldDescriptor> { Ir.ObjectField("obj", "Option<FooBar>") };
 
         string line = InvokeUnpackLine(logger, "T", "obj", FieldKind.Object, fields);
         Assert.Contains("read_object::<FooBar>()", line, StringComparison.Ordinal);
@@ -223,13 +172,7 @@ public sealed class PackEmitterTests
         Logger logger = CreateLogger();
         var fields = new List<FieldDescriptor>
         {
-            new()
-            {
-                CSharpName = "Items",
-                RustName = "items",
-                RustType = "Vec<Thing>",
-                Kind = FieldKind.PolymorphicList,
-            },
+            Ir.PodField("items", "Vec<Thing>", FieldKind.PolymorphicList),
         };
 
         string line = InvokeUnpackLine(logger, "T", "items", FieldKind.PolymorphicList, fields);

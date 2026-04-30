@@ -11,6 +11,22 @@ internal static class TestCompilation
     /// <summary>Compiles <paramref name="source"/> into a dynamic assembly and returns reflection + Cecil views.</summary>
     public static (Assembly Reflection, AssemblyDefinition Cecil) Compile(string source, string assemblyName = "TestAsm")
     {
+        (Assembly reflection, AssemblyDefinition cecil, _) = CompileImpl(source, assemblyName, useLoadFrom: false);
+        return (reflection, cecil);
+    }
+
+    /// <summary>
+    /// Like <see cref="Compile"/>, but also returns the on-disk path and loads the reflection view via
+    /// <see cref="Assembly.LoadFrom(string)"/> so callers that build path-based components (e.g.,
+    /// <see cref="SharedTypeGenerator.Analysis.TypeAnalyzer"/>) see the same Assembly instance the test does.
+    /// </summary>
+    public static (Assembly Reflection, AssemblyDefinition Cecil, string Path) CompileToFile(
+        string source, string assemblyName = "TestAsm") =>
+        CompileImpl(source, assemblyName, useLoadFrom: true);
+
+    private static (Assembly Reflection, AssemblyDefinition Cecil, string Path) CompileImpl(
+        string source, string assemblyName, bool useLoadFrom)
+    {
         SyntaxTree tree = CSharpSyntaxTree.ParseText(source, CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.Latest));
         IEnumerable<MetadataReference> refs = GetMetadataReferences();
         CSharpCompilation compilation = CSharpCompilation.Create(
@@ -31,13 +47,13 @@ internal static class TestCompilation
         }
 
         byte[] bytes = ms.ToArray();
-        Assembly reflection = Assembly.Load(bytes);
         // Cecil defers IL reads; keep a stable on-disk image so method bodies stay readable after this returns.
         string path = Path.Combine(Path.GetTempPath(), $"{assemblyName}-{Guid.NewGuid():N}.dll");
         File.WriteAllBytes(path, bytes);
+        Assembly reflection = useLoadFrom ? Assembly.LoadFrom(path) : Assembly.Load(bytes);
         var readerParameters = new ReaderParameters { AssemblyResolver = new DefaultAssemblyResolver() };
         AssemblyDefinition cecil = AssemblyDefinition.ReadAssembly(path, readerParameters);
-        return (reflection, cecil);
+        return (reflection, cecil, path);
     }
 
     private static IEnumerable<MetadataReference> GetMetadataReferences()

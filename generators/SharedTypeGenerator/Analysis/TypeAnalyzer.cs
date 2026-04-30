@@ -118,7 +118,12 @@ public partial class TypeAnalyzer
         return descriptor;
     }
 
-    private TypeShape ClassifyShape(Type type)
+    /// <summary>
+    /// Top-level shape dispatch: classifies <paramref name="type"/> into the <see cref="TypeShape"/>
+    /// that drives sub-analyzer selection. Internal so unit tests can exercise dispatch without
+    /// running a full <see cref="Analyze"/> pass.
+    /// </summary>
+    internal TypeShape ClassifyShape(Type type)
     {
         if (type.IsEnum)
             return type.GetCustomAttribute<FlagsAttribute>() != null ? TypeShape.FlagsEnum : TypeShape.ValueEnum;

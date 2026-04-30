@@ -1,7 +1,6 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 using LayoutKind = System.Runtime.InteropServices.LayoutKind;
-using NotEnoughLogs;
 using SharedTypeGenerator.IR;
 using SharedTypeGenerator.Logging;
 
@@ -31,28 +30,6 @@ public partial class TypeAnalyzer
         };
     }
 
-    /// <summary>Accumulates marshal size of fields for trailing-padding heuristics when no explicit offsets exist.</summary>
-    private static int SumMarshalSizesOfFields(FieldInfo[] fields)
-    {
-        int totalSize = 0;
-        foreach (FieldInfo field in fields)
-        {
-            Type sizeType = field.FieldType == typeof(bool) ? typeof(byte) : field.FieldType;
-            if (sizeType.IsEnum)
-                sizeType = sizeType.GetField("value__")!.FieldType;
-            try
-            {
-                totalSize += Marshal.SizeOf(sizeType);
-            }
-            catch (Exception ex) when (ex is ArgumentException or MarshalDirectiveException)
-            {
-                /* skip field for sum */
-            }
-        }
-
-        return totalSize;
-    }
-
     /// <summary>
     /// Inserts synthetic <c>_padding</c> fields between explicit-offset regions to match declared struct size.
     /// </summary>
@@ -66,23 +43,10 @@ public partial class TypeAnalyzer
             return 0;
 
         var offsetSizePairs = new List<(int Offset, int Size)>();
-        for (int i = 0; i < fields.Length; i++)
+        foreach (FieldInfo field in fields)
         {
-            FieldInfo field = fields[i];
             int offset = field.GetCustomAttribute<FieldOffsetAttribute>()?.Value ?? 0;
-            Type st = field.FieldType == typeof(bool) ? typeof(byte) : field.FieldType;
-            if (st.IsEnum)
-                st = st.GetField("value__")!.FieldType;
-            int size;
-            try
-            {
-                size = Marshal.SizeOf(st);
-            }
-            catch (Exception ex) when (ex is ArgumentException or MarshalDirectiveException)
-            {
-                size = 0;
-            }
-
+            int size = ManagedLayoutSizing.TryGetManagedFieldSize(field, out int s) ? s : 0;
             offsetSizePairs.Add((offset, size));
         }
 
@@ -117,35 +81,10 @@ public partial class TypeAnalyzer
         return paddingBytes;
     }
 
-    /// <summary>Throws when explicit field extents exceed <see cref="Marshal.SizeOf"/> for the struct.</summary>
+    /// <summary>Throws when explicit field extents exceed the recorded host-interop size.</summary>
     private static void VerifyHostInteropExtentAgainstFields(FieldInfo[] fields, int hostInteropSizeBytes, Type structType)
     {
-        if (!fields.Any(f => f.GetCustomAttribute<FieldOffsetAttribute>() != null))
-            return;
-
-        int maxEnd = 0;
-        foreach (FieldInfo field in fields)
-        {
-            FieldOffsetAttribute? fo = field.GetCustomAttribute<FieldOffsetAttribute>();
-            if (fo == null)
-                continue;
-
-            Type st = field.FieldType == typeof(bool) ? typeof(byte) : field.FieldType;
-            if (st.IsEnum)
-                st = st.GetField("value__")!.FieldType;
-            int sz;
-            try
-            {
-                sz = Marshal.SizeOf(st);
-            }
-            catch (Exception ex) when (ex is ArgumentException or MarshalDirectiveException)
-            {
-                continue;
-            }
-
-            maxEnd = Math.Max(maxEnd, fo.Value + sz);
-        }
-
+        int maxEnd = ManagedLayoutSizing.MaxFieldEndBytes(fields);
         if (maxEnd > hostInteropSizeBytes)
         {
             throw new InvalidOperationException(
@@ -154,122 +93,123 @@ public partial class TypeAnalyzer
     }
 
     /// <summary>
-    /// Computes the max `FieldOffset + managed_field_size` over all fields, where `bool` is 1 byte
-    /// and enums take their underlying type's size (mirroring the CLR's managed layout, not the
-    /// P/Invoke marshaled layout). For Sequential layout fields without offsets, returns 0.
+    /// Returns the declared explicit-layout size from <see cref="StructLayoutAttribute.Size"/>,
+    /// falling back to Cecil <c>ClassLayout</c> metadata, otherwise 0.
     /// </summary>
-    private static int MaxFieldEndBytesInManagedLayout(FieldInfo[] fields)
+    private int ResolveDeclaredOrCecilSize(Type type, StructLayoutAttribute? layout)
     {
-        int maxEnd = 0;
-        foreach (FieldInfo field in fields)
-        {
-            FieldOffsetAttribute? fo = field.GetCustomAttribute<FieldOffsetAttribute>();
-            if (fo == null)
-                continue;
-
-            Type st = field.FieldType == typeof(bool) ? typeof(byte) : field.FieldType;
-            if (st.IsEnum)
-                st = st.GetField("value__")!.FieldType;
-            int sz;
-            try
-            {
-                sz = Marshal.SizeOf(st);
-            }
-            catch (Exception ex) when (ex is ArgumentException or MarshalDirectiveException)
-            {
-                continue;
-            }
-            maxEnd = Math.Max(maxEnd, fo.Value + sz);
-        }
-
-        return maxEnd;
-    }
-
-    private TypeDescriptor AnalyzePodStruct(Type type)
-    {
-        FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        var fieldDescriptors = new List<FieldDescriptor>();
-
-        int totalSize = SumMarshalSizesOfFields(fields);
-        bool allFieldsPod = true;
-
-        foreach (FieldInfo field in fields)
-        {
-            bool fieldRustLayoutPod = PodAnalyzer.IsRustLayoutPodField(field.FieldType, new HashSet<Type>(), _assembly);
-            if (!fieldRustLayoutPod)
-                allFieldsPod = false;
-
-            fieldDescriptors.Add(BuildPodStructFieldDescriptor(field));
-        }
-
-        StructLayoutAttribute? layout = type.GetCustomAttribute<StructLayoutAttribute>();
         int declaredSize = (layout?.Value == LayoutKind.Explicit && layout.Size > 0) ? layout.Size : 0;
         if (declaredSize == 0)
             declaredSize = CecilLayoutInspector.GetExplicitLayoutSizeOrZero(_assemblyDef, type, _logger);
+        return declaredSize;
+    }
 
-        int paddingBytes = 0;
-
+    /// <summary>
+    /// Computes trailing padding bytes for a Pod struct: gap padding between explicit offsets when
+    /// <paramref name="declaredSize"/> is set, otherwise the difference between
+    /// <see cref="Marshal.SizeOf(Type)"/> and the summed managed field sizes.
+    /// </summary>
+    private int ComputePodStructPadding(Type type, FieldInfo[] fields, int declaredSize,
+        List<FieldDescriptor> fieldDescriptors)
+    {
         try
         {
             if (fields.Length > 0 && fields.Any(f => f.GetCustomAttribute<FieldOffsetAttribute>() != null) && declaredSize > 0)
             {
-                paddingBytes = ComputeExplicitLayoutGapPadding(fields, declaredSize, fieldDescriptors);
+                return ComputeExplicitLayoutGapPadding(fields, declaredSize, fieldDescriptors);
             }
-            else if (declaredSize == 0)
+
+            if (declaredSize == 0)
             {
                 try
                 {
                     int actualSize = Marshal.SizeOf(type);
-                    paddingBytes = Math.Max(0, actualSize - totalSize);
+                    int summed = ManagedLayoutSizing.SumManagedFieldSizes(fields);
+                    return Math.Max(0, actualSize - summed);
                 }
                 catch (Exception ex) when (ex is ArgumentException or MarshalDirectiveException)
                 {
-                    _logger.LogTrace(LogCategory.Analysis, $"{type.FullName}: Marshal.SizeOf for padding heuristic failed: {ex.Message}");
+                    _logger.LogTrace(LogCategory.Analysis,
+                        $"{type.FullName}: Marshal.SizeOf for padding heuristic failed: {ex.Message}");
                 }
             }
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or MarshalDirectiveException)
         {
-            _logger.LogTrace(LogCategory.Analysis, $"{type.FullName}: explicit layout padding computation failed: {ex.Message}");
+            _logger.LogTrace(LogCategory.Analysis,
+                $"{type.FullName}: explicit layout padding computation failed: {ex.Message}");
         }
 
-        bool hasSimdCompositePaddingRisk = fields.Length > 1 && fields.Any(f =>
+        return 0;
+    }
+
+    /// <summary>
+    /// Whether multiple-field structs contain at least one glam SIMD composite that introduces
+    /// alignment padding incompatible with whole-struct Pod emission.
+    /// </summary>
+    private bool HasSimdCompositePaddingRisk(FieldInfo[] fields)
+    {
+        if (fields.Length < 2)
+            return false;
+        return fields.Any(f =>
         {
             string rustT = f.FieldType == typeof(bool) ? "u8" : RustTypeMapper.MapType(f.FieldType, _assembly);
             return RustTypeMapper.IsGlamRustTypeRequiringCompositeNonPod(rustT);
         });
-        bool isPod = allFieldsPod && !hasSimdCompositePaddingRisk;
+    }
 
-        int? hostInteropSizeBytes = null;
+    /// <summary>
+    /// Computes the host-interop size constant emitted alongside the Rust struct.
+    /// Prefers <c>max(declaredSize, fieldEnd)</c> over <see cref="Marshal.SizeOf(Type)"/> when explicit-layout
+    /// information is available so the constant matches the managed on-wire record stride.
+    /// </summary>
+    private int? ComputeHostInteropSizeBytes(Type type, FieldInfo[] fields, int declaredSize)
+    {
         try
         {
             int marshalSize = Marshal.SizeOf(type);
-            // CLR managed layout size: `Marshal.SizeOf` uses P/Invoke rules (bool→4, etc.), which can
-            // differ from what the host writes on wire. For explicit-layout structs, use
-            // `max(declaredSize, field_end_bytes)` with `bool` counted as 1 byte so the constant
-            // matches the managed on-wire record stride. For sequential-layout structs we don't
-            // compute field ends here, so fall back to `Marshal.SizeOf`.
-            int fieldEndBytes = MaxFieldEndBytesInManagedLayout(fields);
+            int fieldEndBytes = ManagedLayoutSizing.MaxFieldEndBytes(fields);
             if (fieldEndBytes > 0 || declaredSize > 0)
             {
-                hostInteropSizeBytes = Math.Max(declaredSize, fieldEndBytes);
-                if (hostInteropSizeBytes.Value != marshalSize)
+                int managed = Math.Max(declaredSize, fieldEndBytes);
+                if (managed != marshalSize)
                 {
                     _logger.LogInfo(
                         LogCategory.Analysis,
-                        $"{type.FullName}: managed layout size={hostInteropSizeBytes} differs from Marshal.SizeOf={marshalSize} (declaredSize={declaredSize}, fieldEnd={fieldEndBytes}); using managed layout size for HostInteropSizeBytes.");
+                        $"{type.FullName}: managed layout size={managed} differs from Marshal.SizeOf={marshalSize} (declaredSize={declaredSize}, fieldEnd={fieldEndBytes}); using managed layout size for HostInteropSizeBytes.");
                 }
+                return managed;
             }
-            else
-            {
-                hostInteropSizeBytes = marshalSize;
-            }
+
+            return marshalSize;
         }
         catch (Exception ex) when (ex is ArgumentException or MissingMethodException)
         {
             _logger.LogWarning(LogCategory.Analysis, $"{type.FullName}: Marshal.SizeOf failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Analyzes an explicit-layout Pod struct into a <see cref="TypeDescriptor"/>.</summary>
+    private TypeDescriptor AnalyzePodStruct(Type type)
+    {
+        FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        var fieldDescriptors = new List<FieldDescriptor>();
+
+        bool allFieldsPod = true;
+        foreach (FieldInfo field in fields)
+        {
+            if (!PodAnalyzer.IsRustLayoutPodField(field.FieldType, new HashSet<Type>(), _assembly))
+                allFieldsPod = false;
+            fieldDescriptors.Add(BuildPodStructFieldDescriptor(field));
         }
 
+        StructLayoutAttribute? layout = type.GetCustomAttribute<StructLayoutAttribute>();
+        int declaredSize = ResolveDeclaredOrCecilSize(type, layout);
+        int paddingBytes = ComputePodStructPadding(type, fields, declaredSize, fieldDescriptors);
+
+        bool isPod = allFieldsPod && !HasSimdCompositePaddingRisk(fields);
+        int? hostInteropSizeBytes = ComputeHostInteropSizeBytes(type, fields, declaredSize);
         if (hostInteropSizeBytes.HasValue)
             VerifyHostInteropExtentAgainstFields(fields, hostInteropSizeBytes.Value, type);
 
