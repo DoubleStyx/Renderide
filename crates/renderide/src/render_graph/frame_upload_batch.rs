@@ -146,6 +146,20 @@ impl RecordedUploads {
             data,
         });
     }
+
+    /// Clears recorded writes and payload bytes while retaining grown capacities for the next
+    /// frame.
+    fn clear_retain_capacity(&mut self) {
+        self.writes.clear();
+        self.bytes.clear();
+    }
+}
+
+#[inline]
+fn queue_write_order(write: &QueueWrite) -> QueueWriteOrder {
+    match write {
+        QueueWrite::Buffer { order, .. } => *order,
+    }
 }
 
 /// Collects per-frame [`wgpu::Queue::write_buffer`] calls for a single ordered replay.
@@ -228,12 +242,12 @@ impl FrameUploadBatch {
     /// Called on the main thread after per-view encoding finishes and before the single
     /// [`wgpu::Queue::submit`]. After this returns the batch is empty.
     pub fn drain_and_flush(&self, queue: &wgpu::Queue) {
-        let RecordedUploads { mut writes, bytes } = std::mem::take(&mut *self.recorded.lock());
-        crate::profiling::plot_frame_upload_batch(writes.len(), bytes.len());
-        writes.sort_by_key(|write| match write {
-            QueueWrite::Buffer { order, .. } => *order,
-        });
-        for write in writes {
+        let mut recorded = self.recorded.lock();
+        crate::profiling::plot_frame_upload_batch(recorded.writes.len(), recorded.bytes.len());
+        if !recorded.writes.is_sorted_by_key(queue_write_order) {
+            recorded.writes.sort_by_key(queue_write_order);
+        }
+        for write in &recorded.writes {
             match write {
                 QueueWrite::Buffer {
                     order: _,
@@ -241,10 +255,11 @@ impl FrameUploadBatch {
                     offset,
                     data,
                 } => {
-                    queue.write_buffer(&buffer, offset, &bytes[data]);
+                    queue.write_buffer(buffer, *offset, &recorded.bytes[data.clone()]);
                 }
             }
         }
+        recorded.clear_retain_capacity();
     }
 
     /// Returns the number of pending writes (diagnostics / tests).

@@ -121,6 +121,10 @@ pub struct MeshDeformScratch {
     ///
     /// Cleared (length-only, capacity retained) at the start of each blendshape record call.
     pub blend_weight_bytes: Vec<u8>,
+    /// Reusable byte buffer for one skinning palette before it is copied into the frame upload batch.
+    ///
+    /// Cleared (length-only, capacity retained) at the start of each skinning record call.
+    pub bone_palette_bytes: Vec<u8>,
     /// Reusable byte buffer for packed scatter `Params` per mesh; one entry per dispatch chunk.
     ///
     /// Cleared (length-only, capacity retained) at the start of each blendshape record call.
@@ -151,6 +155,7 @@ impl MeshDeformScratch {
             blendshape_weights: BLENDSHAPE_WEIGHTS.create(device, weight_bytes),
             skin_dispatch: SKIN_DISPATCH.create(device, skin_dispatch_bytes),
             blend_weight_bytes: Vec::new(),
+            bone_palette_bytes: Vec::new(),
             packed_scatter_params: Vec::new(),
             scatter_dispatch_wgs: Vec::new(),
             max_bones: INITIAL_MAX_BONES,

@@ -101,14 +101,7 @@ pub(super) fn propagate_transform_change_dirty_flags(
     if !changed.any() {
         return;
     }
-    let n = changed
-        .flags()
-        .len()
-        .min(cache.computed.len().max(cache.local_dirty.len()));
-    for (i, &dirty) in changed.flags()[..n].iter().enumerate() {
-        if !dirty {
-            continue;
-        }
+    for &i in changed.indices() {
         if i < cache.computed.len() {
             cache.computed[i] = false;
         }

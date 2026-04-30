@@ -19,6 +19,7 @@ use crate::materials::ShaderPermutation;
 use crate::materials::host_data::MaterialDictionary;
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter};
 use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::world_mesh::FramePreparedRenderables;
 
 use super::keys::{collect_material_keys_for_space, collect_material_keys_into};
 use super::resolve::{MaterialResolveCtx, ResolvedMaterialBatch, resolve_material_batch};
@@ -212,6 +213,42 @@ impl FrameMaterialBatchCache {
 
         // Evict entries not referenced this frame so the cache tracks the live working set.
         // Cheap — the cache typically holds a few dozen entries, and this touches them all once.
+        self.entries
+            .retain(|_, entry| entry.last_used_frame == current_frame);
+    }
+
+    /// Refreshes the cache from a pre-expanded draw list instead of walking scene renderers.
+    ///
+    /// `FramePreparedRenderables` already resolves render-context material overrides and
+    /// per-slot property blocks once for the frame. Reusing those keys avoids a second
+    /// O(renderers × material slots) scene walk in `render::build_frame_material_cache`.
+    pub fn refresh_for_prepared(
+        &mut self,
+        prepared: &FramePreparedRenderables,
+        dict: &MaterialDictionary<'_>,
+        router: &MaterialRouter,
+        pipeline_property_ids: &MaterialPipelinePropertyIds,
+        shader_perm: ShaderPermutation,
+    ) {
+        profiling::scope!("mesh::material_batch_cache_refresh_for_prepared");
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+        let current_frame = self.frame_counter;
+        let router_gen = router.generation();
+        let ctx = MaterialResolveCtx {
+            dict,
+            router,
+            pipeline_property_ids,
+            shader_perm,
+        };
+
+        let mut seen = std::mem::take(&mut self.seen_scratch);
+        seen.clear();
+        for key in prepared.material_property_pairs() {
+            if seen.insert(key) {
+                self.touch_or_refresh(key.0, key.1, ctx, router_gen, current_frame);
+            }
+        }
+        self.seen_scratch = seen;
         self.entries
             .retain(|_, entry| entry.last_used_frame == current_frame);
     }

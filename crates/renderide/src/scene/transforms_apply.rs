@@ -31,7 +31,10 @@ use super::error::SceneError;
 use super::ids::RenderSpaceId;
 use super::pose::render_transform_identity;
 use super::render_space::RenderSpaceState;
-use super::world::{WorldTransformCache, mark_descendants_uncomputed, rebuild_children};
+use super::world::{
+    WorldTransformCache, mark_descendants_uncomputed, mark_descendants_uncomputed_from_roots,
+    rebuild_children,
+};
 
 /// Per-node dirty mask for one [`apply_transforms_update_extracted`] call.
 ///
@@ -42,15 +45,18 @@ use super::world::{WorldTransformCache, mark_descendants_uncomputed, rebuild_chi
 struct NodeDirtyMask {
     /// `true` at index `i` when transform `i` had its parent or pose mutated this call.
     flags: Vec<bool>,
+    /// Dense list of indices marked dirty this call, without duplicates.
+    indices: Vec<usize>,
     /// `true` when at least one entry was set this call.
     any: bool,
 }
 
 impl NodeDirtyMask {
-    /// Allocates a fresh mask sized for `node_count` nodes.
+    /// Allocates an empty mask with enough dedup capacity for `node_count` nodes.
     fn new(node_count: usize) -> Self {
         Self {
-            flags: vec![false; node_count],
+            flags: Vec::new(),
+            indices: Vec::with_capacity(node_count.min(64)),
             any: false,
         }
     }
@@ -62,7 +68,11 @@ impl NodeDirtyMask {
         if index >= self.flags.len() {
             self.flags.resize(index + 1, false);
         }
+        if self.flags[index] {
+            return;
+        }
         self.flags[index] = true;
+        self.indices.push(index);
         self.any = true;
     }
 
@@ -73,9 +83,16 @@ impl NodeDirtyMask {
     }
 
     /// Read-only access to the flag vector for dirty-flag propagation.
+    #[cfg(test)]
     #[inline]
     fn flags(&self) -> &[bool] {
         &self.flags
+    }
+
+    /// Dirty transform indices marked during this apply call.
+    #[inline]
+    fn indices(&self) -> &[usize] {
+        &self.indices
     }
 }
 
@@ -201,8 +218,12 @@ pub fn apply_transforms_update_extracted(
     removal_events_out.clear();
     let sid = space_id.0;
     let mut invalidate_world = false;
+    let mut full_invalidate_world = false;
 
     ensure_world_cache_matches_node_count(space, cache, &mut invalidate_world);
+    if invalidate_world {
+        full_invalidate_world = true;
+    }
 
     if !extracted.removals.is_empty() {
         let had_removal = apply_transform_removals_ordered(
@@ -214,15 +235,20 @@ pub fn apply_transforms_update_extracted(
         if had_removal {
             cache.children_dirty = true;
             invalidate_world = true;
+            full_invalidate_world = true;
         }
     }
 
+    let before_grow = invalidate_world;
     grow_transform_buffers_to_target(
         space,
         cache,
         extracted.target_transform_count,
         &mut invalidate_world,
     );
+    if invalidate_world && !before_grow {
+        full_invalidate_world = true;
+    }
 
     let mut changed = NodeDirtyMask::new(space.nodes.len());
 
@@ -251,8 +277,14 @@ pub fn apply_transforms_update_extracted(
         rebuild_children(&space.node_parents, space.nodes.len(), &mut cache.children);
         cache.children_dirty = false;
     }
-    if invalidate_world {
+    if full_invalidate_world {
         mark_descendants_uncomputed(&cache.children, &mut cache.computed);
+    } else if invalidate_world {
+        mark_descendants_uncomputed_from_roots(
+            &cache.children,
+            &mut cache.computed,
+            changed.indices(),
+        );
     }
     invalidate_world
 }

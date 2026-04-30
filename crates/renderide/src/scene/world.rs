@@ -92,6 +92,32 @@ pub(super) fn mark_descendants_uncomputed(children: &[Vec<usize>], computed: &mu
     }
 }
 
+/// Marks descendants of the provided dirty roots as uncomputed.
+pub(super) fn mark_descendants_uncomputed_from_roots(
+    children: &[Vec<usize>],
+    computed: &mut [bool],
+    roots: &[usize],
+) {
+    if computed.is_empty() || roots.is_empty() {
+        return;
+    }
+    let mut stack: Vec<usize> = Vec::with_capacity(64.min(computed.len()));
+    for &root in roots {
+        if root < computed.len() {
+            computed[root] = false;
+        }
+        stack.clear();
+        stack.extend_from_slice(children.get(root).map_or(&[], Vec::as_slice));
+        while let Some(child) = stack.pop() {
+            if child >= computed.len() {
+                continue;
+            }
+            computed[child] = false;
+            stack.extend_from_slice(children.get(child).map_or(&[], Vec::as_slice));
+        }
+    }
+}
+
 #[inline]
 fn get_local_matrix(
     nodes: &[RenderTransform],

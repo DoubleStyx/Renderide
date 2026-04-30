@@ -10,7 +10,9 @@ mod per_draw_uniforms;
 mod scratch;
 mod skinning_palette;
 
-pub use skinning_palette::{SkinningPaletteParams, build_skinning_palette};
+pub use skinning_palette::{
+    SkinningPaletteParams, build_skinning_palette, write_skinning_palette_bytes,
+};
 
 pub use blendshape_bind_chunks::{
     BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES, blendshape_sparse_buffers_fit_device,

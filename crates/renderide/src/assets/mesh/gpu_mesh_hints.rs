@@ -2,14 +2,10 @@
 
 use crate::shared::{
     BlendshapeBufferDescriptor, IndexBufferFormat, MeshUploadData, MeshUploadHintFlag,
-    SubmeshBufferDescriptor, VertexAttributeType,
+    SubmeshBufferDescriptor, VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType,
 };
 
 use super::gpu_mesh::GpuMesh;
-use super::layout::{
-    color_float4_stream_bytes, extract_float3_position_normal_as_vec4_streams,
-    uv0_float2_stream_bytes, vertex_float2_stream_bytes, vertex_float4_stream_bytes,
-};
 
 pub(super) fn wgpu_index_format(f: IndexBufferFormat) -> wgpu::IndexFormat {
     match f {
@@ -51,19 +47,28 @@ pub(super) fn derived_streams_compatible_for_in_place(
     vc_usize: usize,
     vertex_stride_us: usize,
 ) -> bool {
-    let pos_norm = extract_float3_position_normal_as_vec4_streams(
-        vertex_slice,
-        vc_usize,
-        vertex_stride_us,
-        &data.vertex_attributes,
-    );
-    match (
-        &gpu.positions_buffer,
-        &gpu.normals_buffer,
-        pos_norm.as_ref(),
-    ) {
-        (Some(pb), Some(nb), Some((pvec, nvec))) => {
-            if pb.size() != pvec.len() as u64 || nb.size() != nvec.len() as u64 {
+    if vc_usize == 0 || vertex_stride_us == 0 {
+        return gpu.positions_buffer.is_none()
+            && gpu.normals_buffer.is_none()
+            && gpu.uv0_buffer.is_none()
+            && gpu.color_buffer.is_none()
+            && gpu.tangent_buffer.is_none()
+            && gpu.uv1_buffer.is_none()
+            && gpu.uv2_buffer.is_none()
+            && gpu.uv3_buffer.is_none();
+    }
+    let Some(needed_vertex_bytes) = vc_usize.checked_mul(vertex_stride_us) else {
+        return false;
+    };
+    if vertex_slice.len() < needed_vertex_bytes {
+        return false;
+    }
+
+    let pos_norm_bytes = has_supported_position_stream(&data.vertex_attributes)
+        .then(|| (vc_usize as u64).saturating_mul(16));
+    match (&gpu.positions_buffer, &gpu.normals_buffer, pos_norm_bytes) {
+        (Some(pb), Some(nb), Some(bytes)) => {
+            if pb.size() != bytes || nb.size() != bytes {
                 return false;
             }
         }
@@ -71,78 +76,44 @@ pub(super) fn derived_streams_compatible_for_in_place(
         _ => return false,
     }
 
-    let uv_new = uv0_float2_stream_bytes(
-        vertex_slice,
-        vc_usize,
-        vertex_stride_us,
-        &data.vertex_attributes,
-    );
-    match (&gpu.uv0_buffer, uv_new.as_ref()) {
-        (Some(b), Some(uv)) => {
-            if b.size() != uv.len() as u64 {
-                return false;
-            }
-        }
-        (None, None) => {}
-        _ => return false,
+    let uv_bytes = (vc_usize as u64).saturating_mul(8);
+    let vec4_bytes = (vc_usize as u64).saturating_mul(16);
+    if !required_stream_size_matches(gpu.uv0_buffer.as_deref(), uv_bytes) {
+        return false;
     }
-
-    let color_new = color_float4_stream_bytes(
-        vertex_slice,
-        vc_usize,
-        vertex_stride_us,
-        &data.vertex_attributes,
-    );
-    match (&gpu.color_buffer, color_new.as_ref()) {
-        (Some(b), Some(c)) => {
-            if b.size() != c.len() as u64 {
-                return false;
-            }
-        }
-        (None, None) => {}
-        _ => return false,
+    if !required_stream_size_matches(gpu.color_buffer.as_deref(), vec4_bytes) {
+        return false;
     }
-
-    let tangent_new = vertex_float4_stream_bytes(
-        vertex_slice,
-        vc_usize,
-        vertex_stride_us,
-        &data.vertex_attributes,
-        VertexAttributeType::Tangent,
-        [1.0, 1.0, 1.0, 1.0],
-    );
-    if let Some(b) = &gpu.tangent_buffer {
-        let Some(t) = tangent_new.as_ref() else {
-            return false;
-        };
-        if b.size() != t.len() as u64 {
+    if !optional_stream_size_matches(gpu.tangent_buffer.as_deref(), Some(vec4_bytes)) {
+        return false;
+    }
+    for buffer in [&gpu.uv1_buffer, &gpu.uv2_buffer, &gpu.uv3_buffer] {
+        if !optional_stream_size_matches(buffer.as_deref(), Some(uv_bytes)) {
             return false;
         }
     }
-
-    for (buffer, target) in [
-        (&gpu.uv1_buffer, VertexAttributeType::UV1),
-        (&gpu.uv2_buffer, VertexAttributeType::UV2),
-        (&gpu.uv3_buffer, VertexAttributeType::UV3),
-    ] {
-        let uv_new = vertex_float2_stream_bytes(
-            vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
-            target,
-        );
-        if let Some(b) = buffer {
-            let Some(uv) = uv_new.as_ref() else {
-                return false;
-            };
-            if b.size() != uv.len() as u64 {
-                return false;
-            }
-        }
-    }
-
     true
+}
+
+fn has_supported_position_stream(attrs: &[VertexAttributeDescriptor]) -> bool {
+    attrs.iter().any(|attr| {
+        (attr.attribute as i16) == (VertexAttributeType::Position as i16)
+            && attr.format == VertexAttributeFormat::Float32
+            && attr.dimensions >= 3
+    })
+}
+
+fn required_stream_size_matches(buffer: Option<&wgpu::Buffer>, expected: u64) -> bool {
+    buffer.is_some_and(|buffer| buffer.size() == expected)
+}
+
+fn optional_stream_size_matches(buffer: Option<&wgpu::Buffer>, expected: Option<u64>) -> bool {
+    match (buffer, expected) {
+        (Some(buffer), Some(expected)) => buffer.size() == expected,
+        (None, None) => true,
+        (None, Some(_)) => true,
+        (Some(_), None) => false,
+    }
 }
 
 /// True when the host requests any selective (non–full-replace) upload region.

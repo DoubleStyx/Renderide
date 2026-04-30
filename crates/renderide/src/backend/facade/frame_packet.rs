@@ -68,23 +68,23 @@ impl RenderBackend {
         let pipeline_property_ids = self.materials.pipeline_property_resolver().resolve();
 
         {
-            profiling::scope!("render::build_frame_material_cache");
-            let dict = MaterialDictionary::new(property_store);
-            self.material_batch_cache.refresh_for_frame(
-                scene,
-                &dict,
-                router,
-                &pipeline_property_ids,
-                ShaderPermutation(0),
-            );
-        };
-
-        {
             profiling::scope!("render::build_frame_prepared_renderables");
             self.prepared_renderables.rebuild_for_frame(
                 scene,
                 self.asset_transfers.mesh_pool(),
                 render_context,
+            );
+        };
+
+        {
+            profiling::scope!("render::build_frame_material_cache");
+            let dict = MaterialDictionary::new(property_store);
+            self.material_batch_cache.refresh_for_prepared(
+                &self.prepared_renderables,
+                &dict,
+                router,
+                &pipeline_property_ids,
+                ShaderPermutation(0),
             );
         };
 

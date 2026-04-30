@@ -201,6 +201,14 @@ impl FramePreparedRenderables {
             .iter()
             .map(|d| (d.mesh_asset_id, d.material_asset_id))
     }
+
+    /// Iterator of `(material_asset_id, property_block_id)` pairs for every prepared draw.
+    #[inline]
+    pub fn material_property_pairs(&self) -> impl Iterator<Item = (i32, Option<i32>)> + '_ {
+        self.draws
+            .iter()
+            .map(|d| (d.material_asset_id, d.property_block_id))
+    }
 }
 
 /// One renderable's identity and mesh handles, threaded into [`expand_renderer_slots`].

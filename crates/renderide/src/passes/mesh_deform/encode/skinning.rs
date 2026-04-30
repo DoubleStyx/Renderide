@@ -9,7 +9,7 @@ use glam::Mat4;
 
 use crate::mesh_deform::SkinCacheEntry;
 use crate::mesh_deform::advance_slab_cursor;
-use crate::mesh_deform::{SkinningPaletteParams, build_skinning_palette};
+use crate::mesh_deform::{SkinningPaletteParams, write_skinning_palette_bytes};
 use crate::scene::RenderSpaceId;
 
 use super::super::snapshot::MeshDeformSnapshot;
@@ -61,29 +61,30 @@ pub(super) fn record_skinning_deform(
 
     let bone_count_u = ctx.mesh.skinning_bind_matrices.len() as u32;
     gpu.scratch.ensure_bone_capacity(gpu.device, bone_count_u);
-    let Some(palette_mats) = build_skinning_palette(SkinningPaletteParams {
-        scene: ctx.scene,
-        space_id: ctx.space_id,
-        skinning_bind_matrices: &ctx.mesh.skinning_bind_matrices,
-        has_skeleton: ctx.mesh.has_skeleton,
-        bone_transform_indices: indices,
-        smr_node_id: ctx.smr_node_id,
-        render_context: ctx.render_context,
-        head_output_transform: ctx.head_output_transform,
-    }) else {
+    let Some(_bone_count) = write_skinning_palette_bytes(
+        SkinningPaletteParams {
+            scene: ctx.scene,
+            space_id: ctx.space_id,
+            skinning_bind_matrices: &ctx.mesh.skinning_bind_matrices,
+            has_skeleton: ctx.mesh.has_skeleton,
+            bone_transform_indices: indices,
+            smr_node_id: ctx.smr_node_id,
+            render_context: ctx.render_context,
+            head_output_transform: ctx.head_output_transform,
+        },
+        &mut gpu.scratch.bone_palette_bytes,
+    ) else {
         return false;
     };
-    let mut palette: Vec<u8> = vec![0u8; palette_mats.len() * 64];
-    for (bi, pal) in palette_mats.iter().enumerate() {
-        let cols = pal.to_cols_array();
-        palette[bi * 64..bi * 64 + 64].copy_from_slice(bytemuck::cast_slice(&cols));
-    }
 
-    let palette_len = palette.len() as u64;
+    let palette_len = gpu.scratch.bone_palette_bytes.len() as u64;
     gpu.scratch
         .ensure_bone_byte_capacity(gpu.device, ctx.bone_cursor.saturating_add(palette_len));
-    gpu.upload_batch
-        .write_buffer(&gpu.scratch.bone_matrices, *ctx.bone_cursor, &palette);
+    gpu.upload_batch.write_buffer(
+        &gpu.scratch.bone_matrices,
+        *ctx.bone_cursor,
+        gpu.scratch.bone_palette_bytes.as_slice(),
+    );
 
     let Some(bone_binding_size) = NonZeroU64::new(palette_len) else {
         return false;
