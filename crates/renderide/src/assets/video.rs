@@ -8,7 +8,7 @@
 pub mod player;
 
 #[cfg(not(feature = "video-textures"))]
-#[path = "player_stub.rs"]
+#[path = "video/player_stub.rs"]
 pub mod player;
 
 #[cfg(feature = "video-textures")]

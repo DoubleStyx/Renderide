@@ -73,7 +73,7 @@ pub type RendererSettingsHandle = Arc<std::sync::RwLock<RendererSettings>>;
 /// Resolves `config.toml`, merges with figment layers, and builds [`RendererSettings`].
 ///
 /// Precedence: struct defaults, then TOML file (unless [`ConfigFilePolicy::Ignore`]), then
-/// `RENDERIDE_*` environment variables (see module docs in `config/mod.rs`).
+/// `RENDERIDE_*` environment variables (see module docs in `config.rs`).
 /// [`apply_renderide_gpu_validation_env`] runs after extraction.
 ///
 /// When no file exists and [`super::resolve::renderide_config_env_nonempty`] is false, writes
