@@ -74,20 +74,13 @@ pub(crate) fn pack_sphere_mesh_upload(
         .flat_map(|v| v.normal.iter().flat_map(|c| c.to_le_bytes()))
         .collect();
 
-    let (index_buffer_format, index_bytes, index_count) =
-        if mesh.vertices.len() <= u16::MAX as usize {
-            let mut bytes = Vec::with_capacity(mesh.indices.len() * 2);
-            for i in &mesh.indices {
-                bytes.extend_from_slice(&(*i as u16).to_le_bytes());
-            }
-            (IndexBufferFormat::UInt16, bytes, mesh.indices.len() as i32)
-        } else {
-            let mut bytes = Vec::with_capacity(mesh.indices.len() * 4);
-            for i in &mesh.indices {
-                bytes.extend_from_slice(&i.to_le_bytes());
-            }
-            (IndexBufferFormat::UInt32, bytes, mesh.indices.len() as i32)
-        };
+    let index_buffer_format = if mesh.vertices.len() <= u16::MAX as usize {
+        IndexBufferFormat::UInt16
+    } else {
+        IndexBufferFormat::UInt32
+    };
+    let index_bytes = encode_indices(&mesh.indices, index_buffer_format);
+    let index_count = mesh.indices.len() as i32;
 
     let vertex_attributes = vec![position_float3_attr(), normal_float3_attr()];
     let payload = write_mesh_payload(&MeshLayoutInput {
@@ -147,12 +140,37 @@ pub(crate) fn make_mesh_upload_data(
     })
 }
 
-/// Conservative axis-aligned bounds for the unit sphere (slight outward bias keeps frustum culling
-/// from false-negatives at oblique angles while staying non-degenerate).
+/// Conservative axis-aligned bounds for the unit sphere.
+///
+/// `extents = 1.05` (instead of `1.0`) so frustum culling stays inclusive at oblique projection
+/// angles where floating-point imprecision could otherwise reject a pixel-correct silhouette;
+/// the geometry is the unit sphere itself but the AABB carries a 5% outward margin.
 pub(crate) fn unit_sphere_bounds() -> RenderBoundingBox {
     RenderBoundingBox {
         center: glam::Vec3::ZERO,
         extents: glam::Vec3::splat(1.05),
+    }
+}
+
+/// Encodes a `u32` index slice as little-endian bytes for the requested index format.
+///
+/// Centralizes the byte width selection so packing logic does not duplicate the per-format arm.
+fn encode_indices(indices: &[u32], format: IndexBufferFormat) -> Vec<u8> {
+    match format {
+        IndexBufferFormat::UInt16 => {
+            let mut bytes = Vec::with_capacity(indices.len() * 2);
+            for i in indices {
+                bytes.extend_from_slice(&(*i as u16).to_le_bytes());
+            }
+            bytes
+        }
+        IndexBufferFormat::UInt32 => {
+            let mut bytes = Vec::with_capacity(indices.len() * 4);
+            for i in indices {
+                bytes.extend_from_slice(&i.to_le_bytes());
+            }
+            bytes
+        }
     }
 }
 
@@ -176,6 +194,21 @@ mod tests {
         );
         assert_eq!(upload.submeshes.len(), 1);
         assert_eq!(upload.submeshes[0].index_count, mesh.indices.len() as i32);
+    }
+
+    #[test]
+    fn encode_indices_uint16_packs_two_bytes_per_index_little_endian() {
+        let bytes = encode_indices(&[0, 1, 0xff, 0x1234], IndexBufferFormat::UInt16);
+        assert_eq!(bytes, vec![0x00, 0x00, 0x01, 0x00, 0xff, 0x00, 0x34, 0x12]);
+    }
+
+    #[test]
+    fn encode_indices_uint32_packs_four_bytes_per_index_little_endian() {
+        let bytes = encode_indices(&[0, 1, 0x1234_5678], IndexBufferFormat::UInt32);
+        assert_eq!(
+            bytes,
+            vec![0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x56, 0x34, 0x12,]
+        );
     }
 
     #[test]

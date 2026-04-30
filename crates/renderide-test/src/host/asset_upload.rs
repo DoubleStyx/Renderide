@@ -22,17 +22,11 @@ pub(super) const DEFAULT_ASSET_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10
 /// shared memory alive until the renderer is shut down (the renderer's `SharedMemoryAccessor`
 /// only holds a read mapping; the host owns the backing).
 ///
-/// Fields are intentionally accessed only via [`Drop`] (writer keeps SHM alive); we expose them
-/// publicly so future host-side code can re-derive descriptors without re-opening the writer.
-#[expect(
-    dead_code,
-    reason = "fields kept alive via Drop; exposed for future host-side callers"
-)]
+/// The writer is held purely for its [`Drop`] semantics — releasing it tears down the SHM
+/// mapping the renderer is reading.
 pub(super) struct UploadedMesh {
-    /// Asset id assigned to the uploaded mesh.
-    pub asset_id: i32,
-    /// Live writer keeping the SHM buffer alive.
-    pub writer: SharedMemoryWriter,
+    /// Live writer keeping the SHM buffer alive; released on `Drop`.
+    _writer: SharedMemoryWriter,
 }
 
 /// Uploads `mesh` as a `MeshUploadData` against `asset_id`, blocking on `MeshUploadResult` while
@@ -78,7 +72,7 @@ pub(super) fn upload_sphere_mesh(
     wait_for_mesh_upload_result(queues, lockstep, asset_id, timeout)?;
     logger::info!("AssetUpload: received MeshUploadResult(asset_id={asset_id})");
 
-    Ok(UploadedMesh { asset_id, writer })
+    Ok(UploadedMesh { _writer: writer })
 }
 
 fn wait_for_mesh_upload_result(

@@ -1,5 +1,4 @@
-//! Procedural scene assets used by the golden test (sphere mesh, checkerboard texture).
+//! Procedural scene assets used by the golden test.
 
 pub(crate) mod mesh_payload;
 pub(crate) mod sphere;
-pub(crate) mod texture;

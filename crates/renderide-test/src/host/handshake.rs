@@ -20,20 +20,6 @@ use super::lockstep::LockstepDriver;
 /// Default deadline for receiving `RendererInitResult` after sending `RendererInitData`.
 pub(super) const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Outcome of [`run_handshake`].
-///
-/// The init result is exposed for future callers that want to log GPU caps or condition behavior
-/// on `actual_output_device`; the current harness only verifies the handshake completed.
-#[expect(
-    dead_code,
-    reason = "exposed for future callers; current harness only checks handshake completion"
-)]
-#[derive(Clone, Debug)]
-pub(super) struct HandshakeOutcome {
-    /// The renderer's reply to our `RendererInitData`.
-    pub init_result: RendererInitResult,
-}
-
 /// Drives the three-step init handshake. Pumps the lockstep loop while waiting for the result so
 /// any `FrameStartData` the renderer sends before finalize gets answered (the renderer's
 /// `frontend::begin_frame::begin_frame_allowed` only sends `FrameStartData` after `Finalized`,
@@ -43,7 +29,7 @@ pub(super) fn run_handshake(
     lockstep: &mut LockstepDriver,
     shared_memory_prefix: &str,
     timeout: Duration,
-) -> Result<HandshakeOutcome, HarnessError> {
+) -> Result<(), HarnessError> {
     let init = RendererInitData {
         shared_memory_prefix: Some(shared_memory_prefix.to_string()),
         unique_session_id: random_guid(),
@@ -81,7 +67,7 @@ pub(super) fn run_handshake(
         ));
     }
     logger::info!("Handshake: sent RendererInitFinalizeData; lockstep open");
-    Ok(HandshakeOutcome { init_result })
+    Ok(())
 }
 
 fn wait_for_init_result(
