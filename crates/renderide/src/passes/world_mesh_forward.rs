@@ -23,6 +23,8 @@
 //!    MSAA scene color after grab-pass transparent draws.
 //! 9. [`WorldMeshForwardDepthResolvePass`] — **[`ComputePass`]** that resolves the final MSAA
 //!    depth into the single-sample frame depth used by Hi-Z.
+//! 10. [`WorldMeshGtaoNormalPrepass`] — optional **[`RasterPass`]** enabled only when GTAO is in
+//!     the graph; writes smoothed view-space mesh normals behind the final forward depth.
 //!
 //! ## VR stereo world draws
 //!
@@ -35,6 +37,7 @@ mod color_resolve;
 mod current_view_textures;
 mod encode;
 mod execute_helpers;
+mod gtao_normal_prepass;
 mod material_batch;
 mod skybox;
 mod state;
@@ -42,6 +45,9 @@ mod vp;
 
 pub use color_resolve::{
     WorldMeshForwardColorResolveGraphResources, WorldMeshForwardColorResolvePass,
+};
+pub use gtao_normal_prepass::{
+    WorldMeshGtaoNormalPrepass, WorldMeshGtaoNormalPrepassGraphResources,
 };
 pub(crate) use material_batch::{MaterialBatchPacket, MaterialDrawResolver, PipelineVariantKey};
 pub(crate) use state::{

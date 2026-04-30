@@ -11,6 +11,7 @@ use super::builder::GraphBuilder;
 use super::cache::GraphCacheKey;
 use super::compiled::CompiledRenderGraph;
 use super::error::GraphBuildError;
+use super::ids::PassId;
 use super::post_processing;
 use super::resources::{
     BackendFrameBufferKind, BufferAccess, BufferHandle, BufferImportSource, BufferSizePolicy,
@@ -37,6 +38,8 @@ struct MainGraphHandles {
     scene_color_hdr_msaa: TextureHandle,
     forward_msaa_depth: TextureHandle,
     forward_msaa_depth_r32: TextureHandle,
+    /// Single-sample smoothed-normal target sampled by GTAO when the effect is enabled.
+    gtao_normals: Option<TextureHandle>,
 }
 
 /// Handles for imported backend buffers (lights, cluster tables, per-draw slab, frame uniforms).
@@ -166,17 +169,22 @@ fn import_main_graph_buffers(builder: &mut GraphBuilder) -> MainGraphBufferImpor
 
 /// Declares cluster buffers and HDR forward transients for [`build_main_graph`].
 ///
+/// The GTAO normal target is included only when the post-processing signature enables GTAO; that
+/// keeps the steady-state graph free of the normal prepass and its attachment when AO is disabled.
+///
 /// Forward MSAA depth targets use [`TransientArrayLayers::Frame`] (not a fixed layer count from
 /// [`GraphCacheKey::multiview_stereo`]) so the same compiled graph can run mono desktop and stereo
 /// OpenXR without mismatched multiview attachment layers.
 fn create_main_graph_transient_resources(
     builder: &mut GraphBuilder,
+    include_gtao_normals: bool,
 ) -> (
     BufferHandle,
     TextureHandle,
     TextureHandle,
     TextureHandle,
     TextureHandle,
+    Option<TextureHandle>,
 ) {
     let cluster_params = builder.create_buffer(TransientBufferDesc {
         label: "cluster_params",
@@ -234,17 +242,33 @@ fn create_main_graph_transient_resources(
         )
         .with_frame_array_layers(),
     );
+    let gtao_normals = include_gtao_normals.then(|| {
+        builder.create_texture(
+            TransientTextureDesc::texture_2d(
+                "gtao_normals",
+                wgpu::TextureFormat::Rgba16Float,
+                extent_backbuffer,
+                1,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+            .with_frame_array_layers(),
+        )
+    });
     (
         cluster_params,
         scene_color_hdr,
         scene_color_hdr_msaa,
         forward_msaa_depth,
         forward_msaa_depth_r32,
+        gtao_normals,
     )
 }
 
 /// Wires imported frame targets and main-graph transients into `builder` for [`build_main_graph`].
-fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGraphHandles {
+fn import_main_graph_resources(
+    builder: &mut GraphBuilder,
+    include_gtao_normals: bool,
+) -> MainGraphHandles {
     let (color, depth, hi_z_current) = import_main_graph_textures(builder);
     let buf = import_main_graph_buffers(builder);
     let (
@@ -253,7 +277,8 @@ fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGraphHandles {
         scene_color_hdr_msaa,
         forward_msaa_depth,
         forward_msaa_depth_r32,
-    ) = create_main_graph_transient_resources(builder);
+        gtao_normals,
+    ) = create_main_graph_transient_resources(builder, include_gtao_normals);
     MainGraphHandles {
         color,
         depth,
@@ -268,6 +293,67 @@ fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGraphHandles {
         scene_color_hdr_msaa,
         forward_msaa_depth,
         forward_msaa_depth_r32,
+        gtao_normals,
+    }
+}
+
+fn add_color_snapshot_edges(
+    builder: &mut GraphBuilder,
+    forward_intersect: PassId,
+    pre_grab_color_resolve: Option<PassId>,
+    color_snapshot: PassId,
+) {
+    if let Some(pre_grab_color_resolve) = pre_grab_color_resolve {
+        builder.add_edge(forward_intersect, pre_grab_color_resolve);
+        builder.add_edge(pre_grab_color_resolve, color_snapshot);
+    } else {
+        builder.add_edge(forward_intersect, color_snapshot);
+    }
+}
+
+fn add_forward_tail_edges(
+    builder: &mut GraphBuilder,
+    forward_transparent: PassId,
+    final_color_resolve: Option<PassId>,
+    depth_resolve: PassId,
+    gtao_normal_prepass: Option<PassId>,
+    hiz: PassId,
+) {
+    if let Some(final_color_resolve) = final_color_resolve {
+        builder.add_edge(forward_transparent, final_color_resolve);
+        builder.add_edge(final_color_resolve, depth_resolve);
+    } else {
+        builder.add_edge(forward_transparent, depth_resolve);
+    }
+    if let Some(gtao_normal_prepass) = gtao_normal_prepass {
+        builder.add_edge(depth_resolve, gtao_normal_prepass);
+        builder.add_edge(gtao_normal_prepass, hiz);
+    } else {
+        builder.add_edge(depth_resolve, hiz);
+    }
+}
+
+fn main_forward_resources(h: &MainGraphHandles) -> crate::passes::WorldMeshForwardGraphResources {
+    crate::passes::WorldMeshForwardGraphResources {
+        scene_color_hdr: h.scene_color_hdr,
+        scene_color_hdr_msaa: h.scene_color_hdr_msaa,
+        depth: h.depth,
+        msaa_depth: h.forward_msaa_depth,
+        msaa_depth_r32: h.forward_msaa_depth_r32,
+        cluster_light_counts: h.cluster_light_counts,
+        cluster_light_indices: h.cluster_light_indices,
+        lights: h.lights,
+        per_draw_slab: h.per_draw_slab,
+        frame_uniforms: h.frame_uniforms,
+    }
+}
+
+fn main_color_resolve_resources(
+    h: &MainGraphHandles,
+) -> crate::passes::WorldMeshForwardColorResolveGraphResources {
+    crate::passes::WorldMeshForwardColorResolveGraphResources {
+        scene_color_hdr_msaa: h.scene_color_hdr_msaa,
+        scene_color_hdr: h.scene_color_hdr,
     }
 }
 
@@ -288,18 +374,7 @@ fn add_main_graph_passes_and_edges(
         },
         cluster_assignment,
     )));
-    let forward_resources = crate::passes::WorldMeshForwardGraphResources {
-        scene_color_hdr: h.scene_color_hdr,
-        scene_color_hdr_msaa: h.scene_color_hdr_msaa,
-        depth: h.depth,
-        msaa_depth: h.forward_msaa_depth,
-        msaa_depth_r32: h.forward_msaa_depth_r32,
-        cluster_light_counts: h.cluster_light_counts,
-        cluster_light_indices: h.cluster_light_indices,
-        lights: h.lights,
-        per_draw_slab: h.per_draw_slab,
-        frame_uniforms: h.frame_uniforms,
-    };
+    let forward_resources = main_forward_resources(&h);
     let forward_prepare = builder.add_callback_pass(Box::new(
         crate::passes::WorldMeshForwardPreparePass::new(forward_resources),
     ));
@@ -316,10 +391,7 @@ fn add_main_graph_passes_and_edges(
     // makes a single-sample HDR snapshot available to grab-pass shaders; the final resolve moves
     // any grab-pass transparent MSAA color back into the single-sample HDR target consumed by
     // post-processing. In 1× mode each forward pass writes `scene_color_hdr` directly.
-    let color_resolve_resources = crate::passes::WorldMeshForwardColorResolveGraphResources {
-        scene_color_hdr_msaa: h.scene_color_hdr_msaa,
-        scene_color_hdr: h.scene_color_hdr,
-    };
+    let color_resolve_resources = main_color_resolve_resources(&h);
     let pre_grab_color_resolve = (msaa_sample_count > 1).then(|| {
         builder.add_raster_pass(Box::new(
             crate::passes::WorldMeshForwardColorResolvePass::new_pre_grab(color_resolve_resources),
@@ -339,6 +411,15 @@ fn add_main_graph_passes_and_edges(
     let depth_resolve = builder.add_compute_pass(Box::new(
         crate::passes::WorldMeshForwardDepthResolvePass::new(forward_resources),
     ));
+    let gtao_normal_prepass = h.gtao_normals.map(|normals| {
+        builder.add_raster_pass(Box::new(crate::passes::WorldMeshGtaoNormalPrepass::new(
+            crate::passes::WorldMeshGtaoNormalPrepassGraphResources {
+                normals,
+                depth: h.depth,
+                per_draw_slab: h.per_draw_slab,
+            },
+        )))
+    });
     let hiz = builder.add_compute_pass(Box::new(crate::passes::HiZBuildPass::new(
         crate::passes::HiZBuildGraphResources {
             depth: h.depth,
@@ -362,20 +443,21 @@ fn add_main_graph_passes_and_edges(
     builder.add_edge(forward_prepare, forward_opaque);
     builder.add_edge(forward_opaque, depth_snapshot);
     builder.add_edge(depth_snapshot, forward_intersect);
-    if let Some(pre_grab_color_resolve) = pre_grab_color_resolve {
-        builder.add_edge(forward_intersect, pre_grab_color_resolve);
-        builder.add_edge(pre_grab_color_resolve, color_snapshot);
-    } else {
-        builder.add_edge(forward_intersect, color_snapshot);
-    }
+    add_color_snapshot_edges(
+        &mut builder,
+        forward_intersect,
+        pre_grab_color_resolve,
+        color_snapshot,
+    );
     builder.add_edge(color_snapshot, forward_transparent);
-    if let Some(final_color_resolve) = final_color_resolve {
-        builder.add_edge(forward_transparent, final_color_resolve);
-        builder.add_edge(final_color_resolve, depth_resolve);
-    } else {
-        builder.add_edge(forward_transparent, depth_resolve);
-    }
-    builder.add_edge(depth_resolve, hiz);
+    add_forward_tail_edges(
+        &mut builder,
+        forward_transparent,
+        final_color_resolve,
+        depth_resolve,
+        gtao_normal_prepass,
+        hiz,
+    );
     // Sequence post-processing after the final forward HDR target is available.
     if let Some((first_post, last_post)) = chain_output.pass_range() {
         builder.add_edge(hiz, first_post);
@@ -391,24 +473,29 @@ fn add_main_graph_passes_and_edges(
 /// Execution order is GTAO → bloom → ACES tonemap. GTAO runs first so ambient occlusion
 /// modulates linear HDR light before bloom scatter; bloom runs in HDR-linear space so its
 /// dual-filter pyramid operates on scene-referred radiance; then ACES compresses the combined
-/// HDR signal to display-referred `[0, 1]`. Each effect gates itself via
+/// HDR signal to display-referred `[0, 1]`. The graph contributes `GtaoEffect` only when its
+/// normal prepass target exists; each effect still gates itself via
 /// [`super::post_processing::PostProcessEffect::is_enabled`] against the live
 /// [`crate::config::PostProcessingSettings`].
 ///
 /// `GtaoEffect` is parameterised with the current [`crate::config::GtaoSettings`] snapshot and
-/// the imported `frame_uniforms` handle (used to access per-eye projection coefficients and the
-/// frame index at record time). `BloomEffect` captures a [`crate::config::BloomSettings`]
-/// snapshot for its shared params UBO and per-mip blend constants.
+/// the normal prepass texture plus imported `frame_uniforms` handle (used to access per-eye
+/// projection coefficients and the frame index at record time). `BloomEffect` captures a
+/// [`crate::config::BloomSettings`] snapshot for its shared params UBO and per-mip blend
+/// constants.
 fn build_default_post_processing_chain(
     h: &MainGraphHandles,
     post_processing_settings: &crate::config::PostProcessingSettings,
 ) -> post_processing::PostProcessChain {
     let mut chain = post_processing::PostProcessChain::new();
-    chain.push(Box::new(crate::passes::GtaoEffect {
-        settings: post_processing_settings.gtao,
-        depth: h.depth,
-        frame_uniforms: h.frame_uniforms,
-    }));
+    if let Some(normals) = h.gtao_normals {
+        chain.push(Box::new(crate::passes::GtaoEffect {
+            settings: post_processing_settings.gtao,
+            depth: h.depth,
+            normals,
+            frame_uniforms: h.frame_uniforms,
+        }));
+    }
     chain.push(Box::new(crate::passes::BloomEffect {
         settings: post_processing_settings.bloom,
     }));
@@ -426,7 +513,9 @@ fn build_default_post_processing_chain(
 /// [`crate::config::RenderingSettings::scene_color_format`] at execute time (see
 /// [`GraphCacheKey::scene_color_format`] for graph-cache identity). `key` still drives graph-cache
 /// identity ([`GraphCacheKey::surface_format`], [`GraphCacheKey::multiview_stereo`],
-/// [`GraphCacheKey::msaa_sample_count`]). Imported sources resolve at execute time via
+/// [`GraphCacheKey::msaa_sample_count`], and [`GraphCacheKey::post_processing`]). The post-
+/// processing signature controls whether the GTAO normal prepass is compiled into the graph.
+/// Imported sources resolve at execute time via
 /// [`crate::backend::FrameResourceManager`].
 pub fn build_main_graph(
     key: GraphCacheKey,
@@ -438,7 +527,7 @@ pub fn build_main_graph(
         key.post_processing.active_count()
     );
     let mut builder = GraphBuilder::new();
-    let handles = import_main_graph_resources(&mut builder);
+    let handles = import_main_graph_resources(&mut builder, key.post_processing.gtao);
     let msaa_handles = [
         handles.scene_color_hdr_msaa,
         handles.forward_msaa_depth,
@@ -532,6 +621,23 @@ mod tests {
         }
     }
 
+    fn gtao_enabled_post() -> PostProcessingSettings {
+        PostProcessingSettings {
+            enabled: true,
+            gtao: GtaoSettings {
+                enabled: true,
+                ..Default::default()
+            },
+            bloom: BloomSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            tonemap: TonemapSettings {
+                mode: TonemapMode::None,
+            },
+        }
+    }
+
     #[test]
     fn default_main_needs_surface_and_eleven_passes() {
         let g = build_main_graph(smoke_key(), &no_post()).expect("default graph");
@@ -582,6 +688,51 @@ mod tests {
         assert!(
             g_on.compile_stats.transient_texture_count
                 >= g_off.compile_stats.transient_texture_count
+        );
+    }
+
+    #[test]
+    fn gtao_adds_normal_prepass_and_normal_transient() {
+        let post = gtao_enabled_post();
+        let mut key = smoke_key();
+        key.post_processing = PostProcessChainSignature::from_settings(&post);
+        let g = build_main_graph(key, &post).expect("gtao graph");
+        let pass_names: Vec<&str> = g.pass_info.iter().map(|p| p.name.as_str()).collect();
+        let normal_pos = pass_names
+            .iter()
+            .position(|name| *name == "WorldMeshGtaoNormalPrepass")
+            .expect("GTAO normal prepass");
+        let gtao_pos = pass_names
+            .iter()
+            .position(|name| *name == "Gtao")
+            .expect("GTAO pass");
+
+        assert!(normal_pos < gtao_pos);
+        assert!(
+            g.transient_textures
+                .iter()
+                .any(|t| t.desc.label == "gtao_normals"),
+            "GTAO graph should allocate a normal prepass transient"
+        );
+    }
+
+    #[test]
+    fn gtao_disabled_omits_normal_prepass_and_transient() {
+        let post = aces_enabled_post();
+        let mut key = smoke_key();
+        key.post_processing = PostProcessChainSignature::from_settings(&post);
+        let g = build_main_graph(key, &post).expect("aces graph");
+
+        assert!(
+            !g.pass_info
+                .iter()
+                .any(|p| p.name == "WorldMeshGtaoNormalPrepass")
+        );
+        assert!(
+            !g.transient_textures
+                .iter()
+                .any(|t| t.desc.label == "gtao_normals"),
+            "non-GTAO graph should not allocate normal prepass texture"
         );
     }
 

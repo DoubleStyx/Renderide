@@ -16,7 +16,8 @@ use crate::world_mesh::{DrawGroup, WorldMeshDrawItem};
 use super::MaterialBatchPacket;
 
 use vertex_binding::{
-    LastMeshBindState, draw_mesh_submesh_instanced, gpu_refs_for_encode, streams_for_item,
+    LastMeshBindState, draw_mesh_submesh_instanced, gpu_refs_for_encode, primary_streams,
+    streams_for_item,
 };
 
 /// Pre-grouped draws, bind groups, and precomputed-batch table for one mesh-forward raster subpass.
@@ -49,6 +50,44 @@ pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
     /// false, every group carries `instance_range.len() == 1` and the per-draw slab is
     /// addressed via dynamic offset instead.
     pub supports_base_instance: bool,
+}
+
+/// Per-render-pass geometry draw state for material-independent mesh passes.
+pub(crate) struct GeometryDrawState {
+    /// Last bound vertex/index buffers for the current render pass.
+    last_mesh: LastMeshBindState,
+    /// Last dynamic offset used for `@group(2)` per-draw slab binding.
+    last_per_draw_dyn_offset: Option<u32>,
+}
+
+impl GeometryDrawState {
+    /// Creates empty bind-state tracking for a fresh render pass.
+    pub(crate) fn new() -> Self {
+        Self {
+            last_mesh: LastMeshBindState::new(),
+            last_per_draw_dyn_offset: None,
+        }
+    }
+}
+
+/// One material-independent geometry draw group.
+pub(crate) struct GeometryDrawGroupBatch<'a, 'b, 'c, 'd> {
+    /// Active render pass.
+    pub rpass: &'a mut wgpu::RenderPass<'b>,
+    /// Pre-built instance group to draw.
+    pub group: &'c DrawGroup,
+    /// Full sorted world mesh draw list for the view.
+    pub draws: &'c [WorldMeshDrawItem],
+    /// Mesh pool and skin cache for vertex/index binding.
+    pub encode: &'a WorldMeshForwardEncodeRefs<'d>,
+    /// Device limits snapshot (storage-offset alignment for `@group(2)`).
+    pub gpu_limits: &'a GpuLimits,
+    /// Per-draw storage slab at `@group(2)`.
+    pub per_draw_bind_group: &'a wgpu::BindGroup,
+    /// Whether `draw_indexed` may use non-zero `first_instance`.
+    pub supports_base_instance: bool,
+    /// Bind deduplication state shared across geometry groups in the same render pass.
+    pub state: &'a mut GeometryDrawState,
 }
 
 /// Records one raster subpass by walking pre-built [`DrawGroup`]s.
@@ -161,6 +200,46 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
     }
 
     crate::profiling::plot_world_mesh_subpass(subpass_batch_count, subpass_input_draws);
+}
+
+/// Records one geometry-only draw group with no material bind group or material pipeline work.
+pub(crate) fn draw_geometry_group(batch: GeometryDrawGroupBatch<'_, '_, '_, '_>) {
+    let GeometryDrawGroupBatch {
+        rpass,
+        group,
+        draws,
+        encode,
+        gpu_limits,
+        per_draw_bind_group,
+        supports_base_instance,
+        state,
+    } = batch;
+    let Some(item) = draws.get(group.representative_draw_idx) else {
+        return;
+    };
+
+    let slab_first_instance = group.instance_range.start as usize;
+    let instance_count = group.instance_range.end - group.instance_range.start;
+    bind_per_draw_slab_if_changed(
+        rpass,
+        per_draw_bind_group,
+        gpu_limits,
+        slab_first_instance,
+        instance_count,
+        supports_base_instance,
+        &mut state.last_per_draw_dyn_offset,
+    );
+
+    let inst_range = instance_range_for_draw_group(group, supports_base_instance);
+    let gpu_refs = gpu_refs_for_encode(encode);
+    draw_mesh_submesh_instanced(
+        rpass,
+        item,
+        gpu_refs,
+        primary_streams(),
+        inst_range,
+        &mut state.last_mesh,
+    );
 }
 
 /// Updates @group(2) dynamic offset and rebinds the per-draw slab when the row offset changes.

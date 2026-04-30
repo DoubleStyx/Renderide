@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 /// Ground-Truth Ambient Occlusion (Jimenez et al. 2016) configuration.
 ///
 /// Persisted as `[post_processing.gtao]`. GTAO runs pre-tonemap and modulates HDR scene color by
-/// a visibility factor reconstructed from the depth buffer. View-space normals are reconstructed
-/// from depth derivatives (no separate GBuffer). Defaults pick a perceptually neutral strength that
-/// still visibly darkens creases and corners; the implementation uses one horizon direction per
-/// pixel with a 4×4 spatial jitter so aliasing masks as grain rather than structured banding.
+/// a visibility factor reconstructed from the depth buffer and a graph-owned normal prepass.
+/// View-space normals come from smoothed mesh normals where available, with depth-derivative
+/// reconstruction as a fallback. Defaults pick a perceptually neutral strength that still visibly
+/// darkens creases and corners; the implementation uses one horizon direction per pixel with a
+/// 4×4 spatial jitter so aliasing masks as grain rather than structured banding.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GtaoSettings {

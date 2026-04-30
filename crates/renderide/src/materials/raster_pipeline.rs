@@ -103,6 +103,7 @@ pub(crate) struct ReflectiveRasterMeshForwardPipelineDesc {
 
 mod vertex_layouts;
 
+pub(crate) use vertex_layouts::mesh_forward_position_normal_vertex_buffer_layouts;
 use vertex_layouts::mesh_forward_vertex_buffer_layouts;
 
 fn pipeline_layout_and_vertex_buffers(

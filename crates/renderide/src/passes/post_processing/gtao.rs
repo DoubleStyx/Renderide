@@ -1,10 +1,12 @@
 //! Ground-Truth Ambient Occlusion (Jimenez et al. 2016) render pass.
 //!
-//! Reads the chain's HDR scene color and the scene depth buffer, reconstructs view-space normals
-//! from depth derivatives, evaluates the analytic cosine-weighted GTAO integral with a single
-//! horizon direction per pixel (spatially jittered 4×4 + per-frame phase rotation), applies the
-//! multi-bounce fit for near-field indirect light, and writes the HDR scene color modulated by
-//! the resulting visibility factor. Must run **before** tonemapping so AO acts on linear light.
+//! Reads the chain's HDR scene color, scene depth, and the graph-owned GTAO normal prepass target.
+//! Pixels with valid prepass normals use smoothed view-space mesh normals; uncovered pixels fall
+//! back to depth-derived normals. The pass then evaluates the analytic cosine-weighted GTAO
+//! integral with a single horizon direction per pixel (spatially jittered 4×4 + per-frame phase
+//! rotation), applies the multi-bounce fit for near-field indirect light, and writes the HDR scene
+//! color modulated by the resulting visibility factor. Must run **before** tonemapping so AO acts
+//! on linear light.
 //!
 //! Multiview is handled the same way as [`crate::passes::AcesTonemapPass`]: two
 //! pipeline variants (mono / multiview) picked via a `multiview_mask_override` of
@@ -46,6 +48,8 @@ pub struct GtaoGraphResources {
     /// the record path builds its own depth-only `TextureView` from `frame.view.depth_texture`
     /// since `ResolvedImportedTexture` only exposes the attachment view).
     pub depth: ImportedTextureHandle,
+    /// GTAO normal prepass target. Alpha marks valid mesh-normal pixels.
+    pub normals: TextureHandle,
     /// Legacy-path fallback for the frame-uniforms buffer. In normal per-view rendering, the
     /// actual buffer bound at record time is [`PerViewFramePlan::frame_uniform_buffer`] (read
     /// from the blackboard); this import is kept only for graph-scheduling declaration and
@@ -93,6 +97,7 @@ impl RasterPass for GtaoPass {
                 stages: wgpu::ShaderStages::FRAGMENT,
             },
         );
+        read_fragment_sampled_texture(b, self.resources.normals);
         b.import_buffer(
             self.resources.frame_uniforms,
             BufferAccess::Uniform {
@@ -128,6 +133,12 @@ impl RasterPass for GtaoPass {
             return Err(missing_pass_resource(
                 self.name(),
                 format_args!("missing transient input {:?}", self.resources.input),
+            ));
+        };
+        let Some(normal_tex) = graph_resources.transient_texture(self.resources.normals) else {
+            return Err(missing_pass_resource(
+                self.name(),
+                format_args!("missing GTAO normals {:?}", self.resources.normals),
             ));
         };
 
@@ -184,6 +195,7 @@ impl RasterPass for GtaoPass {
             multiview_stereo,
             &input_tex.texture,
             frame.view.depth_texture,
+            &normal_tex.texture,
             &frame_uniform_buffer,
         );
         rpass.set_pipeline(pipeline.as_ref());
@@ -209,6 +221,8 @@ pub struct GtaoEffect {
     pub settings: GtaoSettings,
     /// Imported depth texture handle (declared as a sampled read for scheduling).
     pub depth: ImportedTextureHandle,
+    /// Transient GTAO normal prepass target sampled by the shader.
+    pub normals: TextureHandle,
     /// Imported frame-uniforms buffer handle (fallback / scheduling; actual bind sources from
     /// [`PerViewFramePlanSlot`] at record time).
     pub frame_uniforms: ImportedBufferHandle,
@@ -234,6 +248,7 @@ impl PostProcessEffect for GtaoEffect {
                 input,
                 output,
                 depth: self.depth,
+                normals: self.normals,
                 frame_uniforms: self.frame_uniforms,
             },
             self.settings,
@@ -258,6 +273,7 @@ mod tests {
         GraphBuilder,
         TextureHandle,
         TextureHandle,
+        TextureHandle,
         ImportedTextureHandle,
         ImportedBufferHandle,
     ) {
@@ -276,6 +292,16 @@ mod tests {
         };
         let input = builder.create_texture(desc());
         let output = builder.create_texture(desc());
+        let normals = builder.create_texture(
+            TransientTextureDesc::texture_2d(
+                "gtao_normals",
+                wgpu::TextureFormat::Rgba16Float,
+                TransientExtent::Backbuffer,
+                1,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+            .with_frame_array_layers(),
+        );
         let depth = builder.import_texture(ImportedTextureDecl {
             label: "frame_depth",
             source: ImportSource::Frame(
@@ -302,17 +328,18 @@ mod tests {
                 dynamic_offset: false,
             },
         });
-        (builder, input, output, depth, frame_uniforms)
+        (builder, input, output, normals, depth, frame_uniforms)
     }
 
     #[test]
     fn setup_declares_sampled_input_and_raster_output_and_uniform_buffer() {
-        let (_builder, input, output, depth, frame_uniforms) = fake_graph();
+        let (_builder, input, output, normals, depth, frame_uniforms) = fake_graph();
         let mut pass = GtaoPass::new(
             GtaoGraphResources {
                 input,
                 output,
                 depth,
+                normals,
                 frame_uniforms,
             },
             GtaoSettings::default(),
@@ -335,8 +362,8 @@ mod tests {
             })
             .count();
         assert!(
-            sampled_reads >= 2,
-            "expected sampled reads for both HDR input and depth (got {sampled_reads})"
+            sampled_reads >= 3,
+            "expected sampled reads for HDR input, depth, and normals (got {sampled_reads})"
         );
         assert!(
             setup.accesses.iter().any(|a| matches!(
@@ -356,6 +383,7 @@ mod tests {
         let e = GtaoEffect {
             settings: GtaoSettings::default(),
             depth: ImportedTextureHandle(0),
+            normals: TextureHandle(0),
             frame_uniforms: ImportedBufferHandle(0),
         };
         assert_eq!(e.id(), PostProcessEffectId::Gtao);
@@ -367,6 +395,7 @@ mod tests {
         let e = GtaoEffect {
             settings: GtaoSettings::default(),
             depth: ImportedTextureHandle(0),
+            normals: TextureHandle(0),
             frame_uniforms: ImportedBufferHandle(0),
         };
         let mut s = PostProcessingSettings {

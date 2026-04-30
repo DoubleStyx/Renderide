@@ -90,6 +90,12 @@ pub(super) fn mesh_forward_vertex_buffer_layouts() -> [wgpu::VertexBufferLayout<
     ]
 }
 
+/// Returns the position + normal vertex buffer layouts shared by geometry-only mesh passes.
+pub(crate) fn mesh_forward_position_normal_vertex_buffer_layouts()
+-> [wgpu::VertexBufferLayout<'static>; 2] {
+    [layout_at(0), layout_at(1)]
+}
+
 const fn layout_at(index: usize) -> wgpu::VertexBufferLayout<'static> {
     wgpu::VertexBufferLayout {
         array_stride: MESH_FORWARD_STREAMS[index].stride,

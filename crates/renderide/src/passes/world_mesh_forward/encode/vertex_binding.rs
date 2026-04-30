@@ -355,3 +355,12 @@ pub(super) fn streams_for_item(item: &WorldMeshDrawItem) -> EmbeddedVertexStream
         embedded_extended_vertex_streams: item.batch_key.embedded_needs_extended_vertex_streams,
     }
 }
+
+/// Vertex stream flags for geometry-only passes that need only position and normal streams.
+pub(super) fn primary_streams() -> EmbeddedVertexStreamFlags {
+    EmbeddedVertexStreamFlags {
+        embedded_uv: false,
+        embedded_color: false,
+        embedded_extended_vertex_streams: false,
+    }
+}

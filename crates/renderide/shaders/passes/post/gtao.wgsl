@@ -1,8 +1,9 @@
 //! Fullscreen pass: Ground-Truth Ambient Occlusion (Jimenez et al. 2016, "Practical Realtime
-//! Strategies for Accurate Indirect Occlusion"). Reads HDR scene color and the scene depth
-//! buffer, reconstructs view-space positions and normals on the fly, searches screen-space
-//! horizons analytically (Eq. 5–7), applies the multi-bounce fit (Eq. 10), and writes modulated
-//! HDR to the post-processing chain output.
+//! Strategies for Accurate Indirect Occlusion"). Reads HDR scene color, scene depth, and the
+//! GTAO normal prepass target. Valid prepass pixels use smoothed view-space mesh normals; other
+//! pixels fall back to depth-derived normals. The pass reconstructs view-space positions, searches
+//! screen-space horizons analytically (Eq. 5–7), applies the multi-bounce fit (Eq. 10), and writes
+//! modulated HDR to the post-processing chain output.
 //!
 //! The per-pixel horizon search mirrors Intel's XeGTAO reference shader: direction is
 //! orthogonalised against the view vector, the slice-plane normal `axis_vec` is explicitly
@@ -24,6 +25,7 @@
 //! - `@binding(2)` scene depth (`texture_depth_2d` mono, `texture_depth_2d_array` multiview).
 //! - `@binding(3)` `FrameGlobals` uniform (per-eye proj coefficients + near/far + frame index).
 //! - `@binding(4)` `GtaoParams` uniform (user-tunable radius/intensity/steps).
+//! - `@binding(5)` GTAO normal prepass (`texture_2d_array<f32>`; alpha marks valid normals).
 
 #import renderide::fullscreen as fs
 
@@ -75,6 +77,7 @@ struct GtaoParams {
 }
 
 @group(0) @binding(4) var<uniform> gtao: GtaoParams;
+@group(0) @binding(5) var gtao_normals: texture_2d_array<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32) -> fs::FullscreenVertexOutput {
@@ -88,6 +91,11 @@ fn load_depth(pix: vec2<i32>, view_layer: u32) -> f32 {
 #else
     return textureLoad(scene_depth, pix, 0);
 #endif
+}
+
+/// Normal prepass value at integer pixel coords for the current view layer.
+fn load_prepass_normal(pix: vec2<i32>, view_layer: u32) -> vec4<f32> {
+    return textureLoad(gtao_normals, pix, i32(view_layer), 0);
 }
 
 /// Reverse-Z NDC depth → positive view-space Z (eye-forward distance magnitude).
@@ -227,15 +235,22 @@ fn compute_gtao(
     let far = frame.far_clip;
     let view_z = linearize_depth(raw_depth, near, far);
     let view_pos = view_pos_from_uv(uv, view_z, proj_params);
-    let view_normal = reconstruct_view_normal(
-        pix,
-        view_pos,
-        view_layer,
-        proj_params,
-        viewport,
-        near,
-        far,
-    );
+    let normal_sample = load_prepass_normal(pix, view_layer);
+    let normal_len = length(normal_sample.xyz);
+    var view_normal: vec3<f32>;
+    if (normal_sample.a > 0.5 && normal_len > 1e-4) {
+        view_normal = normal_sample.xyz / normal_len;
+    } else {
+        view_normal = reconstruct_view_normal(
+            pix,
+            view_pos,
+            view_layer,
+            proj_params,
+            viewport,
+            near,
+            far,
+        );
+    }
     let view_dir = normalize(-view_pos);
 
     // Screen-space search radius scaled by world radius and projection focal length.

@@ -298,8 +298,9 @@ fn post_processing_master(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut 
 fn post_processing_gtao(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
     let _id = ui.push_id("gtao");
     ui.text_disabled(
-        "GTAO (Ground-Truth Ambient Occlusion): reconstructs view-space normals from depth \
-         and modulates HDR scene color by a physical visibility factor. Runs pre-tonemap.",
+        "GTAO (Ground-Truth Ambient Occlusion): uses the normal prepass with depth-derived \
+         fallback normals and modulates HDR scene color by a physical visibility factor. Runs \
+         pre-tonemap.",
     );
     if ui.checkbox("Enable GTAO", &mut g.post_processing.gtao.enabled) {
         *dirty = true;

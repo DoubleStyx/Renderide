@@ -1,9 +1,11 @@
 //! Cached pipelines, bind layouts, sampler, and per-pass uniform buffer for [`super::GtaoPass`].
 //!
 //! Two bind-group layouts are cached (mono vs multiview) because the depth sampling type differs
-//! (`texture_depth_2d` vs `texture_depth_2d_array`). One GPU-side uniform buffer (`GtaoParams`) is
-//! shared across every GTAO pass instance and rewritten from the CPU each record — GTAO is a
-//! singleton effect in the chain, so a process-wide buffer avoids per-frame allocation churn.
+//! (`texture_depth_2d` vs `texture_depth_2d_array`). The normal prepass target is sampled as a
+//! `texture_2d_array<f32>` for both paths so mono and stereo share one shader-side shape. One
+//! GPU-side uniform buffer (`GtaoParams`) is shared across every GTAO pass instance and rewritten
+//! from the CPU each record — GTAO is a singleton effect in the chain, so a process-wide buffer
+//! avoids per-frame allocation churn.
 //!
 //! WGSL is sourced from the build-time embedded shader registry ([`embedded_target_wgsl`]) so
 //! the same `shaders/passes/post/gtao.wgsl` source is composed once into mono and multiview
@@ -63,6 +65,8 @@ struct GtaoBindGroupKey {
     scene_color_texture: wgpu::Texture,
     /// Scene-depth source texture (aspect view derived internally).
     scene_depth_texture: wgpu::Texture,
+    /// GTAO normal prepass texture.
+    normal_texture: wgpu::Texture,
     /// Per-view frame-uniforms buffer.
     frame_uniforms: wgpu::Buffer,
     /// Mono vs multiview-stereo view shape.
@@ -83,7 +87,7 @@ pub(super) struct GtaoPipelineCache {
     mono: RenderPipelineMap<wgpu::TextureFormat>,
     /// Cached pipelines keyed by output format (multiview variant).
     multiview: RenderPipelineMap<wgpu::TextureFormat>,
-    /// Bind groups keyed by `(scene_color, scene_depth, frame_uniforms, multiview_stereo)`.
+    /// Bind groups keyed by `(scene_color, scene_depth, normals, frame_uniforms, multiview_stereo)`.
     /// Normally one entry per active view (desktop / HMD / each secondary RT camera).
     bind_groups: BindGroupMap<GtaoBindGroupKey>,
 }
@@ -116,8 +120,9 @@ impl GtaoPipelineCache {
         })
     }
 
-    /// Bind-group layout for the selected variant. Entries 0..=4 are, in order:
-    /// HDR scene-color array, linear sampler, scene depth, frame globals UBO, GTAO params UBO.
+    /// Bind-group layout for the selected variant. Entries 0..=5 are, in order:
+    /// HDR scene-color array, linear sampler, scene depth, frame globals UBO, GTAO params UBO,
+    /// GTAO normal prepass texture.
     pub(super) fn bind_group_layout(
         &self,
         device: &wgpu::Device,
@@ -152,6 +157,13 @@ impl GtaoPipelineCache {
                     ),
                     uniform_buffer_layout_entry(3, wgpu::ShaderStages::FRAGMENT, None),
                     uniform_buffer_layout_entry(4, wgpu::ShaderStages::FRAGMENT, None),
+                    texture_layout_entry(
+                        5,
+                        wgpu::ShaderStages::FRAGMENT,
+                        wgpu::TextureSampleType::Float { filterable: false },
+                        wgpu::TextureViewDimension::D2Array,
+                        false,
+                    ),
                 ],
             })
         })
@@ -185,7 +197,7 @@ impl GtaoPipelineCache {
     }
 
     /// Bind group for one frame's set of textures + UBOs, cached by
-    /// `(scene_color_texture, scene_depth_texture, frame_uniforms, multiview_stereo)`.
+    /// `(scene_color_texture, scene_depth_texture, normal_texture, frame_uniforms, multiview_stereo)`.
     ///
     /// Builds the per-dispatch `D2Array` color view and depth-aspect view on miss so the cached
     /// bind group outlives any single per-frame view clone. Hit is a `HashMap` lookup +
@@ -196,11 +208,13 @@ impl GtaoPipelineCache {
         multiview_stereo: bool,
         scene_color_texture: &wgpu::Texture,
         scene_depth_texture: &wgpu::Texture,
+        normal_texture: &wgpu::Texture,
         frame_uniforms: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         let key = GtaoBindGroupKey {
             scene_color_texture: scene_color_texture.clone(),
             scene_depth_texture: scene_depth_texture.clone(),
+            normal_texture: normal_texture.clone(),
             frame_uniforms: frame_uniforms.clone(),
             multiview_stereo,
         };
@@ -224,6 +238,11 @@ impl GtaoPipelineCache {
                         array_layer_count: depth_layer_count,
                         ..Default::default()
                     });
+            let normal_view = create_d2_array_view(
+                &key.normal_texture,
+                "gtao_normals_sampled",
+                key.multiview_stereo,
+            );
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("gtao"),
                 layout: self.bind_group_layout(device, key.multiview_stereo),
@@ -247,6 +266,10 @@ impl GtaoPipelineCache {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: self.params_buffer(device).as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&normal_view),
                     },
                 ],
             })
