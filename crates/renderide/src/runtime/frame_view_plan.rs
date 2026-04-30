@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::gpu::GpuContext;
+use crate::gpu::OutputDepthMode;
 use crate::materials::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 use crate::render_graph::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewClear, FrameViewTarget,
-    OutputDepthMode, WorldMeshDrawPlan,
+    WorldMeshDrawPlan,
 };
 use crate::world_mesh::CameraTransformDrawFilter;
 

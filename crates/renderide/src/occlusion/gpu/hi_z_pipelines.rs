@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use crate::embedded_shaders::{
     HI_Z_DOWNSAMPLE_MAX_WGSL, HI_Z_MIP0_DEFAULT_WGSL, HI_Z_MIP0_MULTIVIEW_WGSL,
 };
-use crate::render_graph::gpu_cache::{
+use crate::gpu::bind_layout::{
     storage_texture_layout_entry, texture_layout_entry, uniform_buffer_layout_entry,
 };
 

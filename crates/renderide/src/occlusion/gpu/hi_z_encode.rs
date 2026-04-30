@@ -3,8 +3,8 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::backend::HistoryTextureMipViews;
+use crate::gpu::OutputDepthMode;
 use crate::occlusion::{hi_z_pyramid_dimensions, mip_dimensions, mip_levels_for_extent};
-use crate::render_graph::OutputDepthMode;
 
 use super::hi_z_gpu::{HIZ_MAX_MIPS, HiZGpuScratch, HiZGpuState};
 use super::hi_z_pipelines::HiZPipelines;

@@ -69,7 +69,6 @@ pub(crate) mod frame_params;
 pub(crate) mod frame_upload_batch;
 pub(crate) mod gpu_cache;
 pub(crate) mod ids;
-pub(crate) mod output_depth_mode;
 pub mod pass;
 pub mod post_processing;
 mod record_parallel;
@@ -98,7 +97,6 @@ pub use context::{
 pub use error::{GraphBuildError, GraphExecuteError, RenderPassError, SetupError};
 pub use frame_params::{FrameRenderParams, FrameViewClear, PerViewFramePlan, PerViewFramePlanSlot};
 pub use ids::{GroupId, PassId};
-pub use output_depth_mode::{OutputDepthMode, OutputDepthModeError};
 pub use pass::{
     CallbackPass, ComputePass, CopyPass, GroupScope, PassBuilder, PassKind, PassMergeHint,
     PassNode, PassPhase, RasterPass, RasterPassBuilder,

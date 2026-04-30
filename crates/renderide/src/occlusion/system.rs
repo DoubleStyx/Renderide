@@ -11,9 +11,9 @@ use hashbrown::HashMap;
 use parking_lot::Mutex;
 
 use crate::camera::ViewId;
+use crate::gpu::OutputDepthMode;
 use crate::occlusion::HiZCullData;
 use crate::occlusion::gpu::{HiZBuildRecord, HiZGpuState, HiZHistoryTarget, encode_hi_z_build};
-use crate::render_graph::OutputDepthMode;
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::{HiZTemporalState, WorldMeshCullProjParams, capture_hi_z_temporal};
 

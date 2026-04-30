@@ -24,8 +24,8 @@ use crate::occlusion::gpu::HiZGpuState;
 use crate::scene::SceneCoordinator;
 use crate::shared::CameraClearMode;
 
-use super::OutputDepthMode;
 use super::blackboard::BlackboardSlot;
+use crate::gpu::OutputDepthMode;
 use crate::world_mesh::draw_prep::CameraTransformDrawFilter;
 
 /// Per-view background clear contract propagated from host camera state.

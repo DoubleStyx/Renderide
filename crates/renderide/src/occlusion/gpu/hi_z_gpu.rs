@@ -2,11 +2,11 @@
 
 use crossbeam_channel as mpsc;
 
+use crate::gpu::OutputDepthMode;
 use crate::occlusion::{
     HiZCpuSnapshot, HiZStereoCpuSnapshot, hi_z_snapshot_from_linear_linear, mip_dimensions,
     mip_levels_for_extent, unpack_linear_rows_to_mips,
 };
-use crate::render_graph::OutputDepthMode;
 use crate::world_mesh::HiZTemporalState;
 
 use super::readback_ring::{GpuReadbackRing, pending_none_array};

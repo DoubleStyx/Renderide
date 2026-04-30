@@ -596,8 +596,8 @@ mod tests {
     use super::*;
     use crate::config::{RendererSettings, RendererSettingsHandle};
     use crate::connection::ConnectionParams;
+    use crate::gpu::OutputDepthMode;
     use crate::materials::ShaderPermutation;
-    use crate::render_graph::OutputDepthMode;
 
     fn build_runtime() -> RendererRuntime {
         let settings: RendererSettingsHandle =

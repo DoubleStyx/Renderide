@@ -12,6 +12,7 @@ mod frame_cpu_gpu_timing;
 mod instance_limits;
 pub mod limits;
 pub mod msaa_depth_resolve;
+pub mod output_depth_mode;
 pub mod present;
 mod queue_access_gate;
 mod vr_mirror;
@@ -31,5 +32,6 @@ pub use limits::{
 pub use msaa_depth_resolve::{
     MsaaDepthResolveMonoTargets, MsaaDepthResolveResources, MsaaDepthResolveStereoTargets,
 };
+pub use output_depth_mode::{OutputDepthMode, OutputDepthModeError};
 pub use queue_access_gate::GpuQueueAccessGate;
 pub use vr_mirror::{VR_MIRROR_EYE_LAYER, VrMirrorBlitResources};
