@@ -453,4 +453,74 @@ focused_fps = 10
             PathBuf::from("/tmp/x/config.toml")
         );
     }
+
+    /// Regression test: loads a `config.toml` whose every enum token uses the original
+    /// pre-refactor on-disk format (serde's `snake_case` for the section that had it,
+    /// PascalCase for `RecordParallelism` which had no `rename_all`). Goes through the full
+    /// figment pipeline rather than a bare `toml::from_str` so it catches the path the
+    /// renderer actually exercises at startup.
+    #[test]
+    fn pre_refactor_format_loads_through_figment() {
+        let content = r#"
+[display]
+focused_fps = 0
+unfocused_fps = 0
+
+[rendering]
+vsync = "off"
+asset_integration_budget_ms = 3
+reported_max_texture_size = 0
+render_texture_hdr_color = false
+texture_vram_budget_mib = 0
+msaa = "x8"
+scene_color_format = "rgba16_float"
+record_parallelism = "PerViewParallel"
+cluster_assignment = "auto"
+max_frame_latency = 2
+
+[debug]
+log_verbose = false
+power_preference = "high_performance"
+gpu_validation_layers = false
+debug_hud_frame_timing = true
+debug_hud_enabled = false
+debug_hud_transforms = false
+debug_hud_textures = false
+
+[post_processing]
+enabled = true
+
+[post_processing.bloom]
+composite_mode = "energy_conserving"
+
+[post_processing.tonemap]
+mode = "aces_fitted"
+
+[watchdog]
+action = "log_and_continue"
+"#;
+        let s =
+            run_pipeline(Some(content.to_string())).expect("figment must accept original tokens");
+        use crate::config::types::{
+            ClusterAssignmentMode, MsaaSampleCount, PowerPreferenceSetting, RecordParallelism,
+            SceneColorFormat, TonemapMode, VsyncMode, WatchdogAction,
+        };
+        assert_eq!(s.rendering.vsync, VsyncMode::Off);
+        assert_eq!(s.rendering.msaa, MsaaSampleCount::X8);
+        assert_eq!(
+            s.rendering.scene_color_format,
+            SceneColorFormat::Rgba16Float
+        );
+        assert_eq!(
+            s.rendering.record_parallelism,
+            RecordParallelism::PerViewParallel
+        );
+        assert_eq!(s.rendering.cluster_assignment, ClusterAssignmentMode::Auto);
+        assert_eq!(
+            s.debug.power_preference,
+            PowerPreferenceSetting::HighPerformance
+        );
+        assert_eq!(s.post_processing.tonemap.mode, TonemapMode::AcesFitted);
+        assert_eq!(s.watchdog.action, WatchdogAction::LogAndContinue);
+    }
 }

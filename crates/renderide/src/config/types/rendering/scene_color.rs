@@ -5,24 +5,32 @@ use wgpu::TextureFormat;
 
 labeled_enum! {
     /// Intermediate scene color format for the forward pass (pre-compose, pre-post-processing).
+    ///
+    /// Persist tokens match the on-disk format that the original `#[serde(rename_all =
+    /// "snake_case")]` derive produced — serde inserts an underscore before each internal
+    /// uppercase letter, so `Rgba16Float` writes as `"rgba16_float"`. The compact-suffix form
+    /// (`"rgba16float"`) is accepted as an alias for forgiveness.
     pub enum SceneColorFormat: "scene-color format" {
         default => Rgba16Float;
 
-        /// `rgba16float`: wide dynamic range and alpha (default HDR scene target).
+        /// `rgba16_float`: wide dynamic range and alpha (default HDR scene target).
         Rgba16Float => {
-            persist: "rgba16float",
+            persist: "rgba16_float",
             label: "RGBA16Float (HDR scene)",
+            aliases: ["rgba16float"],
         },
-        /// `rg11b10float`: lower bandwidth; no distinct alpha channel (avoid with premultiplied
+        /// `rg11b10_float`: lower bandwidth; no distinct alpha channel (avoid with premultiplied
         /// transparency).
         Rg11b10Float => {
-            persist: "rg11b10float",
+            persist: "rg11b10_float",
             label: "RG11B10Float (packed HDR)",
+            aliases: ["rg11b10float"],
         },
-        /// `rgba8unorm`: LDR scene color (debug / parity).
+        /// `rgba8_unorm`: LDR scene color (debug / parity).
         Rgba8Unorm => {
-            persist: "rgba8unorm",
+            persist: "rgba8_unorm",
             label: "RGBA8 UNORM (LDR scene)",
+            aliases: ["rgba8unorm"],
         },
     }
 }
