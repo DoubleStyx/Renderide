@@ -393,11 +393,11 @@ impl WindowsCrashFds {
             let _ = g.write_all(data);
             let _ = g.flush();
         }
-        if let Some(t) = &self.term {
-            if let Ok(mut g) = t.lock() {
-                let _ = g.write_all(data);
-                let _ = g.flush();
-            }
+        if let Some(t) = &self.term
+            && let Ok(mut g) = t.lock()
+        {
+            let _ = g.write_all(data);
+            let _ = g.flush();
         }
     }
 }
