@@ -3,11 +3,11 @@
 use crate::assets::mesh::GpuMesh;
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::gpu::GpuLimits;
+use crate::gpu_pools::MeshPool;
 use crate::materials::MaterialPipelineSet;
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::mesh_deform::{GpuSkinCache, SkinCacheKey};
 use crate::render_graph::frame_params::MaterialBatchPacket;
-use crate::resources::MeshPool;
 use crate::world_mesh::WorldMeshDrawItem;
 use crate::world_mesh::draw_prep::DrawGroup;
 

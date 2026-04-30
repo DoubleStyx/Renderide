@@ -11,11 +11,11 @@ use std::fmt;
 use parking_lot::Mutex;
 use rayon::prelude::*;
 
+use crate::gpu_pools::MeshPool;
 use crate::mesh_deform::{EntryNeed, SkinCacheKey, SkinCacheRendererKind};
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder, PassPhase};
-use crate::resources::MeshPool;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
 use self::encode::{

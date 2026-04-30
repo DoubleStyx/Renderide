@@ -24,9 +24,9 @@ use hashbrown::HashMap;
 use std::sync::Arc;
 
 use crate::gpu::GpuLimits;
-use crate::resources::budget::VramAccounting;
-use crate::resources::resource_pool::{GpuResourcePool, RenderTexturePoolAccess};
-use crate::resources::{GpuResource, Texture2dSamplerState};
+use crate::gpu_pools::budget::VramAccounting;
+use crate::gpu_pools::resource_pool::{GpuResourcePool, RenderTexturePoolAccess};
+use crate::gpu_pools::{GpuResource, Texture2dSamplerState};
 use crate::shared::SetRenderTextureFormat;
 
 /// Host render texture mirrored as a wgpu color target + optional depth.

@@ -1,7 +1,7 @@
 //! Cubemap format/properties/data IPC and cooperative [`super::super::cubemap_task::CubemapUploadTask`] integration.
 
+use crate::gpu_pools::GpuCubemap;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
-use crate::resources::GpuCubemap;
 use crate::shared::{
     RendererCommand, SetCubemapData, SetCubemapFormat, SetCubemapProperties, SetCubemapResult,
     TextureUpdateResultType, UnloadCubemap,

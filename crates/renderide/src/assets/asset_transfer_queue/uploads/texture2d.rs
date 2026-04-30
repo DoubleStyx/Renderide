@@ -57,7 +57,7 @@ pub fn on_set_texture_2d_format(
         );
         return;
     };
-    let Some(tex) = crate::resources::GpuTexture2d::new_from_format(
+    let Some(tex) = crate::gpu_pools::GpuTexture2d::new_from_format(
         device.as_ref(),
         limits.as_ref(),
         &f,

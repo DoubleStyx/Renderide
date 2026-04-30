@@ -1,7 +1,7 @@
-//! Host render-texture format IPC → [`crate::resources::GpuRenderTexture`] pool.
+//! Host render-texture format IPC → [`crate::gpu_pools::GpuRenderTexture`] pool.
 
+use crate::gpu_pools::GpuRenderTexture;
 use crate::ipc::DualQueueIpc;
-use crate::resources::GpuRenderTexture;
 use crate::shared::{
     RenderTextureResult, RendererCommand, SetRenderTextureFormat, UnloadRenderTexture,
 };

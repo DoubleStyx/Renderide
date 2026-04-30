@@ -1,5 +1,5 @@
-use crate::resources::resource_pool::{GpuResourcePool, PoolResourceAccess};
-use crate::resources::{GpuResource, Texture2dSamplerState, VramAccounting, VramResourceKind};
+use crate::gpu_pools::resource_pool::{GpuResourcePool, PoolResourceAccess};
+use crate::gpu_pools::{GpuResource, Texture2dSamplerState, VramAccounting, VramResourceKind};
 use hashbrown::HashMap;
 use renderide_shared::VideoTextureProperties;
 use std::sync::Arc;

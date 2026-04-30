@@ -160,9 +160,9 @@ pub struct FrameDiagnosticsSnapshot {
     pub textures_cpu_mip0_ready: usize,
     /// Same as [`crate::diagnostics::RendererInfoSnapshot::resident_texture_count`] — GPU pool entries.
     pub textures_gpu_resident: usize,
-    /// GPU-resident host render textures ([`crate::resources::RenderTexturePool`]).
+    /// GPU-resident host render textures ([`crate::gpu_pools::RenderTexturePool`]).
     pub render_textures_gpu_resident: usize,
-    /// Rows in [`crate::resources::MeshPool`] (resident GPU mesh entries).
+    /// Rows in [`crate::gpu_pools::MeshPool`] (resident GPU mesh entries).
     pub mesh_pool_entry_count: usize,
     /// Host shader routes (id, name, pipeline, implemented flag), sorted implemented-first then by id.
     pub shader_routes: Vec<ShaderRouteRow>,

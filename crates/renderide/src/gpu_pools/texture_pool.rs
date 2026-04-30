@@ -62,7 +62,7 @@ impl Texture2dSamplerState {
 /// GPU Texture2D: no CPU mip storage; mips live only in [`wgpu::Texture`].
 ///
 /// **`mip_levels_resident`** tracks how many mips currently hold uploaded or synthesized texels. A future
-/// streaming pass may reduce resident mips under [`crate::resources::StreamingPolicy`] (evict fine
+/// streaming pass may reduce resident mips under [`crate::gpu_pools::StreamingPolicy`] (evict fine
 /// mips, re-upload from SHM or transcode). Prefer **recreating** the `wgpu::Texture` with a lower
 /// `mip_level_count` over sparse partial images until wgpu exposes true sparse textures.
 #[derive(Debug)]

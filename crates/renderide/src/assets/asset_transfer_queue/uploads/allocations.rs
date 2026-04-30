@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use crate::resources::{GpuCubemap, GpuRenderTexture, GpuTexture2d, GpuTexture3d};
+use crate::gpu_pools::{GpuCubemap, GpuRenderTexture, GpuTexture2d, GpuTexture3d};
 
 use super::super::AssetTransferQueue;
 
-/// Ensures [`GpuTexture2d`](crate::resources::GpuTexture2d) instances exist for every format table entry (called on attach and before data upload).
+/// Ensures [`GpuTexture2d`](crate::gpu_pools::GpuTexture2d) instances exist for every format table entry (called on attach and before data upload).
 pub fn flush_pending_texture_allocations(
     queue: &mut AssetTransferQueue,
     device: &Arc<wgpu::Device>,
@@ -34,7 +34,7 @@ pub fn flush_pending_texture_allocations(
     }
 }
 
-/// Allocates [`GpuRenderTexture`](crate::resources::GpuRenderTexture) targets for pending render-texture format entries.
+/// Allocates [`GpuRenderTexture`](crate::gpu_pools::GpuRenderTexture) targets for pending render-texture format entries.
 pub fn flush_pending_render_texture_allocations(
     queue: &mut AssetTransferQueue,
     device: &Arc<wgpu::Device>,
@@ -64,7 +64,7 @@ pub fn flush_pending_render_texture_allocations(
     }
 }
 
-/// Ensures [`GpuTexture3d`](crate::resources::GpuTexture3d) instances exist for pending format table entries.
+/// Ensures [`GpuTexture3d`](crate::gpu_pools::GpuTexture3d) instances exist for pending format table entries.
 pub fn flush_pending_texture3d_allocations(
     queue: &mut AssetTransferQueue,
     device: &Arc<wgpu::Device>,
@@ -92,7 +92,7 @@ pub fn flush_pending_texture3d_allocations(
     }
 }
 
-/// Ensures [`GpuCubemap`](crate::resources::GpuCubemap) instances exist for pending format table entries.
+/// Ensures [`GpuCubemap`](crate::gpu_pools::GpuCubemap) instances exist for pending format table entries.
 pub fn flush_pending_cubemap_allocations(
     queue: &mut AssetTransferQueue,
     device: &Arc<wgpu::Device>,

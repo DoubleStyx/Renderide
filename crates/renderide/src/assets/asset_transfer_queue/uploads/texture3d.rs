@@ -1,7 +1,7 @@
 //! Texture3D format/properties/data IPC and cooperative [`super::super::texture3d_task::Texture3dUploadTask`] integration.
 
+use crate::gpu_pools::GpuTexture3d;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
-use crate::resources::GpuTexture3d;
 use crate::shared::{
     RendererCommand, SetTexture3DData, SetTexture3DFormat, SetTexture3DProperties,
     SetTexture3DResult, TextureUpdateResultType, UnloadTexture3D,

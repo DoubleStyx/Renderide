@@ -2,8 +2,8 @@
 //!
 //! [`AssetTransferQueue`] lives in the [`crate::assets`] module and is owned by
 //! [`crate::backend::RenderBackend`]. It handles shared-memory ingestion paths that populate
-//! [`crate::resources::MeshPool`], [`crate::resources::TexturePool`], [`crate::resources::Texture3dPool`],
-//! and [`crate::resources::CubemapPool`].
+//! [`crate::gpu_pools::MeshPool`], [`crate::gpu_pools::TexturePool`], [`crate::gpu_pools::Texture3dPool`],
+//! and [`crate::gpu_pools::CubemapPool`].
 
 mod cubemap_task;
 mod cubemap_upload_plan;
@@ -22,7 +22,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::gpu::GpuLimits;
-use crate::resources::{
+use crate::gpu_pools::{
     CubemapPool, GpuVideoTexture, MeshPool, RenderTexturePool, Texture3dPool, TexturePool,
     VideoTexturePool,
 };
@@ -79,7 +79,7 @@ pub struct AssetTransferQueue {
     pub(crate) render_texture_formats: HashMap<i32, SetRenderTextureFormat>,
     /// Latest [`SetTexture2DFormat`] per asset (required before data upload).
     pub(crate) texture_formats: HashMap<i32, SetTexture2DFormat>,
-    /// Latest [`SetTexture2DProperties`] per asset (sampler metadata on [`crate::resources::GpuTexture2d`]).
+    /// Latest [`SetTexture2DProperties`] per asset (sampler metadata on [`crate::gpu_pools::GpuTexture2d`]).
     pub(crate) texture_properties: HashMap<i32, SetTexture2DProperties>,
     /// Latest [`SetTexture3DFormat`] per asset.
     pub(crate) texture3d_formats: HashMap<i32, SetTexture3DFormat>,
@@ -99,7 +99,7 @@ pub struct AssetTransferQueue {
     pub(crate) gpu_queue_access_gate: Option<crate::gpu::GpuQueueAccessGate>,
     /// Effective limits snapshot (set with device on attach).
     pub(crate) gpu_limits: Option<Arc<GpuLimits>>,
-    /// When true, [`crate::resources::GpuRenderTexture`] uses `Rgba16Float`; else `Rgba8Unorm`.
+    /// When true, [`crate::gpu_pools::GpuRenderTexture`] uses `Rgba16Float`; else `Rgba8Unorm`.
     pub(crate) render_texture_hdr_color: bool,
     /// When non-zero, [`Self::maybe_warn_texture_vram_budget`] compares resident texture bytes.
     pub(crate) texture_vram_budget_bytes: u64,

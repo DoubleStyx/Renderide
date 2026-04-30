@@ -204,35 +204,35 @@ macro_rules! impl_texture_pool_facade {
     ($pool:ty, $resource:ty) => {
         impl $pool {
             /// Creates an empty pool with the given streaming policy.
-            pub fn new(streaming: Box<dyn $crate::resources::StreamingPolicy>) -> Self {
+            pub fn new(streaming: Box<dyn $crate::gpu_pools::StreamingPolicy>) -> Self {
                 Self {
-                    inner: $crate::resources::resource_pool::GpuResourcePool::new(
-                        $crate::resources::resource_pool::TexturePoolAccess::new(streaming),
+                    inner: $crate::gpu_pools::resource_pool::GpuResourcePool::new(
+                        $crate::gpu_pools::resource_pool::TexturePoolAccess::new(streaming),
                     ),
                 }
             }
 
-            /// Default pool with [`crate::resources::NoopStreamingPolicy`].
+            /// Default pool with [`crate::gpu_pools::NoopStreamingPolicy`].
             pub fn default_pool() -> Self {
                 Self {
-                    inner: $crate::resources::resource_pool::GpuResourcePool::new(
-                        $crate::resources::resource_pool::TexturePoolAccess::noop(),
+                    inner: $crate::gpu_pools::resource_pool::GpuResourcePool::new(
+                        $crate::gpu_pools::resource_pool::TexturePoolAccess::noop(),
                     ),
                 }
             }
 
             /// VRAM accounting for resident textures.
-            pub fn accounting(&self) -> &$crate::resources::VramAccounting {
+            pub fn accounting(&self) -> &$crate::gpu_pools::VramAccounting {
                 self.inner.accounting()
             }
 
             /// Mutable VRAM totals (insert/remove update accounting).
-            pub fn accounting_mut(&mut self) -> &mut $crate::resources::VramAccounting {
+            pub fn accounting_mut(&mut self) -> &mut $crate::gpu_pools::VramAccounting {
                 self.inner.accounting_mut()
             }
 
             /// Streaming policy for mip eviction suggestions.
-            pub fn streaming_mut(&mut self) -> &mut dyn $crate::resources::StreamingPolicy {
+            pub fn streaming_mut(&mut self) -> &mut dyn $crate::gpu_pools::StreamingPolicy {
                 self.inner.access_mut().streaming_mut()
             }
 
@@ -290,7 +290,7 @@ mod tests {
     //! Unit tests for generic resident GPU resource pool mechanics.
 
     use super::{GpuResourcePool, PoolResourceAccess};
-    use crate::resources::{GpuResource, VramResourceKind};
+    use crate::gpu_pools::{GpuResource, VramResourceKind};
 
     /// Fake resident resource used to test generic pool behavior without GPU handles.
     #[derive(Debug)]

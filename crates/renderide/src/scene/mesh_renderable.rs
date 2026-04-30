@@ -32,7 +32,7 @@ pub struct StaticMeshRenderer {
     pub node_id: i32,
     /// Draw layer (opaque vs overlay vs hidden).
     pub layer: LayerType,
-    /// Resident mesh asset id in [`crate::resources::MeshPool`].
+    /// Resident mesh asset id in [`crate::gpu_pools::MeshPool`].
     pub mesh_asset_id: i32,
     /// Host sorting order within the layer.
     pub sorting_order: i32,

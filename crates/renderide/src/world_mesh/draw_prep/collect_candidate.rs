@@ -103,8 +103,8 @@ mod tests {
 
     use super::*;
     use crate::assets::material::{MaterialDictionary, MaterialPropertyStore, PropertyIdRegistry};
+    use crate::gpu_pools::MeshPool;
     use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
-    use crate::resources::MeshPool;
     use crate::scene::{RenderSpaceId, SceneCoordinator};
     use crate::shared::RenderingContext;
 

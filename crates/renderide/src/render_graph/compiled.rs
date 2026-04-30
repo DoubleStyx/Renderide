@@ -18,7 +18,7 @@ use super::schedule::FrameSchedule;
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::world_mesh::draw_prep::{CameraTransformDrawFilter, WorldMeshDrawCollection};
 
-/// Single-view color + depth for secondary cameras rendering to a host [`crate::resources::GpuRenderTexture`].
+/// Single-view color + depth for secondary cameras rendering to a host [`crate::gpu_pools::GpuRenderTexture`].
 pub struct ExternalOffscreenTargets<'a> {
     /// Host render-texture asset id for `color_view` (used to suppress self-sampling during this pass).
     pub render_texture_asset_id: i32,

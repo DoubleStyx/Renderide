@@ -2,7 +2,7 @@
 //!
 //! Matches the shared `IdPacker<T>` layout used on the host: a small type tag in the high bits and
 //! the asset id in the low bits. [`SetTexture2DFormat::asset_id`](crate::shared::SetTexture2DFormat)
-//! and [`crate::resources::TexturePool`] use the **unpacked** 2D asset id.
+//! and [`crate::gpu_pools::TexturePool`] use the **unpacked** 2D asset id.
 
 /// Host texture asset kind (same enum order as the shared `TextureAssetType` wire enum).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

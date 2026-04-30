@@ -10,8 +10,8 @@ use crate::assets::material::{
 use crate::assets::texture::{
     HostTextureAssetKind, texture2d_asset_id_from_packed, unpack_host_texture_packed,
 };
+use crate::gpu_pools::{CubemapSamplerState, Texture2dSamplerState, Texture3dSamplerState};
 use crate::materials::ReflectedRasterLayout;
-use crate::resources::{CubemapSamplerState, Texture2dSamplerState, Texture3dSamplerState};
 use crate::shared::{TextureFilterMode, TextureWrapMode};
 
 use super::layout::{StemEmbeddedPropertyIds, shader_writer_unescaped_property_name};
@@ -22,15 +22,15 @@ use super::texture_pools::EmbeddedTexturePools;
 pub(crate) enum ResolvedTextureBinding {
     /// No texture or unsupported packed type.
     None,
-    /// [`crate::resources::TexturePool`] entry (unpacked 2D asset id).
+    /// [`crate::gpu_pools::TexturePool`] entry (unpacked 2D asset id).
     Texture2D { asset_id: i32 },
-    /// [`crate::resources::Texture3dPool`] entry (unpacked 3D asset id).
+    /// [`crate::gpu_pools::Texture3dPool`] entry (unpacked 3D asset id).
     Texture3D { asset_id: i32 },
-    /// [`crate::resources::CubemapPool`] entry (unpacked cubemap asset id).
+    /// [`crate::gpu_pools::CubemapPool`] entry (unpacked cubemap asset id).
     Cubemap { asset_id: i32 },
-    /// [`crate::resources::RenderTexturePool`] entry (unpacked render-texture asset id).
+    /// [`crate::gpu_pools::RenderTexturePool`] entry (unpacked render-texture asset id).
     RenderTexture { asset_id: i32 },
-    /// [`crate::resources::VideoTexturePool`] entry (unpacked 2D asset id).
+    /// [`crate::gpu_pools::VideoTexturePool`] entry (unpacked 2D asset id).
     VideoTexture { asset_id: i32 },
 }
 
@@ -494,7 +494,7 @@ mod tests {
 
     use crate::assets::material::PropertyIdRegistry;
     use crate::backend::embedded::layout::{EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds};
-    use crate::resources::Texture2dSamplerState;
+    use crate::gpu_pools::Texture2dSamplerState;
     use crate::shared::{TextureFilterMode, TextureWrapMode};
 
     fn lookup(material_id: i32) -> MaterialPropertyLookupIds {

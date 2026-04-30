@@ -77,6 +77,8 @@ pub use ipc::connection;
 pub mod materials;
 /// Host `HeadOutputDevice` → VR / OpenXR GPU path. Lives in `xr/` (was top-level `output_device.rs`).
 pub use crate::xr::output_device;
+/// GPU resource pools and VRAM hooks (meshes, Texture2D, Texture3D, cubemaps, video textures).
+pub mod gpu_pools;
 /// Pipeline-primitive vocabulary: shader permutations and the null/debug raster fallback.
 pub mod pipelines;
 /// Tracy profiling integration: CPU spans, frame marks, and optional GPU timestamp queries.
@@ -84,8 +86,6 @@ pub mod pipelines;
 pub mod profiling;
 /// Compiled render-graph IR, pass nodes, transient pool, parallel recording, and execution.
 pub mod render_graph;
-/// Embedded asset blobs (icons, fallback textures, etc.) bundled into the binary.
-pub mod resources;
 /// Per-tick orchestration façade ([`runtime::RendererRuntime`]) wiring frontend, scene, and backend.
 pub mod runtime;
 /// Transforms, render spaces, mesh renderables — **scene** layer (no wgpu).

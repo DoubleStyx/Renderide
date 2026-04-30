@@ -4,13 +4,13 @@
 //!
 //! - **`asset_transfer_queue`** — [`AssetTransferQueue`]: IPC-driven mesh/texture/render-texture
 //!   queues, per-poll upload budgets, CPU-side format/property tables, and
-//!   [`crate::resources::MeshPool`] / [`crate::resources::TexturePool`] / [`crate::resources::RenderTexturePool`].
+//!   [`crate::gpu_pools::MeshPool`] / [`crate::gpu_pools::TexturePool`] / [`crate::gpu_pools::RenderTexturePool`].
 //!   Owned by [`crate::backend::RenderBackend`] after GPU attach.
 //! - **`material`** — Property store, property id registry, and parsing of host material batch blobs
 //!   (`MaterialsUpdateBatch` → [`material::MaterialPropertyStore`]). Feeds [`crate::materials::MaterialSystem`]
 //!   at runtime; does not own GPU bind groups.
 //! - **`mesh`** — Host [`mesh::MeshBufferLayout`] contract, [`mesh::GpuMesh`] construction, layout
-//!   fingerprints, and upload validation. [`crate::resources::GpuResource`] is implemented for resident meshes.
+//!   fingerprints, and upload validation. [`crate::gpu_pools::GpuResource`] is implemented for resident meshes.
 //! - **`shader`** — Resolving [`crate::shared::ShaderUpload`] AssetBundle paths to pipeline kinds for
 //!   [`crate::materials::MaterialRegistry`].
 //! - **`texture`** — Host Texture2D format/layout, decode/swizzle, mip packing, and

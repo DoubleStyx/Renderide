@@ -16,7 +16,7 @@ use crate::backend::frame_gpu::{
 };
 use crate::embedded_shaders;
 use crate::gpu::{GpuContext, GpuLimits};
-use crate::resources::CubemapSamplerState;
+use crate::gpu_pools::CubemapSamplerState;
 use crate::scene::SceneCoordinator;
 use crate::shared::{TextureFilterMode, TextureWrapMode};
 use crate::skybox::params::{

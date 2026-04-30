@@ -1,6 +1,6 @@
 //! Borrowed view of resident texture pools for embedded [`super::EmbeddedMaterialBindResources`] `@group(1)` resolution.
 
-use crate::resources::{
+use crate::gpu_pools::{
     CubemapPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
 };
 

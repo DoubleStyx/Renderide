@@ -22,7 +22,7 @@ use crate::gpu::GpuLimits;
 use crate::gpu::frame_globals::{
     FrameGpuUniforms, SkyboxSpecularSourceKind, SkyboxSpecularUniformParams,
 };
-use crate::resources::{CubemapSamplerState, Texture2dSamplerState};
+use crate::gpu_pools::{CubemapSamplerState, Texture2dSamplerState};
 
 use super::frame_gpu_error::FrameGpuInitError;
 pub use empty_material::{EmptyMaterialBindGroup, empty_material_bind_group_layout};

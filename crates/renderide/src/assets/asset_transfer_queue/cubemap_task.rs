@@ -28,7 +28,7 @@ pub struct CubemapUploadTask {
 }
 
 impl CubemapUploadTask {
-    /// Builds a task; `fmt` and `wgpu_format` must match the resident [`crate::resources::GpuCubemap`].
+    /// Builds a task; `fmt` and `wgpu_format` must match the resident [`crate::gpu_pools::GpuCubemap`].
     pub fn new(
         data: SetCubemapData,
         format: SetCubemapFormat,

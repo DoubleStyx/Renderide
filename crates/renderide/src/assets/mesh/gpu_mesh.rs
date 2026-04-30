@@ -111,7 +111,7 @@ pub struct GpuMesh {
     /// inverse bind matrices (mesh space → bone bind space). Per-frame palette is
     /// `world_bone * skinning_bind_matrices[i]`.
     pub skinning_bind_matrices: Vec<Mat4>,
-    /// Approximate VRAM (bytes), used by [`crate::resources::VramAccounting`].
+    /// Approximate VRAM (bytes), used by [`crate::gpu_pools::VramAccounting`].
     pub resident_bytes: u64,
 }
 

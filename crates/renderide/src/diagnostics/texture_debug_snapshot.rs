@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::resources::TexturePool;
+use crate::gpu_pools::TexturePool;
 use crate::shared::{ColorProfile, TextureFilterMode, TextureFormat, TextureWrapMode};
 
 /// Per-texture row in the debug HUD: asset id, dimensions, host/GPU formats, mip counts, sampler.

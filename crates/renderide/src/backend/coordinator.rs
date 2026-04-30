@@ -22,12 +22,12 @@ use crate::assets::material::MaterialPropertyStore;
 use crate::config::{PostProcessingSettings, RendererSettingsHandle, SceneColorFormat};
 use crate::diagnostics::{DebugHudEncodeError, DebugHudInput, SceneTransformsSnapshot};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+use crate::gpu_pools::{
+    CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
+};
 use crate::materials::{MaterialRouter, RasterPipelineKind};
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::render_graph::{GraphCache, PerViewHudConfig, PerViewHudOutputs, TransientPool};
-use crate::resources::{
-    CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
-};
 use crate::world_mesh::{FrameMaterialBatchCache, WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 use super::FrameGpuBindingsError;

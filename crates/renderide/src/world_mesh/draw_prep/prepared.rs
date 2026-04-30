@@ -14,7 +14,7 @@
 
 use rayon::prelude::*;
 
-use crate::resources::MeshPool;
+use crate::gpu_pools::MeshPool;
 use crate::scene::{MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{LayerType, RenderingContext};
 
@@ -402,7 +402,7 @@ fn expand_renderer_slots(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resources::MeshPool;
+    use crate::gpu_pools::MeshPool;
     use crate::scene::{RenderSpaceId, SceneCoordinator};
     use crate::shared::RenderTransform;
 

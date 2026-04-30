@@ -10,7 +10,7 @@ use super::super::texture_resolve::{
     texture_property_ids_for_binding,
 };
 use crate::assets::material::{MaterialPropertyLookupIds, MaterialPropertyStore};
-use crate::resources::{CubemapSamplerState, Texture2dSamplerState, Texture3dSamplerState};
+use crate::gpu_pools::{CubemapSamplerState, Texture2dSamplerState, Texture3dSamplerState};
 
 /// LRU cap for `@group(1)` bind groups (per unique material/texture signature).
 pub(super) const MAX_CACHED_EMBEDDED_BIND_GROUPS: usize = 512;

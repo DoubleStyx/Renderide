@@ -36,11 +36,11 @@ pub struct RendererInfoSnapshot {
     pub render_space_count: usize,
     /// Mesh renderable records across spaces.
     pub mesh_renderable_count: usize,
-    /// Resident [`crate::resources::MeshPool`] entries.
+    /// Resident [`crate::gpu_pools::MeshPool`] entries.
     pub resident_mesh_count: usize,
-    /// Resident entries in [`crate::resources::TexturePool`].
+    /// Resident entries in [`crate::gpu_pools::TexturePool`].
     pub resident_texture_count: usize,
-    /// Host [`crate::resources::GpuRenderTexture`] entries in [`crate::resources::RenderTexturePool`].
+    /// Host [`crate::gpu_pools::GpuRenderTexture`] entries in [`crate::gpu_pools::RenderTexturePool`].
     pub resident_render_texture_count: usize,
     /// Allocated material property uniform slots.
     pub material_property_slots: usize,

@@ -10,10 +10,10 @@ mod text_uniform_packing_tests {
     use crate::assets::material::PropertyIdRegistry;
     use crate::assets::material::{MaterialPropertyLookupIds, MaterialPropertyStore};
     use crate::backend::embedded::layout::StemEmbeddedPropertyIds;
-    use crate::materials::{ReflectedMaterialUniformBlock, ReflectedUniformScalarKind};
-    use crate::resources::{
+    use crate::gpu_pools::{
         CubemapPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
     };
+    use crate::materials::{ReflectedMaterialUniformBlock, ReflectedUniformScalarKind};
 
     fn lookup(material_id: i32) -> MaterialPropertyLookupIds {
         MaterialPropertyLookupIds {
@@ -921,10 +921,10 @@ mod storage_orientation_uniform_tests {
     use crate::assets::texture::HostTextureAssetKind;
     use crate::backend::embedded::layout::{EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds};
     use crate::backend::embedded::texture_pools::EmbeddedTexturePools;
-    use crate::materials::ReflectedMaterialUniformBlock;
-    use crate::resources::{
+    use crate::gpu_pools::{
         CubemapPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
     };
+    use crate::materials::ReflectedMaterialUniformBlock;
 
     fn lookup(material_id: i32) -> MaterialPropertyLookupIds {
         MaterialPropertyLookupIds {

@@ -28,7 +28,7 @@ pub struct Texture3dUploadTask {
 }
 
 impl Texture3dUploadTask {
-    /// Builds a task; `fmt` and `wgpu_format` must match the resident [`crate::resources::GpuTexture3d`].
+    /// Builds a task; `fmt` and `wgpu_format` must match the resident [`crate::gpu_pools::GpuTexture3d`].
     pub fn new(
         data: SetTexture3DData,
         format: SetTexture3DFormat,
