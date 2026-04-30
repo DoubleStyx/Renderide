@@ -161,14 +161,6 @@ impl AssetTransferQueue {
         }
     }
 
-    /// Returns cached video texture properties, or stable defaults tagged with `asset_id`.
-    pub(crate) fn video_texture_properties_or_default(
-        &self,
-        asset_id: i32,
-    ) -> crate::shared::VideoTextureProperties {
-        self.catalogs.video_texture_properties_or_default(asset_id)
-    }
-
     /// Drains the per-frame accumulator of video clock-error samples for transmission to the host.
     ///
     /// The runtime calls this once per tick before [`crate::frontend::RendererFrontend::pre_frame`]
@@ -227,7 +219,7 @@ mod tests {
     fn video_texture_properties_default_preserves_asset_id() {
         let queue = AssetTransferQueue::new();
 
-        let props = queue.video_texture_properties_or_default(42);
+        let props = queue.catalogs.video_texture_properties_or_default(42);
 
         assert_eq!(props.asset_id, 42);
         assert_eq!(props.filter_mode, TextureFilterMode::Point);
@@ -249,7 +241,7 @@ mod tests {
             },
         );
 
-        let props = queue.video_texture_properties_or_default(7);
+        let props = queue.catalogs.video_texture_properties_or_default(7);
 
         assert_eq!(props.asset_id, 7);
         assert_eq!(props.filter_mode, TextureFilterMode::Trilinear);

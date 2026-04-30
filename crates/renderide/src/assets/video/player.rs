@@ -313,7 +313,7 @@ impl VideoPlayer {
         // so a frame cannot be lost if video data arrives before sampler properties.
         let id = self.asset_id;
         if let Some((view, w, h, bytes)) = self.video_sink.poll_texture_change() {
-            let props = queue.video_texture_properties_or_default(id);
+            let props = queue.catalogs.video_texture_properties_or_default(id);
             if let Some(gpu_tex) = queue.ensure_video_texture_with_props(&props) {
                 gpu_tex.set_view(view, w, h, bytes);
             } else {
