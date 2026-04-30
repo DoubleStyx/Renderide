@@ -22,6 +22,20 @@ use super::super::{CompiledRenderGraph, FrameViewTarget, ResolvedView};
 use super::{OwnedResolvedView, TransientTextureResolveSurfaceParams};
 use crate::camera::ViewId;
 
+fn subresource_view_dimension(
+    dimension: wgpu::TextureDimension,
+    array_layer_count: u32,
+) -> Option<wgpu::TextureViewDimension> {
+    match dimension {
+        wgpu::TextureDimension::D1 => Some(wgpu::TextureViewDimension::D1),
+        wgpu::TextureDimension::D2 if array_layer_count > 1 => {
+            Some(wgpu::TextureViewDimension::D2Array)
+        }
+        wgpu::TextureDimension::D2 => Some(wgpu::TextureViewDimension::D2),
+        wgpu::TextureDimension::D3 => Some(wgpu::TextureViewDimension::D3),
+    }
+}
+
 impl CompiledRenderGraph {
     /// Acquires transient texture leases for this view and inserts them into `resources`.
     pub(super) fn resolve_transient_textures(
@@ -73,6 +87,9 @@ impl CompiledRenderGraph {
                     texture: lease.texture,
                     view: lease.view,
                     layer_views,
+                    mip_levels: key.mip_levels.max(1),
+                    array_layers: key.array_layers.max(1),
+                    dimension: key.dimension,
                 };
                 let cloned = inserted.clone();
                 physical_slots.insert(compiled.physical_slot, inserted);
@@ -205,8 +222,24 @@ impl CompiledRenderGraph {
             let Some(parent) = resources.transient_texture(desc.parent) else {
                 continue;
             };
+            if !desc.fits_resolved_parent(parent.mip_levels, parent.array_layers) {
+                logger::warn!(
+                    "render graph subresource '{}' skipped: mip {}+{} layer {}+{} exceeds \
+                     resolved parent {:?} (mips={}, layers={})",
+                    desc.label,
+                    desc.base_mip_level,
+                    desc.mip_level_count,
+                    desc.base_array_layer,
+                    desc.array_layer_count,
+                    desc.parent,
+                    parent.mip_levels,
+                    parent.array_layers
+                );
+                continue;
+            }
             let view = parent.texture.create_view(&wgpu::TextureViewDescriptor {
                 label: Some(desc.label),
+                dimension: subresource_view_dimension(parent.dimension, desc.array_layer_count),
                 base_mip_level: desc.base_mip_level,
                 mip_level_count: Some(desc.mip_level_count.max(1)),
                 base_array_layer: desc.base_array_layer,

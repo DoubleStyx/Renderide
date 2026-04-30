@@ -29,6 +29,28 @@ fn subresource_constructors_target_single_mip_or_layer() {
 }
 
 #[test]
+fn subresource_fit_check_uses_resolved_parent_counts() {
+    let parent = TextureHandle(3);
+    let mip = TransientSubresourceDesc::single_mip(parent, "mip2", 2);
+    assert!(mip.fits_resolved_parent(3, 1));
+    assert!(!mip.fits_resolved_parent(2, 1));
+
+    let layer = TransientSubresourceDesc::single_layer(parent, "layer1", 1);
+    assert!(layer.fits_resolved_parent(1, 2));
+    assert!(!layer.fits_resolved_parent(1, 1));
+
+    let overflowing = TransientSubresourceDesc {
+        parent,
+        label: "overflow",
+        base_mip_level: u32::MAX,
+        mip_level_count: 1,
+        base_array_layer: 0,
+        array_layer_count: 1,
+    };
+    assert!(!overflowing.fits_resolved_parent(u32::MAX, 1));
+}
+
+#[test]
 fn transient_extent_fixed_extent_only_for_concrete_sizes() {
     assert_eq!(
         TransientExtent::Custom {

@@ -50,6 +50,12 @@ pub struct ResolvedGraphTexture {
     pub view: wgpu::TextureView,
     /// Per-layer D2 views for array textures.
     pub layer_views: Vec<wgpu::TextureView>,
+    /// Resolved mip count for this execution scope.
+    pub mip_levels: u32,
+    /// Resolved array-layer/depth count for this execution scope.
+    pub array_layers: u32,
+    /// Resolved texture dimension.
+    pub dimension: wgpu::TextureDimension,
 }
 
 /// Resolved transient buffer for one graph execution scope.

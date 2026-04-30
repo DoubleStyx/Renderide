@@ -127,6 +127,25 @@ impl TransientSubresourceDesc {
         }
     }
 
+    /// Returns whether this declaration fits a parent texture after frame-dependent layer
+    /// policies have resolved to concrete counts.
+    pub(crate) fn fits_resolved_parent(
+        self,
+        parent_mip_levels: u32,
+        parent_array_layers: u32,
+    ) -> bool {
+        if self.mip_level_count == 0 || self.array_layer_count == 0 {
+            return false;
+        }
+        let Some(mip_end) = self.base_mip_level.checked_add(self.mip_level_count) else {
+            return false;
+        };
+        let Some(layer_end) = self.base_array_layer.checked_add(self.array_layer_count) else {
+            return false;
+        };
+        mip_end <= parent_mip_levels.max(1) && layer_end <= parent_array_layers.max(1)
+    }
+
     /// Creates a descriptor targeting a single mip of the parent's default array layer(s).
     pub fn single_mip(parent: TextureHandle, label: &'static str, mip_level: u32) -> Self {
         Self {
