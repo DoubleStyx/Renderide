@@ -369,4 +369,36 @@ mod tests {
         assert_eq!(p1, p2);
         assert!(p2.is_dir());
     }
+
+    /// Verifies that non-ASCII characters (Greek, emoji) are all replaced with `_` while the
+    /// safe alphabet around them survives. Sanitization works at the `char` level, so a
+    /// multi-byte codepoint becomes a single `_` (not multiple).
+    #[test]
+    fn sanitize_timestamp_replaces_unicode_with_underscores() {
+        let got = sanitize_timestamp("ts-π-🚀-2026");
+        assert_eq!(got, "ts-_-_-2026", "unexpected sanitized form: {got:?}");
+    }
+
+    /// Verifies [`log_file_path`] cannot escape the component directory under an env-overridden
+    /// logs root, even when given a hostile timestamp containing `..` and path separators.
+    #[test]
+    fn log_file_path_stays_inside_component_dir_for_malicious_timestamp() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _override = with_logs_root_override(dir.path());
+
+        let p = log_file_path(LogComponent::Renderer, "../escape");
+
+        let component_dir = dir.path().join("renderer");
+        assert_eq!(
+            p.parent().expect("parent"),
+            component_dir.as_path(),
+            "expected file directly under component dir: {p:?}"
+        );
+
+        let stem = p.file_stem().and_then(|s| s.to_str()).expect("file stem");
+        assert!(!stem.contains(".."), "stem must not contain `..`: {stem:?}");
+        assert!(!stem.contains('/'), "stem must not contain `/`: {stem:?}");
+        assert!(!stem.contains('\\'), "stem must not contain `\\`: {stem:?}");
+        assert!(p.to_string_lossy().ends_with(".log"));
+    }
 }

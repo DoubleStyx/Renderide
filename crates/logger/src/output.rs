@@ -320,4 +320,64 @@ mod tests {
         format_log_line_into(&mut buf, LogLevel::Trace, format_args!("x"));
         assert!(buf.capacity() >= LINE_BUF_INITIAL_CAPACITY);
     }
+
+    /// Verifies the canonical `[ts] LEVEL message\n` shape: bracketed timestamp prefix, level
+    /// label surrounded by spaces, original message body, and a trailing newline.
+    #[test]
+    fn format_log_line_into_emits_bracketed_timestamp_level_and_newline() {
+        let mut buf = String::new();
+        format_log_line_into(&mut buf, LogLevel::Info, format_args!("hello_world"));
+        assert!(buf.starts_with('['), "expected leading '[' in {buf:?}");
+        assert!(buf.contains("] "), "expected '] ' separator in {buf:?}");
+        assert!(buf.contains(" INFO "), "expected ' INFO ' token in {buf:?}");
+        assert!(buf.contains("hello_world"), "expected message in {buf:?}");
+        assert!(buf.ends_with('\n'), "expected trailing newline in {buf:?}");
+        assert_eq!(
+            buf.matches('\n').count(),
+            1,
+            "expected exactly one newline in {buf:?}"
+        );
+    }
+
+    /// Verifies every [`LogLevel`] variant emits its [`LogLevel::as_label`] token surrounded by
+    /// spaces. Guards against accidental label drift in the formatter.
+    #[test]
+    fn format_log_line_into_uses_correct_label_for_each_level() {
+        let mut buf = String::new();
+        for level in LogLevel::all() {
+            format_log_line_into(&mut buf, level, format_args!("body"));
+            let token = format!(" {} body", level.as_label());
+            assert!(
+                buf.contains(&token),
+                "expected token {token:?} in line for {level:?}: {buf:?}"
+            );
+        }
+    }
+
+    /// Verifies an empty message still produces a well-formed line ending in `LEVEL \n` so
+    /// downstream parsers can rely on the level-then-space invariant.
+    #[test]
+    fn format_log_line_into_handles_empty_message() {
+        let mut buf = String::new();
+        format_log_line_into(&mut buf, LogLevel::Warn, format_args!(""));
+        assert!(buf.starts_with('['));
+        assert!(buf.ends_with(" WARN \n"), "got {buf:?}");
+        assert_eq!(buf.matches('\n').count(), 1);
+    }
+
+    /// Pins the documented behavior that newlines inside the formatted message are written
+    /// verbatim. If a future change introduces sanitization this test will fail and force the
+    /// decision to be deliberate.
+    #[test]
+    fn format_log_line_into_preserves_embedded_newlines() {
+        let mut buf = String::new();
+        format_log_line_into(&mut buf, LogLevel::Error, format_args!("first\nsecond"));
+        assert!(buf.contains("first\nsecond"), "got {buf:?}");
+        assert!(buf.ends_with('\n'));
+        assert_eq!(
+            buf.matches('\n').count(),
+            2,
+            "expected embedded + trailing newline: {buf:?}"
+        );
+    }
 }

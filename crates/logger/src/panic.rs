@@ -141,4 +141,42 @@ mod tests {
     fn log_panic_payload_other_type() {
         log_panic_payload(Box::new(42_i32), "ctx");
     }
+
+    /// Drives [`log_panic`] through the same path real panic hooks use:
+    /// [`std::panic::catch_unwind`] returns the panic payload, and the helper writes a complete
+    /// report to disk. Confirms the helper survives the unwinding context and produces the same
+    /// `PANIC: ` / `Backtrace:` shape as direct invocation.
+    #[test]
+    fn log_panic_writes_report_when_called_from_catch_unwind() {
+        let path = std::env::temp_dir().join(format!(
+            "logger_log_panic_catch_unwind_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result = std::panic::catch_unwind(|| {
+            panic!("catch_unwind panic message");
+        });
+        std::panic::set_hook(prev);
+
+        let payload = result.expect_err("closure should have panicked");
+        let message = payload
+            .downcast::<&'static str>()
+            .map(|s| (*s).to_string())
+            .unwrap_or_else(|_| "non-string payload".to_string());
+
+        log_panic(&path, &message);
+
+        let got = std::fs::read_to_string(&path).expect("read");
+        assert!(got.starts_with("PANIC: "), "got {got:?}");
+        assert!(
+            got.contains("catch_unwind panic message"),
+            "expected payload in report: {got:?}"
+        );
+        assert!(got.contains("Backtrace:"), "got {got:?}");
+
+        let _ = std::fs::remove_file(&path);
+    }
 }
