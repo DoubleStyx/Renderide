@@ -35,11 +35,18 @@ mod color_resolve;
 mod current_view_textures;
 mod encode;
 mod execute_helpers;
+mod material_batch;
 mod skybox;
+mod state;
 mod vp;
 
 pub use color_resolve::{
     WorldMeshForwardColorResolveGraphResources, WorldMeshForwardColorResolvePass,
+};
+pub(crate) use material_batch::{MaterialBatchPacket, MaterialDrawResolver, PipelineVariantKey};
+pub(crate) use state::{
+    PrefetchedWorldMeshDrawsSlot, PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState,
+    WorldMeshForwardPlanSlot,
 };
 
 use std::num::NonZeroU32;
@@ -54,7 +61,6 @@ use crate::render_graph::resources::{
     TextureHandle,
 };
 use crate::world_mesh::InstancePlan;
-use crate::world_mesh::WorldMeshForwardPlanSlot;
 
 use execute_helpers::{
     encode_msaa_depth_resolve_after_clear_only, encode_world_mesh_forward_color_snapshot,
@@ -69,7 +75,7 @@ use skybox::{SkyboxRenderer, record_prepared_skybox};
 /// Prepares sorted world-mesh forward draw state for subsequent graph nodes.
 ///
 /// The pass is a [`CallbackPass`] (no encoder); it records deferred uploads and stores one
-/// [`crate::world_mesh::PreparedWorldMeshForwardFrame`] in the per-view blackboard via
+/// [`PreparedWorldMeshForwardFrame`] in the per-view blackboard via
 /// [`WorldMeshForwardPlanSlot`].
 #[derive(Debug, Default)]
 pub struct WorldMeshForwardPreparePass {

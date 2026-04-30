@@ -2,7 +2,9 @@
 
 use crate::render_graph::context::GraphResolvedResources;
 use crate::render_graph::frame_params::FrameRenderParams;
-use crate::world_mesh::{PreparedWorldMeshForwardFrame, WorldMeshHelperNeeds};
+use crate::world_mesh::WorldMeshHelperNeeds;
+
+use super::super::PreparedWorldMeshForwardFrame;
 
 use super::super::WorldMeshForwardGraphResources;
 

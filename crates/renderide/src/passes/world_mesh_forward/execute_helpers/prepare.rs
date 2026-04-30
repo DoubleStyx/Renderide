@@ -10,12 +10,12 @@ use crate::render_graph::frame_params::FrameRenderParams;
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
 use crate::world_mesh::draw_prep::{WorldMeshDrawCollection, WorldMeshDrawItem};
 use crate::world_mesh::{
-    PrefetchedWorldMeshDrawsSlot, PrefetchedWorldMeshViewDraws, PreparedWorldMeshForwardFrame,
-    WorldMeshCullProjParams, world_mesh_draw_state_rows_from_sorted,
+    PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams, world_mesh_draw_state_rows_from_sorted,
     world_mesh_draw_stats_from_sorted,
 };
 
 use super::super::skybox::SkyboxRenderer;
+use super::super::{PrefetchedWorldMeshDrawsSlot, PreparedWorldMeshForwardFrame};
 use super::camera::{compute_view_projections, resolve_pass_config};
 use super::frame_uniforms::write_per_view_frame_uniforms;
 use super::material_resolve::precompute_material_resolve_batches;

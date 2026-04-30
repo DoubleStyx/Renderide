@@ -8,8 +8,6 @@
 
 use glam::Mat4;
 
-use crate::backend::CLUSTER_COUNT_Z;
-use crate::backend::TILE_SIZE;
 use crate::camera::HostCameraFrame;
 use crate::camera::{
     clamp_desktop_fov_degrees, effective_head_output_clip_planes, reverse_z_perspective,
@@ -28,6 +26,12 @@ pub const CLUSTER_NEAR_CLIP_MIN: f32 = 0.0001;
 ///
 /// Keep in sync with `CLUSTER_FAR_CLIP_MIN_SPAN` in `shaders/source/modules/cluster_math.wgsl`.
 pub const CLUSTER_FAR_CLIP_MIN_SPAN: f32 = 0.0001;
+/// Screen tile size in pixels (DOOM-style cluster grid XY).
+///
+/// Keep in sync with `TILE_SIZE` in `shaders/source/modules/pbs_cluster.wgsl`.
+pub const TILE_SIZE: u32 = 32;
+/// Exponential depth slice count (view-space Z bins).
+pub const CLUSTER_COUNT_Z: u32 = 16;
 
 /// Returns clip planes sanitized exactly like the WGSL clustered-light helpers.
 pub fn sanitize_cluster_clip_planes(near_clip: f32, far_clip: f32) -> (f32, f32) {

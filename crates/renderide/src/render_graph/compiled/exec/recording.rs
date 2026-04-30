@@ -21,10 +21,10 @@ use super::{
     TransientTextureResolveSurfaceParams,
 };
 use crate::diagnostics::PerViewHudOutputsSlot;
+use crate::passes::PrefetchedWorldMeshDrawsSlot;
 use crate::passes::post_processing::settings_slot::{
     BloomSettingsSlot, BloomSettingsValue, GtaoSettingsSlot, GtaoSettingsValue,
 };
-use crate::world_mesh::PrefetchedWorldMeshDrawsSlot;
 
 impl CompiledRenderGraph {
     /// Records the per-view pass phase into one command buffer for `work_item`.

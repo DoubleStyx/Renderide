@@ -1,23 +1,40 @@
 //! Material batch packet resolution for world-mesh forward draws.
 //!
-//! The resolver is the single boundary between sorted draw runs and concrete raster state. Both
-//! pre-warm and record-time preparation build [`PipelineVariantKey`] with the same helper so they
-//! cannot drift on MSAA, front-face, blend, or render-state permutations.
+//! The resolver is the single boundary between sorted CPU draw runs and concrete raster state.
+//! Both pre-warm and record-time preparation build [`PipelineVariantKey`] with the same helper so
+//! they cannot drift on MSAA, front-face, blend, render-state, or shader permutations.
+
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
 use crate::backend::WorldMeshForwardEncodeRefs;
-use crate::embedded_shaders;
 use crate::materials::ShaderPermutation;
 use crate::materials::{EmbeddedMaterialBindResources, EmbeddedTexturePools};
 use crate::materials::{
-    MaterialBlendMode, MaterialPassDesc, MaterialPipelineDesc, MaterialPipelineSet,
-    MaterialRegistry, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
-    embedded_composed_stem_for_permutation,
+    MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineSet, MaterialRegistry,
+    MaterialRenderState, RasterFrontFace, RasterPipelineKind,
 };
-use crate::world_mesh::MaterialBatchPacket;
+use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
-use super::types::WorldMeshDrawItem;
+/// One resolved per-batch draw packet covering a contiguous range of sorted draws with the same
+/// [`crate::world_mesh::MaterialDrawBatchKey`].
+///
+/// Populated by the prepare pass so the recording loop can drive pipeline and bind-group state
+/// entirely from this table, without material-cache lookups inside `RenderPass`.
+#[derive(Clone)]
+pub(crate) struct MaterialBatchPacket {
+    /// First draw index (into the sorted draw list) covered by this entry.
+    pub first_draw_idx: usize,
+    /// Last draw index (inclusive) covered by this entry.
+    pub last_draw_idx: usize,
+    /// Exact pipeline variant requested for this batch.
+    pub(crate) pipeline_key: PipelineVariantKey,
+    /// Resolved `@group(1)` bind group for this batch's material, or `None` for the empty fallback.
+    pub bind_group: Option<Arc<wgpu::BindGroup>>,
+    /// Resolved pipeline set for this batch, or `None` when the pipeline is unavailable (skip draws).
+    pub pipelines: Option<MaterialPipelineSet>,
+}
 
 /// Inputs needed to build a [`PipelineVariantKey`] for one material draw run.
 #[derive(Clone, Copy, Debug)]
@@ -154,7 +171,7 @@ impl<'a> MaterialDrawResolver<'a> {
 
     /// Resolves every contiguous material run in `draws` into record-ready packets.
     pub(crate) fn resolve_batches(&self, draws: &[WorldMeshDrawItem]) -> Vec<MaterialBatchPacket> {
-        profiling::scope!("world_mesh::resolve_material_packets");
+        profiling::scope!("world_mesh_forward::resolve_material_packets");
         if draws.is_empty() {
             return Vec::new();
         }
@@ -173,32 +190,25 @@ impl<'a> MaterialDrawResolver<'a> {
         last: usize,
     ) -> MaterialBatchPacket {
         let item = &draws[first];
-        let batch_key = &item.batch_key;
         let pipeline_key =
             PipelineVariantKey::for_draw_item(item, self.pass_desc, self.shader_perm);
 
-        let (pipelines, declared_passes) = self.resolve_pipelines(batch_key, pipeline_key);
+        let pipelines = self.resolve_pipelines(pipeline_key);
         let bind_group = self.resolve_embedded_bind_group(item);
 
         MaterialBatchPacket {
             first_draw_idx: first,
             last_draw_idx: last,
             pipeline_key,
-            front_face: batch_key.front_face,
             bind_group,
             pipelines,
-            declared_passes,
         }
     }
 
-    /// Resolves the material pipeline set and declared pass table for one batch.
-    fn resolve_pipelines(
-        &self,
-        batch_key: &crate::world_mesh::MaterialDrawBatchKey,
-        pipeline_key: PipelineVariantKey,
-    ) -> (Option<MaterialPipelineSet>, &'static [MaterialPassDesc]) {
+    /// Resolves the material pipeline set for one batch.
+    fn resolve_pipelines(&self, pipeline_key: PipelineVariantKey) -> Option<MaterialPipelineSet> {
         let Some(registry) = self.registry else {
-            return (None, &[]);
+            return None;
         };
 
         let pass_desc = pipeline_key.pass_desc();
@@ -210,24 +220,22 @@ impl<'a> MaterialDrawResolver<'a> {
             pipeline_key.render_state,
             pipeline_key.front_face,
         );
-        let declared_passes =
-            declared_passes_for_pipeline_kind(&batch_key.pipeline, pipeline_key.shader_perm);
 
         match pipelines {
-            Some(p) if !p.is_empty() => (Some(p), declared_passes),
+            Some(p) if !p.is_empty() => Some(p),
             Some(_) => {
                 logger::trace!(
                     "WorldMeshForward: empty pipeline for shader {:?}, skipping batch",
                     pipeline_key.shader_asset_id
                 );
-                (None, declared_passes)
+                None
             }
             None => {
                 logger::trace!(
                     "WorldMeshForward: no pipeline for shader {:?}, skipping batch",
                     pipeline_key.shader_asset_id
                 );
-                (None, declared_passes)
+                None
             }
         }
     }
@@ -236,7 +244,7 @@ impl<'a> MaterialDrawResolver<'a> {
     fn resolve_embedded_bind_group(
         &self,
         item: &WorldMeshDrawItem,
-    ) -> Option<std::sync::Arc<wgpu::BindGroup>> {
+    ) -> Option<Arc<wgpu::BindGroup>> {
         let batch_key = &item.batch_key;
         if !matches!(&batch_key.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
             return None;
@@ -283,18 +291,6 @@ fn collect_material_batch_boundaries(draws: &[WorldMeshDrawItem]) -> Vec<(usize,
     }
     boundaries.push((current_start, draws.len() - 1));
     boundaries
-}
-
-/// Returns the declared pass descriptors for `pipeline` at `shader_perm` (zero-alloc `&'static`).
-fn declared_passes_for_pipeline_kind(
-    pipeline: &RasterPipelineKind,
-    shader_perm: ShaderPermutation,
-) -> &'static [MaterialPassDesc] {
-    let RasterPipelineKind::EmbeddedStem(stem) = pipeline else {
-        return &[];
-    };
-    let composed = embedded_composed_stem_for_permutation(stem.as_ref(), shader_perm);
-    embedded_shaders::embedded_target_passes(&composed)
 }
 
 #[cfg(test)]

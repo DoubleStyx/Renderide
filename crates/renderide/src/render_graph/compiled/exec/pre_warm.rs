@@ -15,8 +15,8 @@ use crate::materials::MaterialPipelineDesc;
 use crate::materials::ShaderPermutation;
 use crate::occlusion::gpu::HIZ_MAX_MIPS;
 use crate::occlusion::{hi_z_pyramid_dimensions, mip_levels_for_extent};
+use crate::passes::PipelineVariantKey;
 use crate::render_graph::HistorySlotId;
-use crate::world_mesh::draw_prep::PipelineVariantKey;
 
 impl CompiledRenderGraph {
     /// Prepares shared frame resources, per-view resource slots, mesh streams, and material

@@ -24,6 +24,7 @@ pub use post_processing::{
 };
 pub use scene_color_compose::{SceneColorComposeGraphResources, SceneColorComposePass};
 pub use swapchain_clear::SwapchainClearPass;
+pub(crate) use world_mesh_forward::{PipelineVariantKey, PrefetchedWorldMeshDrawsSlot};
 pub use world_mesh_forward::{
     WorldMeshColorSnapshotPass, WorldMeshDepthSnapshotPass,
     WorldMeshForwardColorResolveGraphResources, WorldMeshForwardColorResolvePass,

@@ -163,7 +163,7 @@ impl RasterPass for WorldMeshForwardColorResolvePass {
         };
         let has_grab_pass_transparent_work = ctx
             .blackboard
-            .get::<crate::world_mesh::WorldMeshForwardPlanSlot>()
+            .get::<super::WorldMeshForwardPlanSlot>()
             .is_some_and(|prepared| !prepared.plan.transparent_groups.is_empty());
         Ok(color_resolve_raster_needed(
             self.stage,

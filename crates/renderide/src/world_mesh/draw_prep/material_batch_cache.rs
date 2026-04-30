@@ -95,8 +95,8 @@ struct CacheEntry {
 
 /// Persistent `(material_asset_id, property_block_id)` → [`ResolvedMaterialBatch`] lookup table.
 ///
-/// Owned by [`crate::backend::RenderBackend`] and passed through per-view collection as an
-/// immutable reference. Call [`Self::refresh_for_frame`] once per frame before per-view draw
+/// Owned by the renderer host and passed through per-view collection as an immutable reference.
+/// Call [`Self::refresh_for_frame`] once per frame before per-view draw
 /// collection: it walks every active render space, ensures every referenced key has an up-to-date
 /// entry (re-resolving on generation mismatch), and evicts entries not referenced this frame.
 ///

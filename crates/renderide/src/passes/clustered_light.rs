@@ -20,8 +20,7 @@ use glam::Mat4;
 use cache::ClusteredLightBindGroupCache;
 use froxel_cpu::{AUTO_CPU_FROXEL_LIGHT_THRESHOLD, FroxelLightPlanner};
 
-use crate::backend::GpuLight;
-use crate::backend::{CLUSTER_COUNT_Z, CLUSTER_PARAMS_UNIFORM_SIZE, TILE_SIZE};
+use crate::backend::{CLUSTER_PARAMS_UNIFORM_SIZE, GpuLight};
 use crate::camera::HostCameraFrame;
 use crate::camera::ViewId;
 use crate::config::ClusterAssignmentMode;
@@ -36,8 +35,8 @@ use crate::render_graph::resources::{
 };
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::cluster_frame::{
-    ClusterFrameParams, cluster_frame_params, cluster_frame_params_stereo,
-    sanitize_cluster_clip_planes,
+    CLUSTER_COUNT_Z, ClusterFrameParams, TILE_SIZE, cluster_frame_params,
+    cluster_frame_params_stereo, sanitize_cluster_clip_planes,
 };
 
 /// CPU layout for the compute shader `ClusterParams` uniform (WGSL `struct` + tail pad).

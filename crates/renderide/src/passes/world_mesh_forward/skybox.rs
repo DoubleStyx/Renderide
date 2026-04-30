@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 use bytemuck::{Pod, Zeroable};
 use parking_lot::Mutex;
 
+use super::WorldMeshForwardPipelineState;
 use crate::backend::FrameGpuResources;
 use crate::camera::ViewId;
 use crate::camera::view_matrix_for_world_mesh_render_space;
@@ -17,7 +18,6 @@ use crate::render_graph::frame_params::FrameRenderParams;
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
 use crate::shared::CameraClearMode;
 use crate::skybox::{PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedSkybox};
-use crate::world_mesh::WorldMeshForwardPipelineState;
 
 /// Minimum binding size for [`SkyboxViewUniforms`].
 const SKYBOX_VIEW_UNIFORM_SIZE: u64 = size_of::<SkyboxViewUniforms>() as u64;

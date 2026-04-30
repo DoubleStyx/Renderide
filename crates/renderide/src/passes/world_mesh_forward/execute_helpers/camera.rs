@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 
 use glam::Mat4;
 
+use super::super::WorldMeshForwardPipelineState;
 use crate::camera::HostCameraFrame;
 use crate::camera::clamp_desktop_fov_degrees;
 use crate::camera::{
@@ -14,7 +15,6 @@ use crate::materials::MaterialPipelineDesc;
 use crate::materials::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
-use crate::world_mesh::WorldMeshForwardPipelineState;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
 /// Selects left/right camera world-space positions fed into frame globals for shader view-direction math.

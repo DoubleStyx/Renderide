@@ -7,9 +7,10 @@ use crate::gpu_pools::MeshPool;
 use crate::materials::MaterialPipelineSet;
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::mesh_deform::{GpuSkinCache, SkinCacheKey};
-use crate::world_mesh::MaterialBatchPacket;
 use crate::world_mesh::WorldMeshDrawItem;
 use crate::world_mesh::draw_prep::DrawGroup;
+
+use super::MaterialBatchPacket;
 
 /// Embedded material vertex stream requirements for one draw (matches pipeline reflection flags).
 #[derive(Clone, Copy)]

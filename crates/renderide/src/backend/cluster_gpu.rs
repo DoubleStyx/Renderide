@@ -9,13 +9,8 @@
 use std::mem::size_of;
 
 use crate::gpu::GpuLimits;
+pub use crate::world_mesh::cluster_frame::{CLUSTER_COUNT_Z, TILE_SIZE};
 
-/// Screen tile size in pixels (DOOM-style cluster grid XY). Filament-like coarse grid to keep
-/// `total_clusters` small (4× fewer than a 16-pixel tile). Keep in sync with `TILE_SIZE` in
-/// `shaders/source/modules/pbs_cluster.wgsl`.
-pub const TILE_SIZE: u32 = 32;
-/// Exponential depth slice count (view-space Z bins). Filament-like shallow slice count.
-pub const CLUSTER_COUNT_Z: u32 = 16;
 /// Maximum lights assigned to a single cluster (buffer index order). Keep in sync with
 /// `MAX_LIGHTS_PER_TILE` in `shaders/source/modules/pbs_cluster.wgsl` and
 /// `shaders/source/compute/clustered_light.wgsl`. Bumped from 32 to reduce far-cluster overflow
