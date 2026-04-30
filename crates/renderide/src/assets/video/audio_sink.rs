@@ -10,6 +10,7 @@ use thiserror::Error;
 /// Call [`ResoniteAudioSink::attach_queue`] to connect a shared-memory publisher
 /// and start forwarding decoded samples to the host.
 pub struct ResoniteAudioSink {
+    /// GStreamer app sink receiving decoded raw audio buffers.
     sink: AppSink,
 }
 
@@ -40,8 +41,8 @@ impl ResoniteAudioSink {
 
     /// Connects a shared-memory publisher identified by `queue_name` and `queue_capacity`.
     ///
-    /// Returns `false` when the queue cannot be opened; the sink is then left without a callback
-    /// and no audio will be forwarded.
+    /// When the queue cannot be opened, the sink is left without a new callback and no audio is
+    /// forwarded to that queue.
     pub fn attach_queue(
         &self,
         queue_name: &str,
@@ -73,7 +74,7 @@ impl ResoniteAudioSink {
                         return Ok(gstreamer::FlowSuccess::Ok);
                     };
 
-                    // Silent failure (caller decides how to handle backpressure)
+                    // Backpressure is expected when the host falls behind; keep this path quiet.
                     let _ = publisher.try_enqueue(map.as_slice());
 
                     Ok(gstreamer::FlowSuccess::Ok)
@@ -85,14 +86,18 @@ impl ResoniteAudioSink {
     }
 }
 
+/// Errors returned while attaching a host audio queue to [`ResoniteAudioSink`].
 #[derive(Debug, Error)]
 pub enum ResoniteAudioSinkError {
+    /// Host provided a queue capacity that cannot hold any audio payloads.
     #[error("invalid audio queue capacity: {0}")]
     InvalidQueueCapacity(i32),
 
+    /// Queue options could not be constructed for the host queue name.
     #[error("failed to build QueueOptions: {0}")]
     QueueOptions(String),
 
+    /// Shared-memory publisher creation failed.
     #[error("failed to create publisher: {0}")]
     Publisher(#[source] interprocess::OpenError),
 }
@@ -114,6 +119,6 @@ mod tests {
     fn invalid_audio_queue_capacity_is_rejected() {
         assert!(positive_queue_capacity(0).is_err());
         assert!(positive_queue_capacity(-1).is_err());
-        assert_eq!(positive_queue_capacity(64).unwrap(), 64);
+        assert!(matches!(positive_queue_capacity(64), Ok(64)));
     }
 }
