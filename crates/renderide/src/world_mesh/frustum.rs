@@ -400,12 +400,7 @@ mod tests {
 
     #[test]
     fn frustum_plane_cross_check_matches_homogeneous_clip_random_boxes() {
-        let proj = crate::render_graph::camera::reverse_z_perspective(
-            16.0 / 9.0,
-            60f32.to_radians(),
-            0.1,
-            100.0,
-        );
+        let proj = crate::camera::reverse_z_perspective(16.0 / 9.0, 60f32.to_radians(), 0.1, 100.0);
         let view = Mat4::look_at_rh(Vec3::new(0.0, 1.5, 4.0), Vec3::ZERO, Vec3::Y);
         let view_proj = proj * view;
 
@@ -429,8 +424,7 @@ mod tests {
 
     #[test]
     fn frustum_rejects_box_fully_outside_left() {
-        let proj =
-            crate::render_graph::camera::reverse_z_perspective(1.0, 60f32.to_radians(), 0.1, 100.0);
+        let proj = crate::camera::reverse_z_perspective(1.0, 60f32.to_radians(), 0.1, 100.0);
         let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
         let view_proj = proj * view;
 
@@ -475,24 +469,9 @@ mod tests {
         let mut state: u64 = 0xA1B2_C3D4_E5F6_0789;
 
         let projections = [
-            crate::render_graph::camera::reverse_z_perspective(
-                16.0 / 9.0,
-                60f32.to_radians(),
-                0.1,
-                100.0,
-            ),
-            crate::render_graph::camera::reverse_z_perspective(
-                1.0,
-                90f32.to_radians(),
-                0.05,
-                500.0,
-            ),
-            crate::render_graph::camera::reverse_z_perspective(
-                4.0 / 3.0,
-                45f32.to_radians(),
-                0.5,
-                50.0,
-            ),
+            crate::camera::reverse_z_perspective(16.0 / 9.0, 60f32.to_radians(), 0.1, 100.0),
+            crate::camera::reverse_z_perspective(1.0, 90f32.to_radians(), 0.05, 500.0),
+            crate::camera::reverse_z_perspective(4.0 / 3.0, 45f32.to_radians(), 0.5, 50.0),
         ];
 
         let mut mismatches = 0usize;

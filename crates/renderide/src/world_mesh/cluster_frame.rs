@@ -10,12 +10,12 @@ use glam::Mat4;
 
 use crate::backend::CLUSTER_COUNT_Z;
 use crate::backend::TILE_SIZE;
-use crate::gpu::frame_globals::{
-    ClusteredFrameGlobalsParams, FrameGpuUniforms, SkyboxSpecularUniformParams,
-};
-use crate::render_graph::camera::{
+use crate::camera::{
     clamp_desktop_fov_degrees, effective_head_output_clip_planes, reverse_z_perspective,
     view_matrix_from_render_transform,
+};
+use crate::gpu::frame_globals::{
+    ClusteredFrameGlobalsParams, FrameGpuUniforms, SkyboxSpecularUniformParams,
 };
 use crate::render_graph::frame_params::HostCameraFrame;
 use crate::scene::SceneCoordinator;

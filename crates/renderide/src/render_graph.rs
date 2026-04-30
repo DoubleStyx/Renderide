@@ -62,7 +62,6 @@
 pub(crate) mod blackboard;
 pub(crate) mod builder;
 pub(crate) mod cache;
-pub(crate) mod camera;
 pub(crate) mod compiled;
 pub(crate) mod context;
 pub(crate) mod error;
@@ -115,11 +114,14 @@ pub use crate::world_mesh::{
 pub use blackboard::{Blackboard, BlackboardSlot, FrameMotionVectorsSlot};
 pub use builder::GraphBuilder;
 pub use cache::{GraphCache, GraphCacheKey};
-pub use camera::{DESKTOP_FOV_DEGREES_MAX, DESKTOP_FOV_DEGREES_MIN};
-pub use camera::{
-    apply_view_handedness_fix, clamp_desktop_fov_degrees, effective_head_output_clip_planes,
-    reverse_z_orthographic, reverse_z_perspective, reverse_z_perspective_openxr_fov,
-    view_matrix_for_world_mesh_render_space, view_matrix_from_render_transform,
+// camera math + state extracted to `crate::camera`. Re-exports kept here so `crate::render_graph::…`
+// paths resolve until consumers migrate (Phase D).
+pub use crate::camera::{
+    DESKTOP_FOV_DEGREES_MAX, DESKTOP_FOV_DEGREES_MIN, HostCameraFrame, SecondaryCameraId,
+    StereoViewMatrices, ViewId, apply_view_handedness_fix, clamp_desktop_fov_degrees,
+    effective_head_output_clip_planes, reverse_z_orthographic, reverse_z_perspective,
+    reverse_z_perspective_openxr_fov, view_matrix_for_world_mesh_render_space,
+    view_matrix_from_render_transform,
 };
 pub use compiled::{
     ColorAttachmentTemplate, CompileStats, CompiledRenderGraph, DepthAttachmentTemplate, DotFormat,
@@ -133,11 +135,10 @@ pub use context::{
 };
 pub use error::{GraphBuildError, GraphExecuteError, RenderPassError, SetupError};
 pub use frame_params::{
-    FrameRenderParams, FrameViewClear, HostCameraFrame, MaterialBatchPacket, PerViewFramePlan,
-    PerViewFramePlanSlot, PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot,
-    PrefetchedWorldMeshDrawsSlot, PrefetchedWorldMeshViewDraws, PreparedClearColorSkybox,
-    PreparedMaterialSkybox, PreparedSkybox, PreparedWorldMeshForwardFrame, SecondaryCameraId,
-    StereoViewMatrices, ViewId, WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,
+    FrameRenderParams, FrameViewClear, MaterialBatchPacket, PerViewFramePlan, PerViewFramePlanSlot,
+    PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot, PrefetchedWorldMeshDrawsSlot,
+    PrefetchedWorldMeshViewDraws, PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedSkybox,
+    PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,
     WorldMeshHelperNeeds,
 };
 // Hi-Z extracted to `crate::occlusion`; re-exports kept for graph/passes/backend consumers.

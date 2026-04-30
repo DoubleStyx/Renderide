@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 
-use glam::{Mat4, Vec3};
 use parking_lot::Mutex;
 
 use crate::assets::AssetTransferQueue;
@@ -19,14 +18,21 @@ use crate::backend::MaterialSystem;
 use crate::backend::OcclusionSystem;
 use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::backend::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
+// Re-exported for back-compat: consumers using `crate::render_graph::frame_params::HostCameraFrame`
+// keep working until Phase D migrates them to `crate::camera::*`.
+#[expect(
+    unused_imports,
+    reason = "back-compat re-export; consumers reach these via crate::render_graph::frame_params::*"
+)]
+pub use crate::camera::{HostCameraFrame, SecondaryCameraId, StereoViewMatrices, ViewId};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::materials::{
     MaterialPassDesc, MaterialPipelineDesc, MaterialPipelineSet, RasterFrontFace,
 };
 use crate::occlusion::gpu::HiZGpuState;
 use crate::pipelines::ShaderPermutation;
-use crate::scene::{RenderSpaceId, SceneCoordinator};
-use crate::shared::{CameraClearMode, HeadOutputDevice};
+use crate::scene::SceneCoordinator;
+use crate::shared::CameraClearMode;
 
 use super::OutputDepthMode;
 use super::blackboard::BlackboardSlot;
@@ -35,143 +41,6 @@ use crate::world_mesh::draw_prep::PipelineVariantKey;
 use crate::world_mesh::draw_prep::{
     CameraTransformDrawFilter, InstancePlan, WorldMeshDrawCollection, WorldMeshDrawItem,
 };
-
-/// Stable logical identity for one secondary camera view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SecondaryCameraId {
-    /// Render space containing the camera.
-    pub render_space_id: RenderSpaceId,
-    /// Dense host camera renderable index within the render space.
-    pub renderable_index: i32,
-}
-
-impl SecondaryCameraId {
-    /// Builds a secondary-camera id from the host render-space and dense camera row.
-    pub const fn new(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
-        Self {
-            render_space_id,
-            renderable_index,
-        }
-    }
-}
-
-/// Identifies one logical render view for view-scoped resources and temporal state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ViewId {
-    /// Main window or OpenXR multiview (shared primary-view state).
-    Main,
-    /// Secondary camera, tracked independently from the render target asset it writes.
-    SecondaryCamera(SecondaryCameraId),
-}
-
-impl ViewId {
-    /// Builds the stable logical identity for one secondary camera view.
-    pub const fn secondary_camera(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
-        Self::SecondaryCamera(SecondaryCameraId::new(render_space_id, renderable_index))
-    }
-}
-
-/// Per-eye matrices for an OpenXR stereo multiview view.
-///
-/// Consolidates the view-projection (stage → clip), view-only (world → view), and eye positions
-/// so that callers cannot set one without the others. Present only on the HMD view; non-HMD views
-/// carry [`None`] for this slot on [`HostCameraFrame::stereo`].
-#[derive(Clone, Copy, Debug)]
-pub struct StereoViewMatrices {
-    /// Per-eye view–projection (reverse-Z), mapping **stage** space to clip. World mesh passes
-    /// combine this with object transforms; the host `view_transform` is not multiplied again.
-    pub view_proj: (Mat4, Mat4),
-    /// Per-eye **view** matrices (world-to-view, handedness fix applied). Clustered lighting
-    /// decomposes view and projection per eye without re-deriving from HMD poses.
-    pub view_only: (Mat4, Mat4),
-    /// Per-eye world-space camera positions used by shader view-vector math.
-    pub eye_world_position: (Vec3, Vec3),
-}
-
-/// Latest camera-related fields from host [`crate::shared::FrameSubmitData`], updated each `frame_submit`.
-#[derive(Clone, Copy, Debug)]
-pub struct HostCameraFrame {
-    /// Host lock-step frame index (`-1` before the first submit in standalone).
-    pub frame_index: i32,
-    /// Near clip distance from the host frame submission.
-    pub near_clip: f32,
-    /// Far clip distance from the host frame submission.
-    pub far_clip: f32,
-    /// Vertical field of view in **degrees** (matches host `desktopFOV`).
-    pub desktop_fov_degrees: f32,
-    /// Whether the host reported VR output as active for this frame.
-    pub vr_active: bool,
-    /// Init-time head output device selected by the host.
-    pub output_device: HeadOutputDevice,
-    /// `(orthographic_half_height, near, far)` from the first [`crate::shared::CameraRenderTask`] whose
-    /// parameters use orthographic projection (overlay main-camera ortho override).
-    pub primary_ortho_task: Option<(f32, f32, f32)>,
-    /// Per-eye stereo matrices when this frame renders the OpenXR multiview view; [`None`] on
-    /// desktop or secondary-RT views. Set together via [`StereoViewMatrices`] so the view-projection,
-    /// view-only matrices, and per-eye camera positions cannot drift out of sync. See
-    /// [`StereoViewMatrices`] for field details.
-    pub stereo: Option<StereoViewMatrices>,
-    /// Legacy Unity `HeadOutput.transform` in renderer world space.
-    ///
-    /// Overlay render spaces are positioned relative to this transform each frame
-    /// (`RenderingManager.HandleFrameUpdate -> RenderSpace.UpdateOverlayPositioning`).
-    pub head_output_transform: Mat4,
-    /// Explicit per-view world-to-view matrix override.
-    ///
-    /// Set on any view that carries its own camera pose (currently secondary render-texture
-    /// cameras). When [`None`], mesh forward and culling paths derive the view matrix from the
-    /// active render space. When [`Some`], [`super::passes::world_mesh_forward::vp::compute_per_draw_vp_matrices`]
-    /// matches the offscreen projection, and CPU frustum + Hi-Z temporal culling
-    /// ([`crate::world_mesh::cull`]) use the same world-to-view as the depth pyramid author pass.
-    pub explicit_world_to_view: Option<Mat4>,
-    /// Optional override for cluster + forward projection (reverse-Z perspective or ortho).
-    ///
-    /// When both [`Self::cluster_view_override`] and [`Self::cluster_proj_override`] are set,
-    /// [`crate::world_mesh::cluster_frame::cluster_frame_params`] uses them instead of the desktop main-space camera.
-    pub cluster_view_override: Option<Mat4>,
-    /// Optional override projection for clustered light assignment (reverse-Z).
-    pub cluster_proj_override: Option<Mat4>,
-    /// Explicit camera world position for `@group(0)` camera uniforms.
-    ///
-    /// Set on views that carry an explicit camera pose (currently secondary render-texture
-    /// cameras). When [`None`], callers fall back to [`Self::eye_world_position`] and only
-    /// finally to `head_output_transform.col(3).truncate()`.
-    pub explicit_camera_world_position: Option<Vec3>,
-    /// Eye/camera world position derived from the active main render space's `view_transform`.
-    ///
-    /// `head_output_transform` is the render-space *root* (often the world or play-area anchor),
-    /// which differs from the eye whenever the host sets `override_view_position`. Populated each
-    /// `frame_submit` for desktop and overwritten by the OpenXR head pose for VR. PBS shaders read
-    /// this through the `frame.camera_world_pos` uniform; HMD views use
-    /// [`StereoViewMatrices::eye_world_position`] for per-eye shader view vectors. Using the root
-    /// translation made `v = normalize(cam - world_pos)` point at the space root, biasing every
-    /// specular highlight toward "the player's feet."
-    pub eye_world_position: Option<Vec3>,
-    /// Skips Hi-Z temporal state and uses uncull or frustum-only paths for this view.
-    pub suppress_occlusion_temporal: bool,
-}
-
-impl Default for HostCameraFrame {
-    fn default() -> Self {
-        Self {
-            frame_index: -1,
-            near_clip: 0.01,
-            far_clip: 10_000.0,
-            desktop_fov_degrees: 60.0,
-            vr_active: false,
-            output_device: HeadOutputDevice::Screen,
-            primary_ortho_task: None,
-            stereo: None,
-            head_output_transform: Mat4::IDENTITY,
-            explicit_world_to_view: None,
-            cluster_view_override: None,
-            cluster_proj_override: None,
-            explicit_camera_world_position: None,
-            eye_world_position: None,
-            suppress_occlusion_temporal: false,
-        }
-    }
-}
 
 /// Pipeline state resolved during world-mesh forward preparation.
 pub struct WorldMeshForwardPipelineState {

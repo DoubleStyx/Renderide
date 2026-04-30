@@ -1,11 +1,14 @@
-//! Host-facing view matrices and **reverse-Z** projection for world mesh passes.
+//! Host camera state, view identity, and reverse-Z projection / view-matrix math.
 //!
+//! Holds the types and pure-CPU helpers that any module talking about cameras / views uses, so
+//! non-graph modules don't have to import `crate::render_graph` just to reference a camera.
 //! World-to-view applies a Z flip for Vulkan/WebGPU clip, and perspective uses vertical FOV in
-//! **radians** with clip planes from [`super::frame_params::HostCameraFrame`].
+//! **radians** with clip planes from [`HostCameraFrame`].
 //!
-//! OpenXR HMD views use [`projection::reverse_z_perspective_openxr_fov`] (asymmetric frustum from tangents).
+//! OpenXR HMD views use [`reverse_z_perspective_openxr_fov`] (asymmetric frustum from tangents).
 
 mod projection;
+mod state;
 mod view;
 
 pub use projection::{DESKTOP_FOV_DEGREES_MAX, DESKTOP_FOV_DEGREES_MIN};
@@ -13,6 +16,7 @@ pub use projection::{
     clamp_desktop_fov_degrees, effective_head_output_clip_planes, reverse_z_orthographic,
     reverse_z_perspective, reverse_z_perspective_openxr_fov,
 };
+pub use state::{HostCameraFrame, SecondaryCameraId, StereoViewMatrices, ViewId};
 pub use view::{
     apply_view_handedness_fix, view_matrix_for_world_mesh_render_space,
     view_matrix_from_render_transform,

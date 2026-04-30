@@ -65,6 +65,10 @@ pub mod reflection_probes;
 /// Render-graph pass implementations (skybox, ACES tonemap, bloom, GTAO, world-mesh forward, …).
 pub mod passes;
 
+/// Host camera state (`HostCameraFrame`, `StereoViewMatrices`), view identity (`ViewId`),
+/// and reverse-Z projection / view-matrix math.
+pub mod camera;
+
 /// IPC queues, shared-memory accessor, init handshake, and dual-queue dispatch.
 pub mod ipc;
 /// CLI IPC queue parameters and queue name helpers ([`ipc::connection`]).

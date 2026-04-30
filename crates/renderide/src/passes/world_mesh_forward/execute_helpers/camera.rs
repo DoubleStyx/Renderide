@@ -4,12 +4,12 @@ use std::num::NonZeroU32;
 
 use glam::Mat4;
 
+use crate::camera::{
+    effective_head_output_clip_planes, reverse_z_orthographic, reverse_z_perspective,
+};
 use crate::gpu::GpuLimits;
 use crate::materials::MaterialPipelineDesc;
 use crate::pipelines::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
-use crate::render_graph::camera::{
-    effective_head_output_clip_planes, reverse_z_orthographic, reverse_z_perspective,
-};
 use crate::render_graph::clamp_desktop_fov_degrees;
 use crate::render_graph::frame_params::{HostCameraFrame, WorldMeshForwardPipelineState};
 use crate::scene::SceneCoordinator;

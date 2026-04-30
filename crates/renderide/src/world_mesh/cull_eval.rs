@@ -16,8 +16,8 @@ use super::frustum::{
     mesh_bounds_degenerate_for_cull, world_aabb_from_local_bounds,
     world_aabb_visible_in_homogeneous_clip,
 };
+use crate::camera::view_matrix_for_world_mesh_render_space;
 use crate::render_graph::HiZCullData;
-use crate::render_graph::camera::view_matrix_for_world_mesh_render_space;
 use crate::render_graph::hi_z_view_proj_matrices;
 use crate::render_graph::mesh_fully_occluded_in_hiz;
 use crate::render_graph::stereo_hiz_keeps_draw;

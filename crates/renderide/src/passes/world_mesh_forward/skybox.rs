@@ -9,9 +9,9 @@ use parking_lot::Mutex;
 
 use crate::assets::material::MaterialPropertyLookupIds;
 use crate::backend::{EmbeddedTexturePools, FrameGpuResources};
+use crate::camera::view_matrix_for_world_mesh_render_space;
 use crate::embedded_shaders;
 use crate::render_graph::ViewId;
-use crate::render_graph::camera::view_matrix_for_world_mesh_render_space;
 use crate::render_graph::frame_params::{
     FrameRenderParams, PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedSkybox,
     WorldMeshForwardPipelineState,

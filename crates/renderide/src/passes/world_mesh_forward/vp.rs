@@ -4,8 +4,8 @@
 
 use glam::Mat4;
 
+use crate::camera::view_matrix_for_world_mesh_render_space;
 use crate::materials::RasterPipelineKind;
-use crate::render_graph::camera::view_matrix_for_world_mesh_render_space;
 use crate::render_graph::{HostCameraFrame, WorldMeshDrawItem};
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;

@@ -18,7 +18,7 @@ pub trait XrHostCameraSync {
     fn output_device(&self) -> HeadOutputDevice;
     /// Whether VR submission is active this frame (OpenXR session running).
     fn vr_active(&self) -> bool;
-    /// Active main space root scale for [`crate::render_graph::camera::effective_head_output_clip_planes`].
+    /// Active main space root scale for [`crate::camera::effective_head_output_clip_planes`].
     fn scene_root_scale_for_clip(&self) -> Option<Vec3>;
     /// Same rig alignment as [`crate::xr::tracking_space_to_world_matrix`].
     fn world_from_tracking(&self, center_pose_tracking: Option<(Vec3, Quat)>) -> Mat4;
