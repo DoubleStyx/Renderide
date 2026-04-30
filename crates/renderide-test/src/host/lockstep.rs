@@ -2,8 +2,8 @@
 //! `FrameSubmitData`, and lets callers inspect drained messages for asset acks (e.g.
 //! `MeshUploadResult`).
 //!
-//! `frame_index` starts at 0 and increments on each submit, mirroring `RenderSystem.cs:111`'s
-//! `FrameIndex++` in the production C# host.
+//! `frame_index` starts at 0 and increments on each submit, mirroring the production C# host's
+//! monotonically-incrementing per-tick counter.
 
 use renderide_shared::ipc::HostDualQueueIpc;
 use renderide_shared::shared::{FrameSubmitData, RenderSpaceUpdate, RendererCommand};
@@ -11,7 +11,7 @@ use renderide_shared::shared::{FrameSubmitData, RenderSpaceUpdate, RendererComma
 /// Per-tick lockstep state: how many `FrameStartData` messages we observed and the full drained
 /// command batch (for callers that want to look for asset acks like `MeshUploadResult`).
 #[derive(Debug, Default)]
-pub(super) struct TickResult {
+pub struct TickResult {
     /// Number of `FrameStartData` messages consumed this tick.
     pub frame_starts: u32,
     /// Number of `FrameSubmitData` replies actually enqueued (may be `< frame_starts` if the
@@ -23,9 +23,8 @@ pub(super) struct TickResult {
 
 /// Lockstep driver shared across the harness. Owns the current scene state plus the per-tick
 /// frame counter.
-pub(super) struct LockstepDriver {
-    /// Frame index for the next `FrameSubmitData` we send (matches `RenderSystem.cs:111`'s
-    /// monotonically-incrementing counter).
+pub struct LockstepDriver {
+    /// Frame index for the next `FrameSubmitData` we send.
     frame_index: i32,
     /// Fixed scalar fields applied to every `FrameSubmitData` (clip planes, FOV, `vr_active` flag).
     pub frame_scalars: FrameSubmitScalars,
@@ -36,7 +35,7 @@ pub(super) struct LockstepDriver {
 
 /// Static per-frame scalar fields that the harness sets once and reuses across every submit.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct FrameSubmitScalars {
+pub struct FrameSubmitScalars {
     /// Near-clip plane in meters.
     pub near_clip: f32,
     /// Far-clip plane in meters.
@@ -64,7 +63,7 @@ impl Default for FrameSubmitScalars {
 impl LockstepDriver {
     /// Creates a driver with `frame_index = 0` and no scene attached yet (handshake / upload
     /// phase).
-    pub(super) const fn new(frame_scalars: FrameSubmitScalars) -> Self {
+    pub const fn new(frame_scalars: FrameSubmitScalars) -> Self {
         Self {
             frame_index: 0,
             frame_scalars,
@@ -74,12 +73,12 @@ impl LockstepDriver {
 
     /// Latches a render-space update so future `FrameSubmitData` messages embed the sphere scene.
     /// Pass `None` to revert to "empty" frame submits.
-    pub(super) fn set_render_space(&mut self, update: Option<RenderSpaceUpdate>) {
+    pub fn set_render_space(&mut self, update: Option<RenderSpaceUpdate>) {
         self.current_render_space = update;
     }
 
     /// Current frame index that will be assigned to the **next** outgoing `FrameSubmitData`.
-    pub(super) const fn current_frame_index(&self) -> i32 {
+    pub const fn current_frame_index(&self) -> i32 {
         self.frame_index
     }
 
@@ -104,22 +103,11 @@ impl LockstepDriver {
     }
 
     fn send_frame_submit(&mut self, queues: &mut HostDualQueueIpc) -> bool {
-        let render_spaces = self
-            .current_render_space
-            .as_ref()
-            .map(|rs| vec![rs.clone()])
-            .unwrap_or_default();
-        let submit = FrameSubmitData {
-            frame_index: self.frame_index,
-            debug_log: self.frame_scalars.debug_log,
-            vr_active: self.frame_scalars.vr_active,
-            near_clip: self.frame_scalars.near_clip,
-            far_clip: self.frame_scalars.far_clip,
-            desktop_fov: self.frame_scalars.desktop_fov,
-            output_state: None,
-            render_spaces,
-            render_tasks: Vec::new(),
-        };
+        let submit = build_frame_submit_data(
+            self.frame_index,
+            &self.frame_scalars,
+            self.current_render_space.as_ref(),
+        );
         let sent = queues.send_primary(RendererCommand::FrameSubmitData(submit));
         if sent {
             self.frame_index = self.frame_index.wrapping_add(1);
@@ -129,6 +117,31 @@ impl LockstepDriver {
             );
         }
         sent
+    }
+}
+
+/// Builds a [`FrameSubmitData`] message with the supplied frame index, scalar fields, and
+/// optional render-space. Pure: no I/O, no clock, no global state.
+///
+/// Extracted from [`LockstepDriver::send_frame_submit`] so unit tests can verify the construction
+/// rules (frame index propagation, scalar plumbing, render-space `Vec` shape) without standing up
+/// a real Cloudtoid queue.
+pub fn build_frame_submit_data(
+    frame_index: i32,
+    scalars: &FrameSubmitScalars,
+    render_space: Option<&RenderSpaceUpdate>,
+) -> FrameSubmitData {
+    let render_spaces = render_space.map(|rs| vec![rs.clone()]).unwrap_or_default();
+    FrameSubmitData {
+        frame_index,
+        debug_log: scalars.debug_log,
+        vr_active: scalars.vr_active,
+        near_clip: scalars.near_clip,
+        far_clip: scalars.far_clip,
+        desktop_fov: scalars.desktop_fov,
+        output_state: None,
+        render_spaces,
+        render_tasks: Vec::new(),
     }
 }
 
@@ -149,5 +162,69 @@ mod tests {
         let d = LockstepDriver::new(FrameSubmitScalars::default());
         assert_eq!(d.current_frame_index(), 0);
         assert!(d.current_render_space.is_none());
+    }
+
+    #[test]
+    fn frame_submit_scalars_default_values() {
+        let s = FrameSubmitScalars::default();
+        assert!((s.near_clip - 0.1).abs() < 1e-6);
+        assert!((s.far_clip - 100.0).abs() < 1e-3);
+        assert!((s.desktop_fov - 60.0).abs() < 1e-6);
+        assert!(!s.vr_active);
+        assert!(!s.debug_log);
+    }
+
+    #[test]
+    fn set_render_space_to_some_then_none_round_trip() {
+        let mut d = LockstepDriver::new(FrameSubmitScalars::default());
+        d.set_render_space(Some(RenderSpaceUpdate::default()));
+        assert!(d.current_render_space.is_some());
+        d.set_render_space(None);
+        assert!(d.current_render_space.is_none());
+    }
+
+    #[test]
+    fn current_frame_index_unchanged_by_set_render_space() {
+        let mut d = LockstepDriver::new(FrameSubmitScalars::default());
+        let before = d.current_frame_index();
+        d.set_render_space(Some(RenderSpaceUpdate::default()));
+        d.set_render_space(None);
+        assert_eq!(d.current_frame_index(), before);
+    }
+
+    #[test]
+    fn build_frame_submit_data_with_no_render_space_yields_empty_render_spaces() {
+        let scalars = FrameSubmitScalars::default();
+        let submit = build_frame_submit_data(7, &scalars, None);
+        assert_eq!(submit.frame_index, 7);
+        assert!(submit.render_spaces.is_empty());
+        assert!(submit.render_tasks.is_empty());
+        assert!(submit.output_state.is_none());
+    }
+
+    #[test]
+    fn build_frame_submit_data_with_some_render_space_yields_one_entry() {
+        let scalars = FrameSubmitScalars::default();
+        let rs = RenderSpaceUpdate::default();
+        let submit = build_frame_submit_data(0, &scalars, Some(&rs));
+        assert_eq!(submit.render_spaces.len(), 1);
+    }
+
+    #[test]
+    fn build_frame_submit_data_uses_provided_frame_index_and_scalars() {
+        let scalars = FrameSubmitScalars {
+            near_clip: 0.25,
+            far_clip: 5000.0,
+            desktop_fov: 90.0,
+            vr_active: true,
+            debug_log: true,
+        };
+        let submit = build_frame_submit_data(42, &scalars, None);
+        assert_eq!(submit.frame_index, 42);
+        assert!((submit.near_clip - 0.25).abs() < 1e-6);
+        assert!((submit.far_clip - 5000.0).abs() < 1e-3);
+        assert!((submit.desktop_fov - 90.0).abs() < 1e-6);
+        assert!(submit.vr_active);
+        assert!(submit.debug_log);
     }
 }

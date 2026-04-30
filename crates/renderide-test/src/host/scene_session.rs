@@ -24,10 +24,10 @@ use super::lockstep::{FrameSubmitScalars, LockstepDriver};
 
 mod config;
 mod consts;
-mod png_readback;
+pub mod png_readback;
 mod scene_state;
 mod shutdown;
-mod spawn;
+pub mod spawn;
 
 pub use config::SceneSessionConfig;
 

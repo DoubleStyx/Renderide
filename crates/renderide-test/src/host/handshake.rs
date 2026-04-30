@@ -129,4 +129,23 @@ mod tests {
         let b = random_guid();
         assert!(a.a != b.a || a.b != b.b);
     }
+
+    #[test]
+    fn random_guid_does_not_produce_zeroed_value() {
+        for _ in 0..10 {
+            let g = random_guid();
+            let all_zero = g.a == 0
+                && g.b == 0
+                && g.c == 0
+                && g.d == 0
+                && g.e == 0
+                && g.f == 0
+                && g.g == 0
+                && g.h == 0
+                && g.i == 0
+                && g.j == 0
+                && g.k == 0;
+            assert!(!all_zero, "random_guid produced an all-zero value");
+        }
+    }
 }

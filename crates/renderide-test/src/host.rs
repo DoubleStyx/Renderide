@@ -17,9 +17,9 @@ use crate::error::HarnessError;
 
 mod asset_upload;
 mod handshake;
-mod ipc_setup;
-mod lockstep;
-mod scene_session;
+pub mod ipc_setup;
+pub mod lockstep;
+pub mod scene_session;
 
 pub use scene_session::SceneSessionConfig;
 

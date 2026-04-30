@@ -3,6 +3,9 @@ name = "renderide-test"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "renderide-test"
 path = "src/main.rs"

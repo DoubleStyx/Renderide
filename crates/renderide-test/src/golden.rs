@@ -135,8 +135,24 @@ fn write_actual_for_debug(actual: &RgbaImage, diff_out: &Path) -> Result<(), Har
 
 #[cfg(test)]
 mod tests {
-    use super::flat_sample_rgba_if_nearly_uniform;
+    use super::{check, flat_sample_rgba_if_nearly_uniform, generate};
+    use crate::error::HarnessError;
     use image::RgbaImage;
+
+    /// Builds a deterministic non-flat RGBA gradient. The gradient spans every channel by more
+    /// than [`super::FLAT_CHANNEL_RANGE_MAX`], so the flat-image gate accepts it.
+    fn non_flat_gradient(width: u32, height: u32) -> RgbaImage {
+        let mut img = RgbaImage::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let r = (x.wrapping_mul(251) / width.max(1)) as u8;
+                let g = (y.wrapping_mul(239) / height.max(1)) as u8;
+                let b = ((x ^ y).wrapping_mul(53) & 0xff) as u8;
+                img.put_pixel(x, y, image::Rgba([r, g, b, 255]));
+            }
+        }
+        img
+    }
 
     #[test]
     fn flat_detects_single_fill_color() {
@@ -157,26 +173,17 @@ mod tests {
 
     #[test]
     fn check_rejects_dimension_mismatch_before_ssim() {
-        use crate::error::HarnessError;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let actual = dir.path().join("actual.png");
         let golden = dir.path().join("golden.png");
         let diff_out = dir.path().join("diff.png");
 
-        let mut small = RgbaImage::new(2, 2);
-        for p in small.pixels_mut() {
-            *p = image::Rgba([10, 20, 30, 255]);
-        }
-        small.save(&actual).expect("write actual");
+        non_flat_gradient(8, 8).save(&actual).expect("write actual");
+        non_flat_gradient(12, 12)
+            .save(&golden)
+            .expect("write golden");
 
-        let mut large = RgbaImage::new(3, 3);
-        for p in large.pixels_mut() {
-            *p = image::Rgba([10, 20, 30, 255]);
-        }
-        large.save(&golden).expect("write golden");
-
-        let err = super::check(&actual, &golden, 0.95, &diff_out).expect_err("dimension mismatch");
+        let err = check(&actual, &golden, 0.95, &diff_out).expect_err("dimension mismatch");
         match err {
             HarnessError::ImageCompare(msg) => {
                 assert!(
@@ -186,5 +193,118 @@ mod tests {
             }
             other => panic!("expected ImageCompare, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn generate_writes_to_golden_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let actual = dir.path().join("actual.png");
+        let golden = dir.path().join("golden.png");
+        non_flat_gradient(8, 8).save(&actual).expect("save actual");
+
+        generate(&actual, &golden).expect("generate");
+
+        assert!(golden.exists(), "golden path was not written");
+        let actual_bytes = std::fs::read(&actual).expect("read actual");
+        let golden_bytes = std::fs::read(&golden).expect("read golden");
+        assert_eq!(actual_bytes, golden_bytes);
+    }
+
+    #[test]
+    fn generate_creates_missing_parent_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let actual = dir.path().join("actual.png");
+        let golden = dir.path().join("nested").join("subdir").join("golden.png");
+        non_flat_gradient(8, 8).save(&actual).expect("save actual");
+
+        generate(&actual, &golden).expect("generate");
+
+        assert!(golden.exists());
+    }
+
+    #[test]
+    fn generate_rejects_flat_capture() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let actual = dir.path().join("actual.png");
+        let golden = dir.path().join("golden.png");
+
+        let mut flat = RgbaImage::new(8, 8);
+        for p in flat.pixels_mut() {
+            *p = image::Rgba([7, 7, 7, 255]);
+        }
+        flat.save(&actual).expect("save flat");
+
+        let err = generate(&actual, &golden).expect_err("flat capture must be rejected");
+        match err {
+            HarnessError::FlatImage { color, .. } => assert_eq!(color, [7, 7, 7, 255]),
+            other => panic!("expected FlatImage, got {other:?}"),
+        }
+        assert!(!golden.exists(), "flat image must not overwrite golden");
+    }
+
+    #[test]
+    fn check_returns_score_one_for_identical_images() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let actual = dir.path().join("actual.png");
+        let golden = dir.path().join("golden.png");
+        let diff_out = dir.path().join("diff.png");
+
+        let img = non_flat_gradient(16, 16);
+        img.save(&actual).expect("save actual");
+        img.save(&golden).expect("save golden");
+
+        let score = check(&actual, &golden, 0.95, &diff_out).expect("check identical");
+        assert!(score >= 0.99, "expected near-1.0 SSIM, got {score}");
+        assert!(!diff_out.exists(), "diff must not be written on success");
+    }
+
+    #[test]
+    fn check_maps_missing_golden_to_golden_missing_variant() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let actual = dir.path().join("actual.png");
+        let golden = dir.path().join("golden.png");
+        let diff_out = dir.path().join("diff.png");
+
+        non_flat_gradient(8, 8).save(&actual).expect("save actual");
+
+        let err = check(&actual, &golden, 0.95, &diff_out).expect_err("missing golden");
+        assert!(
+            matches!(&err, HarnessError::GoldenMissing(p) if p == &golden),
+            "expected GoldenMissing, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_writes_diff_on_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let actual = dir.path().join("actual.png");
+        let golden = dir.path().join("golden.png");
+        let diff_out = dir.path().join("diff.png");
+
+        let mut a = RgbaImage::new(16, 16);
+        let mut g = RgbaImage::new(16, 16);
+        for y in 0..16 {
+            for x in 0..16 {
+                a.put_pixel(x, y, image::Rgba([(x * 16) as u8, 0, 0, 255]));
+                g.put_pixel(x, y, image::Rgba([0, (y * 16) as u8, 255, 255]));
+            }
+        }
+        a.save(&actual).expect("save actual");
+        g.save(&golden).expect("save golden");
+
+        let err = check(&actual, &golden, 0.999, &diff_out).expect_err("mismatch");
+        match err {
+            HarnessError::GoldenMismatch {
+                score,
+                threshold,
+                diff_path,
+            } => {
+                assert!(score < threshold);
+                assert_eq!(diff_path, diff_out);
+            }
+            other => panic!("expected GoldenMismatch, got {other:?}"),
+        }
+        let diff_meta = std::fs::metadata(&diff_out).expect("diff metadata");
+        assert!(diff_meta.len() > 0, "diff file should not be empty");
     }
 }

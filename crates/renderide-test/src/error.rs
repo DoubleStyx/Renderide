@@ -86,6 +86,7 @@ pub enum HarnessError {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::Duration;
 
     use super::HarnessError;
 
@@ -117,5 +118,98 @@ mod tests {
         assert!(s.contains("SSIM=0.5000"));
         assert!(s.contains("0.9500"));
         assert!(s.contains("diff.png"));
+    }
+
+    #[test]
+    fn display_png_output_missing_includes_path_and_wait() {
+        let e = HarnessError::PngOutputMissing {
+            path: PathBuf::from("target/headless.png"),
+            wait: Duration::from_secs(7),
+        };
+        let s = e.to_string();
+        assert!(s.contains("headless.png"));
+        assert!(s.contains("expected fresh PNG output"));
+        assert!(s.contains("7"));
+    }
+
+    #[test]
+    fn display_flat_image_includes_path_and_color() {
+        let e = HarnessError::FlatImage {
+            path: PathBuf::from("flat.png"),
+            color: [10, 20, 30, 40],
+        };
+        let s = e.to_string();
+        assert!(s.contains("flat.png"));
+        assert!(s.contains("flat single color"));
+        for component in ["10", "20", "30", "40"] {
+            assert!(
+                s.contains(component),
+                "missing component {component} in {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn display_asset_ack_timeout_includes_duration_and_reason() {
+        let e = HarnessError::AssetAckTimeout(Duration::from_millis(2500), "mesh upload");
+        let s = e.to_string();
+        assert!(s.contains("asset ack timed out"));
+        assert!(s.contains("mesh upload"));
+    }
+
+    #[test]
+    fn display_handshake_timeout_includes_label() {
+        let e = HarnessError::HandshakeTimeout(Duration::from_secs(15));
+        let s = e.to_string();
+        assert!(s.contains("handshake timed out"));
+    }
+
+    #[test]
+    fn display_png_read_includes_path() {
+        let img_err = image::ImageError::IoError(std::io::Error::other("decode failed"));
+        let e = HarnessError::PngRead {
+            path: PathBuf::from("a.png"),
+            source: img_err,
+        };
+        let s = e.to_string();
+        assert!(s.contains("a.png"));
+        assert!(s.starts_with("read png"));
+    }
+
+    #[test]
+    fn display_png_write_includes_path() {
+        let img_err = image::ImageError::IoError(std::io::Error::other("write failed"));
+        let e = HarnessError::PngWrite {
+            path: PathBuf::from("b.png"),
+            source: img_err,
+        };
+        let s = e.to_string();
+        assert!(s.contains("b.png"));
+        assert!(s.starts_with("write png"));
+    }
+
+    #[test]
+    fn display_image_compare_includes_inner_message() {
+        let e = HarnessError::ImageCompare("rank deficient".to_string());
+        let s = e.to_string();
+        assert!(s.contains("rank deficient"));
+        assert!(s.starts_with("image-compare"));
+    }
+
+    #[test]
+    fn display_queue_options_includes_inner_message() {
+        let e = HarnessError::QueueOptions("capacity overflow".to_string());
+        let s = e.to_string();
+        assert!(s.contains("capacity overflow"));
+        assert!(s.contains("queue options invalid"));
+    }
+
+    #[test]
+    fn display_spawn_renderer_includes_io_error() {
+        let io_err = std::io::Error::other("permission denied");
+        let e = HarnessError::SpawnRenderer(io_err);
+        let s = e.to_string();
+        assert!(s.contains("permission denied"));
+        assert!(s.contains("spawn renderer process"));
     }
 }

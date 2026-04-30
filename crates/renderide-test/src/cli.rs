@@ -166,7 +166,12 @@ fn run_harness(common: &CommonOpts) -> Result<HarnessRunOutcome, HarnessError> {
     Ok(outcome)
 }
 
-fn parse_resolution(s: &str) -> (u32, u32) {
+/// Parses a `WxH` resolution string into a `(width, height)` tuple.
+///
+/// Accepts both lowercase `x` and uppercase `X` separators. Width and height are clamped to a
+/// minimum of `1` so callers never receive a zero-sized render target. Returns the default
+/// `(256, 256)` when the input is malformed.
+pub fn parse_resolution(s: &str) -> (u32, u32) {
     if let Some((w_str, h_str)) = s.split_once(['x', 'X'])
         && let (Ok(w), Ok(h)) = (w_str.parse::<u32>(), h_str.parse::<u32>())
     {

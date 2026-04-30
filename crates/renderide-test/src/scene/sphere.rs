@@ -33,7 +33,7 @@ impl SphereMesh {
     ///
     /// Choosing `latitude = 16, longitude = 24` yields ~624 verts / ~1152 tris which is small
     /// enough to fit comfortably in any IPC ring while still showing recognizable shading.
-    pub(crate) fn generate(latitude: u32, longitude: u32) -> Self {
+    pub fn generate(latitude: u32, longitude: u32) -> Self {
         assert!(
             latitude >= 2 && longitude >= 3,
             "sphere needs at least 2 latitude rings and 3 longitude segments"
@@ -107,6 +107,62 @@ mod tests {
                 )
                 .sqrt();
             assert!((r - 1.0).abs() < 1e-4, "position not on unit sphere: r={r}");
+        }
+    }
+
+    #[test]
+    fn all_indices_in_vertex_range() {
+        let m = SphereMesh::generate(8, 12);
+        let n = m.vertices.len() as u32;
+        for &idx in &m.indices {
+            assert!(idx < n, "index {idx} out of range for {n} vertices");
+        }
+    }
+
+    #[test]
+    fn all_normals_have_unit_length() {
+        let m = SphereMesh::generate(8, 12);
+        for v in &m.vertices {
+            let len = v.normal[0]
+                .mul_add(
+                    v.normal[0],
+                    v.normal[1].mul_add(v.normal[1], v.normal[2] * v.normal[2]),
+                )
+                .sqrt();
+            assert!(
+                (len - 1.0).abs() < 1e-3,
+                "normal not unit length: |n|={len}"
+            );
+        }
+    }
+
+    #[test]
+    fn generation_is_deterministic() {
+        let a = SphereMesh::generate(8, 12);
+        let b = SphereMesh::generate(8, 12);
+        assert_eq!(a.vertices, b.vertices);
+        assert_eq!(a.indices, b.indices);
+    }
+
+    #[test]
+    fn pole_vertices_are_at_expected_y() {
+        let m = SphereMesh::generate(8, 12);
+        let lon = 12u32;
+        let row = (lon + 1) as usize;
+        for v in &m.vertices[..row] {
+            assert!(
+                (v.position[1] - 1.0).abs() < 1e-4,
+                "top ring not at y=+1: {:?}",
+                v.position
+            );
+        }
+        let last = m.vertices.len();
+        for v in &m.vertices[last - row..] {
+            assert!(
+                (v.position[1] + 1.0).abs() < 1e-4,
+                "bottom ring not at y=-1: {:?}",
+                v.position
+            );
         }
     }
 }

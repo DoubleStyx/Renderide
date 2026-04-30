@@ -52,7 +52,7 @@ pub(super) fn spawn_renderer(
 }
 
 /// Builds the renderer process arguments for one harness session.
-fn renderer_spawn_args(cfg: &SceneSessionConfig, queue_name: &str) -> Vec<String> {
+pub fn renderer_spawn_args(cfg: &SceneSessionConfig, queue_name: &str) -> Vec<String> {
     vec![
         "--headless".to_string(),
         "--headless-output".to_string(),
@@ -113,5 +113,56 @@ mod tests {
             args.windows(2)
                 .any(|w| w[0] == "-QueueCapacity" && w[1] == capacity)
         );
+    }
+
+    #[test]
+    fn spawn_args_include_log_level_debug() {
+        let args = renderer_spawn_args(&minimal_config(), "q");
+        assert!(args.windows(2).any(|w| w == ["-LogLevel", "debug"]));
+    }
+
+    #[test]
+    fn spawn_args_include_ignore_config() {
+        let args = renderer_spawn_args(&minimal_config(), "q");
+        assert!(args.iter().any(|a| a == "--ignore-config"));
+    }
+
+    #[test]
+    fn spawn_args_reflect_varied_resolution_and_interval() {
+        let mut cfg = minimal_config();
+        cfg.width = 1920;
+        cfg.height = 1080;
+        cfg.interval_ms = 33;
+        let args = renderer_spawn_args(&cfg, "q");
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--headless-resolution", "1920x1080"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--headless-interval-ms", "33"])
+        );
+    }
+
+    #[test]
+    fn spawn_args_pair_flag_with_value_in_order() {
+        let cfg = minimal_config();
+        let args = renderer_spawn_args(&cfg, "queue-x");
+        let pairs: &[(&str, &str)] = &[
+            ("--headless-output", "target/headless.png"),
+            ("--headless-resolution", "64x32"),
+            ("--headless-interval-ms", "250"),
+            ("-QueueName", "queue-x"),
+            ("-QueueCapacity", &DEFAULT_QUEUE_CAPACITY_BYTES.to_string()),
+            ("-LogLevel", "debug"),
+        ];
+        for (flag, expected_value) in pairs {
+            let pos = args
+                .iter()
+                .position(|a| a == flag)
+                .unwrap_or_else(|| panic!("flag {flag} missing in {args:?}"));
+            assert!(pos + 1 < args.len(), "flag {flag} has no value slot");
+            assert_eq!(&args[pos + 1], expected_value, "flag {flag} value mismatch");
+        }
     }
 }

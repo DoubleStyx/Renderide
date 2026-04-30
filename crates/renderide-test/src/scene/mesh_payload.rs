@@ -235,4 +235,47 @@ mod tests {
         assert!(!upload_data.high_priority);
         assert_eq!(upload_data.buffer.buffer_id, 99);
     }
+
+    #[test]
+    fn pack_sphere_mesh_upload_uses_uint32_when_vertex_count_exceeds_u16() {
+        // 256 * 256 = 65_536 vertices, one more than u16::MAX, forcing the UInt32 branch.
+        let mesh = SphereMesh::generate(255, 255);
+        assert!(mesh.vertices.len() > u16::MAX as usize);
+        let upload = pack_sphere_mesh_upload(&mesh).expect("pack");
+        assert_eq!(upload.index_buffer_format, IndexBufferFormat::UInt32);
+
+        let vertex_bytes = upload.vertex_count as usize * upload.payload.vertex_stride_bytes;
+        let index_bytes = mesh.indices.len() * 4;
+        let bone_count_bytes = upload.vertex_count as usize;
+        assert_eq!(
+            upload.payload.bytes.len(),
+            vertex_bytes + index_bytes + bone_count_bytes,
+            "payload byte budget should account for u32 indices"
+        );
+    }
+
+    #[test]
+    fn make_mesh_upload_data_overflow_guard_fires_for_negative_vertex_count() {
+        let mesh = SphereMesh::generate(4, 6);
+        let mut upload = pack_sphere_mesh_upload(&mesh).expect("pack");
+        upload.vertex_count = -1;
+        let descriptor = SharedMemoryBufferDescriptor {
+            buffer_id: 1,
+            buffer_capacity: 0,
+            offset: 0,
+            length: 0,
+        };
+        let err =
+            make_mesh_upload_data(&upload, 42, descriptor).expect_err("negative count must fail");
+        match err {
+            SphereMeshDescriptorError::VertexCountOverflow(n) => assert_eq!(n, 1),
+        }
+    }
+
+    #[test]
+    fn unit_sphere_bounds_has_expected_center_and_extents() {
+        let b = unit_sphere_bounds();
+        assert_eq!(b.center, glam::Vec3::ZERO);
+        assert_eq!(b.extents, glam::Vec3::splat(1.05));
+    }
 }

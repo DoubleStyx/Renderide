@@ -17,7 +17,7 @@ use super::config::SceneSessionOutcome;
 use super::consts::timing;
 
 /// Wall-clock + monotonic anchors for one readback wait.
-pub(super) struct PngStabilityWaitTiming {
+pub struct PngStabilityWaitTiming {
     /// `SystemTime` when the scene was submitted; the PNG `mtime` must exceed this.
     pub scene_submitted_at: SystemTime,
     /// Monotonic instant at scene submit; used for the "wait at least N intervals" gate.
@@ -30,7 +30,7 @@ pub(super) struct PngStabilityWaitTiming {
 
 /// Filesystem snapshot of the renderer's PNG output, supplied to [`PngStabilityState::observe`].
 #[derive(Clone, Copy, Debug)]
-pub(super) enum PngObservation {
+pub enum PngObservation {
     /// File does not exist or its metadata could not be read.
     Missing,
     /// File exists with the given modification time and byte length.
@@ -44,7 +44,7 @@ pub(super) enum PngObservation {
 
 /// Decision returned by [`PngStabilityState::observe`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PngStabilityVerdict {
+pub enum PngStabilityVerdict {
     /// Keep polling; not yet a fresh, stable PNG.
     Pending,
     /// PNG is stable past scene-submit and safe to return.
@@ -55,7 +55,7 @@ pub(super) enum PngStabilityVerdict {
 ///
 /// Each call to [`Self::observe`] is deterministic given `(now, observation)`; the outer loop
 /// owns all I/O. This separation keeps the decision logic unit-testable.
-pub(super) struct PngStabilityState {
+pub struct PngStabilityState {
     /// `SystemTime` baseline; observed `mtime` must strictly exceed this to count as scene-fresh.
     scene_submitted_at: SystemTime,
     /// Monotonic baseline; the render-window opens once `now - scene_submit_instant` exceeds
@@ -77,7 +77,7 @@ impl PngStabilityState {
     /// `min_wall_after_submit` is set to `interval * 2`, floored at
     /// [`timing::MIN_WALL_AFTER_SUBMIT_FLOOR`], so callers configured with very short
     /// renderer intervals still wait long enough for slow software rendering to apply-then-render.
-    pub(super) fn new(timing: &PngStabilityWaitTiming) -> Self {
+    pub fn new(timing: &PngStabilityWaitTiming) -> Self {
         let min_wall_after_submit = (timing.interval * 2).max(timing::MIN_WALL_AFTER_SUBMIT_FLOOR);
         Self {
             scene_submitted_at: timing.scene_submitted_at,
@@ -90,28 +90,24 @@ impl PngStabilityState {
     }
 
     /// Floor on the post-submit wait before any PNG is accepted; exposed for deadline computation.
-    pub(super) const fn min_wall_after_submit(&self) -> Duration {
+    pub const fn min_wall_after_submit(&self) -> Duration {
         self.min_wall_after_submit
     }
 
     /// Whether enough wall-clock has elapsed past scene submit for ANY PNG to be considered
     /// scene-fresh. Exposed for log-line context.
-    pub(super) fn render_window_open(&self, now: Instant) -> bool {
+    pub fn render_window_open(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.scene_submit_instant) >= self.min_wall_after_submit
     }
 
     /// Mtime most recently considered as a stability candidate (`None` if none seen yet).
     /// Exposed for log-line context.
-    pub(super) const fn last_seen_mtime(&self) -> Option<SystemTime> {
+    pub const fn last_seen_mtime(&self) -> Option<SystemTime> {
         self.last_seen_mtime
     }
 
     /// Updates internal state from a fresh observation and returns the new verdict.
-    pub(super) fn observe(
-        &mut self,
-        now: Instant,
-        observation: PngObservation,
-    ) -> PngStabilityVerdict {
+    pub fn observe(&mut self, now: Instant, observation: PngObservation) -> PngStabilityVerdict {
         let (mtime, size) = match observation {
             PngObservation::Missing => return PngStabilityVerdict::Pending,
             PngObservation::Present { mtime, size } => (mtime, size),

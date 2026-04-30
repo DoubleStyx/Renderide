@@ -15,7 +15,7 @@ use crate::error::HarnessError;
 
 /// Default Cloudtoid queue capacity in bytes. Matches the bootstrapper's nominal `8 MiB` payload
 /// budget so we never hit a "queue full" while uploading the sphere mesh.
-pub(super) const DEFAULT_QUEUE_CAPACITY_BYTES: i64 = 8 * 1024 * 1024;
+pub const DEFAULT_QUEUE_CAPACITY_BYTES: i64 = 8 * 1024 * 1024;
 
 /// Per-session naming + queue endpoints owned by the harness.
 pub(super) struct IpcSession {
@@ -35,7 +35,7 @@ pub(super) struct IpcSession {
 ///
 /// Combines the current process id, a Unix-epoch microsecond timestamp, and a per-call atomic
 /// counter to guarantee uniqueness even when two harness runs start within the same OS tick.
-pub(super) fn make_session_id() -> String {
+pub fn make_session_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let pid = std::process::id();
     let now_us = SystemTime::now()
@@ -93,6 +93,7 @@ fn set_interprocess_dir_env(path: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::make_session_id;
+    use std::collections::HashSet;
 
     #[test]
     fn session_ids_are_unique_within_one_process() {
@@ -101,5 +102,25 @@ mod tests {
         assert_ne!(a, b);
         assert!(a.starts_with("renderide-test_"));
         assert!(b.starts_with("renderide-test_"));
+    }
+
+    #[test]
+    fn session_id_uses_filesystem_safe_chars() {
+        let id = make_session_id();
+        for c in id.chars() {
+            assert!(
+                c.is_ascii_alphanumeric() || c == '-' || c == '_',
+                "session id contains unsafe char {c:?}: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_id_uniqueness_over_many_calls() {
+        let mut seen = HashSet::new();
+        for _ in 0..200 {
+            let id = make_session_id();
+            assert!(seen.insert(id.clone()), "duplicate session id: {id}");
+        }
     }
 }
