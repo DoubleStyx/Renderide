@@ -231,13 +231,19 @@ macro_rules! __labeled_enum_emit {
 
             /// Parses a case-insensitive token (canonical persist string or any declared alias).
             ///
+            /// Matching uses `eq_ignore_ascii_case` so the canonical persist string keeps its
+            /// declared casing on serialize while inputs in any case still resolve. Separator
+            /// characters (e.g. underscores) must match exactly — when an enum needs to accept
+            /// multiple separator conventions, list each as an explicit alias.
+            ///
             /// Mirrors [`crate::config::labeled_enum::LabeledEnum::parse_persist`] without
             /// requiring the trait to be in scope at call sites.
             pub fn parse_persist(s: &str) -> ::core::option::Option<Self> {
-                let lower = s.trim().to_ascii_lowercase();
-                let s = lower.as_str();
+                let s = s.trim();
                 $(
-                    if s == $persist $(|| s == $alias)* {
+                    if s.eq_ignore_ascii_case($persist)
+                        $(|| s.eq_ignore_ascii_case($alias))*
+                    {
                         return ::core::option::Option::Some(Self::$Variant);
                     }
                 )*
