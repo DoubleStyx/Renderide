@@ -38,7 +38,7 @@ mod debug_hud_frame;
 pub(crate) mod frame_render;
 mod frame_view_plan;
 mod lockstep;
-// xr_impls.rs moved to crate::xr::runtime_glue (XR ↔ runtime glue belongs next to xr/).
+mod xr_glue;
 
 // IPC dispatch (RendererCommand routing, frame submit, lights/shader/material IPC, init handshake)
 // extracted to `crate::frontend::dispatch`. Dispatch reaches into RendererRuntime's `pub(crate)`

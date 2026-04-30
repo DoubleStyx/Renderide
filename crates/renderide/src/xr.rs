@@ -29,7 +29,6 @@ mod host_camera_sync;
 mod input;
 mod openxr_loader_paths;
 pub mod output_device;
-mod runtime_glue;
 mod session;
 mod swapchain;
 

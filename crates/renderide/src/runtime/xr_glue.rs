@@ -1,4 +1,6 @@
-//! [`crate::xr::XrHostCameraSync`] and [`crate::xr::XrFrameRenderer`] for [`super::RendererRuntime`].
+//! [`crate::xr::XrHostCameraSync`] and [`crate::xr::XrFrameRenderer`] for [`RendererRuntime`].
+//!
+//! Lives next to the type it impls so `xr/` never reaches into runtime internals.
 
 use glam::{Mat4, Quat, Vec3};
 
@@ -8,7 +10,7 @@ use crate::render_graph::ExternalFrameTargets;
 use crate::render_graph::GraphExecuteError;
 use crate::shared::HeadOutputDevice;
 
-use crate::runtime::RendererRuntime;
+use super::RendererRuntime;
 
 impl crate::xr::XrHostCameraSync for RendererRuntime {
     fn near_clip(&self) -> f32 {
