@@ -1,23 +1,36 @@
 //! [`LightCache`]: merges incremental host light updates and resolves to world space.
 //!
-//! Dense per-space storage mirrors the reference
-//! [`RenderableComponentManager`](https://github.com/Yellow-Dog-Man/FrooxEngine) protocol: the host
+//! Dense per-space storage mirrors the host's `RenderableComponentManager` protocol: the host
 //! pre-assigns a `RenderableIndex` equal to its own list length and applies swap-remove on
-//! removals, and the renderer maintains an identically-ordered list so subsequent state rows can
-//! address renderables by index without any renderer→host handshake.
+//! removals, and the renderer maintains an identically-ordered list so subsequent state rows
+//! can address renderables by index without any renderer→host handshake.
+//!
+//! The two host-renderable paths live in submodules: [`regular_lights`] holds the regular
+//! Unity-`Light`-component apply path and [`buffer_renderers`] the buffer-renderer apply path.
+//! This barrel module keeps the [`LightCache`] struct definition, the buffer storage rebuild
+//! helper, and the world-space resolve pipeline that fans both paths into the per-space output.
+
+mod buffer_renderers;
+mod regular_lights;
+
+#[cfg(test)]
+mod tests;
 
 use hashbrown::HashMap;
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Vec3};
 
-use crate::shared::{LightData, LightState, LightsBufferRendererState};
+use crate::scene::transforms_apply::TransformRemovalEvent;
+use crate::shared::{LightData, LightsBufferRendererState};
 
-use super::super::transforms_apply::TransformRemovalEvent;
-use super::super::world::fixup_transform_id;
 use super::types::{CachedLight, ResolvedLight};
 
 /// Local axis for light propagation before world transform (host forward = **+Z**).
 const LOCAL_LIGHT_PROPAGATION: Vec3 = Vec3::new(0.0, 0.0, 1.0);
+
+/// Sentinel marking an entry whose transform was removed outright — dropped during the retain
+/// pass at the end of [`LightCache::fixup_for_transform_removals`].
+const DEAD_TRANSFORM_ID: usize = usize::MAX;
 
 /// Dense buffer-renderer entry. Position in the per-space [`Vec`] equals the host's
 /// `RenderableIndex`; the pointed-to [`LightData`] rows live in [`LightCache::buffers`] keyed by
@@ -128,141 +141,10 @@ impl LightCache {
         self.spaces.insert(space_id, out);
     }
 
-    /// Applies [`crate::shared::LightsBufferRendererUpdate`]: removals, additions (transform indices), states.
-    ///
-    /// Processes in the fixed order **removals → additions → states**, matching the reference
-    /// `RenderableManager.HandleUpdate`. Removal uses [`Vec::swap_remove`] so the renderer's
-    /// dense list stays in lockstep with the host's swap-remove reindexing; additions append
-    /// placeholder entries whose transform ids come from the `additions` buffer; state rows
-    /// address those entries by index.
-    pub fn apply_update(
-        &mut self,
-        space_id: i32,
-        removals: &[i32],
-        additions: &[i32],
-        states: &[LightsBufferRendererState],
-    ) {
-        profiling::scope!("lights::apply_update");
-        let v = self.buffer_renderers.entry(space_id).or_default();
-
-        for &idx in removals.iter().take_while(|&&i| i >= 0) {
-            let idx_usize = idx as usize;
-            if idx_usize >= v.len() {
-                logger::warn!(
-                    "light_cache: buffer-renderer removal index {idx} out of range (space_id={space_id}, len={})",
-                    v.len()
-                );
-                continue;
-            }
-            v.swap_remove(idx_usize);
-        }
-
-        for &t in additions.iter().take_while(|&&t| t >= 0) {
-            v.push(BufferRenderer {
-                transform_id: t as usize,
-                state: LightsBufferRendererState::default(),
-            });
-        }
-
-        for state in states {
-            if state.renderable_index < 0 {
-                break;
-            }
-            let idx_usize = state.renderable_index as usize;
-            let Some(slot) = v.get_mut(idx_usize) else {
-                logger::warn!(
-                    "light_cache: buffer-renderer state index {} out of range (space_id={space_id}, len={})",
-                    state.renderable_index,
-                    v.len()
-                );
-                continue;
-            };
-            slot.state = *state;
-        }
-
-        self.rebuild_space_vec(space_id);
-        self.mark_changed();
-    }
-
-    /// Applies regular [`LightState`] updates (Unity `Light` components).
-    ///
-    /// Same three-phase pipeline as [`Self::apply_update`]: removals via [`Vec::swap_remove`] to
-    /// mirror the host's reindexing, additions append placeholder [`CachedLight`]s carrying the
-    /// transform id from the `additions` buffer, and states address entries by index.
-    pub fn apply_regular_lights_update(
-        &mut self,
-        space_id: i32,
-        removals: &[i32],
-        additions: &[i32],
-        states: &[LightState],
-    ) {
-        profiling::scope!("lights::apply_regular_lights_update");
-        let v = self.regular_lights.entry(space_id).or_default();
-
-        for &idx in removals.iter().take_while(|&&i| i >= 0) {
-            let idx_usize = idx as usize;
-            if idx_usize >= v.len() {
-                logger::warn!(
-                    "light_cache: regular-light removal index {idx} out of range (space_id={space_id}, len={})",
-                    v.len()
-                );
-                continue;
-            }
-            v.swap_remove(idx_usize);
-        }
-
-        for &t in additions.iter().take_while(|&&t| t >= 0) {
-            v.push(CachedLight {
-                data: LightData::default(),
-                state: LightsBufferRendererState::default(),
-                transform_id: t as usize,
-            });
-        }
-
-        for state in states {
-            if state.renderable_index < 0 {
-                break;
-            }
-            let idx_usize = state.renderable_index as usize;
-            let Some(slot) = v.get_mut(idx_usize) else {
-                logger::warn!(
-                    "light_cache: regular-light state index {} out of range (space_id={space_id}, len={})",
-                    state.renderable_index,
-                    v.len()
-                );
-                continue;
-            };
-            slot.data = LightData {
-                point: Vec3::ZERO,
-                orientation: Quat::IDENTITY,
-                color: Vec3::new(state.color.x, state.color.y, state.color.z),
-                intensity: state.intensity,
-                range: state.range,
-                angle: state.spot_angle,
-            };
-            slot.state = LightsBufferRendererState {
-                renderable_index: state.renderable_index,
-                global_unique_id: -1,
-                shadow_strength: state.shadow_strength,
-                shadow_near_plane: state.shadow_near_plane,
-                shadow_map_resolution: state.shadow_map_resolution_override,
-                shadow_bias: state.shadow_bias,
-                shadow_normal_bias: state.shadow_normal_bias,
-                cookie_texture_asset_id: state.cookie_texture_asset_id,
-                light_type: state.r#type,
-                shadow_type: state.shadow_type,
-                _padding: [0; 2],
-            };
-        }
-
-        self.rebuild_space_vec(space_id);
-        self.mark_changed();
-    }
-
     /// Rolls each cached light's `transform_id` forward through this frame's
     /// [`TransformRemovalEvent`]s so stored references follow a transform when it was swap-moved
-    /// into a freed slot (matches the host's `RenderableIndex` reindexing). Must run *before* the
-    /// frame's light add/remove/state apply so any new state rows land on the correct entry.
+    /// into a freed slot. Must run *before* the frame's light add/remove/state apply so any new
+    /// state rows land on the correct entry.
     ///
     /// Drops entries whose own transform was the one being removed (fixup returns `-1`) with a
     /// warning; a well-formed host stream won't produce that case because the light's own
@@ -277,84 +159,11 @@ impl LightCache {
             return;
         }
         profiling::scope!("lights::fixup_for_transform_removals");
-        // Sentinel marking an entry whose transform was removed outright — dropped during retain.
-        const DEAD: usize = usize::MAX;
 
-        let mut dirty = false;
+        let regular_dirty = self.fixup_regular_lights_for_transform_removals(space_id, removals);
+        let buffer_dirty = self.fixup_buffer_renderers_for_transform_removals(space_id, removals);
 
-        if let Some(v) = self.regular_lights.get_mut(&space_id) {
-            for removal in removals {
-                for light in v.iter_mut() {
-                    if light.transform_id == DEAD {
-                        continue;
-                    }
-                    let fixed = fixup_transform_id(
-                        light.transform_id as i32,
-                        removal.removed_index,
-                        removal.last_index_before_swap,
-                    );
-                    if fixed < 0 {
-                        light.transform_id = DEAD;
-                        dirty = true;
-                    } else if (fixed as usize) != light.transform_id {
-                        light.transform_id = fixed as usize;
-                        dirty = true;
-                    }
-                }
-            }
-            let before = v.len();
-            v.retain(|l| {
-                if l.transform_id == DEAD {
-                    logger::warn!(
-                        "light_cache: regular light dropped during transform-removal fixup (space_id={space_id})"
-                    );
-                    false
-                } else {
-                    true
-                }
-            });
-            if v.len() != before {
-                dirty = true;
-            }
-        }
-
-        if let Some(v) = self.buffer_renderers.get_mut(&space_id) {
-            for removal in removals {
-                for br in v.iter_mut() {
-                    if br.transform_id == DEAD {
-                        continue;
-                    }
-                    let fixed = fixup_transform_id(
-                        br.transform_id as i32,
-                        removal.removed_index,
-                        removal.last_index_before_swap,
-                    );
-                    if fixed < 0 {
-                        br.transform_id = DEAD;
-                        dirty = true;
-                    } else if (fixed as usize) != br.transform_id {
-                        br.transform_id = fixed as usize;
-                        dirty = true;
-                    }
-                }
-            }
-            let before = v.len();
-            v.retain(|br| {
-                if br.transform_id == DEAD {
-                    logger::warn!(
-                        "light_cache: buffer renderer dropped during transform-removal fixup (space_id={space_id})"
-                    );
-                    false
-                } else {
-                    true
-                }
-            });
-            if v.len() != before {
-                dirty = true;
-            }
-        }
-
-        if dirty {
+        if regular_dirty || buffer_dirty {
             self.rebuild_space_vec(space_id);
             self.mark_changed();
         }
@@ -469,6 +278,3 @@ impl Default for LightCache {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests;

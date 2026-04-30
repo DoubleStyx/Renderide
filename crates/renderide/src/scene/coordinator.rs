@@ -24,10 +24,7 @@ use super::render_space::RenderSpaceState;
 use super::transforms_apply::TransformRemovalEvent;
 use super::world::{WorldTransformCache, compute_world_matrices_for_space, ensure_cache_shapes};
 
-use parallel_apply::{
-    ExtractedRenderSpaceUpdate, PerSpaceApplyInputs, apply_extracted_render_space_update,
-    extract_render_space_update, light_updates_view,
-};
+use parallel_apply::{ExtractedRenderSpaceUpdate, extract_render_space_update, light_updates_view};
 
 /// Warns when more than one non-overlay render space is marked active (breaks main-camera assumptions).
 fn warn_if_multiple_active_non_overlay_spaces(data: &FrameSubmitData) {
@@ -405,106 +402,6 @@ impl SceneCoordinator {
         debug_assert!(extracted_per_space.is_empty());
         self.apply_extracted_scratch = extracted_per_space;
         Ok(())
-    }
-
-    /// Drains per-space state, runs Phase B (parallel where it pays), and re-inserts the results.
-    ///
-    /// Drives the rayon fan-out used by [`Self::apply_frame_submit`]. For one or zero entries we
-    /// stay serial to skip rayon dispatch overhead. Per-space dirty cache marks are merged into
-    /// [`Self::world_dirty`] on the main thread before reinsert. The caller's
-    /// `extracted_per_space` is drained in place so the backing [`Vec`] capacity persists across
-    /// frames.
-    fn apply_extracted_per_space(
-        &mut self,
-        extracted_per_space: &mut Vec<ExtractedRenderSpaceUpdate>,
-    ) -> Result<(), SceneError> {
-        if extracted_per_space.is_empty() {
-            return Ok(());
-        }
-        profiling::scope!("scene::apply_frame_submit::apply");
-
-        // Drain spaces and caches into a Vec so they can move into worker closures.
-        let mut work: Vec<(
-            RenderSpaceId,
-            RenderSpaceState,
-            WorldTransformCache,
-            ExtractedRenderSpaceUpdate,
-            Vec<TransformRemovalEvent>,
-        )> = Vec::with_capacity(extracted_per_space.len());
-        for extracted in extracted_per_space.drain(..) {
-            let id = extracted.space_id;
-            let Some(space) = self.spaces.remove(&id) else {
-                continue;
-            };
-            let cache = self.world_caches.remove(&id).unwrap_or_default();
-            work.push((id, space, cache, extracted, Vec::new()));
-        }
-
-        if work.len() <= 1 {
-            for (id, mut space, mut cache, extracted, mut removal_events) in work {
-                let dirty = apply_extracted_render_space_update(
-                    &extracted,
-                    PerSpaceApplyInputs {
-                        space: &mut space,
-                        cache: &mut cache,
-                        removal_events: &mut removal_events,
-                    },
-                );
-                if dirty {
-                    self.world_dirty.insert(id);
-                }
-                self.spaces.insert(id, space);
-                self.world_caches.insert(id, cache);
-                self.stash_transform_removals(id, removal_events);
-            }
-            return Ok(());
-        }
-
-        use rayon::prelude::*;
-        let processed: Vec<(
-            RenderSpaceId,
-            RenderSpaceState,
-            WorldTransformCache,
-            bool,
-            Vec<TransformRemovalEvent>,
-        )> = work
-            .into_par_iter()
-            .map(
-                |(id, mut space, mut cache, extracted, mut removal_events)| {
-                    let dirty = apply_extracted_render_space_update(
-                        &extracted,
-                        PerSpaceApplyInputs {
-                            space: &mut space,
-                            cache: &mut cache,
-                            removal_events: &mut removal_events,
-                        },
-                    );
-                    (id, space, cache, dirty, removal_events)
-                },
-            )
-            .collect();
-        for (id, space, cache, dirty, removal_events) in processed {
-            if dirty {
-                self.world_dirty.insert(id);
-            }
-            self.spaces.insert(id, space);
-            self.world_caches.insert(id, cache);
-            self.stash_transform_removals(id, removal_events);
-        }
-        Ok(())
-    }
-
-    /// Moves a per-space transform-removal buffer into [`Self::transform_removals_by_space`] so
-    /// Phase C can read it. Reuses the pre-allocated entry when present so the steady-state path
-    /// swaps `Vec` contents instead of reallocating.
-    fn stash_transform_removals(
-        &mut self,
-        id: RenderSpaceId,
-        mut removals: Vec<TransformRemovalEvent>,
-    ) {
-        let slot = self.transform_removals_by_space.entry(id).or_default();
-        slot.clear();
-        slot.append(&mut removals);
     }
 
     /// Drops render spaces that were absent from this submit’s id set.

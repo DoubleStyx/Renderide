@@ -9,29 +9,35 @@
 //! mesh renderables, layer assignments, render overrides, and lights using the captured
 //! [`TransformRemovalEvent`]s. Removal handling here therefore performs only the parent-pointer
 //! repair that needs to happen before [`Vec::swap_remove`].
+//!
+//! The dense apply path is split across two submodules: [`removals`] handles transform removals
+//! and parent-pointer deltas, [`poses`] handles pose row validation, commit, and dirty-flag
+//! propagation. This barrel module owns the cross-phase [`NodeDirtyMask`], the buffer-growth
+//! helpers, the shared-memory [`extract_transforms_update`] entry point, and the
+//! [`apply_transforms_update_extracted`] orchestrator that runs the two phases in order.
+
+mod poses;
+mod removals;
+
+pub use removals::{TransformRemovalEvent, apply_transform_removals_ordered};
 
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{
-    RenderTransform, TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES, TransformParentUpdate,
-    TransformPoseUpdate, TransformsUpdate,
+    TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES, TransformParentUpdate, TransformPoseUpdate,
+    TransformsUpdate,
 };
 
 use super::error::SceneError;
 use super::ids::RenderSpaceId;
-use super::pose::{PoseValidation, render_transform_identity};
+use super::pose::render_transform_identity;
 use super::render_space::RenderSpaceState;
 use super::world::{WorldTransformCache, mark_descendants_uncomputed, rebuild_children};
 
-/// Minimum pose-update count before [`apply_transform_pose_updates`] fans out validation across
-/// rayon workers. Below this threshold the scalar loop is faster than rayon dispatch overhead.
-const POSE_UPDATE_PARALLEL_MIN_ROWS: usize = 1024;
-
-/// Per-node dirty mask for one [`apply_transforms_update`] call.
+/// Per-node dirty mask for one [`apply_transforms_update_extracted`] call.
 ///
-/// Replaces the previous [`HashSet<usize>`] tracker so pose / parent updates can flip flags by
-/// index without hashing or rehash-driven reallocation. Values are aligned to
-/// [`RenderSpaceState::nodes`] length so [`propagate_transform_change_dirty_flags`] can iterate
-/// in dense index order.
+/// Replaces the previous [`std::collections::HashSet<usize>`] tracker so pose / parent updates
+/// can flip flags by index without hashing or rehash-driven reallocation. Values are aligned to
+/// [`RenderSpaceState::nodes`] length so dirty-flag propagation can iterate in dense index order.
 #[derive(Debug, Default)]
 struct NodeDirtyMask {
     /// `true` at index `i` when transform `i` had its parent or pose mutated this call.
@@ -65,15 +71,12 @@ impl NodeDirtyMask {
     fn any(&self) -> bool {
         self.any
     }
-}
 
-/// One successful transform removal: dense index removed and last valid index before `swap_remove`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TransformRemovalEvent {
-    /// Removed dense transform index (`i32`, same as host removal buffer entry).
-    pub removed_index: i32,
-    /// Last valid index in `nodes` before the slot was removed (swapped-into source).
-    pub last_index_before_swap: usize,
+    /// Read-only access to the flag vector for dirty-flag propagation.
+    #[inline]
+    fn flags(&self) -> &[bool] {
+        &self.flags
+    }
 }
 
 /// Owned per-space transform-update payload extracted from shared memory.
@@ -93,57 +96,6 @@ pub struct ExtractedTransformsUpdate {
     pub target_transform_count: i32,
     /// Host frame index for diagnostics.
     pub frame_index: i32,
-}
-
-/// Applies removals in buffer order; writes events into `out` (cleared first).
-pub fn apply_transform_removals_ordered(
-    space: &mut RenderSpaceState,
-    cache: &mut WorldTransformCache,
-    removals: &[i32],
-    out: &mut Vec<TransformRemovalEvent>,
-) -> bool {
-    out.clear();
-    let mut had_removal = false;
-    for &raw in removals.iter().take_while(|&&i| i >= 0) {
-        let idx = raw as usize;
-        if idx >= space.nodes.len() {
-            continue;
-        }
-        let removed_id = raw;
-        let last_index_before_swap = space.nodes.len() - 1;
-
-        for (i, parent) in space.node_parents.iter_mut().enumerate() {
-            if *parent == removed_id {
-                *parent = -1;
-                if i < cache.computed.len() {
-                    cache.computed[i] = false;
-                }
-            } else if *parent == last_index_before_swap as i32 {
-                *parent = removed_id;
-            }
-        }
-
-        space.nodes.swap_remove(idx);
-        space.node_parents.swap_remove(idx);
-        if idx < cache.world_matrices.len() {
-            cache.world_matrices.swap_remove(idx);
-            cache.computed.swap_remove(idx);
-            cache.local_matrices.swap_remove(idx);
-            cache.local_dirty.swap_remove(idx);
-            if idx < cache.degenerate_scales.len() {
-                cache.degenerate_scales.swap_remove(idx);
-            }
-            if idx < cache.visit_epoch.len() {
-                cache.visit_epoch.swap_remove(idx);
-            }
-        }
-        out.push(TransformRemovalEvent {
-            removed_index: removed_id,
-            last_index_before_swap,
-        });
-        had_removal = true;
-    }
-    had_removal
 }
 
 /// Resizes world/cache sidecars when the node table grew or shrank on host.
@@ -171,7 +123,7 @@ fn ensure_world_cache_matches_node_count(
 }
 
 /// Extends dense transform buffers up to `target_transform_count` with identity locals.
-fn grow_transform_buffers_to_target_target(
+fn grow_transform_buffers_to_target(
     space: &mut RenderSpaceState,
     cache: &mut WorldTransformCache,
     target_transform_count: i32,
@@ -190,144 +142,6 @@ fn grow_transform_buffers_to_target_target(
     }
     if space.nodes.len() != nodes_before {
         *invalidate_world = true;
-    }
-}
-
-/// Applies parent pointer deltas from a pre-extracted slice.
-fn apply_transform_parent_updates_extracted(
-    space: &mut RenderSpaceState,
-    cache: &mut WorldTransformCache,
-    parents: &[TransformParentUpdate],
-    changed: &mut NodeDirtyMask,
-    invalidate_world: &mut bool,
-) {
-    profiling::scope!("scene::apply_parent_updates");
-    if parents.is_empty() {
-        return;
-    }
-    let mut had_parent = false;
-    for pu in parents {
-        if pu.transform_id < 0 {
-            break;
-        }
-        if (pu.transform_id as usize) < space.node_parents.len() {
-            space.node_parents[pu.transform_id as usize] = pu.new_parent_id;
-            changed.mark(pu.transform_id as usize);
-            had_parent = true;
-        }
-    }
-    if had_parent {
-        cache.children_dirty = true;
-        *invalidate_world = true;
-    }
-}
-
-/// Validated pose row ready for serial commit into [`RenderSpaceState::nodes`].
-///
-/// Produced by [`validate_pose_rows`] (serial or rayon) before the single-threaded apply phase so
-/// per-row [`PoseValidation::is_valid`] checks can fan out without contending on `space.nodes`.
-struct ValidatedPoseRow {
-    /// Dense transform index into [`RenderSpaceState::nodes`].
-    transform_index: usize,
-    /// Pose to commit (already substituted with [`render_transform_identity`] when the host row was rejected).
-    pose: RenderTransform,
-    /// `true` when the host row failed [`PoseValidation::is_valid`] (caller logs the rejection).
-    rejected: bool,
-    /// Original [`TransformPoseUpdate::transform_id`] for the rejection log line.
-    raw_transform_id: i32,
-}
-
-/// Index of the first sentinel `transform_id < 0` row, or `poses.len()` if no terminator is present.
-#[inline]
-fn pose_terminator_index(poses: &[TransformPoseUpdate]) -> usize {
-    poses
-        .iter()
-        .position(|pu| pu.transform_id < 0)
-        .unwrap_or(poses.len())
-}
-
-/// Walks the active prefix of `poses` once and produces one [`ValidatedPoseRow`] per in-bounds entry.
-///
-/// Above [`POSE_UPDATE_PARALLEL_MIN_ROWS`] the per-row validation fans out across rayon workers.
-/// Output order matches input order so the caller's serial commit preserves last-write-wins
-/// semantics for any duplicate transform indices in the host batch.
-fn validate_pose_rows(poses: &[TransformPoseUpdate], node_count: usize) -> Vec<ValidatedPoseRow> {
-    profiling::scope!("scene::validate_pose_rows");
-    let active_len = pose_terminator_index(poses);
-    let active = &poses[..active_len];
-    let row_for = |pu: &TransformPoseUpdate| -> Option<ValidatedPoseRow> {
-        let idx = pu.transform_id as usize;
-        if idx >= node_count {
-            return None;
-        }
-        let valid = PoseValidation { pose: &pu.pose }.is_valid();
-        Some(ValidatedPoseRow {
-            transform_index: idx,
-            pose: if valid {
-                pu.pose
-            } else {
-                render_transform_identity()
-            },
-            rejected: !valid,
-            raw_transform_id: pu.transform_id,
-        })
-    };
-
-    if active.len() >= POSE_UPDATE_PARALLEL_MIN_ROWS {
-        use rayon::prelude::*;
-        active.par_iter().filter_map(row_for).collect()
-    } else {
-        active.iter().filter_map(row_for).collect()
-    }
-}
-
-/// Applies pose rows from a pre-extracted slice, validating each against [`PoseValidation`].
-fn apply_transform_pose_updates_extracted(
-    space: &mut RenderSpaceState,
-    poses: &[TransformPoseUpdate],
-    frame_index: i32,
-    sid: i32,
-    changed: &mut NodeDirtyMask,
-) {
-    profiling::scope!("scene::apply_pose_updates");
-    if poses.is_empty() {
-        return;
-    }
-    let validated = validate_pose_rows(poses, space.nodes.len());
-    for row in validated {
-        if row.rejected {
-            logger::error!(
-                "invalid pose scene={sid} transform={} frame={frame_index}: identity",
-                row.raw_transform_id
-            );
-        }
-        space.nodes[row.transform_index] = row.pose;
-        changed.mark(row.transform_index);
-    }
-}
-
-/// Marks per-node dirty flags after local transform edits.
-fn propagate_transform_change_dirty_flags(
-    cache: &mut WorldTransformCache,
-    changed: &NodeDirtyMask,
-) {
-    if !changed.any() {
-        return;
-    }
-    let n = changed
-        .flags
-        .len()
-        .min(cache.computed.len().max(cache.local_dirty.len()));
-    for (i, &dirty) in changed.flags[..n].iter().enumerate() {
-        if !dirty {
-            continue;
-        }
-        if i < cache.computed.len() {
-            cache.computed[i] = false;
-        }
-        if i < cache.local_dirty.len() {
-            cache.local_dirty[i] = true;
-        }
     }
 }
 
@@ -373,9 +187,9 @@ pub fn extract_transforms_update(
 
 /// Applies removals, growth, parent updates, and pose updates for one space using a pre-extracted payload.
 ///
-/// Writes `world_dirty` for `space_id` when any change invalidates the world cache. Returns
-/// `true` when the caller should mark `space_id` dirty in its own merged set (used by the parallel
-/// per-space apply pipeline that cannot share a `&mut HashSet`).
+/// Returns `true` when the world cache for this space must be invalidated. The orchestrator
+/// keeps the per-space dirty bookkeeping; downstream callers should treat this return value as
+/// the signal to mark `space_id` dirty in their merged set.
 pub fn apply_transforms_update_extracted(
     space: &mut RenderSpaceState,
     cache: &mut WorldTransformCache,
@@ -403,7 +217,7 @@ pub fn apply_transforms_update_extracted(
         }
     }
 
-    grow_transform_buffers_to_target_target(
+    grow_transform_buffers_to_target(
         space,
         cache,
         extracted.target_transform_count,
@@ -412,14 +226,14 @@ pub fn apply_transforms_update_extracted(
 
     let mut changed = NodeDirtyMask::new(space.nodes.len());
 
-    apply_transform_parent_updates_extracted(
+    removals::apply_transform_parent_updates_extracted(
         space,
         cache,
         &extracted.parent_updates,
         &mut changed,
         &mut invalidate_world,
     );
-    apply_transform_pose_updates_extracted(
+    poses::apply_transform_pose_updates_extracted(
         space,
         &extracted.pose_updates,
         extracted.frame_index,
@@ -431,7 +245,7 @@ pub fn apply_transforms_update_extracted(
         invalidate_world = true;
     }
 
-    propagate_transform_change_dirty_flags(cache, &changed);
+    poses::propagate_transform_change_dirty_flags(cache, &changed);
 
     if cache.children_dirty {
         rebuild_children(&space.node_parents, space.nodes.len(), &mut cache.children);
@@ -518,110 +332,6 @@ mod tests {
         assert!((space.nodes[1].position.x - 1.0).abs() < 1e-5);
     }
 
-    /// [`pose_terminator_index`] returns the index of the first sentinel `transform_id < 0`,
-    /// matching the early-break semantics of the host pose-update buffer protocol.
-    #[test]
-    fn pose_terminator_index_finds_first_sentinel() {
-        let pose = node_tagged(0.0);
-        let rows = vec![
-            TransformPoseUpdate {
-                transform_id: 0,
-                pose,
-            },
-            TransformPoseUpdate {
-                transform_id: 1,
-                pose,
-            },
-            TransformPoseUpdate {
-                transform_id: -1,
-                pose,
-            },
-            TransformPoseUpdate {
-                transform_id: 2,
-                pose,
-            },
-        ];
-        assert_eq!(pose_terminator_index(&rows), 2);
-    }
-
-    /// [`pose_terminator_index`] returns `len` when no sentinel is present so the validation pass
-    /// processes every row.
-    #[test]
-    fn pose_terminator_index_no_sentinel_returns_len() {
-        let pose = node_tagged(0.0);
-        let rows = vec![TransformPoseUpdate {
-            transform_id: 0,
-            pose,
-        }];
-        assert_eq!(pose_terminator_index(&rows), rows.len());
-    }
-
-    /// [`validate_pose_rows`] preserves input order, drops out-of-range transform indices, and
-    /// substitutes [`render_transform_identity`] for invalid poses while flagging them for log.
-    #[test]
-    fn validate_pose_rows_preserves_order_and_substitutes_invalid() {
-        let valid = node_tagged(2.0);
-        let mut bad = node_tagged(0.0);
-        bad.position.x = f32::NAN;
-        let rows = vec![
-            TransformPoseUpdate {
-                transform_id: 0,
-                pose: valid,
-            },
-            TransformPoseUpdate {
-                transform_id: 7,
-                pose: valid,
-            },
-            TransformPoseUpdate {
-                transform_id: 1,
-                pose: bad,
-            },
-            TransformPoseUpdate {
-                transform_id: -1,
-                pose: valid,
-            },
-        ];
-        let out = validate_pose_rows(&rows, 3);
-        assert_eq!(
-            out.len(),
-            2,
-            "out-of-range and sentinel rows must be dropped"
-        );
-        assert_eq!(out[0].transform_index, 0);
-        assert!(!out[0].rejected);
-        assert_eq!(out[1].transform_index, 1);
-        assert!(out[1].rejected);
-        let identity = render_transform_identity();
-        assert_eq!(out[1].pose.position, identity.position);
-        assert_eq!(out[1].pose.scale, identity.scale);
-        assert_eq!(out[1].pose.rotation, identity.rotation);
-    }
-
-    /// [`validate_pose_rows`] above [`POSE_UPDATE_PARALLEL_MIN_ROWS`] still preserves input order
-    /// (rayon `par_iter().filter_map().collect()` is order-preserving by index).
-    #[test]
-    fn validate_pose_rows_parallel_path_preserves_order() {
-        let pose = node_tagged(1.0);
-        let n = POSE_UPDATE_PARALLEL_MIN_ROWS + 16;
-        let mut rows = Vec::with_capacity(n + 1);
-        for i in 0..n {
-            rows.push(TransformPoseUpdate {
-                transform_id: i as i32,
-                pose,
-            });
-        }
-        rows.push(TransformPoseUpdate {
-            transform_id: -1,
-            pose,
-        });
-        let out = validate_pose_rows(&rows, n);
-        assert_eq!(out.len(), n);
-        for (i, row) in out.iter().enumerate() {
-            assert_eq!(row.transform_index, i);
-            assert!(!row.rejected);
-        }
-    }
-
     /// [`NodeDirtyMask::mark`] grows the underlying `Vec<bool>` to fit indices that exceed the
     /// initial node-table size (e.g. when a host pose row references a slot just allocated by
     /// [`grow_transform_buffers_to_target`]).
@@ -630,7 +340,7 @@ mod tests {
         let mut mask = NodeDirtyMask::new(2);
         mask.mark(5);
         assert!(mask.any());
-        assert!(mask.flags[5]);
-        assert_eq!(mask.flags.len(), 6);
+        assert!(mask.flags()[5]);
+        assert_eq!(mask.flags().len(), 6);
     }
 }

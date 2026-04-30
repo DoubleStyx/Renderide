@@ -18,6 +18,8 @@
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{LightRenderablesUpdate, LightsBufferRendererUpdate, RenderSpaceUpdate};
 
+use super::SceneCoordinator;
+
 use super::super::camera_apply::{
     ExtractedCameraRenderablesUpdate, extract_camera_renderables_update,
     fixup_cameras_for_transform_removals,
@@ -239,5 +241,106 @@ pub fn light_updates_view(update: &RenderSpaceUpdate) -> LightUpdateView<'_> {
         space_id: update.id,
         lights_update: update.lights_update.as_ref(),
         lights_buffer_renderers_update: update.lights_buffer_renderers_update.as_ref(),
+    }
+}
+
+impl SceneCoordinator {
+    /// Drains per-space state, runs Phase B (parallel where it pays), and re-inserts the results.
+    ///
+    /// Drives the rayon fan-out used by [`SceneCoordinator::apply_frame_submit`]. For one or zero
+    /// entries we stay serial to skip rayon dispatch overhead. Per-space dirty cache marks are
+    /// merged into [`SceneCoordinator::world_dirty`] on the main thread before reinsert. The
+    /// caller's `extracted_per_space` is drained in place so the backing [`Vec`] capacity persists
+    /// across frames.
+    pub(super) fn apply_extracted_per_space(
+        &mut self,
+        extracted_per_space: &mut Vec<ExtractedRenderSpaceUpdate>,
+    ) -> Result<(), SceneError> {
+        if extracted_per_space.is_empty() {
+            return Ok(());
+        }
+        profiling::scope!("scene::apply_frame_submit::apply");
+
+        let mut work: Vec<(
+            RenderSpaceId,
+            crate::scene::render_space::RenderSpaceState,
+            crate::scene::world::WorldTransformCache,
+            ExtractedRenderSpaceUpdate,
+            Vec<TransformRemovalEvent>,
+        )> = Vec::with_capacity(extracted_per_space.len());
+        for extracted in extracted_per_space.drain(..) {
+            let id = extracted.space_id;
+            let Some(space) = self.spaces.remove(&id) else {
+                continue;
+            };
+            let cache = self.world_caches.remove(&id).unwrap_or_default();
+            work.push((id, space, cache, extracted, Vec::new()));
+        }
+
+        if work.len() <= 1 {
+            for (id, mut space, mut cache, extracted, mut removal_events) in work {
+                let dirty = apply_extracted_render_space_update(
+                    &extracted,
+                    PerSpaceApplyInputs {
+                        space: &mut space,
+                        cache: &mut cache,
+                        removal_events: &mut removal_events,
+                    },
+                );
+                if dirty {
+                    self.world_dirty.insert(id);
+                }
+                self.spaces.insert(id, space);
+                self.world_caches.insert(id, cache);
+                self.stash_transform_removals(id, removal_events);
+            }
+            return Ok(());
+        }
+
+        use rayon::prelude::*;
+        let processed: Vec<(
+            RenderSpaceId,
+            crate::scene::render_space::RenderSpaceState,
+            crate::scene::world::WorldTransformCache,
+            bool,
+            Vec<TransformRemovalEvent>,
+        )> = work
+            .into_par_iter()
+            .map(
+                |(id, mut space, mut cache, extracted, mut removal_events)| {
+                    let dirty = apply_extracted_render_space_update(
+                        &extracted,
+                        PerSpaceApplyInputs {
+                            space: &mut space,
+                            cache: &mut cache,
+                            removal_events: &mut removal_events,
+                        },
+                    );
+                    (id, space, cache, dirty, removal_events)
+                },
+            )
+            .collect();
+        for (id, space, cache, dirty, removal_events) in processed {
+            if dirty {
+                self.world_dirty.insert(id);
+            }
+            self.spaces.insert(id, space);
+            self.world_caches.insert(id, cache);
+            self.stash_transform_removals(id, removal_events);
+        }
+        Ok(())
+    }
+
+    /// Moves a per-space transform-removal buffer into [`SceneCoordinator::transform_removals_by_space`]
+    /// so Phase C can read it. Reuses the pre-allocated entry when present so the steady-state
+    /// path swaps `Vec` contents instead of reallocating.
+    fn stash_transform_removals(
+        &mut self,
+        id: RenderSpaceId,
+        mut removals: Vec<TransformRemovalEvent>,
+    ) {
+        let slot = self.transform_removals_by_space.entry(id).or_default();
+        slot.clear();
+        slot.append(&mut removals);
     }
 }
