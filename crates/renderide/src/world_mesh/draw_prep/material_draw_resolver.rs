@@ -118,7 +118,7 @@ pub(crate) struct MaterialDrawResolver<'a> {
     /// Embedded material bind resources used for `@group(1)` lookup.
     embedded_bind: Option<&'a EmbeddedMaterialBindResources>,
     /// Material property store used by embedded bind resolution.
-    store: &'a crate::assets::material::MaterialPropertyStore,
+    store: &'a crate::materials::host_data::MaterialPropertyStore,
     /// Texture pools used by embedded bind resolution.
     pools: EmbeddedTexturePools<'a>,
     /// Queue used by embedded uniform updates.

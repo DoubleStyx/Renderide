@@ -192,7 +192,7 @@ fn collect_view_draws(
     // It's `Sync` because everything inside is `&` borrows of frame-shared state.
     let dict = {
         profiling::scope!("collect::shared_dictionary");
-        crate::assets::material::MaterialDictionary::new(setup.property_store)
+        crate::materials::host_data::MaterialDictionary::new(setup.property_store)
     };
     prepared
         .par_iter()

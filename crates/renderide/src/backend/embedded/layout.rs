@@ -6,8 +6,8 @@
 use hashbrown::HashMap;
 use std::sync::Arc;
 
-use crate::assets::material::PropertyIdRegistry;
 use crate::embedded_shaders;
+use crate::materials::host_data::PropertyIdRegistry;
 use crate::materials::{ReflectedRasterLayout, reflect_raster_material_wgsl};
 
 /// Cached reflection and layout for one composed shader stem.
@@ -21,7 +21,7 @@ pub(crate) struct StemMaterialLayout {
 /// probe texture presence (PBS `_NORMALMAP` / `_EMISSION` / `_SPECULARMAP` / … flags) and by
 /// the `_ALPHATEST_ON` / `_ALPHABLEND_ON` / `_MUL_RGB_BY_ALPHA` inference path that reads on-wire signals,
 /// each captured as a synthetic property by
-/// [`crate::assets::material::parse_materials_update_batch_into_store`]:
+/// [`crate::materials::host_data::parse_materials_update_batch_into_store`]:
 ///
 /// 1. The [`crate::shared::MaterialRenderType`] tag at `_RenderType`
 ///    (`MaterialProvider.SetBlendMode` family — `Unlit`, `Toon`, etc.).
@@ -262,7 +262,7 @@ mod tests {
     use super::{
         EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds, shader_writer_unescaped_property_name,
     };
-    use crate::assets::material::PropertyIdRegistry;
+    use crate::materials::host_data::PropertyIdRegistry;
     use crate::materials::reflect_raster_material_wgsl;
 
     #[test]

@@ -1,7 +1,7 @@
 //! GPU and host-facing resource layer: pools, material tables, uploads, preprocess pipelines.
 //!
 //! This module owns **wgpu** [`wgpu::Device`] / [`wgpu::Queue`], mesh and texture pools, the
-//! [`MaterialPropertyStore`](crate::assets::material::MaterialPropertyStore), the compiled
+//! [`MaterialPropertyStore`](crate::materials::host_data::MaterialPropertyStore), the compiled
 //! [`CompiledRenderGraph`](crate::render_graph::CompiledRenderGraph) after attach, and code paths
 //! that turn shared-memory asset payloads into resident GPU resources. [`light_gpu`](crate::backend::light_gpu)
 //! packs scene [`ResolvedLight`](crate::scene::ResolvedLight) values for future storage-buffer upload. It does **not**

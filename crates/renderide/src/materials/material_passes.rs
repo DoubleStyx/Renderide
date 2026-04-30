@@ -16,7 +16,7 @@
 //! Single-pass materials that declare no `//#material` tag fall through to [`default_pass`],
 //! preserving the pre-multi-pass opaque default exactly.
 
-use crate::assets::material::{
+use crate::materials::host_data::{
     MaterialDictionary, MaterialPropertyLookupIds, MaterialPropertyValue, PropertyIdRegistry,
 };
 
@@ -161,7 +161,7 @@ pub(crate) type PropertyMapRef<'a> =
 
 /// Like [`first_float_by_pids`] but takes the two inner maps already fetched once via
 /// [`MaterialDictionary::fetch_property_maps`]. Iterates `pids` doing only one inner-map lookup
-/// per side per id, matching [`crate::assets::material::MaterialPropertyStore::get_merged`]'s
+/// per side per id, matching [`crate::materials::host_data::MaterialPropertyStore::get_merged`]'s
 /// "property block overrides material" semantics.
 pub(crate) fn first_float_from_maps(
     material_map: PropertyMapRef<'_>,
@@ -564,7 +564,7 @@ mod tests {
         MaterialCullOverride, MaterialRenderState, material_render_state_for_lookup,
     };
     use super::*;
-    use crate::assets::material::{MaterialPropertyStore, PropertyIdRegistry};
+    use crate::materials::host_data::{MaterialPropertyStore, PropertyIdRegistry};
 
     #[test]
     fn resolves_unity_src_dst_blend_properties() {

@@ -12,7 +12,7 @@ use super::super::texture_resolve::{
 };
 use super::cache::{EmbeddedSamplerCacheKey, MaterialBindCacheKey};
 use super::uniform::MaterialUniformCacheKey;
-use crate::assets::material::{MaterialPropertyLookupIds, MaterialPropertyStore};
+use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
 pub(super) type EmbeddedGroup1TexturesAndSamplers =
     (Vec<Arc<wgpu::TextureView>>, Vec<Arc<wgpu::Sampler>>);

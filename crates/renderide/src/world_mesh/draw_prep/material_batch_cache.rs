@@ -9,13 +9,13 @@
 //!
 //! Unlike the previous per-frame rebuild, this cache lives across frames on [`RenderBackend`] and
 //! invalidates individual entries via monotonic generation counters maintained by
-//! [`crate::assets::material::MaterialPropertyStore`] and [`crate::materials::MaterialRouter`].
+//! [`crate::materials::host_data::MaterialPropertyStore`] and [`crate::materials::MaterialRouter`].
 //! A frame where nothing has changed touches each live entry with one HashMap probe and four
 //! `u64` comparisons — no dictionary or router lookups required.
 
 use hashbrown::HashMap;
 
-use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
+use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
     MaterialBlendMode, MaterialPipelinePropertyIds, MaterialRenderState, MaterialRouter,
     RasterPipelineKind, embedded_stem_needs_color_stream,
@@ -81,7 +81,7 @@ pub(super) struct ResolvedMaterialBatch {
 struct CacheEntry {
     batch: ResolvedMaterialBatch,
     /// Material-side mutation generation at resolve time
-    /// (see [`crate::assets::material::MaterialPropertyStore::material_generation`]).
+    /// (see [`crate::materials::host_data::MaterialPropertyStore::material_generation`]).
     material_gen: u64,
     /// Property-block mutation generation at resolve time, or `0` when `property_block_id` is `None`.
     property_block_gen: u64,
@@ -446,7 +446,7 @@ fn resolve_material_batch(
 
 #[cfg(test)]
 mod tests {
-    use crate::assets::material::{
+    use crate::materials::host_data::{
         MaterialDictionary, MaterialPropertyStore, MaterialPropertyValue, PropertyIdRegistry,
     };
     use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};

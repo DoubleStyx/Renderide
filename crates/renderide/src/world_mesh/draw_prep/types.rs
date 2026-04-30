@@ -5,7 +5,7 @@ use std::borrow::Cow;
 
 use glam::Mat4;
 
-use crate::assets::material::MaterialPropertyLookupIds;
+use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::materials::{
     MaterialBlendMode, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
 };
@@ -308,7 +308,7 @@ pub struct WorldMeshDrawItem {
     pub collect_order: usize,
     /// Approximate camera distance used for transparent back-to-front sorting.
     pub camera_distance_sq: f32,
-    /// Merge key for host material + property block lookups (e.g. [`crate::assets::material::MaterialDictionary::get_merged`]).
+    /// Merge key for host material + property block lookups (e.g. [`crate::materials::host_data::MaterialDictionary::get_merged`]).
     pub lookup_ids: MaterialPropertyLookupIds,
     /// Cached batch key for the forward pass.
     pub batch_key: MaterialDrawBatchKey,

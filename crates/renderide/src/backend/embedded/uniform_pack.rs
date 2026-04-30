@@ -1,6 +1,6 @@
 //! Uniform byte packing for embedded `@group(1)` material blocks (reflection-driven defaults and keywords).
 
-use crate::assets::material::{
+use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
 };
 use crate::materials::{ReflectedRasterLayout, ReflectedUniformField, ReflectedUniformScalarKind};

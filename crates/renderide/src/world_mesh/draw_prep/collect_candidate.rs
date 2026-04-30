@@ -102,8 +102,10 @@ mod tests {
     use glam::{Mat4, Vec3};
 
     use super::*;
-    use crate::assets::material::{MaterialDictionary, MaterialPropertyStore, PropertyIdRegistry};
     use crate::gpu_pools::MeshPool;
+    use crate::materials::host_data::{
+        MaterialDictionary, MaterialPropertyStore, PropertyIdRegistry,
+    };
     use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
     use crate::scene::{RenderSpaceId, SceneCoordinator};
     use crate::shared::RenderingContext;

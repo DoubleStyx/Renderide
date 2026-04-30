@@ -7,11 +7,11 @@ use std::sync::{Arc, OnceLock};
 use bytemuck::{Pod, Zeroable};
 use parking_lot::Mutex;
 
-use crate::assets::material::MaterialPropertyLookupIds;
 use crate::backend::{EmbeddedTexturePools, FrameGpuResources};
 use crate::camera::ViewId;
 use crate::camera::view_matrix_for_world_mesh_render_space;
 use crate::embedded_shaders;
+use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::render_graph::frame_params::{
     FrameRenderParams, PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedSkybox,
     WorldMeshForwardPipelineState,

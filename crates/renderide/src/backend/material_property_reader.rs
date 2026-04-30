@@ -1,9 +1,9 @@
 //! Name-based material property readers shared by backend environment systems.
 
-use crate::assets::material::{
+use crate::assets::texture::{HostTextureAssetKind, unpack_host_texture_packed};
+use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue, PropertyIdRegistry,
 };
-use crate::assets::texture::{HostTextureAssetKind, unpack_host_texture_packed};
 
 /// Reads a packed texture property by host name.
 pub(crate) fn texture_property(

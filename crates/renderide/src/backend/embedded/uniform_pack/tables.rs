@@ -1,6 +1,6 @@
 //! Name-driven keyword inference and scalar default tables for embedded uniform packing.
 
-use crate::assets::material::{
+use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
 };
 
@@ -112,7 +112,7 @@ pub(super) fn inferred_keyword_float_f32(
 
 /// Discriminant of [`crate::shared::MaterialRenderType::TransparentCutout`] on the wire.
 /// Captured under the synthetic `_RenderType` property by
-/// [`crate::assets::material::parse_materials_update_batch_into_store`].
+/// [`crate::materials::host_data::parse_materials_update_batch_into_store`].
 const RENDER_TYPE_TRANSPARENT_CUTOUT: i32 = 1;
 /// Discriminant of [`crate::shared::MaterialRenderType::Transparent`] on the wire.
 const RENDER_TYPE_TRANSPARENT: i32 = 2;

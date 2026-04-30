@@ -1,9 +1,9 @@
 //! Small property-store probes used by uniform packing and keyword inference.
 
-use crate::assets::material::{
+use crate::assets::texture::unpack_host_texture_packed;
+use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
 };
-use crate::assets::texture::unpack_host_texture_packed;
 
 /// True when the host material has a `set_float` for `property_id` with value ≥ 0.5 (Unity shader keyword pattern).
 pub(super) fn keyword_float_enabled_by_pid(

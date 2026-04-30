@@ -3,7 +3,7 @@
 //! Used by the mesh-forward draw prep path and reflective raster pipeline builders to key
 //! [`wgpu::RenderPipeline`] instances consistently with host material overrides.
 
-use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
+use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 
 use glam::{Mat3, Mat4};
 

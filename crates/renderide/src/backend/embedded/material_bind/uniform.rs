@@ -8,7 +8,7 @@ use super::super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::super::layout::StemMaterialLayout;
 use super::super::texture_pools::EmbeddedTexturePools;
 use super::super::uniform_pack::{UniformPackTextureContext, build_embedded_uniform_bytes};
-use crate::assets::material::{MaterialPropertyLookupIds, MaterialPropertyStore};
+use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
 /// Cached GPU uniform buffer, last store-mutation generation, and last bound-texture state signature.
 ///

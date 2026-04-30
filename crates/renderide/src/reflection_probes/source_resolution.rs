@@ -10,11 +10,11 @@ use super::{
     DEFAULT_SAMPLE_SIZE, GpuSh2Source, Projection360EquirectKey, Sh2ProjectParams, Sh2SourceKey,
     constant_color_sh2,
 };
-use crate::assets::material::{
-    MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
-};
 use crate::assets::texture::HostTextureAssetKind;
 use crate::backend::material_property_reader::texture_property;
+use crate::materials::host_data::{
+    MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
+};
 use crate::scene::{RenderSpaceId, SceneCoordinator, reflection_probe_skybox_only};
 use crate::shared::{ReflectionProbeClear, ReflectionProbeType, RenderSH2};
 use crate::skybox::params::{

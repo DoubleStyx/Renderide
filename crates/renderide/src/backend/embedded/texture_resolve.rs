@@ -4,14 +4,14 @@ use std::hash::{Hash, Hasher};
 
 use ahash::AHasher;
 
-use crate::assets::material::{
-    MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
-};
 use crate::assets::texture::{
     HostTextureAssetKind, texture2d_asset_id_from_packed, unpack_host_texture_packed,
 };
 use crate::gpu_pools::{CubemapSamplerState, Texture2dSamplerState, Texture3dSamplerState};
 use crate::materials::ReflectedRasterLayout;
+use crate::materials::host_data::{
+    MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
+};
 use crate::shared::{TextureFilterMode, TextureWrapMode};
 
 use super::layout::{StemEmbeddedPropertyIds, shader_writer_unescaped_property_name};
@@ -492,9 +492,9 @@ mod tests {
 
     use hashbrown::HashMap;
 
-    use crate::assets::material::PropertyIdRegistry;
     use crate::backend::embedded::layout::{EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds};
     use crate::gpu_pools::Texture2dSamplerState;
+    use crate::materials::host_data::PropertyIdRegistry;
     use crate::shared::{TextureFilterMode, TextureWrapMode};
 
     fn lookup(material_id: i32) -> MaterialPropertyLookupIds {

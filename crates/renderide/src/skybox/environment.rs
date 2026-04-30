@@ -10,13 +10,13 @@ use bytemuck::{Pod, Zeroable};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
-use crate::assets::material::MaterialPropertyLookupIds;
 use crate::backend::frame_gpu::{
     SkyboxSpecularEnvironmentSource, SkyboxSpecularGeneratedCubemapSource,
 };
 use crate::embedded_shaders;
 use crate::gpu::{GpuContext, GpuLimits};
 use crate::gpu_pools::CubemapSamplerState;
+use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::scene::SceneCoordinator;
 use crate::shared::{TextureFilterMode, TextureWrapMode};
 use crate::skybox::params::{

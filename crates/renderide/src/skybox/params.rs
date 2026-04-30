@@ -2,11 +2,11 @@
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::assets::material::{
-    MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
-};
 use crate::backend::material_property_reader::{
     float_property, float4_array16_property, float4_property,
+};
+use crate::materials::host_data::{
+    MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
 };
 
 /// Default sky parameter sample grid used by SH2 projection.

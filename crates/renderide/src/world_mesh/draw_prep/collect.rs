@@ -14,8 +14,8 @@ use hashbrown::HashMap;
 use glam::{Mat4, Vec3};
 use rayon::prelude::*;
 
-use crate::assets::material::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::gpu_pools::MeshPool;
+use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterFrontFace};
 use crate::pipelines::ShaderPermutation;
 use crate::scene::{RenderSpaceId, SceneCoordinator};

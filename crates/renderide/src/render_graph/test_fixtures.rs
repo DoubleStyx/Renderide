@@ -1,6 +1,6 @@
 //! Test-only helpers for building synthetic [`crate::world_mesh::draw_prep::WorldMeshDrawItem`] values.
 
-use crate::assets::material::MaterialPropertyLookupIds;
+use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::materials::{RasterFrontFace, RasterPipelineKind};
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 

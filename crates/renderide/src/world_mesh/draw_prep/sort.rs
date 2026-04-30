@@ -100,7 +100,7 @@ pub(super) fn batch_key_for_slot(
         }
         RasterPipelineKind::Null => false,
     };
-    let lookup_ids = crate::assets::material::MaterialPropertyLookupIds {
+    let lookup_ids = crate::materials::host_data::MaterialPropertyLookupIds {
         material_asset_id,
         mesh_property_block_slot0: property_block_id,
     };

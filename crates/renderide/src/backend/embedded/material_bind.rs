@@ -2,7 +2,7 @@
 //!
 //! Layouts and uniform packing come from [`crate::materials::reflect_raster_material_wgsl`] (naga).
 //! WGSL identifiers in `@group(1)` match Unity [`MaterialPropertyBlock`](https://docs.unity3d.com/ScriptReference/MaterialPropertyBlock.html)
-//! names; [`crate::assets::material::PropertyIdRegistry`] resolves them to batch property ids.
+//! names; [`crate::materials::host_data::PropertyIdRegistry`] resolves them to batch property ids.
 //!
 //! **UI text (`_TextMode`, `_RectClip`):** When a reflected uniform field is named `_TextMode` or `_RectClip`,
 //! packing uses explicit `set_float` when present; otherwise keyword-style floats (`MSDF`, `RASTER`, `SDF`,
@@ -25,7 +25,7 @@ use super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::layout::{EmbeddedSharedKeywordIds, StemMaterialLayout};
 use super::texture_pools::EmbeddedTexturePools;
 use super::texture_resolve::default_embedded_sampler;
-use crate::assets::material::{
+use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
 };
 

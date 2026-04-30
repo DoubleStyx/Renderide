@@ -1,15 +1,15 @@
 //! Resolves the active skybox source used as frame-global indirect specular.
 
 use crate::assets::asset_transfer_queue::AssetTransferQueue;
-use crate::assets::material::{
-    MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
-};
 use crate::assets::texture::HostTextureAssetKind;
 use crate::backend::MaterialSystem;
 use crate::backend::frame_gpu::{
     SkyboxSpecularCubemapSource, SkyboxSpecularEnvironmentSource, SkyboxSpecularEquirectSource,
 };
 use crate::backend::material_property_reader::{float4_property, texture_property};
+use crate::materials::host_data::{
+    MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
+};
 use crate::scene::SceneCoordinator;
 
 /// Default `Projection360` field of view used by Unity material defaults.
@@ -169,8 +169,8 @@ fn resolve_projection360_equirect_source(
 mod tests {
     use super::*;
 
-    use crate::assets::material::MaterialPropertyValue;
     use crate::ipc::SharedMemoryAccessor;
+    use crate::materials::host_data::MaterialPropertyValue;
     use crate::scene::SceneCoordinator;
     use crate::shared::{FrameSubmitData, RenderSpaceUpdate};
 

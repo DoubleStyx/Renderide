@@ -18,13 +18,13 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::assets::asset_transfer_queue::{self as asset_uploads, AssetTransferQueue};
-use crate::assets::material::MaterialPropertyStore;
 use crate::config::{PostProcessingSettings, RendererSettingsHandle, SceneColorFormat};
 use crate::diagnostics::{DebugHudEncodeError, DebugHudInput, SceneTransformsSnapshot};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::gpu_pools::{
     CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
 };
+use crate::materials::host_data::MaterialPropertyStore;
 use crate::materials::{MaterialRouter, RasterPipelineKind};
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::render_graph::{GraphCache, PerViewHudConfig, PerViewHudOutputs, TransientPool};
@@ -127,7 +127,7 @@ pub struct RenderBackend {
     pub(crate) record_parallelism: crate::config::RecordParallelism,
     /// Persistent resolved-material cache, refreshed once per frame before per-view draw
     /// collection. Entries invalidate against
-    /// [`crate::assets::material::MaterialPropertyStore`] and
+    /// [`crate::materials::host_data::MaterialPropertyStore`] and
     /// [`crate::materials::MaterialRouter`] generation counters, so steady-state refresh cost is
     /// proportional to the number of mutated materials rather than the total material count.
     pub(crate) material_batch_cache: FrameMaterialBatchCache,
@@ -464,7 +464,7 @@ impl RenderBackend {
     }
 
     /// Property name interning for material batches.
-    pub fn property_id_registry(&self) -> &crate::assets::material::PropertyIdRegistry {
+    pub fn property_id_registry(&self) -> &crate::materials::host_data::PropertyIdRegistry {
         self.materials.property_id_registry()
     }
 

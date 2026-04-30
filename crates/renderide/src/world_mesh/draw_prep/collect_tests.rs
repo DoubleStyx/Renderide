@@ -3,8 +3,8 @@
 use glam::{Mat4, Quat, Vec3};
 
 use super::*;
-use crate::assets::material::{MaterialDictionary, MaterialPropertyStore, PropertyIdRegistry};
 use crate::gpu_pools::MeshPool;
+use crate::materials::host_data::{MaterialDictionary, MaterialPropertyStore, PropertyIdRegistry};
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{RenderTransform, RenderingContext};

@@ -1,7 +1,7 @@
 //! Backend-owned frame extraction helpers and read-only draw-preparation views.
 
-use crate::assets::material::{MaterialDictionary, MaterialPropertyStore};
 use crate::gpu_pools::MeshPool;
+use crate::materials::host_data::{MaterialDictionary, MaterialPropertyStore};
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter};
 use crate::pipelines::ShaderPermutation;
 use crate::scene::SceneCoordinator;
@@ -22,7 +22,7 @@ pub(crate) struct ExtractedFrameShared<'a> {
     pub(crate) scene: &'a SceneCoordinator,
     /// Mesh GPU asset pool queried for bounds and skinning metadata during draw collection.
     pub(crate) mesh_pool: &'a MeshPool,
-    /// Property store backing [`crate::assets::material::MaterialDictionary::new`].
+    /// Property store backing [`crate::materials::host_data::MaterialDictionary::new`].
     pub(crate) property_store: &'a MaterialPropertyStore,
     /// Resolved raster pipeline selection for embedded materials.
     pub(crate) router: &'a MaterialRouter,

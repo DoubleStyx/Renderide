@@ -1,7 +1,7 @@
 //! AAA-style materials: WGSL templates + overrides, pipeline cache, and routing.
 //!
-//! Host material **properties** live in [`crate::assets::material::MaterialPropertyStore`] (IPC
-//! batches). **Shader program choice** (which embedded WGSL target to use) is routed via [`MaterialRouter`]
+//! Host material **properties** live in [`host_data::MaterialPropertyStore`] (IPC batches).
+//! **Shader program choice** (which embedded WGSL target to use) is routed via [`MaterialRouter`]
 //! from host shader asset ids updated by [`crate::assets::shader::resolve_shader_upload`].
 //!
 //! # Pipeline-state vs. shader-uniform boundary
@@ -78,6 +78,7 @@ mod cache;
 mod embedded_raster_pipeline;
 pub(crate) mod embedded_shader_stem;
 mod family;
+pub mod host_data;
 mod material_pass_tables;
 mod material_passes;
 mod material_property_binding;
