@@ -11,6 +11,7 @@ use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_params::{
     FrameSystemsShared, MsaaViewsSlot, PerViewFramePlan, PerViewFramePlanSlot,
 };
+use super::super::super::frame_upload_batch::FrameUploadScope;
 use super::super::super::pass::PassKind;
 use super::super::helpers;
 use super::super::{
@@ -103,6 +104,7 @@ impl CompiledRenderGraph {
             for &pass_idx in self.schedule.per_view_pass_indices() {
                 self.execute_pass_node(
                     pass_idx,
+                    FrameUploadScope::per_view(view_idx, pass_idx),
                     &resolved,
                     graph_resources,
                     &mut frame_params,
@@ -282,6 +284,7 @@ impl CompiledRenderGraph {
             for &pass_idx in self.schedule.frame_global_pass_indices() {
                 self.execute_pass_node(
                     pass_idx,
+                    FrameUploadScope::frame_global(pass_idx),
                     &resolved,
                     graph_resources,
                     &mut frame_params,
@@ -376,7 +379,7 @@ impl CompiledRenderGraph {
     /// on the [`CompiledRenderGraph`] handle. All pass `record_*` methods already require only
     /// `&self`, so the dispatch loop is structurally Send/Sync-safe at this layer.
     //
-    // This function intentionally keeps ten independent parameters rather than bundling into a
+    // This function intentionally keeps independent parameters rather than bundling into a
     // context struct: `encoder` uses an anonymous `'_` lifetime so each call's mutable borrow
     // ends at the call boundary, and the other `&'a` references must all share the per-view
     // lifetime `'a` without being pulled into a single `'a`-bound struct that would couple
@@ -388,6 +391,7 @@ impl CompiledRenderGraph {
     pub(super) fn execute_pass_node<'a>(
         &self,
         pass_idx: usize,
+        upload_scope: FrameUploadScope,
         resolved: &'a ResolvedView<'a>,
         graph_resources: &'a GraphResolvedResources,
         frame_params: &mut crate::render_graph::frame_params::FrameRenderParams<'a>,
@@ -401,6 +405,7 @@ impl CompiledRenderGraph {
         upload_batch: &super::super::super::frame_upload_batch::FrameUploadBatch,
         profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
     ) -> Result<(), GraphExecuteError> {
+        let _upload_scope = upload_batch.enter_scope(upload_scope);
         let kind = self.passes[pass_idx].kind();
         match kind {
             PassKind::Raster => {
