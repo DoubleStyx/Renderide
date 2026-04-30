@@ -99,9 +99,8 @@ pub use error::{GraphBuildError, GraphExecuteError, RenderPassError, SetupError}
 pub use frame_params::{
     FrameRenderParams, FrameViewClear, MaterialBatchPacket, PerViewFramePlan, PerViewFramePlanSlot,
     PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot, PrefetchedWorldMeshDrawsSlot,
-    PrefetchedWorldMeshViewDraws, PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedSkybox,
-    PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,
-    WorldMeshHelperNeeds,
+    PrefetchedWorldMeshViewDraws, PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState,
+    WorldMeshForwardPlanSlot, WorldMeshHelperNeeds,
 };
 pub use ids::{GroupId, PassId};
 pub use output_depth_mode::{OutputDepthMode, OutputDepthModeError};
