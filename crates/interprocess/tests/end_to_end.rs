@@ -133,3 +133,73 @@ fn concurrent_producer_consumer() {
     consumer.join().expect("consumer join");
     cancel.store(true, Ordering::Relaxed);
 }
+
+#[test]
+fn try_enqueue_returns_false_when_full_then_succeeds_after_drain() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let opts = QueueOptions::with_path("e2e_full_drain", dir.path(), 64).expect("valid");
+    let mut publisher = Publisher::new(opts.clone()).expect("publisher");
+    let mut subscriber = Subscriber::new(opts).expect("subscriber");
+
+    let payload = b"x";
+    let mut accepted = 0;
+    for _ in 0..16 {
+        if publisher.try_enqueue(payload) {
+            accepted += 1;
+        } else {
+            break;
+        }
+    }
+    assert!(accepted > 0, "expected at least one enqueue to succeed");
+    assert!(
+        !publisher.try_enqueue(payload),
+        "expected enqueue to be rejected once the ring is full"
+    );
+
+    assert_eq!(
+        subscriber.try_dequeue().as_deref(),
+        Some(payload.as_slice())
+    );
+
+    assert!(
+        publisher.try_enqueue(payload),
+        "expected enqueue to succeed after dequeue freed space"
+    );
+}
+
+#[test]
+fn subscriber_drains_messages_after_publisher_drop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let opts = QueueOptions::with_path("e2e_pub_drop", dir.path(), 4096).expect("valid");
+    let mut publisher = Publisher::new(opts.clone()).expect("publisher");
+    let mut subscriber = Subscriber::new(opts).expect("subscriber");
+
+    for i in 0u8..5 {
+        assert!(publisher.try_enqueue(&[i, i, i]));
+    }
+    drop(publisher);
+
+    for i in 0u8..5 {
+        assert_eq!(
+            subscriber.try_dequeue().as_deref(),
+            Some([i, i, i].as_slice())
+        );
+    }
+    assert!(subscriber.try_dequeue().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn keep_backing_file_when_destroy_on_dispose_false() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let opts =
+        QueueOptions::with_path_and_destroy("e2e_keep", dir.path(), 4096, false).expect("valid");
+    let path = opts.file_path();
+    let publisher = Publisher::new(opts).expect("publisher");
+    assert!(path.exists());
+    drop(publisher);
+    assert!(
+        path.exists(),
+        "backing file should remain when destroy_on_dispose is false"
+    );
+}

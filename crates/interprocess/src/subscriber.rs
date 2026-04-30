@@ -287,4 +287,52 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn utc_now_ticks_is_after_dotnet_unix_epoch() {
+        let now = utc_now_ticks();
+        assert!(
+            now > DOTNET_TICKS_AT_UNIX_EPOCH,
+            "utc_now_ticks() = {now} should be past the .NET Unix epoch"
+        );
+        // Year 3000 in .NET ticks: ~9.4e17. A loose upper bound that fails loudly on a
+        // saturating-add or sign-flip regression while leaving room for clock drift.
+        const YEAR_3000_DOTNET_TICKS: i64 = 946_708_416_000_000_000;
+        assert!(
+            now < YEAR_3000_DOTNET_TICKS,
+            "utc_now_ticks() = {now} unexpectedly past year 3000 — saturating-add bug?"
+        );
+    }
+
+    /// Verifies `Subscriber::new` surfaces an `OpenError` when the backing directory cannot
+    /// accept a new file. Unix-only because the equivalent permission denial on Windows is
+    /// brittle to set up reliably from a unit test.
+    #[cfg(unix)]
+    #[test]
+    fn subscriber_new_returns_err_for_unwritable_path() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        struct PermsGuard {
+            path: std::path::PathBuf,
+        }
+
+        impl Drop for PermsGuard {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_path_buf();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o500)).expect("chmod 0o500");
+        let _guard = PermsGuard { path: path.clone() };
+
+        let opts =
+            QueueOptions::with_path("sub_no_perm", &path, 4096).expect("options should validate");
+        assert!(
+            Subscriber::new(opts).is_err(),
+            "expected Subscriber::new to fail when backing dir is read-only"
+        );
+    }
 }

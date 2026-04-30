@@ -212,4 +212,36 @@ mod tests {
         let cap = 64i64;
         assert_eq!(available_space(&h, cap), cap - 16);
     }
+
+    /// Verifies `Publisher::new` surfaces an `OpenError` when the backing directory cannot
+    /// accept a new file. Unix-only because the equivalent permission denial on Windows is
+    /// brittle to set up reliably from a unit test.
+    #[cfg(unix)]
+    #[test]
+    fn publisher_new_returns_err_for_unwritable_path() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        struct PermsGuard {
+            path: std::path::PathBuf,
+        }
+
+        impl Drop for PermsGuard {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_path_buf();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o500)).expect("chmod 0o500");
+        let _guard = PermsGuard { path: path.clone() };
+
+        let opts =
+            QueueOptions::with_path("pub_no_perm", &path, 4096).expect("options should validate");
+        assert!(
+            Publisher::new(opts).is_err(),
+            "expected Publisher::new to fail when backing dir is read-only"
+        );
+    }
 }

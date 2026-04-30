@@ -76,3 +76,91 @@ impl Semaphore {
         self.inner.wait_timeout(timeout)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use super::Semaphore;
+
+    /// Counter combined with the test process id to keep semaphore names unique across tests.
+    ///
+    /// POSIX named semaphores live in a kernel-global namespace (`/ct.ip.{name}`), and Windows
+    /// global semaphores live under `Global\CT.IP.{name}`. Reusing a name across tests would let
+    /// stale tokens from one test leak into another, so each test grabs a fresh value here.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Returns a queue-style name guaranteed to be unique within this test process.
+    fn unique_name() -> String {
+        format!(
+            "semtest_facade_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    #[test]
+    fn wait_timeout_zero_returns_false_when_no_post() {
+        let sem = Semaphore::open(&unique_name()).expect("open");
+        assert!(!sem.wait_timeout(Duration::from_millis(0)));
+    }
+
+    #[test]
+    fn post_then_wait_returns_true() {
+        let sem = Semaphore::open(&unique_name()).expect("open");
+        sem.post();
+        assert!(sem.wait_timeout(Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn multiple_posts_release_multiple_waits() {
+        let sem = Semaphore::open(&unique_name()).expect("open");
+        sem.post();
+        sem.post();
+        sem.post();
+        assert!(sem.wait_timeout(Duration::from_millis(50)));
+        assert!(sem.wait_timeout(Duration::from_millis(50)));
+        assert!(sem.wait_timeout(Duration::from_millis(50)));
+        assert!(!sem.wait_timeout(Duration::from_millis(0)));
+    }
+
+    #[test]
+    fn wait_timeout_returns_false_within_budget_when_idle() {
+        let sem = Semaphore::open(&unique_name()).expect("open");
+        let start = Instant::now();
+        let acquired = sem.wait_timeout(Duration::from_millis(20));
+        let elapsed = start.elapsed();
+        assert!(!acquired);
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "wait_timeout(20ms) idle should return well under 500ms, got {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn concurrent_post_wakes_blocked_waiter() {
+        let name = unique_name();
+        let waiter = {
+            let name = name.clone();
+            thread::spawn(move || {
+                let sem = Semaphore::open(&name).expect("open in waiter");
+                let start = Instant::now();
+                let acquired = sem.wait_timeout(Duration::from_secs(2));
+                (acquired, start.elapsed())
+            })
+        };
+
+        thread::sleep(Duration::from_millis(20));
+        let poster = Semaphore::open(&name).expect("open in poster");
+        poster.post();
+
+        let (acquired, elapsed) = waiter.join().expect("waiter join");
+        assert!(acquired, "waiter should have acquired after post");
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "waiter should return promptly after post, got {elapsed:?}"
+        );
+    }
+}
