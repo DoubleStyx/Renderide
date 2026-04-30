@@ -1,5 +1,6 @@
 using SharedTypeGenerator.Analysis;
 using SharedTypeGenerator.IR;
+using SharedTypeGenerator.Tests.Unit.Support;
 using Xunit;
 
 namespace SharedTypeGenerator.Tests.Unit;
@@ -13,32 +14,11 @@ public sealed class PackStepNonPodPostProcessorTests
     {
         var types = new List<TypeDescriptor>
         {
-            new()
-            {
-                CSharpName = "Nested",
-                RustName = "Nested",
-                Shape = TypeShape.PodStruct,
-                Fields = [],
-                IsPod = false,
-            },
-            new()
-            {
-                CSharpName = "Host",
-                RustName = "Host",
-                Shape = TypeShape.PodStruct,
-                Fields =
-                [
-                    new FieldDescriptor
-                    {
-                        CSharpName = "nested",
-                        RustName = "nested",
-                        RustType = "Nested",
-                        Kind = FieldKind.Pod,
-                    },
-                ],
-                IsPod = true,
-                PackSteps = [new WriteField("nested", FieldKind.Pod)],
-            },
+            Ir.PodStruct("Nested", isPod: false),
+            Ir.PodStruct(
+                "Host",
+                fields: [Ir.PodField("nested", "Nested")],
+                packSteps: [new WriteField("nested", FieldKind.Pod)]),
         };
 
         PackStepNonPodPostProcessor.Apply(types);
@@ -53,24 +33,10 @@ public sealed class PackStepNonPodPostProcessorTests
     {
         var types = new List<TypeDescriptor>
         {
-            new()
-            {
-                CSharpName = "Host",
-                RustName = "Host",
-                Shape = TypeShape.PodStruct,
-                Fields =
-                [
-                    new FieldDescriptor
-                    {
-                        CSharpName = "x",
-                        RustName = "x",
-                        RustType = "i32",
-                        Kind = FieldKind.Pod,
-                    },
-                ],
-                IsPod = true,
-                PackSteps = [new WriteField("x", FieldKind.Pod)],
-            },
+            Ir.PodStruct(
+                "Host",
+                fields: [Ir.PodField("x", "i32")],
+                packSteps: [new WriteField("x", FieldKind.Pod)]),
         };
 
         PackStepNonPodPostProcessor.Apply(types);
@@ -85,35 +51,11 @@ public sealed class PackStepNonPodPostProcessorTests
     {
         var types = new List<TypeDescriptor>
         {
-            new()
-            {
-                CSharpName = "Nested",
-                RustName = "Nested",
-                Shape = TypeShape.PodStruct,
-                Fields = [],
-                IsPod = false,
-            },
-            new()
-            {
-                CSharpName = "Host",
-                RustName = "Host",
-                Shape = TypeShape.PodStruct,
-                Fields =
-                [
-                    new FieldDescriptor
-                    {
-                        CSharpName = "nested",
-                        RustName = "nested",
-                        RustType = "Nested",
-                        Kind = FieldKind.Pod,
-                    },
-                ],
-                IsPod = true,
-                PackSteps =
-                [
-                    new ConditionalBlock("flag", [new WriteField("nested", FieldKind.Pod)]),
-                ],
-            },
+            Ir.PodStruct("Nested", isPod: false),
+            Ir.PodStruct(
+                "Host",
+                fields: [Ir.PodField("nested", "Nested")],
+                packSteps: [new ConditionalBlock("flag", [new WriteField("nested", FieldKind.Pod)])]),
         };
 
         PackStepNonPodPostProcessor.Apply(types);
