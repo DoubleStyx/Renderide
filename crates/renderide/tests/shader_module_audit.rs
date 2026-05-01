@@ -47,6 +47,50 @@ fn define_import_path(src: &str) -> Option<&str> {
     })
 }
 
+fn material_source(file_name: &str) -> io::Result<String> {
+    fs::read_to_string(manifest_dir().join("shaders/materials").join(file_name))
+}
+
+fn declares_f32_field(src: &str, field_name: &str) -> bool {
+    src.lines().any(|line| {
+        let trimmed = line.trim();
+        let Some((name, ty)) = trimmed.split_once(':') else {
+            return false;
+        };
+        name.trim() == field_name && ty.trim_start().starts_with("f32")
+    })
+}
+
+fn all_texture_samples_guarded_by_keyword(src: &str, texture_name: &str, keyword: &str) -> bool {
+    let sample = format!("textureSample({texture_name},");
+    let guard = format!("uvu::kw_enabled(mat.{keyword})");
+    let mut saw_sample = false;
+
+    for (sample_pos, _) in src.match_indices(&sample) {
+        saw_sample = true;
+        let before_sample = &src[..sample_pos];
+        let Some(guard_pos) = before_sample.rfind(&guard) else {
+            return false;
+        };
+        if before_sample[guard_pos..].contains('}') {
+            return false;
+        }
+    }
+
+    saw_sample
+}
+
+fn normal_sampling_guarded_by_keyword(src: &str) -> bool {
+    let Some(call_pos) = src.find("sample_optional_world_normal(") else {
+        return false;
+    };
+    let call = &src[call_pos..];
+    let Some(call_end) = call.find(");") else {
+        return false;
+    };
+    call[..call_end].contains("uvu::kw_enabled(mat._NORMALMAP)")
+}
+
 /// Nested WGSL modules must remain discoverable and uniquely addressable by naga-oil.
 #[test]
 fn shader_modules_have_unique_import_paths() -> io::Result<()> {
@@ -110,6 +154,79 @@ fn shared_pbs_lighting_roots_do_not_duplicate_clustered_lighting() -> io::Result
         "materials importing renderide::pbs::lighting must delegate clustered PBS lighting:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
+}
+
+/// PBS rim variants mirror Unity's optional-texture keywords: maps only override fallback material
+/// values when their corresponding multi-compile keyword is active.
+#[test]
+fn pbs_rim_shaders_preserve_unity_texture_keywords() -> io::Result<()> {
+    struct Case<'a> {
+        file_name: &'a str,
+        workflow_keyword: &'a str,
+        workflow_texture: &'a str,
+        forbidden_unity_fallback_mul: &'a [&'a str],
+    }
+
+    let cases = [
+        Case {
+            file_name: "pbsrim.wgsl",
+            workflow_keyword: "_METALLICMAP",
+            workflow_texture: "_MetallicMap",
+            forbidden_unity_fallback_mul: &["mat._Metallic * mg", "mat._Glossiness * mg"],
+        },
+        Case {
+            file_name: "pbsrimspecular.wgsl",
+            workflow_keyword: "_SPECULARMAP",
+            workflow_texture: "_SpecularMap",
+            forbidden_unity_fallback_mul: &["mat._SpecularColor * spec_s"],
+        },
+    ];
+
+    for case in cases {
+        let src = material_source(case.file_name)?;
+        for keyword in [
+            "_ALBEDOTEX",
+            "_EMISSIONTEX",
+            "_NORMALMAP",
+            case.workflow_keyword,
+            "_OCCLUSION",
+        ] {
+            assert!(
+                declares_f32_field(&src, keyword),
+                "{} must declare Unity keyword uniform {keyword}",
+                case.file_name
+            );
+        }
+
+        for (texture, keyword) in [
+            ("_MainTex", "_ALBEDOTEX"),
+            ("_EmissionMap", "_EMISSIONTEX"),
+            (case.workflow_texture, case.workflow_keyword),
+            ("_OcclusionMap", "_OCCLUSION"),
+        ] {
+            assert!(
+                all_texture_samples_guarded_by_keyword(&src, texture, keyword),
+                "{} must sample {texture} only when {keyword} is enabled",
+                case.file_name
+            );
+        }
+
+        assert!(
+            normal_sampling_guarded_by_keyword(&src),
+            "{} must sample _NormalMap through the _NORMALMAP keyword",
+            case.file_name
+        );
+
+        for forbidden in case.forbidden_unity_fallback_mul {
+            assert!(
+                !src.contains(forbidden),
+                "{} must not multiply workflow maps by fallback material values (`{forbidden}`)",
+                case.file_name
+            );
+        }
+    }
+
     Ok(())
 }
 

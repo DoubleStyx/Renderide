@@ -4,8 +4,8 @@
 //! Unity's dedicated rim shader (`_MetallicMap`, `_NormalMap`, `_RimColor`, `_RimPower`) instead of the
 //! Standard shader property names.
 //!
-//! Transparent blend / raster state is still controlled by the renderer's fixed mesh-forward pipeline,
-//! not the material uniforms.
+//! Texture sampling follows Unity's multi-compile keyword behavior: fallback material values are used
+//! whenever the matching texture keyword is disabled.
 
 
 #import renderide::globals as rg
@@ -26,6 +26,11 @@ struct PbsRimMaterial {
     _Metallic: f32,
     _NormalScale: f32,
     _RimPower: f32,
+    _ALBEDOTEX: f32,
+    _EMISSIONTEX: f32,
+    _NORMALMAP: f32,
+    _METALLICMAP: f32,
+    _OCCLUSION: f32,
 }
 
 @group(1) @binding(0)  var<uniform> mat: PbsRimMaterial;
@@ -41,13 +46,27 @@ struct PbsRimMaterial {
 @group(1) @binding(10) var _MetallicMap_sampler: sampler;
 
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
-    return psamp::sample_world_normal(_NormalMap, _NormalMap_sampler, uv_main, 0.0, mat._NormalScale, world_n);
+    return psamp::sample_optional_world_normal(
+        uvu::kw_enabled(mat._NORMALMAP),
+        _NormalMap,
+        _NormalMap_sampler,
+        uv_main,
+        0.0,
+        mat._NormalScale,
+        world_n,
+    );
 }
 
 fn metallic_roughness(uv: vec2<f32>) -> vec2<f32> {
-    let mg = textureSample(_MetallicMap, _MetallicMap_sampler, uv);
-    let metallic = clamp(mat._Metallic * mg.x, 0.0, 1.0);
-    let smoothness = clamp(mat._Glossiness * mg.w, 0.0, 1.0);
+    var metallic = mat._Metallic;
+    var smoothness = mat._Glossiness;
+    if (uvu::kw_enabled(mat._METALLICMAP)) {
+        let mg = textureSample(_MetallicMap, _MetallicMap_sampler, uv);
+        metallic = mg.x;
+        smoothness = mg.w;
+    }
+    metallic = clamp(metallic, 0.0, 1.0);
+    smoothness = clamp(smoothness, 0.0, 1.0);
     let roughness = psamp::roughness_from_smoothness(smoothness);
     return vec2<f32>(metallic, roughness);
 }
@@ -80,21 +99,28 @@ fn fs_main(
 ) -> @location(0) vec4<f32> {
     let uv_main = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
 
-    let albedo_s = textureSample(_MainTex, _MainTex_sampler, uv_main);
-    let base_color = mat._Color.xyz * albedo_s.xyz;
-    let alpha = mat._Color.a * albedo_s.a;
+    var albedo = mat._Color;
+    if (uvu::kw_enabled(mat._ALBEDOTEX)) {
+        albedo = albedo * textureSample(_MainTex, _MainTex_sampler, uv_main);
+    }
+    let base_color = albedo.xyz;
+    let alpha = albedo.a;
 
     let mr = metallic_roughness(uv_main);
     let metallic = mr.x;
     let roughness = mr.y;
 
-    let occ_s = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).x;
-    let occlusion = occ_s;
+    var occlusion = 1.0;
+    if (uvu::kw_enabled(mat._OCCLUSION)) {
+        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).x;
+    }
 
-    var n = normalize(world_n);
-    n = sample_normal_world(uv_main, n);
+    let n = sample_normal_world(uv_main, world_n);
 
-    let emission = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).xyz * mat._EmissionColor.xyz;
+    var emission = mat._EmissionColor.xyz;
+    if (uvu::kw_enabled(mat._EMISSIONTEX)) {
+        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).xyz;
+    }
 
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let rim = mf::rim_factor(n, view_dir, mat._RimPower);
