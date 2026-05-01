@@ -77,7 +77,7 @@ fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     );
     let text_input = tsdf::DistanceFieldInput(0.0, vout.uv, vout.extra_data, vtx_color);
     let mode = tsdf::text_mode_clamped(mat._TextMode);
-    let c = tsdf::shade_text_sample(atlas_color, atlas_clip, style, text_input, mat._TintColor * vtx_color, mode);
+    let c = tsdf::shade_text_sample(atlas_color, atlas_clip, style, text_input, vtx_color, mode);
 
     return rg::retain_globals_additive(c);
 }

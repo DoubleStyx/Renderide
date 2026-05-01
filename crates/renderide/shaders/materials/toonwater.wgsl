@@ -3,8 +3,8 @@
 //!
 //! Adapted from the Unity reference's `StandardToonWater` surface shader to fit the project's
 //! self-contained clustered-toon pattern (see `toonstandard.wgsl`). Notable changes:
-//! - `_Time.x` / `_SinTime.w` replaced with host-driven `_AnimationOffset` (renderer does not
-//!   expose engine time uniforms to materials directly).
+//! - `_Time.x` / `_SinTime.w` use `_AnimationOffset` when provided, otherwise a frame-index
+//!   fallback phase keeps water animated without a host-side keyword/wire change.
 //! - Scene depth sampled via [`renderide::scene_depth_sample`]; reconstructed view-space depth
 //!   replaces the Unity `_CameraDepthTexture` + `_InverseView` unprojection.
 //! - Refracted scene color sampled via [`renderide::grab_pass`].
@@ -20,6 +20,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::grab_pass as gp
 #import renderide::scene_depth_sample as sds
+#import renderide::toon::brdf as tbrdf
 #import renderide::uv_utils as uvu
 #import renderide::voronoi as vor
 
@@ -74,10 +75,15 @@ struct VertexOutput {
     @location(4) @interpolate(flat) view_layer: u32,
 }
 
+fn animation_phase() -> f32 {
+    let frame_phase = f32(rg::frame.frame_tail.x) * 0.016666667;
+    return select(frame_phase, mat._AnimationOffset, abs(mat._AnimationOffset) > 1e-6);
+}
+
 fn voronoi_sample_at(uv: vec2<f32>) -> f32 {
     if (mat._SeparateVoronoi > 0.5) {
         let scale = max(10.0 - 10.0 * mat._WaveScale, 1e-4);
-        return vor::voronoi_min_dist(uv * scale, mat._AnimationOffset);
+        return vor::voronoi_min_dist(uv * scale, animation_phase());
     }
     return textureSampleLevel(_VoronoiTex, _VoronoiTex_sampler, uv, 0.0).r;
 }
@@ -85,7 +91,7 @@ fn voronoi_sample_at(uv: vec2<f32>) -> f32 {
 fn voronoi_sample_at_fragment(uv: vec2<f32>) -> f32 {
     if (mat._SeparateVoronoi > 0.5) {
         let scale = max(10.0 - 10.0 * mat._WaveScale, 1e-4);
-        return vor::voronoi_min_dist(uv * scale, mat._AnimationOffset);
+        return vor::voronoi_min_dist(uv * scale, animation_phase());
     }
     return textureSample(_VoronoiTex, _VoronoiTex_sampler, uv).r;
 }
@@ -131,43 +137,9 @@ fn vs_main(
 
 fn refract_screen_uv(uv_in: vec2<f32>) -> vec2<f32> {
     var uv = uv_in;
-    let phase = 0.25 * mat._WaveHeight * sin(mat._AnimationOffset) * sin(uv.y * 50.0);
+    let phase = 0.25 * mat._WaveHeight * sin(animation_phase()) * sin(uv.y * 50.0);
     uv.x = uv.x + 0.1 * sin((1.0 - uv.x - uv.y) * phase);
     return clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
-}
-
-fn toon_diffuse(n: vec3<f32>, l: vec3<f32>) -> f32 {
-    let nl = dot(n, l);
-    let t = mat._Transmission;
-    let denom = (1.0 + t) * (1.0 + t);
-    let wrapped = clamp((nl + t) / max(denom, 1e-4), 0.0, 1.0);
-    return min(round(wrapped * 2.0) / 2.0 + t, 1.0);
-}
-
-fn toon_specular(n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, smoothness: f32) -> f32 {
-    if (mat._SpecularHighlights < 0.5) {
-        return 0.0;
-    }
-    let nl = max(dot(n, l), 0.0);
-    let r = reflect(-v, n);
-    let rl = max(dot(r, l), 0.0);
-    let rough = psamp::roughness_from_smoothness(smoothness);
-    let shininess = (1.0 - rough) * (1.0 - rough) * 256.0 + 1.0;
-    let raw = pow(rl, shininess) * (shininess + 8.0) / (8.0 * 3.14159265);
-    let steps = max((1.0 - smoothness) * 4.0, 0.01);
-    let stepped = round(raw * steps) / steps;
-    return stepped * nl;
-}
-
-fn toon_fresnel(diff_color: vec3<f32>, view_dir: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    if (mat._Fresnel < 0.5) {
-        return vec3<f32>(0.0);
-    }
-    let rim = 1.0 - clamp(dot(normalize(view_dir), n), 0.0, 1.0);
-    let fresnel_color = mix(vec3<f32>(0.5), diff_color, mat._FresnelDiffCont);
-    let fresnel_power = pow(rim, max(20.0 - mat._FresnelPower * 20.0, 1e-4));
-    let fresnel = fresnel_color * fresnel_power;
-    return (mat._FresnelStrength * 5.0) * fresnel * mat._FresnelTint.rgb;
 }
 
 //#pass forward
@@ -192,7 +164,8 @@ fn fs_main(
     let frag_eye_z = sds::fragment_linear_depth(world_pos, view_layer);
     let depth_diff = max(scene_eye_z - frag_eye_z, 0.0);
 
-    let noise = textureSample(_NoiseTex, _NoiseTex_sampler, uv0 * 1.5 + vec2<f32>(mat._AnimationOffset)).r;
+    let phase = animation_phase();
+    let noise = textureSample(_NoiseTex, _NoiseTex_sampler, uv0 * 1.5 + vec2<f32>(phase)).r;
     var crest = max(pow(voronoi_f * 1.5, 10.0) * (mat._WaveHeight * 10.0) - noise * 20.0, 0.0);
     crest = crest + max((depth_diff * 1.5) * (mat._WaveHeight * 1000.0) - noise * (100.0 * mat._WaveHeight), 0.0);
     crest = min(step(0.9, crest), 1.0) * mat._WaveCrest;
@@ -241,14 +214,23 @@ fn fs_main(
                 attenuation = attenuation * smoothstep(light.spot_cos_half_angle, inner, spot_cos);
             }
         }
-        let diff_step = toon_diffuse(n, l);
-        let spec_step = toon_specular(n, l, v, smoothness);
+        let diff_step = tbrdf::diffuse(n, l, mat._Transmission);
+        let spec_step = tbrdf::specular(n, l, v, smoothness, mat._SpecularHighlights);
         let radiance = light.color * attenuation;
         lo = lo + radiance * (albedo * diff_step + spec_color * spec_step);
     }
 
     let emission = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb * mat._EmissionColor.rgb;
-    var color = lo + emission + toon_fresnel(albedo, v, n);
+    var color = lo + emission + tbrdf::fresnel(
+        albedo,
+        v,
+        n,
+        mat._Fresnel,
+        mat._FresnelDiffCont,
+        mat._FresnelPower,
+        mat._FresnelStrength,
+        mat._FresnelTint.rgb,
+    );
 
     if (mat._PlanarReflection > 0.5) {
         let refl = textureSample(_ReflectionTex, _ReflectionTex_sampler, refracted_uv).rgb;

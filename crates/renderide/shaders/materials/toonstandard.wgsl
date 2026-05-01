@@ -13,6 +13,7 @@
 #import renderide::pbs::brdf as brdf
 #import renderide::pbs::cluster as pcls
 #import renderide::pbs::sampling as psamp
+#import renderide::toon::brdf as tbrdf
 #import renderide::uv_utils as uvu
 
 struct ToonStandardMaterial {
@@ -87,43 +88,6 @@ fn vs_main(
     return out;
 }
 
-/// Stepped wrapped-Lambert diffuse (matches the Unity ToonBRDF_Diffuse cadence).
-fn toon_diffuse(n: vec3<f32>, l: vec3<f32>) -> f32 {
-    let nl = dot(n, l);
-    let t = mat._Transmission;
-    let denom = (1.0 + t) * (1.0 + t);
-    let wrapped = clamp((nl + t) / max(denom, 1e-4), 0.0, 1.0);
-    return min(round(wrapped * 2.0) / 2.0 + t, 1.0);
-}
-
-/// Stepped normalized Blinn-Phong specular (analytical replacement for the unity_NHxRoughness LUT).
-fn toon_specular(n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, smoothness: f32) -> f32 {
-    if (mat._SpecularHighlights < 0.5) {
-        return 0.0;
-    }
-    let nl = max(dot(n, l), 0.0);
-    let r = reflect(-v, n);
-    let rl = max(dot(r, l), 0.0);
-    let rough = psamp::roughness_from_smoothness(smoothness);
-    let shininess = (1.0 - rough) * (1.0 - rough) * 256.0 + 1.0;
-    let raw = pow(rl, shininess) * (shininess + 8.0) / (8.0 * 3.14159265);
-    let steps = max((1.0 - smoothness) * 4.0, 0.01);
-    let stepped = round(raw * steps) / steps;
-    return stepped * nl;
-}
-
-/// View-dependent stylization rim from the Unity ToonBRDF_Fresnel implementation.
-fn toon_fresnel(diff_color: vec3<f32>, view_dir: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    if (mat._Fresnel < 0.5) {
-        return vec3<f32>(0.0);
-    }
-    let rim = 1.0 - clamp(dot(normalize(view_dir), n), 0.0, 1.0);
-    let fresnel_color = mix(vec3<f32>(0.5), diff_color, mat._FresnelDiffCont);
-    let fresnel_power = pow(rim, max(20.0 - mat._FresnelPower * 20.0, 1e-4));
-    let fresnel = fresnel_color * fresnel_power;
-    return (mat._FresnelStrength * 5.0) * fresnel * mat._FresnelTint.rgb;
-}
-
 fn shade(
     frag_xy: vec2<f32>,
     world_pos: vec3<f32>,
@@ -178,13 +142,22 @@ fn shade(
                 attenuation = attenuation * smoothstep(light.spot_cos_half_angle, inner, spot_cos);
             }
         }
-        let diff_step = toon_diffuse(n, l);
-        let spec_step = toon_specular(n, l, v, smoothness);
+        let diff_step = tbrdf::diffuse(n, l, mat._Transmission);
+        let spec_step = tbrdf::specular(n, l, v, smoothness, mat._SpecularHighlights);
         let radiance = light.color * attenuation;
         lo = lo + radiance * (base_color * diff_step + spec_color * spec_step);
     }
 
-    let fresnel = toon_fresnel(base_color, v, n);
+    let fresnel = tbrdf::fresnel(
+        base_color,
+        v,
+        n,
+        mat._Fresnel,
+        mat._FresnelDiffCont,
+        mat._FresnelPower,
+        mat._FresnelStrength,
+        mat._FresnelTint.rgb,
+    );
     return vec4<f32>(lo + emission + fresnel, c.a);
 }
 

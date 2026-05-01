@@ -1,7 +1,6 @@
 //! World text unlit (Unity shader asset `TextUnit`): MSDF / SDF / raster font atlas in world space.
 //!
-//! This mirrors the renderer's `ui_textunlit` logic, but omits UI-only rect/overlay/stencil paths.
-//! The current mesh forward path still has no vertex color stream, so vertex color is approximated as white.
+//! This mirrors `textunlit` as a compatibility route, but omits UI-only rect/overlay/stencil paths.
 
 
 #import renderide::globals as rg
@@ -80,7 +79,7 @@ fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     );
     let text_input = tsdf::DistanceFieldInput(0.0, vout.uv, vout.extra_data, vtx_color);
     let mode = tsdf::text_mode_clamped(mat._TextMode);
-    let c = tsdf::shade_text_sample(atlas_color, atlas_clip, style, text_input, mat._TintColor * vtx_color, mode);
+    let c = tsdf::shade_text_sample(atlas_color, atlas_clip, style, text_input, vtx_color, mode);
 
     return rg::retain_globals_additive(c);
 }
