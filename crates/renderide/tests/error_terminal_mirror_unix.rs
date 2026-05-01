@@ -1,6 +1,6 @@
-#![cfg(unix)]
-
 //! Integration: renderer error logs reach both the log file and preserved terminal stderr.
+
+#![cfg(unix)]
 
 use std::fs::{File, OpenOptions};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
