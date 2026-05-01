@@ -19,6 +19,10 @@ use super::ping_pong::{PingPongCursor, PingPongHdrSlots};
 pub struct PostProcessChainSignature {
     /// Ground-Truth Ambient Occlusion pass active.
     pub gtao: bool,
+    /// Number of GTAO depth-aware denoise iterations baked into the graph (`0..=2`).
+    /// Topology field: `>= 2` adds an intermediate denoise pass and a second AO ping-pong
+    /// transient, so a change must rebuild. `0` when GTAO is inactive.
+    pub gtao_denoise_passes: u32,
     /// Dual-filter bloom pass active.
     pub bloom: bool,
     /// Stephen Hill ACES Fitted tonemap pass active.
@@ -34,9 +38,15 @@ impl PostProcessChainSignature {
     /// Derives the signature from live [`PostProcessingSettings`].
     pub fn from_settings(settings: &PostProcessingSettings) -> Self {
         let master = settings.enabled;
+        let gtao = master && settings.gtao.enabled;
         let bloom = master && settings.bloom.enabled && settings.bloom.intensity > 0.0;
         Self {
-            gtao: master && settings.gtao.enabled,
+            gtao,
+            gtao_denoise_passes: if gtao {
+                settings.gtao.denoise_passes.min(2)
+            } else {
+                0
+            },
             bloom,
             aces_tonemap: master && matches!(settings.tonemap.mode, TonemapMode::AcesFitted),
             bloom_max_mip_dimension: if bloom {

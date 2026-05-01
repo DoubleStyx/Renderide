@@ -138,6 +138,7 @@ mod tests {
             bloom: false,
             bloom_max_mip_dimension: 0,
             gtao: false,
+            gtao_denoise_passes: 0,
         });
         assert_ne!(off, on);
         assert_eq!(off, key_with_post(PostProcessChainSignature::default()));

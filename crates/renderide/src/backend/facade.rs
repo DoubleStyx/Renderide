@@ -848,6 +848,7 @@ mod post_processing_rebuild_tests {
                 bloom: true,
                 bloom_max_mip_dimension: 512,
                 gtao: true,
+                gtao_denoise_passes: 2,
             }
         );
     }
