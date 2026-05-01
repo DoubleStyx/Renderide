@@ -235,6 +235,12 @@ impl AppDriver {
         } else {
             FrameRenderMode::Desktop
         };
+        logger::trace!(
+            "frame render mode: {:?} hmd_projection_ended={} vr_active={}",
+            mode,
+            hmd_projection_ended,
+            self.runtime.vr_active(),
+        );
 
         if !hmd_projection_ended {
             self.render_non_hmd_views(mode)?;

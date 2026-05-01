@@ -69,8 +69,12 @@ pub(crate) fn process_frame_submit(runtime: &mut RendererRuntime, data: FrameSub
     };
 
     logger::trace!(
-        "frame_submit frame_index={} near_clip={} far_clip={} desktop_fov_deg={} vr_active={} scene_apply_ms={:.3}",
+        "frame_submit frame_index={} render_spaces={} render_tasks={} output_state={} debug_log={} near_clip={} far_clip={} desktop_fov_deg={} vr_active={} scene_apply_ms={:.3}",
         data.frame_index,
+        data.render_spaces.len(),
+        data.render_tasks.len(),
+        data.output_state.is_some(),
+        data.debug_log,
         runtime.host_camera.clip.near,
         runtime.host_camera.clip.far,
         runtime.host_camera.desktop_fov_degrees,

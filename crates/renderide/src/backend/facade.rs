@@ -528,6 +528,16 @@ impl RenderBackend {
             cluster_assignment,
         );
         self.sync_frame_graph_cache(&post_processing_settings, shape);
+        logger::info!(
+            "backend attached: surface_format={:?} scene_color_format={:?} msaa_sample_count={} mesh_preprocess={} msaa_depth_resolve={} frame_graph_passes={} frame_graph_topo_levels={}",
+            surface_format,
+            self.scene_color_format_wgpu(),
+            msaa_sample_count,
+            self.mesh_preprocess.is_some(),
+            self.msaa_depth_resolve.is_some(),
+            self.frame_graph_pass_count(),
+            self.frame_graph_topo_levels(),
+        );
         Ok(())
     }
 

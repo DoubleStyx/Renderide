@@ -10,7 +10,7 @@ use crate::shared::{
     VideoTextureLoad, VideoTextureProperties, VideoTextureStartAudioTrack, VideoTextureUpdate,
 };
 
-use crate::assets::asset_transfer_queue::{self as asset_uploads};
+use crate::assets::asset_transfer_queue::{self as asset_uploads, AssetIntegrationDrainSummary};
 
 use super::RenderBackend;
 
@@ -22,8 +22,8 @@ impl RenderBackend {
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
         normal_deadline: std::time::Instant,
-    ) {
-        asset_uploads::drain_asset_tasks(&mut self.asset_transfers, shm, ipc, normal_deadline);
+    ) -> AssetIntegrationDrainSummary {
+        asset_uploads::drain_asset_tasks(&mut self.asset_transfers, shm, ipc, normal_deadline)
     }
 
     /// Handle [`SetTexture2DFormat`](crate::shared::SetTexture2DFormat).

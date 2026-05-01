@@ -20,6 +20,71 @@ pub const MAX_ASSET_INTEGRATION_QUEUED: usize = 2048;
 /// Minimum extra wall-clock slice granted to high-priority integration before yielding.
 const MIN_HIGH_PRIORITY_EMERGENCY_BUDGET: Duration = Duration::from_millis(1);
 
+/// Queue and budget state observed during one cooperative asset-integration drain.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AssetIntegrationDrainSummary {
+    /// High-priority tasks queued before the drain.
+    pub high_priority_before: usize,
+    /// Normal-priority tasks queued before the drain.
+    pub normal_priority_before: usize,
+    /// High-priority tasks queued after the drain.
+    pub high_priority_after: usize,
+    /// Normal-priority tasks queued after the drain.
+    pub normal_priority_after: usize,
+    /// Whether the drain had GPU handles needed to execute upload work.
+    pub gpu_ready: bool,
+    /// Whether high-priority work exceeded the emergency budget.
+    pub high_priority_budget_exhausted: bool,
+    /// Whether normal-priority work exceeded the frame budget.
+    pub normal_priority_budget_exhausted: bool,
+    /// Wall-clock time spent in the drain.
+    pub elapsed: Duration,
+}
+
+impl AssetIntegrationDrainSummary {
+    /// Captures queue state before integration starts.
+    fn start(asset: &AssetTransferQueue) -> Self {
+        Self {
+            high_priority_before: asset.integrator.high_priority.len(),
+            normal_priority_before: asset.integrator.normal_priority.len(),
+            ..Self::default()
+        }
+    }
+
+    /// Completes the summary from the queue state after integration ends.
+    fn finish(
+        mut self,
+        asset: &AssetTransferQueue,
+        gpu_ready: bool,
+        high_priority_budget_exhausted: bool,
+        normal_priority_budget_exhausted: bool,
+        drain_start: Instant,
+    ) -> Self {
+        self.high_priority_after = asset.integrator.high_priority.len();
+        self.normal_priority_after = asset.integrator.normal_priority.len();
+        self.gpu_ready = gpu_ready;
+        self.high_priority_budget_exhausted = high_priority_budget_exhausted;
+        self.normal_priority_budget_exhausted = normal_priority_budget_exhausted;
+        self.elapsed = drain_start.elapsed();
+        self
+    }
+
+    /// Combined queued work before the drain.
+    pub fn total_before(self) -> usize {
+        self.high_priority_before + self.normal_priority_before
+    }
+
+    /// Combined queued work after the drain.
+    pub fn total_after(self) -> usize {
+        self.high_priority_after + self.normal_priority_after
+    }
+
+    /// Whether any budget ceiling was reached while work remained queued.
+    pub fn budget_exhausted(self) -> bool {
+        self.high_priority_budget_exhausted || self.normal_priority_budget_exhausted
+    }
+}
+
 /// One cooperative upload (mesh or texture data).
 #[derive(Debug)]
 pub enum AssetTask {
@@ -266,25 +331,26 @@ pub fn drain_asset_tasks(
     shm: &mut SharedMemoryAccessor,
     ipc: &mut Option<&mut DualQueueIpc>,
     normal_deadline: Instant,
-) {
+) -> AssetIntegrationDrainSummary {
     profiling::scope!("asset::drain_tasks");
     let drain_start = Instant::now();
+    let summary = AssetIntegrationDrainSummary::start(asset);
     let high_priority_deadline = high_priority_emergency_deadline(drain_start, normal_deadline);
     let Some(device) = asset.gpu.gpu_device.clone() else {
         plot_asset_integrator_backlog(asset, false, false);
-        return;
+        return summary.finish(asset, false, false, false, drain_start);
     };
     let Some(gpu_limits) = asset.gpu.gpu_limits.clone() else {
         plot_asset_integrator_backlog(asset, false, false);
-        return;
+        return summary.finish(asset, false, false, false, drain_start);
     };
     let Some(queue_arc) = asset.gpu.gpu_queue.clone() else {
         plot_asset_integrator_backlog(asset, false, false);
-        return;
+        return summary.finish(asset, false, false, false, drain_start);
     };
     let Some(gate) = asset.gpu.gpu_queue_access_gate.clone() else {
         plot_asset_integrator_backlog(asset, false, false);
-        return;
+        return summary.finish(asset, false, false, false, drain_start);
     };
     let gpu = AssetUploadGpuContext {
         device: &device,
@@ -322,6 +388,13 @@ pub fn drain_asset_tasks(
     );
 
     poll_video_texture_events(asset, ipc);
+    summary.finish(
+        asset,
+        true,
+        high_priority_budget_exhausted,
+        normal_priority_budget_exhausted,
+        drain_start,
+    )
 }
 
 /// Drains all queued tasks without a time limit (used on GPU attach before first frame).
@@ -331,7 +404,7 @@ pub fn drain_asset_tasks_unbounded(
     ipc: &mut Option<&mut DualQueueIpc>,
 ) {
     let far_future = Instant::now() + Duration::from_secs(3600);
-    drain_asset_tasks(asset, shm, ipc, far_future);
+    let _ = drain_asset_tasks(asset, shm, ipc, far_future);
 }
 
 #[cfg(test)]
@@ -357,6 +430,22 @@ mod tests {
             AssetTask::Texture3d(task) => task.high_priority(),
             AssetTask::Cubemap(task) => task.high_priority(),
         }
+    }
+
+    #[test]
+    fn asset_integration_summary_totals_and_budget_flag() {
+        let summary = AssetIntegrationDrainSummary {
+            high_priority_before: 2,
+            normal_priority_before: 3,
+            high_priority_after: 1,
+            normal_priority_after: 4,
+            normal_priority_budget_exhausted: true,
+            ..Default::default()
+        };
+
+        assert_eq!(summary.total_before(), 5);
+        assert_eq!(summary.total_after(), 5);
+        assert!(summary.budget_exhausted());
     }
 
     #[test]

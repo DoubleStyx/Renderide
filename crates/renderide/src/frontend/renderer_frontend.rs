@@ -9,7 +9,7 @@ use crate::shared::{
     RendererCommand, RendererInitData, VideoTextureClockErrorState,
 };
 
-use super::decoupling::DecouplingState;
+use super::decoupling::{DecouplingActivationDecision, DecouplingState, DecouplingSubmitDecision};
 use super::frame_start_performance::FrameStartPerformanceState;
 use super::init_state::InitState;
 use super::lockstep_state::LockstepState;
@@ -268,8 +268,17 @@ impl RendererFrontend {
 
     /// Per-tick decoupling activation check.
     pub fn update_decoupling_activation(&mut self, now: Instant) {
-        self.decoupling
+        let decision = self
+            .decoupling
             .update_activation_for_tick(now, self.lockstep.awaiting_submit());
+        if decision == DecouplingActivationDecision::Activate {
+            logger::info!(
+                "render decoupling activated: last_frame_index={} threshold_s={:.4} asset_budget_ms={}",
+                self.lockstep.last_frame_index(),
+                self.decoupling.activate_interval_seconds(),
+                self.decoupling.effective_asset_integration_budget_ms(1),
+            );
+        }
     }
 
     /// Increments the renderer-tick counter feeding frame-start performance data.
@@ -280,7 +289,41 @@ impl RendererFrontend {
     /// Updates lock-step state after the host submits a frame.
     pub fn note_frame_submit_processed(&mut self, frame_index: i32) {
         self.lockstep.note_frame_submit_processed(frame_index);
-        self.decoupling.record_frame_submit_received(Instant::now());
+        let decision = self.decoupling.record_frame_submit_received(Instant::now());
+        match decision {
+            DecouplingSubmitDecision::Recouple => {
+                logger::info!(
+                    "render decoupling recoupled: frame_index={} stable_frame_count={} last_submit_ms={:.3}",
+                    frame_index,
+                    self.decoupling.recouple_frame_count(),
+                    self.decoupling
+                        .last_frame_begin_to_submit()
+                        .map_or(-1.0, |duration| duration.as_secs_f64() * 1000.0),
+                );
+            }
+            DecouplingSubmitDecision::ResetProgress => {
+                logger::trace!(
+                    "render decoupling recouple progress reset: frame_index={} last_submit_ms={:.3} threshold_s={:.4}",
+                    frame_index,
+                    self.decoupling
+                        .last_frame_begin_to_submit()
+                        .map_or(-1.0, |duration| duration.as_secs_f64() * 1000.0),
+                    self.decoupling.activate_interval_seconds(),
+                );
+            }
+            DecouplingSubmitDecision::AdvanceProgress(progress) => {
+                logger::trace!(
+                    "render decoupling recouple progress: frame_index={} progress={}/{} last_submit_ms={:.3}",
+                    frame_index,
+                    progress,
+                    self.decoupling.recouple_frame_count(),
+                    self.decoupling
+                        .last_frame_begin_to_submit()
+                        .map_or(-1.0, |duration| duration.as_secs_f64() * 1000.0),
+                );
+            }
+            DecouplingSubmitDecision::Hold => {}
+        }
     }
 
     /// Marks init received after `renderer_init_data`.

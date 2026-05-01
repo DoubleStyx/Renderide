@@ -198,18 +198,23 @@ impl DecouplingState {
     /// Per-tick activation check. If the renderer is currently waiting on a [`crate::shared::FrameSubmitData`]
     /// (`awaiting_submit == true`, i.e. `last_frame_data_processed == false`) and the elapsed wait
     /// exceeds [`Self::activate_interval_seconds`], flip `active` and reset the recouple counter.
-    pub fn update_activation_for_tick(&mut self, now: Instant, awaiting_submit: bool) {
-        if activation_decision(
+    pub(crate) fn update_activation_for_tick(
+        &mut self,
+        now: Instant,
+        awaiting_submit: bool,
+    ) -> DecouplingActivationDecision {
+        let decision = activation_decision(
             self.active,
             awaiting_submit,
             self.last_frame_start_sent_at,
             now,
             self.activate_interval_seconds,
-        ) == DecouplingActivationDecision::Activate
-        {
+        );
+        if decision == DecouplingActivationDecision::Activate {
             self.active = true;
             self.recouple_progress = 0;
         }
+        decision
     }
 
     /// Records the round-trip for the just-received [`crate::shared::FrameSubmitData`] and, when
@@ -218,20 +223,24 @@ impl DecouplingState {
     /// Mirrors `RenderingManager.cs:400-415`: sub-threshold submits increment the counter and at
     /// `recouple_frame_count` the decoupled flag clears; at-or-above-threshold submits reset the
     /// counter.
-    pub fn record_frame_submit_received(&mut self, now: Instant) {
+    pub(crate) fn record_frame_submit_received(
+        &mut self,
+        now: Instant,
+    ) -> DecouplingSubmitDecision {
         let elapsed = self
             .last_frame_start_sent_at
             .take()
             .map(|sent| now.saturating_duration_since(sent));
         self.last_frame_begin_to_submit = elapsed;
 
-        match submit_decision(
+        let decision = submit_decision(
             self.active,
             elapsed,
             self.activate_interval_seconds,
             self.recouple_progress,
             self.recouple_frame_count,
-        ) {
+        );
+        match decision {
             DecouplingSubmitDecision::Hold => {}
             DecouplingSubmitDecision::ResetProgress => {
                 self.recouple_progress = 0;
@@ -244,6 +253,7 @@ impl DecouplingState {
                 self.recouple_progress = 0;
             }
         }
+        decision
     }
 
     /// Returns the wall-clock budget (in milliseconds) the runtime should pass to
@@ -321,7 +331,10 @@ mod tests {
         let t0 = Instant::now();
         s.record_frame_start_sent(t0);
         let later = t0 + Duration::from_secs_f32(0.06);
-        s.update_activation_for_tick(later, true);
+        assert_eq!(
+            s.update_activation_for_tick(later, true),
+            DecouplingActivationDecision::Activate
+        );
         assert!(s.is_active());
     }
 
@@ -358,10 +371,12 @@ mod tests {
         for n in 1..=3 {
             let send = Instant::now();
             s.record_frame_start_sent(send);
-            s.record_frame_submit_received(send + Duration::from_secs_f32(0.01));
+            let decision = s.record_frame_submit_received(send + Duration::from_secs_f32(0.01));
             if n < 3 {
+                assert_eq!(decision, DecouplingSubmitDecision::AdvanceProgress(n));
                 assert!(s.is_active(), "still decoupled after {n} fast submits");
             } else {
+                assert_eq!(decision, DecouplingSubmitDecision::Recouple);
                 assert!(!s.is_active(), "recoupled after {n} fast submits");
             }
         }

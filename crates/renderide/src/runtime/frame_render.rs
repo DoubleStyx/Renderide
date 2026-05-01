@@ -2,12 +2,14 @@
 //! render-texture cameras, and the main desktop view, then dispatches the compiled render graph
 //! in a single submit.
 
+use std::fmt::Write as _;
+
 use crate::gpu::GpuContext;
 use crate::render_graph::{ExternalFrameTargets, GraphExecuteError};
 
 use super::RendererRuntime;
 use super::frame_extract::{ExtractedFrame, PreparedViews, select_inner_parallelism};
-use super::frame_view_plan::{FrameViewPlan, HeadlessOffscreenSnapshot};
+use super::frame_view_plan::{FrameViewPlan, FrameViewPlanTarget, HeadlessOffscreenSnapshot};
 
 /// Which combination of views the compiled render graph records for one tick.
 ///
@@ -77,6 +79,7 @@ impl RendererRuntime {
             self.extract_frame(gpu, mode)
         };
         if frame_extract.is_empty() {
+            logger::trace!("render frame skipped: no prepared views");
             return Ok(());
         }
 
@@ -163,6 +166,7 @@ impl RendererRuntime {
         let swapchain_extent_px = gpu.surface_extent_px();
         let prepared: Vec<FrameViewPlan<'a>> =
             self.collect_prepared_views(mode, swapchain_extent_px);
+        trace_prepared_views(&prepared);
         let headless_snapshot = {
             profiling::scope!("render::headless_snapshot");
             if includes_main && gpu.is_headless() {
@@ -173,4 +177,50 @@ impl RendererRuntime {
         };
         PreparedViews::new(prepared, headless_snapshot)
     }
+}
+
+fn trace_prepared_views(prepared: &[FrameViewPlan<'_>]) {
+    if !logger::enabled(logger::LogLevel::Trace) {
+        return;
+    }
+    let mut hmd = 0usize;
+    let mut secondary = 0usize;
+    let mut main = 0usize;
+    let mut details = String::new();
+    for (idx, view) in prepared.iter().enumerate() {
+        let label = match &view.target {
+            FrameViewPlanTarget::Hmd(_) => {
+                hmd += 1;
+                "hmd"
+            }
+            FrameViewPlanTarget::SecondaryRt(_) => {
+                secondary += 1;
+                "secondary_rt"
+            }
+            FrameViewPlanTarget::MainSwapchain => {
+                main += 1;
+                "main_swapchain"
+            }
+        };
+        if idx > 0 {
+            details.push_str(", ");
+        }
+        let _ = write!(
+            details,
+            "#{idx}:{label} view_id={:?} extent={}x{} stereo={} filter={}",
+            view.view_id,
+            view.viewport_px.0,
+            view.viewport_px.1,
+            view.is_multiview_stereo_active(),
+            view.draw_filter.is_some(),
+        );
+    }
+    logger::trace!(
+        "render prepared views: count={} hmd={} secondary_rt={} main_swapchain={} [{}]",
+        prepared.len(),
+        hmd,
+        secondary,
+        main,
+        details,
+    );
 }

@@ -30,6 +30,11 @@ pub(crate) struct PendingShaderResolution {
 /// the lock-step invariant that the host sees routing ready before it sends dependent materials.
 pub(crate) fn on_shader_upload(pending: &mut Vec<PendingShaderResolution>, upload: ShaderUpload) {
     let asset_id = upload.asset_id;
+    logger::trace!(
+        "shader_upload: queued async resolver asset_id={} file_present={}",
+        asset_id,
+        upload.file.is_some(),
+    );
     let (tx, rx) = bounded::<ResolvedShaderUpload>(1);
     rayon::spawn(move || {
         let resolved = resolve_shader_upload(&upload);
@@ -85,6 +90,7 @@ pub(crate) fn drain_pending_shader_resolutions(
 
 pub(crate) fn on_shader_unload(backend: &mut RenderBackend, unload: ShaderUnload) {
     let id = unload.asset_id;
+    logger::debug!("shader_unload: asset_id={id}");
     backend.unregister_shader_route(id);
 }
 
@@ -94,6 +100,12 @@ pub(crate) fn on_materials_update_batch(
     batch: MaterialsUpdateBatch,
 ) {
     if frontend.shared_memory().is_none() {
+        logger::trace!(
+            "materials update batch {} queued until shared memory is available (material_updates={} material_count={})",
+            batch.update_batch_id,
+            batch.material_updates.len(),
+            batch.material_update_count,
+        );
         if !backend.enqueue_materials_batch_no_shm(batch) {
             // already logged
         }

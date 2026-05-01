@@ -34,8 +34,8 @@ use crate::shared::VideoTextureClockErrorState;
 use catalogs::AssetCatalogs;
 use gpu_runtime::AssetGpuRuntime;
 pub use integrator::{
-    AssetIntegrator, AssetTask, MAX_ASSET_INTEGRATION_QUEUED, StepResult, drain_asset_tasks,
-    drain_asset_tasks_unbounded,
+    AssetIntegrationDrainSummary, AssetIntegrator, AssetTask, MAX_ASSET_INTEGRATION_QUEUED,
+    StepResult, drain_asset_tasks, drain_asset_tasks_unbounded,
 };
 use pending::PendingAssetUploads;
 use pools::ResidentAssetPools;

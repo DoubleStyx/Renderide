@@ -256,13 +256,19 @@ impl GpuContext {
             "GPU (headless)",
         );
         logger::info!(
-            "GPU (headless): adapter={} backend={:?} extent={}x{} format={:?} instance_flags={:?}",
+            "GPU (headless): adapter={} backend={:?} extent={}x{} format={:?} instance_flags={:?} \
+             msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
+             msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
             adapter_info.name,
             adapter_info.backend,
             config.width,
             config.height,
             config.format,
             instance_flags,
+            &msaa.desktop,
+            msaa.desktop_max(),
+            &msaa.stereo,
+            msaa.stereo_max(),
         );
         let gpu_profiler = try_gpu_profiler(
             &adapter,

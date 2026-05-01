@@ -187,7 +187,7 @@ fn collect_view_draws(
         profiling::scope!("collect::shared_dictionary");
         crate::materials::host_data::MaterialDictionary::new(setup.property_store)
     };
-    prepared
+    let draw_plans: Vec<WorldMeshDrawPlan> = prepared
         .par_iter()
         .zip(cull_snapshots.into_par_iter())
         .map(|(prep, snap)| {
@@ -225,7 +225,41 @@ fn collect_view_draws(
                 collection, cull_proj,
             )))
         })
-        .collect()
+        .collect();
+    trace_view_draw_plans(prepared, &draw_plans);
+    draw_plans
+}
+
+fn trace_view_draw_plans(prepared: &[FrameViewPlan<'_>], draw_plans: &[WorldMeshDrawPlan]) {
+    if !logger::enabled(logger::LogLevel::Trace) {
+        return;
+    }
+    for (prep, draw_plan) in prepared.iter().zip(draw_plans.iter()) {
+        let Some(collection) = draw_plan.as_prefetched() else {
+            logger::trace!(
+                "render view draws: view_id={:?} extent={}x{} shader_perm={:?} empty_plan=true",
+                prep.view_id,
+                prep.viewport_px.0,
+                prep.viewport_px.1,
+                prep.shader_permutation(),
+            );
+            continue;
+        };
+        let helper_needs = draw_plan.helper_needs();
+        logger::trace!(
+            "render view draws: view_id={:?} extent={}x{} shader_perm={:?} draws={} pre_cull={} frustum_culled={} hi_z_culled={} helper_depth_snapshot={} helper_color_snapshot={}",
+            prep.view_id,
+            prep.viewport_px.0,
+            prep.viewport_px.1,
+            prep.shader_permutation(),
+            collection.items.len(),
+            collection.draws_pre_cull,
+            collection.draws_culled,
+            collection.draws_hi_z_culled,
+            helper_needs.depth_snapshot,
+            helper_needs.color_snapshot,
+        );
+    }
 }
 
 /// Selects the per-view inner-walk parallelism tier for a tick based on how many views will

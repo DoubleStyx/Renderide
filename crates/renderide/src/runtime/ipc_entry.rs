@@ -5,6 +5,8 @@
 //! init phase. Keeping every IPC ingress on one file makes the boundary between the runtime
 //! façade and the dispatch routers explicit.
 
+use crate::frontend::InitState;
+use crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{
     FrameSubmitData, LightsBufferRendererSubmission, MaterialsUpdateBatch, RendererCommand,
@@ -33,11 +35,13 @@ impl RendererRuntime {
             &mut self.frontend,
         );
         let mut batch = self.frontend.poll_commands();
+        trace_ipc_batch(
+            &batch,
+            self.frontend.init_state(),
+            self.pending_shader_resolutions.len(),
+        );
         for cmd in batch.drain(..) {
-            let _tag =
-                crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag(
-                    &cmd,
-                );
+            let _tag = renderer_command_variant_tag(&cmd);
             profiling::scope!("ipc::dispatch", _tag);
             crate::frontend::dispatch::ipc_init::dispatch_ipc_command(self, cmd);
         }
@@ -45,6 +49,11 @@ impl RendererRuntime {
     }
 
     pub(crate) fn on_init_data(&mut self, d: RendererInitData) {
+        logger::info!(
+            "IPC init data received: output_device={:?} shared_memory_prefix_present={}",
+            d.output_device,
+            d.shared_memory_prefix.is_some(),
+        );
         self.host_camera.output_device = d.output_device;
         if let Some(ref prefix) = d.shared_memory_prefix {
             self.frontend
@@ -120,4 +129,35 @@ impl RendererRuntime {
         lockstep::trace_duplicate_frame_index_if_interesting(data.frame_index, prev_frame_index);
         crate::frontend::dispatch::frame_submit::process_frame_submit(self, data);
     }
+}
+
+fn trace_ipc_batch(batch: &[RendererCommand], init_state: InitState, pending_shaders: usize) {
+    if batch.is_empty() || !logger::enabled(logger::LogLevel::Trace) {
+        return;
+    }
+    let mut counts: Vec<(&'static str, usize)> = Vec::new();
+    for cmd in batch {
+        let tag = renderer_command_variant_tag(cmd);
+        if let Some((_, count)) = counts.iter_mut().find(|(existing, _)| *existing == tag) {
+            *count += 1;
+        } else {
+            counts.push((tag, 1));
+        }
+    }
+    let mut kinds = String::new();
+    for (idx, (tag, count)) in counts.iter().enumerate() {
+        if idx > 0 {
+            kinds.push_str(", ");
+        }
+        kinds.push_str(tag);
+        kinds.push('=');
+        kinds.push_str(&count.to_string());
+    }
+    logger::trace!(
+        "IPC poll batch: commands={} init_state={:?} pending_shader_resolutions={} kinds=[{}]",
+        batch.len(),
+        init_state,
+        pending_shaders,
+        kinds,
+    );
 }

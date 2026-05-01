@@ -39,7 +39,8 @@ impl RendererRuntime {
             return;
         };
         let mut ipc_opt = ipc;
-        self.backend.drain_asset_tasks(shm, &mut ipc_opt, deadline);
+        let summary = self.backend.drain_asset_tasks(shm, &mut ipc_opt, deadline);
+        trace_asset_integration_summary(budget_ms, summary);
         self.did_integrate_this_tick = true;
     }
 
@@ -47,4 +48,29 @@ impl RendererRuntime {
     pub fn did_integrate_assets_this_tick(&self) -> bool {
         self.did_integrate_this_tick
     }
+}
+
+fn trace_asset_integration_summary(
+    budget_ms: u32,
+    summary: crate::assets::asset_transfer_queue::AssetIntegrationDrainSummary,
+) {
+    if summary.total_before() == 0
+        && summary.total_after() == 0
+        && !summary.budget_exhausted()
+        && summary.gpu_ready
+    {
+        return;
+    }
+    logger::trace!(
+        "asset integration: budget_ms={} gpu_ready={} elapsed_ms={:.3} high {}->{} normal {}->{} exhausted_high={} exhausted_normal={}",
+        budget_ms,
+        summary.gpu_ready,
+        summary.elapsed.as_secs_f64() * 1000.0,
+        summary.high_priority_before,
+        summary.high_priority_after,
+        summary.normal_priority_before,
+        summary.normal_priority_after,
+        summary.high_priority_budget_exhausted,
+        summary.normal_priority_budget_exhausted,
+    );
 }

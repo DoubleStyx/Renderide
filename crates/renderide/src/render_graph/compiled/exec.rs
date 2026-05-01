@@ -552,6 +552,11 @@ impl CompiledRenderGraph {
             upload_batch.drain_and_flush(mv_ctx.device, queue_ref)
         };
 
+        let has_upload_cmd = upload_cmd.is_some();
+        let has_frame_global_cmd = frame_global_cmd.is_some();
+        let per_view_command_count = per_view_cmds.len();
+        let has_per_view_profiler_cmd = per_view_profiler_cmd.is_some();
+        let has_hud_cmd = hud_cmd.is_some();
         let all_cmds: Vec<wgpu::CommandBuffer> = upload_cmd
             .into_iter()
             .chain(frame_global_cmd)
@@ -559,6 +564,7 @@ impl CompiledRenderGraph {
             .chain(per_view_profiler_cmd)
             .chain(hud_cmd)
             .collect();
+        let command_buffer_count = all_cmds.len();
 
         // Hand the swapchain texture (if any) to the driver thread so `queue.submit` and
         // `SurfaceTexture::present` run off the main thread. The scope still drops cleanly — with
@@ -570,6 +576,18 @@ impl CompiledRenderGraph {
         };
 
         let hi_z_callbacks = collect_hi_z_submit_callbacks(mv_ctx, per_view_occlusion_info);
+        logger::trace!(
+            "graph submit batch: views={} swapchain={} command_buffers={} upload={} frame_global={} per_view={} profiler={} hud={} hi_z_callbacks={}",
+            views.len(),
+            target_is_swapchain,
+            command_buffer_count,
+            has_upload_cmd,
+            has_frame_global_cmd,
+            per_view_command_count,
+            has_per_view_profiler_cmd,
+            has_hud_cmd,
+            hi_z_callbacks.len(),
+        );
 
         {
             profiling::scope!("gpu::queue_submit");

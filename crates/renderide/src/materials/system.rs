@@ -161,6 +161,12 @@ impl MaterialSystem {
         ipc: &mut DualQueueIpc,
     ) {
         profiling::scope!("material::flush_pending_batches");
+        let pending_count = self.pending_material_batches.len();
+        if pending_count > 0 {
+            logger::debug!(
+                "materials: flushing {pending_count} deferred update batch(es) after shared memory became available"
+            );
+        }
         let batches: Vec<MaterialsUpdateBatch> = self.pending_material_batches.drain(..).collect();
         for batch in batches {
             self.apply_materials_update_batch(batch, shm, ipc);
@@ -176,6 +182,12 @@ impl MaterialSystem {
             );
             return false;
         }
+        logger::trace!(
+            "materials update batch {} deferred: pending_no_shm_queue={}/{}",
+            batch.update_batch_id,
+            self.pending_material_batches.len() + 1,
+            MAX_PENDING_MATERIAL_BATCHES,
+        );
         self.pending_material_batches.push_back(batch);
         true
     }
@@ -219,6 +231,16 @@ impl MaterialSystem {
             &mut self.material_property_store,
             &opts,
             instance_changed,
+        );
+        logger::trace!(
+            "materials update batch {update_batch_id}: material_updates={} material_count={} int_buffers={} float_buffers={} float4_buffers={} matrix_buffers={} instance_changed_bits={}",
+            batch.material_updates.len(),
+            batch.material_update_count,
+            batch.int_buffers.len(),
+            batch.float_buffers.len(),
+            batch.float4_buffers.len(),
+            batch.matrix_buffers.len(),
+            instance_changed.iter().filter(|&&flag| flag).count(),
         );
 
         if batch.instance_changed_buffer.length > 0 {

@@ -94,6 +94,10 @@ impl CompiledRenderGraph {
         if compile_requests.is_empty() {
             return;
         }
+        logger::trace!(
+            "graph pipeline prewarm: compiling {} warmed-miss variant(s)",
+            compile_requests.len()
+        );
 
         // Fan pipeline misses out to the rayon pool so multiple new permutations compile in
         // parallel instead of serially blocking the main thread. `MaterialPipelineCache`
@@ -180,6 +184,12 @@ impl CompiledRenderGraph {
                 }
             }
         }
+        logger::trace!(
+            "graph pre-warm per-view resources: views={} uv1_stream_meshes={} extended_stream_meshes={}",
+            views.len(),
+            mesh_ids_needing_uv1_stream.len(),
+            mesh_ids_needing_extended_streams.len(),
+        );
         for mesh_asset_id in mesh_ids_needing_uv1_stream {
             let _ = mv_ctx
                 .backend

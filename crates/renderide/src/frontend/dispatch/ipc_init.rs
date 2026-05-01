@@ -99,6 +99,7 @@ pub(crate) fn dispatch_ipc_command(runtime: &mut RendererRuntime, cmd: RendererC
             }
         }
         InitDispatchDecision::Finalize => {
+            logger::info!("IPC init finalized; renderer entering running command dispatch");
             runtime.frontend.set_init_state(InitState::Finalized);
         }
         InitDispatchDecision::DispatchRunning => runtime.handle_running_command(cmd),
