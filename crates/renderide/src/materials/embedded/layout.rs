@@ -259,7 +259,9 @@ pub(crate) fn build_stem_material_layout(
 mod tests {
     use std::sync::Arc;
 
-    use super::{EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds};
+    use super::{
+        EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds, shader_writer_unescaped_property_name,
+    };
     use crate::materials::host_data::PropertyIdRegistry;
     use crate::materials::reflect_raster_material_wgsl;
 
@@ -276,6 +278,41 @@ mod tests {
         assert_eq!(
             ids.texture_binding_property_ids.get(&1).map(|p| &**p),
             Some([registry.intern("_MainTex"), registry.intern("_Tex"),].as_slice())
+        );
+    }
+
+    #[test]
+    fn xiexe_outline_emissive_typo_alias_is_preserved() {
+        let wgsl = crate::embedded_shaders::embedded_target_wgsl("xstoon2.0_default")
+            .expect("xiexe target WGSL");
+        let reflected = reflect_raster_material_wgsl(wgsl).expect("xiexe WGSL reflection");
+        let uniform = reflected
+            .material_uniform
+            .as_ref()
+            .expect("xiexe material uniform block");
+        assert!(
+            uniform.fields.contains_key("_OutlineEmissiveues"),
+            "the deliberate `_OutlineEmissiveues` Unity-property typo must remain in the reflected uniform block; XSToon2.0.shader sets this name and removing it would break outline-mode lookup"
+        );
+    }
+
+    #[test]
+    fn xiexe_baked_cubemap_binding_is_reflected() {
+        let wgsl = crate::embedded_shaders::embedded_target_wgsl("xstoon2.0_default")
+            .expect("xiexe target WGSL");
+        let reflected = reflect_raster_material_wgsl(wgsl).expect("xiexe WGSL reflection");
+        let unmangled: Vec<String> = reflected
+            .material_group1_names
+            .values()
+            .map(|n| shader_writer_unescaped_property_name(n).to_string())
+            .collect();
+        assert!(
+            unmangled.iter().any(|n| n == "_BakedCubemap"),
+            "missing `_BakedCubemap` cube binding in xstoon2 layout: {unmangled:?}"
+        );
+        assert!(
+            unmangled.iter().any(|n| n == "_BakedCubemap_sampler"),
+            "missing `_BakedCubemap_sampler` in xstoon2 layout: {unmangled:?}"
         );
     }
 }

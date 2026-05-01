@@ -226,9 +226,11 @@ fn reflection_is_multiplicative() -> bool {
     return abs(xb::mat._ReflectionBlendMode - 1.0) < 0.5;
 }
 
-/// Samples one indirect-reflection branch using the current reflection mode while preserving the
-/// existing XSToon2 bindings. Mode `1` ("baked cubemap") falls back to the renderer skybox source
-/// because the XSToon2 contract has no dedicated cubemap binding.
+/// Samples one indirect-reflection branch using the current reflection mode.
+///
+/// Mode `0` ("PBR") routes through the renderer skybox-driven `brdf::indirect_specular`, mode
+/// `1` ("baked cubemap") samples the per-material `_BakedCubemap` directly with a roughness-LOD
+/// reflection vector, and mode `2` ("matcap") samples `_Matcap` with the view-space matcap UV.
 fn indirect_reflection_branch(
     s: xb::SurfaceData,
     normal: vec3<f32>,
@@ -258,7 +260,24 @@ fn indirect_reflection_branch(
         return spec * max(reflectivity_scale, 0.0) * reflectivity_mask;
     }
 
-    var spec = brdf::indirect_specular(
+    if (xb::baked_cubemap_enabled()) {
+        let r = reflect(-view_dir, normal);
+        let lod = clamp(
+            (1.0 - clamp(perceptual_roughness, 0.0, 1.0)) * SPECCUBE_LOD_STEPS,
+            0.0,
+            SPECCUBE_LOD_STEPS,
+        );
+        var spec = textureSampleLevel(xb::_BakedCubemap, xb::_BakedCubemap_sampler, r, lod).rgb
+            * fresnel
+            * occlusion_scalar(s)
+            * reflectivity_mask;
+        if (!reflection_is_multiplicative()) {
+            spec = spec * (ambient + dominant_light_col_atten * 0.5);
+        }
+        return spec;
+    }
+
+    let spec = brdf::indirect_specular(
         normal,
         view_dir,
         clamp(perceptual_roughness, 0.0, 1.0),
@@ -266,10 +285,6 @@ fn indirect_reflection_branch(
         occlusion_scalar(s),
         xb::reflection_uses_pbr(),
     ) * reflectivity_mask;
-
-    if (abs(xb::mat._ReflectionMode - 1.0) < 0.5 && !reflection_is_multiplicative()) {
-        spec = spec * (ambient + dominant_light_col_atten * 0.5);
-    }
     return spec;
 }
 

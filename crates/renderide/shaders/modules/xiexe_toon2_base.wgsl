@@ -312,6 +312,12 @@ struct XiexeToon2Material {
 @group(1) @binding(29) var _SpecularMap: texture_2d<f32>;
 /// Specular-map sampler.
 @group(1) @binding(30) var _SpecularMap_sampler: sampler;
+/// Per-material baked cubemap sampled by `_ReflectionMode == 1`. The host uploads the
+/// Unity `_BakedCubemap` (CUBE) property; an unbound material falls back to the resident
+/// black-cube default in the texture pool.
+@group(1) @binding(31) var _BakedCubemap: texture_cube<f32>;
+/// Baked-cubemap sampler.
+@group(1) @binding(32) var _BakedCubemap_sampler: sampler;
 
 /// Vertex-to-fragment payload carried by every xiexe-toon variant. The two-UV-set layout
 /// mirrors Unity `VertexOutput`/`g2f` so material-property UV selectors keep working.
@@ -478,12 +484,17 @@ fn reflection_disabled() -> bool {
     return !kw(mat.MATCAP) && abs(mat._ReflectionMode - 3.0) < 0.5;
 }
 
-/// True when the shader should use the skybox/PBR reflection branch.
+/// True when the shader should use the skybox/PBR reflection branch (`_ReflectionMode == 0`).
 ///
-/// The legacy "baked cubemap" mode has no dedicated cubemap binding in the XSToon2 contract, so
-/// both mode `0` and mode `1` fall back to the renderer's frame-global skybox specular source.
+/// Mode `1` ("baked cubemap") samples `_BakedCubemap` directly via
+/// `lighting::indirect_reflection_branch` and is therefore excluded here.
 fn reflection_uses_pbr() -> bool {
-    return !reflection_disabled() && !matcap_enabled();
+    return !reflection_disabled() && !matcap_enabled() && !baked_cubemap_enabled();
+}
+
+/// True when the reflection mode selects the per-material baked-cubemap branch.
+fn baked_cubemap_enabled() -> bool {
+    return !kw(mat.MATCAP) && abs(mat._ReflectionMode - 1.0) < 0.5;
 }
 
 /// True when the legacy clear-coat controls should add the secondary lobe.

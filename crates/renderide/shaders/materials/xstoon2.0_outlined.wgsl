@@ -1,5 +1,10 @@
 //! Generic outlined Xiexe Toon 2.0 (`Shader "Xiexe/XSToon2.0_Outlined"`).
-
+//!
+//! Resonite ships two upstream Unity shader paths for the outlined XSToon2.0 entry
+//! (`Xiexe/XSToon2.0_Outlined` and `Xiexe/Toon2.0/XSToon2.0_Outlined`); the asset path
+//! normalisation in `assets::util` resolves them to two distinct WGSL stems so both
+//! routes succeed. This file is the underscore-cased route; `xstoon2.0-outlined.wgsl`
+//! is the dash-cased peer. They share the same module pipeline by design.
 
 #import renderide::xiexe::toon2 as xs
 #import renderide::xiexe::toon2::base as xb
