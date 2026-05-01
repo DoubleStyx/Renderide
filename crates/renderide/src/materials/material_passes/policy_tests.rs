@@ -87,6 +87,14 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         None,
     );
     assert_resolved_pass(
+        pass_from_kind(PassKind::ForwardTransparentCullFront, "fs_back_faces"),
+        disabled_depth,
+        wgpu::ColorWrites::ALL,
+        false,
+        wgpu::CompareFunction::Always,
+        Some(wgpu::Face::Front),
+    );
+    assert_resolved_pass(
         pass_from_kind(PassKind::Outline, "fs_outline"),
         disabled_depth,
         wgpu::ColorWrites::ALL,
@@ -189,6 +197,40 @@ fn pbsrim_zwrite_stems_keep_depth_prepass_before_forward() {
         assert!(!forward.resolved_depth_write(state), "{stem}");
         assert!(forward.blend.is_some(), "{stem}");
     }
+}
+
+/// Verifies selected PBS transparent stems declare transparent defaults instead of opaque forward aliases.
+#[test]
+fn selected_pbs_transparent_stems_keep_transparent_pass_defaults() {
+    for stem in [
+        "pbsdisplacetransparent_default",
+        "pbsdisplacespeculartransparent_default",
+        "pbsdistancelerptransparent_default",
+        "pbsdistancelerpspeculartransparent_default",
+    ] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(
+            passes.len(),
+            1,
+            "{stem} should declare one transparent forward pass"
+        );
+        assert_eq!(passes[0].name, "forward_transparent", "{stem}");
+        assert!(!passes[0].depth_write, "{stem}");
+        assert!(passes[0].blend.is_some(), "{stem}");
+    }
+
+    let passes = crate::embedded_shaders::embedded_target_passes("pbsdualsidedtransparent_default");
+    assert_eq!(
+        passes.len(),
+        2,
+        "pbsdualsidedtransparent_default should declare back-face then front-face transparent passes"
+    );
+    assert_eq!(passes[0].name, "forward_transparent_cull_front");
+    assert_eq!(passes[0].cull_mode, Some(wgpu::Face::Front));
+    assert!(passes[0].blend.is_some());
+    assert_eq!(passes[1].name, "forward_transparent_cull_back");
+    assert_eq!(passes[1].cull_mode, Some(wgpu::Face::Back));
+    assert!(passes[1].blend.is_some());
 }
 
 /// Verifies the XSToon family keeps its expected forward / outline / stencil topology.

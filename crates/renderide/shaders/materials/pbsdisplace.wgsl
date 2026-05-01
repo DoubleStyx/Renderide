@@ -1,5 +1,5 @@
 //! Unity surface shader `Shader "PBSDisplace"`: metallic Standard lighting with optional
-//! vertex-stage displacement modes:
+//! displacement modes:
 //!
 //! * `VERTEX_OFFSET`: scalar displacement along vertex normal (`_VertexOffsetMap.r`).
 //! * `UV_OFFSET`: shifts the surface sampling UV in the fragment path by `_UVOffsetMap.rg`.
@@ -77,16 +77,15 @@ struct VertexOutput {
     @location(3) @interpolate(flat) view_layer: u32,
 }
 
-fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
-    return psamp::sample_optional_world_normal(
-        uvu::kw_enabled(mat._NORMALMAP),
-        _NormalMap,
-        _NormalMap_sampler,
-        uv_main,
-        0.0,
-        mat._NormalScale,
-        world_n,
-    );
+fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> vec3<f32> {
+    var ts_n = vec3<f32>(0.0, 0.0, 1.0);
+    if (uvu::kw_enabled(mat._NORMALMAP)) {
+        ts_n = psamp::sample_tangent_normal(_NormalMap, _NormalMap_sampler, uv_main, 0.0, mat._NormalScale);
+    }
+    if (!front_facing) {
+        ts_n.z = -ts_n.z;
+    }
+    return psamp::tangent_to_world(world_n, ts_n);
 }
 
 @vertex
@@ -143,32 +142,28 @@ fn vs_main(
     return out;
 }
 
-fn displaced_main_uv(uv0: vec2<f32>) -> vec2<f32> {
-    var main_uv0 = uv0;
-    if (uvu::kw_enabled(mat.UV_OFFSET)) {
-        let uv_offset_uv = uvu::apply_st_for_storage(
-            uv0,
-            mat._UVOffsetMap_ST,
-            mat._UVOffsetMap_StorageVInverted,
-        );
-        let uv_offset = textureSample(_UVOffsetMap, _UVOffsetMap_sampler, uv_offset_uv).rg
-            * mat._UVOffsetMagnitude
-            + vec2<f32>(mat._UVOffsetBias);
-        main_uv0 = main_uv0 + uv_offset;
-    }
-    return uvu::apply_st_for_storage(main_uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
-}
-
 fn shade(
     frag_xy: vec2<f32>,
     world_pos: vec3<f32>,
     world_n: vec3<f32>,
     uv0: vec2<f32>,
     view_layer: u32,
+    front_facing: bool,
     include_directional: bool,
     include_local: bool,
 ) -> vec4<f32> {
-    let uv_main = displaced_main_uv(uv0);
+    let uv_main_base = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
+    let uv_main = pdisp::apply_fragment_uv_offset(
+        uv_main_base,
+        uv0,
+        uvu::kw_enabled(mat.UV_OFFSET),
+        mat._UVOffsetMap_ST,
+        mat._UVOffsetMap_StorageVInverted,
+        mat._UVOffsetMagnitude,
+        mat._UVOffsetBias,
+        _UVOffsetMap,
+        _UVOffsetMap_sampler,
+    );
 
     var c = mat._Color;
     if (uvu::kw_enabled(mat._ALBEDOTEX)) {
@@ -199,7 +194,7 @@ fn shade(
         emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     }
 
-    let n = sample_normal_world(uv_main, world_n);
+    let n = sample_normal_world(uv_main, world_n, front_facing);
     let base_color = c.rgb;
     let surface = psurf::metallic(base_color, c.a, metallic, roughness, occlusion, n, emission);
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
@@ -213,10 +208,11 @@ fn shade(
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
+    @builtin(front_facing) front_facing: bool,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
     @location(2) uv0: vec2<f32>,
     @location(3) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return shade(frag_pos.xy, world_pos, world_n, uv0, view_layer, true, true);
+    return shade(frag_pos.xy, world_pos, world_n, uv0, view_layer, front_facing, true, true);
 }

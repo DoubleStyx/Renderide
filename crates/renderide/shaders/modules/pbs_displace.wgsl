@@ -1,14 +1,14 @@
 //! Shared vertex-stage displacement helpers for the Unity PBSDisplace material family.
 //!
 //! Material files keep their Unity property structs and texture binding names local; this module
-//! only centralizes the vertex math so metallic, specular, and transparent variants remain aligned
-//! when displacement semantics change.
+//! only centralizes the displacement math so metallic, specular, and transparent variants remain
+//! aligned when displacement semantics change.
 
 #import renderide::uv_utils as uvu
 
 #define_import_path renderide::pbs::displace
 
-/// Object-space position after applying enabled vertex displacement keywords.
+/// Object-space position and UV after applying enabled displacement keywords.
 struct DisplacementResult {
     /// Object-space position passed to the draw model matrix.
     position: vec3<f32>,
@@ -44,7 +44,7 @@ fn apply_vertex_offsets(
         if (object_position_offset_enabled || vertex_position_offset_enabled) {
             let object_xz = model[3].xz;
             let vertex_world_xz = (model * vec4<f32>(position, 1.0)).xz;
-            let position_xz = select(object_xz, vertex_world_xz, vertex_position_offset_enabled);
+            let position_xz = select(vertex_world_xz, object_xz, object_position_offset_enabled);
             let position_uv = uvu::apply_st_for_storage(
                 position_xz,
                 position_offset_st,
@@ -69,4 +69,29 @@ fn apply_vertex_offsets(
     }
 
     return DisplacementResult(displaced, uv0);
+}
+
+/// Applies the PBSDisplace fragment-stage `_UVOffsetMap` warp to the already transformed main UV.
+fn apply_fragment_uv_offset(
+    base_main_uv: vec2<f32>,
+    raw_uv0: vec2<f32>,
+    uv_offset_enabled: bool,
+    uv_offset_st: vec4<f32>,
+    uv_offset_storage_v_inverted: f32,
+    uv_offset_magnitude: f32,
+    uv_offset_bias: f32,
+    uv_offset_map: texture_2d<f32>,
+    uv_offset_sampler: sampler,
+) -> vec2<f32> {
+    if (!uv_offset_enabled) {
+        return base_main_uv;
+    }
+
+    let offset_uv = uvu::apply_st_for_storage(
+        raw_uv0,
+        uv_offset_st,
+        uv_offset_storage_v_inverted,
+    );
+    let offset_sample = textureSample(uv_offset_map, uv_offset_sampler, offset_uv).rg;
+    return base_main_uv + (offset_sample * uv_offset_magnitude + vec2<f32>(uv_offset_bias));
 }

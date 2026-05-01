@@ -289,6 +289,23 @@ fn overlay_pass_uses_unity_rgb_blend_and_keeps_alpha_max() {
 }
 
 #[test]
+fn forward_transparent_defaults_to_unity_alpha_blend() {
+    let pass = pass_from_kind(PassKind::ForwardTransparent, "fs_forward_base");
+    let blend = pass.blend.expect("transparent default blend");
+
+    assert!(!pass.depth_write);
+    assert_eq!(pass.cull_mode, None);
+    assert_eq!(pass.write_mask, wgpu::ColorWrites::ALL);
+    assert_eq!(pass.material_state, MaterialPassState::Forward);
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+    assert_eq!(blend.color.operation, wgpu::BlendOperation::Add);
+    assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max);
+}
+
+#[test]
 fn overlay_pass_preserves_explicit_blend_one_zero_for_alpha_max() {
     let pass = pass_from_kind(PassKind::OverlayBehind, "fs_overlay");
     let materialized =
@@ -315,6 +332,44 @@ fn overlay_always_pass_matches_fixed_overlay_shader_state() {
     assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
     assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::SrcAlpha);
     assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+}
+
+#[test]
+fn transparent_forward_host_blend_override_materializes() {
+    let pass = pass_from_kind(PassKind::ForwardTransparent, "fs_forward_base");
+
+    let stem_default = materialized_pass_for_blend_mode(&pass, MaterialBlendMode::StemDefault);
+    assert!(stem_default.blend.is_some());
+    assert!(!stem_default.depth_write);
+    assert_eq!(stem_default.write_mask, wgpu::ColorWrites::ALL);
+
+    let opaque = materialized_pass_for_blend_mode(&pass, MaterialBlendMode::Opaque);
+    assert_eq!(opaque.blend, None);
+    assert!(opaque.depth_write);
+    assert_eq!(opaque.write_mask, wgpu::ColorWrites::COLOR);
+}
+
+#[test]
+fn transparent_fixed_cull_ignores_host_cull() {
+    let state = MaterialRenderState {
+        cull_override: MaterialCullOverride::Off,
+        ..MaterialRenderState::default()
+    };
+
+    assert_eq!(
+        pass_from_kind(PassKind::ForwardTransparent, "fs_forward_base").resolved_cull_mode(state),
+        None
+    );
+    assert_eq!(
+        pass_from_kind(PassKind::ForwardTransparentCullFront, "fs_back_faces")
+            .resolved_cull_mode(state),
+        Some(wgpu::Face::Front)
+    );
+    assert_eq!(
+        pass_from_kind(PassKind::ForwardTransparentCullBack, "fs_front_faces")
+            .resolved_cull_mode(state),
+        Some(wgpu::Face::Back)
+    );
 }
 
 #[test]

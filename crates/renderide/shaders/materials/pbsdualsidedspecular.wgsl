@@ -4,8 +4,6 @@
 //! base, forward additive, and shadow caster passes. This renderer has a forward color path here, so
 //! the shader declares the forward base + forward additive passes and keeps culling disabled.
 
-
-#import renderide::per_draw as pd
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::sampling as psamp
@@ -44,14 +42,6 @@ struct PbsDualSidedSpecularMaterial {
 @group(1) @binding(9)  var _SpecularMap: texture_2d<f32>;
 @group(1) @binding(10) var _SpecularMap_sampler: sampler;
 
-struct VertexOutput {
-    @builtin(position) clip_pos: vec4<f32>,
-    @location(0) world_pos: vec3<f32>,
-    @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
-}
-
 struct SurfaceData {
     base_color: vec3<f32>,
     alpha: f32,
@@ -73,16 +63,27 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, front_facing: boo
     return psamp::tangent_to_world(world_n, ts_n);
 }
 
-fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> SurfaceData {
+fn sample_surface(
+    uv0: vec2<f32>,
+    world_n: vec3<f32>,
+    front_facing: bool,
+    vertex_color: vec4<f32>,
+) -> SurfaceData {
     let uv_main = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
 
     var albedo = mat._Color;
     if (uvu::kw_enabled(mat._ALBEDOTEX)) {
         albedo = albedo * textureSample(_MainTex, _MainTex_sampler, uv_main);
     }
+    if (uvu::kw_enabled(mat.VCOLOR_ALBEDO)) {
+        albedo = albedo * vertex_color;
+    }
+    let vertex_alpha = select(1.0, vertex_color.a, uvu::kw_enabled(mat.VCOLOR_ALBEDO));
     let clip_alpha = select(
         albedo.a,
-        mat._Color.a * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_main),
+        mat._Color.a
+            * vertex_alpha
+            * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_main),
         uvu::kw_enabled(mat._ALBEDOTEX),
     );
     if (uvu::kw_enabled(mat._ALPHACLIP) && clip_alpha <= mat._AlphaClip) {
@@ -92,6 +93,9 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> Sur
     var spec = mat._SpecularColor;
     if (uvu::kw_enabled(mat._SPECULARMAP)) {
         spec = textureSample(_SpecularMap, _SpecularMap_sampler, uv_main);
+    }
+    if (uvu::kw_enabled(mat.VCOLOR_SPECULAR)) {
+        spec = spec * vertex_color;
     }
     let f0 = clamp(spec.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let smoothness = clamp(spec.a, 0.0, 1.0);
@@ -109,6 +113,9 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> Sur
         if (uvu::kw_enabled(mat._EMISSIONTEX)) {
             emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
         }
+    }
+    if (uvu::kw_enabled(mat.VCOLOR_EMIT)) {
+        emission = emission * vertex_color.rgb;
     }
 
     return SurfaceData(
@@ -131,27 +138,13 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
-) -> VertexOutput {
-    let d = pd::get_draw(instance_index);
-    let world_p = mv::world_position(d, pos);
-    let wn = mv::model_world_normal(d, n);
+    @location(3) color: vec4<f32>,
+) -> mv::WorldColorVertexOutput {
 #ifdef MULTIVIEW
-    let vp = mv::select_view_proj(d, view_idx);
+    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, uv0, color);
 #else
-    let vp = mv::select_view_proj(d, 0u);
+    return mv::world_color_vertex_main(instance_index, 0u, pos, n, uv0, color);
 #endif
-
-    var out: VertexOutput;
-    out.clip_pos = vp * world_p;
-    out.world_pos = world_p.xyz;
-    out.world_n = wn;
-    out.uv0 = uv0;
-#ifdef MULTIVIEW
-    out.view_layer = view_idx;
-#else
-    out.view_layer = 0u;
-#endif
-    return out;
 }
 
 //#pass forward
@@ -162,9 +155,10 @@ fn fs_forward_base(
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
     @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(3) color: vec4<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, world_n, front_facing);
+    let s = sample_surface(uv0, world_n, front_facing, color);
     let surface = psurf::specular(
         s.base_color,
         s.alpha,

@@ -9,6 +9,12 @@ pub(super) enum BuildPassKind {
     Forward,
     /// Main forward material pass with authored two-sided culling.
     ForwardTwoSided,
+    /// Transparent forward material pass.
+    ForwardTransparent,
+    /// Transparent forward material pass with fixed front-face culling.
+    ForwardTransparentCullFront,
+    /// Transparent forward material pass with fixed back-face culling.
+    ForwardTransparentCullBack,
     /// Static transparent RGB-only material pass.
     TransparentRgb,
     /// Outline shell pass.
@@ -33,6 +39,13 @@ impl BuildPassKind {
             "forward_two_sided" | "forwardtwosided" | "two_sided" | "twosided" => {
                 Ok(Self::ForwardTwoSided)
             }
+            "forward_transparent" | "transparent" => Ok(Self::ForwardTransparent),
+            "forward_transparent_cull_front" | "transparent_cull_front" | "transparent_front" => {
+                Ok(Self::ForwardTransparentCullFront)
+            }
+            "forward_transparent_cull_back" | "transparent_cull_back" | "transparent_back" => {
+                Ok(Self::ForwardTransparentCullBack)
+            }
             "transparent_rgb" | "transparentrgb" => Ok(Self::TransparentRgb),
             "outline" => Ok(Self::Outline),
             "stencil" => Ok(Self::Stencil),
@@ -52,6 +65,9 @@ impl BuildPassKind {
         match self {
             Self::Forward => "Forward",
             Self::ForwardTwoSided => "ForwardTwoSided",
+            Self::ForwardTransparent => "ForwardTransparent",
+            Self::ForwardTransparentCullFront => "ForwardTransparentCullFront",
+            Self::ForwardTransparentCullBack => "ForwardTransparentCullBack",
             Self::TransparentRgb => "TransparentRgb",
             Self::Outline => "Outline",
             Self::Stencil => "Stencil",
@@ -384,6 +400,60 @@ fn fs_overlay() -> @location(0) vec4<f32> {
         assert_eq!(
             pass_literal(&passes[0]),
             "crate::materials::pass_from_kind(crate::materials::PassKind::OverlayAlways, \"fs_overlay\")"
+        );
+        Ok(())
+    }
+
+    /// Transparent pass directives map to the corresponding runtime pass variants.
+    #[test]
+    fn transparent_pass_directives_extract_fragment_entries() -> Result<(), BuildError> {
+        let passes = parse_pass_directives(
+            r#"
+//#pass transparent
+@fragment
+fn fs_transparent() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+//#pass forward_transparent_cull_front
+@fragment
+fn fs_back_faces() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+//#pass transparent_cull_back
+@fragment
+fn fs_front_faces() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+"#,
+            "transparent.wgsl",
+        )?;
+
+        assert_eq!(
+            passes,
+            [
+                BuildPassDirective {
+                    kind: BuildPassKind::ForwardTransparent,
+                    fragment_entry: "fs_transparent".to_string(),
+                    vertex_entry: "vs_main".to_string(),
+                    alpha_to_coverage: false,
+                },
+                BuildPassDirective {
+                    kind: BuildPassKind::ForwardTransparentCullFront,
+                    fragment_entry: "fs_back_faces".to_string(),
+                    vertex_entry: "vs_main".to_string(),
+                    alpha_to_coverage: false,
+                },
+                BuildPassDirective {
+                    kind: BuildPassKind::ForwardTransparentCullBack,
+                    fragment_entry: "fs_front_faces".to_string(),
+                    vertex_entry: "vs_main".to_string(),
+                    alpha_to_coverage: false,
+                },
+            ]
+        );
+        assert_eq!(
+            pass_literal(&passes[2]),
+            "crate::materials::pass_from_kind(crate::materials::PassKind::ForwardTransparentCullBack, \"fs_front_faces\")"
         );
         Ok(())
     }

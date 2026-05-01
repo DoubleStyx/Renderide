@@ -43,6 +43,22 @@ const SRC_ALPHA_ONE_MINUS_SRC_ALPHA_BLEND: wgpu::BlendState = wgpu::BlendState {
     },
 };
 
+/// Unity straight alpha blend used by surface shaders that declare `alpha` without explicit
+/// material blend-factor properties.
+const UNITY_ALPHA_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::SrcAlpha,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    // Matches Unity shader syntax: `Blend SrcAlpha OneMinusSrcAlpha, One One` + `BlendOp Add, Max`.
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Max,
+    },
+};
+
 /// How a declared shader pass applies material-driven Unity render state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MaterialPassState {
@@ -134,6 +150,16 @@ impl MaterialRenderStatePolicy {
         depth_offset: true,
     };
 
+    /// Forward draw that keeps the shader-authored cull mode while allowing other material state.
+    pub(crate) const FIXED_CULL_FORWARD: Self = Self {
+        color_mask: true,
+        depth_write: true,
+        depth_compare: true,
+        cull: false,
+        stencil: true,
+        depth_offset: true,
+    };
+
     /// Overlay draws preserve authored color/depth behavior but still accept mask/cull/offset state.
     pub(crate) const OVERLAY: Self = Self {
         color_mask: false,
@@ -162,6 +188,12 @@ pub enum PassKind {
     Forward,
     /// Forward pass with material-driven blend / depth-write and authored `Cull Off`.
     ForwardTwoSided,
+    /// Transparent forward pass with Unity `alpha` defaults and material-driven overrides.
+    ForwardTransparent,
+    /// Transparent forward pass with hardcoded `Cull Front`, ignoring runtime `_Cull`.
+    ForwardTransparentCullFront,
+    /// Transparent forward pass with hardcoded `Cull Back`, ignoring runtime `_Cull`.
+    ForwardTransparentCullBack,
     /// Transparent unlit draw: `Blend SrcAlpha OneMinusSrcAlpha`, `ColorMask RGB`, `ZWrite Off`, `Cull Off`.
     TransparentRgb,
     /// Outline silhouette pass: `Cull Front` so back faces of an inflated shell show.
@@ -211,6 +243,19 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
             render_state_policy: MaterialRenderStatePolicy::FORWARD_TWO_SIDED,
             ..base
         },
+        PassKind::ForwardTransparent => {
+            transparent_forward_pass(base, None, MaterialRenderStatePolicy::FORWARD)
+        }
+        PassKind::ForwardTransparentCullFront => transparent_forward_pass(
+            base,
+            Some(wgpu::Face::Front),
+            MaterialRenderStatePolicy::FIXED_CULL_FORWARD,
+        ),
+        PassKind::ForwardTransparentCullBack => transparent_forward_pass(
+            base,
+            Some(wgpu::Face::Back),
+            MaterialRenderStatePolicy::FIXED_CULL_FORWARD,
+        ),
         PassKind::TransparentRgb => MaterialPassDesc {
             depth_write: false,
             cull_mode: None,
@@ -262,11 +307,30 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
     }
 }
 
+const fn transparent_forward_pass(
+    base: MaterialPassDesc,
+    cull_mode: Option<wgpu::Face>,
+    render_state_policy: MaterialRenderStatePolicy,
+) -> MaterialPassDesc {
+    MaterialPassDesc {
+        depth_write: false,
+        cull_mode,
+        blend: Some(UNITY_ALPHA_BLEND),
+        write_mask: wgpu::ColorWrites::ALL,
+        material_state: MaterialPassState::Forward,
+        render_state_policy,
+        ..base
+    }
+}
+
 /// Short debug label for a [`PassKind`] used in pipeline names.
 const fn pass_kind_label(kind: PassKind) -> &'static str {
     match kind {
         PassKind::Forward => "forward",
         PassKind::ForwardTwoSided => "forward_two_sided",
+        PassKind::ForwardTransparent => "forward_transparent",
+        PassKind::ForwardTransparentCullFront => "forward_transparent_cull_front",
+        PassKind::ForwardTransparentCullBack => "forward_transparent_cull_back",
         PassKind::TransparentRgb => "transparent_rgb",
         PassKind::Outline => "outline",
         PassKind::Stencil => "stencil",
