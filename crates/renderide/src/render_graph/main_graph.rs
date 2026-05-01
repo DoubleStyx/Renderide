@@ -40,6 +40,8 @@ struct MainGraphHandles {
     forward_msaa_depth_r32: TextureHandle,
     /// Single-sample smoothed-normal target sampled by GTAO when the effect is enabled.
     gtao_normals: Option<TextureHandle>,
+    /// Multisampled smoothed-normal target used by the GTAO normal prepass when MSAA is active.
+    gtao_normals_msaa: Option<TextureHandle>,
 }
 
 /// Handles for imported backend buffers (lights, cluster tables, per-draw slab, frame uniforms).
@@ -185,6 +187,7 @@ fn create_main_graph_transient_resources(
     TextureHandle,
     TextureHandle,
     Option<TextureHandle>,
+    Option<TextureHandle>,
 ) {
     let cluster_params = builder.create_buffer(TransientBufferDesc {
         label: "cluster_params",
@@ -254,6 +257,17 @@ fn create_main_graph_transient_resources(
             .with_frame_array_layers(),
         )
     });
+    let gtao_normals_msaa = include_gtao_normals.then(|| {
+        builder.create_texture(
+            TransientTextureDesc::frame_sampled_texture_2d(
+                "gtao_normals_msaa",
+                wgpu::TextureFormat::Rgba16Float,
+                extent_backbuffer,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+            .with_frame_array_layers(),
+        )
+    });
     (
         cluster_params,
         scene_color_hdr,
@@ -261,6 +275,7 @@ fn create_main_graph_transient_resources(
         forward_msaa_depth,
         forward_msaa_depth_r32,
         gtao_normals,
+        gtao_normals_msaa,
     )
 }
 
@@ -278,6 +293,7 @@ fn import_main_graph_resources(
         forward_msaa_depth,
         forward_msaa_depth_r32,
         gtao_normals,
+        gtao_normals_msaa,
     ) = create_main_graph_transient_resources(builder, include_gtao_normals);
     MainGraphHandles {
         color,
@@ -294,6 +310,7 @@ fn import_main_graph_resources(
         forward_msaa_depth,
         forward_msaa_depth_r32,
         gtao_normals,
+        gtao_normals_msaa,
     }
 }
 
@@ -411,15 +428,20 @@ fn add_main_graph_passes_and_edges(
     let depth_resolve = builder.add_compute_pass(Box::new(
         crate::passes::WorldMeshForwardDepthResolvePass::new(forward_resources),
     ));
-    let gtao_normal_prepass = h.gtao_normals.map(|normals| {
-        builder.add_raster_pass(Box::new(crate::passes::WorldMeshGtaoNormalPrepass::new(
-            crate::passes::WorldMeshGtaoNormalPrepassGraphResources {
-                normals,
-                depth: h.depth,
-                per_draw_slab: h.per_draw_slab,
-            },
-        )))
-    });
+    let gtao_normal_prepass =
+        h.gtao_normals
+            .zip(h.gtao_normals_msaa)
+            .map(|(normals, msaa_normals)| {
+                builder.add_raster_pass(Box::new(crate::passes::WorldMeshGtaoNormalPrepass::new(
+                    crate::passes::WorldMeshGtaoNormalPrepassGraphResources {
+                        normals,
+                        msaa_normals,
+                        depth: h.depth,
+                        msaa_depth: h.forward_msaa_depth,
+                        per_draw_slab: h.per_draw_slab,
+                    },
+                )))
+            });
     let hiz = builder.add_compute_pass(Box::new(crate::passes::HiZBuildPass::new(
         crate::passes::HiZBuildGraphResources {
             depth: h.depth,
@@ -708,12 +730,19 @@ mod tests {
             .expect("GTAO pass");
 
         assert!(normal_pos < gtao_pos);
-        assert!(
-            g.transient_textures
-                .iter()
-                .any(|t| t.desc.label == "gtao_normals"),
-            "GTAO graph should allocate a normal prepass transient"
-        );
+        let normals = g
+            .transient_textures
+            .iter()
+            .find(|t| t.desc.label == "gtao_normals")
+            .expect("GTAO graph should allocate a normal prepass transient");
+        let msaa_normals = g
+            .transient_textures
+            .iter()
+            .find(|t| t.desc.label == "gtao_normals_msaa")
+            .expect("GTAO graph should allocate an MSAA normal prepass transient");
+
+        assert_eq!(normals.desc.sample_count, TransientSampleCount::Fixed(1));
+        assert_eq!(msaa_normals.desc.sample_count, TransientSampleCount::Frame);
     }
 
     #[test]
@@ -733,6 +762,12 @@ mod tests {
                 .iter()
                 .any(|t| t.desc.label == "gtao_normals"),
             "non-GTAO graph should not allocate normal prepass texture"
+        );
+        assert!(
+            !g.transient_textures
+                .iter()
+                .any(|t| t.desc.label == "gtao_normals_msaa"),
+            "non-GTAO graph should not allocate MSAA normal prepass texture"
         );
     }
 

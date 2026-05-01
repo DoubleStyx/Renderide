@@ -1,7 +1,8 @@
 //! World-mesh normal prepass for GTAO.
 //!
-//! The pass renders only position + normal streams against the final resolved forward depth with
-//! depth compare `Equal`. RGB stores a normalized view-space normal in GTAO's positive-depth
+//! The pass renders only position + normal streams against the active forward depth tier with
+//! depth compare `Equal`. MSAA views use the multisampled forward depth and resolve normals to the
+//! single-sample GTAO texture. RGB stores a normalized view-space normal in GTAO's positive-depth
 //! convention, and alpha marks pixels with a valid mesh normal so the GTAO shader can fall back to
 //! depth-derived normals for sky, outlines, or geometry whose material pass changes depth.
 
