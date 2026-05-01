@@ -272,6 +272,52 @@ fn forward_pass_uses_unity_separate_alpha_blend() {
 }
 
 #[test]
+fn overlay_pass_uses_unity_rgb_blend_and_keeps_alpha_max() {
+    let pass = pass_from_kind(PassKind::OverlayFront, "fs_overlay");
+    let materialized =
+        materialized_pass_for_blend_mode(&pass, MaterialBlendMode::UnityBlend { src: 5, dst: 10 });
+    let blend = materialized.blend.expect("overlay blend");
+
+    assert_eq!(materialized.material_state, MaterialPassState::Overlay);
+    assert!(materialized.depth_write);
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+    assert_eq!(blend.color.operation, wgpu::BlendOperation::Add);
+    assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max);
+}
+
+#[test]
+fn overlay_pass_preserves_explicit_blend_one_zero_for_alpha_max() {
+    let pass = pass_from_kind(PassKind::OverlayBehind, "fs_overlay");
+    let materialized =
+        materialized_pass_for_blend_mode(&pass, MaterialBlendMode::UnityBlend { src: 1, dst: 0 });
+    let blend = materialized.blend.expect("overlay blend");
+
+    assert_eq!(materialized.depth_compare, wgpu::CompareFunction::Less);
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero);
+    assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max);
+}
+
+#[test]
+fn overlay_always_pass_matches_fixed_overlay_shader_state() {
+    let pass = pass_from_kind(PassKind::OverlayAlways, "fs_main");
+    let blend = pass.blend.expect("overlay blend");
+
+    assert_eq!(pass.name, "overlay_always");
+    assert_eq!(pass.material_state, MaterialPassState::Static);
+    assert_eq!(pass.depth_compare, wgpu::CompareFunction::Always);
+    assert!(!pass.depth_write);
+    assert_eq!(pass.write_mask, wgpu::ColorWrites::ALL);
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+    assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::SrcAlpha);
+    assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+}
+
+#[test]
 fn cull_property_resolves_off_front_back() {
     let reg = PropertyIdRegistry::new();
     let ids = MaterialPipelinePropertyIds::new(&reg);

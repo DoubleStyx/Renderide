@@ -17,6 +17,8 @@ pub(super) enum BuildPassKind {
     Stencil,
     /// Depth-only prepass.
     DepthPrepass,
+    /// Fixed always-on-top alpha overlay pass.
+    OverlayAlways,
     /// Overlay front pass.
     OverlayFront,
     /// Overlay-behind pass.
@@ -35,6 +37,8 @@ impl BuildPassKind {
             "outline" => Ok(Self::Outline),
             "stencil" => Ok(Self::Stencil),
             "depth_prepass" | "depthprepass" | "prepass" => Ok(Self::DepthPrepass),
+            "overlay_always" | "overlayalways" | "always_overlay" | "overlay_alpha"
+            | "overlayalpha" => Ok(Self::OverlayAlways),
             "overlay_front" | "overlayfront" | "front" => Ok(Self::OverlayFront),
             "overlay_behind" | "overlaybehind" | "behind" => Ok(Self::OverlayBehind),
             _ => Err(BuildError::Message(format!(
@@ -52,6 +56,7 @@ impl BuildPassKind {
             Self::Outline => "Outline",
             Self::Stencil => "Stencil",
             Self::DepthPrepass => "DepthPrepass",
+            Self::OverlayAlways => "OverlayAlways",
             Self::OverlayFront => "OverlayFront",
             Self::OverlayBehind => "OverlayBehind",
         }
@@ -304,6 +309,28 @@ fn fs_circle() -> @location(0) vec4<f32> {
                     vertex_entry: "vs_main".to_string(),
                 },
             ]
+        );
+        Ok(())
+    }
+
+    /// The single-pass overlay shader needs a fixed `ZTest Always` alpha overlay pass.
+    #[test]
+    fn pass_directive_accepts_overlay_always() -> Result<(), BuildError> {
+        let passes = parse_pass_directives(
+            r#"
+//#pass overlay_always
+@fragment
+fn fs_overlay() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+"#,
+            "overlay.wgsl",
+        )?;
+
+        assert_eq!(passes[0].kind, BuildPassKind::OverlayAlways);
+        assert_eq!(
+            pass_literal(&passes[0]),
+            "crate::materials::pass_from_kind(crate::materials::PassKind::OverlayAlways, \"fs_overlay\")"
         );
         Ok(())
     }

@@ -1,6 +1,6 @@
 //! Unity surface shader `Shader "PBSDisplaceSpecular"`: SpecularSetup lighting with the same
-//! VERTEX_OFFSET / UV_OFFSET / OBJECT_POS_OFFSET / VERTEX_POS_OFFSET vertex-stage displacement
-//! modes as [`pbsdisplace`](super::pbsdisplace).
+//! VERTEX_OFFSET / UV_OFFSET / OBJECT_POS_OFFSET / VERTEX_POS_OFFSET displacement modes as
+//! [`pbsdisplace`](super::pbsdisplace).
 //!
 //! Reads tinted f0 + smoothness from `_SpecularColor` / `_SpecularMap` instead of metallic-gloss.
 
@@ -20,7 +20,12 @@ struct PbsDisplaceSpecularMaterial {
     _MainTex_ST: vec4<f32>,
     _MainTex_StorageVInverted: f32,
     _VertexOffsetMap_ST: vec4<f32>,
+    _UVOffsetMap_ST: vec4<f32>,
+    _PositionOffsetMap_ST: vec4<f32>,
     _PositionOffsetMagnitude: vec4<f32>,
+    _VertexOffsetMap_StorageVInverted: f32,
+    _UVOffsetMap_StorageVInverted: f32,
+    _PositionOffsetMap_StorageVInverted: f32,
     _NormalScale: f32,
     _AlphaClip: f32,
     _VertexOffsetMagnitude: f32,
@@ -92,20 +97,19 @@ fn vs_main(
         pos.xyz,
         n.xyz,
         uv0,
+        d.model,
         uvu::kw_enabled(mat.VERTEX_OFFSET),
-        uvu::kw_enabled(mat.UV_OFFSET),
         uvu::kw_enabled(mat.OBJECT_POS_OFFSET),
         uvu::kw_enabled(mat.VERTEX_POS_OFFSET),
         mat._VertexOffsetMap_ST,
-        mat._PositionOffsetMagnitude.xyz,
+        mat._VertexOffsetMap_StorageVInverted,
+        mat._PositionOffsetMap_ST,
+        mat._PositionOffsetMap_StorageVInverted,
+        mat._PositionOffsetMagnitude.xy,
         mat._VertexOffsetMagnitude,
         mat._VertexOffsetBias,
-        mat._UVOffsetMagnitude,
-        mat._UVOffsetBias,
         _VertexOffsetMap,
         _VertexOffsetMap_sampler,
-        _UVOffsetMap,
-        _UVOffsetMap_sampler,
         _PositionOffsetMap,
         _PositionOffsetMap_sampler,
     );
@@ -132,6 +136,22 @@ fn vs_main(
     return out;
 }
 
+fn displaced_main_uv(uv0: vec2<f32>) -> vec2<f32> {
+    var main_uv0 = uv0;
+    if (uvu::kw_enabled(mat.UV_OFFSET)) {
+        let uv_offset_uv = uvu::apply_st_for_storage(
+            uv0,
+            mat._UVOffsetMap_ST,
+            mat._UVOffsetMap_StorageVInverted,
+        );
+        let uv_offset = textureSample(_UVOffsetMap, _UVOffsetMap_sampler, uv_offset_uv).rg
+            * mat._UVOffsetMagnitude
+            + vec2<f32>(mat._UVOffsetBias);
+        main_uv0 = main_uv0 + uv_offset;
+    }
+    return uvu::apply_st_for_storage(main_uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
+}
+
 fn shade(
     frag_xy: vec2<f32>,
     world_pos: vec3<f32>,
@@ -141,7 +161,7 @@ fn shade(
     include_directional: bool,
     include_local: bool,
 ) -> vec4<f32> {
-    let uv_main = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
+    let uv_main = displaced_main_uv(uv0);
 
     var c = mat._Color;
     if (uvu::kw_enabled(mat._ALBEDOTEX)) {

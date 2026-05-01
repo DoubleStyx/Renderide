@@ -38,6 +38,9 @@ pub(super) fn inferred_keyword_float_f32(
     {
         return Some(value);
     }
+    if let Some(value) = pbs_displace_keyword_inferred(field_name, store, lookup, ids) {
+        return Some(value);
+    }
 
     let inferred = match texture_keyword_pids(field_name, kw) {
         Some(pids) => texture_property_present_pids(store, lookup, &pids),
@@ -98,14 +101,34 @@ fn texture_keyword_pids(field_name: &str, kw: &EmbeddedSharedKeywordIds) -> Opti
         ],
         "GRADIENT" => vec![kw.gradient],
         "_ALBEDOTEX" => vec![kw.main_tex, kw.main_tex1],
-        "_EMISSION" | "_EMISSIONTEX" => vec![kw.emission_map, kw.emission_map1],
+        "_EMISSION" | "_EMISSIONTEX" => vec![
+            kw.emission_map,
+            kw.emission_map1,
+            kw.emission_map2,
+            kw.emission_map3,
+        ],
         "_NORMALMAP" => vec![kw.normal_map, kw.normal_map0, kw.normal_map1, kw.bump_map],
-        "_SPECULARMAP" => vec![kw.specular_map, kw.specular_map1, kw.spec_gloss_map],
+        "_SPECULARMAP" => vec![
+            kw.specular_map,
+            kw.specular_map1,
+            kw.specular_map2,
+            kw.specular_map3,
+            kw.spec_gloss_map,
+        ],
         "_METALLICGLOSSMAP" => vec![kw.metallic_gloss_map],
-        "_METALLICMAP" => vec![kw.metallic_map, kw.metallic_map1, kw.metallic_gloss_map],
+        "_METALLICMAP" => vec![
+            kw.metallic_map,
+            kw.metallic_map1,
+            kw.metallic_gloss_map,
+            kw.metallic_gloss01,
+            kw.metallic_gloss23,
+        ],
         "_DETAIL_MULX2" => vec![kw.detail_albedo_map, kw.detail_normal_map, kw.detail_mask],
         "_PARALLAXMAP" => vec![kw.parallax_map],
         "_OCCLUSION" => vec![kw.occlusion, kw.occlusion1, kw.occlusion_map],
+        "_HEIGHTMAP" => vec![kw.packed_height_map],
+        "_PACKED_NORMALMAP" => vec![kw.packed_normal_map01, kw.packed_normal_map23],
+        "_PACKED_EMISSIONTEX" => vec![kw.packed_emission_map],
         _ => return None,
     })
 }
@@ -371,6 +394,46 @@ fn projection360_keyword_inferred(
         "_CLAMP_INTENSITY" => uniform_written("_MaxIntensity"),
         "TINT_TEX_LERP" => tint_tex_present && tint0_written,
         "TINT_TEX_DIRECT" => tint_tex_present && !tint0_written,
+        _ => return None,
+    };
+    Some(if enabled { 1.0 } else { 0.0 })
+}
+
+/// Infers PBSDisplace keyword fields from the properties the host serializes.
+///
+/// `ShaderKeywords.Variant` is not present on the wire. The host toggles `VERTEX_OFFSET` from
+/// either a vertex-offset texture or non-zero bias, `UV_OFFSET` from either a UV-offset texture or
+/// non-zero bias, and `OBJECT_POS_OFFSET` / `VERTEX_POS_OFFSET` from the world-space offset texture
+/// plus a bool that is not serialized. Without that bool, the renderer uses the host's default
+/// object-space variant when the texture is present and leaves the per-vertex variant disabled
+/// unless an explicit float property is ever supplied.
+fn pbs_displace_keyword_inferred(
+    field_name: &str,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    ids: &StemEmbeddedPropertyIds,
+) -> Option<f32> {
+    let kw = ids.shared.as_ref();
+    let uniform_nonzero = |name: &str| {
+        ids.uniform_field_ids
+            .get(name)
+            .and_then(|&pid| first_float_by_pids(store, lookup, &[pid]))
+            .is_some_and(|value| value != 0.0)
+    };
+
+    let enabled = match field_name {
+        "VERTEX_OFFSET" => {
+            texture_property_present_pids(store, lookup, &[kw.vertex_offset_map])
+                || uniform_nonzero("_VertexOffsetBias")
+        }
+        "UV_OFFSET" => {
+            texture_property_present_pids(store, lookup, &[kw.uv_offset_map])
+                || uniform_nonzero("_UVOffsetBias")
+        }
+        "OBJECT_POS_OFFSET" => {
+            texture_property_present_pids(store, lookup, &[kw.position_offset_map])
+        }
+        "VERTEX_POS_OFFSET" => false,
         _ => return None,
     };
     Some(if enabled { 1.0 } else { 0.0 })

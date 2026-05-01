@@ -98,9 +98,31 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         pass_from_kind(PassKind::OverlayBehind, "fs_overlay"),
         disabled_depth,
         wgpu::ColorWrites::ALL,
-        true,
+        false,
         wgpu::CompareFunction::Less,
         None,
+    );
+    let overlay_always = pass_from_kind(PassKind::OverlayAlways, "fs_overlay");
+    assert_eq!(
+        overlay_always.resolved_color_writes(enabled_depth),
+        wgpu::ColorWrites::ALL
+    );
+    assert!(!overlay_always.resolved_depth_write(enabled_depth));
+    assert_eq!(
+        overlay_always.resolved_depth_compare(enabled_depth),
+        wgpu::CompareFunction::Always
+    );
+    assert_eq!(
+        overlay_always.resolved_cull_mode(enabled_depth),
+        Some(wgpu::Face::Back)
+    );
+    assert_eq!(
+        overlay_always.resolved_stencil_state(enabled_depth),
+        wgpu::StencilState::default()
+    );
+    assert_eq!(
+        overlay_always.resolved_depth_bias(enabled_depth),
+        wgpu::DepthBiasState::default()
     );
 }
 

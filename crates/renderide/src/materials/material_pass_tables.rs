@@ -114,6 +114,25 @@ pub(crate) fn unity_blend_state(src: u8, dst: u8) -> Option<wgpu::BlendState> {
     })
 }
 
+/// Builds Unity overlay blend state matching `Blend[src][dst], One One` + `BlendOp Add, Max`.
+///
+/// Unlike [`unity_blend_state`], `Blend One Zero` is preserved as an explicit blend state because
+/// the overlay pass still relies on alpha `Max` blending even when RGB is a no-op.
+pub(crate) fn unity_overlay_blend_state(src: u8, dst: u8) -> Option<wgpu::BlendState> {
+    Some(wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: unity_blend_factor(src)?,
+            dst_factor: unity_blend_factor(dst)?,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Max,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +265,16 @@ mod tests {
     #[test]
     fn blend_state_rejects_unknown_factors() {
         assert!(unity_blend_state(11, 0).is_none());
+    }
+
+    #[test]
+    fn overlay_blend_state_preserves_opaque_rgb_noop_with_alpha_max() {
+        let bs = unity_overlay_blend_state(1, 0).expect("overlay blend state");
+        assert_eq!(bs.color.src_factor, wgpu::BlendFactor::One);
+        assert_eq!(bs.color.dst_factor, wgpu::BlendFactor::Zero);
+        assert_eq!(bs.color.operation, wgpu::BlendOperation::Add);
+        assert_eq!(bs.alpha.src_factor, wgpu::BlendFactor::One);
+        assert_eq!(bs.alpha.dst_factor, wgpu::BlendFactor::One);
+        assert_eq!(bs.alpha.operation, wgpu::BlendOperation::Max);
     }
 }

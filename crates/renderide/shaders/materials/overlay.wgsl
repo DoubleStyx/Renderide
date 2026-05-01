@@ -1,5 +1,5 @@
-//! Unity unlit `Shader "Unlit/Overlay"`: texture × tint with `_ZTest=Always` (host-driven) for
-//! HUD-style overlays.
+//! Unity unlit `Shader "Unlit/Overlay"`: texture × tint with fixed `ZTest Always`, `ZWrite Off`,
+//! and `Blend SrcAlpha OneMinusSrcAlpha` for HUD-style overlays.
 
 
 #import renderide::globals as rg
@@ -34,7 +34,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass overlay_always
 @fragment
 fn fs_main(
     @location(0) uv: vec2<f32>,

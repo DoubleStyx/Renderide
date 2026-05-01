@@ -27,6 +27,7 @@ struct PbsColorSplatMaterial {
     _Albedo_ST: vec4<f32>,
     _Albedo_StorageVInverted: f32,
     _ColorMap_ST: vec4<f32>,
+    _ColorMap_StorageVInverted: f32,
     _HeightTransitionRange: f32,
     _NormalScale: f32,
     _NormalScale1: f32,
@@ -162,7 +163,7 @@ fn sample_emission(uv_albedo: vec2<f32>, weights: vec4<f32>) -> vec3<f32> {
 
 fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>) -> SurfaceData {
     let uv_albedo = uvu::apply_st_for_storage(uv0, mat._Albedo_ST, mat._Albedo_StorageVInverted);
-    let uv_color = uvu::apply_st(uv0, mat._ColorMap_ST);
+    let uv_color = uvu::apply_st_for_storage(uv0, mat._ColorMap_ST, mat._ColorMap_StorageVInverted);
 
     let weights = splat_weights(uv_albedo, uv_color);
 

@@ -6,7 +6,7 @@
 //! mapping from declared kind to pipeline state, and [`MaterialRenderStatePolicy`] decides
 //! which host runtime properties may override that state per pass.
 
-use super::super::material_pass_tables::unity_blend_state;
+use super::super::material_pass_tables::{unity_blend_state, unity_overlay_blend_state};
 use super::super::render_state::MaterialRenderState;
 use super::blend_mode::MaterialBlendMode;
 
@@ -29,6 +29,20 @@ const OVERLAY_NOOP_COLOR_MAX_ALPHA_BLEND: wgpu::BlendState = wgpu::BlendState {
     },
 };
 
+/// Unity `Blend SrcAlpha OneMinusSrcAlpha` for single-pass HUD overlays.
+const SRC_ALPHA_ONE_MINUS_SRC_ALPHA_BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::SrcAlpha,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::SrcAlpha,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 /// How a declared shader pass applies material-driven Unity render state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MaterialPassState {
@@ -38,6 +52,8 @@ pub enum MaterialPassState {
     /// Forward pass with material-driven blend: `Blend [_SrcBlend] [_DstBlend]`, `ZWrite [_ZWrite]`.
     /// One pass per material — directional + local lights are accumulated in a single shader call.
     Forward,
+    /// Overlay pass with material-driven `Blend [_SrcBlend][_DstBlend], One One`, `BlendOp Add, Max`.
+    Overlay,
 }
 
 /// Controls which host-authored render-state fields may override a declared shader pass.
@@ -121,7 +137,7 @@ impl MaterialRenderStatePolicy {
     /// Overlay draws preserve authored color/depth behavior but still accept mask/cull/offset state.
     pub(crate) const OVERLAY: Self = Self {
         color_mask: false,
-        depth_write: false,
+        depth_write: true,
         depth_compare: false,
         cull: true,
         stencil: true,
@@ -154,6 +170,8 @@ pub enum PassKind {
     Stencil,
     /// Depth-only prepass: writes depth, no color (`ColorMask 0`). Runs before the matching color pass.
     DepthPrepass,
+    /// Fixed HUD overlay: `Blend SrcAlpha OneMinusSrcAlpha`, `ZTest Always`, `ZWrite Off`.
+    OverlayAlways,
     /// Overlay rendered on top of already-drawn geometry. Writes RGBA (`ColorWrites::ALL`).
     OverlayFront,
     /// Overlay rendered behind already-drawn geometry: reverse-Z `depth=Less` inverts the usual test.
@@ -217,13 +235,23 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
             render_state_policy: MaterialRenderStatePolicy::DEPTH_PREPASS,
             ..base
         },
+        PassKind::OverlayAlways => MaterialPassDesc {
+            depth_compare: wgpu::CompareFunction::Always,
+            depth_write: false,
+            blend: Some(SRC_ALPHA_ONE_MINUS_SRC_ALPHA_BLEND),
+            write_mask: wgpu::ColorWrites::ALL,
+            render_state_policy: MaterialRenderStatePolicy::STATIC,
+            ..base
+        },
         PassKind::OverlayFront => MaterialPassDesc {
+            material_state: MaterialPassState::Overlay,
             blend: Some(OVERLAY_NOOP_COLOR_MAX_ALPHA_BLEND),
             write_mask: wgpu::ColorWrites::ALL,
             render_state_policy: MaterialRenderStatePolicy::OVERLAY,
             ..base
         },
         PassKind::OverlayBehind => MaterialPassDesc {
+            material_state: MaterialPassState::Overlay,
             depth_compare: wgpu::CompareFunction::Less,
             blend: Some(OVERLAY_NOOP_COLOR_MAX_ALPHA_BLEND),
             write_mask: wgpu::ColorWrites::ALL,
@@ -242,6 +270,7 @@ const fn pass_kind_label(kind: PassKind) -> &'static str {
         PassKind::Outline => "outline",
         PassKind::Stencil => "stencil",
         PassKind::DepthPrepass => "depth_prepass",
+        PassKind::OverlayAlways => "overlay_always",
         PassKind::OverlayFront => "overlay_front",
         PassKind::OverlayBehind => "overlay_behind",
     }
@@ -416,6 +445,13 @@ pub fn materialized_pass_for_blend_mode(
                 depth_write: src == 1 && dst == 0,
                 ..*pass
             }
+        }
+        MaterialPassState::Overlay => {
+            let Some((src, dst)) = blend_mode.unity_blend_factors() else {
+                return *pass;
+            };
+            let blend = unity_overlay_blend_state(src, dst);
+            MaterialPassDesc { blend, ..*pass }
         }
     }
 }

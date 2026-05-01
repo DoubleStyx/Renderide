@@ -2,12 +2,13 @@
 //! vertex-stage displacement modes:
 //!
 //! * `VERTEX_OFFSET`: scalar displacement along vertex normal (`_VertexOffsetMap.r`).
-//! * `UV_OFFSET`: shifts UV per-vertex by `_UVOffsetMap.rg` × magnitude (vertex-stage UV warp).
-//! * `OBJECT_POS_OFFSET` / `VERTEX_POS_OFFSET`: 3-axis position offset from `_PositionOffsetMap`
-//!   in object or world space (`_PositionOffsetMagnitude.xyz`).
+//! * `UV_OFFSET`: shifts the surface sampling UV in the fragment path by `_UVOffsetMap.rg`.
+//! * `OBJECT_POS_OFFSET` / `VERTEX_POS_OFFSET`: offsets the UV used to sample `_VertexOffsetMap`
+//!   from `_PositionOffsetMap.xy` in object-origin or per-vertex world space.
 //!
-//! All three sample textures from `vs_main` via `textureSampleLevel(..., 0.0)` — this is the
-//! first WGSL material in the renderer to exercise vertex-stage texture fetch.
+//! `_VertexOffsetMap` and `_PositionOffsetMap` sample in `vs_main` via
+//! `textureSampleLevel(..., 0.0)`; `_UVOffsetMap` samples in the fragment path like Unity's
+//! generated surface shader.
 
 #import renderide::mesh::vertex as mv
 #import renderide::per_draw as pd
@@ -24,7 +25,12 @@ struct PbsDisplaceMaterial {
     _MainTex_ST: vec4<f32>,
     _MainTex_StorageVInverted: f32,
     _VertexOffsetMap_ST: vec4<f32>,
+    _UVOffsetMap_ST: vec4<f32>,
+    _PositionOffsetMap_ST: vec4<f32>,
     _PositionOffsetMagnitude: vec4<f32>,
+    _VertexOffsetMap_StorageVInverted: f32,
+    _UVOffsetMap_StorageVInverted: f32,
+    _PositionOffsetMap_StorageVInverted: f32,
     _NormalScale: f32,
     _Glossiness: f32,
     _Metallic: f32,
@@ -98,20 +104,19 @@ fn vs_main(
         pos.xyz,
         n.xyz,
         uv0,
+        d.model,
         uvu::kw_enabled(mat.VERTEX_OFFSET),
-        uvu::kw_enabled(mat.UV_OFFSET),
         uvu::kw_enabled(mat.OBJECT_POS_OFFSET),
         uvu::kw_enabled(mat.VERTEX_POS_OFFSET),
         mat._VertexOffsetMap_ST,
-        mat._PositionOffsetMagnitude.xyz,
+        mat._VertexOffsetMap_StorageVInverted,
+        mat._PositionOffsetMap_ST,
+        mat._PositionOffsetMap_StorageVInverted,
+        mat._PositionOffsetMagnitude.xy,
         mat._VertexOffsetMagnitude,
         mat._VertexOffsetBias,
-        mat._UVOffsetMagnitude,
-        mat._UVOffsetBias,
         _VertexOffsetMap,
         _VertexOffsetMap_sampler,
-        _UVOffsetMap,
-        _UVOffsetMap_sampler,
         _PositionOffsetMap,
         _PositionOffsetMap_sampler,
     );
@@ -138,6 +143,22 @@ fn vs_main(
     return out;
 }
 
+fn displaced_main_uv(uv0: vec2<f32>) -> vec2<f32> {
+    var main_uv0 = uv0;
+    if (uvu::kw_enabled(mat.UV_OFFSET)) {
+        let uv_offset_uv = uvu::apply_st_for_storage(
+            uv0,
+            mat._UVOffsetMap_ST,
+            mat._UVOffsetMap_StorageVInverted,
+        );
+        let uv_offset = textureSample(_UVOffsetMap, _UVOffsetMap_sampler, uv_offset_uv).rg
+            * mat._UVOffsetMagnitude
+            + vec2<f32>(mat._UVOffsetBias);
+        main_uv0 = main_uv0 + uv_offset;
+    }
+    return uvu::apply_st_for_storage(main_uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
+}
+
 fn shade(
     frag_xy: vec2<f32>,
     world_pos: vec3<f32>,
@@ -147,7 +168,7 @@ fn shade(
     include_directional: bool,
     include_local: bool,
 ) -> vec4<f32> {
-    let uv_main = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
+    let uv_main = displaced_main_uv(uv0);
 
     var c = mat._Color;
     if (uvu::kw_enabled(mat._ALBEDOTEX)) {

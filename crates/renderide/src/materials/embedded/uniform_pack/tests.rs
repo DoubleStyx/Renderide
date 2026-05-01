@@ -610,6 +610,40 @@ mod text_uniform_packing_tests {
     }
 
     #[test]
+    fn inferred_pbs_splat_keywords_enable_from_texture_presence() {
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+        for property_name in [
+            "_PackedHeightMap",
+            "_PackedNormalMap23",
+            "_PackedEmissionMap",
+            "_MetallicGloss23",
+            "_SpecularMap3",
+        ] {
+            store.set_material(
+                54,
+                reg.intern(property_name),
+                MaterialPropertyValue::Texture(packed_texture2d(123)),
+            );
+        }
+
+        for field_name in [
+            "_HEIGHTMAP",
+            "_PACKED_NORMALMAP",
+            "_PACKED_EMISSIONTEX",
+            "_METALLICMAP",
+            "_SPECULARMAP",
+        ] {
+            assert_eq!(
+                inferred_keyword_float_f32(field_name, &store, lookup(54), &ids),
+                Some(1.0),
+                "{field_name} should infer from its selected texture family"
+            );
+        }
+    }
+
+    #[test]
     fn gradient_keyword_infers_from_gradient_texture() {
         let mut store = MaterialPropertyStore::new();
         let reg = PropertyIdRegistry::new();
@@ -661,6 +695,49 @@ mod text_uniform_packing_tests {
 
         assert_eq!(
             inferred_keyword_float_f32("CLIP", &store, lookup(62), &ids),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn inferred_pbs_displace_keywords_follow_host_keyword_predicates() {
+        let (_reflected, ids, reg) =
+            reflected_with_f32_fields(&[("_VertexOffsetBias", 0), ("_UVOffsetBias", 4)]);
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(
+            55,
+            reg.intern("_VertexOffsetMap"),
+            MaterialPropertyValue::Texture(packed_texture2d(123)),
+        );
+        store.set_material(
+            55,
+            reg.intern("_UVOffsetBias"),
+            MaterialPropertyValue::Float(0.25),
+        );
+        store.set_material(
+            55,
+            reg.intern("_PositionOffsetMap"),
+            MaterialPropertyValue::Texture(packed_texture2d(456)),
+        );
+
+        assert_eq!(
+            inferred_keyword_float_f32("VERTEX_OFFSET", &store, lookup(55), &ids),
+            Some(1.0)
+        );
+        assert_eq!(
+            inferred_keyword_float_f32("UV_OFFSET", &store, lookup(55), &ids),
+            Some(1.0)
+        );
+        assert_eq!(
+            inferred_keyword_float_f32("OBJECT_POS_OFFSET", &store, lookup(55), &ids),
+            Some(1.0)
+        );
+        assert_eq!(
+            inferred_keyword_float_f32("VERTEX_POS_OFFSET", &store, lookup(55), &ids),
+            Some(0.0)
+        );
+        assert_eq!(
+            inferred_keyword_float_f32("VERTEX_OFFSET", &store, lookup(56), &ids),
             Some(0.0)
         );
     }
