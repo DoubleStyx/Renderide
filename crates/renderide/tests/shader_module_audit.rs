@@ -32,10 +32,16 @@ fn collect_wgsl_files(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
 }
 
 fn file_label(path: &Path) -> String {
-    path.strip_prefix(manifest_dir())
-        .unwrap_or(path)
-        .display()
-        .to_string()
+    normalize_file_label(
+        path.strip_prefix(manifest_dir())
+            .unwrap_or(path)
+            .display()
+            .to_string(),
+    )
+}
+
+fn normalize_file_label(label: impl AsRef<str>) -> String {
+    label.as_ref().replace('\\', "/")
 }
 
 fn define_import_path(src: &str) -> Option<&str> {
@@ -89,6 +95,14 @@ fn normal_sampling_guarded_by_keyword(src: &str) -> bool {
         return false;
     };
     call[..call_end].contains("uvu::kw_enabled(mat._NORMALMAP)")
+}
+
+#[test]
+fn file_labels_use_forward_slashes_for_cross_platform_audits() {
+    assert_eq!(
+        normalize_file_label(r"shaders\modules\per_draw.wgsl"),
+        "shaders/modules/per_draw.wgsl"
+    );
 }
 
 /// Nested WGSL modules must remain discoverable and uniquely addressable by naga-oil.
