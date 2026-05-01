@@ -54,8 +54,8 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
     var n = world_n;
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         let tbn = pnorm::orthonormal_tbn(n, world_t);
-        var ts_n = nd::decode_ts_normal_with_placeholder(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_main).xyz,
+        var ts_n = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(_NormalMap, _NormalMap_sampler, uv_main),
             mat._NormalScale,
         );
         if (!front_facing) {

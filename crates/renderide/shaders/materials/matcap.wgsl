@@ -78,8 +78,8 @@ fn fs_main(
     @location(4) view_x: vec3<f32>,
     @location(5) view_y: vec3<f32>,
 ) -> @location(0) vec4<f32> {
-    let normal_ts = nd::decode_ts_normal_with_placeholder(
-        textureSample(_NormalMap, _NormalMap_sampler, uv_normal).xyz,
+    let normal_ts = nd::decode_ts_normal_with_placeholder_sample(
+        textureSample(_NormalMap, _NormalMap_sampler, uv_normal),
         1.0,
     );
     let tbn = mat3x3<f32>(

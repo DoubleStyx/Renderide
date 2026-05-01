@@ -90,13 +90,13 @@ fn sample_normal_world(
     let use_normal_map = uvu::kw_enabled(mat._NORMALMAP) || uvu::kw_enabled(mat._DETAIL_NORMALMAP);
     if (use_normal_map) {
         let tbn = pnorm::orthonormal_tbn(world_n, world_t);
-        var ts = nd::decode_ts_normal_with_placeholder(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_main).xyz,
+        var ts = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(_NormalMap, _NormalMap_sampler, uv_main),
             mat._NormalScale,
         );
         if (uvu::kw_enabled(mat._DETAIL_NORMALMAP)) {
-            let detail = nd::decode_ts_normal_with_placeholder(
-                textureSample(_DetailNormalMap, _DetailNormalMap_sampler, uv_detail).xyz,
+            let detail = nd::decode_ts_normal_with_placeholder_sample(
+                textureSample(_DetailNormalMap, _DetailNormalMap_sampler, uv_detail),
                 mat._DetailNormalMapScale,
             );
             ts = blend_detail_normal(ts, detail);

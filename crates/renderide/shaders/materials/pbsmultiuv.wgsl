@@ -39,6 +39,8 @@ struct PbsMultiUVMaterial {
     _SecondaryAlbedo_StorageVInverted: f32,
     /// Normal map tile/offset.
     _NormalMap_ST: vec4<f32>,
+    // LOD Bias for the normal map
+    _NormalMap_LodBias: f32,
     /// Storage-V-inverted flag for `_NormalMap`.
     _NormalMap_StorageVInverted: f32,
     /// Emission map tile/offset.
@@ -138,6 +140,7 @@ fn sample_normal_world(
     uv3: vec2<f32>,
     world_n: vec3<f32>,
     world_t: vec4<f32>,
+    front_facing: bool,
 ) -> vec3<f32> {
     let tbn = pnorm::orthonormal_tbn(world_n, world_t);
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
@@ -147,10 +150,13 @@ fn sample_normal_world(
             mat._NormalMap_ST,
             mat._NormalMap_StorageVInverted,
         );
-        ts_n = nd::decode_ts_normal_with_placeholder(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_n).xyz,
+        ts_n = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(_NormalMap, _NormalMap_sampler, uv_n),
             mat._NormalScale,
         );
+    }
+    if (!front_facing) {
+        ts_n.z = -ts_n.z;
     }
     return normalize(tbn * ts_n);
 }
@@ -163,6 +169,7 @@ fn sample_surface(
     uv3: vec2<f32>,
     world_n: vec3<f32>,
     world_t: vec4<f32>,
+    front_facing: bool,
 ) -> SurfaceData {
     let uv_albedo = uvu::apply_st_for_storage(
         pick_uv(uv0, uv1, uv2, uv3, mat._AlbedoUV),
@@ -235,7 +242,7 @@ fn sample_surface(
         metallic,
         roughness,
         occlusion,
-        sample_normal_world(uv0, uv1, uv2, uv3, world_n, world_t),
+        sample_normal_world(uv0, uv1, uv2, uv3, world_n, world_t, front_facing),
         emission,
     );
 }
@@ -267,6 +274,7 @@ fn vs_main(
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
+    @builtin(front_facing) front_facing: bool,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
     @location(2) world_t: vec4<f32>,
@@ -276,7 +284,7 @@ fn fs_forward_base(
     @location(6) uv3: vec2<f32>,
     @location(7) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, uv1, uv2, uv3, world_n, world_t);
+    let s = sample_surface(uv0, uv1, uv2, uv3, world_n, world_t, front_facing);
     let surface = psurf::metallic(
         s.base_color,
         s.alpha,

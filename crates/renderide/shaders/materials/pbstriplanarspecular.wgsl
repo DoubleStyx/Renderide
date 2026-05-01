@@ -145,16 +145,16 @@ fn sample_normal_world(uvs: PlanarUvs, world_n: vec3<f32>, world_t: vec4<f32>, w
         return n_geo;
     }
 
-    var t_x = nd::decode_ts_normal_with_placeholder(
-        textureSample(_NormalMap, _NormalMap_sampler, uvs.uv_x).xyz,
+    var t_x = nd::decode_ts_normal_with_placeholder_sample(
+        textureSample(_NormalMap, _NormalMap_sampler, uvs.uv_x),
         mat._NormalScale,
     );
-    var t_y = nd::decode_ts_normal_with_placeholder(
-        textureSample(_NormalMap, _NormalMap_sampler, uvs.uv_y).xyz,
+    var t_y = nd::decode_ts_normal_with_placeholder_sample(
+        textureSample(_NormalMap, _NormalMap_sampler, uvs.uv_y),
         mat._NormalScale,
     );
-    var t_z = nd::decode_ts_normal_with_placeholder(
-        textureSample(_NormalMap, _NormalMap_sampler, uvs.uv_z).xyz,
+    var t_z = nd::decode_ts_normal_with_placeholder_sample(
+        textureSample(_NormalMap, _NormalMap_sampler, uvs.uv_z),
         mat._NormalScale,
     );
 

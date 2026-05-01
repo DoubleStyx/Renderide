@@ -90,9 +90,9 @@ fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, l: f32) 
     var n = normalize(world_n);
     let t = normalize(world_t);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
-        let n0 = textureSample(_NormalMap0, _NormalMap0_sampler, uvu::apply_st(uv, mat._NormalMap0_ST)).xyz;
-        let n1 = textureSample(_NormalMap1, _NormalMap1_sampler, uvu::apply_st(uv, mat._NormalMap1_ST)).xyz;
-        let ts_n = nd::decode_ts_normal_with_placeholder(mix(n0, n1, vec3<f32>(l)), 1.0);
+        let n0 = textureSample(_NormalMap0, _NormalMap0_sampler, uvu::apply_st(uv, mat._NormalMap0_ST));
+        let n1 = textureSample(_NormalMap1, _NormalMap1_sampler, uvu::apply_st(uv, mat._NormalMap1_ST));
+        let ts_n = nd::decode_ts_normal_with_placeholder_sample(mix(n0, n1, vec4<f32>(l)), 1.0);
         let tbn = pnorm::orthonormal_tbn(n, t);
         n = normalize(tbn * ts_n);
     }

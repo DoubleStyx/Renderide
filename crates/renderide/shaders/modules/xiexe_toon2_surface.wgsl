@@ -82,13 +82,13 @@ fn decode_normal_world(
     }
 
     if (xb::normal_map_enabled()) {
-        let base_ts = nd::decode_ts_normal_with_placeholder(
-            textureSample(xb::_BumpMap, xb::_BumpMap_sampler, uv_normal).xyz,
+        let base_ts = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(xb::_BumpMap, xb::_BumpMap_sampler, uv_normal),
             xb::mat._BumpScale,
         );
         let detail_mask = textureSample(xb::_DetailMask, xb::_DetailMask_sampler, uv_detail_mask).r;
-        let detail_ts = nd::decode_ts_normal_with_placeholder(
-            textureSample(xb::_DetailNormalMap, xb::_DetailNormalMap_sampler, uv_detail_normal).xyz,
+        let detail_ts = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(xb::_DetailNormalMap, xb::_DetailNormalMap_sampler, uv_detail_normal),
             xb::mat._DetailNormalMapScale,
         );
         let blended_ts = xb::safe_normalize(

@@ -108,8 +108,8 @@ fn shade(
 
     let edge_dir = normalize(vec2<f32>(dpdx(border_dist), dpdy(border_dist))) * mat._EdgeNormalStrength;
     let edge_normal_ts = normalize(vec3<f32>(edge_dir, 1.0));
-    let cell_normal_ts = nd::decode_ts_normal_with_placeholder(
-        textureSample(_NormalMap, _NormalMap_sampler, uv_normal + v_result.min_point).xyz,
+    let cell_normal_ts = nd::decode_ts_normal_with_placeholder_sample(
+        textureSample(_NormalMap, _NormalMap_sampler, uv_normal + v_result.min_point),
         mat._NormalStrength,
     );
     let n_blend_ts = mix(edge_normal_ts, cell_normal_ts, border_lerp);
