@@ -97,6 +97,18 @@ impl Drop for FrameUploadScopeGuard {
     }
 }
 
+/// Whether a recorded [`QueueWrite::Buffer`] entry can be served from the persistent staging
+/// buffer (4-aligned offset and length per [`wgpu::COPY_BUFFER_ALIGNMENT`]) or has to fall back
+/// to [`wgpu::Queue::write_buffer`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WritePlan {
+    /// Aligned write: payload is staged at `staging_offset` and copied via
+    /// [`wgpu::CommandEncoder::copy_buffer_to_buffer`].
+    Stage { staging_offset: u64, len: u64 },
+    /// Unaligned write: served by [`wgpu::Queue::write_buffer`] as before.
+    Fallback,
+}
+
 /// One deferred [`wgpu::Queue::write_buffer`] entry.
 enum QueueWrite {
     /// A buffered buffer write; the caller's payload is copied into the frame upload arena so the
@@ -145,13 +157,6 @@ impl RecordedUploads {
             offset,
             data,
         });
-    }
-
-    /// Clears recorded writes and payload bytes while retaining grown capacities for the next
-    /// frame.
-    fn clear_retain_capacity(&mut self) {
-        self.writes.clear();
-        self.bytes.clear();
     }
 }
 
@@ -237,29 +242,142 @@ impl FrameUploadBatch {
         }
     }
 
-    /// Drains every pending write and replays it against `queue` in deterministic scope order.
+    /// Drains every pending write into a single staging buffer + per-write
+    /// [`wgpu::CommandEncoder::copy_buffer_to_buffer`], returning the recorded command buffer for
+    /// inclusion at the head of the frame's submit batch.
     ///
-    /// Called on the main thread after per-view encoding finishes and before the single
-    /// [`wgpu::Queue::submit`]. After this returns the batch is empty.
-    pub fn drain_and_flush(&self, queue: &wgpu::Queue) {
-        let mut recorded = self.recorded.lock();
-        crate::profiling::plot_frame_upload_batch(recorded.writes.len(), recorded.bytes.len());
-        if !recorded.writes.is_sorted_by_key(queue_write_order) {
-            recorded.writes.sort_by_key(queue_write_order);
+    /// Replaces the previous "N × [`wgpu::Queue::write_buffer`]" replay: each `write_buffer` call
+    /// internally allocates its own staging chunk and locks the queue, so a frame with dozens of
+    /// per-view uniform writes paid that overhead per write. The staging-belt path memcpy's the
+    /// whole arena into one mapped buffer, unmaps once, and emits one encoder op per write — the
+    /// op is essentially free relative to a `write_buffer` call.
+    ///
+    /// Writes whose `offset` or `len` are not 4-byte aligned (the
+    /// [`wgpu::COPY_BUFFER_ALIGNMENT`] requirement for `copy_buffer_to_buffer`) fall back to
+    /// `queue.write_buffer`. In practice every renderer uniform/storage upload is 4-aligned, so
+    /// the fast path covers the steady-state working set; the fallback is correctness insurance.
+    ///
+    /// Returns `None` when no writes were pending. After this returns the batch is empty.
+    pub fn drain_and_flush(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<wgpu::CommandBuffer> {
+        // Take the recorded writes + payload arena out under a short lock so the wgpu work below
+        // (buffer alloc, mapped memcpy, encoder ops, fallback write_buffer calls) does not run
+        // with the recording mutex held. Capacities are restored to the field at the end so the
+        // next frame's `write_buffer` calls grow into the same allocations.
+        let (mut writes, payload_bytes) = {
+            let mut recorded = self.recorded.lock();
+            crate::profiling::plot_frame_upload_batch(recorded.writes.len(), recorded.bytes.len());
+            if recorded.writes.is_empty() {
+                return None;
+            }
+            if !recorded.writes.is_sorted_by_key(queue_write_order) {
+                recorded.writes.sort_by_key(queue_write_order);
+            }
+            (
+                std::mem::take(&mut recorded.writes),
+                std::mem::take(&mut recorded.bytes),
+            )
+        };
+
+        // First pass: assign each aligned write a slot in the staging buffer; mark unaligned
+        // writes for the `queue.write_buffer` fallback.
+        let mut plans: Vec<WritePlan> = Vec::with_capacity(writes.len());
+        let mut staging_size: u64 = 0;
+        for write in &writes {
+            let QueueWrite::Buffer { offset, data, .. } = write;
+            let len = (data.end - data.start) as u64;
+            let aligned = len > 0
+                && (*offset).is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+                && len.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
+            if aligned {
+                let aligned_off = staging_size.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
+                plans.push(WritePlan::Stage {
+                    staging_offset: aligned_off,
+                    len,
+                });
+                staging_size = aligned_off + len;
+            } else {
+                plans.push(WritePlan::Fallback);
+            }
         }
-        for write in &recorded.writes {
-            match write {
-                QueueWrite::Buffer {
-                    order: _,
-                    buffer,
-                    offset,
-                    data,
+
+        let staging = (staging_size > 0).then(|| {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("frame_upload_staging"),
+                size: staging_size,
+                usage: wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            });
+            {
+                let mut mapped = buf.slice(..).get_mapped_range_mut();
+                for (write, plan) in writes.iter().zip(plans.iter()) {
+                    let (
+                        QueueWrite::Buffer { data, .. },
+                        WritePlan::Stage {
+                            staging_offset,
+                            len,
+                        },
+                    ) = (write, plan)
+                    else {
+                        continue;
+                    };
+                    let dst_start = *staging_offset as usize;
+                    let dst_end = dst_start + *len as usize;
+                    mapped
+                        .slice(dst_start..dst_end)
+                        .copy_from_slice(&payload_bytes[data.clone()]);
+                }
+            }
+            buf.unmap();
+            buf
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("frame_upload_staging_belt"),
+        });
+        for (write, plan) in writes.iter().zip(plans.iter()) {
+            let QueueWrite::Buffer {
+                buffer,
+                offset,
+                data,
+                ..
+            } = write;
+            match plan {
+                WritePlan::Stage {
+                    staging_offset,
+                    len,
                 } => {
-                    queue.write_buffer(buffer, *offset, &recorded.bytes[data.clone()]);
+                    let Some(staging_buf) = staging.as_ref() else {
+                        continue;
+                    };
+                    encoder.copy_buffer_to_buffer(
+                        staging_buf,
+                        *staging_offset,
+                        buffer,
+                        *offset,
+                        *len,
+                    );
+                }
+                WritePlan::Fallback => {
+                    queue.write_buffer(buffer, *offset, &payload_bytes[data.clone()]);
                 }
             }
         }
-        recorded.clear_retain_capacity();
+        let cmd = encoder.finish();
+
+        // Restore the cleared scratch buffers so the next frame reuses their grown capacities.
+        writes.clear();
+        let mut payload_bytes = payload_bytes;
+        payload_bytes.clear();
+        {
+            let mut recorded = self.recorded.lock();
+            recorded.writes = writes;
+            recorded.bytes = payload_bytes;
+        }
+        Some(cmd)
     }
 
     /// Returns the number of pending writes (diagnostics / tests).

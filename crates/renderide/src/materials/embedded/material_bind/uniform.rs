@@ -15,6 +15,7 @@ use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertySto
 /// Texture-state signature tracks host `mipmap_bias` and storage orientation for currently-bound
 /// textures; the store's mutation generation does not bump on texture-property updates, so
 /// buffered texture-derived fields would otherwise become stale. Both must match to skip reupload.
+#[derive(Clone)]
 pub(super) struct CachedUniformEntry {
     pub(super) buffer: Arc<wgpu::Buffer>,
     pub(super) last_written_generation: u64,
@@ -69,13 +70,18 @@ impl EmbeddedMaterialBindResources {
             pools,
             primary_texture_2d,
         };
-        let mut uniform_cache = self.uniform_cache.lock();
-        if let Some(entry) = uniform_cache.get_mut(uniform_key) {
+        // Sharded cache lookup: clone the entry out under the shard lock and release it before
+        // any write_buffer / build_buffer_init work. Steady-state cache hits (matching generation
+        // and texture signature) take the fast path with one short shard lock; refresh and create
+        // paths re-`put` the updated entry, accepting last-writer-wins under the (rare) race
+        // where two workers miss the same key concurrently.
+        let cached = self.uniform_cache.get_cloned(uniform_key);
+        if let Some(entry) = cached {
             if entry.last_written_generation == mutation_gen
                 && entry.last_written_texture_state_sig == texture_state_sig
             {
                 profiling::scope!("materials::embedded_uniform_cache_hit");
-                return Ok(entry.buffer.clone());
+                return Ok(entry.buffer);
             }
             profiling::scope!("materials::embedded_uniform_refresh");
             let uniform_bytes = build_embedded_uniform_bytes(
@@ -89,9 +95,13 @@ impl EmbeddedMaterialBindResources {
                 format!("stem {stem}: uniform block missing (shader has no material uniform)")
             })?;
             queue.write_buffer(entry.buffer.as_ref(), 0, &uniform_bytes);
-            entry.last_written_generation = mutation_gen;
-            entry.last_written_texture_state_sig = texture_state_sig;
-            return Ok(entry.buffer.clone());
+            let refreshed = CachedUniformEntry {
+                buffer: entry.buffer.clone(),
+                last_written_generation: mutation_gen,
+                last_written_texture_state_sig: texture_state_sig,
+            };
+            let _ = self.uniform_cache.put(*uniform_key, refreshed);
+            return Ok(entry.buffer);
         }
         profiling::scope!("materials::embedded_uniform_create");
         let uniform_bytes = build_embedded_uniform_bytes(
@@ -117,11 +127,10 @@ impl EmbeddedMaterialBindResources {
             last_written_generation: mutation_gen,
             last_written_texture_state_sig: texture_state_sig,
         };
-        if let Some(evicted) = uniform_cache.put(*uniform_key, entry) {
+        if let Some(evicted) = self.uniform_cache.put(*uniform_key, entry) {
             drop(evicted);
             logger::trace!("EmbeddedMaterialBindResources: evicted LRU uniform cache entry");
         }
-        drop(uniform_cache);
         Ok(buf)
     }
 }

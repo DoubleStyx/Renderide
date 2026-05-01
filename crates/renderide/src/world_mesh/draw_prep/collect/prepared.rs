@@ -7,7 +7,10 @@ use glam::Mat4;
 use crate::materials::RasterFrontFace;
 use crate::scene::{RenderSpaceId, SkinnedMeshRenderer};
 
-use crate::world_mesh::culling::{CpuCullFailure, MeshCullTarget, mesh_draw_passes_cpu_cull};
+use crate::world_mesh::culling::{
+    CpuCullFailure, MeshCullTarget, mesh_cpu_cull_with_geometry,
+    mesh_world_geometry_for_cull_with_head,
+};
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::item::WorldMeshDrawItem;
@@ -117,15 +120,28 @@ fn prepared_run_view_state(
     let mut rigid_world_matrix = None;
     if let Some(c) = ctx.culling {
         cull_stats.0 += run.len();
-        let target = MeshCullTarget {
-            scene: ctx.scene,
-            space_id: first.space_id,
-            mesh,
-            skinned: first.skinned,
-            skinned_renderer: skinning.as_renderer(),
-            node_id: first.node_id,
+        // Reuse the per-renderer geometry that `FramePreparedRenderables::build_for_frame` already
+        // computed for non-overlay spaces. Overlay spaces (geometry depends on the per-view
+        // `head_output_transform`) keep recomputing per-view via the fallback path below.
+        let geom = match first.cull_geometry {
+            Some(g) => g,
+            None => {
+                let target = MeshCullTarget {
+                    scene: ctx.scene,
+                    space_id: first.space_id,
+                    mesh,
+                    skinned: first.skinned,
+                    skinned_renderer: skinning.as_renderer(),
+                    node_id: first.node_id,
+                };
+                mesh_world_geometry_for_cull_with_head(
+                    &target,
+                    c.host_camera.head_output_transform,
+                    ctx.render_context,
+                )
+            }
         };
-        match mesh_draw_passes_cpu_cull(&target, first.is_overlay, c, ctx.render_context) {
+        match mesh_cpu_cull_with_geometry(geom, ctx.scene, first.space_id, first.is_overlay, c) {
             Err(CpuCullFailure::Frustum) => {
                 cull_stats.1 += run.len();
                 return (None, cull_stats);

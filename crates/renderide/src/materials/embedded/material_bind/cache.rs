@@ -1,7 +1,12 @@
 //! LRU caches and stem layout memoization for embedded `@group(1)` bind groups.
 
+use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+
+use ahash::RandomState;
+use lru::LruCache;
+use parking_lot::Mutex;
 
 use super::super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::super::layout::{StemMaterialLayout, build_stem_material_layout, stem_hash};
@@ -11,6 +16,68 @@ use super::super::texture_resolve::{
 };
 use crate::gpu_pools::SamplerState;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
+
+/// Number of shards across which the embedded `@group(1)` bind, uniform, and sampler caches are
+/// split. Each shard owns its own [`parking_lot::Mutex<LruCache<K, V>>`]; per-view rayon workers
+/// hash their cache key into a shard index and only contend with workers whose keys hash into the
+/// same shard. 16 is enough to keep contention sub-linear up through ~16-core rayon pools while
+/// keeping the per-shard LRU large enough to track the working set.
+pub(super) const EMBEDDED_CACHE_SHARDS: usize = 16;
+
+/// Hash-sharded LRU cache. Each shard is an independent `Mutex<LruCache<K, V>>`; lookups and
+/// inserts route by `BuildHasher::hash_one(key) & (shards - 1)` so distinct keys typically miss
+/// each other's locks. The total capacity is split evenly across shards, with a minimum of one
+/// slot per shard so the LRU type's invariant is preserved.
+pub(super) struct ShardedLru<K, V> {
+    shards: Box<[Mutex<LruCache<K, V>>]>,
+    hasher: RandomState,
+    mask: usize,
+}
+
+impl<K: Eq + Hash, V> ShardedLru<K, V> {
+    /// Builds an `n_shards`-way sharded LRU with `total_cap` total capacity (split evenly).
+    ///
+    /// `n_shards` must be a power of two so the modulo collapses to a bitmask. Total capacity
+    /// rounds up so the sharded total is at least the requested cap, never less.
+    pub(super) fn new(total_cap: NonZeroUsize, n_shards: usize) -> Self {
+        debug_assert!(
+            n_shards.is_power_of_two(),
+            "n_shards must be a power of two for the bitmask routing"
+        );
+        let per_shard = total_cap.get().div_ceil(n_shards).max(1);
+        let per_shard_nz = NonZeroUsize::new(per_shard).unwrap_or(NonZeroUsize::MIN);
+        let shards: Box<[Mutex<LruCache<K, V>>]> = (0..n_shards)
+            .map(|_| Mutex::new(LruCache::new(per_shard_nz)))
+            .collect();
+        Self {
+            shards,
+            hasher: RandomState::new(),
+            mask: n_shards - 1,
+        }
+    }
+
+    /// Routes `key` to a shard index via `BuildHasher::hash_one` masked to `n_shards - 1`.
+    #[inline]
+    fn shard_index(&self, key: &K) -> usize {
+        (self.hasher.hash_one(key) as usize) & self.mask
+    }
+
+    /// LRU lookup that promotes the entry to most-recently-used and returns a clone of the value.
+    pub(super) fn get_cloned(&self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
+        let mut shard = self.shards[self.shard_index(key)].lock();
+        shard.get(key).cloned()
+    }
+
+    /// Inserts `value` for `key`, returning the evicted entry (if any) so the caller can drop it
+    /// outside the shard lock.
+    pub(super) fn put(&self, key: K, value: V) -> Option<V> {
+        let mut shard = self.shards[self.shard_index(&key)].lock();
+        shard.put(key, value)
+    }
+}
 
 /// LRU cap for `@group(1)` bind groups (per unique material/texture signature).
 pub(super) const MAX_CACHED_EMBEDDED_BIND_GROUPS: usize = 512;
@@ -202,15 +269,12 @@ impl EmbeddedMaterialBindResources {
         key: EmbeddedSamplerCacheKey,
         create: impl FnOnce() -> wgpu::Sampler,
     ) -> Arc<wgpu::Sampler> {
-        {
-            let mut cache = self.sampler_cache.lock();
-            if let Some(hit) = cache.get(&key) {
-                return hit.clone();
-            }
+        if let Some(hit) = self.sampler_cache.get_cloned(&key) {
+            return hit;
         }
         //perf xlinka: sampler objects are cheap-ish, but bind misses can make lots of them.
         let sampler = Arc::new(create());
-        let evicted = self.sampler_cache.lock().put(key, sampler.clone());
+        let evicted = self.sampler_cache.put(key, sampler.clone());
         drop(evicted);
         sampler
     }

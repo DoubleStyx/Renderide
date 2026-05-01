@@ -22,12 +22,14 @@ use crate::camera::{HostCameraFrame, WorldProjectionSet, view_matrix_from_render
 use crate::occlusion::HiZCullData;
 use crate::occlusion::hi_z_pyramid_dimensions;
 
-pub(crate) use eval::{CpuCullFailure, mesh_draw_passes_cpu_cull};
+pub(crate) use eval::{CpuCullFailure, mesh_cpu_cull_with_geometry, mesh_draw_passes_cpu_cull};
 pub use frustum::{
     Frustum, HOMOGENEOUS_CLIP_EPS, Plane, mesh_bounds_degenerate_for_cull,
     world_aabb_from_local_bounds, world_aabb_visible_in_homogeneous_clip,
 };
-pub(crate) use geometry::MeshCullTarget;
+pub(crate) use geometry::{
+    MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
+};
 
 /// View and projection snapshot from the **frame that produced** the Hi-Z depth buffer (used for
 /// CPU occlusion tests against the previous frame’s pyramid).

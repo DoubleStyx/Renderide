@@ -26,8 +26,12 @@ pub(crate) struct MeshCullTarget<'a> {
 }
 
 /// World-space AABB and rigid transform for a single CPU cull evaluation.
-#[derive(Clone, Copy)]
-pub(super) struct MeshCullGeometry {
+///
+/// View-invariant for non-overlay spaces (the matrix and bounds are functions of the scene,
+/// mesh, and `render_context` only); overlay spaces re-root against the view's
+/// `head_output_transform`, so a precomputed value is invalid for them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MeshCullGeometry {
     /// When `None`, culling treats the draw as visible (conservative).
     pub world_aabb: Option<(Vec3, Vec3)>,
     /// World matrix for rigid meshes when [`Self::world_aabb`] was built from local bounds.
@@ -35,9 +39,26 @@ pub(super) struct MeshCullGeometry {
 }
 
 /// World-space AABB (and rigid matrix when applicable) for culling, evaluated once per draw slot.
-pub(super) fn mesh_world_geometry_for_cull(
+pub(crate) fn mesh_world_geometry_for_cull(
     target: &MeshCullTarget<'_>,
     culling: &WorldMeshCullInput<'_>,
+    render_context: RenderingContext,
+) -> MeshCullGeometry {
+    mesh_world_geometry_for_cull_with_head(
+        target,
+        culling.host_camera.head_output_transform,
+        render_context,
+    )
+}
+
+/// Same as [`mesh_world_geometry_for_cull`] but takes the per-view `head_output_transform`
+/// directly so non-overlay frame-time precompute (which has no view yet) can pass `Mat4::IDENTITY`.
+///
+/// Caller is responsible for ensuring overlay spaces use the live per-view transform; the result
+/// is only view-invariant when `target.scene.space(target.space_id).is_overlay == false`.
+pub(crate) fn mesh_world_geometry_for_cull_with_head(
+    target: &MeshCullTarget<'_>,
+    head_output_transform: Mat4,
     render_context: RenderingContext,
 ) -> MeshCullGeometry {
     if mesh_bounds_degenerate_for_cull(&target.mesh.bounds) {
@@ -52,7 +73,6 @@ pub(super) fn mesh_world_geometry_for_cull(
             rigid_world_matrix: None,
         };
     }
-    let hc = culling.host_camera;
     if target.skinned {
         let Some(sk) = target.skinned_renderer else {
             return MeshCullGeometry {
@@ -70,7 +90,7 @@ pub(super) fn mesh_world_geometry_for_cull(
             target.space_id,
             root_node,
             render_context,
-            hc.head_output_transform,
+            head_output_transform,
         ) else {
             return MeshCullGeometry {
                 world_aabb: None,
@@ -90,7 +110,7 @@ pub(super) fn mesh_world_geometry_for_cull(
             target.space_id,
             target.node_id as usize,
             render_context,
-            hc.head_output_transform,
+            head_output_transform,
         ) else {
             return MeshCullGeometry {
                 world_aabb: None,
