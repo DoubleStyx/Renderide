@@ -1,6 +1,7 @@
 //! Builds the scene-state shared-memory region and pumps the lockstep until the renderer has
 //! seen at least one frame submission carrying the scene.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use renderide_shared::ipc::HostDualQueueIpc;
@@ -29,6 +30,7 @@ pub(super) struct SceneState {
 /// `RenderSpaceUpdate` into the lockstep driver so subsequent `FrameSubmitData` carries the scene.
 pub(super) fn build_scene_state(
     prefix: &str,
+    backing_dir: &Path,
     lockstep: &mut LockstepDriver,
 ) -> Result<SceneState, HarnessError> {
     let defaults = SphereSceneInputs::default();
@@ -44,6 +46,7 @@ pub(super) fn build_scene_state(
     let cfg = SharedMemoryWriterConfig {
         prefix: prefix.to_string(),
         destroy_on_drop: true,
+        dir_override: Some(backing_dir.to_path_buf()),
     };
     let mut writer = SharedMemoryWriter::open(cfg, asset_ids::SCENE_STATE_BUFFER, total_bytes)
         .map_err(|e| {

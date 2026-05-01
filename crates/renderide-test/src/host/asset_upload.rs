@@ -4,6 +4,7 @@
 //! Background queue, and pumps the lockstep loop while waiting for `MeshUploadResult` so the
 //! renderer's frame-start lockstep doesn't deadlock during the upload.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use renderide_shared::ipc::HostDualQueueIpc;
@@ -29,34 +30,50 @@ pub(super) struct UploadedMesh {
     _writer: SharedMemoryWriter,
 }
 
-/// Uploads `mesh` as a `MeshUploadData` against `asset_id`, blocking on `MeshUploadResult` while
-/// pumping the lockstep loop.
+/// Per-call inputs for [`upload_sphere_mesh`]. Bundled to keep the function under clippy's
+/// `too_many_arguments` cap and to give callers one focused place to set up an upload.
+pub(super) struct MeshUploadRequest<'a> {
+    /// Shared-memory prefix matching `RendererInitData.shared_memory_prefix`.
+    pub shared_memory_prefix: &'a str,
+    /// Per-session backing directory passed to [`SharedMemoryWriterConfig::dir_override`].
+    pub backing_dir: &'a Path,
+    /// Buffer id assigned to this mesh's SHM region.
+    pub buffer_id: i32,
+    /// Renderer-side asset id echoed back in the `MeshUploadResult` ack.
+    pub asset_id: i32,
+    /// Packed mesh payload to upload.
+    pub mesh: &'a SphereMeshUpload,
+    /// Deadline for receiving `MeshUploadResult`.
+    pub timeout: Duration,
+}
+
+/// Uploads `request.mesh` as a `MeshUploadData` against `request.asset_id`, blocking on
+/// `MeshUploadResult` while pumping the lockstep loop.
 pub(super) fn upload_sphere_mesh(
     queues: &mut HostDualQueueIpc,
     lockstep: &mut LockstepDriver,
-    shared_memory_prefix: &str,
-    buffer_id: i32,
-    asset_id: i32,
-    mesh: &SphereMeshUpload,
-    timeout: Duration,
+    request: MeshUploadRequest<'_>,
 ) -> Result<UploadedMesh, HarnessError> {
     let cfg = SharedMemoryWriterConfig {
-        prefix: shared_memory_prefix.to_string(),
+        prefix: request.shared_memory_prefix.to_string(),
         destroy_on_drop: true,
+        dir_override: Some(request.backing_dir.to_path_buf()),
     };
-    let capacity = mesh.payload.bytes.len();
-    let mut writer = SharedMemoryWriter::open(cfg, buffer_id, capacity).map_err(|e| {
+    let capacity = request.mesh.payload.bytes.len();
+    let mut writer = SharedMemoryWriter::open(cfg, request.buffer_id, capacity).map_err(|e| {
         HarnessError::QueueOptions(format!(
-            "SharedMemoryWriter::open(prefix={shared_memory_prefix}, buffer={buffer_id}, cap={capacity}): {e}"
+            "SharedMemoryWriter::open(prefix={prefix}, buffer={buffer}, cap={capacity}): {e}",
+            prefix = request.shared_memory_prefix,
+            buffer = request.buffer_id,
         ))
     })?;
     writer
-        .write_at(0, &mesh.payload.bytes)
+        .write_at(0, &request.mesh.payload.bytes)
         .map_err(|e| HarnessError::QueueOptions(format!("write mesh bytes: {e}")))?;
     writer.flush();
 
-    let buffer_descriptor = writer.descriptor_for(0, mesh.payload.bytes.len() as i32);
-    let upload = make_mesh_upload_data(mesh, asset_id, buffer_descriptor)
+    let buffer_descriptor = writer.descriptor_for(0, request.mesh.payload.bytes.len() as i32);
+    let upload = make_mesh_upload_data(request.mesh, request.asset_id, buffer_descriptor)
         .map_err(|e| HarnessError::QueueOptions(format!("compose MeshUploadData: {e}")))?;
 
     if !queues.send_background(RendererCommand::MeshUploadData(upload)) {
@@ -65,12 +82,16 @@ pub(super) fn upload_sphere_mesh(
         ));
     }
     logger::info!(
-        "AssetUpload: sent MeshUploadData(asset_id={asset_id}, bytes={})",
-        mesh.payload.bytes.len()
+        "AssetUpload: sent MeshUploadData(asset_id={asset}, bytes={})",
+        request.mesh.payload.bytes.len(),
+        asset = request.asset_id,
     );
 
-    wait_for_mesh_upload_result(queues, lockstep, asset_id, timeout)?;
-    logger::info!("AssetUpload: received MeshUploadResult(asset_id={asset_id})");
+    wait_for_mesh_upload_result(queues, lockstep, request.asset_id, request.timeout)?;
+    logger::info!(
+        "AssetUpload: received MeshUploadResult(asset_id={asset})",
+        asset = request.asset_id
+    );
 
     Ok(UploadedMesh { _writer: writer })
 }

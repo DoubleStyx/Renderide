@@ -22,6 +22,7 @@
 pub mod buffer;
 pub mod ipc;
 pub mod packing;
+pub mod test_hooks;
 pub mod wire_writer;
 
 /// Automatically generated Renderite shared types and decode helpers.
@@ -30,6 +31,7 @@ pub mod shared;
 pub use ipc::shared_memory::{
     SharedMemoryWriter, SharedMemoryWriterConfig, SharedMemoryWriterError,
 };
+pub use test_hooks::RENDERIDE_TEST_STEM_PREFIX;
 
 // The `polymorphic_decode_error` and `wire_decode_error` types AND their containing modules are
 // re-exported at crate root. Both spellings are load-bearing: the renderer's

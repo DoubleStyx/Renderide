@@ -7,6 +7,8 @@
 //! the mock host (`renderide-test`) and any future host-side Rust tooling can speak the same
 //! `RendererCommand` byte stream `FrooxEngine` produces, with zero divergence in encoding.
 
+use std::path::Path;
+
 use interprocess::{Publisher, QueueFactory, QueueOptions, Subscriber};
 
 use super::connection::{ConnectionParams, InitError, publisher_queue_name, subscriber_queue_name};
@@ -41,13 +43,33 @@ pub struct HostDualQueueIpc {
 impl HostDualQueueIpc {
     /// Opens all four authority endpoints: publishers on `{name}PrimaryA` / `{name}BackgroundA`
     /// and subscribers on `{name}PrimaryS` / `{name}BackgroundS`.
+    ///
+    /// Backing directory is resolved via [`interprocess::default_memory_dir`] (which honors
+    /// the `RENDERIDE_INTERPROCESS_DIR` env var). For parallel-safe in-process use cases that
+    /// must not mutate the process-global env, see [`Self::connect_with_dir`].
     pub fn connect(params: &ConnectionParams) -> Result<Self, InitError> {
+        Self::connect_inner(params, None)
+    }
+
+    /// Same as [`Self::connect`] but pins the backing directory explicitly. The renderer child
+    /// process must be spawned with `RENDERIDE_INTERPROCESS_DIR` set to the same directory so
+    /// both ends agree without touching the parent's environment.
+    pub fn connect_with_dir(params: &ConnectionParams, dir: &Path) -> Result<Self, InitError> {
+        Self::connect_inner(params, Some(dir))
+    }
+
+    fn connect_inner(
+        params: &ConnectionParams,
+        dir_override: Option<&Path>,
+    ) -> Result<Self, InitError> {
         let factory = QueueFactory::new();
         let cap = params.queue_capacity;
-        let primary_pub = open_authority_publisher(factory, params, "Primary", cap)?;
-        let background_pub = open_authority_publisher(factory, params, "Background", cap)?;
-        let primary_sub = open_authority_subscriber(factory, params, "Primary", cap)?;
-        let background_sub = open_authority_subscriber(factory, params, "Background", cap)?;
+        let primary_pub = open_authority_publisher(factory, params, "Primary", cap, dir_override)?;
+        let background_pub =
+            open_authority_publisher(factory, params, "Background", cap, dir_override)?;
+        let primary_sub = open_authority_subscriber(factory, params, "Primary", cap, dir_override)?;
+        let background_sub =
+            open_authority_subscriber(factory, params, "Background", cap, dir_override)?;
         Ok(Self {
             primary_publisher: primary_pub,
             background_publisher: background_pub,
@@ -109,11 +131,11 @@ fn open_authority_publisher(
     params: &ConnectionParams,
     channel: &str,
     capacity: i64,
+    dir_override: Option<&Path>,
 ) -> Result<Publisher, InitError> {
     // Renderer subscribes on `…A`; host publishes there.
     let name = subscriber_queue_name(&params.queue_name, channel);
-    let options =
-        QueueOptions::with_destroy(&name, capacity, true).map_err(InitError::IpcConnect)?;
+    let options = build_queue_options(&name, capacity, dir_override)?;
     factory
         .create_publisher(options)
         .map_err(|e| InitError::IpcConnect(e.to_string()))
@@ -125,14 +147,28 @@ fn open_authority_subscriber(
     params: &ConnectionParams,
     channel: &str,
     capacity: i64,
+    dir_override: Option<&Path>,
 ) -> Result<Subscriber, InitError> {
     // Renderer publishes on `…S`; host subscribes there.
     let name = publisher_queue_name(&params.queue_name, channel);
-    let options =
-        QueueOptions::with_destroy(&name, capacity, true).map_err(InitError::IpcConnect)?;
+    let options = build_queue_options(&name, capacity, dir_override)?;
     factory
         .create_subscriber(options)
         .map_err(|e| InitError::IpcConnect(e.to_string()))
+}
+
+fn build_queue_options(
+    queue_name: &str,
+    capacity: i64,
+    dir_override: Option<&Path>,
+) -> Result<QueueOptions, InitError> {
+    match dir_override {
+        Some(dir) => QueueOptions::with_path_and_destroy(queue_name, dir, capacity, true)
+            .map_err(InitError::IpcConnect),
+        None => {
+            QueueOptions::with_destroy(queue_name, capacity, true).map_err(InitError::IpcConnect)
+        }
+    }
 }
 
 #[cfg(test)]

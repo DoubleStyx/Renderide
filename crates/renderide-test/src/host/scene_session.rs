@@ -17,7 +17,7 @@ use crate::error::HarnessError;
 use crate::scene::mesh_payload::pack_sphere_mesh_upload;
 use crate::scene::sphere::SphereMesh;
 
-use super::asset_upload::{DEFAULT_ASSET_UPLOAD_TIMEOUT, upload_sphere_mesh};
+use super::asset_upload::{DEFAULT_ASSET_UPLOAD_TIMEOUT, MeshUploadRequest, upload_sphere_mesh};
 use super::handshake::{DEFAULT_HANDSHAKE_TIMEOUT, run_handshake};
 use super::ipc_setup::{DEFAULT_QUEUE_CAPACITY_BYTES, connect_session};
 use super::lockstep::{FrameSubmitScalars, LockstepDriver};
@@ -74,14 +74,17 @@ pub(super) fn run_session(cfg: &SceneSessionConfig) -> Result<SceneSessionOutcom
     let _uploaded = upload_sphere_mesh(
         &mut session.queues,
         &mut lockstep,
-        &prefix,
-        asset_ids::SPHERE_MESH_BUFFER,
-        asset_ids::SPHERE_MESH,
-        &upload,
-        DEFAULT_ASSET_UPLOAD_TIMEOUT,
+        MeshUploadRequest {
+            shared_memory_prefix: &prefix,
+            backing_dir: &backing_dir,
+            buffer_id: asset_ids::SPHERE_MESH_BUFFER,
+            asset_id: asset_ids::SPHERE_MESH,
+            mesh: &upload,
+            timeout: DEFAULT_ASSET_UPLOAD_TIMEOUT,
+        },
     )?;
 
-    let scene = build_scene_state(&prefix, &mut lockstep)?;
+    let scene = build_scene_state(&prefix, &backing_dir, &mut lockstep)?;
 
     let scene_submit_index =
         ensure_scene_submitted(&mut session.queues, &mut lockstep, cfg.timeout)?;

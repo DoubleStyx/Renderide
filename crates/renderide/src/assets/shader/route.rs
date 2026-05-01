@@ -8,9 +8,15 @@
 //! [`RasterPipelineKind::EmbeddedStem`]; unresolved or non-embedded shaders use
 //! [`RasterPipelineKind::Null`] (the black/grey checkerboard) as the **only** mesh fallback
 //! (there is no separate solid-color pipeline).
+//!
+//! The integration harness can bypass AssetBundle parsing by setting [`ShaderUpload::file`] to
+//! `RENDERIDE_TEST_STEM:<stem>` (see [`renderide_shared::RENDERIDE_TEST_STEM_PREFIX`]). The prefix
+//! is never produced by the production host, so this path is inert outside the test harness.
 
 use std::path::Path;
 use std::sync::Arc;
+
+use renderide_shared::RENDERIDE_TEST_STEM_PREFIX;
 
 use crate::materials::{RasterPipelineKind, embedded_default_stem_for_shader_asset_name};
 
@@ -65,6 +71,13 @@ pub fn plan_shader_route(shader_asset_name: Option<String>) -> ShaderRoutePlan {
 
 /// Full resolution pipeline for a host [`ShaderUpload`].
 pub fn resolve_shader_upload(data: &ShaderUpload) -> ResolvedShaderUpload {
+    if let Some(stem) = data
+        .file
+        .as_deref()
+        .and_then(|f| f.strip_prefix(RENDERIDE_TEST_STEM_PREFIX))
+    {
+        return plan_shader_route(Some(stem.to_string())).into();
+    }
     let shader_asset_name = data
         .file
         .as_deref()
@@ -125,6 +138,46 @@ mod tests {
     fn route_plan_uses_null_for_unknown_name() {
         let r = plan_shader_route(Some("definitely_missing_shader".to_string()));
 
+        assert_eq!(
+            r.shader_asset_name.as_deref(),
+            Some("definitely_missing_shader")
+        );
+        assert_eq!(r.pipeline, RasterPipelineKind::Null);
+    }
+
+    #[test]
+    fn stem_prefix_resolves_to_embedded_stem() {
+        let u = ShaderUpload {
+            asset_id: 7,
+            file: Some(format!("{RENDERIDE_TEST_STEM_PREFIX}ui_textunlit")),
+        };
+        let r = resolve_shader_upload(&u);
+        assert_eq!(r.shader_asset_name.as_deref(), Some("ui_textunlit"));
+        assert!(matches!(r.pipeline, RasterPipelineKind::EmbeddedStem(_)));
+    }
+
+    #[test]
+    fn stem_prefix_avoids_filesystem_lookup() {
+        let nonexistent = "/this/path/should/never/exist/on/disk/anywhere/zzz";
+        assert!(!Path::new(nonexistent).exists());
+        let u = ShaderUpload {
+            asset_id: 8,
+            file: Some(format!("{RENDERIDE_TEST_STEM_PREFIX}{nonexistent}")),
+        };
+        let r = resolve_shader_upload(&u);
+        assert_eq!(r.shader_asset_name.as_deref(), Some(nonexistent));
+        assert_eq!(r.pipeline, RasterPipelineKind::Null);
+    }
+
+    #[test]
+    fn stem_prefix_with_unknown_stem_falls_back_to_null() {
+        let u = ShaderUpload {
+            asset_id: 9,
+            file: Some(format!(
+                "{RENDERIDE_TEST_STEM_PREFIX}definitely_missing_shader"
+            )),
+        };
+        let r = resolve_shader_upload(&u);
         assert_eq!(
             r.shader_asset_name.as_deref(),
             Some("definitely_missing_shader")

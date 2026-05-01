@@ -62,12 +62,17 @@ pub fn host_writer_backing_dir() -> PathBuf {
 ///
 /// Holds the configuration needed to derive `SharedMemoryBufferDescriptor`s without re-reading
 /// the prefix and capacity at every call site.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SharedMemoryWriterConfig {
     /// Session prefix, matching `RendererInitData.shared_memory_prefix`.
     pub prefix: String,
     /// Whether to remove backing files on drop (Unix only; ignored on Windows).
     pub destroy_on_drop: bool,
+    /// Optional explicit backing directory. When `Some`, takes precedence over the
+    /// `RENDERIDE_INTERPROCESS_DIR` environment variable; lets concurrent in-process callers
+    /// (notably the integration harness) avoid mutating the process-global env. Unix only;
+    /// ignored on Windows where the named-mapping backend is path-independent.
+    pub dir_override: Option<PathBuf>,
 }
 
 /// Failure to create or write a host-side shared-memory buffer.
@@ -121,9 +126,11 @@ mod platform {
             buffer_id: i32,
             capacity_bytes: i32,
         ) -> Result<Self, SharedMemoryWriterError> {
-            let dir = env::var_os(RENDERIDE_INTERPROCESS_DIR_ENV)
-                .filter(|s| !s.is_empty())
-                .map_or_else(interprocess::default_memory_dir, PathBuf::from);
+            let dir = cfg.dir_override.clone().unwrap_or_else(|| {
+                env::var_os(RENDERIDE_INTERPROCESS_DIR_ENV)
+                    .filter(|s| !s.is_empty())
+                    .map_or_else(interprocess::default_memory_dir, PathBuf::from)
+            });
             std::fs::create_dir_all(&dir).map_err(SharedMemoryWriterError::Io)?;
             let file_path = dir.join(format!(
                 "{}.qu",
@@ -428,6 +435,7 @@ mod tests {
         let cfg = SharedMemoryWriterConfig {
             prefix: "test_capacity_zero".into(),
             destroy_on_drop: true,
+            ..SharedMemoryWriterConfig::default()
         };
         let err = SharedMemoryWriter::open(cfg, 0, 0).expect_err("capacity zero");
         assert!(matches!(err, SharedMemoryWriterError::CapacityZero));
@@ -440,6 +448,7 @@ mod tests {
         let cfg = SharedMemoryWriterConfig {
             prefix,
             destroy_on_drop: true,
+            ..SharedMemoryWriterConfig::default()
         };
         let writer = SharedMemoryWriter::open(cfg, 1, 1024).expect("open writer");
         let d = writer.descriptor_for(16, 64);
@@ -455,6 +464,7 @@ mod tests {
         let cfg = SharedMemoryWriterConfig {
             prefix,
             destroy_on_drop: true,
+            ..SharedMemoryWriterConfig::default()
         };
         let mut writer = SharedMemoryWriter::open(cfg, 7, 256).expect("open writer");
         writer.write_at(0, b"hello world").expect("write");
@@ -467,6 +477,7 @@ mod tests {
         let cfg = SharedMemoryWriterConfig {
             prefix,
             destroy_on_drop: true,
+            ..SharedMemoryWriterConfig::default()
         };
         let mut writer = SharedMemoryWriter::open(cfg, 9, 16).expect("open writer");
         let err = writer.write_at(10, b"too long").expect_err("oob");
