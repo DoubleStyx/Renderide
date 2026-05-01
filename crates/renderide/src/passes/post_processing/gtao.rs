@@ -1,216 +1,59 @@
-//! Ground-Truth Ambient Occlusion (Jimenez et al. 2016) render pass.
+//! Ground-Truth Ambient Occlusion (Jimenez et al. 2016) post-processing effect with
+//! XeGTAO-style depth-aware bilateral denoise.
 //!
-//! Reads the chain's HDR scene color and the scene depth buffer, reconstructs view-space normals
-//! from depth derivatives, evaluates the analytic cosine-weighted GTAO integral with a single
-//! horizon direction per pixel (spatially jittered 4×4 + per-frame phase rotation), applies the
-//! multi-bounce fit for near-field indirect light, and writes the HDR scene color modulated by
-//! the resulting visibility factor. Must run **before** tonemapping so AO acts on linear light.
+//! Registers a three-stage chain on the post-processing graph builder:
 //!
-//! Multiview is handled the same way as [`crate::passes::AcesTonemapPass`]: two
-//! pipeline variants (mono / multiview) picked via a `multiview_mask_override` of
-//! `NonZeroU32::new(3)` in stereo, with `#ifdef MULTIVIEW` in the shader selecting
-//! `@builtin(view_index)` and the depth-array sample path.
+//! 1. [`main_pass::GtaoMainPass`] — produces the AO term (scaled by
+//!    `1 / OCCLUSION_TERM_SCALE` per XeGTAO's headroom convention) and packed depth-edge
+//!    weights from the imported scene depth. The HDR scene-color input is *not* read here;
+//!    modulation is deferred to the apply stage so the bilateral denoiser can act on the AO
+//!    term first.
+//! 2. [`denoise_pass::GtaoDenoisePass`] — XeGTAO 3×3 edge-preserving bilateral filter.
+//!    Only registered when [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`.
+//! 3. [`apply_pass::GtaoApplyPass`] — final denoise iteration that multiplies the AO term by
+//!    `OCCLUSION_TERM_SCALE` to recover the true visibility, then modulates HDR scene color
+//!    and writes the chain's HDR output. Always registered. The shader short-circuits the
+//!    kernel when `denoise_blur_beta <= 0`, so `denoise_passes == 0` collapses to a
+//!    "modulate by raw AO" path without re-binding a different pipeline.
+//!
+//! Multiview (stereo) is handled by per-stage pipeline variants (mono / multiview-stereo)
+//! picked via a `multiview_mask_override` of `NonZeroU32::new(3)` in stereo, with
+//! `#ifdef MULTIVIEW` in each shader selecting `@builtin(view_index)` and the array depth
+//! sample path.
 
+mod apply_pass;
+mod denoise_pass;
+mod main_pass;
 mod pipeline;
 
-use std::num::NonZeroU32;
 use std::sync::LazyLock;
 
-use pipeline::{GtaoParamsGpu, GtaoPipelineCache};
+use apply_pass::{GtaoApplyPass, GtaoApplyResources};
+use denoise_pass::{GtaoDenoisePass, GtaoDenoiseResources};
+use main_pass::{GtaoMainPass, GtaoMainResources};
+use pipeline::{AO_TERM_FORMAT, EDGES_FORMAT, GtaoPipelines};
 
 use crate::config::{GtaoSettings, PostProcessingSettings};
-use crate::passes::helpers::{
-    color_attachment, missing_pass_resource, read_fragment_sampled_texture,
-};
-use crate::passes::post_processing::settings_slot::GtaoSettingsSlot;
 use crate::render_graph::builder::GraphBuilder;
-use crate::render_graph::compiled::RenderPassTemplate;
-use crate::render_graph::context::RasterPassCtx;
-use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::PerViewFramePlanSlot;
-use crate::render_graph::gpu_cache::raster_stereo_mask_override;
-use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::post_processing::{EffectPasses, PostProcessEffect, PostProcessEffectId};
 use crate::render_graph::resources::{
-    BufferAccess, ImportedBufferHandle, ImportedTextureHandle, TextureAccess, TextureHandle,
+    ImportedBufferHandle, ImportedTextureHandle, TextureHandle, TransientArrayLayers,
+    TransientExtent, TransientSampleCount, TransientTextureDesc, TransientTextureFormat,
 };
 
-/// Graph handles for [`GtaoPass`].
-#[derive(Clone, Copy, Debug)]
-pub struct GtaoGraphResources {
-    /// HDR scene-color input (chain stage's previous output, or the forward HDR target).
-    pub input: TextureHandle,
-    /// HDR chain output written by this pass (input × AO factor).
-    pub output: TextureHandle,
-    /// Frame depth texture (declared as a sampled dependency so the scheduler sees the read;
-    /// the record path builds its own depth-only `TextureView` from `frame.view.depth_texture`
-    /// since `ResolvedImportedTexture` only exposes the attachment view).
-    pub depth: ImportedTextureHandle,
-    /// Legacy-path fallback for the frame-uniforms buffer. In normal per-view rendering, the
-    /// actual buffer bound at record time is [`PerViewFramePlan::frame_uniform_buffer`] (read
-    /// from the blackboard); this import is kept only for graph-scheduling declaration and
-    /// fallback when the per-view slot is absent.
-    pub frame_uniforms: ImportedBufferHandle,
-}
-
-/// Fullscreen render pass applying GTAO to `input`, writing modulated HDR to `output`.
-pub struct GtaoPass {
-    /// Graph handles for this pass instance.
-    resources: GtaoGraphResources,
-    /// Live GTAO tunables captured at chain-build time and rewritten into the GPU UBO each record.
-    settings: GtaoSettings,
-    /// Process-wide cached pipelines, bind-group layouts, sampler, and params UBO.
-    pipelines: &'static GtaoPipelineCache,
-}
-
-impl GtaoPass {
-    /// Creates a new GTAO pass instance capturing the current settings snapshot.
-    pub fn new(resources: GtaoGraphResources, settings: GtaoSettings) -> Self {
-        Self {
-            resources,
-            settings,
-            pipelines: gtao_pipelines(),
-        }
-    }
-}
-
-/// Process-wide pipeline cache shared by every GTAO pass instance.
-fn gtao_pipelines() -> &'static GtaoPipelineCache {
-    static CACHE: LazyLock<GtaoPipelineCache> = LazyLock::new(GtaoPipelineCache::default);
-    &CACHE
-}
-
-impl RasterPass for GtaoPass {
-    fn name(&self) -> &str {
-        "Gtao"
-    }
-
-    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        read_fragment_sampled_texture(b, self.resources.input);
-        b.import_texture(
-            self.resources.depth,
-            TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::FRAGMENT,
-            },
-        );
-        b.import_buffer(
-            self.resources.frame_uniforms,
-            BufferAccess::Uniform {
-                stages: wgpu::ShaderStages::FRAGMENT,
-                dynamic_offset: false,
-            },
-        );
-        color_attachment(
-            b,
-            self.resources.output,
-            wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        );
-        Ok(())
-    }
-
-    fn multiview_mask_override(
-        &self,
-        ctx: &RasterPassCtx<'_, '_>,
-        template: &RenderPassTemplate,
-    ) -> Option<NonZeroU32> {
-        raster_stereo_mask_override(ctx, template)
-    }
-
-    fn record(
-        &self,
-        ctx: &mut RasterPassCtx<'_, '_>,
-        rpass: &mut wgpu::RenderPass<'_>,
-    ) -> Result<(), RenderPassError> {
-        profiling::scope!("post_processing::gtao");
-        let frame = &*ctx.pass_frame;
-        let graph_resources = ctx.graph_resources;
-        let Some(input_tex) = graph_resources.transient_texture(self.resources.input) else {
-            return Err(missing_pass_resource(
-                self.name(),
-                format_args!("missing transient input {:?}", self.resources.input),
-            ));
-        };
-
-        // Bind the per-view frame-uniforms buffer when the per-view plan is populated (the
-        // default render path). The imported `frame_uniforms` handle resolves to the shared
-        // `FrameResourceManager` buffer, which is only written by the shared-frame path —
-        // binding it in per-view mode would leave the shader reading zeros and producing NaN
-        // through `linearize_depth` / `view_pos_from_uv`, which `saturate` collapses to 0.
-        let per_view_buffer = ctx
-            .blackboard
-            .get::<PerViewFramePlanSlot>()
-            .map(|plan| plan.frame_uniform_buffer.clone());
-        let frame_uniform_buffer = match per_view_buffer {
-            Some(buf) => buf,
-            None => match graph_resources.imported_buffer(self.resources.frame_uniforms) {
-                Some(resolved) => resolved.buffer.clone(),
-                None => {
-                    return Err(missing_pass_resource(
-                        self.name(),
-                        "frame_uniforms not resolved",
-                    ));
-                }
-            },
-        };
-
-        let multiview_stereo = frame.view.multiview_stereo;
-        let target_format = output_attachment_format(self.resources.output, graph_resources);
-
-        let settings = ctx
-            .blackboard
-            .get::<GtaoSettingsSlot>()
-            .map_or(self.settings, |slot| slot.0);
-        let params = GtaoParamsGpu {
-            radius_world: settings.radius_meters.max(0.0),
-            max_pixel_radius: settings.max_pixel_radius.max(1.0),
-            intensity: settings.intensity.max(0.0),
-            step_count: settings.step_count.max(1),
-            falloff_range: settings.falloff_range.clamp(0.05, 1.0),
-            albedo_multibounce: settings.albedo_multibounce.clamp(0.0, 0.99),
-            align_pad_tail: [0.0; 2],
-        };
-        let params_buffer = self.pipelines.params_buffer(ctx.device);
-        // Route through the deferred `upload_batch` sink rather than calling
-        // `ctx.queue.write_buffer` directly so every queue write goes through the driver
-        // thread (matches the project's single-producer invariant for wgpu's queue).
-        ctx.upload_batch
-            .write_buffer(params_buffer, 0, bytemuck::bytes_of(&params));
-
-        let pipeline = self
-            .pipelines
-            .pipeline(ctx.device, target_format, multiview_stereo);
-        let bind_group = self.pipelines.bind_group(
-            ctx.device,
-            multiview_stereo,
-            &input_tex.texture,
-            frame.view.depth_texture,
-            &frame_uniform_buffer,
-        );
-        rpass.set_pipeline(pipeline.as_ref());
-        rpass.set_bind_group(0, &bind_group, &[]);
-        rpass.draw(0..3, 0..1);
-        Ok(())
-    }
-}
-
-/// Resolves the wgpu format the GTAO color attachment is bound to this frame.
-fn output_attachment_format(
-    output: TextureHandle,
-    graph_resources: &crate::render_graph::context::GraphResolvedResources,
-) -> wgpu::TextureFormat {
-    graph_resources
-        .transient_texture(output)
-        .map_or(wgpu::TextureFormat::Rgba16Float, |t| t.texture.format())
-}
-
-/// Effect descriptor that contributes a [`GtaoPass`] to the post-processing chain.
+/// Effect descriptor that contributes the GTAO three-pass chain to the post-processing
+/// chain.
 pub struct GtaoEffect {
-    /// Snapshot of the GTAO settings used when building the pass for this frame.
+    /// Snapshot of the GTAO settings used when building the chain for this frame. Live edits
+    /// after chain build flow in via
+    /// [`crate::passes::post_processing::settings_slot::GtaoSettingsSlot`] for non-topology
+    /// fields; topology fields (`enabled`, `denoise_passes`) trigger a graph rebuild via
+    /// [`crate::render_graph::post_processing::PostProcessChainSignature`].
     pub settings: GtaoSettings,
     /// Imported depth texture handle (declared as a sampled read for scheduling).
     pub depth: ImportedTextureHandle,
     /// Imported frame-uniforms buffer handle (fallback / scheduling; actual bind sources from
-    /// [`PerViewFramePlanSlot`] at record time).
+    /// [`crate::render_graph::frame_params::PerViewFramePlanSlot`] at record time).
     pub frame_uniforms: ImportedBufferHandle,
 }
 
@@ -229,127 +72,96 @@ impl PostProcessEffect for GtaoEffect {
         input: TextureHandle,
         output: TextureHandle,
     ) -> EffectPasses {
-        let pass_id = builder.add_raster_pass(Box::new(GtaoPass::new(
-            GtaoGraphResources {
-                input,
-                output,
+        let pipelines = gtao_pipelines();
+        let denoise_passes = self.settings.denoise_passes.min(2);
+
+        let ao_term_a = builder.create_texture(ao_buffer_desc("gtao_ao_term_a"));
+        let edges = builder.create_texture(ao_buffer_desc_format(
+            "gtao_edges",
+            TransientTextureFormat::Fixed(EDGES_FORMAT),
+        ));
+        let ao_term_b =
+            (denoise_passes >= 2).then(|| builder.create_texture(ao_buffer_desc("gtao_ao_term_b")));
+
+        let main = builder.add_raster_pass(Box::new(GtaoMainPass::new(
+            GtaoMainResources {
                 depth: self.depth,
                 frame_uniforms: self.frame_uniforms,
+                ao_term: ao_term_a,
+                edges,
             },
             self.settings,
+            pipelines,
         )));
-        EffectPasses::single(pass_id)
+
+        let (intermediate, ao_for_apply) = if let Some(ao_term_b) = ao_term_b {
+            let intermediate = builder.add_raster_pass(Box::new(GtaoDenoisePass::new(
+                GtaoDenoiseResources {
+                    ao_in: ao_term_a,
+                    edges,
+                    ao_out: ao_term_b,
+                },
+                self.settings,
+                pipelines,
+            )));
+            builder.add_edge(main, intermediate);
+            (Some(intermediate), ao_term_b)
+        } else {
+            (None, ao_term_a)
+        };
+
+        let apply = builder.add_raster_pass(Box::new(GtaoApplyPass::new(
+            GtaoApplyResources {
+                hdr_input: input,
+                ao_in: ao_for_apply,
+                edges,
+                hdr_output: output,
+            },
+            self.settings,
+            pipelines,
+        )));
+        builder.add_edge(intermediate.unwrap_or(main), apply);
+
+        EffectPasses {
+            first: main,
+            last: apply,
+        }
+    }
+}
+
+/// Process-wide pipeline + UBO singleton shared across every GTAO chain rebuild.
+fn gtao_pipelines() -> &'static GtaoPipelines {
+    static CACHE: LazyLock<GtaoPipelines> = LazyLock::new(GtaoPipelines::default);
+    &CACHE
+}
+
+/// Transient texture descriptor for the AO term ping-pong buffers (`R8Unorm`, frame array
+/// layers).
+fn ao_buffer_desc(label: &'static str) -> TransientTextureDesc {
+    ao_buffer_desc_format(label, TransientTextureFormat::Fixed(AO_TERM_FORMAT))
+}
+
+/// Transient texture descriptor for an `R8Unorm` GTAO buffer with a custom format slot.
+fn ao_buffer_desc_format(
+    label: &'static str,
+    format: TransientTextureFormat,
+) -> TransientTextureDesc {
+    TransientTextureDesc {
+        label,
+        format,
+        extent: TransientExtent::Backbuffer,
+        mip_levels: 1,
+        sample_count: TransientSampleCount::Fixed(1),
+        dimension: wgpu::TextureDimension::D2,
+        array_layers: TransientArrayLayers::Frame,
+        base_usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        alias: true,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render_graph::GraphBuilder;
-    use crate::render_graph::pass::PassBuilder;
-    use crate::render_graph::pass::node::PassKind;
-    use crate::render_graph::resources::{
-        AccessKind, BufferImportSource, ImportSource, ImportedBufferDecl, ImportedTextureDecl,
-        TextureAccess, TransientArrayLayers, TransientExtent, TransientSampleCount,
-        TransientTextureDesc, TransientTextureFormat,
-    };
-
-    fn fake_graph() -> (
-        GraphBuilder,
-        TextureHandle,
-        TextureHandle,
-        ImportedTextureHandle,
-        ImportedBufferHandle,
-    ) {
-        let mut builder = GraphBuilder::new();
-        let desc = || TransientTextureDesc {
-            label: "pp_hdr",
-            format: TransientTextureFormat::SceneColorHdr,
-            extent: TransientExtent::Backbuffer,
-            mip_levels: 1,
-            sample_count: TransientSampleCount::Fixed(1),
-            dimension: wgpu::TextureDimension::D2,
-            array_layers: TransientArrayLayers::Frame,
-            base_usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-            alias: true,
-        };
-        let input = builder.create_texture(desc());
-        let output = builder.create_texture(desc());
-        let depth = builder.import_texture(ImportedTextureDecl {
-            label: "frame_depth",
-            source: ImportSource::Frame(
-                crate::render_graph::resources::FrameTargetRole::DepthAttachment,
-            ),
-            initial_access: TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::FRAGMENT,
-            },
-            final_access: TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::FRAGMENT,
-            },
-        });
-        let frame_uniforms = builder.import_buffer(ImportedBufferDecl {
-            label: "frame_uniforms",
-            source: BufferImportSource::Frame(
-                crate::render_graph::resources::BackendFrameBufferKind::FrameUniforms,
-            ),
-            initial_access: BufferAccess::Uniform {
-                stages: wgpu::ShaderStages::FRAGMENT,
-                dynamic_offset: false,
-            },
-            final_access: BufferAccess::Uniform {
-                stages: wgpu::ShaderStages::FRAGMENT,
-                dynamic_offset: false,
-            },
-        });
-        (builder, input, output, depth, frame_uniforms)
-    }
-
-    #[test]
-    fn setup_declares_sampled_input_and_raster_output_and_uniform_buffer() {
-        let (_builder, input, output, depth, frame_uniforms) = fake_graph();
-        let mut pass = GtaoPass::new(
-            GtaoGraphResources {
-                input,
-                output,
-                depth,
-                frame_uniforms,
-            },
-            GtaoSettings::default(),
-        );
-        let mut b = PassBuilder::new("Gtao");
-        pass.setup(&mut b).expect("setup");
-        let setup = b.finish().expect("finish");
-        assert_eq!(setup.kind, PassKind::Raster);
-        let sampled_reads = setup
-            .accesses
-            .iter()
-            .filter(|a| {
-                matches!(
-                    &a.access,
-                    AccessKind::Texture(TextureAccess::Sampled {
-                        stages: wgpu::ShaderStages::FRAGMENT,
-                        ..
-                    })
-                )
-            })
-            .count();
-        assert!(
-            sampled_reads >= 2,
-            "expected sampled reads for both HDR input and depth (got {sampled_reads})"
-        );
-        assert!(
-            setup.accesses.iter().any(|a| matches!(
-                &a.access,
-                AccessKind::Buffer(BufferAccess::Uniform {
-                    stages: wgpu::ShaderStages::FRAGMENT,
-                    ..
-                })
-            )),
-            "expected uniform-buffer read of frame_uniforms"
-        );
-        assert_eq!(setup.color_attachments.len(), 1);
-    }
 
     #[test]
     fn gtao_effect_id_label() {
@@ -381,5 +193,19 @@ mod tests {
         s.gtao.enabled = true;
         s.enabled = false;
         assert!(!e.is_enabled(&s), "master off disables even if gtao on");
+    }
+
+    /// The WGSL `GtaoParams` struct is 32 bytes (8 × 4); changes here require updating
+    /// `gtao_main.wgsl`, `gtao_denoise.wgsl`, and `gtao_apply.wgsl` simultaneously.
+    #[test]
+    fn gtao_params_gpu_size_is_32_bytes() {
+        assert_eq!(size_of::<pipeline::GtaoParamsGpu>(), 32);
+    }
+
+    /// Verifies the bundle of caches constructs (which exercises the manual `Default`
+    /// implementations in `pipeline.rs` that pick bounded bind-group caches).
+    #[test]
+    fn pipeline_caches_default_construct() {
+        let _ = GtaoPipelines::default();
     }
 }

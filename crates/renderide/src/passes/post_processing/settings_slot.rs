@@ -5,10 +5,10 @@ use crate::render_graph::blackboard::BlackboardSlot;
 /// Blackboard slot for the live [`crate::config::GtaoSettings`] snapshot.
 ///
 /// Seeded each frame from [`crate::config::RendererSettings`] before per-view recording so
-/// [`crate::passes::post_processing::GtaoPass`] reads the current slider values without
-/// rebuilding the compiled render graph. Slider changes don't flip
-/// [`crate::render_graph::post_processing::chain::PostProcessChainSignature`] (which tracks
-/// enable flags only) — this slot is the path that propagates parameter edits into the UBO.
+/// the GTAO chain ([`crate::passes::post_processing::GtaoEffect`]) reads the current slider
+/// values without rebuilding the compiled render graph. Non-topology slider changes don't
+/// flip [`crate::render_graph::post_processing::chain::PostProcessChainSignature`] — this
+/// slot is the path that propagates those edits into the per-stage UBO writes.
 pub struct GtaoSettingsSlot;
 impl BlackboardSlot for GtaoSettingsSlot {
     type Value = GtaoSettingsValue;
