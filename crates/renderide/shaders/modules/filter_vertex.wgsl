@@ -12,8 +12,9 @@ struct VertexOutput {
     @location(0) primary_uv: vec2<f32>,
     @location(1) world_pos: vec3<f32>,
     @location(2) world_n: vec3<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
-    @location(4) view_n: vec3<f32>,
+    @location(3) world_t: vec4<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
+    @location(5) view_n: vec3<f32>,
 }
 
 struct RectVertexOutput {
@@ -38,11 +39,13 @@ fn vertex_main(
     let world_p = mv::world_position(d, pos);
     let vp = mv::select_view_proj(d, view_idx);
     let world_n = rmath::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
+    let world_t = vec4<f32>(d.normal_matrix * t.xyz, t.w);
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
     out.primary_uv = primary_uv;
     out.world_pos = world_p.xyz;
     out.world_n = world_n;
+    out.world_t = world_t;
     out.view_layer = view_idx;
     out.view_n = vb::world_to_view_normal(world_n, vp);
     return out;

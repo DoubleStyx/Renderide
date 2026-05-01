@@ -71,9 +71,9 @@ fn decode_normal_world(
     front_facing: bool,
     flip_back_face: bool,
 ) -> mat3x3<f32> {
-    var n = xb::safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0));
-    var t = xb::safe_normalize(world_t, pnorm::orthonormal_tbn(n)[0]);
-    var b = xb::safe_normalize(world_b, pnorm::orthonormal_tbn(n)[1]);
+    var n = xb::safe_normalize(world_n, vec3<f32>(0.0, 0.0, 1.0));
+    var t = xb::safe_normalize(world_t, vec3<f32>(1.0, 0.0, 0.0));
+    var b = xb::safe_normalize(world_b, vec3<f32>(0.0, 1.0, 0.0));
 
     if (flip_back_face && !front_facing) {
         n = -n;
