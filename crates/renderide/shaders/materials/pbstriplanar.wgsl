@@ -306,5 +306,3 @@ fn fs_forward_base(
         s.alpha,
     );
 }
-
-/// Forward-add pass: additive accumulation of local (point/spot) lights.
