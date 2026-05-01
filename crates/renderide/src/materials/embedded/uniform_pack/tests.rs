@@ -115,6 +115,14 @@ mod text_uniform_packing_tests {
         asset_id | ((HostTextureAssetKind::RenderTexture as i32) << pack_type_shift)
     }
 
+    fn packed_texture2d(asset_id: i32) -> i32 {
+        use crate::assets::texture::HostTextureAssetKind;
+
+        let type_bits = 3u32;
+        let pack_type_shift = 32u32.saturating_sub(type_bits);
+        asset_id | ((HostTextureAssetKind::Texture2D as i32) << pack_type_shift)
+    }
+
     #[test]
     fn cutout_blend_mode_infers_alpha_clip_from_canonical_blend_mode() {
         let mut store = MaterialPropertyStore::new();
@@ -566,6 +574,93 @@ mod text_uniform_packing_tests {
         );
         assert_eq!(
             inferred_keyword_float_f32("_ALBEDOTEX", &store, lookup(4), &ids),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn fresnel_texture_keyword_infers_from_far_or_near_textures() {
+        let reg = PropertyIdRegistry::new();
+        let ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+
+        for (i, property_name) in [
+            "_FarTex",
+            "_NearTex",
+            "_FarTex0",
+            "_NearTex0",
+            "_FarTex1",
+            "_NearTex1",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let material_id = 50 + i as i32;
+            let mut store = MaterialPropertyStore::new();
+            store.set_material(
+                material_id,
+                reg.intern(property_name),
+                MaterialPropertyValue::Texture(packed_texture2d(100 + i as i32)),
+            );
+            assert_eq!(
+                inferred_keyword_float_f32("_TEXTURE", &store, lookup(material_id), &ids),
+                Some(1.0),
+                "{property_name} should enable _TEXTURE"
+            );
+        }
+    }
+
+    #[test]
+    fn gradient_keyword_infers_from_gradient_texture() {
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+        store.set_material(
+            60,
+            reg.intern("_Gradient"),
+            MaterialPropertyValue::Texture(packed_texture2d(14)),
+        );
+
+        assert_eq!(
+            inferred_keyword_float_f32("GRADIENT", &store, lookup(60), &ids),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn normalmap_keyword_infers_from_normal_map_zero() {
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+        store.set_material(
+            61,
+            reg.intern("_NormalMap0"),
+            MaterialPropertyValue::Texture(packed_texture2d(15)),
+        );
+
+        assert_eq!(
+            inferred_keyword_float_f32("_NORMALMAP", &store, lookup(61), &ids),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn clip_keyword_stays_off_from_clip_range_properties_only() {
+        let mut store = MaterialPropertyStore::new();
+        let reg = PropertyIdRegistry::new();
+        let ids = StemEmbeddedPropertyIds::minimal_for_tests(&reg);
+        store.set_material(
+            62,
+            reg.intern("_ClipMin"),
+            MaterialPropertyValue::Float(0.0),
+        );
+        store.set_material(
+            62,
+            reg.intern("_ClipMax"),
+            MaterialPropertyValue::Float(10.0),
+        );
+
+        assert_eq!(
+            inferred_keyword_float_f32("CLIP", &store, lookup(62), &ids),
             Some(0.0)
         );
     }

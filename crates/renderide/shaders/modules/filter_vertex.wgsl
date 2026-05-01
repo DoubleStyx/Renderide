@@ -16,6 +16,16 @@ struct VertexOutput {
     @location(4) view_n: vec3<f32>,
 }
 
+struct RectVertexOutput {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) primary_uv: vec2<f32>,
+    @location(1) world_pos: vec3<f32>,
+    @location(2) world_n: vec3<f32>,
+    @location(3) @interpolate(flat) view_layer: u32,
+    @location(4) view_n: vec3<f32>,
+    @location(5) obj_xy: vec2<f32>,
+}
+
 fn vertex_main(
     instance_index: u32,
     view_idx: u32,
@@ -34,5 +44,24 @@ fn vertex_main(
     out.world_n = world_n;
     out.view_layer = view_idx;
     out.view_n = vb::world_to_view_normal(world_n, vp);
+    return out;
+}
+
+fn rect_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    primary_uv: vec2<f32>,
+) -> RectVertexOutput {
+    let inner = vertex_main(instance_index, view_idx, pos, n, primary_uv);
+    var out: RectVertexOutput;
+    out.clip_pos = inner.clip_pos;
+    out.primary_uv = inner.primary_uv;
+    out.world_pos = inner.world_pos;
+    out.world_n = inner.world_n;
+    out.view_layer = inner.view_layer;
+    out.view_n = inner.view_n;
+    out.obj_xy = pos.xy;
     return out;
 }

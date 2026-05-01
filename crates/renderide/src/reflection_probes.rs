@@ -578,16 +578,13 @@ fn gradient_sky_visible_color_for_dir(dir: Vec3, params: &Sh2ProjectParams) -> V
     for i in 0..count {
         let dirs_spread = params.dirs_spread[i];
         let gradient_params = params.gradient_params[i];
-        let axis = Vec3::new(dirs_spread[0], dirs_spread[1], dirs_spread[2]).normalize();
-        let spread = dirs_spread[3].abs().max(0.000_001);
-        let expv = gradient_params[1].max(0.000_001);
-        let fromv = gradient_params[2];
-        let tov = gradient_params[3];
-        let denom = (tov - fromv).abs().max(0.000_001);
-        let mut r = (0.5 - dir.dot(axis) * 0.5) / spread;
+        let axis = Vec3::new(dirs_spread[0], dirs_spread[1], dirs_spread[2]);
+        let mut r = 0.5 - dir.dot(axis) * 0.5;
+        r /= dirs_spread[3];
         if r <= 1.0 {
-            r = r.max(0.0).powf(expv);
-            r = ((r - fromv) / denom).clamp(0.0, 1.0);
+            r = r.powf(gradient_params[1]);
+            r = ((r - gradient_params[2]) / (gradient_params[3] - gradient_params[2]))
+                .clamp(0.0, 1.0);
             let c0 = Vec4::from_array(params.gradient_color0[i]);
             let c1 = Vec4::from_array(params.gradient_color1[i]);
             let c = c0.lerp(c1, r);
@@ -803,6 +800,21 @@ mod tests {
         assert!((minus_x - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-6);
         assert!((plus_y - Vec3::new(0.5, 0.0, 0.5)).length() < 1e-6);
         assert!((plus_z - Vec3::new(0.5, 0.0, 0.5)).length() < 1e-6);
+    }
+
+    #[test]
+    fn gradient_sky_sampling_keeps_raw_unity_direction_magnitude() {
+        let mut params = Sh2ProjectParams::empty(SkyParamMode::Gradient);
+        params.color0 = [0.0, 0.0, 0.0, 1.0];
+        params.gradient_count = 1;
+        params.dirs_spread[0] = [0.5, 0.0, 0.0, 1.0];
+        params.gradient_color0[0] = [1.0, 0.0, 0.0, 1.0];
+        params.gradient_color1[0] = [0.0, 0.0, 1.0, 1.0];
+        params.gradient_params[0] = [0.0, 1.0, 0.0, 1.0];
+
+        let plus_x = gradient_sky_visible_color_for_dir(Vec3::X, &params);
+
+        assert!((plus_x - Vec3::new(0.75, 0.0, 0.25)).length() < 1e-6);
     }
 
     /// Verifies procedural sky params preserve visible-shader sun and exposure semantics.

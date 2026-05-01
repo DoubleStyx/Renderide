@@ -88,9 +88,18 @@ fn blend_keyword_inferred(
 fn texture_keyword_pids(field_name: &str, kw: &EmbeddedSharedKeywordIds) -> Option<Vec<i32>> {
     Some(match field_name {
         "_LERPTEX" => vec![kw.lerp_tex],
+        "_TEXTURE" => vec![
+            kw.far_tex,
+            kw.near_tex,
+            kw.far_tex0,
+            kw.near_tex0,
+            kw.far_tex1,
+            kw.near_tex1,
+        ],
+        "GRADIENT" => vec![kw.gradient],
         "_ALBEDOTEX" => vec![kw.main_tex, kw.main_tex1],
         "_EMISSION" | "_EMISSIONTEX" => vec![kw.emission_map, kw.emission_map1],
-        "_NORMALMAP" => vec![kw.normal_map, kw.normal_map1, kw.bump_map],
+        "_NORMALMAP" => vec![kw.normal_map, kw.normal_map0, kw.normal_map1, kw.bump_map],
         "_SPECULARMAP" => vec![kw.specular_map, kw.specular_map1, kw.spec_gloss_map],
         "_METALLICGLOSSMAP" => vec![kw.metallic_gloss_map],
         "_METALLICMAP" => vec![kw.metallic_map, kw.metallic_map1, kw.metallic_gloss_map],

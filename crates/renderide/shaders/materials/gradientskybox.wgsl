@@ -28,13 +28,11 @@ fn gradient_color(ray_in: vec3<f32>) -> vec4<f32> {
     for (var i = 0u; i < count; i = i + 1u) {
         let dirs_spread = mat._DirsSpread[i];
         let params = mat._Params[i];
-        let spread = max(abs(dirs_spread.w), 0.000001);
-        let expv = max(params.y, 0.000001);
-        let denom = max(abs(params.w - params.z), 0.000001);
-        var r = (0.5 - dot(ray, normalize(dirs_spread.xyz)) * 0.5) / spread;
+        var r = 0.5 - dot(ray, dirs_spread.xyz) * 0.5;
+        r = r / dirs_spread.w;
         if (r <= 1.0) {
-            r = pow(max(r, 0.0), expv);
-            r = clamp((r - params.z) / denom, 0.0, 1.0);
+            r = pow(r, params.y);
+            r = clamp((r - params.z) / (params.w - params.z), 0.0, 1.0);
             let c = mix(mat._Color0[i], mat._Color1[i], r);
             if (params.x == 0.0) {
                 col = col * (1.0 - c.a) + c.rgb * c.a;

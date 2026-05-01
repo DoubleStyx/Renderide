@@ -61,15 +61,11 @@ fn sample_gradient(params: SkyboxEvaluatorParams, ray: vec3<f32>) -> vec3<f32> {
     for (var i = 0u; i < count; i = i + 1u) {
         let dirs_spread = params.dirs_spread[i];
         let gradient_params = params.gradient_params[i];
-        let spread = max(abs(dirs_spread.w), 0.000001);
-        let expv = max(gradient_params.y, 0.000001);
-        let fromv = gradient_params.z;
-        let tov = gradient_params.w;
-        let denom = max(abs(tov - fromv), 0.000001);
-        var r = (0.5 - dot(ray, normalize(dirs_spread.xyz)) * 0.5) / spread;
+        var r = 0.5 - dot(ray, dirs_spread.xyz) * 0.5;
+        r = r / dirs_spread.w;
         if (r <= 1.0) {
-            r = pow(max(r, 0.0), expv);
-            r = clamp((r - fromv) / denom, 0.0, 1.0);
+            r = pow(r, gradient_params.y);
+            r = clamp((r - gradient_params.z) / (gradient_params.w - gradient_params.z), 0.0, 1.0);
             let c = mix(params.gradient_color_a[i], params.gradient_color_b[i], r);
             if (gradient_params.x == 0.0) {
                 color = color * (1.0 - c.a) + c.rgb * c.a;

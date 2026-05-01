@@ -97,27 +97,6 @@ fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, l: f32) -> vec3<f32> {
     return n;
 }
 
-fn sample_set_color(
-    far_tex: texture_2d<f32>,
-    far_sampler: sampler,
-    near_tex: texture_2d<f32>,
-    near_sampler: sampler,
-    uv: vec2<f32>,
-    far_st: vec4<f32>,
-    near_st: vec4<f32>,
-    far_color: vec4<f32>,
-    near_color: vec4<f32>,
-    fresnel: f32,
-) -> vec4<f32> {
-    var far = far_color;
-    var near = near_color;
-    if (uvu::kw_enabled(mat._TEXTURE)) {
-        far = far * textureSample(far_tex, far_sampler, uvu::apply_st(uv, far_st));
-        near = near * textureSample(near_tex, near_sampler, uvu::apply_st(uv, near_st));
-    }
-    return mix(near, far, fresnel);
-}
-
 //#pass forward
 @fragment
 fn fs_main(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
@@ -128,30 +107,16 @@ fn fs_main(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
     let exp = mix(mat._Exp0, mat._Exp1, l);
     let fresnel = mf::view_angle_fresnel(n, view_dir, exp, mat._GammaCurve);
 
-    let col0 = sample_set_color(
-        _FarTex0,
-        _FarTex0_sampler,
-        _NearTex0,
-        _NearTex0_sampler,
-        in.primary_uv,
-        mat._FarTex0_ST,
-        mat._NearTex0_ST,
-        mat._FarColor0,
-        mat._NearColor0,
-        fresnel,
-    );
-    let col1 = sample_set_color(
-        _FarTex1,
-        _FarTex1_sampler,
-        _NearTex1,
-        _NearTex1_sampler,
-        in.primary_uv,
-        mat._FarTex1_ST,
-        mat._NearTex1_ST,
-        mat._FarColor1,
-        mat._NearColor1,
-        fresnel,
-    );
+    var far_color = mix(mat._FarColor0, mat._FarColor1, l);
+    var near_color = mix(mat._NearColor0, mat._NearColor1, l);
+    if (uvu::kw_enabled(mat._TEXTURE)) {
+        let far_tex0 = textureSample(_FarTex0, _FarTex0_sampler, uvu::apply_st(in.primary_uv, mat._FarTex0_ST));
+        let far_tex1 = textureSample(_FarTex1, _FarTex1_sampler, uvu::apply_st(in.primary_uv, mat._FarTex1_ST));
+        let near_tex0 = textureSample(_NearTex0, _NearTex0_sampler, uvu::apply_st(in.primary_uv, mat._NearTex0_ST));
+        let near_tex1 = textureSample(_NearTex1, _NearTex1_sampler, uvu::apply_st(in.primary_uv, mat._NearTex1_ST));
+        far_color = far_color * mix(far_tex0, far_tex1, l);
+        near_color = near_color * mix(near_tex0, near_tex1, l);
+    }
 
-    return rg::retain_globals_additive(mix(col0, col1, l));
+    return rg::retain_globals_additive(mix(near_color, far_color, fresnel));
 }
