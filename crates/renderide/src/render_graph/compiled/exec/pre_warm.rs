@@ -2,6 +2,7 @@
 //! loop so the loop can later fan out across rayon workers without mutating shared backend state.
 
 use hashbrown::HashMap;
+use hashbrown::HashSet;
 use hashbrown::hash_map::Entry;
 
 use super::super::super::context::GraphResolvedResources;
@@ -129,8 +130,8 @@ impl CompiledRenderGraph {
         views: &[FrameView<'_>],
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::pre_warm_per_view");
-        let mut mesh_ids_needing_uv1_stream = std::collections::HashSet::new();
-        let mut mesh_ids_needing_extended_streams = std::collections::HashSet::new();
+        let mut mesh_ids_needing_uv1_stream: HashSet<i32> = HashSet::new();
+        let mut mesh_ids_needing_extended_streams: HashSet<i32> = HashSet::new();
         for view in views {
             let view_id = view.view_id();
             let viewport = view.target.extent_px(mv_ctx.gpu);
@@ -398,13 +399,13 @@ fn collect_unique_pipeline_requests(
     shader_perm: ShaderPermutation,
     out: &mut Vec<PipelineVariantKey>,
 ) {
-    let mut seen: std::collections::HashSet<(
+    let mut seen: HashSet<(
         i32,
         crate::materials::MaterialBlendMode,
         crate::materials::MaterialRenderState,
         crate::materials::RasterFrontFace,
         bool,
-    )> = std::collections::HashSet::new();
+    )> = HashSet::new();
     for item in items {
         let grab_pass = item.batch_key.embedded_uses_scene_color_snapshot;
         let key = (
