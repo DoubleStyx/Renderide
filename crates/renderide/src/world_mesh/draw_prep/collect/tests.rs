@@ -36,6 +36,7 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
         index_count: 3,
         material_asset_id: 9,
         property_block_id: None,
+        cull_geometry: None,
     }
 }
 

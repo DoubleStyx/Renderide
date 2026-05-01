@@ -12,11 +12,15 @@
 //! The cull step and [`super::item::WorldMeshDrawItem`] construction stay per-view because they
 //! depend on the view's camera, filter, and Hi-Z snapshot.
 
+use glam::Mat4;
 use rayon::prelude::*;
 
 use crate::gpu_pools::MeshPool;
 use crate::scene::{MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{LayerType, RenderingContext};
+use crate::world_mesh::culling::{
+    MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
+};
 
 use super::item::stacked_material_submesh_range;
 
@@ -63,6 +67,11 @@ pub(super) struct FramePreparedDraw {
     pub material_asset_id: i32,
     /// Per-slot property block id when present (distinct from `Some` for batching).
     pub property_block_id: Option<i32>,
+    /// Frame-time precomputed cull geometry (world AABB + rigid world matrix), shared across all
+    /// material slots of the same source renderer. `Some` when the source space is non-overlay
+    /// and therefore the geometry is view-invariant; `None` for overlay spaces (their world
+    /// matrix re-roots against the per-view `head_output_transform`, so cull recomputes per-view).
+    pub cull_geometry: Option<MeshCullGeometry>,
 }
 
 /// Frame-scope dense list of [`FramePreparedDraw`] entries across every active render space.
@@ -232,6 +241,8 @@ struct RenderableExpansion<'a> {
     world_space_deformed: bool,
     /// Whether the mesh has active blendshape weights this frame.
     blendshape_deformed: bool,
+    /// Frame-time precomputed cull geometry for the renderer (`None` for overlay spaces).
+    cull_geometry: Option<MeshCullGeometry>,
 }
 
 /// Expands every valid renderer (static and skinned) in `space_id` into `out`.
@@ -248,6 +259,8 @@ fn expand_space_into(
     if !space.is_active {
         return;
     }
+
+    let space_is_overlay = space.is_overlay;
 
     for (renderable_index, r) in space.static_mesh_renderers.iter().enumerate() {
         if r.mesh_asset_id < 0 || r.node_id < 0 {
@@ -266,6 +279,16 @@ fn expand_space_into(
         if mesh.submeshes.is_empty() {
             continue;
         }
+        let cull_geometry = precompute_cull_geometry(PrecomputeCullInputs {
+            scene,
+            space_id,
+            space_is_overlay,
+            mesh,
+            skinned: false,
+            skinned_renderer: None,
+            node_id: r.node_id,
+            render_context,
+        });
         expand_renderer_slots(
             out,
             scene,
@@ -279,6 +302,7 @@ fn expand_space_into(
                 skinned: false,
                 world_space_deformed: false,
                 blendshape_deformed: mesh.supports_active_blendshape_deform(&r.blend_shape_weights),
+                cull_geometry,
             },
         );
     }
@@ -304,6 +328,16 @@ fn expand_space_into(
         let world_space_deformed =
             mesh.supports_world_space_skin_deform(Some(sk.bone_transform_indices.as_slice()));
         let blendshape_deformed = mesh.supports_active_blendshape_deform(&r.blend_shape_weights);
+        let cull_geometry = precompute_cull_geometry(PrecomputeCullInputs {
+            scene,
+            space_id,
+            space_is_overlay,
+            mesh,
+            skinned: true,
+            skinned_renderer: Some(sk),
+            node_id: r.node_id,
+            render_context,
+        });
         expand_renderer_slots(
             out,
             scene,
@@ -317,9 +351,59 @@ fn expand_space_into(
                 skinned: true,
                 world_space_deformed,
                 blendshape_deformed,
+                cull_geometry,
             },
         );
     }
+}
+
+/// Bundle of inputs needed to precompute one renderer's cull geometry for the frame.
+struct PrecomputeCullInputs<'a> {
+    scene: &'a SceneCoordinator,
+    space_id: RenderSpaceId,
+    space_is_overlay: bool,
+    mesh: &'a crate::assets::mesh::GpuMesh,
+    skinned: bool,
+    skinned_renderer: Option<&'a crate::scene::SkinnedMeshRenderer>,
+    node_id: i32,
+    render_context: RenderingContext,
+}
+
+/// Computes per-renderer cull geometry once per frame for non-overlay spaces.
+///
+/// Returns `None` when the source space is overlay (its world matrix re-roots against the
+/// per-view `head_output_transform`, so the geometry is genuinely view-dependent and must stay
+/// per-view). For non-overlay spaces, [`mesh_world_geometry_for_cull_with_head`] is invoked with
+/// `Mat4::IDENTITY` because the matrix path it follows
+/// ([`SceneCoordinator::world_matrix_for_render_context`]) only multiplies by
+/// `head_output_transform` for overlay spaces.
+fn precompute_cull_geometry(inputs: PrecomputeCullInputs<'_>) -> Option<MeshCullGeometry> {
+    let PrecomputeCullInputs {
+        scene,
+        space_id,
+        space_is_overlay,
+        mesh,
+        skinned,
+        skinned_renderer,
+        node_id,
+        render_context,
+    } = inputs;
+    if space_is_overlay {
+        return None;
+    }
+    let target = MeshCullTarget {
+        scene,
+        space_id,
+        mesh,
+        skinned,
+        skinned_renderer,
+        node_id,
+    };
+    Some(mesh_world_geometry_for_cull_with_head(
+        &target,
+        Mat4::IDENTITY,
+        render_context,
+    ))
 }
 
 /// Expands one renderer's material slots mapped to submesh ranges into prepared draws.
@@ -342,6 +426,7 @@ fn expand_renderer_slots(
         skinned,
         world_space_deformed,
         blendshape_deformed,
+        cull_geometry,
     } = renderable;
     let fallback_slot;
     let slots: &[MeshMaterialSlot] = if !renderer.material_slots.is_empty() {
@@ -403,6 +488,7 @@ fn expand_renderer_slots(
             index_count,
             material_asset_id,
             property_block_id: slot.property_block_id,
+            cull_geometry,
         });
     }
 }

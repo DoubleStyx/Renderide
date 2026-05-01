@@ -34,8 +34,9 @@ use crate::materials::host_data::{
 
 use assemble::build_embedded_bind_group_entries;
 use cache::{
-    EmbeddedSamplerCacheKey, TextureDebugCacheKey, max_cached_embedded_bind_groups,
-    max_cached_embedded_samplers, max_cached_embedded_uniforms, max_cached_texture_debug_ids,
+    EMBEDDED_CACHE_SHARDS, EmbeddedSamplerCacheKey, ShardedLru, TextureDebugCacheKey,
+    max_cached_embedded_bind_groups, max_cached_embedded_samplers, max_cached_embedded_uniforms,
+    max_cached_texture_debug_ids,
 };
 use texture_signature::compute_uniform_texture_state_signature;
 use uniform::{CachedUniformEntry, EmbeddedUniformBufferRequest, MaterialUniformCacheKey};
@@ -53,9 +54,16 @@ pub struct EmbeddedMaterialBindResources {
     property_registry: Arc<PropertyIdRegistry>,
     shared_keyword_ids: Arc<EmbeddedSharedKeywordIds>,
     stem_cache: Mutex<HashMap<String, Arc<StemMaterialLayout>>>,
-    bind_cache: Mutex<LruCache<MaterialBindCacheKey, Arc<wgpu::BindGroup>>>,
-    uniform_cache: Mutex<LruCache<MaterialUniformCacheKey, CachedUniformEntry>>,
-    sampler_cache: Mutex<LruCache<EmbeddedSamplerCacheKey, Arc<wgpu::Sampler>>>,
+    /// Sharded LRU caches for `@group(1)` bind groups, packed uniform buffers, and samplers.
+    /// Each shard is a `parking_lot::Mutex<LruCache<...>>` so per-view rayon workers contend
+    /// only with workers whose cache key hashes into the same shard. Replaces the previous
+    /// single-`Mutex<LruCache<...>>` whose lock was the dominant contention point during
+    /// `graph::per_view_fan_out`.
+    bind_cache: ShardedLru<MaterialBindCacheKey, Arc<wgpu::BindGroup>>,
+    uniform_cache: ShardedLru<MaterialUniformCacheKey, CachedUniformEntry>,
+    sampler_cache: ShardedLru<EmbeddedSamplerCacheKey, Arc<wgpu::Sampler>>,
+    /// Texture-debug HUD cache stays a single mutex: per-stem call frequency is low and the
+    /// HUD does not run inside the per-view rayon fan-out, so sharding has no benefit here.
     texture_debug_cache: Mutex<LruCache<TextureDebugCacheKey, Arc<[i32]>>>,
 }
 
@@ -83,9 +91,9 @@ impl EmbeddedMaterialBindResources {
             property_registry,
             shared_keyword_ids,
             stem_cache: Mutex::new(HashMap::new()),
-            bind_cache: Mutex::new(LruCache::new(max_cached_embedded_bind_groups())),
-            uniform_cache: Mutex::new(LruCache::new(max_cached_embedded_uniforms())),
-            sampler_cache: Mutex::new(LruCache::new(max_cached_embedded_samplers())),
+            bind_cache: ShardedLru::new(max_cached_embedded_bind_groups(), EMBEDDED_CACHE_SHARDS),
+            uniform_cache: ShardedLru::new(max_cached_embedded_uniforms(), EMBEDDED_CACHE_SHARDS),
+            sampler_cache: ShardedLru::new(max_cached_embedded_samplers(), EMBEDDED_CACHE_SHARDS),
             texture_debug_cache: Mutex::new(LruCache::new(max_cached_texture_debug_ids())),
         })
     }
@@ -158,8 +166,7 @@ impl EmbeddedMaterialBindResources {
 
         let hit_bg = {
             profiling::scope!("materials::embedded_bind_cache_lookup");
-            let mut cache = self.bind_cache.lock();
-            cache.get(&bind_key).cloned()
+            self.bind_cache.get_cloned(&bind_key)
         };
         if let Some(bg) = hit_bg {
             profiling::scope!("materials::embedded_bind_cache_hit");
@@ -219,7 +226,7 @@ impl EmbeddedMaterialBindResources {
                 entries: &entries,
             }))
         };
-        let evicted = self.bind_cache.lock().put(bind_key, bind_group.clone());
+        let evicted = self.bind_cache.put(bind_key, bind_group.clone());
         if let Some(evicted) = evicted {
             drop(evicted);
             logger::trace!("EmbeddedMaterialBindResources: evicted LRU bind group cache entry");

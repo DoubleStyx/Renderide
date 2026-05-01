@@ -11,13 +11,14 @@ use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
 
 use super::frustum::world_aabb_visible_in_homogeneous_clip;
-use super::geometry::{MeshCullTarget, mesh_world_geometry_for_cull};
+use super::geometry::{MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull};
 use super::{HiZTemporalState, WorldMeshCullInput, WorldMeshCullProjParams};
 use crate::camera::view_matrix_for_world_mesh_render_space;
 use crate::occlusion::HiZCullData;
 use crate::occlusion::hi_z_view_proj_matrices;
 use crate::occlusion::mesh_fully_occluded_in_hiz;
 use crate::occlusion::stereo_hiz_keeps_draw;
+use crate::scene::SceneCoordinator;
 
 /// Frustum acceptance for one world AABB using the same stereo / overlay rules as the forward pass.
 fn cpu_cull_frustum_visible(
@@ -108,18 +109,33 @@ pub(crate) fn mesh_draw_passes_cpu_cull(
     render_context: RenderingContext,
 ) -> Result<Option<Mat4>, CpuCullFailure> {
     let geom = mesh_world_geometry_for_cull(target, culling, render_context);
+    mesh_cpu_cull_with_geometry(geom, target.scene, target.space_id, is_overlay, culling)
+}
 
+/// Like [`mesh_draw_passes_cpu_cull`] but skips the [`mesh_world_geometry_for_cull`] call when
+/// the caller already has a frame-time precomputed [`MeshCullGeometry`] (typical for non-overlay
+/// draws cached on [`crate::world_mesh::draw_prep::FramePreparedRenderables`]).
+///
+/// Frustum + Hi-Z tests stay per-view; only the matrix and AABB derivation is amortized. Returns
+/// the same `Result<Option<Mat4>, CpuCullFailure>` as [`mesh_draw_passes_cpu_cull`].
+pub(crate) fn mesh_cpu_cull_with_geometry(
+    geom: MeshCullGeometry,
+    scene: &SceneCoordinator,
+    space_id: RenderSpaceId,
+    is_overlay: bool,
+    culling: &WorldMeshCullInput<'_>,
+) -> Result<Option<Mat4>, CpuCullFailure> {
     let Some((wmin, wmax)) = geom.world_aabb else {
         return Ok(geom.rigid_world_matrix);
     };
 
-    let Some(space) = target.scene.space(target.space_id) else {
+    let Some(space) = scene.space(space_id) else {
         return Ok(geom.rigid_world_matrix);
     };
     let view = culling
         .host_camera
         .explicit_world_to_view()
-        .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(target.scene, space));
+        .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(scene, space));
     let proj = &culling.proj;
 
     if !cpu_cull_frustum_visible(proj, is_overlay, view, wmin, wmax) {
@@ -130,7 +146,7 @@ pub(crate) fn mesh_draw_passes_cpu_cull(
         return Ok(geom.rigid_world_matrix);
     }
 
-    if cpu_cull_hi_z_should_cull(target.space_id, wmin, wmax, culling) {
+    if cpu_cull_hi_z_should_cull(space_id, wmin, wmax, culling) {
         return Err(CpuCullFailure::HiZ);
     }
     Ok(geom.rigid_world_matrix)

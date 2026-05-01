@@ -544,15 +544,17 @@ impl CompiledRenderGraph {
             backbuffer_view_holder.as_ref(),
         )?;
 
-        // Drain all per-view and frame-global deferred writes onto the main thread before submit
-        // so every command buffer sees a coherent queue state.
-        {
+        // Drain the deferred upload arena into one staging buffer + N copy_buffer_to_buffer ops on
+        // a dedicated upload encoder. Submitted at the head of the batch so subsequent encoders'
+        // reads see the freshly copied uniforms / storage data.
+        let upload_cmd = {
             profiling::scope!("gpu::drain_upload_batch");
-            upload_batch.drain_and_flush(queue_ref);
+            upload_batch.drain_and_flush(mv_ctx.device, queue_ref)
         };
 
-        let all_cmds: Vec<wgpu::CommandBuffer> = frame_global_cmd
+        let all_cmds: Vec<wgpu::CommandBuffer> = upload_cmd
             .into_iter()
+            .chain(frame_global_cmd)
             .chain(per_view_cmds)
             .chain(per_view_profiler_cmd)
             .chain(hud_cmd)
