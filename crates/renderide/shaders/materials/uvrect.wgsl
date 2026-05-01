@@ -1,6 +1,6 @@
 //! UV Rect (Unity shader asset `UVRect`): colors inside/outside a UV-space rect.
 //!
-//! `_RectClip` is a synthetic helper field so the CPU packer can reuse existing `RECTCLIP` keyword handling.
+//! `_RectClip` is an explicit helper field; missing values default to clipping disabled.
 
 #import renderide::globals as rg
 #import renderide::math as rmath

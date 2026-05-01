@@ -418,7 +418,8 @@ fn mul_rgb_by_alpha_inferred(
 //      `MaterialProviderBase.cs:48-51`).
 //   2. A multi-compile keyword field (`_NORMALMAP`, `_ALPHATEST_ON`, etc.) — inferred by
 //      [`inferred_keyword_float_f32`] from texture presence / blend factor reconstruction.
-//   3. `_TextMode` / `_RectClip` / `_Cutoff` — handled by special-case probes in the caller.
+//   3. `_TextMode` / `_RectClip` / `_OVERLAY` explicit-zero defaults and `_Cutoff` — handled
+//      by special-case probes in the caller.
 //
 // Previously-held Unity-Properties{} fallback values are irrelevant: FrooxEngine supplies its own
 // initial values (from each `MaterialProvider.OnAwake()`), not Unity's. See the audit for detail.

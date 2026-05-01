@@ -68,13 +68,14 @@ pub(crate) struct UniformPackTextureContext<'a> {
 
 /// Builds CPU bytes for the reflected material uniform block.
 ///
-/// Every value comes from one of five sources, in priority order: texture storage-orientation
+/// Every value comes from one of six sources, in priority order: texture storage-orientation
 /// flags for fields following the [`STORAGE_V_INVERTED_SUFFIX`] convention, host-sourced sampler
 /// state for fields following the [`LOD_BIAS_SUFFIX`] convention (`_<Tex>_LodBias`), the host's
-/// property store (for host-declared properties), [`inferred_keyword_float_f32`] for multi-compile
-/// keyword fields (`_NORMALMAP`, `_ALPHATEST_ON`, …) the host cannot write because FrooxEngine
-/// routes them through the `ShaderKeywords.Variant` bitmask the renderer never receives, or the
-/// `default_vec4_for_field` table / a zero for the unobservable pre-first-batch window.
+/// property store (for host-declared properties), explicit-only zero-default fields such as UI
+/// text controls, [`inferred_keyword_float_f32`] for multi-compile keyword fields (`_NORMALMAP`,
+/// `_ALPHATEST_ON`, …) the host cannot write because FrooxEngine routes them through the
+/// `ShaderKeywords.Variant` bitmask the renderer never receives, or the `default_vec4_for_field`
+/// table / a zero for the unobservable pre-first-batch window.
 pub(crate) fn build_embedded_uniform_bytes(
     reflected: &ReflectedRasterLayout,
     ids: &StemEmbeddedPropertyIds,
@@ -113,6 +114,8 @@ pub(crate) fn build_embedded_uniform_bytes(
                 } else if field_name == "_Cutoff" {
                     // Unity-convention cutoff fallback for the pre-first-batch window.
                     0.5
+                } else if explicit_zero_default_f32_field(field_name) {
+                    0.0
                 } else {
                     inferred_keyword_float_f32(
                         shader_writer_unescaped_field_name(field_name),
@@ -136,6 +139,14 @@ pub(crate) fn build_embedded_uniform_bytes(
     }
 
     Some(buf)
+}
+
+/// Returns whether a scalar field must use only its canonical host property and otherwise default to zero.
+fn explicit_zero_default_f32_field(field_name: &str) -> bool {
+    matches!(
+        shader_writer_unescaped_field_name(field_name),
+        "_TextMode" | "_RectClip" | "_OVERLAY"
+    )
 }
 
 /// Resolves the texture binding associated with a field following a texture-name suffix convention.

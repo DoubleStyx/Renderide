@@ -4,10 +4,9 @@
 //! WGSL identifiers in `@group(1)` match Unity [`MaterialPropertyBlock`](https://docs.unity3d.com/ScriptReference/MaterialPropertyBlock.html)
 //! names; [`crate::materials::host_data::PropertyIdRegistry`] resolves them to batch property ids.
 //!
-//! **UI text (`_TextMode`, `_RectClip`):** When a reflected uniform field is named `_TextMode` or `_RectClip`,
-//! packing uses explicit `set_float` when present; otherwise keyword-style floats (`MSDF`, `RASTER`, `SDF`,
-//! `RECTCLIP`, case variants) are interpreted the same way FrooxEngine/Unity keyword bindings are—without
-//! hard-coding a particular shader stem in the draw pass.
+//! **Explicit UI controls (`_TextMode`, `_RectClip`, `_OVERLAY`):** packing uses canonical
+//! `set_float` values when present; otherwise these fields default to zero instead of falling
+//! through to keyword-style alias inference.
 
 mod assemble;
 mod cache;

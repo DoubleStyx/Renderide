@@ -10,7 +10,7 @@ mod text_uniform_packing_tests {
     use crate::gpu_pools::{
         CubemapPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
     };
-    use crate::materials::embedded::layout::StemEmbeddedPropertyIds;
+    use crate::materials::embedded::layout::{EmbeddedSharedKeywordIds, StemEmbeddedPropertyIds};
     use crate::materials::host_data::PropertyIdRegistry;
     use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
     use crate::materials::{ReflectedMaterialUniformBlock, ReflectedUniformScalarKind};
@@ -51,6 +51,59 @@ mod text_uniform_packing_tests {
             );
         }
         out
+    }
+
+    /// Extracts a packed f32 uniform from `bytes`.
+    fn read_f32_at(bytes: &[u8], offset: usize) -> f32 {
+        f32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("uniform f32 bytes"),
+        )
+    }
+
+    fn reflected_with_f32_fields(
+        field_specs: &[(&str, u32)],
+    ) -> (
+        ReflectedRasterLayout,
+        StemEmbeddedPropertyIds,
+        PropertyIdRegistry,
+    ) {
+        let registry = PropertyIdRegistry::new();
+        let mut fields = HashMap::new();
+        let mut total_size = 0u32;
+        for (field_name, field_offset) in field_specs {
+            fields.insert(
+                (*field_name).to_string(),
+                ReflectedUniformField {
+                    offset: *field_offset,
+                    size: 4,
+                    kind: ReflectedUniformScalarKind::F32,
+                },
+            );
+            total_size = total_size.max(field_offset.saturating_add(4));
+        }
+        let reflected = ReflectedRasterLayout {
+            layout_fingerprint: 0,
+            material_entries: Vec::new(),
+            per_draw_entries: Vec::new(),
+            material_uniform: Some(ReflectedMaterialUniformBlock {
+                binding: 0,
+                total_size,
+                fields,
+            }),
+            material_group1_names: HashMap::new(),
+            vs_max_vertex_location: None,
+            uses_scene_depth_snapshot: false,
+            uses_scene_color_snapshot: false,
+            requires_intersection_pass: false,
+        };
+        let ids = StemEmbeddedPropertyIds::build(
+            Arc::new(EmbeddedSharedKeywordIds::new(&registry)),
+            &registry,
+            &reflected,
+        );
+        (reflected, ids, registry)
     }
 
     /// Packs an asset id as a host render-texture material property.
@@ -422,6 +475,82 @@ mod text_uniform_packing_tests {
             .expect("uniform bytes");
 
         assert_eq!(read_f32x4(&bytes, 0), [2.0, 3.0, 0.25, 0.75]);
+    }
+
+    #[test]
+    fn explicit_ui_text_control_fields_pack_canonical_values() {
+        let (reflected, ids, registry) =
+            reflected_with_f32_fields(&[("_TextMode", 0), ("_RectClip", 4), ("_OVERLAY", 8)]);
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(
+            25,
+            registry.intern("_TextMode"),
+            MaterialPropertyValue::Float(2.0),
+        );
+        store.set_material(
+            25,
+            registry.intern("_RectClip"),
+            MaterialPropertyValue::Float(1.0),
+        );
+        store.set_material(
+            25,
+            registry.intern("_OVERLAY"),
+            MaterialPropertyValue::Float(1.0),
+        );
+        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+        let pools = EmbeddedTexturePools {
+            texture: &texture,
+            texture3d: &texture3d,
+            cubemap: &cubemap,
+            render_texture: &render_texture,
+            video_texture: &video_texture,
+        };
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+
+        let bytes = build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(25), &tex_ctx)
+            .expect("uniform bytes");
+
+        assert_eq!(read_f32_at(&bytes, 0), 2.0);
+        assert_eq!(read_f32_at(&bytes, 4), 1.0);
+        assert_eq!(read_f32_at(&bytes, 8), 1.0);
+    }
+
+    #[test]
+    fn explicit_ui_text_control_fields_ignore_keyword_aliases() {
+        let (reflected, ids, registry) =
+            reflected_with_f32_fields(&[("_TextMode", 0), ("_RectClip", 4), ("_OVERLAY", 8)]);
+        let mut store = MaterialPropertyStore::new();
+        for property_name in [
+            "TextMode", "textmode", "RectClip", "rectclip", "OVERLAY", "overlay",
+        ] {
+            store.set_material(
+                26,
+                registry.intern(property_name),
+                MaterialPropertyValue::Float(1.0),
+            );
+        }
+        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+        let pools = EmbeddedTexturePools {
+            texture: &texture,
+            texture3d: &texture3d,
+            cubemap: &cubemap,
+            render_texture: &render_texture,
+            video_texture: &video_texture,
+        };
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+
+        let bytes = build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(26), &tex_ctx)
+            .expect("uniform bytes");
+
+        assert_eq!(read_f32_at(&bytes, 0), 0.0);
+        assert_eq!(read_f32_at(&bytes, 4), 0.0);
+        assert_eq!(read_f32_at(&bytes, 8), 0.0);
     }
 
     #[test]
@@ -1221,6 +1350,43 @@ mod storage_orientation_uniform_tests {
 
         let bytes =
             build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(7), &tex_ctx).unwrap();
+        assert_eq!(read_f32_at(&bytes, 0), 0.0);
+    }
+
+    #[test]
+    fn font_atlas_storage_field_resolves_font_atlas_binding() {
+        let texture_pool = TexturePool::default_pool();
+        let texture3d_pool = Texture3dPool::default_pool();
+        let cubemap_pool = CubemapPool::default_pool();
+        let render_texture_pool = RenderTexturePool::new();
+        let video_texture_pool = VideoTexturePool::new();
+        let pools = EmbeddedTexturePools {
+            texture: &texture_pool,
+            texture3d: &texture3d_pool,
+            cubemap: &cubemap_pool,
+            render_texture: &render_texture_pool,
+            video_texture: &video_texture_pool,
+        };
+        let (reflected, ids, registry) = reflected_with_texture_and_field(
+            "_FontAtlas",
+            wgpu::TextureViewDimension::D2,
+            "_FontAtlas_StorageVInverted",
+            ReflectedUniformScalarKind::F32,
+            4,
+        );
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(
+            8,
+            registry.intern("_FontAtlas"),
+            MaterialPropertyValue::Texture(42),
+        );
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+
+        let bytes =
+            build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(8), &tex_ctx).unwrap();
         assert_eq!(read_f32_at(&bytes, 0), 0.0);
     }
 }

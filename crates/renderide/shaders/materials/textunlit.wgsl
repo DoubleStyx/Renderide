@@ -6,6 +6,7 @@
 #import renderide::alpha_clip_sample as acs
 #import renderide::mesh::vertex as mv
 #import renderide::text_sdf as tsdf
+#import renderide::uv_utils as uvu
 
 struct TextUnlitMaterial {
     _TintColor: vec4<f32>,
@@ -16,8 +17,10 @@ struct TextUnlitMaterial {
     _FaceSoftness: f32,
     _OutlineSize: f32,
     _TextMode: f32,
+    _FontAtlas_StorageVInverted: f32,
     _pad0: f32,
     _pad1: f32,
+    _pad2: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: TextUnlitMaterial;
@@ -51,7 +54,7 @@ fn vs_main(
 #endif
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
-    out.uv = vec2<f32>(uv.x, 1.0 - uv.y);
+    out.uv = uvu::flip_v_for_storage(uv, mat._FontAtlas_StorageVInverted);
     out.extra_data = extra_n;
     out.vtx_color = color;
     return out;

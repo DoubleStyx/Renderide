@@ -9,13 +9,12 @@
 //! **Glyph mode (Unity `RASTER` / `SDF` / `MSDF` keywords):** FrooxEngine always sends `_Range` from
 //! `PixelRange / atlasSize` for both raster and distance-field fonts, so **mode cannot be inferred from `_Range` alone**.
 //! Use **`_TextMode`**: `0` = MSDF (median RGB), `1` = RASTER (`atlas * tint`, alpha clip), `2` = SDF (single-channel alpha distance).
-//! The host may set `_TextMode` explicitly or rely on keyword floats (`MSDF`, `SDF`, `RASTER`) mapped in
-//! [`crate::backend::embedded_material_bind`].
+//! Missing `_TextMode` defaults to `0` / MSDF instead of inferring from keyword-like aliases.
 //!
 //! **Rect clip (Unity `RECTCLIP` keyword):** When **`_RectClip` > 0.5** and `_Rect` has non-zero area, fragments outside
-//! the rect in object XY are discarded. If `_RectClip` is unset, **`RECTCLIP` / `rectclip` keyword floats** are used.
+//! the rect in object XY are discarded. Missing `_RectClip` defaults to off.
 //!
-//! **OVERLAY** depth compositing is not implemented; when `_OverlayTint.a` is high, a simple tint approximation may be applied.
+//! **OVERLAY** depth compositing uses `_OVERLAY` to gate the scene-depth comparison before applying `_OverlayTint`.
 //!
 //! Per-draw uniforms (`@group(2)`) use [`renderide::per_draw`].
 
@@ -25,7 +24,9 @@
 #import renderide::alpha_clip_sample as acs
 #import renderide::mesh::vertex as mv
 #import renderide::text_sdf as tsdf
+#import renderide::scene_depth_sample as sds
 #import renderide::ui::rect_clip as uirc
+#import renderide::uv_utils as uvu
 
 struct UiTextUnlitMaterial {
     _TintColor: vec4<f32>,
@@ -41,6 +42,10 @@ struct UiTextUnlitMaterial {
     _TextMode: f32,
     /// `1` when rect clipping is enabled (Unity `RECTCLIP`); gates use of `_Rect`.
     _RectClip: f32,
+    /// `1` when overlay depth compositing is enabled (Unity `OVERLAY`).
+    _OVERLAY: f32,
+    /// `1` when `_FontAtlas` storage is already V-inverted and shader V-flip must be skipped.
+    _FontAtlas_StorageVInverted: f32,
     _pad: f32,
 }
 
@@ -54,6 +59,8 @@ struct VertexOutput {
     @location(1) extra_data: vec4<f32>,
     @location(2) vtx_color: vec4<f32>,
     @location(3) obj_xy: vec2<f32>,
+    @location(4) world_pos: vec3<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 }
 
 @vertex
@@ -76,10 +83,16 @@ fn vs_main(
 #endif
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
-    out.uv = vec2<f32>(uv.x, 1.0 - uv.y);
+    out.uv = uvu::flip_v_for_storage(uv, mat._FontAtlas_StorageVInverted);
     out.extra_data = extra_n;
     out.vtx_color = color;
     out.obj_xy = pos.xy;
+    out.world_pos = world_p.xyz;
+#ifdef MULTIVIEW
+    out.view_layer = view_idx;
+#else
+    out.view_layer = 0u;
+#endif
     return out;
 }
 
@@ -107,9 +120,12 @@ fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     let mode = tsdf::text_mode_clamped(mat._TextMode);
     var c = tsdf::shade_text_sample(atlas_color, atlas_clip, style, text_input, vtx_color, mode);
 
-    let o = mat._OverlayTint;
-    if (o.a > 0.01) {
-        c = vec4<f32>(c.rgb * mix(vec3<f32>(1.0), o.rgb, o.a), c.a);
+    if (mat._OVERLAY > 0.5) {
+        let scene_z = sds::scene_linear_depth(vout.clip_pos, vout.view_layer);
+        let part_z = sds::fragment_linear_depth(vout.world_pos, vout.view_layer);
+        if (part_z > scene_z) {
+            c = c * mat._OverlayTint;
+        }
     }
 
     return rg::retain_globals_additive(c);

@@ -384,6 +384,10 @@ mod tests {
             "ui_textunlit_default",
             mono
         ));
+        assert!(embedded_stem_uses_scene_depth_snapshot(
+            "ui_textunlit_default",
+            mono
+        ));
 
         assert!(embedded_stem_needs_extended_vertex_streams(
             "ui_circlesegment_default",

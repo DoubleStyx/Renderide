@@ -67,7 +67,7 @@ fn shade_distance_field(style: DistanceFieldStyle, input: DistanceFieldInput) ->
 
     var fill_color = style.tint_color * input.vertex_color;
     let outline_w = style.outline_size + input.extra_data.y;
-    if (outline_w > 1e-6 || style.outline_size > 1e-6) {
+    if (style.outline_size > 1e-6) {
         let outline_dist = sig_dist - outline_w;
         var outline_lerp = mix(outline_dist * aa, outline_dist, style.face_softness);
         outline_lerp = clamp(outline_lerp + 0.5, 0.0, 1.0);
