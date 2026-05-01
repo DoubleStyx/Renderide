@@ -73,6 +73,7 @@ fn sample_normal_world(
     uv0: vec2<f32>,
     uv1: vec2<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
     front_facing: bool,
     lerp_factor: f32,
 ) -> vec3<f32> {
@@ -84,7 +85,7 @@ fn sample_normal_world(
         return n;
     }
 
-    let tbn = pnorm::orthonormal_tbn(normalize(world_n));
+    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
     let ts0 = nd::decode_ts_normal_with_placeholder_sample(
         textureSample(_NormalMap, _NormalMap_sampler, uv0),
         mat._NormalScale,
@@ -120,11 +121,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_vertex_main(instance_index, view_idx, pos, n, uv0);
+    return mv::world_vertex_main(instance_index, view_idx, pos, n, t, uv0);
 #else
-    return mv::world_vertex_main(instance_index, 0u, pos, n, uv0);
+    return mv::world_vertex_main(instance_index, 0u, pos, n, t, uv0);
 #endif
 }
 
@@ -135,8 +137,9 @@ fn fs_main(
     @builtin(front_facing) front_facing: bool,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0_raw: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0_raw: vec2<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let uv_main0 = uvu::apply_st_for_storage(uv0_raw, mat._MainTex_ST, mat._MainTex_StorageVInverted);
     let uv_main1 = uvu::apply_st_for_storage(uv0_raw, mat._MainTex1_ST, mat._MainTex1_StorageVInverted);
@@ -204,7 +207,7 @@ fn fs_main(
     let smoothness = clamp(mix(smoothness0, smoothness1, l), 0.0, 1.0);
     let roughness = psamp::roughness_from_smoothness(smoothness);
 
-    let n = sample_normal_world(uv_main0, uv_main1, world_n, front_facing, l);
+    let n = sample_normal_world(uv_main0, uv_main1, world_n, world_t, front_facing, l);
 
     let surface = psurf::metallic(base_color, alpha, metallic, roughness, occlusion, n, em);
     let color = plight::shade_metallic_clustered(

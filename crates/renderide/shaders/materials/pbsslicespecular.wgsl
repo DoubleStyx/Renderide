@@ -84,12 +84,12 @@ fn sample_normal_world(
     uv_main: vec2<f32>,
     uv_detail: vec2<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
     front_facing: bool,
 ) -> vec3<f32> {
-    var n = normalize(world_n);
     let use_normal_map = uvu::kw_enabled(mat._NORMALMAP) || uvu::kw_enabled(mat._DETAIL_NORMALMAP);
     if (use_normal_map) {
-        let tbn = pnorm::orthonormal_tbn(n);
+        let tbn = pnorm::orthonormal_tbn(world_n, world_t);
         var ts = nd::decode_ts_normal_with_placeholder(
             textureSample(_NormalMap, _NormalMap_sampler, uv_main).xyz,
             mat._NormalScale,
@@ -106,6 +106,7 @@ fn sample_normal_world(
         }
         return normalize(tbn * ts);
     }
+    var n = normalize(world_n);
     if (!front_facing) {
         n = -n;
     }
@@ -121,11 +122,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldObjectVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_object_vertex_main(instance_index, view_idx, pos, n, uv0);
+    return mv::world_object_vertex_main(instance_index, view_idx, pos, n, t, uv0);
 #else
-    return mv::world_object_vertex_main(instance_index, 0u, pos, n, uv0);
+    return mv::world_object_vertex_main(instance_index, 0u, pos, n, t, uv0);
 #endif
 }
 
@@ -137,8 +139,9 @@ fn fs_main(
     @location(0) world_pos: vec3<f32>,
     @location(1) object_pos: vec3<f32>,
     @location(2) world_n: vec3<f32>,
-    @location(3) uv0: vec2<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(3) world_t: vec4<f32>,
+    @location(4) uv0: vec2<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let uv_main = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
     let uv_detail_albedo = uvu::apply_st(uv0, mat._DetailAlbedoMap_ST);
@@ -170,7 +173,7 @@ fn fs_main(
 
     let base_color = c.rgb;
     let alpha = c.a;
-    let n = sample_normal_world(uv_main, uv_detail_normal, world_n, front_facing);
+    let n = sample_normal_world(uv_main, uv_detail_normal, world_n, world_t, front_facing);
 
     var occlusion: f32 = 1.0;
     if (uvu::kw_enabled(mat._OCCLUSION)) {

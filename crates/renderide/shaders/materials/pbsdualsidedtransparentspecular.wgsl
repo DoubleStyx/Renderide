@@ -77,8 +77,8 @@ struct SurfaceData {
 }
 
 /// Sample tangent-space normal, place it in world space, and flip Z for back-faces (two-sided).
-fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> vec3<f32> {
-    let tbn = pnorm::orthonormal_tbn(normalize(world_n));
+fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
+    let tbn = pnorm::orthonormal_tbn(normalize(world_n), normalize(world_t));
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         ts_n = nd::decode_ts_normal_with_placeholder(
@@ -96,6 +96,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, front_facing: boo
 fn sample_surface(
     uv0: vec2<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
     front_facing: bool,
     vertex_color: vec4<f32>,
 ) -> SurfaceData {
@@ -156,7 +157,7 @@ fn sample_surface(
         roughness,
         one_minus_reflectivity,
         occlusion,
-        sample_normal_world(uv_main, world_n, front_facing),
+        sample_normal_world(uv_main, world_n, world_t, front_facing),
         emission,
     );
 }
@@ -172,11 +173,12 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldColorVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, uv0, color);
+    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, t, uv0, color);
 #else
-    return mv::world_color_vertex_main(instance_index, 0u, pos, n, uv0, color);
+    return mv::world_color_vertex_main(instance_index, 0u, pos, n, t, uv0, color);
 #endif
 }
 
@@ -188,11 +190,12 @@ fn fs_forward_base(
     @builtin(front_facing) front_facing: bool,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) color: vec4<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, world_n, front_facing, color);
+    let s = sample_surface(uv0, world_n, world_t, front_facing, color);
     let surface = psurf::specular(
         s.base_color,
         s.alpha,

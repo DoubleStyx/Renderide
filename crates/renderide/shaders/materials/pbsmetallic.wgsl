@@ -123,14 +123,14 @@ fn sample_normal_world(
     uv_main: vec2<f32>,
     uv_detail: vec2<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
     detail_mask: f32,
 ) -> vec3<f32> {
-    var n = normalize(world_n);
     if (!kw(mat._NORMALMAP)) {
-        return n;
+        return normalize(world_n);
     }
 
-    let tbn = pnorm::orthonormal_tbn(n);
+    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
     var ts_n = nd::decode_ts_normal_with_placeholder_sample(
         ts::sample_tex_2d(_BumpMap, _BumpMap_sampler, uv_main, mat._BumpMap_LodBias),
         mat._BumpScale,
@@ -144,11 +144,10 @@ fn sample_normal_world(
         ts_n = normalize(vec3<f32>(ts_n.xy + ts_detail.xy * detail_mask, ts_n.z));
     }
 
-    n = normalize(tbn * ts_n);
-    return n;
+    return normalize(tbn * ts_n);
 }
 
-fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n: vec3<f32>, view_layer: u32) -> SurfaceData {
+fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n: vec3<f32>, world_t: vec4<f32>, view_layer: u32) -> SurfaceData {
     let uv_base = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
     let uv_main = uv_with_parallax(uv_base, world_pos, view_layer);
     let uv_detail = uvu::apply_st(uv0, mat._DetailAlbedoMap_ST);
@@ -184,7 +183,7 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
         base_color = base_color * mix(vec3<f32>(1.0), detail * 2.0, detail_mask);
     }
 
-    let n = sample_normal_world(uv_main, uv_detail, world_n, detail_mask);
+    let n = sample_normal_world(uv_main, uv_detail, world_n, world_t, detail_mask);
 
     let emission_color = mat._EmissionColor.rgb;
     var emission = vec3<f32>(0.0);
@@ -208,11 +207,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldUv2VertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, uv0, uv0);
+    return mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, t, uv0, uv0);
 #else
-    return mv::world_uv2_vertex_main(instance_index, 0u, pos, n, uv0, uv0);
+    return mv::world_uv2_vertex_main(instance_index, 0u, pos, n, t, uv0, uv0);
 #endif
 }
 
@@ -222,11 +222,12 @@ fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) uv1: vec2<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) uv1: vec2<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, uv1, world_pos, world_n, view_layer);
+    let s = sample_surface(uv0, uv1, world_pos, world_n, world_t, view_layer);
     let surface = psurf::metallic(
         s.base_color,
         s.alpha,

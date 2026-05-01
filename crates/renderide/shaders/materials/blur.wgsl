@@ -34,23 +34,27 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> fv::VertexOutput {
 #ifdef MULTIVIEW
-    return fv::vertex_main(instance_index, view_idx, pos, n, uv0);
+    return fv::vertex_main(instance_index, view_idx, pos, n, t, uv0);
 #else
-    return fv::vertex_main(instance_index, 0u, pos, n, uv0);
+    return fv::vertex_main(instance_index, 0u, pos, n, t, uv0);
 #endif
 }
 
-fn refract_offset(uv0: vec2<f32>, world_n: vec3<f32>) -> vec2<f32> {
+fn refract_offset(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec3<f32>) -> vec2<f32> {
     var n = normalize(world_n);
+    let t = normalize(world_t);
+    let b = cross(t, n);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         let ts = nd::decode_ts_normal_with_placeholder_sample(
             textureSample(_NormalMap, _NormalMap_sampler, uvu::apply_st(uv0, mat._NormalMap_ST)),
             1.0,
         );
-        n = normalize(vec3<f32>(n.xy + ts.xy, n.z));
+        n = (vec3<f32>(n.xy + ts.xy, n.z));
     }
+    n = normalize(t * n.x + b * n.y + n * n.z);
     return n.xy * mat._RefractionStrength;
 }
 
@@ -72,13 +76,14 @@ fn fs_main(
     @location(0) uv0: vec2<f32>,
     @location(1) world_pos: vec3<f32>,
     @location(2) world_n: vec3<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(3) world_t: vec3<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let screen_uv = gp::frag_screen_uv(frag_pos);
     let fade = sds::depth_fade(frag_pos, world_pos, view_layer, max(mat._DepthDivisor, 1.0));
     let spread_tex = textureSample(_SpreadTex, _SpreadTex_sampler, uvu::apply_st(uv0, mat._SpreadTex_ST)).rg;
     let spread = mat._Spread.xy * spread_tex * fade;
-    let center_uv = screen_uv - refract_offset(uv0, world_n) * fade;
+    let center_uv = screen_uv - refract_offset(uv0, world_n, world_t) * fade;
     let iterations = u32(clamp(mat._Iterations, 1.0, 64.0));
     return rg::retain_globals_additive(sample_blur(center_uv, spread, iterations, view_layer));
 }

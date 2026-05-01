@@ -21,6 +21,7 @@ fn vertex_main(
     view_idx: u32,
     pos: vec4<f32>,
     n: vec4<f32>,
+    t: vec4<f32>,
     primary_uv: vec2<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);

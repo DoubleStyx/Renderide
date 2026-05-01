@@ -132,8 +132,9 @@ fn sample_normal_world(
     uv2: vec2<f32>,
     uv3: vec2<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
 ) -> vec3<f32> {
-    let tbn = pnorm::orthonormal_tbn(normalize(world_n));
+    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         let uv_n = uvu::apply_st_for_storage(
@@ -156,6 +157,7 @@ fn sample_surface(
     uv2: vec2<f32>,
     uv3: vec2<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
 ) -> SurfaceData {
     let uv_albedo = uvu::apply_st_for_storage(
         pick_uv(uv0, uv1, uv2, uv3, mat._AlbedoUV),
@@ -228,7 +230,7 @@ fn sample_surface(
         roughness,
         one_minus_reflectivity,
         occlusion,
-        sample_normal_world(uv0, uv1, uv2, uv3, world_n),
+        sample_normal_world(uv0, uv1, uv2, uv3, world_n, world_t),
         emission,
     );
 }
@@ -243,14 +245,15 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
     @location(5) uv1: vec2<f32>,
     @location(6) uv2: vec2<f32>,
     @location(7) uv3: vec2<f32>,
 ) -> mv::WorldUv4VertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_uv4_vertex_main(instance_index, view_idx, pos, n, uv0, uv1, uv2, uv3);
+    return mv::world_uv4_vertex_main(instance_index, view_idx, pos, n, t, uv0, uv1, uv2, uv3);
 #else
-    return mv::world_uv4_vertex_main(instance_index, 0u, pos, n, uv0, uv1, uv2, uv3);
+    return mv::world_uv4_vertex_main(instance_index, 0u, pos, n, t, uv0, uv1, uv2, uv3);
 #endif
 }
 
@@ -261,13 +264,14 @@ fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) uv1: vec2<f32>,
-    @location(4) uv2: vec2<f32>,
-    @location(5) uv3: vec2<f32>,
-    @location(6) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) uv1: vec2<f32>,
+    @location(5) uv2: vec2<f32>,
+    @location(6) uv3: vec2<f32>,
+    @location(7) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, uv1, uv2, uv3, world_n);
+    let s = sample_surface(uv0, uv1, uv2, uv3, world_n, world_t);
     let surface = psurf::specular(
         s.base_color,
         s.alpha,

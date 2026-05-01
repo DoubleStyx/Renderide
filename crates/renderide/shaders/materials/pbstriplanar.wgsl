@@ -70,8 +70,9 @@ struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) proj_pos: vec3<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec3<f32>,
+    @location(3) proj_pos: vec3<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 }
 
 /// Resolved per-fragment shading inputs for the metallic Cook–Torrance path.
@@ -153,7 +154,7 @@ fn triplanar_rgba(
 
 /// Build a triplanar world-space normal via Reoriented Normal Mapping when `_NORMALMAP` is on,
 /// otherwise return the interpolated geometric normal (renormalized).
-fn sample_normal_world(uvs: PlanarUvs, world_n: vec3<f32>, weights: vec3<f32>) -> vec3<f32> {
+fn sample_normal_world(uvs: PlanarUvs, world_n: vec3<f32>, world_t: vec3<f32>, weights: vec3<f32>) -> vec3<f32> {
     let n_geo = normalize(world_n);
     if (!uvu::kw_enabled(mat._NORMALMAP)) {
         return n_geo;
@@ -199,7 +200,7 @@ fn sample_normal_world(uvs: PlanarUvs, world_n: vec3<f32>, weights: vec3<f32>) -
 }
 
 /// Resolve the [`SurfaceData`] for a fragment, mirroring Unity's triplanar `surf` for `PBSTriplanar`.
-fn sample_surface(world_pos: vec3<f32>, world_n: vec3<f32>, proj_pos: vec3<f32>) -> SurfaceData {
+fn sample_surface(world_pos: vec3<f32>, world_n: vec3<f32>, world_t: vec3<f32>, proj_pos: vec3<f32>) -> SurfaceData {
     let uvs = build_planar_uvs(proj_pos, world_n);
     let weights = triplanar_weights(world_n);
 
@@ -236,7 +237,7 @@ fn sample_surface(world_pos: vec3<f32>, world_n: vec3<f32>, proj_pos: vec3<f32>)
         metallic,
         roughness,
         occlusion,
-        sample_normal_world(uvs, world_n, weights),
+        sample_normal_world(uvs, world_n, world_t, weights),
         emission.rgb,
     );
 }
@@ -251,10 +252,12 @@ fn vs_main(
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
+    @location(4) t: vec4<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);
     let world_p = mv::world_position(d, pos);
     let wn = mv::world_normal(d, n);
+    let wt = mv::world_normal(d, t);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);
 #else
@@ -265,6 +268,7 @@ fn vs_main(
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.world_n = wn;
+    out.world_t = wt;
     // Default to world-space projection; switch to object-space when `_OBJECTSPACE` keyword wins.
     out.proj_pos = select(world_p.xyz, pos.xyz, uvu::kw_enabled(mat._OBJECTSPACE));
 #ifdef MULTIVIEW
@@ -282,10 +286,11 @@ fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) proj_pos: vec3<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec3<f32>,
+    @location(3) proj_pos: vec3<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(world_pos, world_n, proj_pos);
+    let s = sample_surface(world_pos, world_n, world_t, proj_pos);
     let surface = psurf::metallic(
         s.base_color,
         s.alpha,

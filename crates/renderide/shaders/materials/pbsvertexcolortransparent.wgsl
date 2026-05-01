@@ -55,7 +55,7 @@ struct SurfaceData {
     emission: vec3<f32>,
 }
 
-fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
+fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> vec3<f32> {
     return psamp::sample_optional_world_normal(
         uvu::kw_enabled(mat._NORMALMAP),
         _NormalMap,
@@ -64,10 +64,11 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
         0.0,
         mat._NormalScale,
         world_n,
+        world_t,
     );
 }
 
-fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, vertex_color: vec4<f32>) -> SurfaceData {
+fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, vertex_color: vec4<f32>) -> SurfaceData {
     let uv_main = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
 
     var albedo = mat._Color;
@@ -126,7 +127,7 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, vertex_color: vec4<f32>) -
         metallic,
         roughness,
         occlusion,
-        sample_normal_world(uv_main, world_n),
+        sample_normal_world(uv_main, world_n, world_t),
         emission,
     );
 }
@@ -141,11 +142,12 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldColorVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, uv0, color);
+    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, t, uv0, color);
 #else
-    return mv::world_color_vertex_main(instance_index, 0u, pos, n, uv0, color);
+    return mv::world_color_vertex_main(instance_index, 0u, pos, n, t, uv0, color);
 #endif
 }
 
@@ -155,11 +157,12 @@ fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) color: vec4<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, world_n, color);
+    let s = sample_surface(uv0, world_n, world_t, color);
     let surface = psurf::metallic(
         s.base_color,
         s.alpha,

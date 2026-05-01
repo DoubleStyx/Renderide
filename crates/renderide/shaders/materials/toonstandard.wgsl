@@ -48,12 +48,13 @@ struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 }
 
-fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
-    return psamp::sample_world_normal(_BumpMap, _BumpMap_sampler, uv_main, 0.0, mat._BumpScale, world_n);
+fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> vec3<f32> {
+    return psamp::sample_world_normal(_BumpMap, _BumpMap_sampler, uv_main, 0.0, mat._BumpScale, world_n, world_t);
 }
 
 @vertex
@@ -65,10 +66,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);
     let world_p = mv::world_position(d, pos);
     let wn = mv::world_normal(d, n);
+    let wt = mv::world_tangent(d, t);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);
 #else
@@ -78,6 +81,7 @@ fn vs_main(
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.world_n = wn;
+    out.world_t = wt;
     out.uv0 = uv0;
 #ifdef MULTIVIEW
     out.view_layer = view_idx;
@@ -128,6 +132,7 @@ fn shade(
     frag_xy: vec2<f32>,
     world_pos: vec3<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
     uv0: vec2<f32>,
     view_layer: u32,
 ) -> vec4<f32> {
@@ -142,7 +147,7 @@ fn shade(
 
     let emission = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb * mat._EmissionColor.rgb;
 
-    let n = sample_normal_world(uv_main, world_n);
+    let n = sample_normal_world(uv_main, world_n, world_t);
     let cam = rg::camera_world_pos_for_view(view_layer);
     let v = normalize(cam - world_pos);
 
@@ -194,8 +199,9 @@ fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return shade(frag_pos.xy, world_pos, world_n, uv0, view_layer);
+    return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, view_layer);
 }

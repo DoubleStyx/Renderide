@@ -23,37 +23,41 @@ struct WorldVertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) primary_uv: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) primary_uv: vec2<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 }
 
 struct WorldUv2VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) primary_uv: vec2<f32>,
-    @location(3) secondary_uv: vec2<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) primary_uv: vec2<f32>,
+    @location(4) secondary_uv: vec2<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 }
 
 struct WorldUv4VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv_a: vec2<f32>,
-    @location(3) uv_b: vec2<f32>,
-    @location(4) uv_c: vec2<f32>,
-    @location(5) uv_d: vec2<f32>,
-    @location(6) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv_a: vec2<f32>,
+    @location(4) uv_b: vec2<f32>,
+    @location(5) uv_c: vec2<f32>,
+    @location(6) uv_d: vec2<f32>,
+    @location(7) @interpolate(flat) view_layer: u32,
 }
 
 struct WorldColorVertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) primary_uv: vec2<f32>,
-    @location(3) color: vec4<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) primary_uv: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 }
 
 struct WorldObjectVertexOutput {
@@ -61,8 +65,9 @@ struct WorldObjectVertexOutput {
     @location(0) world_pos: vec3<f32>,
     @location(1) object_pos: vec3<f32>,
     @location(2) world_n: vec3<f32>,
-    @location(3) primary_uv: vec2<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(3) world_t: vec4<f32>,
+    @location(4) primary_uv: vec2<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 }
 
 fn select_view_proj(draw: pd::PerDrawUniforms, view_idx: u32) -> mat4x4<f32> {
@@ -80,12 +85,20 @@ fn world_normal(draw: pd::PerDrawUniforms, n: vec4<f32>) -> vec3<f32> {
     return normalize(draw.normal_matrix * n.xyz);
 }
 
+fn world_tangent(draw: pd::PerDrawUniforms, t: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(world_normal(draw, t), t.w);
+}
+
 fn model_vector(draw: pd::PerDrawUniforms, v: vec3<f32>) -> vec3<f32> {
     return (draw.model * vec4<f32>(v, 0.0)).xyz;
 }
 
 fn model_world_normal(draw: pd::PerDrawUniforms, n: vec4<f32>) -> vec3<f32> {
     return normalize(model_vector(draw, n.xyz));
+}
+
+fn model_world_tangent(draw: pd::PerDrawUniforms, t: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(model_world_normal(draw, t), t.w);
 }
 
 fn view_layer_from_index(view_idx: u32) -> u32 {
@@ -136,6 +149,7 @@ fn world_vertex_main(
     view_idx: u32,
     pos: vec4<f32>,
     n: vec4<f32>,
+    t: vec4<f32>,
     primary_uv: vec2<f32>,
 ) -> WorldVertexOutput {
     let draw = pd::get_draw(instance_index);
@@ -146,6 +160,7 @@ fn world_vertex_main(
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.world_n = world_normal(draw, n);
+    out.world_t = world_tangent(draw, t);
     out.primary_uv = primary_uv;
     out.view_layer = view_idx;
     return out;
@@ -156,6 +171,7 @@ fn world_model_normal_vertex_main(
     view_idx: u32,
     pos: vec4<f32>,
     n: vec4<f32>,
+    t: vec4<f32>,
     primary_uv: vec2<f32>,
 ) -> WorldVertexOutput {
     let draw = pd::get_draw(instance_index);
@@ -166,6 +182,7 @@ fn world_model_normal_vertex_main(
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.world_n = model_world_normal(draw, n);
+    out.world_t = model_world_tangent(draw, t);
     out.primary_uv = primary_uv;
     out.view_layer = view_idx;
     return out;
@@ -176,6 +193,7 @@ fn world_uv2_vertex_main(
     view_idx: u32,
     pos: vec4<f32>,
     n: vec4<f32>,
+    t: vec4<f32>,
     primary_uv: vec2<f32>,
     secondary_uv: vec2<f32>,
 ) -> WorldUv2VertexOutput {
@@ -187,6 +205,7 @@ fn world_uv2_vertex_main(
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.world_n = world_normal(draw, n);
+    out.world_t = world_tangent(draw, t);
     out.primary_uv = primary_uv;
     out.secondary_uv = secondary_uv;
     out.view_layer = view_idx;
@@ -198,6 +217,7 @@ fn world_uv4_vertex_main(
     view_idx: u32,
     pos: vec4<f32>,
     n: vec4<f32>,
+    t: vec4<f32>,
     uv_a: vec2<f32>,
     uv_b: vec2<f32>,
     uv_c: vec2<f32>,
@@ -211,6 +231,7 @@ fn world_uv4_vertex_main(
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.world_n = world_normal(draw, n);
+    out.world_t = world_tangent(draw, t);
     out.uv_a = uv_a;
     out.uv_b = uv_b;
     out.uv_c = uv_c;
@@ -224,6 +245,7 @@ fn world_object_vertex_main(
     view_idx: u32,
     pos: vec4<f32>,
     n: vec4<f32>,
+    t: vec4<f32>,
     primary_uv: vec2<f32>,
 ) -> WorldObjectVertexOutput {
     let draw = pd::get_draw(instance_index);
@@ -235,6 +257,7 @@ fn world_object_vertex_main(
     out.world_pos = world_p.xyz;
     out.object_pos = pos.xyz;
     out.world_n = world_normal(draw, n);
+    out.world_t = world_tangent(draw, t);
     out.primary_uv = primary_uv;
     out.view_layer = view_idx;
     return out;
@@ -245,6 +268,7 @@ fn world_color_vertex_main(
     view_idx: u32,
     pos: vec4<f32>,
     n: vec4<f32>,
+    t: vec4<f32>,
     primary_uv: vec2<f32>,
     color: vec4<f32>,
 ) -> WorldColorVertexOutput {
@@ -256,6 +280,7 @@ fn world_color_vertex_main(
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.world_n = world_normal(draw, n);
+    out.world_t = world_tangent(draw, t);
     out.primary_uv = primary_uv;
     out.color = color;
     out.view_layer = view_idx;

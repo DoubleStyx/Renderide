@@ -77,9 +77,10 @@ fn sample_normal_world(
     uv_main: vec2<f32>,
     uv_det: vec2<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
     detail_mask: f32,
 ) -> vec3<f32> {
-    let tbn = pnorm::orthonormal_tbn(world_n);
+    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
     var ts_n = nd::decode_ts_normal_with_placeholder_sample(
         textureSample(_BumpMap, _BumpMap_sampler, uv_main),
         mat._BumpScale,
@@ -105,11 +106,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldUv2VertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, uv0, uv0);
+    return mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, t, uv0, uv0);
 #else
-    return mv::world_uv2_vertex_main(instance_index, 0u, pos, n, uv0, uv0);
+    return mv::world_uv2_vertex_main(instance_index, 0u, pos, n, t, uv0, uv0);
 #endif
 }
 
@@ -119,9 +121,10 @@ fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) uv1: vec2<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) uv1: vec2<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     // --- UV transforms ---
     let uv_main = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
@@ -155,8 +158,7 @@ fn fs_main(
     let detail_mask_s = textureSample(_DetailMask, _DetailMask_sampler, uv_main).a;
 
     // --- Normal ---
-    var n = normalize(world_n);
-    n = sample_normal_world(uv_main, uv_det, n, detail_mask_s);
+    let n = sample_normal_world(uv_main, uv_det, world_n, world_t, detail_mask_s);
 
     // --- Emission ---
     let em = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).xyz * mat._EmissionColor.xyz;

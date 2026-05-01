@@ -67,11 +67,12 @@ struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 }
 
-fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
+fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> vec3<f32> {
     return psamp::sample_optional_world_normal(
         uvu::kw_enabled(mat._NORMALMAP),
         _NormalMap,
@@ -80,6 +81,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>) -> vec3<f32> {
         0.0,
         mat._NormalScale,
         world_n,
+        world_t,
     );
 }
 
@@ -92,6 +94,7 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);
     let displaced_uv = pdisp::apply_vertex_offsets(
@@ -120,6 +123,7 @@ fn vs_main(
 
     let world_p = d.model * vec4<f32>(displaced, 1.0);
     let wn = normalize(d.normal_matrix * n.xyz);
+    let wt = vec4<f32>(normalize(d.normal_matrix * t.xyz), t.w);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);
 #else
@@ -129,6 +133,7 @@ fn vs_main(
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.world_n = wn;
+    out.world_t = wt;
     out.uv0 = uv;
 #ifdef MULTIVIEW
     out.view_layer = view_idx;
@@ -142,6 +147,7 @@ fn shade(
     frag_xy: vec2<f32>,
     world_pos: vec3<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
     uv0: vec2<f32>,
     view_layer: u32,
     include_directional: bool,
@@ -178,7 +184,7 @@ fn shade(
         emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     }
 
-    let n = sample_normal_world(uv_main, world_n);
+    let n = sample_normal_world(uv_main, world_n, world_t);
     let base_color = c.rgb;
     let surface = psurf::metallic(base_color, c.a, metallic, roughness, occlusion, n, emission);
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
@@ -194,8 +200,9 @@ fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return shade(frag_pos.xy, world_pos, world_n, uv0, view_layer, true, true);
+    return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, view_layer, true, true);
 }

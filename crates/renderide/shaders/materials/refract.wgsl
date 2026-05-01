@@ -30,11 +30,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> fv::VertexOutput {
 #ifdef MULTIVIEW
-    return fv::vertex_main(instance_index, view_idx, pos, n, uv0);
+    return fv::vertex_main(instance_index, view_idx, pos, n, t, uv0);
 #else
-    return fv::vertex_main(instance_index, 0u, pos, n, uv0);
+    return fv::vertex_main(instance_index, 0u, pos, n, t, uv0);
 #endif
 }
 
@@ -76,8 +77,9 @@ fn fs_main(
     @location(0) uv0: vec2<f32>,
     @location(1) world_pos: vec3<f32>,
     @location(2) world_n: vec3<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
-    @location(4) view_n: vec3<f32>,
+    @location(3) world_t: vec3<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
+    @location(5) view_n: vec3<f32>,
 ) -> @location(0) vec4<f32> {
     let screen_uv = gp::frag_screen_uv(frag_pos);
     let color = gp::sample_scene_color(

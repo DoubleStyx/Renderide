@@ -25,9 +25,9 @@ fn sample_world_normal(
     lod_bias: f32,
     scale: f32,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
 ) -> vec3<f32> {
-    let n = normalize(world_n);
-    let tbn = pnorm::orthonormal_tbn(n);
+    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
     return normalize(tbn * sample_tangent_normal(tex, samp, uv, lod_bias, scale));
 }
 
@@ -39,12 +39,12 @@ fn sample_optional_world_normal(
     lod_bias: f32,
     scale: f32,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
 ) -> vec3<f32> {
-    let n = normalize(world_n);
     if (!enabled) {
-        return n;
+        return normalize(world_n);
     }
-    return sample_world_normal(tex, samp, uv, lod_bias, scale, n);
+    return sample_world_normal(tex, samp, uv, lod_bias, scale, world_n, world_t);
 }
 
 fn blend_detail_tangent_normal(base: vec3<f32>, detail: vec3<f32>, detail_mask: f32) -> vec3<f32> {
@@ -57,7 +57,7 @@ fn unpack_packed_normal_xy(xy: vec2<f32>, scale: f32) -> vec3<f32> {
     return vec3<f32>(scaled, z);
 }
 
-fn tangent_to_world(world_n: vec3<f32>, tangent_n: vec3<f32>) -> vec3<f32> {
+/*fn tangent_to_world(world_n: vec3<f32>, tangent_n: vec3<f32>) -> vec3<f32> {
     let n = normalize(world_n);
     return normalize(pnorm::orthonormal_tbn(n) * normalize(tangent_n));
-}
+}*/

@@ -7,11 +7,13 @@
 
 #import renderide::per_draw as pd
 #import renderide::mesh::vertex as mv
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::alpha_clip_sample as acs
 #import renderide::uv_utils as uvu
+#import renderide::normal_decode as nd
 
 struct PbsDualSidedSpecularMaterial {
     _Color: vec4<f32>,
@@ -44,14 +46,6 @@ struct PbsDualSidedSpecularMaterial {
 @group(1) @binding(9)  var _SpecularMap: texture_2d<f32>;
 @group(1) @binding(10) var _SpecularMap_sampler: sampler;
 
-struct VertexOutput {
-    @builtin(position) clip_pos: vec4<f32>,
-    @location(0) world_pos: vec3<f32>,
-    @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
-}
-
 struct SurfaceData {
     base_color: vec3<f32>,
     alpha: f32,
@@ -62,18 +56,23 @@ struct SurfaceData {
     emission: vec3<f32>,
 }
 
-fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> vec3<f32> {
+fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
+    let tbn = pnorm::orthonormal_tbn(normalize(world_n), normalize(world_t));
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
-        ts_n = psamp::sample_tangent_normal(_NormalMap, _NormalMap_sampler, uv_main, 0.0, mat._NormalScale);
+        ts_n = nd::decode_ts_normal_with_placeholder(
+            textureSample(_NormalMap, _NormalMap_sampler, uv_main).xyz,
+            mat._NormalScale,
+        );
     }
+    // Unity surface shader path flips tangent-space Z for backfaces.
     if (!front_facing) {
         ts_n.z = -ts_n.z;
     }
-    return psamp::tangent_to_world(world_n, ts_n);
+    return normalize(tbn * ts_n);
 }
 
-fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> SurfaceData {
+fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> SurfaceData {
     let uv_main = uvu::apply_st_for_storage(uv0, mat._MainTex_ST, mat._MainTex_StorageVInverted);
 
     var albedo = mat._Color;
@@ -117,7 +116,7 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> Sur
         f0,
         roughness,
         occlusion,
-        sample_normal_world(uv_main, world_n, front_facing),
+        sample_normal_world(uv_main, world_n, world_t, front_facing),
         emission,
     );
 }
@@ -131,27 +130,14 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
-) -> VertexOutput {
-    let d = pd::get_draw(instance_index);
-    let world_p = mv::world_position(d, pos);
-    let wn = mv::model_world_normal(d, n);
+    @location(3) color: vec4<f32>,
+    @location(4) t: vec4<f32>,
+) -> mv::WorldColorVertexOutput {
 #ifdef MULTIVIEW
-    let vp = mv::select_view_proj(d, view_idx);
+    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, t, uv0, color);
 #else
-    let vp = mv::select_view_proj(d, 0u);
+    return mv::world_color_vertex_main(instance_index, 0u, pos, n, t, uv0, color);
 #endif
-
-    var out: VertexOutput;
-    out.clip_pos = vp * world_p;
-    out.world_pos = world_p.xyz;
-    out.world_n = wn;
-    out.uv0 = uv0;
-#ifdef MULTIVIEW
-    out.view_layer = view_idx;
-#else
-    out.view_layer = 0u;
-#endif
-    return out;
 }
 
 //#pass forward
@@ -161,10 +147,12 @@ fn fs_forward_base(
     @builtin(front_facing) front_facing: bool,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, world_n, front_facing);
+    let s = sample_surface(uv0, world_n, world_t, front_facing);
     let surface = psurf::specular(
         s.base_color,
         s.alpha,
