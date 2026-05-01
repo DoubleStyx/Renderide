@@ -52,18 +52,19 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) color: vec4<f32>,
     @location(4) t: vec4<f32>,
-) -> mv::WorldVertexOutput {
+) -> mv::WorldColorVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_vertex_main(instance_index, view_idx, pos, n, t, uv);
+    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, t, uv, color);
 #else
-    return mv::world_vertex_main(instance_index, 0u, pos, n, t, uv);
+    return mv::world_color_vertex_main(instance_index, 0u, pos, n, t, uv, color);
 #endif
 }
 
 //#pass forward
 @fragment
-fn fs_main(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: mv::WorldColorVertexOutput) -> @location(0) vec4<f32> {
     var n = normalize(in.world_n);
     if (mat._NORMALMAP > 0.99) {
         let uv_n = vec2<f32>(in.primary_uv.x, 1.0 - in.primary_uv.y);
@@ -83,7 +84,7 @@ fn fs_main(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
     let near_color =
         mat._NearColor * ms::sample_rgba(_NearTex, _NearTex_sampler, in.primary_uv, mat._NearTex_ST, 0.0, mat._PolarPow, use_polar);
 
-    var color = mf::near_far_color(near_color, far_color, fres);
+    var color = in.color * mf::near_far_color(near_color, far_color, fres);
 
     let far_clip = mat._FarColor * ms::sample_rgba_lod0(_FarTex, _FarTex_sampler, in.primary_uv, mat._FarTex_ST, mat._PolarPow, use_polar);
     let near_clip = mat._NearColor * ms::sample_rgba_lod0(_NearTex, _NearTex_sampler, in.primary_uv, mat._NearTex_ST, mat._PolarPow, use_polar);

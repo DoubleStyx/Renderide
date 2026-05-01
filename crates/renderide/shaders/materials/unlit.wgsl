@@ -59,23 +59,24 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) _n: vec4<f32>,
     @location(2) uv: vec2<f32>,
-) -> mv::UvVertexOutput {
+    @location(3) color: vec4<f32>,
+) -> mv::UvColorVertexOutput {
 #ifdef MULTIVIEW
-    return mv::uv_vertex_main(instance_index, view_idx, pos, uv);
+    return mv::uv_color_vertex_main(instance_index, view_idx, pos, uv, color * mat._Color);
 #else
-    return mv::uv_vertex_main(instance_index, 0u, pos, uv);
+    return mv::uv_color_vertex_main(instance_index, 0u, pos, uv, color * mat._Color);
 #endif
 }
 
 //#pass forward
 @fragment
-fn fs_main(in: mv::UvVertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: mv::UvColorVertexOutput) -> @location(0) vec4<f32> {
     let uv_off = uvu::apply_st(in.uv, mat._OffsetTex_ST);
     let offset_s = ts::sample_tex_2d(_OffsetTex, _OffsetTex_sampler, uv_off, mat._OffsetTex_LodBias);
     let uv_main = uvu::apply_st_for_storage(in.uv, mat._Tex_ST, mat._Tex_StorageVInverted) + offset_s.xy * mat._OffsetMagnitude.xy;
 
     let t = ts::sample_tex_2d(_Tex, _Tex_sampler, uv_main, mat._Tex_LodBias);
-    var color = mat._Color * t;
+    var color = in.color * t;
 
     let alpha_test = uvu::kw_enabled(mat._ALPHATEST_ON);
     let alpha_blend = uvu::kw_enabled(mat._ALPHABLEND_ON);
