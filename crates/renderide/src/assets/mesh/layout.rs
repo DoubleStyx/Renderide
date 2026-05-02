@@ -773,6 +773,7 @@ pub fn vertex_float2_stream_bytes(
 /// Dense `vec4<f32>` vertex stream for an arbitrary float attribute.
 ///
 /// Missing or unsupported attributes return `default` per vertex.
+#[cfg(test)]
 pub fn vertex_float4_stream_bytes(
     vertex_data: &[u8],
     vertex_count: usize,
