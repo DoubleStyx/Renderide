@@ -6,6 +6,7 @@ mod allocations;
 mod attach;
 mod cubemap;
 mod mesh;
+mod point_render_buffer;
 mod render_texture;
 mod texture2d;
 mod texture3d;
@@ -18,6 +19,9 @@ pub use cubemap::{
     try_cubemap_upload_with_device,
 };
 pub use mesh::{on_mesh_unload, try_process_mesh_upload};
+pub use point_render_buffer::{
+    on_point_render_buffer_consumed, on_point_render_buffer_unload, on_point_render_buffer_upload,
+};
 pub use render_texture::{on_set_render_texture_format, on_unload_render_texture};
 pub use texture2d::{
     on_set_texture_2d_data, on_set_texture_2d_format, on_set_texture_2d_properties,

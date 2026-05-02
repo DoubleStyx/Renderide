@@ -52,6 +52,8 @@ pub struct WorldMeshDrawItem {
     pub first_index: u32,
     /// Number of indices for this submesh draw.
     pub index_count: u32,
+    /// `true` when this submesh uses point-list topology.
+    pub point_topology: bool,
     /// `true` if [`crate::shared::LayerType::Overlay`].
     pub is_overlay: bool,
     /// Host sorting order for transparent draw ordering.
@@ -102,8 +104,8 @@ pub struct WorldMeshDrawItem {
 /// submeshes are not drawn.
 pub(crate) fn stacked_material_submesh_range(
     material_slot_index: usize,
-    submeshes: &[(u32, u32)],
-) -> Option<(u32, u32)> {
+    submeshes: &[(u32, u32, bool)],
+) -> Option<(u32, u32, bool)> {
     let last_submesh_index = submeshes.len().checked_sub(1)?;
     submeshes
         .get(material_slot_index.min(last_submesh_index))
@@ -147,24 +149,36 @@ mod tests {
 
     #[test]
     fn stacked_material_submesh_range_reuses_last_submesh_for_extra_slots() {
-        let submeshes = [(0, 3), (3, 6)];
+        let submeshes = [(0, 3, false), (3, 6, false)];
 
-        assert_eq!(stacked_material_submesh_range(0, &submeshes), Some((0, 3)));
-        assert_eq!(stacked_material_submesh_range(1, &submeshes), Some((3, 6)));
-        assert_eq!(stacked_material_submesh_range(2, &submeshes), Some((3, 6)));
-        assert_eq!(stacked_material_submesh_range(3, &submeshes), Some((3, 6)));
+        assert_eq!(
+            stacked_material_submesh_range(0, &submeshes),
+            Some((0, 3, false))
+        );
+        assert_eq!(
+            stacked_material_submesh_range(1, &submeshes),
+            Some((3, 6, false))
+        );
+        assert_eq!(
+            stacked_material_submesh_range(2, &submeshes),
+            Some((3, 6, false))
+        );
+        assert_eq!(
+            stacked_material_submesh_range(3, &submeshes),
+            Some((3, 6, false))
+        );
     }
 
     #[test]
     fn stacked_material_submesh_range_leaves_unbacked_submeshes_to_callers() {
-        let submeshes = [(0, 3), (3, 6), (9, 12)];
+        let submeshes = [(0, 3, false), (3, 6, false), (9, 12, false)];
         let material_slot_count = 2usize;
 
         let ranges: Vec<_> = (0..material_slot_count)
             .filter_map(|slot| stacked_material_submesh_range(slot, &submeshes))
             .collect();
 
-        assert_eq!(ranges, vec![(0, 3), (3, 6)]);
+        assert_eq!(ranges, vec![(0, 3, false), (3, 6, false)]);
     }
 
     #[test]

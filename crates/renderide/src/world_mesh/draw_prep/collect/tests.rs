@@ -34,6 +34,7 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
         slot_index: 0,
         first_index: 0,
         index_count: 3,
+        point_topology: false,
         material_asset_id: 9,
         property_block_id: None,
         cull_geometry: None,

@@ -41,14 +41,15 @@ use pending::PendingAssetUploads;
 use pools::ResidentAssetPools;
 pub use uploads::{
     MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS, attach_flush_pending_asset_uploads,
-    on_mesh_unload, on_set_cubemap_data, on_set_cubemap_format, on_set_cubemap_properties,
-    on_set_render_texture_format, on_set_texture_2d_data, on_set_texture_2d_format,
-    on_set_texture_2d_properties, on_set_texture_3d_data, on_set_texture_3d_format,
-    on_set_texture_3d_properties, on_unload_cubemap, on_unload_render_texture,
-    on_unload_texture_2d, on_unload_texture_3d, on_unload_video_texture, on_video_texture_load,
-    on_video_texture_properties, on_video_texture_start_audio_track, on_video_texture_update,
-    try_cubemap_upload_with_device, try_process_mesh_upload, try_texture_upload_with_device,
-    try_texture3d_upload_with_device,
+    on_mesh_unload, on_point_render_buffer_consumed, on_point_render_buffer_unload,
+    on_point_render_buffer_upload, on_set_cubemap_data, on_set_cubemap_format,
+    on_set_cubemap_properties, on_set_render_texture_format, on_set_texture_2d_data,
+    on_set_texture_2d_format, on_set_texture_2d_properties, on_set_texture_3d_data,
+    on_set_texture_3d_format, on_set_texture_3d_properties, on_unload_cubemap,
+    on_unload_render_texture, on_unload_texture_2d, on_unload_texture_3d, on_unload_video_texture,
+    on_video_texture_load, on_video_texture_properties, on_video_texture_start_audio_track,
+    on_video_texture_update, try_cubemap_upload_with_device, try_process_mesh_upload,
+    try_texture_upload_with_device, try_texture3d_upload_with_device,
 };
 use video_runtime::VideoAssetRuntime;
 

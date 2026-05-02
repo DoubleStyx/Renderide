@@ -191,6 +191,7 @@ fn append_prepared_run_draws(
             slot_index: d.slot_index,
             first_index: d.first_index,
             index_count: d.index_count,
+            point_topology: d.point_topology,
             is_overlay: d.is_overlay,
             sorting_order: d.sorting_order,
             skinned: d.skinned,

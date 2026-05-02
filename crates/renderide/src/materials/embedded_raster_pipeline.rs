@@ -27,6 +27,8 @@ pub(crate) struct EmbeddedRasterPipelineSource {
     pub render_state: MaterialRenderState,
     /// Front-face winding selected from draw transform handedness.
     pub front_face: RasterFrontFace,
+    /// Whether this batch should rasterize as points.
+    pub point_topology: bool,
 }
 
 /// Cache key for reflection-derived metadata on a composed embedded target.
@@ -298,6 +300,7 @@ pub(crate) fn create_embedded_render_pipelines(
         blend_mode,
         render_state,
         front_face,
+        point_topology,
     } = source;
     let shader = refs.with_label("embedded_raster_material");
     let streams = VertexStreamToggles {
@@ -323,6 +326,11 @@ pub(crate) fn create_embedded_render_pipelines(
         &materialized_passes,
         render_state,
         front_face,
+        if point_topology {
+            wgpu::PrimitiveTopology::PointList
+        } else {
+            wgpu::PrimitiveTopology::TriangleList
+        },
     )
 }
 

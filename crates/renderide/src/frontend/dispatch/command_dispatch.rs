@@ -4,9 +4,9 @@
 
 use crate::shared::{
     DesktopConfig, FrameStartData, MaterialPropertyIdRequest, MaterialPropertyIdResult,
-    MeshUploadData, RenderDecouplingConfig, RendererCommand, SetCubemapData, SetCubemapFormat,
-    SetCubemapProperties, SetTexture2DData, SetTexture2DFormat, SetTexture2DProperties,
-    SetTexture3DData, SetTexture3DFormat, SetTexture3DProperties,
+    MeshUploadData, PointRenderBufferUpload, RenderDecouplingConfig, RendererCommand,
+    SetCubemapData, SetCubemapFormat, SetCubemapProperties, SetTexture2DData, SetTexture2DFormat,
+    SetTexture2DProperties, SetTexture3DData, SetTexture3DFormat, SetTexture3DProperties,
 };
 
 use super::renderer_command_kind::renderer_command_variant_tag;
@@ -34,6 +34,15 @@ pub(crate) fn dispatch_running_command(runtime: &mut RendererRuntime, cmd: Rende
         RendererCommand::FrameSubmitData(data) => runtime.on_frame_submit(data),
         RendererCommand::MeshUploadData(d) => process_mesh_upload(runtime, d),
         RendererCommand::MeshUnload(u) => runtime.backend.on_mesh_unload(u),
+        RendererCommand::PointRenderBufferUpload(upload) => {
+            dispatch_point_render_buffer_upload(runtime, upload);
+        }
+        RendererCommand::PointRenderBufferConsumed(consumed) => {
+            runtime.backend.on_point_render_buffer_consumed(consumed);
+        }
+        RendererCommand::PointRenderBufferUnload(unload) => {
+            runtime.backend.on_point_render_buffer_unload(unload);
+        }
         RendererCommand::SetTexture2DFormat(f) => dispatch_texture_2d_format(runtime, f),
         RendererCommand::SetTexture2DProperties(p) => dispatch_texture_2d_properties(runtime, p),
         RendererCommand::SetTexture2DData(d) => dispatch_texture_2d_data(runtime, d),
@@ -122,6 +131,16 @@ fn process_mesh_upload(runtime: &mut RendererRuntime, d: MeshUploadData) {
     } else {
         logger::warn!("mesh upload: no shared memory (standalone?)");
     }
+}
+
+fn dispatch_point_render_buffer_upload(
+    runtime: &mut RendererRuntime,
+    upload: PointRenderBufferUpload,
+) {
+    let (shm, ipc) = runtime.frontend.transport_pair_mut();
+    runtime
+        .backend
+        .on_point_render_buffer_upload(upload, shm, ipc);
 }
 
 fn release_shared_memory_view(runtime: &mut RendererRuntime, buffer_id: i32) {

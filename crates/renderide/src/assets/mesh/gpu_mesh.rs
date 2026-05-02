@@ -67,8 +67,8 @@ pub struct GpuMesh {
     pub index_format: wgpu::IndexFormat,
     /// Total index elements across all submeshes.
     pub index_count: u32,
-    /// Per-submesh `(first_index, index_count)` in elements of `index_format`.
-    pub submeshes: Vec<(u32, u32)>,
+    /// Per-submesh `(first_index, index_count, is_point_topology)` in elements of `index_format`.
+    pub submeshes: Vec<(u32, u32, bool)>,
     /// Vertex count from the host upload (used for deform and draw ranges).
     pub vertex_count: u32,
     /// Byte stride of one interleaved vertex in `vertex_buffer`.

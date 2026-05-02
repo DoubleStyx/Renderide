@@ -56,6 +56,20 @@ pub struct MaterialPipelineCacheKey {
     pub render_state: MaterialRenderState,
     /// Front-face winding for draw transforms in this pipeline bucket.
     pub front_face: RasterFrontFace,
+    /// Whether this pipeline renders point-list geometry.
+    pub point_topology: bool,
+}
+
+impl MaterialPipelineCacheKey {
+    /// Rehydrates the descriptor used by raster pipeline builders.
+    fn pass_desc(&self) -> MaterialPipelineDesc {
+        MaterialPipelineDesc {
+            surface_format: self.surface_format,
+            depth_stencil_format: self.depth_stencil_format,
+            sample_count: self.sample_count,
+            multiview_mask: self.multiview_mask,
+        }
+    }
 }
 
 /// One or more pipelines for a material entry (one per declared `//#pass`).
@@ -137,59 +151,45 @@ impl MaterialPipelineCache {
         self.stats.snapshot()
     }
 
-    /// Returns or builds the pipeline set for `kind`, `desc`, and `permutation`.
+    /// Returns or builds the pipeline set for one fully-specified cache key.
     ///
     /// On a cache hit, does not compose WGSL or run reflection; those run only when inserting a new entry.
     pub fn get_or_create(
         &self,
-        kind: &RasterPipelineKind,
-        desc: &MaterialPipelineDesc,
-        permutation: ShaderPermutation,
-        blend_mode: MaterialBlendMode,
-        render_state: MaterialRenderState,
-        front_face: RasterFrontFace,
+        key: MaterialPipelineCacheKey,
     ) -> Result<MaterialPipelineSet, PipelineBuildError> {
         profiling::scope!("materials::get_or_create_pipeline");
-        let key = MaterialPipelineCacheKey {
-            kind: kind.clone(),
-            permutation,
-            surface_format: desc.surface_format,
-            depth_stencil_format: desc.depth_stencil_format,
-            sample_count: desc.sample_count,
-            multiview_mask: desc.multiview_mask,
-            blend_mode,
-            render_state,
-            front_face,
-        };
+        let desc = key.pass_desc();
         //perf xlinka: a hit is real use; promote it so hot pipelines do not get evicted.
         if let Some(hit) = self.pipelines.lock().get(&key) {
             self.stats.hits.fetch_add(1, Ordering::Relaxed);
             return Ok(hit.clone());
         }
         self.stats.misses.fetch_add(1, Ordering::Relaxed);
-        let wgsl = match kind {
-            RasterPipelineKind::EmbeddedStem(stem) => build_embedded_wgsl(stem, permutation)?,
-            RasterPipelineKind::Null => build_null_wgsl(permutation)?,
+        let wgsl = match &key.kind {
+            RasterPipelineKind::EmbeddedStem(stem) => build_embedded_wgsl(stem, key.permutation)?,
+            RasterPipelineKind::Null => build_null_wgsl(key.permutation)?,
         };
         let device = self.device.clone();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("raster_material_shader"),
             source: wgpu::ShaderSource::Wgsl(wgsl.clone().into()),
         });
-        let pipelines: Vec<wgpu::RenderPipeline> = match kind {
+        let pipelines: Vec<wgpu::RenderPipeline> = match &key.kind {
             RasterPipelineKind::EmbeddedStem(stem) => create_embedded_render_pipelines(
                 EmbeddedRasterPipelineSource {
                     stem: stem.clone(),
-                    permutation,
-                    blend_mode,
-                    render_state,
-                    front_face,
+                    permutation: key.permutation,
+                    blend_mode: key.blend_mode,
+                    render_state: key.render_state,
+                    front_face: key.front_face,
+                    point_topology: key.point_topology,
                 },
                 ShaderModuleBuildRefs {
                     device: &device,
                     limits: &self.limits,
                     module: &module,
-                    desc,
+                    desc: &desc,
                     wgsl_source: &wgsl,
                 },
             )?,
@@ -198,9 +198,10 @@ impl MaterialPipelineCache {
                     &device,
                     &self.limits,
                     &module,
-                    desc,
+                    &desc,
                     &wgsl,
-                    front_face,
+                    key.front_face,
+                    key.point_topology,
                 )?]
             }
         };

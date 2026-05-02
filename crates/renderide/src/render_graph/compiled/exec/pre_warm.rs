@@ -12,8 +12,8 @@ use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext};
 use super::{GraphResolveKey, TransientTextureResolveSurfaceParams};
 use crate::backend::{HistoryResourceScope, TextureHistorySpec};
 use crate::gpu::OutputDepthMode;
-use crate::materials::MaterialPipelineDesc;
 use crate::materials::ShaderPermutation;
+use crate::materials::{MaterialPipelineDesc, MaterialPipelineVariantSpec};
 use crate::occlusion::gpu::HIZ_MAX_MIPS;
 use crate::occlusion::{hi_z_pyramid_dimensions, mip_levels_for_extent};
 use crate::passes::PipelineVariantKey;
@@ -105,10 +105,13 @@ impl CompiledRenderGraph {
             let _ = reg.pipeline_for_shader_asset(
                 req.shader_asset_id,
                 &pass_desc,
-                req.shader_perm,
-                req.blend_mode,
-                req.render_state,
-                req.front_face,
+                MaterialPipelineVariantSpec {
+                    permutation: req.shader_perm,
+                    blend_mode: req.blend_mode,
+                    render_state: req.render_state,
+                    front_face: req.front_face,
+                    point_topology: req.point_topology,
+                },
             );
         });
         // Stamp the warmed set so the next frame's walk can skip these variants entirely. We
@@ -413,6 +416,7 @@ fn collect_unique_pipeline_requests(
         crate::materials::MaterialRenderState,
         crate::materials::RasterFrontFace,
         bool,
+        bool,
     )> = HashSet::new();
     for item in items {
         let grab_pass = item.batch_key.embedded_uses_scene_color_snapshot;
@@ -422,6 +426,7 @@ fn collect_unique_pipeline_requests(
             item.batch_key.render_state,
             item.batch_key.front_face,
             grab_pass,
+            item.batch_key.point_topology,
         );
         if !seen.insert(key) {
             continue;

@@ -61,6 +61,7 @@ pub mod lights;
 mod math;
 mod mesh_apply;
 mod mesh_material_row;
+mod mesh_render_buffer_apply;
 mod mesh_renderable;
 mod pose;
 mod reflection_probe;

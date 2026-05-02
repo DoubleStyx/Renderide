@@ -12,8 +12,8 @@ use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::materials::ShaderPermutation;
 use crate::materials::{EmbeddedMaterialBindResources, EmbeddedTexturePools};
 use crate::materials::{
-    MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineSet, MaterialRegistry,
-    MaterialRenderState, RasterFrontFace, RasterPipelineKind,
+    MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineSet, MaterialPipelineVariantSpec,
+    MaterialRegistry, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
 };
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
@@ -51,6 +51,8 @@ pub(crate) struct PipelineVariantKeyInput {
     pub render_state: MaterialRenderState,
     /// Front-face winding selected from the draw transform.
     pub front_face: RasterFrontFace,
+    /// Whether this batch uses point-list topology.
+    pub point_topology: bool,
 }
 
 /// Exact material pipeline variant used by both pipeline pre-warm and record-time resolution.
@@ -74,6 +76,8 @@ pub(crate) struct PipelineVariantKey {
     pub render_state: MaterialRenderState,
     /// Front-face winding selected from the draw transform.
     pub front_face: RasterFrontFace,
+    /// Whether this batch uses point-list topology.
+    pub point_topology: bool,
 }
 
 impl PipelineVariantKey {
@@ -86,6 +90,7 @@ impl PipelineVariantKey {
             blend_mode,
             render_state,
             front_face,
+            point_topology,
         } = input;
         Self {
             shader_asset_id,
@@ -97,6 +102,7 @@ impl PipelineVariantKey {
             blend_mode,
             render_state,
             front_face,
+            point_topology,
         }
     }
 
@@ -124,6 +130,7 @@ impl PipelineVariantKey {
             blend_mode: batch_key.blend_mode,
             render_state: batch_key.render_state,
             front_face: batch_key.front_face,
+            point_topology: batch_key.point_topology,
         })
     }
 }
@@ -220,10 +227,13 @@ impl<'a> MaterialDrawResolver<'a> {
         let pipelines = registry.pipeline_for_shader_asset(
             pipeline_key.shader_asset_id,
             &pass_desc,
-            pipeline_key.shader_perm,
-            pipeline_key.blend_mode,
-            pipeline_key.render_state,
-            pipeline_key.front_face,
+            MaterialPipelineVariantSpec {
+                permutation: pipeline_key.shader_perm,
+                blend_mode: pipeline_key.blend_mode,
+                render_state: pipeline_key.render_state,
+                front_face: pipeline_key.front_face,
+                point_topology: pipeline_key.point_topology,
+            },
         );
 
         match pipelines {
@@ -322,6 +332,7 @@ mod tests {
             blend_mode: MaterialBlendMode::Opaque,
             render_state: MaterialRenderState::default(),
             front_face: RasterFrontFace::CounterClockwise,
+            point_topology: false,
         })
     }
 

@@ -21,6 +21,8 @@ pub struct MaterialDrawBatchKey {
     pub skinned: bool,
     /// Front-face winding selected from the draw's model transform.
     pub front_face: RasterFrontFace,
+    /// Whether the draw uses point-list rasterization.
+    pub point_topology: bool,
     /// Whether the embedded stem needs a UV0 vertex stream for the active shader permutation.
     pub embedded_needs_uv0: bool,
     /// Whether the embedded stem needs a color vertex stream at `@location(3)`.

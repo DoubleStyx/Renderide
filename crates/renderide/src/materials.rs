@@ -171,7 +171,7 @@ pub use null_pipeline::NullFamily;
 pub use pipeline_property_resolver::PipelinePropertyResolver;
 
 /// Shader route table, optional material asset registry, and WGSL composition patches.
-pub use registry::MaterialRegistry;
+pub use registry::{MaterialPipelineVariantSpec, MaterialRegistry};
 pub use resolve_raster::resolve_raster_pipeline;
 pub use router::{MaterialRouter, ShaderRouteEntry};
 

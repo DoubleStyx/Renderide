@@ -2,7 +2,8 @@
 
 use super::render_overrides::{RenderMaterialOverrideEntry, RenderTransformOverrideEntry};
 use crate::shared::{
-    LayerType, ReflectionProbeChangeRenderTask, RenderSH2, RenderSpaceUpdate, RenderTransform,
+    LayerType, MeshRenderBufferState, ReflectionProbeChangeRenderTask, RenderSH2,
+    RenderSpaceUpdate, RenderTransform,
 };
 
 use hashbrown::HashMap;
@@ -94,6 +95,8 @@ pub struct RenderSpaceState {
     /// Reused dedup set for [`resolve_mesh_layers_from_assignments`]'s ensure-cache pass; cleared
     /// at the start of every resolve and refilled by walking unique renderer node ids.
     pub layer_resolve_seen_scratch: hashbrown::HashSet<i32>,
+    /// Mesh-render-buffer renderer rows keyed by host dense index.
+    pub mesh_render_buffers: Vec<MeshRenderBufferState>,
     /// Render-context-local transform substitutions from the host.
     pub render_transform_overrides: Vec<RenderTransformOverrideEntry>,
     /// Render-context-local material substitutions from the host.
@@ -154,6 +157,7 @@ impl Default for RenderSpaceState {
             resolved_layer_cache: HashMap::new(),
             hierarchy_dirty: true,
             layer_resolve_seen_scratch: hashbrown::HashSet::new(),
+            mesh_render_buffers: Vec::new(),
             render_transform_overrides: Vec::new(),
             render_material_overrides: Vec::new(),
         }

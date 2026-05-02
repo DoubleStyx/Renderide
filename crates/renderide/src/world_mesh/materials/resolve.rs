@@ -69,6 +69,7 @@ pub(crate) fn batch_key_for_slot(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
+    point_topology: bool,
     front_face: RasterFrontFace,
     ctx: MaterialResolveCtx<'_>,
 ) -> MaterialDrawBatchKey {
@@ -145,6 +146,7 @@ pub(crate) fn batch_key_for_slot(
         property_block_slot0: property_block_id,
         skinned,
         front_face,
+        point_topology,
         embedded_needs_uv0,
         embedded_needs_color,
         embedded_needs_uv1,
@@ -166,6 +168,7 @@ pub(crate) fn batch_key_for_slot_cached(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
+    point_topology: bool,
     front_face: RasterFrontFace,
     cache: &FrameMaterialBatchCache,
     ctx: MaterialResolveCtx<'_>,
@@ -175,6 +178,7 @@ pub(crate) fn batch_key_for_slot_cached(
             material_asset_id,
             property_block_id,
             skinned,
+            point_topology,
             front_face,
             resolved,
         )
@@ -183,6 +187,7 @@ pub(crate) fn batch_key_for_slot_cached(
             material_asset_id,
             property_block_id,
             skinned,
+            point_topology,
             front_face,
             ctx,
         )
@@ -266,6 +271,7 @@ fn batch_key_from_resolved(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
+    point_topology: bool,
     front_face: RasterFrontFace,
     r: &ResolvedMaterialBatch,
 ) -> MaterialDrawBatchKey {
@@ -276,6 +282,7 @@ fn batch_key_from_resolved(
         property_block_slot0: property_block_id,
         skinned,
         front_face,
+        point_topology,
         embedded_needs_uv0: r.embedded_needs_uv0,
         embedded_needs_color: r.embedded_needs_color,
         embedded_needs_uv1: r.embedded_needs_uv1,

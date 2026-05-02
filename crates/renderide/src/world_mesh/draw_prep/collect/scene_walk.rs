@@ -27,6 +27,8 @@ pub(crate) struct SubmeshSlotIndices {
     pub first_index: u32,
     /// Index count for this submesh draw.
     pub index_count: u32,
+    /// Whether this submesh uses point-list topology.
+    pub point_topology: bool,
 }
 
 /// Layer and skin deform flags that affect CPU cull and [`WorldMeshDrawItem`] fields.
@@ -56,7 +58,7 @@ struct StaticMeshDrawSource<'a> {
     /// Resident mesh data.
     mesh: &'a crate::assets::mesh::GpuMesh,
     /// Submesh index ranges.
-    submeshes: &'a [(u32, u32)],
+    submeshes: &'a [(u32, u32, bool)],
 }
 
 /// Mutable expansion state while expanding one chunk into draw items.
@@ -178,7 +180,7 @@ fn push_draws_for_renderer(
         .supports_active_blendshape_deform(&draw.renderer.blend_shape_weights);
 
     for (slot_index, slot) in slots.iter().enumerate() {
-        let Some((first_index, index_count)) =
+        let Some((first_index, index_count, point_topology)) =
             stacked_material_submesh_range(slot_index, draw.submeshes)
         else {
             continue;
@@ -192,6 +194,7 @@ fn push_draws_for_renderer(
                 slot_index,
                 first_index,
                 index_count,
+                point_topology,
             },
             OverlayDeformCullFlags {
                 is_overlay,
@@ -217,6 +220,7 @@ fn push_one_slot_draw(
         slot_index,
         first_index,
         index_count,
+        point_topology,
     } = indices;
     let OverlayDeformCullFlags {
         is_overlay,
@@ -280,6 +284,7 @@ fn push_one_slot_draw(
         slot_index,
         first_index,
         index_count,
+        point_topology,
         is_overlay,
         sorting_order: draw.renderer.sorting_order,
         skinned: draw.skinned,

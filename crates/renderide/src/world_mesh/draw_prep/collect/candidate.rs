@@ -24,6 +24,8 @@ pub(super) struct DrawCandidate {
     pub(super) first_index: u32,
     /// Number of indices emitted by the draw.
     pub(super) index_count: u32,
+    /// `true` when this draw uses point-list topology.
+    pub(super) point_topology: bool,
     /// Overlay layer flag copied into cull and draw metadata.
     pub(super) is_overlay: bool,
     /// Renderer sorting order copied into transparent ordering.
@@ -60,6 +62,7 @@ pub(super) fn evaluate_draw_candidate(
         candidate.material_asset_id,
         candidate.property_block_id,
         candidate.skinned,
+        candidate.point_topology,
         front_face,
         cache,
         MaterialResolveCtx {
@@ -91,6 +94,7 @@ pub(super) fn evaluate_draw_candidate(
         slot_index: candidate.slot_index,
         first_index: candidate.first_index,
         index_count: candidate.index_count,
+        point_topology: candidate.point_topology,
         is_overlay: candidate.is_overlay,
         sorting_order: candidate.sorting_order,
         skinned: candidate.skinned,
@@ -155,6 +159,7 @@ mod tests {
             slot_index: 0,
             first_index: 0,
             index_count: 3,
+            point_topology: false,
             is_overlay: false,
             sorting_order: 0,
             skinned: true,

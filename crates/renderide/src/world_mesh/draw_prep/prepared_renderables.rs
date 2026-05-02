@@ -16,7 +16,9 @@ use glam::Mat4;
 use rayon::prelude::*;
 
 use crate::gpu_pools::MeshPool;
-use crate::scene::{MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
+use crate::scene::{
+    MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, RenderSpaceState, SceneCoordinator,
+};
 use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::{
     MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
@@ -63,6 +65,8 @@ pub(super) struct FramePreparedDraw {
     pub first_index: u32,
     /// Number of indices for this submesh draw (always `> 0`).
     pub index_count: u32,
+    /// `true` when this slot maps to a point-list submesh.
+    pub point_topology: bool,
     /// Material id after [`SceneCoordinator::overridden_material_asset_id`] resolution (always `>= 0`).
     pub material_asset_id: i32,
     /// Per-slot property block id when present (distinct from `Some` for batching).
@@ -261,7 +265,44 @@ fn expand_space_into(
     }
 
     let space_is_overlay = space.is_overlay;
+    expand_static_renderers_into(
+        out,
+        scene,
+        mesh_pool,
+        render_context,
+        space_id,
+        space,
+        space_is_overlay,
+    );
+    expand_skinned_renderers_into(
+        out,
+        scene,
+        mesh_pool,
+        render_context,
+        space_id,
+        space,
+        space_is_overlay,
+    );
+    expand_mesh_render_buffers_into(
+        out,
+        scene,
+        mesh_pool,
+        render_context,
+        space_id,
+        space,
+        space_is_overlay,
+    );
+}
 
+fn expand_static_renderers_into(
+    out: &mut Vec<FramePreparedDraw>,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    render_context: RenderingContext,
+    space_id: RenderSpaceId,
+    space: &RenderSpaceState,
+    space_is_overlay: bool,
+) {
     for (renderable_index, r) in space.static_mesh_renderers.iter().enumerate() {
         if r.mesh_asset_id < 0 || r.node_id < 0 {
             continue;
@@ -306,7 +347,17 @@ fn expand_space_into(
             },
         );
     }
+}
 
+fn expand_skinned_renderers_into(
+    out: &mut Vec<FramePreparedDraw>,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    render_context: RenderingContext,
+    space_id: RenderSpaceId,
+    space: &RenderSpaceState,
+    space_is_overlay: bool,
+) {
     for (renderable_index, sk) in space.skinned_mesh_renderers.iter().enumerate() {
         let r = &sk.base;
         if r.mesh_asset_id < 0 || r.node_id < 0 {
@@ -354,6 +405,73 @@ fn expand_space_into(
                 cull_geometry,
             },
         );
+    }
+}
+
+fn expand_mesh_render_buffers_into(
+    out: &mut Vec<FramePreparedDraw>,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    render_context: RenderingContext,
+    space_id: RenderSpaceId,
+    space: &RenderSpaceState,
+    space_is_overlay: bool,
+) {
+    for (buffer_index, state) in space.mesh_render_buffers.iter().enumerate() {
+        let node_id = state.renderable_index;
+        if node_id < 0 || state.mesh_asset_id < 0 || state.material_asset_id < 0 {
+            continue;
+        }
+        if scene.transform_has_degenerate_scale_for_context(
+            space_id,
+            node_id as usize,
+            render_context,
+        ) {
+            continue;
+        }
+        let Some(mesh) = mesh_pool.get(state.mesh_asset_id) else {
+            continue;
+        };
+        if mesh.submeshes.is_empty() {
+            continue;
+        }
+        let cull_geometry = precompute_cull_geometry(PrecomputeCullInputs {
+            scene,
+            space_id,
+            space_is_overlay,
+            mesh,
+            skinned: false,
+            skinned_renderer: None,
+            node_id,
+            render_context,
+        });
+        let Some((first_index, index_count, point_topology)) =
+            stacked_material_submesh_range(0, &mesh.submeshes)
+        else {
+            continue;
+        };
+        if index_count == 0 {
+            continue;
+        }
+        out.push(FramePreparedDraw {
+            space_id,
+            renderable_index: buffer_index,
+            instance_id: MeshRendererInstanceId((1u64 << 63) | (buffer_index as u64 + 1)),
+            node_id,
+            mesh_asset_id: state.mesh_asset_id,
+            is_overlay: false,
+            sorting_order: 0,
+            skinned: false,
+            world_space_deformed: false,
+            blendshape_deformed: false,
+            slot_index: 0,
+            first_index,
+            index_count,
+            point_topology,
+            material_asset_id: state.material_asset_id,
+            property_block_id: None,
+            cull_geometry,
+        });
     }
 }
 
@@ -444,7 +562,7 @@ fn expand_renderer_slots(
     if slots.is_empty() {
         return;
     }
-    let submeshes: &[(u32, u32)] = &mesh.submeshes;
+    let submeshes: &[(u32, u32, bool)] = &mesh.submeshes;
     if submeshes.is_empty() {
         return;
     }
@@ -452,7 +570,7 @@ fn expand_renderer_slots(
     let is_overlay = renderer.layer == LayerType::Overlay;
 
     for (slot_index, slot) in slots.iter().enumerate() {
-        let Some((first_index, index_count)) =
+        let Some((first_index, index_count, point_topology)) =
             stacked_material_submesh_range(slot_index, submeshes)
         else {
             continue;
@@ -486,6 +604,7 @@ fn expand_renderer_slots(
             slot_index,
             first_index,
             index_count,
+            point_topology,
             material_asset_id,
             property_block_id: slot.property_block_id,
             cull_geometry,

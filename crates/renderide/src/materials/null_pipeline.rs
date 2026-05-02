@@ -67,6 +67,7 @@ pub(crate) fn create_null_render_pipeline(
     desc: &MaterialPipelineDesc,
     wgsl_source: &str,
     front_face: RasterFrontFace,
+    point_topology: bool,
 ) -> Result<wgpu::RenderPipeline, PipelineBuildError> {
     create_reflective_raster_mesh_forward_pipeline(
         device,
@@ -83,6 +84,11 @@ pub(crate) fn create_null_render_pipeline(
             depth_write_enabled: true,
             render_state: MaterialRenderState::default(),
             front_face,
+            primitive_topology: if point_topology {
+                wgpu::PrimitiveTopology::PointList
+            } else {
+                wgpu::PrimitiveTopology::TriangleList
+            },
         },
     )
 }

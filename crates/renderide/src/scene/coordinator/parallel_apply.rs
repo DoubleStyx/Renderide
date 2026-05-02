@@ -35,6 +35,10 @@ use super::super::mesh_apply::{
     extract_mesh_renderables_update, extract_skinned_mesh_renderables_update,
     fixup_static_meshes_for_transform_removals,
 };
+use super::super::mesh_render_buffer_apply::{
+    ExtractedMeshRenderBufferUpdate, apply_mesh_render_buffer_update_extracted,
+    extract_mesh_render_buffer_update, fixup_mesh_render_buffers_for_transform_removals,
+};
 use super::super::reflection_probe::{
     ExtractedReflectionProbeRenderablesUpdate, apply_reflection_probe_renderables_update_extracted,
     extract_reflection_probe_renderables_update, fixup_reflection_probes_for_transform_removals,
@@ -70,6 +74,8 @@ pub struct ExtractedRenderSpaceUpdate {
     pub skinned_meshes: Option<ExtractedSkinnedMeshRenderablesUpdate>,
     /// Layer-assignment update payload.
     pub layers: Option<ExtractedLayerUpdate>,
+    /// Mesh-render-buffer renderer update payload.
+    pub mesh_render_buffers: Option<ExtractedMeshRenderBufferUpdate>,
     /// Render-context transform-override update payload.
     pub transform_overrides: Option<ExtractedRenderTransformOverridesUpdate>,
     /// Render-context material-override update payload.
@@ -114,6 +120,10 @@ pub fn extract_render_space_update(
         Some(lu) => Some(extract_layer_update(shm, lu, update.id)?),
         None => None,
     };
+    let mesh_render_buffers = match update.mesh_render_buffers_update.as_ref() {
+        Some(mu) => Some(extract_mesh_render_buffer_update(shm, mu, update.id)?),
+        None => None,
+    };
     let transform_overrides = match update.render_transform_overrides_update.as_ref() {
         Some(rtu) => Some(extract_render_transform_overrides_update(
             shm, rtu, update.id,
@@ -134,6 +144,7 @@ pub fn extract_render_space_update(
         meshes,
         skinned_meshes,
         layers,
+        mesh_render_buffers,
         transform_overrides,
         material_overrides,
     })
@@ -213,6 +224,10 @@ pub fn apply_extracted_render_space_update(
         }
         super::super::layer_apply::resolve_mesh_layers_from_assignments(space);
     };
+    fixup_mesh_render_buffers_for_transform_removals(space, transform_removals);
+    if let Some(ref mu) = extracted.mesh_render_buffers {
+        apply_mesh_render_buffer_update_extracted(space, mu);
+    }
     if let Some(ref rtu) = extracted.transform_overrides {
         apply_render_transform_overrides_update_extracted(space, rtu, transform_removals);
     }

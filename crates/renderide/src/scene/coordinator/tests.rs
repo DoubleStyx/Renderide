@@ -312,6 +312,7 @@ fn parallel_apply_extracted_commits_pose_writes_and_marks_dirty() {
         skinned_meshes: None,
         reflection_probes: None,
         layers: None,
+        mesh_render_buffers: None,
         transform_overrides: None,
         material_overrides: None,
     };

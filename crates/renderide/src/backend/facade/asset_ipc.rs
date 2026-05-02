@@ -3,7 +3,8 @@
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::materials::RasterPipelineKind;
 use crate::shared::{
-    MaterialsUpdateBatch, MeshUnload, MeshUploadData, SetCubemapData, SetCubemapFormat,
+    MaterialsUpdateBatch, MeshUnload, MeshUploadData, PointRenderBufferConsumed,
+    PointRenderBufferUnload, PointRenderBufferUpload, SetCubemapData, SetCubemapFormat,
     SetCubemapProperties, SetRenderTextureFormat, SetTexture2DData, SetTexture2DFormat,
     SetTexture2DProperties, SetTexture3DData, SetTexture3DFormat, SetTexture3DProperties,
     UnloadCubemap, UnloadRenderTexture, UnloadTexture2D, UnloadTexture3D, UnloadVideoTexture,
@@ -194,6 +195,26 @@ impl RenderBackend {
     /// Remove a mesh from the pool.
     pub fn on_mesh_unload(&mut self, u: MeshUnload) {
         asset_uploads::on_mesh_unload(&mut self.asset_transfers, u);
+    }
+
+    /// Handle [`PointRenderBufferUpload`](crate::shared::PointRenderBufferUpload).
+    pub fn on_point_render_buffer_upload(
+        &mut self,
+        upload: PointRenderBufferUpload,
+        shm: Option<&mut SharedMemoryAccessor>,
+        ipc: Option<&mut DualQueueIpc>,
+    ) {
+        asset_uploads::on_point_render_buffer_upload(&mut self.asset_transfers, upload, shm, ipc);
+    }
+
+    /// Handle [`PointRenderBufferConsumed`](crate::shared::PointRenderBufferConsumed).
+    pub fn on_point_render_buffer_consumed(&mut self, consumed: PointRenderBufferConsumed) {
+        asset_uploads::on_point_render_buffer_consumed(&mut self.asset_transfers, consumed);
+    }
+
+    /// Handle [`PointRenderBufferUnload`](crate::shared::PointRenderBufferUnload).
+    pub fn on_point_render_buffer_unload(&mut self, unload: PointRenderBufferUnload) {
+        asset_uploads::on_point_render_buffer_unload(&mut self.asset_transfers, unload);
     }
 
     /// Drain pending material batches using the given shared memory and IPC.

@@ -17,24 +17,30 @@ pub(super) fn wgpu_index_format(f: IndexBufferFormat) -> wgpu::IndexFormat {
 pub(super) fn validated_submesh_ranges(
     submeshes: &[SubmeshBufferDescriptor],
     index_count_u32: u32,
-) -> Vec<(u32, u32)> {
+) -> Vec<(u32, u32, bool)> {
     if submeshes.is_empty() {
         if index_count_u32 > 0 {
-            return vec![(0, index_count_u32)];
+            return vec![(0, index_count_u32, false)];
         }
         return Vec::new();
     }
-    let valid: Vec<(u32, u32)> = submeshes
+    let valid: Vec<(u32, u32, bool)> = submeshes
         .iter()
         .filter(|s| {
             s.index_count > 0
                 && (i64::from(s.index_start) + i64::from(s.index_count))
                     <= i64::from(index_count_u32)
         })
-        .map(|s| (s.index_start as u32, s.index_count as u32))
+        .map(|s| {
+            (
+                s.index_start as u32,
+                s.index_count as u32,
+                s.topology == crate::shared::SubmeshTopology::Points,
+            )
+        })
         .collect();
     if valid.is_empty() && index_count_u32 > 0 {
-        vec![(0, index_count_u32)]
+        vec![(0, index_count_u32, false)]
     } else {
         valid
     }
@@ -170,7 +176,7 @@ mod tests {
 
     fn submesh(start: i32, count: i32) -> SubmeshBufferDescriptor {
         SubmeshBufferDescriptor {
-            topology: SubmeshTopology::default(),
+            topology: SubmeshTopology::Triangles,
             index_start: start,
             index_count: count,
             ..Default::default()
@@ -184,31 +190,41 @@ mod tests {
 
     #[test]
     fn empty_submeshes_with_indices_yields_single_full_range() {
-        assert_eq!(validated_submesh_ranges(&[], 12), vec![(0, 12)]);
+        assert_eq!(validated_submesh_ranges(&[], 12), vec![(0, 12, false)]);
     }
 
     #[test]
     fn valid_submeshes_are_passed_through() {
         let s = [submesh(0, 6), submesh(6, 6)];
-        assert_eq!(validated_submesh_ranges(&s, 12), vec![(0, 6), (6, 6)]);
+        assert_eq!(
+            validated_submesh_ranges(&s, 12),
+            vec![(0, 6, false), (6, 6, false)]
+        );
     }
 
     #[test]
     fn zero_count_submeshes_are_filtered_out() {
         let s = [submesh(0, 0), submesh(0, 6)];
-        assert_eq!(validated_submesh_ranges(&s, 6), vec![(0, 6)]);
+        assert_eq!(validated_submesh_ranges(&s, 6), vec![(0, 6, false)]);
     }
 
     #[test]
     fn out_of_range_submeshes_are_filtered_out() {
         let s = [submesh(0, 6), submesh(6, 10)];
-        assert_eq!(validated_submesh_ranges(&s, 12), vec![(0, 6)]);
+        assert_eq!(validated_submesh_ranges(&s, 12), vec![(0, 6, false)]);
     }
 
     #[test]
     fn all_invalid_submeshes_fall_back_to_full_range() {
         let s = [submesh(100, 6)];
-        assert_eq!(validated_submesh_ranges(&s, 12), vec![(0, 12)]);
+        assert_eq!(validated_submesh_ranges(&s, 12), vec![(0, 12, false)]);
+    }
+
+    #[test]
+    fn point_topology_is_preserved() {
+        let mut s = [submesh(0, 6)];
+        s[0].topology = SubmeshTopology::Points;
+        assert_eq!(validated_submesh_ranges(&s, 6), vec![(0, 6, true)]);
     }
 
     #[test]
