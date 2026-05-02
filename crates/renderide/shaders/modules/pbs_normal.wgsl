@@ -13,10 +13,18 @@
 
 #define_import_path renderide::pbs::normal
 
-/// Construct a 3x3 matrix of the tangent, bitangent and normal vectors
-fn orthonormal_tbn(n: vec3<f32>, t: vec3<f32>) -> mat3x3<f32> {
-    let bitangent = cross(n, t);
-    return mat3x3<f32>(t, bitangent, n);
+/// Branchless orthonormal basis from a unit world normal.
+///
+/// Construction follows *Building an Orthonormal Basis, Revisited* (Duff et al., JCGT 2017) so
+/// there is no discontinuity near `n.z = ±1` (unlike a fixed world-up cross). Returns the matrix
+/// `[T B N]` with columns the tangent, bitangent, and the input normal.
+fn orthonormal_tbn(n: vec3<f32>) -> mat3x3<f32> {
+    let sign = select(-1.0, 1.0, n.z >= 0.0);
+    let a = -1.0 / (sign + n.z);
+    let b = n.x * n.y * a;
+    let t = vec3<f32>(1.0 + sign * n.x * n.x * a, sign * b, -sign * n.x);
+    let bitan = vec3<f32>(b, sign + n.y * n.y * a, -n.y);
+    return mat3x3<f32>(normalize(t), normalize(bitan), n);
 }
 
 /// Apply a tangent-space normal `ts_n` to a geometric world normal `world_n`, returning the
