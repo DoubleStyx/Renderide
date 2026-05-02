@@ -94,7 +94,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass forward_transparent
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
