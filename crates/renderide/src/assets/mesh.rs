@@ -7,7 +7,6 @@ mod gpu_mesh_validation;
 mod layout;
 #[cfg(test)]
 mod layout_tests;
-mod tangent_generation;
 mod upload_impl;
 
 pub use gpu_mesh::GpuMesh;

@@ -18,7 +18,6 @@
 #import renderide::mesh::vertex as mv
 #import renderide::per_draw as pd
 #import renderide::pbs::lighting as plight
-#import renderide::pbs::normal as pnorm
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::uv_utils as uvu
@@ -67,10 +66,9 @@ struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) world_t: vec4<f32>,
-    @location(3) uv0: vec2<f32>,
-    @location(4) point_emission: vec3<f32>,
-    @location(5) @interpolate(flat) view_layer: u32,
+    @location(2) uv0: vec2<f32>,
+    @location(3) point_emission: vec3<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 }
 
 fn safe_inverse_range(band_start: f32, band_end: f32) -> f32 {
@@ -121,7 +119,7 @@ fn accumulate_points(reference: vec3<f32>) -> DisplaceResult {
     return DisplaceResult(displace, emission);
 }
 
-fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
+fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> vec3<f32> {
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         ts_n = psamp::sample_tangent_normal(_NormalMap, _NormalMap_sampler, uv_main, 0.0, mat._NormalScale);
@@ -129,7 +127,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
     if (!front_facing) {
         ts_n.z = -ts_n.z;
     }
-    return normalize(pnorm::orthonormal_tbn(world_n, world_t) * ts_n);
+    return psamp::tangent_to_world(world_n, ts_n);
 }
 
 @vertex
@@ -141,7 +139,6 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
-    @location(4) t: vec4<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);
     let world_p_pre = d.model * vec4<f32>(pos.xyz, 1.0);
@@ -158,7 +155,6 @@ fn vs_main(
     let displaced_obj = pos.xyz + direction * acc.displace;
     let world_p = d.model * vec4<f32>(displaced_obj, 1.0);
     let wn = normalize(d.normal_matrix * n.xyz);
-    let wt = mv::world_tangent(d, t);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);
 #else
@@ -169,7 +165,6 @@ fn vs_main(
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.world_n = wn;
-    out.world_t = wt;
     out.uv0 = uv0;
     out.point_emission = acc.emission;
 #ifdef MULTIVIEW
@@ -184,7 +179,6 @@ fn shade(
     frag_xy: vec2<f32>,
     world_pos: vec3<f32>,
     world_n: vec3<f32>,
-    world_t: vec4<f32>,
     uv0: vec2<f32>,
     point_emission: vec3<f32>,
     view_layer: u32,
@@ -209,7 +203,7 @@ fn shade(
     metallic = clamp(metallic, 0.0, 1.0);
     let roughness = psamp::roughness_from_smoothness(smoothness);
 
-    let n = sample_normal_world(uv_main, world_n, world_t, front_facing);
+    let n = sample_normal_world(uv_main, world_n, front_facing);
 
     let emission_tex = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     let emission = mat._EmissionColor.rgb * emission_tex + point_emission;
@@ -226,10 +220,9 @@ fn fs_forward_base(
     @builtin(front_facing) front_facing: bool,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) world_t: vec4<f32>,
-    @location(3) uv0: vec2<f32>,
-    @location(4) point_emission: vec3<f32>,
-    @location(5) @interpolate(flat) view_layer: u32,
+    @location(2) uv0: vec2<f32>,
+    @location(3) point_emission: vec3<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, point_emission, view_layer, front_facing, true, true);
+    return shade(frag_pos.xy, world_pos, world_n, uv0, point_emission, view_layer, front_facing, true, true);
 }

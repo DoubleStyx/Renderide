@@ -9,10 +9,7 @@ use crate::gpu::GpuLimits;
 use crate::mesh_deform::{
     BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES, blendshape_sparse_buffers_fit_device,
 };
-use crate::shared::{
-    IndexBufferFormat, MeshUploadData, SubmeshBufferDescriptor, VertexAttributeDescriptor,
-    VertexAttributeType,
-};
+use crate::shared::{MeshUploadData, VertexAttributeDescriptor, VertexAttributeType};
 
 use super::gpu_mesh_hints::wgpu_index_format;
 use super::layout::{
@@ -20,8 +17,8 @@ use super::layout::{
     compute_index_count, compute_vertex_stride, extract_bind_poses, extract_blendshape_offsets,
     extract_float3_position_normal_as_vec4_streams, split_bone_weights_tail_for_gpu,
     synthetic_bone_data_for_blendshape_only, uv0_float2_stream_bytes, vertex_float2_stream_bytes,
+    vertex_float4_stream_bytes,
 };
-use super::tangent_generation::tangent_stream_bytes;
 
 /// Tangent plus UV1–UV3 optional vertex buffers from extended stream upload.
 type ExtendedVertexStreams = (
@@ -30,24 +27,6 @@ type ExtendedVertexStreams = (
     Option<Arc<wgpu::Buffer>>,
     Option<Arc<wgpu::Buffer>>,
 );
-
-/// CPU-side mesh source required to build lazy tangent and UV1-UV3 vertex streams.
-pub(super) struct ExtendedVertexUploadSource<'a> {
-    /// Interleaved vertex bytes from the host mesh payload.
-    pub vertex_slice: &'a [u8],
-    /// Index bytes from the host mesh payload.
-    pub index_slice: &'a [u8],
-    /// Number of vertices in `vertex_slice`.
-    pub vertex_count: usize,
-    /// Byte stride of one interleaved vertex.
-    pub vertex_stride: usize,
-    /// Host vertex attribute descriptors, in interleaved order.
-    pub vertex_attributes: &'a [VertexAttributeDescriptor],
-    /// Host index-buffer format.
-    pub index_format: IndexBufferFormat,
-    /// Host submesh descriptors.
-    pub submeshes: &'a [SubmeshBufferDescriptor],
-}
 
 /// Interleaved VB, IB, and layout-derived scalars after validation.
 pub(super) struct CoreBuffers {
@@ -299,30 +278,31 @@ fn create_vertex_stream_buffer(
 pub(super) fn upload_extended_vertex_streams(
     device: &wgpu::Device,
     asset_id: i32,
-    source: ExtendedVertexUploadSource<'_>,
+    vertex_slice: &[u8],
+    vc_usize: usize,
+    vertex_stride_us: usize,
+    vertex_attributes: &[VertexAttributeDescriptor],
 ) -> ExtendedVertexStreams {
-    let vc_usize = source.vertex_count;
     if vc_usize == 0 {
         return (None, None, None, None);
     }
 
-    let tangent_bytes = tangent_stream_bytes(
-        source.vertex_slice,
-        source.index_slice,
+    let tangent_bytes = vertex_float4_stream_bytes(
+        vertex_slice,
         vc_usize,
-        source.vertex_stride,
-        source.vertex_attributes,
-        source.index_format,
-        source.submeshes,
+        vertex_stride_us,
+        vertex_attributes,
+        VertexAttributeType::Tangent,
+        [1.0, 1.0, 1.0, 1.0],
     )
-    .unwrap_or_else(|| float4_default_stream_bytes(vc_usize, [1.0, 0.0, 0.0, 1.0]));
+    .unwrap_or_else(|| float4_default_stream_bytes(vc_usize, [1.0, 1.0, 1.0, 1.0]));
 
     let make_uv = |target: VertexAttributeType, label: &str| {
         let bytes = vertex_float2_stream_bytes(
-            source.vertex_slice,
+            vertex_slice,
             vc_usize,
-            source.vertex_stride,
-            source.vertex_attributes,
+            vertex_stride_us,
+            vertex_attributes,
             target,
         )
         .unwrap_or_else(|| float2_zero_stream_bytes(vc_usize));
@@ -388,7 +368,7 @@ pub(super) fn upload_default_extended_vertex_streams(
     if vc_usize == 0 {
         return (None, None, None, None);
     }
-    let tangent_bytes = float4_default_stream_bytes(vc_usize, [1.0, 0.0, 0.0, 1.0]);
+    let tangent_bytes = float4_default_stream_bytes(vc_usize, [1.0, 1.0, 1.0, 1.0]);
     let uv_bytes = float2_zero_stream_bytes(vc_usize);
     (
         Some(create_vertex_stream_buffer(

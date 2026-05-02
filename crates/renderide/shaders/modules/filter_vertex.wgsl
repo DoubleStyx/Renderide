@@ -40,7 +40,7 @@ fn vertex_main(
     let world_p = mv::world_position(d, pos);
     let vp = mv::select_view_proj(d, view_idx);
     let world_n = rmath::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
-    let world_t = vec4<f32>((d.model * vec4<f32>(t.xyz, 0.0)).xyz, t.w);
+    let world_t = vec4<f32>(d.normal_matrix * t.xyz, t.w);
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
     out.primary_uv = primary_uv;

@@ -77,7 +77,7 @@ struct SurfaceData {
 
 /// Sample tangent-space normal, place it in world space, and flip Z for back-faces (two-sided).
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
-    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
+    let tbn = pnorm::orthonormal_tbn(normalize(world_n), normalize(world_t));
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         ts_n = nd::decode_ts_normal_with_placeholder(

@@ -15,15 +15,14 @@ use super::super::layout::{
     extract_bind_poses, synthetic_bone_data_for_blendshape_only,
 };
 use super::super::upload_impl::{
-    ExtendedVertexUploadSource, upload_default_extended_vertex_streams,
-    upload_default_uv1_vertex_stream, upload_extended_vertex_streams, upload_uv1_vertex_stream,
+    upload_default_extended_vertex_streams, upload_default_uv1_vertex_stream,
+    upload_extended_vertex_streams, upload_uv1_vertex_stream,
 };
 use super::{
-    ExtendedVertexStreamSource, GpuMesh, MeshInPlaceWriteContext,
-    blendshape_and_deform_buffers_match_for_in_place, compatible_for_in_place_real_skeleton,
-    compatible_for_in_place_synthetic_blendshape_skeleton, extended_vertex_stream_bytes,
-    extended_vertex_stream_source_from_raw, write_in_place_blendshape_buffer,
-    write_in_place_bone_buffers, write_in_place_index_buffer,
+    GpuMesh, MeshInPlaceWriteContext, blendshape_and_deform_buffers_match_for_in_place,
+    compatible_for_in_place_real_skeleton, compatible_for_in_place_synthetic_blendshape_skeleton,
+    extended_vertex_stream_bytes, extended_vertex_stream_source_from_raw,
+    write_in_place_blendshape_buffer, write_in_place_bone_buffers, write_in_place_index_buffer,
     write_in_place_vertex_and_derived_streams,
 };
 
@@ -80,15 +79,10 @@ impl GpuMesh {
                 upload_extended_vertex_streams(
                     device,
                     self.asset_id,
-                    ExtendedVertexUploadSource {
-                        vertex_slice: source.vertex_bytes.as_ref(),
-                        index_slice: source.index_bytes.as_ref(),
-                        vertex_count: vc_usize,
-                        vertex_stride: self.vertex_stride as usize,
-                        vertex_attributes: source.vertex_attributes.as_ref(),
-                        index_format: source.index_format,
-                        submeshes: source.submeshes.as_ref(),
-                    },
+                    source.vertex_bytes.as_ref(),
+                    vc_usize,
+                    self.vertex_stride as usize,
+                    source.vertex_attributes.as_ref(),
                 )
             } else {
                 upload_default_extended_vertex_streams(device, self.asset_id, vc_usize)
@@ -306,7 +300,6 @@ impl GpuMesh {
                 vertex_stride: vertex_stride_us,
             },
             write_vertex,
-            write_ib,
         );
         write_in_place_index_buffer(self, queue, raw, layout, write_ib);
         write_in_place_bone_buffers(
@@ -342,8 +335,14 @@ impl GpuMesh {
                 .collect();
         }
 
-        let extended_vertex_stream_source =
-            updated_extended_vertex_stream_source(self, raw, data, layout, write_vertex, write_ib);
+        let has_extended_gpu_streams = self.extended_vertex_streams_ready();
+        let extended_vertex_stream_source = if write_vertex && !has_extended_gpu_streams {
+            extended_vertex_stream_source_from_raw(raw, data, layout)
+        } else if write_vertex {
+            None
+        } else {
+            self.extended_vertex_stream_source.clone()
+        };
 
         Some(Self {
             asset_id: self.asset_id,
@@ -378,21 +377,4 @@ impl GpuMesh {
             resident_bytes: self.resident_bytes,
         })
     }
-}
-
-fn updated_extended_vertex_stream_source(
-    mesh: &GpuMesh,
-    raw: &[u8],
-    data: &MeshUploadData,
-    layout: &MeshBufferLayout,
-    write_vertex: bool,
-    write_index: bool,
-) -> Option<ExtendedVertexStreamSource> {
-    if !write_vertex && !write_index {
-        return mesh.extended_vertex_stream_source.clone();
-    }
-    if mesh.extended_vertex_streams_ready() {
-        return None;
-    }
-    extended_vertex_stream_source_from_raw(raw, data, layout)
 }

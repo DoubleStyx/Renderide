@@ -88,7 +88,6 @@ crash-handler = "0.7"
 ## emit a hex address list (signal-safe first pass) and a best-effort symbolicated trace
 ## (second pass) for native faults that bypass Rust's panic hook.
 backtrace = "0.3"
-bevy_mikktspace = "1.0"
 ## GPU timestamp query scopes; bridges per-phase GPU timing to Tracy when the `tracy` feature is on.
 ## Only compiled when the `tracy` workspace feature is enabled.
 wgpu-profiler = { version = "0.27", optional = true }

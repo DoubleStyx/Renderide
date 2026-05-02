@@ -86,7 +86,7 @@ fn world_normal(draw: pd::PerDrawUniforms, n: vec4<f32>) -> vec3<f32> {
 }
 
 fn world_tangent(draw: pd::PerDrawUniforms, t: vec4<f32>) -> vec4<f32> {
-    return vec4<f32>(model_vector(draw, t.xyz), t.w);
+    return vec4<f32>(world_normal(draw, t), t.w);
 }
 
 fn model_vector(draw: pd::PerDrawUniforms, v: vec3<f32>) -> vec3<f32> {
@@ -98,7 +98,7 @@ fn model_world_normal(draw: pd::PerDrawUniforms, n: vec4<f32>) -> vec3<f32> {
 }
 
 fn model_world_tangent(draw: pd::PerDrawUniforms, t: vec4<f32>) -> vec4<f32> {
-    return vec4<f32>(model_vector(draw, t.xyz), t.w);
+    return vec4<f32>(model_world_normal(draw, t), t.w);
 }
 
 fn view_layer_from_index(view_idx: u32) -> u32 {
