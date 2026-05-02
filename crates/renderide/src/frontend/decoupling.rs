@@ -14,7 +14,7 @@
 //!   [`DecouplingState::decoupled_max_asset_processing_seconds`] (the host-supplied ceiling)
 //!   so the renderer can keep up with display while the host catches up.
 //!
-//! Pure state — no IPC, no winit, no GPU. Activation/recouple are driven by `Instant` inputs
+//! Pure state -- no IPC, no winit, no GPU. Activation/recouple are driven by `Instant` inputs
 //! supplied by callers so the logic is unit-testable without wiring the runtime.
 //!
 //! `decouple_activate_interval = 0.0` together with `recouple_frame_count = i32::MAX` is the
@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use crate::shared::RenderDecouplingConfig;
 
-/// Default activation threshold in seconds (1/15 s ≈ 66.67 ms). Matches Renderite.Unity.
+/// Default activation threshold in seconds (1/15 s ~= 66.67 ms). Matches Renderite.Unity.
 const DEFAULT_ACTIVATE_INTERVAL_SECONDS: f32 = 1.0 / 15.0;
 /// Default decoupled asset-processing ceiling in seconds (2 ms). Matches Renderite.Unity.
 const DEFAULT_DECOUPLED_MAX_ASSET_PROCESSING_SECONDS: f32 = 0.002;
@@ -119,7 +119,7 @@ pub struct DecouplingState {
     recouple_progress: i32,
     /// Wall-clock instant the most recent outgoing [`crate::shared::FrameStartData`] was sent.
     last_frame_start_sent_at: Option<Instant>,
-    /// Most recent observed `FrameStartData → FrameSubmitData` round-trip duration.
+    /// Most recent observed `FrameStartData -> FrameSubmitData` round-trip duration.
     last_frame_begin_to_submit: Option<Duration>,
 }
 
@@ -391,7 +391,7 @@ mod tests {
         s.update_activation_for_tick(t0 + Duration::from_secs_f32(0.06), true);
         assert!(s.is_active());
 
-        // Two fast submits, then one slow, then two fast → still decoupled (counter reset).
+        // Two fast submits, then one slow, then two fast -> still decoupled (counter reset).
         let pattern = [0.01, 0.01, 0.06, 0.01, 0.01];
         for delay_s in pattern {
             let send = Instant::now();
@@ -414,7 +414,7 @@ mod tests {
         for _ in 0..1000 {
             let send = Instant::now();
             s.record_frame_start_sent(send);
-            // All submits are technically "≥ 0.0" so they reset the counter — but even if they
+            // All submits are technically ">= 0.0" so they reset the counter -- but even if they
             // were sub-threshold, `i32::MAX` would never be reached. Either branch keeps `active`.
             s.record_frame_submit_received(send + Duration::from_secs_f32(0.001));
         }

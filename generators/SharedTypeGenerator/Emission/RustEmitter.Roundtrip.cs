@@ -15,7 +15,7 @@ public partial class RustEmitter
         if (roundtripable.Count == 0) return;
 
         _w.BlankLine();
-        _w.Comment("Roundtrip dispatch for C#–Rust serialization tests. Called by the roundtrip binary.");
+        _w.Comment("Roundtrip dispatch for C#-Rust serialization tests. Called by the roundtrip binary.");
         using (_w.BeginMethod("roundtrip_dispatch", "std::io::Result<Vec<u8>>", null, ["type_name: &str", "input: &[u8]"], isPublic: true))
         {
             _w.Line("use super::packing::default_entity_pool::DefaultEntityPool;");

@@ -115,7 +115,7 @@ pub struct GpuMesh {
     /// True when the host uploaded a real skeleton (`bone_count > 0`).
     pub has_skeleton: bool,
     /// Unity [`Mesh.bindposes`](https://docs.unity3d.com/ScriptReference/Mesh-bindposes.html):
-    /// inverse bind matrices (mesh space → bone bind space). Per-frame palette is
+    /// inverse bind matrices (mesh space -> bone bind space). Per-frame palette is
     /// `world_bone * skinning_bind_matrices[i]`.
     pub skinning_bind_matrices: Vec<Mat4>,
     /// Approximate VRAM (bytes), used by [`crate::gpu_pools::VramAccounting`].

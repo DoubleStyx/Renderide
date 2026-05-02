@@ -58,7 +58,7 @@ pub struct DebugHud {
     imgui: Context,
     renderer: ImguiWgpuRenderer,
     last_frame_at: Instant,
-    /// Lightweight FPS / wall / CPU–submit / GPU-idle metrics ([`FrameTimingHudSnapshot`]).
+    /// Lightweight FPS / wall / CPU-submit / GPU-idle metrics ([`FrameTimingHudSnapshot`]).
     frame_timing: Option<FrameTimingHudSnapshot>,
     latest: Option<RendererInfoSnapshot>,
     /// Per-frame timing, draws, host metrics, shader routes, and GPU allocator detail ([`FrameDiagnosticsSnapshot`]).
@@ -147,7 +147,7 @@ impl DebugHud {
         self.frame_diagnostics = Some(sample);
     }
 
-    /// Stores per–render-space world transform rows for the **Scene transforms** window.
+    /// Stores per-render-space world transform rows for the **Scene transforms** window.
     pub fn set_scene_transforms_snapshot(&mut self, sample: SceneTransformsSnapshot) {
         self.scene_transforms = sample;
     }

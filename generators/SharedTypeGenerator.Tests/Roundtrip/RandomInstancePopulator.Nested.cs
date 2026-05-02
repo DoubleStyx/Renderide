@@ -43,7 +43,7 @@ public static partial class RandomInstancePopulator
         return instance;
     }
 
-    /// <summary>Creates a list with 0–4 elements using the same element distribution as the pre-refactor loop.</summary>
+    /// <summary>Creates a list with 0-4 elements using the same element distribution as the pre-refactor loop.</summary>
     private static IList CreateRandomList(Type elementType, Random rng, Assembly assembly, HashSet<object> seen)
     {
         var listType = typeof(List<>).MakeGenericType(elementType);

@@ -264,7 +264,7 @@ fn unpack_desktop_snapshot(
 
 /// Unpacks the per-eye CPU snapshots in parallel via [`rayon::join`].
 ///
-/// Each eye performs an independent O(W·H·mips) byte-to-`f32` walk over its own staging buffer
+/// Each eye performs an independent O(W*H*mips) byte-to-`f32` walk over its own staging buffer
 /// (see [`unpack_linear_rows_to_mips`]), then validates dimensions through
 /// [`hi_z_snapshot_from_linear_linear`]. The two walks share no state, so fan-out is straightforward
 /// and roughly halves stereo Hi-Z readback wall time on multi-core hosts.

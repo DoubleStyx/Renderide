@@ -1,4 +1,4 @@
-//! Bloom upsample pass: 3×3 tent filter blended into the target mip with a per-pass blend factor.
+//! Bloom upsample pass: 3x3 tent filter blended into the target mip with a per-pass blend factor.
 
 use std::borrow::Cow;
 use std::num::NonZeroU32;
@@ -31,7 +31,7 @@ pub(super) struct BloomUpsamplePass {
     /// Source mip being read by this pass (higher = lower frequency).
     mip: u32,
     /// `mip_count - 1`, captured at graph-build time (driven by `max_mip_dimension`, which is
-    /// part of the chain signature — a change there forces a rebuild).
+    /// part of the chain signature -- a change there forces a rebuild).
     max_mip_f32: f32,
     /// Snapshot used when the live blackboard slot is absent (tests / pre-lifecycle paths).
     fallback_settings: BloomSettings,

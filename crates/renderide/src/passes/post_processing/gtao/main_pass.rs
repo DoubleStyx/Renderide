@@ -1,12 +1,12 @@
-//! `gtao_main` raster pass — XeGTAO production stage.
+//! `gtao_main` raster pass -- XeGTAO production stage.
 //!
 //! Reads the imported scene depth, reconstructs view-space normals from depth derivatives,
 //! evaluates the GTAO horizon search, and writes:
 //!
-//! - `@location(0)` — `saturate(visibility / OCCLUSION_TERM_SCALE)` to an `R8Unorm` ping-pong
+//! - `@location(0)` -- `saturate(visibility / OCCLUSION_TERM_SCALE)` to an `R8Unorm` ping-pong
 //!   target. The `1 / 1.5` scale is XeGTAO's `XeGTAO_OutputWorkingTerm` headroom convention;
 //!   the apply stage multiplies by `OCCLUSION_TERM_SCALE` to recover the true visibility.
-//! - `@location(1)` — packed `LRTB` depth-edge weights (`gtao_pack_edges`) to an `R8Unorm`
+//! - `@location(1)` -- packed `LRTB` depth-edge weights (`gtao_pack_edges`) to an `R8Unorm`
 //!   ping-pong target sampled by the depth-aware denoise / apply stages.
 
 use std::num::NonZeroU32;
@@ -114,7 +114,7 @@ impl RasterPass for GtaoMainPass {
 
         // Bind the per-view frame-uniforms buffer when the per-view plan is populated. The
         // imported `frame_uniforms` handle resolves to the shared FrameResourceManager buffer,
-        // which is only written by the shared-frame path — binding it under per-view rendering
+        // which is only written by the shared-frame path -- binding it under per-view rendering
         // would leave the shader reading zeros and producing NaN through `linearize_depth` /
         // `view_pos_from_uv`.
         let per_view_buffer = ctx

@@ -1,4 +1,4 @@
-//! **Renderer config** HUD window — editable [`crate::config::RendererSettings`] with immediate
+//! **Renderer config** HUD window -- editable [`crate::config::RendererSettings`] with immediate
 //! disk sync.
 //!
 //! Merges what used to live in three files (the window envelope, the four-tab body, and the
@@ -69,7 +69,7 @@ impl HudWindow for RendererConfigWindow {
 
         ui.text_wrapped(
             "This file is owned by the renderer. Do not edit config.toml manually while \
-             the process is running — your changes may be overwritten or lost. Use these \
+             the process is running -- your changes may be overwritten or lost. Use these \
              controls instead.",
         );
         if suppress_renderer_config_disk_writes {
@@ -289,7 +289,7 @@ fn post_processing_master(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut 
         *dirty = true;
     }
     ui.text_disabled(
-        "Master toggle for the post-processing chain (HDR scene color → display target). \
+        "Master toggle for the post-processing chain (HDR scene color -> display target). \
          Applied on the next frame (the render graph is rebuilt automatically when the chain \
          topology changes).",
     );
@@ -430,7 +430,7 @@ fn post_processing_bloom(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut b
 
 fn post_processing_tonemap(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
     let _id = ui.push_id("tonemap");
-    ui.text_disabled("Tonemap (HDR linear → display-referred 0..1 linear).");
+    ui.text_disabled("Tonemap (HDR linear -> display-referred 0..1 linear).");
     for (i, &mode) in TonemapMode::ALL.iter().enumerate() {
         let _id = ui.push_id_int(i as i32);
         if ui

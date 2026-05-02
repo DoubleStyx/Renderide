@@ -1,16 +1,16 @@
 //! Fullscreen pass: GTAO depth-aware denoise (intermediate iteration).
 //!
 //! Reads the AO term + packed edges produced by `gtao_main`, runs XeGTAO's edge-preserving
-//! 3×3 bilateral kernel (`XeGTAO_Denoise` with `finalApply = false`), and writes a denoised
+//! 3x3 bilateral kernel (`XeGTAO_Denoise` with `finalApply = false`), and writes a denoised
 //! AO term to a ping-pong target. The kernel uses the symmetricity correction and edge-leak
 //! step from the reference, and the diagonal weights derive from the two cardinal edges
-//! that straddle each diagonal (XeGTAO lines 785–788, factored into the shared
+//! that straddle each diagonal (XeGTAO lines 785-788, factored into the shared
 //! `renderide::gtao_filter` module so this shader and `gtao_apply` cannot drift).
 //!
 //! Intermediate iterations use `blur_amount = denoise_blur_beta / 5.0` (XeGTAO's
 //! `consts.DenoiseBlurBeta / 5.0`); the apply stage uses the full beta. The output stays in
 //! the production-scaled `[0, 1] / OCCLUSION_TERM_SCALE` representation since XeGTAO's
-//! `XeGTAO_Output(finalApply=false)` is a pass-through write — the headroom factor is only
+//! `XeGTAO_Output(finalApply=false)` is a pass-through write -- the headroom factor is only
 //! removed in the final-apply stage.
 //!
 //! Build script composes this into `gtao_denoise_default` (mono) and `gtao_denoise_multiview`
@@ -57,7 +57,7 @@ fn load_edges_lrtb(pix: vec2<i32>, view_layer: u32, viewport_max: vec2<i32>) -> 
 }
 
 /// Runs the XeGTAO bilateral kernel at `pix`. Returns the denoised AO term in the same
-/// production-scaled `[0, 1]` representation as the input — XeGTAO leaves the
+/// production-scaled `[0, 1]` representation as the input -- XeGTAO leaves the
 /// `OCCLUSION_TERM_SCALE` factor in place for intermediate iterations.
 fn denoise_at(pix: vec2<i32>, view_layer: u32, viewport_max: vec2<i32>) -> f32 {
     let edges_c = load_edges_lrtb(pix, view_layer, viewport_max);

@@ -1,6 +1,6 @@
 //! Reusable `wgpu::BindGroupLayoutEntry` factories.
 //!
-//! Pure wgpu primitives — no graph-framework dependency. Originally lived under
+//! Pure wgpu primitives -- no graph-framework dependency. Originally lived under
 //! `render_graph/gpu_cache.rs` but are needed by `gpu/msaa_depth_resolve.rs` and other
 //! GPU-tier modules that must not import the graph framework.
 

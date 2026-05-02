@@ -1,7 +1,7 @@
 //! Unity surface shader `Shader "PBSVoronoiCrystal"`: metallic Standard lighting layered over a
 //! procedural Voronoi pattern.
 //!
-//! Each fragment scans a 3×3 cell neighborhood of the scaled UV; the nearest cell drives albedo
+//! Each fragment scans a 3x3 cell neighborhood of the scaled UV; the nearest cell drives albedo
 //! / smoothness / emission via gradient-texture lookups; the second-nearest distance drives an
 //! `_EdgeThickness`-wide border that blends to `_EdgeColor` / `_EdgeMetallic` / `_EdgeGloss` etc.
 //! Cell centers animate by `_AnimationOffset` (host-driven; this renderer doesn't expose seconds-

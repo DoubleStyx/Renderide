@@ -18,14 +18,14 @@ pub(crate) struct StemMaterialLayout {
 }
 
 /// Pre-interned property ids used by [`super::uniform_pack::inferred_keyword_float_f32`] to
-/// probe texture presence (PBS `_NORMALMAP` / `_EMISSION` / `_SPECULARMAP` / … flags) and by
+/// probe texture presence (PBS `_NORMALMAP` / `_EMISSION` / `_SPECULARMAP` / ... flags) and by
 /// the `_ALPHATEST_ON` / `_ALPHABLEND_ON` / `_MUL_RGB_BY_ALPHA` inference path that reads on-wire signals,
 /// each captured as a synthetic property by
 /// [`crate::materials::host_data::parse_materials_update_batch_into_store`]:
 ///
 /// 1. The [`crate::shared::MaterialRenderType`] tag at `_RenderType`
-///    (`MaterialProvider.SetBlendMode` family — `Unlit`, `Toon`, etc.).
-/// 2. The Unity render queue at `_RenderQueue` (PBS `AlphaHandling` family —
+///    (`MaterialProvider.SetBlendMode` family -- `Unlit`, `Toon`, etc.).
+/// 2. The Unity render queue at `_RenderQueue` (PBS `AlphaHandling` family --
 ///    `PBS_DualSidedMaterial.cs` and friends bypass `SetBlendMode` and the `_ALPHACLIP`
 ///    keyword bitmask, signaling AlphaClip via queue 2450 and Opaque via queue 2000).
 /// 3. The `_SrcBlend` / `_DstBlend` factors for distinguishing alpha-blend, additive, and
@@ -176,7 +176,7 @@ pub(crate) struct StemEmbeddedPropertyIds {
 
 /// Returns alternate host property names for a canonical texture binding name.
 ///
-/// Only the `_Tex` ⇄ `_MainTex` cross-alias is live (`UnlitMaterial` uses `_Tex`; PBS/Toon
+/// Only the `_Tex` <-> `_MainTex` cross-alias is live (`UnlitMaterial` uses `_Tex`; PBS/Toon
 /// materials use `_MainTex`). A host-side audit confirmed that the no-underscore forms `Texture`,
 /// `MaskTexture`, `OffsetTexture` are never declared as `MaterialProperty` and thus never sent;
 /// they were removed.

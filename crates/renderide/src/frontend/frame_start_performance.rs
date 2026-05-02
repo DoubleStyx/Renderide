@@ -2,18 +2,18 @@
 //! [`crate::shared::FrameStartData`] sent to the host.
 //!
 //! Contract (matches Renderite.Unity, consumed by `FrooxEngine.PerformanceMetrics`):
-//! - `immediate_fps` — instantaneous, derived from the current tick's wall-clock interval
+//! - `immediate_fps` -- instantaneous, derived from the current tick's wall-clock interval
 //!   ([`crate::frontend::RendererFrontend::on_tick_frame_wall_clock`]). No smoothing.
-//! - `fps` — count-based rolling average over a [`FPS_WINDOW`] window: `frame_count /
+//! - `fps` -- count-based rolling average over a [`FPS_WINDOW`] window: `frame_count /
 //!   elapsed_seconds` recomputed once each time the window closes, otherwise the previously
 //!   computed value is carried forward unchanged. Mirrors `PerformanceStats.Update` in the
 //!   Renderite.Unity reference. Stable for ~[`FPS_WINDOW`] at a time so the host-side
 //!   `Sync<float> FPS.Value` change events fire at the window cadence rather than every frame.
-//! - `render_time` — most recently completed GPU submit→idle wall-clock duration in seconds
+//! - `render_time` -- most recently completed GPU submit->idle wall-clock duration in seconds
 //!   ([`crate::gpu::GpuContext::last_completed_gpu_render_time_seconds`]); excludes the post-submit
 //!   present/vsync block. Reports `-1.0` when no GPU completion callback has fired yet, mirroring the
 //!   Renderite.Unity `XRStats.TryGetGPUTimeLastFrame` sentinel.
-//! - `rendered_frames_since_last` — number of completed renderer ticks since the previous
+//! - `rendered_frames_since_last` -- number of completed renderer ticks since the previous
 //!   `FrameStartData` send. `1` in lockstep, `> 1` when the renderer ticked multiple times per
 //!   host submit (i.e. host is slow and the renderer kept rendering). Drives
 //!   `FrooxEngine.PerformanceStats.RenderedFramesSinceLastTick`.
@@ -214,7 +214,7 @@ mod tests {
         let t0 = Instant::now();
         state.on_tick_frame_wall_clock(t0);
         // 29 mid-window ticks at ~16.66 ms spacing land just shy of the 500 ms boundary; the
-        // 30th tick lands exactly on it and triggers the window close → 30 frames / 0.5 s = 60 fps.
+        // 30th tick lands exactly on it and triggers the window close -> 30 frames / 0.5 s = 60 fps.
         for i in 1..30 {
             state.on_tick_frame_wall_clock(t0 + Duration::from_micros(i * 16_666));
         }
@@ -260,7 +260,7 @@ mod tests {
         let first_fps = state.last_window_fps;
         assert!((first_fps - 60.0).abs() < 0.01);
         // Second window: 7 mid-window ticks at 66.66 ms spacing, then an 8th tick at exactly
-        // 500 ms past the new anchor → 8 frames / 0.5 s = 16 fps. Independent of the first window.
+        // 500 ms past the new anchor -> 8 frames / 0.5 s = 16 fps. Independent of the first window.
         let window_anchor = t0 + Duration::from_millis(500);
         for i in 1..8 {
             state.on_tick_frame_wall_clock(window_anchor + Duration::from_micros(i * 66_666));

@@ -1,4 +1,4 @@
-//! Read-only snapshot of renderer state for the debug HUD “Renderer” tab (no ImGui types).
+//! Read-only snapshot of renderer state for the debug HUD "Renderer" tab (no ImGui types).
 
 use crate::diagnostics::BackendDiagSnapshot;
 use crate::frontend::InitState;

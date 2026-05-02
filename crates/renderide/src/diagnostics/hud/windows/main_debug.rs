@@ -1,4 +1,4 @@
-//! **Renderide debug** main panel — anchored top-right window with one [`TabView`] per concern.
+//! **Renderide debug** main panel -- anchored top-right window with one [`TabView`] per concern.
 //!
 //! The window envelope is the [`HudWindow`] impl on [`MainDebugWindow`]; the body iterates each
 //! tab (`Stats / Shader routes / Draw state / GPU memory / GPU passes`) by static dispatch.
@@ -34,7 +34,7 @@ pub struct MainDebugWindowData<'a> {
     pub gpu_pass_timings: &'a [GpuPassEntry],
 }
 
-/// **Renderide debug** HUD window — anchored top-right tabbed panel.
+/// **Renderide debug** HUD window -- anchored top-right tabbed panel.
 pub struct MainDebugWindow;
 
 impl HudWindow for MainDebugWindow {
@@ -78,15 +78,15 @@ impl HudWindow for MainDebugWindow {
 /// data subset it consumes from the shared [`MainDebugWindowData`] in [`Self::render`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DebugTab {
-    /// **Stats** tab — frame index, GPU adapter, host metrics, draw stats, resources.
+    /// **Stats** tab -- frame index, GPU adapter, host metrics, draw stats, resources.
     Stats,
-    /// **Shader routes** tab — host shader → renderer pipeline routing list.
+    /// **Shader routes** tab -- host shader -> renderer pipeline routing list.
     ShaderRoutes,
-    /// **Draw state** tab — sorted mesh draws with material pipeline state.
+    /// **Draw state** tab -- sorted mesh draws with material pipeline state.
     DrawState,
-    /// **GPU memory** tab — full wgpu allocator report.
+    /// **GPU memory** tab -- full wgpu allocator report.
     GpuMemory,
-    /// **GPU passes** tab — per-pass GPU timing breakdown.
+    /// **GPU passes** tab -- per-pass GPU timing breakdown.
     GpuPasses,
 }
 

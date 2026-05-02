@@ -8,7 +8,7 @@
 //!   compute passes will consume.
 //!
 //! Declaring a pass as callback (via `builder.callback()` in `setup`) means the graph compiler
-//! expects no resource accesses — the pass is usually cull-exempt because its side effects
+//! expects no resource accesses -- the pass is usually cull-exempt because its side effects
 //! (upload recorder writes, blackboard mutations) are not visible through graph resource
 //! declarations.
 

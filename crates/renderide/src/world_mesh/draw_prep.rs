@@ -1,11 +1,11 @@
 //! Flatten scene mesh renderables into sorted draw items for [`super::passes::WorldMeshForwardPreparePass`](crate::passes::WorldMeshForwardPreparePass).
 //!
-//! Batches are keyed by raster pipeline kind (from host shader → [`crate::materials::resolve_raster_pipeline`]),
-//! material asset id, property block slot0, and skinned—ordering mirrors Unity-style batch boundaries so
+//! Batches are keyed by raster pipeline kind (from host shader -> [`crate::materials::resolve_raster_pipeline`]),
+//! material asset id, property block slot0, and skinned--ordering mirrors Unity-style batch boundaries so
 //! pipeline and future per-material bind groups change only on boundaries.
 //!
 //! Optional CPU frustum and Hi-Z culling share one bounds evaluation per draw slot
-//! ([`super::culling::mesh_draw_passes_cpu_cull`]) using the same view–projection rules as the forward pass
+//! ([`super::culling::mesh_draw_passes_cpu_cull`]) using the same view-projection rules as the forward pass
 //! ([`super::culling::build_world_mesh_cull_proj_params`]).
 //!
 //! Per-space draw collection runs in parallel ([`rayon`]) by default; the merged list is sorted with

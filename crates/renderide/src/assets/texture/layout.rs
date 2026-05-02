@@ -38,7 +38,7 @@ pub fn bytes_per_compressed_block(format: TextureFormat) -> Option<u32> {
         TextureFormat::BC1 => Some(8),
         TextureFormat::BC2 | TextureFormat::BC3 => Some(16),
         TextureFormat::BC4 => Some(8),
-        // Two BC4-style halves (R then G), 16 bytes total per 4×4 block (matches `wgpu::TextureFormat::Bc5RgUnorm`).
+        // Two BC4-style halves (R then G), 16 bytes total per 4x4 block (matches `wgpu::TextureFormat::Bc5RgUnorm`).
         TextureFormat::BC5 => Some(16),
         TextureFormat::BC6H | TextureFormat::BC7 => Some(16),
         TextureFormat::ETC2RGB | TextureFormat::ETC2RGBA1 => Some(8),
@@ -53,7 +53,7 @@ pub fn bytes_per_compressed_block(format: TextureFormat) -> Option<u32> {
     }
 }
 
-/// Bytes required to store one mip level of an uncompressed format (`width` × `height` texels).
+/// Bytes required to store one mip level of an uncompressed format (`width` x `height` texels).
 pub fn mip_uncompressed_byte_len(format: TextureFormat, width: u32, height: u32) -> Option<u64> {
     let w = u64::from(width);
     let h = u64::from(height);
@@ -87,7 +87,7 @@ pub fn mip_compressed_byte_len(format: TextureFormat, width: u32, height: u32) -
     blocks.checked_mul(u64::from(bpb))
 }
 
-/// Bytes per texel for a tightly packed mip slice (`mip_bytes == width × height × result`).
+/// Bytes per texel for a tightly packed mip slice (`mip_bytes == width x height x result`).
 pub fn mip_tight_bytes_per_texel(mip_bytes: usize, width: u32, height: u32) -> Option<usize> {
     let px = (width as usize).checked_mul(height as usize)?;
     if px == 0 {
@@ -112,7 +112,7 @@ pub fn mip_byte_len(format: TextureFormat, width: u32, height: u32) -> Option<u6
 /// addressing into a **byte offset** into the tight-packed mip payload.
 ///
 /// Shared-memory uploads may still report offsets in texel units; this maps them using the size of a
-/// minimal tile (`1×1` texels in host packing, or one compressed block) relative to [`block_extent`].
+/// minimal tile (`1x1` texels in host packing, or one compressed block) relative to [`block_extent`].
 pub fn host_mip_payload_byte_offset(
     format: TextureFormat,
     start_texel_linear: usize,
@@ -140,7 +140,7 @@ pub fn mip_dimensions_at_level(base_w: u32, base_h: u32, level: u32) -> (u32, u3
     (w, h)
 }
 
-/// Sum of byte lengths for mips 0..`mipmap_count` for `base_w`×`base_h`.
+/// Sum of byte lengths for mips 0..`mipmap_count` for `base_w`x`base_h`.
 pub fn total_mip_chain_byte_len(
     format: TextureFormat,
     base_w: u32,
@@ -177,7 +177,7 @@ pub fn mip_dimensions_at_level_3d(
     (w, h, d)
 }
 
-/// Sum of byte lengths for mips 0..`mipmap_count` for a 3D volume (`base_w`×`base_h`×`base_d`).
+/// Sum of byte lengths for mips 0..`mipmap_count` for a 3D volume (`base_w`x`base_h`x`base_d`).
 pub fn total_mip_chain_volume_byte_len(
     format: TextureFormat,
     base_w: u32,

@@ -1,5 +1,5 @@
 //! Unity `Shader "Reflection"`: samples a host-provided 2D reflection texture in screen space,
-//! optionally distorted by a tangent-space normal map. **Not a grab pass** — `_ReflectionTex` is a
+//! optionally distorted by a tangent-space normal map. **Not a grab pass** -- `_ReflectionTex` is a
 //! regular `sampler2D`, populated by the host with whatever reflection RT (planar, cubemap-projected,
 //! etc.) is available. Multi-view eye separation is handled by the renderer's per-eye render pass,
 //! not the side-by-side `eyeIndex` texture-coordinate offset Unity needs for single-pass stereo.

@@ -8,13 +8,13 @@
 //!
 //! # Module map
 //!
-//! - [`shared`] — generated Renderite shared structs and enums (emitted by the workspace
+//! - [`shared`] -- generated Renderite shared structs and enums (emitted by the workspace
 //!   `SharedTypeGenerator` tool). Host and renderer agree on this byte layout.
-//! - [`packing`] — `MemoryPacker` / `MemoryUnpacker` and supporting traits implementing the
+//! - [`packing`] -- `MemoryPacker` / `MemoryUnpacker` and supporting traits implementing the
 //!   binary contract, plus hand-rolled [`packing::extras`] impls for generated types whose layout
 //!   the auto-classifier cannot derive.
-//! - [`buffer`] — [`buffer::SharedMemoryBufferDescriptor`] for shared-memory regions.
-//! - [`ipc`] — Cloudtoid queue helpers, the renderer-side dual-queue wrapper
+//! - [`buffer`] -- [`buffer::SharedMemoryBufferDescriptor`] for shared-memory regions.
+//! - [`ipc`] -- Cloudtoid queue helpers, the renderer-side dual-queue wrapper
 //!   ([`ipc::DualQueueIpc`]), the host-side wrapper ([`ipc::HostDualQueueIpc`]), the read-only
 //!   [`ipc::SharedMemoryAccessor`], and its host-side [`ipc::shared_memory::SharedMemoryWriter`]
 //!   counterpart.

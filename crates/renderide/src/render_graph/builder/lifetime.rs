@@ -110,7 +110,7 @@ fn merge_lifetime(existing: Option<ResourceLifetime>, ordinal: usize) -> Option<
 
 /// Resource shape required for physical-slot aliasing.
 ///
-/// Texture and buffer compilation share the exact same disjoint-lifetime alias-slot algorithm —
+/// Texture and buffer compilation share the exact same disjoint-lifetime alias-slot algorithm --
 /// only the alias key shape differs. Implementing this trait lets [`assign_aliased_slots`] run
 /// once over either kind of resource list.
 trait AliasResource {

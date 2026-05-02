@@ -94,7 +94,7 @@ fn model_world_normal(draw: pd::PerDrawUniforms, n: vec4<f32>) -> vec3<f32> {
 }
 
 /// Tangents lie in the surface plane and transform like ordinary direction
-/// vectors, so they go through the model matrix — never the inverse-transpose
+/// vectors, so they go through the model matrix -- never the inverse-transpose
 /// `normal_matrix`, which is only correct for surface normals. The handedness
 /// `w` carries Unity's bitangent sign and is preserved verbatim.
 fn world_tangent(draw: pd::PerDrawUniforms, t: vec4<f32>) -> vec4<f32> {

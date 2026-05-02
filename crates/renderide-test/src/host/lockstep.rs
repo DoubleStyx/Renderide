@@ -1,4 +1,4 @@
-//! Lockstep loop: drains both `…S` queues, replies to every `FrameStartData` with the current
+//! Lockstep loop: drains both `...S` queues, replies to every `FrameStartData` with the current
 //! `FrameSubmitData`, and lets callers inspect drained messages for asset acks (e.g.
 //! `MeshUploadResult`).
 //!
@@ -82,7 +82,7 @@ impl LockstepDriver {
         self.frame_index
     }
 
-    /// Drains both `…S` queues and replies to every `FrameStartData` with a `FrameSubmitData`
+    /// Drains both `...S` queues and replies to every `FrameStartData` with a `FrameSubmitData`
     /// built from the current scene state.
     pub(super) fn tick(&mut self, queues: &mut HostDualQueueIpc) -> TickResult {
         let mut drained = Vec::new();

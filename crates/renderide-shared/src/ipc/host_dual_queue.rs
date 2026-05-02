@@ -1,9 +1,9 @@
 //! Host-side authority dual-queue (mirror of [`super::dual_queue::DualQueueIpc`]).
 //!
-//! When the renderer connects as a non-authority client it subscribes on `…A` and publishes on
-//! `…S` (see [`super::connection::subscriber_queue_name`] / [`super::connection::publisher_queue_name`]).
-//! The host therefore takes the **complementary** sides — publishes on `…A` (renderer reads) and
-//! subscribes on `…S` (renderer writes). This module mirrors the renderer-side `DualQueueIpc` so
+//! When the renderer connects as a non-authority client it subscribes on `...A` and publishes on
+//! `...S` (see [`super::connection::subscriber_queue_name`] / [`super::connection::publisher_queue_name`]).
+//! The host therefore takes the **complementary** sides -- publishes on `...A` (renderer reads) and
+//! subscribes on `...S` (renderer writes). This module mirrors the renderer-side `DualQueueIpc` so
 //! the mock host (`renderide-test`) and any future host-side Rust tooling can speak the same
 //! `RendererCommand` byte stream `FrooxEngine` produces, with zero divergence in encoding.
 
@@ -25,7 +25,7 @@ const INVALID_MESSAGE_LOG_PREFIX: &str = "Host IPC";
 
 /// Authority-side dual-queue endpoints used by the host to talk to the renderer.
 ///
-/// **Publishes on `…A`** (renderer subscribes there) and **subscribes on `…S`** (renderer
+/// **Publishes on `...A`** (renderer subscribes there) and **subscribes on `...S`** (renderer
 /// publishes there). The renderer-side counterpart is [`super::dual_queue::DualQueueIpc`].
 pub struct HostDualQueueIpc {
     primary_publisher: Publisher,
@@ -58,7 +58,7 @@ impl HostDualQueueIpc {
         })
     }
 
-    /// Drains both subscribers (`…S`) into `out`, Primary first then Background.
+    /// Drains both subscribers (`...S`) into `out`, Primary first then Background.
     ///
     /// Reuses the existing `RendererCommand` decoder so messages from the renderer arrive as
     /// fully-typed values. Decode errors are logged via [`logger::warn!`] and the offending
@@ -79,7 +79,7 @@ impl HostDualQueueIpc {
         );
     }
 
-    /// Encodes and publishes `cmd` on the Primary `…A` queue (renderer reads it as Primary).
+    /// Encodes and publishes `cmd` on the Primary `...A` queue (renderer reads it as Primary).
     ///
     /// Returns `true` when the message was queued, `false` when encoding produced no bytes or
     /// the queue was full (caller may retry next tick).
@@ -92,7 +92,7 @@ impl HostDualQueueIpc {
             .try_enqueue(&self.send_buffer[..written])
     }
 
-    /// Encodes and publishes `cmd` on the Background `…A` queue (renderer reads it as Background).
+    /// Encodes and publishes `cmd` on the Background `...A` queue (renderer reads it as Background).
     pub fn send_background(&mut self, mut cmd: RendererCommand) -> bool {
         let written = encode_command(&mut cmd, &mut self.send_buffer, ENCODE_OVERFLOW_LOG_PREFIX);
         if written == 0 {
@@ -103,14 +103,14 @@ impl HostDualQueueIpc {
     }
 }
 
-/// Authority-side publisher: opens the `…A` queue (renderer subscribes here).
+/// Authority-side publisher: opens the `...A` queue (renderer subscribes here).
 fn open_authority_publisher(
     factory: QueueFactory,
     params: &ConnectionParams,
     channel: &str,
     capacity: i64,
 ) -> Result<Publisher, InitError> {
-    // Renderer subscribes on `…A`; host publishes there.
+    // Renderer subscribes on `...A`; host publishes there.
     let name = subscriber_queue_name(&params.queue_name, channel);
     let options =
         QueueOptions::with_destroy(&name, capacity, true).map_err(InitError::IpcConnect)?;
@@ -119,14 +119,14 @@ fn open_authority_publisher(
         .map_err(|e| InitError::IpcConnect(e.to_string()))
 }
 
-/// Authority-side subscriber: opens the `…S` queue (renderer publishes here).
+/// Authority-side subscriber: opens the `...S` queue (renderer publishes here).
 fn open_authority_subscriber(
     factory: QueueFactory,
     params: &ConnectionParams,
     channel: &str,
     capacity: i64,
 ) -> Result<Subscriber, InitError> {
-    // Renderer publishes on `…S`; host subscribes there.
+    // Renderer publishes on `...S`; host subscribes there.
     let name = publisher_queue_name(&params.queue_name, channel);
     let options =
         QueueOptions::with_destroy(&name, capacity, true).map_err(InitError::IpcConnect)?;
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn host_can_send_and_receive_via_self_loopback() {
         // The host alone cannot exercise full round-trip without a renderer counterpart
-        // (publishers and subscribers are paired across the `…A`/`…S` boundary). This test
+        // (publishers and subscribers are paired across the `...A`/`...S` boundary). This test
         // just verifies that `connect` sets up all four endpoints without error.
         let prefix = format!("renderide_host_dq_test_{}", std::process::id());
         let params = ConnectionParams {

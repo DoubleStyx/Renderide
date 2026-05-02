@@ -7,7 +7,7 @@ use crate::render_graph::blackboard::BlackboardSlot;
 /// Seeded each frame from [`crate::config::RendererSettings`] before per-view recording so
 /// the GTAO chain ([`crate::passes::post_processing::GtaoEffect`]) reads the current slider
 /// values without rebuilding the compiled render graph. Non-topology slider changes don't
-/// flip [`crate::render_graph::post_processing::chain::PostProcessChainSignature`] — this
+/// flip [`crate::render_graph::post_processing::chain::PostProcessChainSignature`] -- this
 /// slot is the path that propagates those edits into the per-stage UBO writes.
 pub struct GtaoSettingsSlot;
 impl BlackboardSlot for GtaoSettingsSlot {
@@ -25,9 +25,9 @@ pub struct GtaoSettingsValue(pub crate::config::GtaoSettings);
 ///
 /// Seeded each frame from [`crate::config::RendererSettings`] before per-view recording so the
 /// bloom passes read the current slider values without rebuilding the compiled render graph.
-/// Non-topology edits (intensity, low-frequency boost, threshold, composite mode, …) flow in via
+/// Non-topology edits (intensity, low-frequency boost, threshold, composite mode, ...) flow in via
 /// this slot; only the effective `max_mip_dimension` changes force a rebuild because it resizes
-/// the mip-chain transient textures — the chain signature tracks that value explicitly.
+/// the mip-chain transient textures -- the chain signature tracks that value explicitly.
 pub struct BloomSettingsSlot;
 impl BlackboardSlot for BloomSettingsSlot {
     type Value = BloomSettingsValue;

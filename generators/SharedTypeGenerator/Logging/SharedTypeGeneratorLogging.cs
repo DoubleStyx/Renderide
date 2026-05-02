@@ -7,8 +7,8 @@ namespace SharedTypeGenerator.Logging;
 public static class SharedTypeGeneratorLogging
 {
     /// <summary>
-    /// Builds the composed sink used by SharedTypeGenerator and its tests: <see cref="SuppressWarningsSink"/> →
-    /// <see cref="ErrorDuplicatingSink"/> → <see cref="LogFileSink"/>.
+    /// Builds the composed sink used by SharedTypeGenerator and its tests: <see cref="SuppressWarningsSink"/> -&gt;
+    /// <see cref="ErrorDuplicatingSink"/> -&gt; <see cref="LogFileSink"/>.
     /// </summary>
     /// <param name="logFilePath">Target log file path (truncated per <see cref="LogFileSink"/>).</param>
     /// <param name="stderr">Optional duplicate destination for errors; defaults to <see cref="Console.Error"/>.</param>

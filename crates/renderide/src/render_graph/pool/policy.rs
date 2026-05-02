@@ -5,7 +5,7 @@
 //! `(Buffer, size)` for buffers) and the key that identifies an alias-equivalent slot. The
 //! resource-specific bits (limit validation, GPU object construction, lease assembly, "is this
 //! cached resource still valid?" checks) live in the texture / buffer specialisations of
-//! [`super::TransientPool`] rather than on the trait — that keeps `Pool<P>` a pure storage primitive
+//! [`super::TransientPool`] rather than on the trait -- that keeps `Pool<P>` a pure storage primitive
 //! and lets the call sites stay readable.
 
 use std::hash::Hash;

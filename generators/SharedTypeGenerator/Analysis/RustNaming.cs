@@ -87,7 +87,7 @@ public static class RustNaming
         return name.Replace("_", "").Pascalize();
     }
 
-    /// <summary>SCREAMING_SNAKE for const names from a Rust PascalCase struct name (e.g. <c>LightData</c> → <c>LIGHT_DATA</c>).</summary>
+    /// <summary>SCREAMING_SNAKE for const names from a Rust PascalCase struct name (e.g. <c>LightData</c> -> <c>LIGHT_DATA</c>).</summary>
     public static string ToScreamingSnakeTypeName(this string rustPascalTypeName)
     {
         return rustPascalTypeName.Underscore().Replace("__", "_", StringComparison.Ordinal).ToUpperInvariant();

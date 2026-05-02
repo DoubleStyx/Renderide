@@ -96,7 +96,7 @@ impl DriverThread {
     }
 
     /// Enqueues a batch for the driver thread to submit and present. Blocks while the
-    /// ring is full — that block is the frame-pacing backpressure.
+    /// ring is full -- that block is the frame-pacing backpressure.
     ///
     /// When the batch carries a [`wgpu::SurfaceTexture`], the submitted counter is bumped
     /// so [`Self::wait_for_previous_present`] can gate the next acquire precisely on the
@@ -127,7 +127,7 @@ impl DriverThread {
     /// Use this right before [`wgpu::Surface::get_current_texture`] to uphold wgpu's
     /// single-outstanding-surface-texture invariant without draining the full driver ring.
     /// Unlike [`Self::flush`] this does not block on non-surface batches or on the driver's
-    /// current non-present work — only on the specific "previous present completed" event.
+    /// current non-present work -- only on the specific "previous present completed" event.
     pub fn wait_for_previous_present(&self) {
         self.surface_counters.wait_for_present_catchup(0);
     }
@@ -169,7 +169,7 @@ impl DriverThread {
             return;
         }
         // Any recv error (channel disconnected due to panic inside the driver) is treated
-        // as "driver no longer running" — callers handle that via the separate error slot.
+        // as "driver no longer running" -- callers handle that via the separate error slot.
         let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
     }
 }

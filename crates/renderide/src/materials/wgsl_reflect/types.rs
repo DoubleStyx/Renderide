@@ -35,7 +35,7 @@ pub struct ReflectedMaterialUniformBlock {
     pub binding: u32,
     /// Total uniform block size in bytes (including tail padding).
     pub total_size: u32,
-    /// Struct member name → layout (only members with names; excludes padding-only slots if unnamed).
+    /// Struct member name -> layout (only members with names; excludes padding-only slots if unnamed).
     pub fields: HashMap<String, ReflectedUniformField>,
 }
 
@@ -70,7 +70,7 @@ pub struct ReflectedRasterLayout {
     pub per_draw_entries: Vec<wgpu::BindGroupLayoutEntry>,
     /// First `var<uniform>` in `@group(1)` with a struct body, if any (for CPU packing without hand-written `#[repr(C)]` structs).
     pub material_uniform: Option<ReflectedMaterialUniformBlock>,
-    /// `@group(1)` `@binding` → WGSL global identifier (matches Unity host property names where applicable).
+    /// `@group(1)` `@binding` -> WGSL global identifier (matches Unity host property names where applicable).
     pub material_group1_names: HashMap<u32, String>,
     /// Exact `vs_main` vertex input locations and formats, sorted by location.
     pub vs_vertex_inputs: Vec<ReflectedVertexInput>,
@@ -111,7 +111,7 @@ pub enum ReflectError {
     Layout(String),
     /// `@group(0)` sizes did not match [`FrameGpuUniforms`](crate::gpu::frame_globals::FrameGpuUniforms), [`GpuLight`](crate::backend::GpuLight), or cluster buffers.
     #[error(
-        "group(0) must have uniform binding 0 size {expected_frame}, storage binding 1 stride {expected_light}, bindings 2–3 u32 stride {expected_cluster_u32}; got b0={got0:?} b1={got1:?} b2={got2:?} b3={got3:?}"
+        "group(0) must have uniform binding 0 size {expected_frame}, storage binding 1 stride {expected_light}, bindings 2-3 u32 stride {expected_cluster_u32}; got b0={got0:?} b1={got1:?} b2={got2:?} b3={got3:?}"
     )]
     FrameGroupMismatch {
         /// Expected `FrameGpuUniforms` uniform size in bytes.
@@ -132,7 +132,7 @@ pub enum ReflectError {
     /// A global resource at the given group/binding is not supported for raster materials.
     #[error("unsupported global resource at group {group} binding {binding}: {reason}")]
     UnsupportedBinding {
-        /// Bind group index (`0`–`2` for materials).
+        /// Bind group index (`0`-`2` for materials).
         group: u32,
         /// Binding index within the group.
         binding: u32,

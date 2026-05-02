@@ -1,7 +1,7 @@
 //! Clustered forward lighting: shared GPU buffers for per-cluster light lists.
 //!
 //! [`ClusterBufferCache`] tracks a grow-only high-water-mark over `cluster_light_counts` and
-//! `cluster_light_indices` — the only two buffers shared across views. The per-view compute
+//! `cluster_light_indices` -- the only two buffers shared across views. The per-view compute
 //! params uniform (`ClusterParams`) is **not** managed here; it lives in
 //! `PerViewFrameState::cluster_params_buffer` to avoid a CPU-side write race during parallel
 //! per-view recording (see `frame_resource_manager.rs`).
@@ -18,7 +18,7 @@ pub use crate::world_mesh::cluster::{CLUSTER_COUNT_Z, TILE_SIZE};
 ///
 /// Indices are packed 2-per-`u32` in `cluster_light_indices` (low 16 bits = even slot, high 16
 /// bits = odd slot); the cluster's own compute thread is the sole writer, so no atomics are
-/// required. `MAX_LIGHTS_PER_TILE` must therefore be even — enforced by the assert below.
+/// required. `MAX_LIGHTS_PER_TILE` must therefore be even -- enforced by the assert below.
 pub const MAX_LIGHTS_PER_TILE: u32 = 64;
 
 const _: () = assert!(MAX_LIGHTS_PER_TILE.is_multiple_of(2));
@@ -34,7 +34,7 @@ pub const CLUSTER_PARAMS_UNIFORM_SIZE: u64 = 256;
 pub struct ClusterBufferRefs<'a> {
     /// One `u32` count per cluster (compute writes; fragment reads plain `u32`; one thread per cluster).
     pub cluster_light_counts: &'a wgpu::Buffer,
-    /// Packed light indices: 2 × `u16` indices per `u32` slot. Slot `k` within cluster `c` lives
+    /// Packed light indices: 2 x `u16` indices per `u32` slot. Slot `k` within cluster `c` lives
     /// at `u32` word `c * (MAX_LIGHTS_PER_TILE / 2) + (k >> 1)`, bits `(k & 1) * 16 ..+16`.
     pub cluster_light_indices: &'a wgpu::Buffer,
 }
@@ -48,7 +48,7 @@ pub struct ClusterBufferRefs<'a> {
 /// [`wgpu::Queue::submit`]: a view's clustered-light compute pass writes its lists, then its
 /// raster reads them, all within one command buffer; the next view's command buffer (submitted
 /// in order) overwrites only after the previous view's reads retire. This is why there is no
-/// per-view offset — each view uses range `[0..view_cluster_count)` in turn.
+/// per-view offset -- each view uses range `[0..view_cluster_count)` in turn.
 ///
 /// When `stereo` is true, the counts and indices buffers are allocated at **2x** size so the
 /// compute pass can write eye-0 clusters at `[0..N)` and eye-1 at `[N..2N)`.
@@ -82,7 +82,7 @@ impl ClusterBufferCache {
 
     /// Ensures buffers fit `viewport`, `cluster_count_z`, and `stereo`. **Grow-only**: if the
     /// current allocation already covers the request (equal or larger on every axis, with a
-    /// one-way `mono → stereo` transition), the existing buffers are reused and [`Self::version`]
+    /// one-way `mono -> stereo` transition), the existing buffers are reused and [`Self::version`]
     /// is not bumped. When a reallocation is required, the new high-water-mark replaces the
     /// previous allocation and `version` bumps to invalidate bind-group caches.
     ///
@@ -190,7 +190,7 @@ impl ClusterBufferCache {
 
     /// Returns refs to the currently-provisioned storage buffers, or [`None`] if not yet
     /// allocated. All views share these; see [`ClusterBufferCache`] for the ordering argument
-    /// that makes GPU-side sharing safe. `params_buffer` is excluded — it is per-view.
+    /// that makes GPU-side sharing safe. `params_buffer` is excluded -- it is per-view.
     pub fn current_refs(&self) -> Option<ClusterBufferRefs<'_>> {
         Some(ClusterBufferRefs {
             cluster_light_counts: self.cluster_light_counts.as_ref()?,

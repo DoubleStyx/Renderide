@@ -1,24 +1,24 @@
-//! Fullscreen pass: Ground-Truth Ambient Occlusion (Jimenez et al. 2016) — production stage.
+//! Fullscreen pass: Ground-Truth Ambient Occlusion (Jimenez et al. 2016) -- production stage.
 //!
 //! Reads the imported scene depth, reconstructs view-space positions and normals on the fly
 //! from depth derivatives, evaluates the analytic cosine-weighted GTAO integral, applies the
 //! multi-bounce fit, and writes:
 //!
-//! - `@location(0)` — `saturate(visibility / OCCLUSION_TERM_SCALE)` to an `R8Unorm` ping-pong
+//! - `@location(0)` -- `saturate(visibility / OCCLUSION_TERM_SCALE)` to an `R8Unorm` ping-pong
 //!   target. Storing scaled-down AO matches XeGTAO's `XeGTAO_OutputWorkingTerm` and gives the
 //!   bilateral kernel headroom: a weighted sum of neighbour visibilities can transiently
 //!   exceed `1.0`, but stays representable in `[0, 1]` after the divide. The final-apply pass
 //!   multiplies by `OCCLUSION_TERM_SCALE` to recover the true visibility before modulating
 //!   HDR.
-//! - `@location(1)` — packed `LRTB` depth-edge weights produced by `gtao_pack_edges` to an
+//! - `@location(1)` -- packed `LRTB` depth-edge weights produced by `gtao_pack_edges` to an
 //!   `R8Unorm` ping-pong target. The bilateral denoise / apply stages unpack these and use
 //!   them as kernel weights so silhouette detail survives the blur.
 //!
 //! The horizon search mirrors XeGTAO's `XeGTAO_MainPass` inner loop with one slice per pixel
-//! (paper §4.1 spatiotemporal distribution; temporal accumulation is a follow-up). The
+//! (paper Sec.4.1 spatiotemporal distribution; temporal accumulation is a follow-up). The
 //! direction is orthogonalised against the view vector, the slice-plane normal `axis_vec` is
 //! explicitly normalised before projecting the surface normal, horizon cosines are
-//! initialised at the tangent-plane bound `cos(n ± π/2)`, each candidate is smoothly faded
+//! initialised at the tangent-plane bound `cos(n +/- PI/2)`, each candidate is smoothly faded
 //! toward that bound by a distance falloff, and the running horizon is a pure `max`. The
 //! analytic inner integral uses `cos(n)` directly (from the projected-normal dot product)
 //! rather than recomputing a trigonometric `cos(gamma)`.
@@ -103,9 +103,9 @@ fn load_depth(pix: vec2<i32>, view_layer: u32) -> f32 {
 #endif
 }
 
-/// Reverse-Z NDC depth → positive view-space Z.
+/// Reverse-Z NDC depth -> positive view-space Z.
 ///
-/// Renderide's perspective matrix (see `reverse_z_perspective_from_scales`) is −Z forward in
+/// Renderide's perspective matrix (see `reverse_z_perspective_from_scales`) is -Z forward in
 /// view space; this helper returns `|view_z|` so the rest of the shader can treat all depth
 /// and delta arithmetic as magnitudes (matches XeGTAO's internal convention).
 fn linearize_depth(d: f32, near: f32, far: f32) -> f32 {
@@ -121,13 +121,13 @@ fn proj_params_for_view(view_layer: u32) -> vec4<f32> {
     return frame.proj_params_right;
 }
 
-/// Screen UV (`[0, 1]`) → view-space position, given the linearized positive view-space Z for
+/// Screen UV (`[0, 1]`) -> view-space position, given the linearized positive view-space Z for
 /// that pixel.
 ///
 /// Renderide's reverse-Z perspective matrix has column 2 = `(skew_x, skew_y, z2, -1)`. With
 /// `clip_w = -view_z` and `linearize_depth` returning `|view_z|`, the unprojection reduces to
 /// `view_x = (ndc_x + skew_x) * |view_z| / x_scale` (and similarly for y). The `+skew` sign
-/// is load-bearing for asymmetric VR frustums; desktop (skew ≈ 0) is a no-op.
+/// is load-bearing for asymmetric VR frustums; desktop (skew ~= 0) is a no-op.
 fn view_pos_from_uv(uv: vec2<f32>, view_z: f32, proj_params: vec4<f32>) -> vec3<f32> {
     let ndc_xy = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let view_x = (ndc_xy.x + proj_params.z) * view_z / proj_params.x;
@@ -144,7 +144,7 @@ fn view_pos_from_uv(uv: vec2<f32>, view_z: f32, proj_params: vec4<f32>) -> vec3<
 /// `+X` = screen-right, `+Y` = view-up (= **pixel-down**; WebGPU's NDC Y is flipped from
 /// pixel Y), `+Z` = away from camera. `dx` points in `+view_x`, `dy` points in `-view_y`
 /// (screen-down-in-pixel = view-down-in-Y). `cross(dx, dy)` then yields a vector toward the
-/// camera — the correct outward-facing surface normal. **Do not flip the cross order**;
+/// camera -- the correct outward-facing surface normal. **Do not flip the cross order**;
 /// `cross(dy, dx)` produces a normal pointing away from the camera, and downstream
 /// `cos_n = dot(normal, view_dir)` comes out negative, collapsing the horizon integral to 0
 /// on camera-facing surfaces (fresnel-like inversion).
@@ -186,7 +186,7 @@ fn reconstruct_view_normal(
     return normalize(cross(dx, dy));
 }
 
-/// Interleaved-gradient spatial noise (Jiménez) so adjacent pixels cover different slice
+/// Interleaved-gradient spatial noise (Jimenez) so adjacent pixels cover different slice
 /// angles.
 fn spatial_phase(pix: vec2<i32>) -> f32 {
     let p = vec2<f32>(pix);
@@ -194,7 +194,7 @@ fn spatial_phase(pix: vec2<i32>) -> f32 {
     return fract(jitter);
 }
 
-/// Per-frame phase rotation across 6 directions — feeds the temporal-accumulation follow-up.
+/// Per-frame phase rotation across 6 directions -- feeds the temporal-accumulation follow-up.
 fn temporal_phase(frame_index: u32) -> f32 {
     let k = f32(frame_index % 6u);
     return k * (1.0 / 6.0);
@@ -282,7 +282,7 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
     // normal is on the wrong side of the view plane (e.g. a silhouette with an
     // ill-conditioned depth derivative), which would otherwise drive the integral into the
     // mirrored hemisphere and flip the sign of the AO contribution. Clamping to 0 collapses
-    // that case to `n = π/2` (fully grazing) — still wrong for the affected pixel, but not
+    // that case to `n = PI/2` (fully grazing) -- still wrong for the affected pixel, but not
     // inverted.
     let cos_n = clamp(
         dot(projected_normal_vec, view_dir) / projected_normal_vec_length,
@@ -292,8 +292,8 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
     let n = sign_n * acos(cos_n);
     let sin_n = sin(n);
 
-    let low_horizon_cos0 = -sin_n; // cos(n + π/2)
-    let low_horizon_cos1 = sin_n;  // cos(n - π/2)
+    let low_horizon_cos0 = -sin_n; // cos(n + PI/2)
+    let low_horizon_cos1 = sin_n;  // cos(n - PI/2)
     var horizon_cos0 = low_horizon_cos0;
     var horizon_cos1 = low_horizon_cos1;
 

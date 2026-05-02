@@ -1,6 +1,6 @@
 //! Command-line connection parameters for Cloudtoid IPC (`-QueueName` / `-QueueCapacity`).
 //!
-//! Matches the managed host’s argument convention (see `RenderingManager.GetConnectionParameters`).
+//! Matches the managed host's argument convention (see `RenderingManager.GetConnectionParameters`).
 
 use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -104,12 +104,12 @@ pub fn get_connection_parameters() -> Option<ConnectionParams> {
     })
 }
 
-/// Subscriber queue name for the renderer (non-authority → `…A` side).
+/// Subscriber queue name for the renderer (non-authority -> `...A` side).
 pub fn subscriber_queue_name(base: &str, channel: &str) -> String {
     format!("{base}{channel}A")
 }
 
-/// Publisher queue name for the renderer (non-authority → `…S` side).
+/// Publisher queue name for the renderer (non-authority -> `...S` side).
 pub fn publisher_queue_name(base: &str, channel: &str) -> String {
     format!("{base}{channel}S")
 }

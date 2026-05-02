@@ -2,7 +2,7 @@
 //! lighting with optional displacement modes.
 //!
 //! * `VERTEX_OFFSET`: scalar displacement along vertex normal (`_VertexOffsetMap.r`).
-//! * `UV_OFFSET`: shifts the fragment main UV by `_UVOffsetMap.rg` × magnitude.
+//! * `UV_OFFSET`: shifts the fragment main UV by `_UVOffsetMap.rg` x magnitude.
 //! * `OBJECT_POS_OFFSET` / `VERTEX_POS_OFFSET`: shifts `_VertexOffsetMap` UVs from
 //!   `_PositionOffsetMap.xy` sampled by object-origin or vertex world XZ.
 //!

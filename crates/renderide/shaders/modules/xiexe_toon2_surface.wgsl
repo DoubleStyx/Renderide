@@ -3,7 +3,7 @@
 //!
 //! The forward and outline paths take separate normal-decoding routes. The forward path
 //! flips world-space `(N, T, B)` for back-facing fragments so two-sided meshes light
-//! correctly. The outline path skips that flip — outline visible fragments are the
+//! correctly. The outline path skips that flip -- outline visible fragments are the
 //! back-faces of an extruded shell whose geometric normals already point outward (matching
 //! the Unity reference where outlines use the unflipped `i.ntb` of the front-face vertex).
 
@@ -54,7 +54,7 @@ fn vertex_main(
 
 /// Builds a perturbed TBN from the interpolated geometry frame. The base normal map and
 /// (when `_DetailMask.r > 0`) the detail normal map are blended in tangent space using
-/// Unity's `BlendNormals` formula — `xy` adds, `z` multiplies — so content authored
+/// Unity's `BlendNormals` formula -- `xy` adds, `z` multiplies -- so content authored
 /// against Unity's `BlendNormals` (`#include UnityCG.cginc`) reproduces.
 ///
 /// `flip_back_face` toggles the dual-sided correction. The forward path passes `true` so
@@ -138,7 +138,7 @@ fn sample_surface(
         albedo = vec4<f32>(albedo.rgb * color.rgb, albedo.a);
     }
     // `diffuse_color` keeps the original (saturated) base color for tinting paths
-    // (specular albedo tint, rim/shadow-rim tints, outline tint) — see
+    // (specular albedo tint, rim/shadow-rim tints, outline tint) -- see
     // `XSFrag.cginc:81` (`o.diffuseColor = o.albedo.rgb` *before* the metallic discount)
     // followed by `BRDF_XSLighting:35` (saturation pass).
     let diffuse_color = xb::maybe_saturate_color(albedo.rgb);
@@ -171,7 +171,7 @@ fn sample_surface(
     let clearcoat_strength = clamp(xb::mat._ClearcoatStrength * mg.b, 0.0, 1.0);
     let clearcoat_smoothness = clamp(xb::mat._ClearcoatSmoothness * mg.g, 0.0, 1.0);
 
-    // Direct-lighting albedo is the metallic-discounted tinted base — `BRDF_XSLighting:33`
+    // Direct-lighting albedo is the metallic-discounted tinted base -- `BRDF_XSLighting:33`
     // does `i.albedo.rgb *= (1 - metallic)` before the lighting walk so a perfect metal
     // contributes no diffuse term. Multiplication is linear w.r.t. the saturation lerp,
     // so applying `(1 - metallic)` after the desaturation is equivalent to before.

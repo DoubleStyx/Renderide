@@ -4,7 +4,7 @@
 //! Cluster buffers ([`ClusterBufferCache`]) and the `@group(0)` layout live here and are
 //! **shared across every view**; per-view uniform buffers and bind groups live in
 //! [`crate::backend::frame_resource_manager::PerViewFrameState`] and reference these shared
-//! cluster buffers plus view-local scene snapshots (safe under single-submit ordering — see
+//! cluster buffers plus view-local scene snapshots (safe under single-submit ordering -- see
 //! [`ClusterBufferCache`]).
 
 mod empty_material;
@@ -403,7 +403,7 @@ impl FrameGpuResources {
         );
     }
 
-    /// Allocates frame uniform, lights storage, minimal cluster grid `(1×1×Z)`, and fallback
+    /// Allocates frame uniform, lights storage, minimal cluster grid `(1x1xZ)`, and fallback
     /// sampled textures; builds [`Self::bind_group`].
     ///
     /// Returns an error when the initial cluster buffer cache could not be populated (zero viewport or internal mismatch).
@@ -478,7 +478,7 @@ impl FrameGpuResources {
         })
     }
 
-    /// Grows the shared cluster cache to cover `viewport` × `stereo` if needed; rebuilds
+    /// Grows the shared cluster cache to cover `viewport` x `stereo` if needed; rebuilds
     /// [`Self::bind_group`] when the underlying buffers were reallocated.
     ///
     /// When `stereo` is true, cluster count/index buffers are doubled for per-eye storage.

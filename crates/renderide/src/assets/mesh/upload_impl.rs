@@ -23,7 +23,7 @@ use super::layout::{
 };
 use super::tangent_generation::tangent_stream_bytes;
 
-/// Tangent plus UV1–UV3 optional vertex buffers from extended stream upload.
+/// Tangent plus UV1-UV3 optional vertex buffers from extended stream upload.
 type ExtendedVertexStreams = (
     Option<Arc<wgpu::Buffer>>,
     Option<Arc<wgpu::Buffer>>,
@@ -219,7 +219,7 @@ fn upload_positions_normals(
         (Some(Arc::new(pbuf)), Some(Arc::new(nbuf)))
     } else {
         logger::warn!(
-            "mesh {}: missing float3 position+normal attributes — debug/deform path disabled",
+            "mesh {}: missing float3 position+normal attributes -- debug/deform path disabled",
             data.asset_id
         );
         (None, None)

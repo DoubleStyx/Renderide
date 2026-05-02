@@ -29,7 +29,7 @@ pub struct EmaScalar {
 }
 
 impl EmaScalar {
-    /// Creates a tracker with the given virtual history length (clamped to ≥ 1).
+    /// Creates a tracker with the given virtual history length (clamped to >= 1).
     pub fn new(history_len: usize) -> Self {
         let history = history_len.max(1) as f64;
         Self {
@@ -104,8 +104,8 @@ mod tests {
         for _ in 0..100 {
             e.update(10.0);
         }
-        // A single 100ms spike should not push the displayed value past ~20 — EMA alpha is
-        // 2/21 ≈ 0.095, so the post-spike value is ~10 + 0.095 * (100 - 10) ≈ 18.6.
+        // A single 100ms spike should not push the displayed value past ~20 -- EMA alpha is
+        // 2/21 ~= 0.095, so the post-spike value is ~10 + 0.095 * (100 - 10) ~= 18.6.
         let v = e.update(100.0);
         assert!(v < 25.0, "ema after spike was {v}, expected dampened");
         assert!(

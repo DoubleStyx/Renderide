@@ -46,7 +46,7 @@ pub(super) struct WorldMeshDrawGpuRefs<'a> {
 ///
 /// `byte_len == None` encodes a full-buffer `.slice(..)` bind; `Some(n)` is a ranged bind
 /// of `byte_offset..byte_offset + n`. Two `BufferBindId`s are equal when they refer to the
-/// same buffer object, offset, and length — a sufficient condition for the bind to be a no-op.
+/// same buffer object, offset, and length -- a sufficient condition for the bind to be a no-op.
 ///
 /// Buffer identity is a raw pointer cast to `usize`; the pointer is stable for the lifetime
 /// of the mesh pool / skin cache (both outlive any single render pass).
@@ -85,7 +85,7 @@ impl BufferBindId {
 /// Tracks the last-submitted buffer identity for each of the 8 vertex slots and the index
 /// buffer. Reset at every new render pass (i.e. at the start of [`super::draw_subset`]).
 pub(super) struct LastMeshBindState {
-    /// Last bound buffer identity per vertex slot 0–7; `None` = never bound this pass.
+    /// Last bound buffer identity per vertex slot 0-7; `None` = never bound this pass.
     vertex: [Option<BufferBindId>; 8],
     /// Last bound index buffer (pointer-as-usize identity) and format; `None` = never bound.
     index: Option<(usize, wgpu::IndexFormat)>,

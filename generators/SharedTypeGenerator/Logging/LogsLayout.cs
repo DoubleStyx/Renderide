@@ -13,7 +13,7 @@ public static class LogsLayout
 
     /// <summary>
     /// Environment variable: when set, this directory is the logs root (component subdirectories are created beneath it).
-    /// Same semantics as the Rust crate’s <c>RENDERIDE_LOGS_ROOT</c>.
+    /// Same semantics as the Rust crate's <c>RENDERIDE_LOGS_ROOT</c>.
     /// </summary>
     public const string LogsRootEnvVar = "RENDERIDE_LOGS_ROOT";
 
@@ -36,7 +36,7 @@ public static class LogsLayout
 
     /// <summary>
     /// A new log file path for this process: <c>.../SharedTypeGenerator/YYYY-MM-DD_HH-mm-ss.log</c> in UTC,
-    /// matching the Rust workspace logger crate’s <c>log_filename_timestamp</c> (second resolution).
+    /// matching the Rust workspace logger crate's <c>log_filename_timestamp</c> (second resolution).
     /// Ensures the component directory exists.
     /// </summary>
     public static string EnsureNewSharedTypeGeneratorLogFilePath(string? gitTopLevel)

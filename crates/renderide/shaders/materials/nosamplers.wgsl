@@ -1,5 +1,5 @@
 //! Unity surface shader `Shader "Custom/Nosamplers"`: metallic Standard lighting that demos
-//! Unity's `UNITY_DECLARE_TEX2D_NOSAMPLER` aliasing — `_MetallicMap` shares the `_Albedo` sampler
+//! Unity's `UNITY_DECLARE_TEX2D_NOSAMPLER` aliasing -- `_MetallicMap` shares the `_Albedo` sampler
 //! and `_EmissionMap`/`_EmissionMap1` are sampled with their own.
 
 

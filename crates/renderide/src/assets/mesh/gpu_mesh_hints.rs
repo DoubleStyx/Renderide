@@ -116,7 +116,7 @@ fn optional_stream_size_matches(buffer: Option<&wgpu::Buffer>, expected: Option<
     }
 }
 
-/// True when the host requests any selective (non–full-replace) upload region.
+/// True when the host requests any selective (non-full-replace) upload region.
 pub(crate) fn mesh_upload_hint_any_selective(h: MeshUploadHintFlag) -> bool {
     h.vertex_layout()
         || h.positions()

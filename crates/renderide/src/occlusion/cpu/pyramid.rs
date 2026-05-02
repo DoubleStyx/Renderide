@@ -2,7 +2,7 @@
 
 /// Maximum length of the **longer** side of Hi-Z mip0 (downscaled from the depth attachment).
 ///
-/// Previously 256; halved to **128** to cut pyramid area (~4× fewer mip0 texels), reducing GPU
+/// Previously 256; halved to **128** to cut pyramid area (~4x fewer mip0 texels), reducing GPU
 /// compute, readback size, and CPU unpacking at the cost of coarser occlusion tests.
 pub const HI_Z_PYRAMID_MAX_LONG_EDGE: u32 = 128;
 
@@ -17,7 +17,7 @@ pub fn mip_dimensions(base_width: u32, base_height: u32, mip: u32) -> Option<(u3
     Some((w, h))
 }
 
-/// Total `f32` count for a full mip chain down to 1×1 or `mip_levels` slices.
+/// Total `f32` count for a full mip chain down to 1x1 or `mip_levels` slices.
 pub fn total_float_count(base_width: u32, base_height: u32, mip_levels: u32) -> usize {
     let mut n = 0usize;
     for m in 0..mip_levels {

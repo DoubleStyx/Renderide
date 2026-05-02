@@ -26,7 +26,7 @@ use crate::skybox::params::{
 /// Active skybox source to be baked into a GGX-prefiltered cubemap.
 ///
 /// `Analytic` is boxed because [`AnalyticIblSource`] embeds the full
-/// [`SkyboxEvaluatorParams`] (≈1.1 KiB of gradient arrays), an order of magnitude larger than the
+/// [`SkyboxEvaluatorParams`] (~=1.1 KiB of gradient arrays), an order of magnitude larger than the
 /// other variants.
 pub(crate) enum SkyboxIblSource {
     /// Analytic procedural / gradient skybox evaluator.

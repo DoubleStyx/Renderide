@@ -2,7 +2,7 @@
 //!
 //! The frame loop reads through this handle every tick; the debug HUD writes through it when
 //! the user edits values; saves to disk go through [`super::save`]. Wrapping the settings in
-//! `Arc<RwLock<…>>` (rather than handing out clones) means the HUD's edits are immediately
+//! `Arc<RwLock<...>>` (rather than handing out clones) means the HUD's edits are immediately
 //! visible to the next frame without a propagation step.
 
 use std::sync::Arc;

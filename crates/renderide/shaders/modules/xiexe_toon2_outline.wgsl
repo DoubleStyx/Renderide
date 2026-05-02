@@ -3,21 +3,21 @@
 //! Parity notes against the upstream Xiexe Toon include files:
 //!
 //! - Vertex extrusion uses `_OutlineMask`-modulated width with a distance fade matching
-//!   `min(distance · 3, 1)` from `XSGeom.cginc:55`. The mask is sampled at the raw UV0
+//!   `min(distance * 3, 1)` from `XSGeom.cginc:55`. The mask is sampled at the raw UV0
 //!   (Unity's geometry shader uses `IN[i].uv` regardless of `_UVSet*`) so masks authored
 //!   for UV0 keep working when albedo's UV-set selector is set to UV1.
 //!
 //! - Outline fragments do **not** flip the world normal on back-faces. The visible
 //!   outline pixels under front-face culling are back-faces of the extruded shell whose
 //!   geometric normals already point outward; flipping them produced a normal pointing
-//!   into the camera and constant ≈1 NdotV, which manifested as the "outline explodes
+//!   into the camera and constant ~=1 NdotV, which manifested as the "outline explodes
 //!   all lighting" bug.
 //!
 //! - The outline lighting branch follows `calcOutlineColor`:
-//!   - `_OutlineEmissive` / `_OutlineLighting` / `_OutlineEmissiveues` ≠ 0 → flat
-//!     `_OutlineColor` (with optional `_OutlineAlbedoTint` × albedo).
-//!   - All three flags = 0 (Lit mode) → `ol · saturate(att · NdotL) · lightCol +
-//!     indirectDiffuse · ol`, where the cluster light walk and ambient term provide the
+//!   - `_OutlineEmissive` / `_OutlineLighting` / `_OutlineEmissiveues` != 0 -> flat
+//!     `_OutlineColor` (with optional `_OutlineAlbedoTint` x albedo).
+//!   - All three flags = 0 (Lit mode) -> `ol * saturate(att * NdotL) * lightCol +
+//!     indirectDiffuse * ol`, where the cluster light walk and ambient term provide the
 //!     two factors.
 
 #define_import_path renderide::xiexe::toon2::outline
@@ -31,7 +31,7 @@
 #import renderide::uv_utils as uvu
 
 /// Outline vertex transform. Samples `_OutlineMask` at UV0 (Unity-faithful), extrudes
-/// the vertex along its object-space normal by `_OutlineWidth · 0.01 · mask · dist_scale`,
+/// the vertex along its object-space normal by `_OutlineWidth * 0.01 * mask * dist_scale`,
 /// then runs the standard vertex pipeline so downstream interpolants stay consistent
 /// with the forward path. The output color is overridden with `_OutlineColor` so the
 /// fragment can also distinguish outline fragments via `color.a` if needed.

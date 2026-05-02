@@ -75,7 +75,7 @@ impl GpuTexture2d {
         let max_dim = limits.max_texture_dimension_2d();
         if w > max_dim || h > max_dim {
             logger::warn!(
-                "texture {}: format size {}×{} exceeds max_texture_dimension_2d ({max_dim}); GPU texture not created",
+                "texture {}: format size {}x{} exceeds max_texture_dimension_2d ({max_dim}); GPU texture not created",
                 fmt.asset_id,
                 w,
                 h

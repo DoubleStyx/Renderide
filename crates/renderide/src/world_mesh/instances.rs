@@ -6,7 +6,7 @@
 //! `draw_indexed(.., 0, instance_range)` per [`DrawGroup`].
 //!
 //! Replaces the older `(regular_indices, intersect_indices) + for_each_instance_batch`
-//! pipeline whose merge requirement was *adjacency in the sorted draw array* — that policy
+//! pipeline whose merge requirement was *adjacency in the sorted draw array* -- that policy
 //! silently fragmented instancing whenever the sort cascade interleaved same-mesh draws
 //! with different-mesh draws (e.g. varying `sorting_order` within one material).
 //!
@@ -38,8 +38,8 @@ pub struct DrawGroup {
 /// Per-view instance plan: slab layout plus groups for regular, intersection, and grab-pass
 /// transparent subpasses.
 ///
-/// The forward pass packs the per-draw slab in `slab_layout` order — slot `i` holds the
-/// per-draw uniforms for `draws[slab_layout[i]]` — and emits each group's `instance_range`
+/// The forward pass packs the per-draw slab in `slab_layout` order -- slot `i` holds the
+/// per-draw uniforms for `draws[slab_layout[i]]` -- and emits each group's `instance_range`
 /// directly. `representative_draw_idx` for both group lists is monotonically increasing so
 /// the existing `precomputed_batches` cursor in `draw_subset` advances in O(amortised 1).
 #[derive(Clone, Debug, Default)]
@@ -75,7 +75,7 @@ struct MeshSubmeshKey {
 /// cleared between windows. Singleton-per-draw groups are produced when:
 /// - `supports_base_instance` is false (downlevel devices set `instance_count == 1`), or
 /// - the run is `skinned` (vertex deform path differs per draw), or
-/// - the run is `alpha_blended` (back-to-front order is load-bearing — must not collapse).
+/// - the run is `alpha_blended` (back-to-front order is load-bearing -- must not collapse).
 ///
 /// Group emit order matches the order of each group's first member in `draws`, so the
 /// view's high-level sort intent (state-change minimisation, transparent depth) is
@@ -172,7 +172,7 @@ impl InstancePlanBuilder {
     /// Produces the final plan after debug-validating group order.
     fn finish(self) -> InstancePlan {
         // The cross-window walk visits regular and intersect groups interleaved by sort order,
-        // so each list is already in ascending `representative_draw_idx` order — no resort.
+        // so each list is already in ascending `representative_draw_idx` order -- no resort.
         debug_assert!(
             self.regular_groups
                 .windows(2)

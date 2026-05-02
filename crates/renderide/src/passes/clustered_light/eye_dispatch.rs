@@ -92,7 +92,7 @@ pub(super) fn run_clustered_light_eye_passes(env: ClusteredLightEyePassEnv<'_>) 
         let dz = CLUSTER_COUNT_Z;
         if !env.gpu_limits.compute_dispatch_fits(dx, dy, dz) {
             logger::warn!(
-                "ClusteredLight: dispatch {}×{}×{} exceeds max_compute_workgroups_per_dimension ({})",
+                "ClusteredLight: dispatch {}x{}x{} exceeds max_compute_workgroups_per_dimension ({})",
                 dx,
                 dy,
                 dz,

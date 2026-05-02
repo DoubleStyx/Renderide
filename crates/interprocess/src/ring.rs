@@ -23,7 +23,7 @@ pub struct RingView {
 /// `ptr` must be valid for reads and writes for `capacity` bytes for the lifetime of queue usage,
 /// and `capacity` must be positive. The pointer must refer to the ring region inside the mapping
 /// opened by [`crate::memory::SharedMapping::open_queue`].
-// SAFETY: see the doc comment above — the pointer is valid for the lifetime of queue usage.
+// SAFETY: see the doc comment above -- the pointer is valid for the lifetime of queue usage.
 unsafe impl Send for RingView {}
 
 /// # Safety
@@ -31,7 +31,7 @@ unsafe impl Send for RingView {}
 /// All synchronisation for queue data races is provided by atomics in the wire format and by
 /// single-writer / single-reader protocol on message bodies; concurrent raw access is allowed
 /// only through those contracts.
-// SAFETY: see the doc comment above — all data-race synchronization is handled by the wire protocol.
+// SAFETY: see the doc comment above -- all data-race synchronization is handled by the wire protocol.
 unsafe impl Sync for RingView {}
 
 impl RingView {
@@ -120,7 +120,7 @@ impl RingView {
             }
         }
         if second > 0 {
-            // SAFETY: same invariants — `second <= capacity`, distinct allocations.
+            // SAFETY: same invariants -- `second <= capacity`, distinct allocations.
             unsafe {
                 std::ptr::copy_nonoverlapping(data.as_ptr().add(first), self.ptr, second);
             }
@@ -227,7 +227,7 @@ mod tests {
     fn write_read_roundtrip_wrap() {
         let mut buf = [0u8; 6];
         let cap = 6i64;
-        // SAFETY: see module `# Safety (tests)` — `buf` outlives `ring`, `cap` matches length.
+        // SAFETY: see module `# Safety (tests)` -- `buf` outlives `ring`, `cap` matches length.
         let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), cap) };
         ring.write(4, &[1, 2, 3]);
         let got = ring.read(4, 3);
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn write_empty_is_noop() {
         let mut buf = [7u8; 4];
-        // SAFETY: see module `# Safety (tests)` — `buf` outlives `ring`, capacity matches length.
+        // SAFETY: see module `# Safety (tests)` -- `buf` outlives `ring`, capacity matches length.
         let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), 4) };
         ring.write(2, &[]);
         assert_eq!(buf, [7u8; 4]);
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn clear_zero_len_is_noop() {
         let mut buf = [5u8; 4];
-        // SAFETY: see module `# Safety (tests)` — `buf` outlives `ring`, capacity matches length.
+        // SAFETY: see module `# Safety (tests)` -- `buf` outlives `ring`, capacity matches length.
         let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), 4) };
         ring.clear(0, 0);
         assert_eq!(buf, [5u8; 4]);
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn write_spans_wrap_from_negative_logical_offset() {
         let mut buf = [0u8; 5];
-        // SAFETY: see module `# Safety (tests)` — `buf` outlives `ring`, capacity matches length.
+        // SAFETY: see module `# Safety (tests)` -- `buf` outlives `ring`, capacity matches length.
         let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), 5) };
         ring.write(-2, &[1, 2, 3, 4]);
         assert_eq!(buf, [3, 4, 0, 1, 2]);
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn clear_spans_wrap() {
         let mut buf = [9u8; 6];
-        // SAFETY: see module `# Safety (tests)` — `buf` outlives `ring`, capacity matches length.
+        // SAFETY: see module `# Safety (tests)` -- `buf` outlives `ring`, capacity matches length.
         let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), 6) };
         ring.clear(4, 4);
         assert_eq!(buf, [0u8, 0u8, 9u8, 9u8, 0u8, 0u8]);
@@ -332,7 +332,7 @@ mod tests {
         struct AlignedBuf([u8; 64]);
         let mut storage = AlignedBuf([0u8; 64]);
         let buf = &mut storage.0;
-        // SAFETY: see module `# Safety (tests)` — `buf` outlives `ring`, capacity matches length.
+        // SAFETY: see module `# Safety (tests)` -- `buf` outlives `ring`, capacity matches length.
         let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), 64) };
         // SAFETY: offset 0 is a valid 8-byte header slot inside the 64-byte buffer.
         let mh = unsafe { ring.message_header_at(0) }.expect("aligned");
@@ -350,7 +350,7 @@ mod tests {
         struct AlignedBuf([u8; 64]);
         let mut storage = AlignedBuf([0u8; 64]);
         let buf = &mut storage.0;
-        // SAFETY: see module `# Safety (tests)` — `buf` outlives `ring`, capacity matches length.
+        // SAFETY: see module `# Safety (tests)` -- `buf` outlives `ring`, capacity matches length.
         let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), 64) };
         // Logical offset 1 produces phys=1, which is not 4-byte aligned.
         // SAFETY: read-only path, no dereference because alignment guard returns None first.

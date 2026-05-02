@@ -242,7 +242,7 @@ impl<'a> FrameView<'a> {
     }
 
     /// `true` when this view both targets a multiview attachment AND the host camera carries stereo
-    /// matrices — i.e. the per-view record path should emit stereo clustering / multiview draws.
+    /// matrices -- i.e. the per-view record path should emit stereo clustering / multiview draws.
     ///
     /// Single source of truth; every caller that gates on "is this the stereo multiview view?"
     /// goes through this method rather than re-deriving the AND-chain.

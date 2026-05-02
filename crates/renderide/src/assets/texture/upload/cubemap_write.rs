@@ -1,4 +1,4 @@
-//! [`SetCubemapData`](crate::shared::SetCubemapData) → cubemap array layers ([`super::mip_write_common::write_cubemap_face_mip`]).
+//! [`SetCubemapData`](crate::shared::SetCubemapData) -> cubemap array layers ([`super::mip_write_common::write_cubemap_face_mip`]).
 
 use crate::shared::{SetCubemapData, SetCubemapFormat};
 
@@ -27,7 +27,7 @@ struct CubemapFaceMipSliceStep {
     h: u32,
 }
 
-/// Host payload subslice for one cubemap face × mip after bias and length checks.
+/// Host payload subslice for one cubemap face x mip after bias and length checks.
 fn resolve_cubemap_face_mip_slice<'a>(
     chain: &CubemapMipChainState<'a>,
     step: CubemapFaceMipSliceStep,
@@ -108,7 +108,7 @@ pub struct CubemapFaceMipUploadStep<'a> {
     pub payload: &'a std::sync::Arc<[u8]>,
 }
 
-/// Incremental cubemap upload: one face × one mip per step.
+/// Incremental cubemap upload: one face x one mip per step.
 #[derive(Debug)]
 pub struct CubemapMipChainUploader {
     face: u32,
@@ -175,7 +175,7 @@ impl CubemapMipChainUploader {
             || tex_extent.depth_or_array_layers != 6
         {
             return Err(TextureUploadError::from(format!(
-                "GPU cubemap {}×{}×{} does not match format face {} (asset {})",
+                "GPU cubemap {}x{}x{} does not match format face {} (asset {})",
                 tex_extent.width,
                 tex_extent.height,
                 tex_extent.depth_or_array_layers,
@@ -307,7 +307,7 @@ impl CubemapMipChainUploader {
         let (gw, gh) = mip_dimensions_at_level(self.face_size, self.face_size, mip_level);
         if w != gw || h != gh {
             return Err(TextureUploadError::from(format!(
-                "cubemap {} mip {mip_level}: upload says {w}×{h} but GPU mip is {gw}×{gh}",
+                "cubemap {} mip {mip_level}: upload says {w}x{h} but GPU mip is {gw}x{gh}",
                 step.upload.asset_id
             )));
         }

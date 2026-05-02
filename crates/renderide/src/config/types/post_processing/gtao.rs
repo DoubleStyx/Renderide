@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// color by a visibility factor reconstructed from the depth buffer. View-space normals are
 /// reconstructed from depth derivatives (no separate GBuffer). Defaults pick a perceptually
 /// neutral strength that still visibly darkens creases and corners; the implementation uses
-/// one horizon direction per pixel with a 4×4 spatial jitter so aliasing masks as grain
+/// one horizon direction per pixel with a 4x4 spatial jitter so aliasing masks as grain
 /// rather than structured banding, and an XeGTAO-style depth-aware bilateral denoise reduces
 /// the residual horizon noise without softening silhouettes.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -26,7 +26,7 @@ pub struct GtaoSettings {
     /// Horizon steps per side (per-pixel samples). 6 matches the paper's recommended default.
     pub step_count: u32,
     /// Distance-falloff range as a fraction of [`Self::radius_meters`]. Candidate samples
-    /// are linearly faded toward the tangent-plane horizon over the last `falloff_range ·
+    /// are linearly faded toward the tangent-plane horizon over the last `falloff_range *
     /// radius_meters` of the search radius (matches XeGTAO's `FalloffRange`). Smaller =
     /// harder cutoff; larger = smoother transition but more distant influence.
     pub falloff_range: f32,
@@ -39,9 +39,9 @@ pub struct GtaoSettings {
     /// raw single-tap AO term); `1` runs only the final-apply kernel; `2` (XeGTAO's
     /// recommended default) runs an intermediate iteration at `denoise_blur_beta / 5`
     /// followed by the apply iteration at the full `denoise_blur_beta`. Values above `2` are
-    /// clamped at runtime — XeGTAO's reference uses `0..=2` exclusively.
+    /// clamped at runtime -- XeGTAO's reference uses `0..=2` exclusively.
     pub denoise_passes: u32,
-    /// Bilateral blur strength used by the depth-aware denoise kernel — XeGTAO's
+    /// Bilateral blur strength used by the depth-aware denoise kernel -- XeGTAO's
     /// `DenoiseBlurBeta` constant. Higher values smooth more aggressively across cardinal
     /// neighbours; lower values keep more detail. Has no effect when [`Self::denoise_passes`]
     /// is `0`.

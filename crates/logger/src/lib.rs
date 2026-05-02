@@ -15,8 +15,8 @@
 //! # Layout
 //!
 //! Logs default to **`Renderide/logs/<component>/<UTC-date>_<UTC-time-to-the-second>.log`**, where
-//! `<component>` is one of [`LogComponent`]. The repository root is inferred from this crate’s
-//! manifest path: `.../Renderide/crates/logger` → two levels up → `.../Renderide/logs`.
+//! `<component>` is one of [`LogComponent`]. The repository root is inferred from this crate's
+//! manifest path: `.../Renderide/crates/logger` -> two levels up -> `.../Renderide/logs`.
 //!
 //! Override the root directory with the **`RENDERIDE_LOGS_ROOT`** environment variable; the value
 //! is used as-is as the logs root for all components.
@@ -26,7 +26,7 @@
 //! - Call [`init`] or [`init_for`] once at startup, then install a panic hook that calls
 //!   [`log_panic`] with the same file path, or compose [`panic_report`] and
 //!   [`append_panic_report_to_file`] if you also mirror the report to a preserved terminal handle
-//!   (see the renderer’s `native_stdio` module).
+//!   (see the renderer's `native_stdio` module).
 //! - Use [`parse_log_level_from_args`] for `-LogLevel` (case-insensitive). After init, use
 //!   [`set_max_level`] to change filtering without reopening the log file.
 //! - Prefer [`init_for`] when using the standard layout; use [`init`] with a custom path when needed.
@@ -34,7 +34,7 @@
 //! # Panics and flushing
 //!
 //! Do not call [`flush`] from a panic handler if the panic might have occurred while holding the
-//! logger’s internal mutex (for example inside a log macro), or you risk deadlock.
+//! logger's internal mutex (for example inside a log macro), or you risk deadlock.
 
 mod level;
 mod output;

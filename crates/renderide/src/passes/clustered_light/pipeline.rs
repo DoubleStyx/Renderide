@@ -18,7 +18,7 @@ use crate::world_mesh::cluster::{CLUSTER_COUNT_Z, TILE_SIZE, sanitize_cluster_cl
 /// CPU layout for the compute shader `ClusterParams` uniform (WGSL `struct` + tail pad).
 ///
 /// `world_to_view_scale` carries the world-to-view linear-scale factor so the shader can convert
-/// `light.range` (world units) to view-space units before the cluster sphere/AABB test — see
+/// `light.range` (world units) to view-space units before the cluster sphere/AABB test -- see
 /// [`crate::world_mesh::cluster::ClusterFrameParams::world_to_view_scale_max`].
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

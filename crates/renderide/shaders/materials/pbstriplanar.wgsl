@@ -2,7 +2,7 @@
 //! projection sampled from world or object space.
 //!
 //! Each texture (`_MainTex`, `_MetallicMap`, `_EmissionMap`, `_NormalMap`, `_OcclusionMap`) is
-//! sampled three times — once per axis-aligned plane (ZY for X, XZ for Y, XY for Z) — and blended
+//! sampled three times -- once per axis-aligned plane (ZY for X, XZ for Y, XY for Z) -- and blended
 //! by `pow(abs(world_normal), _TriBlendPower)`. Normal maps use Reoriented Normal Mapping (RNM)
 //! per plane, after Ben Golus's 2017 example. World-space vs object-space is selected by
 //! `_WORLDSPACE` (1.0) / `_OBJECTSPACE` (1.0); this matches Unity's `_WORLDSPACE`/`_OBJECTSPACE`
@@ -31,7 +31,7 @@ struct PbsTriplanarMaterial {
     _Glossiness: f32,
     /// Metallic fallback when `_METALLICMAP` is disabled.
     _Metallic: f32,
-    /// Triplanar blend exponent — higher values produce sharper transitions between planes.
+    /// Triplanar blend exponent -- higher values produce sharper transitions between planes.
     _TriBlendPower: f32,
     /// Keyword: project from world space (mutually exclusive with `_OBJECTSPACE`).
     _WORLDSPACE: f32,
@@ -63,7 +63,7 @@ struct PbsTriplanarMaterial {
 
 /// Interpolated vertex output forwarded to both forward-base and forward-add fragments.
 ///
-/// `proj_pos` is the projection source — world or object space, selected at vertex time so that
+/// `proj_pos` is the projection source -- world or object space, selected at vertex time so that
 /// the fragment shader can stay branchless.
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
@@ -73,7 +73,7 @@ struct VertexOutput {
     @location(3) @interpolate(flat) view_layer: u32,
 }
 
-/// Resolved per-fragment shading inputs for the metallic Cook–Torrance path.
+/// Resolved per-fragment shading inputs for the metallic Cook-Torrance path.
 struct SurfaceData {
     base_color: vec3<f32>,
     alpha: f32,
@@ -84,9 +84,9 @@ struct SurfaceData {
     emission: vec3<f32>,
 }
 
-/// Reoriented Normal Mapping blend — combines a base world-space normal with a per-plane
+/// Reoriented Normal Mapping blend -- combines a base world-space normal with a per-plane
 /// tangent-space normal so the projected plane's surface variation rotates onto the underlying
-/// world normal without flattening near pole transitions. From Barré-Brisebois & Hill, 2012.
+/// world normal without flattening near pole transitions. From Barre-Brisebois & Hill, 2012.
 fn blend_rnm(n1_in: vec3<f32>, n2_in: vec3<f32>) -> vec3<f32> {
     let n1 = vec3<f32>(n1_in.x, n1_in.y, n1_in.z + 1.0);
     let n2 = vec3<f32>(-n2_in.x, -n2_in.y, n2_in.z);
@@ -152,8 +152,8 @@ fn triplanar_rgba(
 
 /// Build a triplanar world-space normal via Reoriented Normal Mapping when `_NORMALMAP` is on,
 /// otherwise return the interpolated geometric normal (renormalized). Triplanar shading does not
-/// rely on the mesh tangent — RNM rotates each per-plane tangent-space normal directly onto the
-/// interpolated world normal — so no tangent is plumbed through this material.
+/// rely on the mesh tangent -- RNM rotates each per-plane tangent-space normal directly onto the
+/// interpolated world normal -- so no tangent is plumbed through this material.
 fn sample_normal_world(uvs: PlanarUvs, world_n: vec3<f32>, weights: vec3<f32>) -> vec3<f32> {
     let n_geo = normalize(world_n);
     if (!uvu::kw_enabled(mat._NORMALMAP)) {

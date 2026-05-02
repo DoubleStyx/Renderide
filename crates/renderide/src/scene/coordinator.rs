@@ -199,7 +199,7 @@ impl SceneCoordinator {
     /// Cached world matrix from the host transform hierarchy (parent chain only).
     ///
     /// This matches object/light/bone placement: [`RenderSpaceState::root_transform`] is **not**
-    /// applied here—it drives the view basis via [`RenderSpaceState::view_transform`], not mesh
+    /// applied here--it drives the view basis via [`RenderSpaceState::view_transform`], not mesh
     /// model matrices.
     pub fn world_matrix(&self, id: RenderSpaceId, transform_index: usize) -> Option<Mat4> {
         self.world_caches
@@ -285,7 +285,7 @@ impl SceneCoordinator {
         let results: Vec<(RenderSpaceId, Result<WorldTransformCache, SceneError>)> = work
             .into_par_iter()
             .map(|(id, mut cache)| {
-                // Space removed between drain and dispatch — preserve cache as-is so the reinsert
+                // Space removed between drain and dispatch -- preserve cache as-is so the reinsert
                 // step below drops it via the `Ok` path (caller treats this as a no-op).
                 let Some(space) = spaces.get(&id) else {
                     return (id, Ok(cache));
@@ -384,7 +384,7 @@ impl SceneCoordinator {
 
         // Phase C: light updates (still serial: shared LightCache). Before applying each space's
         // update we roll pre-existing cached `transform_id`s forward through any transform
-        // swap-removes that ran in Phase B — mirrors the host's `RenderableIndex` reindexing so a
+        // swap-removes that ran in Phase B -- mirrors the host's `RenderableIndex` reindexing so a
         // light whose transform was swap-moved into a freed slot keeps pointing at it.
         {
             profiling::scope!("scene::apply_frame_submit::lights");
@@ -421,7 +421,7 @@ impl SceneCoordinator {
         Ok(())
     }
 
-    /// Drops render spaces that were absent from this submit’s id set.
+    /// Drops render spaces that were absent from this submit's id set.
     fn remove_render_spaces_not_in_submit(&mut self, seen: &HashSet<RenderSpaceId>) {
         self.remove_spaces_scratch.clear();
         self.remove_spaces_scratch

@@ -90,13 +90,13 @@ pub enum ManifestError {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ActionType {
-    /// `xr::Action<xr::Posef>` — a tracked pose used to build an [`openxr::Space`].
+    /// `xr::Action<xr::Posef>` -- a tracked pose used to build an [`openxr::Space`].
     Pose,
-    /// `xr::Action<bool>` — digital button / touch state.
+    /// `xr::Action<bool>` -- digital button / touch state.
     Bool,
-    /// `xr::Action<f32>` — analog axis such as trigger pull.
+    /// `xr::Action<f32>` -- analog axis such as trigger pull.
     Float,
-    /// `xr::Action<xr::Vector2f>` — 2D axis such as thumbstick or trackpad.
+    /// `xr::Action<xr::Vector2f>` -- 2D axis such as thumbstick or trackpad.
     Vector2f,
     /// Haptic output driven via [`openxr::Action::apply_feedback`].
     Haptic,
@@ -126,14 +126,14 @@ pub struct ActionDef {
     pub localized_name: String,
 }
 
-/// Parsed, unvalidated contents of `actions.toml` — pass to [`ActionManifest::from_parsed`] to validate.
+/// Parsed, unvalidated contents of `actions.toml` -- pass to [`ActionManifest::from_parsed`] to validate.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(super) struct ActionManifestRaw {
     action_set: ActionSetDef,
     action: Vec<ActionDef>,
 }
 
-/// Validated action manifest — every [`ActionDef`] has a unique id and a known type.
+/// Validated action manifest -- every [`ActionDef`] has a unique id and a known type.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActionManifest {
     /// Action set metadata.
@@ -178,14 +178,14 @@ impl ActionManifest {
 
 /// Identifier for an OpenXR extension that gates a profile's binding submission.
 ///
-/// Each variant maps one-to-one to a field of [`crate::xr::input::bindings::ProfileExtensionGates`] — profiles
+/// Each variant maps one-to-one to a field of [`crate::xr::input::bindings::ProfileExtensionGates`] -- profiles
 /// declaring an unknown variant are rejected at parse time so a typo in a binding TOML cannot
 /// silently skip binding suggestion at runtime.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ExtensionGate {
     /// `XR_KHR_generic_controller`.
     KhrGenericController,
-    /// `XR_BD_controller_interaction` — gates both Pico 4 and Pico Neo3.
+    /// `XR_BD_controller_interaction` -- gates both Pico 4 and Pico Neo3.
     BdController,
     /// `XR_EXT_hp_mixed_reality_controller`.
     ExtHpMixedRealityController,

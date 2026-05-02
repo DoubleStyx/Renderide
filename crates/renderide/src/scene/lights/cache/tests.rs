@@ -275,7 +275,7 @@ fn buffer_renderer_swap_remove_middle_preserves_last_entry() {
 }
 
 /// Regression: after removing and re-adding, the dense list must have exactly one entry per
-/// live renderable with its provided transform id — no ghost carrying `transform_id = 0`.
+/// live renderable with its provided transform id -- no ghost carrying `transform_id = 0`.
 #[test]
 fn buffer_renderer_remove_then_add_has_no_ghost() {
     let mut cache = LightCache::new();
@@ -310,7 +310,7 @@ fn buffer_renderer_remove_then_add_has_no_ghost() {
     assert_eq!(lights[1].transform_id, 12);
 }
 
-/// Regression: a state-only update after a swap-remove must apply to the swapped entry —
+/// Regression: a state-only update after a swap-remove must apply to the swapped entry --
 /// the original `transform_id` must be preserved (no fallback to `transform_id = 0`, which
 /// would render the light at the world origin).
 #[test]
@@ -349,7 +349,7 @@ fn buffer_renderer_state_only_update_after_swap_uses_swapped_transform() {
 }
 
 /// Regression: the same swap-remove contract must hold for regular (Unity `Light`)
-/// renderables — the reported bug was about a Light component added via the component picker
+/// renderables -- the reported bug was about a Light component added via the component picker
 /// ending up with `renderable_index = -1` / at the world origin after add/remove cycles.
 #[test]
 fn regular_light_swap_remove_middle_preserves_last_entry() {
@@ -407,7 +407,7 @@ fn regular_light_remove_then_add_has_no_ghost() {
     assert_eq!(lights[1].transform_id, 12);
 }
 
-/// Regression: reproduces the "light at origin" symptom — a state update for a swapped
+/// Regression: reproduces the "light at origin" symptom -- a state update for a swapped
 /// regular light must address the swapped entry and preserve its non-zero transform id.
 #[test]
 fn regular_light_state_only_update_after_swap_uses_swapped_transform() {
@@ -439,7 +439,7 @@ fn regular_light_state_only_update_after_swap_uses_swapped_transform() {
 /// Regression: when an unrelated transform elsewhere in the space is swap-removed and the
 /// host moves the last transform into the freed slot, the light's stored `transform_id`
 /// must be rolled forward so it still points at its slot's transform. Without the fixup,
-/// `get_world_matrix` returns `None` and the light falls back to `Mat4::IDENTITY` → visible
+/// `get_world_matrix` returns `None` and the light falls back to `Mat4::IDENTITY` -> visible
 /// at world origin. Reproduces the user-reported bug directly.
 #[test]
 fn regular_light_transform_id_follows_swap_remove() {
@@ -477,7 +477,7 @@ fn regular_light_transform_id_follows_swap_remove() {
     assert_eq!(lights[0].transform_id, 5);
     assert!((lights[0].data.intensity - 1.0).abs() < 1e-5);
     // The light whose transform was at the pre-swap last index (42) now points at the
-    // freed slot (10). Without the fixup, this would still read 42 → out of range → origin.
+    // freed slot (10). Without the fixup, this would still read 42 -> out of range -> origin.
     assert_eq!(lights[1].transform_id, 10);
     assert!((lights[1].data.intensity - 2.0).abs() < 1e-5);
 }
@@ -516,7 +516,7 @@ fn buffer_renderer_transform_id_follows_swap_remove() {
     // Unrelated renderer (transform 5, buffer 100) is untouched.
     assert_eq!(lights[0].state.global_unique_id, 100);
     assert_eq!(lights[0].transform_id, 5);
-    // Swapped-in renderer follows: transform 42 → 10.
+    // Swapped-in renderer follows: transform 42 -> 10.
     assert_eq!(lights[1].state.global_unique_id, 101);
     assert_eq!(lights[1].transform_id, 10);
 }
@@ -541,7 +541,7 @@ fn regular_light_whose_own_transform_was_removed_is_dropped() {
     );
 
     // Remove transform 5 (which is the first light's transform). last_index_before_swap = 42
-    // → the second light's transform moves into slot 5.
+    // -> the second light's transform moves into slot 5.
     cache.fixup_for_transform_removals(
         space_id,
         &[TransformRemovalEvent {

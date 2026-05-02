@@ -43,7 +43,7 @@ fn per_pass_texture2d_asset_ids_from_draws(
     out
 }
 
-/// Sort-then-dedup in O(n log n) instead of the O(n²) `Vec::contains` linear scan.
+/// Sort-then-dedup in O(n log n) instead of the O(n^2) `Vec::contains` linear scan.
 ///
 /// Sort order is implementation-defined (numeric ascending) since the debug HUD only needs the
 /// set of bound textures, not the original draw-order sequence.

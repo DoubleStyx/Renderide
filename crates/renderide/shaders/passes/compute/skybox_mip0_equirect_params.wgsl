@@ -36,7 +36,7 @@ fn positive_fmod(v: vec2<f32>, wrap: vec2<f32>) -> vec2<f32> {
     return r - trunc(r / wrap) * wrap;
 }
 
-/// Projection360 view direction → unscaled equirectangular UVs.
+/// Projection360 view direction -> unscaled equirectangular UVs.
 fn dir_to_uv(view_dir: vec3<f32>) -> vec2<f32> {
     var angle = vec2<f32>(
         atan2(view_dir.x, view_dir.z),

@@ -25,10 +25,10 @@ fn mat3_linear(m: mat4x4<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(m[0].xyz, m[1].xyz, m[2].xyz);
 }
 
-/// Upper-3×3 inverse-transpose (cotangent rule for normals) of `m`.
+/// Upper-3x3 inverse-transpose (cotangent rule for normals) of `m`.
 ///
-/// For columns `c0, c1, c2`, the rows of `adj(m)` are `c1×c2`, `c2×c0`, `c0×c1`. `m^-1 = adj(m)/det`
-/// stores those vectors as **rows**, so `m^-T` stores them as **columns** — which is what
+/// For columns `c0, c1, c2`, the rows of `adj(m)` are `c1xc2`, `c2xc0`, `c0xc1`. `m^-1 = adj(m)/det`
+/// stores those vectors as **rows**, so `m^-T` stores them as **columns** -- which is what
 /// `mat3x3<f32>(...)` produces directly. Returns identity for singular linear parts to avoid NaNs
 /// in the linear-blend skinning sum.
 ///
@@ -57,7 +57,7 @@ fn inverse_transpose_3x3(m: mat3x3<f32>) -> mat3x3<f32> {
     );
 }
 
-/// Upper 3×3 inverse-transpose of a 4×4 (cotangent rule for normals; handles non-uniform scale).
+/// Upper 3x3 inverse-transpose of a 4x4 (cotangent rule for normals; handles non-uniform scale).
 fn normal_matrix(m: mat4x4<f32>) -> mat3x3<f32> {
     return inverse_transpose_3x3(mat3_linear(m));
 }

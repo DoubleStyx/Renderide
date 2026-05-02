@@ -1,6 +1,6 @@
 //! Voronoi noise primitives shared across material and image-effect shaders.
 //!
-//! The animated cell-center offset is `0.5 + 0.5 * sin(anim_offset + 2π * cell_seed)` so callers
+//! The animated cell-center offset is `0.5 + 0.5 * sin(anim_offset + 2PI * cell_seed)` so callers
 //! drive animation by feeding host-supplied seconds (the renderer does not expose `_Time.y` to
 //! materials directly).
 
@@ -31,7 +31,7 @@ struct VoronoiResult {
     min_point: vec2<f32>,
 }
 
-/// Tiled animated Voronoi: scans the 3×3 neighborhood around `floor(uv_scaled)`, wraps tile
+/// Tiled animated Voronoi: scans the 3x3 neighborhood around `floor(uv_scaled)`, wraps tile
 /// coordinates by `scale`, and returns the nearest / second-nearest distances for edge effects.
 fn voronoi_full(uv_scaled: vec2<f32>, scale: vec2<f32>, anim_offset: f32) -> VoronoiResult {
     let i_uv = floor(uv_scaled);

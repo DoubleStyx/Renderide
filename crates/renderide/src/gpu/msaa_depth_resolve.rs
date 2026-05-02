@@ -7,10 +7,10 @@
 //! the compute shader is single-variant.
 //!
 //! Submodules:
-//! - [`targets`] — view bundles consumed by the encoders
+//! - [`targets`] -- view bundles consumed by the encoders
 //!   ([`MsaaDepthResolveMonoTargets`], [`MsaaDepthResolveStereoTargets`]).
-//! - [`pipelines`] — init-time pipeline construction (compute + per-format blit pipelines).
-//! - [`encode`] — per-frame pass recording (compute resolve + depth blit).
+//! - [`pipelines`] -- init-time pipeline construction (compute + per-format blit pipelines).
+//! - [`encode`] -- per-frame pass recording (compute resolve + depth blit).
 
 mod encode;
 mod pipelines;
@@ -27,7 +27,7 @@ use pipelines::{create_desktop_blit_pipelines, create_stereo_multiview_blit_pipe
 
 pub use targets::{MsaaDepthResolveMonoTargets, MsaaDepthResolveStereoTargets};
 
-/// Pipelines and layouts for MSAA depth → R32F compute → depth blit.
+/// Pipelines and layouts for MSAA depth -> R32F compute -> depth blit.
 ///
 /// Exposes both the desktop (`D2`) path via [`Self::encode_resolve`] and the stereo (OpenXR 2-layer
 /// `D2Array`) path via [`Self::encode_resolve_stereo`]. The stereo path reuses the same compute
@@ -136,7 +136,7 @@ impl MsaaDepthResolveResources {
 
     /// Resolves `targets.msaa_depth_view` into `targets.dst_depth_view` via R32F intermediate `targets.r32_view`.
     ///
-    /// When the 8×8-tiled compute dispatch would exceed [`GpuLimits::compute_dispatch_fits`], logs a
+    /// When the 8x8-tiled compute dispatch would exceed [`GpuLimits::compute_dispatch_fits`], logs a
     /// warning and skips compute and blit (degraded depth for intersection / Hi-Z vs invalid GPU work).
     ///
     /// `profiler` opens a pass-level GPU timestamp query around each of the two passes (compute

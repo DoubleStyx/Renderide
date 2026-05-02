@@ -1,7 +1,7 @@
 //! Redirect native **stdout** and **stderr** into the Renderide file logger on Unix and Windows.
 //!
 //! Vulkan validation layers and **spirv-val** often emit via **`printf`** (stdout) and/or
-//! **`fprintf(stderr, …)`**. WGPU’s instance flags do not control whether users enable layers via
+//! **`fprintf(stderr, ...)`**. WGPU's instance flags do not control whether users enable layers via
 //! `VK_INSTANCE_LAYERS`, so the renderer installs forwarding **unconditionally** after file logging
 //! starts (see [`crate::app::run`]).
 //!
@@ -9,7 +9,7 @@
 //! [`ensure_stdio_forwarded_to_logger`] for entry points that skip `run` (idempotent via [`Once`]).
 //!
 //! - **Unix:** `pipe` + `dup2` per stream (`STDOUT_FILENO` / `STDERR_FILENO`).
-//! - **Windows:** `CreatePipe` + `SetStdHandle(STD_OUTPUT_HANDLE / STD_ERROR_HANDLE, …)`.
+//! - **Windows:** `CreatePipe` + `SetStdHandle(STD_OUTPUT_HANDLE / STD_ERROR_HANDLE, ...)`.
 //!
 //! The readers use [`logger::try_log`] (non-blocking lock + append fallback) so they cannot deadlock
 //! with the main thread on the global logger mutex, and read in chunks so a missing newline cannot
@@ -26,7 +26,7 @@
 //!
 //! On other targets this module is a no-op.
 //!
-//! Avoid enabling the logger’s **mirror-to-stderr** option together with this redirect: mirrored
+//! Avoid enabling the logger's **mirror-to-stderr** option together with this redirect: mirrored
 //! lines would be written back into the pipe and re-logged. Tee uses the **preserved** handles, not
 //! [`std::io::stderr`].
 
@@ -114,7 +114,7 @@ pub(crate) fn ensure_stdio_forwarded_to_logger() {
     });
 }
 
-/// Writes `data` to the process’s **original** stderr (before [`ensure_stdio_forwarded_to_logger`]),
+/// Writes `data` to the process's **original** stderr (before [`ensure_stdio_forwarded_to_logger`]),
 /// for panic reporting. No-op if redirect did not run, tee is disabled, or the platform is
 /// unsupported.
 pub(crate) fn try_write_preserved_stderr(data: &[u8]) {

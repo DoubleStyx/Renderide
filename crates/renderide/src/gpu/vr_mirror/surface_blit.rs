@@ -1,4 +1,4 @@
-//! Staging→surface blit for the VR desktop mirror.
+//! Staging->surface blit for the VR desktop mirror.
 //!
 //! Per-frame effect: blits the persistent staging texture (filled by
 //! [`super::resources::VrMirrorBlitResources::submit_eye_to_staging`]) into the swapchain

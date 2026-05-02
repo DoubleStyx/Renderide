@@ -33,7 +33,7 @@ pub(super) struct BloomParamsGpu {
     pub threshold_precomputations: [f32; 4],
     /// Composite intensity (scatter factor in linear HDR).
     pub intensity: f32,
-    /// `1.0` → energy-conserving composite; `0.0` → additive composite.
+    /// `1.0` -> energy-conserving composite; `0.0` -> additive composite.
     pub energy_conserving: f32,
     /// Alignment pad to 32 bytes (std140 vec2 tail).
     pub _pad: [f32; 2],
@@ -66,9 +66,9 @@ pub(super) enum BloomPipelineKind {
     DownsampleFirst,
     /// Plain 13-tap downsample between intermediate bloom mips.
     Downsample,
-    /// 3×3 tent upsample with energy-conserving blend (`src*C + dst*(1-C)`).
+    /// 3x3 tent upsample with energy-conserving blend (`src*C + dst*(1-C)`).
     UpsampleEnergyConserving,
-    /// 3×3 tent upsample with additive blend (`src*C + dst`).
+    /// 3x3 tent upsample with additive blend (`src*C + dst`).
     UpsampleAdditive,
     /// Composite: samples scene + bloom mip 0, does blend math in shader (Replace blend state).
     Composite,
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn threshold_matches_bevy_formula() {
-        // threshold=1.0, softness=0.5 → knee=0.5, components: [1.0, 0.5, 1.0, 0.25/0.5001]
+        // threshold=1.0, softness=0.5 -> knee=0.5, components: [1.0, 0.5, 1.0, 0.25/0.5001]
         let v = threshold_precomputations(1.0, 0.5);
         assert!((v[0] - 1.0).abs() < 1e-6);
         assert!((v[1] - 0.5).abs() < 1e-6);

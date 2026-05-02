@@ -163,7 +163,7 @@ public static class ResoniteAssemblyDiscovery
             string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (!string.IsNullOrEmpty(home))
             {
-                // Default Steam Client layout on macOS (same as Valve’s documented install).
+                // Default Steam Client layout on macOS (same as Valve's documented install).
                 TryAdd(Path.Combine(home, "Library", "Application Support", "Steam"));
                 // Some setups use a compatibility symlink similar to Linux.
                 TryAdd(Path.Combine(home, ".steam", "steam"));

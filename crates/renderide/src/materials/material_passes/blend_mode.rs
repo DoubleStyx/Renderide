@@ -11,8 +11,8 @@ use super::property_ids::MaterialPipelinePropertyIds;
 ///
 /// Reconstructed from the `_SrcBlend` / `_DstBlend` Unity blend-factor floats that FrooxEngine
 /// writes for every material (see [`MaterialBlendMode::from_unity_blend_factors`]). The host
-/// never sends a named `BlendMode` enum value on the wire — `MaterialProvider.SetBlendMode(Alpha)`
-/// on the C# side simply translates to `SrcBlend=SrcAlpha` / `DstBlend=OneMinusSrcAlpha` floats —
+/// never sends a named `BlendMode` enum value on the wire -- `MaterialProvider.SetBlendMode(Alpha)`
+/// on the C# side simply translates to `SrcBlend=SrcAlpha` / `DstBlend=OneMinusSrcAlpha` floats --
 /// so only three shapes are observable here: no override, the `(1, 0)` opaque canonical form, and
 /// every other valid `(src, dst)` pair.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -20,7 +20,7 @@ pub enum MaterialBlendMode {
     /// No material-level override; use the stem's normal static behavior.
     #[default]
     StemDefault,
-    /// Canonical Unity `Blend One Zero` — opaque, no color blend.
+    /// Canonical Unity `Blend One Zero` -- opaque, no color blend.
     Opaque,
     /// Direct Unity `Blend[src][dst], One One` factors from `_SrcBlend` / `_DstBlend`.
     UnityBlend {
@@ -62,7 +62,7 @@ impl MaterialBlendMode {
 }
 
 /// One side of a [`MaterialPropertyLookupIds`] fetched via
-/// [`MaterialDictionary::fetch_property_maps`]: the inner `property_id → value` map for either the
+/// [`MaterialDictionary::fetch_property_maps`]: the inner `property_id -> value` map for either the
 /// material or the property block. `None` when no properties have been stored for that id.
 pub(crate) type PropertyMapRef<'a> =
     Option<&'a std::collections::HashMap<i32, MaterialPropertyValue>>;
@@ -90,7 +90,7 @@ pub(crate) fn first_float_from_maps(
 
 /// Resolves a material/property-block `BlendMode` override using pre-fetched inner maps. Prefer
 /// this in hot paths that also call [`crate::materials::material_render_state_from_maps`] for
-/// the same lookup — the two outer-map probes are amortised across both calls.
+/// the same lookup -- the two outer-map probes are amortised across both calls.
 pub fn material_blend_mode_from_maps(
     material_map: PropertyMapRef<'_>,
     property_block_map: PropertyMapRef<'_>,

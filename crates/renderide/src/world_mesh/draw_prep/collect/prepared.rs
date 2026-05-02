@@ -243,7 +243,7 @@ fn collect_prepared_renderer_run(
 /// Collects draw items for one chunk of a pre-expanded [`super::FramePreparedRenderables`] list.
 ///
 /// Unlike the scene-walk chunk collector, there is no scene walk: the prepared draws already
-/// captured every valid `(renderer × material slot)` tuple plus its frame-global resolution
+/// captured every valid `(renderer x material slot)` tuple plus its frame-global resolution
 /// (material override, submesh index range, overlay flag, skin deform flag). This per-view pass
 /// only applies filters and per-view CPU culling per renderer, then builds [`WorldMeshDrawItem`]s
 /// for each material slot.

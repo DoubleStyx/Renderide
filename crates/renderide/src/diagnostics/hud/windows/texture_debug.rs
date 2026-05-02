@@ -15,7 +15,7 @@ const TEXTURE_DEBUG_H: f32 = 420.0;
 /// Y offset stacks the **Textures** window below the **Renderer config** window on first use.
 const TEXTURE_DEBUG_Y_OFFSET: f32 = 360.0;
 
-/// **Textures** HUD window — texture pool listing with current-view filtering.
+/// **Textures** HUD window -- texture pool listing with current-view filtering.
 pub struct TextureDebugWindow;
 
 impl HudWindow for TextureDebugWindow {

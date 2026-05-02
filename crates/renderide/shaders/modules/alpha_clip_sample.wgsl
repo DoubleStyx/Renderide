@@ -11,7 +11,7 @@
 /// LOD index for coverage-only comparisons (stable silhouette vs implicit mips).
 const CLIP_COVERAGE_LOD: f32 = 0.0;
 
-/// Alpha channel of `tex` at [`CLIP_COVERAGE_LOD`] (for `_ALPHATEST` / tint × alpha).
+/// Alpha channel of `tex` at [`CLIP_COVERAGE_LOD`] (for `_ALPHATEST` / tint x alpha).
 fn texture_alpha_base_mip(tex: texture_2d<f32>, samp: sampler, uv: vec2<f32>) -> f32 {
     return textureSampleLevel(tex, samp, uv, CLIP_COVERAGE_LOD).a;
 }

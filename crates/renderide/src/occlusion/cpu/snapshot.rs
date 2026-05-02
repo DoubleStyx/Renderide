@@ -6,7 +6,7 @@ use super::pyramid::{mip_dimensions, total_float_count};
 
 /// Packed reverse-Z depth values (greater = closer) for one eye / one desktop pyramid.
 ///
-/// `mips` stores mip0 row-major, then mip1, … each mip is `max(1, base_width >> k) × max(1, base_height >> k)`.
+/// `mips` stores mip0 row-major, then mip1, ... each mip is `max(1, base_width >> k) x max(1, base_height >> k)`.
 ///
 /// The pyramid buffer is shared via `Arc<[f32]>` so per-view and per-secondary-camera `Clone`s are
 /// refcount bumps rather than full `Vec<f32>` copies. Producers construct the data once in a

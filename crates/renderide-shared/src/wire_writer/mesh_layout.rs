@@ -1,8 +1,8 @@
 //! Host-side mesh payload encoder.
 //!
 //! Produces the byte buffer for `MeshUploadData.buffer`, matching the canonical region order from
-//! `Renderite.Shared.MeshBuffer.ComputeBufferLayout`: vertices → indices → `bone_counts` →
-//! `bone_weights` → `bind_poses` → `blendshape_data`. The renderer-side parser lives at
+//! `Renderite.Shared.MeshBuffer.ComputeBufferLayout`: vertices -> indices -> `bone_counts` ->
+//! `bone_weights` -> `bind_poses` -> `blendshape_data`. The renderer-side parser lives at
 //! `crates/renderide/src/assets/mesh/layout.rs` and reads exactly this layout.
 //!
 //! For the integration test we only use vertices and indices: the sphere has no bones and no
@@ -64,10 +64,10 @@ pub enum MeshLayoutError {
         srcs: usize,
     },
     /// One of the attribute source slices had the wrong byte length for the declared
-    /// `vertex_count` × per-vertex size.
+    /// `vertex_count` x per-vertex size.
     #[error(
         "attribute {index} (type={attribute_type:?}, format={format:?}, dims={dims}) source had \
-         {got} bytes; expected {vertex_count} vertices × {row_bytes} bytes/vertex"
+         {got} bytes; expected {vertex_count} vertices x {row_bytes} bytes/vertex"
     )]
     SourceBytesMismatch {
         /// Index of the offending attribute.
@@ -293,7 +293,7 @@ mod tests {
         };
         let payload = write_mesh_payload(&input).expect("encode");
 
-        // vertices (2 × 24) + indices (3 × 2) + bone_counts region (vertex_count = 2 zero bytes)
+        // vertices (2 x 24) + indices (3 x 2) + bone_counts region (vertex_count = 2 zero bytes)
         assert_eq!(payload.bytes.len(), 2 * 24 + 6 + 2);
         assert_eq!(payload.vertex_stride_bytes, 24);
         assert_eq!(payload.index_region_bytes, 6);
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn rejects_mismatched_source_byte_count() {
         let attrs = vec![position_float3_attr()];
-        let bad_pos = vec![0u8; 5]; // 5 bytes, not 24 expected for 2 vertices × 12.
+        let bad_pos = vec![0u8; 5]; // 5 bytes, not 24 expected for 2 vertices x 12.
         let input = MeshLayoutInput {
             vertex_count: 2,
             vertex_attributes: attrs,

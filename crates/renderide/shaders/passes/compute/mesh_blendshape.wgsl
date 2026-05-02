@@ -5,7 +5,7 @@ struct Params {
     vertex_count: u32,
     sparse_base: u32,
     sparse_count: u32,
-    /// Element offset into `out_pos` for this instance’s subrange (GPU skin cache arena).
+    /// Element offset into `out_pos` for this instance's subrange (GPU skin cache arena).
     base_dst_e: u32,
     effective_weight: f32,
     _p1: u32,

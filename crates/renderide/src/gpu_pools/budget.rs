@@ -80,7 +80,7 @@ pub trait StreamingPolicy: Send + Sync {
     /// Under memory pressure, return texture id + **minimum mip level to keep resident**; mips
     /// finer than the returned level may be dropped or re-streamed later.
     ///
-    /// Example: `(asset_id, 2)` means keep mips 2..N, evict 0–1.
+    /// Example: `(asset_id, 2)` means keep mips 2..N, evict 0-1.
     fn suggest_texture_mip_evictions(&self, _budget: &VramAccounting) -> Vec<(i32, u8)> {
         Vec::new()
     }

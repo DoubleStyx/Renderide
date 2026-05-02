@@ -315,7 +315,7 @@ impl AppDriver {
             return;
         };
         let gpu = target.gpu_mut();
-        // Capture the main-thread CPU duration just before finalizing the frame's timing —
+        // Capture the main-thread CPU duration just before finalizing the frame's timing --
         // every per-frame submit has been dispatched by now, but the event loop has not yet
         // yielded, so this represents the time the main thread spent on this tick.
         gpu.record_main_thread_cpu_end(Instant::now());

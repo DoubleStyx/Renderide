@@ -67,7 +67,7 @@ fn plane_distance(p: vec3<f32>, normal: vec3<f32>, offset: f32) -> f32 {
 }
 
 fn slice_position(world_pos: vec3<f32>, object_pos: vec3<f32>) -> vec3<f32> {
-    // Unity `#pragma multi_compile WORLD_SPACE OBJECT_SPACE` — default to world space when neither
+    // Unity `#pragma multi_compile WORLD_SPACE OBJECT_SPACE` -- default to world space when neither
     // keyword is set, honor explicit OBJECT_SPACE only when WORLD_SPACE is off.
     let use_world = uvu::kw_enabled(mat._WORLD_SPACE) || (!uvu::kw_enabled(mat._OBJECT_SPACE));
     return select(object_pos, world_pos, use_world);

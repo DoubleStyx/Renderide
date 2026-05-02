@@ -2,7 +2,7 @@
 //! two-sided normals, authored for transparent draws.
 //!
 //! Functionally identical to [`pbsdualsidedspecular`](super::pbsdualsidedspecular) at the WGSL
-//! level — Unity's `alpha`/`Queue=Transparent` directives only change default render queue and
+//! level -- Unity's `alpha`/`Queue=Transparent` directives only change default render queue and
 //! blend factors, which this renderer drives from host `_SrcBlend`/`_DstBlend`/`_ZWrite` material
 //! properties. The shader is split into its own embedded stem
 //! (`pbsdualsidedtransparentspecular_default`) so host shader-asset routing maps

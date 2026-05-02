@@ -20,7 +20,7 @@ impl GpuContext {
 
     /// Same as [`Self::submit_tracked_frame_commands`] but accepts an externally-held
     /// [`wgpu::Queue`] reference. Retained for API compatibility with the pre-driver-thread
-    /// call sites — the reference is ignored because submit now always runs on the driver
+    /// call sites -- the reference is ignored because submit now always runs on the driver
     /// thread with its own cloned [`Arc<wgpu::Queue>`].
     pub fn submit_tracked_frame_commands_with_queue(
         &self,
@@ -32,7 +32,7 @@ impl GpuContext {
 
     /// Submits multiple command buffers through the driver thread in a single
     /// [`wgpu::Queue::submit`] call, tracked for frame timing. No surface is presented on
-    /// this path — for swapchain frames use [`Self::submit_frame_batch`] with a
+    /// this path -- for swapchain frames use [`Self::submit_frame_batch`] with a
     /// [`wgpu::SurfaceTexture`].
     ///
     /// All `Queue::write_buffer` calls on the main thread must have occurred before this
@@ -79,7 +79,7 @@ impl GpuContext {
 
     /// Internal helper that builds the [`crate::gpu::driver_thread::SubmitBatch`] (including the
     /// frame-timing track and an optional frame-bracket timestamp readback) and pushes it into
-    /// the driver thread's ring. Blocks when the ring is full — that block is the frame-pacing
+    /// the driver thread's ring. Blocks when the ring is full -- that block is the frame-pacing
     /// backpressure.
     fn submit_frame_batch_inner(
         &self,
@@ -107,7 +107,7 @@ impl GpuContext {
                 frame_start,
             }
         });
-        // Only bracket tracked submits with non-empty work — empty submits (driver flush
+        // Only bracket tracked submits with non-empty work -- empty submits (driver flush
         // sentinels) have no GPU time to measure, and untracked submits have no HUD slot.
         let frame_bracket_readback = if track.is_some() && !command_buffers.is_empty() {
             self.submission.frame_bracket.open_session().map(|session| {

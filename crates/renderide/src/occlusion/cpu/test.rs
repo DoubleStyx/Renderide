@@ -1,7 +1,7 @@
 //! CPU hierarchical-Z occlusion test (reverse-Z depth buffer).
 //!
 //! Hi-Z pyramids come from the **previous** frame; tests must use [`crate::world_mesh::HiZTemporalState`]
-//! view–projection from the frame that produced that depth, not the current frame.
+//! view-projection from the frame that produced that depth, not the current frame.
 //!
 //! Set `RENDERIDE_HIZ_TRACE=1` to emit [`logger::trace`] lines when a draw is classified as fully
 //! occluded (can be verbose).
@@ -32,7 +32,7 @@ fn hiz_trace_enabled() -> bool {
     *FLAG
 }
 
-/// Builds view–projection matrices for Hi-Z tests (same rules as frustum culling, using **previous**
+/// Builds view-projection matrices for Hi-Z tests (same rules as frustum culling, using **previous**
 /// frame data from [`crate::world_mesh::HiZTemporalState`]).
 pub fn hi_z_view_proj_matrices(
     prev: &WorldMeshCullProjParams,
@@ -57,7 +57,7 @@ pub fn hi_z_view_proj_matrices(
 ///
 /// Conservative: if **any** corner has `clip.w <= 0` (straddles the near plane / behind the camera),
 /// returns `false` (keep the draw). Compares the AABB **closest** depth (maximum NDC Z in reverse-Z)
-/// to the **minimum** depth in a 2×2 texel neighborhood at the footprint center (weakest occluder in
+/// to the **minimum** depth in a 2x2 texel neighborhood at the footprint center (weakest occluder in
 /// that block in reverse-Z, reducing single-texel and mip-boundary popping). Mip level is capped;
 /// an extra margin is required before culling.
 #[inline]
@@ -130,7 +130,7 @@ mod tests {
             mips: Arc::from(mips),
         };
         assert!(snap.validate().is_some());
-        // Closest point ~0.9195; uniform Hi-Z 0.92 — gap smaller than HI_Z_OCCLUSION_MARGIN + bias.
+        // Closest point ~0.9195; uniform Hi-Z 0.92 -- gap smaller than HI_Z_OCCLUSION_MARGIN + bias.
         let wmin = Vec3::new(-0.01, -0.01, 0.9195);
         let wmax = Vec3::new(0.01, 0.01, 0.91);
         assert!(
@@ -155,11 +155,11 @@ mod tests {
         assert!(mesh_fully_occluded_in_hiz(&snap, vp, wmin, wmax));
     }
 
-    /// A hole (far / low reverse-Z) in the 2×2 block lowers `hiz_min`, so we do not cull.
+    /// A hole (far / low reverse-Z) in the 2x2 block lowers `hiz_min`, so we do not cull.
     #[test]
     fn hiz_min_2x2_sees_farther_occluder_in_block() {
         let vp = Mat4::IDENTITY;
-        // mip0 4×4 row-major: center anchor (sx,sy)=(2,2) uses indices 10..=15; put a hole at 10.
+        // mip0 4x4 row-major: center anchor (sx,sy)=(2,2) uses indices 10..=15; put a hole at 10.
         let mut mips = vec![0.95f32; 21];
         mips[10] = 0.35;
         let snap = HiZCpuSnapshot {
@@ -173,13 +173,13 @@ mod tests {
         let wmax = Vec3::new(0.01, 0.01, 0.88);
         assert!(
             !mesh_fully_occluded_in_hiz(&snap, vp, wmin, wmax),
-            "2×2 min must include the farther sample so we keep the draw"
+            "2x2 min must include the farther sample so we keep the draw"
         );
     }
 
     #[test]
     fn straddling_near_plane_not_fully_occluded() {
-        // Last row [0,0,0,-1] makes clip.w = -w; corners with w>0 and w<=0 in the same AABB → keep draw.
+        // Last row [0,0,0,-1] makes clip.w = -w; corners with w>0 and w<=0 in the same AABB -> keep draw.
         let vp = Mat4::from_cols_array(&[
             1.0, 0.0, 0.0, 0.0, //
             0.0, 1.0, 0.0, 0.0, //
@@ -216,7 +216,7 @@ mod tests {
     fn fully_occluded_uses_closest_corner_not_farthest() {
         let vp = Mat4::IDENTITY;
         // Uniform Hi-Z plane slightly farther than the front of the box (reverse-Z: smaller = farther).
-        // 4×4 + 2×2 + 1×1 = 21 floats for three mips.
+        // 4x4 + 2x2 + 1x1 = 21 floats for three mips.
         let mips = vec![0.92f32; 21];
         let snap = HiZCpuSnapshot {
             base_width: 4,

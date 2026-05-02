@@ -12,10 +12,10 @@
 //!
 //! Each retained pass is a [`super::super::pass::PassNode`] enum. The executor matches on the
 //! variant to call the correct record method:
-//! - `Raster` → graph opens `wgpu::RenderPass` from template; calls `record_raster`.
-//! - `Compute` → passes receive raw encoder; calls `record_compute`.
-//! - `Copy` → same as compute; calls `record_copy`.
-//! - `Callback` → no encoder; calls `run_callback`.
+//! - `Raster` -> graph opens `wgpu::RenderPass` from template; calls `record_raster`.
+//! - `Compute` -> passes receive raw encoder; calls `record_compute`.
+//! - `Copy` -> same as compute; calls `record_copy`.
+//! - `Callback` -> no encoder; calls `run_callback`.
 
 use hashbrown::HashMap;
 
@@ -352,7 +352,7 @@ impl CompiledRenderGraph {
         // plus per-view interior mutability.
         Self::prepare_view_resources_for_views(&mut mv_ctx, views)?;
 
-        // ── Frame-global pass (optional) ─────────────────────────────────────────────────────
+        // -- Frame-global pass (optional) -----------------------------------------------------
         let frame_global_cmd = self.encode_frame_global_passes(
             &mut mv_ctx,
             views,
@@ -361,7 +361,7 @@ impl CompiledRenderGraph {
         )?;
         let per_view_work_items = self.prepare_per_view_work_items(&mut mv_ctx, views)?;
 
-        // ── Per-view recording (no submit per view) ──────────────────────────────────────────
+        // -- Per-view recording (no submit per view) ------------------------------------------
         let RecordedPerViewBatch {
             per_view_cmds,
             per_view_occlusion_info,
@@ -567,7 +567,7 @@ impl CompiledRenderGraph {
         let command_buffer_count = all_cmds.len();
 
         // Hand the swapchain texture (if any) to the driver thread so `queue.submit` and
-        // `SurfaceTexture::present` run off the main thread. The scope still drops cleanly — with
+        // `SurfaceTexture::present` run off the main thread. The scope still drops cleanly -- with
         // the texture taken, its `Drop` is a no-op.
         let surface_tex = if target_is_swapchain {
             swapchain_scope.take_surface_texture()
@@ -814,7 +814,7 @@ fn encode_swapchain_hud_overlay(
         return Ok(None);
     }
     if !mv_ctx.backend.debug_hud_has_visible_content() {
-        // No visible HUD content — drop cached input-capture flags so stale "want capture
+        // No visible HUD content -- drop cached input-capture flags so stale "want capture
         // keyboard/mouse" state from a previously visible HUD does not block input dispatch
         // to the world while the HUD is hidden.
         mv_ctx.backend.clear_debug_hud_input_capture();
@@ -831,7 +831,7 @@ fn encode_swapchain_hud_overlay(
     // Wrap the HUD encoder in a GPU profiler scope so Dear ImGui's per-frame draw work
     // appears as `graph::hud_imgui` on the Tracy GPU timeline. The encoder is its own
     // command buffer in the submit batch, so the resolve must happen inside the encoder
-    // itself — `prof.resolve_queries` after `end_query` records the resolve copy in the
+    // itself -- `prof.resolve_queries` after `end_query` records the resolve copy in the
     // same buffer that wrote the timestamps, ensuring GPU ordering across the submit.
     let hud_query = mv_ctx
         .gpu

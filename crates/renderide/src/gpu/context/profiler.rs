@@ -153,7 +153,7 @@ impl GpuContext {
     ///
     /// Call from the runtime tick epilogue, after the last [`wgpu::Queue::submit`] dispatch
     /// but before the event-loop yields. The captured duration becomes the HUD's "CPU" row
-    /// reading — see
+    /// reading -- see
     /// [`crate::gpu::frame_cpu_gpu_timing::FrameCpuGpuTiming::record_main_thread_cpu_end`].
     pub fn record_main_thread_cpu_end(&self, cpu_end: Instant) {
         profiling::scope!("gpu::record_main_thread_cpu_end");

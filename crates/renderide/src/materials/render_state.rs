@@ -1,4 +1,4 @@
-//! Material-driven raster state resolved from Unity-style properties (`_Stencil`, `_ZWrite`, `_Cull`, …).
+//! Material-driven raster state resolved from Unity-style properties (`_Stencil`, `_ZWrite`, `_Cull`, ...).
 //!
 //! Used by the mesh-forward draw prep path and reflective raster pipeline builders to key
 //! [`wgpu::RenderPipeline`] instances consistently with host material overrides.

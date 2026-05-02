@@ -18,7 +18,7 @@ use crate::shared::{RendererCommand, decode_renderer_command};
 /// Encodes `cmd` into `buf`, returning the number of bytes written.
 ///
 /// Returns `0` (and logs at [`logger::error!`] under `overflow_log_prefix`) when the encode buffer
-/// was too small for the command. Callers treat `0` as "nothing to enqueue" — sending a truncated
+/// was too small for the command. Callers treat `0` as "nothing to enqueue" -- sending a truncated
 /// frame would surface as a confusing decoder underrun on the other side.
 pub(super) fn encode_command(
     cmd: &mut RendererCommand,

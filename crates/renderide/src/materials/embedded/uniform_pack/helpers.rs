@@ -5,7 +5,7 @@ use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
 };
 
-/// True when the host material has a `set_float` for `property_id` with value ≥ 0.5 (Unity shader keyword pattern).
+/// True when the host material has a `set_float` for `property_id` with value >= 0.5 (Unity shader keyword pattern).
 pub(super) fn keyword_float_enabled_by_pid(
     store: &MaterialPropertyStore,
     lookup: MaterialPropertyLookupIds,
@@ -101,7 +101,7 @@ pub(super) fn is_keyword_like_field(field_name: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// `true` when the property has a packed texture that unpacks to any supported host kind (2D, RT, …).
+/// `true` when the property has a packed texture that unpacks to any supported host kind (2D, RT, ...).
 pub(super) fn texture_property_any_kind_present_by_pid(
     store: &MaterialPropertyStore,
     lookup: MaterialPropertyLookupIds,

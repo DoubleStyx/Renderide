@@ -68,7 +68,7 @@ pub(super) fn open_queue(options: &QueueOptions) -> Result<(UnixMapping, Semapho
 
     let map_len = storage_size_u64 as usize;
     // SAFETY: `memmap2::MmapMut` is unsafe because the file's contents may be mutated by other
-    // processes; this is intentional — the cross-process ring protocol provides all synchronisation
+    // processes; this is intentional -- the cross-process ring protocol provides all synchronisation
     // via atomics and single-writer / single-reader slot discipline. The mapping length is no
     // greater than the just-set file length.
     let mmap = unsafe {

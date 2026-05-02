@@ -79,7 +79,7 @@ pub fn apply_per_frame_cursor_lock_when_locked(
 
 /// Applies host [`OutputState`] to the winit window (IME, grab transitions, warps). Use
 /// [`apply_per_frame_cursor_lock_when_locked`] each frame while locked for continuous re-centering
-/// (a no-op on macOS; see that function’s documentation).
+/// (a no-op on macOS; see that function's documentation).
 pub fn apply_output_state_to_window(
     window: &Window,
     state: &OutputState,

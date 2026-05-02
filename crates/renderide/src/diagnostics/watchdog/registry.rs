@@ -151,7 +151,7 @@ impl Heartbeat {
     }
 
     /// Begin a region in which the watchdog should ignore this slot. Returns a guard whose
-    /// [`Drop`] re-enables reporting. Nest freely — the suspend count is reference-counted.
+    /// [`Drop`] re-enables reporting. Nest freely -- the suspend count is reference-counted.
     pub fn pause(&self) -> WatchdogPause {
         self.slot.suspend_count.fetch_add(1, Ordering::AcqRel);
         WatchdogPause {
@@ -163,7 +163,7 @@ impl Heartbeat {
 /// RAII guard suppressing watchdog hitch / hang reports on a single heartbeat slot for its
 /// lifetime. Wrap legitimate long stalls (initial pipeline compile, `xrWaitFrame`, bulk asset
 /// upload bursts) so they do not trip the deadline.
-#[must_use = "WatchdogPause re-enables reporting when dropped — bind it to a `_pause` local"]
+#[must_use = "WatchdogPause re-enables reporting when dropped -- bind it to a `_pause` local"]
 pub struct WatchdogPause {
     slot: Arc<HeartbeatSlot>,
 }
@@ -180,7 +180,7 @@ impl Drop for WatchdogPause {
 /// spinning up a real watchdog thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SlotEvaluation {
-    /// Slot is healthy or paused — emit nothing.
+    /// Slot is healthy or paused -- emit nothing.
     Quiet,
     /// Heartbeat is older than the hitch threshold but younger than the hang threshold; this
     /// is the first time we've observed this stall (dedup against [`HeartbeatSlot::hitch_reported_at_pet`]).
@@ -202,7 +202,7 @@ pub(super) enum SlotEvaluation {
 }
 
 /// Decide what (if anything) to report for `slot` at the given absolute time `now_ns` on the
-/// slot's epoch. Pure logic — no I/O — so the dedup behaviour is unit-testable.
+/// slot's epoch. Pure logic -- no I/O -- so the dedup behaviour is unit-testable.
 pub(super) fn evaluate_slot(slot: &HeartbeatSlot, now_ns: u64) -> SlotEvaluation {
     if slot.suspend_count.load(Ordering::Acquire) > 0 {
         return SlotEvaluation::Quiet;
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn evaluate_quiet_when_pet_is_fresh() {
         let slot = make_slot(Duration::from_millis(100), Duration::from_secs(10));
-        // Pet at time 0; observe at time 1ms — well under hitch threshold.
+        // Pet at time 0; observe at time 1ms -- well under hitch threshold.
         slot.last_pet_ns.store(1_000_000, Ordering::Release);
         let eval = evaluate_slot(&slot, 2_000_000);
         assert_eq!(eval, SlotEvaluation::Quiet);
@@ -306,7 +306,7 @@ mod tests {
     fn evaluate_hitch_when_elapsed_crosses_hitch_threshold() {
         let slot = make_slot(Duration::from_millis(100), Duration::from_secs(10));
         slot.last_pet_ns.store(1_000_000, Ordering::Release);
-        // Now is 1ms + 150ms = 151ms — hitch territory but well under 10s hang threshold.
+        // Now is 1ms + 150ms = 151ms -- hitch territory but well under 10s hang threshold.
         let now = 1_000_000 + 150 * 1_000_000;
         let eval = evaluate_slot(&slot, now);
         match eval {

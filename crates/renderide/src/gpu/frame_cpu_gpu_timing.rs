@@ -5,39 +5,39 @@
 //! mainstream profiler overlay (Bevy `FrameTimeDiagnosticsPlugin`, Filament `FrameInfo`,
 //! MangoHud-style HUDs):
 //!
-//! - **CPU frame ms** — wall-clock between [`Self::begin_frame`] and the matching
+//! - **CPU frame ms** -- wall-clock between [`Self::begin_frame`] and the matching
 //!   [`Self::record_main_thread_cpu_end`] call from the runtime tick epilogue, both on the
 //!   *main thread*. This is the time the renderer's main thread spends building the frame
 //!   (asset integration, scene snapshot, draw collection, encoder recording, submit dispatch).
 //!   It excludes FPS-gating sleeps, lockstep waits, and event-loop idles, and it does **not**
 //!   cross the driver-thread queue boundary.
-//! - **GPU frame ms** — when the adapter advertises [`wgpu::Features::TIMESTAMP_QUERY`] +
+//! - **GPU frame ms** -- when the adapter advertises [`wgpu::Features::TIMESTAMP_QUERY`] +
 //!   [`wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`], wall-clock from a `WriteTimestamp(0)`
 //!   command issued before the tick's first command buffer to a `WriteTimestamp(1)` command
 //!   issued after the tick's last command buffer, computed from the GPU's own clock via
 //!   [`wgpu::Queue::get_timestamp_period`]. When those features are unavailable, falls back to
 //!   the wall-clock between `Queue::submit` returning on the driver thread and
-//!   [`wgpu::Queue::on_submitted_work_done`] firing — [`GpuMsSource`] records which path
+//!   [`wgpu::Queue::on_submitted_work_done`] firing -- [`GpuMsSource`] records which path
 //!   produced the value so the HUD can relabel the row honestly.
-//! - **Roundtrip ms** — wall-clock between consecutive winit ticks. Tracked outside this
+//! - **Roundtrip ms** -- wall-clock between consecutive winit ticks. Tracked outside this
 //!   struct ([`crate::diagnostics::FrameTimingHudSnapshot::wall_frame_time_ms`]).
 //!
 //! GPU values are populated **on the driver thread or on a `map_async` callback**, so they may
 //! arrive after the originating winit tick has already ended its [`Self::end_frame`]. The HUD
 //! reads [`Self::last_completed_paired_frame_ms`], which is updated only when a CPU value and a
-//! GPU value have *both* arrived for the same `(generation, seq)` — that way the two numbers
+//! GPU value have *both* arrived for the same `(generation, seq)` -- that way the two numbers
 //! shown to the user always belong to the same frame, so the relationship
-//! `Frame ≥ max(CPU, GPU)` (in steady state) is observable on the overlay.
+//! `Frame >= max(CPU, GPU)` (in steady state) is observable on the overlay.
 //!
 //! `submit_latency_ms` is retained as a Filament-style "backend cost" measurement (frame_start
-//! → `Queue::submit` returning on the driver thread) but is not displayed in the default HUD;
+//! -> `Queue::submit` returning on the driver thread) but is not displayed in the default HUD;
 //! reach for it when investigating driver-thread back-pressure.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-/// Maximum number of pending submit→completion pairs retained while waiting for a matching
+/// Maximum number of pending submit->completion pairs retained while waiting for a matching
 /// `record_gpu_done`. The driver ring is bounded to a couple of frames; this generous cap
 /// covers transient spikes where multiple frames' submits land before any of them complete.
 const MAX_PENDING_PAIRS: usize = 16;
@@ -79,7 +79,7 @@ pub struct FrameCpuGpuTiming {
     /// arrived. Kept ordered by insertion so the oldest entry is evicted first when
     /// [`MAX_PENDING_PAIRS`] is exceeded.
     pending_paired_cpu_ms: VecDeque<((u64, u32), f64)>,
-    /// CPU ms (frame_start → main-thread tick end) for the current tick once
+    /// CPU ms (frame_start -> main-thread tick end) for the current tick once
     /// [`Self::record_main_thread_cpu_end`] fires.
     pub(crate) cpu_frame_ms: Option<f64>,
     /// Driver-thread submit-return latency for the current tick when the driver thread reported
@@ -131,14 +131,14 @@ impl FrameCpuGpuTiming {
         self.submit_latency_ms = None;
         self.gpu_frame_ms = None;
         // Intentionally keep `last_completed_*_frame_ms` / `last_gpu_source` for HUD display
-        // without blocking — the previous tick's values stand in until the next pairing lands.
+        // without blocking -- the previous tick's values stand in until the next pairing lands.
     }
 
     /// Publishes the main-thread CPU frame duration synchronously from the runtime tick
     /// epilogue, after the last `Queue::submit` dispatch but before the event-loop yield.
     ///
     /// This is the value the HUD's "CPU" row reflects. It excludes driver-thread queue
-    /// overhead, FPS-gating sleeps, and lockstep waits — those are visible separately as
+    /// overhead, FPS-gating sleeps, and lockstep waits -- those are visible separately as
     /// [`Self::submit_latency_ms`] (driver-side) or in the wall-clock "Frame" row.
     pub fn record_main_thread_cpu_end(&mut self, cpu_end: Instant) {
         let Some(frame_start) = self.frame_start else {
@@ -182,7 +182,7 @@ impl FrameCpuGpuTiming {
     /// Records that the driver thread has finished `Queue::submit` for `seq`.
     ///
     /// Folds the value into the per-tick `submit_latency_ms` diagnostic when the tick is still
-    /// current. Does **not** influence the HUD's CPU column — that comes from
+    /// current. Does **not** influence the HUD's CPU column -- that comes from
     /// [`Self::record_main_thread_cpu_end`].
     fn record_real_submit(
         &mut self,
@@ -284,7 +284,7 @@ pub fn record_real_submit(track: &FrameTimingTrack) -> Instant {
 /// Use this only when [`crate::gpu::frame_bracket::FrameBracket`] cannot produce a session for
 /// the active adapter. `real_submit_at` must be captured on the driver thread after
 /// `Queue::submit` returns, so the resulting `gpu_ms` measures
-/// `submit_returned → on_submitted_work_done` rather than including driver-ring wait time.
+/// `submit_returned -> on_submitted_work_done` rather than including driver-ring wait time.
 pub fn make_gpu_done_callback(
     handle: FrameCpuGpuTimingHandle,
     generation: u64,

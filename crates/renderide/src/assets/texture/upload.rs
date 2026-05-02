@@ -5,7 +5,7 @@
 //! uploaded as a sub-rect only (uncompressed RGBA8-family GPU storage, single mip, no `flip_y`).
 //! Other cases fall back to the full mip chain path.
 //!
-//! The [`wgpu::TextureFormat`] must match the texture’s creation format (see [`format_resolve::resolve_texture2d_wgpu_format`]).
+//! The [`wgpu::TextureFormat`] must match the texture's creation format (see [`format_resolve::resolve_texture2d_wgpu_format`]).
 
 mod cubemap_write;
 mod error;

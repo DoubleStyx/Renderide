@@ -1,4 +1,4 @@
-//! Tangent-space → world-space normal-mapping primitives shared across all PBS materials.
+//! Tangent-space -> world-space normal-mapping primitives shared across all PBS materials.
 //!
 //! Each PBS material file owns its own `sample_normal_world` wrapper because per-material details
 //! (single-UV vs multi-UV vs triplanar, dual-sided front_facing flip, detail-mask blending, etc.)
@@ -32,7 +32,7 @@ fn orthonormal_tbn(world_n: vec3<f32>, world_t: vec4<f32>) -> mat3x3<f32> {
 /// Branchless orthonormal basis from a unit world normal.
 ///
 /// Construction follows *Building an Orthonormal Basis, Revisited* (Duff et al., JCGT 2017) so
-/// there is no discontinuity near `n.z = ±1` (unlike a fixed world-up cross). Returns the matrix
+/// there is no discontinuity near `n.z = +/-1` (unlike a fixed world-up cross). Returns the matrix
 /// `[T B N]` with columns the tangent, bitangent, and the input normal.
 fn orthonormal_tbn_fallback(n: vec3<f32>) -> mat3x3<f32> {
     let sign = select(-1.0, 1.0, n.z >= 0.0);

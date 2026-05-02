@@ -1,4 +1,4 @@
-//! **Draw state** tab — sorted mesh draws with material pipeline state.
+//! **Draw state** tab -- sorted mesh draws with material pipeline state.
 
 use imgui::ListClipper;
 

@@ -35,7 +35,7 @@ fn max_cached_pipelines() -> NonZeroUsize {
     NonZeroUsize::new(MAX_CACHED_PIPELINES).unwrap_or(NonZeroUsize::MIN)
 }
 
-/// Key for [`MaterialPipelineCache`] lookups (no WGSL parse — see module docs).
+/// Key for [`MaterialPipelineCache`] lookups (no WGSL parse -- see module docs).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MaterialPipelineCacheKey {
     /// Which WGSL program backs the pipeline (embedded stem or null fallback).

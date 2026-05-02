@@ -44,7 +44,7 @@ fn sort_secondary_view_tasks(tasks: &mut [(RenderSpaceId, f32, usize)]) {
 impl RendererRuntime {
     /// Collects every active view for this tick into a single ordered list.
     ///
-    /// Ordering — preserved so the mesh-deform skip flag on
+    /// Ordering -- preserved so the mesh-deform skip flag on
     /// [`crate::backend::FrameResourceManager`] still runs deform exactly once per tick:
     /// 1. HMD stereo multiview (when `mode = VrWithHmd`).
     /// 2. Secondary render-texture cameras, sorted by camera depth.
@@ -172,7 +172,7 @@ impl RendererRuntime {
             let filter = draw_filter_from_camera_entry(entry);
             // Selective secondary cameras (dashboards, in-world UI panels, mirrors on specific
             // subtrees) render tens of draws, not thousands. Hi-Z snapshots + occlusion temporal
-            // cost a per-camera readback path with negligible payoff at that scale — skip them.
+            // cost a per-camera readback path with negligible payoff at that scale -- skip them.
             if !entry.selective_transform_ids.is_empty() {
                 hc.suppress_occlusion_temporal = true;
             }
@@ -201,7 +201,7 @@ impl RendererRuntime {
     /// [`crate::world_mesh::build_world_mesh_cull_proj_params`] on the pre-dispatch CPU cull
     /// path. A stale or zero extent produces a degenerate frustum and random scene-object
     /// culling. The render graph resolves its own rendering extent from
-    /// [`crate::render_graph::FrameViewTarget::Swapchain::extent_px`] at record time — that is a
+    /// [`crate::render_graph::FrameViewTarget::Swapchain::extent_px`] at record time -- that is a
     /// separate concern from cull math, which has already run by then.
     pub(super) fn build_main_swapchain_view<'a>(
         &self,
@@ -263,7 +263,7 @@ mod tests {
         let views = runtime.collect_prepared_views(FrameRenderMode::VrSecondariesOnly, TEST_EXTENT);
         assert!(
             views.is_empty(),
-            "no HMD, no secondaries, and main swapchain excluded — nothing to render"
+            "no HMD, no secondaries, and main swapchain excluded -- nothing to render"
         );
     }
 

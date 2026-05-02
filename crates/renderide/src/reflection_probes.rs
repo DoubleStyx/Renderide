@@ -489,11 +489,11 @@ pub const SH_C1: f32 = 0.488_602_52;
 #[cfg(test)]
 pub const SH_C2: f32 = 1.092_548_5;
 
-/// Second-order `3z²-1` SH basis constant.
+/// Second-order `3z^2-1` SH basis constant.
 #[cfg(test)]
 pub const SH_C3: f32 = 0.315_391_57;
 
-/// Second-order `x²-y²` SH basis constant.
+/// Second-order `x^2-y^2` SH basis constant.
 #[cfg(test)]
 pub const SH_C4: f32 = 0.546_274_24;
 
@@ -864,7 +864,7 @@ mod tests {
     /// Per-fragment object-space view direction parity with Unity's `ObjSpaceViewDir(i.pos)`.
     ///
     /// The mesh `Projection360` shader passes the object-space view direction through the
-    /// vertex stage *un-normalized* — perspective-correct interpolation of a function that
+    /// vertex stage *un-normalized* -- perspective-correct interpolation of a function that
     /// is linear in the vertex world position yields the per-fragment direction after
     /// `normalize`. Normalizing per vertex would distort the interpolated direction (the
     /// angular error scales with the triangle's angular extent and breaks narrow-FOV

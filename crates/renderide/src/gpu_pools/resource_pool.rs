@@ -13,7 +13,7 @@
 //! * [`UntrackedAccess`] implements the trait for pools whose host drives evictions explicitly
 //!   (render-target + video). The notify hook is a no-op.
 //!
-//! Two facade macros — `impl_streaming_pool_facade!` and `impl_resident_pool_facade!` — emit
+//! Two facade macros -- `impl_streaming_pool_facade!` and `impl_resident_pool_facade!` -- emit
 //! the same canonical method vocabulary (`insert` / `remove` / `get` / `get_mut` / `iter` /
 //! `len` / `is_empty` / `accounting` / `accounting_mut`) on each concrete pool newtype. The
 //! streaming variant additionally emits `streaming_mut()`.
@@ -36,7 +36,7 @@ pub(crate) trait PoolResourceAccess {
 }
 
 /// Streaming-aware access for a single resource kind. Used by mesh and the three host texture
-/// pools — every pool whose host drives priority hints rather than explicit deletes.
+/// pools -- every pool whose host drives priority hints rather than explicit deletes.
 pub(crate) struct StreamingAccess {
     /// Accounting bucket: [`VramResourceKind::Mesh`] or [`VramResourceKind::Texture`].
     kind: VramResourceKind,
@@ -90,7 +90,7 @@ impl PoolResourceAccess for StreamingAccess {
     }
 }
 
-/// Access policy without streaming hooks — render-target and video pools, whose host drives
+/// Access policy without streaming hooks -- render-target and video pools, whose host drives
 /// evictions through explicit delete commands rather than through priority hints.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UntrackedAccess {

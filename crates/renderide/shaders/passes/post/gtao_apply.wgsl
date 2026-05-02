@@ -1,8 +1,8 @@
 //! Fullscreen pass: GTAO depth-aware denoise (final iteration) + HDR modulation.
 //!
 //! Reads the post-processing chain's HDR scene-color input plus the AO term and packed edges
-//! (from `gtao_main` directly when `denoise_passes ∈ {0, 1}`, or from the intermediate
-//! denoise ping-pong target when `denoise_passes == 2`). Runs XeGTAO's edge-preserving 3×3
+//! (from `gtao_main` directly when `denoise_passes in {0, 1}`, or from the intermediate
+//! denoise ping-pong target when `denoise_passes == 2`). Runs XeGTAO's edge-preserving 3x3
 //! bilateral kernel at the full `denoise_blur_beta` (`XeGTAO_Denoise` with
 //! `finalApply = true`), multiplies the resulting AO factor by `OCCLUSION_TERM_SCALE` to
 //! recover the true visibility (the production pass stored `visibility / 1.5` for kernel

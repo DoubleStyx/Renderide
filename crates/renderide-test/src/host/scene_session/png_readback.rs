@@ -220,7 +220,7 @@ mod tests {
 
     use super::{PngObservation, PngStabilityState, PngStabilityVerdict, PngStabilityWaitTiming};
 
-    /// Builds a timing where `interval=1s` → `min_wall_after_submit=2s`
+    /// Builds a timing where `interval=1s` -> `min_wall_after_submit=2s`
     /// (since `interval*2 = 2s > MIN_WALL_AFTER_SUBMIT_FLOOR = 1.5s`).
     fn make_timing(
         scene_submitted_at: SystemTime,

@@ -24,7 +24,7 @@ pub(super) mod asset_ids {
 
 /// Procedural sphere tessellation that stands in for "a real scene".
 ///
-/// Values must match the golden image's vertex layout — changing them invalidates the committed
+/// Values must match the golden image's vertex layout -- changing them invalidates the committed
 /// `goldens/sphere.png`.
 pub(super) mod sphere_tessellation {
     /// Number of latitude bands; `16` produces enough silhouette smoothness for SSIM stability.

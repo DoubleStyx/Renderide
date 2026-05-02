@@ -1,4 +1,4 @@
-//! CPU-side texture upload staging / mip layout errors (host bytes → GPU).
+//! CPU-side texture upload staging / mip layout errors (host bytes -> GPU).
 
 use thiserror::Error;
 

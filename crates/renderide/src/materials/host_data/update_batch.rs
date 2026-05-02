@@ -35,7 +35,7 @@ pub struct ParseMaterialBatchOptions {
     pub record_wire_metrics: bool,
     /// Interned `_RenderType` property id. When `Some`, [`MaterialPropertyUpdateType::SetRenderType`]
     /// opcodes write the [`crate::shared::MaterialRenderType`] discriminant (`0` Opaque,
-    /// `1` TransparentCutout, `2` Transparent — matches the host's `MaterialRenderType` enum)
+    /// `1` TransparentCutout, `2` Transparent -- matches the host's `MaterialRenderType` enum)
     /// as a synthetic [`super::MaterialPropertyValue::Float`] at this id. The keyword inference path
     /// in [`crate::materials::embedded::uniform_pack`] reads it to populate `_ALPHATEST_ON` /
     /// `_ALPHACLIP` / `_ALPHABLEND_ON` / `_ALPHAPREMULTIPLY_ON` per Unity blend mode semantics.
@@ -44,9 +44,9 @@ pub struct ParseMaterialBatchOptions {
     pub render_type_property_id: Option<i32>,
     /// Interned `_RenderQueue` property id. When `Some`,
     /// [`MaterialPropertyUpdateType::SetRenderQueue`] opcodes write the queue value (Unity
-    /// convention: `[1000, 2450)` opaque, `[2450, 3000)` alpha-test, `[3000, ∞)` transparent)
+    /// convention: `[1000, 2450)` opaque, `[2450, 3000)` alpha-test, `[3000, inf)` transparent)
     /// as a synthetic [`super::MaterialPropertyValue::Float`] at this id. PBS material providers
-    /// (`PBS_DualSidedMaterial.cs`, `PBS_DisplaceMaterial.cs`, …) bypass `MaterialProvider.SetBlendMode`
+    /// (`PBS_DualSidedMaterial.cs`, `PBS_DisplaceMaterial.cs`, ...) bypass `MaterialProvider.SetBlendMode`
     /// entirely and route their `AlphaHandling` enum through this opcode plus the
     /// `_ALPHACLIP` shader keyword. The keyword bitmask is not on the wire, so the queue
     /// range is the only signal the renderer can use to infer alpha-test for those
@@ -92,13 +92,13 @@ pub fn parse_materials_update_batch_into_store(
 /// `instance_changed_out` is indexed by `SelectTarget` order: bit `i` corresponds to the `i`-th
 /// `SelectTarget` opcode encountered (materials first, then property blocks, matching Unity
 /// `MaterialAssetManager.ApplyUpdate`). When the slice is shorter than the number of
-/// `SelectTarget` ops in the batch, extra targets are silently dropped — the parser still
+/// `SelectTarget` ops in the batch, extra targets are silently dropped -- the parser still
 /// processes the payload so cursors stay aligned.
 ///
 /// Per-target initial value:
-/// - **Material**: `false` — Unity does not call `EnsureInstance` on materials, only OR's per-op
+/// - **Material**: `false` -- Unity does not call `EnsureInstance` on materials, only OR's per-op
 ///   results.
-/// - **Property block**: `true` — mirrors the effect of Unity's
+/// - **Property block**: `true` -- mirrors the effect of Unity's
 ///   `MaterialPropertyBlockAsset.EnsureInstance()` plus the comment in
 ///   `MaterialAssetManager.HandlePropertyBlockUpdate` that says property-block updates always
 ///   trigger instance-changed. Without this, the host's `MaterialAssetUpdated(false)` path skips

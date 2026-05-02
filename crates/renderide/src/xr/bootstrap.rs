@@ -34,7 +34,7 @@ static CACHED_VK_GET_INSTANCE_PROC_ADDR: OnceLock<vk::PFN_vkGetInstanceProcAddr>
 /// `vk::Instance` is a `#[repr(transparent)]` pointer-sized handle so the calling convention is
 /// identical at the ABI level, but transmuting between fn-pointer types is not language-blessed.
 /// This shim instead receives the OpenXR-typed call and forwards through the cached, properly
-/// typed ash entry — no fn-pointer transmute is required.
+/// typed ash entry -- no fn-pointer transmute is required.
 unsafe extern "system" fn vk_get_instance_proc_addr_shim(
     instance: *const c_void,
     name: *const std::os::raw::c_char,
@@ -331,7 +331,7 @@ fn build_wgpu_hal_and_queue_family(
         )));
     }
 
-    // SAFETY: as above — valid instance/device pair.
+    // SAFETY: as above -- valid instance/device pair.
     let queue_family_index =
         unsafe { vk_instance.get_physical_device_queue_family_properties(vk_physical_device) }
             .into_iter()
@@ -446,7 +446,7 @@ fn create_vulkan_logical_device_openxr(
         .enabled_extension_names(&str_pointers);
     let device_create_info = enabled_phd_features.add_to_device_create(pre_info);
 
-    // SAFETY: see `create_openxr_vulkan_instance` — the same ABI-compatible pointer transmute.
+    // SAFETY: see `create_openxr_vulkan_instance` -- the same ABI-compatible pointer transmute.
     // `vk_physical_device` was obtained from the matching `xr_instance`/`xr_system_id` pair;
     // `device_create_info` references data that outlives the call. `ash::Device::load` ties the
     // new `VkDevice` to `desc.vk_instance`'s function table.

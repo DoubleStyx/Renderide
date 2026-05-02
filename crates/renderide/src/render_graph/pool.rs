@@ -1,7 +1,7 @@
 //! Transient resource pool: keying, hit/miss accounting, free-list reuse, and GC.
 //!
 //! [`TransientPool`] is the public face used by the executor. Internally it composes two
-//! instances of the generic [`Pool`] — one keyed by [`TextureKey`] (storing
+//! instances of the generic [`Pool`] -- one keyed by [`TextureKey`] (storing
 //! [`policy::TextureSlotValue`]) and one keyed by [`BufferKey`] (storing
 //! [`policy::BufferSlotValue`]). The shared LRU + free-list bookkeeping lives on [`Pool`]; the
 //! GPU-resource construction, validation against device limits, and lease wrapping live on

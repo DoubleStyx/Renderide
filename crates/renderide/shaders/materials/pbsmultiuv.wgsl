@@ -1,7 +1,7 @@
 //! Unity surface shader `Shader "PBSMultiUV"`: metallic Standard lighting where each texture
 //! independently selects which mesh UV channel to sample and carries its own `_ST` tile/offset.
 //!
-//! All four Unity UV channels (`texcoord` … `texcoord3`) are wired through. Per-texture `_*UV`
+//! All four Unity UV channels (`texcoord` ... `texcoord3`) are wired through. Per-texture `_*UV`
 //! values `< 1.0` resolve to UV0, `< 2.0` to UV1, `< 3.0` to UV2, and `>= 3.0` to UV3.
 //!
 //! Mirrors the keyword surface (`_DUAL_ALBEDO`, `_EMISSIONTEX`, `_DUAL_EMISSIONTEX`, `_NORMALMAP`,
@@ -27,7 +27,7 @@ struct PbsMultiUVMaterial {
     _SecondaryEmissionColor: vec4<f32>,
     /// Albedo tile/offset.
     _MainTex_ST: vec4<f32>,
-    /// Storage-V-inverted flag for `_MainTex` (non-zero ⇒ skip the final V-flip).
+    /// Storage-V-inverted flag for `_MainTex` (non-zero => skip the final V-flip).
     /// Secondary albedo tile/offset (used when `_DUAL_ALBEDO` is enabled).
     _SecondaryAlbedo_ST: vec4<f32>,
     /// Storage-V-inverted flag for `_SecondaryAlbedo`.
@@ -56,7 +56,7 @@ struct PbsMultiUVMaterial {
     _Metallic: f32,
     /// Alpha-clip threshold; applied only when `_ALPHACLIP` is enabled.
     _AlphaClip: f32,
-    /// UV-channel selector for `_MainTex` (Unity index 0..3 ⇒ UV0..UV3).
+    /// UV-channel selector for `_MainTex` (Unity index 0..3 => UV0..UV3).
     _AlbedoUV: f32,
     /// UV-channel selector for `_SecondaryAlbedo`.
     _SecondaryAlbedoUV: f32,
@@ -102,7 +102,7 @@ struct PbsMultiUVMaterial {
 @group(1) @binding(13) var _OcclusionMap: texture_2d<f32>;
 @group(1) @binding(14) var _OcclusionMap_sampler: sampler;
 
-/// Resolved per-fragment shading inputs for the metallic Cook–Torrance path.
+/// Resolved per-fragment shading inputs for the metallic Cook-Torrance path.
 struct SurfaceData {
     base_color: vec3<f32>,
     alpha: f32,
@@ -113,8 +113,8 @@ struct SurfaceData {
     emission: vec3<f32>,
 }
 
-/// Pick UV0..UV3 by a `_*UV` index uniform: `< 1.0` → UV0, `< 2.0` → UV1, `< 3.0` → UV2,
-/// `>= 3.0` → UV3.
+/// Pick UV0..UV3 by a `_*UV` index uniform: `< 1.0` -> UV0, `< 2.0` -> UV1, `< 3.0` -> UV2,
+/// `>= 3.0` -> UV3.
 fn pick_uv(uv0: vec2<f32>, uv1: vec2<f32>, uv2: vec2<f32>, uv3: vec2<f32>, idx: f32) -> vec2<f32> {
     let lo = select(uv0, uv1, idx >= 1.0);
     let hi = select(uv2, uv3, idx >= 3.0);

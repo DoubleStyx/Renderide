@@ -24,7 +24,7 @@ use crate::xr::output_device::head_output_device_is_vr;
 /// On the FrooxEngine side, **TrackedObject.Position** may differ from **RawPosition** when a
 /// **TrackingSpace** applies position/rotation offsets; compare IPC trace logs to **RawPosition**
 /// when debugging avatar alignment.
-/// `openxr_controllers` is filled from the same XR tick’s `sync_actions` before `pre_frame` runs.
+/// `openxr_controllers` is filled from the same XR tick's `sync_actions` before `pre_frame` runs.
 /// `hands` carries per-finger [`HandState`] snapshots (synthesised from controller input by
 /// [`crate::xr::input::synthesize_hand_states`]) so the host avoids the idle-reset fallback in
 /// `HandPoser` and drives avatar fingers from tracked data.

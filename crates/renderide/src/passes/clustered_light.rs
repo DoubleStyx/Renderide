@@ -1,6 +1,6 @@
 //! Clustered forward lighting: compute pass assigns light indices per view-space cluster.
 //!
-//! Dispatches over a 3D grid (`16×16` pixel tiles × exponential Z slices). Uses the same
+//! Dispatches over a 3D grid (`16x16` pixel tiles x exponential Z slices). Uses the same
 //! [`crate::backend::GpuLight`] buffer and cluster storage as raster `@group(0)`
 //! ([`crate::backend::FrameGpuResources`]).
 //!
@@ -56,7 +56,7 @@ pub struct ClusteredLightPass {
     resources: ClusteredLightGraphResources,
     /// Assignment backend selected when this graph was compiled.
     assignment_mode: ClusterAssignmentMode,
-    /// Logged once on first successful dispatch; uses an atomic to allow `record(&self, …)`.
+    /// Logged once on first successful dispatch; uses an atomic to allow `record(&self, ...)`.
     logged_active_once: AtomicBool,
     /// Logged once when CPU froxel mode is requested for a view that cannot safely use it.
     logged_cpu_fallback_once: AtomicBool,

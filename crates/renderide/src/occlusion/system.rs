@@ -159,7 +159,7 @@ impl OcclusionSystem {
     /// submit-done; the actual `map_async` runs here via
     /// [`crate::occlusion::gpu::HiZGpuState::start_ready_maps`], so no
     /// wgpu call is issued from inside the device-poll callback (which would risk deadlocks
-    /// with wgpu's internal queue-write locks — observed as a futex hang inside
+    /// with wgpu's internal queue-write locks -- observed as a futex hang inside
     /// `queue.write_texture` during asset upload).
     pub fn hi_z_begin_frame_readback(&mut self, device: &wgpu::Device) {
         profiling::scope!("hi_z::readback_drain");

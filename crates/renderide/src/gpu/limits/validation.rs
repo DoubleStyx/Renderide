@@ -3,7 +3,7 @@
 //! Pure policy: given a [`wgpu::Device`] and [`wgpu::Adapter`], either build a
 //! [`GpuLimits`] snapshot or reject the device with a [`GpuLimitsError::Requirement`].
 //! Callers go through [`GpuLimits::try_new`] in `super`, which forwards into [`try_new`]
-//! here — keeping the public entry point byte-identical with prior call sites in
+//! here -- keeping the public entry point byte-identical with prior call sites in
 //! [`crate::gpu::context::GpuContext`].
 
 use std::sync::Arc;
@@ -29,7 +29,7 @@ pub(super) fn try_new(
 
     validate_wgpu_minimums(&wgpu_limits)?;
 
-    // Non–WebGPU-compliant stacks (e.g. some GLES/WebGL paths) may not implement `first_instance`
+    // Non-WebGPU-compliant stacks (e.g. some GLES/WebGL paths) may not implement `first_instance`
     // for `draw_indexed` batching the same way; disable merged instance batches there.
     // wgpu 29 removed the dedicated BASE_INSTANCE DownlevelFlag; is_webgpu_compliant() is the
     // correct proxy.
@@ -47,7 +47,7 @@ pub(super) fn try_new(
 
     if max_per_draw_slab_slots < INITIAL_PER_DRAW_UNIFORM_SLOTS {
         return Err(GpuLimitsError::Requirement(
-            "max_storage_buffer_binding_size too small for initial per-draw slab (256×256 B rows)",
+            "max_storage_buffer_binding_size too small for initial per-draw slab (256x256 B rows)",
         ));
     }
 
@@ -78,7 +78,7 @@ pub(super) fn try_new(
 fn validate_wgpu_minimums(l: &wgpu::Limits) -> Result<(), GpuLimitsError> {
     if l.max_bind_groups < 4 {
         return Err(GpuLimitsError::Requirement(
-            "max_bind_groups must be at least 4 (frame / material / per-draw / …)",
+            "max_bind_groups must be at least 4 (frame / material / per-draw / ...)",
         ));
     }
     if l.max_texture_dimension_2d < 1024 {

@@ -6,7 +6,7 @@ labeled_enum! {
     /// MSAA sample count for the main desktop swapchain forward path
     /// ([`super::RenderingSettings::msaa`]).
     ///
-    /// Tiers stop at **8×**; higher modes are not exposed (and are rarely supported for common
+    /// Tiers stop at **8x**; higher modes are not exposed (and are rarely supported for common
     /// surface formats on desktop GPUs). Older `msaa = "x16"` configs continue to load as
     /// [`Self::X8`] via the alias list.
     pub enum MsaaSampleCount: "MSAA sample count" {
@@ -15,25 +15,25 @@ labeled_enum! {
         /// No multisampling (`sample_count` 1).
         Off => {
             persist: "off",
-            label: "1× (off)",
+            label: "1x (off)",
             aliases: ["1", "1x", "none"],
         },
-        /// 2× MSAA.
+        /// 2x MSAA.
         X2 => {
             persist: "x2",
-            label: "2×",
+            label: "2x",
             aliases: ["2", "2x"],
         },
-        /// 4× MSAA.
+        /// 4x MSAA.
         X4 => {
             persist: "x4",
-            label: "4×",
+            label: "4x",
             aliases: ["4", "4x"],
         },
-        /// 8× MSAA (largest tier in settings; the GPU may still cap lower).
+        /// 8x MSAA (largest tier in settings; the GPU may still cap lower).
         X8 => {
             persist: "x8",
-            label: "8×",
+            label: "8x",
             aliases: ["8", "8x", "x16", "16", "16x"],
         },
     }
@@ -50,7 +50,7 @@ impl MsaaSampleCount {
         }
     }
 
-    /// Stable string for TOML / UI (`off`, `x2`, …). Historical alias for [`Self::persist_str`].
+    /// Stable string for TOML / UI (`off`, `x2`, ...). Historical alias for [`Self::persist_str`].
     pub fn as_persist_str(self) -> &'static str {
         self.persist_str()
     }

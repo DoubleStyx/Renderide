@@ -2,7 +2,7 @@
 //! independently selects its mesh UV channel and tile/offset.
 //!
 //! Mirrors [`pbsmultiuv`](super::pbsmultiuv) for the SpecularSetup workflow. All four Unity UV
-//! channels (`texcoord` … `texcoord3`) are wired through. Per-texture `_*UV` values `< 1.0`
+//! channels (`texcoord` ... `texcoord3`) are wired through. Per-texture `_*UV` values `< 1.0`
 //! resolve to UV0, `< 2.0` to UV1, `< 3.0` to UV2, and `>= 3.0` to UV3.
 
 
@@ -26,7 +26,7 @@ struct PbsMultiUVSpecularMaterial {
     _SpecularColor: vec4<f32>,
     /// Albedo tile/offset.
     _MainTex_ST: vec4<f32>,
-    /// Storage-V-inverted flag for `_MainTex` (non-zero ⇒ skip the final V-flip).
+    /// Storage-V-inverted flag for `_MainTex` (non-zero => skip the final V-flip).
     /// Secondary albedo tile/offset.
     _SecondaryAlbedo_ST: vec4<f32>,
     /// Storage-V-inverted flag for `_SecondaryAlbedo`.
@@ -49,7 +49,7 @@ struct PbsMultiUVSpecularMaterial {
     _NormalScale: f32,
     /// Alpha-clip threshold; applied only when `_ALPHACLIP` is enabled.
     _AlphaClip: f32,
-    /// UV-channel selector for `_MainTex` (Unity index 0..3 ⇒ UV0..UV3).
+    /// UV-channel selector for `_MainTex` (Unity index 0..3 => UV0..UV3).
     _AlbedoUV: f32,
     /// UV-channel selector for `_SecondaryAlbedo`.
     _SecondaryAlbedoUV: f32,
@@ -107,8 +107,8 @@ struct SurfaceData {
     emission: vec3<f32>,
 }
 
-/// Pick UV0..UV3 by a `_*UV` index uniform: `< 1.0` → UV0, `< 2.0` → UV1, `< 3.0` → UV2,
-/// `>= 3.0` → UV3.
+/// Pick UV0..UV3 by a `_*UV` index uniform: `< 1.0` -> UV0, `< 2.0` -> UV1, `< 3.0` -> UV2,
+/// `>= 3.0` -> UV3.
 fn pick_uv(uv0: vec2<f32>, uv1: vec2<f32>, uv2: vec2<f32>, uv3: vec2<f32>, idx: f32) -> vec2<f32> {
     let lo = select(uv0, uv1, idx >= 1.0);
     let hi = select(uv2, uv3, idx >= 3.0);

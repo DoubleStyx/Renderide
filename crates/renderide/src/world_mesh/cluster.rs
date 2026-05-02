@@ -71,7 +71,7 @@ pub struct FrameGpuUniformBuildParams {
 }
 
 impl ClusterFrameParams {
-    /// Coefficients for `dot(coeffs.xyz, world) + coeffs.w` → view-space Z (third row of world-to-view).
+    /// Coefficients for `dot(coeffs.xyz, world) + coeffs.w` -> view-space Z (third row of world-to-view).
     pub fn view_space_z_coeffs(&self) -> [f32; 4] {
         FrameGpuUniforms::view_space_z_coeffs_from_world_to_view(self.world_to_view)
     }
@@ -86,15 +86,15 @@ impl ClusterFrameParams {
         sanitize_cluster_clip_planes(self.near_clip, self.far_clip)
     }
 
-    /// Maximum row length of the world-to-view linear part — the factor that converts a
+    /// Maximum row length of the world-to-view linear part -- the factor that converts a
     /// **world-space radius** to a **view-space radius** for this view.
     ///
     /// When the active render space has a non-unit scale `s` (e.g. a tiny avatar with `s = 0.01`)
     /// the world-to-view matrix carries `1/s` on its linear part, so any world position
     /// transformed by it is scaled by `1/s` in view space. Light positions are uploaded in world
     /// units, so the cluster compute's `light.range` must be multiplied by this factor before
-    /// being compared against the view-space cluster AABB — otherwise the culling sphere appears
-    /// `s ×` too small in view space and lights are bound to far fewer clusters than they cover,
+    /// being compared against the view-space cluster AABB -- otherwise the culling sphere appears
+    /// `s x` too small in view space and lights are bound to far fewer clusters than they cover,
     /// producing tile-shaped dark seams in the lit image. Mirrors Bevy's
     /// `view_from_world_scale.abs().max_element()` (`bevy_light/src/cluster/assign.rs`).
     ///
@@ -194,7 +194,7 @@ pub fn cluster_frame_params(
     })
 }
 
-/// Returns per-eye cluster params when stereo view matrices and view–projections are available.
+/// Returns per-eye cluster params when stereo view matrices and view-projections are available.
 ///
 /// Each eye gets its own `world_to_view` (from [`StereoViewMatrices::view_only`]) and projection
 /// (decomposed as `vp * view.inverse()`). Returns `None` when stereo data is absent, falling back
@@ -301,7 +301,7 @@ impl CommonClusterInputs {
     }
 }
 
-/// Decomposes projection from a combined view–projection: `proj = vp * view.inverse()`.
+/// Decomposes projection from a combined view-projection: `proj = vp * view.inverse()`.
 /// Falls back to a symmetric desktop projection if the decomposition yields non-finite values.
 fn extract_proj(vp: Mat4, view: Mat4, aspect: f32, fov_rad: f32, near: f32, far: f32) -> Mat4 {
     let p = vp * view.inverse();
@@ -354,7 +354,7 @@ mod tests {
         assert!((s - 1.0).abs() < 1e-6, "expected 1.0, got {s}");
     }
 
-    /// Non-uniform scale: world `(0.01, 0.5, 1.0)` ⇒ inverse axes lengths `(100, 2, 1)` ⇒ max 100.
+    /// Non-uniform scale: world `(0.01, 0.5, 1.0)` => inverse axes lengths `(100, 2, 1)` => max 100.
     #[test]
     fn world_to_view_scale_max_uses_max_axis_for_nonuniform_scale() {
         let world = Mat4::from_scale(Vec3::new(0.01, 0.5, 1.0));
@@ -364,12 +364,15 @@ mod tests {
         assert!((s - 100.0).abs() < 1e-3, "expected ~100, got {s}");
     }
 
-    /// Degenerate (all-zero) view matrix must not yield `0` or `NaN` — the floor keeps it finite.
+    /// Degenerate (all-zero) view matrix must not yield `0` or `NaN` -- the floor keeps it finite.
     #[test]
     fn world_to_view_scale_max_floors_degenerate_view() {
         let cfp = cfp_with_view(Mat4::ZERO);
         let s = cfp.world_to_view_scale_max();
-        assert!(s.is_finite() && s >= 1e-6, "expected ≥1e-6 finite, got {s}");
+        assert!(
+            s.is_finite() && s >= 1e-6,
+            "expected >=1e-6 finite, got {s}"
+        );
     }
 
     #[test]

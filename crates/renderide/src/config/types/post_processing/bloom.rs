@@ -13,7 +13,7 @@ pub type BloomMaxMipDimension =
 /// Physically-based bloom configuration.
 ///
 /// Persisted as `[post_processing.bloom]`. Implements the Call of Duty: Advanced Warfare
-/// dual-filter technique (13-tap downsample + 3×3 tent upsample) with Karis-average firefly
+/// dual-filter technique (13-tap downsample + 3x3 tent upsample) with Karis-average firefly
 /// reduction on the first downsample. Runs **pre-tonemap** so it scatters HDR-linear light; the
 /// tonemap pass then compresses the combined value. Defaults favor energy-conserving scatter
 /// without thresholding, so dim HDR-linear contributions can still participate in the bloom pyramid.
@@ -35,7 +35,7 @@ pub struct BloomSettings {
     /// drop the lowest-frequency (largest) mips entirely, which tightens the scatter radius.
     pub high_pass_frequency: f32,
     /// Soft-knee prefilter threshold applied to the first downsample (in HDR-linear units).
-    /// `0.0` disables the prefilter — physically-based bloom scatters all light, so leave this
+    /// `0.0` disables the prefilter -- physically-based bloom scatters all light, so leave this
     /// at 0 for the realistic path and raise it only for stylized looks.
     pub prefilter_threshold: f32,
     /// Softness of the prefilter knee. Valid range `[0.0, 1.0]`. `0.0` is a hard cutoff.
@@ -89,7 +89,7 @@ labeled_enum! {
     /// color.
     ///
     /// [`Self::EnergyConserving`] uses `out = src * c + dst * (1 - c)`, so total radiance is
-    /// preserved — the scattered light is removed from the base image. [`Self::Additive`] uses
+    /// preserved -- the scattered light is removed from the base image. [`Self::Additive`] uses
     /// `out = src * c + dst`, which brightens the scene by adding the scattered contribution on
     /// top.
     pub enum BloomCompositeMode: "bloom composite mode" {

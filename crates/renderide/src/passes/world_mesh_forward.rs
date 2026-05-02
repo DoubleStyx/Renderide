@@ -4,29 +4,29 @@
 //!
 //! World-mesh forward rendering is split across these graph passes:
 //!
-//! 1. [`WorldMeshForwardPreparePass`] — **[`CallbackPass`]** that collects + sorts draws, packs
+//! 1. [`WorldMeshForwardPreparePass`] -- **[`CallbackPass`]** that collects + sorts draws, packs
 //!    per-draw VP/model uniforms (rayon-parallel above the existing threshold), and uploads the
 //!    per-draw slab and frame uniforms via `Queue::write_buffer`. Stores the prepared state in
 //!    [`WorldMeshForwardPlanSlot`] for downstream passes.
-//! 2. [`WorldMeshForwardOpaquePass`] — **[`RasterPass`]** that opens the HDR color + depth
+//! 2. [`WorldMeshForwardOpaquePass`] -- **[`RasterPass`]** that opens the HDR color + depth
 //!    attachments with `LoadOp::Clear` and records opaque draws.
-//! 3. [`WorldMeshDepthSnapshotPass`] — **[`ComputePass`]** that resolves MSAA depth (when active)
+//! 3. [`WorldMeshDepthSnapshotPass`] -- **[`ComputePass`]** that resolves MSAA depth (when active)
 //!    and copies single-sample depth into the scene-depth snapshot for intersection materials.
-//! 4. [`WorldMeshForwardIntersectPass`] — **[`RasterPass`]** that draws intersection materials.
-//! 5. [`WorldMeshForwardColorResolvePass`] — optional **[`RasterPass`]** that resolves MSAA
+//! 4. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws intersection materials.
+//! 5. [`WorldMeshForwardColorResolvePass`] -- optional **[`RasterPass`]** that resolves MSAA
 //!    scene color before the grab-pass snapshot.
-//! 6. [`WorldMeshColorSnapshotPass`] — **[`ComputePass`]** that copies resolved HDR color into
+//! 6. [`WorldMeshColorSnapshotPass`] -- **[`ComputePass`]** that copies resolved HDR color into
 //!    the grab-pass scene-color snapshot.
-//! 7. [`WorldMeshForwardTransparentPass`] — **[`RasterPass`]** that draws grab-pass transparent
+//! 7. [`WorldMeshForwardTransparentPass`] -- **[`RasterPass`]** that draws grab-pass transparent
 //!    materials into the active frame-sampled HDR target.
-//! 8. [`WorldMeshForwardColorResolvePass`] — optional final **[`RasterPass`]** that resolves
+//! 8. [`WorldMeshForwardColorResolvePass`] -- optional final **[`RasterPass`]** that resolves
 //!    MSAA scene color after grab-pass transparent draws.
-//! 9. [`WorldMeshForwardDepthResolvePass`] — **[`ComputePass`]** that resolves the final MSAA
+//! 9. [`WorldMeshForwardDepthResolvePass`] -- **[`ComputePass`]** that resolves the final MSAA
 //!    depth into the single-sample frame depth used by Hi-Z.
 //!
 //! ## VR stereo world draws
 //!
-//! OpenXR per-eye view–projection maps **stage** space to clip. For non-overlay draws with
+//! OpenXR per-eye view-projection maps **stage** space to clip. For non-overlay draws with
 //! [`crate::camera::StereoViewMatrices`], identity is used instead of the host
 //! `view_transform` world-to-camera to avoid mixing stage with the host rig. Overlays keep
 //! `view` for orthographic / UI alignment. Matrix composition lives in [`vp`].
@@ -442,7 +442,7 @@ impl RasterPass for WorldMeshForwardIntersectPass {
             // and resolved by [`WorldMeshForwardColorResolvePass`] using the Karis HDR-aware
             // bracket. wgpu's automatic linear average underestimates very bright samples at
             // contrast edges, producing visible aliasing where bright/dark samples meet (e.g.
-            // specular sparks against dark surfaces) — the custom resolve fixes that.
+            // specular sparks against dark surfaces) -- the custom resolve fixes that.
             r.frame_sampled_color(
                 self.resources.scene_color_hdr,
                 self.resources.scene_color_hdr_msaa,

@@ -10,7 +10,7 @@
 /// Per-logical-shader layout describing which property ids feed which `@group(1)` bindings (reserved).
 #[derive(Debug, Default)]
 pub struct MaterialPropertyGpuLayout {
-    /// Reserved until the shipped shader metadata lists `property_name` → `binding` pairs alongside reflection.
+    /// Reserved until the shipped shader metadata lists `property_name` -> `binding` pairs alongside reflection.
     pub _pending: (),
 }
 

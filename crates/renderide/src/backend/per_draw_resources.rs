@@ -16,7 +16,7 @@ use crate::mesh_deform::{INITIAL_PER_DRAW_UNIFORM_SLOTS, PER_DRAW_UNIFORM_STRIDE
 /// per-draw dynamic storage offset at bind time instead.
 ///
 /// Each render view owns one `PerDrawResources` instance. Slabs are grown on demand (never shrink)
-/// and are independent — one view cannot exhaust another view's buffer.
+/// and are independent -- one view cannot exhaust another view's buffer.
 pub struct PerDrawResources {
     /// Packed rows (`slot_count * 256` bytes), `STORAGE | COPY_DST`.
     pub per_draw_storage: wgpu::Buffer,
@@ -118,7 +118,7 @@ impl PerDrawResources {
             &per_draw_storage,
         ));
         logger::debug!(
-            "per-draw slab: grew {old} → {next} slots ({size} bytes)",
+            "per-draw slab: grew {old} -> {next} slots ({size} bytes)",
             old = self.slot_count,
             size = size_u64,
         );

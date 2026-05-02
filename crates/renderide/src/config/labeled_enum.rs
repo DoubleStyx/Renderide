@@ -1,6 +1,6 @@
 //! Common algebra for finite enum config types: [`LabeledEnum`] trait plus the [`labeled_enum!`]
 //! declarative macro that emits the enum, [`Default`], [`serde::Serialize`] / [`serde::Deserialize`],
-//! and the trait impl from a single declarative listing of variants × persist string × label ×
+//! and the trait impl from a single declarative listing of variants x persist string x label x
 //! optional aliases.
 //!
 //! ## Why
@@ -51,7 +51,7 @@ pub trait LabeledEnum: Sized + Copy + 'static {
 /// Declarative shortcut for [`LabeledEnum`] enums.
 ///
 /// Generates the enum (with `Clone, Copy, Debug, PartialEq, Eq, Hash`), [`Default`],
-/// [`serde::Serialize`], [`serde::Deserialize`] (string visitor — plus a bool visitor in the
+/// [`serde::Serialize`], [`serde::Deserialize`] (string visitor -- plus a bool visitor in the
 /// bool-aware arm), and the [`LabeledEnum`] impl from one declaration. Variants list their
 /// canonical persist string, label, and any alias tokens accepted on input.
 ///
@@ -64,10 +64,10 @@ pub trait LabeledEnum: Sized + Copy + 'static {
 ///     /// MSAA sample count for the main desktop swapchain forward path.
 ///     pub enum MsaaSampleCount: "MSAA sample count" {
 ///         default => Off;
-///         Off => { persist: "off", label: "1× (off)", aliases: ["1", "1x", "none"] },
-///         X2  => { persist: "x2",  label: "2×",       aliases: ["2", "2x"] },
-///         X4  => { persist: "x4",  label: "4×",       aliases: ["4", "4x"] },
-///         X8  => { persist: "x8",  label: "8×",       aliases: ["8", "8x", "x16", "16", "16x"] },
+///         Off => { persist: "off", label: "1x (off)", aliases: ["1", "1x", "none"] },
+///         X2  => { persist: "x2",  label: "2x",       aliases: ["2", "2x"] },
+///         X4  => { persist: "x4",  label: "4x",       aliases: ["4", "4x"] },
+///         X8  => { persist: "x8",  label: "8x",       aliases: ["8", "8x", "x16", "16", "16x"] },
 ///     }
 /// }
 /// ```
@@ -233,7 +233,7 @@ macro_rules! __labeled_enum_emit {
             ///
             /// Matching uses `eq_ignore_ascii_case` so the canonical persist string keeps its
             /// declared casing on serialize while inputs in any case still resolve. Separator
-            /// characters (e.g. underscores) must match exactly — when an enum needs to accept
+            /// characters (e.g. underscores) must match exactly -- when an enum needs to accept
             /// multiple separator conventions, list each as an explicit alias.
             ///
             /// Mirrors [`crate::config::labeled_enum::LabeledEnum::parse_persist`] without
@@ -347,7 +347,7 @@ mod tests {
     }
 
     labeled_enum! {
-        /// Bool-shape fixture: `true` ⇒ `On`, `false` ⇒ `Off`.
+        /// Bool-shape fixture: `true` => `On`, `false` => `Off`.
         pub enum Switch: "switch (`on` / `off`)" {
             default    => Off;
             bool_true  => On;

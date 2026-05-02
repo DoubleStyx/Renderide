@@ -1,6 +1,6 @@
 //! Process-stable shader property ids for [`crate::shared::MaterialPropertyIdRequest`].
 //!
-//! Unity’s Renderite path uses `Shader.PropertyToID`. This renderer assigns opaque integers; the
+//! Unity's Renderite path uses `Shader.PropertyToID`. This renderer assigns opaque integers; the
 //! host must use the returned [`crate::shared::MaterialPropertyIdResult`] values in subsequent
 //! [`crate::shared::MaterialsUpdateBatch`] records.
 
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 /// Callback invoked when the host resolves a material property name (see [`PropertyIdRegistry`]).
 pub type MaterialPropertySemanticHook = Arc<dyn Fn(&str, i32) + Send + Sync>;
 
-/// Intern table and optional name→semantics hooks (e.g. mapping `_MainTex` to a material family’s slot).
+/// Intern table and optional name->semantics hooks (e.g. mapping `_MainTex` to a material family's slot).
 ///
 /// Hooks are invoked on every host property-id **request** for a non-empty name (including when the
 /// name was already interned); callers that stream per-row request batches see every row observed.
@@ -25,7 +25,7 @@ struct PropertyIdRegistryInner {
 }
 
 impl PropertyIdRegistry {
-    /// Builds a registry starting at property id `1` (id `0` means “no property” / empty name).
+    /// Builds a registry starting at property id `1` (id `0` means "no property" / empty name).
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(PropertyIdRegistryInner {

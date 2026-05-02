@@ -40,7 +40,7 @@ tracy = [
 ]
 ## Enables GStreamer-backed video texture playback. When disabled, video texture IPC commands
 ## still create GPU placeholders (the host sees a black frame), but no decoding occurs and
-## `VideoPlayer::new` returns `None`. Off by default to keep cross-platform CI lean — GStreamer
+## `VideoPlayer::new` returns `None`. Off by default to keep cross-platform CI lean -- GStreamer
 ## system libraries are reliably available on Linux but require manual setup on macOS and Windows.
 ##
 ## Usage: `cargo build --features video-textures` (Linux: install `libgstreamer1.0-dev`,

@@ -1,5 +1,5 @@
 //! Lightweight per-frame timing for the **Frame timing** ImGui window (FPS, wall interval,
-//! CPU/GPU per-frame ms, RAM/VRAM, and a rolling frametime graph — MangoHud-style overlay).
+//! CPU/GPU per-frame ms, RAM/VRAM, and a rolling frametime graph -- MangoHud-style overlay).
 //!
 //! Unlike [`super::FrameDiagnosticsSnapshot`], this avoids the heavy shader-routes / allocator-report
 //! gathering and is safe to populate every tick.
@@ -33,9 +33,9 @@ pub struct FrameTimingHudSnapshot {
     pub gpu_frame_ms_smoothed: Option<f64>,
     /// Origin of the GPU value: real timestamp queries vs callback-latency fallback.
     pub gpu_ms_source: Option<GpuMsSource>,
-    /// Rolling frametime samples (ms, oldest-first) for the sparkline plot. Raw — not smoothed.
+    /// Rolling frametime samples (ms, oldest-first) for the sparkline plot. Raw -- not smoothed.
     pub frame_time_history: Vec<f32>,
-    /// Global host CPU usage 0–100 (sysinfo, throttled).
+    /// Global host CPU usage 0-100 (sysinfo, throttled).
     pub host_cpu_usage_percent: f32,
     /// Total system RAM in bytes (sysinfo).
     pub host_ram_total_bytes: u64,

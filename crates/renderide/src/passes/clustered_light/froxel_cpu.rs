@@ -2,7 +2,7 @@
 //!
 //! This path mirrors the existing clustered-light storage contract (`cluster_light_counts` plus
 //! packed `cluster_light_indices`) so the material shaders do not need to change while the
-//! renderer gains a light-centric alternative to the O(froxels × lights) GPU scan.
+//! renderer gains a light-centric alternative to the O(froxels x lights) GPU scan.
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
 

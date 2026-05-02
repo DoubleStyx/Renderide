@@ -261,7 +261,7 @@ pub fn embedded_stem_uses_scene_color_snapshot(
         .uses_scene_color
 }
 
-/// Composed target stem for an embedded base stem (e.g. `unlit_default` → `unlit_multiview`).
+/// Composed target stem for an embedded base stem (e.g. `unlit_default` -> `unlit_multiview`).
 pub fn embedded_composed_stem_for_permutation(
     base_stem: &str,
     permutation: ShaderPermutation,

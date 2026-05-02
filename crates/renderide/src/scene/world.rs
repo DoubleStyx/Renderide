@@ -24,7 +24,7 @@ pub struct WorldTransformCache {
     pub(super) visit_epoch: Vec<u32>,
     /// Incremented before each upward walk.
     pub(super) walk_epoch: u32,
-    /// Parent → children lists; rebuilt when structure changes.
+    /// Parent -> children lists; rebuilt when structure changes.
     pub(super) children: Vec<Vec<usize>>,
     /// `children` must be rebuilt before descendant marking.
     pub(super) children_dirty: bool,
@@ -57,7 +57,7 @@ pub(crate) fn fixup_transform_id(old: i32, removed_id: i32, last_index: usize) -
     }
 }
 
-/// Rebuilds parent → children adjacency.
+/// Rebuilds parent -> children adjacency.
 pub(super) fn rebuild_children(node_parents: &[i32], n: usize, children: &mut Vec<Vec<usize>>) {
     children.resize_with(n, Vec::new);
     for c in children.iter_mut() {
@@ -188,7 +188,7 @@ impl WorldTransformCache {
                     if visit_epoch[id] == epoch {
                         cycle_detected = true;
                         logger::trace!(
-                            "parent cycle at scene {} transform {} — local-only fallback",
+                            "parent cycle at scene {} transform {} -- local-only fallback",
                             scene_id,
                             id
                         );

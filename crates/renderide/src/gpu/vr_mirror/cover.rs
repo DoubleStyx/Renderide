@@ -18,8 +18,8 @@ pub(super) struct SurfaceBlitUniform {
 /// aspect ratio), crop top/bottom in texture space; if the window is taller (smaller aspect ratio),
 /// crop left/right.
 ///
-/// Shader: `tuv = uv * uv_scale + uv_offset` maps screen `uv` in [0, 1]² into texture UV in a centered
-/// sub-rectangle of [0, 1]².
+/// Shader: `tuv = uv * uv_scale + uv_offset` maps screen `uv` in [0, 1]^2 into texture UV in a centered
+/// sub-rectangle of [0, 1]^2.
 pub(super) fn cover_uv_params(
     eye_w: u32,
     eye_h: u32,
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn cover_uv_center_crop_when_surface_wider_than_eye() {
-        // 2:1 window, 1:1 eye (R_s > R_t) → crop texture top/bottom (cover).
+        // 2:1 window, 1:1 eye (R_s > R_t) -> crop texture top/bottom (cover).
         let u = cover_uv_params(100, 100, 200, 100);
         assert!((u.uv_scale[0] - 1.0).abs() < 1e-5);
         assert!((u.uv_scale[1] - 0.5).abs() < 1e-5);
@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn cover_uv_center_crop_when_surface_taller_than_eye() {
-        // 1:2 window, 1:1 eye (R_s < R_t) → crop texture left/right (cover).
+        // 1:2 window, 1:1 eye (R_s < R_t) -> crop texture left/right (cover).
         let u = cover_uv_params(100, 100, 100, 200);
         assert!((u.uv_scale[0] - 0.5).abs() < 1e-5);
         assert!((u.uv_scale[1] - 1.0).abs() < 1e-5);

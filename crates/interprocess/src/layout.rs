@@ -87,7 +87,7 @@ pub(crate) fn message_header_wire_bytes(state: i32, body_length: i32) -> [u8; 8]
 /// Returns the wire size of a message (header + body + padding) for a given body length.
 ///
 /// `body_len` must be non-negative; `debug_assert` catches the negative case in debug builds.
-/// Arithmetic saturates at [`i64::MAX`] for pathological inputs — downstream capacity checks in
+/// Arithmetic saturates at [`i64::MAX`] for pathological inputs -- downstream capacity checks in
 /// the publisher reject any padded length exceeding the ring capacity, so saturation cannot
 /// produce an invalid write.
 pub fn padded_message_length(body_len: i64) -> i64 {
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn padded_message_length_saturates_for_oversized_body() {
         // Contract: saturating arithmetic prevents panic and returns an 8-aligned i64.
-        // For pathological inputs the publisher's separate capacity check rejects the result —
+        // For pathological inputs the publisher's separate capacity check rejects the result --
         // the function itself only promises no UB and 8-byte alignment.
         let p = padded_message_length(i64::MAX - 1);
         assert_eq!(p % 8, 0, "saturating result must still be 8-byte aligned");

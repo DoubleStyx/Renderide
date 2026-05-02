@@ -16,7 +16,7 @@ pub struct ShaderRouteEntry {
     pub shader_asset_name: Option<String>,
 }
 
-/// Shader asset id → route; unknown ids use the fallback pipeline set via [`Self::new`] /
+/// Shader asset id -> route; unknown ids use the fallback pipeline set via [`Self::new`] /
 /// [`Self::set_fallback`].
 #[derive(Debug)]
 pub struct MaterialRouter {

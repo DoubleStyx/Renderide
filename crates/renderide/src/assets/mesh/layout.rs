@@ -1,6 +1,6 @@
 //! Mesh packed-buffer layout matching `Renderite.Shared.MeshBuffer.ComputeBufferLayout`.
 //!
-//! Regions: vertices → indices → bone_counts → bone_weights → bind_poses → blendshape_data.
+//! Regions: vertices -> indices -> bone_counts -> bone_weights -> bind_poses -> blendshape_data.
 
 use std::collections::HashSet;
 
@@ -10,7 +10,7 @@ use crate::shared::{
 };
 
 /// Bytes per sparse blendshape entry on the GPU:
-/// `vertex_index: u32` + `delta.xyz: f32` (12) — matches [`blendshape_scatter_main`] struct layout.
+/// `vertex_index: u32` + `delta.xyz: f32` (12) -- matches [`blendshape_scatter_main`] struct layout.
 pub const BLENDSHAPE_SPARSE_ENTRY_SIZE: usize = 16;
 
 /// Bytes per frame range row: `first_entry: u32`, `entry_count: u32`.
@@ -711,7 +711,7 @@ fn fill_normal_stream_with_forward_z(out: &mut [u8]) {
 
 /// Dense `vec2<f32>` UV stream (`8` bytes per vertex) for embedded materials (e.g. world Unlit).
 ///
-/// When [`VertexAttributeType::UV0`] is missing or not `float32`×2, returns **zeros** so a vertex buffer
+/// When [`VertexAttributeType::UV0`] is missing or not `float32`x2, returns **zeros** so a vertex buffer
 /// slot can always be bound.
 pub fn uv0_float2_stream_bytes(
     vertex_data: &[u8],

@@ -12,7 +12,7 @@ use super::super::instance_limits::instance_flags_for_gpu_init;
 /// chosen adapter.
 ///
 /// [`wgpu::PowerPreference::None`] is treated as [`wgpu::PowerPreference::HighPerformance`] so that
-/// callers without an explicit preference still get the discrete GPU on hybrid systems — matches
+/// callers without an explicit preference still get the discrete GPU on hybrid systems -- matches
 /// Renderide's `[debug] power_preference` default.
 pub(crate) fn power_preference_score(
     device_type: wgpu::DeviceType,

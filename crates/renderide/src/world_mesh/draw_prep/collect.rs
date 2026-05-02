@@ -216,7 +216,7 @@ fn collect_world_mesh_chunks(
         debug_assert_eq!(
             prepared.render_context(),
             ctx.render_context,
-            "prepared renderables were built for a different render context than the per-view draw collection — material overrides would disagree"
+            "prepared renderables were built for a different render context than the per-view draw collection -- material overrides would disagree"
         );
         profiling::scope!("mesh::collect_prepared");
         match parallelism {

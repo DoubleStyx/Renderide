@@ -119,7 +119,7 @@ fn decode_rgb565_family_mip_to_rgba8(
 ///
 /// Used as a fallback for missing compression features or packed formats without a direct `wgpu`
 /// layout match. The renderer keeps host bytes in Unity (V=0 bottom) orientation throughout, so
-/// no row flip is applied here — `_flip_y` is retained for IPC compatibility only.
+/// no row flip is applied here -- `_flip_y` is retained for IPC compatibility only.
 pub fn decode_mip_to_rgba8(
     format: TextureFormat,
     width: u32,
@@ -235,8 +235,8 @@ pub fn needs_rgba8_decode_before_upload(device: &wgpu::Device, host: TextureForm
     );
     let bc_cpu_fallback = matches!(host, BC1 | BC2 | BC3 | BC4 | BC5 | BC6H | BC7) && !bc_native;
     let etc2_cpu_fallback = matches!(host, ETC2RGB | ETC2RGBA1 | ETC2RGBA8) && !etc2_native;
-    // ASTC is *always* CPU-decoded — see [`crate::assets::texture::format::map_host_format`] for
-    // the rationale (mode-dependent block layouts up to 12×12 prevent in-block flip).
+    // ASTC is *always* CPU-decoded -- see [`crate::assets::texture::format::map_host_format`] for
+    // the rationale (mode-dependent block layouts up to 12x12 prevent in-block flip).
     let astc_cpu_fallback = matches!(
         host,
         ASTC4x4 | ASTC5x5 | ASTC6x6 | ASTC8x8 | ASTC10x10 | ASTC12x12
@@ -403,13 +403,13 @@ fn decode_bc3_to_rgba8(width: usize, height: usize, raw: &[u8]) -> Option<Vec<u8
 }
 
 /// Resonite/Unity **BC3nm** (DXT5nm) packs tangent-space **X** in the **alpha** block and sets **red**
-/// to **1.0** in the color block (`Bitmap.PackNormalMap` → `(1, Y, Y, X)` per texel). After BC3 decode,
-/// PBS materials read tangent XY from the **RG** channels in WGSL, so **X** must be moved from **A→R**
+/// to **1.0** in the color block (`Bitmap.PackNormalMap` -> `(1, Y, Y, X)` per texel). After BC3 decode,
+/// PBS materials read tangent XY from the **RG** channels in WGSL, so **X** must be moved from **A->R**
 /// for correct lighting.
 ///
-/// Detection (per **4×4** tile): skip **uniform opaque white** RGB (`R=G=B=255` everywhere) so BC3 UI
-/// cutouts are not turned cyan. Otherwise require every texel’s **R** ≥ [`BC3NM_R_CHANNEL_MIN`] (BC3 can
-/// round the constant 1.0 channel down slightly) and **G≈B** within [`BC3NM_GB_MAX_DELTA`] (duplicate Y
+/// Detection (per **4x4** tile): skip **uniform opaque white** RGB (`R=G=B=255` everywhere) so BC3 UI
+/// cutouts are not turned cyan. Otherwise require every texel's **R** >= [`BC3NM_R_CHANNEL_MIN`] (BC3 can
+/// round the constant 1.0 channel down slightly) and **G~=B** within [`BC3NM_GB_MAX_DELTA`] (duplicate Y
 /// can diverge across endpoints/indices). Then assign `R := A`, `A := 0xFF`.
 const BC3NM_R_CHANNEL_MIN: u8 = 250;
 const BC3NM_GB_MAX_DELTA: u8 = 8;
@@ -528,8 +528,8 @@ mod tests {
 
     #[test]
     fn bc3_full_mip_decode_swizzles_when_tile_is_nm_packed() {
-        // One BC3 macroblock: alpha indices all 0 → alpha 50 per texel. BC1 duplicate red endpoints
-        // (`0xF800`) and zero indices → solid sRGB red (R=255) for all 16 texels → nm detection fires.
+        // One BC3 macroblock: alpha indices all 0 -> alpha 50 per texel. BC1 duplicate red endpoints
+        // (`0xF800`) and zero indices -> solid sRGB red (R=255) for all 16 texels -> nm detection fires.
         let raw = vec![
             50u8, 50, 0, 0, 0, 0, 0, 0, // alpha: a0=a1=50; 48 index bits = 0
             0x00, 0xF8, 0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, // BC1: c0=c1=red, indices 0
@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn bc2_4x4_decode_returns_solid_red() {
         // BC2: 8B explicit alpha (4 bits/texel) + 8B BC1 color. Alpha all 0xFF (premapped to
-        // 4-bit 0xF), BC1 indices all 0 with c0=c1=red(0xF800) → 4×4 opaque sRGB red.
+        // 4-bit 0xF), BC1 indices all 0 with c0=c1=red(0xF800) -> 4x4 opaque sRGB red.
         let raw = vec![
             0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // explicit alpha = full
             0x00, 0xF8, 0x00, 0xF8, 0x00, 0x00, 0x00, 0x00, // BC1: c0=c1=red, indices 0
@@ -556,9 +556,9 @@ mod tests {
         let out = decode_mip_to_rgba8(TextureFormat::BC2, 4, 4, false, &raw).expect("ok");
         assert_eq!(out.len(), 4 * 4 * 4);
         for px in out.chunks_exact(4) {
-            assert!(px[0] >= 250, "R≈255");
-            assert!(px[1] < 5, "G≈0");
-            assert!(px[2] < 5, "B≈0");
+            assert!(px[0] >= 250, "R~=255");
+            assert!(px[1] < 5, "G~=0");
+            assert!(px[2] < 5, "B~=0");
             assert_eq!(px[3], 255);
         }
     }
@@ -566,8 +566,8 @@ mod tests {
     #[test]
     fn etc2rgb_4x4_decode_returns_4x4_image() {
         // ETC2 RGB block (8B): use individual mode with two equal sub-blocks of mid-gray. Exact
-        // pixel values aren't asserted here; the test pins the integration shape — that the format
-        // is wired and produces a 4×4×RGBA8 buffer without erroring.
+        // pixel values aren't asserted here; the test pins the integration shape -- that the format
+        // is wired and produces a 4x4xRGBA8 buffer without erroring.
         let raw = [0u8; 8];
         let out = decode_mip_to_rgba8(TextureFormat::ETC2RGB, 4, 4, false, &raw).expect("ok");
         assert_eq!(out.len(), 4 * 4 * 4);

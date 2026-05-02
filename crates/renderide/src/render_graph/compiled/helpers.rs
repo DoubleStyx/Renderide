@@ -269,7 +269,7 @@ pub(super) fn clamp_viewport_for_transient_alloc(
     let h = oh.min(max_texture_dimension_2d);
     if w != ow || h != oh {
         logger::warn!(
-            "transient alloc: viewport {}×{} clamped to {}×{} (max_texture_dimension_2d={max_texture_dimension_2d})",
+            "transient alloc: viewport {}x{} clamped to {}x{} (max_texture_dimension_2d={max_texture_dimension_2d})",
             ow,
             oh,
             w,

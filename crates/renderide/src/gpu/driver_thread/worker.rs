@@ -20,7 +20,7 @@ use crate::gpu::frame_cpu_gpu_timing::{
 ///
 /// Drop runs on both clean shutdown (loop break) and panic-driven unwind through
 /// [`driver_loop`], so a producer blocked in [`super::ring::BoundedRing::push`] is always
-/// released — preventing the main thread from hanging forever on a crashed driver.
+/// released -- preventing the main thread from hanging forever on a crashed driver.
 struct ConsumerLivenessGuard<'a> {
     ring: &'a BoundedRing<DriverMessage>,
 }

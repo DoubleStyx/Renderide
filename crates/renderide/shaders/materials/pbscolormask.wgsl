@@ -70,7 +70,7 @@ struct PbsColorMaskMaterial {
 @group(1) @binding(11) var _MetallicMap: texture_2d<f32>;
 @group(1) @binding(12) var _MetallicMap_sampler: sampler;
 
-/// Resolved per-fragment shading inputs for the metallic Cook–Torrance path.
+/// Resolved per-fragment shading inputs for the metallic Cook-Torrance path.
 struct SurfaceData {
     base_color: vec3<f32>,
     alpha: f32,

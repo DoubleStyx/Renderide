@@ -4,7 +4,7 @@
 //! This is the Stage 3 amortization of [`super::collect::collect_and_sort_draws_with_parallelism`]:
 //! every per-view collection used to walk each active render space, look up the resident
 //! [`crate::assets::mesh::GpuMesh`] per renderer, expand material slots onto submesh ranges, and resolve
-//! render-context material overrides — all of which are functions of frame-global state, not the
+//! render-context material overrides -- all of which are functions of frame-global state, not the
 //! view. Doing that work once per frame and reusing the dense list across every view (desktop
 //! multi-view secondary render-texture cameras + main swapchain) removes the N+1 scene walk that
 //! dominated frame cost.
@@ -24,7 +24,7 @@ use crate::world_mesh::culling::{
 
 use super::item::stacked_material_submesh_range;
 
-/// One fully-resolved draw slot (renderer × material slot mapped to a submesh range) for the current frame.
+/// One fully-resolved draw slot (renderer x material slot mapped to a submesh range) for the current frame.
 ///
 /// All fields here are functions of `(scene, mesh_pool, render_context)` and are therefore safe
 /// to share across every view in a frame. Per-view data (camera transform, frustum / Hi-Z cull
@@ -78,7 +78,7 @@ pub(super) struct FramePreparedDraw {
 ///
 /// Build once per frame via [`FramePreparedRenderables::build_for_frame`] and hand as a borrow to
 /// every per-view [`super::collect::DrawCollectionContext`]. Per-view collection walks this list,
-/// applies frustum / Hi-Z culling, and emits [`super::item::WorldMeshDrawItem`]s — no scene
+/// applies frustum / Hi-Z culling, and emits [`super::item::WorldMeshDrawItem`]s -- no scene
 /// walk, no repeated mesh-pool lookup, no repeated material-override resolution.
 pub struct FramePreparedRenderables {
     /// Active render spaces captured while building this frame snapshot.
@@ -109,7 +109,7 @@ impl FramePreparedRenderables {
     /// Per-space expansion runs in parallel via [`rayon`] and the per-space outputs are
     /// concatenated in render-space-id order. Every entry is filtered to only include draws that
     /// would survive [`super::collect::collect_chunk`]'s transform-scale, resident-mesh, and
-    /// slot-validity checks — per-view collection can iterate unconditionally without duplicating
+    /// slot-validity checks -- per-view collection can iterate unconditionally without duplicating
     /// those guards.
     pub fn build_for_frame(
         scene: &SceneCoordinator,
@@ -125,7 +125,7 @@ impl FramePreparedRenderables {
     /// capacities across frames. Same semantics and parallelization as [`Self::build_for_frame`].
     ///
     /// Pooling matters because every frame produces a fresh dense list of every renderable's
-    /// material slots — typically hundreds to thousands of entries. Allocating and freeing the
+    /// material slots -- typically hundreds to thousands of entries. Allocating and freeing the
     /// backing buffer each frame shows up in `extract_frame_shared` zone profiles; clearing in
     /// place keeps the allocation count flat in steady state.
     pub fn rebuild_for_frame(

@@ -46,7 +46,7 @@ pub struct FrameGpuUniforms {
     pub viewport_height: u32,
     /// Left-eye (or mono) projection coefficients: `(P[0][0], P[1][1], P[0][2], P[1][2])`.
     ///
-    /// Column-major `glam::Mat4` indexing. Screen-space → view-space unprojection (view Z known)
+    /// Column-major `glam::Mat4` indexing. Screen-space -> view-space unprojection (view Z known)
     /// uses `view_x = (ndc_x - c.z) * view_z / c.x` and `view_y = (ndc_y - c.w) * view_z / c.y`,
     /// where `c` is this vec4. Encodes both symmetric (desktop) and asymmetric (per-eye VR)
     /// perspective projections exactly.

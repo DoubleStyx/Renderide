@@ -22,7 +22,7 @@ pub(super) const DEFAULT_ASSET_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10
 /// shared memory alive until the renderer is shut down (the renderer's `SharedMemoryAccessor`
 /// only holds a read mapping; the host owns the backing).
 ///
-/// The writer is held purely for its [`Drop`] semantics — releasing it tears down the SHM
+/// The writer is held purely for its [`Drop`] semantics -- releasing it tears down the SHM
 /// mapping the renderer is reading.
 pub(super) struct UploadedMesh {
     /// Live writer keeping the SHM buffer alive; released on `Drop`.

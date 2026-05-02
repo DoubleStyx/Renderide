@@ -92,8 +92,8 @@ pub(super) enum FrameViewPlanTarget<'a> {
 
 /// One CPU-planned view ready for draw collection and render-graph conversion.
 ///
-/// Built for every active view in the tick — HMD stereo multiview, secondary render-texture
-/// cameras, and the main desktop swapchain — so downstream draw and pass code consume a stable
+/// Built for every active view in the tick -- HMD stereo multiview, secondary render-texture
+/// cameras, and the main desktop swapchain -- so downstream draw and pass code consume a stable
 /// view-intent object instead of branching on runtime mode.
 pub(super) struct FrameViewPlan<'a> {
     /// Per-view camera parameters (clip planes, matrices, stereo, overrides).
@@ -152,7 +152,7 @@ impl FrameViewPlan<'_> {
     /// Back-to-front sort origin for transparent draws.
     ///
     /// Preference order matches the world-mesh forward path: explicit camera world position
-    /// (secondary RT cameras) → main-space eye position → head-output translation as fallback.
+    /// (secondary RT cameras) -> main-space eye position -> head-output translation as fallback.
     pub(super) fn view_origin_world(&self) -> glam::Vec3 {
         self.host_camera.view_origin_world()
     }

@@ -47,7 +47,7 @@ struct ClusterParams {
 @group(0) @binding(0) var<uniform> params: ClusterParams;
 @group(0) @binding(1) var<storage, read> lights: array<GpuLight>;
 @group(0) @binding(2) var<storage, read_write> cluster_light_counts: array<u32>;
-/// Packed light indices: 2 × `u16` per `u32` slot (low 16 bits = even slot, high 16 bits = odd
+/// Packed light indices: 2 x `u16` per `u32` slot (low 16 bits = even slot, high 16 bits = odd
 /// slot). Each cluster is written by a single compute thread, so no atomics are required.
 @group(0) @binding(3) var<storage, read_write> cluster_light_indices: array<u32>;
 
@@ -86,7 +86,7 @@ fn get_cluster_aabb(cluster_x: u32, cluster_y: u32, cluster_z: u32) -> TileAabb 
     // Use integer-pixel tile bounds (no 0.5 inset) so the AABB covers the exact pixel range that
     // `cluster_xy_from_frag` in `pbs_cluster.wgsl` assigns to this tile. A prior 0.5-pixel inset on
     // both edges left a 1-pixel-wide band of fragments that mapped to this tile but fell outside
-    // this AABB — producing visibly pixelated seams where lights reach the neighbor's AABB only.
+    // this AABB -- producing visibly pixelated seams where lights reach the neighbor's AABB only.
     let px_min = f32(cluster_x * params.tile_size);
     let px_max = min(f32((cluster_x + 1u) * params.tile_size), w);
     let py_min = f32(cluster_y * params.tile_size);

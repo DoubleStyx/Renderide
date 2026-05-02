@@ -1,7 +1,7 @@
 //! Persistent VR mirror state: lazy staging texture, surface uniform buffer, and
 //! per-format surface pipeline cache.
 //!
-//! Per-frame blit logic for eye→staging and staging→surface lives in the sibling
+//! Per-frame blit logic for eye->staging and staging->surface lives in the sibling
 //! [`super::eye_blit`] / [`super::surface_blit`] modules.
 
 use super::HMD_MIRROR_SOURCE_FORMAT;
@@ -11,7 +11,7 @@ use super::pipelines::surface_pipeline;
 pub struct VrMirrorBlitResources {
     staging_texture: Option<wgpu::Texture>,
     staging_extent: (u32, u32),
-    /// `true` after a successful eye→staging copy this session.
+    /// `true` after a successful eye->staging copy this session.
     staging_valid: bool,
     surface_uniform: Option<wgpu::Buffer>,
     surface_pipeline: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,

@@ -7,8 +7,8 @@
 /// Sorted list of MSAA sample counts `2`, `4`, and `8` supported for **both** `color` and
 /// the forward depth/stencil format on `adapter`.
 ///
-/// Per-format support is not uniform: e.g. [`wgpu::TextureFormat::Rgba8UnormSrgb`] may allow 4× but
-/// not 2× on some drivers; callers must use [`clamp_msaa_request_to_supported`] before creating textures.
+/// Per-format support is not uniform: e.g. [`wgpu::TextureFormat::Rgba8UnormSrgb`] may allow 4x but
+/// not 2x on some drivers; callers must use [`clamp_msaa_request_to_supported`] before creating textures.
 pub(crate) fn msaa_supported_sample_counts(
     adapter: &wgpu::Adapter,
     color: wgpu::TextureFormat,
@@ -50,9 +50,9 @@ pub(crate) fn msaa_supported_sample_counts_stereo(
 
 /// Maps a user-requested MSAA level to a **device-valid** sample count for the current surface format.
 ///
-/// - `requested` ≤ 1 → `1` (off).
-/// - Otherwise picks the **smallest** supported count ≥ `requested` when possible (e.g. 2× requested
-///   but only 4× is valid → 4×). If `requested` exceeds all tiers, uses the **largest** supported count.
+/// - `requested` <= 1 -> `1` (off).
+/// - Otherwise picks the **smallest** supported count >= `requested` when possible (e.g. 2x requested
+///   but only 4x is valid -> 4x). If `requested` exceeds all tiers, uses the **largest** supported count.
 pub(crate) fn clamp_msaa_request_to_supported(requested: u32, supported: &[u32]) -> u32 {
     if requested <= 1 {
         return 1;
@@ -86,7 +86,7 @@ impl MsaaSupport {
         let desktop = msaa_supported_sample_counts(adapter, color_format, depth_stencil_format);
         if desktop.is_empty() {
             logger::warn!(
-                "{log_prefix}: adapter reported no supported MSAA sample counts (1× is always \
+                "{log_prefix}: adapter reported no supported MSAA sample counts (1x is always \
                  supported by spec); MSAA disabled for the desktop swapchain"
             );
         }

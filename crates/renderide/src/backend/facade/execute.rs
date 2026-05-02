@@ -16,8 +16,8 @@ impl RenderBackend {
     /// [`crate::runtime::RendererRuntime::drain_hi_z_readback`]).
     ///
     /// `views` is not consumed; callers can clear and repopulate the same [`Vec`] each frame to
-    /// retain capacity. Each [`FrameView`] routes to its own target — desktop swapchain, external
-    /// OpenXR multiview, or host render-texture offscreen — without changing the backend entry
+    /// retain capacity. Each [`FrameView`] routes to its own target -- desktop swapchain, external
+    /// OpenXR multiview, or host render-texture offscreen -- without changing the backend entry
     /// point.
     pub fn execute_multi_view_frame(
         &mut self,

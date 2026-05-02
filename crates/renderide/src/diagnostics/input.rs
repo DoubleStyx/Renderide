@@ -1,4 +1,4 @@
-//! Winit / accumulator → ImGui bridge: [`DebugHudInput`] and IPC [`InputState`] sanitization when the HUD captures input.
+//! Winit / accumulator -> ImGui bridge: [`DebugHudInput`] and IPC [`InputState`] sanitization when the HUD captures input.
 
 use glam::Vec2;
 
@@ -37,7 +37,7 @@ pub fn sanitize_input_state_for_imgui_host(
 /// Pointer and window hints for ImGui, in **physical** pixels where noted.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DebugHudInput {
-    /// Cursor position in physical pixels (or `[-∞, -∞]` when unavailable).
+    /// Cursor position in physical pixels (or `[-inf, -inf]` when unavailable).
     pub cursor_px: [f32; 2],
     /// Drawable size in physical pixels.
     pub window_px: (u32, u32),
@@ -62,7 +62,7 @@ pub struct DebugHudInput {
 impl DebugHudInput {
     /// Builds input for the HUD from winit and the accumulated window/input state.
     ///
-    /// Cursor is **`WindowInputAccumulator::window_position` (logical) × scale factor**, matching the
+    /// Cursor is **`WindowInputAccumulator::window_position` (logical) x scale factor**, matching the
     /// swapchain / ImGui framebuffer in **physical** pixels.
     pub fn from_winit(
         window: &winit::window::Window,

@@ -1,14 +1,14 @@
 //! Cached pipelines, bind layouts, sampler, and per-pass uniform buffer for the GTAO
-//! three-pass chain (`gtao_main` → optional `gtao_denoise` → `gtao_apply`).
+//! three-pass chain (`gtao_main` -> optional `gtao_denoise` -> `gtao_apply`).
 //!
 //! Three independent caches are exposed:
 //!
-//! - [`GtaoMainPipelineCache`] — main AO production pass with two `R8Unorm` color targets
+//! - [`GtaoMainPipelineCache`] -- main AO production pass with two `R8Unorm` color targets
 //!   (visibility scaled by `1 / OCCLUSION_TERM_SCALE` + packed edges). Built manually
 //!   because the shared fullscreen helper is single-color-target only.
-//! - [`GtaoDenoisePipelineCache`] — bilateral denoise iteration with one `R8Unorm` color
+//! - [`GtaoDenoisePipelineCache`] -- bilateral denoise iteration with one `R8Unorm` color
 //!   target (denoised AO).
-//! - [`GtaoApplyPipelineCache`] — final-apply pass that folds the denoise kernel into HDR
+//! - [`GtaoApplyPipelineCache`] -- final-apply pass that folds the denoise kernel into HDR
 //!   modulation; one color target whose format follows the post-processing chain.
 //!
 //! Each cache holds mono + multiview variants. One process-wide `GtaoParams` uniform buffer

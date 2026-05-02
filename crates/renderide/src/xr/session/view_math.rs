@@ -18,12 +18,12 @@ pub(crate) fn ref_from_view_matrix(pose: &xr::Posef) -> Mat4 {
     Mat4::from_rotation_translation(rotation, translation)
 }
 
-/// Per-eye view–projection from OpenXR [`xr::View`] (reverse-Z, renderer world basis).
+/// Per-eye view-projection from OpenXR [`xr::View`] (reverse-Z, renderer world basis).
 pub fn view_projection_from_xr_view(view: &xr::View, near: f32, far: f32) -> Mat4 {
     view_projection_from_xr_view_aligned(view, near, far, Mat4::IDENTITY)
 }
 
-/// Per-eye view–projection from OpenXR [`xr::View`] after applying the host render-space rig
+/// Per-eye view-projection from OpenXR [`xr::View`] after applying the host render-space rig
 /// transform that maps tracking space into renderer world space.
 pub fn view_projection_from_xr_view_aligned(
     view: &xr::View,

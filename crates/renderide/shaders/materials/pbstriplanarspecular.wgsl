@@ -26,7 +26,7 @@ struct PbsTriplanarSpecularMaterial {
     _MainTex_ST: vec4<f32>,
     /// Tangent-space normal scale.
     _NormalScale: f32,
-    /// Triplanar blend exponent — higher values produce sharper transitions between planes.
+    /// Triplanar blend exponent -- higher values produce sharper transitions between planes.
     _TriBlendPower: f32,
     /// Keyword: project from world space (mutually exclusive with `_OBJECTSPACE`).
     _WORLDSPACE: f32,
@@ -137,8 +137,8 @@ fn triplanar_rgba(
 
 /// Build a triplanar world-space normal via Reoriented Normal Mapping when `_NORMALMAP` is on,
 /// otherwise return the renormalized geometric normal. Triplanar shading does not consume the
-/// mesh tangent — RNM rotates each per-plane tangent-space normal directly onto the interpolated
-/// world normal — so no tangent input is required.
+/// mesh tangent -- RNM rotates each per-plane tangent-space normal directly onto the interpolated
+/// world normal -- so no tangent input is required.
 fn sample_normal_world(uvs: PlanarUvs, world_n: vec3<f32>, weights: vec3<f32>) -> vec3<f32> {
     let n_geo = normalize(world_n);
     if (!uvu::kw_enabled(mat._NORMALMAP)) {

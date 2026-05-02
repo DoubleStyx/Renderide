@@ -7,8 +7,8 @@
 //! in the manifest are pre-resolved into [`ResolvedProfilePaths`] for the per-frame detection loop
 //! in [`super::openxr_input`].
 //!
-//! The lifecycle remains the spec-required order: create action set → create actions → suggest
-//! bindings (per profile) → attach action sets → create action spaces.
+//! The lifecycle remains the spec-required order: create action set -> create actions -> suggest
+//! bindings (per profile) -> attach action sets -> create action spaces.
 
 mod action_handles;
 mod profile_paths;

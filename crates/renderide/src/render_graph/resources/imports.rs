@@ -24,7 +24,7 @@ pub enum FrameTargetRole {
 pub struct HistorySlotId(&'static str);
 
 impl HistorySlotId {
-    /// Hi-Z pyramid for a view — the previous-frame depth pyramid used by GPU-side occlusion.
+    /// Hi-Z pyramid for a view -- the previous-frame depth pyramid used by GPU-side occlusion.
     pub const HI_Z: Self = Self("hi_z");
 
     /// Declares a new history slot id with a stable name. The name must be unique across
@@ -45,7 +45,7 @@ impl HistorySlotId {
 /// and [`BackendFrameBufferKind`] for buffers (lights, cluster tables, per-draw slab,
 /// frame uniforms). The [`Self::PingPong`] variant carries a [`HistorySlotId`]
 /// ([`&'static str`] newtype) so slot names stay readable in logs and registry errors. The
-/// alternative — an interned `u32` id — would lose the debug name without meaningful payoff for
+/// alternative -- an interned `u32` id -- would lose the debug name without meaningful payoff for
 /// a type instantiated a handful of times at graph build.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ImportSourceKind<F> {
