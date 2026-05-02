@@ -10,6 +10,9 @@ members = [
   "crates/logger",
 ]
 
+[profile.dev]
+opt-level = 1
+
 # Faster-than-default dev builds: inherits `dev` (debug symbols, unwind, assertions) but uses opt 2.
 # (`debug` is a reserved profile name in Cargo, so this is named `dev-fast`.)
 # Usage: `cargo build --profile dev-fast`
@@ -19,7 +22,6 @@ opt-level = 2
 
 # Global Release Build Settings
 [profile.release]
-# Disable debug symbols to reduce file size and increase performance
 debug = true
 # Full optimization for maximum performance
 opt-level = 3

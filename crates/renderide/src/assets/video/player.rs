@@ -169,6 +169,32 @@ impl AudioStreamMetadata {
     }
 }
 
+/// Builds a `videoflip method=vertical-flip` element that converts GStreamer's
+/// natural top-down V output to the Unity (V=0 bottom) convention shaders expect.
+///
+/// Returns `None` if `videoflip` is unavailable on the host system; the caller
+/// then builds the pipeline without a `video-filter` so playback still proceeds
+/// (frames will appear upside down until `gst-plugins-good` is installed).
+fn build_vertical_flip_filter(asset_id: i32) -> Option<gstreamer::Element> {
+    if gstreamer::ElementFactory::find("videoflip").is_none() {
+        logger::warn!(
+            "video texture {asset_id}: 'videoflip' element unavailable; \
+             frames may appear vertically flipped (install gst-plugins-good)"
+        );
+        return None;
+    }
+    match gstreamer::ElementFactory::make("videoflip")
+        .property_from_str("method", "vertical-flip")
+        .build()
+    {
+        Ok(element) => Some(element),
+        Err(e) => {
+            logger::warn!("video texture {asset_id}: failed to build videoflip: {e}");
+            None
+        }
+    }
+}
+
 impl VideoPlayer {
     /// Creates a new [`VideoPlayer`] using [`VideoTextureLoad`].
     pub fn new(
@@ -201,12 +227,15 @@ impl VideoPlayer {
             }
         };
 
-        let pipeline = match gstreamer::ElementFactory::make("playbin3")
+        let video_filter = build_vertical_flip_filter(id);
+        let mut pipeline_builder = gstreamer::ElementFactory::make("playbin3")
             .property("uri", &uri)
             .property("audio-sink", audio_sink.appsink())
-            .property("video-sink", video_sink.appsink())
-            .build()
-        {
+            .property("video-sink", video_sink.appsink());
+        if let Some(flip) = video_filter.as_ref() {
+            pipeline_builder = pipeline_builder.property("video-filter", flip);
+        }
+        let pipeline = match pipeline_builder.build() {
             Ok(p) => p,
             Err(e) => {
                 logger::error!("video texture {}: failed to create playbin: {e}", id);

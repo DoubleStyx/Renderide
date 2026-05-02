@@ -43,8 +43,10 @@ tracy = [
 ## `VideoPlayer::new` returns `None`. Off by default to keep cross-platform CI lean — GStreamer
 ## system libraries are reliably available on Linux but require manual setup on macOS and Windows.
 ##
-## Usage: `cargo build --features video-textures` (Linux: install `libgstreamer1.0-dev` and
-## `libgstreamer-plugins-base1.0-dev` first).
+## Usage: `cargo build --features video-textures` (Linux: install `libgstreamer1.0-dev`,
+## `libgstreamer-plugins-base1.0-dev`, and `libgstreamer-plugins-good1.0-dev` first;
+## the latter provides `videoflip`, used to land frames in the Unity V=0-bottom
+## convention shaders expect).
 video-textures = ["dep:gstreamer", "dep:gstreamer-app"]
 
 [package.metadata.cargo-machete]

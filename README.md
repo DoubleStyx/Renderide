@@ -127,13 +127,13 @@ The full schema lives next to the loader in [`crates/renderide/src/config`](crat
 
 ## Debugging
 
-1. Build the workspace in dev mode:
+1. Build the workspace in release mode:
 
    ```bash
-   cargo build --profile dev-fast
+   cargo build --release
    ```
 
-1. Run the bootstrapper in dev mode:
+1. Run the bootstrapper with Rust backtrace enabled:
 
    ```bash
    RUST_BACKTRACE=1 ./target/dev-fast/bootstrapper
@@ -175,6 +175,8 @@ Linux, macOS, and Windows are all tier-1 targets and exercised in CI ([`.github/
 ## Contributing
 
 Contributions are welcome. The workspace builds with the standard Cargo commands listed above; lints (`cargo clippy --all-targets --all-features`) and formatting (`cargo fmt`, plus `taplo fmt` when editing `Cargo.toml`) are expected to be clean before opening a pull request, and CI runs the same checks across all three platforms.
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) to learn how to get started.
 
 ## License
 
