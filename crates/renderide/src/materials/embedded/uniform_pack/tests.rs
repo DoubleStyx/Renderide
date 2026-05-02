@@ -53,6 +53,47 @@ mod text_uniform_packing_tests {
         out
     }
 
+    fn reflected_with_single_vec4_field(
+        field_name: &str,
+    ) -> (
+        ReflectedRasterLayout,
+        StemEmbeddedPropertyIds,
+        PropertyIdRegistry,
+    ) {
+        let registry = PropertyIdRegistry::new();
+        let mut fields = HashMap::new();
+        fields.insert(
+            field_name.to_string(),
+            ReflectedUniformField {
+                offset: 0,
+                size: 16,
+                kind: ReflectedUniformScalarKind::Vec4,
+            },
+        );
+        let reflected = ReflectedRasterLayout {
+            layout_fingerprint: 0,
+            material_entries: Vec::new(),
+            per_draw_entries: Vec::new(),
+            material_uniform: Some(ReflectedMaterialUniformBlock {
+                binding: 0,
+                total_size: 16,
+                fields,
+            }),
+            material_group1_names: HashMap::new(),
+            vs_vertex_inputs: Vec::new(),
+            vs_max_vertex_location: None,
+            uses_scene_depth_snapshot: false,
+            uses_scene_color_snapshot: false,
+            requires_intersection_pass: false,
+        };
+        let ids = StemEmbeddedPropertyIds::build(
+            Arc::new(EmbeddedSharedKeywordIds::new(&registry)),
+            &registry,
+            &reflected,
+        );
+        (reflected, ids, registry)
+    }
+
     /// Extracts a packed f32 uniform from `bytes`.
     fn read_f32_at(bytes: &[u8], offset: usize) -> f32 {
         f32::from_le_bytes(
@@ -617,6 +658,63 @@ mod text_uniform_packing_tests {
         let bytes = build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(24), &tex_ctx)
             .expect("uniform bytes");
 
+        assert_eq!(read_f32x4(&bytes, 0), [2.0, 3.0, 0.25, 0.75]);
+    }
+
+    #[test]
+    fn color_vec4_uniform_is_linearized_during_pack() {
+        let (reflected, ids, registry) = reflected_with_single_vec4_field("_Color");
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(
+            240,
+            registry.intern("_Color"),
+            MaterialPropertyValue::Float4([0.5, 0.25, 0.75, 0.9]),
+        );
+        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+        let pools = EmbeddedTexturePools {
+            texture: &texture,
+            texture3d: &texture3d,
+            cubemap: &cubemap,
+            render_texture: &render_texture,
+            video_texture: &video_texture,
+        };
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+        let bytes = build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(240), &tex_ctx)
+            .expect("uniform bytes");
+        let packed = read_f32x4(&bytes, 0);
+
+        assert!((packed[0] - srgb_channel_to_linear(0.5)).abs() < 1e-6);
+        assert!((packed[1] - srgb_channel_to_linear(0.25)).abs() < 1e-6);
+        assert!((packed[2] - srgb_channel_to_linear(0.75)).abs() < 1e-6);
+        assert!((packed[3] - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn non_color_vec4_uniform_is_packed_raw() {
+        let (reflected, ids, registry) = reflected_with_single_vec4_field("_MainTex_ST");
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(
+            241,
+            registry.intern("_MainTex_ST"),
+            MaterialPropertyValue::Float4([2.0, 3.0, 0.25, 0.75]),
+        );
+        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+        let pools = EmbeddedTexturePools {
+            texture: &texture,
+            texture3d: &texture3d,
+            cubemap: &cubemap,
+            render_texture: &render_texture,
+            video_texture: &video_texture,
+        };
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+        let bytes = build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(241), &tex_ctx)
+            .expect("uniform bytes");
         assert_eq!(read_f32x4(&bytes, 0), [2.0, 3.0, 0.25, 0.75]);
     }
 

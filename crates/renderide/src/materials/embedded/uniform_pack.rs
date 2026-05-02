@@ -22,6 +22,40 @@ const LOD_BIAS_SUFFIX: &str = "_LodBias";
 /// Suffix convention that opts a uniform field in to storage V-inversion population.
 const STORAGE_V_INVERTED_SUFFIX: &str = "_StorageVInverted";
 
+/// Converts one sRGB channel to linear for color-like vec4 uniforms.
+///
+/// Values above `1.0` are treated as already-linear HDR and pass through unchanged.
+fn srgb_channel_to_linear(v: f32) -> f32 {
+    if v > 1.0 {
+        return v;
+    }
+    if v <= 0.04045 {
+        return v / 12.92;
+    }
+    ((v + 0.055) / 1.055).powf(2.4)
+}
+
+/// Applies sRGB->linear conversion to the RGB channels while keeping alpha unchanged.
+fn srgb_vec4_rgb_to_linear(v: [f32; 4]) -> [f32; 4] {
+    [
+        srgb_channel_to_linear(v[0]),
+        srgb_channel_to_linear(v[1]),
+        srgb_channel_to_linear(v[2]),
+        v[3],
+    ]
+}
+
+/// Heuristic for vec4 uniforms that represent display-authored colors/tints.
+fn should_linearize_vec4_uniform(field_name: &str) -> bool {
+    let unescaped = shader_writer_unescaped_field_name(field_name)
+        .strip_prefix('_')
+        .unwrap_or(shader_writer_unescaped_field_name(field_name));
+    let lower = unescaped.to_ascii_lowercase();
+    lower.contains("color")
+        || lower.contains("tint")
+        || lower.ends_with("rim")
+}
+
 fn write_f32_at(buf: &mut [u8], field: &ReflectedUniformField, v: f32) {
     let off = field.offset as usize;
     if off + 4 <= buf.len() && field.size >= 4 {
@@ -91,12 +125,15 @@ pub(crate) fn build_embedded_uniform_bytes(
         let pid = *ids.uniform_field_ids.get(field_name)?;
         match field.kind {
             ReflectedUniformScalarKind::Vec4 => {
-                let v =
+                let mut v =
                     if let Some(MaterialPropertyValue::Float4(c)) = store.get_merged(lookup, pid) {
                         *c
                     } else {
                         default_vec4_for_field(shader_writer_unescaped_field_name(field_name))
                     };
+                if should_linearize_vec4_uniform(field_name) {
+                    v = srgb_vec4_rgb_to_linear(v);
+                }
                 write_f32x4_at(&mut buf, field, &v);
             }
             ReflectedUniformScalarKind::F32 => {
