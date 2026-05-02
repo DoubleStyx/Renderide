@@ -51,9 +51,7 @@ fn should_linearize_vec4_uniform(field_name: &str) -> bool {
         .strip_prefix('_')
         .unwrap_or(shader_writer_unescaped_field_name(field_name));
     let lower = unescaped.to_ascii_lowercase();
-    lower.contains("color")
-        || lower.contains("tint")
-        || lower.ends_with("rim")
+    lower.contains("color") || lower.contains("tint") || lower.ends_with("rim")
 }
 
 fn write_f32_at(buf: &mut [u8], field: &ReflectedUniformField, v: f32) {
