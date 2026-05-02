@@ -55,7 +55,7 @@ fn vertex_outline(
     let outline_pos = vec4<f32>(pos.xyz + xb::safe_normalize(n.xyz, vec3<f32>(0.0, 1.0, 0.0)) * outline_width, 1.0);
 
     var out = xsurf::vertex_main(instance_index, view_idx, outline_pos, n, uv_primary, color, tangent, uv_secondary);
-    out.color = vec4<f32>(xb::mat._OutlineColor.rgb, 1.0);
+    out.color = vec4<f32>(xb::srgb_to_linear(xb::mat._OutlineColor.rgb), 1.0);
     return out;
 }
 
@@ -79,7 +79,7 @@ fn fragment_outline(
     let s = xsurf::sample_surface(false, front_facing, world_pos, world_n, world_t, world_b, uv_primary, uv_secondary, color);
     let alpha = xa::apply_alpha(alpha_mode, frag_pos.xy, world_pos, view_layer, uv_primary, s.albedo.a, s.clip_alpha);
 
-    var ol = xb::mat._OutlineColor.rgb;
+    var ol = xb::srgb_to_linear(xb::mat._OutlineColor.rgb);
     if (xb::kw(xb::mat._OutlineAlbedoTint)) {
         ol = ol * s.diffuse_color;
     }

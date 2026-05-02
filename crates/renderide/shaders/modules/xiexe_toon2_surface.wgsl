@@ -132,8 +132,9 @@ fn sample_surface(
     let uv_reflectivity = uvu::apply_st(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetReflectivity), xb::mat._ReflectivityMask_ST);
     let uv_specular = uvu::apply_st(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetSpecular), xb::mat._SpecularMap_ST);
 
-    var albedo = textureSample(xb::_MainTex, xb::_MainTex_sampler, uv_albedo) * xb::mat._Color;
-    let clip_alpha = xb::mat._Color.a * acs::texture_alpha_base_mip(xb::_MainTex, xb::_MainTex_sampler, uv_albedo);
+    let color_tint = vec4<f32>(xb::srgb_to_linear(xb::mat._Color.rgb), xb::mat._Color.a);
+    var albedo = textureSample(xb::_MainTex, xb::_MainTex_sampler, uv_albedo) * color_tint;
+    let clip_alpha = color_tint.a * acs::texture_alpha_base_mip(xb::_MainTex, xb::_MainTex_sampler, uv_albedo);
     if (xb::vertex_color_albedo_enabled()) {
         albedo = vec4<f32>(albedo.rgb * color.rgb, albedo.a);
     }
@@ -183,7 +184,7 @@ fn sample_surface(
     var occlusion = vec3<f32>(1.0);
     if (xb::occlusion_enabled()) {
         let occ = textureSample(xb::_OcclusionMap, xb::_OcclusionMap_sampler, uv_occlusion).r;
-        occlusion = mix(xb::mat._OcclusionColor.rgb, vec3<f32>(1.0), occ);
+        occlusion = mix(xb::srgb_to_linear(xb::mat._OcclusionColor.rgb), vec3<f32>(1.0), occ);
     }
 
     var emission = vec3<f32>(0.0);

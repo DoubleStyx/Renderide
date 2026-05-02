@@ -160,7 +160,7 @@ fn rim_light(
 
     var col = rim * xb::mat._RimIntensity * (light.color + ambient);
     col = col * mix(vec3<f32>(1.0), vec3<f32>(light.attenuation) + ambient, clamp(xb::mat._RimAttenEffect, 0.0, 1.0));
-    col = col * xb::mat._RimColor.rgb;
+    col = col * xb::srgb_to_linear(xb::mat._RimColor.rgb);
     col = col * mix(vec3<f32>(1.0), s.diffuse_color, clamp(xb::mat._RimAlbedoTint, 0.0, 1.0));
     col = col * mix(vec3<f32>(1.0), env_map, clamp(xb::mat._RimCubemapTint, 0.0, 1.0));
     return col;
@@ -179,7 +179,7 @@ fn shadow_rim(
     var rim = xb::saturate(1.0 - vdn) * pow(xb::saturate(1.0 - ndl), max(xb::mat._ShadowRimThreshold * 2.0, 0.0));
     rim = smoothstep(xb::mat._ShadowRimRange - sharp, xb::mat._ShadowRimRange + sharp, rim);
 
-    let tint = xb::mat._ShadowRim.rgb * mix(vec3<f32>(1.0), s.diffuse_color, clamp(xb::mat._ShadowRimAlbedoTint, 0.0, 1.0)) + ambient * 0.1;
+    let tint = xb::srgb_to_linear(xb::mat._ShadowRim.rgb) * mix(vec3<f32>(1.0), s.diffuse_color, clamp(xb::mat._ShadowRimAlbedoTint, 0.0, 1.0)) + ambient * 0.1;
     return mix(vec3<f32>(1.0), tint, rim);
 }
 
@@ -190,7 +190,8 @@ fn subsurface(
     view_dir: vec3<f32>,
     ambient: vec3<f32>,
 ) -> vec3<f32> {
-    if (dot(xb::mat._SSColor.rgb, xb::mat._SSColor.rgb) <= 1e-8) {
+    let ss_color = xb::srgb_to_linear(xb::mat._SSColor.rgb);
+    if (dot(ss_color, ss_color) <= 1e-8) {
         return vec3<f32>(0.0);
     }
 
@@ -203,7 +204,7 @@ fn subsurface(
     let attenuation = xb::saturate(light.attenuation * (raw_ndl * 0.5 + 0.5));
     let h = xb::safe_normalize(light.direction + s.normal * xb::mat._SSDistortion, s.normal);
     let vdh = pow(xb::saturate(dot(view_dir, -h)), max(xb::mat._SSPower, 0.001));
-    let scatter = xb::mat._SSColor.rgb * (vdh + ambient) * attenuation * xb::mat._SSScale * s.thickness;
+    let scatter = ss_color * (vdh + ambient) * attenuation * xb::mat._SSScale * s.thickness;
     return max(vec3<f32>(0.0), light.color * scatter * s.albedo.rgb) * ndl * light.attenuation;
 }
 
@@ -253,7 +254,7 @@ fn indirect_reflection_branch(
     if (xb::matcap_enabled()) {
         let uv = matcap_uv(view_dir, normal);
         let lod = clamp((1.0 - clamp(perceptual_roughness, 0.0, 1.0)) * SPECCUBE_LOD_STEPS, 0.0, SPECCUBE_LOD_STEPS);
-        var spec = textureSampleLevel(xb::_Matcap, xb::_Matcap_sampler, uv, lod).rgb * xb::mat._MatcapTint.rgb;
+        var spec = textureSampleLevel(xb::_Matcap, xb::_Matcap_sampler, uv, lod).rgb * xb::srgb_to_linear(xb::mat._MatcapTint.rgb);
         if (!reflection_is_multiplicative()) {
             spec = spec * (ambient + dominant_light_col_atten * 0.5);
         }
@@ -360,7 +361,7 @@ fn emission_color(
     }
 
     var emission = mix(s.emission, s.emission * s.diffuse_color, clamp(xb::mat._EmissionToDiffuse, 0.0, 1.0));
-    emission = emission * xb::mat._EmissionColor.rgb;
+    emission = emission * xb::srgb_to_linear(xb::mat._EmissionColor.rgb);
 
     if (xb::scale_with_light_enabled()) {
         let sensitivity = clamp(xb::mat._ScaleWithLightSensitivity, 0.0, 1.0);

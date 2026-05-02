@@ -429,6 +429,29 @@ fn grayscale(v: vec3<f32>) -> f32 {
     return dot(v, vec3<f32>(0.2125, 0.7154, 0.0721));
 }
 
+/// Converts one sRGB channel to linear for material color properties.
+///
+/// Values above 1.0 are treated as HDR-linear and passed through to avoid
+/// over-amplifying authored HDR tints.
+fn srgb_channel_to_linear(v: f32) -> f32 {
+    if (v > 1.0) {
+        return v;
+    }
+    if (v <= 0.04045) {
+        return v / 12.92;
+    }
+    return pow((v + 0.055) / 1.055, 2.4);
+}
+
+/// Component-wise sRGB->linear conversion for material color uniforms.
+fn srgb_to_linear(v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        srgb_channel_to_linear(v.x),
+        srgb_channel_to_linear(v.y),
+        srgb_channel_to_linear(v.z),
+    );
+}
+
 /// Lerps `c` toward its luminance by `(1 - mat._Saturation)`. Matches the Unity behaviour
 /// of `_Saturation = 0` collapsing to greyscale and `_Saturation = 1` keeping full color.
 fn maybe_saturate_color(c: vec3<f32>) -> vec3<f32> {
