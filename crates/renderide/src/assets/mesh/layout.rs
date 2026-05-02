@@ -2,16 +2,16 @@
 //!
 //! Regions: vertices → indices → bone_counts → bone_weights → bind_poses → blendshape_data.
 
-use std::collections::HashSet;
-
 use crate::shared::{
     BlendshapeBufferDescriptor, IndexBufferFormat, SubmeshBufferDescriptor,
     VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType,
 };
+use hashbrown::{HashMap, HashSet};
 
 /// Bytes per sparse blendshape entry on the GPU:
-/// `vertex_index: u32` + `delta.xyz: f32` (12) — matches [`blendshape_scatter_main`] struct layout.
-pub const BLENDSHAPE_SPARSE_ENTRY_SIZE: usize = 16;
+/// `vertex_index: u32` + position, normal, and tangent `delta.xyz: f32` channels (36 bytes)
+/// — matches [`blendshape_scatter_main`] struct layout.
+pub const BLENDSHAPE_SPARSE_ENTRY_SIZE: usize = 40;
 
 /// Bytes per frame range row: `first_entry: u32`, `entry_count: u32`.
 pub const BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE: usize = 8;
@@ -216,12 +216,12 @@ pub fn extract_bind_poses(raw: &[u8], bone_count: usize) -> Option<Vec<[[f32; 4]
     Some(poses)
 }
 
-/// GPU-ready sparse position deltas and a small per-frame descriptor table (`first_entry`, `entry_count`).
+/// GPU-ready sparse blendshape deltas and a small per-frame descriptor table (`first_entry`, `entry_count`).
 ///
-/// Normal and tangent streams from the host are not stored; the current scatter pass applies position
-/// deltas only.
+/// Position, normal, and tangent channels share one sparse row per vertex so scatter dispatches can
+/// update every deformed attribute stream with the same frame coefficient.
 pub struct BlendshapeGpuPack {
-    /// Tightly packed rows of `vertex_index: u32` followed by `delta.xyz: f32` ([`BLENDSHAPE_SPARSE_ENTRY_SIZE`] bytes each).
+    /// Tightly packed rows of `vertex_index: u32` followed by position, normal, and tangent deltas.
     pub sparse_deltas: Vec<u8>,
     /// One `(first_entry, entry_count)` descriptor row per frame as little-endian `u32` pairs, padded to one empty row when all frames are empty.
     pub shape_descriptor_bytes: Vec<u8>,
@@ -231,6 +231,12 @@ pub struct BlendshapeGpuPack {
     pub shape_frame_spans: Vec<BlendshapeFrameSpan>,
     /// Logical blendshape slot count (`max(blendshape_index) + 1`).
     pub num_blendshapes: i32,
+    /// Whether any sparse row carries a nonzero position delta.
+    pub has_position_deltas: bool,
+    /// Whether any sparse row carries a nonzero normal delta.
+    pub has_normal_deltas: bool,
+    /// Whether any sparse row carries a nonzero tangent delta.
+    pub has_tangent_deltas: bool,
 }
 
 /// Sparse range and metadata for one Unity blendshape frame.
@@ -275,8 +281,50 @@ struct PendingBlendshapeFrame {
     frame_index: i32,
     /// Unity frame weight.
     frame_weight: f32,
-    /// Nonzero position deltas in this frame.
-    entries: Vec<(u32, [f32; 3])>,
+    /// Nonzero per-vertex deltas in this frame, keyed by vertex index.
+    entries: HashMap<u32, PendingBlendshapeDelta>,
+}
+
+/// One sparse vertex delta row before deterministic sorting and byte packing.
+#[derive(Clone, Copy, Debug, Default)]
+struct PendingBlendshapeDelta {
+    position: [f32; 3],
+    normal: [f32; 3],
+    tangent: [f32; 3],
+}
+
+impl PendingBlendshapeDelta {
+    fn has_any_channel(self) -> bool {
+        vector_has_nonzero_delta(self.position)
+            || vector_has_nonzero_delta(self.normal)
+            || vector_has_nonzero_delta(self.tangent)
+    }
+}
+
+/// Blendshape delta stream channel carried by a host descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum BlendshapeDeltaChannel {
+    Position,
+    Normal,
+    Tangent,
+}
+
+impl BlendshapeDeltaChannel {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Position => "position",
+            Self::Normal => "normal",
+            Self::Tangent => "tangent",
+        }
+    }
+
+    fn set_delta(self, row: &mut PendingBlendshapeDelta, delta: [f32; 3]) {
+        match self {
+            Self::Position => row.position = delta,
+            Self::Normal => row.normal = delta,
+            Self::Tangent => row.tangent = delta,
+        }
+    }
 }
 
 /// Returns whether a coefficient is finite and nonzero enough to dispatch.
@@ -426,8 +474,15 @@ fn blendshape_slot_count(blendshape_buffers: &[BlendshapeBufferDescriptor]) -> O
     Some(num_blendshapes)
 }
 
-/// Reads one descriptor's position channel into sparse pending entries.
-fn read_pending_position_entries(
+/// Returns whether a vector delta is large enough to influence a sparse row.
+fn vector_has_nonzero_delta(delta: [f32; 3]) -> bool {
+    let [x, y, z] = delta;
+    let mag_sq = z.mul_add(z, x.mul_add(x, y * y));
+    mag_sq > BLENDSHAPE_POSITION_EPSILON_SQ
+}
+
+/// Reads one descriptor channel into sparse pending entries.
+fn read_pending_channel_entries(
     raw: &[u8],
     byte_offset: usize,
     vertex_count: usize,
@@ -444,12 +499,50 @@ fn read_pending_position_entries(
         let x = f32::from_le_bytes(raw[src_offset..src_offset + 4].try_into().ok()?);
         let y = f32::from_le_bytes(raw[src_offset + 4..src_offset + 8].try_into().ok()?);
         let z = f32::from_le_bytes(raw[src_offset + 8..src_offset + 12].try_into().ok()?);
-        let mag_sq = z.mul_add(z, x.mul_add(x, y * y));
-        if !duplicate_frame && mag_sq > BLENDSHAPE_POSITION_EPSILON_SQ {
-            entries.push((v as u32, [x, y, z]));
+        let delta = [x, y, z];
+        if !duplicate_frame && vector_has_nonzero_delta(delta) {
+            entries.push((v as u32, delta));
         }
     }
     Some(entries)
+}
+
+/// Returns the mutable frame accumulator for `descriptor`, creating it if this is the first channel
+/// observed for that shape/frame pair.
+fn pending_frame_for_descriptor<'a>(
+    per_shape: &'a mut [Vec<PendingBlendshapeFrame>],
+    shape_index: usize,
+    descriptor: &BlendshapeBufferDescriptor,
+) -> Option<&'a mut PendingBlendshapeFrame> {
+    let frames = per_shape.get_mut(shape_index)?;
+    let frame_index = descriptor.frame_index;
+    let index = match frames
+        .iter()
+        .position(|frame| frame.frame_index == frame_index)
+    {
+        Some(index) => index,
+        None => {
+            frames.push(PendingBlendshapeFrame {
+                shape_index: shape_index as u32,
+                frame_index,
+                frame_weight: descriptor.frame_weight,
+                entries: HashMap::new(),
+            });
+            frames.len() - 1
+        }
+    };
+    frames.get_mut(index)
+}
+
+/// Merges one descriptor channel into the shape/frame sparse accumulator.
+fn merge_pending_channel_entries(
+    frame: &mut PendingBlendshapeFrame,
+    channel: BlendshapeDeltaChannel,
+    entries: Vec<(u32, [f32; 3])>,
+) {
+    for (vertex_index, delta) in entries {
+        channel.set_delta(frame.entries.entry(vertex_index).or_default(), delta);
+    }
 }
 
 /// Extracts descriptor streams into per-shape pending blendshape frames.
@@ -463,8 +556,9 @@ fn collect_pending_blendshape_frames(
     const VECTOR3_BYTES: usize = 12;
     let mut per_shape: Vec<Vec<PendingBlendshapeFrame>> = Vec::with_capacity(num_blendshapes);
     per_shape.resize_with(num_blendshapes, Vec::new);
-    let mut seen_position_frames: Vec<HashSet<i32>> = Vec::with_capacity(num_blendshapes);
-    seen_position_frames.resize_with(num_blendshapes, HashSet::new);
+    let mut seen_channels: Vec<HashSet<(i32, BlendshapeDeltaChannel)>> =
+        Vec::with_capacity(num_blendshapes);
+    seen_channels.resize_with(num_blendshapes, HashSet::new);
     let mut byte_offset = layout.blendshape_data_start;
 
     for descriptor in blendshape_buffers {
@@ -472,39 +566,40 @@ fn collect_pending_blendshape_frames(
         if bi >= num_blendshapes {
             continue;
         }
-        if descriptor.data_flags.positions() {
+        for (has_channel, channel) in [
+            (
+                descriptor.data_flags.positions(),
+                BlendshapeDeltaChannel::Position,
+            ),
+            (
+                descriptor.data_flags.normals(),
+                BlendshapeDeltaChannel::Normal,
+            ),
+            (
+                descriptor.data_flags.tangets(),
+                BlendshapeDeltaChannel::Tangent,
+            ),
+        ] {
+            if !has_channel {
+                continue;
+            }
             let chunk_len = VECTOR3_BYTES * vertex_count;
-            let duplicate_frame = !seen_position_frames[bi].insert(descriptor.frame_index);
+            let duplicate_frame = !seen_channels[bi].insert((descriptor.frame_index, channel));
             if duplicate_frame {
                 logger::warn!(
-                    "extract_blendshape_offsets: duplicate position frame shape={} frame={} skipped",
+                    "extract_blendshape_offsets: duplicate {} frame shape={} frame={} skipped",
+                    channel.label(),
                     descriptor.blendshape_index,
                     descriptor.frame_index
                 );
             }
             let entries =
-                read_pending_position_entries(raw, byte_offset, vertex_count, duplicate_frame)?;
+                read_pending_channel_entries(raw, byte_offset, vertex_count, duplicate_frame)?;
             if !duplicate_frame {
-                per_shape[bi].push(PendingBlendshapeFrame {
-                    shape_index: bi as u32,
-                    frame_index: descriptor.frame_index,
-                    frame_weight: descriptor.frame_weight,
-                    entries,
-                });
+                let frame = pending_frame_for_descriptor(&mut per_shape, bi, descriptor)?;
+                merge_pending_channel_entries(frame, channel, entries);
             }
             byte_offset += chunk_len;
-        }
-        for has_channel in [
-            descriptor.data_flags.normals(),
-            descriptor.data_flags.tangets(),
-        ] {
-            if has_channel {
-                let chunk_len = VECTOR3_BYTES * vertex_count;
-                if byte_offset + chunk_len > raw.len() {
-                    return None;
-                }
-                byte_offset += chunk_len;
-            }
         }
     }
     Some(per_shape)
@@ -522,6 +617,9 @@ fn build_blendshape_gpu_pack(
         vec![0u8; descriptor_row_count * BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE];
     let mut frame_ranges = Vec::with_capacity(frame_count);
     let mut shape_frame_spans = vec![BlendshapeFrameSpan::default(); num_blendshapes];
+    let mut has_position_deltas = false;
+    let mut has_normal_deltas = false;
+    let mut has_tangent_deltas = false;
 
     for (s, frames) in per_shape.iter_mut().enumerate() {
         frames.sort_by(|a, b| {
@@ -535,6 +633,9 @@ fn build_blendshape_gpu_pack(
             &mut sparse_deltas,
             &mut shape_descriptor_bytes,
             &mut frame_ranges,
+            &mut has_position_deltas,
+            &mut has_normal_deltas,
+            &mut has_tangent_deltas,
         );
         shape_frame_spans[s] = BlendshapeFrameSpan {
             first_frame,
@@ -548,6 +649,9 @@ fn build_blendshape_gpu_pack(
         frame_ranges,
         shape_frame_spans,
         num_blendshapes: num_blendshapes as i32,
+        has_position_deltas,
+        has_normal_deltas,
+        has_tangent_deltas,
     }
 }
 
@@ -557,15 +661,31 @@ fn append_sorted_pending_frames(
     sparse_deltas: &mut Vec<u8>,
     shape_descriptor_bytes: &mut [u8],
     frame_ranges: &mut Vec<BlendshapeFrameRange>,
+    has_position_deltas: &mut bool,
+    has_normal_deltas: &mut bool,
+    has_tangent_deltas: &mut bool,
 ) {
     for frame in frames {
         let first_entry = (sparse_deltas.len() / BLENDSHAPE_SPARSE_ENTRY_SIZE) as u32;
-        let count = frame.entries.len() as u32;
-        for (vi, d) in &frame.entries {
+        let mut entries: Vec<(u32, PendingBlendshapeDelta)> = frame
+            .entries
+            .iter()
+            .filter_map(|(&vertex_index, &delta)| {
+                delta.has_any_channel().then_some((vertex_index, delta))
+            })
+            .collect();
+        entries.sort_by_key(|(vertex_index, _)| *vertex_index);
+        let count = entries.len() as u32;
+        for (vi, d) in entries {
+            *has_position_deltas |= vector_has_nonzero_delta(d.position);
+            *has_normal_deltas |= vector_has_nonzero_delta(d.normal);
+            *has_tangent_deltas |= vector_has_nonzero_delta(d.tangent);
             sparse_deltas.extend_from_slice(&vi.to_le_bytes());
-            sparse_deltas.extend_from_slice(&d[0].to_le_bytes());
-            sparse_deltas.extend_from_slice(&d[1].to_le_bytes());
-            sparse_deltas.extend_from_slice(&d[2].to_le_bytes());
+            for channel_delta in [d.position, d.normal, d.tangent] {
+                sparse_deltas.extend_from_slice(&channel_delta[0].to_le_bytes());
+                sparse_deltas.extend_from_slice(&channel_delta[1].to_le_bytes());
+                sparse_deltas.extend_from_slice(&channel_delta[2].to_le_bytes());
+            }
         }
         let base = frame_ranges
             .len()
@@ -582,10 +702,10 @@ fn append_sorted_pending_frames(
     }
 }
 
-/// Repacks host blendshape **position** deltas into frame-aware sparse GPU storage.
+/// Repacks host blendshape position, normal, and tangent deltas into frame-aware sparse GPU storage.
 ///
-/// Only [`BlendshapeDataFlags::POSITIONS`] channels contribute. Normal/tangent streams are consumed
-/// from the wire to advance offsets but are not uploaded.
+/// Missing channels are encoded as zero deltas so one sparse row can update all deformed attribute
+/// streams selected by the compute path.
 pub fn extract_blendshape_offsets(
     raw: &[u8],
     layout: &MeshBufferLayout,

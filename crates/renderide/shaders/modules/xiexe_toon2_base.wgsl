@@ -325,7 +325,7 @@ struct VertexOutput {
     @location(0) world_pos: vec3<f32>,
     /// World-space geometric normal (pre-perturbation).
     @location(1) world_n: vec3<f32>,
-    /// World-space tangent (orthonormalised against `world_n`).
+    /// World-space tangent from the MikkTSpace basis.
     @location(2) world_t: vec3<f32>,
     /// World-space bitangent (signed by `tangent.w`).
     @location(3) world_b: vec3<f32>,
@@ -355,9 +355,9 @@ struct SurfaceData {
     raw_normal: vec3<f32>,
     /// Final perturbed world-space normal (post-detail blend, post-back-face flip).
     normal: vec3<f32>,
-    /// World-space tangent matching `normal` after re-orthonormalisation.
+    /// World-space tangent matching `normal` after normal-map perturbation.
     tangent: vec3<f32>,
-    /// World-space bitangent matching `normal` after re-orthonormalisation.
+    /// World-space bitangent matching `normal` after normal-map perturbation.
     bitangent: vec3<f32>,
     /// Final metallic factor.
     metallic: f32,
@@ -531,4 +531,3 @@ fn bayer_threshold(frag_xy: vec2<f32>) -> f32 {
 fn view_projection_for_draw(d: pd::PerDrawUniforms, view_idx: u32) -> mat4x4<f32> {
     return mv::select_view_proj(d, view_idx);
 }
-

@@ -93,6 +93,12 @@ pub struct GpuMesh {
     pub blendshape_shape_frame_spans: Vec<BlendshapeFrameSpan>,
     /// Number of logical blendshape slots (`max(blendshape_index)+1`).
     pub num_blendshapes: u32,
+    /// Whether uploaded blendshape rows include nonzero position deltas.
+    pub blendshape_has_position_deltas: bool,
+    /// Whether uploaded blendshape rows include nonzero normal deltas.
+    pub blendshape_has_normal_deltas: bool,
+    /// Whether uploaded blendshape rows include nonzero tangent deltas.
+    pub blendshape_has_tangent_deltas: bool,
     /// Decomposed position stream (`vec4<f32>` per vertex) for compute + debug raster.
     pub positions_buffer: Option<Arc<wgpu::Buffer>>,
     /// Bind-pose normal stream (`vec4<f32>` per vertex; xyz used). Skinning writes deformed normals
@@ -162,11 +168,20 @@ pub(super) fn blendshape_and_deform_buffers_match_for_in_place(
         if mesh.num_blendshapes != n_blend {
             return false;
         }
+        if mesh.blendshape_has_position_deltas != extracted.has_position_deltas
+            || mesh.blendshape_has_normal_deltas != extracted.has_normal_deltas
+            || mesh.blendshape_has_tangent_deltas != extracted.has_tangent_deltas
+        {
+            return false;
+        }
     } else if mesh.num_blendshapes > 0
         || mesh.blendshape_sparse_buffer.is_some()
         || mesh.blendshape_shape_descriptor_buffer.is_some()
         || !mesh.blendshape_frame_ranges.is_empty()
         || !mesh.blendshape_shape_frame_spans.is_empty()
+        || mesh.blendshape_has_position_deltas
+        || mesh.blendshape_has_normal_deltas
+        || mesh.blendshape_has_tangent_deltas
     {
         return false;
     }
@@ -630,6 +645,9 @@ impl GpuMesh {
             blendshape_frame_ranges: blend_up.frame_ranges,
             blendshape_shape_frame_spans: blend_up.shape_frame_spans,
             num_blendshapes,
+            blendshape_has_position_deltas: blend_up.has_position_deltas,
+            blendshape_has_normal_deltas: blend_up.has_normal_deltas,
+            blendshape_has_tangent_deltas: blend_up.has_tangent_deltas,
             positions_buffer: derived.positions_buffer,
             normals_buffer: derived.normals_buffer,
             uv0_buffer: derived.uv0_buffer,

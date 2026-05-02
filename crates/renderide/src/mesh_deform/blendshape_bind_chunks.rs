@@ -87,6 +87,9 @@ mod tests {
                 frame_count: 1,
             }],
             num_blendshapes: 1,
+            has_position_deltas: true,
+            has_normal_deltas: false,
+            has_tangent_deltas: false,
         };
         assert!(blendshape_sparse_buffers_fit_device(&pack, 1024, 1024));
     }

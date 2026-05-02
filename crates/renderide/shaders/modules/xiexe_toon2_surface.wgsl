@@ -34,7 +34,10 @@ fn vertex_main(
     let d = pd::get_draw(instance_index);
     let world_p = d.model * vec4<f32>(pos.xyz, 1.0);
     let world_n = xb::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
-    let world_tangent = vec4<f32>((d.model * vec4<f32>(tangent.xyz, 0.0)).xyz, tangent.w);
+    let world_tangent = vec4<f32>(
+        xb::safe_normalize((d.model * vec4<f32>(tangent.xyz, 0.0)).xyz, vec3<f32>(1.0, 0.0, 0.0)),
+        tangent.w,
+    );
     let tbn = pnorm::orthonormal_tbn(world_n, world_tangent);
     let vp = xb::view_projection_for_draw(d, view_idx);
 

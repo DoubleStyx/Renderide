@@ -70,6 +70,7 @@ pub(super) struct MeshDeformRecordInputs<'a, 'b> {
     pub skin_cache_entry: &'a SkinCacheEntry,
     pub positions_arena: &'a wgpu::Buffer,
     pub normals_arena: &'a wgpu::Buffer,
+    pub tangents_arena: &'a wgpu::Buffer,
     pub temp_arena: &'a wgpu::Buffer,
 }
 
@@ -110,6 +111,8 @@ pub(super) fn record_mesh_deform(
             BlendshapeCacheCtx {
                 cache_entry: inputs.skin_cache_entry,
                 positions_arena: inputs.positions_arena,
+                normals_arena: inputs.normals_arena,
+                tangents_arena: inputs.tangents_arena,
                 temp_arena: inputs.temp_arena,
                 blend_then_skin,
             },
@@ -133,6 +136,7 @@ pub(super) fn record_mesh_deform(
                 cache_entry: inputs.skin_cache_entry,
                 positions_arena: inputs.positions_arena,
                 normals_arena: inputs.normals_arena,
+                tangents_arena: inputs.tangents_arena,
                 temp_arena: inputs.temp_arena,
                 skin_dispatch_cursor: inputs.skin_dispatch_cursor,
             },

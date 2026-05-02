@@ -588,6 +588,12 @@ pub(super) struct BlendshapeBuffersUpload {
     pub shape_frame_spans: Vec<BlendshapeFrameSpan>,
     /// Logical blendshape slot count for weight indexing.
     pub num_blendshapes: u32,
+    /// Whether any sparse row carries a nonzero position delta.
+    pub has_position_deltas: bool,
+    /// Whether any sparse row carries a nonzero normal delta.
+    pub has_normal_deltas: bool,
+    /// Whether any sparse row carries a nonzero tangent delta.
+    pub has_tangent_deltas: bool,
 }
 
 /// Pads sparse CPU bytes to at least [`BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES`] for `wgpu` buffers.
@@ -618,6 +624,9 @@ pub(super) fn upload_blendshape_buffer(
             frame_ranges: Vec::new(),
             shape_frame_spans: Vec::new(),
             num_blendshapes: 0,
+            has_position_deltas: false,
+            has_normal_deltas: false,
+            has_tangent_deltas: false,
         };
     }
     let Some(pack) =
@@ -629,6 +638,9 @@ pub(super) fn upload_blendshape_buffer(
             frame_ranges: Vec::new(),
             shape_frame_spans: Vec::new(),
             num_blendshapes: 0,
+            has_position_deltas: false,
+            has_normal_deltas: false,
+            has_tangent_deltas: false,
         };
     };
 
@@ -648,6 +660,9 @@ pub(super) fn upload_blendshape_buffer(
             frame_ranges: Vec::new(),
             shape_frame_spans: Vec::new(),
             num_blendshapes: 0,
+            has_position_deltas: false,
+            has_normal_deltas: false,
+            has_tangent_deltas: false,
         };
     }
 
@@ -674,6 +689,9 @@ pub(super) fn upload_blendshape_buffer(
         frame_ranges: pack.frame_ranges,
         shape_frame_spans: pack.shape_frame_spans,
         num_blendshapes: n_u32,
+        has_position_deltas: pack.has_position_deltas,
+        has_normal_deltas: pack.has_normal_deltas,
+        has_tangent_deltas: pack.has_tangent_deltas,
     }
 }
 

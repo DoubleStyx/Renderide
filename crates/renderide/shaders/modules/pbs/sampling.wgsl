@@ -52,7 +52,5 @@ fn blend_detail_tangent_normal(base: vec3<f32>, detail: vec3<f32>, detail_mask: 
 }
 
 fn unpack_packed_normal_xy(xy: vec2<f32>, scale: f32) -> vec3<f32> {
-    let scaled = (xy * 2.0 - 1.0) * scale;
-    let z = sqrt(max(1.0 - dot(scaled, scaled), 0.0));
-    return vec3<f32>(scaled, z);
+    return nd::reconstruct_ts_normal_from_scaled_xy((xy * 2.0 - 1.0) * scale);
 }

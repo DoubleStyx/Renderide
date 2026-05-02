@@ -2,11 +2,11 @@
 //!
 //! Each PBS material file owns its own `sample_normal_world` wrapper because per-material details
 //! (single-UV vs multi-UV vs triplanar, dual-sided front_facing flip, detail-mask blending, etc.)
-//! legitimately differ. What is duplicated across ~46 files is the inner math: building an
-//! orthonormal basis from the geometric world normal, applying the basis to a decoded tangent
+//! legitimately differ. What is duplicated across ~46 files is the inner math: building a
+//! MikkTSpace-style TBN from the geometric world normal, applying the basis to a decoded tangent
 //! normal, and (for dual-sided materials) flipping for back faces. Those primitives live here.
 //!
-//! Tangent-space normal *decoding* (BC3/BC5 swizzle, scale-after-Z reconstruction) lives in
+//! Tangent-space normal *decoding* (BC3/BC5 swizzle, Unity-style normal-scale reconstruction) lives in
 //! [`renderide::normal_decode`]. This module is strictly the basis-construction step and above.
 //!
 //! Import with `#import renderide::pbs::normal as pnorm`.
@@ -14,18 +14,22 @@
 #define_import_path renderide::pbs::normal
 #import renderide::math as rmath
 
-/// Builds a Gram-Schmidt-orthonormalised TBN from a world-space normal and a Unity-style
-/// `vec4` tangent (xyz = world tangent, w = bitangent handedness sign). Falls back to the
-/// branchless `pbs::normal::orthonormal_tbn_fallback` if the supplied tangent is degenerate.
+/// Builds a MikkTSpace-style TBN from a world-space normal and a Unity-style `vec4` tangent
+/// (xyz = world tangent, w = bitangent handedness sign). Valid normals/tangents are not
+/// re-orthogonalized in the fragment path; degenerate data falls back to a stable generated basis.
 fn orthonormal_tbn(world_n: vec3<f32>, world_t: vec4<f32>) -> mat3x3<f32> {
-    let n = rmath::safe_normalize(world_n, vec3<f32>(0.0, 0.0, 1.0));
-    let t_raw = world_t.xyz - n * dot(world_t.xyz, n);
-    if (dot(t_raw, t_raw) <= 1e-10) {
-        return orthonormal_tbn_fallback(n);
+    let n_len_sq = dot(world_n, world_n);
+    if (!(n_len_sq > 1e-10) || n_len_sq > 3.402823e38) {
+        return orthonormal_tbn_fallback(vec3<f32>(0.0, 0.0, 1.0));
     }
-    let t = normalize(t_raw);
+    let t_len_sq = dot(world_t.xyz, world_t.xyz);
+    if (!(t_len_sq > 1e-10) || t_len_sq > 3.402823e38) {
+        return orthonormal_tbn_fallback(rmath::safe_normalize(world_n, vec3<f32>(0.0, 0.0, 1.0)));
+    }
+    let n = world_n;
+    let t = world_t.xyz;
     let sign = select(1.0, -1.0, world_t.w < 0.0);
-    let b = rmath::safe_normalize(cross(n, t) * sign, orthonormal_tbn_fallback(n)[1]);
+    let b = cross(n, t) * sign;
     return mat3x3<f32>(t, b, n);
 }
 

@@ -18,9 +18,29 @@ pub(super) struct BlendshapeCacheCtx<'a> {
     /// Instance line from [`crate::mesh_deform::GpuSkinCache`].
     pub cache_entry: &'a SkinCacheEntry,
     pub positions_arena: &'a wgpu::Buffer,
+    pub normals_arena: &'a wgpu::Buffer,
+    pub tangents_arena: &'a wgpu::Buffer,
     pub temp_arena: &'a wgpu::Buffer,
     /// When true, blend output is written to the temp arena for the skinning pass.
     pub blend_then_skin: bool,
+}
+
+/// Blendshape scatter `Params.flags` bit for writing normal deltas.
+const BLENDSHAPE_SCATTER_APPLY_NORMALS: u32 = 1;
+/// Blendshape scatter `Params.flags` bit for writing tangent deltas.
+const BLENDSHAPE_SCATTER_APPLY_TANGENTS: u32 = 2;
+
+/// Resolved destination buffers and base element offsets for one blendshape dispatch batch.
+struct BlendshapeDestinations<'a> {
+    positions_buffer: &'a wgpu::Buffer,
+    normals_buffer: Option<&'a wgpu::Buffer>,
+    tangents_buffer: Option<&'a wgpu::Buffer>,
+    base_pos_e: u32,
+    base_nrm_e: u32,
+    base_tan_e: u32,
+    flags: u32,
+    copy_normals: bool,
+    copy_tangents: bool,
 }
 
 /// Reserved staging range for packed blendshape scatter params.
@@ -65,6 +85,8 @@ pub(super) fn record_blendshape_deform(
     let BlendshapeCacheCtx {
         cache_entry,
         positions_arena,
+        normals_arena,
+        tangents_arena,
         temp_arena,
         blend_then_skin,
     } = ctx;
@@ -74,7 +96,6 @@ pub(super) fn record_blendshape_deform(
     let Some(ref sparse) = mesh.blendshape_sparse_buffer else {
         return 0;
     };
-    let vc = mesh.vertex_count;
     let shape_count = mesh.num_blendshapes;
     if shape_count == 0 {
         return 0;
@@ -88,24 +109,24 @@ pub(super) fn record_blendshape_deform(
         return 0;
     }
 
-    let (dst_buf, dst_off, base_dst_e) = if blend_then_skin {
-        let Some(t) = cache_entry.temp.as_ref() else {
-            return 0;
-        };
-        (temp_arena, t.offset_bytes, t.first_element_index(16))
-    } else {
-        let p = &cache_entry.positions;
-        (positions_arena, p.offset_bytes, p.first_element_index(16))
+    let Some(destinations) = resolve_blendshape_destinations(
+        mesh,
+        cache_entry,
+        positions_arena,
+        normals_arena,
+        tangents_arena,
+        temp_arena,
+        blend_then_skin,
+    ) else {
+        return 0;
     };
 
-    let copy_len = u64::from(vc).saturating_mul(16).max(16);
-    gpu.encoder
-        .copy_buffer_to_buffer(positions.as_ref(), 0, dst_buf, dst_off, copy_len);
+    copy_base_blendshape_streams(gpu.encoder, mesh, positions.as_ref(), &destinations);
 
     let weight_binding_len = stage_blendshape_weights(gpu, blend_weights, *blend_weight_cursor);
 
     let max_wg = gpu.gpu_limits.max_compute_workgroups_per_dimension();
-    if !pack_blendshape_scatter_params(gpu, mesh, blend_weights, base_dst_e, max_wg) {
+    if !pack_blendshape_scatter_params(gpu, mesh, blend_weights, &destinations, max_wg) {
         return 0;
     }
 
@@ -116,7 +137,7 @@ pub(super) fn record_blendshape_deform(
 
     blendshape_record_scatter_compute_passes(
         gpu,
-        dst_buf,
+        &destinations,
         sparse.as_ref(),
         weight_binding_len,
         blend_weight_cursor,
@@ -124,12 +145,116 @@ pub(super) fn record_blendshape_deform(
     )
 }
 
+fn resolve_blendshape_destinations<'a>(
+    mesh: &MeshDeformSnapshot,
+    cache_entry: &'a SkinCacheEntry,
+    positions_arena: &'a wgpu::Buffer,
+    normals_arena: &'a wgpu::Buffer,
+    tangents_arena: &'a wgpu::Buffer,
+    temp_arena: &'a wgpu::Buffer,
+    blend_then_skin: bool,
+) -> Option<BlendshapeDestinations<'a>> {
+    let (positions_buffer, pos_range) = if blend_then_skin {
+        (temp_arena, cache_entry.temp.as_ref()?)
+    } else {
+        (positions_arena, &cache_entry.positions)
+    };
+    let normals_range = if blend_then_skin {
+        cache_entry.temp_normals.as_ref()
+    } else {
+        cache_entry.normals.as_ref()
+    };
+    let tangents_range = if blend_then_skin {
+        cache_entry.temp_tangents.as_ref()
+    } else {
+        cache_entry.tangents.as_ref()
+    };
+    let copy_normals = normals_range.is_some();
+    let copy_tangents = tangents_range.is_some() && mesh.tangent_buffer.is_some();
+    let apply_normals = mesh.blendshape_has_normal_deltas && copy_normals;
+    let apply_tangents = mesh.blendshape_has_tangent_deltas && copy_tangents;
+    let flags = (if apply_normals {
+        BLENDSHAPE_SCATTER_APPLY_NORMALS
+    } else {
+        0
+    }) | (if apply_tangents {
+        BLENDSHAPE_SCATTER_APPLY_TANGENTS
+    } else {
+        0
+    });
+    let normals_buffer = normals_range.map(|_| {
+        if blend_then_skin {
+            temp_arena
+        } else {
+            normals_arena
+        }
+    });
+    let tangents_buffer = tangents_range.map(|_| {
+        if blend_then_skin {
+            temp_arena
+        } else {
+            tangents_arena
+        }
+    });
+    Some(BlendshapeDestinations {
+        positions_buffer,
+        normals_buffer,
+        tangents_buffer,
+        base_pos_e: pos_range.first_element_index(16),
+        base_nrm_e: normals_range.map_or(0, |range| range.first_element_index(16)),
+        base_tan_e: tangents_range.map_or(0, |range| range.first_element_index(16)),
+        flags,
+        copy_normals,
+        copy_tangents,
+    })
+}
+
+fn copy_base_blendshape_streams(
+    encoder: &mut wgpu::CommandEncoder,
+    mesh: &MeshDeformSnapshot,
+    positions: &wgpu::Buffer,
+    destinations: &BlendshapeDestinations<'_>,
+) {
+    let copy_len = u64::from(mesh.vertex_count).saturating_mul(16).max(16);
+    encoder.copy_buffer_to_buffer(
+        positions,
+        0,
+        destinations.positions_buffer,
+        u64::from(destinations.base_pos_e).saturating_mul(16),
+        copy_len,
+    );
+    if destinations.copy_normals
+        && let (Some(normals), Some(dst_normals)) =
+            (mesh.normals_buffer.as_ref(), destinations.normals_buffer)
+    {
+        encoder.copy_buffer_to_buffer(
+            normals.as_ref(),
+            0,
+            dst_normals,
+            u64::from(destinations.base_nrm_e).saturating_mul(16),
+            copy_len,
+        );
+    }
+    if destinations.copy_tangents
+        && let (Some(tangents), Some(dst_tangents)) =
+            (mesh.tangent_buffer.as_ref(), destinations.tangents_buffer)
+    {
+        encoder.copy_buffer_to_buffer(
+            tangents.as_ref(),
+            0,
+            dst_tangents,
+            u64::from(destinations.base_tan_e).saturating_mul(16),
+            copy_len,
+        );
+    }
+}
+
 /// Records compute passes that scatter blendshape deltas using packed params and per-dispatch
 /// workgroups stored in [`crate::mesh_deform::MeshDeformScratch::packed_scatter_params`] /
 /// [`crate::mesh_deform::MeshDeformScratch::scatter_dispatch_wgs`].
 fn blendshape_record_scatter_compute_passes(
     gpu: &mut MeshDeformEncodeGpu<'_>,
-    dst_buf: &wgpu::Buffer,
+    destinations: &BlendshapeDestinations<'_>,
     sparse: &wgpu::Buffer,
     weight_binding_len: u64,
     blend_weight_cursor: &mut u64,
@@ -195,7 +320,21 @@ fn blendshape_record_scatter_compute_passes(
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: dst_buf.as_entire_binding(),
+                    resource: destinations.positions_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: destinations
+                        .normals_buffer
+                        .unwrap_or(&gpu.scratch.dummy_vec4)
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: destinations
+                        .tangents_buffer
+                        .unwrap_or(&gpu.scratch.dummy_vec4)
+                        .as_entire_binding(),
                 },
             ],
         });
@@ -263,7 +402,7 @@ fn pack_blendshape_scatter_params(
     gpu: &mut MeshDeformEncodeGpu<'_>,
     mesh: &MeshDeformSnapshot,
     blend_weights: &[f32],
-    base_dst_e: u32,
+    destinations: &BlendshapeDestinations<'_>,
     max_wg: u32,
 ) -> bool {
     let vc = mesh.vertex_count;
@@ -305,13 +444,16 @@ fn pack_blendshape_scatter_params(
                 }
                 gpu.scratch
                     .packed_scatter_params
-                    .extend_from_slice(&build_scatter_params(
-                        vc,
+                    .extend_from_slice(&build_scatter_params(ScatterParamFields {
+                        vertex_count: vc,
                         sparse_base,
                         sparse_count,
-                        base_dst_e,
-                        coefficient.effective_weight,
-                    ));
+                        base_dst_pos_e: destinations.base_pos_e,
+                        base_dst_nrm_e: destinations.base_nrm_e,
+                        base_dst_tan_e: destinations.base_tan_e,
+                        flags: destinations.flags,
+                        effective_weight: coefficient.effective_weight,
+                    }));
                 gpu.scratch.scatter_dispatch_wgs.push(wg);
             }
         }
@@ -319,20 +461,29 @@ fn pack_blendshape_scatter_params(
     true
 }
 
-/// `shaders/passes/compute/mesh_blendshape.wgsl` `Params` (32 bytes).
-fn build_scatter_params(
+/// CPU-side field layout for `mesh_blendshape.wgsl` `Params`.
+struct ScatterParamFields {
     vertex_count: u32,
     sparse_base: u32,
     sparse_count: u32,
-    base_dst_e: u32,
+    base_dst_pos_e: u32,
+    base_dst_nrm_e: u32,
+    base_dst_tan_e: u32,
+    flags: u32,
     effective_weight: f32,
-) -> [u8; 32] {
+}
+
+/// `shaders/passes/compute/mesh_blendshape.wgsl` `Params` (32 bytes).
+fn build_scatter_params(fields: ScatterParamFields) -> [u8; 32] {
     let mut o = [0u8; 32];
-    o[0..4].copy_from_slice(&vertex_count.to_le_bytes());
-    o[4..8].copy_from_slice(&sparse_base.to_le_bytes());
-    o[8..12].copy_from_slice(&sparse_count.to_le_bytes());
-    o[12..16].copy_from_slice(&base_dst_e.to_le_bytes());
-    o[16..20].copy_from_slice(&effective_weight.to_le_bytes());
+    o[0..4].copy_from_slice(&fields.vertex_count.to_le_bytes());
+    o[4..8].copy_from_slice(&fields.sparse_base.to_le_bytes());
+    o[8..12].copy_from_slice(&fields.sparse_count.to_le_bytes());
+    o[12..16].copy_from_slice(&fields.base_dst_pos_e.to_le_bytes());
+    o[16..20].copy_from_slice(&fields.base_dst_nrm_e.to_le_bytes());
+    o[20..24].copy_from_slice(&fields.base_dst_tan_e.to_le_bytes());
+    o[24..28].copy_from_slice(&fields.flags.to_le_bytes());
+    o[28..32].copy_from_slice(&fields.effective_weight.to_le_bytes());
     o
 }
 

@@ -58,12 +58,16 @@ impl GpuMesh {
 
     /// Returns whether the mesh has valid sparse blendshape data and at least one active shape.
     pub fn supports_active_blendshape_deform(&self, blend_weights: &[f32]) -> bool {
+        let has_supported_channel = self.blendshape_has_position_deltas
+            || (self.blendshape_has_normal_deltas && self.normals_buffer.is_some())
+            || (self.blendshape_has_tangent_deltas && self.tangent_buffer.is_some());
         blendshape_deform_is_active(
             self.num_blendshapes,
             &self.blendshape_shape_frame_spans,
             &self.blendshape_frame_ranges,
             blend_weights,
         ) && self.blendshape_sparse_buffer.is_some()
+            && has_supported_channel
     }
 
     /// Creates tangent / UV1-3 streams the first time an embedded shader needs them.
@@ -364,6 +368,9 @@ impl GpuMesh {
             blendshape_frame_ranges: self.blendshape_frame_ranges.clone(),
             blendshape_shape_frame_spans: self.blendshape_shape_frame_spans.clone(),
             num_blendshapes: self.num_blendshapes,
+            blendshape_has_position_deltas: self.blendshape_has_position_deltas,
+            blendshape_has_normal_deltas: self.blendshape_has_normal_deltas,
+            blendshape_has_tangent_deltas: self.blendshape_has_tangent_deltas,
             positions_buffer: self.positions_buffer.clone(),
             normals_buffer: self.normals_buffer.clone(),
             uv0_buffer: self.uv0_buffer.clone(),

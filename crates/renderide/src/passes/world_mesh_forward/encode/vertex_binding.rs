@@ -131,7 +131,7 @@ pub(super) fn draw_mesh_submesh_instanced(
     if !bind_primary_vertex_streams(rpass, item, gpu, mesh, normals_bind, last_mesh) {
         return;
     }
-    if !bind_optional_vertex_streams(rpass, mesh, streams, last_mesh) {
+    if !bind_optional_vertex_streams(rpass, item, gpu, mesh, streams, last_mesh) {
         return;
     }
 
@@ -246,10 +246,7 @@ fn bind_deformed_primary_streams(
         BufferBindId::ranged(pos_buf, pos_range.start, pos_range.end),
         last_mesh.vertex
     );
-    if item.world_space_deformed {
-        let Some(nrm_r) = entry.normals.as_ref() else {
-            return false;
-        };
+    if let Some(nrm_r) = entry.normals.as_ref() {
         let nrm_buf = cache.normals_arena();
         let nrm_range = nrm_r.byte_range();
         bind_vertex_if_changed!(
@@ -259,21 +256,26 @@ fn bind_deformed_primary_streams(
             BufferBindId::ranged(nrm_buf, nrm_range.start, nrm_range.end),
             last_mesh.vertex
         );
-    } else {
-        bind_vertex_if_changed!(
-            rpass,
-            1,
-            normals_bind.slice(..),
-            BufferBindId::full(normals_bind),
-            last_mesh.vertex
-        );
+        return true;
     }
+    if item.world_space_deformed {
+        return false;
+    }
+    bind_vertex_if_changed!(
+        rpass,
+        1,
+        normals_bind.slice(..),
+        BufferBindId::full(normals_bind),
+        last_mesh.vertex
+    );
     true
 }
 
 /// Binds UV, color, tangent, and extra UV streams required by the material reflection.
 fn bind_optional_vertex_streams(
     rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'_>,
     mesh: &GpuMesh,
     streams: EmbeddedVertexStreamFlags,
     last_mesh: &mut LastMeshBindState,
@@ -319,21 +321,16 @@ fn bind_optional_vertex_streams(
         );
     }
     if streams.embedded_extended_vertex_streams {
-        let (Some(tangent), Some(uv1), Some(uv2), Some(uv3)) = (
-            mesh.tangent_buffer.as_deref(),
+        let (Some(uv1), Some(uv2), Some(uv3)) = (
             mesh.uv1_buffer.as_deref(),
             mesh.uv2_buffer.as_deref(),
             mesh.uv3_buffer.as_deref(),
         ) else {
             return false;
         };
-        bind_vertex_if_changed!(
-            rpass,
-            4,
-            tangent.slice(..),
-            BufferBindId::full(tangent),
-            last_mesh.vertex
-        );
+        if !bind_tangent_stream(rpass, item, gpu, mesh, last_mesh) {
+            return false;
+        }
         bind_vertex_if_changed!(
             rpass,
             5,
@@ -356,6 +353,57 @@ fn bind_optional_vertex_streams(
             last_mesh.vertex
         );
     }
+    true
+}
+
+fn bind_tangent_stream(
+    rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'_>,
+    mesh: &GpuMesh,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    if item.world_space_deformed || item.blendshape_deformed {
+        let Some(cache) = gpu.skin_cache else {
+            return false;
+        };
+        let key = SkinCacheKey::from_draw_parts(item.space_id, item.skinned, item.instance_id);
+        let Some(entry) = cache.lookup_current(&key) else {
+            logger::trace!(
+                "WorldMeshForward: deformed tangent cache miss for mesh_asset_id {}; draw skipped",
+                item.mesh_asset_id
+            );
+            return false;
+        };
+        let Some(tangent_range) = entry.tangents.as_ref() else {
+            logger::trace!(
+                "WorldMeshForward: deformed tangent stream missing for mesh_asset_id {}; draw skipped",
+                item.mesh_asset_id
+            );
+            return false;
+        };
+        let tangent_buf = cache.tangents_arena();
+        let range = tangent_range.byte_range();
+        bind_vertex_if_changed!(
+            rpass,
+            4,
+            tangent_buf.slice(range.start..range.end),
+            BufferBindId::ranged(tangent_buf, range.start, range.end),
+            last_mesh.vertex
+        );
+        return true;
+    }
+
+    let Some(tangent) = mesh.tangent_buffer.as_deref() else {
+        return false;
+    };
+    bind_vertex_if_changed!(
+        rpass,
+        4,
+        tangent.slice(..),
+        BufferBindId::full(tangent),
+        last_mesh.vertex
+    );
     true
 }
 
