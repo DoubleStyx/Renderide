@@ -43,14 +43,6 @@ fn orthonormal_tbn_fallback(n: vec3<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(normalize(t), normalize(bitan), n);
 }
 
-/// Apply a tangent-space normal `ts_n` to a geometric world normal `world_n`, returning the
-/// perturbed world-space normal. `world_n` is assumed non-zero; it is normalized internally.
-fn tangent_to_world(world_n: vec3<f32>, ts_n: vec3<f32>) -> vec3<f32> {
-    let n = normalize(world_n);
-    let tbn = orthonormal_tbn(n);
-    return normalize(tbn * ts_n);
-}
-
 /// Flip a normal for back-facing fragments. Dual-sided materials use this so geometry seen from
 /// the back side still receives lighting consistent with its visible orientation.
 fn flip_for_backface(n: vec3<f32>, front_facing: bool) -> vec3<f32> {

@@ -532,9 +532,3 @@ fn view_projection_for_draw(d: pd::PerDrawUniforms, view_idx: u32) -> mat4x4<f32
     return mv::select_view_proj(d, view_idx);
 }
 
-/// Builds a Gram-Schmidt-orthonormalised TBN from a world-space normal and a Unity-style
-/// `vec4` tangent (xyz = world tangent, w = bitangent handedness sign). Falls back to the
-/// branchless `pbs::normal::orthonormal_tbn_fallback` if the supplied tangent is degenerate.
-fn tangent_frame(world_n: vec3<f32>, world_tangent: vec4<f32>) -> mat3x3<f32> {
-    return pnorm::orthonormal_tbn(world_n, world_tangent);
-}

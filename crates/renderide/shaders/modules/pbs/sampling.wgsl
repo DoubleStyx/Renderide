@@ -56,8 +56,3 @@ fn unpack_packed_normal_xy(xy: vec2<f32>, scale: f32) -> vec3<f32> {
     let z = sqrt(max(1.0 - dot(scaled, scaled), 0.0));
     return vec3<f32>(scaled, z);
 }
-
-/*fn tangent_to_world(world_n: vec3<f32>, tangent_n: vec3<f32>) -> vec3<f32> {
-    let n = normalize(world_n);
-    return normalize(pnorm::orthonormal_tbn(n) * normalize(tangent_n));
-}*/

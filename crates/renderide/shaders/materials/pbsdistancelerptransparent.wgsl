@@ -149,7 +149,7 @@ fn vs_main(
     let displaced_obj = pos.xyz + direction * acc.displace;
     let world_p = d.model * vec4<f32>(displaced_obj, 1.0);
     let wn = normalize(d.normal_matrix * n.xyz);
-    let wt = vec4<f32>(normalize(d.normal_matrix * t.xyz), t.w);
+    let wt = mv::world_tangent(d, t);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);
 #else
