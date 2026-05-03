@@ -91,6 +91,11 @@ pub struct FramePreparedRenderables {
     /// (the main renderer uses [`SceneCoordinator::active_main_render_context`] for every view
     /// in the same frame).
     pub(super) render_context: RenderingContext,
+    /// Reused per-worker output buffers for the multi-space parallel expansion path. Outer
+    /// [`Vec`] is resized to [`Self::active_space_ids`] length; each inner [`Vec`] is cleared and
+    /// re-filled inside the rayon worker before [`expand_space_into`] runs. Capacities persist
+    /// across frames so the steady-state path does not reallocate the per-space buffers.
+    space_scratch: Vec<Vec<FramePreparedDraw>>,
 }
 
 impl FramePreparedRenderables {
@@ -101,6 +106,7 @@ impl FramePreparedRenderables {
             active_space_ids: Vec::new(),
             draws: Vec::new(),
             render_context,
+            space_scratch: Vec::new(),
         }
     }
 
@@ -150,31 +156,38 @@ impl FramePreparedRenderables {
         }
 
         if self.active_space_ids.len() == 1 {
-            expand_space_into(
-                &mut self.draws,
-                scene,
-                mesh_pool,
-                render_context,
-                self.active_space_ids[0],
-            );
+            let space_id = self.active_space_ids[0];
+            self.draws.reserve(estimated_draw_count(scene, space_id));
+            expand_space_into(&mut self.draws, scene, mesh_pool, render_context, space_id);
             return;
         }
 
-        let per_space: Vec<Vec<FramePreparedDraw>> = self
-            .active_space_ids
-            .par_iter()
-            .map(|&space_id| {
-                let mut local = Vec::new();
-                expand_space_into(&mut local, scene, mesh_pool, render_context, space_id);
-                local
-            })
-            .collect();
+        // Reuse a long-lived per-space scratch so each frame's parallel expansion does not
+        // allocate a fresh outer `Vec` (the prior `par_iter().map(...).collect()` pattern) or a
+        // fresh inner `Vec` per worker (`let mut local = Vec::new();`). Capacities persist across
+        // frames; only the contents get cleared and refilled.
+        let mut space_scratch = std::mem::take(&mut self.space_scratch);
+        space_scratch.resize_with(self.active_space_ids.len(), Vec::new);
+        let active_space_ids = &self.active_space_ids;
 
-        let total: usize = per_space.iter().map(Vec::len).sum();
+        space_scratch
+            .par_iter_mut()
+            .zip(active_space_ids.par_iter())
+            .for_each(|(out, &space_id)| {
+                out.clear();
+                let estimate = estimated_draw_count(scene, space_id);
+                if estimate > out.capacity() {
+                    out.reserve(estimate - out.capacity());
+                }
+                expand_space_into(out, scene, mesh_pool, render_context, space_id);
+            });
+
+        let total: usize = space_scratch.iter().map(Vec::len).sum();
         self.draws.reserve(total);
-        for mut local in per_space {
-            self.draws.append(&mut local);
+        for buf in &mut space_scratch {
+            self.draws.append(buf);
         }
+        self.space_scratch = space_scratch;
     }
 
     /// Number of expanded draws across all active render spaces.
@@ -243,6 +256,19 @@ struct RenderableExpansion<'a> {
     blendshape_deformed: bool,
     /// Frame-time precomputed cull geometry for the renderer (`None` for overlay spaces).
     cull_geometry: Option<MeshCullGeometry>,
+}
+
+/// Upper bound on prepared draws produced by `space_id`, used to pre-size per-space output
+/// buffers. The 2x multiplier reflects the typical 2-slot-per-renderer expansion observed across
+/// the existing scene corpus; over-estimation is cheap (`Vec::reserve` only grows), under-estimation
+/// triggers the doubling growth path.
+fn estimated_draw_count(scene: &SceneCoordinator, space_id: RenderSpaceId) -> usize {
+    scene.space(space_id).map_or(0, |s| {
+        s.static_mesh_renderers
+            .len()
+            .saturating_add(s.skinned_mesh_renderers.len())
+            .saturating_mul(2)
+    })
 }
 
 /// Expands every valid renderer (static and skinned) in `space_id` into `out`.
