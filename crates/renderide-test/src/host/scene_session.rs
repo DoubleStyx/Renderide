@@ -21,7 +21,10 @@ use crate::scene::mesh_payload::pack_mesh_upload;
 use crate::scene::sphere::generate_sphere;
 use crate::scene::torus::generate_torus;
 
-use super::asset_upload::{DEFAULT_ASSET_UPLOAD_TIMEOUT, MeshUploadRequest, upload_sphere_mesh};
+use super::asset_upload::{
+    DEFAULT_ASSET_UPLOAD_TIMEOUT, MaterialBindRequest, MeshUploadRequest, bind_material_shader,
+    upload_shader, upload_sphere_mesh,
+};
 use super::handshake::{DEFAULT_HANDSHAKE_TIMEOUT, run_handshake};
 use super::ipc_setup::{DEFAULT_QUEUE_CAPACITY_BYTES, connect_session};
 use super::lockstep::{FrameSubmitScalars, LockstepDriver};
@@ -97,6 +100,31 @@ pub(super) fn run_session(
         },
     )?;
 
+    let _bound_material = if let Some(binding) = geometry.shader_binding.as_ref() {
+        upload_shader(
+            &mut session.queues,
+            &mut lockstep,
+            binding.shader_asset_id,
+            binding.shader_name,
+            DEFAULT_ASSET_UPLOAD_TIMEOUT,
+        )?;
+        Some(bind_material_shader(
+            &mut session.queues,
+            &mut lockstep,
+            MaterialBindRequest {
+                shared_memory_prefix: &prefix,
+                backing_dir: &backing_dir,
+                buffer_id: asset_ids::MATERIAL_UPDATE_BUFFER,
+                update_batch_id: asset_ids::MATERIAL_UPDATE_BATCH_ID,
+                material_asset_id: geometry.assets.material,
+                shader_asset_id: binding.shader_asset_id,
+                timeout: DEFAULT_ASSET_UPLOAD_TIMEOUT,
+            },
+        )?)
+    } else {
+        None
+    };
+
     let scene = build_scene_state(&prefix, &backing_dir, geometry.assets, &mut lockstep)?;
 
     let scene_submit_index =
@@ -134,6 +162,18 @@ struct GeometrySetup {
     mesh: Mesh,
     bounds: RenderBoundingBox,
     assets: SceneAssetIds,
+    /// When `Some`, the harness uploads the shader and binds it to the geometry's material
+    /// before submitting the scene. When `None` the case stays on the renderer's Null
+    /// fallback pipeline.
+    shader_binding: Option<ShaderBinding>,
+}
+
+struct ShaderBinding {
+    /// Renderer-side asset id given to the uploaded shader.
+    shader_asset_id: i32,
+    /// AssetBundle-style shader name (e.g. `"Unlit.shader"`); the renderer's stem-prefix
+    /// resolver strips the optional `.shader` extension and lowercases.
+    shader_name: &'static str,
 }
 
 fn build_geometry_for_template(template: SessionTemplate) -> GeometrySetup {
@@ -151,6 +191,7 @@ fn build_geometry_for_template(template: SessionTemplate) -> GeometrySetup {
                 mesh: asset_ids::SPHERE_MESH,
                 material: asset_ids::SPHERE_MATERIAL,
             },
+            shader_binding: None,
         },
         SessionTemplate::Torus => {
             let outer = torus_geometry::MAJOR_RADIUS + torus_geometry::MINOR_RADIUS;
@@ -173,6 +214,10 @@ fn build_geometry_for_template(template: SessionTemplate) -> GeometrySetup {
                     mesh: asset_ids::TORUS_MESH,
                     material: asset_ids::TORUS_MATERIAL,
                 },
+                shader_binding: Some(ShaderBinding {
+                    shader_asset_id: asset_ids::TORUS_SHADER,
+                    shader_name: "Unlit.shader",
+                }),
             }
         }
     }

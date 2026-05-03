@@ -24,6 +24,12 @@ pub(super) mod asset_ids {
     /// Buffer id for the scene-state shared-memory region (pose updates, additions, mesh
     /// states, packed material ids).
     pub(in crate::host::scene_session) const SCENE_STATE_BUFFER: i32 = 1;
+    /// Buffer id for a `MaterialsUpdateBatch` payload that binds a shader to a material.
+    pub(in crate::host::scene_session) const MATERIAL_UPDATE_BUFFER: i32 = 2;
+    /// Shader asset id used by the torus case to attach an unlit embedded WGSL stem.
+    pub(in crate::host::scene_session) const TORUS_SHADER: i32 = 6;
+    /// Update batch id echoed back in `MaterialsUpdateBatchResult`.
+    pub(in crate::host::scene_session) const MATERIAL_UPDATE_BATCH_ID: i32 = 1;
     /// Render-space id for the sole render space the harness submits.
     pub(in crate::host::scene_session) const RENDER_SPACE: i32 = 1;
 }

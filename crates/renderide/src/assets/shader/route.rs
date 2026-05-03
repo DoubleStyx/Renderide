@@ -71,18 +71,33 @@ pub fn plan_shader_route(shader_asset_name: Option<String>) -> ShaderRoutePlan {
 
 /// Full resolution pipeline for a host [`ShaderUpload`].
 pub fn resolve_shader_upload(data: &ShaderUpload) -> ResolvedShaderUpload {
-    if let Some(stem) = data
+    if let Some(suffix) = data
         .file
         .as_deref()
         .and_then(|f| f.strip_prefix(RENDERIDE_TEST_STEM_PREFIX))
     {
-        return plan_shader_route(Some(stem.to_string())).into();
+        let stem = normalize_test_stem_suffix(suffix);
+        return plan_shader_route(Some(stem)).into();
     }
     let shader_asset_name = data
         .file
         .as_deref()
         .and_then(|file| unity_asset::try_resolve_shader_asset_name_from_path(Path::new(file)));
     plan_shader_route(shader_asset_name).into()
+}
+
+/// Normalizes a sentinel-prefix suffix the way the AssetBundle path resolves a `m_Container`
+/// entry: drop a trailing `.shader` (case-insensitive) and lowercase. Lets the harness pass a
+/// production-style name like `Unlit.shader` and have it match the embedded `unlit_default`
+/// stem the same way the production host's AssetBundle entry would.
+fn normalize_test_stem_suffix(suffix: &str) -> String {
+    let trimmed = suffix.trim();
+    let without_ext = trimmed
+        .strip_suffix(".shader")
+        .or_else(|| trimmed.strip_suffix(".SHADER"))
+        .or_else(|| trimmed.strip_suffix(".Shader"))
+        .unwrap_or(trimmed);
+    without_ext.to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -183,5 +198,27 @@ mod tests {
             Some("definitely_missing_shader")
         );
         assert_eq!(r.pipeline, RasterPipelineKind::Null);
+    }
+
+    #[test]
+    fn stem_prefix_strips_dot_shader_suffix_and_lowercases() {
+        let u = ShaderUpload {
+            asset_id: 10,
+            file: Some(format!("{RENDERIDE_TEST_STEM_PREFIX}Unlit.shader")),
+        };
+        let r = resolve_shader_upload(&u);
+        assert_eq!(r.shader_asset_name.as_deref(), Some("unlit"));
+        assert!(matches!(r.pipeline, RasterPipelineKind::EmbeddedStem(_)));
+    }
+
+    #[test]
+    fn stem_prefix_accepts_uppercase_dot_shader_suffix() {
+        let u = ShaderUpload {
+            asset_id: 11,
+            file: Some(format!("{RENDERIDE_TEST_STEM_PREFIX}TextureDebug.SHADER")),
+        };
+        let r = resolve_shader_upload(&u);
+        assert_eq!(r.shader_asset_name.as_deref(), Some("texturedebug"));
+        assert!(matches!(r.pipeline, RasterPipelineKind::EmbeddedStem(_)));
     }
 }

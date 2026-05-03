@@ -85,25 +85,28 @@ pub fn unlit_sphere() -> IntegrationCase {
     }
 }
 
-/// Procedural torus rendered through the Null fallback pipeline; the runner writes a
-/// CPU-generated Perlin noise PNG into the per-case output dir alongside the renderer's
-/// `actual.png` to exercise the suite's modular content pipeline.
+/// Procedural torus rendered with an embedded unlit shader (`Unlit.shader` resolved through
+/// the test-only `RENDERIDE_TEST_STEM:` sentinel). The runner additionally writes a
+/// CPU-generated Perlin noise PNG into the per-case output dir alongside `actual.png` to
+/// exercise the suite's modular content pipeline.
 ///
-/// The renderer pipeline path is the same Null/checkerboard fallback as
-/// [`unlit_sphere`] -- only the geometry differs and an additional artifact is written.
-/// Tolerance loosened the same way as `unlit_sphere` to absorb adapter variance.
+/// Distinct from [`unlit_sphere`] in three ways: different geometry (torus instead of
+/// sphere), a real shader is uploaded and bound to the material (so the rendering is the
+/// embedded `unlit_default` WGSL stem rather than the Null/checkerboard fallback), and the
+/// case emits a side artifact. Tolerance is still relatively loose to absorb adapter
+/// variance under software rasterizers.
 pub fn torus_unlit_perlin() -> IntegrationCase {
     IntegrationCase {
         name: "torus_unlit_perlin".to_string(),
         description:
-            "Procedural torus on the Null fallback pipeline; per-case output also receives a CPU-generated Perlin noise PNG."
+            "Procedural torus rendered with the embedded unlit shader; per-case output also receives a CPU-generated Perlin noise PNG."
                 .to_string(),
         golden_path: default_goldens_dir().join("torus_unlit_perlin.png"),
         resolution: (256, 256),
         tolerance: Tolerance {
-            ssim_min: Some(0.65),
-            max_abs_diff: Some(64),
-            max_failing_pixel_fraction: Some(0.40),
+            ssim_min: Some(0.85),
+            max_abs_diff: Some(32),
+            max_failing_pixel_fraction: Some(0.10),
             combine: Combine::Or,
         },
         template: CaseTemplate::TorusUnlitPerlin {
