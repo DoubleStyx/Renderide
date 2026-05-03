@@ -13,7 +13,10 @@ struct LocationSignature {
     scalar_kind: Option<naga::ScalarKind>,
 }
 
-fn scalar_kind_for_type(module: &naga::Module, ty: naga::Handle<naga::Type>) -> Option<naga::ScalarKind> {
+fn scalar_kind_for_type(
+    module: &naga::Module,
+    ty: naga::Handle<naga::Type>,
+) -> Option<naga::ScalarKind> {
     match &module.types[ty].inner {
         naga::TypeInner::Scalar(s) => Some(s.kind),
         naga::TypeInner::Vector { scalar, .. } => Some(scalar.kind),
@@ -108,9 +111,10 @@ fn resolve_implicit_vertex_entry(
     module: &naga::Module,
     pass: &BuildPassDirective,
 ) -> Option<String> {
-    let fragment_entry = module.entry_points.iter().find(|e| {
-        e.stage == naga::ShaderStage::Fragment && e.name == pass.fragment_entry
-    })?;
+    let fragment_entry = module
+        .entry_points
+        .iter()
+        .find(|e| e.stage == naga::ShaderStage::Fragment && e.name == pass.fragment_entry)?;
     let mut matches = module
         .entry_points
         .iter()

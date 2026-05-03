@@ -188,26 +188,26 @@ impl MaterialPipelineCache {
             label: Some("raster_material_shader"),
             source: wgpu::ShaderSource::Wgsl(wgsl.clone().into()),
         });
-        let pipelines_result: Result<Vec<wgpu::RenderPipeline>, PipelineBuildError> = match &key.kind {
-            RasterPipelineKind::EmbeddedStem(stem) => create_embedded_render_pipelines(
-                EmbeddedRasterPipelineSource {
-                    stem: stem.clone(),
-                    permutation: key.permutation,
-                    blend_mode: key.blend_mode,
-                    render_state: key.render_state,
-                    front_face: key.front_face,
-                    point_topology: key.point_topology,
-                },
-                ShaderModuleBuildRefs {
-                    device: &device,
-                    limits: &self.limits,
-                    module: &module,
-                    desc: &desc,
-                    wgsl_source: &wgsl,
-                },
-            ),
-            RasterPipelineKind::Null => {
-                Ok(vec![create_null_render_pipeline(
+        let pipelines_result: Result<Vec<wgpu::RenderPipeline>, PipelineBuildError> =
+            match &key.kind {
+                RasterPipelineKind::EmbeddedStem(stem) => create_embedded_render_pipelines(
+                    EmbeddedRasterPipelineSource {
+                        stem: stem.clone(),
+                        permutation: key.permutation,
+                        blend_mode: key.blend_mode,
+                        render_state: key.render_state,
+                        front_face: key.front_face,
+                        point_topology: key.point_topology,
+                    },
+                    ShaderModuleBuildRefs {
+                        device: &device,
+                        limits: &self.limits,
+                        module: &module,
+                        desc: &desc,
+                        wgsl_source: &wgsl,
+                    },
+                ),
+                RasterPipelineKind::Null => Ok(vec![create_null_render_pipeline(
                     &device,
                     &self.limits,
                     &module,
@@ -215,9 +215,8 @@ impl MaterialPipelineCache {
                     &wgsl,
                     key.front_face,
                     key.point_topology,
-                )?])
-            }
-        };
+                )?]),
+            };
         let validation_scope = Self::pop_wgpu_error_scope(validation_scope, "validation");
         let oom_scope = Self::pop_wgpu_error_scope(oom_scope, "out_of_memory");
         let internal_scope = Self::pop_wgpu_error_scope(internal_scope, "internal");
