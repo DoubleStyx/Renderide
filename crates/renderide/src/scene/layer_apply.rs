@@ -120,7 +120,7 @@ pub(crate) fn apply_layer_update_extracted(
 /// Each call to [`resolve_layer_for_node`] walks the parent chain and scans `layer_assignments`,
 /// so per-renderer cost scales with scene depth x assignment count. Above this threshold the
 /// parallel dispatch pays for itself; below it the serial path avoids rayon overhead.
-const LAYER_RESOLVE_PARALLEL_MIN: usize = 256;
+const LAYER_RESOLVE_PARALLEL_MIN: usize = 1024;
 
 pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState) {
     profiling::scope!("scene::apply::layer_resolve");
@@ -304,7 +304,7 @@ fn resolve_layer_for_node(
 ///
 /// Each entry's `fixup_transform_id` is a trivial branch, but removals x assignments can grow
 /// into the tens of thousands during bulky scene teardowns.
-const LAYER_FIXUP_PARALLEL_MIN: usize = 128;
+const LAYER_FIXUP_PARALLEL_MIN: usize = 1024;
 
 pub(crate) fn fixup_layer_assignments_for_transform_removals(
     space: &mut RenderSpaceState,

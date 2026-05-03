@@ -142,6 +142,7 @@ fn upload_skinning_palette(
     ctx: &SkinningDeformContext<'_, '_>,
     bone_transform_indices: &[i32],
 ) -> Option<(NonZeroU64, u64)> {
+    profiling::scope!("mesh_deform::skinning_palette");
     let bone_count_u = ctx.mesh.skinning_bind_matrices.len() as u32;
     gpu.scratch.ensure_bone_capacity(gpu.device, bone_count_u);
     write_skinning_palette_bytes(

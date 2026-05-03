@@ -94,6 +94,10 @@ pub struct RenderSpaceState {
     /// Reused dedup set for [`resolve_mesh_layers_from_assignments`]'s ensure-cache pass; cleared
     /// at the start of every resolve and refilled by walking unique renderer node ids.
     pub layer_resolve_seen_scratch: hashbrown::HashSet<i32>,
+    /// Reused per-renderer batch grouping for the parallel blendshape weight apply path.
+    /// Cleared at the start of every apply that crosses the parallel threshold; reused so the
+    /// HashMap and inner Vec capacities persist across frames.
+    pub blendshape_apply_groups: HashMap<usize, Vec<std::ops::Range<usize>>>,
     /// Render-context-local transform substitutions from the host.
     pub render_transform_overrides: Vec<RenderTransformOverrideEntry>,
     /// Render-context-local material substitutions from the host.
@@ -154,6 +158,7 @@ impl Default for RenderSpaceState {
             resolved_layer_cache: HashMap::new(),
             hierarchy_dirty: true,
             layer_resolve_seen_scratch: hashbrown::HashSet::new(),
+            blendshape_apply_groups: HashMap::new(),
             render_transform_overrides: Vec::new(),
             render_material_overrides: Vec::new(),
         }

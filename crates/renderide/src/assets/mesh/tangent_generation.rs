@@ -1,6 +1,7 @@
 //! CPU-side tangent stream extraction and MikkTSpace fallback generation.
 
 use bevy_mikktspace::{Geometry, TangentSpace, generate_tangents};
+use rayon::prelude::*;
 
 use crate::shared::{
     IndexBufferFormat, SubmeshBufferDescriptor, SubmeshTopology, VertexAttributeDescriptor,
@@ -9,8 +10,19 @@ use crate::shared::{
 
 use super::layout::attribute_offset_and_size;
 
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "renderide assumes a little-endian target for vertex stream decode",
+);
+
 const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const TANGENT_EPSILON_SQUARED: f32 = 1.0e-20;
+/// Vertex count above which vertex-stream extraction and tangent encoding fan out across rayon.
+///
+/// Production meshes cluster around 1k-8k vertices, so a threshold of 16384 keeps the typical
+/// case on the serial path. Very large meshes (avatar bodies, big geometry) still take the
+/// parallel path.
+const VERTEX_STREAM_PARALLEL_MIN: usize = 16_384;
 
 /// Returns a dense `vec4<f32>` tangent stream, preferring host tangents and generating MikkTSpace
 /// tangents when the host did not provide a usable tangent attribute.
@@ -65,18 +77,31 @@ fn host_tangent_stream_bytes(
     if size < dimensions * 4 {
         return None;
     }
+    if vertex_count == 0 {
+        return Some(Vec::new());
+    }
+    let last_base = (vertex_count - 1)
+        .checked_mul(stride)?
+        .checked_add(offset)?;
+    if last_base.checked_add(dimensions * 4)? > vertex_data.len() {
+        return None;
+    }
 
     let mut out = default_tangent_stream_bytes(vertex_count);
-    for vertex in 0..vertex_count {
+    let copy_one = |dst: &mut [u8], vertex: usize| {
         let base = vertex * stride + offset;
-        if base + dimensions * 4 > vertex_data.len() {
-            return None;
-        }
-        let dst = vertex * 16;
         for component in 0..dimensions {
             let src = base + component * 4;
-            out[dst + component * 4..dst + component * 4 + 4]
-                .copy_from_slice(&vertex_data[src..src + 4]);
+            dst[component * 4..component * 4 + 4].copy_from_slice(&vertex_data[src..src + 4]);
+        }
+    };
+    if vertex_count >= VERTEX_STREAM_PARALLEL_MIN {
+        out.par_chunks_exact_mut(16)
+            .enumerate()
+            .for_each(|(vertex, slot)| copy_one(slot, vertex));
+    } else {
+        for (vertex, slot) in out.chunks_exact_mut(16).enumerate() {
+            copy_one(slot, vertex);
         }
     }
     Some(out)
@@ -153,19 +178,25 @@ fn read_float3_vertex_stream(
     if size < 12 {
         return None;
     }
-
-    let mut out = Vec::with_capacity(vertex_count);
-    for vertex in 0..vertex_count {
-        let base = vertex * stride + offset;
-        if base + 12 > vertex_data.len() {
-            return None;
-        }
-        out.push([
-            read_f32(vertex_data, base)?,
-            read_f32(vertex_data, base + 4)?,
-            read_f32(vertex_data, base + 8)?,
-        ]);
+    if vertex_count == 0 {
+        return Some(Vec::new());
     }
+    let last_base = (vertex_count - 1)
+        .checked_mul(stride)?
+        .checked_add(offset)?;
+    if last_base.checked_add(12)? > vertex_data.len() {
+        return None;
+    }
+
+    let read_one = |vertex: usize| -> [f32; 3] {
+        let base = vertex * stride + offset;
+        bytemuck::pod_read_unaligned::<[f32; 3]>(&vertex_data[base..base + 12])
+    };
+    let out: Vec<[f32; 3]> = if vertex_count >= VERTEX_STREAM_PARALLEL_MIN {
+        (0..vertex_count).into_par_iter().map(read_one).collect()
+    } else {
+        (0..vertex_count).map(read_one).collect()
+    };
     Some(out)
 }
 
@@ -184,25 +215,26 @@ fn read_float2_vertex_stream(
     if size < 8 {
         return None;
     }
-
-    let mut out = Vec::with_capacity(vertex_count);
-    for vertex in 0..vertex_count {
-        let base = vertex * stride + offset;
-        if base + 8 > vertex_data.len() {
-            return None;
-        }
-        out.push([
-            read_f32(vertex_data, base)?,
-            read_f32(vertex_data, base + 4)?,
-        ]);
+    if vertex_count == 0 {
+        return Some(Vec::new());
     }
-    Some(out)
-}
+    let last_base = (vertex_count - 1)
+        .checked_mul(stride)?
+        .checked_add(offset)?;
+    if last_base.checked_add(8)? > vertex_data.len() {
+        return None;
+    }
 
-fn read_f32(bytes: &[u8], offset: usize) -> Option<f32> {
-    let end = offset.checked_add(4)?;
-    let raw: [u8; 4] = bytes.get(offset..end)?.try_into().ok()?;
-    Some(f32::from_le_bytes(raw))
+    let read_one = |vertex: usize| -> [f32; 2] {
+        let base = vertex * stride + offset;
+        bytemuck::pod_read_unaligned::<[f32; 2]>(&vertex_data[base..base + 8])
+    };
+    let out: Vec<[f32; 2]> = if vertex_count >= VERTEX_STREAM_PARALLEL_MIN {
+        (0..vertex_count).into_par_iter().map(read_one).collect()
+    } else {
+        (0..vertex_count).map(read_one).collect()
+    };
+    Some(out)
 }
 
 fn decode_indices(index_data: &[u8], index_format: IndexBufferFormat) -> Option<Vec<u32>> {
@@ -273,10 +305,18 @@ fn collect_triangle_faces(
 }
 
 fn encode_tangents(tangents: &[[f32; 4]]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(tangents.len() * 16);
-    for tangent in tangents {
-        for value in sanitize_tangent(*tangent) {
-            out.extend_from_slice(&value.to_le_bytes());
+    let mut out = vec![0u8; tangents.len() * 16];
+    let write_one = |slot: &mut [u8], tangent: &[f32; 4]| {
+        let sanitized = sanitize_tangent(*tangent);
+        slot.copy_from_slice(bytemuck::cast_slice(&sanitized));
+    };
+    if tangents.len() >= VERTEX_STREAM_PARALLEL_MIN {
+        out.par_chunks_exact_mut(16)
+            .zip(tangents.par_iter())
+            .for_each(|(slot, tangent)| write_one(slot, tangent));
+    } else {
+        for (slot, tangent) in out.chunks_exact_mut(16).zip(tangents.iter()) {
+            write_one(slot, tangent);
         }
     }
     out
@@ -502,6 +542,50 @@ mod tests {
         for vertex in 0..4 {
             assert_eq!(read_tangent(&tangents, vertex), DEFAULT_TANGENT);
         }
+    }
+
+    #[test]
+    fn host_tangent_stream_parallel_path_matches_serial() {
+        let attrs = [
+            attr(VertexAttributeType::Position, 3),
+            attr(VertexAttributeType::Normal, 3),
+            attr(VertexAttributeType::UV0, 2),
+            attr(VertexAttributeType::Tangent, 4),
+        ];
+        let stride = 48usize;
+        let vertex_count = VERTEX_STREAM_PARALLEL_MIN + 17;
+        let mut vertices = Vec::with_capacity(stride * vertex_count);
+        for v in 0..vertex_count {
+            push_vertex_with_tangent(
+                &mut vertices,
+                [v as f32, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [v as f32 * 0.1, 0.0],
+                [
+                    1.0,
+                    (v % 5) as f32 * 0.2,
+                    0.0,
+                    if v % 2 == 0 { 1.0 } else { -1.0 },
+                ],
+            );
+        }
+        let parallel_out = tangent_stream_bytes(
+            &vertices,
+            &[],
+            vertex_count,
+            stride,
+            &attrs,
+            IndexBufferFormat::UInt16,
+            &[],
+        )
+        .expect("tangent stream");
+        let mut serial_out = vec![0u8; vertex_count * 16];
+        let tangent_offset = 12 + 12 + 8;
+        for v in 0..vertex_count {
+            let base = v * stride + tangent_offset;
+            serial_out[v * 16..v * 16 + 16].copy_from_slice(&vertices[base..base + 16]);
+        }
+        assert_eq!(parallel_out, serial_out);
     }
 
     #[test]

@@ -18,7 +18,10 @@ use super::super::item::{
 };
 
 /// Renders per chunk (static or skinned slice of one render space).
-pub(super) const WORLD_MESH_COLLECT_CHUNK_SIZE: usize = 128;
+///
+/// 256 matches Filament's `CountSplitter<128>` break-even (count*2) for renderable processing:
+/// halving the rayon dispatch count for typical scene sizes vs the previous 128 width.
+pub(super) const WORLD_MESH_COLLECT_CHUNK_SIZE: usize = 256;
 
 /// Submesh index range for one material slot pairing during draw collection.
 pub(crate) struct SubmeshSlotIndices {
@@ -30,14 +33,18 @@ pub(crate) struct SubmeshSlotIndices {
     pub index_count: u32,
 }
 
-/// Layer and skin deform flags that affect CPU cull and [`WorldMeshDrawItem`] fields.
-pub(crate) struct OverlayDeformCullFlags {
+/// Layer and skin deform flags that affect CPU cull and [`WorldMeshDrawItem`] fields, paired with
+/// the cached per-renderer CPU cull outcome shared across the renderer's material slots.
+struct OverlayDeformCullFlags<'a> {
     /// Overlay layer uses alternate cull behavior.
-    pub is_overlay: bool,
+    is_overlay: bool,
     /// Skinned mesh with world-space deform from the skin cache.
-    pub world_space_deformed: bool,
+    world_space_deformed: bool,
     /// Mesh has active blendshape weights and uses cache-backed positions.
-    pub blendshape_deformed: bool,
+    blendshape_deformed: bool,
+    /// Cached cull outcome for this renderer; `None` when the cull was skipped (skinned or no
+    /// culling pass active).
+    cached_cull: Option<&'a CachedCull>,
 }
 
 /// One static or skinned mesh renderer with its resolved [`crate::assets::mesh::GpuMesh`] and submesh index ranges.
@@ -103,6 +110,21 @@ pub(super) fn transform_chain_has_degenerate_scale(
             node_id as usize,
             ctx.render_context,
         )
+}
+
+/// Cached per-renderer CPU cull outcome shared across the renderer's material slots.
+///
+/// `mesh_draw_passes_cpu_cull` only depends on per-renderer state (scene/space, mesh, transform
+/// chain, overlay flag, render context) -- not on which material slot is being expanded. Computing
+/// it once amortizes frustum + Hi-Z work across slots. Skinned renderers don't run the cull, so
+/// `None` here means "no cull was performed; let downstream code derive the rigid world matrix".
+enum CachedCull {
+    /// Cull ran and accepted; carries the optional rigid world matrix it produced.
+    Accepted(Option<glam::Mat4>),
+    /// Cull ran and the renderer was rejected by the frustum stage.
+    RejectedFrustum,
+    /// Cull ran and the renderer was rejected by the Hi-Z stage.
+    RejectedHiZ,
 }
 
 /// Expands one static mesh renderer into draw items (material slots mapped to submesh ranges).
@@ -178,6 +200,16 @@ fn push_draws_for_renderer(
         .mesh
         .supports_active_blendshape_deform(&draw.renderer.blend_shape_weights);
 
+    // Cull hoist: when a renderer expands to multiple material slots, every slot's cull would
+    // otherwise re-test the same world AABB / Hi-Z. Compute it once and feed every slot the
+    // cached outcome. For single-slot renderers (the common case for static scenery) the hoist
+    // has no work to amortize, so let `push_one_slot_draw` cull inline via its `None` branch.
+    let cached_cull = if n_slot > 1 {
+        compute_cached_cull(ctx, &draw, is_overlay)
+    } else {
+        None
+    };
+
     for (slot_index, slot) in slots.iter().enumerate() {
         let Some((first_index, index_count)) =
             stacked_material_submesh_range(slot_index, draw.submeshes)
@@ -198,9 +230,38 @@ fn push_draws_for_renderer(
                 is_overlay,
                 world_space_deformed,
                 blendshape_deformed,
+                cached_cull: cached_cull.as_ref(),
             },
             cache,
         );
+    }
+}
+
+/// Runs the per-renderer CPU cull once and packages the outcome for downstream slot expansion.
+///
+/// Skinned renderers and frames without a culling pass return `None`; otherwise the result is
+/// translated into [`CachedCull`] so [`push_one_slot_draw`] never reruns the same test.
+fn compute_cached_cull(
+    ctx: &DrawCollectionContext<'_>,
+    draw: &StaticMeshDrawSource<'_>,
+    is_overlay: bool,
+) -> Option<CachedCull> {
+    if draw.skinned {
+        return None;
+    }
+    let culling = ctx.culling?;
+    let target = MeshCullTarget {
+        scene: ctx.scene,
+        space_id: draw.space_id,
+        mesh: draw.mesh,
+        skinned: draw.skinned,
+        skinned_renderer: draw.skinned_renderer,
+        node_id: draw.renderer.node_id,
+    };
+    match mesh_draw_passes_cpu_cull(&target, is_overlay, culling, ctx.render_context) {
+        Ok(rigid_world_matrix) => Some(CachedCull::Accepted(rigid_world_matrix)),
+        Err(CpuCullFailure::Frustum) => Some(CachedCull::RejectedFrustum),
+        Err(CpuCullFailure::HiZ) => Some(CachedCull::RejectedHiZ),
     }
 }
 
@@ -211,7 +272,7 @@ fn push_one_slot_draw(
     draw: &StaticMeshDrawSource<'_>,
     slot: &MeshMaterialSlot,
     indices: SubmeshSlotIndices,
-    flags: OverlayDeformCullFlags,
+    flags: OverlayDeformCullFlags<'_>,
     cache: &FrameMaterialBatchCache,
 ) {
     let SubmeshSlotIndices {
@@ -223,6 +284,7 @@ fn push_one_slot_draw(
         is_overlay,
         world_space_deformed,
         blendshape_deformed,
+        cached_cull,
     } = flags;
     let material_asset_id = ctx
         .scene
@@ -237,20 +299,33 @@ fn push_one_slot_draw(
     if index_count == 0 || material_asset_id < 0 {
         return;
     }
+    let cull_result: Option<Result<Option<glam::Mat4>, CpuCullFailure>> = match cached_cull {
+        Some(CachedCull::Accepted(m)) => Some(Ok(*m)),
+        Some(CachedCull::RejectedFrustum) => Some(Err(CpuCullFailure::Frustum)),
+        Some(CachedCull::RejectedHiZ) => Some(Err(CpuCullFailure::HiZ)),
+        // Single-slot renderer bypassed the hoist: cull inline so per-slot work matches the
+        // cached path without paying the CachedCull wrapper cost.
+        None if !draw.skinned => ctx.culling.map(|culling| {
+            mesh_draw_passes_cpu_cull(
+                &MeshCullTarget {
+                    scene: ctx.scene,
+                    space_id: draw.space_id,
+                    mesh: draw.mesh,
+                    skinned: draw.skinned,
+                    skinned_renderer: draw.skinned_renderer,
+                    node_id: draw.renderer.node_id,
+                },
+                is_overlay,
+                culling,
+                ctx.render_context,
+            )
+        }),
+        None => None,
+    };
     let mut rigid_world_matrix = None;
-    if !draw.skinned
-        && let Some(c) = ctx.culling
-    {
+    if let Some(outcome) = cull_result {
         acc.cull_stats.0 += 1;
-        let target = MeshCullTarget {
-            scene: ctx.scene,
-            space_id: draw.space_id,
-            mesh: draw.mesh,
-            skinned: draw.skinned,
-            skinned_renderer: draw.skinned_renderer,
-            node_id: draw.renderer.node_id,
-        };
-        match mesh_draw_passes_cpu_cull(&target, is_overlay, c, ctx.render_context) {
+        match outcome {
             Err(CpuCullFailure::Frustum) => {
                 acc.cull_stats.1 += 1;
                 return;
@@ -259,9 +334,7 @@ fn push_one_slot_draw(
                 acc.cull_stats.2 += 1;
                 return;
             }
-            Ok(m) => {
-                rigid_world_matrix = m;
-            }
+            Ok(m) => rigid_world_matrix = m,
         }
     }
     if !world_space_deformed && rigid_world_matrix.is_none() {

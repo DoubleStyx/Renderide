@@ -81,15 +81,13 @@ impl Sh2ReadbackJobs {
 
 /// Parses nine packed `vec4<f32>` SH rows from GPU readback bytes.
 fn parse_sh2_bytes(bytes: &[u8]) -> Option<RenderSH2> {
-    let mut coeffs = [[0.0f32; 4]; 9];
-    for (i, chunk) in bytes.chunks_exact(16).take(9).enumerate() {
-        coeffs[i] = [
-            f32::from_le_bytes(chunk.get(0..4)?.try_into().ok()?),
-            f32::from_le_bytes(chunk.get(4..8)?.try_into().ok()?),
-            f32::from_le_bytes(chunk.get(8..12)?.try_into().ok()?),
-            f32::from_le_bytes(chunk.get(12..16)?.try_into().ok()?),
-        ];
-    }
+    const _: () = assert!(
+        cfg!(target_endian = "little"),
+        "renderide assumes a little-endian target for GPU readback unpacking",
+    );
+    const SH2_BYTES: usize = 9 * 16;
+    let payload = bytes.get(..SH2_BYTES)?;
+    let coeffs: [[f32; 4]; 9] = bytemuck::try_pod_read_unaligned(payload).ok()?;
     Some(RenderSH2 {
         sh0: Vec3::new(coeffs[0][0], coeffs[0][1], coeffs[0][2]),
         sh1: Vec3::new(coeffs[1][0], coeffs[1][1], coeffs[1][2]),
@@ -122,5 +120,27 @@ mod tests {
         let sh = parse_sh2_bytes(&bytes).unwrap();
         assert_eq!(sh.sh0, Vec3::new(0.0, 0.25, 0.5));
         assert_eq!(sh.sh8, Vec3::new(8.0, 8.25, 8.5));
+    }
+
+    /// A short payload should be rejected rather than reading out of bounds.
+    #[test]
+    fn parse_sh2_bytes_rejects_short_payload() {
+        let bytes = vec![0u8; 9 * 16 - 1];
+        assert!(parse_sh2_bytes(&bytes).is_none());
+    }
+
+    /// Parsing must work even when the slice does not start at an f32-aligned address.
+    #[test]
+    fn parse_sh2_bytes_handles_unaligned_input() {
+        let mut padded = [0u8; 1 + 9 * 16];
+        for row in 0..9 {
+            for channel in 0..3 {
+                let value = row as f32 - channel as f32 * 0.5;
+                let offset = 1 + row * 16 + channel * 4;
+                padded[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        let sh = parse_sh2_bytes(&padded[1..]).unwrap();
+        assert_eq!(sh.sh3, Vec3::new(3.0, 2.5, 2.0));
     }
 }

@@ -314,9 +314,7 @@ mod tests {
             local_dirty: vec![true; nodes_len],
             degenerate_scales: vec![false; nodes_len],
             visit_epoch: vec![0; nodes_len],
-            walk_epoch: 0,
-            children: Vec::new(),
-            children_dirty: true,
+            ..Default::default()
         }
     }
 

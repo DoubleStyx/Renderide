@@ -1,6 +1,7 @@
 //! Per-draw uniform packing for mesh forward passes (WebGPU dynamic uniform offset = 256 bytes).
 
 use glam::{Mat3, Mat4};
+use rayon::prelude::*;
 
 /// Stride between consecutive draw slots in the uniform slab (`mat4`x3 + WGSL padding).
 pub const PER_DRAW_UNIFORM_STRIDE: usize = 256;
@@ -153,7 +154,16 @@ impl PaddedPerDrawUniforms {
     }
 }
 
+/// Slot count above which slab writes fan out to a rayon worker pool.
+///
+/// Each slot is a 256-byte memcpy (~50ns); 2048 slots is ~100us, the rayon dispatch
+/// break-even point.
+const PER_DRAW_SLAB_PARALLEL_MIN: usize = 2048;
+
 /// Writes `count` consecutive [`PaddedPerDrawUniforms`] into `out` (must be `count * 256` bytes).
+///
+/// Parallelizes across rayon when `slots.len() >= PER_DRAW_SLAB_PARALLEL_MIN`. Each worker writes
+/// into a disjoint 256-byte region of `out`, so there is no synchronization on the hot path.
 pub fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u8]) {
     let need = slots.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE);
     assert!(
@@ -161,10 +171,21 @@ pub fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u
         "slab buffer too small: need {need}, have {}",
         out.len()
     );
-    for (i, slot) in slots.iter().enumerate() {
-        let start = i * PER_DRAW_UNIFORM_STRIDE;
-        let bytes: &[u8] = bytemuck::bytes_of(slot);
-        out[start..start + bytes.len()].copy_from_slice(bytes);
+    profiling::scope!("mesh_deform::write_per_draw_uniform_slab");
+    let dst = &mut out[..need];
+    if slots.len() >= PER_DRAW_SLAB_PARALLEL_MIN {
+        dst.par_chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE)
+            .zip(slots.par_iter())
+            .for_each(|(slab, slot)| {
+                slab.copy_from_slice(bytemuck::bytes_of(slot));
+            });
+    } else {
+        for (slab, slot) in dst
+            .chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE)
+            .zip(slots.iter())
+        {
+            slab.copy_from_slice(bytemuck::bytes_of(slot));
+        }
     }
 }
 
@@ -232,6 +253,30 @@ mod tests {
         let b: &PaddedPerDrawUniforms =
             bytemuck::from_bytes(&buf[PER_DRAW_UNIFORM_STRIDE..PER_DRAW_UNIFORM_STRIDE * 2]);
         assert!(!b.position_stream_world_space());
+    }
+
+    #[test]
+    fn slab_parallel_path_matches_serial_for_large_input() {
+        let count = PER_DRAW_SLAB_PARALLEL_MIN + 17;
+        let slots: Vec<PaddedPerDrawUniforms> = (0..count)
+            .map(|i| {
+                let m = Mat4::from_translation(glam::Vec3::new(i as f32, i as f32 * 0.5, 0.0));
+                PaddedPerDrawUniforms::new_single(Mat4::IDENTITY, m)
+                    .with_position_stream_world_space(i % 2 == 0)
+            })
+            .collect();
+
+        let mut parallel = vec![0u8; PER_DRAW_UNIFORM_STRIDE * count];
+        write_per_draw_uniform_slab(&slots, &mut parallel);
+
+        let mut serial = vec![0u8; PER_DRAW_UNIFORM_STRIDE * count];
+        for (slab, slot) in serial
+            .chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE)
+            .zip(slots.iter())
+        {
+            slab.copy_from_slice(bytemuck::bytes_of(slot));
+        }
+        assert_eq!(parallel, serial);
     }
 
     #[test]
