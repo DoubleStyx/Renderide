@@ -32,6 +32,16 @@ pub struct WorldTransformCache {
     pub(super) children: Vec<Vec<usize>>,
     /// `children` must be rebuilt before descendant marking.
     pub(super) children_dirty: bool,
+    /// Bulk-rebuild scratch: depth per node (`u32::MAX` for cycle nodes). Reused across frames.
+    pub(super) bfs_depth: Vec<u32>,
+    /// Bulk-rebuild scratch: per-depth-level node-index buckets. Inner Vec capacities persist
+    /// across frames so a stable scene re-uses the same storage every solve.
+    pub(super) bfs_levels: Vec<Vec<usize>>,
+    /// Bulk-rebuild scratch: indices of nodes whose ancestor chain forms a cycle.
+    pub(super) bfs_cycle_nodes: Vec<usize>,
+    /// Bulk-rebuild scratch: per-level computed (world matrix, degenerate flag) pairs before
+    /// they are written back to [`Self::world_matrices`] and [`Self::degenerate_scales`].
+    pub(super) bfs_writes: Vec<(Mat4, bool)>,
 }
 
 impl Default for WorldTransformCache {
@@ -46,6 +56,10 @@ impl Default for WorldTransformCache {
             walk_epoch: 0,
             children: Vec::new(),
             children_dirty: true,
+            bfs_depth: Vec::new(),
+            bfs_levels: Vec::new(),
+            bfs_cycle_nodes: Vec::new(),
+            bfs_writes: Vec::new(),
         }
     }
 }
@@ -147,14 +161,25 @@ fn cache_is_fully_dirty(computed: &[bool]) -> bool {
     !computed.iter().any(|c| *c)
 }
 
-/// Builds level lists by hierarchy depth from a parent-array tree.
-///
-/// Returns `(levels, cycle_nodes)` where `levels[d]` lists every node at depth `d` whose ancestor
-/// chain reaches a root, and `cycle_nodes` lists every node whose ancestor chain forms a cycle.
-/// Cycle nodes get a local-only fallback matrix (the same convention as
+/// Fills `depth` / `levels` / `cycle_nodes` from a parent-array tree, reusing the supplied
+/// buffers' allocations. After this call `levels[d]` lists every node at depth `d` whose
+/// ancestor chain reaches a root, and `cycle_nodes` lists every node whose ancestor chain
+/// forms a cycle. Cycle nodes get a local-only fallback matrix (matching
 /// [`WorldTransformCache::compute_world_matrices_incremental`]).
-fn classify_nodes_by_depth(node_parents: &[i32], n: usize) -> (Vec<Vec<usize>>, Vec<usize>) {
-    let mut depth = vec![u32::MAX; n];
+fn classify_nodes_by_depth(
+    node_parents: &[i32],
+    n: usize,
+    depth: &mut Vec<u32>,
+    levels: &mut Vec<Vec<usize>>,
+    cycle_nodes: &mut Vec<usize>,
+) {
+    depth.clear();
+    depth.resize(n, u32::MAX);
+    cycle_nodes.clear();
+    for inner in levels.iter_mut() {
+        inner.clear();
+    }
+
     // Repeatedly resolve depths in a sweep order: a node knows its depth once its parent does.
     // For a typical mostly-sorted host order this converges in 1-2 sweeps; cap at n iterations to
     // exit deterministically when a cycle leaves a residue of unresolved nodes.
@@ -190,8 +215,9 @@ fn classify_nodes_by_depth(node_parents: &[i32], n: usize) -> (Vec<Vec<usize>>, 
         .copied()
         .max()
         .unwrap_or(0) as usize;
-    let mut levels: Vec<Vec<usize>> = vec![Vec::new(); max_depth + 1];
-    let mut cycle_nodes: Vec<usize> = Vec::new();
+    if levels.len() < max_depth + 1 {
+        levels.resize_with(max_depth + 1, Vec::new);
+    }
     for (i, &d) in depth.iter().enumerate() {
         if d == u32::MAX {
             cycle_nodes.push(i);
@@ -199,7 +225,6 @@ fn classify_nodes_by_depth(node_parents: &[i32], n: usize) -> (Vec<Vec<usize>>, 
             levels[d as usize].push(i);
         }
     }
-    (levels, cycle_nodes)
 }
 
 impl WorldTransformCache {
@@ -237,67 +262,83 @@ impl WorldTransformCache {
             *dirty = false;
         }
 
-        let (levels, cycle_nodes) = classify_nodes_by_depth(node_parents, n);
+        // Reused scratch state lives on the cache so the bulk-rebuild path only allocates on
+        // the first call and grows lazily as the scene gets bigger.
+        let WorldTransformCache {
+            world_matrices,
+            computed,
+            local_matrices,
+            degenerate_scales,
+            bfs_depth,
+            bfs_levels,
+            bfs_cycle_nodes,
+            bfs_writes,
+            ..
+        } = self;
 
-        for cycle_id in &cycle_nodes {
+        classify_nodes_by_depth(node_parents, n, bfs_depth, bfs_levels, bfs_cycle_nodes);
+
+        for cycle_id in bfs_cycle_nodes.iter() {
             logger::trace!(
                 "parent cycle at scene {} transform {} -- local-only fallback",
                 scene_id,
                 cycle_id
             );
-            let local = self.local_matrices[*cycle_id];
-            self.world_matrices[*cycle_id] = local;
-            self.degenerate_scales[*cycle_id] =
+            let local = local_matrices[*cycle_id];
+            world_matrices[*cycle_id] = local;
+            degenerate_scales[*cycle_id] =
                 render_transform_has_degenerate_scale(&nodes[*cycle_id]);
-            self.computed[*cycle_id] = true;
+            computed[*cycle_id] = true;
         }
 
         // Roots (depth 0) have no parent contribution; world = local.
-        if let Some(roots) = levels.first()
+        if let Some(roots) = bfs_levels.first()
             && !roots.is_empty()
         {
-            let local_matrices = &self.local_matrices;
-            let writes: Vec<(Mat4, bool)> = roots
+            let local_ro: &[Mat4] = local_matrices;
+            bfs_writes.clear();
+            roots
                 .par_iter()
                 .map(|&i| {
                     (
-                        local_matrices[i],
+                        local_ro[i],
                         render_transform_has_degenerate_scale(&nodes[i]),
                     )
                 })
-                .collect();
-            for (slot, &i) in writes.iter().zip(roots.iter()) {
-                self.world_matrices[i] = slot.0;
-                self.degenerate_scales[i] = slot.1;
-                self.computed[i] = true;
+                .collect_into_vec(bfs_writes);
+            for (slot, &i) in bfs_writes.iter().zip(roots.iter()) {
+                world_matrices[i] = slot.0;
+                degenerate_scales[i] = slot.1;
+                computed[i] = true;
             }
         }
 
         // Subsequent levels read the previous level's world / degenerate state, multiply locally,
         // and write back disjoint indices. The collect-then-apply split avoids needing unsafe
         // disjoint-index access into world_matrices.
-        for level in levels.iter().skip(1) {
-            if level.is_empty() {
+        for level_idx in 1..bfs_levels.len() {
+            if bfs_levels[level_idx].is_empty() {
                 continue;
             }
-            let local_matrices: &[Mat4] = &self.local_matrices;
-            let world_ro: &[Mat4] = &self.world_matrices;
-            let degen_ro: &[bool] = &self.degenerate_scales;
-            let writes: Vec<(Mat4, bool)> = level
+            let local_ro: &[Mat4] = local_matrices;
+            let world_ro: &[Mat4] = world_matrices;
+            let degen_ro: &[bool] = degenerate_scales;
+            bfs_writes.clear();
+            bfs_levels[level_idx]
                 .par_iter()
                 .map(|&i| {
                     let p = node_parents[i] as usize;
                     let parent_world = world_ro[p];
                     let parent_degen = degen_ro[p];
-                    let local = local_matrices[i];
+                    let local = local_ro[i];
                     let degen_self = render_transform_has_degenerate_scale(&nodes[i]);
                     (parent_world * local, parent_degen | degen_self)
                 })
-                .collect();
-            for (slot, &i) in writes.iter().zip(level.iter()) {
-                self.world_matrices[i] = slot.0;
-                self.degenerate_scales[i] = slot.1;
-                self.computed[i] = true;
+                .collect_into_vec(bfs_writes);
+            for (slot, &i) in bfs_writes.iter().zip(bfs_levels[level_idx].iter()) {
+                world_matrices[i] = slot.0;
+                degenerate_scales[i] = slot.1;
+                computed[i] = true;
             }
         }
     }
