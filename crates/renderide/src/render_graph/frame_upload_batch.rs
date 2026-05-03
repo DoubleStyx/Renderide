@@ -365,6 +365,9 @@ fn build_staging_buffer(
 ) -> Option<wgpu::Buffer> {
     (staging_size > 0).then(|| {
         crate::profiling::scope!("frame_upload::build_staging_buffer");
+        // Plot the per-frame staging size so a triple-buffered ring (the architectural follow-up
+        // for this hotspot) can be sized off the historical max instead of guessed at.
+        tracy_client::plot!("frame_upload::staging_bytes", staging_size as f64);
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame_upload_staging"),
             size: staging_size,
