@@ -719,6 +719,7 @@ mod tests {
         intersect.intersect_groups.push(DrawGroup {
             representative_draw_idx: 0,
             instance_range: 0..1,
+            material_packet_idx: 0,
         });
         assert!(forward_intersection_raster_needed(true, &intersect));
         assert!(!forward_intersection_raster_needed(false, &intersect));
@@ -727,6 +728,7 @@ mod tests {
         transparent.transparent_groups.push(DrawGroup {
             representative_draw_idx: 0,
             instance_range: 0..1,
+            material_packet_idx: 0,
         });
         assert!(forward_transparent_raster_needed(true, &transparent));
         assert!(!forward_transparent_raster_needed(false, &transparent));

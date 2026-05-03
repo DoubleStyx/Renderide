@@ -248,17 +248,18 @@ fn collect_world_mesh_chunks(
             profiling::scope!("mesh::collect_prepared::run_aligned_chunks");
             prepared.run_aligned_chunks(PREPARED_CHUNK_SIZE)
         };
+        let draws = prepared.draws();
         if parallelism == WorldMeshDrawCollectParallelism::Full && run_chunks.len() >= 2 {
             profiling::scope!("mesh::collect_prepared::parallel_chunks");
             run_chunks
                 .par_iter()
-                .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
+                .map(|runs| collect_prepared_chunk(draws, runs, ctx, cache, filter_masks))
                 .collect()
         } else {
             profiling::scope!("mesh::collect_prepared::serial_chunks");
             run_chunks
                 .iter()
-                .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
+                .map(|runs| collect_prepared_chunk(draws, runs, ctx, cache, filter_masks))
                 .collect()
         }
     } else {

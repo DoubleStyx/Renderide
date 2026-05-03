@@ -1,5 +1,6 @@
 //! Prepare callback helpers for world-mesh forward passes.
 
+use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::camera::HostCameraFrame;
 use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot};
 use crate::gpu::GpuLimits;
@@ -10,12 +11,14 @@ use crate::render_graph::frame_params::GraphPassFrame;
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
 use crate::world_mesh::draw_prep::{WorldMeshDrawCollection, WorldMeshDrawItem};
 use crate::world_mesh::{
-    PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams, state_rows_from_sorted,
-    stats_from_sorted,
+    DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams,
+    state_rows_from_sorted, stats_from_sorted,
 };
 
 use super::super::skybox::SkyboxRenderer;
-use super::super::{PrefetchedWorldMeshDrawsSlot, PreparedWorldMeshForwardFrame};
+use super::super::{
+    MaterialBatchPacket, PrefetchedWorldMeshDrawsSlot, PreparedWorldMeshForwardFrame,
+};
 use super::camera::{compute_view_projections, resolve_pass_config};
 use super::frame_uniforms::write_per_view_frame_uniforms;
 use super::material_resolve::precompute_material_resolve_batches;
@@ -150,7 +153,7 @@ pub(in crate::passes::world_mesh_forward) fn prepare_world_mesh_forward_frame(
 
     // Build the Bevy-style instance plan up front so the slab is packed in the same order
     // the forward pass will read it via `instance_index` / `first_instance`.
-    let plan = {
+    let mut plan = {
         profiling::scope!("world_mesh::prepare_frame::build_instance_plan");
         crate::world_mesh::build_plan(&draws, supports_base_instance)
     };
@@ -190,19 +193,14 @@ pub(in crate::passes::world_mesh_forward) fn prepare_world_mesh_forward_frame(
         frame.world_mesh_forward_encode_refs()
     };
 
-    // Resolve per-batch pipelines and @group(1) bind groups in parallel (Filament phase-A).
-    // Results live on `PreparedWorldMeshForwardFrame`; both raster sub-passes consume them.
-    let precomputed_batches = {
-        profiling::scope!("world_mesh::prepare_frame::precompute_material_batches");
-        precompute_material_resolve_batches(
-            &encode_refs,
-            queue,
-            &draws,
-            pipeline.shader_perm,
-            &pipeline.pass_desc,
-            offscreen_write_rt,
-        )
-    };
+    let precomputed_batches = precompute_and_assign_material_batches(
+        &encode_refs,
+        queue,
+        &draws,
+        &pipeline,
+        offscreen_write_rt,
+        &mut plan,
+    );
 
     Some(PreparedWorldMeshForwardFrame {
         draws,
@@ -216,6 +214,57 @@ pub(in crate::passes::world_mesh_forward) fn prepare_world_mesh_forward_frame(
         precomputed_batches,
         skybox,
     })
+}
+
+fn precompute_and_assign_material_batches(
+    encode_refs: &WorldMeshForwardEncodeRefs<'_>,
+    queue: &wgpu::Queue,
+    draws: &[WorldMeshDrawItem],
+    pipeline: &crate::passes::world_mesh_forward::WorldMeshForwardPipelineState,
+    offscreen_write_rt: Option<i32>,
+    plan: &mut InstancePlan,
+) -> Vec<MaterialBatchPacket> {
+    // Resolve per-batch pipelines and @group(1) bind groups in parallel (Filament phase-A).
+    // Results live on `PreparedWorldMeshForwardFrame`; both raster sub-passes consume them.
+    let precomputed_batches = {
+        profiling::scope!("world_mesh::prepare_frame::precompute_material_batches");
+        precompute_material_resolve_batches(
+            encode_refs,
+            queue,
+            draws,
+            pipeline.shader_perm,
+            &pipeline.pass_desc,
+            offscreen_write_rt,
+        )
+    };
+    assign_material_packet_indices(plan, &precomputed_batches);
+    precomputed_batches
+}
+
+/// Stamps each draw group with the material packet covering its representative draw.
+fn assign_material_packet_indices(plan: &mut InstancePlan, packets: &[MaterialBatchPacket]) {
+    assign_group_packet_indices(&mut plan.regular_groups, packets);
+    assign_group_packet_indices(&mut plan.intersect_groups, packets);
+    assign_group_packet_indices(&mut plan.transparent_groups, packets);
+}
+
+fn assign_group_packet_indices(groups: &mut [DrawGroup], packets: &[MaterialBatchPacket]) {
+    if groups.is_empty() || packets.is_empty() {
+        return;
+    }
+    let mut packet_idx = 0usize;
+    for group in groups {
+        let representative = group.representative_draw_idx;
+        while packet_idx + 1 < packets.len() && packets[packet_idx].last_draw_idx < representative {
+            packet_idx += 1;
+        }
+        debug_assert!(
+            representative >= packets[packet_idx].first_draw_idx
+                && representative <= packets[packet_idx].last_draw_idx,
+            "material packet should cover representative draw index {representative}",
+        );
+        group.material_packet_idx = packet_idx;
+    }
 }
 
 /// Applies the render-texture clip-space Y flip when a view writes to an offscreen target.

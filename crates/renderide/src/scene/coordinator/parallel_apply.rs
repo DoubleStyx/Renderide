@@ -18,7 +18,7 @@
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{LightRenderablesUpdate, LightsBufferRendererUpdate, RenderSpaceUpdate};
 
-use super::SceneCoordinator;
+use super::{ApplyWorkSlot, SceneCoordinator};
 
 use super::super::camera_apply::{
     ExtractedCameraRenderablesUpdate, extract_camera_renderables_update,
@@ -299,7 +299,14 @@ impl SceneCoordinator {
                     continue;
                 };
                 let cache = self.world_caches.remove(&id).unwrap_or_default();
-                work.push((id, space, cache, extracted, Vec::new()));
+                work.push(ApplyWorkSlot {
+                    id,
+                    space,
+                    cache,
+                    extracted,
+                    removal_events: Vec::new(),
+                    world_dirty: false,
+                });
             }
         }
 
@@ -308,63 +315,49 @@ impl SceneCoordinator {
         const MIN_SPACES_FOR_PARALLEL_APPLY: usize = 2;
         if work.len() < MIN_SPACES_FOR_PARALLEL_APPLY {
             profiling::scope!("scene::apply::serial_inner");
-            for (id, mut space, mut cache, extracted, mut removal_events) in work.drain(..) {
-                let dirty = apply_extracted_render_space_update(
-                    &extracted,
+            for mut slot in work.drain(..) {
+                slot.world_dirty = apply_extracted_render_space_update(
+                    &slot.extracted,
                     PerSpaceApplyInputs {
-                        space: &mut space,
-                        cache: &mut cache,
-                        removal_events: &mut removal_events,
+                        space: &mut slot.space,
+                        cache: &mut slot.cache,
+                        removal_events: &mut slot.removal_events,
                     },
                 );
-                if dirty {
-                    self.world_dirty.insert(id);
+                if slot.world_dirty {
+                    self.world_dirty.insert(slot.id);
                 }
-                self.spaces.insert(id, space);
-                self.world_caches.insert(id, cache);
-                self.stash_transform_removals(id, removal_events);
+                self.spaces.insert(slot.id, slot.space);
+                self.world_caches.insert(slot.id, slot.cache);
+                self.stash_transform_removals(slot.id, slot.removal_events);
             }
             self.apply_work_scratch = work;
             return Ok(());
         }
 
-        use rayon::iter::ParallelDrainRange;
         use rayon::prelude::*;
-        // `par_drain(..)` empties `work` while keeping its allocation, mirroring the standard
-        // `Vec::drain` semantics so the buffer can be reused next frame.
-        let processed: Vec<(
-            RenderSpaceId,
-            crate::scene::render_space::RenderSpaceState,
-            crate::scene::world::WorldTransformCache,
-            bool,
-            Vec<TransformRemovalEvent>,
-        )> = {
+        {
             profiling::scope!("scene::apply::mutate");
-            work.par_drain(..)
-                .map(
-                    |(id, mut space, mut cache, extracted, mut removal_events)| {
-                        let dirty = apply_extracted_render_space_update(
-                            &extracted,
-                            PerSpaceApplyInputs {
-                                space: &mut space,
-                                cache: &mut cache,
-                                removal_events: &mut removal_events,
-                            },
-                        );
-                        (id, space, cache, dirty, removal_events)
+            work.par_iter_mut().for_each(|slot| {
+                slot.world_dirty = apply_extracted_render_space_update(
+                    &slot.extracted,
+                    PerSpaceApplyInputs {
+                        space: &mut slot.space,
+                        cache: &mut slot.cache,
+                        removal_events: &mut slot.removal_events,
                     },
-                )
-                .collect()
+                );
+            });
         };
         {
             profiling::scope!("scene::apply::reinsert");
-            for (id, space, cache, dirty, removal_events) in processed {
-                if dirty {
-                    self.world_dirty.insert(id);
+            for slot in work.drain(..) {
+                if slot.world_dirty {
+                    self.world_dirty.insert(slot.id);
                 }
-                self.spaces.insert(id, space);
-                self.world_caches.insert(id, cache);
-                self.stash_transform_removals(id, removal_events);
+                self.spaces.insert(slot.id, slot.space);
+                self.world_caches.insert(slot.id, slot.cache);
+                self.stash_transform_removals(slot.id, slot.removal_events);
             }
         }
         self.apply_work_scratch = work;

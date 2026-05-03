@@ -27,12 +27,17 @@ use super::draw_prep::WorldMeshDrawItem;
 pub struct DrawGroup {
     /// Index in the sorted `draws` array of the group's first member in sort order.
     ///
-    /// Used by the forward pass to advance the `precomputed_batches` cursor and to read
-    /// material/state fields that are uniform across the group.
+    /// Used by the forward pass to read material/state fields that are uniform across the group.
     pub representative_draw_idx: usize,
     /// Slab-coordinate range to pass as `first_instance..first_instance + count` to
     /// `draw_indexed`. Indexes into [`InstancePlan::slab_layout`], not into `draws`.
     pub instance_range: Range<u32>,
+    /// Index into the view's pre-resolved material packet table.
+    ///
+    /// Filled after material packets are resolved during world-mesh-forward prepare. Defaults to
+    /// zero while the grouping plan is being built, then recording consumes it directly instead
+    /// of cursoring through packet boundaries per group.
+    pub material_packet_idx: usize,
 }
 
 /// Per-view instance plan: slab layout plus groups for regular, intersection, and grab-pass
@@ -40,8 +45,9 @@ pub struct DrawGroup {
 ///
 /// The forward pass packs the per-draw slab in `slab_layout` order -- slot `i` holds the
 /// per-draw uniforms for `draws[slab_layout[i]]` -- and emits each group's `instance_range`
-/// directly. `representative_draw_idx` for both group lists is monotonically increasing so
-/// the existing `precomputed_batches` cursor in `draw_subset` advances in O(amortised 1).
+/// directly. `representative_draw_idx` for each group list is monotonically increasing; prepare
+/// attaches material packet indices after packet resolution so recording does not search packet
+/// boundaries.
 #[derive(Clone, Debug, Default)]
 pub struct InstancePlan {
     /// New slab order. `slab_layout[i]` is the sorted-draw index whose per-draw uniforms
@@ -360,6 +366,7 @@ fn emit_group(
     target.push(DrawGroup {
         representative_draw_idx,
         instance_range: first_instance..first_instance + count,
+        material_packet_idx: 0,
     });
 }
 

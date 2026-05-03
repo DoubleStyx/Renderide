@@ -192,51 +192,28 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
     let total = space.static_mesh_renderers.len() + space.skinned_mesh_renderers.len();
     let resolved_cache = &space.resolved_layer_cache;
 
-    // Collect node ids whose layer resolution falls through to the default; logged after the
-    // borrow on `space` ends. Both the parallel and serial branches funnel missing-node ids
-    // through this mutex-guarded vec; the cost is negligible vs. the per-renderable cache probe.
-    let fallback_log: Mutex<Vec<i32>> = Mutex::new(Vec::new());
-
     // Phase 2 (parallel above the threshold): walk renderers and consume the cache. Reads are
     // safe to share across rayon workers because `hashbrown::HashMap` is `Sync` for `&` access.
     if total >= LAYER_RESOLVE_PARALLEL_MIN {
         profiling::scope!("scene::apply::layer_resolve::apply_cached_parallel");
         use rayon::prelude::*;
         space.static_mesh_renderers.par_iter_mut().for_each(|r| {
-            apply_cached_layer(resolved_cache, &fallback_log, &mut r.layer, r.node_id);
+            apply_cached_layer(resolved_cache, &mut r.layer, r.node_id);
         });
         space.skinned_mesh_renderers.par_iter_mut().for_each(|r| {
-            apply_cached_layer(
-                resolved_cache,
-                &fallback_log,
-                &mut r.base.layer,
-                r.base.node_id,
-            );
+            apply_cached_layer(resolved_cache, &mut r.base.layer, r.base.node_id);
         });
     } else {
         profiling::scope!("scene::apply::layer_resolve::apply_cached_serial");
         for renderer in &mut space.static_mesh_renderers {
-            apply_cached_layer(
-                resolved_cache,
-                &fallback_log,
-                &mut renderer.layer,
-                renderer.node_id,
-            );
+            apply_cached_layer(resolved_cache, &mut renderer.layer, renderer.node_id);
         }
         for renderer in &mut space.skinned_mesh_renderers {
             apply_cached_layer(
                 resolved_cache,
-                &fallback_log,
                 &mut renderer.base.layer,
                 renderer.base.node_id,
             );
-        }
-    }
-
-    {
-        profiling::scope!("scene::apply::layer_resolve::fallback_log");
-        for node_id in fallback_log.into_inner() {
-            record_layer_fallback(node_id);
         }
     }
 }
@@ -261,6 +238,9 @@ fn ensure_resolved_cache_entry(
         return;
     }
     let resolved = resolve_layer_for_node(node_parents, layer_for_node, node_id);
+    if resolved.is_none() {
+        record_layer_fallback(node_id);
+    }
     cache.insert(node_id, resolved);
 }
 
@@ -270,7 +250,6 @@ fn ensure_resolved_cache_entry(
 #[inline]
 fn apply_cached_layer(
     cache: &HashMap<i32, Option<LayerType>>,
-    fallback_log: &Mutex<Vec<i32>>,
     out_layer: &mut LayerType,
     node_id: i32,
 ) {
@@ -278,7 +257,6 @@ fn apply_cached_layer(
         Some(Some(layer)) => *out_layer = layer,
         Some(None) | None => {
             *out_layer = LayerType::default();
-            fallback_log.lock().push(node_id);
         }
     }
 }

@@ -85,8 +85,6 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
     let mut last_mesh = LastMeshBindState::new();
     let mut last_per_draw_dyn_offset: Option<u32> = None;
     let mut last_stencil_ref: Option<u32> = None;
-    // Cursor into `precomputed`; advances monotonically as group representatives increase.
-    let mut batch_cursor: usize = 0;
     // Track which precomputed batch is currently bound to avoid redundant set_bind_group(1).
     let mut bound_batch_cursor: Option<usize> = None;
     // Track the last pipeline pointer to skip redundant set_pipeline across groups that share
@@ -103,15 +101,10 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
         profiling::scope!("world_mesh::draw_subset::group_loop");
         for group in groups {
             let representative = group.representative_draw_idx;
-
-            // Advance the cursor to the precomputed batch that covers `representative`.
-            while batch_cursor + 1 < precomputed.len()
-                && precomputed[batch_cursor].last_draw_idx < representative
-            {
-                batch_cursor += 1;
-            }
-
-            let pc = &precomputed[batch_cursor];
+            let batch_cursor = group.material_packet_idx;
+            let Some(pc) = precomputed.get(batch_cursor) else {
+                continue;
+            };
             debug_assert!(
                 representative >= pc.first_draw_idx && representative <= pc.last_draw_idx,
                 "precomputed batch [{}, {}] should cover representative draw index {}",
@@ -285,6 +278,7 @@ mod tests {
         let group = DrawGroup {
             representative_draw_idx: 17,
             instance_range: 17..18,
+            material_packet_idx: 0,
         };
         assert_eq!(instance_range_for_draw_group(&group, false), 0..1);
     }
@@ -294,6 +288,7 @@ mod tests {
         let group = DrawGroup {
             representative_draw_idx: 17,
             instance_range: 17..20,
+            material_packet_idx: 0,
         };
         assert_eq!(instance_range_for_draw_group(&group, true), 17..20);
     }

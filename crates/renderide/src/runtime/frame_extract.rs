@@ -191,9 +191,14 @@ fn collect_view_draws(
         profiling::scope!("collect::shared_dictionary");
         crate::materials::host_data::MaterialDictionary::new(setup.property_store)
     };
+    let inner_parallelism = select_inner_parallelism_for_prepared_work(
+        prepared.len(),
+        setup.prepared_renderables.len(),
+        setup.inner_parallelism,
+    );
     // One view per frame is the desktop common case; rayon scope dispatch + single-task spawn is
     // pure overhead vs a direct serial call. Per-view collection internally still parallelises
-    // across renderer-run chunks via `setup.inner_parallelism`.
+    // across renderer-run chunks when the refined inner-parallelism tier allows it.
     let collect_one = |(prep, snap): (&FrameViewPlan<'_>, Option<ViewCullSnapshot>)| {
         profiling::scope!("render::collect_view_draws::collect_one");
         let shader_perm = prep.shader_permutation();
@@ -231,7 +236,7 @@ fn collect_view_draws(
                 material_cache,
                 prepared: Some(setup.prepared_renderables),
             },
-            setup.inner_parallelism,
+            inner_parallelism,
         );
         {
             profiling::scope!("render::collect_view_draws::package_draw_plan");
@@ -306,6 +311,26 @@ pub(super) fn select_inner_parallelism(
     }
 }
 
+/// Prepared-draw count above which two outer-parallel views are allowed to keep inner chunk
+/// parallelism enabled. Below this, nested rayon scheduling usually costs more than it saves.
+const MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM: usize = 2048;
+
+/// Refines the frame-level inner parallelism once the backend has built the prepared draw list.
+///
+/// The early selector only knows view count. At this point we also know whether each view will
+/// walk enough prepared draws to justify nested chunk workers for the common two-view case.
+fn select_inner_parallelism_for_prepared_work(
+    view_count: usize,
+    prepared_draw_count: usize,
+    default_parallelism: WorldMeshDrawCollectParallelism,
+) -> WorldMeshDrawCollectParallelism {
+    if view_count == 2 && prepared_draw_count >= MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM {
+        WorldMeshDrawCollectParallelism::Full
+    } else {
+        default_parallelism
+    }
+}
+
 /// Builds frustum + Hi-Z cull inputs for one prepared view.
 ///
 /// Returns [`None`] when the view has explicitly suppressed temporal occlusion (selective
@@ -363,6 +388,26 @@ mod tests {
     fn select_inner_parallelism_disables_nested_parallelism_for_multiple_views() {
         assert_eq!(
             select_inner_parallelism(&[main_swapchain_plan(), main_swapchain_plan()]),
+            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
+        );
+    }
+
+    #[test]
+    fn prepared_work_selector_reenables_inner_parallelism_for_large_two_view_frames() {
+        assert_eq!(
+            select_inner_parallelism_for_prepared_work(
+                2,
+                MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM,
+                WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch,
+            ),
+            WorldMeshDrawCollectParallelism::Full
+        );
+        assert_eq!(
+            select_inner_parallelism_for_prepared_work(
+                2,
+                MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM - 1,
+                WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch,
+            ),
             WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
         );
     }

@@ -82,13 +82,20 @@ pub struct SceneCoordinator {
 }
 
 /// One per-space work slot held in [`SceneCoordinator::apply_work_scratch`].
-pub(super) type ApplyWorkSlot = (
-    RenderSpaceId,
-    RenderSpaceState,
-    WorldTransformCache,
-    ExtractedRenderSpaceUpdate,
-    Vec<TransformRemovalEvent>,
-);
+pub(super) struct ApplyWorkSlot {
+    /// Render space identity for reinsert and dirty-cache tracking.
+    pub(super) id: RenderSpaceId,
+    /// Lifted per-space scene state.
+    pub(super) space: RenderSpaceState,
+    /// Lifted per-space world transform cache.
+    pub(super) cache: WorldTransformCache,
+    /// Pre-extracted host update payload to apply.
+    pub(super) extracted: ExtractedRenderSpaceUpdate,
+    /// Reused transform-removal side buffer for this work item.
+    pub(super) removal_events: Vec<TransformRemovalEvent>,
+    /// Whether applying this slot dirtied the world transform cache.
+    pub(super) world_dirty: bool,
+}
 
 impl Default for SceneCoordinator {
     fn default() -> Self {
