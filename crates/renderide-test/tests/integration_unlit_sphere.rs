@@ -13,6 +13,7 @@ use renderide_test::scene_dsl::cases::unlit_sphere;
 use renderide_test::scene_dsl::runner::{RunnerConfig, run_integration_case};
 
 #[test]
+#[ignore = "GPU headless case; run `renderide-test check-suite`"]
 fn unlit_sphere_passes_through_runner() {
     let Some(runner_cfg) = RunnerConfig::for_cargo_test() else {
         eprintln!(
