@@ -76,6 +76,8 @@ pub(super) fn default_vec4_for_field(field_name: &str) -> [f32; 4] {
         "_Tint0" => [1.0, 0.0, 0.0, 1.0],
         "_Tint1" => [0.0, 1.0, 0.0, 1.0],
         "_OverlayTint" => [1.0, 1.0, 1.0, 0.5],
+        "_BackgroundColor" => [0.0, 0.0, 0.0, 0.0],
+        "_Range" => [0.001, 0.001, 0.0, 0.0],
         "_EmissionColor"
         | "_EmissionColor1"
         | "_IntersectEmissionColor"
@@ -143,6 +145,11 @@ mod tests {
             default_vec4_for_field("_EmissionColor"),
             [0.0, 0.0, 0.0, 0.0]
         );
+        assert_eq!(
+            default_vec4_for_field("_BackgroundColor"),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(default_vec4_for_field("_Range"), [0.001, 0.001, 0.0, 0.0]);
         assert_eq!(default_vec4_for_field("_Tint0"), [1.0, 0.0, 0.0, 1.0]);
     }
 

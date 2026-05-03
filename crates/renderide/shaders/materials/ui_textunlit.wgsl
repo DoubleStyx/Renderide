@@ -6,10 +6,10 @@
 //! **Vertex color:** Unity multiplies `_TintColor * vertexColor`. The mesh pass provides a float4
 //! color stream at `@location(3)` with opaque-white fallback when absent on the host mesh.
 //!
-//! **Glyph mode (Unity `RASTER` / `SDF` / `MSDF` keywords):** FrooxEngine always sends `_Range` from
-//! `PixelRange / atlasSize` for both raster and distance-field fonts, so **mode cannot be inferred from `_Range` alone**.
+//! **Glyph mode (Unity `RASTER` / `SDF` / `MSDF` keywords):** FrooxEngine sends `_Range` from
+//! `PixelRange / atlasSize` for both raster and distance-field fonts, so mode is not derived from `_Range`.
 //! Use **`_TextMode`**: `0` = MSDF (median RGB), `1` = RASTER (`atlas * tint`, alpha clip), `2` = SDF (single-channel alpha distance).
-//! Missing `_TextMode` defaults to `0` / MSDF instead of inferring from keyword-like aliases.
+//! Missing `_TextMode` is inferred from `_FontAtlas` color profile by CPU uniform packing.
 //!
 //! **Rect clip (Unity `RECTCLIP` keyword):** When **`_RectClip` > 0.5** and `_Rect` has non-zero area, fragments outside
 //! the rect in object XY are discarded. Missing `_RectClip` defaults to off.
@@ -21,7 +21,6 @@
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
-#import renderide::alpha_clip_sample as acs
 #import renderide::mesh::vertex as mv
 #import renderide::text_sdf as tsdf
 #import renderide::scene_depth_sample as sds
@@ -44,7 +43,7 @@ struct UiTextUnlitMaterial {
     _RectClip: f32,
     /// `1` when overlay depth compositing is enabled (Unity `OVERLAY`).
     _OVERLAY: f32,
-    /// `1` when `_FontAtlas` storage is already V-inverted and shader V-flip must be skipped.
+    /// Padding for 16-byte uniform alignment.
     _pad: f32,
 }
 
@@ -105,7 +104,6 @@ fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let atlas_color = textureSample(_FontAtlas, _FontAtlas_sampler, vout.uv);
-    let atlas_clip = acs::texture_rgba_base_mip(_FontAtlas, _FontAtlas_sampler, vout.uv);
     let style = tsdf::distance_field_style(
         mat._TintColor,
         mat._OutlineColor,
@@ -117,7 +115,7 @@ fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     );
     let text_input = tsdf::DistanceFieldInput(0.0, vout.uv, vout.extra_data, vtx_color);
     let mode = tsdf::text_mode_clamped(mat._TextMode);
-    var c = tsdf::shade_text_sample(atlas_color, atlas_clip, style, text_input, vtx_color, mode);
+    var c = tsdf::shade_text_sample(atlas_color, style, text_input, vtx_color, mode);
 
     if (mat._OVERLAY > 0.5) {
         let scene_z = sds::scene_linear_depth(vout.clip_pos, vout.view_layer);

@@ -4,9 +4,9 @@
 //! WGSL identifiers in `@group(1)` match Unity [`MaterialPropertyBlock`](https://docs.unity3d.com/ScriptReference/MaterialPropertyBlock.html)
 //! names; [`crate::materials::host_data::PropertyIdRegistry`] resolves them to batch property ids.
 //!
-//! **Explicit UI controls (`_TextMode`, `_RectClip`, `_OVERLAY`):** packing uses canonical
-//! `set_float` values when present; otherwise these fields default to zero instead of falling
-//! through to keyword-style alias inference.
+//! **Text/UI controls (`_TextMode`, `_RectClip`, `_OVERLAY`):** packing uses canonical
+//! `set_float` values when present. Missing `_TextMode` is inferred from `_FontAtlas` texture
+//! profile, while UI-only controls default to zero instead of keyword-style alias inference.
 
 mod assemble;
 mod cache;
