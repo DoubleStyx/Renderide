@@ -302,30 +302,20 @@ impl GpuMesh {
         let want_submesh_topologies =
             validated_submesh_topologies(&data.submeshes, self.index_count);
 
-        write_in_place_vertex_and_derived_streams(
-            &MeshInPlaceWriteContext {
-                mesh: self,
-                queue,
-                raw,
-                layout,
-                data,
-                vertex_count: vc_usize,
-                vertex_stride: vertex_stride_us,
-            },
-            write_vertex,
-            write_ib,
-        );
+        let write_context = MeshInPlaceWriteContext {
+            mesh: self,
+            queue,
+            raw,
+            layout,
+            data,
+            vertex_count: vc_usize,
+            vertex_stride: vertex_stride_us,
+        };
+
+        write_in_place_vertex_and_derived_streams(&write_context, write_vertex, write_ib);
         write_in_place_index_buffer(self, queue, raw, layout, write_ib);
         write_in_place_bone_buffers(
-            &MeshInPlaceWriteContext {
-                mesh: self,
-                queue,
-                raw,
-                layout,
-                data,
-                vertex_count: vc_usize,
-                vertex_stride: vertex_stride_us,
-            },
+            &write_context,
             BoneBufferWriteHints {
                 needs_bone_buffers,
                 synthetic_bones,
