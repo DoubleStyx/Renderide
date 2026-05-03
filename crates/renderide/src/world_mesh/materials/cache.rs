@@ -82,6 +82,19 @@ pub struct FrameMaterialBatchCache {
     /// into one inner `Vec`; the serial merge pass only walks unique-per-chunk keys instead of
     /// every prepared draw.
     chunks_unique_scratch: Vec<Vec<(i32, Option<i32>)>>,
+    /// Snapshot of the inputs that determine whether a refresh would re-resolve any entry. When
+    /// the next refresh sees the same triple, no host-side material state has changed since the
+    /// last walk: the cache fast-paths by stamping every existing entry's `last_used_frame` so
+    /// eviction preserves them. Newly referenced materials (none in steady state) fall through to
+    /// the slow path in [`super::resolve::batch_key_for_slot_cached`], which resolves directly via
+    /// [`super::resolve::batch_key_for_slot`].
+    last_refresh_router_gen: Option<u64>,
+    /// Snapshot of [`crate::materials::host_data::MaterialPropertyStore::global_generation`] at
+    /// the most recent refresh, paired with [`Self::last_refresh_router_gen`].
+    last_refresh_dict_global_gen: Option<u64>,
+    /// Snapshot of the [`ShaderPermutation`] the cache was last refreshed for; the gate skips the
+    /// walk only when the next refresh targets the same permutation.
+    last_refresh_shader_perm: Option<ShaderPermutation>,
 }
 
 impl Default for FrameMaterialBatchCache {
@@ -101,7 +114,52 @@ impl FrameMaterialBatchCache {
             keys_per_space_scratch: Vec::new(),
             pairs_scratch: Vec::new(),
             chunks_unique_scratch: Vec::new(),
+            last_refresh_router_gen: None,
+            last_refresh_dict_global_gen: None,
+            last_refresh_shader_perm: None,
         }
+    }
+
+    /// Returns `true` and stamps every entry's `last_used_frame` to `current_frame` when the
+    /// inputs that determine cache-entry resolution are unchanged since the last refresh.
+    ///
+    /// Callers use the result to skip the per-pair walk: any draw that references a still-cached
+    /// material reads the existing entry, while a draw referencing a freshly added material falls
+    /// through to the slow path in
+    /// [`crate::world_mesh::materials::resolve::batch_key_for_slot_cached`]. New materials show
+    /// up exclusively after a host mutation (which bumps the global generation and disqualifies
+    /// the gate), so the slow-path fall-through is rare in practice.
+    fn try_fast_path_skip(
+        &mut self,
+        router_gen: u64,
+        dict_global_gen: u64,
+        shader_perm: ShaderPermutation,
+        current_frame: u64,
+    ) -> bool {
+        if self.last_refresh_router_gen == Some(router_gen)
+            && self.last_refresh_dict_global_gen == Some(dict_global_gen)
+            && self.last_refresh_shader_perm == Some(shader_perm)
+        {
+            for entry in self.entries.values_mut() {
+                entry.last_used_frame = current_frame;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Records the snapshot of `(router_gen, dict_global_gen, shader_perm)` that the most recent
+    /// refresh resolved against. Read by [`Self::try_fast_path_skip`] on the next refresh.
+    fn record_refresh_snapshot(
+        &mut self,
+        router_gen: u64,
+        dict_global_gen: u64,
+        shader_perm: ShaderPermutation,
+    ) {
+        self.last_refresh_router_gen = Some(router_gen);
+        self.last_refresh_dict_global_gen = Some(dict_global_gen);
+        self.last_refresh_shader_perm = Some(shader_perm);
     }
 
     /// Clears all entries while retaining allocated capacity.
@@ -153,6 +211,10 @@ impl FrameMaterialBatchCache {
         self.frame_counter = self.frame_counter.wrapping_add(1);
         let current_frame = self.frame_counter;
         let router_gen = router.generation();
+        let dict_global_gen = dict.global_generation();
+        if self.try_fast_path_skip(router_gen, dict_global_gen, shader_perm, current_frame) {
+            return;
+        }
         let ctx = MaterialResolveCtx {
             dict,
             router,
@@ -231,6 +293,7 @@ impl FrameMaterialBatchCache {
         // Cheap -- the cache typically holds a few dozen entries, and this touches them all once.
         self.entries
             .retain(|_, entry| entry.last_used_frame == current_frame);
+        self.record_refresh_snapshot(router_gen, dict_global_gen, shader_perm);
     }
 
     /// Refreshes the cache from a pre-expanded draw list instead of walking scene renderers.
@@ -255,6 +318,10 @@ impl FrameMaterialBatchCache {
         self.frame_counter = self.frame_counter.wrapping_add(1);
         let current_frame = self.frame_counter;
         let router_gen = router.generation();
+        let dict_global_gen = dict.global_generation();
+        if self.try_fast_path_skip(router_gen, dict_global_gen, shader_perm, current_frame) {
+            return;
+        }
         let ctx = MaterialResolveCtx {
             dict,
             router,
@@ -266,6 +333,7 @@ impl FrameMaterialBatchCache {
         seen.clear();
         let mut pairs = std::mem::take(&mut self.pairs_scratch);
         pairs.clear();
+        pairs.reserve(prepared.len());
         pairs.extend(prepared.material_property_pairs());
 
         if pairs.len() < PARALLEL_REFRESH_THRESHOLD {
@@ -312,6 +380,7 @@ impl FrameMaterialBatchCache {
         self.seen_scratch = seen;
         self.entries
             .retain(|_, entry| entry.last_used_frame == current_frame);
+        self.record_refresh_snapshot(router_gen, dict_global_gen, shader_perm);
     }
 
     /// Ensures the cache has a valid entry for `(material_asset_id, property_block_id)` and
