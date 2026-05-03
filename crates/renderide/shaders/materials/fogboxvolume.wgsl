@@ -112,19 +112,6 @@ fn fs_main(
         dist = 1.0 - (1.0 / exp(dist * mat._FogDensity));
     }
 
-    // Linear fog: `dist` is view-linear length inside [_FogStart, _FogEnd] (world units). Feeding
-    // that directly into `pow(dist * rate, γ)` overshoots Unity when the span is modest, but
-    // dividing by the full `_FogEnd - _FogStart` undershoots badly when Froox uses a huge span
-    // (near far-clip): `dist/span` stays ~0 and fog disappears. Normalize with a **capped** reference
-    // span so tight ranges behave correctly and large spans still get a usable 0–1 factor.
-    let fog_span = max(mat._FogEnd - mat._FogStart, 1e-5);
-    let linear_accum_span = max(min(fog_span, 450.0), 1e-5);
-    let accumulation_t = select(
-        dist,
-        clamp(dist / linear_accum_span, 0.0, 1.0),
-        use_linear_fog,
-    );
-
     let acc_color = accumulation_color(in.world_pos);
     let gamma = max(mat._GammaCurve, 1e-5);
     // Unity `Volume/FogBox` shader Properties default `_AccumulationColor` to (0.1,0.1,0.1,0.1).
@@ -132,7 +119,14 @@ fn fs_main(
     // and hides `_BaseColor`. Scale so full-white matches Unity's default tint strength (same factor
     // on RGBA as Unity's property defaults).
     let unity_accumulation_property_scale = 0.1;
-    let acc = pow(max(accumulation_t * mat._AccumulationRate, 0.0), gamma)
+    // FrooxEngine `_AccumulationRate` reads ~10× strong vs Unity for the same slider value (e.g.
+    // 0.32 authored in Resonite needs ~0.032 for Unity-equivalent intensity). Apply the same
+    // engine-parity scale uniformly across linear and exponential fog modes.
+    let froox_accumulation_rate_scale = 0.1;
+    let acc = pow(
+            max(dist * mat._AccumulationRate * froox_accumulation_rate_scale, 0.0),
+            gamma,
+        )
         * acc_color
         * unity_accumulation_property_scale;
     var result_color = mat._BaseColor + acc;
