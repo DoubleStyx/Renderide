@@ -13,9 +13,11 @@
 pub mod cases;
 pub mod output;
 pub mod runner;
+pub mod suite;
 pub mod tolerance;
 
 pub use cases::{CaseTemplate, IntegrationCase};
 pub use output::CaseOutputLayout;
 pub use runner::run_integration_case;
+pub use suite::{SuiteCaseReport, SuiteConfig, SuiteReport, SuiteRunOutcome, run_suite};
 pub use tolerance::{Combine, CriterionResult, Tolerance, ToleranceEvaluation};

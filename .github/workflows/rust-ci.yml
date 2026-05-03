@@ -72,3 +72,42 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --locked
+
+  headless-renderer:
+    name: headless renderer suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies (Vulkan + GStreamer)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            mesa-vulkan-drivers vulkan-tools \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build headless suite binaries
+        run: cargo build --profile dev-fast --locked -p renderide -p renderide-test
+
+      - name: Run headless renderer suite
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          MESA_LOADER_DRIVER_OVERRIDE: "llvmpipe"
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          WGPU_BACKEND: vulkan
+        run: cargo run --profile dev-fast --locked -p renderide-test -- check-suite --dev-fast
+
+      - name: Upload headless suite artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: headless-renderer-suite
+          path: |
+            target/renderide-test-out/**
+            logs/renderer-test/**
+            logs/renderer/**

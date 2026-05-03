@@ -14,6 +14,9 @@ use clap::{Parser, Subcommand};
 
 use crate::error::HarnessError;
 use crate::host::{HarnessRunOutcome, HostHarness, HostHarnessConfig, SessionTemplate};
+use crate::scene_dsl::output::default_output_root;
+use crate::scene_dsl::runner::RunnerConfig;
+use crate::scene_dsl::suite::{SuiteConfig, run_suite, select_cases};
 
 /// CLI entry point.
 pub fn run() -> ExitCode {
@@ -83,6 +86,12 @@ enum Command {
         #[command(flatten)]
         common: CommonOpts,
     },
+    /// Run the registered scene suite in parallel and fail if any case fails.
+    CheckSuite {
+        /// Suite harness options.
+        #[command(flatten)]
+        suite: SuiteOpts,
+    },
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -109,6 +118,37 @@ struct CommonOpts {
     #[arg(long, default_value_t = 1000)]
     interval_ms: u64,
     /// Print the renderer process's stdout/stderr instead of swallowing it.
+    #[arg(long, default_value_t = false)]
+    verbose_renderer: bool,
+}
+
+#[derive(Parser, Debug, Clone)]
+struct SuiteOpts {
+    /// Path to the renderide binary to spawn (defaults to `target/{profile}/renderide`).
+    #[arg(long)]
+    renderer: Option<PathBuf>,
+    /// Use the `dev-fast` profile renderer binary (`target/dev-fast/renderide`).
+    #[arg(long, default_value_t = false, conflicts_with = "release")]
+    dev_fast: bool,
+    /// Use the release-mode renderer binary (`target/release/renderide`).
+    #[arg(long, default_value_t = false, conflicts_with = "dev_fast")]
+    release: bool,
+    /// Case name to run. Repeat to run a subset; omitted means every registered case.
+    #[arg(long = "case", value_name = "NAME")]
+    case: Vec<String>,
+    /// Maximum number of cases to run concurrently. Defaults to the selected case count.
+    #[arg(long)]
+    jobs: Option<usize>,
+    /// Test-output root. Defaults to the workspace target/renderide-test-out directory.
+    #[arg(long)]
+    output_root: Option<PathBuf>,
+    /// How long to wait for handshake / asset acks / a fresh PNG per case.
+    #[arg(long, default_value_t = 180)]
+    timeout_seconds: u64,
+    /// Renderer interval between consecutive offscreen renders (ms).
+    #[arg(long, default_value_t = 500)]
+    interval_ms: u64,
+    /// Print renderer processes' stdout/stderr instead of swallowing them.
     #[arg(long, default_value_t = false)]
     verbose_renderer: bool,
 }
@@ -140,6 +180,61 @@ fn dispatch(cli: Cli) -> Result<(), HarnessError> {
             println!("Produced PNG at {}", outcome.png_path.display());
             Ok(())
         }
+        Command::CheckSuite { suite } => run_suite_command(&suite),
+    }
+}
+
+fn run_suite_command(opts: &SuiteOpts) -> Result<(), HarnessError> {
+    let cases = select_cases(&opts.case)?;
+    let case_count = cases.len();
+    let renderer_path = match &opts.renderer {
+        Some(p) => p.clone(),
+        None => resolve_renderer_path(BuildProfile::from_flags(opts.release, opts.dev_fast)),
+    };
+    let mut runner = RunnerConfig::with_defaults(renderer_path);
+    runner.timeout = Duration::from_secs(opts.timeout_seconds);
+    runner.interval_ms = opts.interval_ms;
+    runner.verbose_renderer = opts.verbose_renderer;
+    runner.output_root = opts.output_root.clone().unwrap_or_else(default_output_root);
+
+    let jobs = opts.jobs.unwrap_or(case_count.max(1)).max(1);
+    logger::info!(
+        "Suite: running {case_count} case(s) with jobs={jobs}, renderer_path={}, output_root={}",
+        runner.renderer_path.display(),
+        runner.output_root.display()
+    );
+
+    let outcome = run_suite(SuiteConfig {
+        cases,
+        runner,
+        jobs,
+    })?;
+    for case in &outcome.report.cases {
+        if case.passed {
+            println!("PASS {} ({})", case.name, case.artifacts_dir.display());
+        } else {
+            println!(
+                "FAIL {} ({}) {}",
+                case.name,
+                case.artifacts_dir.display(),
+                case.error.as_deref().unwrap_or("case failed")
+            );
+        }
+    }
+    println!("Suite report: {}", outcome.report_path.display());
+    println!(
+        "Suite result: {}/{} passed",
+        outcome.report.passed, outcome.report.total
+    );
+
+    if outcome.passed() {
+        Ok(())
+    } else {
+        Err(HarnessError::SuiteFailed {
+            failed: outcome.report.failed,
+            total: outcome.report.total,
+            report_path: outcome.report_path,
+        })
     }
 }
 

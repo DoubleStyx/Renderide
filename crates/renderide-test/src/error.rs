@@ -81,6 +81,21 @@ pub enum HarnessError {
     /// `image-compare` failed to compute a similarity score.
     #[error("image-compare: {0}")]
     ImageCompare(String),
+    /// A requested named scene case does not exist in the suite registry.
+    #[error("unknown integration case `{0}`")]
+    UnknownCase(String),
+    /// One or more cases in the headless suite failed.
+    #[error(
+        "headless suite failed: {failed}/{total} cases failed; report written to {report_path}"
+    )]
+    SuiteFailed {
+        /// Number of failed cases.
+        failed: usize,
+        /// Number of cases executed.
+        total: usize,
+        /// Path to the suite-level JSON report.
+        report_path: PathBuf,
+    },
 }
 
 #[cfg(test)]
@@ -211,5 +226,25 @@ mod tests {
         let s = e.to_string();
         assert!(s.contains("permission denied"));
         assert!(s.contains("spawn renderer process"));
+    }
+
+    #[test]
+    fn display_unknown_case_includes_name() {
+        let e = HarnessError::UnknownCase("missing_case".to_string());
+        let s = e.to_string();
+        assert!(s.contains("unknown integration case"));
+        assert!(s.contains("missing_case"));
+    }
+
+    #[test]
+    fn display_suite_failed_includes_counts_and_report() {
+        let e = HarnessError::SuiteFailed {
+            failed: 2,
+            total: 5,
+            report_path: PathBuf::from("target/renderide-test-out/suite-report.json"),
+        };
+        let s = e.to_string();
+        assert!(s.contains("2/5"));
+        assert!(s.contains("suite-report.json"));
     }
 }
