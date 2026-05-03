@@ -90,6 +90,7 @@ struct FrameGlobals {
 @group(0) @binding(8) var scene_color_sampler: sampler;
 @group(0) @binding(9) var skybox_specular: texture_cube<f32>;
 @group(0) @binding(10) var skybox_specular_sampler: sampler;
+@group(0) @binding(11) var ibl_dfg_lut: texture_2d<f32>;
 
 /// World-space camera position for the current view layer.
 fn camera_world_pos_for_view(view_layer: u32) -> vec3<f32> {
