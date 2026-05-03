@@ -50,4 +50,36 @@ mod normalize_unity_shader_lookup_key_tests {
     fn preserves_inner_ascii_other_chars() {
         assert_eq!(normalize_unity_shader_lookup_key("Foo-Bar_1"), "foo-bar_1");
     }
+
+    #[test]
+    fn handles_mixed_slashes_and_spaces_in_one_key() {
+        assert_eq!(
+            normalize_unity_shader_lookup_key("Custom UI/Text Unlit"),
+            "custom-ui_text-unlit"
+        );
+    }
+
+    #[test]
+    fn preserves_inner_tab_characters() {
+        assert_eq!(
+            normalize_unity_shader_lookup_key("Foo\tBar Baz"),
+            "foo\tbar-baz"
+        );
+    }
+
+    #[test]
+    fn preserves_non_ascii_characters_during_ascii_lowercase() {
+        assert_eq!(
+            normalize_unity_shader_lookup_key("Ümlaut/Foo"),
+            "Ümlaut_foo"
+        );
+    }
+
+    #[test]
+    fn trims_outer_whitespace_and_maps_inner_spaces() {
+        assert_eq!(
+            normalize_unity_shader_lookup_key("  Foo Bar/Baz Qux  "),
+            "foo-bar_baz-qux"
+        );
+    }
 }

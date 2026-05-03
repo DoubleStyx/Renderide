@@ -47,6 +47,15 @@ impl SceneCoordinator {
             compute_world_matrices_for_space(id.0, &space.nodes, &space.node_parents, &mut cache);
         self.world_caches.insert(id, cache);
     }
+
+    /// Inserts a fully constructed [`RenderSpaceState`] under `id` (unit tests only).
+    ///
+    /// Bypasses the host frame-submit path so tests can populate
+    /// `static_mesh_renderers`, `skinned_mesh_renderers`, and other fields directly without
+    /// going through shared memory.
+    pub(crate) fn test_insert_space(&mut self, id: RenderSpaceId, space: RenderSpaceState) {
+        self.spaces.insert(id, space);
+    }
 }
 
 /// Builds a unit-scale test transform at the origin.

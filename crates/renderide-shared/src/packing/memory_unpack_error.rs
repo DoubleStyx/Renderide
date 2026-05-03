@@ -43,3 +43,95 @@ fn short_type_name<T>() -> &'static str {
     let full = std::any::type_name::<T>();
     full.rsplit("::").next().unwrap_or(full)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn underrun_display_is_stable() {
+        let err = MemoryUnpackError::Underrun {
+            ty: "u32",
+            needed: 4,
+            remaining: 2,
+        };
+        assert_eq!(
+            err.to_string(),
+            "buffer underrun: need 4 bytes for u32, 2 byte(s) remaining"
+        );
+    }
+
+    #[test]
+    fn length_overflow_display_is_stable() {
+        assert_eq!(
+            MemoryUnpackError::LengthOverflow.to_string(),
+            "length overflow for POD access"
+        );
+    }
+
+    #[test]
+    fn string_too_long_display_is_stable() {
+        let err = MemoryUnpackError::StringTooLong {
+            requested: 99_999,
+            max: 1_024,
+        };
+        assert_eq!(
+            err.to_string(),
+            "string length 99999 exceeds MAX_STRING_LEN (1024)"
+        );
+    }
+
+    #[test]
+    fn pod_underrun_records_short_type_name_for_module_path() {
+        let err = MemoryUnpackError::pod_underrun::<i32>(8, 3);
+        assert_eq!(
+            err,
+            MemoryUnpackError::Underrun {
+                ty: "i32",
+                needed: 8,
+                remaining: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn pod_underrun_handles_single_segment_type_name() {
+        let err = MemoryUnpackError::pod_underrun::<u8>(1, 0);
+        match err {
+            MemoryUnpackError::Underrun {
+                ty,
+                needed,
+                remaining,
+            } => {
+                assert_eq!(ty, "u8");
+                assert_eq!(needed, 1);
+                assert_eq!(remaining, 0);
+            }
+            _ => panic!("expected Underrun variant"),
+        }
+    }
+
+    #[test]
+    fn pod_underrun_strips_module_path_for_qualified_type() {
+        struct LocalDummy;
+        let err = MemoryUnpackError::pod_underrun::<LocalDummy>(2, 0);
+        match err {
+            MemoryUnpackError::Underrun { ty, .. } => {
+                assert_eq!(ty, "LocalDummy");
+            }
+            _ => panic!("expected Underrun variant"),
+        }
+    }
+
+    #[test]
+    fn equality_and_copy_round_trip() {
+        let a = MemoryUnpackError::Underrun {
+            ty: "i64",
+            needed: 8,
+            remaining: 0,
+        };
+        let b = a;
+        assert_eq!(a, b);
+        assert_ne!(a, MemoryUnpackError::LengthOverflow);
+    }
+}

@@ -15,3 +15,52 @@ pub enum WireDecodeError {
     #[error(transparent)]
     Unpack(#[from] MemoryUnpackError),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_polymorphic_decode_error_routes_to_polymorphic_variant() {
+        let inner = PolymorphicDecodeError {
+            discriminator: 7,
+            union: "RendererCommand",
+        };
+        let err: WireDecodeError = inner.into();
+        match err {
+            WireDecodeError::Polymorphic(e) => assert_eq!(e, inner),
+            WireDecodeError::Unpack(_) => panic!("expected Polymorphic variant"),
+        }
+    }
+
+    #[test]
+    fn from_memory_unpack_error_routes_to_unpack_variant() {
+        let inner = MemoryUnpackError::LengthOverflow;
+        let err: WireDecodeError = inner.into();
+        match err {
+            WireDecodeError::Unpack(e) => assert_eq!(e, inner),
+            WireDecodeError::Polymorphic(_) => panic!("expected Unpack variant"),
+        }
+    }
+
+    #[test]
+    fn display_is_transparent_for_polymorphic() {
+        let inner = PolymorphicDecodeError {
+            discriminator: -3,
+            union: "Foo",
+        };
+        let wire: WireDecodeError = inner.into();
+        assert_eq!(wire.to_string(), inner.to_string());
+    }
+
+    #[test]
+    fn display_is_transparent_for_unpack() {
+        let inner = MemoryUnpackError::Underrun {
+            ty: "i32",
+            needed: 4,
+            remaining: 1,
+        };
+        let wire: WireDecodeError = inner.into();
+        assert_eq!(wire.to_string(), inner.to_string());
+    }
+}
