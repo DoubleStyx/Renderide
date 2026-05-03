@@ -248,21 +248,18 @@ fn collect_world_mesh_chunks(
             profiling::scope!("mesh::collect_prepared::run_aligned_chunks");
             prepared.run_aligned_chunks(PREPARED_CHUNK_SIZE)
         };
-        match parallelism {
-            WorldMeshDrawCollectParallelism::Full => {
-                profiling::scope!("mesh::collect_prepared::parallel_chunks");
-                run_chunks
-                    .par_iter()
-                    .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
-                    .collect()
-            }
-            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => {
-                profiling::scope!("mesh::collect_prepared::serial_chunks");
-                run_chunks
-                    .iter()
-                    .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
-                    .collect()
-            }
+        if parallelism == WorldMeshDrawCollectParallelism::Full && run_chunks.len() >= 2 {
+            profiling::scope!("mesh::collect_prepared::parallel_chunks");
+            run_chunks
+                .par_iter()
+                .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
+                .collect()
+        } else {
+            profiling::scope!("mesh::collect_prepared::serial_chunks");
+            run_chunks
+                .iter()
+                .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
+                .collect()
         }
     } else {
         let chunks = {
@@ -270,21 +267,18 @@ fn collect_world_mesh_chunks(
             build_chunk_specs(space_ids, ctx)
         };
         profiling::scope!("mesh::collect");
-        match parallelism {
-            WorldMeshDrawCollectParallelism::Full => {
-                profiling::scope!("mesh::collect::parallel_chunks");
-                chunks
-                    .par_iter()
-                    .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
-                    .collect()
-            }
-            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => {
-                profiling::scope!("mesh::collect::serial_chunks");
-                chunks
-                    .iter()
-                    .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
-                    .collect()
-            }
+        if parallelism == WorldMeshDrawCollectParallelism::Full && chunks.len() >= 2 {
+            profiling::scope!("mesh::collect::parallel_chunks");
+            chunks
+                .par_iter()
+                .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
+                .collect()
+        } else {
+            profiling::scope!("mesh::collect::serial_chunks");
+            chunks
+                .iter()
+                .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
+                .collect()
         }
     }
 }

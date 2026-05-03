@@ -8,8 +8,16 @@ use crate::shared::RenderTransform;
 use super::error::SceneError;
 use super::math::{render_transform_has_degenerate_scale, render_transform_to_matrix};
 
-/// Node count above which a bulk rebuild fans out across rayon by hierarchy depth level.
-const WORLD_BULK_REBUILD_PARALLEL_MIN: usize = 1024;
+/// Node count above which a fully dirty cache routes through the bulk rebuild path.
+const WORLD_BULK_REBUILD_PARALLEL_MIN: usize = 256;
+
+/// Node count in one hierarchy depth level above which that level fans out across rayon.
+const WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN: usize = 64;
+
+#[inline]
+fn should_parallelize_bulk_level(node_count: usize) -> bool {
+    node_count >= WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN
+}
 
 /// Per-space cache: world matrices and incremental recompute bookkeeping.
 #[derive(Debug)]
@@ -296,15 +304,24 @@ impl WorldTransformCache {
         {
             let local_ro: &[Mat4] = local_matrices;
             bfs_writes.clear();
-            roots
-                .par_iter()
-                .map(|&i| {
+            if should_parallelize_bulk_level(roots.len()) {
+                roots
+                    .par_iter()
+                    .map(|&i| {
+                        (
+                            local_ro[i],
+                            render_transform_has_degenerate_scale(&nodes[i]),
+                        )
+                    })
+                    .collect_into_vec(bfs_writes);
+            } else {
+                bfs_writes.extend(roots.iter().map(|&i| {
                     (
                         local_ro[i],
                         render_transform_has_degenerate_scale(&nodes[i]),
                     )
-                })
-                .collect_into_vec(bfs_writes);
+                }));
+            }
             for (slot, &i) in bfs_writes.iter().zip(roots.iter()) {
                 world_matrices[i] = slot.0;
                 degenerate_scales[i] = slot.1;
@@ -323,17 +340,22 @@ impl WorldTransformCache {
             let world_ro: &[Mat4] = world_matrices;
             let degen_ro: &[bool] = degenerate_scales;
             bfs_writes.clear();
-            level
-                .par_iter()
-                .map(|&i| {
-                    let p = node_parents[i] as usize;
-                    let parent_world = world_ro[p];
-                    let parent_degen = degen_ro[p];
-                    let local = local_ro[i];
-                    let degen_self = render_transform_has_degenerate_scale(&nodes[i]);
-                    (parent_world * local, parent_degen | degen_self)
-                })
-                .collect_into_vec(bfs_writes);
+            let compute_one = |&i: &usize| {
+                let p = node_parents[i] as usize;
+                let parent_world = world_ro[p];
+                let parent_degen = degen_ro[p];
+                let local = local_ro[i];
+                let degen_self = render_transform_has_degenerate_scale(&nodes[i]);
+                (parent_world * local, parent_degen | degen_self)
+            };
+            if should_parallelize_bulk_level(level.len()) {
+                level
+                    .par_iter()
+                    .map(compute_one)
+                    .collect_into_vec(bfs_writes);
+            } else {
+                bfs_writes.extend(level.iter().map(compute_one));
+            }
             for (slot, &i) in bfs_writes.iter().zip(level.iter()) {
                 world_matrices[i] = slot.0;
                 degenerate_scales[i] = slot.1;
@@ -529,6 +551,16 @@ mod tests {
             scale: Vec3::ONE,
             rotation: Quat::IDENTITY,
         }
+    }
+
+    #[test]
+    fn bulk_level_parallel_gate_requires_meaningful_width() {
+        assert!(!should_parallelize_bulk_level(
+            WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN - 1
+        ));
+        assert!(should_parallelize_bulk_level(
+            WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN
+        ));
     }
 
     #[test]

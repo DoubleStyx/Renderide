@@ -294,25 +294,28 @@ impl SceneCoordinator {
         // `&self.spaces` is a shared borrow across rayon workers; `BTreeMap::get` is `Sync` for
         // `Sync` keys and values. Each task owns its own cache.
         let spaces = &self.spaces;
-        let results: Vec<(RenderSpaceId, Result<WorldTransformCache, SceneError>)> = work
-            .into_par_iter()
-            .map(|(id, mut cache)| {
-                // Space removed between drain and dispatch -- preserve cache as-is so the reinsert
-                // step below drops it via the `Ok` path (caller treats this as a no-op).
-                let Some(space) = spaces.get(&id) else {
-                    return (id, Ok(cache));
-                };
-                let n = space.nodes.len();
-                ensure_cache_shapes(&mut cache, n, false);
-                let result = compute_world_matrices_for_space(
-                    id.0,
-                    &space.nodes,
-                    &space.node_parents,
-                    &mut cache,
-                );
-                (id, result.map(|()| cache))
-            })
-            .collect();
+        let compute_one = |(id, mut cache): (RenderSpaceId, WorldTransformCache)| {
+            // Space removed between drain and dispatch -- preserve cache as-is so the reinsert
+            // step below drops it via the `Ok` path (caller treats this as a no-op).
+            let Some(space) = spaces.get(&id) else {
+                return (id, Ok(cache));
+            };
+            let n = space.nodes.len();
+            ensure_cache_shapes(&mut cache, n, false);
+            let result = compute_world_matrices_for_space(
+                id.0,
+                &space.nodes,
+                &space.node_parents,
+                &mut cache,
+            );
+            (id, result.map(|()| cache))
+        };
+        let results: Vec<(RenderSpaceId, Result<WorldTransformCache, SceneError>)> =
+            if work.len() == 1 {
+                work.into_iter().map(compute_one).collect()
+            } else {
+                work.into_par_iter().map(compute_one).collect()
+            };
 
         let mut first_err: Option<SceneError> = None;
         for (id, result) in results {

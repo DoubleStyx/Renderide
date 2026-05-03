@@ -750,12 +750,9 @@ impl CompiledRenderGraph {
             per_view_shared,
             profiler,
         } = inputs;
-        // Rayon scope dispatch + per-task spawn cost dominates the work-stealing benefit at small
-        // view counts. OpenXR stereo (the common case) hits exactly two views with two evenly
-        // sized workloads, so the parallel path was usually a wash with serial. Bump the
-        // threshold to require at least three views before paying the rayon overhead; secondary
-        // RT cameras + main + HMD eyes still parallelise.
-        const MIN_VIEWS_FOR_PARALLEL_RECORD: usize = 3;
+        // One view records serially. Two or more independent views can use worker threads, which
+        // lets OpenXR stereo record both eyes in parallel.
+        const MIN_VIEWS_FOR_PARALLEL_RECORD: usize = 2;
         if record_parallelism == crate::config::RecordParallelism::PerViewParallel
             && n_views >= MIN_VIEWS_FOR_PARALLEL_RECORD
         {

@@ -19,9 +19,17 @@ use crate::shared::{
 
 /// Touched-renderer count above which blendshape weight apply fans out across rayon.
 ///
-/// 1024 matches Godot's `threaded_cull_minimum_instances` default. Below this point the
-/// per-batch grouping + rayon dispatch overhead dominates the simple serial loop.
-const BLENDSHAPE_APPLY_PARALLEL_MIN: usize = 1024;
+/// Batch count above which the grouping + worker dispatch cost is likely to pay off.
+const BLENDSHAPE_APPLY_PARALLEL_MIN: usize = 128;
+
+/// Renderer count above which grouped blendshape apply has enough worker slots to fan out.
+const BLENDSHAPE_APPLY_PARALLEL_MIN_RENDERERS: usize = 64;
+
+#[inline]
+fn should_parallelize_blendshape_apply(accepted_count: usize, renderer_count: usize) -> bool {
+    accepted_count >= BLENDSHAPE_APPLY_PARALLEL_MIN
+        && renderer_count >= BLENDSHAPE_APPLY_PARALLEL_MIN_RENDERERS
+}
 
 use super::diagnostics::{
     BONE_INDEX_EMPTY_WARNED_SCENES, SKINNED_MESH_OOB_WARNED_SCENES, warn_oob_renderable_index_once,
@@ -292,7 +300,7 @@ fn apply_skinned_blendshape_weight_batches_extracted(
         return;
     }
 
-    if accepted.len() >= BLENDSHAPE_APPLY_PARALLEL_MIN {
+    if should_parallelize_blendshape_apply(accepted.len(), space.skinned_mesh_renderers.len()) {
         // Group accepted batches by destination renderable so the parallel apply can take a
         // unique &mut to each renderer without aliasing. Iteration order of a single renderer's
         // batches is preserved (push order matches the original batch stream order).
@@ -498,8 +506,9 @@ mod blendshape_apply_tests {
     use crate::shared::{BlendshapeUpdate, BlendshapeUpdateBatch};
 
     use super::{
-        BLENDSHAPE_APPLY_PARALLEL_MIN, ExtractedSkinnedMeshRenderablesUpdate,
-        apply_skinned_blendshape_weight_batches_extracted,
+        BLENDSHAPE_APPLY_PARALLEL_MIN, BLENDSHAPE_APPLY_PARALLEL_MIN_RENDERERS,
+        ExtractedSkinnedMeshRenderablesUpdate, apply_skinned_blendshape_weight_batches_extracted,
+        should_parallelize_blendshape_apply,
     };
 
     fn space_with_n_renderers(n: usize) -> RenderSpaceState {
@@ -530,6 +539,22 @@ mod blendshape_apply_tests {
             blendshape_update_count: 0,
         });
         (batches, updates)
+    }
+
+    #[test]
+    fn parallel_gate_requires_enough_batches_and_renderers() {
+        assert!(!should_parallelize_blendshape_apply(
+            BLENDSHAPE_APPLY_PARALLEL_MIN - 1,
+            BLENDSHAPE_APPLY_PARALLEL_MIN_RENDERERS
+        ));
+        assert!(!should_parallelize_blendshape_apply(
+            BLENDSHAPE_APPLY_PARALLEL_MIN,
+            BLENDSHAPE_APPLY_PARALLEL_MIN_RENDERERS - 1
+        ));
+        assert!(should_parallelize_blendshape_apply(
+            BLENDSHAPE_APPLY_PARALLEL_MIN,
+            BLENDSHAPE_APPLY_PARALLEL_MIN_RENDERERS
+        ));
     }
 
     #[test]

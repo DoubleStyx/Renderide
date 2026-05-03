@@ -4,17 +4,17 @@ use rayon::prelude::*;
 
 use crate::shared::TextureFormat;
 
-/// Texel count above which mip decode fans out across rayon (256 KiB RGBA8 = 256x256).
+/// Texel count above which mip decode fans out across rayon (64 KiB RGBA8 = 128x128).
 ///
-/// Most mip levels in a chain are smaller than 256x256, so they keep the serial path and
-/// avoid rayon dispatch overhead. Above 256x256 the decode is large enough to amortize.
-const PARALLEL_DECODE_MIN_TEXELS: usize = 65_536;
+/// Most tail mips in a chain are smaller than 128x128, so they keep the serial path and
+/// avoid rayon dispatch overhead. Above 128x128 the decode is large enough to amortize.
+const PARALLEL_DECODE_MIN_TEXELS: usize = 16_384;
 
 /// Texel count per rayon chunk during parallel decode.
 ///
 /// Larger chunks reduce rayon scheduler thrash, matching Filament's CountSplitter recursive
 /// halving (which keeps splits to ~MAX_SPLITS=12 even on huge inputs).
-const PARALLEL_DECODE_TEXELS_PER_CHUNK: usize = 16_384;
+const PARALLEL_DECODE_TEXELS_PER_CHUNK: usize = 8_192;
 
 /// Runs `decode` over the full input/output, splitting into rayon chunks once `texel_count`
 /// crosses [`PARALLEL_DECODE_MIN_TEXELS`].

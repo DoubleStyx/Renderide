@@ -184,10 +184,18 @@ impl<'a> MaterialDrawResolver<'a> {
             return Vec::new();
         }
 
-        collect_material_batch_boundaries(draws)
-            .into_par_iter()
-            .map(|(first, last)| self.resolve_one_batch(draws, first, last))
-            .collect()
+        let boundaries = collect_material_batch_boundaries(draws);
+        if boundaries.len() < 2 {
+            boundaries
+                .into_iter()
+                .map(|(first, last)| self.resolve_one_batch(draws, first, last))
+                .collect()
+        } else {
+            boundaries
+                .into_par_iter()
+                .map(|(first, last)| self.resolve_one_batch(draws, first, last))
+                .collect()
+        }
     }
 
     /// Resolves one material run into a record-ready packet.

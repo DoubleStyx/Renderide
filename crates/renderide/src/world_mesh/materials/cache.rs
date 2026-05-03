@@ -26,10 +26,10 @@ use super::resolve::{MaterialResolveCtx, ResolvedMaterialBatch, resolve_material
 
 /// Minimum prepared-draw count before [`FrameMaterialBatchCache::refresh_for_prepared`] uses the
 /// chunked rayon dedup path. Below this, per-draw work is small enough that the serial walk wins.
-const PARALLEL_REFRESH_THRESHOLD: usize = 512;
+const PARALLEL_REFRESH_THRESHOLD: usize = 128;
 /// Chunk size for the parallel dedup phase. Larger values improve dedup density per chunk; smaller
-/// values give finer-grained parallelism. 256 strikes a balance for typical scenes.
-const PARALLEL_REFRESH_CHUNK_SIZE: usize = 256;
+/// values give finer-grained parallelism. 64 keeps medium scenes split across workers.
+const PARALLEL_REFRESH_CHUNK_SIZE: usize = 64;
 
 /// Cached resolution plus the validation keys captured at resolve time.
 #[derive(Clone)]

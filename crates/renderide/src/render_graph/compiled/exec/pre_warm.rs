@@ -102,12 +102,7 @@ impl CompiledRenderGraph {
             compile_requests.len()
         );
 
-        // Fan pipeline misses out to the rayon pool so multiple new permutations compile in
-        // parallel instead of serially blocking the main thread. `MaterialPipelineCache`
-        // releases its mutex before `create_shader_module` / `create_render_pipeline` and
-        // elides duplicate inserts on re-lock, so concurrent callers are safe.
-        use rayon::prelude::*;
-        compile_requests.par_iter().for_each(|req| {
+        let compile_one = |req: &PipelineVariantKey| {
             profiling::scope!("graph::pre_warm_pipelines::compile");
             let pass_desc = req.pass_desc();
             let _ = reg.pipeline_for_shader_asset(
@@ -121,7 +116,17 @@ impl CompiledRenderGraph {
                     primitive_topology: req.primitive_topology,
                 },
             );
-        });
+        };
+        if compile_requests.len() == 1 {
+            compile_one(&compile_requests[0]);
+        } else {
+            // Fan pipeline misses out to the rayon pool so multiple new permutations compile in
+            // parallel instead of serially blocking the main thread. `MaterialPipelineCache`
+            // releases its mutex before `create_shader_module` / `create_render_pipeline` and
+            // elides duplicate inserts on re-lock, so concurrent callers are safe.
+            use rayon::prelude::*;
+            compile_requests.par_iter().for_each(compile_one);
+        }
         // Stamp the warmed set so the next frame's walk can skip these variants entirely. We
         // mark every requested key, even if its compile failed: a later retry would re-add it.
         reg.mark_pipeline_variants_warmed(compile_requests.iter().copied());

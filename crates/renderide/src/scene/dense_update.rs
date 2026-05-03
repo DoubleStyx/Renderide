@@ -7,7 +7,7 @@
 /// render-transform/material overrides) share this threshold so the choice
 /// remains consistent and easy to retune in one place. Below this length the
 /// thread-pool dispatch overhead outweighs the per-element work.
-pub(crate) const FIXUP_PARALLEL_MIN: usize = 1024;
+pub(crate) const FIXUP_PARALLEL_MIN: usize = 256;
 
 /// Iterates non-negative entries until the host terminator.
 pub(crate) fn non_negative_i32s(values: &[i32]) -> impl Iterator<Item = i32> + '_ {

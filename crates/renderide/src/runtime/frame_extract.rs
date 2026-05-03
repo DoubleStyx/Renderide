@@ -55,11 +55,15 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
         } = self;
         let cull_snapshots: Vec<Option<ViewCullSnapshot>> = {
             profiling::scope!("render::gather_view_cull_snapshots");
-            prepared_views
-                .plans()
-                .par_iter()
-                .map(|prep| cull_snapshot_for_view(&shared, prep))
-                .collect()
+            let plans = prepared_views.plans();
+            match plans.len() {
+                0 => Vec::new(),
+                1 => vec![cull_snapshot_for_view(&shared, &plans[0])],
+                _ => plans
+                    .par_iter()
+                    .map(|prep| cull_snapshot_for_view(&shared, prep))
+                    .collect(),
+            }
         };
         let view_draws = collect_view_draws(&shared, prepared_views.plans(), cull_snapshots);
         PreparedDraws {

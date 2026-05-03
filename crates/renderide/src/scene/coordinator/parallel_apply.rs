@@ -303,10 +303,10 @@ impl SceneCoordinator {
             }
         }
 
-        // Stay on the serial path for small batches: rayon dispatch + scope teardown costs more
-        // than the per-space mutate at typical scene sizes (1-3 active spaces).
-        const SERIAL_APPLY_THRESHOLD: usize = 4;
-        if work.len() <= SERIAL_APPLY_THRESHOLD {
+        // Stay on the serial path for a single space; two or more independent spaces can use the
+        // worker pool under the aggressive early parallelism policy.
+        const MIN_SPACES_FOR_PARALLEL_APPLY: usize = 2;
+        if work.len() < MIN_SPACES_FOR_PARALLEL_APPLY {
             profiling::scope!("scene::apply::serial_inner");
             for (id, mut space, mut cache, extracted, mut removal_events) in work.drain(..) {
                 let dirty = apply_extracted_render_space_update(

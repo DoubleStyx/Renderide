@@ -8,9 +8,9 @@ use crate::shared::RenderingContext;
 
 /// Bone count above which palette construction fans out across rayon.
 ///
-/// Per-bone work is one Mat4 multiply (~100ns); 1024 bones is ~100us total, matching the
-/// rayon dispatch break-even point.
-const SKINNING_PALETTE_PARALLEL_MIN: usize = 1024;
+/// Per-bone work is one world lookup plus a Mat4 multiply, so medium skinned meshes can amortize
+/// worker dispatch once the palette reaches a few hundred bones.
+const SKINNING_PALETTE_PARALLEL_MIN: usize = 256;
 
 /// Bytes per column-major `mat4<f32>` slot in the GPU-facing palette buffer.
 const PALETTE_BONE_BYTES: usize = 64;
