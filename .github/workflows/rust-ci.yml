@@ -74,19 +74,13 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Run headless renderer suite
-        if: runner.os == 'Linux'
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          MESA_LOADER_DRIVER_OVERRIDE: "llvmpipe"
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          WGPU_BACKEND: vulkan
-        run: ./target/debug/renderide-test check-suite --renderer target/debug/renderide
+        run: cargo run --locked -p renderide-test -- check-suite
 
       - name: Upload headless suite artifacts
-        if: always() && runner.os == 'Linux'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: headless-renderer-suite
+          name: headless-renderer-suite-${{ matrix.os }}
           path: |
             target/renderide-test-out/**
             logs/renderer-test/**
