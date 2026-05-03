@@ -14,7 +14,7 @@ use crate::world_mesh::culling::{
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
-use super::super::prepared_renderables::FramePreparedDraw;
+use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
 use super::{
     DrawCollectionContext, front_face_for_world_matrix, world_matrix_for_local_vertex_stream,
@@ -24,11 +24,14 @@ use super::{
 ///
 /// Matches the scene-walk chunk width so per-view CPU cost stays bounded by the same per-task
 /// overhead as the scene-walk path.
-pub(super) const PREPARED_CHUNK_SIZE: usize = 256;
+pub(super) const PREPARED_CHUNK_SIZE: usize = 128;
 
 /// Returns true when two prepared slot entries came from the same source renderer.
 #[inline]
-pub(super) fn prepared_draws_share_renderer(a: &FramePreparedDraw, b: &FramePreparedDraw) -> bool {
+pub(in crate::world_mesh::draw_prep) fn prepared_draws_share_renderer(
+    a: &FramePreparedDraw,
+    b: &FramePreparedDraw,
+) -> bool {
     a.space_id == b.space_id
         && a.renderable_index == b.renderable_index
         && a.instance_id == b.instance_id
@@ -253,22 +256,22 @@ fn collect_prepared_renderer_run(
 /// for each material slot.
 pub(super) fn collect_prepared_chunk(
     draws: &[FramePreparedDraw],
+    runs: &[FramePreparedRun],
     ctx: &DrawCollectionContext<'_>,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
 ) -> (Vec<WorldMeshDrawItem>, (usize, usize, usize)) {
-    let mut out: Vec<WorldMeshDrawItem> = Vec::with_capacity(draws.len());
+    let chunk_draws = runs
+        .first()
+        .and_then(|first| runs.last().map(|last| last.end - first.start))
+        .unwrap_or(0) as usize;
+    let mut out: Vec<WorldMeshDrawItem> = Vec::with_capacity(chunk_draws);
     let mut cull_stats = (0usize, 0usize, 0usize);
 
-    let mut run_start = 0usize;
-    while run_start < draws.len() {
-        let first = &draws[run_start];
-        let mut run_end = run_start + 1;
-        while run_end < draws.len() && prepared_draws_share_renderer(first, &draws[run_end]) {
-            run_end += 1;
-        }
-        let run = &draws[run_start..run_end];
-        run_start = run_end;
+    for prepared_run in runs {
+        let start = prepared_run.start as usize;
+        let end = prepared_run.end as usize;
+        let run = &draws[start..end];
         let run_stats = collect_prepared_renderer_run(run, ctx, cache, filter_masks, &mut out);
         cull_stats.0 += run_stats.0;
         cull_stats.1 += run_stats.1;

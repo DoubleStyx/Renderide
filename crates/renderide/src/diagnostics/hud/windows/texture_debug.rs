@@ -29,8 +29,9 @@ impl HudWindow for TextureDebugWindow {
     fn anchor(&self, _viewport: Viewport) -> WindowSlot {
         WindowSlot {
             position: [layout::MARGIN, layout::MARGIN + TEXTURE_DEBUG_Y_OFFSET],
-            size_min: [TEXTURE_DEBUG_W, TEXTURE_DEBUG_H],
-            size_max: [TEXTURE_DEBUG_W, TEXTURE_DEBUG_H],
+            size: [TEXTURE_DEBUG_W, TEXTURE_DEBUG_H],
+            size_min: [420.0, 220.0],
+            size_max: [f32::INFINITY, f32::INFINITY],
         }
     }
 

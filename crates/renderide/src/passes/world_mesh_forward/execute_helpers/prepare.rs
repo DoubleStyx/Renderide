@@ -1,5 +1,6 @@
 //! Prepare callback helpers for world-mesh forward passes.
 
+use crate::backend::WorldMeshForwardEncodeRefs;
 use crate::camera::HostCameraFrame;
 use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot};
 use crate::gpu::GpuLimits;
@@ -10,12 +11,14 @@ use crate::render_graph::frame_params::GraphPassFrame;
 use crate::render_graph::frame_upload_batch::FrameUploadBatch;
 use crate::world_mesh::draw_prep::{WorldMeshDrawCollection, WorldMeshDrawItem};
 use crate::world_mesh::{
-    PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams, state_rows_from_sorted,
-    stats_from_sorted,
+    DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams,
+    state_rows_from_sorted, stats_from_sorted,
 };
 
 use super::super::skybox::SkyboxRenderer;
-use super::super::{PrefetchedWorldMeshDrawsSlot, PreparedWorldMeshForwardFrame};
+use super::super::{
+    MaterialBatchPacket, PrefetchedWorldMeshDrawsSlot, PreparedWorldMeshForwardFrame,
+};
 use super::camera::{compute_view_projections, resolve_pass_config};
 use super::frame_uniforms::write_per_view_frame_uniforms;
 use super::material_resolve::precompute_material_resolve_batches;
@@ -101,83 +104,102 @@ pub(in crate::passes::world_mesh_forward) fn prepare_world_mesh_forward_frame(
     profiling::scope!("world_mesh::prepare_frame");
     let supports_base_instance = gpu_limits.supports_base_instance;
     let hc = frame.view.host_camera;
-    let pipeline = resolve_pass_config(
-        hc,
-        frame.view.multiview_stereo,
-        frame.view.scene_color_format,
-        frame.view.depth_texture.format(),
-        gpu_limits,
-        frame.view.sample_count,
-    );
+    let pipeline = {
+        profiling::scope!("world_mesh::prepare_frame::resolve_pass_config");
+        resolve_pass_config(
+            hc,
+            frame.view.multiview_stereo,
+            frame.view.scene_color_format,
+            frame.view.depth_texture.format(),
+            gpu_limits,
+            frame.view.sample_count,
+        )
+    };
     let use_multiview = pipeline.use_multiview;
     let shader_perm = pipeline.shader_perm;
 
-    let prefetched = take_world_mesh_draws(blackboard);
+    let prefetched = {
+        profiling::scope!("world_mesh::prepare_frame::take_draw_plan");
+        take_world_mesh_draws(blackboard)
+    };
     let helper_needs = prefetched.helper_needs;
-    capture_hi_z_temporal_after_collect(frame, prefetched.cull_proj, hc);
+    {
+        profiling::scope!("world_mesh::prepare_frame::capture_hi_z_temporal");
+        capture_hi_z_temporal_after_collect(frame, prefetched.cull_proj, hc);
+    }
 
-    publish_world_mesh_hud_outputs(
-        frame,
-        blackboard,
-        &prefetched.collection,
-        supports_base_instance,
-        shader_perm,
-    );
+    {
+        profiling::scope!("world_mesh::prepare_frame::publish_hud_outputs");
+        publish_world_mesh_hud_outputs(
+            frame,
+            blackboard,
+            &prefetched.collection,
+            supports_base_instance,
+            shader_perm,
+        );
+    }
 
     let draws = prefetched.collection.items;
-    let (render_context, world_proj, overlay_proj) =
-        compute_view_projections(frame.shared.scene, hc, frame.view.viewport_px, &draws);
+    let (render_context, world_proj, overlay_proj) = {
+        profiling::scope!("world_mesh::prepare_frame::compute_view_projections");
+        compute_view_projections(frame.shared.scene, hc, frame.view.viewport_px, &draws)
+    };
 
     // Read the offscreen RT id before borrowing `frame` for encode_refs.
     let offscreen_write_rt = frame.view.offscreen_write_render_texture_asset_id;
 
-    // Render-texture color attachments must land in Unity (V=0 bottom) orientation so material
-    // shaders sample them through the same `apply_st(uv, ST)` convention as host-uploaded textures.
-    // Pre-multiply a clip-space Y flip into the projection matrices and flip pipeline winding at
-    // the batch resolver below so back-face culling stays correct. The skybox carries the same
-    // sign through `SkyboxViewUniforms.clip_y_sign` so its fullscreen pass agrees on orientation.
-    let (world_proj, overlay_proj) = if offscreen_write_rt.is_some() {
-        let y_flip = glam::Mat4::from_diagonal(glam::Vec4::new(1.0, -1.0, 1.0, 1.0));
-        (y_flip * world_proj, overlay_proj.map(|p| y_flip * p))
-    } else {
-        (world_proj, overlay_proj)
-    };
+    let (world_proj, overlay_proj) =
+        apply_offscreen_projection_flip(world_proj, overlay_proj, offscreen_write_rt);
 
     // Build the Bevy-style instance plan up front so the slab is packed in the same order
     // the forward pass will read it via `instance_index` / `first_instance`.
-    let plan = crate::world_mesh::build_plan(&draws, supports_base_instance);
+    let mut plan = {
+        profiling::scope!("world_mesh::prepare_frame::build_instance_plan");
+        crate::world_mesh::build_plan(&draws, supports_base_instance)
+    };
 
-    if !pack_and_upload_per_draw_slab(
-        device,
-        upload_batch,
-        frame,
-        SlabPackInputs {
-            render_context,
-            world_proj,
-            overlay_proj,
-            draws: &draws,
-            slab_layout: &plan.slab_layout,
-        },
-    ) {
+    let slab_uploaded = {
+        profiling::scope!("world_mesh::prepare_frame::pack_and_upload_slab");
+        pack_and_upload_per_draw_slab(
+            device,
+            upload_batch,
+            frame,
+            SlabPackInputs {
+                render_context,
+                world_proj,
+                overlay_proj,
+                draws: &draws,
+                slab_layout: &plan.slab_layout,
+            },
+        )
+    };
+    if !slab_uploaded {
         return None;
     }
 
-    write_per_view_frame_uniforms(queue, upload_batch, frame, blackboard, use_multiview, hc);
-    let skybox = skybox_renderer.prepare(device, queue, upload_batch, frame, &pipeline);
+    {
+        profiling::scope!("world_mesh::prepare_frame::write_frame_uniforms");
+        write_per_view_frame_uniforms(queue, upload_batch, frame, blackboard, use_multiview, hc);
+    }
+    let skybox = {
+        profiling::scope!("world_mesh::prepare_frame::prepare_skybox");
+        skybox_renderer.prepare(device, queue, upload_batch, frame, &pipeline)
+    };
 
     // Build a WorldMeshForwardEncodeRefs from the frame so precompute_material_resolve_batches
     // can access both the material system and the asset transfer pools (texture pools).
-    let encode_refs = frame.world_mesh_forward_encode_refs();
+    let encode_refs = {
+        profiling::scope!("world_mesh::prepare_frame::build_encode_refs");
+        frame.world_mesh_forward_encode_refs()
+    };
 
-    // Resolve per-batch pipelines and @group(1) bind groups in parallel (Filament phase-A).
-    // Results live on `PreparedWorldMeshForwardFrame`; both raster sub-passes consume them.
-    let precomputed_batches = precompute_material_resolve_batches(
+    let precomputed_batches = precompute_and_assign_material_batches(
         &encode_refs,
         queue,
         &draws,
-        pipeline.shader_perm,
-        &pipeline.pass_desc,
+        &pipeline,
         offscreen_write_rt,
+        &mut plan,
     );
 
     Some(PreparedWorldMeshForwardFrame {
@@ -192,6 +214,76 @@ pub(in crate::passes::world_mesh_forward) fn prepare_world_mesh_forward_frame(
         precomputed_batches,
         skybox,
     })
+}
+
+fn precompute_and_assign_material_batches(
+    encode_refs: &WorldMeshForwardEncodeRefs<'_>,
+    queue: &wgpu::Queue,
+    draws: &[WorldMeshDrawItem],
+    pipeline: &crate::passes::world_mesh_forward::WorldMeshForwardPipelineState,
+    offscreen_write_rt: Option<i32>,
+    plan: &mut InstancePlan,
+) -> Vec<MaterialBatchPacket> {
+    // Resolve per-batch pipelines and @group(1) bind groups in parallel (Filament phase-A).
+    // Results live on `PreparedWorldMeshForwardFrame`; both raster sub-passes consume them.
+    let precomputed_batches = {
+        profiling::scope!("world_mesh::prepare_frame::precompute_material_batches");
+        precompute_material_resolve_batches(
+            encode_refs,
+            queue,
+            draws,
+            pipeline.shader_perm,
+            &pipeline.pass_desc,
+            offscreen_write_rt,
+        )
+    };
+    assign_material_packet_indices(plan, &precomputed_batches);
+    precomputed_batches
+}
+
+/// Stamps each draw group with the material packet covering its representative draw.
+fn assign_material_packet_indices(plan: &mut InstancePlan, packets: &[MaterialBatchPacket]) {
+    assign_group_packet_indices(&mut plan.regular_groups, packets);
+    assign_group_packet_indices(&mut plan.intersect_groups, packets);
+    assign_group_packet_indices(&mut plan.transparent_groups, packets);
+}
+
+fn assign_group_packet_indices(groups: &mut [DrawGroup], packets: &[MaterialBatchPacket]) {
+    if groups.is_empty() || packets.is_empty() {
+        return;
+    }
+    let mut packet_idx = 0usize;
+    for group in groups {
+        let representative = group.representative_draw_idx;
+        while packet_idx + 1 < packets.len() && packets[packet_idx].last_draw_idx < representative {
+            packet_idx += 1;
+        }
+        debug_assert!(
+            representative >= packets[packet_idx].first_draw_idx
+                && representative <= packets[packet_idx].last_draw_idx,
+            "material packet should cover representative draw index {representative}",
+        );
+        group.material_packet_idx = packet_idx;
+    }
+}
+
+/// Applies the render-texture clip-space Y flip when a view writes to an offscreen target.
+fn apply_offscreen_projection_flip(
+    world_proj: glam::Mat4,
+    overlay_proj: Option<glam::Mat4>,
+    offscreen_write_rt: Option<i32>,
+) -> (glam::Mat4, Option<glam::Mat4>) {
+    // Render-texture color attachments must land in Unity (V=0 bottom) orientation so material
+    // shaders sample them through the same `apply_st(uv, ST)` convention as host-uploaded textures.
+    // Pre-multiply a clip-space Y flip into the projection matrices and flip pipeline winding at
+    // the batch resolver below so back-face culling stays correct. The skybox carries the same
+    // sign through `SkyboxViewUniforms.clip_y_sign` so its fullscreen pass agrees on orientation.
+    if offscreen_write_rt.is_some() {
+        let y_flip = glam::Mat4::from_diagonal(glam::Vec4::new(1.0, -1.0, 1.0, 1.0));
+        (y_flip * world_proj, overlay_proj.map(|p| y_flip * p))
+    } else {
+        (world_proj, overlay_proj)
+    }
 }
 
 /// Computes [`PerViewHudOutputs`] from the collected draws and inserts them on `blackboard` if any

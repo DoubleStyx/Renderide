@@ -125,7 +125,10 @@ impl FrameBracketSession {
                 label: Some("frame_bracket_begin"),
             });
         enc.write_timestamp(&self.query_set, 0);
-        enc.finish()
+        {
+            profiling::scope!("CommandEncoder::finish::frame_bracket_begin");
+            enc.finish()
+        }
     }
 
     /// Builds the command buffer that closes the bracket -- writes timestamp 1, resolves both
@@ -148,7 +151,10 @@ impl FrameBracketSession {
             0,
             TIMESTAMP_PAIR_BYTES,
         );
-        enc.finish()
+        {
+            profiling::scope!("CommandEncoder::finish::frame_bracket_end");
+            enc.finish()
+        }
     }
 
     /// Consumes the session and returns the readback handle the driver thread polls after submit.

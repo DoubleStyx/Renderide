@@ -25,6 +25,8 @@ pub const FRAME_TIMING_RESERVE_H: f32 = 140.0;
 /// First-use width of the **Renderide debug** main panel (anchored to the viewport's top-right
 /// corner). Pulled out of the panel render path so layout decisions live in one place.
 pub const MAIN_DEBUG_PANEL_W: f32 = 760.0;
+/// First-use height of the **Renderide debug** main panel.
+pub const MAIN_DEBUG_PANEL_H: f32 = 460.0;
 
 /// First-use position for **Frame timing**: directly under **Renderer config** (same column).
 pub fn frame_timing_xy() -> [f32; 2] {
@@ -71,6 +73,8 @@ pub enum WindowAnchor {
 pub struct WindowSlot {
     /// First-use top-left position in physical pixels.
     pub position: [f32; 2],
+    /// First-use size in physical pixels.
+    pub size: [f32; 2],
     /// First-use minimum size constraint.
     pub size_min: [f32; 2],
     /// First-use maximum size constraint.
@@ -85,8 +89,9 @@ impl WindowAnchor {
                 let panel_x = (viewport.width as f32 - width - MARGIN).max(MARGIN);
                 WindowSlot {
                     position: [panel_x, MARGIN],
-                    size_min: [width, 0.0],
-                    size_max: [width, 1.0e9],
+                    size: [width, MAIN_DEBUG_PANEL_H],
+                    size_min: [420.0, 160.0],
+                    size_max: [1.0e9, 1.0e9],
                 }
             }
         }
@@ -95,7 +100,7 @@ impl WindowAnchor {
 
 #[cfg(test)]
 mod tests {
-    use super::{MARGIN, Viewport, WindowAnchor};
+    use super::{MAIN_DEBUG_PANEL_H, MARGIN, Viewport, WindowAnchor};
 
     #[test]
     fn top_right_anchor_pulls_window_in_by_margin_on_wide_viewport() {
@@ -105,6 +110,7 @@ mod tests {
         };
         let slot = WindowAnchor::TopRight { width: 760.0 }.resolve(v);
         assert_eq!(slot.position[1], MARGIN);
+        assert_eq!(slot.size, [760.0, MAIN_DEBUG_PANEL_H]);
         // 1920 - 760 - 12 = 1148
         assert!((slot.position[0] - 1148.0).abs() < 0.5);
     }

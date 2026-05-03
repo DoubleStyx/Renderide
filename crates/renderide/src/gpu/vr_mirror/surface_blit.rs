@@ -127,9 +127,13 @@ impl VrMirrorBlitResources {
         // on the driver) destroys the surface texture, after which the driver's deferred
         // `Queue::submit` rejects the command buffer with: "Texture with '<Surface Texture>'
         // label has been destroyed".
+        let command_buffer = {
+            profiling::scope!("CommandEncoder::finish::vr_mirror_surface");
+            encoder.finish()
+        };
         submit_surface_frame_traced(
             gpu,
-            vec![encoder.finish()],
+            vec![command_buffer],
             frame,
             SurfaceSubmitTrace::VrMirror,
         );

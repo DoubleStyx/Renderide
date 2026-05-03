@@ -6,12 +6,12 @@
 
 use std::path::Path;
 
-use imgui::Drag;
+use imgui::{Drag, TabItem, TabItemFlags};
 
 use crate::config::{
-    BloomCompositeMode, ClusterAssignmentMode, MsaaSampleCount, PowerPreferenceSetting,
-    RendererSettings, RendererSettingsHandle, SceneColorFormat, TonemapMode, VsyncMode,
-    save_renderer_settings,
+    BloomCompositeMode, ClusterAssignmentMode, DebugHudRendererConfigTab, DebugHudSettings,
+    MsaaSampleCount, PowerPreferenceSetting, RendererSettings, RendererSettingsHandle,
+    SceneColorFormat, TonemapMode, VsyncMode, save_renderer_settings,
 };
 
 use super::super::layout::{self, Viewport, WindowSlot};
@@ -43,8 +43,9 @@ impl HudWindow for RendererConfigWindow {
     fn anchor(&self, _viewport: Viewport) -> WindowSlot {
         WindowSlot {
             position: [layout::MARGIN, layout::MARGIN],
-            size_min: [layout::RENDERER_CONFIG_W, layout::RENDERER_CONFIG_H],
-            size_max: [layout::RENDERER_CONFIG_W, layout::RENDERER_CONFIG_H],
+            size: [layout::RENDERER_CONFIG_W, layout::RENDERER_CONFIG_H],
+            size_min: [360.0, 260.0],
+            size_max: [f32::INFINITY, f32::INFINITY],
         }
     }
 
@@ -60,7 +61,7 @@ impl HudWindow for RendererConfigWindow {
         state.renderer_config_open = value;
     }
 
-    fn body(&self, ui: &imgui::Ui, data: Self::Data<'_>, _state: &mut Self::State) {
+    fn body(&self, ui: &imgui::Ui, data: Self::Data<'_>, state: &mut Self::State) {
         let RendererConfigData {
             settings,
             save_path,
@@ -85,7 +86,13 @@ impl HudWindow for RendererConfigWindow {
             return;
         };
 
-        renderer_config_panel_body(ui, &mut g, save_path, suppress_renderer_config_disk_writes);
+        renderer_config_panel_body(
+            ui,
+            &mut g,
+            save_path,
+            suppress_renderer_config_disk_writes,
+            state,
+        );
     }
 }
 
@@ -100,20 +107,43 @@ fn renderer_config_panel_body(
     g: &mut RendererSettings,
     save_path: &Path,
     suppress_renderer_config_disk_writes: bool,
+    state: &mut HudUiState,
 ) {
     let mut dirty = false;
+    if !state.renderer_config_tabs.all_open() && ui.small_button("Show all config tabs") {
+        state.renderer_config_tabs = Default::default();
+        state.renderer_config_tab_restore_pending = true;
+    }
+
     if let Some(_bar) = ui.tab_bar("renderer_config_tabs") {
-        if let Some(_t) = ui.tab_item("Display") {
-            display_section(ui, g, &mut dirty);
-        }
-        if let Some(_t) = ui.tab_item("Rendering") {
-            rendering_section(ui, g, &mut dirty);
-        }
-        if let Some(_t) = ui.tab_item("Debug") {
-            debug_section(ui, g, &mut dirty);
-        }
-        if let Some(_t) = ui.tab_item("Post-Processing") {
-            post_processing_section(ui, g, &mut dirty);
+        for &tab in DebugHudRendererConfigTab::ALL {
+            let mut tab_open = state.renderer_config_tabs.is_open(tab);
+            if !tab_open {
+                continue;
+            }
+            let flags =
+                if state.renderer_config_tab_restore_pending && state.renderer_config_tab == tab {
+                    TabItemFlags::SET_SELECTED
+                } else {
+                    TabItemFlags::empty()
+                };
+            if let Some(_t) = TabItem::new(tab.label())
+                .opened(&mut tab_open)
+                .flags(flags)
+                .begin(ui)
+            {
+                state.renderer_config_tab = tab;
+                state.renderer_config_tab_restore_pending = false;
+                match tab {
+                    DebugHudRendererConfigTab::Display => display_section(ui, g, &mut dirty),
+                    DebugHudRendererConfigTab::Rendering => rendering_section(ui, g, &mut dirty),
+                    DebugHudRendererConfigTab::Debug => debug_section(ui, g, &mut dirty),
+                    DebugHudRendererConfigTab::PostProcessing => {
+                        post_processing_section(ui, g, &mut dirty);
+                    }
+                }
+            }
+            state.renderer_config_tabs.set_open(tab, tab_open);
         }
     }
 
@@ -242,6 +272,25 @@ fn debug_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
         *dirty = true;
     }
     ui.text_disabled("Texture pool rows and current-view usage; can be noisy in large scenes.");
+    if ui.checkbox("Persist HUD layout", &mut g.debug.hud.persist_layout) {
+        *dirty = true;
+    }
+    ui.text_disabled("Saves ImGui window placement to renderide-imgui.ini next to config.toml.");
+    let mut ui_scale = g.debug.hud.resolved_ui_scale();
+    if Drag::new("HUD UI scale")
+        .range(
+            DebugHudSettings::MIN_UI_SCALE,
+            DebugHudSettings::MAX_UI_SCALE,
+        )
+        .speed(0.01)
+        .build(ui, &mut ui_scale)
+    {
+        g.debug.hud.ui_scale = ui_scale.clamp(
+            DebugHudSettings::MIN_UI_SCALE,
+            DebugHudSettings::MAX_UI_SCALE,
+        );
+        *dirty = true;
+    }
     if ui.checkbox("Log verbose", &mut g.debug.log_verbose) {
         *dirty = true;
     }

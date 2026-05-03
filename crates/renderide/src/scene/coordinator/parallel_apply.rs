@@ -18,7 +18,7 @@
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{LightRenderablesUpdate, LightsBufferRendererUpdate, RenderSpaceUpdate};
 
-use super::SceneCoordinator;
+use super::{ApplyWorkSlot, SceneCoordinator};
 
 use super::super::camera_apply::{
     ExtractedCameraRenderablesUpdate, extract_camera_renderables_update,
@@ -49,6 +49,25 @@ use super::super::transforms_apply::{
     ExtractedTransformsUpdate, TransformRemovalEvent, apply_transforms_update_extracted,
     extract_transforms_update,
 };
+
+/// Returns `true` when [`ExtractedRenderSpaceUpdate`] carries no body work for this tick (every
+/// per-update payload is `None`).
+///
+/// Header fields ([`crate::scene::render_space::RenderSpaceState::apply_update_header`]) are
+/// applied during Phase A regardless, so an "empty" extracted update means Phase B has no work
+/// for this space and can skip the lift/reinsert pair entirely. Common on ticks where only
+/// camera matrices changed.
+#[inline]
+pub fn is_extracted_empty(e: &ExtractedRenderSpaceUpdate) -> bool {
+    e.cameras.is_none()
+        && e.reflection_probes.is_none()
+        && e.transforms.is_none()
+        && e.meshes.is_none()
+        && e.skinned_meshes.is_none()
+        && e.layers.is_none()
+        && e.transform_overrides.is_none()
+        && e.material_overrides.is_none()
+}
 
 /// Owned per-space payload bundle: every shared-memory buffer referenced by one
 /// [`RenderSpaceUpdate`] pre-read into [`Vec`]s, ready for parallel apply.
@@ -266,69 +285,80 @@ impl SceneCoordinator {
         // so steady-state apply does not allocate.
         let mut work = std::mem::take(&mut self.apply_work_scratch);
         debug_assert!(work.is_empty());
-        for extracted in extracted_per_space.drain(..) {
-            let id = extracted.space_id;
-            let Some(space) = self.spaces.remove(&id) else {
-                continue;
-            };
-            let cache = self.world_caches.remove(&id).unwrap_or_default();
-            work.push((id, space, cache, extracted, Vec::new()));
+        {
+            profiling::scope!("scene::apply::lift");
+            for extracted in extracted_per_space.drain(..) {
+                let id = extracted.space_id;
+                // Header fields were already applied in Phase A. If the host sent no body
+                // payloads for this space this tick, skip the lift/reinsert pair entirely so the
+                // steady-state path never moves a [`RenderSpaceState`].
+                if is_extracted_empty(&extracted) {
+                    continue;
+                }
+                let Some(space) = self.spaces.remove(&id) else {
+                    continue;
+                };
+                let cache = self.world_caches.remove(&id).unwrap_or_default();
+                work.push(ApplyWorkSlot {
+                    id,
+                    space,
+                    cache,
+                    extracted,
+                    removal_events: Vec::new(),
+                    world_dirty: false,
+                });
+            }
         }
 
-        if work.len() <= 1 {
-            for (id, mut space, mut cache, extracted, mut removal_events) in work.drain(..) {
-                let dirty = apply_extracted_render_space_update(
-                    &extracted,
+        // Stay on the serial path for a single space; two or more independent spaces can use the
+        // worker pool under the aggressive early parallelism policy.
+        const MIN_SPACES_FOR_PARALLEL_APPLY: usize = 2;
+        if work.len() < MIN_SPACES_FOR_PARALLEL_APPLY {
+            profiling::scope!("scene::apply::serial_inner");
+            for mut slot in work.drain(..) {
+                slot.world_dirty = apply_extracted_render_space_update(
+                    &slot.extracted,
                     PerSpaceApplyInputs {
-                        space: &mut space,
-                        cache: &mut cache,
-                        removal_events: &mut removal_events,
+                        space: &mut slot.space,
+                        cache: &mut slot.cache,
+                        removal_events: &mut slot.removal_events,
                     },
                 );
-                if dirty {
-                    self.world_dirty.insert(id);
+                if slot.world_dirty {
+                    self.world_dirty.insert(slot.id);
                 }
-                self.spaces.insert(id, space);
-                self.world_caches.insert(id, cache);
-                self.stash_transform_removals(id, removal_events);
+                self.spaces.insert(slot.id, slot.space);
+                self.world_caches.insert(slot.id, slot.cache);
+                self.stash_transform_removals(slot.id, slot.removal_events);
             }
             self.apply_work_scratch = work;
             return Ok(());
         }
 
-        use rayon::iter::ParallelDrainRange;
         use rayon::prelude::*;
-        // `par_drain(..)` empties `work` while keeping its allocation, mirroring the standard
-        // `Vec::drain` semantics so the buffer can be reused next frame.
-        let processed: Vec<(
-            RenderSpaceId,
-            crate::scene::render_space::RenderSpaceState,
-            crate::scene::world::WorldTransformCache,
-            bool,
-            Vec<TransformRemovalEvent>,
-        )> = work
-            .par_drain(..)
-            .map(
-                |(id, mut space, mut cache, extracted, mut removal_events)| {
-                    let dirty = apply_extracted_render_space_update(
-                        &extracted,
-                        PerSpaceApplyInputs {
-                            space: &mut space,
-                            cache: &mut cache,
-                            removal_events: &mut removal_events,
-                        },
-                    );
-                    (id, space, cache, dirty, removal_events)
-                },
-            )
-            .collect();
-        for (id, space, cache, dirty, removal_events) in processed {
-            if dirty {
-                self.world_dirty.insert(id);
+        {
+            profiling::scope!("scene::apply::mutate");
+            work.par_iter_mut().for_each(|slot| {
+                slot.world_dirty = apply_extracted_render_space_update(
+                    &slot.extracted,
+                    PerSpaceApplyInputs {
+                        space: &mut slot.space,
+                        cache: &mut slot.cache,
+                        removal_events: &mut slot.removal_events,
+                    },
+                );
+            });
+        };
+        {
+            profiling::scope!("scene::apply::reinsert");
+            for slot in work.drain(..) {
+                if slot.world_dirty {
+                    self.world_dirty.insert(slot.id);
+                }
+                self.spaces.insert(slot.id, slot.space);
+                self.world_caches.insert(slot.id, slot.cache);
+                self.stash_transform_removals(slot.id, slot.removal_events);
             }
-            self.spaces.insert(id, space);
-            self.world_caches.insert(id, cache);
-            self.stash_transform_removals(id, removal_events);
         }
         self.apply_work_scratch = work;
         Ok(())

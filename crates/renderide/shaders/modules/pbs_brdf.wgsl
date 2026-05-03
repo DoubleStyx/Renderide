@@ -127,7 +127,70 @@ fn sample_skybox_specular_radiance(dir: vec3<f32>, perceptual_roughness: f32) ->
     ).rgb;
 }
 
-/// Samples frame-global skybox indirect specular with Schlick Fresnel and material occlusion.
+/// Samples the frame-global DFG LUT with manual bilinear filtering.
+fn sample_ibl_dfg_lut(perceptual_roughness: f32, n_dot_v: f32) -> vec2<f32> {
+    let dims_u = textureDimensions(rg::ibl_dfg_lut);
+    let dims = vec2<f32>(f32(dims_u.x), f32(dims_u.y));
+    let max_xy = vec2<i32>(i32(dims_u.x) - 1, i32(dims_u.y) - 1);
+    let uv = vec2<f32>(
+        clamp(n_dot_v, 0.0, 1.0),
+        clamp(perceptual_roughness, 0.0, 1.0),
+    );
+    let xy = uv * dims - vec2<f32>(0.5);
+    let base = floor(xy);
+    let base_i = vec2<i32>(base);
+    let f = xy - base;
+    let p00 = clamp(base_i, vec2<i32>(0), max_xy);
+    let p10 = clamp(base_i + vec2<i32>(1, 0), vec2<i32>(0), max_xy);
+    let p01 = clamp(base_i + vec2<i32>(0, 1), vec2<i32>(0), max_xy);
+    let p11 = clamp(base_i + vec2<i32>(1, 1), vec2<i32>(0), max_xy);
+    let a = textureLoad(rg::ibl_dfg_lut, p00, 0).rg;
+    let b = textureLoad(rg::ibl_dfg_lut, p10, 0).rg;
+    let c = textureLoad(rg::ibl_dfg_lut, p01, 0).rg;
+    let d = textureLoad(rg::ibl_dfg_lut, p11, 0).rg;
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+/// Split-sum specular energy for the frame-global DFG LUT.
+fn indirect_specular_energy(
+    perceptual_roughness: f32,
+    n_dot_v: f32,
+    f0: vec3<f32>,
+    enabled: bool,
+) -> vec3<f32> {
+    if (!enabled || rg::frame.skybox_specular.y <= 0.5) {
+        return vec3<f32>(0.0);
+    }
+    let dfg = sample_ibl_dfg_lut(perceptual_roughness, n_dot_v);
+    return mix(vec3<f32>(dfg.x), vec3<f32>(dfg.y), clamp(f0, vec3<f32>(0.0), vec3<f32>(1.0)));
+}
+
+/// Indirect-diffuse scale paired with the split-sum specular energy.
+fn indirect_diffuse_energy_scale(specular_energy: vec3<f32>, enabled: bool) -> vec3<f32> {
+    if (!enabled || rg::frame.skybox_specular.y <= 0.5) {
+        return vec3<f32>(1.0);
+    }
+    return max(vec3<f32>(0.0), vec3<f32>(1.0) - specular_energy);
+}
+
+/// Applies precomputed split-sum energy to frame-global skybox indirect specular.
+fn indirect_specular_with_energy(
+    n: vec3<f32>,
+    v: vec3<f32>,
+    perceptual_roughness: f32,
+    specular_energy: vec3<f32>,
+    occlusion: f32,
+    enabled: bool,
+) -> vec3<f32> {
+    if (!enabled || rg::frame.skybox_specular.y <= 0.5) {
+        return vec3<f32>(0.0);
+    }
+    let dir = skybox_specular_dominant_dir(n, v, perceptual_roughness);
+    let radiance = sample_skybox_specular_radiance(dir, perceptual_roughness);
+    return radiance * specular_energy * max(occlusion, 0.0);
+}
+
+/// Samples frame-global skybox indirect specular with split-sum DFG energy.
 fn indirect_specular(
     n: vec3<f32>,
     v: vec3<f32>,
@@ -140,10 +203,8 @@ fn indirect_specular(
         return vec3<f32>(0.0);
     }
     let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
-    let dir = skybox_specular_dominant_dir(n, v, perceptual_roughness);
-    let radiance = sample_skybox_specular_radiance(dir, perceptual_roughness);
-    let f = f_schlick(f0, f90_from_f0(f0), n_dot_v);
-    return radiance * f * max(occlusion, 0.0);
+    let energy = indirect_specular_energy(perceptual_roughness, n_dot_v, f0, enabled);
+    return indirect_specular_with_energy(n, v, perceptual_roughness, energy, occlusion, enabled);
 }
 
 /// Indirect diffuse term for Unity Standard metallic materials.
@@ -151,9 +212,12 @@ fn indirect_diffuse_metallic(
     ambient: vec3<f32>,
     base_color: vec3<f32>,
     metallic: f32,
+    specular_energy: vec3<f32>,
     occlusion: f32,
+    glossy_reflections_enabled: bool,
 ) -> vec3<f32> {
-    return ambient * base_color * (1.0 - clamp(metallic, 0.0, 1.0)) * occlusion;
+    let energy_scale = indirect_diffuse_energy_scale(specular_energy, glossy_reflections_enabled);
+    return ambient * base_color * (1.0 - clamp(metallic, 0.0, 1.0)) * energy_scale * occlusion;
 }
 
 /// Indirect diffuse term for Unity Standard specular materials.
@@ -161,9 +225,12 @@ fn indirect_diffuse_specular(
     ambient: vec3<f32>,
     base_color: vec3<f32>,
     one_minus_reflectivity: f32,
+    specular_energy: vec3<f32>,
     occlusion: f32,
+    glossy_reflections_enabled: bool,
 ) -> vec3<f32> {
-    return ambient * base_color * clamp(one_minus_reflectivity, 0.0, 1.0) * occlusion;
+    let energy_scale = indirect_diffuse_energy_scale(specular_energy, glossy_reflections_enabled);
+    return ambient * base_color * clamp(one_minus_reflectivity, 0.0, 1.0) * energy_scale * occlusion;
 }
 
 /// Unity Standard metallic workflow F0 tint.

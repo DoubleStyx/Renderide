@@ -3116,6 +3116,7 @@ dependencies = [
  "image",
  "image-compare",
  "logger",
+ "rayon",
  "renderide-shared",
  "serde",
  "serde_json",

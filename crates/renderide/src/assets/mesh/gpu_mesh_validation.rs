@@ -77,31 +77,41 @@ pub fn try_upload_mesh_from_raw(
         return None;
     }
 
-    let layout_fp = mesh_layout_fingerprint(data, layout);
+    let trace_enabled = logger::enabled(logger::LogLevel::Trace);
+    // Compute the layout fingerprint only when the trace log will actually consume it. The
+    // fingerprint hashes every vertex attribute and submesh, so recomputing it on every mesh
+    // upload at non-trace log levels was pure waste.
+    let layout_fp = if trace_enabled {
+        mesh_layout_fingerprint(data, layout)
+    } else {
+        0
+    };
     let hint = data.upload_hint.flags;
 
     if let (Some(queue), Some(existing)) = (queue, existing) {
-        {
-            profiling::scope!("asset::mesh_in_place_compatibility");
-            if existing.compatible_for_in_place_update(data, layout, raw) {
-                profiling::scope!("asset::mesh_in_place_upload");
-                if let Some(mesh) = existing.write_in_place(queue, raw, data, layout, hint) {
+        profiling::scope!("asset::mesh_in_place_compatibility");
+        if existing.compatible_for_in_place_update(data, layout, raw) {
+            profiling::scope!("asset::mesh_in_place_upload");
+            if let Some(mesh) = existing.write_in_place(queue, raw, data, layout, hint) {
+                if trace_enabled {
                     logger::trace!(
                         "mesh {}: in-place upload (layout_fp={:#x})",
                         data.asset_id,
                         layout_fp
                     );
-                    return Some(mesh);
                 }
+                return Some(mesh);
             }
         }
     }
 
-    logger::trace!(
-        "mesh {}: full GPU buffer upload (layout_fp={:#x})",
-        data.asset_id,
-        layout_fp
-    );
+    if trace_enabled {
+        logger::trace!(
+            "mesh {}: full GPU buffer upload (layout_fp={:#x})",
+            data.asset_id,
+            layout_fp
+        );
+    }
     GpuMesh::upload(device, gpu_limits, raw, data, layout)
 }
 

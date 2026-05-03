@@ -19,10 +19,9 @@ const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const TANGENT_EPSILON_SQUARED: f32 = 1.0e-20;
 /// Vertex count above which vertex-stream extraction and tangent encoding fan out across rayon.
 ///
-/// Production meshes cluster around 1k-8k vertices, so a threshold of 16384 keeps the typical
-/// case on the serial path. Very large meshes (avatar bodies, big geometry) still take the
-/// parallel path.
-const VERTEX_STREAM_PARALLEL_MIN: usize = 16_384;
+/// Production meshes cluster around 1k-8k vertices, so a threshold of 2048 lets medium avatar and
+/// prop meshes use the worker pool while tiny meshes stay serial.
+const VERTEX_STREAM_PARALLEL_MIN: usize = 2_048;
 
 /// Returns a dense `vec4<f32>` tangent stream, preferring host tangents and generating MikkTSpace
 /// tangents when the host did not provide a usable tangent attribute.

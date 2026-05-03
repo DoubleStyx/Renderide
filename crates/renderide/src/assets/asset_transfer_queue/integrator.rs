@@ -237,32 +237,7 @@ fn drain_high_priority_asset_tasks(
     high_priority_deadline: Instant,
 ) -> bool {
     profiling::scope!("asset::high_priority_drain");
-    let mut yielded = 0;
-    loop {
-        if Instant::now() >= high_priority_deadline {
-            return !asset.integrator.high_priority.is_empty();
-        }
-        let Some(mut task) = asset.integrator.high_priority.pop_front() else {
-            return false;
-        };
-        let step_result = step_asset_task(asset, gpu, shm, ipc, &mut task);
-        match step_result {
-            StepResult::Continue => {
-                asset.integrator.push_front(task, true);
-                yielded = 0;
-            }
-            StepResult::YieldBackground => {
-                asset.integrator.high_priority.push_back(task);
-                yielded += 1;
-                if yielded >= asset.integrator.high_priority.len() {
-                    return false;
-                }
-            }
-            StepResult::Done => {
-                yielded = 0;
-            }
-        }
-    }
+    drain_priority_lane(asset, gpu, shm, ipc, high_priority_deadline, true)
 }
 
 /// Drains normal upload tasks until empty, background-yielded, or the frame budget is hit.
@@ -274,24 +249,67 @@ fn drain_normal_priority_asset_tasks(
     normal_deadline: Instant,
 ) -> bool {
     profiling::scope!("asset::normal_priority_drain");
-    let mut yielded = 0;
+    drain_priority_lane(asset, gpu, shm, ipc, normal_deadline, false)
+}
+
+/// Iteration cadence between [`Instant::now`] deadline polls in [`drain_priority_lane`].
+///
+/// `Instant::now` is a syscall on Windows (`QueryPerformanceCounter`) and on Linux variants where
+/// `clock_gettime(CLOCK_MONOTONIC)` is not vDSO-accelerated. Tasks that complete in well under a
+/// microsecond (texture mip step, zero-byte mesh layout fingerprint) make the per-iteration poll
+/// dominate the loop. Polling every fourth iteration cuts the syscall rate ~4x while keeping the
+/// deadline-overshoot bounded by `~3 * task_step_cost` plus the cost of one task spawn.
+const DEADLINE_POLL_STRIDE: u32 = 4;
+
+/// Shared inner loop for [`drain_high_priority_asset_tasks`] /
+/// [`drain_normal_priority_asset_tasks`].
+///
+/// Returns `true` when the named lane still has work pending after the call (the deadline
+/// expired before the queue drained or every yielded task tail-rotated without progress).
+/// The two outer functions remain as thin wrappers so tracy zone names stay distinct between
+/// priority lanes.
+fn drain_priority_lane(
+    asset: &mut AssetTransferQueue,
+    gpu: &AssetUploadGpuContext<'_>,
+    shm: &mut SharedMemoryAccessor,
+    ipc: &mut Option<&mut DualQueueIpc>,
+    deadline: Instant,
+    is_high_priority: bool,
+) -> bool {
+    let mut yielded: usize = 0;
+    let mut iter_count: u32 = 0;
     loop {
-        if Instant::now() >= normal_deadline {
-            return !asset.integrator.normal_priority.is_empty();
+        // Coarse deadline check: every `DEADLINE_POLL_STRIDE` iterations rather than
+        // every iteration, so cheap task steps (e.g. texture mip progression) do not pay
+        // the `Instant::now` syscall on every pop.
+        if iter_count.is_multiple_of(DEADLINE_POLL_STRIDE) && Instant::now() >= deadline {
+            return is_lane_nonempty(asset, is_high_priority);
         }
-        let Some(mut task) = asset.integrator.normal_priority.pop_front() else {
+        iter_count = iter_count.wrapping_add(1);
+        let task_opt = if is_high_priority {
+            asset.integrator.high_priority.pop_front()
+        } else {
+            asset.integrator.normal_priority.pop_front()
+        };
+        let Some(mut task) = task_opt else {
             return false;
         };
         let step_result = step_asset_task(asset, gpu, shm, ipc, &mut task);
         match step_result {
             StepResult::Continue => {
-                asset.integrator.push_front(task, false);
+                asset.integrator.push_front(task, is_high_priority);
                 yielded = 0;
             }
             StepResult::YieldBackground => {
-                asset.integrator.normal_priority.push_back(task);
+                let lane_len = if is_high_priority {
+                    asset.integrator.high_priority.push_back(task);
+                    asset.integrator.high_priority.len()
+                } else {
+                    asset.integrator.normal_priority.push_back(task);
+                    asset.integrator.normal_priority.len()
+                };
                 yielded += 1;
-                if yielded >= asset.integrator.normal_priority.len() {
+                if yielded >= lane_len {
                     return false;
                 }
             }
@@ -299,6 +317,17 @@ fn drain_normal_priority_asset_tasks(
                 yielded = 0;
             }
         }
+    }
+}
+
+/// Returns whether the indicated lane has any pending tasks, used by the deadline-exit branch in
+/// [`drain_priority_lane`] to inform callers whether the next tick should re-enter the lane.
+#[inline]
+fn is_lane_nonempty(asset: &AssetTransferQueue, is_high_priority: bool) -> bool {
+    if is_high_priority {
+        !asset.integrator.high_priority.is_empty()
+    } else {
+        !asset.integrator.normal_priority.is_empty()
     }
 }
 

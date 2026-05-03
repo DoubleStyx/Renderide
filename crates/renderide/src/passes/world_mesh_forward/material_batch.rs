@@ -189,12 +189,22 @@ impl<'a> MaterialDrawResolver<'a> {
             .map(|bind| bind.bump_uniform_upload_epoch())
             .unwrap_or(0);
 
-        collect_material_batch_boundaries(draws)
-            .into_par_iter()
-            .map(|(first, last)| {
-                self.resolve_one_batch(draws, first, last, uniform_upload_epoch)
-            })
-            .collect()
+        let boundaries = collect_material_batch_boundaries(draws);
+        if boundaries.len() < 2 {
+            boundaries
+                .into_iter()
+                .map(|(first, last)| {
+                    self.resolve_one_batch(draws, first, last, uniform_upload_epoch)
+                })
+                .collect()
+        } else {
+            boundaries
+                .into_par_iter()
+                .map(|(first, last)| {
+                    self.resolve_one_batch(draws, first, last, uniform_upload_epoch)
+                })
+                .collect()
+        }
     }
 
     /// Resolves one material run into a record-ready packet.

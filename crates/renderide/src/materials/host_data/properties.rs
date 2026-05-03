@@ -72,6 +72,11 @@ impl<'a> MaterialDictionary<'a> {
         self.store.property_block_generation(block_id)
     }
 
+    /// Cross-id mutation generation (see [`MaterialPropertyStore::global_generation`]).
+    pub fn global_generation(&self) -> u64 {
+        self.store.global_generation()
+    }
+
     /// Returns the two inner property maps (material-side and property-block-side) for one
     /// [`MaterialPropertyLookupIds`] in a single outer-map probe.
     ///
@@ -111,6 +116,10 @@ pub struct MaterialPropertyStore {
     material_mutation_generation: HashMap<i32, u64>,
     /// Bumped on any mutation affecting [`Self::get_merged`] for that property block id.
     property_block_mutation_generation: HashMap<i32, u64>,
+    /// Bumped on any mutation to either map (or the shader binding map). Lets persistent caches
+    /// fast-path-skip a per-id walk when no host-side material state has changed since the last
+    /// refresh.
+    global_mutation_generation: u64,
 }
 
 impl MaterialPropertyStore {
@@ -122,7 +131,16 @@ impl MaterialPropertyStore {
             shader_asset_by_material: HashMap::new(),
             material_mutation_generation: HashMap::new(),
             property_block_mutation_generation: HashMap::new(),
+            global_mutation_generation: 0,
         }
+    }
+
+    /// Cross-id monotonic generation. Bumped by every mutation method on this store
+    /// (`set_material`, `set_property_block`, `set_shader_asset_for_material`, `remove_material`,
+    /// `remove_property_block`). Persistent caches snapshot this value during their own refresh
+    /// and skip the per-id walk entirely on subsequent refreshes when the snapshot matches.
+    pub fn global_generation(&self) -> u64 {
+        self.global_mutation_generation
     }
 
     /// Monotonic generation for `material_id` and optional property block, used to skip redundant GPU uniform uploads.
@@ -160,10 +178,12 @@ impl MaterialPropertyStore {
 
     fn bump_material_generation(&mut self, material_id: i32) {
         bump_generation(&mut self.material_mutation_generation, material_id);
+        self.global_mutation_generation = self.global_mutation_generation.wrapping_add(1);
     }
 
     fn bump_property_block_generation(&mut self, block_id: i32) {
         bump_generation(&mut self.property_block_mutation_generation, block_id);
+        self.global_mutation_generation = self.global_mutation_generation.wrapping_add(1);
     }
 
     /// Sets a property on a host **material** asset.

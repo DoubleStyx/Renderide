@@ -13,6 +13,7 @@
 //! depend on the view's camera, filter, and Hi-Z snapshot.
 
 use glam::Mat4;
+use hashbrown::HashSet;
 use rayon::prelude::*;
 
 use crate::gpu_pools::MeshPool;
@@ -74,6 +75,15 @@ pub(super) struct FramePreparedDraw {
     pub cull_geometry: Option<MeshCullGeometry>,
 }
 
+/// Contiguous range of [`FramePreparedRenderables::draws`] produced by one source renderer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FramePreparedRun {
+    /// First draw index in this renderer run.
+    pub start: u32,
+    /// One-past-last draw index in this renderer run.
+    pub end: u32,
+}
+
 /// Frame-scope dense list of [`FramePreparedDraw`] entries across every active render space.
 ///
 /// Build once per frame via [`FramePreparedRenderables::build_for_frame`] and hand as a borrow to
@@ -87,10 +97,25 @@ pub struct FramePreparedRenderables {
     /// [`SceneCoordinator::render_space_ids`] order, then static renderers (ascending index),
     /// then skinned renderers (ascending index), then material slots in ascending index.
     pub(super) draws: Vec<FramePreparedDraw>,
+    /// Contiguous renderer runs in [`Self::draws`]. Lets per-view collection chunk the prepared
+    /// list on run boundaries via [`Self::run_aligned_chunks`] and then consume precomputed run
+    /// ranges directly instead of rediscovering boundaries inside every view/chunk.
+    pub(super) runs: Vec<FramePreparedRun>,
+    /// First-seen unique `(material_asset_id, property_block_id)` keys referenced by
+    /// [`Self::draws`]. Material caches consume this list once per shader permutation instead of
+    /// materializing and deduping every prepared draw.
+    material_property_keys: Vec<(i32, Option<i32>)>,
     /// Render context used when resolving material overrides; must match the per-view contexts
     /// (the main renderer uses [`SceneCoordinator::active_main_render_context`] for every view
     /// in the same frame).
     pub(super) render_context: RenderingContext,
+    /// Reused per-worker output buffers for the multi-space parallel expansion path. Outer
+    /// [`Vec`] is resized to [`Self::active_space_ids`] length; each inner [`Vec`] is cleared and
+    /// re-filled inside the rayon worker before [`expand_space_into`] runs. Capacities persist
+    /// across frames so the steady-state path does not reallocate the per-space buffers.
+    space_scratch: Vec<Vec<FramePreparedDraw>>,
+    /// Reused dedup set for rebuilding [`Self::material_property_keys`].
+    material_property_seen_scratch: HashSet<(i32, Option<i32>)>,
 }
 
 impl FramePreparedRenderables {
@@ -100,7 +125,11 @@ impl FramePreparedRenderables {
         Self {
             active_space_ids: Vec::new(),
             draws: Vec::new(),
+            runs: Vec::new(),
+            material_property_keys: Vec::new(),
             render_context,
+            space_scratch: Vec::new(),
+            material_property_seen_scratch: HashSet::new(),
         }
     }
 
@@ -138,43 +167,112 @@ impl FramePreparedRenderables {
         self.render_context = render_context;
         self.active_space_ids.clear();
         self.draws.clear();
+        self.runs.clear();
+        self.material_property_keys.clear();
 
-        self.active_space_ids.extend(
-            scene
-                .render_space_ids()
-                .filter(|id| scene.space(*id).is_some_and(|s| s.is_active)),
-        );
+        {
+            profiling::scope!("mesh::prepared_renderables::collect_active_spaces");
+            self.active_space_ids.extend(
+                scene
+                    .render_space_ids()
+                    .filter(|id| scene.space(*id).is_some_and(|s| s.is_active)),
+            );
+        }
 
         if self.active_space_ids.is_empty() {
             return;
         }
 
         if self.active_space_ids.len() == 1 {
-            expand_space_into(
-                &mut self.draws,
-                scene,
-                mesh_pool,
-                render_context,
-                self.active_space_ids[0],
+            let space_id = self.active_space_ids[0];
+            {
+                profiling::scope!("mesh::prepared_renderables::single_space_expand");
+                self.draws.reserve(estimated_draw_count(scene, space_id));
+                expand_space_into(&mut self.draws, scene, mesh_pool, render_context, space_id);
+            }
+            populate_runs_and_material_keys(
+                &self.draws,
+                &mut self.runs,
+                &mut self.material_property_keys,
+                &mut self.material_property_seen_scratch,
             );
             return;
         }
 
-        let per_space: Vec<Vec<FramePreparedDraw>> = self
-            .active_space_ids
-            .par_iter()
-            .map(|&space_id| {
-                let mut local = Vec::new();
-                expand_space_into(&mut local, scene, mesh_pool, render_context, space_id);
-                local
-            })
-            .collect();
-
-        let total: usize = per_space.iter().map(Vec::len).sum();
-        self.draws.reserve(total);
-        for mut local in per_space {
-            self.draws.append(&mut local);
+        // Reuse a long-lived per-space scratch so each frame's parallel expansion does not
+        // allocate a fresh outer `Vec` (the prior `par_iter().map(...).collect()` pattern) or a
+        // fresh inner `Vec` per worker (`let mut local = Vec::new();`). Capacities persist across
+        // frames; only the contents get cleared and refilled.
+        let mut space_scratch = std::mem::take(&mut self.space_scratch);
+        {
+            profiling::scope!("mesh::prepared_renderables::prepare_space_scratch");
+            space_scratch.resize_with(self.active_space_ids.len(), Vec::new);
         }
+        let active_space_ids = &self.active_space_ids;
+
+        {
+            profiling::scope!("mesh::prepared_renderables::parallel_expand");
+            space_scratch
+                .par_iter_mut()
+                .zip(active_space_ids.par_iter())
+                .for_each(|(out, &space_id)| {
+                    out.clear();
+                    let estimate = estimated_draw_count(scene, space_id);
+                    if estimate > out.capacity() {
+                        out.reserve(estimate - out.capacity());
+                    }
+                    expand_space_into(out, scene, mesh_pool, render_context, space_id);
+                });
+        }
+
+        {
+            profiling::scope!("mesh::prepared_renderables::merge_space_scratch");
+            let total: usize = space_scratch.iter().map(Vec::len).sum();
+            self.draws.reserve(total);
+            for buf in &mut space_scratch {
+                self.draws.append(buf);
+            }
+        }
+        self.space_scratch = space_scratch;
+        populate_runs_and_material_keys(
+            &self.draws,
+            &mut self.runs,
+            &mut self.material_property_keys,
+            &mut self.material_property_seen_scratch,
+        );
+    }
+
+    /// Returns slices of [`Self::draws`] aligned to renderer-run boundaries with each chunk
+    /// covering at least `target_chunk_size` draws (the last chunk may be smaller). Used by
+    /// per-view collection so the per-renderer CPU cull and material-batch lookup happens at
+    /// most once per renderer per frame even on parallel workers.
+    pub(super) fn run_aligned_chunks(&self, target_chunk_size: usize) -> Vec<&[FramePreparedRun]> {
+        if self.runs.is_empty() {
+            return Vec::new();
+        }
+        let target_chunk_size = target_chunk_size.max(1);
+        let mut chunks: Vec<&[FramePreparedRun]> = Vec::new();
+
+        let mut run_start = 0usize;
+        while run_start < self.runs.len() {
+            let draw_start = self.runs[run_start].start as usize;
+            let mut run_end = run_start + 1;
+            while run_end < self.runs.len()
+                && (self.runs[run_end - 1].end as usize).saturating_sub(draw_start)
+                    < target_chunk_size
+            {
+                run_end += 1;
+            }
+            chunks.push(&self.runs[run_start..run_end]);
+            run_start = run_end;
+        }
+        chunks
+    }
+
+    /// Dense prepared draw slice backing [`Self::runs`].
+    #[inline]
+    pub(super) fn draws(&self) -> &[FramePreparedDraw] {
+        &self.draws
     }
 
     /// Number of expanded draws across all active render spaces.
@@ -211,12 +309,10 @@ impl FramePreparedRenderables {
             .map(|d| (d.mesh_asset_id, d.material_asset_id))
     }
 
-    /// Iterator of `(material_asset_id, property_block_id)` pairs for every prepared draw.
+    /// Unique `(material_asset_id, property_block_id)` pairs referenced by this prepared snapshot.
     #[inline]
-    pub fn material_property_pairs(&self) -> impl Iterator<Item = (i32, Option<i32>)> + '_ {
-        self.draws
-            .iter()
-            .map(|d| (d.material_asset_id, d.property_block_id))
+    pub fn unique_material_property_pairs(&self) -> &[(i32, Option<i32>)] {
+        &self.material_property_keys
     }
 }
 
@@ -243,6 +339,58 @@ struct RenderableExpansion<'a> {
     blendshape_deformed: bool,
     /// Frame-time precomputed cull geometry for the renderer (`None` for overlay spaces).
     cull_geometry: Option<MeshCullGeometry>,
+}
+
+/// Walks `draws` once and refreshes renderer-run ranges plus unique material/property keys.
+///
+/// Runs are detected post-build instead of plumbed through the parallel expansion so the
+/// multi-space worker output can be merged with `Vec::append` without per-space offset adjustment.
+fn populate_runs_and_material_keys(
+    draws: &[FramePreparedDraw],
+    runs: &mut Vec<FramePreparedRun>,
+    material_property_keys: &mut Vec<(i32, Option<i32>)>,
+    seen: &mut HashSet<(i32, Option<i32>)>,
+) {
+    profiling::scope!("mesh::prepared_renderables::populate_run_starts");
+    runs.clear();
+    material_property_keys.clear();
+    seen.clear();
+    if draws.is_empty() {
+        return;
+    }
+    let mut run_start = 0usize;
+    let mut prev = &draws[0];
+    for (idx, d) in draws.iter().enumerate() {
+        let key = (d.material_asset_id, d.property_block_id);
+        if seen.insert(key) {
+            material_property_keys.push(key);
+        }
+        if idx > 0 && !super::collect::prepared::prepared_draws_share_renderer(prev, d) {
+            runs.push(FramePreparedRun {
+                start: run_start as u32,
+                end: idx as u32,
+            });
+            run_start = idx;
+        }
+        prev = d;
+    }
+    runs.push(FramePreparedRun {
+        start: run_start as u32,
+        end: draws.len() as u32,
+    });
+}
+
+/// Upper bound on prepared draws produced by `space_id`, used to pre-size per-space output
+/// buffers. The 2x multiplier reflects the typical 2-slot-per-renderer expansion observed across
+/// the existing scene corpus; over-estimation is cheap (`Vec::reserve` only grows), under-estimation
+/// triggers the doubling growth path.
+fn estimated_draw_count(scene: &SceneCoordinator, space_id: RenderSpaceId) -> usize {
+    scene.space(space_id).map_or(0, |s| {
+        s.static_mesh_renderers
+            .len()
+            .saturating_add(s.skinned_mesh_renderers.len())
+            .saturating_mul(2)
+    })
 }
 
 /// Expands every valid renderer (static and skinned) in `space_id` into `out`.
@@ -504,6 +652,31 @@ mod tests {
         SceneCoordinator::new()
     }
 
+    fn prepared_draw(
+        renderable_index: usize,
+        material_asset_id: i32,
+        property_block_id: Option<i32>,
+    ) -> FramePreparedDraw {
+        FramePreparedDraw {
+            space_id: RenderSpaceId(1),
+            renderable_index,
+            instance_id: MeshRendererInstanceId(renderable_index as u64 + 1),
+            node_id: renderable_index as i32,
+            mesh_asset_id: 10,
+            is_overlay: false,
+            sorting_order: 0,
+            skinned: false,
+            world_space_deformed: false,
+            blendshape_deformed: false,
+            slot_index: 0,
+            first_index: 0,
+            index_count: 3,
+            material_asset_id,
+            property_block_id,
+            cull_geometry: None,
+        }
+    }
+
     #[test]
     fn build_for_frame_on_empty_scene_is_empty() {
         let scene = empty_scene();
@@ -548,5 +721,29 @@ mod tests {
             RenderingContext::default(),
         );
         assert_eq!(prepared.mesh_material_pairs().count(), 0);
+    }
+
+    #[test]
+    fn populate_runs_also_deduplicates_material_property_keys() {
+        let draws = vec![
+            prepared_draw(0, 7, None),
+            prepared_draw(0, 7, None),
+            prepared_draw(1, 9, Some(3)),
+            prepared_draw(1, 7, None),
+        ];
+        let mut runs = Vec::new();
+        let mut keys = Vec::new();
+        let mut seen = HashSet::new();
+
+        populate_runs_and_material_keys(&draws, &mut runs, &mut keys, &mut seen);
+
+        assert_eq!(
+            runs,
+            vec![
+                FramePreparedRun { start: 0, end: 2 },
+                FramePreparedRun { start: 2, end: 4 },
+            ]
+        );
+        assert_eq!(keys, vec![(7, None), (9, Some(3))]);
     }
 }

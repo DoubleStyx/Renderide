@@ -14,6 +14,7 @@ mod text_uniform_packing_tests {
     use crate::materials::host_data::PropertyIdRegistry;
     use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
     use crate::materials::{ReflectedMaterialUniformBlock, ReflectedUniformScalarKind};
+    use crate::shared::ColorProfile;
 
     fn lookup(material_id: i32) -> MaterialPropertyLookupIds {
         MaterialPropertyLookupIds {
@@ -893,6 +894,32 @@ mod text_uniform_packing_tests {
     }
 
     #[test]
+    fn font_atlas_profile_metadata_infers_text_mode() {
+        let binding = ResolvedTextureBinding::Texture2D { asset_id: 42 };
+
+        assert_eq!(
+            binding_text_mode_from_metadata(binding, Some(ColorProfile::Linear)),
+            Some(0.0)
+        );
+        assert_eq!(
+            binding_text_mode_from_metadata(binding, Some(ColorProfile::SRGB)),
+            Some(1.0)
+        );
+        assert_eq!(
+            binding_text_mode_from_metadata(binding, Some(ColorProfile::SRGBAlpha)),
+            Some(1.0)
+        );
+        assert_eq!(binding_text_mode_from_metadata(binding, None), None);
+        assert_eq!(
+            binding_text_mode_from_metadata(
+                ResolvedTextureBinding::RenderTexture { asset_id: 42 },
+                Some(ColorProfile::SRGB)
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn explicit_ui_text_control_fields_ignore_keyword_aliases() {
         let (reflected, ids, registry) =
             reflected_with_f32_fields(&[("_TextMode", 0), ("_RectClip", 4), ("_OVERLAY", 8)]);
@@ -1133,6 +1160,11 @@ mod text_uniform_packing_tests {
         assert_eq!(default_vec4_for_field("_Rect"), [0.0, 0.0, 1.0, 1.0]);
         assert_eq!(default_vec4_for_field("_Point"), [0.0, 0.0, 0.0, 0.0]);
         assert_eq!(default_vec4_for_field("_OverlayTint"), [1.0, 1.0, 1.0, 0.5]);
+        assert_eq!(
+            default_vec4_for_field("_BackgroundColor"),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(default_vec4_for_field("_Range"), [0.001, 0.001, 0.0, 0.0]);
         assert_eq!(
             default_vec4_for_field("_BehindFarColor"),
             [0.0, 0.0, 0.0, 1.0]
@@ -1920,6 +1952,43 @@ mod storage_orientation_uniform_tests {
             "_FontAtlas",
             wgpu::TextureViewDimension::D2,
             "_FontAtlas_StorageVInverted",
+            ReflectedUniformScalarKind::F32,
+            4,
+        );
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(
+            8,
+            registry.intern("_FontAtlas"),
+            MaterialPropertyValue::Texture(42),
+        );
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+
+        let bytes =
+            build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(8), &tex_ctx).unwrap();
+        assert_eq!(read_f32_at(&bytes, 0), 0.0);
+    }
+
+    #[test]
+    fn nonresident_font_atlas_keeps_text_mode_msdf_fallback() {
+        let texture_pool = TexturePool::default_pool();
+        let texture3d_pool = Texture3dPool::default_pool();
+        let cubemap_pool = CubemapPool::default_pool();
+        let render_texture_pool = RenderTexturePool::new();
+        let video_texture_pool = VideoTexturePool::new();
+        let pools = EmbeddedTexturePools {
+            texture: &texture_pool,
+            texture3d: &texture3d_pool,
+            cubemap: &cubemap_pool,
+            render_texture: &render_texture_pool,
+            video_texture: &video_texture_pool,
+        };
+        let (reflected, ids, registry) = reflected_with_texture_and_field(
+            "_FontAtlas",
+            wgpu::TextureViewDimension::D2,
+            "_TextMode",
             ReflectedUniformScalarKind::F32,
             4,
         );

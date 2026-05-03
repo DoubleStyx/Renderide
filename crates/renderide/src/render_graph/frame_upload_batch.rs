@@ -365,6 +365,11 @@ fn build_staging_buffer(
 ) -> Option<wgpu::Buffer> {
     (staging_size > 0).then(|| {
         crate::profiling::scope!("frame_upload::build_staging_buffer");
+        // Plot the per-frame staging size so a triple-buffered ring (the architectural follow-up
+        // for this hotspot) can be sized off the historical max instead of guessed at. Gated on
+        // the `tracy` feature so non-tracy builds compile without the `tracy_client` dependency.
+        #[cfg(feature = "tracy")]
+        tracy_client::plot!("frame_upload::staging_bytes", staging_size as f64);
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame_upload_staging"),
             size: staging_size,
@@ -421,7 +426,10 @@ fn record_upload_command_buffer(
     for (write, plan) in writes.iter().zip(plans.iter()) {
         record_upload_write(&mut encoder, queue, write, plan, payload_bytes, staging);
     }
-    encoder.finish()
+    {
+        crate::profiling::scope!("CommandEncoder::finish::frame_upload");
+        encoder.finish()
+    }
 }
 
 /// Records one staged copy or fallback queue write.

@@ -14,7 +14,7 @@ use super::NodeDirtyMask;
 
 /// Minimum pose-update count before [`validate_pose_rows`] fans out validation across rayon
 /// workers. Below this threshold the scalar loop is faster than rayon dispatch overhead.
-const POSE_UPDATE_PARALLEL_MIN_ROWS: usize = 1024;
+const POSE_UPDATE_PARALLEL_MIN_ROWS: usize = 256;
 
 /// Validated pose row ready for serial commit into [`RenderSpaceState::nodes`].
 struct ValidatedPoseRow {

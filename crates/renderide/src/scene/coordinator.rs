@@ -4,7 +4,7 @@ pub mod parallel_apply;
 mod world_queries;
 
 use hashbrown::HashMap;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use glam::Mat4;
 
@@ -45,7 +45,11 @@ mod tests;
 
 /// Scene registry: one entry per host render space, Unity `RenderingManager` dictionary semantics.
 pub struct SceneCoordinator {
-    spaces: BTreeMap<RenderSpaceId, RenderSpaceState>,
+    /// Backed by [`hashbrown::HashMap`] for O(1) per-id lookup on the per-frame
+    /// `apply_frame_submit` lift/reinsert path. Iteration order is non-deterministic; callers
+    /// that need a stable order go through [`Self::render_space_ids`] which sorts ids by host
+    /// `RenderSpaceId` value at iteration time.
+    spaces: HashMap<RenderSpaceId, RenderSpaceState>,
     world_caches: HashMap<RenderSpaceId, WorldTransformCache>,
     world_dirty: HashSet<RenderSpaceId>,
     light_cache: LightCache,
@@ -78,13 +82,20 @@ pub struct SceneCoordinator {
 }
 
 /// One per-space work slot held in [`SceneCoordinator::apply_work_scratch`].
-pub(super) type ApplyWorkSlot = (
-    RenderSpaceId,
-    RenderSpaceState,
-    WorldTransformCache,
-    ExtractedRenderSpaceUpdate,
-    Vec<TransformRemovalEvent>,
-);
+pub(super) struct ApplyWorkSlot {
+    /// Render space identity for reinsert and dirty-cache tracking.
+    pub(super) id: RenderSpaceId,
+    /// Lifted per-space scene state.
+    pub(super) space: RenderSpaceState,
+    /// Lifted per-space world transform cache.
+    pub(super) cache: WorldTransformCache,
+    /// Pre-extracted host update payload to apply.
+    pub(super) extracted: ExtractedRenderSpaceUpdate,
+    /// Reused transform-removal side buffer for this work item.
+    pub(super) removal_events: Vec<TransformRemovalEvent>,
+    /// Whether applying this slot dirtied the world transform cache.
+    pub(super) world_dirty: bool,
+}
 
 impl Default for SceneCoordinator {
     fn default() -> Self {
@@ -96,7 +107,7 @@ impl SceneCoordinator {
     /// Empty registry.
     pub fn new() -> Self {
         Self {
-            spaces: BTreeMap::new(),
+            spaces: HashMap::new(),
             world_caches: HashMap::new(),
             world_dirty: HashSet::new(),
             light_cache: LightCache::new(),
@@ -120,8 +131,16 @@ impl SceneCoordinator {
     }
 
     /// Render space ids currently present, ordered by host id for deterministic traversal.
-    pub fn render_space_ids(&self) -> impl Iterator<Item = RenderSpaceId> + '_ {
-        self.spaces.keys().copied()
+    ///
+    /// The backing [`hashbrown::HashMap`] iterates in unspecified order, so this method copies the
+    /// keys into a small owned [`Vec`] and sorts by [`RenderSpaceId`] before returning the
+    /// iterator. The allocation is negligible at typical scene sizes (1-10 active render spaces);
+    /// callers that have observed a sorted contract from the prior `BTreeMap` backing are
+    /// preserved.
+    pub fn render_space_ids(&self) -> impl Iterator<Item = RenderSpaceId> {
+        let mut ids: Vec<RenderSpaceId> = self.spaces.keys().copied().collect();
+        ids.sort_unstable_by_key(|id| id.0);
+        ids.into_iter()
     }
 
     /// Number of host render spaces currently tracked.
@@ -282,25 +301,28 @@ impl SceneCoordinator {
         // `&self.spaces` is a shared borrow across rayon workers; `BTreeMap::get` is `Sync` for
         // `Sync` keys and values. Each task owns its own cache.
         let spaces = &self.spaces;
-        let results: Vec<(RenderSpaceId, Result<WorldTransformCache, SceneError>)> = work
-            .into_par_iter()
-            .map(|(id, mut cache)| {
-                // Space removed between drain and dispatch -- preserve cache as-is so the reinsert
-                // step below drops it via the `Ok` path (caller treats this as a no-op).
-                let Some(space) = spaces.get(&id) else {
-                    return (id, Ok(cache));
-                };
-                let n = space.nodes.len();
-                ensure_cache_shapes(&mut cache, n, false);
-                let result = compute_world_matrices_for_space(
-                    id.0,
-                    &space.nodes,
-                    &space.node_parents,
-                    &mut cache,
-                );
-                (id, result.map(|()| cache))
-            })
-            .collect();
+        let compute_one = |(id, mut cache): (RenderSpaceId, WorldTransformCache)| {
+            // Space removed between drain and dispatch -- preserve cache as-is so the reinsert
+            // step below drops it via the `Ok` path (caller treats this as a no-op).
+            let Some(space) = spaces.get(&id) else {
+                return (id, Ok(cache));
+            };
+            let n = space.nodes.len();
+            ensure_cache_shapes(&mut cache, n, false);
+            let result = compute_world_matrices_for_space(
+                id.0,
+                &space.nodes,
+                &space.node_parents,
+                &mut cache,
+            );
+            (id, result.map(|()| cache))
+        };
+        let results: Vec<(RenderSpaceId, Result<WorldTransformCache, SceneError>)> =
+            if work.len() == 1 {
+                work.into_iter().map(compute_one).collect()
+            } else {
+                work.into_par_iter().map(compute_one).collect()
+            };
 
         let mut first_err: Option<SceneError> = None;
         for (id, result) in results {

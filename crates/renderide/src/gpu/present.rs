@@ -255,6 +255,10 @@ where
     // `submit_tracked_frame_commands` (which only enqueues on the driver) destroys the surface
     // texture, which makes the driver's deferred `Queue::submit` reject the command buffer:
     // "Texture with '<Surface Texture>' label has been destroyed".
-    submit_surface_frame_traced(gpu, vec![encoder.finish()], frame, submit_trace);
+    let command_buffer = {
+        profiling::scope!("CommandEncoder::finish::surface_clear");
+        encoder.finish()
+    };
+    submit_surface_frame_traced(gpu, vec![command_buffer], frame, submit_trace);
     Ok(())
 }

@@ -11,9 +11,9 @@ use crate::shared::FrameSubmitData;
 
 /// Buffers at or above this size are filled via rayon `par_chunks_mut`; smaller
 /// buffers fall back to a single SIMD memset to avoid rayon dispatch overhead.
-/// 256 KiB roughly matches glibc's memset NT-store crossover and is large
-/// enough that splitting across cores wins on multi-channel DRAM.
-const PAR_FILL_THRESHOLD: usize = 256 * 1024;
+/// 128 KiB is large enough to amortize rayon dispatch while letting medium photo
+/// buffers use available memory bandwidth sooner.
+const PAR_FILL_THRESHOLD: usize = 128 * 1024;
 /// Per-thread chunk size for parallel fills. 64 KiB keeps each chunk
 /// L2-resident on most desktop CPUs while staying large enough that
 /// memset's non-temporal store path is selected per chunk.

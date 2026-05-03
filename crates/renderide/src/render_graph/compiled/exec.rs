@@ -285,6 +285,36 @@ impl CompiledRenderGraph {
         self.schedule.validate()
     }
 
+    /// Records one view work item and wraps the encoded command buffer with submit-order metadata.
+    fn record_per_view_work_item_output(
+        &self,
+        work_item: PerViewWorkItem,
+        transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
+        upload_batch: &super::super::frame_upload_batch::FrameUploadBatch,
+        per_view_shared: &PerViewRecordShared<'_>,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
+    ) -> Result<(usize, PerViewRecordOutput), GraphExecuteError> {
+        let view_idx = work_item.view_idx;
+        let view_id = work_item.view_id;
+        let host_camera = work_item.host_camera;
+        let encoded = self.record_one_view(
+            per_view_shared,
+            work_item,
+            transient_by_key,
+            upload_batch,
+            profiler,
+        )?;
+        Ok((
+            view_idx,
+            PerViewRecordOutput {
+                view_id,
+                host_camera,
+                command_buffer: encoded.command_buffer,
+                hud_outputs: encoded.hud_outputs,
+            },
+        ))
+    }
+
     /// Records all views into separate command encoders and submits them in a single
     /// [`wgpu::Queue::submit`] call alongside the frame-global encoder.
     ///
@@ -493,12 +523,17 @@ impl CompiledRenderGraph {
                 per_view_hud_outputs.push(output.hud_outputs);
             }
             let per_view_profiler_cmd = per_view_profiler.as_mut().map(|profiler| {
-                let mut profiler_encoder =
+                let mut profiler_encoder = {
+                    profiling::scope!("graph::per_view_profiler::create_encoder");
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                         label: Some("render-graph-per-view-profiler-resolve"),
-                    });
+                    })
+                };
                 profiler.resolve_queries(&mut profiler_encoder);
-                profiler_encoder.finish()
+                {
+                    profiling::scope!("CommandEncoder::finish::graph_per_view_profiler");
+                    profiler_encoder.finish()
+                }
             });
             Ok(RecordedPerViewBatch {
                 per_view_cmds,
@@ -532,17 +567,23 @@ impl CompiledRenderGraph {
             upload_batch,
             queue_arc,
         } = inputs;
-        let target_is_swapchain = views
-            .iter()
-            .any(|v| matches!(v.target, FrameViewTarget::Swapchain));
+        let target_is_swapchain = {
+            profiling::scope!("graph::single_submit::classify_targets");
+            views
+                .iter()
+                .any(|v| matches!(v.target, FrameViewTarget::Swapchain))
+        };
         let queue_ref: &wgpu::Queue = queue_arc.as_ref();
 
-        let hud_cmd = encode_swapchain_hud_overlay(
-            mv_ctx,
-            queue_ref,
-            target_is_swapchain,
-            backbuffer_view_holder.as_ref(),
-        )?;
+        let hud_cmd = {
+            profiling::scope!("graph::single_submit::encode_hud");
+            encode_swapchain_hud_overlay(
+                mv_ctx,
+                queue_ref,
+                target_is_swapchain,
+                backbuffer_view_holder.as_ref(),
+            )
+        }?;
 
         // Drain the deferred upload arena into one staging buffer + N copy_buffer_to_buffer ops on
         // a dedicated upload encoder. Submitted at the head of the batch so subsequent encoders'
@@ -557,25 +598,46 @@ impl CompiledRenderGraph {
         let per_view_command_count = per_view_cmds.len();
         let has_per_view_profiler_cmd = per_view_profiler_cmd.is_some();
         let has_hud_cmd = hud_cmd.is_some();
-        let all_cmds: Vec<wgpu::CommandBuffer> = upload_cmd
-            .into_iter()
-            .chain(frame_global_cmd)
-            .chain(per_view_cmds)
-            .chain(per_view_profiler_cmd)
-            .chain(hud_cmd)
-            .collect();
+        // Build the submit batch with exact pre-allocation. The prior `into_iter().chain().collect()`
+        // pattern relied on `size_hint()` from the chained iterators; with `Option::into_iter()`
+        // mixed in, the hint was inexact and `collect()` walked the doubling growth path on the
+        // backing `Vec`.
+        let mut all_cmds: Vec<wgpu::CommandBuffer> = {
+            profiling::scope!("graph::single_submit::allocate_command_batch");
+            Vec::with_capacity(
+                has_upload_cmd as usize
+                    + has_frame_global_cmd as usize
+                    + per_view_command_count
+                    + has_per_view_profiler_cmd as usize
+                    + has_hud_cmd as usize,
+            )
+        };
+        {
+            profiling::scope!("graph::single_submit::assemble_command_batch");
+            all_cmds.extend(upload_cmd);
+            all_cmds.extend(frame_global_cmd);
+            all_cmds.extend(per_view_cmds);
+            all_cmds.extend(per_view_profiler_cmd);
+            all_cmds.extend(hud_cmd);
+        }
         let command_buffer_count = all_cmds.len();
 
         // Hand the swapchain texture (if any) to the driver thread so `queue.submit` and
         // `SurfaceTexture::present` run off the main thread. The scope still drops cleanly -- with
         // the texture taken, its `Drop` is a no-op.
-        let surface_tex = if target_is_swapchain {
-            swapchain_scope.take_surface_texture()
-        } else {
-            None
+        let surface_tex = {
+            profiling::scope!("graph::single_submit::surface_texture_handoff");
+            if target_is_swapchain {
+                swapchain_scope.take_surface_texture()
+            } else {
+                None
+            }
         };
 
-        let hi_z_callbacks = collect_hi_z_submit_callbacks(mv_ctx, per_view_occlusion_info);
+        let hi_z_callbacks = {
+            profiling::scope!("graph::single_submit::collect_hi_z_callbacks");
+            collect_hi_z_submit_callbacks(mv_ctx, per_view_occlusion_info)
+        };
         logger::trace!(
             "graph submit batch: views={} swapchain={} command_buffers={} upload={} frame_global={} per_view={} profiler={} hud={} hi_z_callbacks={}",
             views.len(),
@@ -590,6 +652,7 @@ impl CompiledRenderGraph {
         );
 
         {
+            profiling::scope!("graph::single_submit::driver_enqueue");
             profiling::scope!("gpu::queue_submit");
             mv_ctx.gpu.submit_frame_batch_with_callbacks(
                 all_cmds,
@@ -599,8 +662,11 @@ impl CompiledRenderGraph {
             );
         };
 
-        for outputs in per_view_hud_outputs.iter().flatten() {
-            mv_ctx.backend.apply_per_view_hud_outputs(outputs);
+        {
+            profiling::scope!("graph::single_submit::apply_hud_outputs");
+            for outputs in per_view_hud_outputs.iter().flatten() {
+                mv_ctx.backend.apply_per_view_hud_outputs(outputs);
+            }
         }
         Ok(())
     }
@@ -707,24 +773,49 @@ impl CompiledRenderGraph {
         n_views: usize,
     ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
         profiling::scope!("graph::record_per_view_outputs");
-        let graph: &CompiledRenderGraph = self;
+        // One view records serially. Two or more independent views can use worker threads, which
+        // lets OpenXR stereo record both eyes in parallel.
+        const MIN_VIEWS_FOR_PARALLEL_RECORD: usize = 2;
+        if record_parallelism == crate::config::RecordParallelism::PerViewParallel
+            && n_views >= MIN_VIEWS_FOR_PARALLEL_RECORD
+        {
+            self.record_per_view_outputs_parallel(per_view_work_items, inputs, n_views)
+        } else {
+            self.record_per_view_outputs_serial(per_view_work_items, inputs, n_views)
+        }
+    }
+
+    fn record_per_view_outputs_parallel(
+        &self,
+        per_view_work_items: Vec<PerViewWorkItem>,
+        inputs: PerViewRecordInputs<'_>,
+        n_views: usize,
+    ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
+        profiling::scope!("graph::per_view_fan_out");
+        if n_views == 2 {
+            return self.record_two_view_outputs_parallel(per_view_work_items, inputs);
+        }
+
         let PerViewRecordInputs {
             transient_by_key,
             upload_batch,
             per_view_shared,
             profiler,
         } = inputs;
-        if record_parallelism == crate::config::RecordParallelism::PerViewParallel && n_views > 1 {
-            profiling::scope!("graph::per_view_fan_out");
-            use std::sync::OnceLock;
-            // Per-slot mailbox: each rayon worker writes its own `view_idx` exactly once via
-            // `OnceLock::set`, which is wait-free in the uncontended case (single atomic CAS).
-            // Replaces the prior `parking_lot::Mutex<Vec<Option<_>>>` that allocated a Vec
-            // and acquired a global lock for every successful write.
-            let slots: Vec<OnceLock<PerViewRecordOutput>> = std::iter::repeat_with(OnceLock::new)
+        use std::sync::OnceLock;
+        // Per-slot mailbox: each rayon worker writes its own `view_idx` exactly once via
+        // `OnceLock::set`, which is wait-free in the uncontended case (single atomic CAS).
+        // Replaces the prior `parking_lot::Mutex<Vec<Option<_>>>` that allocated a Vec
+        // and acquired a global lock for every successful write.
+        let slots: Vec<OnceLock<PerViewRecordOutput>> = {
+            profiling::scope!("graph::per_view_fan_out::setup_mailboxes");
+            std::iter::repeat_with(OnceLock::new)
                 .take(n_views)
-                .collect();
-            let first_error: OnceLock<GraphExecuteError> = OnceLock::new();
+                .collect()
+        };
+        let first_error: OnceLock<GraphExecuteError> = OnceLock::new();
+        {
+            profiling::scope!("graph::per_view_fan_out::spawn_workers");
             rayon::scope(|scope| {
                 for work_item in per_view_work_items {
                     let slots = &slots;
@@ -734,26 +825,18 @@ impl CompiledRenderGraph {
                         if first_error.get().is_some() {
                             return;
                         }
-                        let view_idx = work_item.view_idx;
-                        let view_id = work_item.view_id;
-                        let host_camera = work_item.host_camera;
-                        match graph.record_one_view(
-                            shared,
+                        match self.record_per_view_work_item_output(
                             work_item,
                             transient_by_key,
                             upload_batch,
+                            shared,
                             profiler,
                         ) {
-                            Ok(encoded) => {
+                            Ok((view_idx, output)) => {
                                 // Each rayon worker owns a unique `view_idx`, so this `set`
                                 // always succeeds on the happy path; the `Err` arm is dead code
                                 // in practice but discarded silently to keep the closure infallible.
-                                let _ = slots[view_idx].set(PerViewRecordOutput {
-                                    view_id,
-                                    host_camera,
-                                    command_buffer: encoded.command_buffer,
-                                    hud_outputs: encoded.hud_outputs,
-                                });
+                                let _ = slots[view_idx].set(output);
                             }
                             Err(err) => {
                                 // Only the first erroring worker wins; later sets discard.
@@ -763,6 +846,9 @@ impl CompiledRenderGraph {
                     });
                 }
             });
+        }
+        {
+            profiling::scope!("graph::per_view_fan_out::collect_outputs");
             if let Some(err) = first_error.into_inner() {
                 return Err(err);
             }
@@ -770,28 +856,80 @@ impl CompiledRenderGraph {
                 .into_iter()
                 .map(|slot| slot.into_inner().ok_or(GraphExecuteError::NoViewsInBatch))
                 .collect::<Result<Vec<_>, _>>()
-        } else {
-            profiling::scope!("graph::per_view_serial");
-            let mut outputs = Vec::with_capacity(n_views);
-            for work_item in per_view_work_items {
-                let view_id = work_item.view_id;
-                let host_camera = work_item.host_camera;
-                let encoded = graph.record_one_view(
-                    per_view_shared,
-                    work_item,
+        }
+    }
+
+    fn record_two_view_outputs_parallel(
+        &self,
+        per_view_work_items: Vec<PerViewWorkItem>,
+        inputs: PerViewRecordInputs<'_>,
+    ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
+        let PerViewRecordInputs {
+            transient_by_key,
+            upload_batch,
+            per_view_shared,
+            profiler,
+        } = inputs;
+        let mut items = per_view_work_items.into_iter();
+        let first = items.next().ok_or(GraphExecuteError::NoViewsInBatch)?;
+        let second = items.next().ok_or(GraphExecuteError::NoViewsInBatch)?;
+        let extra = items.next();
+        debug_assert!(extra.is_none());
+        let (first, second) = rayon::join(
+            || {
+                self.record_per_view_work_item_output(
+                    first,
                     transient_by_key,
                     upload_batch,
+                    per_view_shared,
                     profiler,
-                )?;
-                outputs.push(PerViewRecordOutput {
-                    view_id,
-                    host_camera,
-                    command_buffer: encoded.command_buffer,
-                    hud_outputs: encoded.hud_outputs,
-                });
-            }
-            Ok(outputs)
+                )
+            },
+            || {
+                self.record_per_view_work_item_output(
+                    second,
+                    transient_by_key,
+                    upload_batch,
+                    per_view_shared,
+                    profiler,
+                )
+            },
+        );
+        let (first_idx, first_output) = first?;
+        let (second_idx, second_output) = second?;
+        debug_assert_ne!(first_idx, second_idx);
+        Ok(if first_idx <= second_idx {
+            vec![first_output, second_output]
+        } else {
+            vec![second_output, first_output]
+        })
+    }
+
+    fn record_per_view_outputs_serial(
+        &self,
+        per_view_work_items: Vec<PerViewWorkItem>,
+        inputs: PerViewRecordInputs<'_>,
+        n_views: usize,
+    ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
+        profiling::scope!("graph::per_view_serial");
+        let PerViewRecordInputs {
+            transient_by_key,
+            upload_batch,
+            per_view_shared,
+            profiler,
+        } = inputs;
+        let mut outputs = Vec::with_capacity(n_views);
+        for work_item in per_view_work_items {
+            let (_, output) = self.record_per_view_work_item_output(
+                work_item,
+                transient_by_key,
+                upload_batch,
+                per_view_shared,
+                profiler,
+            )?;
+            outputs.push(output);
         }
+        Ok(outputs)
     }
 }
 
@@ -852,7 +990,11 @@ fn encode_swapchain_hud_overlay(
         prof.end_query(&mut hud_encoder, query);
         prof.resolve_queries(&mut hud_encoder);
     }
-    Ok(Some(hud_encoder.finish()))
+    let command_buffer = {
+        profiling::scope!("CommandEncoder::finish::graph_hud");
+        hud_encoder.finish()
+    };
+    Ok(Some(command_buffer))
 }
 
 /// Collects per-view Hi-Z submit-done notifications as `on_submitted_work_done` callbacks. Each

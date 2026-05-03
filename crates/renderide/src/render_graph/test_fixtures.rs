@@ -78,6 +78,12 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         alpha_blended,
     };
     let batch_key_hash = compute_batch_key_hash(&batch_key);
+    let sort_prefix = crate::world_mesh::draw_prep::pack_sort_prefix(
+        false,
+        batch_key.render_queue,
+        0,
+        batch_key_hash,
+    );
     WorldMeshDrawItem {
         space_id: RenderSpaceId(0),
         node_id: node,
@@ -101,6 +107,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         batch_key,
         batch_key_hash,
         opaque_depth_bucket: 0,
+        sort_prefix,
         rigid_world_matrix: None,
     }
 }

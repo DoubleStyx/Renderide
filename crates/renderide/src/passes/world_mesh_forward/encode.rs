@@ -72,17 +72,19 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
         supports_base_instance,
     } = batch;
 
-    let subpass_batch_count = groups.len();
-    let subpass_input_draws: usize = groups
-        .iter()
-        .map(|g| (g.instance_range.end - g.instance_range.start) as usize)
-        .sum();
+    let (subpass_batch_count, subpass_input_draws) = {
+        profiling::scope!("world_mesh::draw_subset::summarize_groups");
+        let subpass_batch_count = groups.len();
+        let subpass_input_draws: usize = groups
+            .iter()
+            .map(|g| (g.instance_range.end - g.instance_range.start) as usize)
+            .sum();
+        (subpass_batch_count, subpass_input_draws)
+    };
 
     let mut last_mesh = LastMeshBindState::new();
     let mut last_per_draw_dyn_offset: Option<u32> = None;
     let mut last_stencil_ref: Option<u32> = None;
-    // Cursor into `precomputed`; advances monotonically as group representatives increase.
-    let mut batch_cursor: usize = 0;
     // Track which precomputed batch is currently bound to avoid redundant set_bind_group(1).
     let mut bound_batch_cursor: Option<usize> = None;
     // Track the last pipeline pointer to skip redundant set_pipeline across groups that share
@@ -90,77 +92,81 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
     // adjacent batches resolve to the same multi-pass pipeline set).
     let mut last_pipeline: Option<*const wgpu::RenderPipeline> = None;
 
-    rpass.set_bind_group(0, frame_bg, &[]);
-
-    for group in groups {
-        let representative = group.representative_draw_idx;
-
-        // Advance the cursor to the precomputed batch that covers `representative`.
-        while batch_cursor + 1 < precomputed.len()
-            && precomputed[batch_cursor].last_draw_idx < representative
-        {
-            batch_cursor += 1;
-        }
-
-        let pc = &precomputed[batch_cursor];
-        debug_assert!(
-            representative >= pc.first_draw_idx && representative <= pc.last_draw_idx,
-            "precomputed batch [{}, {}] should cover representative draw index {}",
-            pc.first_draw_idx,
-            pc.last_draw_idx,
-            representative,
-        );
-        debug_assert_eq!(
-            pc.pipeline_key.shader_asset_id, draws[representative].batch_key.shader_asset_id,
-            "material packet pipeline key must match the representative draw"
-        );
-
-        let Some(pipelines) = pc.pipelines.as_ref() else {
-            continue; // pipeline unavailable for this batch -- skip draws
-        };
-
-        // Bind @group(1) once per unique batch; skip when the cursor hasn't advanced.
-        if bound_batch_cursor != Some(batch_cursor) {
-            let material_bg = pc.bind_group.as_deref().unwrap_or(empty_bg);
-            rpass.set_bind_group(1, material_bg, &[]);
-            bound_batch_cursor = Some(batch_cursor);
-        }
-
-        let slab_first_instance = group.instance_range.start as usize;
-        let instance_count = group.instance_range.end - group.instance_range.start;
-        bind_per_draw_slab_if_changed(
-            rpass,
-            per_draw_bind_group,
-            gpu_limits,
-            slab_first_instance,
-            instance_count,
-            supports_base_instance,
-            &mut last_per_draw_dyn_offset,
-        );
-
-        let stencil_ref = draws[representative]
-            .batch_key
-            .render_state
-            .stencil_reference();
-        if last_stencil_ref != Some(stencil_ref) {
-            rpass.set_stencil_reference(stencil_ref);
-            last_stencil_ref = Some(stencil_ref);
-        }
-
-        let inst_range = instance_range_for_draw_group(group, supports_base_instance);
-
-        issue_material_pipeline_passes(
-            rpass,
-            encode,
-            &draws[representative],
-            ActivePipelineSelection { pipelines },
-            &inst_range,
-            &mut last_mesh,
-            &mut last_pipeline,
-        );
+    {
+        profiling::scope!("world_mesh::draw_subset::bind_frame_group");
+        rpass.set_bind_group(0, frame_bg, &[]);
     }
 
-    crate::profiling::plot_world_mesh_subpass(subpass_batch_count, subpass_input_draws);
+    {
+        profiling::scope!("world_mesh::draw_subset::group_loop");
+        for group in groups {
+            let representative = group.representative_draw_idx;
+            let batch_cursor = group.material_packet_idx;
+            let Some(pc) = precomputed.get(batch_cursor) else {
+                continue;
+            };
+            debug_assert!(
+                representative >= pc.first_draw_idx && representative <= pc.last_draw_idx,
+                "precomputed batch [{}, {}] should cover representative draw index {}",
+                pc.first_draw_idx,
+                pc.last_draw_idx,
+                representative,
+            );
+            debug_assert_eq!(
+                pc.pipeline_key.shader_asset_id, draws[representative].batch_key.shader_asset_id,
+                "material packet pipeline key must match the representative draw"
+            );
+
+            let Some(pipelines) = pc.pipelines.as_ref() else {
+                continue; // pipeline unavailable for this batch -- skip draws
+            };
+
+            // Bind @group(1) once per unique batch; skip when the cursor hasn't advanced.
+            if bound_batch_cursor != Some(batch_cursor) {
+                let material_bg = pc.bind_group.as_deref().unwrap_or(empty_bg);
+                rpass.set_bind_group(1, material_bg, &[]);
+                bound_batch_cursor = Some(batch_cursor);
+            }
+
+            let slab_first_instance = group.instance_range.start as usize;
+            let instance_count = group.instance_range.end - group.instance_range.start;
+            bind_per_draw_slab_if_changed(
+                rpass,
+                per_draw_bind_group,
+                gpu_limits,
+                slab_first_instance,
+                instance_count,
+                supports_base_instance,
+                &mut last_per_draw_dyn_offset,
+            );
+
+            let stencil_ref = draws[representative]
+                .batch_key
+                .render_state
+                .stencil_reference();
+            if last_stencil_ref != Some(stencil_ref) {
+                rpass.set_stencil_reference(stencil_ref);
+                last_stencil_ref = Some(stencil_ref);
+            }
+
+            let inst_range = instance_range_for_draw_group(group, supports_base_instance);
+
+            issue_material_pipeline_passes(
+                rpass,
+                encode,
+                &draws[representative],
+                ActivePipelineSelection { pipelines },
+                &inst_range,
+                &mut last_mesh,
+                &mut last_pipeline,
+            );
+        }
+    }
+
+    {
+        profiling::scope!("world_mesh::draw_subset::plot_subpass");
+        crate::profiling::plot_world_mesh_subpass(subpass_batch_count, subpass_input_draws);
+    }
 }
 
 /// Updates @group(2) dynamic offset and rebinds the per-draw slab when the row offset changes.
@@ -272,6 +278,7 @@ mod tests {
         let group = DrawGroup {
             representative_draw_idx: 17,
             instance_range: 17..18,
+            material_packet_idx: 0,
         };
         assert_eq!(instance_range_for_draw_group(&group, false), 0..1);
     }
@@ -281,6 +288,7 @@ mod tests {
         let group = DrawGroup {
             representative_draw_idx: 17,
             instance_range: 17..20,
+            material_packet_idx: 0,
         };
         assert_eq!(instance_range_for_draw_group(&group, true), 17..20);
     }

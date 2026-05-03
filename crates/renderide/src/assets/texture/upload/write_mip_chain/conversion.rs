@@ -11,6 +11,13 @@ use super::super::mip_write_common::{
     mip_src_to_upload_pixels as shared_mip_src_to_upload_pixels,
 };
 
+const DOWNSAMPLE_PARALLEL_MIN_TEXELS: usize = 16_384;
+
+#[inline]
+fn should_parallelize_downsample(dst_w: usize, dst_h: usize) -> bool {
+    dst_w.saturating_mul(dst_h) >= DOWNSAMPLE_PARALLEL_MIN_TEXELS
+}
+
 /// Converts host mip bytes into a buffer suitable for [`write_one_mip`] (decode, optional row flip).
 pub(super) fn mip_src_to_upload_pixels(
     ctx: MipUploadFormatCtx,
@@ -97,30 +104,39 @@ fn store_rgba8_lanes(dst: &mut [u8], i: usize, lanes: u32x4) {
 
 /// Common case: each output texel averages a 2x2 source neighborhood.
 ///
-/// Outer rows fan out across rayon. The inner per-texel accumulator uses [`wide::u32x4`] so the
+/// Medium and larger outputs fan rows out across rayon. The inner per-texel accumulator uses [`wide::u32x4`] so the
 /// four channels widen and add through one SIMD register instead of four scalar operations.
 fn downsample_rgba8_box_2x2(src: &[u8], dst: &mut [u8], sw: usize, dw: usize) {
     let two = u32x4::splat(2);
-    dst.par_chunks_exact_mut(dw * 4)
-        .enumerate()
-        .for_each(|(dy, row)| {
-            let y0 = dy * 2;
-            let row_y0 = y0 * sw * 4;
-            let row_y1 = (y0 + 1) * sw * 4;
-            for dx in 0..dw {
-                let x0 = dx * 2;
-                let i00 = row_y0 + x0 * 4;
-                let i01 = i00 + 4;
-                let i10 = row_y1 + x0 * 4;
-                let i11 = i10 + 4;
-                let s00 = load_rgba8_lanes(src, i00);
-                let s01 = load_rgba8_lanes(src, i01);
-                let s10 = load_rgba8_lanes(src, i10);
-                let s11 = load_rgba8_lanes(src, i11);
-                let avg = ((s00 + s01 + s10 + s11) + two).shr(2_i32);
-                store_rgba8_lanes(row, dx * 4, avg);
-            }
-        });
+    let row_bytes = dw * 4;
+    let dst_h = dst.len() / row_bytes;
+    let process_row = |(dy, row): (usize, &mut [u8])| {
+        let y0 = dy * 2;
+        let row_y0 = y0 * sw * 4;
+        let row_y1 = (y0 + 1) * sw * 4;
+        for dx in 0..dw {
+            let x0 = dx * 2;
+            let i00 = row_y0 + x0 * 4;
+            let i01 = i00 + 4;
+            let i10 = row_y1 + x0 * 4;
+            let i11 = i10 + 4;
+            let s00 = load_rgba8_lanes(src, i00);
+            let s01 = load_rgba8_lanes(src, i01);
+            let s10 = load_rgba8_lanes(src, i10);
+            let s11 = load_rgba8_lanes(src, i11);
+            let avg = ((s00 + s01 + s10 + s11) + two).shr(2_i32);
+            store_rgba8_lanes(row, dx * 4, avg);
+        }
+    };
+    if should_parallelize_downsample(dw, dst_h) {
+        dst.par_chunks_exact_mut(row_bytes)
+            .enumerate()
+            .for_each(process_row);
+    } else {
+        dst.chunks_exact_mut(row_bytes)
+            .enumerate()
+            .for_each(process_row);
+    }
 }
 
 /// General-case downsample for non-2:1 mip ratios (rare: NPOT bases, intentional drops).
@@ -132,31 +148,39 @@ fn downsample_rgba8_box_general(
     dw: usize,
     dh: usize,
 ) {
-    dst.par_chunks_exact_mut(dw * 4)
-        .enumerate()
-        .for_each(|(dy, row)| {
-            let y0 = dy * sh / dh;
-            let y1 = ((dy + 1) * sh).div_ceil(dh).max(y0 + 1).min(sh);
-            for dx in 0..dw {
-                let x0 = dx * sw / dw;
-                let x1 = ((dx + 1) * sw).div_ceil(dw).max(x0 + 1).min(sw);
-                let mut sum = u32x4::ZERO;
-                let mut count = 0u32;
-                for sy in y0..y1 {
-                    for sx in x0..x1 {
-                        let si = (sy * sw + sx) * 4;
-                        sum += load_rgba8_lanes(src, si);
-                        count += 1;
-                    }
+    let row_bytes = dw * 4;
+    let process_row = |(dy, row): (usize, &mut [u8])| {
+        let y0 = dy * sh / dh;
+        let y1 = ((dy + 1) * sh).div_ceil(dh).max(y0 + 1).min(sh);
+        for dx in 0..dw {
+            let x0 = dx * sw / dw;
+            let x1 = ((dx + 1) * sw).div_ceil(dw).max(x0 + 1).min(sw);
+            let mut sum = u32x4::ZERO;
+            let mut count = 0u32;
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let si = (sy * sw + sx) * 4;
+                    sum += load_rgba8_lanes(src, si);
+                    count += 1;
                 }
-                let arr = sum.to_array();
-                let di = dx * 4;
-                row[di] = ((arr[0] + count / 2) / count) as u8;
-                row[di + 1] = ((arr[1] + count / 2) / count) as u8;
-                row[di + 2] = ((arr[2] + count / 2) / count) as u8;
-                row[di + 3] = ((arr[3] + count / 2) / count) as u8;
             }
-        });
+            let arr = sum.to_array();
+            let di = dx * 4;
+            row[di] = ((arr[0] + count / 2) / count) as u8;
+            row[di + 1] = ((arr[1] + count / 2) / count) as u8;
+            row[di + 2] = ((arr[2] + count / 2) / count) as u8;
+            row[di + 3] = ((arr[3] + count / 2) / count) as u8;
+        }
+    };
+    if should_parallelize_downsample(dw, dh) {
+        dst.par_chunks_exact_mut(row_bytes)
+            .enumerate()
+            .for_each(process_row);
+    } else {
+        dst.chunks_exact_mut(row_bytes)
+            .enumerate()
+            .for_each(process_row);
+    }
 }
 
 #[cfg(test)]
@@ -192,6 +216,12 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn downsample_parallel_gate_starts_at_medium_mips() {
+        assert!(!should_parallelize_downsample(127, 128));
+        assert!(should_parallelize_downsample(128, 128));
     }
 
     #[test]

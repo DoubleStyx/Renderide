@@ -207,6 +207,33 @@ fn pbsrim_zwrite_stems_keep_depth_prepass_before_forward() {
     }
 }
 
+/// Verifies opaque PBS DualSided stems preserve authored Cull Off regardless of host `_Cull`.
+#[test]
+fn pbs_dualsided_opaque_stems_preserve_authored_cull_off() {
+    for stem in ["pbsdualsided_default", "pbsdualsidedspecular_default"] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 1, "{stem} should declare one forward pass");
+        assert_eq!(passes[0].name, "forward_two_sided", "{stem}");
+        assert_eq!(passes[0].cull_mode, None, "{stem}");
+
+        for cull_override in [
+            MaterialCullOverride::Front,
+            MaterialCullOverride::Back,
+            MaterialCullOverride::Off,
+        ] {
+            let state = MaterialRenderState {
+                cull_override,
+                ..MaterialRenderState::default()
+            };
+            assert_eq!(
+                passes[0].resolved_cull_mode(state),
+                None,
+                "{stem} must keep authored Cull Off when host sends {cull_override:?}"
+            );
+        }
+    }
+}
+
 /// Verifies selected PBS transparent stems declare transparent defaults instead of opaque forward aliases.
 #[test]
 fn selected_pbs_transparent_stems_keep_transparent_pass_defaults() {
@@ -227,18 +254,23 @@ fn selected_pbs_transparent_stems_keep_transparent_pass_defaults() {
         assert!(passes[0].blend.is_some(), "{stem}");
     }
 
-    let passes = crate::embedded_shaders::embedded_target_passes("pbsdualsidedtransparent_default");
-    assert_eq!(
-        passes.len(),
-        2,
-        "pbsdualsidedtransparent_default should declare back-face then front-face transparent passes"
-    );
-    assert_eq!(passes[0].name, "forward_transparent_cull_front");
-    assert_eq!(passes[0].cull_mode, Some(wgpu::Face::Front));
-    assert!(passes[0].blend.is_some());
-    assert_eq!(passes[1].name, "forward_transparent_cull_back");
-    assert_eq!(passes[1].cull_mode, Some(wgpu::Face::Back));
-    assert!(passes[1].blend.is_some());
+    for stem in [
+        "pbsdualsidedtransparent_default",
+        "pbsdualsidedtransparentspecular_default",
+    ] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(
+            passes.len(),
+            2,
+            "{stem} should declare back-face then front-face transparent passes"
+        );
+        assert_eq!(passes[0].name, "forward_transparent_cull_front", "{stem}");
+        assert_eq!(passes[0].cull_mode, Some(wgpu::Face::Front), "{stem}");
+        assert!(passes[0].blend.is_some(), "{stem}");
+        assert_eq!(passes[1].name, "forward_transparent_cull_back", "{stem}");
+        assert_eq!(passes[1].cull_mode, Some(wgpu::Face::Back), "{stem}");
+        assert!(passes[1].blend.is_some(), "{stem}");
+    }
 }
 
 /// Verifies the XSToon family keeps its expected forward / outline / stencil topology.

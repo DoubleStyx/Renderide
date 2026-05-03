@@ -72,3 +72,16 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --locked
+
+      - name: Run headless renderer suite
+        run: cargo run --locked -p renderide-test -- check-suite
+
+      - name: Upload headless suite artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: headless-renderer-suite-${{ matrix.os }}
+          path: |
+            target/renderide-test-out/**
+            logs/renderer-test/**
+            logs/renderer/**

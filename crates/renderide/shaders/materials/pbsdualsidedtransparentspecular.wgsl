@@ -1,12 +1,8 @@
 //! Unity surface shader `Shader "PBSDualSidedTransparentSpecular"`: Standard SpecularSetup with
 //! two-sided normals, authored for transparent draws.
 //!
-//! Functionally identical to [`pbsdualsidedspecular`](super::pbsdualsidedspecular) at the WGSL
-//! level -- Unity's `alpha`/`Queue=Transparent` directives only change default render queue and
-//! blend factors, which this renderer drives from host `_SrcBlend`/`_DstBlend`/`_ZWrite` material
-//! properties. The shader is split into its own embedded stem
-//! (`pbsdualsidedtransparentspecular_default`) so host shader-asset routing maps
-//! `PBSDualSidedTransparentSpecular` to the matching pipeline cache key.
+//! Transparent two-pass dual-sided rendering: back faces first (`Cull Front`) and front faces
+//! second (`Cull Back`), matching the metallic transparent variant's pass topology.
 
 
 #import renderide::mesh::vertex as mv
@@ -75,18 +71,15 @@ struct SurfaceData {
     emission: vec3<f32>,
 }
 
-/// Sample tangent-space normal, place it in world space, and flip Z for back-faces (two-sided).
+/// Sample tangent-space normal and place it in the fragment's visible-side world frame.
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
-    let tbn = pnorm::orthonormal_tbn(normalize(world_n), normalize(world_t));
+    let tbn = pnorm::visible_side_tbn(world_n, world_t, front_facing);
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         ts_n = nd::decode_ts_normal_with_placeholder_sample(
             textureSample(_NormalMap, _NormalMap_sampler, uv_main),
             mat._NormalScale,
         );
-    }
-    if (!front_facing) {
-        ts_n.z = -ts_n.z;
     }
     return normalize(tbn * ts_n);
 }
@@ -181,20 +174,17 @@ fn vs_main(
 #endif
 }
 
-/// Forward-base pass: ambient + directional lighting + emission.
-//#pass forward
-@fragment
-fn fs_forward_base(
-    @builtin(position) frag_pos: vec4<f32>,
-    @builtin(front_facing) front_facing: bool,
-    @location(0) world_pos: vec3<f32>,
-    @location(1) world_n: vec3<f32>,
-    @location(2) world_t: vec4<f32>,
-    @location(3) uv0: vec2<f32>,
-    @location(4) color: vec4<f32>,
-    @location(5) @interpolate(flat) view_layer: u32,
-) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, world_n, world_t, front_facing, color);
+fn shade(
+    frag_xy: vec2<f32>,
+    world_pos: vec3<f32>,
+    world_n: vec3<f32>,
+    world_t: vec4<f32>,
+    uv0: vec2<f32>,
+    vertex_color: vec4<f32>,
+    view_layer: u32,
+    front_facing: bool,
+) -> vec4<f32> {
+    let s = sample_surface(uv0, world_n, world_t, front_facing, vertex_color);
     let surface = psurf::specular(
         s.base_color,
         s.alpha,
@@ -206,7 +196,7 @@ fn fs_forward_base(
     );
     return vec4<f32>(
         plight::shade_specular_clustered(
-            frag_pos.xy,
+            frag_xy,
             world_pos,
             view_layer,
             surface,
@@ -216,4 +206,32 @@ fn fs_forward_base(
     );
 }
 
-/// Forward-add pass: additive accumulation of local (point/spot) lights.
+//#pass forward_transparent_cull_front
+@fragment
+fn fs_back_faces(
+    @builtin(position) frag_pos: vec4<f32>,
+    @builtin(front_facing) front_facing: bool,
+    @location(0) world_pos: vec3<f32>,
+    @location(1) world_n: vec3<f32>,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
+) -> @location(0) vec4<f32> {
+    return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, color, view_layer, front_facing);
+}
+
+//#pass forward_transparent_cull_back
+@fragment
+fn fs_front_faces(
+    @builtin(position) frag_pos: vec4<f32>,
+    @builtin(front_facing) front_facing: bool,
+    @location(0) world_pos: vec3<f32>,
+    @location(1) world_n: vec3<f32>,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
+) -> @location(0) vec4<f32> {
+    return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, color, view_layer, front_facing);
+}

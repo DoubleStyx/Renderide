@@ -83,7 +83,6 @@ fn shade_distance_field(style: DistanceFieldStyle, input: DistanceFieldInput) ->
 
 fn shade_text_sample(
     atlas_color: vec4<f32>,
-    atlas_clip: vec4<f32>,
     style: DistanceFieldStyle,
     input: DistanceFieldInput,
     raster_tint: vec4<f32>,
@@ -91,7 +90,7 @@ fn shade_text_sample(
 ) -> vec4<f32> {
     if (mode == 1) {
         let c = atlas_color * raster_tint;
-        if (atlas_clip.a * raster_tint.a < 0.001) {
+        if (atlas_color.a * raster_tint.a < 0.001) {
             discard;
         }
         return c;
@@ -99,7 +98,7 @@ fn shade_text_sample(
 
     if (mode == 2) {
         let sdf_input = DistanceFieldInput(
-            atlas_clip.a - 0.5,
+            atlas_color.a - 0.5,
             input.uv,
             input.extra_data,
             input.vertex_color,
@@ -108,7 +107,7 @@ fn shade_text_sample(
     }
 
     let sdf_input = DistanceFieldInput(
-        median3(atlas_clip.r, atlas_clip.g, atlas_clip.b) - 0.5,
+        median3(atlas_color.r, atlas_color.g, atlas_color.b) - 0.5,
         input.uv,
         input.extra_data,
         input.vertex_color,

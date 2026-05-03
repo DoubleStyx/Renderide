@@ -1,10 +1,10 @@
 //! Tangent-space -> world-space normal-mapping primitives shared across all PBS materials.
 //!
 //! Each PBS material file owns its own `sample_normal_world` wrapper because per-material details
-//! (single-UV vs multi-UV vs triplanar, dual-sided front_facing flip, detail-mask blending, etc.)
+//! (single-UV vs multi-UV vs triplanar, dual-sided visible-face frames, detail-mask blending, etc.)
 //! legitimately differ. What is duplicated across ~46 files is the inner math: building a
 //! MikkTSpace-style TBN from the geometric world normal, applying the basis to a decoded tangent
-//! normal, and (for dual-sided materials) flipping for back faces. Those primitives live here.
+//! normal, and orienting dual-sided frames toward the visible face. Those primitives live here.
 //!
 //! Tangent-space normal *decoding* (BC3/BC5 swizzle, Unity-style normal-scale reconstruction) lives in
 //! [`renderide::normal_decode`]. This module is strictly the basis-construction step and above.
@@ -47,8 +47,10 @@ fn orthonormal_tbn_fallback(n: vec3<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(normalize(t), normalize(bitan), n);
 }
 
-/// Flip a normal for back-facing fragments. Dual-sided materials use this so geometry seen from
-/// the back side still receives lighting consistent with its visible orientation.
-fn flip_for_backface(n: vec3<f32>, front_facing: bool) -> vec3<f32> {
-    return select(-n, n, front_facing);
+/// Builds a TBN oriented toward the fragment's visible side. This makes back-facing fragments of
+/// dual-sided materials shade like duplicated opaque geometry with reversed normals.
+fn visible_side_tbn(world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> mat3x3<f32> {
+    let tbn = orthonormal_tbn(world_n, world_t);
+    let side = select(-1.0, 1.0, front_facing);
+    return mat3x3<f32>(tbn[0] * side, tbn[1] * side, tbn[2] * side);
 }

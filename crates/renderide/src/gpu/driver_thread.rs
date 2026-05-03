@@ -135,6 +135,13 @@ impl DriverThread {
             self.submit_counters.note_submit_done();
             logger::warn!("driver thread exited; dropping submit batch");
         }
+        // Tracy plot of how full the driver ring is right after the push so saturation
+        // (depth equal to RING_CAPACITY = the main thread blocked) and steady-state pipelining
+        // (depth typically 0-1) show up alongside the other gpu metrics. Cheap: one Mutex lock,
+        // once per submit. Gated on the `tracy` feature so non-tracy builds compile without the
+        // `tracy_client` dependency, matching every other plot call in this crate.
+        #[cfg(feature = "tracy")]
+        tracy_client::plot!("driver/ring_depth", self.ring.depth() as f64);
     }
 
     /// Blocks until every previously-submitted surface-carrying batch has reached

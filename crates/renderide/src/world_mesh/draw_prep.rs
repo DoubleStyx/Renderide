@@ -26,7 +26,7 @@ pub use collect::{
 pub use filter::{CameraTransformDrawFilter, draw_filter_from_camera_entry};
 pub use item::{WorldMeshDrawCollection, WorldMeshDrawItem, resolved_material_slots};
 pub use prepared_renderables::FramePreparedRenderables;
-pub use sort::sort_draws;
+pub use sort::{pack_sort_prefix, sort_draws};
 
 #[cfg(test)]
 mod tests {

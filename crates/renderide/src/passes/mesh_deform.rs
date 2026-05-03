@@ -194,17 +194,28 @@ fn collect_deform_work_into_scratch(
         scratch.chunks.truncate(space_count);
     }
 
-    {
-        let space_ids = &scratch.space_ids;
-        let chunks = &mut scratch.chunks;
-        space_ids
-            .par_iter()
-            .copied()
-            .zip(chunks.par_iter_mut())
-            .for_each(|(space_id, chunk)| {
-                collect_deform_work_for_space(scene, mesh_pool, space_id, chunk);
-            });
-    };
+    match space_count {
+        0 => {}
+        1 => {
+            collect_deform_work_for_space(
+                scene,
+                mesh_pool,
+                scratch.space_ids[0],
+                &mut scratch.chunks[0],
+            );
+        }
+        _ => {
+            let space_ids = &scratch.space_ids;
+            let chunks = &mut scratch.chunks;
+            space_ids
+                .par_iter()
+                .copied()
+                .zip(chunks.par_iter_mut())
+                .for_each(|(space_id, chunk)| {
+                    collect_deform_work_for_space(scene, mesh_pool, space_id, chunk);
+                });
+        }
+    }
 
     scratch.work.clear();
     scratch.work.reserve(est);

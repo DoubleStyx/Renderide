@@ -156,9 +156,9 @@ impl PaddedPerDrawUniforms {
 
 /// Slot count above which slab writes fan out to a rayon worker pool.
 ///
-/// Each slot is a 256-byte memcpy (~50ns); 2048 slots is ~100us, the rayon dispatch
-/// break-even point.
-const PER_DRAW_SLAB_PARALLEL_MIN: usize = 2048;
+/// Each slot is a 256-byte copy. At 512 slots the slab is already 128 KiB, large enough for
+/// memory-bandwidth fan-out to pay off on typical desktop CPUs.
+const PER_DRAW_SLAB_PARALLEL_MIN: usize = 512;
 
 /// Writes `count` consecutive [`PaddedPerDrawUniforms`] into `out` (must be `count * 256` bytes).
 ///

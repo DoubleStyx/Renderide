@@ -93,8 +93,14 @@ fn process_batch(
     {
         profiling::scope!("driver::submit");
         // Serialise against texture uploads and OpenXR queue-access calls via the shared gate.
-        let _gate = gpu_queue_access_gate.lock();
-        queue.submit(command_buffers)
+        let _gate = {
+            profiling::scope!("driver::submit::queue_gate_lock");
+            gpu_queue_access_gate.lock()
+        };
+        {
+            profiling::scope!("driver::submit::queue_submit");
+            queue.submit(command_buffers)
+        }
     };
     // Bumped immediately after the submit returns and the gate is dropped so the backlog
     // plot reflects "in-flight on driver" without waiting on `present` or `xr_finalize`.

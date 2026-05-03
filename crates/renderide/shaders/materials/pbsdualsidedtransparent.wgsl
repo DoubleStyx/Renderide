@@ -52,16 +52,13 @@ struct SurfaceData {
 }
 
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
-    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
+    let tbn = pnorm::visible_side_tbn(world_n, world_t, front_facing);
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
         ts_n = nd::decode_ts_normal_with_placeholder(
             textureSample(_NormalMap, _NormalMap_sampler, uv_main).xyz,
             mat._NormalScale,
         );
-    }
-    if (!front_facing) {
-        ts_n.z = -ts_n.z;
     }
     return normalize(tbn * ts_n);
 }

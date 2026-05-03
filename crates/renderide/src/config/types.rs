@@ -18,7 +18,10 @@ mod post_processing;
 mod rendering;
 mod watchdog;
 
-pub use debug::{DebugSettings, PowerPreferenceSetting};
+pub use debug::{
+    DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
+    DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugSettings, PowerPreferenceSetting,
+};
 pub use display::DisplaySettings;
 pub use post_processing::{
     BloomCompositeMode, BloomSettings, GtaoSettings, PostProcessingSettings, TonemapMode,

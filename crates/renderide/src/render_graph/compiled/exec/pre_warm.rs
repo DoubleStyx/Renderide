@@ -26,9 +26,18 @@ impl CompiledRenderGraph {
         views: &[FrameView<'_>],
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::prepare_view_resources");
+        // Derive each view's `PreRecordViewResourceLayout` once and reuse it across the four
+        // per-view sub-phases below. Previously every phase ran its own `viewport / stereo /
+        // depth_format / helper_needs / layout` recomputation; some of them rebuilt the same
+        // `Vec<PreRecordViewResourceLayout>` from scratch every frame.
+        //
+        // `Option<...>` is per-view so a swapchain whose depth target failed to resolve this
+        // tick maps to `None` and every phase short-circuits for that index in lock-step.
+        let view_layouts: Vec<Option<crate::backend::PreRecordViewResourceLayout>> =
+            build_view_layouts(mv_ctx, views);
         Self::pre_sync_skybox_specular_environment(mv_ctx);
-        Self::pre_sync_shared_frame_resources_for_views(mv_ctx, views);
-        Self::pre_warm_per_view_resources_for_views(mv_ctx, views)?;
+        Self::pre_sync_shared_frame_resources_for_views(mv_ctx, &view_layouts);
+        Self::pre_warm_per_view_resources_for_views(mv_ctx, views, &view_layouts)?;
         Self::register_history_resources_for_views(mv_ctx, views)?;
         Self::pre_warm_pipeline_cache_for_views(mv_ctx, views);
         Ok(())
@@ -93,12 +102,7 @@ impl CompiledRenderGraph {
             compile_requests.len()
         );
 
-        // Fan pipeline misses out to the rayon pool so multiple new permutations compile in
-        // parallel instead of serially blocking the main thread. `MaterialPipelineCache`
-        // releases its mutex before `create_shader_module` / `create_render_pipeline` and
-        // elides duplicate inserts on re-lock, so concurrent callers are safe.
-        use rayon::prelude::*;
-        compile_requests.par_iter().for_each(|req| {
+        let compile_one = |req: &PipelineVariantKey| {
             profiling::scope!("graph::pre_warm_pipelines::compile");
             let pass_desc = req.pass_desc();
             let _ = reg.pipeline_for_shader_asset(
@@ -112,7 +116,17 @@ impl CompiledRenderGraph {
                     primitive_topology: req.primitive_topology,
                 },
             );
-        });
+        };
+        if compile_requests.len() == 1 {
+            compile_one(&compile_requests[0]);
+        } else {
+            // Fan pipeline misses out to the rayon pool so multiple new permutations compile in
+            // parallel instead of serially blocking the main thread. `MaterialPipelineCache`
+            // releases its mutex before `create_shader_module` / `create_render_pipeline` and
+            // elides duplicate inserts on re-lock, so concurrent callers are safe.
+            use rayon::prelude::*;
+            compile_requests.par_iter().for_each(compile_one);
+        }
         // Stamp the warmed set so the next frame's walk can skip these variants entirely. We
         // mark every requested key, even if its compile failed: a later retry would re-add it.
         reg.mark_pipeline_variants_warmed(compile_requests.iter().copied());
@@ -130,26 +144,15 @@ impl CompiledRenderGraph {
     pub(super) fn pre_warm_per_view_resources_for_views(
         mv_ctx: &mut MultiViewExecutionContext<'_, '_>,
         views: &[FrameView<'_>],
+        view_layouts: &[Option<crate::backend::PreRecordViewResourceLayout>],
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::pre_warm_per_view");
         let mut mesh_ids_needing_uv1_stream: HashSet<i32> = HashSet::new();
         let mut mesh_ids_needing_extended_streams: HashSet<i32> = HashSet::new();
-        for view in views {
+        for (view, layout_opt) in views.iter().zip(view_layouts.iter()) {
             let view_id = view.view_id();
-            let viewport = view.target.extent_px(mv_ctx.gpu);
-            let stereo = view.is_multiview_stereo_active();
-            let Ok(depth_format) = view.target.depth_format(mv_ctx.gpu) else {
+            let Some(layout) = *layout_opt else {
                 continue;
-            };
-            let helper_needs = view.world_mesh_draw_plan.helper_needs();
-            let layout = crate::backend::PreRecordViewResourceLayout {
-                width: viewport.0,
-                height: viewport.1,
-                stereo,
-                depth_format,
-                color_format: mv_ctx.backend.scene_color_format_wgpu(),
-                needs_depth_snapshot: helper_needs.depth_snapshot,
-                needs_color_snapshot: helper_needs.color_snapshot,
             };
             let _ = mv_ctx.backend.frame_resources.per_view_frame_or_create(
                 view_id,
@@ -242,32 +245,18 @@ impl CompiledRenderGraph {
     /// out of the per-view record path so rayon workers only touch per-view state during recording.
     pub(super) fn pre_sync_shared_frame_resources_for_views(
         mv_ctx: &mut MultiViewExecutionContext<'_, '_>,
-        views: &[FrameView<'_>],
+        view_layouts: &[Option<crate::backend::PreRecordViewResourceLayout>],
     ) {
         profiling::scope!("graph::pre_sync_frame_gpu");
-        let mut view_layouts = Vec::with_capacity(views.len());
-        let color_format = mv_ctx.backend.scene_color_format_wgpu();
-        for view in views {
-            let viewport = view.target.extent_px(mv_ctx.gpu);
-            let stereo = view.is_multiview_stereo_active();
-            let Ok(depth_format) = view.target.depth_format(mv_ctx.gpu) else {
-                continue;
-            };
-            let helper_needs = view.world_mesh_draw_plan.helper_needs();
-            view_layouts.push(crate::backend::PreRecordViewResourceLayout {
-                width: viewport.0,
-                height: viewport.1,
-                stereo,
-                depth_format,
-                color_format,
-                needs_depth_snapshot: helper_needs.depth_snapshot,
-                needs_color_snapshot: helper_needs.color_snapshot,
-            });
-        }
+        // Reuse the precomputed layouts from `prepare_view_resources_for_views` instead of
+        // walking views again. Skips views whose depth target failed to resolve this tick
+        // (matching the prior behaviour of dropping them silently).
+        let layouts: Vec<crate::backend::PreRecordViewResourceLayout> =
+            view_layouts.iter().filter_map(|layout| *layout).collect();
         mv_ctx.backend.frame_resources.pre_record_sync_for_views(
             mv_ctx.device,
             mv_ctx.queue_arc.as_ref(),
-            &view_layouts,
+            &layouts,
         );
     }
 
@@ -333,6 +322,34 @@ impl CompiledRenderGraph {
         }
         Ok(())
     }
+}
+
+/// Computes one [`crate::backend::PreRecordViewResourceLayout`] per view. Returns `None` for any
+/// view whose `depth_format` cannot be resolved this tick (matches the prior per-phase `continue`
+/// behaviour); both pre-warm sub-phases short-circuit on `None` so no view is half-prepared.
+fn build_view_layouts(
+    mv_ctx: &mut MultiViewExecutionContext<'_, '_>,
+    views: &[FrameView<'_>],
+) -> Vec<Option<crate::backend::PreRecordViewResourceLayout>> {
+    let color_format = mv_ctx.backend.scene_color_format_wgpu();
+    views
+        .iter()
+        .map(|view| {
+            let viewport = view.target.extent_px(mv_ctx.gpu);
+            let stereo = view.is_multiview_stereo_active();
+            let depth_format = view.target.depth_format(mv_ctx.gpu).ok()?;
+            let helper_needs = view.world_mesh_draw_plan.helper_needs();
+            Some(crate::backend::PreRecordViewResourceLayout {
+                width: viewport.0,
+                height: viewport.1,
+                stereo,
+                depth_format,
+                color_format,
+                needs_depth_snapshot: helper_needs.depth_snapshot,
+                needs_color_snapshot: helper_needs.color_snapshot,
+            })
+        })
+        .collect()
 }
 
 /// Builds the registry spec for the current view's Hi-Z pyramid texture.

@@ -98,6 +98,28 @@ fn normal_sampling_guarded_by_keyword(src: &str) -> bool {
 }
 
 #[test]
+fn text_shaders_use_one_font_atlas_sample_for_coverage() -> io::Result<()> {
+    for file_name in ["ui_textunlit.wgsl", "textunlit.wgsl", "textunit.wgsl"] {
+        let src = material_source(file_name)?;
+        assert!(
+            !src.contains("texture_rgba_base_mip(_FontAtlas"),
+            "{file_name} must not force base-mip atlas sampling for text coverage"
+        );
+        assert!(
+            !src.contains("atlas_clip"),
+            "{file_name} must route text coverage through the same atlas sample as color"
+        );
+    }
+
+    let module_src = fs::read_to_string(manifest_dir().join("shaders/modules/text_sdf.wgsl"))?;
+    assert!(
+        !module_src.contains("atlas_clip"),
+        "text_sdf.wgsl must not expose a second atlas sample for coverage"
+    );
+    Ok(())
+}
+
+#[test]
 fn file_labels_use_forward_slashes_for_cross_platform_audits() {
     assert_eq!(
         normalize_file_label(r"shaders\modules\per_draw.wgsl"),
@@ -166,6 +188,57 @@ fn shared_pbs_lighting_roots_do_not_duplicate_clustered_lighting() -> io::Result
     assert!(
         offenders.is_empty(),
         "materials importing renderide::pbs::lighting must delegate clustered PBS lighting:\n  {}",
+        offenders.join("\n  ")
+    );
+    Ok(())
+}
+
+/// PBS DualSided materials should shade backfaces as a second opaque surface, not as light leaking
+/// through the front side. The visible-side frame must be shared so the metallic/specular variants
+/// cannot drift back to tangent-Z or world-Z flips.
+#[test]
+fn pbs_dualsided_shaders_use_visible_side_tbn_for_backfaces() -> io::Result<()> {
+    let normal_src = fs::read_to_string(manifest_dir().join("shaders/modules/pbs_normal.wgsl"))?;
+    for required in [
+        "fn visible_side_tbn(",
+        "select(-1.0, 1.0, front_facing)",
+        "tbn[0] * side",
+        "tbn[1] * side",
+        "tbn[2] * side",
+    ] {
+        assert!(
+            normal_src.contains(required),
+            "pbs_normal.wgsl must define visible-side TBN helper containing `{required}`"
+        );
+    }
+
+    let mut offenders = Vec::new();
+    for file_name in [
+        "pbsdualsided.wgsl",
+        "pbsdualsidedspecular.wgsl",
+        "pbsdualsidedtransparent.wgsl",
+        "pbsdualsidedtransparentspecular.wgsl",
+    ] {
+        let src = material_source(file_name)?;
+        for required in ["@builtin(front_facing)", "pnorm::visible_side_tbn("] {
+            if !src.contains(required) {
+                offenders.push(format!("{file_name} must contain `{required}`"));
+            }
+        }
+        for forbidden in [
+            "ts_n.z = -ts_n.z",
+            "ts.z = -ts.z",
+            "sample_optional_world_normal(",
+        ] {
+            if src.contains(forbidden) {
+                offenders.push(format!("{file_name} must not contain `{forbidden}`"));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "PBS DualSided shaders must orient normals through the shared visible-side TBN:\n  {}",
         offenders.join("\n  ")
     );
     Ok(())

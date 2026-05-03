@@ -11,6 +11,7 @@ use std::sync::Arc;
 use ahash::AHasher;
 
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
+use crate::shared::ColorProfile;
 
 use super::super::layout::StemMaterialLayout;
 use super::super::texture_pools::EmbeddedTexturePools;
@@ -46,34 +47,61 @@ pub(super) fn compute_uniform_texture_state_signature(
             lookup,
         );
         entry.binding.hash(&mut h);
-        let (bias, storage_v_inverted) = lod_bias_and_v_inversion(binding, pools);
+        let (bias, storage_v_inverted, color_profile) = texture_uniform_state(binding, pools);
         bias.to_bits().hash(&mut h);
         storage_v_inverted.hash(&mut h);
+        color_profile.hash(&mut h);
     }
     h.finish()
 }
 
-fn lod_bias_and_v_inversion(
+fn texture_uniform_state(
     binding: ResolvedTextureBinding,
     pools: &EmbeddedTexturePools<'_>,
-) -> (f32, bool) {
+) -> (f32, bool, i32) {
     match binding {
         ResolvedTextureBinding::Texture2D { asset_id } => {
-            pools.texture.get(asset_id).map_or((0.0, false), |t| {
-                (t.sampler.mipmap_bias, t.storage_v_inverted)
+            pools.texture.get(asset_id).map_or((0.0, false, -1), |t| {
+                (
+                    t.sampler.mipmap_bias,
+                    t.storage_v_inverted,
+                    color_profile_signature_value(Some(t.color_profile)),
+                )
             })
         }
         ResolvedTextureBinding::Texture3D { asset_id } => pools
             .texture3d
             .get(asset_id)
-            .map_or((0.0, false), |t| (t.sampler.mipmap_bias, false)),
+            .map_or((0.0, false, -1), |t| (t.sampler.mipmap_bias, false, -1)),
         ResolvedTextureBinding::Cubemap { asset_id } => {
-            pools.cubemap.get(asset_id).map_or((0.0, false), |t| {
-                (t.sampler.mipmap_bias, t.storage_v_inverted)
+            pools.cubemap.get(asset_id).map_or((0.0, false, -1), |t| {
+                (t.sampler.mipmap_bias, t.storage_v_inverted, -1)
             })
         }
-        ResolvedTextureBinding::RenderTexture { .. } => (0.0, true),
-        ResolvedTextureBinding::VideoTexture { .. } => (0.0, false),
-        ResolvedTextureBinding::None => (0.0, false),
+        ResolvedTextureBinding::RenderTexture { .. } => (0.0, true, -1),
+        ResolvedTextureBinding::VideoTexture { .. } => (0.0, false, -1),
+        ResolvedTextureBinding::None => (0.0, false, -1),
+    }
+}
+
+fn color_profile_signature_value(profile: Option<ColorProfile>) -> i32 {
+    profile.map_or(-1, |profile| profile as i32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn texture2d_color_profile_signature_distinguishes_text_modes() {
+        let missing = color_profile_signature_value(None);
+        let linear = color_profile_signature_value(Some(ColorProfile::Linear));
+        let srgb = color_profile_signature_value(Some(ColorProfile::SRGB));
+        let srgb_alpha = color_profile_signature_value(Some(ColorProfile::SRGBAlpha));
+
+        assert_ne!(missing, linear);
+        assert_ne!(linear, srgb);
+        assert_eq!(srgb, 1);
+        assert_eq!(srgb_alpha, 2);
     }
 }

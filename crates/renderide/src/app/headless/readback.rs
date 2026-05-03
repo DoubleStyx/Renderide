@@ -110,7 +110,11 @@ fn submit_texture_to_buffer_copy(
             depth_or_array_layers: 1,
         },
     );
-    gpu.queue().submit(std::iter::once(encoder.finish()));
+    let command_buffer = {
+        profiling::scope!("CommandEncoder::finish::headless_readback");
+        encoder.finish()
+    };
+    gpu.queue().submit(std::iter::once(command_buffer));
 }
 
 fn await_buffer_map(

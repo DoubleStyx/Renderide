@@ -245,74 +245,83 @@ fn skinning_dispatch_with_uploaded_palette(dispatch: SkinningPaletteDispatch<'_>
     let Some(skin_u_size) = NonZeroU64::new(32) else {
         return;
     };
-    let skin_bg = dispatch
-        .device
-        .create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("skinning_bg"),
-            layout: &dispatch.pre.skinning_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &dispatch.scratch.bone_matrices,
-                        offset: dispatch.bone_cursor,
-                        size: Some(dispatch.bone_binding_size),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: dispatch.src_positions.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: dispatch.bone_idx.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: dispatch.bone_wt.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: dispatch.dst_pos.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: dispatch.src_n.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: dispatch.dst_n.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &dispatch.scratch.skin_dispatch,
-                        offset: dispatch.skin_dispatch_offset,
-                        size: Some(skin_u_size),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: dispatch
-                        .src_tangent
-                        .unwrap_or(&dispatch.scratch.dummy_vec4_read)
-                        .as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 9,
-                    resource: dispatch
-                        .dst_tangent
-                        .unwrap_or(&dispatch.scratch.dummy_vec4_write)
-                        .as_entire_binding(),
-                },
-            ],
-        });
+    let skin_bg = {
+        // Per-mesh bind-group create dominates the per-mesh CPU cost in `mesh_deform::dispatch`
+        // because bindings 1, 2, 3, 5, and 8 are mesh-specific buffers (positions / bone idx /
+        // bone wt / normals / tangents) that cannot share an entry across meshes. Splitting it
+        // into its own zone lets future architectural batching (single indirect dispatch with a
+        // per-mesh dispatch-arg buffer) confirm the win in profiles.
+        profiling::scope!("mesh_deform::skinning_create_bg");
+        dispatch
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("skinning_bg"),
+                layout: &dispatch.pre.skinning_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &dispatch.scratch.bone_matrices,
+                            offset: dispatch.bone_cursor,
+                            size: Some(dispatch.bone_binding_size),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: dispatch.src_positions.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: dispatch.bone_idx.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: dispatch.bone_wt.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: dispatch.dst_pos.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: dispatch.src_n.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: dispatch.dst_n.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &dispatch.scratch.skin_dispatch,
+                            offset: dispatch.skin_dispatch_offset,
+                            size: Some(skin_u_size),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: dispatch
+                            .src_tangent
+                            .unwrap_or(&dispatch.scratch.dummy_vec4_read)
+                            .as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: dispatch
+                            .dst_tangent
+                            .unwrap_or(&dispatch.scratch.dummy_vec4_write)
+                            .as_entire_binding(),
+                    },
+                ],
+            })
+    };
 
     let pass_query = dispatch
         .profiler
         .map(|p| p.begin_pass_query("skinning", dispatch.encoder));
     let timestamp_writes = crate::profiling::compute_pass_timestamp_writes(pass_query.as_ref());
     {
+        profiling::scope!("mesh_deform::skinning_dispatch_pass");
         let mut cpass = dispatch
             .encoder
             .begin_compute_pass(&wgpu::ComputePassDescriptor {

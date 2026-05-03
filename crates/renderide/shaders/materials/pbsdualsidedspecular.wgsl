@@ -54,20 +54,15 @@ struct SurfaceData {
 }
 
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
-    var ts_n = psamp::sample_optional_world_normal(
-        uvu::kw_enabled(mat._NORMALMAP),
-        _NormalMap,
-        _NormalMap_sampler,
-        uv_main,
-        0.0,
-        mat._NormalScale,
-        world_n,
-        world_t,
-    );
-    if (!front_facing) {
-        ts_n.z = -ts_n.z;
+    let tbn = pnorm::visible_side_tbn(world_n, world_t, front_facing);
+    var ts_n = vec3<f32>(0.0, 0.0, 1.0);
+    if (uvu::kw_enabled(mat._NORMALMAP)) {
+        ts_n = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(_NormalMap, _NormalMap_sampler, uv_main),
+            mat._NormalScale,
+        );
     }
-    return ts_n;
+    return normalize(tbn * ts_n);
 }
 
 fn sample_surface(
@@ -156,7 +151,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass forward_two_sided
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

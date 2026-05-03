@@ -19,9 +19,8 @@ use super::super::item::{
 
 /// Renders per chunk (static or skinned slice of one render space).
 ///
-/// 256 matches Filament's `CountSplitter<128>` break-even (count*2) for renderable processing:
-/// halving the rayon dispatch count for typical scene sizes vs the previous 128 width.
-pub(super) const WORLD_MESH_COLLECT_CHUNK_SIZE: usize = 256;
+/// 128 keeps medium render-space slices split across workers without producing excessive tiny jobs.
+pub(super) const WORLD_MESH_COLLECT_CHUNK_SIZE: usize = 128;
 
 /// Submesh index range for one material slot pairing during draw collection.
 pub(crate) struct SubmeshSlotIndices {

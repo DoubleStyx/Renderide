@@ -5,7 +5,6 @@
 
 #import renderide::globals as rg
 #import renderide::per_draw as pd
-#import renderide::alpha_clip_sample as acs
 #import renderide::mesh::vertex as mv
 #import renderide::text_sdf as tsdf
 #import renderide::uv_utils as uvu
@@ -66,7 +65,6 @@ fn vs_main(
 fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     let vtx_color = vout.vtx_color;
     let atlas_color = textureSample(_FontAtlas, _FontAtlas_sampler, vout.uv);
-    let atlas_clip = acs::texture_rgba_base_mip(_FontAtlas, _FontAtlas_sampler, vout.uv);
     let style = tsdf::distance_field_style(
         mat._TintColor,
         mat._OutlineColor,
@@ -78,7 +76,7 @@ fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     );
     let text_input = tsdf::DistanceFieldInput(0.0, vout.uv, vout.extra_data, vtx_color);
     let mode = tsdf::text_mode_clamped(mat._TextMode);
-    let c = tsdf::shade_text_sample(atlas_color, atlas_clip, style, text_input, vtx_color, mode);
+    let c = tsdf::shade_text_sample(atlas_color, style, text_input, vtx_color, mode);
 
     return rg::retain_globals_additive(c);
 }

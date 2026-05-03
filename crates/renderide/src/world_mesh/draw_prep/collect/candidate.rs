@@ -85,6 +85,12 @@ pub(super) fn evaluate_draw_candidate(
     // while opaque-queue draws feed `0.0` and bucket to `0`, leaving batch-key tiebreaking intact.
     let opaque_depth_bucket =
         crate::world_mesh::draw_prep::sort::opaque_depth_bucket(camera_distance_sq);
+    let sort_prefix = crate::world_mesh::draw_prep::pack_sort_prefix(
+        candidate.is_overlay,
+        batch_key.render_queue,
+        opaque_depth_bucket,
+        batch_key_hash,
+    );
     Some(WorldMeshDrawItem {
         space_id: candidate.space_id,
         node_id: candidate.node_id,
@@ -105,6 +111,7 @@ pub(super) fn evaluate_draw_candidate(
         batch_key,
         batch_key_hash,
         opaque_depth_bucket,
+        sort_prefix,
         rigid_world_matrix,
     })
 }

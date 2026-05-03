@@ -1,6 +1,6 @@
 //! Scene transforms overlay: per-render-space world TRS tables.
 
-use imgui::{ListClipper, TableFlags};
+use imgui::{ListClipper, TabItem, TabItemFlags, TableFlags};
 
 use crate::diagnostics::{RenderSpaceTransformsSnapshot, SceneTransformsSnapshot};
 
@@ -30,8 +30,9 @@ impl HudWindow for SceneTransformsWindow {
         let y = layout::scene_transforms_y(viewport.height as f32, SCENE_H);
         WindowSlot {
             position: [layout::MARGIN, y],
-            size_min: [SCENE_W, SCENE_H],
-            size_max: [SCENE_W, SCENE_H],
+            size: [SCENE_W, SCENE_H],
+            size_min: [360.0, 220.0],
+            size_max: [f32::INFINITY, f32::INFINITY],
         }
     }
 
@@ -47,7 +48,7 @@ impl HudWindow for SceneTransformsWindow {
         state.scene_transforms_open = value;
     }
 
-    fn body(&self, ui: &imgui::Ui, snapshot: Self::Data<'_>, _state: &mut Self::State) {
+    fn body(&self, ui: &imgui::Ui, snapshot: Self::Data<'_>, state: &mut Self::State) {
         if snapshot.spaces.is_empty() {
             ui.text("No render spaces.");
             return;
@@ -55,7 +56,16 @@ impl HudWindow for SceneTransformsWindow {
         if let Some(_bar) = ui.tab_bar("scene_transform_tabs") {
             for space in &snapshot.spaces {
                 let tab_label = format!("Space {}##tab_space_{}", space.space_id, space.space_id);
-                if let Some(_tab) = ui.tab_item(tab_label) {
+                let flags = if state.scene_transforms_space_restore_pending
+                    && state.scene_transforms_space_id == Some(space.space_id)
+                {
+                    TabItemFlags::SET_SELECTED
+                } else {
+                    TabItemFlags::empty()
+                };
+                if let Some(_tab) = TabItem::new(tab_label).flags(flags).begin(ui) {
+                    state.scene_transforms_space_id = Some(space.space_id);
+                    state.scene_transforms_space_restore_pending = false;
                     scene_transform_space_tab(ui, space);
                 }
             }

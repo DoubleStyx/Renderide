@@ -4,6 +4,7 @@ use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, MaterialPropertyValue,
 };
 use crate::materials::{ReflectedRasterLayout, ReflectedUniformField, ReflectedUniformScalarKind};
+use crate::shared::ColorProfile;
 
 use super::layout::StemEmbeddedPropertyIds;
 use super::texture_pools::EmbeddedTexturePools;
@@ -21,6 +22,14 @@ use tables::inferred_keyword_float_f32;
 const LOD_BIAS_SUFFIX: &str = "_LodBias";
 /// Suffix convention that opts a uniform field in to storage V-inversion population.
 const STORAGE_V_INVERTED_SUFFIX: &str = "_StorageVInverted";
+/// Synthetic field mirroring Unity text shader keyword mode selection.
+const TEXT_MODE_FIELD: &str = "_TextMode";
+/// Font atlas texture slot used by text materials.
+const FONT_ATLAS_TEXTURE: &str = "_FontAtlas";
+/// Renderer text mode value for MSDF glyph atlases.
+const TEXT_MODE_MSDF: f32 = 0.0;
+/// Renderer text mode value for raster glyph atlases.
+const TEXT_MODE_RASTER: f32 = 1.0;
 
 fn write_f32_at(buf: &mut [u8], field: &ReflectedUniformField, v: f32) {
     let off = field.offset as usize;
@@ -68,14 +77,14 @@ pub(crate) struct UniformPackTextureContext<'a> {
 
 /// Builds CPU bytes for the reflected material uniform block.
 ///
-/// Every value comes from one of six sources, in priority order: texture storage-orientation
+/// Every value comes from one of several sources, in priority order: texture storage-orientation
 /// flags for fields following the [`STORAGE_V_INVERTED_SUFFIX`] convention, host-sourced sampler
 /// state for fields following the [`LOD_BIAS_SUFFIX`] convention (`_<Tex>_LodBias`), the host's
-/// property store (for host-declared properties), explicit-only zero-default fields such as UI
-/// text controls, [`inferred_keyword_float_f32`] for multi-compile keyword fields (`_NORMALMAP`,
-/// `_ALPHATEST_ON`, ...) the host cannot write because FrooxEngine routes them through the
-/// `ShaderKeywords.Variant` bitmask the renderer never receives, or the scalar/vector default
-/// tables / a zero for the unobservable pre-first-batch window.
+/// property store (for host-declared properties), inferred text mode from `_FontAtlas` profile,
+/// explicit-only zero-default UI controls, [`inferred_keyword_float_f32`] for multi-compile keyword
+/// fields (`_NORMALMAP`, `_ALPHATEST_ON`, ...) the host cannot write because FrooxEngine routes
+/// them through the `ShaderKeywords.Variant` bitmask the renderer never receives, or the
+/// scalar/vector default tables / a zero for the unobservable pre-first-batch window.
 pub(crate) fn build_embedded_uniform_bytes(
     reflected: &ReflectedRasterLayout,
     ids: &StemEmbeddedPropertyIds,
@@ -111,6 +120,10 @@ pub(crate) fn build_embedded_uniform_bytes(
                 } else if let Some(MaterialPropertyValue::Float(f)) = store.get_merged(lookup, pid)
                 {
                     *f
+                } else if let Some(text_mode) =
+                    text_mode_for_field(field_name, reflected, ids, store, lookup, tex_ctx)
+                {
+                    text_mode
                 } else if let Some(default_value) = default_f32_for_field(field_name) {
                     default_value
                 } else if explicit_zero_default_f32_field(field_name) {
@@ -140,12 +153,109 @@ pub(crate) fn build_embedded_uniform_bytes(
     Some(buf)
 }
 
-/// Returns whether a scalar field must use only its canonical host property and otherwise default to zero.
+/// Returns whether a scalar field must use only special-case handling and otherwise default to zero.
 fn explicit_zero_default_f32_field(field_name: &str) -> bool {
     matches!(
         shader_writer_unescaped_field_name(field_name),
         "_TextMode" | "_RectClip" | "_OVERLAY"
     )
+}
+
+/// Infers `_TextMode` from the bound `_FontAtlas` profile when the host did not write it.
+fn text_mode_for_field(
+    field_name: &str,
+    reflected: &ReflectedRasterLayout,
+    ids: &StemEmbeddedPropertyIds,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> Option<f32> {
+    if shader_writer_unescaped_field_name(field_name) != TEXT_MODE_FIELD {
+        return None;
+    }
+    Some(inferred_text_mode_from_font_atlas(
+        reflected, ids, store, lookup, tex_ctx,
+    ))
+}
+
+/// Infers the text mode from `_FontAtlas`, falling back to MSDF until the atlas is resident.
+fn inferred_text_mode_from_font_atlas(
+    reflected: &ReflectedRasterLayout,
+    ids: &StemEmbeddedPropertyIds,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> f32 {
+    let Some(resolved) = resolved_texture_binding_for_texture_name(
+        FONT_ATLAS_TEXTURE,
+        reflected,
+        ids,
+        store,
+        lookup,
+        tex_ctx.primary_texture_2d,
+    ) else {
+        return TEXT_MODE_MSDF;
+    };
+    let texture2d_color_profile = match resolved {
+        ResolvedTextureBinding::Texture2D { asset_id } => tex_ctx
+            .pools
+            .texture
+            .get(asset_id)
+            .map(|texture| texture.color_profile),
+        _ => None,
+    };
+    binding_text_mode_from_metadata(resolved, texture2d_color_profile).unwrap_or(TEXT_MODE_MSDF)
+}
+
+/// Converts resolved texture metadata into the renderer text shader mode.
+fn binding_text_mode_from_metadata(
+    resolved: ResolvedTextureBinding,
+    texture2d_color_profile: Option<ColorProfile>,
+) -> Option<f32> {
+    match resolved {
+        ResolvedTextureBinding::Texture2D { .. } => {
+            texture2d_color_profile.map(text_mode_from_font_atlas_profile)
+        }
+        ResolvedTextureBinding::None
+        | ResolvedTextureBinding::Texture3D { .. }
+        | ResolvedTextureBinding::Cubemap { .. }
+        | ResolvedTextureBinding::RenderTexture { .. }
+        | ResolvedTextureBinding::VideoTexture { .. } => None,
+    }
+}
+
+/// Maps font atlas color profile to Unity text shader keyword mode.
+fn text_mode_from_font_atlas_profile(profile: ColorProfile) -> f32 {
+    match profile {
+        ColorProfile::Linear => TEXT_MODE_MSDF,
+        ColorProfile::SRGB | ColorProfile::SRGBAlpha => TEXT_MODE_RASTER,
+    }
+}
+
+/// Resolves the texture binding for a reflected group-1 texture name.
+fn resolved_texture_binding_for_texture_name(
+    texture_name: &str,
+    reflected: &ReflectedRasterLayout,
+    ids: &StemEmbeddedPropertyIds,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    primary_texture_2d: i32,
+) -> Option<ResolvedTextureBinding> {
+    let (&binding, host_name) = reflected
+        .material_group1_names
+        .iter()
+        .find(|(_, name)| name.as_str() == texture_name)?;
+    let tex_pids = texture_property_ids_for_binding(ids, binding);
+    if tex_pids.is_empty() {
+        return Some(ResolvedTextureBinding::None);
+    }
+    Some(resolved_texture_binding_for_host(
+        host_name.as_str(),
+        tex_pids,
+        primary_texture_2d,
+        store,
+        lookup,
+    ))
 }
 
 /// Resolves the texture binding associated with a field following a texture-name suffix convention.
@@ -160,21 +270,14 @@ fn resolved_texture_binding_for_field_suffix(
 ) -> Option<ResolvedTextureBinding> {
     let unescaped = shader_writer_unescaped_field_name(field_name);
     let tex_name = unescaped.strip_suffix(suffix)?;
-    let (&binding, host_name) = reflected
-        .material_group1_names
-        .iter()
-        .find(|(_, name)| name.as_str() == tex_name)?;
-    let tex_pids = texture_property_ids_for_binding(ids, binding);
-    if tex_pids.is_empty() {
-        return Some(ResolvedTextureBinding::None);
-    }
-    Some(resolved_texture_binding_for_host(
-        host_name.as_str(),
-        tex_pids,
-        tex_ctx.primary_texture_2d,
+    resolved_texture_binding_for_texture_name(
+        tex_name,
+        reflected,
+        ids,
         store,
         lookup,
-    ))
+        tex_ctx.primary_texture_2d,
+    )
 }
 
 /// Returns whether a resolved texture binding is a host-uploaded texture with V-inverted storage.
