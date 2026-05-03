@@ -305,9 +305,14 @@ impl AppDriver {
         let Some(target) = self.target.as_ref() else {
             return;
         };
-        if let Some(err) = target.gpu().take_driver_error() {
+        let gpu = target.gpu();
+        if let Some(err) = gpu.take_driver_error() {
             logger::error!("{err}");
         }
+        // Cheap (two atomic loads); plotted alongside `event_loop_idle_ms` so a regression
+        // in driver-thread pipelining is visible in the same Tracy trace as a regression in
+        // frame timing.
+        crate::profiling::plot_driver_submit_backlog(gpu.driver_submit_backlog());
     }
 
     fn end_frame_timing_and_hud_capture(&mut self) {

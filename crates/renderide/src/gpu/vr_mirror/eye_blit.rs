@@ -5,6 +5,7 @@
 //! through the renderer's frame-tracked path.
 
 use crate::gpu::GpuContext;
+use crate::gpu::driver_thread::XrFinalizeWork;
 
 use super::pipelines::{eye_bind_group_layout, eye_pipeline, linear_sampler};
 use super::resources::VrMirrorBlitResources;
@@ -18,6 +19,31 @@ impl VrMirrorBlitResources {
         gpu: &mut GpuContext,
         eye_extent: (u32, u32),
         source_layer_view: &wgpu::TextureView,
+    ) {
+        self.submit_eye_to_staging_inner(gpu, eye_extent, source_layer_view, None);
+    }
+
+    /// Same as [`Self::submit_eye_to_staging`] but attaches an OpenXR finalize payload to
+    /// the submitted batch so the driver thread can release the swapchain image and call
+    /// `xrEndFrame` immediately after `Queue::submit` returns. Used by the VR HMD path so
+    /// the main thread does not have to wait on the driver to drain the ring before the
+    /// OpenXR finalize.
+    pub fn submit_eye_to_staging_with_finalize(
+        &mut self,
+        gpu: &mut GpuContext,
+        eye_extent: (u32, u32),
+        source_layer_view: &wgpu::TextureView,
+        xr_finalize: XrFinalizeWork,
+    ) {
+        self.submit_eye_to_staging_inner(gpu, eye_extent, source_layer_view, Some(xr_finalize));
+    }
+
+    fn submit_eye_to_staging_inner(
+        &mut self,
+        gpu: &mut GpuContext,
+        eye_extent: (u32, u32),
+        source_layer_view: &wgpu::TextureView,
+        xr_finalize: Option<XrFinalizeWork>,
     ) {
         // Clone the device Arc so `device` doesn't hold a borrow on `gpu`; the GPU profiler
         // wrappers below need `gpu.gpu_profiler_mut()` which is `&mut self`.
@@ -82,7 +108,14 @@ impl VrMirrorBlitResources {
             prof.resolve_queries(&mut encoder);
         }
 
-        gpu.submit_tracked_frame_commands(encoder.finish());
+        match xr_finalize {
+            Some(finalize) => {
+                gpu.submit_frame_batch_with_xr_finalize(vec![encoder.finish()], finalize);
+            }
+            None => {
+                gpu.submit_tracked_frame_commands(encoder.finish());
+            }
+        }
         self.mark_staging_valid();
     }
 }

@@ -137,6 +137,24 @@ pub fn plot_event_loop_wait_ms(ms: f64) {
     let _ = ms;
 }
 
+/// Records the driver-thread submit backlog (`submits_pushed - submits_done`) as a Tracy
+/// plot.
+///
+/// Call once per tick from the frame epilogue. A steady-state value of `0` or `1` is
+/// healthy (one frame in flight on the driver matches the ring's nominal pipelining
+/// depth); a sustained value at the ring capacity means the producer is back-pressured
+/// by the driver and CPU/GPU pacing is bound by submit throughput. Useful next to
+/// [`plot_event_loop_idle_ms`] when diagnosing why the main thread is sleeping.
+///
+/// Expands to nothing when the `tracy` feature is off.
+#[inline]
+pub fn plot_driver_submit_backlog(count: u64) {
+    #[cfg(feature = "tracy")]
+    tracy_client::plot!("driver_submit_backlog", count as f64);
+    #[cfg(not(feature = "tracy"))]
+    let _ = count;
+}
+
 /// Records, in milliseconds, the wall-clock gap between the end of the previous
 /// app-driver redraw tick and the start of the current one.
 ///

@@ -10,10 +10,16 @@
 mod frame_loop;
 mod lifecycle;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use openxr as xr;
+use parking_lot::Mutex;
 
 pub use lifecycle::TrackedSessionState;
 use lifecycle::is_visible_tracked;
+
+use crate::gpu::driver_thread::{XrFinalizeErrorSlot, XrFinalizeReceiver};
 
 /// Owns OpenXR session objects (constructed in [`super::super::bootstrap::init_wgpu_openxr`]).
 pub struct XrSessionState {
@@ -32,19 +38,32 @@ pub struct XrSessionState {
     /// Latest [`xr::SessionState`] observed via `SessionStateChanged`.
     pub(super) last_session_state: TrackedSessionState,
     /// `true` between a successful `frame_stream.begin()` and the matching `frame_stream.end()`;
-    /// prevents orphaned frames on error paths.
-    pub(super) frame_open: bool,
+    /// prevents orphaned frames on error paths. Stored as an atomic so the driver thread
+    /// can clear it inside the deferred `xrEndFrame` finalize.
+    pub(super) frame_open: Arc<AtomicBool>,
     /// Set when the runtime requests teardown (`EXITING` / `LOSS_PENDING` / instance loss);
     /// read by the app loop to trigger `event_loop.exit()`.
     pub(super) exit_requested: bool,
     /// Blocks until the compositor signals frame timing.
     pub(super) frame_wait: xr::FrameWaiter,
-    /// Submits composition layers to the compositor.
-    pub(super) frame_stream: xr::FrameStream<xr::Vulkan>,
-    /// Stage reference space for view and controller pose location.
-    pub(super) stage: xr::Space,
+    /// Submits composition layers to the compositor. Behind a [`Mutex`] so the driver
+    /// thread can call `frame_stream.end()` for the deferred finalize while the main
+    /// thread keeps `frame_stream.begin()` on the next tick.
+    pub(super) frame_stream: Arc<Mutex<xr::FrameStream<xr::Vulkan>>>,
+    /// Stage reference space for view and controller pose location. Wrapped in [`Arc`]
+    /// so the projection-layer finalize on the driver thread can hold a reference
+    /// independent of the main-thread session borrow.
+    pub(super) stage: Arc<xr::Space>,
     /// Scratch buffer for `xrPollEvent`.
     pub(super) event_storage: xr::EventDataBuffer,
+    /// Receiver for the in-flight finalize signal queued by the previous tick. The next
+    /// `wait_frame` consumes this before calling `xrBeginFrame` so begin/end ordering is
+    /// preserved across the driver-thread handoff.
+    pub(super) pending_finalize: Option<XrFinalizeReceiver>,
+    /// First-error-wins slot the driver thread writes to on a finalize failure; the next
+    /// `wait_frame` drains this and returns the recorded error so the existing recovery
+    /// path runs one tick later than it would have on the main thread.
+    pub(super) finalize_error_slot: XrFinalizeErrorSlot,
 }
 
 /// Bundle of values needed to construct [`XrSessionState`] - `new` takes this instead of seven
@@ -77,12 +96,14 @@ impl XrSessionState {
             session: desc.session,
             session_running: false,
             last_session_state: TrackedSessionState::Unknown,
-            frame_open: false,
+            frame_open: Arc::new(AtomicBool::new(false)),
             exit_requested: false,
             frame_wait: desc.frame_wait,
-            frame_stream: desc.frame_stream,
-            stage: desc.stage,
+            frame_stream: Arc::new(Mutex::new(desc.frame_stream)),
+            stage: Arc::new(desc.stage),
             event_storage: xr::EventDataBuffer::new(),
+            pending_finalize: None,
+            finalize_error_slot: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -112,9 +133,10 @@ impl XrSessionState {
     }
 
     /// Whether a frame scope is currently open (`xrBeginFrame` called without matching
-    /// `xrEndFrame`).
+    /// `xrEndFrame`). Reads through the shared atomic so the value reflects the deferred
+    /// finalize on the driver thread as well as `wait_frame` on the main thread.
     pub fn frame_open(&self) -> bool {
-        self.frame_open
+        self.frame_open.load(Ordering::Acquire)
     }
 
     /// OpenXR instance handle (swapchain creation, view enumeration).
@@ -129,6 +151,76 @@ impl XrSessionState {
 
     /// Stage reference space used for [`Self::locate_views`] and controller [`xr::Space`] location.
     pub fn stage_space(&self) -> &xr::Space {
-        &self.stage
+        self.stage.as_ref()
+    }
+
+    /// Drains and returns any pending finalize error captured by the driver thread.
+    ///
+    /// Called from `wait_frame` after waiting on [`Self::pending_finalize`]; if a value
+    /// is returned the existing recovery path runs one tick later than it would if the
+    /// finalize had stayed on the main thread.
+    pub(super) fn take_finalize_error(&self) -> Option<xr::sys::Result> {
+        self.finalize_error_slot.lock().take()
+    }
+
+    /// Builds a stereo-projection finalize payload referencing the just-rendered swapchain
+    /// image. The returned receiver should be stored on [`Self::set_pending_finalize`] so
+    /// the next `wait_frame` waits on it.
+    pub(crate) fn build_projection_finalize(
+        &self,
+        swapchain: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
+        predicted_display_time: xr::Time,
+        views: [xr::View; 2],
+        rect: xr::Rect2Di,
+    ) -> (
+        crate::gpu::driver_thread::XrFinalizeWork,
+        XrFinalizeReceiver,
+    ) {
+        let (signal, rx) = crate::gpu::driver_thread::XrFinalizeSignal::new();
+        let payload = crate::gpu::driver_thread::XrProjectionFinalize {
+            swapchain,
+            frame_stream: Arc::clone(&self.frame_stream),
+            stage: Arc::clone(&self.stage),
+            env_blend_mode: self.environment_blend_mode,
+            predicted_display_time,
+            views,
+            rect,
+            frame_open: Arc::clone(&self.frame_open),
+        };
+        let work = crate::gpu::driver_thread::XrFinalizeWork {
+            kind: crate::gpu::driver_thread::XrFinalizeKind::Projection(Box::new(payload)),
+            signal,
+            error_slot: Arc::clone(&self.finalize_error_slot),
+        };
+        (work, rx)
+    }
+
+    /// Builds an empty-end-frame finalize payload, used for recovery paths and ticks where
+    /// the HMD render was skipped after `xrBeginFrame` had already opened the frame.
+    pub(crate) fn build_empty_finalize(
+        &self,
+        predicted_display_time: xr::Time,
+    ) -> (
+        crate::gpu::driver_thread::XrFinalizeWork,
+        XrFinalizeReceiver,
+    ) {
+        let (signal, rx) = crate::gpu::driver_thread::XrFinalizeSignal::new();
+        let work = crate::gpu::driver_thread::XrFinalizeWork {
+            kind: crate::gpu::driver_thread::XrFinalizeKind::Empty {
+                frame_stream: Arc::clone(&self.frame_stream),
+                env_blend_mode: self.environment_blend_mode,
+                predicted_display_time,
+                frame_open: Arc::clone(&self.frame_open),
+            },
+            signal,
+            error_slot: Arc::clone(&self.finalize_error_slot),
+        };
+        (work, rx)
+    }
+
+    /// Stores the receiver matching a finalize payload pushed to the driver thread.
+    /// The next `wait_frame` consumes this before issuing `xrBeginFrame`.
+    pub(crate) fn set_pending_finalize(&mut self, rx: XrFinalizeReceiver) {
+        self.pending_finalize = Some(rx);
     }
 }

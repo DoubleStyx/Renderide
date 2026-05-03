@@ -29,7 +29,7 @@ mod host_camera_sync;
 mod input;
 mod openxr_loader_paths;
 pub mod output_device;
-mod session;
+pub(crate) mod session;
 mod swapchain;
 
 pub use bootstrap::{XrWgpuHandles, init_wgpu_openxr};

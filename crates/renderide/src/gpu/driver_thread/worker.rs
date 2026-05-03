@@ -10,7 +10,9 @@ use std::sync::Arc;
 use super::error::DriverErrorState;
 use super::ring::BoundedRing;
 use super::submit_batch::{DriverMessage, SubmitBatch};
+use super::submit_counters::SubmitCounters;
 use super::surface_counters::SurfaceCounters;
+use super::xr_finalize::run_xr_finalize;
 use crate::gpu::GpuQueueAccessGate;
 use crate::gpu::frame_cpu_gpu_timing::{
     FrameTimingTrack, make_gpu_done_callback, record_frame_bracket_gpu_ms, record_real_submit,
@@ -42,6 +44,7 @@ pub(super) fn driver_loop(
     gpu_queue_access_gate: GpuQueueAccessGate,
     errors: Arc<DriverErrorState>,
     surface_counters: Arc<SurfaceCounters>,
+    submit_counters: Arc<SubmitCounters>,
 ) {
     profiling::register_thread!("renderer-driver");
 
@@ -57,6 +60,7 @@ pub(super) fn driver_loop(
                 &gpu_queue_access_gate,
                 &errors,
                 &surface_counters,
+                &submit_counters,
                 *batch,
             );
         }
@@ -71,6 +75,7 @@ fn process_batch(
     gpu_queue_access_gate: &GpuQueueAccessGate,
     errors: &DriverErrorState,
     surface_counters: &SurfaceCounters,
+    submit_counters: &SubmitCounters,
     batch: SubmitBatch,
 ) {
     profiling::scope!("driver::frame");
@@ -81,6 +86,7 @@ fn process_batch(
         frame_timing,
         frame_bracket_readback,
         wait,
+        xr_finalize,
         frame_seq,
     } = batch;
 
@@ -90,6 +96,9 @@ fn process_batch(
         let _gate = gpu_queue_access_gate.lock();
         queue.submit(command_buffers)
     };
+    // Bumped immediately after the submit returns and the gate is dropped so the backlog
+    // plot reflects "in-flight on driver" without waiting on `present` or `xr_finalize`.
+    submit_counters.note_submit_done();
 
     if let Some(track) = frame_timing {
         // Capture the post-submit instant on this thread for the `submit_latency_ms`
@@ -101,6 +110,14 @@ fn process_batch(
 
     for cb in on_submitted_work_done {
         queue.on_submitted_work_done(cb);
+    }
+
+    if let Some(finalize) = xr_finalize {
+        // Deferred OpenXR `xrReleaseSwapchainImage` + `xrEndFrame` for the VR HMD path.
+        // Running it here keeps the main thread out of `flush_driver` so frame N+1's CPU
+        // work overlaps with frame N's compositor handoff. The next tick's `wait_frame`
+        // gates on the matching finalize signal before issuing `xrBeginFrame`.
+        run_xr_finalize(gpu_queue_access_gate, finalize);
     }
 
     if let Some(tex) = surface_texture {

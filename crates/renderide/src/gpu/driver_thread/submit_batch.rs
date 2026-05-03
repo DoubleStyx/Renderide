@@ -10,6 +10,7 @@
 
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
+use super::xr_finalize::XrFinalizeWork;
 use crate::gpu::frame_bracket::FrameBracketReadback;
 use crate::gpu::frame_cpu_gpu_timing::FrameTimingTrack;
 
@@ -51,6 +52,12 @@ pub struct SubmitBatch {
     /// Use this when the main thread must block until the frame is known to be on the
     /// wire -- e.g. headless tests that read back the presented image synchronously.
     pub wait: Option<SubmitWait>,
+    /// Optional OpenXR finalize work to run on the driver thread immediately after this
+    /// batch's `Queue::submit` returns. When attached the driver releases the swapchain
+    /// image and calls `xrEndFrame` under the queue access gate, then signals the
+    /// finalize oneshot so the next tick's `wait_frame` can proceed. Used by the VR HMD
+    /// path to keep the main thread out of `xrReleaseSwapchainImage`/`xrEndFrame`.
+    pub xr_finalize: Option<XrFinalizeWork>,
     /// Monotonic frame counter, surfaced in [`super::DriverError`] and Tracy zone labels.
     pub frame_seq: u64,
 }

@@ -13,7 +13,7 @@
 //! `views[1]` the right eye. [`headset_center_pose_from_stereo_views`] averages both for the
 //! center-eye pose sent over IPC via [`openxr_pose_to_host_tracking`].
 
-pub(in crate::xr) mod end_frame_watchdog;
+pub(crate) mod end_frame_watchdog;
 mod state;
 mod view_math;
 
