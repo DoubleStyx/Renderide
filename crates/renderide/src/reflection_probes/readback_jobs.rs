@@ -132,7 +132,7 @@ mod tests {
     /// Parsing must work even when the slice does not start at an f32-aligned address.
     #[test]
     fn parse_sh2_bytes_handles_unaligned_input() {
-        let mut padded = vec![0u8; 1 + 9 * 16];
+        let mut padded = [0u8; 1 + 9 * 16];
         for row in 0..9 {
             for channel in 0..3 {
                 let value = row as f32 - channel as f32 * 0.5;

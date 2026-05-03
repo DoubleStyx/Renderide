@@ -652,7 +652,9 @@ mod tests {
     fn rgb24_parallel_path_matches_serial_reference() {
         let w = 64usize;
         let h = 64usize;
-        let raw: Vec<u8> = (0..(w * h * 3)).map(|i| (i as u8).wrapping_mul(7)).collect();
+        let raw: Vec<u8> = (0..(w * h * 3))
+            .map(|i| (i as u8).wrapping_mul(7))
+            .collect();
         let out = decode_mip_to_rgba8(TextureFormat::RGB24, w as u32, h as u32, false, &raw)
             .expect("decode");
         let expected = ref_rgb24(w, h, &raw);
@@ -663,7 +665,9 @@ mod tests {
     fn argb32_parallel_path_matches_serial_reference() {
         let w = 64usize;
         let h = 64usize;
-        let raw: Vec<u8> = (0..(w * h * 4)).map(|i| (i as u8).wrapping_mul(11)).collect();
+        let raw: Vec<u8> = (0..(w * h * 4))
+            .map(|i| (i as u8).wrapping_mul(11))
+            .collect();
         let out = decode_mip_to_rgba8(TextureFormat::ARGB32, w as u32, h as u32, false, &raw)
             .expect("decode");
         let expected = ref_argb32(&raw);
@@ -674,7 +678,9 @@ mod tests {
     fn bgra32_parallel_path_matches_serial_reference() {
         let w = 64usize;
         let h = 64usize;
-        let raw: Vec<u8> = (0..(w * h * 4)).map(|i| (i as u8).wrapping_mul(13)).collect();
+        let raw: Vec<u8> = (0..(w * h * 4))
+            .map(|i| (i as u8).wrapping_mul(13))
+            .collect();
         let out = decode_mip_to_rgba8(TextureFormat::BGRA32, w as u32, h as u32, false, &raw)
             .expect("decode");
         let expected = ref_bgra32(&raw);
@@ -721,9 +727,8 @@ mod tests {
         for _ in 0..(w * h / (w_small * h_small)) {
             raw.extend_from_slice(&raw_small);
         }
-        let big_out =
-            decode_mip_to_rgba8(TextureFormat::RGB565, w as u32, h as u32, false, &raw)
-                .expect("decode big");
+        let big_out = decode_mip_to_rgba8(TextureFormat::RGB565, w as u32, h as u32, false, &raw)
+            .expect("decode big");
         let mut expected = Vec::with_capacity(big_out.len());
         for _ in 0..(w * h / (w_small * h_small)) {
             expected.extend_from_slice(&small_out);

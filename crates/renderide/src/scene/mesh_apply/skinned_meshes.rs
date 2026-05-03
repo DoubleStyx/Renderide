@@ -241,10 +241,7 @@ fn apply_skinned_bone_index_buffers_extracted(
 
 /// Applies a single contiguous slice of blendshape updates onto one renderer's weight vector.
 #[inline]
-fn apply_blendshape_update_slice(
-    weights: &mut Vec<f32>,
-    updates: &[BlendshapeUpdate],
-) {
+fn apply_blendshape_update_slice(weights: &mut Vec<f32>, updates: &[BlendshapeUpdate]) {
     for upd in updates {
         let bi = upd.blendshape_index.max(0) as usize;
         if bi >= MAX_BLENDSHAPE_INDEX {
@@ -505,9 +502,7 @@ mod blendshape_apply_tests {
         space
     }
 
-    fn one_update_per_renderer(
-        n: usize,
-    ) -> (Vec<BlendshapeUpdateBatch>, Vec<BlendshapeUpdate>) {
+    fn one_update_per_renderer(n: usize) -> (Vec<BlendshapeUpdateBatch>, Vec<BlendshapeUpdate>) {
         let mut batches = Vec::with_capacity(n + 1);
         let mut updates = Vec::with_capacity(n);
         for i in 0..n {
@@ -552,19 +547,20 @@ mod blendshape_apply_tests {
         let (batches, updates) = one_update_per_renderer(n);
 
         let mut serial_space = space_with_n_renderers(n);
-        // Force serial path by truncating to one fewer accepted batch than the threshold.
-        // Actually we need both paths; instead, we run the parallel path here and compare to a
-        // hand-rolled serial reference computed from the same batches/updates.
+        // The parallel path triggers because `n` is above the threshold; we compare its output
+        // to the expected per-renderer weight that the same batch stream describes.
         let extracted = ExtractedSkinnedMeshRenderablesUpdate {
-            blendshape_update_batches: batches.clone(),
-            blendshape_updates: updates.clone(),
+            blendshape_update_batches: batches,
+            blendshape_updates: updates,
             ..Default::default()
         };
         apply_skinned_blendshape_weight_batches_extracted(&mut serial_space, &extracted);
 
         for i in 0..n {
             assert_eq!(
-                serial_space.skinned_mesh_renderers[i].base.blend_shape_weights,
+                serial_space.skinned_mesh_renderers[i]
+                    .base
+                    .blend_shape_weights,
                 vec![i as f32 * 0.25]
             );
         }
@@ -607,10 +603,12 @@ mod blendshape_apply_tests {
             space.skinned_mesh_renderers[1].base.blend_shape_weights,
             vec![0.5]
         );
-        assert!(space.skinned_mesh_renderers[0]
-            .base
-            .blend_shape_weights
-            .is_empty());
+        assert!(
+            space.skinned_mesh_renderers[0]
+                .base
+                .blend_shape_weights
+                .is_empty()
+        );
     }
 
     #[test]

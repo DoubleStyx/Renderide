@@ -177,7 +177,10 @@ pub fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u
                 slab.copy_from_slice(bytemuck::bytes_of(slot));
             });
     } else {
-        for (slab, slot) in dst.chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE).zip(slots.iter()) {
+        for (slab, slot) in dst
+            .chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE)
+            .zip(slots.iter())
+        {
             slab.copy_from_slice(bytemuck::bytes_of(slot));
         }
     }

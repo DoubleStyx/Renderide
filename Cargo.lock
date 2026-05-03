@@ -3085,6 +3085,7 @@ dependencies = [
  "unity-asset",
  "wgpu",
  "wgpu-profiler",
+ "wide",
  "windows-sys 0.61.2",
  "winit",
 ]

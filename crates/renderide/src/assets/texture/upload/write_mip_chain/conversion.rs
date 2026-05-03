@@ -164,13 +164,7 @@ mod tests {
     use super::*;
 
     /// Reference scalar implementation matching the pre-SIMD code.
-    fn reference_downsample(
-        src: &[u8],
-        sw: usize,
-        sh: usize,
-        dw: usize,
-        dh: usize,
-    ) -> Vec<u8> {
+    fn reference_downsample(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
         let mut out = vec![0u8; dw * dh * 4];
         for dy in 0..dh {
             let y0 = dy * sh / dh;
@@ -206,7 +200,9 @@ mod tests {
         let sh = 8usize;
         let dw = 4usize;
         let dh = 4usize;
-        let src: Vec<u8> = (0..(sw * sh * 4)).map(|i| (i as u8).wrapping_mul(7)).collect();
+        let src: Vec<u8> = (0..(sw * sh * 4))
+            .map(|i| (i as u8).wrapping_mul(7))
+            .collect();
         let actual = downsample_rgba8_box(&src, sw as u32, sh as u32, dw as u32, dh as u32)
             .expect("downsample");
         let expected = reference_downsample(&src, sw, sh, dw, dh);
@@ -220,7 +216,9 @@ mod tests {
         let sh = 4usize;
         let dw = 4usize;
         let dh = 3usize;
-        let src: Vec<u8> = (0..(sw * sh * 4)).map(|i| (i as u8).wrapping_mul(11)).collect();
+        let src: Vec<u8> = (0..(sw * sh * 4))
+            .map(|i| (i as u8).wrapping_mul(11))
+            .collect();
         let actual = downsample_rgba8_box(&src, sw as u32, sh as u32, dw as u32, dh as u32)
             .expect("downsample");
         let expected = reference_downsample(&src, sw, sh, dw, dh);
@@ -231,9 +229,8 @@ mod tests {
     fn downsample_solid_color_preserves_color() {
         let sw = 16usize;
         let sh = 16usize;
-        let src = vec![200u8, 100, 50, 255].repeat(sw * sh);
-        let actual =
-            downsample_rgba8_box(&src, sw as u32, sh as u32, 8, 8).expect("downsample");
+        let src = [200u8, 100, 50, 255].repeat(sw * sh);
+        let actual = downsample_rgba8_box(&src, sw as u32, sh as u32, 8, 8).expect("downsample");
         for px in actual.chunks_exact(4) {
             assert_eq!(px, [200, 100, 50, 255]);
         }

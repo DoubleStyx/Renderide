@@ -158,10 +158,10 @@ fn classify_nodes_by_depth(node_parents: &[i32], n: usize) -> (Vec<Vec<usize>>, 
     // Repeatedly resolve depths in a sweep order: a node knows its depth once its parent does.
     // For a typical mostly-sorted host order this converges in 1-2 sweeps; cap at n iterations to
     // exit deterministically when a cycle leaves a residue of unresolved nodes.
-    for i in 0..n {
+    for (i, slot) in depth.iter_mut().enumerate().take(n) {
         let p = node_parents.get(i).copied().unwrap_or(-1);
         if p < 0 || (p as usize) >= n || p == i as i32 {
-            depth[i] = 0;
+            *slot = 0;
         }
     }
     let mut changed = true;
@@ -226,9 +226,15 @@ impl WorldTransformCache {
 
         // Materialize every local matrix once. Read-only after this point so the parallel level
         // sweep below can capture &[Mat4] instead of fighting borrow rules around lazy materialise.
-        for i in 0..n {
-            self.local_matrices[i] = render_transform_to_matrix(&nodes[i]);
-            self.local_dirty[i] = false;
+        for ((local, dirty), node) in self
+            .local_matrices
+            .iter_mut()
+            .zip(self.local_dirty.iter_mut())
+            .zip(nodes.iter())
+            .take(n)
+        {
+            *local = render_transform_to_matrix(node);
+            *dirty = false;
         }
 
         let (levels, cycle_nodes) = classify_nodes_by_depth(node_parents, n);
@@ -253,7 +259,12 @@ impl WorldTransformCache {
             let local_matrices = &self.local_matrices;
             let writes: Vec<(Mat4, bool)> = roots
                 .par_iter()
-                .map(|&i| (local_matrices[i], render_transform_has_degenerate_scale(&nodes[i])))
+                .map(|&i| {
+                    (
+                        local_matrices[i],
+                        render_transform_has_degenerate_scale(&nodes[i]),
+                    )
+                })
                 .collect();
             for (slot, &i) in writes.iter().zip(roots.iter()) {
                 self.world_matrices[i] = slot.0;

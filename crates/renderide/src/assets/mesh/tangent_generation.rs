@@ -87,8 +87,7 @@ fn host_tangent_stream_bytes(
         let base = vertex * stride + offset;
         for component in 0..dimensions {
             let src = base + component * 4;
-            dst[component * 4..component * 4 + 4]
-                .copy_from_slice(&vertex_data[src..src + 4]);
+            dst[component * 4..component * 4 + 4].copy_from_slice(&vertex_data[src..src + 4]);
         }
     };
     if vertex_count >= VERTEX_STREAM_PARALLEL_MIN {

@@ -95,14 +95,12 @@ mod tests {
     fn unpack_dense_single_mip_matches_input() {
         let w = 4u32;
         let h = 3u32;
-        let row_pitch =
-            wgpu::util::align_to(w * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) as usize;
+        let row_pitch = wgpu::util::align_to(w * 4, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) as usize;
         let mut staging = vec![0u8; row_pitch * h as usize];
         let dense: Vec<f32> = (0..(w * h)).map(|i| i as f32 + 0.25).collect();
         for row in 0..h as usize {
             let row_bytes = pack_le_f32s(&dense[row * w as usize..(row + 1) * w as usize]);
-            staging[row * row_pitch..row * row_pitch + row_bytes.len()]
-                .copy_from_slice(&row_bytes);
+            staging[row * row_pitch..row * row_pitch + row_bytes.len()].copy_from_slice(&row_bytes);
         }
         let out = unpack_linear_rows_to_mips(w, h, 1, &staging).expect("unpack");
         assert_eq!(out, dense);

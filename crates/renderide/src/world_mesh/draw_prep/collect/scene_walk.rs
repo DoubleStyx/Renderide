@@ -29,14 +29,18 @@ pub(crate) struct SubmeshSlotIndices {
     pub index_count: u32,
 }
 
-/// Layer and skin deform flags that affect CPU cull and [`WorldMeshDrawItem`] fields.
-pub(crate) struct OverlayDeformCullFlags {
+/// Layer and skin deform flags that affect CPU cull and [`WorldMeshDrawItem`] fields, paired with
+/// the cached per-renderer CPU cull outcome shared across the renderer's material slots.
+struct OverlayDeformCullFlags<'a> {
     /// Overlay layer uses alternate cull behavior.
-    pub is_overlay: bool,
+    is_overlay: bool,
     /// Skinned mesh with world-space deform from the skin cache.
-    pub world_space_deformed: bool,
+    world_space_deformed: bool,
     /// Mesh has active blendshape weights and uses cache-backed positions.
-    pub blendshape_deformed: bool,
+    blendshape_deformed: bool,
+    /// Cached cull outcome for this renderer; `None` when the cull was skipped (skinned or no
+    /// culling pass active).
+    cached_cull: Option<&'a CachedCull>,
 }
 
 /// One static or skinned mesh renderer with its resolved [`crate::assets::mesh::GpuMesh`] and submesh index ranges.
@@ -192,25 +196,7 @@ fn push_draws_for_renderer(
         .mesh
         .supports_active_blendshape_deform(&draw.renderer.blend_shape_weights);
 
-    let cached_cull = if !draw.skinned
-        && let Some(culling) = ctx.culling
-    {
-        let target = MeshCullTarget {
-            scene: ctx.scene,
-            space_id: draw.space_id,
-            mesh: draw.mesh,
-            skinned: draw.skinned,
-            skinned_renderer: draw.skinned_renderer,
-            node_id: draw.renderer.node_id,
-        };
-        match mesh_draw_passes_cpu_cull(&target, is_overlay, culling, ctx.render_context) {
-            Ok(rigid_world_matrix) => Some(CachedCull::Accepted(rigid_world_matrix)),
-            Err(CpuCullFailure::Frustum) => Some(CachedCull::RejectedFrustum),
-            Err(CpuCullFailure::HiZ) => Some(CachedCull::RejectedHiZ),
-        }
-    } else {
-        None
-    };
+    let cached_cull = compute_cached_cull(ctx, &draw, is_overlay);
 
     for (slot_index, slot) in slots.iter().enumerate() {
         let Some((first_index, index_count)) =
@@ -232,10 +218,38 @@ fn push_draws_for_renderer(
                 is_overlay,
                 world_space_deformed,
                 blendshape_deformed,
+                cached_cull: cached_cull.as_ref(),
             },
             cache,
-            cached_cull.as_ref(),
         );
+    }
+}
+
+/// Runs the per-renderer CPU cull once and packages the outcome for downstream slot expansion.
+///
+/// Skinned renderers and frames without a culling pass return `None`; otherwise the result is
+/// translated into [`CachedCull`] so [`push_one_slot_draw`] never reruns the same test.
+fn compute_cached_cull(
+    ctx: &DrawCollectionContext<'_>,
+    draw: &StaticMeshDrawSource<'_>,
+    is_overlay: bool,
+) -> Option<CachedCull> {
+    if draw.skinned {
+        return None;
+    }
+    let culling = ctx.culling?;
+    let target = MeshCullTarget {
+        scene: ctx.scene,
+        space_id: draw.space_id,
+        mesh: draw.mesh,
+        skinned: draw.skinned,
+        skinned_renderer: draw.skinned_renderer,
+        node_id: draw.renderer.node_id,
+    };
+    match mesh_draw_passes_cpu_cull(&target, is_overlay, culling, ctx.render_context) {
+        Ok(rigid_world_matrix) => Some(CachedCull::Accepted(rigid_world_matrix)),
+        Err(CpuCullFailure::Frustum) => Some(CachedCull::RejectedFrustum),
+        Err(CpuCullFailure::HiZ) => Some(CachedCull::RejectedHiZ),
     }
 }
 
@@ -246,9 +260,8 @@ fn push_one_slot_draw(
     draw: &StaticMeshDrawSource<'_>,
     slot: &MeshMaterialSlot,
     indices: SubmeshSlotIndices,
-    flags: OverlayDeformCullFlags,
+    flags: OverlayDeformCullFlags<'_>,
     cache: &FrameMaterialBatchCache,
-    cached_cull: Option<&CachedCull>,
 ) {
     let SubmeshSlotIndices {
         slot_index,
@@ -259,6 +272,7 @@ fn push_one_slot_draw(
         is_overlay,
         world_space_deformed,
         blendshape_deformed,
+        cached_cull,
     } = flags;
     let material_asset_id = ctx
         .scene
