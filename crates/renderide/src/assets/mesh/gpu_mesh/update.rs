@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use glam::Mat4;
 
+use crate::materials::RasterPrimitiveTopology;
 use crate::shared::{MeshUploadData, MeshUploadHintFlag};
 
 use super::super::gpu_mesh_hints::{
@@ -286,21 +287,16 @@ impl GpuMesh {
         let vc_usize = data.vertex_count.max(0) as usize;
         let vertex_stride_us = vertex_stride as usize;
 
-        let use_blendshapes =
-            data.upload_hint.flags.blendshapes() && !data.blendshape_buffers.is_empty();
-        let needs_bone_buffers = data.bone_count > 0 || (use_blendshapes && data.vertex_count > 0);
-        let synthetic_bones = data.bone_count == 0 && use_blendshapes && data.vertex_count > 0;
+        let deform = classify_in_place_deform_streams(data);
+        let flags = decode_in_place_write_flags(hint);
 
-        let full = !mesh_upload_hint_any_selective(hint);
-        let write_vertex = full || mesh_upload_hint_touches_vertex_streams(hint);
-        let write_ib = full || hint.geometry();
-        let write_bone_weights = full || hint.bone_weights();
-        let write_bind_poses = full || hint.bind_poses();
-        let write_blend = full || hint.blendshapes();
-
-        let want_submeshes = validated_submesh_ranges(&data.submeshes, self.index_count);
-        let want_submesh_topologies =
-            validated_submesh_topologies(&data.submeshes, self.index_count);
+        let (want_submeshes, want_submesh_topologies) = {
+            profiling::scope!("asset::mesh_write_in_place::validate_submeshes");
+            (
+                validated_submesh_ranges(&data.submeshes, self.index_count),
+                validated_submesh_topologies(&data.submeshes, self.index_count),
+            )
+        };
 
         let write_context = MeshInPlaceWriteContext {
             mesh: self,
@@ -312,74 +308,172 @@ impl GpuMesh {
             vertex_stride: vertex_stride_us,
         };
 
-        write_in_place_vertex_and_derived_streams(&write_context, write_vertex, write_ib);
-        write_in_place_index_buffer(self, queue, raw, layout, write_ib);
-        write_in_place_bone_buffers(
-            &write_context,
-            BoneBufferWriteHints {
-                needs_bone_buffers,
-                synthetic_bones,
-                full,
-                write_bone_weights,
-                write_bind_poses,
-            },
-        )?;
-        write_in_place_blendshape_buffer(self, queue, raw, layout, data, write_blend)?;
-
-        let mut skinning = self.skinning_bind_matrices.clone();
-        if data.bone_count > 0 && (full || write_bind_poses) {
-            let bp_raw =
-                &raw[layout.bind_poses_start..layout.bind_poses_start + layout.bind_poses_length];
-            if let Some(arr) = extract_bind_poses(bp_raw, data.bone_count as usize) {
-                skinning = arr.iter().map(Mat4::from_cols_array_2d).collect();
-            }
-        } else if synthetic_bones && (full || write_bone_weights || write_bind_poses) {
-            let (bind_poses_arr, _, _) = synthetic_bone_data_for_blendshape_only(data.vertex_count);
-            skinning = bind_poses_arr
-                .iter()
-                .map(Mat4::from_cols_array_2d)
-                .collect();
+        {
+            profiling::scope!("asset::mesh_write_in_place::write_vertex_and_derived");
+            write_in_place_vertex_and_derived_streams(
+                &write_context,
+                flags.write_vertex,
+                flags.write_index,
+            );
+        }
+        {
+            profiling::scope!("asset::mesh_write_in_place::write_index");
+            write_in_place_index_buffer(self, queue, raw, layout, flags.write_index);
+        }
+        {
+            profiling::scope!("asset::mesh_write_in_place::write_bones");
+            write_in_place_bone_buffers(
+                &write_context,
+                BoneBufferWriteHints {
+                    needs_bone_buffers: deform.needs_bone_buffers,
+                    synthetic_bones: deform.synthetic_bones,
+                    full: flags.full,
+                    write_bone_weights: flags.write_bone_weights,
+                    write_bind_poses: flags.write_bind_poses,
+                },
+            )?;
+        }
+        {
+            profiling::scope!("asset::mesh_write_in_place::write_blendshapes");
+            write_in_place_blendshape_buffer(self, queue, raw, layout, data, flags.write_blend)?;
         }
 
-        let extended_vertex_stream_source =
-            updated_extended_vertex_stream_source(self, raw, data, layout, write_vertex, write_ib);
+        let skinning = updated_in_place_skinning_matrices(self, raw, data, layout, flags, deform);
 
-        Some(Self {
-            asset_id: self.asset_id,
-            vertex_buffer: Arc::clone(&self.vertex_buffer),
-            index_buffer: Arc::clone(&self.index_buffer),
-            index_format: self.index_format,
-            index_count: self.index_count,
-            submeshes: want_submeshes,
-            submesh_topologies: want_submesh_topologies,
-            vertex_count: self.vertex_count,
-            vertex_stride: self.vertex_stride,
-            bounds: data.bounds,
-            bone_counts_buffer: self.bone_counts_buffer.clone(),
-            bone_indices_buffer: self.bone_indices_buffer.clone(),
-            bone_weights_vec4_buffer: self.bone_weights_vec4_buffer.clone(),
-            bind_poses_buffer: self.bind_poses_buffer.clone(),
-            blendshape_sparse_buffer: self.blendshape_sparse_buffer.clone(),
-            blendshape_shape_descriptor_buffer: self.blendshape_shape_descriptor_buffer.clone(),
-            blendshape_frame_ranges: self.blendshape_frame_ranges.clone(),
-            blendshape_shape_frame_spans: self.blendshape_shape_frame_spans.clone(),
-            num_blendshapes: self.num_blendshapes,
-            blendshape_has_position_deltas: self.blendshape_has_position_deltas,
-            blendshape_has_normal_deltas: self.blendshape_has_normal_deltas,
-            blendshape_has_tangent_deltas: self.blendshape_has_tangent_deltas,
-            positions_buffer: self.positions_buffer.clone(),
-            normals_buffer: self.normals_buffer.clone(),
-            uv0_buffer: self.uv0_buffer.clone(),
-            color_buffer: self.color_buffer.clone(),
-            tangent_buffer: self.tangent_buffer.clone(),
-            uv1_buffer: self.uv1_buffer.clone(),
-            uv2_buffer: self.uv2_buffer.clone(),
-            uv3_buffer: self.uv3_buffer.clone(),
+        let extended_vertex_stream_source = {
+            profiling::scope!("asset::mesh_write_in_place::update_extended_stream_source");
+            updated_extended_vertex_stream_source(
+                self,
+                raw,
+                data,
+                layout,
+                flags.write_vertex,
+                flags.write_index,
+            )
+        };
+
+        Some(rebuild_mesh_after_in_place_write(
+            self,
+            data,
+            want_submeshes,
+            want_submesh_topologies,
+            skinning,
             extended_vertex_stream_source,
-            has_skeleton: self.has_skeleton,
-            skinning_bind_matrices: skinning,
-            resident_bytes: self.resident_bytes,
-        })
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InPlaceDeformStreams {
+    needs_bone_buffers: bool,
+    synthetic_bones: bool,
+}
+
+#[derive(Clone, Copy)]
+struct InPlaceWriteFlags {
+    full: bool,
+    write_vertex: bool,
+    write_index: bool,
+    write_bone_weights: bool,
+    write_bind_poses: bool,
+    write_blend: bool,
+}
+
+fn classify_in_place_deform_streams(data: &MeshUploadData) -> InPlaceDeformStreams {
+    profiling::scope!("asset::mesh_write_in_place::classify_deform_streams");
+    let use_blendshapes =
+        data.upload_hint.flags.blendshapes() && !data.blendshape_buffers.is_empty();
+    InPlaceDeformStreams {
+        needs_bone_buffers: data.bone_count > 0 || (use_blendshapes && data.vertex_count > 0),
+        synthetic_bones: data.bone_count == 0 && use_blendshapes && data.vertex_count > 0,
+    }
+}
+
+fn decode_in_place_write_flags(hint: MeshUploadHintFlag) -> InPlaceWriteFlags {
+    profiling::scope!("asset::mesh_write_in_place::decode_hints");
+    let full = !mesh_upload_hint_any_selective(hint);
+    InPlaceWriteFlags {
+        full,
+        write_vertex: full || mesh_upload_hint_touches_vertex_streams(hint),
+        write_index: full || hint.geometry(),
+        write_bone_weights: full || hint.bone_weights(),
+        write_bind_poses: full || hint.bind_poses(),
+        write_blend: full || hint.blendshapes(),
+    }
+}
+
+fn updated_in_place_skinning_matrices(
+    mesh: &GpuMesh,
+    raw: &[u8],
+    data: &MeshUploadData,
+    layout: &MeshBufferLayout,
+    flags: InPlaceWriteFlags,
+    deform: InPlaceDeformStreams,
+) -> Vec<Mat4> {
+    profiling::scope!("asset::mesh_write_in_place::update_skinning_matrices");
+    let mut skinning = mesh.skinning_bind_matrices.clone();
+    if data.bone_count > 0 && (flags.full || flags.write_bind_poses) {
+        let bp_raw =
+            &raw[layout.bind_poses_start..layout.bind_poses_start + layout.bind_poses_length];
+        if let Some(arr) = extract_bind_poses(bp_raw, data.bone_count as usize) {
+            skinning = arr.iter().map(Mat4::from_cols_array_2d).collect();
+        }
+    } else if deform.synthetic_bones
+        && (flags.full || flags.write_bone_weights || flags.write_bind_poses)
+    {
+        let (bind_poses_arr, _, _) = synthetic_bone_data_for_blendshape_only(data.vertex_count);
+        skinning = bind_poses_arr
+            .iter()
+            .map(Mat4::from_cols_array_2d)
+            .collect();
+    }
+    skinning
+}
+
+fn rebuild_mesh_after_in_place_write(
+    mesh: &GpuMesh,
+    data: &MeshUploadData,
+    submeshes: Vec<(u32, u32)>,
+    submesh_topologies: Vec<RasterPrimitiveTopology>,
+    skinning: Vec<Mat4>,
+    extended_vertex_stream_source: Option<ExtendedVertexStreamSource>,
+) -> GpuMesh {
+    profiling::scope!("asset::mesh_write_in_place::rebuild_metadata");
+    GpuMesh {
+        asset_id: mesh.asset_id,
+        vertex_buffer: Arc::clone(&mesh.vertex_buffer),
+        index_buffer: Arc::clone(&mesh.index_buffer),
+        index_format: mesh.index_format,
+        index_count: mesh.index_count,
+        submeshes,
+        submesh_topologies,
+        vertex_count: mesh.vertex_count,
+        vertex_stride: mesh.vertex_stride,
+        bounds: data.bounds,
+        bone_counts_buffer: mesh.bone_counts_buffer.clone(),
+        bone_indices_buffer: mesh.bone_indices_buffer.clone(),
+        bone_weights_vec4_buffer: mesh.bone_weights_vec4_buffer.clone(),
+        bind_poses_buffer: mesh.bind_poses_buffer.clone(),
+        blendshape_sparse_buffer: mesh.blendshape_sparse_buffer.clone(),
+        blendshape_shape_descriptor_buffer: mesh.blendshape_shape_descriptor_buffer.clone(),
+        blendshape_frame_ranges: mesh.blendshape_frame_ranges.clone(),
+        blendshape_shape_frame_spans: mesh.blendshape_shape_frame_spans.clone(),
+        num_blendshapes: mesh.num_blendshapes,
+        blendshape_has_position_deltas: mesh.blendshape_has_position_deltas,
+        blendshape_has_normal_deltas: mesh.blendshape_has_normal_deltas,
+        blendshape_has_tangent_deltas: mesh.blendshape_has_tangent_deltas,
+        positions_buffer: mesh.positions_buffer.clone(),
+        normals_buffer: mesh.normals_buffer.clone(),
+        uv0_buffer: mesh.uv0_buffer.clone(),
+        color_buffer: mesh.color_buffer.clone(),
+        tangent_buffer: mesh.tangent_buffer.clone(),
+        uv1_buffer: mesh.uv1_buffer.clone(),
+        uv2_buffer: mesh.uv2_buffer.clone(),
+        uv3_buffer: mesh.uv3_buffer.clone(),
+        extended_vertex_stream_source,
+        has_skeleton: mesh.has_skeleton,
+        skinning_bind_matrices: skinning,
+        resident_bytes: mesh.resident_bytes,
     }
 }
 

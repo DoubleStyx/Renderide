@@ -327,8 +327,12 @@ fn submit_projection_job(
 ) {
     profiling::scope!("reflection_probe_sh2::submit_projection_job");
     let tx = submit_done_tx.clone();
+    let command_buffer = {
+        profiling::scope!("CommandEncoder::finish::reflection_probe_sh2");
+        encoder.finish()
+    };
     gpu.submit_frame_batch_with_callbacks(
-        vec![encoder.finish()],
+        vec![command_buffer],
         None,
         None,
         vec![Box::new(move || {

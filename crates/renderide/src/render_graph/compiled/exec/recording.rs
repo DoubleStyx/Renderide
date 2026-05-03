@@ -125,8 +125,12 @@ impl CompiledRenderGraph {
             prof.end_query(&mut encoder, query);
         }
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
+        let command_buffer = {
+            profiling::scope!("CommandEncoder::finish::graph_per_view");
+            encoder.finish()
+        };
         Ok(PerViewEncodeOutput {
-            command_buffer: encoder.finish(),
+            command_buffer,
             hud_outputs,
         })
     }
@@ -233,84 +237,118 @@ impl CompiledRenderGraph {
             return Ok(None);
         }
         let first = views.first().ok_or(GraphExecuteError::NoViewsInBatch)?;
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render-graph-frame-global"),
-        });
+        let mut encoder = {
+            profiling::scope!("graph::frame_global::create_encoder");
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render-graph-frame-global"),
+            })
+        };
         let gpu_query = gpu
             .gpu_profiler_mut()
             .map(|p| p.begin_query("graph::frame_global", &mut encoder));
         let pass_profiler = gpu.take_gpu_profiler();
 
         let record_result = (|| -> Result<(), GraphExecuteError> {
-            let resolved = Self::resolve_view_from_target(
-                first.view_id(),
-                &first.target,
-                gpu,
-                backbuffer_view_holder.as_ref(),
-            )?;
-            let resolved_resources = self.resolve_frame_global_transients(
-                &resolved,
-                transient_by_key,
-                device,
-                backend,
-                gpu_limits,
-            )?;
-            self.resolve_imported_textures(
-                &resolved,
-                backend.history_registry(),
-                resolved_resources,
-            )?;
-            self.resolve_imported_buffers(
-                backend.frame_resources(),
-                backend.history_registry(),
-                &resolved,
-                resolved_resources,
-            )?;
+            let resolved = {
+                profiling::scope!("graph::frame_global::resolve_target");
+                Self::resolve_view_from_target(
+                    first.view_id(),
+                    &first.target,
+                    gpu,
+                    backbuffer_view_holder.as_ref(),
+                )
+            }?;
+            let resolved_resources = {
+                profiling::scope!("graph::frame_global::resolve_transients");
+                self.resolve_frame_global_transients(
+                    &resolved,
+                    transient_by_key,
+                    device,
+                    backend,
+                    gpu_limits,
+                )
+            }?;
+            {
+                profiling::scope!("graph::frame_global::resolve_imported_resources");
+                self.resolve_imported_textures(
+                    &resolved,
+                    backend.history_registry(),
+                    resolved_resources,
+                )?;
+                self.resolve_imported_buffers(
+                    backend.frame_resources(),
+                    backend.history_registry(),
+                    &resolved,
+                    resolved_resources,
+                )?;
+            }
             let graph_resources: &GraphResolvedResources = &*resolved_resources;
 
-            let mut frame_params = helpers::frame_render_params_from_resolved(
-                scene,
-                backend,
-                &resolved,
-                first.host_camera,
-                first.draw_filter.clone(),
-                first.clear,
-            );
+            let mut frame_params = {
+                profiling::scope!("graph::frame_global::build_frame_params");
+                helpers::frame_render_params_from_resolved(
+                    scene,
+                    backend,
+                    &resolved,
+                    first.host_camera,
+                    first.draw_filter.clone(),
+                    first.clear,
+                )
+            };
             // Frame-global blackboard (one per tick). MSAA views are per-view, not frame-global,
             // so no MSAA seed here. Frame-global passes (e.g. mesh deform) don't need MSAA views.
-            let mut frame_blackboard = Blackboard::new();
+            let mut frame_blackboard = {
+                profiling::scope!("graph::frame_global::build_blackboard");
+                Blackboard::new()
+            };
 
             // Iterate the cached frame-global `pass_idx` slice from `FrameSchedule` to avoid
             // rebuilding a scratch `Vec<usize>` every frame.
-            for &pass_idx in self.schedule.frame_global_pass_indices() {
-                self.execute_pass_node(
-                    pass_idx,
-                    FrameUploadScope::frame_global(pass_idx),
-                    &resolved,
-                    graph_resources,
-                    &mut frame_params,
-                    &mut frame_blackboard,
-                    &mut encoder,
-                    device,
-                    gpu_limits,
-                    queue_arc,
-                    upload_batch,
-                    pass_profiler.as_ref(),
-                )?;
+            {
+                profiling::scope!("graph::frame_global::pass_loop");
+                for &pass_idx in self.schedule.frame_global_pass_indices() {
+                    self.execute_pass_node(
+                        pass_idx,
+                        FrameUploadScope::frame_global(pass_idx),
+                        &resolved,
+                        graph_resources,
+                        &mut frame_params,
+                        &mut frame_blackboard,
+                        &mut encoder,
+                        device,
+                        gpu_limits,
+                        queue_arc,
+                        upload_batch,
+                        pass_profiler.as_ref(),
+                    )?;
+                }
             }
             Ok(())
         })();
 
         gpu.restore_gpu_profiler(pass_profiler);
         record_result?;
+        // Return the encoded command buffer WITHOUT submitting; the caller handles single submit.
+        let command_buffer = Self::finish_frame_global_encoder(gpu, encoder, gpu_query);
+        Ok(Some(command_buffer))
+    }
+
+    fn finish_frame_global_encoder(
+        gpu: &mut crate::gpu::GpuContext,
+        mut encoder: wgpu::CommandEncoder,
+        gpu_query: Option<crate::profiling::PhaseQuery>,
+    ) -> wgpu::CommandBuffer {
         if let Some(query) = gpu_query
             && let Some(prof) = gpu.gpu_profiler_mut()
         {
+            profiling::scope!("graph::frame_global::profiler_resolve");
             prof.end_query(&mut encoder, query);
             prof.resolve_queries(&mut encoder);
         }
-        // Return the encoded command buffer WITHOUT submitting; the caller handles single submit.
-        Ok(Some(encoder.finish()))
+        {
+            profiling::scope!("CommandEncoder::finish::graph_frame_global");
+            encoder.finish()
+        }
     }
 
     /// Resolves (or reuses) transient textures and buffers for the frame-global view layout.
@@ -440,20 +478,26 @@ impl CompiledRenderGraph {
             PassKind::Compute => {
                 profiling::scope!("graph::record_compute");
                 // encoder is moved into ComputePassCtx; pass uses ctx.encoder.
-                let mut ctx = ComputePassCtx {
-                    device,
-                    gpu_limits,
-                    queue: queue_arc,
-                    encoder,
-                    depth_view: Some(resolved.depth_view),
-                    pass_frame: frame_params,
-                    upload_batch,
-                    graph_resources,
-                    blackboard,
-                    profiler,
+                let mut ctx = {
+                    profiling::scope!("graph::record_compute::build_context");
+                    ComputePassCtx {
+                        device,
+                        gpu_limits,
+                        queue: queue_arc,
+                        encoder,
+                        depth_view: Some(resolved.depth_view),
+                        pass_frame: frame_params,
+                        upload_batch,
+                        graph_resources,
+                        blackboard,
+                        profiler,
+                    }
                 };
-                pass.record_compute(&mut ctx)
-                    .map_err(GraphExecuteError::Pass)?;
+                {
+                    profiling::scope!("graph::record_compute::pass_record");
+                    pass.record_compute(&mut ctx)
+                        .map_err(GraphExecuteError::Pass)?;
+                }
             }
             PassKind::Copy => {
                 profiling::scope!("graph::record_copy");

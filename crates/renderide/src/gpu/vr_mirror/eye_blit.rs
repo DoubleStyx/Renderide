@@ -108,12 +108,16 @@ impl VrMirrorBlitResources {
             prof.resolve_queries(&mut encoder);
         }
 
+        let command_buffer = {
+            profiling::scope!("CommandEncoder::finish::vr_mirror_eye");
+            encoder.finish()
+        };
         match xr_finalize {
             Some(finalize) => {
-                gpu.submit_frame_batch_with_xr_finalize(vec![encoder.finish()], finalize);
+                gpu.submit_frame_batch_with_xr_finalize(vec![command_buffer], finalize);
             }
             None => {
-                gpu.submit_tracked_frame_commands(encoder.finish());
+                gpu.submit_tracked_frame_commands(command_buffer);
             }
         }
         self.mark_staging_valid();

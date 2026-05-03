@@ -153,11 +153,14 @@ impl FramePreparedRenderables {
         self.draws.clear();
         self.run_starts.clear();
 
-        self.active_space_ids.extend(
-            scene
-                .render_space_ids()
-                .filter(|id| scene.space(*id).is_some_and(|s| s.is_active)),
-        );
+        {
+            profiling::scope!("mesh::prepared_renderables::collect_active_spaces");
+            self.active_space_ids.extend(
+                scene
+                    .render_space_ids()
+                    .filter(|id| scene.space(*id).is_some_and(|s| s.is_active)),
+            );
+        }
 
         if self.active_space_ids.is_empty() {
             return;
@@ -165,8 +168,11 @@ impl FramePreparedRenderables {
 
         if self.active_space_ids.len() == 1 {
             let space_id = self.active_space_ids[0];
-            self.draws.reserve(estimated_draw_count(scene, space_id));
-            expand_space_into(&mut self.draws, scene, mesh_pool, render_context, space_id);
+            {
+                profiling::scope!("mesh::prepared_renderables::single_space_expand");
+                self.draws.reserve(estimated_draw_count(scene, space_id));
+                expand_space_into(&mut self.draws, scene, mesh_pool, render_context, space_id);
+            }
             populate_run_starts(&self.draws, &mut self.run_starts);
             return;
         }
@@ -176,25 +182,34 @@ impl FramePreparedRenderables {
         // fresh inner `Vec` per worker (`let mut local = Vec::new();`). Capacities persist across
         // frames; only the contents get cleared and refilled.
         let mut space_scratch = std::mem::take(&mut self.space_scratch);
-        space_scratch.resize_with(self.active_space_ids.len(), Vec::new);
+        {
+            profiling::scope!("mesh::prepared_renderables::prepare_space_scratch");
+            space_scratch.resize_with(self.active_space_ids.len(), Vec::new);
+        }
         let active_space_ids = &self.active_space_ids;
 
-        space_scratch
-            .par_iter_mut()
-            .zip(active_space_ids.par_iter())
-            .for_each(|(out, &space_id)| {
-                out.clear();
-                let estimate = estimated_draw_count(scene, space_id);
-                if estimate > out.capacity() {
-                    out.reserve(estimate - out.capacity());
-                }
-                expand_space_into(out, scene, mesh_pool, render_context, space_id);
-            });
+        {
+            profiling::scope!("mesh::prepared_renderables::parallel_expand");
+            space_scratch
+                .par_iter_mut()
+                .zip(active_space_ids.par_iter())
+                .for_each(|(out, &space_id)| {
+                    out.clear();
+                    let estimate = estimated_draw_count(scene, space_id);
+                    if estimate > out.capacity() {
+                        out.reserve(estimate - out.capacity());
+                    }
+                    expand_space_into(out, scene, mesh_pool, render_context, space_id);
+                });
+        }
 
-        let total: usize = space_scratch.iter().map(Vec::len).sum();
-        self.draws.reserve(total);
-        for buf in &mut space_scratch {
-            self.draws.append(buf);
+        {
+            profiling::scope!("mesh::prepared_renderables::merge_space_scratch");
+            let total: usize = space_scratch.iter().map(Vec::len).sum();
+            self.draws.reserve(total);
+            for buf in &mut space_scratch {
+                self.draws.append(buf);
+            }
         }
         self.space_scratch = space_scratch;
         populate_run_starts(&self.draws, &mut self.run_starts);
@@ -308,6 +323,7 @@ struct RenderableExpansion<'a> {
 /// the parallel expansion so the multi-space worker output can be merged with `Vec::append` without
 /// per-space offset adjustment.
 fn populate_run_starts(draws: &[FramePreparedDraw], run_starts: &mut Vec<u32>) {
+    profiling::scope!("mesh::prepared_renderables::populate_run_starts");
     run_starts.clear();
     if draws.is_empty() {
         return;

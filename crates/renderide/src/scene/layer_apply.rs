@@ -146,6 +146,7 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
     // node-parent hierarchy have mutated since it was last populated. Either signal forces a
     // full repopulate.
     if layer_index_changed || space.hierarchy_dirty {
+        profiling::scope!("scene::apply::layer_resolve::invalidate_cache");
         space.resolved_layer_cache.clear();
         space.hierarchy_dirty = false;
     }
@@ -199,6 +200,7 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
     // Phase 2 (parallel above the threshold): walk renderers and consume the cache. Reads are
     // safe to share across rayon workers because `hashbrown::HashMap` is `Sync` for `&` access.
     if total >= LAYER_RESOLVE_PARALLEL_MIN {
+        profiling::scope!("scene::apply::layer_resolve::apply_cached_parallel");
         use rayon::prelude::*;
         space.static_mesh_renderers.par_iter_mut().for_each(|r| {
             apply_cached_layer(resolved_cache, &fallback_log, &mut r.layer, r.node_id);
@@ -212,6 +214,7 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
             );
         });
     } else {
+        profiling::scope!("scene::apply::layer_resolve::apply_cached_serial");
         for renderer in &mut space.static_mesh_renderers {
             apply_cached_layer(
                 resolved_cache,
@@ -230,8 +233,11 @@ pub(crate) fn resolve_mesh_layers_from_assignments(space: &mut RenderSpaceState)
         }
     }
 
-    for node_id in fallback_log.into_inner() {
-        record_layer_fallback(node_id);
+    {
+        profiling::scope!("scene::apply::layer_resolve::fallback_log");
+        for node_id in fallback_log.into_inner() {
+            record_layer_fallback(node_id);
+        }
     }
 }
 

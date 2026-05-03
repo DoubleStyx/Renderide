@@ -426,7 +426,10 @@ fn record_upload_command_buffer(
     for (write, plan) in writes.iter().zip(plans.iter()) {
         record_upload_write(&mut encoder, queue, write, plan, payload_bytes, staging);
     }
-    encoder.finish()
+    {
+        crate::profiling::scope!("CommandEncoder::finish::frame_upload");
+        encoder.finish()
+    }
 }
 
 /// Records one staged copy or fallback queue write.

@@ -144,44 +144,65 @@ pub fn collect_and_sort_draws_with_parallelism(
 ) -> WorldMeshDrawCollection {
     profiling::scope!("mesh::collect_and_sort");
     let owned_space_ids;
-    let space_ids: &[RenderSpaceId] = if let Some(prepared) = ctx.prepared {
-        prepared.active_space_ids()
-    } else {
-        owned_space_ids = ctx.scene.render_space_ids().collect::<Vec<_>>();
-        &owned_space_ids
+    let space_ids: &[RenderSpaceId] = {
+        profiling::scope!("mesh::collect_and_sort::resolve_space_ids");
+        if let Some(prepared) = ctx.prepared {
+            prepared.active_space_ids()
+        } else {
+            owned_space_ids = ctx.scene.render_space_ids().collect::<Vec<_>>();
+            &owned_space_ids
+        }
     };
-    let cap_hint = estimate_active_renderable_count(space_ids, ctx);
+    let cap_hint = {
+        profiling::scope!("mesh::collect_and_sort::estimate_capacity");
+        estimate_active_renderable_count(space_ids, ctx)
+    };
 
     let owned_cache;
-    let cache: &FrameMaterialBatchCache = if let Some(shared) = ctx.material_cache {
-        shared
-    } else {
-        let mut local = FrameMaterialBatchCache::new();
-        local.refresh_for_frame(
-            ctx.scene,
-            ctx.material_dict,
-            ctx.material_router,
-            ctx.pipeline_property_ids,
-            ctx.shader_perm,
-        );
-        owned_cache = local;
-        &owned_cache
+    let cache: &FrameMaterialBatchCache = {
+        profiling::scope!("mesh::collect_and_sort::resolve_material_cache");
+        if let Some(shared) = ctx.material_cache {
+            shared
+        } else {
+            let mut local = FrameMaterialBatchCache::new();
+            local.refresh_for_frame(
+                ctx.scene,
+                ctx.material_dict,
+                ctx.material_router,
+                ctx.pipeline_property_ids,
+                ctx.shader_perm,
+            );
+            owned_cache = local;
+            &owned_cache
+        }
     };
-    let filter_masks = build_per_space_filter_masks(space_ids, ctx);
+    let filter_masks = {
+        profiling::scope!("mesh::collect_and_sort::build_filter_masks");
+        build_per_space_filter_masks(space_ids, ctx)
+    };
 
-    let per_chunk = collect_world_mesh_chunks(ctx, parallelism, cache, &filter_masks, space_ids);
+    let per_chunk = {
+        profiling::scope!("mesh::collect_and_sort::collect_chunks");
+        collect_world_mesh_chunks(ctx, parallelism, cache, &filter_masks, space_ids)
+    };
 
     let mut out = Vec::with_capacity(cap_hint);
     let mut cull_stats = (0usize, 0usize, 0usize);
-    for (items, cs) in per_chunk {
-        cull_stats.0 += cs.0;
-        cull_stats.1 += cs.1;
-        cull_stats.2 += cs.2;
-        out.extend(items);
+    {
+        profiling::scope!("mesh::collect_and_sort::merge_chunks");
+        for (items, cs) in per_chunk {
+            cull_stats.0 += cs.0;
+            cull_stats.1 += cs.1;
+            cull_stats.2 += cs.2;
+            out.extend(items);
+        }
     }
 
-    for (i, item) in out.iter_mut().enumerate() {
-        item.collect_order = i;
+    {
+        profiling::scope!("mesh::collect_and_sort::assign_collect_order");
+        for (i, item) in out.iter_mut().enumerate() {
+            item.collect_order = i;
+        }
     }
 
     {
@@ -223,29 +244,47 @@ fn collect_world_mesh_chunks(
         // per-renderer CPU cull and material-batch lookup happens at most once per renderer per
         // view (the prior `par_chunks(PREPARED_CHUNK_SIZE)` path duplicated that work whenever a
         // chunk seam fell inside a renderer run).
-        let run_chunks = prepared.run_aligned_chunks(PREPARED_CHUNK_SIZE);
+        let run_chunks = {
+            profiling::scope!("mesh::collect_prepared::run_aligned_chunks");
+            prepared.run_aligned_chunks(PREPARED_CHUNK_SIZE)
+        };
         match parallelism {
-            WorldMeshDrawCollectParallelism::Full => run_chunks
-                .par_iter()
-                .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
-                .collect(),
-            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => run_chunks
-                .iter()
-                .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
-                .collect(),
+            WorldMeshDrawCollectParallelism::Full => {
+                profiling::scope!("mesh::collect_prepared::parallel_chunks");
+                run_chunks
+                    .par_iter()
+                    .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
+                    .collect()
+            }
+            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => {
+                profiling::scope!("mesh::collect_prepared::serial_chunks");
+                run_chunks
+                    .iter()
+                    .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
+                    .collect()
+            }
         }
     } else {
-        let chunks = build_chunk_specs(space_ids, ctx);
+        let chunks = {
+            profiling::scope!("mesh::collect::build_chunk_specs");
+            build_chunk_specs(space_ids, ctx)
+        };
         profiling::scope!("mesh::collect");
         match parallelism {
-            WorldMeshDrawCollectParallelism::Full => chunks
-                .par_iter()
-                .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
-                .collect(),
-            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => chunks
-                .iter()
-                .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
-                .collect(),
+            WorldMeshDrawCollectParallelism::Full => {
+                profiling::scope!("mesh::collect::parallel_chunks");
+                chunks
+                    .par_iter()
+                    .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
+                    .collect()
+            }
+            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => {
+                profiling::scope!("mesh::collect::serial_chunks");
+                chunks
+                    .iter()
+                    .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
+                    .collect()
+            }
         }
     }
 }

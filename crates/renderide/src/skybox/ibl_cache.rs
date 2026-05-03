@@ -531,8 +531,12 @@ impl SkyboxIblCache {
             },
         );
         self.pending.insert(key, pending);
+        let command_buffer = {
+            profiling::scope!("CommandEncoder::finish::skybox_ibl");
+            encoder.finish()
+        };
         gpu.submit_frame_batch_with_callbacks(
-            vec![encoder.finish()],
+            vec![command_buffer],
             None,
             None,
             vec![Box::new(move || {

@@ -191,18 +191,26 @@ fn collect_view_draws(
     // pure overhead vs a direct serial call. Per-view collection internally still parallelises
     // across renderer-run chunks via `setup.inner_parallelism`.
     let collect_one = |(prep, snap): (&FrameViewPlan<'_>, Option<ViewCullSnapshot>)| {
+        profiling::scope!("render::collect_view_draws::collect_one");
         let shader_perm = prep.shader_permutation();
         // The backend pre-refreshed one material batch cache per shader permutation in
         // `extract_frame_shared`, so any view's permutation is guaranteed to find a hit. The
         // previous mono-only fast path collapsed into this lookup.
-        let material_cache = setup.material_caches.get(&shader_perm);
-        let cull_proj = snap.as_ref().map(|s| s.proj);
-        let culling = snap.map(|s| WorldMeshCullInput {
-            proj: s.proj,
-            host_camera: &prep.host_camera,
-            hi_z: s.hi_z,
-            hi_z_temporal: s.hi_z_temporal,
-        });
+        let material_cache = {
+            profiling::scope!("render::collect_view_draws::material_cache_lookup");
+            setup.material_caches.get(&shader_perm)
+        };
+        let (cull_proj, culling) = {
+            profiling::scope!("render::collect_view_draws::build_cull_input");
+            let cull_proj = snap.as_ref().map(|s| s.proj);
+            let culling = snap.map(|s| WorldMeshCullInput {
+                proj: s.proj,
+                host_camera: &prep.host_camera,
+                hi_z: s.hi_z,
+                hi_z_temporal: s.hi_z_temporal,
+            });
+            (cull_proj, culling)
+        };
         let collection = collect_and_sort_draws_with_parallelism(
             &DrawCollectionContext {
                 scene: setup.scene,
@@ -221,23 +229,31 @@ fn collect_view_draws(
             },
             setup.inner_parallelism,
         );
-        WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
-            collection, cull_proj,
-        )))
+        {
+            profiling::scope!("render::collect_view_draws::package_draw_plan");
+            WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+                collection, cull_proj,
+            )))
+        }
     };
 
     let draw_plans: Vec<WorldMeshDrawPlan> = if prepared.len() == 1 {
+        profiling::scope!("render::collect_view_draws::single_view");
         let mut snaps = cull_snapshots.into_iter();
         let snap = snaps.next().unwrap_or(None);
         vec![collect_one((&prepared[0], snap))]
     } else {
+        profiling::scope!("render::collect_view_draws::parallel_views");
         prepared
             .par_iter()
             .zip(cull_snapshots.into_par_iter())
             .map(collect_one)
             .collect()
     };
-    trace_view_draw_plans(prepared, &draw_plans);
+    {
+        profiling::scope!("render::collect_view_draws::trace_plans");
+        trace_view_draw_plans(prepared, &draw_plans);
+    }
     draw_plans
 }
 

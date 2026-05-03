@@ -245,7 +245,7 @@ impl DebugHud {
         }
     }
 
-    fn persist_ui_state_to_config_if_changed(&mut self) {
+    fn persist_ui_state_to_config_if_changed(&self) {
         let Ok(mut g) = self.renderer_settings.write() else {
             logger::warn!("Failed to persist HUD state: renderer settings store is unavailable");
             return;

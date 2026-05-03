@@ -369,78 +369,99 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
     write_vertex: bool,
     write_index: bool,
 ) {
+    profiling::scope!("asset::mesh_write_in_place::vertex_derived_streams");
     if write_vertex {
-        ctx.queue.write_buffer(
-            ctx.mesh.vertex_buffer.as_ref(),
-            0,
-            &ctx.raw[..ctx.layout.vertex_size],
-        );
+        {
+            profiling::scope!("asset::mesh_write_in_place::write_interleaved_vertex");
+            ctx.queue.write_buffer(
+                ctx.mesh.vertex_buffer.as_ref(),
+                0,
+                &ctx.raw[..ctx.layout.vertex_size],
+            );
+        }
     }
     let vertex_slice = &ctx.raw[..ctx.layout.vertex_size];
     if !write_vertex && !write_index {
         return;
     }
     if write_vertex {
-        if let (Some(pb), Some(nb), Some((pvec, nvec))) = (
-            ctx.mesh.positions_buffer.as_ref(),
-            ctx.mesh.normals_buffer.as_ref(),
-            extract_float3_position_normal_as_vec4_streams(
-                vertex_slice,
-                ctx.vertex_count,
-                ctx.vertex_stride,
-                &ctx.data.vertex_attributes,
-            )
-            .as_ref(),
-        ) {
-            ctx.queue.write_buffer(pb.as_ref(), 0, pvec);
-            ctx.queue.write_buffer(nb.as_ref(), 0, nvec);
+        {
+            profiling::scope!("asset::mesh_write_in_place::write_position_normal_streams");
+            if let (Some(pb), Some(nb), Some((pvec, nvec))) = (
+                ctx.mesh.positions_buffer.as_ref(),
+                ctx.mesh.normals_buffer.as_ref(),
+                extract_float3_position_normal_as_vec4_streams(
+                    vertex_slice,
+                    ctx.vertex_count,
+                    ctx.vertex_stride,
+                    &ctx.data.vertex_attributes,
+                )
+                .as_ref(),
+            ) {
+                ctx.queue.write_buffer(pb.as_ref(), 0, pvec);
+                ctx.queue.write_buffer(nb.as_ref(), 0, nvec);
+            }
         }
 
-        if let (Some(uvb), Some(uv)) = (
-            ctx.mesh.uv0_buffer.as_ref(),
-            uv0_float2_stream_bytes(
-                vertex_slice,
-                ctx.vertex_count,
-                ctx.vertex_stride,
-                &ctx.data.vertex_attributes,
-            ),
-        ) {
-            ctx.queue.write_buffer(uvb.as_ref(), 0, &uv);
+        {
+            profiling::scope!("asset::mesh_write_in_place::write_uv0_stream");
+            if let (Some(uvb), Some(uv)) = (
+                ctx.mesh.uv0_buffer.as_ref(),
+                uv0_float2_stream_bytes(
+                    vertex_slice,
+                    ctx.vertex_count,
+                    ctx.vertex_stride,
+                    &ctx.data.vertex_attributes,
+                ),
+            ) {
+                ctx.queue.write_buffer(uvb.as_ref(), 0, &uv);
+            }
         }
 
-        if let (Some(cb), Some(c)) = (
-            ctx.mesh.color_buffer.as_ref(),
-            color_float4_stream_bytes(
-                vertex_slice,
-                ctx.vertex_count,
-                ctx.vertex_stride,
-                &ctx.data.vertex_attributes,
-            ),
-        ) {
-            ctx.queue.write_buffer(cb.as_ref(), 0, &c);
+        {
+            profiling::scope!("asset::mesh_write_in_place::write_color_stream");
+            if let (Some(cb), Some(c)) = (
+                ctx.mesh.color_buffer.as_ref(),
+                color_float4_stream_bytes(
+                    vertex_slice,
+                    ctx.vertex_count,
+                    ctx.vertex_stride,
+                    &ctx.data.vertex_attributes,
+                ),
+            ) {
+                ctx.queue.write_buffer(cb.as_ref(), 0, &c);
+            }
         }
     }
 
-    if let (Some(tb), Some(t)) = (
-        ctx.mesh.tangent_buffer.as_ref(),
-        tangent_stream_bytes(
-            vertex_slice,
-            &ctx.raw[ctx.layout.index_buffer_start
-                ..ctx.layout.index_buffer_start + ctx.layout.index_buffer_length],
-            ctx.vertex_count,
-            ctx.vertex_stride,
-            &ctx.data.vertex_attributes,
-            ctx.data.index_buffer_format,
-            &ctx.data.submeshes,
-        ),
-    ) {
-        ctx.queue.write_buffer(tb.as_ref(), 0, &t);
+    {
+        profiling::scope!("asset::mesh_write_in_place::write_tangent_stream");
+        if let (Some(tb), Some(t)) = (
+            ctx.mesh.tangent_buffer.as_ref(),
+            tangent_stream_bytes(
+                vertex_slice,
+                &ctx.raw[ctx.layout.index_buffer_start
+                    ..ctx.layout.index_buffer_start + ctx.layout.index_buffer_length],
+                ctx.vertex_count,
+                ctx.vertex_stride,
+                &ctx.data.vertex_attributes,
+                ctx.data.index_buffer_format,
+                &ctx.data.submeshes,
+            ),
+        ) {
+            ctx.queue.write_buffer(tb.as_ref(), 0, &t);
+        }
     }
 
     if !write_vertex {
         return;
     }
 
+    write_in_place_uv1_to_uv3_streams(ctx, vertex_slice);
+}
+
+fn write_in_place_uv1_to_uv3_streams(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
+    profiling::scope!("asset::mesh_write_in_place::write_uv1_to_uv3_streams");
     for (buffer, target) in [
         (&ctx.mesh.uv1_buffer, VertexAttributeType::UV1),
         (&ctx.mesh.uv2_buffer, VertexAttributeType::UV2),
@@ -469,6 +490,7 @@ pub(super) fn write_in_place_index_buffer(
     layout: &MeshBufferLayout,
     write_ib: bool,
 ) {
+    profiling::scope!("asset::mesh_write_in_place::index_buffer");
     if !write_ib {
         return;
     }
@@ -501,6 +523,7 @@ pub(super) fn write_in_place_bone_buffers(
     ctx: &MeshInPlaceWriteContext<'_>,
     hints: BoneBufferWriteHints,
 ) -> Option<()> {
+    profiling::scope!("asset::mesh_write_in_place::bone_buffers");
     let BoneBufferWriteHints {
         needs_bone_buffers,
         synthetic_bones,
@@ -512,6 +535,7 @@ pub(super) fn write_in_place_bone_buffers(
         return Some(());
     }
     if synthetic_bones && (full || write_bone_weights || write_bind_poses) {
+        profiling::scope!("asset::mesh_write_in_place::synthetic_bone_buffers");
         let (bind_poses_arr, bone_counts, bone_weights) =
             synthetic_bone_data_for_blendshape_only(ctx.data.vertex_count);
         if let Some(bc) = &ctx.mesh.bone_counts_buffer {
@@ -533,6 +557,7 @@ pub(super) fn write_in_place_bone_buffers(
             ctx.queue.write_buffer(bp.as_ref(), 0, &bp_bytes);
         }
     } else if ctx.data.bone_count > 0 {
+        profiling::scope!("asset::mesh_write_in_place::real_bone_buffers");
         if full || write_bone_weights {
             let bc = &ctx.raw[ctx.layout.bone_counts_start
                 ..ctx.layout.bone_counts_start + ctx.layout.bone_counts_length];
@@ -575,6 +600,7 @@ pub(super) fn write_in_place_blendshape_buffer(
     data: &MeshUploadData,
     write_blend: bool,
 ) -> Option<()> {
+    profiling::scope!("asset::mesh_write_in_place::blendshape_buffer");
     if !write_blend {
         return Some(());
     }
@@ -584,11 +610,19 @@ pub(super) fn write_in_place_blendshape_buffer(
     let Some(db) = mesh.blendshape_shape_descriptor_buffer.as_ref() else {
         return Some(());
     };
-    let extracted =
-        extract_blendshape_offsets(raw, layout, &data.blendshape_buffers, data.vertex_count)?;
-    let sparse = padded_sparse_bytes(&extracted.sparse_deltas);
-    queue.write_buffer(sb.as_ref(), 0, &sparse);
-    queue.write_buffer(db.as_ref(), 0, &extracted.shape_descriptor_bytes);
+    let extracted = {
+        profiling::scope!("asset::mesh_write_in_place::extract_blendshape_offsets");
+        extract_blendshape_offsets(raw, layout, &data.blendshape_buffers, data.vertex_count)?
+    };
+    let sparse = {
+        profiling::scope!("asset::mesh_write_in_place::pad_sparse_blendshapes");
+        padded_sparse_bytes(&extracted.sparse_deltas)
+    };
+    {
+        profiling::scope!("asset::mesh_write_in_place::write_blendshape_gpu_buffers");
+        queue.write_buffer(sb.as_ref(), 0, &sparse);
+        queue.write_buffer(db.as_ref(), 0, &extracted.shape_descriptor_bytes);
+    }
     Some(())
 }
 
