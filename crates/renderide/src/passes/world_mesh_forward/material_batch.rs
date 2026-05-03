@@ -14,6 +14,7 @@ use crate::materials::{EmbeddedMaterialBindResources, EmbeddedTexturePools};
 use crate::materials::{
     MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineSet, MaterialPipelineVariantSpec,
     MaterialRegistry, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
+    RasterPrimitiveTopology,
 };
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
@@ -51,8 +52,8 @@ pub(crate) struct PipelineVariantKeyInput {
     pub render_state: MaterialRenderState,
     /// Front-face winding selected from the draw transform.
     pub front_face: RasterFrontFace,
-    /// Whether this batch uses point-list topology.
-    pub point_topology: bool,
+    /// Primitive topology selected from the mesh's per-submesh topology.
+    pub primitive_topology: RasterPrimitiveTopology,
 }
 
 /// Exact material pipeline variant used by both pipeline pre-warm and record-time resolution.
@@ -76,8 +77,8 @@ pub(crate) struct PipelineVariantKey {
     pub render_state: MaterialRenderState,
     /// Front-face winding selected from the draw transform.
     pub front_face: RasterFrontFace,
-    /// Whether this batch uses point-list topology.
-    pub point_topology: bool,
+    /// Primitive topology selected from the mesh's per-submesh topology.
+    pub primitive_topology: RasterPrimitiveTopology,
 }
 
 impl PipelineVariantKey {
@@ -90,7 +91,7 @@ impl PipelineVariantKey {
             blend_mode,
             render_state,
             front_face,
-            point_topology,
+            primitive_topology,
         } = input;
         Self {
             shader_asset_id,
@@ -102,7 +103,7 @@ impl PipelineVariantKey {
             blend_mode,
             render_state,
             front_face,
-            point_topology,
+            primitive_topology,
         }
     }
 
@@ -130,7 +131,7 @@ impl PipelineVariantKey {
             blend_mode: batch_key.blend_mode,
             render_state: batch_key.render_state,
             front_face: batch_key.front_face,
-            point_topology: batch_key.point_topology,
+            primitive_topology: batch_key.primitive_topology,
         })
     }
 }
@@ -240,7 +241,7 @@ impl<'a> MaterialDrawResolver<'a> {
                 blend_mode: pipeline_key.blend_mode,
                 render_state: pipeline_key.render_state,
                 front_face: pipeline_key.front_face,
-                point_topology: pipeline_key.point_topology,
+                primitive_topology: pipeline_key.primitive_topology,
             },
         );
 
@@ -342,7 +343,7 @@ mod tests {
             blend_mode: MaterialBlendMode::Opaque,
             render_state: MaterialRenderState::default(),
             front_face: RasterFrontFace::CounterClockwise,
-            point_topology: false,
+            primitive_topology: RasterPrimitiveTopology::TriangleList,
         })
     }
 

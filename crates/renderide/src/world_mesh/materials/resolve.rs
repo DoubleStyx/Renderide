@@ -4,7 +4,7 @@ use crate::materials::ShaderPermutation;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
     MaterialBlendMode, MaterialPipelinePropertyIds, MaterialRenderState, MaterialRouter,
-    RasterFrontFace, RasterPipelineKind, embedded_stem_needs_color_stream,
+    RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream,
     embedded_stem_needs_uv1_stream, embedded_stem_requires_intersection_pass,
     embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
@@ -105,8 +105,8 @@ pub(crate) fn batch_key_for_slot(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
-    point_topology: bool,
     front_face: RasterFrontFace,
+    primitive_topology: RasterPrimitiveTopology,
     ctx: MaterialResolveCtx<'_>,
 ) -> MaterialDrawBatchKey {
     let shader_asset_id = ctx
@@ -186,7 +186,7 @@ pub(crate) fn batch_key_for_slot(
         property_block_slot0: property_block_id,
         skinned,
         front_face,
-        point_topology,
+        primitive_topology,
         embedded_needs_uv0,
         embedded_needs_color,
         embedded_needs_uv1,
@@ -208,8 +208,8 @@ pub(crate) fn batch_key_for_slot_cached(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
-    point_topology: bool,
     front_face: RasterFrontFace,
+    primitive_topology: RasterPrimitiveTopology,
     cache: &FrameMaterialBatchCache,
     ctx: MaterialResolveCtx<'_>,
 ) -> MaterialDrawBatchKey {
@@ -218,8 +218,8 @@ pub(crate) fn batch_key_for_slot_cached(
             material_asset_id,
             property_block_id,
             skinned,
-            point_topology,
             front_face,
+            primitive_topology,
             resolved,
         )
     } else {
@@ -227,8 +227,8 @@ pub(crate) fn batch_key_for_slot_cached(
             material_asset_id,
             property_block_id,
             skinned,
-            point_topology,
             front_face,
+            primitive_topology,
             ctx,
         )
     }
@@ -315,8 +315,8 @@ fn batch_key_from_resolved(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
-    point_topology: bool,
     front_face: RasterFrontFace,
+    primitive_topology: RasterPrimitiveTopology,
     r: &ResolvedMaterialBatch,
 ) -> MaterialDrawBatchKey {
     MaterialDrawBatchKey {
@@ -326,7 +326,7 @@ fn batch_key_from_resolved(
         property_block_slot0: property_block_id,
         skinned,
         front_face,
-        point_topology,
+        primitive_topology,
         embedded_needs_uv0: r.embedded_needs_uv0,
         embedded_needs_color: r.embedded_needs_color,
         embedded_needs_uv1: r.embedded_needs_uv1,
