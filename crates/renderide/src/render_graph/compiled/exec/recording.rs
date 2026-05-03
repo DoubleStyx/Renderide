@@ -407,8 +407,13 @@ impl CompiledRenderGraph {
         profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
     ) -> Result<(), GraphExecuteError> {
         let _upload_scope = upload_batch.enter_scope(upload_scope);
-        let kind = self.passes[pass_idx].kind();
-        match kind {
+        // Hoist the pass borrow once so the inner match arms do not re-index `self.passes` for
+        // every dispatch. The Raster path still needs the explicit `&self.passes[pass_idx]`
+        // because `helpers::execute_graph_raster_pass_node` takes a `&PassNode` and the borrow
+        // matches `pass` exactly; this also keeps the inner record_* dispatches as pointer-cheap
+        // direct calls.
+        let pass = &self.passes[pass_idx];
+        match pass.kind() {
             PassKind::Raster => {
                 profiling::scope!("graph::record_raster");
                 let template = helpers::pass_info_raster_template(&self.pass_info, pass_idx)?;
@@ -425,7 +430,7 @@ impl CompiledRenderGraph {
                     profiler,
                 };
                 helpers::execute_graph_raster_pass_node(
-                    &self.passes[pass_idx],
+                    pass,
                     &template,
                     graph_resources,
                     encoder,
@@ -447,8 +452,7 @@ impl CompiledRenderGraph {
                     blackboard,
                     profiler,
                 };
-                self.passes[pass_idx]
-                    .record_compute(&mut ctx)
+                pass.record_compute(&mut ctx)
                     .map_err(GraphExecuteError::Pass)?;
             }
             PassKind::Copy => {
@@ -465,8 +469,7 @@ impl CompiledRenderGraph {
                     blackboard,
                     profiler,
                 };
-                self.passes[pass_idx]
-                    .record_copy(&mut ctx)
+                pass.record_copy(&mut ctx)
                     .map_err(GraphExecuteError::Pass)?;
             }
             PassKind::Callback => {
@@ -480,8 +483,7 @@ impl CompiledRenderGraph {
                     graph_resources,
                     blackboard,
                 };
-                self.passes[pass_idx]
-                    .run_callback(&mut ctx)
+                pass.run_callback(&mut ctx)
                     .map_err(GraphExecuteError::Pass)?;
             }
         }

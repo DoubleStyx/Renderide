@@ -4,7 +4,7 @@ pub mod parallel_apply;
 mod world_queries;
 
 use hashbrown::HashMap;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use glam::Mat4;
 
@@ -45,7 +45,11 @@ mod tests;
 
 /// Scene registry: one entry per host render space, Unity `RenderingManager` dictionary semantics.
 pub struct SceneCoordinator {
-    spaces: BTreeMap<RenderSpaceId, RenderSpaceState>,
+    /// Backed by [`hashbrown::HashMap`] for O(1) per-id lookup on the per-frame
+    /// `apply_frame_submit` lift/reinsert path. Iteration order is non-deterministic; callers
+    /// that need a stable order go through [`Self::render_space_ids`] which sorts ids by host
+    /// `RenderSpaceId` value at iteration time.
+    spaces: HashMap<RenderSpaceId, RenderSpaceState>,
     world_caches: HashMap<RenderSpaceId, WorldTransformCache>,
     world_dirty: HashSet<RenderSpaceId>,
     light_cache: LightCache,
@@ -96,7 +100,7 @@ impl SceneCoordinator {
     /// Empty registry.
     pub fn new() -> Self {
         Self {
-            spaces: BTreeMap::new(),
+            spaces: HashMap::new(),
             world_caches: HashMap::new(),
             world_dirty: HashSet::new(),
             light_cache: LightCache::new(),
@@ -120,8 +124,16 @@ impl SceneCoordinator {
     }
 
     /// Render space ids currently present, ordered by host id for deterministic traversal.
-    pub fn render_space_ids(&self) -> impl Iterator<Item = RenderSpaceId> + '_ {
-        self.spaces.keys().copied()
+    ///
+    /// The backing [`hashbrown::HashMap`] iterates in unspecified order, so this method copies the
+    /// keys into a small owned [`Vec`] and sorts by [`RenderSpaceId`] before returning the
+    /// iterator. The allocation is negligible at typical scene sizes (1-10 active render spaces);
+    /// callers that have observed a sorted contract from the prior `BTreeMap` backing are
+    /// preserved.
+    pub fn render_space_ids(&self) -> impl Iterator<Item = RenderSpaceId> {
+        let mut ids: Vec<RenderSpaceId> = self.spaces.keys().copied().collect();
+        ids.sort_unstable_by_key(|id| id.0);
+        ids.into_iter()
     }
 
     /// Number of host render spaces currently tracked.

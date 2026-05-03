@@ -87,10 +87,21 @@ pub struct FramePreparedRenderables {
     /// [`SceneCoordinator::render_space_ids`] order, then static renderers (ascending index),
     /// then skinned renderers (ascending index), then material slots in ascending index.
     pub(super) draws: Vec<FramePreparedDraw>,
+    /// Indices into [`Self::draws`] marking the first slot of each renderer run. Always starts
+    /// with `0` when [`Self::draws`] is non-empty. Lets per-view collection chunk the prepared
+    /// list on run boundaries via [`Self::run_aligned_chunks`] so a single renderer's slots are
+    /// never split across two chunks (the prior `par_chunks(PREPARED_CHUNK_SIZE)` path
+    /// duplicated per-renderer CPU cull work whenever a chunk seam fell inside a renderer run).
+    pub(super) run_starts: Vec<u32>,
     /// Render context used when resolving material overrides; must match the per-view contexts
     /// (the main renderer uses [`SceneCoordinator::active_main_render_context`] for every view
     /// in the same frame).
     pub(super) render_context: RenderingContext,
+    /// Reused per-worker output buffers for the multi-space parallel expansion path. Outer
+    /// [`Vec`] is resized to [`Self::active_space_ids`] length; each inner [`Vec`] is cleared and
+    /// re-filled inside the rayon worker before [`expand_space_into`] runs. Capacities persist
+    /// across frames so the steady-state path does not reallocate the per-space buffers.
+    space_scratch: Vec<Vec<FramePreparedDraw>>,
 }
 
 impl FramePreparedRenderables {
@@ -100,7 +111,9 @@ impl FramePreparedRenderables {
         Self {
             active_space_ids: Vec::new(),
             draws: Vec::new(),
+            run_starts: Vec::new(),
             render_context,
+            space_scratch: Vec::new(),
         }
     }
 
@@ -138,6 +151,7 @@ impl FramePreparedRenderables {
         self.render_context = render_context;
         self.active_space_ids.clear();
         self.draws.clear();
+        self.run_starts.clear();
 
         self.active_space_ids.extend(
             scene
@@ -150,31 +164,74 @@ impl FramePreparedRenderables {
         }
 
         if self.active_space_ids.len() == 1 {
-            expand_space_into(
-                &mut self.draws,
-                scene,
-                mesh_pool,
-                render_context,
-                self.active_space_ids[0],
-            );
+            let space_id = self.active_space_ids[0];
+            self.draws.reserve(estimated_draw_count(scene, space_id));
+            expand_space_into(&mut self.draws, scene, mesh_pool, render_context, space_id);
+            populate_run_starts(&self.draws, &mut self.run_starts);
             return;
         }
 
-        let per_space: Vec<Vec<FramePreparedDraw>> = self
-            .active_space_ids
-            .par_iter()
-            .map(|&space_id| {
-                let mut local = Vec::new();
-                expand_space_into(&mut local, scene, mesh_pool, render_context, space_id);
-                local
-            })
-            .collect();
+        // Reuse a long-lived per-space scratch so each frame's parallel expansion does not
+        // allocate a fresh outer `Vec` (the prior `par_iter().map(...).collect()` pattern) or a
+        // fresh inner `Vec` per worker (`let mut local = Vec::new();`). Capacities persist across
+        // frames; only the contents get cleared and refilled.
+        let mut space_scratch = std::mem::take(&mut self.space_scratch);
+        space_scratch.resize_with(self.active_space_ids.len(), Vec::new);
+        let active_space_ids = &self.active_space_ids;
 
-        let total: usize = per_space.iter().map(Vec::len).sum();
+        space_scratch
+            .par_iter_mut()
+            .zip(active_space_ids.par_iter())
+            .for_each(|(out, &space_id)| {
+                out.clear();
+                let estimate = estimated_draw_count(scene, space_id);
+                if estimate > out.capacity() {
+                    out.reserve(estimate - out.capacity());
+                }
+                expand_space_into(out, scene, mesh_pool, render_context, space_id);
+            });
+
+        let total: usize = space_scratch.iter().map(Vec::len).sum();
         self.draws.reserve(total);
-        for mut local in per_space {
-            self.draws.append(&mut local);
+        for buf in &mut space_scratch {
+            self.draws.append(buf);
         }
+        self.space_scratch = space_scratch;
+        populate_run_starts(&self.draws, &mut self.run_starts);
+    }
+
+    /// Returns slices of [`Self::draws`] aligned to renderer-run boundaries with each chunk
+    /// covering at least `target_chunk_size` draws (the last chunk may be smaller). Used by
+    /// per-view collection so the per-renderer CPU cull and material-batch lookup happens at
+    /// most once per renderer per frame even on parallel workers.
+    pub(super) fn run_aligned_chunks(&self, target_chunk_size: usize) -> Vec<&[FramePreparedDraw]> {
+        if self.draws.is_empty() {
+            return Vec::new();
+        }
+        let target_chunk_size = target_chunk_size.max(1);
+        let n = self.draws.len();
+        let starts = self.run_starts.as_slice();
+        let mut chunks: Vec<&[FramePreparedDraw]> = Vec::new();
+
+        let mut cursor = 0usize;
+        let mut next_run_idx = 1usize;
+        while cursor < n {
+            let target = cursor.saturating_add(target_chunk_size);
+            // Walk past every run boundary that is still inside the target window so the chunk
+            // ends at the smallest run boundary that meets the target chunk size.
+            while next_run_idx < starts.len() && (starts[next_run_idx] as usize) < target {
+                next_run_idx += 1;
+            }
+            let chunk_end = if next_run_idx < starts.len() {
+                starts[next_run_idx] as usize
+            } else {
+                n
+            };
+            chunks.push(&self.draws[cursor..chunk_end]);
+            cursor = chunk_end;
+            next_run_idx += 1;
+        }
+        chunks
     }
 
     /// Number of expanded draws across all active render spaces.
@@ -243,6 +300,39 @@ struct RenderableExpansion<'a> {
     blendshape_deformed: bool,
     /// Frame-time precomputed cull geometry for the renderer (`None` for overlay spaces).
     cull_geometry: Option<MeshCullGeometry>,
+}
+
+/// Walks `draws` once and writes the index of each renderer-run start into `run_starts` (cleared
+/// on entry). Two adjacent draws share a run when `prepared_draws_share_renderer` returns `true`;
+/// every other index marks a boundary. Runs are detected post-build instead of plumbed through
+/// the parallel expansion so the multi-space worker output can be merged with `Vec::append` without
+/// per-space offset adjustment.
+fn populate_run_starts(draws: &[FramePreparedDraw], run_starts: &mut Vec<u32>) {
+    run_starts.clear();
+    if draws.is_empty() {
+        return;
+    }
+    run_starts.push(0);
+    let mut prev = &draws[0];
+    for (idx, d) in draws.iter().enumerate().skip(1) {
+        if !super::collect::prepared::prepared_draws_share_renderer(prev, d) {
+            run_starts.push(idx as u32);
+        }
+        prev = d;
+    }
+}
+
+/// Upper bound on prepared draws produced by `space_id`, used to pre-size per-space output
+/// buffers. The 2x multiplier reflects the typical 2-slot-per-renderer expansion observed across
+/// the existing scene corpus; over-estimation is cheap (`Vec::reserve` only grows), under-estimation
+/// triggers the doubling growth path.
+fn estimated_draw_count(scene: &SceneCoordinator, space_id: RenderSpaceId) -> usize {
+    scene.space(space_id).map_or(0, |s| {
+        s.static_mesh_renderers
+            .len()
+            .saturating_add(s.skinned_mesh_renderers.len())
+            .saturating_mul(2)
+    })
 }
 
 /// Expands every valid renderer (static and skinned) in `space_id` into `out`.

@@ -557,13 +557,22 @@ impl CompiledRenderGraph {
         let per_view_command_count = per_view_cmds.len();
         let has_per_view_profiler_cmd = per_view_profiler_cmd.is_some();
         let has_hud_cmd = hud_cmd.is_some();
-        let all_cmds: Vec<wgpu::CommandBuffer> = upload_cmd
-            .into_iter()
-            .chain(frame_global_cmd)
-            .chain(per_view_cmds)
-            .chain(per_view_profiler_cmd)
-            .chain(hud_cmd)
-            .collect();
+        // Build the submit batch with exact pre-allocation. The prior `into_iter().chain().collect()`
+        // pattern relied on `size_hint()` from the chained iterators; with `Option::into_iter()`
+        // mixed in, the hint was inexact and `collect()` walked the doubling growth path on the
+        // backing `Vec`.
+        let mut all_cmds: Vec<wgpu::CommandBuffer> = Vec::with_capacity(
+            has_upload_cmd as usize
+                + has_frame_global_cmd as usize
+                + per_view_command_count
+                + has_per_view_profiler_cmd as usize
+                + has_hud_cmd as usize,
+        );
+        all_cmds.extend(upload_cmd);
+        all_cmds.extend(frame_global_cmd);
+        all_cmds.extend(per_view_cmds);
+        all_cmds.extend(per_view_profiler_cmd);
+        all_cmds.extend(hud_cmd);
         let command_buffer_count = all_cmds.len();
 
         // Hand the swapchain texture (if any) to the driver thread so `queue.submit` and
@@ -714,7 +723,15 @@ impl CompiledRenderGraph {
             per_view_shared,
             profiler,
         } = inputs;
-        if record_parallelism == crate::config::RecordParallelism::PerViewParallel && n_views > 1 {
+        // Rayon scope dispatch + per-task spawn cost dominates the work-stealing benefit at small
+        // view counts. OpenXR stereo (the common case) hits exactly two views with two evenly
+        // sized workloads, so the parallel path was usually a wash with serial. Bump the
+        // threshold to require at least three views before paying the rayon overhead; secondary
+        // RT cameras + main + HMD eyes still parallelise.
+        const MIN_VIEWS_FOR_PARALLEL_RECORD: usize = 3;
+        if record_parallelism == crate::config::RecordParallelism::PerViewParallel
+            && n_views >= MIN_VIEWS_FOR_PARALLEL_RECORD
+        {
             profiling::scope!("graph::per_view_fan_out");
             use std::sync::OnceLock;
             // Per-slot mailbox: each rayon worker writes its own `view_idx` exactly once via

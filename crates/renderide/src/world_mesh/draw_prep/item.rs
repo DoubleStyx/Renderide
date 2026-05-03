@@ -90,6 +90,16 @@ pub struct WorldMeshDrawItem {
     /// at draw-item construction so [`super::sort::cmp_world_mesh_draw_items`] does not recompute
     /// `sqrt`/`log2` on every pairwise compare.
     pub opaque_depth_bucket: u16,
+    /// Packed 64-bit ordering prefix consumed by [`super::sort::sort_draws`]. Built once at
+    /// draw-item construction by [`super::sort::pack_sort_prefix`] so the hot sort path uses a
+    /// single `u64::cmp` instead of a multi-field comparator chain.
+    ///
+    /// Layout (highest bit first): `[overlay:1][render_queue:18][transparent:1]
+    /// [opaque_depth_bucket:8][batch_key_hash_hi:32][reserved:4]`. Transparent draws zero the
+    /// depth-bucket and hash bits so they share a key within their `(overlay, render_queue)`
+    /// bucket; [`super::sort::sort_draws`] then resorts each transparent run with the
+    /// structural comparator on `(sorting_order, camera_distance_sq, collect_order)`.
+    pub sort_prefix: u64,
     /// Rigid-body world matrix for non-skinned draws, filled during draw collection to avoid
     /// recomputing [`crate::scene::SceneCoordinator::world_matrix_for_render_context`] in the forward pass.
     pub rigid_world_matrix: Option<Mat4>,

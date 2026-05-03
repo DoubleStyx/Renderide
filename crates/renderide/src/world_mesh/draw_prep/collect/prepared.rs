@@ -28,7 +28,10 @@ pub(super) const PREPARED_CHUNK_SIZE: usize = 256;
 
 /// Returns true when two prepared slot entries came from the same source renderer.
 #[inline]
-pub(super) fn prepared_draws_share_renderer(a: &FramePreparedDraw, b: &FramePreparedDraw) -> bool {
+pub(in crate::world_mesh::draw_prep) fn prepared_draws_share_renderer(
+    a: &FramePreparedDraw,
+    b: &FramePreparedDraw,
+) -> bool {
     a.space_id == b.space_id
         && a.renderable_index == b.renderable_index
         && a.instance_id == b.instance_id

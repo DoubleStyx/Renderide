@@ -32,7 +32,7 @@ use super::sort::{sort_draws, sort_draws_serial};
 
 mod candidate;
 mod filter_masks;
-mod prepared;
+pub(super) mod prepared;
 mod scene_walk;
 
 use filter_masks::build_per_space_filter_masks;
@@ -219,15 +219,18 @@ fn collect_world_mesh_chunks(
             "prepared renderables were built for a different render context than the per-view draw collection -- material overrides would disagree"
         );
         profiling::scope!("mesh::collect_prepared");
+        // Run-aligned chunking ensures every renderer's slots stay inside one chunk so the
+        // per-renderer CPU cull and material-batch lookup happens at most once per renderer per
+        // view (the prior `par_chunks(PREPARED_CHUNK_SIZE)` path duplicated that work whenever a
+        // chunk seam fell inside a renderer run).
+        let run_chunks = prepared.run_aligned_chunks(PREPARED_CHUNK_SIZE);
         match parallelism {
-            WorldMeshDrawCollectParallelism::Full => prepared
-                .draws
-                .par_chunks(PREPARED_CHUNK_SIZE)
+            WorldMeshDrawCollectParallelism::Full => run_chunks
+                .par_iter()
                 .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
                 .collect(),
-            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => prepared
-                .draws
-                .chunks(PREPARED_CHUNK_SIZE)
+            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => run_chunks
+                .iter()
                 .map(|chunk| collect_prepared_chunk(chunk, ctx, cache, filter_masks))
                 .collect(),
         }
