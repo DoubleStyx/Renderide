@@ -8,6 +8,7 @@
 //! [`ClusterBufferCache`]).
 
 mod empty_material;
+mod ibl_dfg;
 mod scene_snapshot;
 mod skybox_specular;
 
@@ -22,6 +23,7 @@ use crate::materials::embedded::texture_resolve::{TextureBindKind, create_sample
 
 use super::frame_gpu_error::FrameGpuInitError;
 pub use empty_material::{EmptyMaterialBindGroup, empty_material_bind_group_layout};
+use ibl_dfg::create_ibl_dfg_lut;
 pub use scene_snapshot::FrameSceneSnapshotTextureViews;
 use scene_snapshot::{
     DEFAULT_SCENE_COLOR_FORMAT, SceneSnapshotKind, SceneSnapshotLayout, SceneSnapshotSet,
@@ -72,6 +74,10 @@ pub struct FrameGpuResources {
     skybox_specular_key: SkyboxSpecularEnvironmentKey,
     /// Monotonic version incremented whenever the skybox specular binding changes.
     skybox_specular_version: u64,
+    /// Texture backing the static DFG LUT used by split-sum IBL.
+    _ibl_dfg_lut_texture: Arc<wgpu::Texture>,
+    /// Frame-global DFG LUT view bound at `@group(0) @binding(11)`.
+    ibl_dfg_lut_view: Arc<wgpu::TextureView>,
     /// Global `@group(0)` bind group (global frame uniform + shared lights/snapshots).
     ///
     /// Per-view passes bind the per-view bind group from
@@ -283,8 +289,8 @@ fn append_scene_snapshot_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutE
     ]);
 }
 
-/// Appends the frame-global skybox texture and filtering sampler entries for indirect specular.
-fn append_skybox_specular_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
+/// Appends the frame-global IBL texture/sampler entries.
+fn append_ibl_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
     entries.extend([
         wgpu::BindGroupLayoutEntry {
             binding: 9,
@@ -302,6 +308,16 @@ fn append_skybox_specular_layout_entries(entries: &mut Vec<wgpu::BindGroupLayout
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         },
+        wgpu::BindGroupLayoutEntry {
+            binding: 11,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
     ]);
 }
 
@@ -309,10 +325,10 @@ impl FrameGpuResources {
     /// Layout for `@group(0)`: uniform frame + lights + cluster counts + cluster indices +
     /// scene snapshots + skybox specular cubemap.
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        let mut entries = Vec::with_capacity(11);
+        let mut entries = Vec::with_capacity(12);
         append_frame_buffer_layout_entries(&mut entries);
         append_scene_snapshot_layout_entries(&mut entries);
-        append_skybox_specular_layout_entries(&mut entries);
+        append_ibl_layout_entries(&mut entries);
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("frame_globals"),
             entries: &entries,
@@ -326,6 +342,7 @@ impl FrameGpuResources {
         refs: ClusterBufferRefs<'_>,
         snapshots: FrameSceneSnapshotTextureViews<'_>,
         skybox_specular: SkyboxSpecularBindGroupResources<'_>,
+        ibl_dfg_lut_view: &wgpu::TextureView,
     ) -> Arc<wgpu::BindGroup> {
         let layout = Self::bind_group_layout(device);
         Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -376,6 +393,10 @@ impl FrameGpuResources {
                     binding: 10,
                     resource: wgpu::BindingResource::Sampler(skybox_specular.cubemap_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(ibl_dfg_lut_view),
+                },
             ],
         }))
     }
@@ -400,6 +421,7 @@ impl FrameGpuResources {
             refs,
             self.scene_snapshots.views(),
             self.skybox_specular_bind_group_resources(),
+            self.ibl_dfg_lut_view.as_ref(),
         );
     }
 
@@ -448,6 +470,7 @@ impl FrameGpuResources {
         ) = create_black_skybox_specular_fallback(device, queue);
         let skybox_specular_view = skybox_specular_fallback_view.clone();
         let skybox_specular_sampler = skybox_specular_fallback_sampler.clone();
+        let (ibl_dfg_lut_texture, ibl_dfg_lut_view) = create_ibl_dfg_lut(device, queue);
         let bind_group = Self::create_bind_group(
             device,
             &frame_uniform,
@@ -458,6 +481,7 @@ impl FrameGpuResources {
                 cubemap_view: skybox_specular_view.as_ref(),
                 cubemap_sampler: skybox_specular_sampler.as_ref(),
             },
+            ibl_dfg_lut_view.as_ref(),
         );
         Ok(Self {
             frame_uniform,
@@ -472,6 +496,8 @@ impl FrameGpuResources {
             skybox_specular_params: SkyboxSpecularUniformParams::disabled(),
             skybox_specular_key: SkyboxSpecularEnvironmentKey::default(),
             skybox_specular_version: 0,
+            _ibl_dfg_lut_texture: ibl_dfg_lut_texture,
+            ibl_dfg_lut_view,
             bind_group,
             cluster_bind_version,
             limits,
@@ -534,6 +560,7 @@ impl FrameGpuResources {
             cluster_refs,
             snapshots,
             self.skybox_specular_bind_group_resources(),
+            self.ibl_dfg_lut_view.as_ref(),
         )
     }
 

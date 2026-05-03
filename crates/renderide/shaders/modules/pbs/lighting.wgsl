@@ -146,13 +146,27 @@ fn shade_metallic_clustered(
     let direct = direct_metallic_clustered(frag_xy, world_pos, view_layer, s, options);
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let specular_color = brdf::metallic_f0(s.base_color, s.metallic);
+    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
+    let specular_energy = brdf::indirect_specular_energy(
+        s.roughness,
+        n_dot_v,
+        specular_color,
+        options.glossy_reflections_enabled,
+    );
     let ambient_probe = select(vec3<f32>(0.0), shamb::ambient_probe(s.normal), options.include_directional);
-    let ambient = brdf::indirect_diffuse_metallic(ambient_probe, s.base_color, s.metallic, s.occlusion);
-    let indirect_specular = brdf::indirect_specular(
+    let ambient = brdf::indirect_diffuse_metallic(
+        ambient_probe,
+        s.base_color,
+        s.metallic,
+        specular_energy,
+        s.occlusion,
+        options.glossy_reflections_enabled,
+    );
+    let indirect_specular = brdf::indirect_specular_with_energy(
         s.normal,
         view_dir,
         s.roughness,
-        specular_color,
+        specular_energy,
         s.occlusion,
         options.glossy_reflections_enabled,
     );
@@ -169,18 +183,27 @@ fn shade_specular_clustered(
 ) -> vec3<f32> {
     let direct = direct_specular_clustered(frag_xy, world_pos, view_layer, s, options);
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
+    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
+    let specular_energy = brdf::indirect_specular_energy(
+        s.roughness,
+        n_dot_v,
+        s.specular_color,
+        options.glossy_reflections_enabled,
+    );
     let ambient_probe = select(vec3<f32>(0.0), shamb::ambient_probe(s.normal), options.include_directional);
     let ambient = brdf::indirect_diffuse_specular(
         ambient_probe,
         s.base_color,
         s.one_minus_reflectivity,
+        specular_energy,
         s.occlusion,
+        options.glossy_reflections_enabled,
     );
-    let indirect_specular = brdf::indirect_specular(
+    let indirect_specular = brdf::indirect_specular_with_energy(
         s.normal,
         view_dir,
         s.roughness,
-        s.specular_color,
+        specular_energy,
         s.occlusion,
         options.glossy_reflections_enabled,
     );
