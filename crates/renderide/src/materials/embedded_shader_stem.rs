@@ -10,6 +10,10 @@ use crate::embedded_shaders;
 /// Returns `{normalized_key}_default` when that composed target exists in the embedded table.
 pub fn embedded_default_stem_for_shader_asset_name(name: &str) -> Option<String> {
     let key = normalize_unity_shader_lookup_key(name);
+    // Unity exposes both `Volume/FogBox` and `FogBoxVolumeMaterial`; normalize to one stem.
+    if matches!(key.as_str(), "fogboxvolume" | "fogboxvolumematerial") {
+        return Some("fogboxvolume_default".to_string());
+    }
     let stem = format!("{key}_default");
     if embedded_shaders::embedded_target_wgsl(&stem).is_some() {
         return Some(stem);
@@ -495,6 +499,22 @@ mod tests {
         assert_eq!(
             embedded_default_stem_for_shader_asset_name("Invisible").as_deref(),
             Some("invisible_default")
+        );
+    }
+
+    #[test]
+    fn resolves_fog_box_volume_material_alias_from_asset_name() {
+        assert_eq!(
+            embedded_default_stem_for_shader_asset_name("FogBoxVolumeMaterial").as_deref(),
+            Some("fogboxvolume_default")
+        );
+    }
+
+    #[test]
+    fn resolves_fog_box_volume_alias_from_asset_name() {
+        assert_eq!(
+            embedded_default_stem_for_shader_asset_name("FogBoxVolume").as_deref(),
+            Some("fogboxvolume_default")
         );
     }
 
