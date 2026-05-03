@@ -105,7 +105,7 @@ mod wgsl_reflect;
 /// Pipeline cache keyed by shader route / layout fingerprint.
 pub use cache::{
     MaterialPipelineCache, MaterialPipelineCacheKey, MaterialPipelineCacheStats,
-    MaterialPipelineSet, MaterialPipelineVariantSpec,
+    MaterialPipelineSet,
 };
 
 /// Embedded raster materials: bind groups, texture pools, uniform packing for embedded WGSL stems.
@@ -140,15 +140,14 @@ pub use pipeline_kind::RasterPipelineKind;
 pub use render_queue::{
     UNITY_OPAQUE_RENDER_QUEUE_MAX, UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_BACKGROUND,
     UNITY_RENDER_QUEUE_GEOMETRY, UNITY_RENDER_QUEUE_OVERLAY, UNITY_RENDER_QUEUE_TRANSPARENT,
-    UNITY_TRANSPARENT_RENDER_QUEUE_MIN, render_queue_is_transparent,
+    UNITY_RENDER_QUEUE_VOLUME_FOG, UNITY_TRANSPARENT_RENDER_QUEUE_MIN, render_queue_is_transparent,
 };
 pub(crate) use render_queue::{
     fallback_render_queue_for_material, material_render_queue_from_maps,
 };
 pub use render_state::{
     MaterialCullOverride, MaterialDepthOffsetState, MaterialRenderState, MaterialStencilState,
-    RasterFrontFace, RasterPrimitiveTopology, material_render_state_for_lookup,
-    material_render_state_from_maps,
+    RasterFrontFace, material_render_state_for_lookup, material_render_state_from_maps,
 };
 
 /// Naga reflection: composed WGSL -> `wgpu` bind layouts, uniform block layout, stem fingerprints.
@@ -172,7 +171,7 @@ pub use null_pipeline::NullFamily;
 pub use pipeline_property_resolver::PipelinePropertyResolver;
 
 /// Shader route table, optional material asset registry, and WGSL composition patches.
-pub use registry::MaterialRegistry;
+pub use registry::{MaterialPipelineVariantSpec, MaterialRegistry};
 pub use resolve_raster::resolve_raster_pipeline;
 pub use router::{MaterialRouter, ShaderRouteEntry};
 

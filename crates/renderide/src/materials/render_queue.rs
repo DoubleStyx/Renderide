@@ -17,6 +17,9 @@ pub const UNITY_TRANSPARENT_RENDER_QUEUE_MIN: i32 = 2501;
 pub const UNITY_RENDER_QUEUE_TRANSPARENT: i32 = 3000;
 /// Unity `Overlay` render queue.
 pub const UNITY_RENDER_QUEUE_OVERLAY: i32 = 4000;
+/// Fog volume proxies (`FogBoxVolume`): draw after typical `Transparent` (3000+) PBS meshes so
+/// alpha-blended fog composites on top instead of being replaced by nearer opaque-cutout draws.
+pub const UNITY_RENDER_QUEUE_VOLUME_FOG: i32 = UNITY_RENDER_QUEUE_OVERLAY - 10;
 
 /// Returns whether a Unity render queue uses transparent-style sorting.
 #[inline]
@@ -81,6 +84,13 @@ mod tests {
         assert!(render_queue_is_transparent(
             UNITY_TRANSPARENT_RENDER_QUEUE_MIN
         ));
+    }
+
+    #[test]
+    fn volume_fog_queue_is_transparent_and_before_overlay() {
+        assert!(render_queue_is_transparent(UNITY_RENDER_QUEUE_VOLUME_FOG));
+        assert!(UNITY_RENDER_QUEUE_VOLUME_FOG < UNITY_RENDER_QUEUE_OVERLAY);
+        assert!(UNITY_RENDER_QUEUE_VOLUME_FOG > UNITY_RENDER_QUEUE_TRANSPARENT);
     }
 
     #[test]

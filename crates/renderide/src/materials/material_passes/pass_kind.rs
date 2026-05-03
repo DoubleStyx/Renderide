@@ -192,6 +192,9 @@ pub enum PassKind {
     ForwardTransparent,
     /// Transparent forward pass with hardcoded `Cull Front`, ignoring runtime `_Cull`.
     ForwardTransparentCullFront,
+    /// Like [`ForwardTransparentCullFront`], but depth test defaults to `Always` (Unity `ZTest Always`)
+    /// so proxy shells for volumetric fog still shade pixels where opaque geometry is nearer than the mesh.
+    ForwardTransparentVolume,
     /// Transparent forward pass with hardcoded `Cull Back`, ignoring runtime `_Cull`.
     ForwardTransparentCullBack,
     /// Transparent unlit draw: `Blend SrcAlpha OneMinusSrcAlpha`, `ColorMask RGB`, `ZWrite Off`, `Cull Off`.
@@ -245,12 +248,22 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
         },
         PassKind::ForwardTransparent => {
             transparent_forward_pass(base, None, MaterialRenderStatePolicy::FORWARD)
-        }
+        },
         PassKind::ForwardTransparentCullFront => transparent_forward_pass(
             base,
             Some(wgpu::Face::Front),
             MaterialRenderStatePolicy::FIXED_CULL_FORWARD,
         ),
+        PassKind::ForwardTransparentVolume => MaterialPassDesc {
+            // Unity `Volume/FogBox` uses `ZTest Always` so the volume shell is not depth-rejected
+            // when the camera sits inside a large proxy and world geometry is closer than the shell.
+            depth_compare: wgpu::CompareFunction::Always,
+            ..transparent_forward_pass(
+                base,
+                Some(wgpu::Face::Front),
+                MaterialRenderStatePolicy::FIXED_CULL_FORWARD,
+            )
+        },
         PassKind::ForwardTransparentCullBack => transparent_forward_pass(
             base,
             Some(wgpu::Face::Back),
@@ -330,6 +343,7 @@ const fn pass_kind_label(kind: PassKind) -> &'static str {
         PassKind::ForwardTwoSided => "forward_two_sided",
         PassKind::ForwardTransparent => "forward_transparent",
         PassKind::ForwardTransparentCullFront => "forward_transparent_cull_front",
+        PassKind::ForwardTransparentVolume => "forward_transparent_volume",
         PassKind::ForwardTransparentCullBack => "forward_transparent_cull_back",
         PassKind::TransparentRgb => "transparent_rgb",
         PassKind::Outline => "outline",

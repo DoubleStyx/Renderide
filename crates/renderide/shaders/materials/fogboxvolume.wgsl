@@ -65,15 +65,22 @@ fn accumulation_color(world_pos: vec3<f32>) -> vec4<f32> {
     return mat._AccumulationColor;
 }
 
-//#pass forward_transparent_cull_front
+//#pass forward_transparent_volume
 @fragment
 fn fs_main(
     in: mv::WorldVertexOutput,
 ) -> @location(0) vec4<f32> {
-    // Unity `Volume/FogBox` (Resonite.UnityShaders `FogBoxVolume.shader`): fragment builds a ray
-    // from the camera through the mesh vertex, samples scene depth, then:
-    //   `dist = distance(start, end)` with `end = camPos + sceneZ * ndir` (WORLD_SPACE).
-    // With unit `ndir`, that length equals **linear eye depth `sceneZ`**, not shell→opaque slab.
+    // Unity `Volume/FogBox`: samples scene depth and integrates fog along the view segment.
+    //
+    // Render path uses `forward_transparent_volume` (depth test Always), matching Unity `ZTest Always`:
+    // a giant proxy sphere around the world must still run this shader over terrain/sky pixels when
+    // the shell is farther than opaque geometry — otherwise fog only appears on the horizon “rim”.
+    //
+    // WORLD_SPACE uses `scene_z` only (linear depth to the nearest opaque surface at this pixel).
+    // Capping with `min(scene_z, part_z)` made fog thickness track the inner proxy shell’s eye-space
+    // depth `part_z`, which swings with view angle (short toward zenith, long toward the horizon) and
+    // reads as a circular sky rim / thin-center “bubble”. Scene depth gives uniform distance fog on
+    // sky and matches Unity-style world atmosphere. Use OBJECT_SPACE for fog tied to a box proxy.
     //
     // Fog modes are mutually exclusive (`#pragma multi_compile FOG_LINEAR FOG_EXP FOG_EXP2`).
     // For `FOG_LINEAR`, `_FogDensity` is not compiled in — UI often leaves density at 0; exp
@@ -81,9 +88,6 @@ fn fs_main(
     let scene_z = sds::scene_linear_depth(in.clip_pos, in.view_layer);
     let part_z = sds::fragment_linear_depth(in.world_pos, in.view_layer);
     let cam_world = rg::camera_world_pos_for_view(in.view_layer);
-    if (part_z > scene_z) {
-        discard;
-    }
 
     var dist: f32;
     if (uvu::kw_enabled(mat.OBJECT_SPACE)) {
@@ -92,7 +96,6 @@ fn fs_main(
         let max_dist = distance(cam_world, in.world_pos);
         dist = max_dist * end_ratio;
     } else {
-        // WORLD_SPACE: matches `distance(start, end)` with `end = camPos + sceneZ * normalize(...)`.
         dist = scene_z;
     }
 
@@ -109,6 +112,19 @@ fn fs_main(
         dist = 1.0 - (1.0 / exp(dist * mat._FogDensity));
     }
 
+    // Linear fog: `dist` is view-linear length inside [_FogStart, _FogEnd] (world units). Feeding
+    // that directly into `pow(dist * rate, γ)` overshoots Unity when the span is modest, but
+    // dividing by the full `_FogEnd - _FogStart` undershoots badly when Froox uses a huge span
+    // (near far-clip): `dist/span` stays ~0 and fog disappears. Normalize with a **capped** reference
+    // span so tight ranges behave correctly and large spans still get a usable 0–1 factor.
+    let fog_span = max(mat._FogEnd - mat._FogStart, 1e-5);
+    let linear_accum_span = max(min(fog_span, 450.0), 1e-5);
+    let accumulation_t = select(
+        dist,
+        clamp(dist / linear_accum_span, 0.0, 1.0),
+        use_linear_fog,
+    );
+
     let acc_color = accumulation_color(in.world_pos);
     let gamma = max(mat._GammaCurve, 1e-5);
     // Unity `Volume/FogBox` shader Properties default `_AccumulationColor` to (0.1,0.1,0.1,0.1).
@@ -116,7 +132,7 @@ fn fs_main(
     // and hides `_BaseColor`. Scale so full-white matches Unity's default tint strength (same factor
     // on RGBA as Unity's property defaults).
     let unity_accumulation_property_scale = 0.1;
-    let acc = pow(max(dist * mat._AccumulationRate, 0.0), gamma)
+    let acc = pow(max(accumulation_t * mat._AccumulationRate, 0.0), gamma)
         * acc_color
         * unity_accumulation_property_scale;
     var result_color = mat._BaseColor + acc;

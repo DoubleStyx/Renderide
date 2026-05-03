@@ -95,6 +95,14 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         Some(wgpu::Face::Front),
     );
     assert_resolved_pass(
+        pass_from_kind(PassKind::ForwardTransparentVolume, "fs_volume_fog"),
+        disabled_depth,
+        wgpu::ColorWrites::ALL,
+        false,
+        wgpu::CompareFunction::Always,
+        Some(wgpu::Face::Front),
+    );
+    assert_resolved_pass(
         pass_from_kind(PassKind::Outline, "fs_outline"),
         disabled_depth,
         wgpu::ColorWrites::ALL,

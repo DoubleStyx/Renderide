@@ -13,6 +13,8 @@ pub(super) enum BuildPassKind {
     ForwardTransparent,
     /// Transparent forward material pass with fixed front-face culling.
     ForwardTransparentCullFront,
+    /// Transparent volume proxy pass (Cull Front, depth test Always — see Unity FogBox `ZTest Always`).
+    ForwardTransparentVolume,
     /// Transparent forward material pass with fixed back-face culling.
     ForwardTransparentCullBack,
     /// Static transparent RGB-only material pass.
@@ -43,6 +45,7 @@ impl BuildPassKind {
             "forward_transparent_cull_front" | "transparent_cull_front" | "transparent_front" => {
                 Ok(Self::ForwardTransparentCullFront)
             }
+            "forward_transparent_volume" | "transparent_volume" => Ok(Self::ForwardTransparentVolume),
             "forward_transparent_cull_back" | "transparent_cull_back" | "transparent_back" => {
                 Ok(Self::ForwardTransparentCullBack)
             }
@@ -67,6 +70,7 @@ impl BuildPassKind {
             Self::ForwardTwoSided => "ForwardTwoSided",
             Self::ForwardTransparent => "ForwardTransparent",
             Self::ForwardTransparentCullFront => "ForwardTransparentCullFront",
+            Self::ForwardTransparentVolume => "ForwardTransparentVolume",
             Self::ForwardTransparentCullBack => "ForwardTransparentCullBack",
             Self::TransparentRgb => "TransparentRgb",
             Self::Outline => "Outline",
@@ -88,6 +92,8 @@ pub(super) struct BuildPassDirective {
     pub fragment_entry: String,
     /// Vertex entry point for this pass. Defaults to `vs_main`; overridden via `vs=...`.
     pub vertex_entry: String,
+    /// Whether `vertex_entry` was explicitly authored via `vs=` in the directive.
+    pub vertex_entry_explicit: bool,
     /// Whether this pass enables hardware alpha-to-coverage.
     pub alpha_to_coverage: bool,
 }
@@ -167,6 +173,7 @@ pub(super) fn parse_pass_directives(
         let kind_value = tokens.next().unwrap_or("");
         let kind = BuildPassKind::parse(kind_value, file, line_no)?;
         let mut vertex_entry = "vs_main".to_string();
+        let mut vertex_entry_explicit = false;
         let mut alpha_to_coverage = false;
         for token in tokens {
             let (key, value) = token.split_once('=').ok_or_else(|| {
@@ -175,7 +182,10 @@ pub(super) fn parse_pass_directives(
                 ))
             })?;
             match key.trim().to_ascii_lowercase().as_str() {
-                "vs" | "vertex" => vertex_entry = value.trim().to_string(),
+                "vs" | "vertex" => {
+                    vertex_entry = value.trim().to_string();
+                    vertex_entry_explicit = true;
+                }
                 "a2c" | "alpha_to_coverage" => {
                     alpha_to_coverage = parse_bool_value(value.trim(), file, line_no, key.trim())?;
                 }
@@ -191,6 +201,7 @@ pub(super) fn parse_pass_directives(
             kind,
             fragment_entry,
             vertex_entry,
+            vertex_entry_explicit,
             alpha_to_coverage,
         });
     }
@@ -249,7 +260,10 @@ pub(super) fn pass_literal(pass: &BuildPassDirective) -> String {
         "crate::materials::pass_from_kind(crate::materials::PassKind::{kind}, {fs:?})",
         fs = pass.fragment_entry.as_str(),
     );
-    match (pass.vertex_entry == "vs_main", pass.alpha_to_coverage) {
+    match (
+        pass.vertex_entry == "vs_main" && !pass.vertex_entry_explicit,
+        pass.alpha_to_coverage,
+    ) {
         (true, false) => base,
         (false, false) => format!(
             "crate::materials::MaterialPassDesc {{ vertex_entry: {vs:?}, ..{base} }}",
@@ -310,6 +324,7 @@ fn fs_outline() -> @location(0) vec4<f32> {
                 kind: BuildPassKind::Outline,
                 fragment_entry: "fs_outline".to_string(),
                 vertex_entry: "vs_outline".to_string(),
+                vertex_entry_explicit: true,
                 alpha_to_coverage: false,
             }]
         );
@@ -336,6 +351,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                 kind: BuildPassKind::Forward,
                 fragment_entry: "fs_main".to_string(),
                 vertex_entry: "vs_main".to_string(),
+                vertex_entry_explicit: false,
                 alpha_to_coverage: true,
             }]
         );
@@ -369,12 +385,14 @@ fn fs_circle() -> @location(0) vec4<f32> {
                     kind: BuildPassKind::ForwardTwoSided,
                     fragment_entry: "fs_depth_projection".to_string(),
                     vertex_entry: "vs_main".to_string(),
+                    vertex_entry_explicit: false,
                     alpha_to_coverage: false,
                 },
                 BuildPassDirective {
                     kind: BuildPassKind::TransparentRgb,
                     fragment_entry: "fs_circle".to_string(),
                     vertex_entry: "vs_main".to_string(),
+                    vertex_entry_explicit: false,
                     alpha_to_coverage: false,
                 },
             ]
@@ -435,18 +453,21 @@ fn fs_front_faces() -> @location(0) vec4<f32> {
                     kind: BuildPassKind::ForwardTransparent,
                     fragment_entry: "fs_transparent".to_string(),
                     vertex_entry: "vs_main".to_string(),
+                    vertex_entry_explicit: false,
                     alpha_to_coverage: false,
                 },
                 BuildPassDirective {
                     kind: BuildPassKind::ForwardTransparentCullFront,
                     fragment_entry: "fs_back_faces".to_string(),
                     vertex_entry: "vs_main".to_string(),
+                    vertex_entry_explicit: false,
                     alpha_to_coverage: false,
                 },
                 BuildPassDirective {
                     kind: BuildPassKind::ForwardTransparentCullBack,
                     fragment_entry: "fs_front_faces".to_string(),
                     vertex_entry: "vs_main".to_string(),
+                    vertex_entry_explicit: false,
                     alpha_to_coverage: false,
                 },
             ]

@@ -4,17 +4,53 @@ use crate::materials::ShaderPermutation;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
     MaterialBlendMode, MaterialPipelinePropertyIds, MaterialRenderState, MaterialRouter,
-    RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology, embedded_stem_needs_color_stream,
+    RasterFrontFace, RasterPipelineKind, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream,
     embedded_stem_needs_uv1_stream, embedded_stem_requires_intersection_pass,
     embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
     embedded_stem_uses_scene_depth_snapshot, fallback_render_queue_for_material,
     material_blend_mode_from_maps, material_render_queue_from_maps,
-    material_render_state_from_maps, resolve_raster_pipeline,
+    material_render_state_from_maps, resolve_raster_pipeline, UNITY_RENDER_QUEUE_VOLUME_FOG,
 };
 
 use super::FrameMaterialBatchCache;
 use super::key::MaterialDrawBatchKey;
+
+/// Fallback Unity render queue when the host omits `_RenderQueue`.
+///
+/// Fog volume materials default **after** normal transparent PBS draws so sorted order does not paint
+/// nearer alpha-tested meshes over the fog pass (which reads as “no fog on trees”).
+fn fallback_render_queue_for_pipeline(pipeline: &RasterPipelineKind, alpha_blended: bool) -> i32 {
+    match pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) if stem.contains("fogboxvolume") => {
+            if alpha_blended {
+                UNITY_RENDER_QUEUE_VOLUME_FOG
+            } else {
+                fallback_render_queue_for_material(false)
+            }
+        }
+        _ => fallback_render_queue_for_material(alpha_blended),
+    }
+}
+
+/// Worlds often pin `_RenderQueue` to `Transparent` (3000) on fog — same as PBS foliage, so sort order
+/// paints trees **after** the fog pass and replaces blended fog. After resolving the host override,
+/// bump fog to at least [`UNITY_RENDER_QUEUE_VOLUME_FOG`] so it composites on top.
+fn apply_fogbox_render_queue_floor(
+    pipeline: &RasterPipelineKind,
+    alpha_blended: bool,
+    render_queue: i32,
+) -> i32 {
+    if !alpha_blended {
+        return render_queue;
+    }
+    match pipeline {
+        RasterPipelineKind::EmbeddedStem(stem) if stem.contains("fogboxvolume") => {
+            render_queue.max(UNITY_RENDER_QUEUE_VOLUME_FOG)
+        }
+        _ => render_queue,
+    }
+}
 
 /// Read-only material-resolution context threaded through the cache refresh walker and the cached
 /// batch-key lookup.
@@ -69,8 +105,8 @@ pub(crate) fn batch_key_for_slot(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
+    point_topology: bool,
     front_face: RasterFrontFace,
-    primitive_topology: RasterPrimitiveTopology,
     ctx: MaterialResolveCtx<'_>,
 ) -> MaterialDrawBatchKey {
     let shader_asset_id = ctx
@@ -133,11 +169,15 @@ pub(crate) fn batch_key_for_slot(
         RasterPipelineKind::Null => false,
     } || material_blend_mode.is_transparent()
         || embedded_uses_scene_color_snapshot;
-    let render_queue = material_render_queue_from_maps(
-        mat_map,
-        pb_map,
-        ctx.pipeline_property_ids,
-        fallback_render_queue_for_material(alpha_blended),
+    let render_queue = apply_fogbox_render_queue_floor(
+        &pipeline,
+        alpha_blended,
+        material_render_queue_from_maps(
+            mat_map,
+            pb_map,
+            ctx.pipeline_property_ids,
+            fallback_render_queue_for_pipeline(&pipeline, alpha_blended),
+        ),
     );
     MaterialDrawBatchKey {
         pipeline,
@@ -146,7 +186,7 @@ pub(crate) fn batch_key_for_slot(
         property_block_slot0: property_block_id,
         skinned,
         front_face,
-        primitive_topology,
+        point_topology,
         embedded_needs_uv0,
         embedded_needs_color,
         embedded_needs_uv1,
@@ -168,8 +208,8 @@ pub(crate) fn batch_key_for_slot_cached(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
+    point_topology: bool,
     front_face: RasterFrontFace,
-    primitive_topology: RasterPrimitiveTopology,
     cache: &FrameMaterialBatchCache,
     ctx: MaterialResolveCtx<'_>,
 ) -> MaterialDrawBatchKey {
@@ -178,8 +218,8 @@ pub(crate) fn batch_key_for_slot_cached(
             material_asset_id,
             property_block_id,
             skinned,
+            point_topology,
             front_face,
-            primitive_topology,
             resolved,
         )
     } else {
@@ -187,8 +227,8 @@ pub(crate) fn batch_key_for_slot_cached(
             material_asset_id,
             property_block_id,
             skinned,
+            point_topology,
             front_face,
-            primitive_topology,
             ctx,
         )
     }
@@ -242,11 +282,15 @@ pub(crate) fn resolve_material_batch(
     let alpha_blended = embedded_uses_alpha_blending
         || blend_mode.is_transparent()
         || embedded_uses_scene_color_snapshot;
-    let render_queue = material_render_queue_from_maps(
-        mat_map,
-        pb_map,
-        pipeline_property_ids,
-        fallback_render_queue_for_material(alpha_blended),
+    let render_queue = apply_fogbox_render_queue_floor(
+        &pipeline,
+        alpha_blended,
+        material_render_queue_from_maps(
+            mat_map,
+            pb_map,
+            pipeline_property_ids,
+            fallback_render_queue_for_pipeline(&pipeline, alpha_blended),
+        ),
     );
     ResolvedMaterialBatch {
         shader_asset_id,
@@ -271,8 +315,8 @@ fn batch_key_from_resolved(
     material_asset_id: i32,
     property_block_id: Option<i32>,
     skinned: bool,
+    point_topology: bool,
     front_face: RasterFrontFace,
-    primitive_topology: RasterPrimitiveTopology,
     r: &ResolvedMaterialBatch,
 ) -> MaterialDrawBatchKey {
     MaterialDrawBatchKey {
@@ -282,7 +326,7 @@ fn batch_key_from_resolved(
         property_block_slot0: property_block_id,
         skinned,
         front_face,
-        primitive_topology,
+        point_topology,
         embedded_needs_uv0: r.embedded_needs_uv0,
         embedded_needs_color: r.embedded_needs_color,
         embedded_needs_uv1: r.embedded_needs_uv1,
@@ -294,5 +338,24 @@ fn batch_key_from_resolved(
         render_state: r.render_state,
         blend_mode: r.blend_mode,
         alpha_blended: r.alpha_blended,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn fogbox_render_queue_floor_raises_explicit_transparent_override() {
+        let pipeline = RasterPipelineKind::EmbeddedStem(Arc::from("fogboxvolume_default"));
+        assert_eq!(
+            apply_fogbox_render_queue_floor(&pipeline, true, 3000),
+            UNITY_RENDER_QUEUE_VOLUME_FOG
+        );
+        assert_eq!(
+            apply_fogbox_render_queue_floor(&pipeline, true, 4100),
+            4100
+        );
     }
 }

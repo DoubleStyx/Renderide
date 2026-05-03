@@ -102,6 +102,10 @@ pub(crate) struct EmbeddedSharedKeywordIds {
     pub(crate) main_cube: i32,
     /// `Projection360` secondary cubemap texture binding.
     pub(crate) second_cube: i32,
+    /// FrooxEngine `FogBoxVolumeMaterial` / Unity `Volume/FogBox`: Froox sends `AccumulationMode` as this float
+    /// enum (0=Linear, 1=Exp, 2=Exp2), not the `FOG_*` shader keyword floats until a UI toggle.
+    pub(crate) accumulation_mode: i32,
+    pub(crate) accumulation_mode_legacy: i32,
 }
 
 impl EmbeddedSharedKeywordIds {
@@ -162,6 +166,8 @@ impl EmbeddedSharedKeywordIds {
             offset_tex: registry.intern("_OffsetTex"),
             main_cube: registry.intern("_MainCube"),
             second_cube: registry.intern("_SecondCube"),
+            accumulation_mode: registry.intern("_AccumulationMode"),
+            accumulation_mode_legacy: registry.intern("AccumulationMode"),
         }
     }
 }

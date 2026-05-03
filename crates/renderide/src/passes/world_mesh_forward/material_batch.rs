@@ -14,7 +14,6 @@ use crate::materials::{EmbeddedMaterialBindResources, EmbeddedTexturePools};
 use crate::materials::{
     MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineSet, MaterialPipelineVariantSpec,
     MaterialRegistry, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
-    RasterPrimitiveTopology,
 };
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
@@ -52,8 +51,8 @@ pub(crate) struct PipelineVariantKeyInput {
     pub render_state: MaterialRenderState,
     /// Front-face winding selected from the draw transform.
     pub front_face: RasterFrontFace,
-    /// Primitive topology selected from the mesh's per-submesh topology.
-    pub primitive_topology: RasterPrimitiveTopology,
+    /// Whether this batch uses point-list topology.
+    pub point_topology: bool,
 }
 
 /// Exact material pipeline variant used by both pipeline pre-warm and record-time resolution.
@@ -77,8 +76,8 @@ pub(crate) struct PipelineVariantKey {
     pub render_state: MaterialRenderState,
     /// Front-face winding selected from the draw transform.
     pub front_face: RasterFrontFace,
-    /// Primitive topology selected from the mesh's per-submesh topology.
-    pub primitive_topology: RasterPrimitiveTopology,
+    /// Whether this batch uses point-list topology.
+    pub point_topology: bool,
 }
 
 impl PipelineVariantKey {
@@ -91,7 +90,7 @@ impl PipelineVariantKey {
             blend_mode,
             render_state,
             front_face,
-            primitive_topology,
+            point_topology,
         } = input;
         Self {
             shader_asset_id,
@@ -103,7 +102,7 @@ impl PipelineVariantKey {
             blend_mode,
             render_state,
             front_face,
-            primitive_topology,
+            point_topology,
         }
     }
 
@@ -131,7 +130,7 @@ impl PipelineVariantKey {
             blend_mode: batch_key.blend_mode,
             render_state: batch_key.render_state,
             front_face: batch_key.front_face,
-            primitive_topology: batch_key.primitive_topology,
+            point_topology: batch_key.point_topology,
         })
     }
 }
@@ -184,9 +183,16 @@ impl<'a> MaterialDrawResolver<'a> {
             return Vec::new();
         }
 
+        let uniform_upload_epoch = self
+            .embedded_bind
+            .map(|bind| bind.bump_uniform_upload_epoch())
+            .unwrap_or(0);
+
         collect_material_batch_boundaries(draws)
             .into_par_iter()
-            .map(|(first, last)| self.resolve_one_batch(draws, first, last))
+            .map(|(first, last)| {
+                self.resolve_one_batch(draws, first, last, uniform_upload_epoch)
+            })
             .collect()
     }
 
@@ -196,6 +202,7 @@ impl<'a> MaterialDrawResolver<'a> {
         draws: &[WorldMeshDrawItem],
         first: usize,
         last: usize,
+        uniform_upload_epoch: u64,
     ) -> MaterialBatchPacket {
         let item = &draws[first];
         let mut pipeline_key =
@@ -209,7 +216,7 @@ impl<'a> MaterialDrawResolver<'a> {
         }
 
         let pipelines = self.resolve_pipelines(pipeline_key);
-        let bind_group = self.resolve_embedded_bind_group(item);
+        let bind_group = self.resolve_embedded_bind_group(item, uniform_upload_epoch);
 
         MaterialBatchPacket {
             first_draw_idx: first,
@@ -233,7 +240,7 @@ impl<'a> MaterialDrawResolver<'a> {
                 blend_mode: pipeline_key.blend_mode,
                 render_state: pipeline_key.render_state,
                 front_face: pipeline_key.front_face,
-                primitive_topology: pipeline_key.primitive_topology,
+                point_topology: pipeline_key.point_topology,
             },
         );
 
@@ -260,6 +267,7 @@ impl<'a> MaterialDrawResolver<'a> {
     fn resolve_embedded_bind_group(
         &self,
         item: &WorldMeshDrawItem,
+        uniform_upload_epoch: u64,
     ) -> Option<Arc<wgpu::BindGroup>> {
         let batch_key = &item.batch_key;
         if !matches!(&batch_key.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
@@ -286,6 +294,7 @@ impl<'a> MaterialDrawResolver<'a> {
                     &self.pools,
                     item.lookup_ids,
                     self.offscreen_write_render_texture_asset_id,
+                    uniform_upload_epoch,
                 )
                 .ok()
                 .map(|(_, bg)| bg)
@@ -333,7 +342,7 @@ mod tests {
             blend_mode: MaterialBlendMode::Opaque,
             render_state: MaterialRenderState::default(),
             front_face: RasterFrontFace::CounterClockwise,
-            primitive_topology: RasterPrimitiveTopology::TriangleList,
+            point_topology: false,
         })
     }
 
