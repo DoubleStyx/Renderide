@@ -63,7 +63,7 @@ pub(super) fn compile_shader_job(
         .and_then(|s| s.to_str())
         .ok_or_else(|| BuildError::Message(format!("invalid stem: {}", source_path.display())))?;
     let (source, file_path) = shader_source_for_compile(source_path)?;
-    let pass_directives = parse_pass_directives(&source, &file_path)?;
+    let mut pass_directives = parse_pass_directives(&source, &file_path)?;
     if job.validation.require_pass_directive && pass_directives.is_empty() {
         return Err(BuildError::Message(format!(
             "{file_path}: material WGSL must declare at least one //#pass directive (e.g. //#pass forward)"
@@ -77,12 +77,12 @@ pub(super) fn compile_shader_job(
     validate_entry_points(
         &default_module,
         &format!("{stem} ({})", ShaderVariant::Default.label()),
-        &pass_directives,
+        &mut pass_directives,
     )?;
     validate_entry_points(
         &multiview_module,
         &format!("{stem} ({})", ShaderVariant::Multiview.label()),
-        &pass_directives,
+        &mut pass_directives,
     )?;
     validate_no_pipeline_state_uniform_fields(
         &default_module,

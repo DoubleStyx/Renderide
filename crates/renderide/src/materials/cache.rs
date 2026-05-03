@@ -126,6 +126,16 @@ impl MaterialPipelineCacheStatsAtomic {
 }
 
 impl MaterialPipelineCache {
+    fn pop_wgpu_error_scope(
+        scope_guard: wgpu::ErrorScopeGuard,
+        scope: &'static str,
+    ) -> Result<(), PipelineBuildError> {
+        if let Some(err) = pollster::block_on(scope_guard.pop()) {
+            return Err(PipelineBuildError::WgpuScoped(format!("{scope}: {err}")));
+        }
+        Ok(())
+    }
+
     /// Creates an empty cache for `device` with the device's effective [`crate::gpu::GpuLimits`].
     pub fn new(device: Arc<wgpu::Device>, limits: Arc<crate::gpu::GpuLimits>) -> Self {
         Self {
@@ -171,11 +181,14 @@ impl MaterialPipelineCache {
             RasterPipelineKind::Null => build_null_wgsl(key.permutation)?,
         };
         let device = self.device.clone();
+        let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let oom_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("raster_material_shader"),
             source: wgpu::ShaderSource::Wgsl(wgsl.clone().into()),
         });
-        let pipelines: Vec<wgpu::RenderPipeline> = match &key.kind {
+        let pipelines_result: Result<Vec<wgpu::RenderPipeline>, PipelineBuildError> = match &key.kind {
             RasterPipelineKind::EmbeddedStem(stem) => create_embedded_render_pipelines(
                 EmbeddedRasterPipelineSource {
                     stem: stem.clone(),
@@ -192,9 +205,9 @@ impl MaterialPipelineCache {
                     desc: &desc,
                     wgsl_source: &wgsl,
                 },
-            )?,
+            ),
             RasterPipelineKind::Null => {
-                vec![create_null_render_pipeline(
+                Ok(vec![create_null_render_pipeline(
                     &device,
                     &self.limits,
                     &module,
@@ -202,9 +215,16 @@ impl MaterialPipelineCache {
                     &wgsl,
                     key.front_face,
                     key.point_topology,
-                )?]
+                )?])
             }
         };
+        let validation_scope = Self::pop_wgpu_error_scope(validation_scope, "validation");
+        let oom_scope = Self::pop_wgpu_error_scope(oom_scope, "out_of_memory");
+        let internal_scope = Self::pop_wgpu_error_scope(internal_scope, "internal");
+        let pipelines = pipelines_result?;
+        validation_scope?;
+        oom_scope?;
+        internal_scope?;
         let set: MaterialPipelineSet = Arc::from(pipelines.into_boxed_slice());
         let mut cache = self.pipelines.lock();
         if let Some(existing) = cache.get(&key) {

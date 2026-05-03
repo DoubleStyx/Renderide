@@ -47,7 +47,7 @@ fn vs_main(
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) primary_uv: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let scale = max(10.0 - 10.0 * mat._WaveScale, 1e-4);
     let dist = vor::voronoi_min_dist(primary_uv * scale, mat._AnimationOffset);

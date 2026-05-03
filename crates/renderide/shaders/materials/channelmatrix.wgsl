@@ -37,7 +37,7 @@ fn vs_main(
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let c = gp::sample_scene_color(gp::frag_screen_uv(frag_pos), view_layer);
     let remapped = vec3<f32>(

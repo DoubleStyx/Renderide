@@ -19,4 +19,7 @@ pub enum PipelineBuildError {
         /// Material stem label used in pipeline creation.
         label: &'static str,
     },
+    /// wgpu reported a scoped pipeline-build failure (validation/OOM/internal).
+    #[error("wgpu pipeline build error: {0}")]
+    WgpuScoped(String),
 }

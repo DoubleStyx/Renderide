@@ -58,7 +58,7 @@ fn equirect_to_dir(uv: vec2<f32>) -> vec3<f32> {
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) primary_uv: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     var dir = equirect_to_dir(primary_uv);
     let rot3 = mat3x3<f32>(mat._Rotation[0].xyz, mat._Rotation[1].xyz, mat._Rotation[2].xyz);
