@@ -141,6 +141,22 @@ mod tests {
         assert!((m.col(2).z - 1.0).abs() < 1e-6);
     }
 
+    /// An all-zero scale vector also falls back axis-by-axis so translation remains usable.
+    #[test]
+    fn zero_scale_vector_falls_back_to_unit_scale_matrix() {
+        let t = RenderTransform {
+            position: Vec3::new(3.0, 4.0, 5.0),
+            scale: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+        };
+        let m = render_transform_to_matrix(&t);
+
+        assert!((m.col(0).x - 1.0).abs() < 1e-6);
+        assert!((m.col(1).y - 1.0).abs() < 1e-6);
+        assert!((m.col(2).z - 1.0).abs() < 1e-6);
+        assert_eq!(m.col(3).truncate(), Vec3::new(3.0, 4.0, 5.0));
+    }
+
     /// A zero-length rotation quaternion falls back to identity; a finite non-unit quaternion is
     /// passed through so glam can normalize it inside [`glam::Mat4::from_scale_rotation_translation`].
     #[test]
@@ -151,6 +167,19 @@ mod tests {
             rotation: Quat::from_xyzw(0.0, 0.0, 0.0, 0.0),
         };
         let m = render_transform_to_matrix(&t);
+        assert!(m.abs_diff_eq(Mat4::IDENTITY, 1e-6));
+    }
+
+    /// A near-zero quaternion below the guard threshold follows the same identity fallback.
+    #[test]
+    fn near_zero_quaternion_falls_back_to_identity_rotation() {
+        let t = RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::from_xyzw(1.0e-10, -1.0e-10, 1.0e-10, -1.0e-10),
+        };
+        let m = render_transform_to_matrix(&t);
+
         assert!(m.abs_diff_eq(Mat4::IDENTITY, 1e-6));
     }
 
@@ -168,6 +197,27 @@ mod tests {
         assert_eq!(col3.x, 0.0);
         assert_eq!(col3.y, 0.0);
         assert_eq!(col3.z, 0.0);
+    }
+
+    /// Large finite translations and tiny finite scales survive without producing non-finite output.
+    #[test]
+    fn large_translation_and_tiny_scale_stay_finite() {
+        let position = Vec3::new(1.0e20, -1.0e20, 3.5e19);
+        let scale_axis = MIN_RENDER_SCALE * 10.0;
+        let t = RenderTransform {
+            position,
+            scale: Vec3::splat(scale_axis),
+            rotation: Quat::IDENTITY,
+        };
+        let m = render_transform_to_matrix(&t);
+
+        for value in m.to_cols_array() {
+            assert!(value.is_finite());
+        }
+        assert_eq!(m.col(3).truncate(), position);
+        assert_eq!(m.col(0).x, scale_axis);
+        assert_eq!(m.col(1).y, scale_axis);
+        assert_eq!(m.col(2).z, scale_axis);
     }
 
     /// [`multiply_root`] composes the root TRS on the **left**: applying it to an object-local
