@@ -42,16 +42,14 @@ impl HudWindow for FrameTimingWindow {
         let xy = layout::frame_timing_xy();
         WindowSlot {
             position: xy,
+            size: [CONTENT_WIDTH, 120.0],
             size_min: [CONTENT_WIDTH, 0.0],
             size_max: [f32::INFINITY, f32::INFINITY],
         }
     }
 
     fn flags(&self) -> WindowFlags {
-        WindowFlags::ALWAYS_AUTO_RESIZE
-            | WindowFlags::NO_SAVED_SETTINGS
-            | WindowFlags::NO_FOCUS_ON_APPEARING
-            | WindowFlags::NO_NAV
+        WindowFlags::ALWAYS_AUTO_RESIZE | WindowFlags::NO_FOCUS_ON_APPEARING | WindowFlags::NO_NAV
     }
 
     fn bg_alpha(&self) -> f32 {

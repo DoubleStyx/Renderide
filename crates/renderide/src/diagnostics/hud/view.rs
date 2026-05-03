@@ -41,9 +41,9 @@ pub trait HudWindow {
     /// First-use placement resolved against the current viewport.
     fn anchor(&self, viewport: Viewport) -> WindowSlot;
 
-    /// ImGui window flags (defaults: `ALWAYS_AUTO_RESIZE | NO_SAVED_SETTINGS`).
+    /// ImGui window flags.
     fn flags(&self) -> WindowFlags {
-        WindowFlags::ALWAYS_AUTO_RESIZE | WindowFlags::NO_SAVED_SETTINGS
+        WindowFlags::empty()
     }
 
     /// Background alpha (defaults to a translucent overlay so renderer output stays visible).

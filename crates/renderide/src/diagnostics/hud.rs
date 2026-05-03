@@ -21,6 +21,7 @@
 pub mod fmt;
 pub(crate) mod input;
 pub mod layout;
+pub(crate) mod persistence;
 pub mod registry;
 pub mod state;
 pub mod view;
@@ -28,16 +29,18 @@ pub mod windows;
 
 pub use state::HudUiState;
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use imgui::{Condition, Context, FontConfig, FontSource};
 use imgui_wgpu::{Renderer as ImguiWgpuRenderer, RendererConfig};
 
-use crate::config::RendererSettingsHandle;
+use crate::config::{DebugHudSettings, RendererSettingsHandle, save_renderer_settings};
 
 use self::input::apply_input;
 use self::layout::Viewport;
+use self::persistence::{imgui_ini_path_from_config_save_path, write_text_atomic};
 use self::registry::{DebugWindow, OverlayFeatureFlags};
 use self::view::HudWindow;
 use self::windows::frame_timing::FrameTimingWindow;
@@ -72,6 +75,8 @@ pub struct DebugHud {
     /// Live settings + persistence target for the **Renderer config** window.
     renderer_settings: RendererSettingsHandle,
     config_save_path: PathBuf,
+    /// Sidecar path for Dear ImGui's raw window layout settings.
+    imgui_ini_path: PathBuf,
     /// When `true`, do not write `config.toml` from the overlay (startup Figment extract failed).
     suppress_renderer_config_disk_writes: bool,
     /// Most recent flattened per-pass GPU timings for the **GPU passes** tab. Empty until the
@@ -90,10 +95,19 @@ impl DebugHud {
         config_save_path: PathBuf,
         suppress_renderer_config_disk_writes: bool,
     ) -> Self {
+        let hud_settings = renderer_settings
+            .read()
+            .map(|g| g.debug.hud.clone())
+            .unwrap_or_else(|_| DebugHudSettings::default());
+
         let mut imgui = Context::create();
         imgui.set_ini_filename(None);
         imgui.set_log_filename(None);
-        imgui.io_mut().config_windows_move_from_title_bar_only = true;
+        {
+            let io = imgui.io_mut();
+            io.config_windows_move_from_title_bar_only = true;
+            io.font_global_scale = hud_settings.resolved_ui_scale();
+        }
         imgui.fonts().add_font(&[FontSource::DefaultFontData {
             config: Some(FontConfig {
                 oversample_h: 2,
@@ -102,6 +116,9 @@ impl DebugHud {
                 ..FontConfig::default()
             }),
         }]);
+
+        let imgui_ini_path = imgui_ini_path_from_config_save_path(&config_save_path);
+        Self::load_imgui_ini_if_enabled(&mut imgui, &imgui_ini_path, &hud_settings);
 
         let mut renderer_config = RendererConfig::new();
         renderer_config.texture_format = surface_format;
@@ -116,9 +133,10 @@ impl DebugHud {
             frame_diagnostics: None,
             scene_transforms: SceneTransformsSnapshot::default(),
             texture_debug: TextureDebugSnapshot::default(),
-            ui_state: HudUiState::default(),
+            ui_state: HudUiState::from_settings(&hud_settings),
             renderer_settings,
             config_save_path,
+            imgui_ini_path,
             suppress_renderer_config_disk_writes,
             gpu_pass_timings: Vec::new(),
         }
@@ -186,12 +204,87 @@ impl DebugHud {
         profiling::scope!("hud::apply_input");
         let delta = self.last_frame_at.elapsed().max(Duration::from_millis(1));
         self.last_frame_at = Instant::now();
+        let hud_settings = self.current_hud_settings();
 
         let io = self.imgui.io_mut();
         io.display_size = [width as f32, height as f32];
         io.display_framebuffer_scale = [1.0, 1.0];
+        io.font_global_scale = hud_settings.resolved_ui_scale();
         io.update_delta_time(delta);
         apply_input(io, input);
+    }
+
+    fn current_hud_settings(&self) -> DebugHudSettings {
+        self.renderer_settings
+            .read()
+            .map(|g| g.debug.hud.clone())
+            .unwrap_or_else(|_| DebugHudSettings::default())
+    }
+
+    fn load_imgui_ini_if_enabled(
+        imgui: &mut Context,
+        imgui_ini_path: &Path,
+        hud_settings: &DebugHudSettings,
+    ) {
+        if !hud_settings.persist_layout {
+            return;
+        }
+
+        match std::fs::read_to_string(imgui_ini_path) {
+            Ok(data) => imgui.load_ini_settings(&data),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                logger::warn!(
+                    "Failed to read ImGui layout from {}: {e}",
+                    imgui_ini_path.display()
+                );
+            }
+        }
+    }
+
+    fn persist_ui_state_to_config_if_changed(&mut self) {
+        let Ok(mut g) = self.renderer_settings.write() else {
+            logger::warn!("Failed to persist HUD state: renderer settings store is unavailable");
+            return;
+        };
+
+        if !self.ui_state.write_to_settings(&mut g.debug.hud) {
+            return;
+        }
+
+        if self.suppress_renderer_config_disk_writes {
+            logger::error!(
+                "Refusing to save renderer config to {}: disk writes suppressed after startup extract failure",
+                self.config_save_path.display()
+            );
+            return;
+        }
+
+        if let Err(e) = save_renderer_settings(&self.config_save_path, &g) {
+            logger::warn!(
+                "Failed to save renderer config to {}: {e}",
+                self.config_save_path.display()
+            );
+        }
+    }
+
+    fn save_imgui_ini_if_requested(&mut self) {
+        if !self.imgui.io().want_save_ini_settings {
+            return;
+        }
+
+        if self.current_hud_settings().persist_layout {
+            let mut contents = String::new();
+            self.imgui.save_ini_settings(&mut contents);
+            if let Err(e) = write_text_atomic(&self.imgui_ini_path, &contents) {
+                logger::warn!(
+                    "Failed to save ImGui layout to {}: {e}",
+                    self.imgui_ini_path.display()
+                );
+            }
+        }
+
+        self.imgui.io_mut().want_save_ini_settings = false;
     }
 
     /// Returns `true` when at least one HUD window will draw something this frame.
@@ -320,7 +413,10 @@ impl DebugHud {
             }
         }
 
-        self.encode_imgui_wgpu_pass(device, queue, encoder, backbuffer)
+        let result = self.encode_imgui_wgpu_pass(device, queue, encoder, backbuffer);
+        self.persist_ui_state_to_config_if_changed();
+        self.save_imgui_ini_if_requested();
+        result
     }
 }
 
@@ -341,6 +437,7 @@ fn render_window<W>(
     let mut builder = ui
         .window(window.title())
         .position(slot.position, Condition::FirstUseEver)
+        .size(slot.size, Condition::FirstUseEver)
         .size_constraints(slot.size_min, slot.size_max)
         .bg_alpha(window.bg_alpha())
         .flags(window.flags());

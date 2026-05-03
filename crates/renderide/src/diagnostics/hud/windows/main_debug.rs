@@ -9,8 +9,9 @@ pub mod gpu_passes;
 pub mod shader_routes;
 pub mod stats;
 
-use imgui::WindowFlags;
+use imgui::{TabItem, TabItemFlags, WindowFlags};
 
+use crate::config::DebugHudMainTab;
 use crate::diagnostics::{FrameDiagnosticsSnapshot, RendererInfoSnapshot};
 use crate::profiling::GpuPassEntry;
 
@@ -53,18 +54,22 @@ impl HudWindow for MainDebugWindow {
     }
 
     fn flags(&self) -> WindowFlags {
-        WindowFlags::ALWAYS_AUTO_RESIZE
-            | WindowFlags::NO_RESIZE
-            | WindowFlags::NO_SAVED_SETTINGS
-            | WindowFlags::NO_FOCUS_ON_APPEARING
-            | WindowFlags::NO_NAV
+        WindowFlags::NO_FOCUS_ON_APPEARING | WindowFlags::NO_NAV
     }
 
     fn body(&self, ui: &imgui::Ui, data: Self::Data<'_>, state: &mut Self::State) {
         if let Some(_tab_bar) = ui.tab_bar("debug_tabs") {
             for &tab in DebugTab::ALL {
                 profiling::scope!("hud::render_tab");
-                if let Some(_tab_item) = ui.tab_item(tab.label()) {
+                let tab_id = tab.persisted_tab();
+                let flags = if state.main_tab_restore_pending && state.main_tab == tab_id {
+                    TabItemFlags::SET_SELECTED
+                } else {
+                    TabItemFlags::empty()
+                };
+                if let Some(_tab_item) = TabItem::new(tab.label()).flags(flags).begin(ui) {
+                    state.main_tab = tab_id;
+                    state.main_tab_restore_pending = false;
                     tab.render(ui, &data, state);
                 }
             }
@@ -108,6 +113,17 @@ impl DebugTab {
             Self::DrawState => "Draw state",
             Self::GpuMemory => "GPU memory",
             Self::GpuPasses => "GPU passes",
+        }
+    }
+
+    /// Stable config enum for this tab.
+    pub fn persisted_tab(self) -> DebugHudMainTab {
+        match self {
+            Self::Stats => DebugHudMainTab::Stats,
+            Self::ShaderRoutes => DebugHudMainTab::ShaderRoutes,
+            Self::DrawState => DebugHudMainTab::DrawState,
+            Self::GpuMemory => DebugHudMainTab::GpuMemory,
+            Self::GpuPasses => DebugHudMainTab::GpuPasses,
         }
     }
 

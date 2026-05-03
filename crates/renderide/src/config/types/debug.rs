@@ -48,6 +48,143 @@ impl PowerPreferenceSetting {
     }
 }
 
+labeled_enum! {
+    /// Last selected tab in the **Renderide debug** HUD window.
+    pub enum DebugHudMainTab: "debug HUD main tab" {
+        default => Stats;
+
+        /// Frame, adapter, host, IPC, scene, resource, and graph summary.
+        Stats => {
+            persist: "stats",
+            label: "Stats",
+        },
+        /// Host shader -> renderer pipeline route table.
+        ShaderRoutes => {
+            persist: "shader_routes",
+            label: "Shader routes",
+            aliases: ["shaders"],
+        },
+        /// Submitted draw rows and material render-state overrides.
+        DrawState => {
+            persist: "draw_state",
+            label: "Draw state",
+            aliases: ["draws"],
+        },
+        /// Full wgpu allocator report.
+        GpuMemory => {
+            persist: "gpu_memory",
+            label: "GPU memory",
+            aliases: ["memory"],
+        },
+        /// Per-pass GPU timing breakdown.
+        GpuPasses => {
+            persist: "gpu_passes",
+            label: "GPU passes",
+            aliases: ["passes"],
+        },
+    }
+}
+
+labeled_enum! {
+    /// Last selected tab in the **Renderer config** HUD window.
+    pub enum DebugHudRendererConfigTab: "renderer config HUD tab" {
+        default => Display;
+
+        /// Display caps and present-related controls.
+        Display => {
+            persist: "display",
+            label: "Display",
+        },
+        /// Rendering and graph controls.
+        Rendering => {
+            persist: "rendering",
+            label: "Rendering",
+        },
+        /// Debug and diagnostics controls.
+        Debug => {
+            persist: "debug",
+            label: "Debug",
+        },
+        /// Post-processing effect controls.
+        PostProcessing => {
+            persist: "post_processing",
+            label: "Post-Processing",
+            aliases: ["post-processing", "post"],
+        },
+    }
+}
+
+/// Persisted semantic state for the Dear ImGui diagnostics HUD.
+///
+/// ImGui-owned window placement and collapse data lives in the sidecar `.ini` file; this struct
+/// keeps renderer-owned UI preferences in `config.toml` so they share the existing config save
+/// path and write-suppression rules.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DebugHudSettings {
+    /// Whether the renderer should load/save ImGui's raw `.ini` layout sidecar.
+    pub persist_layout: bool,
+    /// Global HUD text scale. Clamped at use sites by [`Self::resolved_ui_scale`].
+    pub ui_scale: f32,
+    /// Whether the **Renderer config** window is open.
+    pub renderer_config_open: bool,
+    /// Whether the **Scene transforms** window is open.
+    pub scene_transforms_open: bool,
+    /// Whether the **Textures** window is open.
+    pub texture_debug_open: bool,
+    /// Show only textures referenced by the current view in the **Textures** window.
+    pub texture_debug_current_view_only: bool,
+    /// Show only overlay/UI-ish draws in the **Draw state** tab.
+    pub draw_state_ui_only: bool,
+    /// Show only material rows with render-state overrides in the **Draw state** tab.
+    pub draw_state_only_overrides: bool,
+    /// Show only fallback shader routes in the **Shader routes** tab.
+    pub shader_routes_only_fallback: bool,
+    /// Last selected tab in **Renderide debug**.
+    pub main_tab: DebugHudMainTab,
+    /// Last selected tab in **Renderer config**.
+    pub renderer_config_tab: DebugHudRendererConfigTab,
+    /// Last selected render-space tab in **Scene transforms**.
+    pub scene_transforms_space_id: Option<i32>,
+}
+
+impl Default for DebugHudSettings {
+    fn default() -> Self {
+        Self {
+            persist_layout: true,
+            ui_scale: Self::DEFAULT_UI_SCALE,
+            renderer_config_open: true,
+            scene_transforms_open: true,
+            texture_debug_open: true,
+            texture_debug_current_view_only: false,
+            draw_state_ui_only: false,
+            draw_state_only_overrides: false,
+            shader_routes_only_fallback: false,
+            main_tab: DebugHudMainTab::default(),
+            renderer_config_tab: DebugHudRendererConfigTab::default(),
+            scene_transforms_space_id: None,
+        }
+    }
+}
+
+impl DebugHudSettings {
+    /// Smallest accepted global HUD scale.
+    pub const MIN_UI_SCALE: f32 = 0.5;
+    /// Largest accepted global HUD scale.
+    pub const MAX_UI_SCALE: f32 = 2.0;
+    /// Default global HUD scale.
+    pub const DEFAULT_UI_SCALE: f32 = 1.0;
+
+    /// Returns a finite HUD scale clamped into the supported range.
+    pub fn resolved_ui_scale(&self) -> f32 {
+        if self.ui_scale.is_finite() {
+            self.ui_scale.clamp(Self::MIN_UI_SCALE, Self::MAX_UI_SCALE)
+        } else {
+            Self::DEFAULT_UI_SCALE
+        }
+    }
+}
+
 /// Debug and diagnostics flags. Persisted as `[debug]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -85,6 +222,8 @@ pub struct DebugSettings {
     /// diagnosing mip / sampler issues. Default false.
     #[serde(default)]
     pub debug_hud_textures: bool,
+    /// Semantic ImGui HUD state persisted through the renderer config.
+    pub hud: DebugHudSettings,
 }
 
 impl Default for DebugSettings {
@@ -97,6 +236,7 @@ impl Default for DebugSettings {
             debug_hud_enabled: false,
             debug_hud_transforms: false,
             debug_hud_textures: false,
+            hud: DebugHudSettings::default(),
         }
     }
 }
@@ -107,7 +247,10 @@ fn default_debug_hud_frame_timing() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::PowerPreferenceSetting;
+    use super::{
+        DebugHudMainTab, DebugHudRendererConfigTab, DebugHudSettings, PowerPreferenceSetting,
+    };
+    use crate::config::RendererSettings;
 
     #[test]
     fn power_preference_from_persist_str() {
@@ -128,5 +271,52 @@ mod tests {
             Some(PowerPreferenceSetting::HighPerformance)
         );
         assert_eq!(PowerPreferenceSetting::from_persist_str(""), None);
+    }
+
+    #[test]
+    fn missing_hud_table_uses_defaults() {
+        let s: RendererSettings = toml::from_str(
+            r#"
+            [debug]
+            debug_hud_enabled = true
+            "#,
+        )
+        .expect("old config without debug.hud should load");
+
+        assert_eq!(s.debug.hud, DebugHudSettings::default());
+        assert!(s.debug.debug_hud_enabled);
+    }
+
+    #[test]
+    fn hud_tab_tokens_roundtrip() {
+        let mut s = RendererSettings::default();
+        s.debug.hud.main_tab = DebugHudMainTab::GpuPasses;
+        s.debug.hud.renderer_config_tab = DebugHudRendererConfigTab::PostProcessing;
+
+        let text = toml::to_string(&s).expect("serialize");
+        assert!(text.contains("main_tab = \"gpu_passes\""));
+        assert!(text.contains("renderer_config_tab = \"post_processing\""));
+
+        let decoded: RendererSettings = toml::from_str(&text).expect("deserialize");
+        assert_eq!(decoded.debug.hud.main_tab, DebugHudMainTab::GpuPasses);
+        assert_eq!(
+            decoded.debug.hud.renderer_config_tab,
+            DebugHudRendererConfigTab::PostProcessing
+        );
+    }
+
+    #[test]
+    fn hud_ui_scale_resolves_to_supported_range() {
+        let mut s = DebugHudSettings {
+            ui_scale: 0.1,
+            ..Default::default()
+        };
+        assert_eq!(s.resolved_ui_scale(), DebugHudSettings::MIN_UI_SCALE);
+
+        s.ui_scale = 99.0;
+        assert_eq!(s.resolved_ui_scale(), DebugHudSettings::MAX_UI_SCALE);
+
+        s.ui_scale = f32::NAN;
+        assert_eq!(s.resolved_ui_scale(), DebugHudSettings::DEFAULT_UI_SCALE);
     }
 }
