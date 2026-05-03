@@ -1,7 +1,7 @@
 //! Layered loader for [`super::types::RendererSettings`].
 //!
 //! The load pipeline is expressed as an explicit ordered [`Vec<ConfigLayer>`] so the precedence
-//! chain (defaults → TOML file → `RENDERIDE_*` env → post-extract overrides like
+//! chain (defaults -> TOML file -> `RENDERIDE_*` env -> post-extract overrides like
 //! `RENDERIDE_GPU_VALIDATION`) is visible in one place. Each layer is one of the variants of
 //! [`ConfigLayer`]; pre-extract layers feed the figment merge, post-extract layers run as
 //! mutators on the extracted [`super::types::RendererSettings`].
@@ -82,7 +82,7 @@ pub struct LoadPipeline {
 }
 
 impl LoadPipeline {
-    /// Empty pipeline (no defaults inserted yet — the canonical chain always starts with
+    /// Empty pipeline (no defaults inserted yet -- the canonical chain always starts with
     /// [`ConfigLayer::Defaults`]).
     pub fn new() -> Self {
         Self::default()
@@ -158,8 +158,8 @@ pub fn apply_renderide_gpu_validation_env(settings: &mut RendererSettings) {
 /// Resolves `config.toml`, runs the canonical [`LoadPipeline`], and produces a
 /// [`ConfigLoadResult`].
 ///
-/// Precedence (top wins): post-extract mutators (`RENDERIDE_GPU_VALIDATION`) → `RENDERIDE_*`
-/// env → TOML file (skipped under [`ConfigFilePolicy::Ignore`]) → struct defaults.
+/// Precedence (top wins): post-extract mutators (`RENDERIDE_GPU_VALIDATION`) -> `RENDERIDE_*`
+/// env -> TOML file (skipped under [`ConfigFilePolicy::Ignore`]) -> struct defaults.
 ///
 /// When no file exists and [`renderide_config_env_nonempty`] is false, writes defaults to the
 /// save path (see [`super::resolve::resolve_save_path`]) and loads that file. This
@@ -424,7 +424,7 @@ focused_fps = 10
 
     #[test]
     fn pipeline_layers_apply_in_order() {
-        // Defaults → TOML → Env → PostExtract: env overrides TOML, post-extract overrides env.
+        // Defaults -> TOML -> Env -> PostExtract: env overrides TOML, post-extract overrides env.
         let _guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
         // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
         unsafe {

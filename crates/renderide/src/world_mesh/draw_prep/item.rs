@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use glam::Mat4;
 
+use crate::materials::RasterPrimitiveTopology;
 use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::scene::{MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, StaticMeshRenderer};
 use crate::world_mesh::materials::MaterialDrawBatchKey;
@@ -110,6 +111,24 @@ pub(crate) fn stacked_material_submesh_range(
         .copied()
 }
 
+/// Returns the primitive topology for one renderer material slot, applying the same "stacked"
+/// indexing as [`stacked_material_submesh_range`].
+///
+/// Returns [`RasterPrimitiveTopology::TriangleList`] when `topologies` is empty so the slot is
+/// drawn with the safe default rather than dropped.
+pub(crate) fn stacked_material_submesh_topology(
+    material_slot_index: usize,
+    topologies: &[RasterPrimitiveTopology],
+) -> RasterPrimitiveTopology {
+    let Some(last_index) = topologies.len().checked_sub(1) else {
+        return RasterPrimitiveTopology::TriangleList;
+    };
+    topologies
+        .get(material_slot_index.min(last_index))
+        .copied()
+        .unwrap_or(RasterPrimitiveTopology::TriangleList)
+}
+
 /// Counts material slots that can produce draws for `renderer` without allocating a fallback slot.
 pub(crate) fn resolved_material_slot_count(renderer: &StaticMeshRenderer) -> usize {
     if !renderer.material_slots.is_empty() {
@@ -143,7 +162,9 @@ pub fn resolved_material_slots<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::stacked_material_submesh_range;
+    use super::{
+        RasterPrimitiveTopology, stacked_material_submesh_range, stacked_material_submesh_topology,
+    };
 
     #[test]
     fn stacked_material_submesh_range_reuses_last_submesh_for_extra_slots() {
@@ -170,5 +191,34 @@ mod tests {
     #[test]
     fn stacked_material_submesh_range_returns_none_for_empty_submeshes() {
         assert_eq!(stacked_material_submesh_range(0, &[]), None);
+    }
+
+    #[test]
+    fn stacked_material_submesh_topology_reuses_last_topology_for_extra_slots() {
+        let t = [
+            RasterPrimitiveTopology::PointList,
+            RasterPrimitiveTopology::TriangleList,
+        ];
+
+        assert_eq!(
+            stacked_material_submesh_topology(0, &t),
+            RasterPrimitiveTopology::PointList,
+        );
+        assert_eq!(
+            stacked_material_submesh_topology(1, &t),
+            RasterPrimitiveTopology::TriangleList,
+        );
+        assert_eq!(
+            stacked_material_submesh_topology(99, &t),
+            RasterPrimitiveTopology::TriangleList,
+        );
+    }
+
+    #[test]
+    fn stacked_material_submesh_topology_falls_back_when_empty() {
+        assert_eq!(
+            stacked_material_submesh_topology(0, &[]),
+            RasterPrimitiveTopology::TriangleList,
+        );
     }
 }

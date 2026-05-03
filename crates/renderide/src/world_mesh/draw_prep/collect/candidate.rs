@@ -1,6 +1,7 @@
 //! Shared draw-candidate evaluation for world-mesh collection.
 
 use super::*;
+use crate::materials::RasterPrimitiveTopology;
 use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::materials::render_queue_is_transparent;
 use crate::scene::MeshRendererInstanceId;
@@ -46,6 +47,7 @@ pub(super) fn evaluate_draw_candidate(
     cache: &FrameMaterialBatchCache,
     candidate: DrawCandidate,
     front_face: RasterFrontFace,
+    primitive_topology: RasterPrimitiveTopology,
     rigid_world_matrix: Option<Mat4>,
     alpha_distance_sq: f32,
 ) -> Option<WorldMeshDrawItem> {
@@ -61,6 +63,7 @@ pub(super) fn evaluate_draw_candidate(
         candidate.property_block_id,
         candidate.skinned,
         front_face,
+        primitive_topology,
         cache,
         MaterialResolveCtx {
             dict: ctx.material_dict,
@@ -169,6 +172,7 @@ mod tests {
             &cache,
             candidate,
             RasterFrontFace::Clockwise,
+            RasterPrimitiveTopology::TriangleList,
             None,
             0.0,
         )

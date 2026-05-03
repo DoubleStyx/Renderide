@@ -1,5 +1,5 @@
 //! Fatal process faults (POSIX signals, Windows structured exceptions, macOS Mach exceptions) do
-//! not invoke Rust’s panic hook. This module registers [`crash_handler::CrashHandler`] so a short
+//! not invoke Rust's panic hook. This module registers [`crash_handler::CrashHandler`] so a short
 //! line is appended to the **same** log file as [`logger::init_for`], using only pre-opened fds and
 //! stack buffers in [`crash_handler::CrashEvent::on_crash`]. On Unix, writes use [`libc::write`]
 //! only (async-signal-safe). After [`crate::native_stdio::ensure_stdio_forwarded_to_logger`], fd 2
@@ -24,12 +24,12 @@
 //! best-effort symbolicates through [`backtrace::resolve`] (heap-allocating); both are guarded
 //! by a reentry flag plus [`std::panic::catch_unwind`] so a fault inside resolution cannot
 //! recurse. Stripped release binaries produce hex only from Phase 2. macOS keeps the
-//! signal-info line alone — the Mach exception callback runs on a dedicated thread, so a plain
+//! signal-info line alone -- the Mach exception callback runs on a dedicated thread, so a plain
 //! `trace` walks the wrong stack; proper macOS support requires unwinding from
 //! `thread_get_state` and is tracked as follow-up work.
 //!
 //! **Linux alt signal stack:** libstd's per-thread altstack (~8 KB) is too small for the
-//! gimli DWARF parser inside [`backtrace::resolve`] — a fatal-signal handler running on it
+//! gimli DWARF parser inside [`backtrace::resolve`] -- a fatal-signal handler running on it
 //! aborts Phase 2 partway through with no diagnostic. [`ensure_alt_signal_stack`] installs a
 //! 512 KB altstack on the main thread before [`crash_handler::CrashHandler::attach`] so
 //! Phase 2 has room to complete. Crashes on worker threads still use libstd's small altstack
@@ -54,7 +54,7 @@ const MAX_FRAMES: usize = 64;
 
 /// Byte capacity of the stack-allocated buffer used by [`format_frames_hex`].
 ///
-/// Holds [`MAX_FRAMES`] lines of `"  0x"` + 16 hex digits + newline (≈1.3 KB) plus the
+/// Holds [`MAX_FRAMES`] lines of `"  0x"` + 16 hex digits + newline (~=1.3 KB) plus the
 /// `"STACK (N frames):\n"` header with headroom.
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 const HEX_BUF_LEN: usize = 2048;
@@ -63,7 +63,7 @@ const HEX_BUF_LEN: usize = 2048;
 ///
 /// [`write_stack_trace`] `compare_exchange`s this to `true` before doing any trace work; a
 /// secondary fault inside [`symbolicate_frames`] would find it already set and fall through
-/// without attempting a nested capture. The flag is never cleared — by the time it is set,
+/// without attempting a nested capture. The flag is never cleared -- by the time it is set,
 /// the process is about to terminate.
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 static CRASH_REENTRY: AtomicBool = AtomicBool::new(false);
@@ -201,7 +201,7 @@ impl UnixCrashFds {
 #[cfg(unix)]
 unsafe fn write_loop_fd(fd: std::os::unix::io::RawFd, mut data: &[u8]) -> &[u8] {
     while !data.is_empty() {
-        // SAFETY: see the function contract above — `fd` is a valid open descriptor for write(2);
+        // SAFETY: see the function contract above -- `fd` is a valid open descriptor for write(2);
         // `errno_value()` only reads the thread-local errno pointer.
         let n = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
         if n < 0 {
@@ -228,7 +228,7 @@ unsafe fn write_loop_fd(fd: std::os::unix::io::RawFd, mut data: &[u8]) -> &[u8] 
 #[cfg(unix)]
 #[inline]
 unsafe fn errno_value() -> libc::c_int {
-    // SAFETY: see the function contract above — the thread-local errno pointer is always valid.
+    // SAFETY: see the function contract above -- the thread-local errno pointer is always valid.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     unsafe {
         *libc::__errno_location()
@@ -253,7 +253,7 @@ unsafe fn errno_value() -> libc::c_int {
 /// crash handler without silently aborting Phase 2.
 ///
 /// Idempotent: subsequent calls are no-ops once the flag is set. The stack memory is leaked
-/// for the process lifetime — freeing it would invite use-after-free from the next signal.
+/// for the process lifetime -- freeing it would invite use-after-free from the next signal.
 /// Affects only the thread that invokes this; worker threads keep libstd's default altstack
 /// and may lose Phase 2 if they crash, but Phase 1 (hex IPs) remains durable everywhere.
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -272,12 +272,12 @@ fn ensure_alt_signal_stack() -> Result<(), String> {
 
     // SAFETY: `ss` is fully initialized above with a pointer/length to a leaked
     // `Box<[u8]>` that lives for the process lifetime. Passing null for `oss` discards the
-    // previous altstack pointer — the previous backing memory leaks, but it was libstd's
+    // previous altstack pointer -- the previous backing memory leaks, but it was libstd's
     // own per-thread allocation and dropping our reference to it does not invalidate it.
     let rc = unsafe { libc::sigaltstack(core::ptr::addr_of!(ss), core::ptr::null_mut()) };
     if rc != 0 {
         // Reset the flag so a future caller could retry, though in practice this never
-        // happens — if `sigaltstack` rejected our parameters once it will reject them again.
+        // happens -- if `sigaltstack` rejected our parameters once it will reject them again.
         ALT_STACK_INSTALLED.store(false, Ordering::Release);
         return Err(format!("sigaltstack failed (rc={rc})"));
     }
@@ -385,7 +385,7 @@ fn install_impl(log_path: &Path) -> Result<(), String> {
 #[cfg(windows)]
 impl WindowsCrashFds {
     /// Writes `data` to the log file and (if configured) the terminal duplicate, matching the
-    /// dual-output routing of the existing Unix path. Individual write errors are swallowed —
+    /// dual-output routing of the existing Unix path. Individual write errors are swallowed --
     /// the crash handler has no meaningful recovery path.
     fn write_all(&self, data: &[u8]) {
         use std::io::Write;
@@ -556,7 +556,7 @@ unsafe fn capture_frame_ips(out: &mut [*mut c_void; MAX_FRAMES]) -> usize {
     n
 }
 
-/// Formats captured instruction pointers as `STACK (<n> frames):\n  0x…\n…` into a
+/// Formats captured instruction pointers as `STACK (<n> frames):\n  0x...\n...` into a
 /// caller-provided stack buffer. Returns bytes written; silently stops if the buffer would
 /// overflow.
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
@@ -593,7 +593,7 @@ fn format_frames_hex(ips: &[*mut c_void], out: &mut [u8; HEX_BUF_LEN]) -> usize 
     w
 }
 
-/// Best-effort symbolicated trace as `SYMBOLS:\n  #NN <name> at <file>:<line>\n…`.
+/// Best-effort symbolicated trace as `SYMBOLS:\n  #NN <name> at <file>:<line>\n...`.
 ///
 /// Allocates freely through [`backtrace::resolve`]. The caller must wrap this in
 /// [`std::panic::catch_unwind`] and guard with [`CRASH_REENTRY`]; a fault inside

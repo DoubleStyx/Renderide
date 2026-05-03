@@ -16,7 +16,7 @@ fn cluster_light_count_at(cluster_id: u32) -> u32 {
 }
 
 /// Fetches the packed `u16` light index at `slot` within cluster `cluster_id`. Indices are stored
-/// 2 × `u16` per `u32` in `rg::cluster_light_indices` (low 16 bits = even slot, high 16 bits = odd
+/// 2 x `u16` per `u32` in `rg::cluster_light_indices` (low 16 bits = even slot, high 16 bits = odd
 /// slot). Must stay in sync with the compute-side writer in
 /// `shaders/passes/compute/clustered_light.wgsl` and the Rust-side layout documented on
 /// `ClusterBufferRefs::cluster_light_indices`.
@@ -26,8 +26,8 @@ fn cluster_light_index_at(cluster_id: u32, slot: u32) -> u32 {
     return (word >> ((slot & 1u) * 16u)) & 0xFFFFu;
 }
 
-/// Integer pixel → tile index. Uses `floor(pxy / TILE_SIZE)` so tile `k` covers pixels
-/// `[TILE_SIZE*k, TILE_SIZE*(k+1))` — this must match [`get_cluster_aabb`] in
+/// Integer pixel -> tile index. Uses `floor(pxy / TILE_SIZE)` so tile `k` covers pixels
+/// `[TILE_SIZE*k, TILE_SIZE*(k+1))` -- this must match [`get_cluster_aabb`] in
 /// `compute/clustered_light.wgsl`, where AABB extents are computed at pixel-edge boundaries
 /// (`px_min = TILE_SIZE*k`, `px_max = TILE_SIZE*(k+1)`). Any gap between the two formulations
 /// shows as pixelated seams where fragments reach lights assigned only to a neighbor.

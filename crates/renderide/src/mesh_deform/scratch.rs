@@ -3,7 +3,7 @@
 /// CPU-reserved caps; buffers grow when exceeded.
 const INITIAL_MAX_BONES: u32 = 256;
 const INITIAL_MAX_BLENDSHAPES: u32 = 256;
-/// Initial staging for packed blendshape `Params` (32 bytes × chunks).
+/// Initial staging for packed blendshape `Params` (32 bytes x chunks).
 const INITIAL_BLENDSHAPE_PARAMS_STAGING: u64 = 4096;
 /// Initial number of 256-byte slots for per-dispatch `SkinDispatchParams` (32 B payload each).
 const INITIAL_SKIN_DISPATCH_SLOTS: u64 = 16;
@@ -105,6 +105,24 @@ const SKIN_DISPATCH: GrowableBuffer = GrowableBuffer {
     min_size: 256,
 };
 
+const DUMMY_VEC4_READ: GrowableBuffer = GrowableBuffer {
+    label: "mesh_deform_dummy_vec4_read",
+    usage: wgpu::BufferUsages::STORAGE,
+    min_size: 16,
+};
+
+const DUMMY_VEC4_WRITE: GrowableBuffer = GrowableBuffer {
+    label: "mesh_deform_dummy_vec4_write",
+    usage: wgpu::BufferUsages::STORAGE,
+    min_size: 16,
+};
+
+const DUMMY_VEC4_WRITE_ALT: GrowableBuffer = GrowableBuffer {
+    label: "mesh_deform_dummy_vec4_write_alt",
+    usage: wgpu::BufferUsages::STORAGE,
+    min_size: 16,
+};
+
 /// Scratch storage written each frame before compute dispatches.
 pub struct MeshDeformScratch {
     /// Linear blend skinning bone palette (`mat4` column-major, 64 bytes each); subranges use 256-byte-aligned offsets.
@@ -117,6 +135,12 @@ pub struct MeshDeformScratch {
     pub blendshape_weights: wgpu::Buffer,
     /// Slab of `mesh_skinning.wgsl` [`SkinDispatchParams`] (32 bytes per dispatch at 256-byte-aligned offsets).
     pub skin_dispatch: wgpu::Buffer,
+    /// Dummy read-only storage used for optional shader input bindings when an attribute path is disabled.
+    pub dummy_vec4_read: wgpu::Buffer,
+    /// Dummy writable storage used for optional shader output bindings when an attribute path is disabled.
+    pub dummy_vec4_write: wgpu::Buffer,
+    /// Alternate dummy writable storage for a second optional output binding in the same dispatch.
+    pub dummy_vec4_write_alt: wgpu::Buffer,
     /// Reusable byte buffer for one mesh's blendshape weight binding before [`crate::render_graph::frame_upload_batch::FrameUploadBatch::write_buffer`].
     ///
     /// Cleared (length-only, capacity retained) at the start of each blendshape record call.
@@ -154,6 +178,10 @@ impl MeshDeformScratch {
                 .create(device, BLENDSHAPE_PARAMS_STAGING.min_size),
             blendshape_weights: BLENDSHAPE_WEIGHTS.create(device, weight_bytes),
             skin_dispatch: SKIN_DISPATCH.create(device, skin_dispatch_bytes),
+            dummy_vec4_read: DUMMY_VEC4_READ.create(device, DUMMY_VEC4_READ.min_size),
+            dummy_vec4_write: DUMMY_VEC4_WRITE.create(device, DUMMY_VEC4_WRITE.min_size),
+            dummy_vec4_write_alt: DUMMY_VEC4_WRITE_ALT
+                .create(device, DUMMY_VEC4_WRITE_ALT.min_size),
             blend_weight_bytes: Vec::new(),
             bone_palette_bytes: Vec::new(),
             packed_scatter_params: Vec::new(),

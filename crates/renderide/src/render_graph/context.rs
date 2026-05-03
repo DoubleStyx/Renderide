@@ -1,19 +1,19 @@
 //! Context types passed to each pass's recording method for one encoder slice.
 //!
 //! Four context types correspond to the four pass kinds in [`super::pass::PassNode`]:
-//! - [`RasterPassCtx`] — graph has already opened `wgpu::RenderPass`; pass records draws.
-//! - [`ComputePassCtx`] — pass receives the raw `wgpu::CommandEncoder` for compute work.
-//! - [`CopyPassCtx`] — same as compute, semantically restricted to copy operations.
-//! - [`CallbackCtx`] — no encoder; pass runs CPU prep, Queue writes, and blackboard mutations.
+//! - [`RasterPassCtx`] -- graph has already opened `wgpu::RenderPass`; pass records draws.
+//! - [`ComputePassCtx`] -- pass receives the raw `wgpu::CommandEncoder` for compute work.
+//! - [`CopyPassCtx`] -- same as compute, semantically restricted to copy operations.
+//! - [`CallbackCtx`] -- no encoder; pass runs CPU prep, Queue writes, and blackboard mutations.
 //!
 //! [`PostSubmitContext`] is shared across all pass kinds for post-submit hooks.
 //!
 //! ## Lifetime parameters
 //!
 //! Contexts use up to three lifetime parameters:
-//! - `'a` — immutable GPU handles (device, limits, queue, graph resources, views).
-//! - `'encoder` — mutable encoder borrow (only compute/copy contexts).
-//! - `'frame` — mutable scene/backend frame params borrow.
+//! - `'a` -- immutable GPU handles (device, limits, queue, graph resources, views).
+//! - `'encoder` -- mutable encoder borrow (only compute/copy contexts).
+//! - `'frame` -- mutable scene/backend frame params borrow.
 //!
 //! Multi-view graph execution creates a **separate** encoder (and thus a separate context) for
 //! frame-global work vs each view; passes never share one encoder across those slices.
@@ -33,9 +33,9 @@ use super::resources::{
     TextureResourceHandle,
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Resolved resource types
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Resolved transient texture for one graph execution scope.
 #[derive(Clone, Debug)]
@@ -96,9 +96,9 @@ pub struct ResolvedImportedBuffer {
     pub buffer: wgpu::Buffer,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Resolved resource lookup table
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Execute-time resource lookup table built by [`super::compiled::CompiledRenderGraph`].
 #[derive(Clone, Debug, Default)]
@@ -238,9 +238,9 @@ impl GraphResolvedResources {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// New typed context structs (Phases 1–2)
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// New typed context structs (Phases 1-2)
+// -----------------------------------------------------------------------------
 
 /// Context for [`super::pass::RasterPass::record`].
 ///
@@ -363,9 +363,9 @@ impl CallbackCtx<'_, '_> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Post-submit context (unchanged)
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Context passed to `post_submit` after a per-view or frame-global submit.
 ///
@@ -382,9 +382,9 @@ pub struct PostSubmitContext<'a> {
     pub host_camera: crate::camera::HostCameraFrame,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Compatibility context types (kept for test compatibility; callers should migrate)
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Compatibility encoder-driven pass context. Prefer [`ComputePassCtx`] for new code.
 ///

@@ -1,4 +1,4 @@
-//! Host shader asset → [`RasterPipelineKind`] for mesh draws.
+//! Host shader asset -> [`RasterPipelineKind`] for mesh draws.
 
 use super::pipeline_kind::RasterPipelineKind;
 use super::router::MaterialRouter;

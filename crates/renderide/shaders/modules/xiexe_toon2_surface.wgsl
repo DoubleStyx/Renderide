@@ -3,7 +3,7 @@
 //!
 //! The forward and outline paths take separate normal-decoding routes. The forward path
 //! flips world-space `(N, T, B)` for back-facing fragments so two-sided meshes light
-//! correctly. The outline path skips that flip — outline visible fragments are the
+//! correctly. The outline path skips that flip -- outline visible fragments are the
 //! back-faces of an extruded shell whose geometric normals already point outward (matching
 //! the Unity reference where outlines use the unflipped `i.ntb` of the front-face vertex).
 
@@ -34,8 +34,11 @@ fn vertex_main(
     let d = pd::get_draw(instance_index);
     let world_p = d.model * vec4<f32>(pos.xyz, 1.0);
     let world_n = xb::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
-    let world_tangent = vec4<f32>((d.model * vec4<f32>(tangent.xyz, 0.0)).xyz, tangent.w);
-    let tbn = xb::tangent_frame(world_n, world_tangent);
+    let world_tangent = vec4<f32>(
+        xb::safe_normalize((d.model * vec4<f32>(tangent.xyz, 0.0)).xyz, vec3<f32>(1.0, 0.0, 0.0)),
+        tangent.w,
+    );
+    let tbn = pnorm::orthonormal_tbn(world_n, world_tangent);
     let vp = xb::view_projection_for_draw(d, view_idx);
 
     var out: xb::VertexOutput;
@@ -54,7 +57,7 @@ fn vertex_main(
 
 /// Builds a perturbed TBN from the interpolated geometry frame. The base normal map and
 /// (when `_DetailMask.r > 0`) the detail normal map are blended in tangent space using
-/// Unity's `BlendNormals` formula — `xy` adds, `z` multiplies — so content authored
+/// Unity's `BlendNormals` formula -- `xy` adds, `z` multiplies -- so content authored
 /// against Unity's `BlendNormals` (`#include UnityCG.cginc`) reproduces.
 ///
 /// `flip_back_face` toggles the dual-sided correction. The forward path passes `true` so
@@ -71,9 +74,9 @@ fn decode_normal_world(
     front_facing: bool,
     flip_back_face: bool,
 ) -> mat3x3<f32> {
-    var n = xb::safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0));
-    var t = xb::safe_normalize(world_t, pnorm::orthonormal_tbn(n)[0]);
-    var b = xb::safe_normalize(world_b, pnorm::orthonormal_tbn(n)[1]);
+    var n = xb::safe_normalize(world_n, vec3<f32>(0.0, 0.0, 1.0));
+    var t = xb::safe_normalize(world_t, vec3<f32>(1.0, 0.0, 0.0));
+    var b = xb::safe_normalize(world_b, vec3<f32>(0.0, 1.0, 0.0));
 
     if (flip_back_face && !front_facing) {
         n = -n;
@@ -82,13 +85,13 @@ fn decode_normal_world(
     }
 
     if (xb::normal_map_enabled()) {
-        let base_ts = nd::decode_ts_normal_with_placeholder(
-            textureSample(xb::_BumpMap, xb::_BumpMap_sampler, uv_normal).xyz,
+        let base_ts = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(xb::_BumpMap, xb::_BumpMap_sampler, uv_normal),
             xb::mat._BumpScale,
         );
         let detail_mask = textureSample(xb::_DetailMask, xb::_DetailMask_sampler, uv_detail_mask).r;
-        let detail_ts = nd::decode_ts_normal_with_placeholder(
-            textureSample(xb::_DetailNormalMap, xb::_DetailNormalMap_sampler, uv_detail_normal).xyz,
+        let detail_ts = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(xb::_DetailNormalMap, xb::_DetailNormalMap_sampler, uv_detail_normal),
             xb::mat._DetailNormalMapScale,
         );
         let blended_ts = xb::safe_normalize(
@@ -138,7 +141,7 @@ fn sample_surface(
         albedo = vec4<f32>(albedo.rgb * color.rgb, albedo.a);
     }
     // `diffuse_color` keeps the original (saturated) base color for tinting paths
-    // (specular albedo tint, rim/shadow-rim tints, outline tint) — see
+    // (specular albedo tint, rim/shadow-rim tints, outline tint) -- see
     // `XSFrag.cginc:81` (`o.diffuseColor = o.albedo.rgb` *before* the metallic discount)
     // followed by `BRDF_XSLighting:35` (saturation pass).
     let diffuse_color = xb::maybe_saturate_color(albedo.rgb);
@@ -171,7 +174,7 @@ fn sample_surface(
     let clearcoat_strength = clamp(xb::mat._ClearcoatStrength * mg.b, 0.0, 1.0);
     let clearcoat_smoothness = clamp(xb::mat._ClearcoatSmoothness * mg.g, 0.0, 1.0);
 
-    // Direct-lighting albedo is the metallic-discounted tinted base — `BRDF_XSLighting:33`
+    // Direct-lighting albedo is the metallic-discounted tinted base -- `BRDF_XSLighting:33`
     // does `i.albedo.rgb *= (1 - metallic)` before the lighting walk so a perfect metal
     // contributes no diffuse term. Multiplication is linear w.r.t. the saturation lerp,
     // so applying `(1 - metallic)` after the desaturation is equivalent to before.

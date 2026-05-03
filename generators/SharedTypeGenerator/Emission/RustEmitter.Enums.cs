@@ -29,7 +29,7 @@ public partial class RustEmitter
                 _w.EnumMemberWithValue(member.Name, member.Value.ToString()!, isDefault: member.IsDefault);
         }
 
-        // MemoryPackable impl — decode without transmute: invalid host values must not panic (Rust 1.94+
+        // MemoryPackable impl -- decode without transmute: invalid host values must not panic (Rust 1.94+
         // treats invalid `repr` enum bit patterns as immediate UB/panic on transmute).
         _w.BlankLine();
         using (_w.BeginTraitImpl("MemoryPackable", name))

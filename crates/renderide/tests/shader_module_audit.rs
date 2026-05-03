@@ -365,6 +365,27 @@ fn material_roots_do_not_redeclare_shared_helpers() -> io::Result<()> {
     Ok(())
 }
 
+#[test]
+fn normal_decode_scales_xy_before_reconstructing_z() -> io::Result<()> {
+    let src = fs::read_to_string(manifest_dir().join("shaders/modules/normal_decode.wgsl"))?;
+    let xy_scale = src
+        .find("let xy = (raw.xy * 2.0 - 1.0) * scale;")
+        .expect("normal decode must scale tangent XY before Z reconstruction");
+    let z_reconstruct = src
+        .find("let z = sqrt(max(1.0 - dot(xy, xy), 0.0));")
+        .expect("normal decode must reconstruct Z from the scaled XY vector");
+
+    assert!(
+        xy_scale < z_reconstruct,
+        "normal decode must apply `_NormalScale` / `_BumpScale` before reconstructing Z"
+    );
+    assert!(
+        !src.contains("scale-after-Z"),
+        "normal decode comments must not describe the old scale-after-Z behavior"
+    );
+    Ok(())
+}
+
 /// Pass shaders using the fullscreen module should not duplicate fullscreen-triangle bit math.
 #[test]
 fn shared_fullscreen_roots_do_not_duplicate_fullscreen_triangle_setup() -> io::Result<()> {

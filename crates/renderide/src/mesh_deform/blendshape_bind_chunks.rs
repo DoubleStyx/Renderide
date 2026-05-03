@@ -26,7 +26,7 @@ pub fn blendshape_sparse_buffers_fit_device(
 }
 
 /// Plans `(sparse_base, sparse_count)` sub-ranges (global entry indices) so each dispatch stays
-/// within `max_workgroups_per_dim × 64` threads (one thread per sparse entry).
+/// within `max_workgroups_per_dim x 64` threads (one thread per sparse entry).
 pub fn plan_blendshape_scatter_chunks(
     first_entry: u32,
     entry_count: u32,
@@ -87,6 +87,9 @@ mod tests {
                 frame_count: 1,
             }],
             num_blendshapes: 1,
+            has_position_deltas: true,
+            has_normal_deltas: false,
+            has_tangent_deltas: false,
         };
         assert!(blendshape_sparse_buffers_fit_device(&pack, 1024, 1024));
     }

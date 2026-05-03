@@ -5,7 +5,7 @@
 //! feature emits a static import of `TaskDialogIndirect` from `comctl32.dll`, which Windows only
 //! resolves when the executable carries a Common Controls v6 side-by-side manifest. `build.rs`
 //! embeds that manifest into the bootstrapper binary via `embed-manifest`, but `embed-manifest`
-//! cannot reach the lib unit-test exe — so when this code lived in the library, the lib unit-test
+//! cannot reach the lib unit-test exe -- so when this code lived in the library, the lib unit-test
 //! exe failed to load with `STATUS_ENTRYPOINT_NOT_FOUND` (0xc0000139) on Windows CI. Keeping the
 //! `rfd` reference in the bin keeps the lib (and its test exe) free of that import.
 

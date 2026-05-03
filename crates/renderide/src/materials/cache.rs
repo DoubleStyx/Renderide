@@ -22,6 +22,7 @@ use crate::materials::null_pipeline::{build_null_wgsl, create_null_render_pipeli
 use crate::materials::raster_pipeline::ShaderModuleBuildRefs;
 use crate::materials::{
     MaterialBlendMode, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
+    RasterPrimitiveTopology,
 };
 
 use super::family::MaterialPipelineDesc;
@@ -35,7 +36,27 @@ fn max_cached_pipelines() -> NonZeroUsize {
     NonZeroUsize::new(MAX_CACHED_PIPELINES).unwrap_or(NonZeroUsize::MIN)
 }
 
-/// Key for [`MaterialPipelineCache`] lookups (no WGSL parse — see module docs).
+/// Material-driven pipeline variant: selectors that affect [`wgpu::RenderPipeline`] state but are
+/// not derived from [`MaterialPipelineDesc`] attachment formats.
+///
+/// Bundled together so registry / cache lookups carry a single argument instead of five
+/// loose scalars, and so any future axis (e.g. additional shader permutations) lands here without
+/// growing call signatures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MaterialPipelineVariantSpec {
+    /// Stereo multiview / single-view permutation for the pipeline.
+    pub permutation: ShaderPermutation,
+    /// Material-level blend override for stems without explicit pass directives.
+    pub blend_mode: MaterialBlendMode,
+    /// Material-level stencil and color write state.
+    pub render_state: MaterialRenderState,
+    /// Front-face winding for draw transforms in this pipeline bucket.
+    pub front_face: RasterFrontFace,
+    /// Primitive topology baked into [`wgpu::PrimitiveState::topology`] for this pipeline bucket.
+    pub primitive_topology: RasterPrimitiveTopology,
+}
+
+/// Key for [`MaterialPipelineCache`] lookups (no WGSL parse -- see module docs).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MaterialPipelineCacheKey {
     /// Which WGSL program backs the pipeline (embedded stem or null fallback).
@@ -56,6 +77,11 @@ pub struct MaterialPipelineCacheKey {
     pub render_state: MaterialRenderState,
     /// Front-face winding for draw transforms in this pipeline bucket.
     pub front_face: RasterFrontFace,
+    /// Primitive topology baked into [`wgpu::PrimitiveState::topology`] for this pipeline bucket.
+    ///
+    /// `wgpu::RenderPipeline` immutably bakes its primitive topology, so two draws of the same
+    /// shader/material that differ in topology must build separate pipelines.
+    pub primitive_topology: RasterPrimitiveTopology,
 }
 
 /// One or more pipelines for a material entry (one per declared `//#pass`).
@@ -144,12 +170,16 @@ impl MaterialPipelineCache {
         &self,
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
-        permutation: ShaderPermutation,
-        blend_mode: MaterialBlendMode,
-        render_state: MaterialRenderState,
-        front_face: RasterFrontFace,
+        variant: MaterialPipelineVariantSpec,
     ) -> Result<MaterialPipelineSet, PipelineBuildError> {
         profiling::scope!("materials::get_or_create_pipeline");
+        let MaterialPipelineVariantSpec {
+            permutation,
+            blend_mode,
+            render_state,
+            front_face,
+            primitive_topology,
+        } = variant;
         let key = MaterialPipelineCacheKey {
             kind: kind.clone(),
             permutation,
@@ -160,6 +190,7 @@ impl MaterialPipelineCache {
             blend_mode,
             render_state,
             front_face,
+            primitive_topology,
         };
         //perf xlinka: a hit is real use; promote it so hot pipelines do not get evicted.
         if let Some(hit) = self.pipelines.lock().get(&key) {
@@ -184,6 +215,7 @@ impl MaterialPipelineCache {
                     blend_mode,
                     render_state,
                     front_face,
+                    primitive_topology,
                 },
                 ShaderModuleBuildRefs {
                     device: &device,
@@ -201,6 +233,7 @@ impl MaterialPipelineCache {
                     desc,
                     &wgsl,
                     front_face,
+                    primitive_topology,
                 )?]
             }
         };

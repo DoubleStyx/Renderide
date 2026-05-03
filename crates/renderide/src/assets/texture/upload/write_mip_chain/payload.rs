@@ -25,7 +25,7 @@ pub(super) struct MipChainWalkState<'a> {
     reason = "short-lived per-mip outcome; boxing `Ready` would add an allocation per mip"
 )]
 pub(super) enum NextMipUploadSlice<'a> {
-    /// Stop iteration: chain finished normally (`uploaded_mips` may be zero only when no mip was ever uploaded — caller treats as error in that case).
+    /// Stop iteration: chain finished normally (`uploaded_mips` may be zero only when no mip was ever uploaded -- caller treats as error in that case).
     ChainDone {
         /// Number of mip levels successfully uploaded before stopping.
         total_uploaded: u32,

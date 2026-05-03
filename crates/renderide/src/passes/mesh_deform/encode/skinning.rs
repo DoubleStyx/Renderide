@@ -7,8 +7,8 @@ use std::num::NonZeroU64;
 
 use glam::Mat4;
 
-use crate::mesh_deform::SkinCacheEntry;
 use crate::mesh_deform::advance_slab_cursor;
+use crate::mesh_deform::{Range, SkinCacheEntry};
 use crate::mesh_deform::{SkinningPaletteParams, write_skinning_palette_bytes};
 use crate::scene::RenderSpaceId;
 
@@ -30,9 +30,13 @@ pub(super) struct SkinningDeformContext<'a, 'b> {
     pub cache_entry: &'a SkinCacheEntry,
     pub positions_arena: &'a wgpu::Buffer,
     pub normals_arena: &'a wgpu::Buffer,
+    pub tangents_arena: &'a wgpu::Buffer,
     pub temp_arena: &'a wgpu::Buffer,
     pub skin_dispatch_cursor: &'b mut u64,
 }
+
+/// Skinning `SkinDispatchParams.flags` bit for writing tangents.
+const SKIN_DISPATCH_APPLY_TANGENTS: u32 = 1;
 
 /// Linear blend skinning compute after optional blendshape pass.
 pub(super) fn record_skinning_deform(
@@ -40,53 +44,12 @@ pub(super) fn record_skinning_deform(
     ctx: SkinningDeformContext<'_, '_>,
 ) -> bool {
     profiling::scope!("mesh_deform::record_skinning");
-    let Some(ref positions) = ctx.mesh.positions_buffer else {
+    let Some(required) = required_skinning_inputs(&ctx) else {
         return false;
     };
-    let Some(ref src_n) = ctx.mesh.normals_buffer else {
-        return false;
-    };
-    let Some(ref bone_idx) = ctx.mesh.bone_indices_buffer else {
-        return false;
-    };
-    let Some(ref bone_wt) = ctx.mesh.bone_weights_vec4_buffer else {
-        return false;
-    };
-    let Some(indices) = ctx.bone_transform_indices else {
-        return false;
-    };
-    let Some(nrm_range) = ctx.cache_entry.normals.as_ref() else {
-        return false;
-    };
-
-    let bone_count_u = ctx.mesh.skinning_bind_matrices.len() as u32;
-    gpu.scratch.ensure_bone_capacity(gpu.device, bone_count_u);
-    let Some(_bone_count) = write_skinning_palette_bytes(
-        SkinningPaletteParams {
-            scene: ctx.scene,
-            space_id: ctx.space_id,
-            skinning_bind_matrices: &ctx.mesh.skinning_bind_matrices,
-            has_skeleton: ctx.mesh.has_skeleton,
-            bone_transform_indices: indices,
-            smr_node_id: ctx.smr_node_id,
-            render_context: ctx.render_context,
-            head_output_transform: ctx.head_output_transform,
-        },
-        &mut gpu.scratch.bone_palette_bytes,
-    ) else {
-        return false;
-    };
-
-    let palette_len = gpu.scratch.bone_palette_bytes.len() as u64;
-    gpu.scratch
-        .ensure_bone_byte_capacity(gpu.device, ctx.bone_cursor.saturating_add(palette_len));
-    gpu.upload_batch.write_buffer(
-        &gpu.scratch.bone_matrices,
-        *ctx.bone_cursor,
-        gpu.scratch.bone_palette_bytes.as_slice(),
-    );
-
-    let Some(bone_binding_size) = NonZeroU64::new(palette_len) else {
+    let Some((bone_binding_size, palette_len)) =
+        upload_skinning_palette(gpu, &ctx, required.bone_transform_indices)
+    else {
         return false;
     };
 
@@ -96,16 +59,31 @@ pub(super) fn record_skinning_deform(
         };
         (ctx.temp_arena, t.first_element_index(16))
     } else {
-        (positions.as_ref(), 0u32)
+        (required.positions, 0u32)
     };
-
-    let skin_params = pack_skin_dispatch_params(
-        ctx.mesh.vertex_count,
-        base_src_pos_e,
-        0,
-        ctx.cache_entry.positions.first_element_index(16),
-        nrm_range.first_element_index(16),
+    let (src_n_for_skin, base_src_nrm_e) =
+        if let Some(temp_normals) = ctx.cache_entry.temp_normals.as_ref() {
+            (ctx.temp_arena, temp_normals.first_element_index(16))
+        } else {
+            (required.src_n, 0u32)
+        };
+    let tangent_dispatch = resolve_tangent_dispatch(
+        ctx.mesh,
+        ctx.cache_entry,
+        ctx.tangents_arena,
+        ctx.temp_arena,
     );
+
+    let skin_params = pack_skin_dispatch_params(SkinDispatchParamFields {
+        vertex_count: ctx.mesh.vertex_count,
+        base_src_pos_e,
+        base_src_nrm_e,
+        base_src_tan_e: tangent_dispatch.base_src_tan_e,
+        base_dst_pos_e: ctx.cache_entry.positions.first_element_index(16),
+        base_dst_nrm_e: required.nrm_range.first_element_index(16),
+        base_dst_tan_e: tangent_dispatch.base_dst_tan_e,
+        flags: tangent_dispatch.flags,
+    });
     let sd_cursor = *ctx.skin_dispatch_cursor;
     gpu.scratch
         .ensure_skin_dispatch_byte_capacity(gpu.device, sd_cursor.saturating_add(32));
@@ -118,11 +96,13 @@ pub(super) fn record_skinning_deform(
         pre: gpu.pre,
         scratch: gpu.scratch,
         src_positions: src_for_skin,
-        bone_idx,
-        bone_wt,
+        bone_idx: required.bone_idx,
+        bone_wt: required.bone_wt,
         dst_pos: ctx.positions_arena,
-        src_n: src_n.as_ref(),
+        src_n: src_n_for_skin,
         dst_n: ctx.normals_arena,
+        src_tangent: tangent_dispatch.src_buffer,
+        dst_tangent: tangent_dispatch.dst_buffer,
         bone_cursor: *ctx.bone_cursor,
         bone_binding_size,
         wg: ctx.wg,
@@ -133,6 +113,108 @@ pub(super) fn record_skinning_deform(
     *ctx.bone_cursor = advance_slab_cursor(*ctx.bone_cursor, palette_len);
     *ctx.skin_dispatch_cursor = advance_slab_cursor(sd_cursor, 32);
     true
+}
+
+struct RequiredSkinningInputs<'a> {
+    positions: &'a wgpu::Buffer,
+    src_n: &'a wgpu::Buffer,
+    bone_idx: &'a wgpu::Buffer,
+    bone_wt: &'a wgpu::Buffer,
+    bone_transform_indices: &'a [i32],
+    nrm_range: &'a Range,
+}
+
+fn required_skinning_inputs<'a>(
+    ctx: &'a SkinningDeformContext<'_, '_>,
+) -> Option<RequiredSkinningInputs<'a>> {
+    Some(RequiredSkinningInputs {
+        positions: ctx.mesh.positions_buffer.as_ref()?.as_ref(),
+        src_n: ctx.mesh.normals_buffer.as_ref()?.as_ref(),
+        bone_idx: ctx.mesh.bone_indices_buffer.as_ref()?.as_ref(),
+        bone_wt: ctx.mesh.bone_weights_vec4_buffer.as_ref()?.as_ref(),
+        bone_transform_indices: ctx.bone_transform_indices?,
+        nrm_range: ctx.cache_entry.normals.as_ref()?,
+    })
+}
+
+fn upload_skinning_palette(
+    gpu: &mut MeshDeformEncodeGpu<'_>,
+    ctx: &SkinningDeformContext<'_, '_>,
+    bone_transform_indices: &[i32],
+) -> Option<(NonZeroU64, u64)> {
+    profiling::scope!("mesh_deform::skinning_palette");
+    let bone_count_u = ctx.mesh.skinning_bind_matrices.len() as u32;
+    gpu.scratch.ensure_bone_capacity(gpu.device, bone_count_u);
+    write_skinning_palette_bytes(
+        SkinningPaletteParams {
+            scene: ctx.scene,
+            space_id: ctx.space_id,
+            skinning_bind_matrices: &ctx.mesh.skinning_bind_matrices,
+            has_skeleton: ctx.mesh.has_skeleton,
+            bone_transform_indices,
+            smr_node_id: ctx.smr_node_id,
+            render_context: ctx.render_context,
+            head_output_transform: ctx.head_output_transform,
+        },
+        &mut gpu.scratch.bone_palette_bytes,
+    )?;
+
+    let palette_len = gpu.scratch.bone_palette_bytes.len() as u64;
+    gpu.scratch
+        .ensure_bone_byte_capacity(gpu.device, ctx.bone_cursor.saturating_add(palette_len));
+    gpu.upload_batch.write_buffer(
+        &gpu.scratch.bone_matrices,
+        *ctx.bone_cursor,
+        gpu.scratch.bone_palette_bytes.as_slice(),
+    );
+    NonZeroU64::new(palette_len).map(|binding_size| (binding_size, palette_len))
+}
+
+struct TangentSkinDispatch<'a> {
+    src_buffer: Option<&'a wgpu::Buffer>,
+    dst_buffer: Option<&'a wgpu::Buffer>,
+    base_src_tan_e: u32,
+    base_dst_tan_e: u32,
+    flags: u32,
+}
+
+fn resolve_tangent_dispatch<'a>(
+    mesh: &'a MeshDeformSnapshot,
+    cache_entry: &'a SkinCacheEntry,
+    tangents_arena: &'a wgpu::Buffer,
+    temp_arena: &'a wgpu::Buffer,
+) -> TangentSkinDispatch<'a> {
+    let Some(dst_range) = cache_entry.tangents.as_ref() else {
+        return TangentSkinDispatch {
+            src_buffer: None,
+            dst_buffer: None,
+            base_src_tan_e: 0,
+            base_dst_tan_e: 0,
+            flags: 0,
+        };
+    };
+    let Some(base_tangent_buffer) = mesh.tangent_buffer.as_ref() else {
+        return TangentSkinDispatch {
+            src_buffer: None,
+            dst_buffer: None,
+            base_src_tan_e: 0,
+            base_dst_tan_e: 0,
+            flags: 0,
+        };
+    };
+    let (src_buffer, base_src_tan_e) =
+        if let Some(temp_tangents) = cache_entry.temp_tangents.as_ref() {
+            (temp_arena, temp_tangents.first_element_index(16))
+        } else {
+            (base_tangent_buffer.as_ref(), 0)
+        };
+    TangentSkinDispatch {
+        src_buffer: Some(src_buffer),
+        dst_buffer: Some(tangents_arena),
+        base_src_tan_e,
+        base_dst_tan_e: dst_range.first_element_index(16),
+        flags: SKIN_DISPATCH_APPLY_TANGENTS,
+    }
 }
 
 /// Buffers and offsets for one skinning dispatch after the bone palette is uploaded to `scratch`.
@@ -147,6 +229,8 @@ struct SkinningPaletteDispatch<'a> {
     dst_pos: &'a wgpu::Buffer,
     src_n: &'a wgpu::Buffer,
     dst_n: &'a wgpu::Buffer,
+    src_tangent: Option<&'a wgpu::Buffer>,
+    dst_tangent: Option<&'a wgpu::Buffer>,
     bone_cursor: u64,
     bone_binding_size: NonZeroU64,
     wg: u32,
@@ -207,6 +291,20 @@ fn skinning_dispatch_with_uploaded_palette(dispatch: SkinningPaletteDispatch<'_>
                         size: Some(skin_u_size),
                     }),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: dispatch
+                        .src_tangent
+                        .unwrap_or(&dispatch.scratch.dummy_vec4_read)
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: dispatch
+                        .dst_tangent
+                        .unwrap_or(&dispatch.scratch.dummy_vec4_write)
+                        .as_entire_binding(),
+                },
             ],
         });
 
@@ -230,19 +328,28 @@ fn skinning_dispatch_with_uploaded_palette(dispatch: SkinningPaletteDispatch<'_>
     }
 }
 
-/// `shaders/passes/compute/mesh_skinning.wgsl` `SkinDispatchParams` (32 bytes).
-fn pack_skin_dispatch_params(
+/// CPU-side field layout for `mesh_skinning.wgsl` `SkinDispatchParams`.
+struct SkinDispatchParamFields {
     vertex_count: u32,
     base_src_pos_e: u32,
     base_src_nrm_e: u32,
+    base_src_tan_e: u32,
     base_dst_pos_e: u32,
     base_dst_nrm_e: u32,
-) -> [u8; 32] {
+    base_dst_tan_e: u32,
+    flags: u32,
+}
+
+/// `shaders/passes/compute/mesh_skinning.wgsl` `SkinDispatchParams` (32 bytes).
+fn pack_skin_dispatch_params(fields: SkinDispatchParamFields) -> [u8; 32] {
     let mut o = [0u8; 32];
-    o[0..4].copy_from_slice(&vertex_count.to_le_bytes());
-    o[4..8].copy_from_slice(&base_src_pos_e.to_le_bytes());
-    o[8..12].copy_from_slice(&base_src_nrm_e.to_le_bytes());
-    o[12..16].copy_from_slice(&base_dst_pos_e.to_le_bytes());
-    o[16..20].copy_from_slice(&base_dst_nrm_e.to_le_bytes());
+    o[0..4].copy_from_slice(&fields.vertex_count.to_le_bytes());
+    o[4..8].copy_from_slice(&fields.base_src_pos_e.to_le_bytes());
+    o[8..12].copy_from_slice(&fields.base_src_nrm_e.to_le_bytes());
+    o[12..16].copy_from_slice(&fields.base_src_tan_e.to_le_bytes());
+    o[16..20].copy_from_slice(&fields.base_dst_pos_e.to_le_bytes());
+    o[20..24].copy_from_slice(&fields.base_dst_nrm_e.to_le_bytes());
+    o[24..28].copy_from_slice(&fields.base_dst_tan_e.to_le_bytes());
+    o[28..32].copy_from_slice(&fields.flags.to_le_bytes());
     o
 }

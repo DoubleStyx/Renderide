@@ -2,18 +2,18 @@
 //!
 //! Provides four `@fragment` entry points sharing the same vertex shader:
 //!
-//! * `fs_downsample_first` — first downsample of the HDR scene color with Karis firefly
+//! * `fs_downsample_first` -- first downsample of the HDR scene color with Karis firefly
 //!   reduction and optional soft-knee threshold. Writes bloom mip 0.
-//! * `fs_downsample` — 13-tap downsample between bloom mips N and N+1.
-//! * `fs_upsample` — 3×3 tent upsample; pipelines using this entry point enable
+//! * `fs_downsample` -- 13-tap downsample between bloom mips N and N+1.
+//! * `fs_upsample` -- 3x3 tent upsample; pipelines using this entry point enable
 //!   constant-factor blending so the output accumulates into the mip above.
-//! * `fs_composite` — final combine pass reading the scene HDR (group 0) and bloom mip 0
+//! * `fs_composite` -- final combine pass reading the scene HDR (group 0) and bloom mip 0
 //!   (group 1) and writing the chain output; performs the composite math in-shader so the
 //!   pipeline can use the default `Replace` blend state.
 //!
 //! Kernel weights, Karis average, and soft-threshold math are direct ports of Bevy's
 //! `crates/bevy_post_process/src/bloom/bloom.wgsl`. Build script emits `bloom_default` and
-//! `bloom_multiview` targets — the multiview variant substitutes `@builtin(view_index)` for
+//! `bloom_multiview` targets -- the multiview variant substitutes `@builtin(view_index)` for
 //! array sampling so the left/right stereo layers are scattered independently.
 
 #import renderide::fullscreen as fs
@@ -26,7 +26,7 @@ struct BloomUniforms {
     /// Composite intensity (linear scatter factor). `0.0` disables bloom (chain gates before
     /// the pass).
     intensity: f32,
-    /// `1.0` → energy-conserving composite; `0.0` → additive composite.
+    /// `1.0` -> energy-conserving composite; `0.0` -> additive composite.
     energy_conserving: f32,
     /// Padding to 16-byte alignment (std140-compatible).
     _pad: vec2<f32>,

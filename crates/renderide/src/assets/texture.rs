@@ -1,4 +1,4 @@
-//! Host texture ingest: format resolution, mip layout, SHM → [`wgpu::Queue::write_texture`].
+//! Host texture ingest: format resolution, mip layout, SHM -> [`wgpu::Queue::write_texture`].
 //!
 //! Covers **Texture2D**, **Texture3D**, and **cubemap** uploads. Does **not** retain CPU pixel buffers
 //! after upload (meshes parity). For mip streaming / eviction, see [`crate::gpu_pools::GpuTexture2d`]

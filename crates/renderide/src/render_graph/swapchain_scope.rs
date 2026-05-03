@@ -3,7 +3,7 @@
 //! ## Safety contract
 //!
 //! wgpu's Vulkan backend ties a per-frame acquire semaphore to the [`wgpu::SurfaceTexture`].
-//! The texture **must** be presented — via [`wgpu::SurfaceTexture::present`] — regardless of
+//! The texture **must** be presented -- via [`wgpu::SurfaceTexture::present`] -- regardless of
 //! whether the frame completes successfully, returns an error, or panics, so the semaphore and
 //! image return to the swapchain pool. Failing to present causes a secondary panic
 //! (`SwapchainAcquireSemaphore` still in use) that masks the original failure.
@@ -62,7 +62,7 @@ impl SwapchainScope {
     /// Acquires the swapchain surface when the graph needs it, returning the entry outcome.
     ///
     /// Returns [`SwapchainEnterOutcome::NotNeeded`] when neither `needs_swapchain` nor
-    /// `graph_needs_surface_acquire` is true. Headless contexts never acquire a surface — callers
+    /// `graph_needs_surface_acquire` is true. Headless contexts never acquire a surface -- callers
     /// are responsible for routing swapchain views to offscreen targets before reaching this
     /// point.
     pub fn enter(
@@ -78,7 +78,7 @@ impl SwapchainScope {
         }
         profiling::scope!("gpu::swapchain_acquire");
         // wgpu holds the invariant that a `Surface` has at most one outstanding
-        // `SurfaceTexture` — the previous frame's `present()` must complete before the next
+        // `SurfaceTexture` -- the previous frame's `present()` must complete before the next
         // `get_current_texture()` call. Wait specifically on the prior present instead of
         // doing a full `flush_driver` so non-surface batches (e.g. Hi-Z readback submits,
         // `on_submitted_work_done` callbacks) stay pipelined with frame N+1's recording.
@@ -113,7 +113,7 @@ impl SwapchainScope {
     ///
     /// Intended for the driver-thread submit path: once the caller hands the texture off to
     /// [`crate::gpu::GpuContext::submit_frame_batch`], the driver thread performs `present()`
-    /// after the submit. The scope's [`Drop`] tolerates the texture being gone — it becomes a
+    /// after the submit. The scope's [`Drop`] tolerates the texture being gone -- it becomes a
     /// no-op for this frame. The backbuffer view is dropped alongside (it is tied to the
     /// texture's lifetime).
     ///

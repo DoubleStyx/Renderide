@@ -35,7 +35,7 @@ impl GpuContext {
             let max_dim = self.limits.wgpu.max_texture_dimension_2d;
             if w > max_dim || h > max_dim {
                 logger::warn!(
-                    "depth attachment extent {}×{} exceeds max_texture_dimension_2d ({max_dim}); creation may fail validation",
+                    "depth attachment extent {}x{} exceeds max_texture_dimension_2d ({max_dim}); creation may fail validation",
                     w,
                     h
                 );

@@ -12,7 +12,7 @@ use super::MAX_PENDING_MESH_UPLOADS;
 pub fn on_mesh_unload(queue: &mut AssetTransferQueue, u: MeshUnload) {
     if queue.pools.mesh_pool.remove(u.asset_id) {
         logger::info!(
-            "mesh {} unloaded (resident_bytes≈{})",
+            "mesh {} unloaded (resident_bytes~={})",
             u.asset_id,
             queue.pools.mesh_pool.accounting().total_resident_bytes()
         );

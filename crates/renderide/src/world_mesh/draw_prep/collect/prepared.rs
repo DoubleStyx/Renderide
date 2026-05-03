@@ -13,7 +13,7 @@ use crate::world_mesh::culling::{
 };
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
-use super::super::item::WorldMeshDrawItem;
+use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
 use super::super::prepared_renderables::FramePreparedDraw;
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
 use super::{
@@ -24,7 +24,7 @@ use super::{
 ///
 /// Matches the scene-walk chunk width so per-view CPU cost stays bounded by the same per-task
 /// overhead as the scene-walk path.
-pub(super) const PREPARED_CHUNK_SIZE: usize = 128;
+pub(super) const PREPARED_CHUNK_SIZE: usize = 256;
 
 /// Returns true when two prepared slot entries came from the same source renderer.
 #[inline]
@@ -178,10 +178,13 @@ fn append_prepared_run_draws(
     run: &[FramePreparedDraw],
     ctx: &DrawCollectionContext<'_>,
     cache: &FrameMaterialBatchCache,
+    mesh: &crate::assets::mesh::GpuMesh,
     state: PreparedRunViewState,
     out: &mut Vec<WorldMeshDrawItem>,
 ) {
     for d in run {
+        let primitive_topology =
+            stacked_material_submesh_topology(d.slot_index, &mesh.submesh_topologies);
         let candidate = DrawCandidate {
             space_id: d.space_id,
             node_id: d.node_id,
@@ -204,6 +207,7 @@ fn append_prepared_run_draws(
             cache,
             candidate,
             state.front_face,
+            primitive_topology,
             state.rigid_world_matrix,
             state.alpha_distance_sq,
         ) {
@@ -235,7 +239,7 @@ fn collect_prepared_renderer_run(
     }
     let (state, cull_stats) = prepared_run_view_state(run, first, mesh, &skinning, ctx);
     if let Some(state) = state {
-        append_prepared_run_draws(run, ctx, cache, state, out);
+        append_prepared_run_draws(run, ctx, cache, mesh, state, out);
     }
     cull_stats
 }
@@ -243,7 +247,7 @@ fn collect_prepared_renderer_run(
 /// Collects draw items for one chunk of a pre-expanded [`super::FramePreparedRenderables`] list.
 ///
 /// Unlike the scene-walk chunk collector, there is no scene walk: the prepared draws already
-/// captured every valid `(renderer × material slot)` tuple plus its frame-global resolution
+/// captured every valid `(renderer x material slot)` tuple plus its frame-global resolution
 /// (material override, submesh index range, overlay flag, skin deform flag). This per-view pass
 /// only applies filters and per-view CPU culling per renderer, then builds [`WorldMeshDrawItem`]s
 /// for each material slot.

@@ -1,8 +1,8 @@
-//! `gtao_apply` raster pass — XeGTAO final iteration that folds AO modulation into the
+//! `gtao_apply` raster pass -- XeGTAO final iteration that folds AO modulation into the
 //! kernel.
 //!
 //! Reads the post-processing chain's HDR scene-color input plus the AO term and packed
-//! edges (from `gtao_main` directly when `denoise_passes ∈ {0, 1}`, or from the intermediate
+//! edges (from `gtao_main` directly when `denoise_passes in {0, 1}`, or from the intermediate
 //! denoise ping-pong target when `denoise_passes == 2`), runs the bilateral kernel at the
 //! full `denoise_blur_beta`, multiplies the resulting AO term by `OCCLUSION_TERM_SCALE` to
 //! recover the true visibility (the production pass stored `visibility / 1.5` for kernel

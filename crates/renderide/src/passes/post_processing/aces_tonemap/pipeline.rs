@@ -12,10 +12,12 @@
 use std::sync::Arc;
 
 use crate::embedded_shaders::{ACES_TONEMAP_DEFAULT_WGSL, ACES_TONEMAP_MULTIVIEW_WGSL};
+use crate::gpu::bind_layout::{
+    fragment_filterable_d2_array_entry, fragment_filtering_sampler_entry,
+};
 use crate::render_graph::gpu_cache::{
     BindGroupMap, FullscreenPipelineVariantDesc, FullscreenShaderVariants, OnceGpu,
     RenderPipelineMap, create_d2_array_view, create_linear_clamp_sampler,
-    fragment_filterable_d2_array_entry, fragment_filtering_sampler_entry,
     fullscreen_pipeline_variant,
 };
 
@@ -36,7 +38,7 @@ pub(super) struct AcesTonemapPipelineCache {
     multiview: RenderPipelineMap<wgpu::TextureFormat>,
     /// Bind groups keyed by scene-color texture identity + multiview flag. `wgpu::Texture`
     /// implements `Eq + Hash` over its internal handle, so entries automatically follow the
-    /// transient pool's allocation lifecycle — when the pool drops and recreates a texture,
+    /// transient pool's allocation lifecycle -- when the pool drops and recreates a texture,
     /// the stale entry is orphaned and cleaned up by bounded cache clearing.
     bind_groups: BindGroupMap<(wgpu::Texture, bool)>,
 }
@@ -138,7 +140,7 @@ impl AcesTonemapPipelineCache {
 
 /// Upper bound for cached ACES bind groups before the cache is flushed.
 ///
-/// The scene-color transient texture is stable across most frames — the cache normally holds
+/// The scene-color transient texture is stable across most frames -- the cache normally holds
 /// one or two entries (mono + multiview). This cap protects against unbounded growth when the
 /// swapchain / MSAA setting flips repeatedly and the transient pool cycles allocations.
 const MAX_CACHED_BIND_GROUPS: usize = 8;

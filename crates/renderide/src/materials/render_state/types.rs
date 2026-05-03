@@ -21,7 +21,7 @@ impl RasterFrontFace {
     /// Conservative determinant threshold below which a transform is treated as degenerate.
     const MIN_DETERMINANT: f32 = 1e-20;
 
-    /// Resolves a front-face winding from the upper 3×3 determinant of a draw model matrix.
+    /// Resolves a front-face winding from the upper 3x3 determinant of a draw model matrix.
     #[must_use]
     pub fn from_model_matrix(model: Mat4) -> Self {
         let det = Mat3::from_mat4(model).determinant();
@@ -53,6 +53,52 @@ impl RasterFrontFace {
     }
 }
 
+/// Primitive topology selected per submesh for [`MaterialPipelineCacheKey`] and
+/// [`crate::world_mesh::MaterialDrawBatchKey`].
+///
+/// `wgpu::PrimitiveTopology` does not derive `Ord`/`PartialOrd`, so we cannot embed it directly in
+/// the batch key (which is sorted as a tiebreaker). This enum mirrors the wgpu variants and adds
+/// the missing trait derives, plus a mapping from the host's `SubmeshTopology` enum.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum RasterPrimitiveTopology {
+    /// Each vertex is a point sprite; no shared topology.
+    PointList,
+    /// Each pair of vertices forms an independent line segment.
+    LineList,
+    /// Connected line strip; first two vertices form a segment, each subsequent vertex extends it.
+    LineStrip,
+    /// Each triple of vertices forms an independent triangle.
+    #[default]
+    TriangleList,
+    /// Connected triangle strip; first three vertices form a triangle, each subsequent vertex
+    /// extends it.
+    TriangleStrip,
+}
+
+impl RasterPrimitiveTopology {
+    /// Lowers the renderer's topology tag into the wgpu primitive setting used at pipeline build.
+    #[must_use]
+    pub fn to_wgpu(self) -> wgpu::PrimitiveTopology {
+        match self {
+            Self::PointList => wgpu::PrimitiveTopology::PointList,
+            Self::LineList => wgpu::PrimitiveTopology::LineList,
+            Self::LineStrip => wgpu::PrimitiveTopology::LineStrip,
+            Self::TriangleList => wgpu::PrimitiveTopology::TriangleList,
+            Self::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
+        }
+    }
+}
+
+impl From<crate::shared::SubmeshTopology> for RasterPrimitiveTopology {
+    fn from(t: crate::shared::SubmeshTopology) -> Self {
+        match t {
+            crate::shared::SubmeshTopology::Points => Self::PointList,
+            crate::shared::SubmeshTopology::Triangles => Self::TriangleList,
+        }
+    }
+}
+
 /// Unity `Cull` / `CullMode` material override for raster pipeline keys and
 /// [`MaterialRenderState::resolved_cull_mode`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -60,7 +106,7 @@ pub enum MaterialCullOverride {
     /// No `_Cull` / `_Culling` property (or unknown enum value): use the pass default.
     #[default]
     Unspecified,
-    /// `Cull Off` — disable backface culling.
+    /// `Cull Off` -- disable backface culling.
     Off,
     /// `Cull Front`.
     Front,

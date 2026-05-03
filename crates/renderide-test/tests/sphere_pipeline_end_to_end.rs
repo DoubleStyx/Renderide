@@ -1,6 +1,6 @@
 //! End-to-end exercise of the sphere asset pipeline:
-//! [`renderide_test::scene::sphere::SphereMesh::generate`] →
-//! [`renderide_test::scene::mesh_payload::pack_sphere_mesh_upload`] →
+//! [`renderide_test::scene::sphere::generate_sphere`] ->
+//! [`renderide_test::scene::mesh_payload::pack_sphere_mesh_upload`] ->
 //! [`renderide_test::scene::mesh_payload::make_mesh_upload_data`].
 //!
 //! All three stages are pure CPU code; no GPU is touched.
@@ -10,17 +10,18 @@ use renderide_shared::shared::IndexBufferFormat;
 use renderide_test::scene::mesh_payload::{
     make_mesh_upload_data, pack_sphere_mesh_upload, unit_sphere_bounds,
 };
-use renderide_test::scene::sphere::SphereMesh;
+use renderide_test::scene::sphere::generate_sphere;
 
 #[test]
 fn sphere_mesh_to_upload_data_pipeline_is_self_consistent() {
-    let mesh = SphereMesh::generate(16, 24);
+    let mesh = generate_sphere(16, 24);
     assert!(!mesh.vertices.is_empty());
     assert!(!mesh.indices.is_empty());
 
     let upload = pack_sphere_mesh_upload(&mesh).expect("pack");
     assert_eq!(upload.vertex_count as usize, mesh.vertices.len());
-    assert_eq!(upload.vertex_attributes.len(), 2);
+    // pos + normal + uv + color = 4 attributes
+    assert_eq!(upload.vertex_attributes.len(), 4);
     assert_eq!(upload.submeshes.len(), 1);
     assert_eq!(
         upload.submeshes[0].index_count,

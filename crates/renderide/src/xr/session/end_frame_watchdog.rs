@@ -11,7 +11,7 @@ use std::time::Duration;
 /// Arms a background thread that emits [`logger::error!`] if [`Self::disarm`] is not called within
 /// `timeout`. Dropping the watchdog without calling [`Self::disarm`] also disarms it silently, so a
 /// panic between arm and disarm still tears down the worker cleanly.
-pub(in crate::xr) struct EndFrameWatchdog {
+pub(crate) struct EndFrameWatchdog {
     /// Sender whose disconnect signals the worker to exit.
     tx: Option<mpsc::SyncSender<()>>,
     /// Joined during [`Self::disarm`] to guarantee the worker has observed the disconnect before we
@@ -22,7 +22,7 @@ pub(in crate::xr) struct EndFrameWatchdog {
 impl EndFrameWatchdog {
     /// Spawns the watchdog thread. The returned guard must be [`Self::disarm`]ed within `timeout`
     /// or the worker will log one error and then wait for the final disconnect.
-    pub(in crate::xr) fn arm(timeout: Duration, label: &'static str) -> Self {
+    pub(crate) fn arm(timeout: Duration, label: &'static str) -> Self {
         let (tx, rx) = mpsc::sync_channel::<()>(0);
         let handle = thread::Builder::new()
             .name(format!("xr-end-frame-watchdog:{label}"))
@@ -30,7 +30,7 @@ impl EndFrameWatchdog {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     logger::error!(
-                        "xr::{label} exceeded {}ms — compositor may be stalled",
+                        "xr::{label} exceeded {}ms -- compositor may be stalled",
                         timeout.as_millis()
                     );
                     // Block until the caller finally disarms so the log line pairs with the eventual
@@ -46,7 +46,7 @@ impl EndFrameWatchdog {
     }
 
     /// Signals the worker to exit and waits for it to observe the disconnect.
-    pub(in crate::xr) fn disarm(mut self) {
+    pub(crate) fn disarm(mut self) {
         drop(self.tx.take());
         if let Some(h) = self.handle.take() {
             let _ = h.join();

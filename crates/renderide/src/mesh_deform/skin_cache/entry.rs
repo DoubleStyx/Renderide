@@ -10,10 +10,16 @@ use crate::mesh_deform::range_alloc::Range;
 pub struct SkinCacheEntry {
     /// Final position stream (`vec4<f32>` per vertex) for forward binding.
     pub positions: Range,
-    /// Deformed normals when skinning is active.
+    /// Final deformed normals when skinning or blendshape normal deltas are active.
     pub normals: Option<Range>,
+    /// Deformed tangents when a deformed draw needs tangent-space shading.
+    pub tangents: Option<Range>,
     /// Intermediate positions after blendshape when both blend and skin run.
     pub temp: Option<Range>,
+    /// Intermediate normals after blendshape when normal deltas feed skinning.
+    pub temp_normals: Option<Range>,
+    /// Intermediate tangents after blendshape when tangent deltas feed skinning.
+    pub temp_tangents: Option<Range>,
     /// Vertex count for this cache line (matches mesh deform snapshot).
     pub vertex_count: u32,
     /// Last [`super::GpuSkinCache::frame_counter`] that touched this entry.
@@ -44,9 +50,11 @@ pub fn bytes_for_vertices(vertex_count: u32) -> u64 {
 /// Whether `entry`'s arena layout already covers the new `need`.
 #[inline]
 pub fn entry_layout_matches(entry: &SkinCacheEntry, need: EntryNeed) -> bool {
-    let needs_temp = need.needs_blend && need.needs_skin;
-    let needs_normals = need.needs_skin;
-    (!needs_temp || entry.temp.is_some()) && (!needs_normals || entry.normals.is_some())
+    (!need.needs_temp_positions() || entry.temp.is_some())
+        && (!need.needs_normals() || entry.normals.is_some())
+        && (!need.needs_tangents || entry.tangents.is_some())
+        && (!need.needs_temp_normals() || entry.temp_normals.is_some())
+        && (!need.needs_temp_tangents() || entry.temp_tangents.is_some())
 }
 
 /// Returns an entry only when it was last touched in the current frame (no LRU eligibility).
@@ -87,7 +95,10 @@ mod tests {
                 len_bytes: 16,
             },
             normals: None,
+            tangents: None,
             temp: None,
+            temp_normals: None,
+            temp_tangents: None,
             vertex_count: 1,
             last_touched_frame,
         }
@@ -138,10 +149,13 @@ mod tests {
                 offset_bytes: 16,
                 len_bytes: 16,
             }),
+            tangents: None,
             temp: Some(Range {
                 offset_bytes: 32,
                 len_bytes: 16,
             }),
+            temp_normals: None,
+            temp_tangents: None,
             vertex_count: 1,
             last_touched_frame: 1,
         };
@@ -151,6 +165,9 @@ mod tests {
             EntryNeed {
                 needs_blend: false,
                 needs_skin: true,
+                needs_blend_normals: false,
+                needs_tangents: false,
+                needs_blend_tangents: false,
             },
         ));
     }

@@ -22,8 +22,10 @@
 mod error;
 mod ring;
 mod submit_batch;
+mod submit_counters;
 mod surface_counters;
 mod worker;
+mod xr_finalize;
 
 #[cfg(test)]
 mod tests;
@@ -33,10 +35,15 @@ use std::thread;
 
 pub use error::{DriverError, DriverErrorKind};
 pub use submit_batch::{SubmitBatch, SubmitWait};
+pub use xr_finalize::{
+    XrFinalizeErrorSlot, XrFinalizeKind, XrFinalizeReceiver, XrFinalizeSignal, XrFinalizeWork,
+    XrProjectionFinalize, wait_for_finalize,
+};
 
 use error::DriverErrorState;
 use ring::BoundedRing;
 use submit_batch::DriverMessage;
+use submit_counters::SubmitCounters;
 use surface_counters::SurfaceCounters;
 
 /// Maximum number of frames queued in the ring at once. Matches Filament's
@@ -52,6 +59,7 @@ pub struct DriverThread {
     ring: Arc<BoundedRing<DriverMessage>>,
     errors: Arc<DriverErrorState>,
     surface_counters: Arc<SurfaceCounters>,
+    submit_counters: Arc<SubmitCounters>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -71,10 +79,12 @@ impl DriverThread {
         let ring = Arc::new(BoundedRing::<DriverMessage>::new(RING_CAPACITY));
         let errors = Arc::new(DriverErrorState::default());
         let surface_counters = Arc::new(SurfaceCounters::default());
+        let submit_counters = Arc::new(SubmitCounters::default());
 
         let ring_clone = Arc::clone(&ring);
         let errors_clone = Arc::clone(&errors);
-        let counters_clone = Arc::clone(&surface_counters);
+        let surface_counters_clone = Arc::clone(&surface_counters);
+        let submit_counters_clone = Arc::clone(&submit_counters);
         let handle = thread::Builder::new()
             .name("renderer-driver".to_string())
             .spawn(move || {
@@ -83,7 +93,8 @@ impl DriverThread {
                     queue,
                     gpu_queue_access_gate,
                     errors_clone,
-                    counters_clone,
+                    surface_counters_clone,
+                    submit_counters_clone,
                 );
             })?;
 
@@ -91,12 +102,13 @@ impl DriverThread {
             ring,
             errors,
             surface_counters,
+            submit_counters,
             handle: Some(handle),
         })
     }
 
     /// Enqueues a batch for the driver thread to submit and present. Blocks while the
-    /// ring is full — that block is the frame-pacing backpressure.
+    /// ring is full -- that block is the frame-pacing backpressure.
     ///
     /// When the batch carries a [`wgpu::SurfaceTexture`], the submitted counter is bumped
     /// so [`Self::wait_for_previous_present`] can gate the next acquire precisely on the
@@ -111,12 +123,16 @@ impl DriverThread {
         if has_surface {
             self.surface_counters.note_submitted();
         }
+        self.submit_counters.note_pushed();
         if let Err(_dropped) = self.ring.push(DriverMessage::Submit(Box::new(batch))) {
             if has_surface {
                 // Roll back the submitted counter so `wait_for_previous_present` does not
                 // wait on a present that will never happen.
                 self.surface_counters.note_presented();
             }
+            // Mirror the rollback for the submit counter so the backlog plot does not
+            // show a phantom in-flight batch.
+            self.submit_counters.note_submit_done();
             logger::warn!("driver thread exited; dropping submit batch");
         }
     }
@@ -127,7 +143,7 @@ impl DriverThread {
     /// Use this right before [`wgpu::Surface::get_current_texture`] to uphold wgpu's
     /// single-outstanding-surface-texture invariant without draining the full driver ring.
     /// Unlike [`Self::flush`] this does not block on non-surface batches or on the driver's
-    /// current non-present work — only on the specific "previous present completed" event.
+    /// current non-present work -- only on the specific "previous present completed" event.
     pub fn wait_for_previous_present(&self) {
         self.surface_counters.wait_for_present_catchup(0);
     }
@@ -138,6 +154,12 @@ impl DriverThread {
     /// existing device-recovery path.
     pub fn take_pending_error(&self) -> Option<DriverError> {
         self.errors.take()
+    }
+
+    /// Snapshot of the (pushed, done) submit counters, suitable for a Tracy backlog plot.
+    /// The gap `pushed - done` is the number of batches the driver still owes the producer.
+    pub fn submit_counter_snapshot(&self) -> (u64, u64) {
+        self.submit_counters.snapshot()
     }
 
     /// Blocks the caller until the driver thread has processed every batch currently in
@@ -156,7 +178,9 @@ impl DriverThread {
             surface_texture: None,
             on_submitted_work_done: Vec::new(),
             frame_timing: None,
+            frame_bracket_readback: None,
             wait: Some(wait),
+            xr_finalize: None,
             frame_seq: 0,
         };
         if self
@@ -168,7 +192,7 @@ impl DriverThread {
             return;
         }
         // Any recv error (channel disconnected due to panic inside the driver) is treated
-        // as "driver no longer running" — callers handle that via the separate error slot.
+        // as "driver no longer running" -- callers handle that via the separate error slot.
         let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
     }
 }

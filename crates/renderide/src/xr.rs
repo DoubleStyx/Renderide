@@ -15,12 +15,12 @@
 //!
 //! ## Layout
 //!
-//! - **`bootstrap`** — Vulkan + OpenXR + wgpu init (`init_wgpu_openxr`).
-//! - **`session`** — `view_math` submodule (poses, view–projection, tracking alignment); [`XrSessionState`]
+//! - **`bootstrap`** -- Vulkan + OpenXR + wgpu init (`init_wgpu_openxr`).
+//! - **`session`** -- `view_math` submodule (poses, view-projection, tracking alignment); [`XrSessionState`]
 //!   (wait / submit frame loop).
-//! - **`input`** — OpenXR actions, profiles, and [`OpenxrInput`].
-//! - **`swapchain`** / **`app_integration`** — stereo targets and frame-tick glue for the render loop.
-//! - **`debug_utils`**, **`openxr_loader_paths`**, **`host_camera_sync`** — debug messenger, loader paths, IPC-facing traits.
+//! - **`input`** -- OpenXR actions, profiles, and [`OpenxrInput`].
+//! - **`swapchain`** / **`app_integration`** -- stereo targets and frame-tick glue for the render loop.
+//! - **`debug_utils`**, **`openxr_loader_paths`**, **`host_camera_sync`** -- debug messenger, loader paths, IPC-facing traits.
 
 mod app_integration;
 mod bootstrap;
@@ -29,7 +29,7 @@ mod host_camera_sync;
 mod input;
 mod openxr_loader_paths;
 pub mod output_device;
-mod session;
+pub(crate) mod session;
 mod swapchain;
 
 pub use bootstrap::{XrWgpuHandles, init_wgpu_openxr};

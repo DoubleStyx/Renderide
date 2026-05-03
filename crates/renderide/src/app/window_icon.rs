@@ -9,7 +9,7 @@
 
 use winit::window::Icon;
 
-/// PNG bytes for [`try_embedded_window_icon`], resolved from this crate’s manifest directory.
+/// PNG bytes for [`try_embedded_window_icon`], resolved from this crate's manifest directory.
 const EMBEDDED_LOGO_PNG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/ResoniteLogo.png"

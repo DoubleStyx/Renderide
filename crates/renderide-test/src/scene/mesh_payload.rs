@@ -1,28 +1,32 @@
-//! Converts the procedural [`super::sphere::SphereMesh`] into the byte payload + descriptor
-//! head fields required by `MeshUploadData`.
+//! Converts a procedural [`super::mesh::Mesh`] into the byte payload + descriptor head fields
+//! required by `MeshUploadData`.
 //!
 //! The renderer-side parser expects the layout produced by
-//! [`renderide_shared::wire_writer::mesh_layout::write_mesh_payload`], so we delegate the actual
-//! byte interleaving to that helper and only add the high-level mesh metadata (vertex count,
+//! [`renderide_shared::wire_writer::mesh_layout::write_mesh_payload`], so this module delegates
+//! byte interleaving to that helper and only adds the high-level mesh metadata (vertex count,
 //! attribute descriptors, submesh, bounds) on top.
 
 use renderide_shared::buffer::SharedMemoryBufferDescriptor;
 use renderide_shared::shared::{
     BlendshapeBufferDescriptor, IndexBufferFormat, MeshUploadData, MeshUploadHint,
     MeshUploadHintFlag, RenderBoundingBox, SubmeshBufferDescriptor, SubmeshTopology,
-    VertexAttributeDescriptor,
+    VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType,
 };
 use renderide_shared::wire_writer::mesh_layout::{
     self, InterleavedAttribute, MeshLayoutInput, MeshPayload, normal_float3_attr,
     position_float3_attr, write_mesh_payload,
 };
 
-use super::sphere::SphereMesh;
+use super::mesh::Mesh;
 
-/// Combines the encoded SHM byte payload with an unfilled [`MeshUploadData`] head ready to receive
-/// a `SharedMemoryBufferDescriptor` once the host writes the bytes.
+/// Backwards-compatible alias retained for any external reference; new code should use
+/// [`Mesh`] directly.
+pub type SphereMesh = Mesh;
+
+/// Combines the encoded SHM byte payload with an unfilled [`MeshUploadData`] head ready to
+/// receive a `SharedMemoryBufferDescriptor` once the host writes the bytes.
 #[derive(Clone, Debug)]
-pub struct SphereMeshUpload {
+pub struct MeshUpload {
     /// Bytes to write into the host shared-memory buffer at the offset chosen by the harness.
     pub payload: MeshPayload,
     /// Number of vertices in the encoded mesh (mirrors `MeshUploadData.vertex_count`).
@@ -33,35 +37,51 @@ pub struct SphereMeshUpload {
     pub vertex_attributes: Vec<VertexAttributeDescriptor>,
     /// Single submesh covering the full index range.
     pub submeshes: Vec<SubmeshBufferDescriptor>,
-    /// Conservative axis-aligned bounds (slightly larger than the unit sphere to avoid
-    /// false-negative frustum culling).
+    /// Conservative axis-aligned bounds.
     pub bounds: RenderBoundingBox,
 }
 
-/// Errors produced when packing the sphere mesh.
+/// Backwards-compatible alias for the historical name.
+pub type SphereMeshUpload = MeshUpload;
+
+/// Errors produced when packing a procedural mesh.
 #[derive(Debug, thiserror::Error)]
-pub enum SphereMeshUploadError {
+pub enum MeshUploadError {
     /// The wire-writer rejected the inputs (mismatched lengths, etc.).
     #[error("encode mesh payload: {0}")]
     Encode(#[from] mesh_layout::MeshLayoutError),
 }
 
-/// Errors produced when assembling the final [`MeshUploadData`] from a packed sphere upload.
+/// Backwards-compatible alias for the historical name.
+pub type SphereMeshUploadError = MeshUploadError;
+
+/// Errors produced when assembling the final [`MeshUploadData`] from a packed mesh.
 #[derive(Debug, thiserror::Error)]
-pub enum SphereMeshDescriptorError {
-    /// Sphere had more vertices than fit in `i32` (impossible in practice; defensive).
+pub enum MeshUploadDescriptorError {
+    /// Mesh had more vertices than fit in `i32` (impossible in practice; defensive).
     #[error("vertex count overflow: {0}")]
     VertexCountOverflow(usize),
 }
 
-/// Encodes a [`SphereMesh`] to a [`SphereMeshUpload`].
+/// Backwards-compatible alias for the historical name.
+pub type SphereMeshDescriptorError = MeshUploadDescriptorError;
+
+/// Encodes any [`Mesh`] (sphere, torus, custom) to a [`MeshUpload`] with position, normal,
+/// UV0, and color (white) attributes.
 ///
 /// The result is independent of the asset id and the SHM descriptor so the same upload payload
 /// can be reused across runs (the harness picks the asset id and writes the bytes into its own
-/// shared-memory buffer).
-pub fn pack_sphere_mesh_upload(
-    mesh: &SphereMesh,
-) -> Result<SphereMeshUpload, SphereMeshUploadError> {
+/// shared-memory buffer). `bounds` should fully contain the mesh in object space.
+///
+/// All four attributes are always emitted: the unlit material's vertex stage reads
+/// `@location(0..3)` (position, normal, uv, color) and unbound attribute slots read garbage
+/// on some drivers, so cases that don't otherwise care about UV / color still need them
+/// present and well-defined. Color is filled with `(1, 1, 1, 1)` so the unlit fragment's
+/// `color * vertex_color` term passes through unchanged.
+pub fn pack_mesh_upload(
+    mesh: &Mesh,
+    bounds: RenderBoundingBox,
+) -> Result<MeshUpload, MeshUploadError> {
     let vertex_count = mesh.vertices.len() as i32;
     let positions: Vec<u8> = mesh
         .vertices
@@ -73,6 +93,14 @@ pub fn pack_sphere_mesh_upload(
         .iter()
         .flat_map(|v| v.normal.iter().flat_map(|c| c.to_le_bytes()))
         .collect();
+    let uvs: Vec<u8> = mesh
+        .vertices
+        .iter()
+        .flat_map(|v| v.uv.iter().flat_map(|c| c.to_le_bytes()))
+        .collect();
+    let colors: Vec<u8> = (0..mesh.vertices.len())
+        .flat_map(|_| [1.0f32, 1.0, 1.0, 1.0].iter().flat_map(|c| c.to_le_bytes()))
+        .collect();
 
     let index_buffer_format = if u16::try_from(mesh.vertices.len()).is_ok() {
         IndexBufferFormat::UInt16
@@ -82,13 +110,20 @@ pub fn pack_sphere_mesh_upload(
     let index_bytes = encode_indices(&mesh.indices, index_buffer_format);
     let index_count = mesh.indices.len() as i32;
 
-    let vertex_attributes = vec![position_float3_attr(), normal_float3_attr()];
+    let vertex_attributes = vec![
+        position_float3_attr(),
+        normal_float3_attr(),
+        uv0_float2_attr(),
+        color_float4_attr(),
+    ];
     let payload = write_mesh_payload(&MeshLayoutInput {
         vertex_count,
         vertex_attributes: vertex_attributes.clone(),
         sources: vec![
             InterleavedAttribute { bytes: &positions },
             InterleavedAttribute { bytes: &normals },
+            InterleavedAttribute { bytes: &uvs },
+            InterleavedAttribute { bytes: &colors },
         ],
         indices: &index_bytes,
         index_buffer_format,
@@ -98,27 +133,51 @@ pub fn pack_sphere_mesh_upload(
         topology: SubmeshTopology::Triangles,
         index_start: 0,
         index_count,
-        bounds: unit_sphere_bounds(),
+        bounds,
     }];
 
-    Ok(SphereMeshUpload {
+    Ok(MeshUpload {
         payload,
         vertex_count,
         index_buffer_format,
         vertex_attributes,
         submeshes,
-        bounds: unit_sphere_bounds(),
+        bounds,
     })
+}
+
+/// Float2 UV0 attribute descriptor. Mirrors the `position_float3_attr` / `normal_float3_attr`
+/// helpers in `renderide_shared::wire_writer::mesh_layout`.
+fn uv0_float2_attr() -> VertexAttributeDescriptor {
+    VertexAttributeDescriptor {
+        attribute: VertexAttributeType::UV0,
+        format: VertexAttributeFormat::Float32,
+        dimensions: 2,
+    }
+}
+
+/// Float4 vertex-color attribute descriptor.
+fn color_float4_attr() -> VertexAttributeDescriptor {
+    VertexAttributeDescriptor {
+        attribute: VertexAttributeType::Color,
+        format: VertexAttributeFormat::Float32,
+        dimensions: 4,
+    }
+}
+
+/// Backwards-compatible wrapper that packs the unit sphere using the historical bounds margin.
+pub fn pack_sphere_mesh_upload(mesh: &Mesh) -> Result<MeshUpload, MeshUploadError> {
+    pack_mesh_upload(mesh, unit_sphere_bounds())
 }
 
 /// Builds a fully populated [`MeshUploadData`] referencing `buffer_descriptor` and `asset_id`.
 pub fn make_mesh_upload_data(
-    upload: &SphereMeshUpload,
+    upload: &MeshUpload,
     asset_id: i32,
     buffer_descriptor: SharedMemoryBufferDescriptor,
-) -> Result<MeshUploadData, SphereMeshDescriptorError> {
+) -> Result<MeshUploadData, MeshUploadDescriptorError> {
     if upload.vertex_count < 0 {
-        return Err(SphereMeshDescriptorError::VertexCountOverflow(
+        return Err(MeshUploadDescriptorError::VertexCountOverflow(
             upload.vertex_count.unsigned_abs() as usize,
         ));
     }
@@ -177,18 +236,20 @@ fn encode_indices(indices: &[u32], format: IndexBufferFormat) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::sphere::generate_sphere;
 
     #[test]
     fn packs_sphere_with_uint16_indices() {
-        let mesh = SphereMesh::generate(8, 12);
+        let mesh = generate_sphere(8, 12);
         let upload = pack_sphere_mesh_upload(&mesh).expect("pack");
         assert_eq!(upload.vertex_count as usize, mesh.vertices.len());
         assert_eq!(upload.index_buffer_format, IndexBufferFormat::UInt16);
-        assert_eq!(upload.payload.vertex_stride_bytes, 12 + 12);
-        // vertices (24B/vertex) + indices (2B each) + bone_counts (vertex_count zeroed bytes)
+        // position(12) + normal(12) + uv(8) + color(16) = 48 bytes per vertex
+        const STRIDE: usize = 12 + 12 + 8 + 16;
+        assert_eq!(upload.payload.vertex_stride_bytes, STRIDE);
         assert_eq!(
             upload.payload.bytes.len(),
-            upload.vertex_count as usize * 24
+            upload.vertex_count as usize * STRIDE
                 + mesh.indices.len() * 2
                 + upload.vertex_count as usize
         );
@@ -215,7 +276,7 @@ mod tests {
 
     #[test]
     fn make_mesh_upload_data_has_expected_fields() {
-        let mesh = SphereMesh::generate(4, 6);
+        let mesh = generate_sphere(4, 6);
         let upload = pack_sphere_mesh_upload(&mesh).expect("pack");
         let descriptor = SharedMemoryBufferDescriptor {
             buffer_id: 99,
@@ -229,7 +290,7 @@ mod tests {
         assert_eq!(upload_data.bone_count, 0);
         assert_eq!(upload_data.bone_weight_count, 0);
         assert_eq!(upload_data.index_buffer_format, IndexBufferFormat::UInt16);
-        assert_eq!(upload_data.vertex_attributes.len(), 2);
+        assert_eq!(upload_data.vertex_attributes.len(), 4);
         assert_eq!(upload_data.submeshes.len(), 1);
         assert!(upload_data.blendshape_buffers.is_empty());
         assert!(!upload_data.high_priority);
@@ -239,7 +300,7 @@ mod tests {
     #[test]
     fn pack_sphere_mesh_upload_uses_uint32_when_vertex_count_exceeds_u16() {
         // 256 * 256 = 65_536 vertices, one more than u16::MAX, forcing the UInt32 branch.
-        let mesh = SphereMesh::generate(255, 255);
+        let mesh = generate_sphere(255, 255);
         assert!(mesh.vertices.len() > u16::MAX as usize);
         let upload = pack_sphere_mesh_upload(&mesh).expect("pack");
         assert_eq!(upload.index_buffer_format, IndexBufferFormat::UInt32);
@@ -256,7 +317,7 @@ mod tests {
 
     #[test]
     fn make_mesh_upload_data_overflow_guard_fires_for_negative_vertex_count() {
-        let mesh = SphereMesh::generate(4, 6);
+        let mesh = generate_sphere(4, 6);
         let mut upload = pack_sphere_mesh_upload(&mesh).expect("pack");
         upload.vertex_count = -1;
         let descriptor = SharedMemoryBufferDescriptor {
@@ -268,7 +329,7 @@ mod tests {
         let err =
             make_mesh_upload_data(&upload, 42, descriptor).expect_err("negative count must fail");
         match err {
-            SphereMeshDescriptorError::VertexCountOverflow(n) => assert_eq!(n, 1),
+            MeshUploadDescriptorError::VertexCountOverflow(n) => assert_eq!(n, 1),
         }
     }
 

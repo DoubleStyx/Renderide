@@ -2,6 +2,7 @@
 
 use crate::materials::{
     MaterialBlendMode, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
+    RasterPrimitiveTopology,
 };
 
 /// Groups draws that can share the same raster pipeline, material bind data, and Unity render-queue
@@ -21,6 +22,11 @@ pub struct MaterialDrawBatchKey {
     pub skinned: bool,
     /// Front-face winding selected from the draw's model transform.
     pub front_face: RasterFrontFace,
+    /// Primitive topology selected from the mesh's per-submesh
+    /// [`crate::shared::SubmeshTopology`]. `wgpu` bakes
+    /// [`wgpu::PrimitiveState::topology`] into the render pipeline, so two draws of the same
+    /// shader/material that differ in topology must build separate pipelines.
+    pub primitive_topology: RasterPrimitiveTopology,
     /// Whether the embedded stem needs a UV0 vertex stream for the active shader permutation.
     pub embedded_needs_uv0: bool,
     /// Whether the embedded stem needs a color vertex stream at `@location(3)`.

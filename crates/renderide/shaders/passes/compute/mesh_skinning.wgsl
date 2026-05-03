@@ -8,9 +8,14 @@ struct SkinDispatchParams {
     vertex_count: u32,
     base_src_pos_e: u32,
     base_src_nrm_e: u32,
+    base_src_tan_e: u32,
     base_dst_pos_e: u32,
     base_dst_nrm_e: u32,
+    base_dst_tan_e: u32,
+    flags: u32,
 }
+
+const SKIN_TANGENTS: u32 = 1u;
 
 @group(0) @binding(0) var<storage, read> bone_matrices: array<mat4x4<f32>>;
 @group(0) @binding(1) var<storage, read> src_pos: array<vec4<f32>>;
@@ -20,15 +25,17 @@ struct SkinDispatchParams {
 @group(0) @binding(5) var<storage, read> src_n: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read_write> dst_n: array<vec4<f32>>;
 @group(0) @binding(7) var<uniform> skin_dispatch: SkinDispatchParams;
+@group(0) @binding(8) var<storage, read> src_t: array<vec4<f32>>;
+@group(0) @binding(9) var<storage, read_write> dst_t: array<vec4<f32>>;
 
 fn mat3_linear(m: mat4x4<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(m[0].xyz, m[1].xyz, m[2].xyz);
 }
 
-/// Upper-3×3 inverse-transpose (cotangent rule for normals) of `m`.
+/// Upper-3x3 inverse-transpose (cotangent rule for normals) of `m`.
 ///
-/// For columns `c0, c1, c2`, the rows of `adj(m)` are `c1×c2`, `c2×c0`, `c0×c1`. `m^-1 = adj(m)/det`
-/// stores those vectors as **rows**, so `m^-T` stores them as **columns** — which is what
+/// For columns `c0, c1, c2`, the rows of `adj(m)` are `c1xc2`, `c2xc0`, `c0xc1`. `m^-1 = adj(m)/det`
+/// stores those vectors as **rows**, so `m^-T` stores them as **columns** -- which is what
 /// `mat3x3<f32>(...)` produces directly. Returns identity for singular linear parts to avoid NaNs
 /// in the linear-blend skinning sum.
 ///
@@ -57,9 +64,17 @@ fn inverse_transpose_3x3(m: mat3x3<f32>) -> mat3x3<f32> {
     );
 }
 
-/// Upper 3×3 inverse-transpose of a 4×4 (cotangent rule for normals; handles non-uniform scale).
+/// Upper 3x3 inverse-transpose of a 4x4 (cotangent rule for normals; handles non-uniform scale).
 fn normal_matrix(m: mat4x4<f32>) -> mat3x3<f32> {
     return inverse_transpose_3x3(mat3_linear(m));
+}
+
+fn safe_normalize(v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    let len_sq = dot(v, v);
+    if (!(len_sq > 1e-12) || len_sq > 3.402823e38) {
+        return fallback;
+    }
+    return v * inverseSqrt(len_sq);
 }
 
 @compute @workgroup_size(64)
@@ -70,8 +85,10 @@ fn skin_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let src_pi = skin_dispatch.base_src_pos_e + i;
     let src_ni = skin_dispatch.base_src_nrm_e + i;
+    let src_ti = skin_dispatch.base_src_tan_e + i;
     let dst_pi = skin_dispatch.base_dst_pos_e + i;
     let dst_ni = skin_dispatch.base_dst_nrm_e + i;
+    let dst_ti = skin_dispatch.base_dst_tan_e + i;
 
     let p = src_pos[src_pi];
     let idx = bone_idx[i];
@@ -92,12 +109,34 @@ fn skin_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     acc_n += w.z * (normal_matrix(bone_matrices[idx.z]) * n_bind);
     acc_n += w.w * (normal_matrix(bone_matrices[idx.w]) * n_bind);
 
+    let tangent_enabled = (skin_dispatch.flags & SKIN_TANGENTS) != 0u;
+    var tb = vec4<f32>(0.0);
+    var t_bind = vec3<f32>(0.0);
+    var acc_t = vec3<f32>(0.0);
+    if (tangent_enabled) {
+        tb = src_t[src_ti];
+        t_bind = tb.xyz;
+        acc_t += w.x * (mat3_linear(bone_matrices[idx.x]) * t_bind);
+        acc_t += w.y * (mat3_linear(bone_matrices[idx.y]) * t_bind);
+        acc_t += w.z * (mat3_linear(bone_matrices[idx.z]) * t_bind);
+        acc_t += w.w * (mat3_linear(bone_matrices[idx.w]) * t_bind);
+    }
+
     if (ws > 1e-6) {
         dst_pos[dst_pi] = vec4<f32>((acc / ws).xyz, p.w);
-        let nn = normalize(acc_n / ws);
+        let nn = safe_normalize(acc_n / ws, n_bind);
         dst_n[dst_ni] = vec4<f32>(nn, nb.w);
+        if (tangent_enabled) {
+            let tt = safe_normalize(acc_t / ws, t_bind);
+            let sign = select(1.0, -1.0, tb.w < 0.0);
+            dst_t[dst_ti] = vec4<f32>(tt, sign);
+        }
     } else {
         dst_pos[dst_pi] = p;
-        dst_n[dst_ni] = vec4<f32>(normalize(n_bind), nb.w);
+        dst_n[dst_ni] = vec4<f32>(safe_normalize(n_bind, vec3<f32>(0.0, 0.0, 1.0)), nb.w);
+        if (tangent_enabled) {
+            let sign = select(1.0, -1.0, tb.w < 0.0);
+            dst_t[dst_ti] = vec4<f32>(safe_normalize(t_bind, vec3<f32>(1.0, 0.0, 0.0)), sign);
+        }
     }
 }

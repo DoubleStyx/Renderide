@@ -3,12 +3,12 @@
 //!
 //! The implementation is split across:
 //!
-//! - [`ipc_setup`] — opens the four authority Cloudtoid queues + tempdir for SHM backing files.
-//! - [`handshake`] — `RendererInitData` → `RendererInitResult` → `RendererInitFinalizeData`.
-//! - [`lockstep`] — drains both `…S` queues and replies to every `FrameStartData` with a
+//! - [`ipc_setup`] -- opens the four authority Cloudtoid queues + tempdir for SHM backing files.
+//! - [`handshake`] -- `RendererInitData` -> `RendererInitResult` -> `RendererInitFinalizeData`.
+//! - [`lockstep`] -- drains both `...S` queues and replies to every `FrameStartData` with a
 //!   `FrameSubmitData`. Per-frame counter starts at 0 (matches `RenderSystem.cs:111`).
-//! - [`asset_upload`] — writes the sphere mesh into shared memory and waits for `MeshUploadResult`.
-//! - [`scene_session`] — top-level orchestration.
+//! - [`asset_upload`] -- writes the sphere mesh into shared memory and waits for `MeshUploadResult`.
+//! - [`scene_session`] -- top-level orchestration.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -21,7 +21,7 @@ pub mod ipc_setup;
 pub mod lockstep;
 pub mod scene_session;
 
-pub use scene_session::SceneSessionConfig;
+pub use scene_session::{SceneSessionConfig, SessionTemplate};
 
 /// Configuration for [`HostHarness::start`].
 #[derive(Clone, Debug)]
@@ -40,6 +40,9 @@ pub struct HostHarnessConfig {
     pub timeout: Duration,
     /// When `true`, inherit the renderer's stdout/stderr.
     pub verbose_renderer: bool,
+    /// Procedural geometry template the harness should upload (sphere by default for the
+    /// historical CLI flow).
+    pub template: SessionTemplate,
 }
 
 /// Outcome of a successful harness run. Holds an optional tempdir guard so callers (e.g. the
@@ -112,7 +115,7 @@ impl HostHarness {
             "Harness: starting scene session (output_path={})",
             session_cfg.output_path.display()
         );
-        match scene_session::run_session(&session_cfg) {
+        match scene_session::run_session(&session_cfg, self.cfg.template.clone()) {
             Ok(outcome) => {
                 logger::info!(
                     "Harness: scene session completed (png_path={})",
@@ -160,6 +163,7 @@ mod harness_start_tests {
             interval_ms: 1,
             timeout: Duration::from_secs(1),
             verbose_renderer: false,
+            template: super::SessionTemplate::Sphere,
         }
     }
 

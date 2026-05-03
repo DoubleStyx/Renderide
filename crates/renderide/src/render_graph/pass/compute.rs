@@ -1,7 +1,7 @@
 //! [`ComputePass`] trait for encoder-driven compute and mixed compute/copy work.
 //!
 //! Unlike [`super::raster::RasterPass`], the graph does not open any GPU pass object for compute
-//! passes — the implementor receives the context (which includes the [`wgpu::CommandEncoder`])
+//! passes -- the implementor receives the context (which includes the [`wgpu::CommandEncoder`])
 //! and dispatches compute workgroups or uses the encoder API directly.
 
 use std::borrow::Cow;

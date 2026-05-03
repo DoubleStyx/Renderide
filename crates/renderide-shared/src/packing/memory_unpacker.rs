@@ -21,13 +21,13 @@ pub struct MemoryUnpacker<'a, 'pool, P: MemoryPackerEntityPool> {
 ///
 /// Caps speculative allocation when an attacker-influenced length prefix would otherwise
 /// drive a multi-megabyte `String` allocation per field. `1 << 20` (one mebi) code units is
-/// two megabytes of UTF-16 — comfortably above any legitimate IPC string.
+/// two megabytes of UTF-16 -- comfortably above any legitimate IPC string.
 pub const MAX_STRING_LEN: usize = 1 << 20;
 
 /// Returns a `Vec::with_capacity` hint that does not exceed the unread buffer length.
 ///
 /// Each element of any list reader consumes at least one wire byte, so a `count` larger than
-/// the remaining buffer cannot decode successfully — the per-element loop will surface
+/// the remaining buffer cannot decode successfully -- the per-element loop will surface
 /// [`MemoryUnpackError::Underrun`]. This helper keeps the speculative pre-allocation bounded
 /// by the input size so a malicious `i32::MAX` count cannot reserve gigabytes ahead of the
 /// real underrun error.
@@ -120,7 +120,7 @@ impl<'a, 'pool, P: MemoryPackerEntityPool> MemoryUnpacker<'a, 'pool, P> {
         }
     }
 
-    /// Host string: UTF-16 LE code units with `i32` length. `-1` → [`None`]. Surrogate halves or
+    /// Host string: UTF-16 LE code units with `i32` length. `-1` -> [`None`]. Surrogate halves or
     /// invalid sequences decode to the empty string (defensive; the host typically sends valid UTF-16).
     /// Lengths above [`MAX_STRING_LEN`] are rejected with [`MemoryUnpackError::StringTooLong`].
     pub fn read_str(&mut self) -> Result<Option<String>, MemoryUnpackError> {

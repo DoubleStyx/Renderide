@@ -1,9 +1,9 @@
-//! World Unlit (`Shader "Unlit"`): texture × tint, optional alpha test,
+//! World Unlit (`Shader "Unlit"`): texture x tint, optional alpha test,
 //! optional UV-shift from a packed offset texture, vertex color, stereo texture transform,
 //! polar UVs, normal-map display mode, and alpha mask.
 //!
 //! Build emits `unlit_default` / `unlit_multiview` targets via [`MULTIVIEW`](https://docs.rs/naga_oil).
-//! `@group(1)` identifiers match Unity material property names (`_Color`, `_Tex`, `_MaskTex`, `_OffsetTex`, …)
+//! `@group(1)` identifiers match Unity material property names (`_Color`, `_Tex`, `_MaskTex`, `_OffsetTex`, ...)
 //! so host binding picks them up by reflection.
 //!
 //! Per-frame bindings (`@group(0)`) are imported from `globals.wgsl` so composed targets match the frame bind group layout used by the renderer.

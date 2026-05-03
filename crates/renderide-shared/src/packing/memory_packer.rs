@@ -100,7 +100,7 @@ impl<'a> MemoryPacker<'a> {
         self.buffer = tail;
     }
 
-    /// UTF‑16 code units (two-byte wchar layout): `i32` length, then each `u16`. Length `-1` means null.
+    /// UTF-16 code units (two-byte wchar layout): `i32` length, then each `u16`. Length `-1` means null.
     pub fn write_str(&mut self, s: Option<&str>) {
         match s {
             None => self.write(&(-1i32)),
@@ -189,7 +189,7 @@ impl<'a> MemoryPacker<'a> {
         }
     }
 
-    /// Polymorphic list: count then each element’s `encode`.
+    /// Polymorphic list: count then each element's `encode`.
     pub fn write_polymorphic_list<T: PolymorphicEncode>(&mut self, list: Option<&mut [T]>) {
         let count = list.as_deref().map_or(0, <[T]>::len) as i32;
         self.write(&count);

@@ -42,13 +42,13 @@ use crate::scene::{ResolvedLight, SceneCoordinator, light_contributes};
 ///
 /// The large cluster storage buffers (`cluster_light_counts`, `cluster_light_indices`) are
 /// shared across all views via [`FrameGpuResources::cluster_cache`] and are safe to share
-/// because GPU in-order execution within a single submit ensures each view's compute→raster
+/// because GPU in-order execution within a single submit ensures each view's compute->raster
 /// pair retires before the next view's compute overwrites.
 ///
 /// [`Self::cluster_params_buffer`] is intentionally **per-view**: it is written by
 /// `ClusteredLightPass::record` via `FrameUploadBatch`, which accumulates writes from rayon
 /// workers. Since insertion order into the batch is non-deterministic, a shared params buffer
-/// would mean the last view to push wins — corrupting every other view's cluster culling and
+/// would mean the last view to push wins -- corrupting every other view's cluster culling and
 /// causing strobe flicker. Keeping params per-view eliminates the race at the cost of ~512 B
 /// per view (completely negligible).
 pub struct PerViewFrameState {
@@ -59,7 +59,7 @@ pub struct PerViewFrameState {
     pub frame_bind_group: Arc<wgpu::BindGroup>,
     /// Per-view uniform buffer for `ClusterParams` (camera matrix, projection, viewport, etc.).
     ///
-    /// Sized `CLUSTER_PARAMS_UNIFORM_SIZE × eye_multiplier`. Must be per-view — see struct doc.
+    /// Sized `CLUSTER_PARAMS_UNIFORM_SIZE x eye_multiplier`. Must be per-view -- see struct doc.
     pub cluster_params_buffer: wgpu::Buffer,
     /// View-local depth/color snapshots sampled by embedded material helper passes.
     scene_snapshots: PerViewSceneSnapshots,
@@ -404,7 +404,7 @@ impl FrameResourceManager {
 
         let entry = per_view_frame.get_mut(view_id)?;
 
-        // Resize per-view params buffer on mono→stereo transition (grow-only for consistency).
+        // Resize per-view params buffer on mono->stereo transition (grow-only for consistency).
         if stereo && !entry.last_stereo {
             entry.cluster_params_buffer = make_cluster_params_buffer(device, true);
             entry.last_stereo = true;

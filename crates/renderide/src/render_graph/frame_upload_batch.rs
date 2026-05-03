@@ -246,10 +246,10 @@ impl FrameUploadBatch {
     /// [`wgpu::CommandEncoder::copy_buffer_to_buffer`], returning the recorded command buffer for
     /// inclusion at the head of the frame's submit batch.
     ///
-    /// Replaces the previous "N × [`wgpu::Queue::write_buffer`]" replay: each `write_buffer` call
+    /// Replaces the previous "N x [`wgpu::Queue::write_buffer`]" replay: each `write_buffer` call
     /// internally allocates its own staging chunk and locks the queue, so a frame with dozens of
     /// per-view uniform writes paid that overhead per write. The staging-belt path memcpy's the
-    /// whole arena into one mapped buffer, unmaps once, and emits one encoder op per write — the
+    /// whole arena into one mapped buffer, unmaps once, and emits one encoder op per write -- the
     /// op is essentially free relative to a `write_buffer` call.
     ///
     /// Writes whose `offset` or `len` are not 4-byte aligned (the

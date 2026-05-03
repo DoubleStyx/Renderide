@@ -1,8 +1,9 @@
 //! Per-draw uniform packing for mesh forward passes (WebGPU dynamic uniform offset = 256 bytes).
 
 use glam::{Mat3, Mat4};
+use rayon::prelude::*;
 
-/// Stride between consecutive draw slots in the uniform slab (`mat4`×3 + WGSL padding).
+/// Stride between consecutive draw slots in the uniform slab (`mat4`x3 + WGSL padding).
 pub const PER_DRAW_UNIFORM_STRIDE: usize = 256;
 
 /// Initial number of draw slots allocated for [`crate::backend::PerDrawResources`].
@@ -49,7 +50,7 @@ impl WgslMat3x3 {
         }
     }
 
-    /// `transpose(inverse(M))` for the upper 3×3 of `model`, packed for WGSL `normal_matrix`.
+    /// `transpose(inverse(M))` for the upper 3x3 of `model`, packed for WGSL `normal_matrix`.
     ///
     /// For singular or near-singular linear parts, returns identity to avoid NaNs in the shader.
     #[must_use]
@@ -64,13 +65,13 @@ impl WgslMat3x3 {
     }
 }
 
-/// GPU layout: left/right view–projection, `model`, inverse-transpose normal matrix, padding to 256 bytes.
+/// GPU layout: left/right view-projection, `model`, inverse-transpose normal matrix, padding to 256 bytes.
 ///
 /// Matches composed `shaders/target/null_*.wgsl` (`PerDrawUniforms` at `@group(2)`).
 ///
 /// **Contract:** [`Self::view_proj_left`] and [`Self::view_proj_right`] normally store
-/// **projection × view** (PV) only. Vertex shaders compute `clip = view_proj * (model * local_pos)`;
-/// premultiplying `model` into the view–projection would apply it twice for static meshes. The
+/// **projection x view** (PV) only. Vertex shaders compute `clip = view_proj * (model * local_pos)`;
+/// premultiplying `model` into the view-projection would apply it twice for static meshes. The
 /// null fallback's world-space-deformed path is the narrow exception: it stores `PV * inverse(model)`
 /// so the shader can keep the real model matrix for checker anchoring without double-transforming
 /// already-world-space vertices.
@@ -90,7 +91,7 @@ pub struct PaddedPerDrawUniforms {
     /// This is identity for most skinned meshes with world-space positions, except the null fallback
     /// keeps the real model matrix and compensates in [`Self::view_proj_left`] / [`Self::view_proj_right`].
     pub model: [f32; 16],
-    /// Inverse transpose of the upper 3×3 of [`Self::model`] for normal transforms.
+    /// Inverse transpose of the upper 3x3 of [`Self::model`] for normal transforms.
     pub normal_matrix: WgslMat3x3,
     /// Metadata plus padding to [`PER_DRAW_UNIFORM_STRIDE`] bytes.
     ///
@@ -153,7 +154,16 @@ impl PaddedPerDrawUniforms {
     }
 }
 
+/// Slot count above which slab writes fan out to a rayon worker pool.
+///
+/// Each slot is a 256-byte memcpy (~50ns); 2048 slots is ~100us, the rayon dispatch
+/// break-even point.
+const PER_DRAW_SLAB_PARALLEL_MIN: usize = 2048;
+
 /// Writes `count` consecutive [`PaddedPerDrawUniforms`] into `out` (must be `count * 256` bytes).
+///
+/// Parallelizes across rayon when `slots.len() >= PER_DRAW_SLAB_PARALLEL_MIN`. Each worker writes
+/// into a disjoint 256-byte region of `out`, so there is no synchronization on the hot path.
 pub fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u8]) {
     let need = slots.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE);
     assert!(
@@ -161,10 +171,21 @@ pub fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u
         "slab buffer too small: need {need}, have {}",
         out.len()
     );
-    for (i, slot) in slots.iter().enumerate() {
-        let start = i * PER_DRAW_UNIFORM_STRIDE;
-        let bytes: &[u8] = bytemuck::bytes_of(slot);
-        out[start..start + bytes.len()].copy_from_slice(bytes);
+    profiling::scope!("mesh_deform::write_per_draw_uniform_slab");
+    let dst = &mut out[..need];
+    if slots.len() >= PER_DRAW_SLAB_PARALLEL_MIN {
+        dst.par_chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE)
+            .zip(slots.par_iter())
+            .for_each(|(slab, slot)| {
+                slab.copy_from_slice(bytemuck::bytes_of(slot));
+            });
+    } else {
+        for (slab, slot) in dst
+            .chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE)
+            .zip(slots.iter())
+        {
+            slab.copy_from_slice(bytemuck::bytes_of(slot));
+        }
     }
 }
 
@@ -177,7 +198,7 @@ mod tests {
         assert_eq!(size_of::<PaddedPerDrawUniforms>(), PER_DRAW_UNIFORM_STRIDE);
     }
 
-    /// Forward pass WGSL uses `clip = view_proj * (model * local)`. Packing PV×model into
+    /// Forward pass WGSL uses `clip = view_proj * (model * local)`. Packing PVxmodel into
     /// `view_proj` would apply `model` twice for static meshes (regression guard).
     #[test]
     fn shader_clip_uses_pv_times_model_once() {
@@ -232,6 +253,30 @@ mod tests {
         let b: &PaddedPerDrawUniforms =
             bytemuck::from_bytes(&buf[PER_DRAW_UNIFORM_STRIDE..PER_DRAW_UNIFORM_STRIDE * 2]);
         assert!(!b.position_stream_world_space());
+    }
+
+    #[test]
+    fn slab_parallel_path_matches_serial_for_large_input() {
+        let count = PER_DRAW_SLAB_PARALLEL_MIN + 17;
+        let slots: Vec<PaddedPerDrawUniforms> = (0..count)
+            .map(|i| {
+                let m = Mat4::from_translation(glam::Vec3::new(i as f32, i as f32 * 0.5, 0.0));
+                PaddedPerDrawUniforms::new_single(Mat4::IDENTITY, m)
+                    .with_position_stream_world_space(i % 2 == 0)
+            })
+            .collect();
+
+        let mut parallel = vec![0u8; PER_DRAW_UNIFORM_STRIDE * count];
+        write_per_draw_uniform_slab(&slots, &mut parallel);
+
+        let mut serial = vec![0u8; PER_DRAW_UNIFORM_STRIDE * count];
+        for (slab, slot) in serial
+            .chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE)
+            .zip(slots.iter())
+        {
+            slab.copy_from_slice(bytemuck::bytes_of(slot));
+        }
+        assert_eq!(parallel, serial);
     }
 
     #[test]

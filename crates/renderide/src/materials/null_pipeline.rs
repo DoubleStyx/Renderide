@@ -11,8 +11,8 @@ use crate::materials::raster_pipeline::{
 };
 use crate::materials::shader_permutation::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 use crate::materials::{
-    MaterialPipelineDesc, MaterialRenderState, RasterFrontFace, reflect_raster_material_wgsl,
-    validate_per_draw_group2,
+    MaterialPipelineDesc, MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology,
+    reflect_raster_material_wgsl, validate_per_draw_group2,
 };
 
 /// Null/fallback material family for decomposed position/normal vertex streams.
@@ -67,6 +67,7 @@ pub(crate) fn create_null_render_pipeline(
     desc: &MaterialPipelineDesc,
     wgsl_source: &str,
     front_face: RasterFrontFace,
+    primitive_topology: RasterPrimitiveTopology,
 ) -> Result<wgpu::RenderPipeline, PipelineBuildError> {
     create_reflective_raster_mesh_forward_pipeline(
         device,
@@ -83,6 +84,7 @@ pub(crate) fn create_null_render_pipeline(
             depth_write_enabled: true,
             render_state: MaterialRenderState::default(),
             front_face,
+            primitive_topology,
         },
     )
 }

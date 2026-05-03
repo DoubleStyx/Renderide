@@ -1,15 +1,15 @@
 //! XeGTAO depth-aware-filter helpers shared by `gtao_main`, `gtao_denoise`, and `gtao_apply`.
 //!
 //! The math is a direct port of `XeGTAO_CalculateEdges` / `XeGTAO_PackEdges` /
-//! `XeGTAO_UnpackEdges` from `XeGTAO.hlsli` (Intel reference, 2021–22). Constants match the
+//! `XeGTAO_UnpackEdges` from `XeGTAO.hlsli` (Intel reference, 2021-22). Constants match the
 //! reference exactly:
 //!
-//! - `OCCLUSION_TERM_SCALE = 1.5` — the AO production pass stores `saturate(visibility / 1.5)`
+//! - `OCCLUSION_TERM_SCALE = 1.5` -- the AO production pass stores `saturate(visibility / 1.5)`
 //!   so the bilateral kernel has headroom when summing weighted neighbours; the final-apply
 //!   pass multiplies by 1.5 to recover the true visibility before modulating HDR.
-//! - `DIAG_WEIGHT = 0.85 * 0.5` — diagonal-neighbour scaling so the 3×3 kernel's diagonal
+//! - `DIAG_WEIGHT = 0.85 * 0.5` -- diagonal-neighbour scaling so the 3x3 kernel's diagonal
 //!   energy is comparable to its cardinal energy.
-//! - `LEAK_THRESHOLD = 2.5`, `LEAK_STRENGTH = 0.5` — small bilateral leak past strong edge
+//! - `LEAK_THRESHOLD = 2.5`, `LEAK_STRENGTH = 0.5` -- small bilateral leak past strong edge
 //!   clusters, which reduces both spatial aliasing and TAA shimmer at silhouettes.
 //!
 //! All helpers are pure functions on view-space (positive) depths and unit-interval edge
@@ -22,7 +22,7 @@
 /// `XE_GTAO_OCCLUSION_TERM_SCALE`.
 const GTAO_OCCLUSION_TERM_SCALE: f32 = 1.5;
 
-/// Diagonal-neighbour weight in the 3×3 bilateral kernel. Matches XeGTAO's `0.85 * 0.5` literal.
+/// Diagonal-neighbour weight in the 3x3 bilateral kernel. Matches XeGTAO's `0.85 * 0.5` literal.
 const GTAO_DIAG_WEIGHT: f32 = 0.425;
 
 /// Edge sum at which the per-pixel "edge leak" begins to take effect. XeGTAO references 2.5
@@ -73,7 +73,7 @@ fn gtao_calculate_edges(
 /// (`0`, `1/3`, `2/3`, `1`) and packs them into a single `R8Unorm` value.
 ///
 /// XeGTAO uses `round(saturate(*) * 2.9)` rather than `* 3.0` to bias slightly toward the
-/// "strong edge" buckets — this matches the reference exactly so any tuning done against the
+/// "strong edge" buckets -- this matches the reference exactly so any tuning done against the
 /// reference numbers carries over.
 fn gtao_pack_edges(edges_lrtb: vec4<f32>) -> f32 {
     let q = round(clamp(edges_lrtb, vec4<f32>(0.0), vec4<f32>(1.0)) * 2.9);
@@ -85,7 +85,7 @@ fn gtao_pack_edges(edges_lrtb: vec4<f32>) -> f32 {
 
 /// Direct port of `XeGTAO_UnpackEdges`. Inverse of `gtao_pack_edges`.
 ///
-/// Note the `* 255.5` (not `255.0`) inside the reference — the extra `0.5` rounds the unorm
+/// Note the `* 255.5` (not `255.0`) inside the reference -- the extra `0.5` rounds the unorm
 /// sample into the correct integer bucket without an explicit `round`. We keep the literal
 /// since later code does its own `saturate`.
 fn gtao_unpack_edges(packed: f32) -> vec4<f32> {
@@ -102,7 +102,7 @@ fn gtao_unpack_edges(packed: f32) -> vec4<f32> {
     );
 }
 
-/// XeGTAO's per-pixel "edge leak" (`XeGTAO_Denoise` lines 772–776). When the four cardinal
+/// XeGTAO's per-pixel "edge leak" (`XeGTAO_Denoise` lines 772-776). When the four cardinal
 /// edges sum below `4 - LEAK_THRESHOLD = 1.5` (i.e. three or four directions are strong
 /// edges), allow up to `LEAK_STRENGTH = 0.5` of bilateral leakage so neighbour AO can flow
 /// past the edge cluster. This prevents both spatial aliasing and TAA shimmer at silhouette
@@ -119,7 +119,7 @@ fn gtao_apply_edge_leak(edges_c_lrtb: vec4<f32>) -> vec4<f32> {
 /// `LRTB` cardinal edge weights, with the per-direction symmetricity correction from
 /// `XeGTAO_Denoise` line 770: a center-to-neighbour weight is multiplied by the neighbour's
 /// edge weight pointing back at the center (`L`'s right edge gates `C`'s left direction,
-/// etc.). XeGTAO calls this out specifically: "edges aren't perfectly symmetrical… this line
+/// etc.). XeGTAO calls this out specifically: "edges aren't perfectly symmetrical... this line
 /// further enforces the symmetricity, creating a slightly sharper blur. Works real nice with
 /// TAA."
 fn gtao_symmetricise_edges(
@@ -137,7 +137,7 @@ fn gtao_symmetricise_edges(
     );
 }
 
-/// Diagonal weights from `XeGTAO_Denoise` lines 785–788. Each diagonal uses the two cardinal
+/// Diagonal weights from `XeGTAO_Denoise` lines 785-788. Each diagonal uses the two cardinal
 /// edges that straddle it, contributed by both the center pixel and the relevant immediate
 /// neighbour, summed and scaled by `DIAG_WEIGHT`. Indices (`LRTB`): `x = L`, `y = R`, `z = T`,
 /// `w = B`.
@@ -162,7 +162,7 @@ fn gtao_diagonal_weights(
     return GtaoDiagonalWeights(tl, tr, bl, br);
 }
 
-/// AO-term inputs for the 3×3 bilateral kernel. Indices match the kernel diagram:
+/// AO-term inputs for the 3x3 bilateral kernel. Indices match the kernel diagram:
 ///
 /// ```text
 /// tl  t  tr
@@ -181,8 +181,8 @@ struct GtaoKernelAo {
     br: f32,
 }
 
-/// XeGTAO's bilateral-kernel core (`XeGTAO_Denoise` lines 801–814). `blur_amount` is the
-/// caller-supplied `XeGTAO_AddSample` seed weight — `denoise_blur_beta` for the final-apply
+/// XeGTAO's bilateral-kernel core (`XeGTAO_Denoise` lines 801-814). `blur_amount` is the
+/// caller-supplied `XeGTAO_AddSample` seed weight -- `denoise_blur_beta` for the final-apply
 /// pass, `denoise_blur_beta / 5.0` for the intermediate denoise pass.
 ///
 /// Returns the weighted-average AO term in the same `[0, 1]` scale as the inputs (the

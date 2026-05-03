@@ -300,7 +300,7 @@ mod tests {
         const YEAR_3000_DOTNET_TICKS: i64 = 946_708_416_000_000_000;
         assert!(
             now < YEAR_3000_DOTNET_TICKS,
-            "utc_now_ticks() = {now} unexpectedly past year 3000 — saturating-add bug?"
+            "utc_now_ticks() = {now} unexpectedly past year 3000 -- saturating-add bug?"
         );
     }
 

@@ -59,7 +59,7 @@ impl std::fmt::Display for LogComponent {
 /// If `override_root` is [`Some`], that path is used as the logs root (same role as the
 /// `RENDERIDE_LOGS_ROOT` environment variable). Otherwise `manifest_dir` must be
 /// `.../Renderide/crates/logger`;
-/// [`Path::ancestors`] yields `logger` → `crates` → `Renderide`, so index `2` is the repository root.
+/// [`Path::ancestors`] yields `logger` -> `crates` -> `Renderide`, so index `2` is the repository root.
 pub fn logs_root_with(
     manifest_dir: &Path,
     override_root: Option<&OsStr>,
@@ -89,7 +89,7 @@ pub fn logs_root() -> PathBuf {
         std::env::var_os(LOGS_ROOT_ENV).as_deref(),
     )
     .unwrap_or_else(|e| {
-        // Can't route through the logger — this is the logger bootstrap path.
+        // Can't route through the logger -- this is the logger bootstrap path.
         #[expect(
             clippy::print_stderr,
             reason = "logger not yet initialized at bootstrap"
@@ -122,8 +122,8 @@ pub fn log_file_path(component: LogComponent, timestamp: &str) -> PathBuf {
 ///
 /// This is a defense-in-depth guard for [`log_file_path`]: every current caller produces
 /// timestamps via [`crate::log_filename_timestamp`] (already in the safe alphabet), but the
-/// public signature accepts arbitrary `&str` and we do not want a future caller — or
-/// attacker-influenced input — to slip a `..` segment or `/` into the joined path.
+/// public signature accepts arbitrary `&str` and we do not want a future caller -- or
+/// attacker-influenced input -- to slip a `..` segment or `/` into the joined path.
 fn sanitize_timestamp(timestamp: &str) -> String {
     let mut out = String::with_capacity(timestamp.len());
     for c in timestamp.chars() {
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn sanitize_timestamp_replaces_each_consecutive_unsafe_char_one_to_one() {
         // The contract is per-char replacement (no run collapsing), so three unsafe characters in
-        // a row become three underscores — important so different inputs cannot accidentally
+        // a row become three underscores -- important so different inputs cannot accidentally
         // collide on the same sanitized filename.
         assert_eq!(sanitize_timestamp("a///b"), "a___b");
         assert_eq!(sanitize_timestamp(".../"), "____");

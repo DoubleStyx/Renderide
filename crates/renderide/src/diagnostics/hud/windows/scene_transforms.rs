@@ -11,7 +11,7 @@ use super::super::view::HudWindow;
 const SCENE_W: f32 = 720.0;
 const SCENE_H: f32 = 420.0;
 
-/// **Scene transforms** HUD window — one tab per render space, clipped TRS table per tab.
+/// **Scene transforms** HUD window -- one tab per render space, clipped TRS table per tab.
 ///
 /// First-use Y prefers the bottom of the viewport minus [`SCENE_H`] but never crosses
 /// [`layout::scene_transforms_min_y`] (avoids covering the **Renderer config** + **Frame timing**
@@ -97,11 +97,11 @@ fn scene_transform_space_tab(ui: &imgui::Ui, space: &RenderSpaceTransformsSnapsh
             match &row.world {
                 None => {
                     ui.table_next_column();
-                    ui.text_disabled("—");
+                    ui.text_disabled("--");
                     ui.table_next_column();
-                    ui.text_disabled("—");
+                    ui.text_disabled("--");
                     ui.table_next_column();
-                    ui.text_disabled("—");
+                    ui.text_disabled("--");
                 }
                 Some(w) => {
                     ui.table_next_column();

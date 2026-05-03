@@ -114,19 +114,21 @@ impl AppDriver {
         let Some(target) = self.target.as_mut() else {
             return;
         };
-        let gpu_queue_access_gate = target.gpu().gpu_queue_access_gate().clone();
-        let Some(session) = target.xr_session_mut() else {
+        let Some((gpu, session)) = target.openxr_parts_mut() else {
             return;
         };
-
+        // Atomic check is intentional: the driver thread clears `frame_open` from a deferred
+        // finalize, so this read is safe without holding any session mutex.
+        if !session.handles.xr_session.frame_open() {
+            return;
+        }
         profiling::scope!("xr::end_frame_if_open");
-        if let Err(error) = session
+        let (finalize, rx) = session
             .handles
             .xr_session
-            .end_frame_if_open(tick.predicted_display_time, &gpu_queue_access_gate)
-        {
-            logger::debug!("OpenXR end_frame_if_open: {error:?}");
-        }
+            .build_empty_finalize(tick.predicted_display_time);
+        gpu.submit_finalize_only(finalize);
+        session.handles.xr_session.set_pending_finalize(rx);
     }
 
     pub(super) fn handle_frame_graph_error(&mut self, error: GraphExecuteError) {

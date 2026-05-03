@@ -1,11 +1,11 @@
 //! Public entry surface for the Xiexe Toon 2.0 family.
 //!
 //! All behaviour lives in the sibling submodules:
-//! - `xiexe_toon2_base`     — material struct, `@group(1)` bindings, shared types and helpers.
-//! - `xiexe_toon2_surface`  — vertex transform and `sample_surface` (forward + outline normal paths).
-//! - `xiexe_toon2_alpha`    — seven-mode alpha dispatch.
-//! - `xiexe_toon2_lighting` — clustered toon BRDF (forward + outline shading walks).
-//! - `xiexe_toon2_outline`  — outline vertex extrusion and per-fragment shading.
+//! - `xiexe_toon2_base`     -- material struct, `@group(1)` bindings, shared types and helpers.
+//! - `xiexe_toon2_surface`  -- vertex transform and `sample_surface` (forward + outline normal paths).
+//! - `xiexe_toon2_alpha`    -- seven-mode alpha dispatch.
+//! - `xiexe_toon2_lighting` -- clustered toon BRDF (forward + outline shading walks).
+//! - `xiexe_toon2_outline`  -- outline vertex extrusion and per-fragment shading.
 //!
 //! Dispatcher shaders (`materials/xstoon2.0*.wgsl`) only need to import this module plus
 //! `renderide::xiexe::toon2::base` for the `VertexOutput` type, then call the four

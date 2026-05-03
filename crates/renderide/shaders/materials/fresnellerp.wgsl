@@ -60,11 +60,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_model_normal_vertex_main(instance_index, view_idx, pos, n, uv);
+    return mv::world_model_normal_vertex_main(instance_index, view_idx, pos, n, t, uv);
 #else
-    return mv::world_model_normal_vertex_main(instance_index, 0u, pos, n, uv);
+    return mv::world_model_normal_vertex_main(instance_index, 0u, pos, n, t, uv);
 #endif
 }
 
@@ -85,13 +86,14 @@ fn compute_lerp(uv: vec2<f32>) -> f32 {
     return clamp(l, 0.0, 1.0);
 }
 
-fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, l: f32) -> vec3<f32> {
+fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, l: f32) -> vec3<f32> {
     var n = normalize(world_n);
+    let t = normalize(world_t);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
-        let n0 = textureSample(_NormalMap0, _NormalMap0_sampler, uvu::apply_st(uv, mat._NormalMap0_ST)).xyz;
-        let n1 = textureSample(_NormalMap1, _NormalMap1_sampler, uvu::apply_st(uv, mat._NormalMap1_ST)).xyz;
-        let ts_n = nd::decode_ts_normal_with_placeholder(mix(n0, n1, vec3<f32>(l)), 1.0);
-        let tbn = pnorm::orthonormal_tbn(n);
+        let n0 = textureSample(_NormalMap0, _NormalMap0_sampler, uvu::apply_st(uv, mat._NormalMap0_ST));
+        let n1 = textureSample(_NormalMap1, _NormalMap1_sampler, uvu::apply_st(uv, mat._NormalMap1_ST));
+        let ts_n = nd::decode_ts_normal_with_placeholder_sample(mix(n0, n1, vec4<f32>(l)), 1.0);
+        let tbn = pnorm::orthonormal_tbn(n, t);
         n = normalize(tbn * ts_n);
     }
     return n;
@@ -101,7 +103,7 @@ fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, l: f32) -> vec3<f32> {
 @fragment
 fn fs_main(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
     let l = compute_lerp(in.primary_uv);
-    let n = sample_normal(in.primary_uv, in.world_n, l);
+    let n = sample_normal(in.primary_uv, in.world_n, in.world_t, l);
     let view_dir = rg::view_dir_for_world_pos(in.world_pos, in.view_layer);
 
     let exp = mix(mat._Exp0, mat._Exp1, l);

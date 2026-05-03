@@ -1,4 +1,4 @@
-//! **GPU memory** tab — full wgpu allocator report (refreshed on a timer).
+//! **GPU memory** tab -- full wgpu allocator report (refreshed on a timer).
 
 use imgui::{ListClipper, TableFlags};
 
@@ -19,7 +19,7 @@ impl TabView for GpuMemoryTab {
 
     fn render(&self, ui: &imgui::Ui, data: Self::Data<'_>, _state: &mut Self::State) {
         let Some(d) = data else {
-            ui.text("Waiting for frame diagnostics…");
+            ui.text("Waiting for frame diagnostics...");
             return;
         };
 

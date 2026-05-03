@@ -13,7 +13,7 @@ use crate::shared::MeshUploadData;
 use super::AssetTransferQueue;
 use super::integrator::StepResult;
 
-/// Stage for a single mesh upload task ([`Renderite.Unity.MeshAsset.Upload`]–style splitting).
+/// Stage for a single mesh upload task ([`Renderite.Unity.MeshAsset.Upload`]-style splitting).
 #[derive(Debug)]
 enum MeshStage {
     /// Compute and cache [`MeshBufferLayout`] (CPU only).
@@ -189,7 +189,7 @@ impl MeshUploadTask {
     ) -> StepResult {
         let Some(mesh) = upload_result else {
             logger::error!(
-                "mesh {asset_id}: upload failed or rejected — host callback not completed (no MeshUploadResult sent)"
+                "mesh {asset_id}: upload failed or rejected -- host callback not completed (no MeshUploadResult sent)"
             );
             return StepResult::Done;
         };
@@ -203,7 +203,7 @@ impl MeshUploadTask {
             }));
         }
         logger::trace!(
-            "mesh {} uploaded via integrator (replaced={} resident_bytes≈{})",
+            "mesh {} uploaded via integrator (replaced={} resident_bytes~={})",
             asset_id,
             existed_before,
             queue.pools.mesh_pool.accounting().total_resident_bytes()

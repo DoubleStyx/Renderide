@@ -29,7 +29,7 @@ use presets::{
 /// Which finger a [`HandState`] segment index (0..24) belongs to.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FingerKind {
-    /// Thumb: segments 0..=3 (Metacarpal, Proximal, Distal, Tip — no Intermediate).
+    /// Thumb: segments 0..=3 (Metacarpal, Proximal, Distal, Tip -- no Intermediate).
     Thumb,
     /// Index finger: segments 4..=8.
     Index,
@@ -54,7 +54,7 @@ fn finger_kind_for_segment(index: usize) -> FingerKind {
     }
 }
 
-/// Controller-derived inputs used to drive the idle↔fist blend.
+/// Controller-derived inputs used to drive the idle<->fist blend.
 struct ControllerCurlInputs {
     /// Which hand this controller drives.
     side: Chirality,
@@ -175,7 +175,7 @@ fn extract_curl_inputs(controller: &VRControllerState) -> Option<ControllerCurlI
     }
 }
 
-/// Returns the idle↔fist blend factor for a given segment index.
+/// Returns the idle<->fist blend factor for a given segment index.
 ///
 /// - Thumb and metacarpals are held at idle (`0.0`). Non-thumb metacarpals are overridden on the
 ///   host anyway when [`HandState::tracks_metacarpals`] is `false`, so their blend does not matter.

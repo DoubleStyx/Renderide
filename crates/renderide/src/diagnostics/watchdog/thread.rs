@@ -25,7 +25,7 @@ use super::signal;
 /// Process-global watchdog. Owns the background poll thread and the heartbeat registry.
 ///
 /// Construct via [`Self::install`] from `app::run` and keep the returned [`Watchdog`]
-/// alive for the lifetime of the renderer process — when it drops, the poll thread joins.
+/// alive for the lifetime of the renderer process -- when it drops, the poll thread joins.
 pub struct Watchdog {
     inner: Arc<WatchdogInner>,
     join: Option<JoinHandle<()>>,
@@ -47,7 +47,7 @@ impl Watchdog {
     /// `settings.enabled` is `false`.
     ///
     /// Failures spawning the watchdog thread or installing the capture signal handler are
-    /// logged and treated as "watchdog unavailable" — startup continues without it.
+    /// logged and treated as "watchdog unavailable" -- startup continues without it.
     pub fn install(settings: WatchdogSettings) -> Option<Self> {
         if !settings.enabled {
             logger::info!("Watchdog disabled by configuration");
@@ -165,7 +165,7 @@ fn handle_slot(inner: &WatchdogInner, slot: &Arc<HeartbeatSlot>) {
         } => {
             let elapsed_ms = elapsed_ns / 1_000_000;
             logger::warn!(
-                "Watchdog: thread '{}' hitch — last pet {elapsed_ms} ms ago (threshold {} ms)",
+                "Watchdog: thread '{}' hitch -- last pet {elapsed_ms} ms ago (threshold {} ms)",
                 slot.name,
                 slot.hitch_ns / 1_000_000
             );
@@ -179,12 +179,12 @@ fn handle_slot(inner: &WatchdogInner, slot: &Arc<HeartbeatSlot>) {
             let trace = capture_hang_trace(slot);
             match trace {
                 Some(t) => logger::error!(
-                    "Watchdog: thread '{}' HANG — last pet {elapsed_ms} ms ago (threshold {} ms)\n{t}",
+                    "Watchdog: thread '{}' HANG -- last pet {elapsed_ms} ms ago (threshold {} ms)\n{t}",
                     slot.name,
                     slot.hang_ns / 1_000_000
                 ),
                 None => logger::error!(
-                    "Watchdog: thread '{}' HANG — last pet {elapsed_ms} ms ago (threshold {} ms); stack capture unavailable",
+                    "Watchdog: thread '{}' HANG -- last pet {elapsed_ms} ms ago (threshold {} ms); stack capture unavailable",
                     slot.name,
                     slot.hang_ns / 1_000_000
                 ),
@@ -195,7 +195,7 @@ fn handle_slot(inner: &WatchdogInner, slot: &Arc<HeartbeatSlot>) {
 
             let action = inner.settings.read().action;
             if matches!(action, WatchdogAction::LogAndAbort) {
-                logger::error!("Watchdog: WatchdogAction::LogAndAbort — aborting process");
+                logger::error!("Watchdog: WatchdogAction::LogAndAbort -- aborting process");
                 logger::flush();
                 std::process::abort();
             }

@@ -38,16 +38,13 @@ impl PlatformGroup {
         if job.is_null() || job == -1_isize as HANDLE {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: Win32 JOB structs are POD; zeroed fields are valid defaults aside from `LimitFlags`.
         let basic = JOBOBJECT_BASIC_LIMIT_INFORMATION {
             LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            ..unsafe { std::mem::zeroed() }
+            ..Default::default()
         };
-        // SAFETY: `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` is a POD Win32 struct; all-zero is a valid
-        // bit pattern for unused fields.
         let info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
             BasicLimitInformation: basic,
-            ..unsafe { std::mem::zeroed() }
+            ..Default::default()
         };
 
         // SAFETY: `SetInformationJobObject` expects a pointer to `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`

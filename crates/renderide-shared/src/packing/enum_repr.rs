@@ -1,4 +1,4 @@
-//! Enumerations serialized as `i32` list elements, matching the host’s enum value lists.
+//! Enumerations serialized as `i32` list elements, matching the host's enum value lists.
 
 /// Enum-like type stored on the wire as a signed 32-bit integer per entry.
 pub trait EnumRepr: Copy {

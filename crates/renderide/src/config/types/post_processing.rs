@@ -13,7 +13,7 @@ pub use tonemap::{TonemapMode, TonemapSettings};
 /// Post-processing stack configuration. Persisted as `[post_processing]` (with sub-tables per effect).
 ///
 /// Effects are organised as nested sub-structs (`tonemap`, future `bloom`, `color_grading`, etc.)
-/// so each gets its own TOML sub-table (`[post_processing.tonemap]`, …) and so the
+/// so each gets its own TOML sub-table (`[post_processing.tonemap]`, ...) and so the
 /// [`crate::render_graph::post_processing::PostProcessChainSignature`] can be derived purely from
 /// this value.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -26,7 +26,7 @@ pub struct PostProcessingSettings {
     pub gtao: GtaoSettings,
     /// Dual-filter physically-based bloom (pre-tonemap HDR). See [`BloomSettings`].
     pub bloom: BloomSettings,
-    /// Tonemapping (HDR → display-referred 0..1 linear). See [`TonemapSettings`].
+    /// Tonemapping (HDR -> display-referred 0..1 linear). See [`TonemapSettings`].
     pub tonemap: TonemapSettings,
 }
 

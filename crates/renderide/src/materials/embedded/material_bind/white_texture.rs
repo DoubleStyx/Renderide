@@ -1,10 +1,10 @@
-//! 1×1 white placeholder textures used as the default binding for unset `@group(1)` texture slots.
+//! 1x1 white placeholder textures used as the default binding for unset `@group(1)` texture slots.
 
 use std::sync::Arc;
 
 use super::super::bind_kind::TextureBindKind;
 
-/// Placeholder 1×1 white texture for one [`TextureBindKind`].
+/// Placeholder 1x1 white texture for one [`TextureBindKind`].
 pub(super) struct WhiteTexture {
     /// Underlying device texture.
     pub(super) texture: Arc<wgpu::Texture>,
@@ -49,7 +49,7 @@ struct WhiteDescriptor {
     depth_or_array_layers: u32,
 }
 
-/// Allocates a 1×1 white texture and a default view for `kind`.
+/// Allocates a 1x1 white texture and a default view for `kind`.
 pub(super) fn create_white(device: &wgpu::Device, kind: TextureBindKind) -> WhiteTexture {
     let desc = kind.white_descriptor();
     let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {

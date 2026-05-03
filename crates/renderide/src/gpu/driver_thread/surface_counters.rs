@@ -3,7 +3,7 @@
 //! The renderer relies on wgpu's invariant that only one [`wgpu::SurfaceTexture`] may be
 //! outstanding at a time: the previous frame's [`wgpu::SurfaceTexture::present`] must run
 //! before the next [`wgpu::Surface::get_current_texture`]. Phase 2 moved `present()` to
-//! the driver thread, so the main thread needs a fine-grained wait — not a full FIFO flush —
+//! the driver thread, so the main thread needs a fine-grained wait -- not a full FIFO flush --
 //! to block only on the specific event "previous surface texture has been presented".
 //!
 //! This module provides that primitive: [`SurfaceCounters`] tracks the number of
@@ -67,7 +67,7 @@ impl SurfaceCounters {
     /// Blocks until the number of in-flight surface-carrying batches is `<= max_in_flight`.
     ///
     /// With `max_in_flight == 0`, this waits until every previously-submitted surface
-    /// texture has been presented — the precise barrier needed by the main thread before
+    /// texture has been presented -- the precise barrier needed by the main thread before
     /// it calls [`wgpu::Surface::get_current_texture`]. Using a larger value would require
     /// wgpu to support multiple outstanding surface textures, which it does not today.
     ///
@@ -76,7 +76,7 @@ impl SurfaceCounters {
     /// `fetch_add` then `lock` then `notify_all` sequence in the gap between the reader's
     /// atomic load and its `wait` call, leaving the reader parked on a condvar no one
     /// will signal again (lost wakeup). Holding the mutex across both the load and the
-    /// `wait` makes the two atomic with respect to the notifier — [`std::sync::Condvar::wait`]
+    /// `wait` makes the two atomic with respect to the notifier -- [`std::sync::Condvar::wait`]
     /// releases the same mutex the notifier must acquire before `notify_all`. Do not
     /// hoist the lock back outside the loop.
     pub(super) fn wait_for_present_catchup(&self, max_in_flight: u64) {

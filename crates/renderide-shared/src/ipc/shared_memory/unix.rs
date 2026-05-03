@@ -25,7 +25,7 @@ impl SharedMemoryView {
                 io::Error::new(io::ErrorKind::NotFound, format!("{}: {e}", path.display()))
             })?;
         // SAFETY: the bulk-data wire protocol (see `ipc/shared_memory`) is the caller's
-        // synchronisation between host and renderer — ownership of each region alternates per
+        // synchronisation between host and renderer -- ownership of each region alternates per
         // message; `memmap2::MmapMut::map_mut` is sound under those external guarantees.
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         Ok(Self { mmap })

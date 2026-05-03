@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// Frame-global GPU buffers could not be allocated or wired for the initial `(1×1)` cluster grid.
+/// Frame-global GPU buffers could not be allocated or wired for the initial `(1x1)` cluster grid.
 #[derive(Debug, Error)]
 pub enum FrameGpuInitError {
     /// Lights storage [`wgpu::Buffer`] would exceed device limits.

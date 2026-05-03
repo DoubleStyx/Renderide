@@ -96,7 +96,7 @@ impl RasterPass for BloomDownsampleFirstPass {
         let output_format = attachment_format(graph_resources, self.output);
 
         // Upload the shared bloom params UBO once per frame via the deferred upload batch
-        // (single-producer queue invariant — see `crate::passes::post_processing::gtao`
+        // (single-producer queue invariant -- see `crate::passes::post_processing::gtao`
         // for the equivalent pattern). Params are built from the live blackboard slot so slider
         // edits propagate without rebuilding the graph.
         let settings = ctx
@@ -124,7 +124,7 @@ impl RasterPass for BloomDownsampleFirstPass {
     }
 }
 
-/// Plain 13-tap downsample between bloom mips (N-1 → N). No firefly reduction, no threshold —
+/// Plain 13-tap downsample between bloom mips (N-1 -> N). No firefly reduction, no threshold --
 /// the first pass already absorbed those costs. Shares pipelines and bind groups with the first
 /// downsample via [`BloomPipelineCache`].
 pub(super) struct BloomDownsamplePass {

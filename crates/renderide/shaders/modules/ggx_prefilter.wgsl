@@ -3,7 +3,7 @@
 //! Provides the math used to convolve a radiance environment into a roughness-keyed mip pyramid
 //! via Karis-style split-sum + Filament solid-angle source-mip selection.
 //!
-//! Roughness convention: every helper takes **perceptual roughness** `r ∈ [0, 1]`. The runtime
+//! Roughness convention: every helper takes **perceptual roughness** `r in [0, 1]`. The runtime
 //! sampling side ([`renderide::pbs::brdf::skybox_specular_lod`]) uses the parabolic
 //! `lod = max_lod * r * (2 - r)`. The prefilter side inverts it via [`lod_to_perceptual_roughness`]
 //! so mip *i* is filtered for the roughness that the runtime LOD lookup will land on.
@@ -61,7 +61,7 @@ fn importance_sample_ggx(xi: vec2<f32>, r: f32, n: vec3<f32>) -> vec3<f32> {
     return tangent_to_world(h, n);
 }
 
-/// GGX/Trowbridge–Reitz NDF for `n_dot_h` and perceptual roughness `r`.
+/// GGX/Trowbridge-Reitz NDF for `n_dot_h` and perceptual roughness `r`.
 fn d_ggx(n_dot_h: f32, r: f32) -> f32 {
     let alpha = max(r * r, 0.0001);
     let alpha_sq = alpha * alpha;
@@ -75,9 +75,9 @@ fn ggx_sample_pdf(n_dot_h: f32, r: f32) -> f32 {
     return max(d * n_dot_h * 0.25, 1e-7);
 }
 
-/// Source mip level whose texel solid angle ≈ the importance sample's solid angle (Filament).
+/// Source mip level whose texel solid angle ~= the importance sample's solid angle (Filament).
 ///
-/// `omega_p = 4π / (6 * src_face²)` is the per-base-texel solid angle and `omega_s = 1 / (n*pdf)`
+/// `omega_p = 4PI / (6 * src_face^2)` is the per-base-texel solid angle and `omega_s = 1 / (n*pdf)`
 /// is the importance sample's. `lod = log4(K * omega_s / omega_p)` with `K = 4` (box filter
 /// constant) folds into `0.5 * log2(omega_s / omega_p) + 1.0`.
 fn solid_angle_lod(pdf: f32, sample_count: u32, src_face_size: u32) -> f32 {
@@ -86,7 +86,7 @@ fn solid_angle_lod(pdf: f32, sample_count: u32, src_face_size: u32) -> f32 {
     return 0.5 * log2(max(omega_s / omega_p, 1e-7)) + 1.0;
 }
 
-/// Inverse of the runtime parabolic LOD lookup. Given `t = mip / max_mip ∈ [0, 1]`, returns the
+/// Inverse of the runtime parabolic LOD lookup. Given `t = mip / max_mip in [0, 1]`, returns the
 /// perceptual roughness that the runtime `lod = max_lod * r * (2 - r)` would map back to mip *i*.
 fn lod_to_perceptual_roughness(t: f32) -> f32 {
     return 1.0 - sqrt(max(1.0 - clamp(t, 0.0, 1.0), 0.0));

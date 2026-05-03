@@ -27,10 +27,10 @@ The split lets the engine and renderer evolve independently and lets the rendere
 Renderide runs as a sibling process to the Resonite host. The bootstrapper launches both and wires up the IPC channels:
 
 ```
-Bootstrapper  ──shm queues──>  Host (.NET / Resonite)
-                                   │
+Bootstrapper  --shm queues-->  Host (.NET / Resonite)
+                                   |
                               shm queues (Primary + Background)
-                                   │
+                                   |
                                    v
                               Renderer (renderide)
 ```
@@ -121,7 +121,7 @@ cargo build --features video-textures
 
 ## Configuration
 
-Renderide reads its settings from a TOML file discovered (or created) at startup, with overrides from `RENDERIDE_*` environment variables. The runtime watches the file and applies most changes without a restart, and the in-renderer ImGui overlay edits the same settings.
+Renderide reads its settings from a TOML file discovered (or created) at startup. The runtime watches the file and applies most changes without a restart, and the in-renderer ImGui overlay edits the same settings.
 
 The full schema lives next to the loader in [`crates/renderide/src/config`](crates/renderide/src/config).
 

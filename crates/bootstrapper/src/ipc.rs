@@ -24,7 +24,7 @@ pub const RENDERIDE_INTERPROCESS_DIR_ENV: &str = "RENDERIDE_INTERPROCESS_DIR";
 /// applying queue backpressure on the Host's `BootstrapperManager`.
 pub const BOOTSTRAP_QUEUE_CAPACITY: i64 = 8192;
 
-/// Returns the Host ↔ bootstrapper queue base names for `shared_memory_prefix`
+/// Returns the Host <-> bootstrapper queue base names for `shared_memory_prefix`
 /// (`{prefix}.bootstrapper_in`, `{prefix}.bootstrapper_out`).
 pub fn bootstrap_queue_base_names(shared_memory_prefix: &str) -> (String, String) {
     (
@@ -46,11 +46,11 @@ fn make_queue_options(name: &str, dir: &Path) -> Result<QueueOptions, BootstrapE
         .map_err(BootstrapError::QueueOptionsInvalid)
 }
 
-/// Subscriber + publisher pair used for Host ↔ bootstrapper messaging.
+/// Subscriber + publisher pair used for Host <-> bootstrapper messaging.
 pub struct BootstrapQueues {
-    /// Host → bootstrapper (`*_in` from Host’s perspective).
+    /// Host -> bootstrapper (`*_in` from Host's perspective).
     pub incoming: Subscriber,
-    /// Bootstrapper → Host.
+    /// Bootstrapper -> Host.
     pub outgoing: Publisher,
 }
 

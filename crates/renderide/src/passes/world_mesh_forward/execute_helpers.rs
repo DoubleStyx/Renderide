@@ -12,7 +12,6 @@ mod slab;
 pub(super) use color_snapshot::encode_world_mesh_forward_color_snapshot;
 pub(super) use msaa_depth::{
     encode_msaa_depth_resolve_after_clear_only, encode_world_mesh_forward_depth_snapshot,
-    resolve_forward_msaa_views,
 };
 pub(super) use prepare::prepare_world_mesh_forward_frame;
 pub(super) use raster_recording::{

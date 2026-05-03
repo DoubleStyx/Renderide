@@ -1,4 +1,4 @@
-//! View–projection parameters for CPU frustum culling of world mesh draws.
+//! View-projection parameters for CPU frustum culling of world mesh draws.
 //!
 //! Values match [`super::passes::world_mesh_forward::WorldMeshForwardOpaquePass`] per-space `view` and
 //! global projection state (`HostCameraFrame`, viewport aspect, clip planes). When
@@ -32,7 +32,7 @@ pub(crate) use geometry::{
 };
 
 /// View and projection snapshot from the **frame that produced** the Hi-Z depth buffer (used for
-/// CPU occlusion tests against the previous frame’s pyramid).
+/// CPU occlusion tests against the previous frame's pyramid).
 ///
 /// The per-space view table is stored as [`Arc<HashMap<...>>`] so per-view clones are refcount
 /// bumps rather than full hash table copies (important when secondary render-texture cameras fan
@@ -51,7 +51,7 @@ pub struct HiZTemporalState {
     pub depth_viewport_px: (u32, u32),
 }
 
-/// Records per-space views and pyramid viewport for the next frame’s Hi-Z occlusion tests.
+/// Records per-space views and pyramid viewport for the next frame's Hi-Z occlusion tests.
 ///
 /// When `explicit_world_to_view` is [`Some`], that matrix is stored for every active render
 /// space so Hi-Z tests use the same view as the offscreen depth author pass (see
@@ -104,7 +104,7 @@ pub struct WorldMeshCullProjParams {
     pub world_proj: Mat4,
     /// Orthographic overlay projection (same choice as forward pass when overlay draws exist).
     pub overlay_proj: Mat4,
-    /// OpenXR per-eye view–projection when VR is active; `None` when not using stereo culling.
+    /// OpenXR per-eye view-projection when VR is active; `None` when not using stereo culling.
     pub vr_stereo: Option<(Mat4, Mat4)>,
 }
 

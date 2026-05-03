@@ -19,7 +19,7 @@ pub struct SharedMemoryBufferDescriptor {
     pub buffer_id: i32,
     /// Total capacity of that buffer (bytes), as known to the host.
     pub buffer_capacity: i32,
-    /// Byte offset from the start of the mapping where this message’s data begins.
+    /// Byte offset from the start of the mapping where this message's data begins.
     pub offset: i32,
     /// Length of the useful region in bytes.
     pub length: i32,

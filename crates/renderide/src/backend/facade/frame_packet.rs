@@ -62,7 +62,7 @@ impl RenderBackend {
     ///
     /// `view_shader_permutations` lists the [`ShaderPermutation`] each prepared view will use; one
     /// material batch cache is refreshed per distinct permutation so multi-view frames (e.g. VR
-    /// stereo + a secondary camera) do not pay an O(materials × pipeline_property_ids) walk per
+    /// stereo + a secondary camera) do not pay an O(materials x pipeline_property_ids) walk per
     /// view. The implicit `ShaderPermutation(0)` mono cache is always refreshed so the prepared
     /// renderables walk warms the steady-state working set.
     pub(crate) fn extract_frame_shared<'a>(

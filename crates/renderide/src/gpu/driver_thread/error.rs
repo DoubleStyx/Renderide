@@ -12,7 +12,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum DriverErrorKind {
     /// `wgpu::Queue::submit` itself reported an error (reserved for future wgpu versions
-    /// that return a `Result` from submit — current wgpu 29 submit is infallible).
+    /// that return a `Result` from submit -- current wgpu 29 submit is infallible).
     #[error("submit failed: {0}")]
     Submit(String),
     /// `SurfaceTexture::present` reported an error (reserved for future wgpu versions).

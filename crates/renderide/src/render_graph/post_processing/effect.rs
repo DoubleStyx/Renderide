@@ -1,7 +1,7 @@
 //! [`PostProcessEffect`] trait and identity enum used by [`super::PostProcessChain`].
 //!
 //! Effects read one HDR float texture and write another, but are free to register an arbitrary
-//! subgraph in between (a single raster pass, a compute → raster pair, a bloom mip-chain ladder,
+//! subgraph in between (a single raster pass, a compute -> raster pair, a bloom mip-chain ladder,
 //! etc.). They are added to the chain in execution order; each enabled effect's terminal pass
 //! hands its output to the next effect (or to [`crate::passes::SceneColorComposePass`]
 //! for the final one).
@@ -18,7 +18,7 @@ pub enum PostProcessEffectId {
     Gtao,
     /// Dual-filter physically-based bloom (COD: Advanced Warfare / Bevy style), pre-tonemap HDR.
     Bloom,
-    /// Stephen Hill ACES Fitted tonemap (HDR linear → display-referred 0..1 linear).
+    /// Stephen Hill ACES Fitted tonemap (HDR linear -> display-referred 0..1 linear).
     AcesTonemap,
 }
 

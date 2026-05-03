@@ -11,7 +11,7 @@ pub struct HostCpuMemoryHud {
     pub cpu_model: String,
     /// Number of logical CPUs.
     pub logical_cpus: usize,
-    /// Global CPU usage percentage (0–100).
+    /// Global CPU usage percentage (0-100).
     pub cpu_usage_percent: f32,
     /// Installed RAM in bytes.
     pub ram_total_bytes: u64,

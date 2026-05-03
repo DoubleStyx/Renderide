@@ -128,6 +128,7 @@ impl RendererRuntime {
             wall_ms,
             &host,
             &self.frame_time_history,
+            &mut self.frame_timing_ema,
         );
         self.backend.set_debug_hud_frame_timing(frame_timing);
         let gpu_pass_timings = gpu

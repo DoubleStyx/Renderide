@@ -300,9 +300,9 @@ mod text_uniform_packing_tests {
         );
     }
 
-    /// `MaterialRenderType::Opaque` (0) — neither alpha-test nor alpha-blend keyword fires.
+    /// `MaterialRenderType::Opaque` (0) -- neither alpha-test nor alpha-blend keyword fires.
     /// This is the case that previously bit Unlit: default `_Cutoff = 0.98` lit up the
-    /// `_Cutoff ∈ (0, 1)` heuristic even though the host had selected Opaque.
+    /// `_Cutoff in (0, 1)` heuristic even though the host had selected Opaque.
     #[test]
     fn opaque_render_type_disables_all_alpha_keywords() {
         let mut store = MaterialPropertyStore::new();
@@ -519,7 +519,7 @@ mod text_uniform_packing_tests {
         );
     }
 
-    /// Queue 2000 (Geometry / Opaque) must leave every alpha keyword off — this is the
+    /// Queue 2000 (Geometry / Opaque) must leave every alpha keyword off -- this is the
     /// PBS `AlphaHandling.Opaque` default.
     #[test]
     fn render_queue_opaque_range_disables_all_alpha_keywords() {
@@ -568,7 +568,7 @@ mod text_uniform_packing_tests {
     }
 
     /// Queue 3000 (Transparent) with premultiplied factors `_SrcBlend = 1`,
-    /// `_DstBlend = 10` is `BlendMode.Transparent` — enables `_ALPHAPREMULTIPLY_ON`.
+    /// `_DstBlend = 10` is `BlendMode.Transparent` -- enables `_ALPHAPREMULTIPLY_ON`.
     #[test]
     fn render_queue_transparent_with_premultiplied_factors_infers_premultiply() {
         let mut store = MaterialPropertyStore::new();
@@ -1040,7 +1040,7 @@ mod text_uniform_packing_tests {
         );
     }
 
-    /// Builds a `StemEmbeddedPropertyIds` that mirrors the projection360 family — every
+    /// Builds a `StemEmbeddedPropertyIds` that mirrors the projection360 family -- every
     /// uniform-field probe used by the keyword inference is registered. Texture-binding
     /// pids live on `EmbeddedSharedKeywordIds` so they don't need per-stem registration.
     fn projection360_ids(reg: &PropertyIdRegistry) -> StemEmbeddedPropertyIds {
@@ -1060,7 +1060,7 @@ mod text_uniform_packing_tests {
     }
 
     /// Inserts the default full-sphere `_FOV` value `Projection360Material` writes after
-    /// `OnAwake()` (`FieldOfView = (360°, 180°)` converted to radians).
+    /// `OnAwake()` (`FieldOfView = (360 deg, 180 deg)` converted to radians).
     fn set_full_sphere_fov(store: &mut MaterialPropertyStore, reg: &PropertyIdRegistry, mat: i32) {
         store.set_material(
             mat,
@@ -1077,7 +1077,7 @@ mod text_uniform_packing_tests {
         asset_id | ((kind as i32) << pack_type_shift)
     }
 
-    /// Default `Projection360` materials send `_FOV = (TAU, π, 0, 0)` — the OUTSIDE-mode
+    /// Default `Projection360` materials send `_FOV = (TAU, PI, 0, 0)` -- the OUTSIDE-mode
     /// inference must leave every keyword field at zero so the fragment shader's existing
     /// fallthrough behaves like Unity's default `OUTSIDE_CLIP` (and the choice is moot
     /// since every direction is in-FOV anyway).
@@ -1100,7 +1100,7 @@ mod text_uniform_packing_tests {
         }
     }
 
-    /// Narrow FOV is what the video player writes — the renderer must enable
+    /// Narrow FOV is what the video player writes -- the renderer must enable
     /// `OUTSIDE_CLAMP` so the partial-FOV pixels render edge-clamped instead of being
     /// discarded by the default-clip fallthrough.
     #[test]
@@ -1128,7 +1128,7 @@ mod text_uniform_packing_tests {
         );
     }
 
-    /// Hemispherical FOVs (`180° × 180°`) are partial in X — must enable `OUTSIDE_CLAMP`.
+    /// Hemispherical FOVs (`180 deg x 180 deg`) are partial in X -- must enable `OUTSIDE_CLAMP`.
     #[test]
     fn projection360_hemispherical_fov_enables_outside_clamp() {
         let mut store = MaterialPropertyStore::new();
@@ -1145,7 +1145,7 @@ mod text_uniform_packing_tests {
         );
     }
 
-    /// Full-azimuth, half-elevation FOV (`360° × 90°`) is partial in Y — must enable
+    /// Full-azimuth, half-elevation FOV (`360 deg x 90 deg`) is partial in Y -- must enable
     /// `OUTSIDE_CLAMP`.
     #[test]
     fn projection360_full_azimuth_half_elevation_enables_outside_clamp() {
@@ -1168,8 +1168,8 @@ mod text_uniform_packing_tests {
         );
     }
 
-    /// Float-precision residuals from the host's degrees→radians conversion
-    /// (`* π / 180`) must still classify whole-sphere defaults as full-sphere.
+    /// Float-precision residuals from the host's degrees->radians conversion
+    /// (`* PI / 180`) must still classify whole-sphere defaults as full-sphere.
     #[test]
     fn projection360_full_sphere_tolerates_float_residual() {
         let mut store = MaterialPropertyStore::new();
@@ -1185,11 +1185,11 @@ mod text_uniform_packing_tests {
         assert_eq!(
             inferred_keyword_float_f32("OUTSIDE_CLAMP", &store, lookup(34), &ids),
             Some(0.0),
-            "host-computed (TAU, π) within tolerance must remain full-sphere"
+            "host-computed (TAU, PI) within tolerance must remain full-sphere"
         );
     }
 
-    /// `Mode.Perspective` is the video player's mode — `_PerspectiveFOV` is sent only when
+    /// `Mode.Perspective` is the video player's mode -- `_PerspectiveFOV` is sent only when
     /// `Projection.Value == Mode.Perspective`, so its presence drives `_PERSPECTIVE = 1`.
     /// Without this inference the shader silently downgrades to `_VIEW`, producing a
     /// vertical-line-stretched-vertically render because object-space view-direction's
@@ -1216,7 +1216,7 @@ mod text_uniform_packing_tests {
         );
     }
 
-    /// `Mode.View` (default) never sends `_PerspectiveFOV` — the keyword stays off and the
+    /// `Mode.View` (default) never sends `_PerspectiveFOV` -- the keyword stays off and the
     /// shader falls through to the object-space view direction.
     #[test]
     fn projection360_no_perspective_fov_keeps_perspective_keyword_off() {
@@ -1231,7 +1231,7 @@ mod text_uniform_packing_tests {
     }
 
     /// Cubemap textures bound on `_MainCube` or `_SecondCube` enable the `CUBEMAP` keyword
-    /// (no `_CubeLOD` written → fixed-mip cubemap path).
+    /// (no `_CubeLOD` written -> fixed-mip cubemap path).
     #[test]
     fn projection360_main_cube_present_enables_cubemap_keyword() {
         let mut store = MaterialPropertyStore::new();
@@ -1349,7 +1349,7 @@ mod text_uniform_packing_tests {
         );
     }
 
-    /// `_MaxIntensity` is sent only when `MaxIntensity.HasValue || HDR texture` — its
+    /// `_MaxIntensity` is sent only when `MaxIntensity.HasValue || HDR texture` -- its
     /// presence drives `_CLAMP_INTENSITY`.
     #[test]
     fn projection360_max_intensity_present_enables_clamp_intensity_keyword() {
@@ -1369,7 +1369,7 @@ mod text_uniform_packing_tests {
     }
 
     /// `TintTexture` set with `TintTextureMode == Direct` sends `_TintTex` but not
-    /// `_Tint0`/`_Tint1` — `TINT_TEX_DIRECT` enables, `TINT_TEX_LERP` stays off.
+    /// `_Tint0`/`_Tint1` -- `TINT_TEX_DIRECT` enables, `TINT_TEX_LERP` stays off.
     #[test]
     fn projection360_tint_texture_without_tint0_routes_to_direct() {
         let mut store = MaterialPropertyStore::new();
@@ -1394,7 +1394,7 @@ mod text_uniform_packing_tests {
         );
     }
 
-    /// `TintTextureMode == Lerp` sends `_Tint0`/`_Tint1` alongside `_TintTex` —
+    /// `TintTextureMode == Lerp` sends `_Tint0`/`_Tint1` alongside `_TintTex` --
     /// `TINT_TEX_LERP` enables, `TINT_TEX_DIRECT` stays off.
     #[test]
     fn projection360_tint_texture_with_tint0_routes_to_lerp() {
@@ -1426,7 +1426,7 @@ mod text_uniform_packing_tests {
     }
 
     /// Stems without an `_FOV` uniform field (i.e., not `Projection360`) must not
-    /// participate in the inference — the call falls through to the generic
+    /// participate in the inference -- the call falls through to the generic
     /// keyword-like-field default of `0`.
     #[test]
     fn outside_mode_inference_does_not_fire_for_non_projection360_stems() {

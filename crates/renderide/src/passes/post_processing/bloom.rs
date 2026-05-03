@@ -28,7 +28,7 @@ use crate::render_graph::resources::{
     TransientTextureDesc, TransientTextureFormat,
 };
 
-/// Storage format for the bloom mip pyramid. 11/11/10-bit float matches Bevy — lower bandwidth
+/// Storage format for the bloom mip pyramid. 11/11/10-bit float matches Bevy -- lower bandwidth
 /// than `Rgba16Float` while still covering the HDR range bloom needs to scatter.
 const BLOOM_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg11b10Ufloat;
 
@@ -86,7 +86,7 @@ impl PostProcessEffect for BloomEffect {
         let max_mip_dimension = settings.effective_max_mip_dimension();
         let mip_count = bloom_mip_count(max_mip_dimension);
 
-        // One transient texture per mip level — avoids needing mip-level render-target views on
+        // One transient texture per mip level -- avoids needing mip-level render-target views on
         // a single multi-mipped texture, which the graph builder's attachment API doesn't model.
         // The transient pool still aliases across frames and benefits from the per-mip size keys.
         let mip_handles: Vec<TextureHandle> = (0..mip_count)

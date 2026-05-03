@@ -13,7 +13,7 @@ use crate::materials::{
     reflect_vertex_shader_needs_uv1_stream, validate_layout_against_limits,
     validate_per_draw_group2, validate_vertex_layout_against_limits,
 };
-use crate::materials::{MaterialRenderState, RasterFrontFace};
+use crate::materials::{MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology};
 
 /// Compiled shader module and [`MaterialPipelineDesc`] from the material cache before adding a pipeline label.
 pub(crate) struct ShaderModuleBuildRefs<'a> {
@@ -85,6 +85,8 @@ pub(crate) struct MeshForwardSharedPipelineBuild<'a> {
     pub vertex_buffers: &'a [wgpu::VertexBufferLayout<'a>],
     /// Front-face winding for this pipeline variant.
     pub front_face: RasterFrontFace,
+    /// Primitive topology baked into [`wgpu::PrimitiveState::topology`] for this variant.
+    pub primitive_topology: RasterPrimitiveTopology,
 }
 
 /// Vertex stream toggles, blending, depth write, and material overrides for
@@ -104,6 +106,8 @@ pub(crate) struct ReflectiveRasterMeshForwardPipelineDesc {
     pub render_state: MaterialRenderState,
     /// Front-face winding selected from the draw's model transform.
     pub front_face: RasterFrontFace,
+    /// Primitive topology selected from the mesh's per-submesh topology.
+    pub primitive_topology: RasterPrimitiveTopology,
 }
 
 mod vertex_layouts;
@@ -204,7 +208,7 @@ pub(crate) fn build_pipeline_from_pass(
                     })],
                 }),
                 primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    topology: shared.primitive_topology.to_wgpu(),
                     front_face: shared.front_face.to_wgpu(),
                     cull_mode: pass.resolved_cull_mode(render_state),
                     ..Default::default()
@@ -265,6 +269,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
         layout: &layout,
         vertex_buffers: &vertex_buffers,
         front_face: raster.front_face,
+        primitive_topology: raster.primitive_topology,
     };
     Ok(build_pipeline_from_pass(
         &shared,
@@ -280,6 +285,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
     passes: &[MaterialPassDesc],
     render_state: MaterialRenderState,
     front_face: RasterFrontFace,
+    primitive_topology: RasterPrimitiveTopology,
 ) -> Result<Vec<wgpu::RenderPipeline>, PipelineBuildError> {
     if passes.is_empty() {
         return Err(PipelineBuildError::EmptyPasses {
@@ -304,6 +310,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
         layout: &layout,
         vertex_buffers: &vertex_buffers,
         front_face,
+        primitive_topology,
     };
     Ok(passes
         .iter()

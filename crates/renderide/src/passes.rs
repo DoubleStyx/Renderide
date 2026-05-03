@@ -1,10 +1,10 @@
 //! Concrete render passes registered on a [`crate::render_graph::CompiledRenderGraph`].
 //!
 //! Each pass implements one of the four typed pass traits:
-//! - [`crate::render_graph::pass::RasterPass`] — raster render passes
-//! - [`crate::render_graph::pass::ComputePass`] — encoder-driven compute
-//! - [`crate::render_graph::pass::CopyPass`] — copy-only work
-//! - [`crate::render_graph::pass::CallbackPass`] — CPU callbacks with no encoder
+//! - [`crate::render_graph::pass::RasterPass`] -- raster render passes
+//! - [`crate::render_graph::pass::ComputePass`] -- encoder-driven compute
+//! - [`crate::render_graph::pass::CopyPass`] -- copy-only work
+//! - [`crate::render_graph::pass::CallbackPass`] -- CPU callbacks with no encoder
 
 mod clustered_light;
 mod helpers;

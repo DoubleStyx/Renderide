@@ -9,7 +9,7 @@
 
 use crate::shared::HeadOutputDevice;
 
-/// Returns `true` for SteamVR, Windows MR, Oculus, and Oculus Quest — aligned with FrooxEngine’s
+/// Returns `true` for SteamVR, Windows MR, Oculus, and Oculus Quest -- aligned with FrooxEngine's
 /// `HeadOutputDeviceExtension.IsVR` (`(uint)(device - 6) <= 3`).
 pub fn head_output_device_is_vr(device: HeadOutputDevice) -> bool {
     matches!(

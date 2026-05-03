@@ -10,15 +10,19 @@ use std::sync::Arc;
 use super::error::DriverErrorState;
 use super::ring::BoundedRing;
 use super::submit_batch::{DriverMessage, SubmitBatch};
+use super::submit_counters::SubmitCounters;
 use super::surface_counters::SurfaceCounters;
+use super::xr_finalize::run_xr_finalize;
 use crate::gpu::GpuQueueAccessGate;
-use crate::gpu::frame_cpu_gpu_timing::{make_gpu_done_callback, record_real_submit};
+use crate::gpu::frame_cpu_gpu_timing::{
+    FrameTimingTrack, make_gpu_done_callback, record_frame_bracket_gpu_ms, record_real_submit,
+};
 
 /// RAII guard that marks the ring's consumer side dead on drop.
 ///
 /// Drop runs on both clean shutdown (loop break) and panic-driven unwind through
 /// [`driver_loop`], so a producer blocked in [`super::ring::BoundedRing::push`] is always
-/// released — preventing the main thread from hanging forever on a crashed driver.
+/// released -- preventing the main thread from hanging forever on a crashed driver.
 struct ConsumerLivenessGuard<'a> {
     ring: &'a BoundedRing<DriverMessage>,
 }
@@ -40,6 +44,7 @@ pub(super) fn driver_loop(
     gpu_queue_access_gate: GpuQueueAccessGate,
     errors: Arc<DriverErrorState>,
     surface_counters: Arc<SurfaceCounters>,
+    submit_counters: Arc<SubmitCounters>,
 ) {
     profiling::register_thread!("renderer-driver");
 
@@ -55,6 +60,7 @@ pub(super) fn driver_loop(
                 &gpu_queue_access_gate,
                 &errors,
                 &surface_counters,
+                &submit_counters,
                 *batch,
             );
         }
@@ -69,6 +75,7 @@ fn process_batch(
     gpu_queue_access_gate: &GpuQueueAccessGate,
     errors: &DriverErrorState,
     surface_counters: &SurfaceCounters,
+    submit_counters: &SubmitCounters,
     batch: SubmitBatch,
 ) {
     profiling::scope!("driver::frame");
@@ -77,7 +84,9 @@ fn process_batch(
         surface_texture,
         on_submitted_work_done,
         frame_timing,
+        frame_bracket_readback,
         wait,
+        xr_finalize,
         frame_seq,
     } = batch;
 
@@ -87,19 +96,28 @@ fn process_batch(
         let _gate = gpu_queue_access_gate.lock();
         queue.submit(command_buffers)
     };
+    // Bumped immediately after the submit returns and the gate is dropped so the backlog
+    // plot reflects "in-flight on driver" without waiting on `present` or `xr_finalize`.
+    submit_counters.note_submit_done();
 
     if let Some(track) = frame_timing {
-        // Capture the post-submit instant on this thread so it represents "CPU is done preparing
-        // the frame" / "GPU is about to start." Reuse it as the baseline for the GPU completion
-        // callback so `gpu_ms` excludes driver-ring wait time.
+        // Capture the post-submit instant on this thread for the `submit_latency_ms`
+        // diagnostic. The HUD's CPU column is published synchronously from the runtime tick
+        // epilogue via `record_main_thread_cpu_end` and does not depend on this instant.
         let real_submit_at = record_real_submit(&track);
-        let gpu_done =
-            make_gpu_done_callback(track.handle, track.generation, track.seq, real_submit_at);
-        queue.on_submitted_work_done(Box::new(gpu_done));
+        register_gpu_completion(queue, track, real_submit_at, frame_bracket_readback);
     }
 
     for cb in on_submitted_work_done {
         queue.on_submitted_work_done(cb);
+    }
+
+    if let Some(finalize) = xr_finalize {
+        // Deferred OpenXR `xrReleaseSwapchainImage` + `xrEndFrame` for the VR HMD path.
+        // Running it here keeps the main thread out of `flush_driver` so frame N+1's CPU
+        // work overlaps with frame N's compositor handoff. The next tick's `wait_frame`
+        // gates on the matching finalize signal before issuing `xrBeginFrame`.
+        run_xr_finalize(gpu_queue_access_gate, finalize);
     }
 
     if let Some(tex) = surface_texture {
@@ -123,4 +141,33 @@ fn process_batch(
     // compiler does not warn about unused fields while we grow the error path.
     let _ = frame_seq;
     let _ = errors; // `errors` will fill in once wgpu surfaces fallible submit/present.
+}
+
+/// Picks the GPU-completion path for a tracked submit.
+///
+/// When `bracket_readback` is `Some`, schedules a `map_async` on the timestamp readback buffer
+/// and publishes the resulting `gpu_frame_ms` (real GPU time) into the timing accumulator
+/// labelled as [`crate::gpu::frame_cpu_gpu_timing::GpuMsSource::FrameBracket`]. Otherwise
+/// registers a `Queue::on_submitted_work_done` callback that publishes the wall-clock
+/// callback-fire latency labelled as [`crate::gpu::frame_cpu_gpu_timing::GpuMsSource::CallbackLatency`].
+fn register_gpu_completion(
+    queue: &wgpu::Queue,
+    track: FrameTimingTrack,
+    real_submit_at: std::time::Instant,
+    bracket_readback: Option<crate::gpu::frame_bracket::FrameBracketReadback>,
+) {
+    if let Some(readback) = bracket_readback {
+        let handle = track.handle;
+        let generation = track.generation;
+        let seq = track.seq;
+        readback.schedule_readback(move |gpu_ms| {
+            if let Some(ms) = gpu_ms {
+                record_frame_bracket_gpu_ms(&handle, generation, seq, ms);
+            }
+        });
+        return;
+    }
+    let gpu_done =
+        make_gpu_done_callback(track.handle, track.generation, track.seq, real_submit_at);
+    queue.on_submitted_work_done(Box::new(gpu_done));
 }

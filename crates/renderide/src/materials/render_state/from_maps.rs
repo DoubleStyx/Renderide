@@ -16,7 +16,7 @@ use super::unity_mapping::{unity_mask, unity_offset_units, unity_u8};
 
 /// Resolves Unity color, stencil, and depth properties using pre-fetched inner maps. Prefer this
 /// in hot paths that also call [`crate::materials::material_blend_mode_from_maps`] for the same
-/// lookup — the two outer-map probes are amortised across both calls.
+/// lookup -- the two outer-map probes are amortised across both calls.
 pub fn material_render_state_from_maps(
     material_map: PropertyMapRef<'_>,
     property_block_map: PropertyMapRef<'_>,

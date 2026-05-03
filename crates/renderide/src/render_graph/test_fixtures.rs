@@ -64,6 +64,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         property_block_slot0: pb,
         skinned,
         front_face: RasterFrontFace::Clockwise,
+        primitive_topology: Default::default(),
         embedded_needs_uv0: false,
         embedded_needs_color: false,
         embedded_needs_uv1: false,

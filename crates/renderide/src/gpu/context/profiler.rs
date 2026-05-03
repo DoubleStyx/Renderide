@@ -118,11 +118,12 @@ impl GpuContext {
     /// Most recently completed CPU and GPU per-frame ms for the debug HUD, paired so both
     /// values describe the **same** frame.
     ///
-    /// Returns `(None, None)` until the first submit has both reported its driver-thread
-    /// `Queue::submit` return *and* fired its `on_submitted_work_done` callback. Once a pair
-    /// has been observed, the values survive across frames so the overlay never goes blank.
-    /// Lags the current tick by at least one frame in steady state, since the callback for
-    /// frame N typically arrives after frame N+1's tick has begun.
+    /// Returns `(None, None)` until the first submit has both published its main-thread CPU
+    /// duration via [`Self::record_main_thread_cpu_end`] *and* delivered a GPU value (real
+    /// timestamp readback or callback-latency fallback). Once a pair has been observed, the
+    /// values survive across frames so the overlay never goes blank. Lags the current tick by
+    /// at least one frame in steady state, since the GPU readback for frame N typically lands
+    /// after frame N+1's tick has begun.
     pub fn frame_cpu_gpu_ms_for_hud(&self) -> (Option<f64>, Option<f64>) {
         let ft = self
             .submission
@@ -133,6 +134,35 @@ impl GpuContext {
             Some((cpu, gpu)) => (Some(cpu), Some(gpu)),
             None => (None, None),
         }
+    }
+
+    /// Origin of the most recent `gpu_frame_ms` value, so the HUD can label the row honestly.
+    ///
+    /// Returns [`None`] until the first GPU value has been published. See
+    /// [`crate::gpu::frame_cpu_gpu_timing::GpuMsSource`].
+    pub fn last_gpu_ms_source(&self) -> Option<crate::gpu::frame_cpu_gpu_timing::GpuMsSource> {
+        let ft = self
+            .submission
+            .frame_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ft.last_gpu_source
+    }
+
+    /// Publishes the main-thread CPU frame duration synchronously.
+    ///
+    /// Call from the runtime tick epilogue, after the last [`wgpu::Queue::submit`] dispatch
+    /// but before the event-loop yields. The captured duration becomes the HUD's "CPU" row
+    /// reading -- see
+    /// [`crate::gpu::frame_cpu_gpu_timing::FrameCpuGpuTiming::record_main_thread_cpu_end`].
+    pub fn record_main_thread_cpu_end(&self, cpu_end: Instant) {
+        profiling::scope!("gpu::record_main_thread_cpu_end");
+        let mut ft = self
+            .submission
+            .frame_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ft.record_main_thread_cpu_end(cpu_end);
     }
 
     /// Most recently completed GPU frame ms in **seconds**, for the IPC

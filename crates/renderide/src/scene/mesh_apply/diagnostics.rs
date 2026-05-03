@@ -26,7 +26,7 @@ pub(super) static BONE_INDEX_EMPTY_WARNED_SCENES: LazyLock<Mutex<HashSet<i32>>> 
 ///
 /// `kind` distinguishes the static vs. skinned mesh paths in the log line. The host's state-row
 /// `renderable_index` should always be in `[0, len)` when the row is applied; an out-of-range
-/// row indicates an addition row was dropped or a removals batch was skipped — silently
+/// row indicates an addition row was dropped or a removals batch was skipped -- silently
 /// ignoring leaves the renderable invisible until the host re-emits.
 pub(super) fn warn_oob_renderable_index_once(
     scene_id: i32,

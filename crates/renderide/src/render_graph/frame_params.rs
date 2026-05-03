@@ -81,19 +81,11 @@ impl BlackboardSlot for MsaaViewsSlot {
 
 /// MSAA attachment views for the forward pass (resolved from graph transient textures).
 ///
-/// Fields are read by [`crate::render_graph::passes::WorldMeshDepthSnapshotPass`] and
-/// [`crate::render_graph::passes::WorldMeshForwardDepthResolvePass`] via the per-view blackboard.
-/// The forward depth-snapshot/resolve helpers in `world_mesh_forward/execute_helpers.rs`
-/// currently resolve MSAA views directly from graph transient textures; reading from this slot
-/// is wired in but the consumer functions are migrated incrementally.
+/// Read by the world-mesh forward depth-snapshot and depth-resolve helpers via the per-view
+/// blackboard ([`MsaaViewsSlot`]). Depth views are produced with `DepthOnly` aspect so they are
+/// directly bindable as `texture_multisampled_2d<f32>` in the MSAA depth-resolve compute shader.
 #[derive(Clone)]
-#[expect(
-    dead_code,
-    reason = "fields are accessed via the blackboard slot; consumer migration is incremental"
-)]
 pub struct MsaaViews {
-    /// Graph-owned multisampled color attachment view when MSAA is active.
-    pub msaa_color_view: wgpu::TextureView,
     /// Graph-owned multisampled depth attachment view when MSAA is active.
     pub msaa_depth_view: wgpu::TextureView,
     /// R32Float intermediate view used by the MSAA depth resolve path.

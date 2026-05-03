@@ -1,4 +1,4 @@
-//! macOS: track direct child PIDs and escalate shutdown `SIGINT` → `SIGTERM` → `SIGKILL`.
+//! macOS: track direct child PIDs and escalate shutdown `SIGINT` -> `SIGTERM` -> `SIGKILL`.
 
 use std::io;
 use std::process::{Child, Command};
@@ -84,5 +84,5 @@ fn macos_kill(pid: u32, signal: libc::c_int) {
     if err.raw_os_error() == Some(libc::ESRCH) {
         return;
     }
-    logger::debug!("macOS: kill(pid={}, sig={}) — {}", pid, signal, err);
+    logger::debug!("macOS: kill(pid={}, sig={}) -- {}", pid, signal, err);
 }

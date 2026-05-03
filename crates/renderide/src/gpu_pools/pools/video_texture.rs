@@ -1,4 +1,4 @@
-//! GPU-resident video texture pool: dummy 1×1 storage replaced by external views from the host.
+//! GPU-resident video texture pool: dummy 1x1 storage replaced by external views from the host.
 
 use std::sync::Arc;
 
@@ -20,7 +20,7 @@ const RGBA8_BYTES_PER_PIXEL: u64 = 4;
 pub struct GpuVideoTexture {
     /// Host VideoTexture asset id.
     pub asset_id: i32,
-    /// The 1×1 placeholder texture used before the first [`Self::set_view`] call.
+    /// The 1x1 placeholder texture used before the first [`Self::set_view`] call.
     dummy_texture: Option<Arc<wgpu::Texture>>,
     /// Current view, initially from `dummy_texture` and then replaced by [`Self::set_view`].
     pub view: Arc<wgpu::TextureView>,
@@ -45,7 +45,7 @@ impl GpuResource for GpuVideoTexture {
 }
 
 impl GpuVideoTexture {
-    /// Creates a 1×1 dummy texture. The real view is installed later via [`Self::set_view`].
+    /// Creates a 1x1 dummy texture. The real view is installed later via [`Self::set_view`].
     pub fn new(device: &wgpu::Device, asset_id: i32, props: &VideoTextureProperties) -> Self {
         let dummy = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
             label: Some(&format!("VideoTexture {asset_id} dummy")),

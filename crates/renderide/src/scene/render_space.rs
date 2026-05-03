@@ -1,4 +1,4 @@
-//! Per–render-space state mirrored from [`crate::shared::RenderSpaceUpdate`].
+//! Per-render-space state mirrored from [`crate::shared::RenderSpaceUpdate`].
 
 use super::render_overrides::{RenderMaterialOverrideEntry, RenderTransformOverrideEntry};
 use crate::shared::{
@@ -57,7 +57,7 @@ pub struct RenderSpaceState {
     pub nodes: Vec<RenderTransform>,
     /// Parent index per node; `-1` = hierarchy root under [`Self::root_transform`].
     pub node_parents: Vec<i32>,
-    /// Static mesh renderables; `renderable_index` ↔ dense index in this vec.
+    /// Static mesh renderables; `renderable_index` <-> dense index in this vec.
     pub static_mesh_renderers: Vec<StaticMeshRenderer>,
     /// Skinned mesh renderables; separate dense table from static.
     pub skinned_mesh_renderers: Vec<SkinnedMeshRenderer>,
@@ -73,7 +73,7 @@ pub struct RenderSpaceState {
     pub layer_assignments: Vec<LayerAssignmentEntry>,
     /// `node_id -> LayerType` index built from [`Self::layer_assignments`] and consumed by
     /// `resolve_mesh_layers_from_assignments` to collapse per-renderable parent walks from
-    /// O(scene_depth × assignment_count) to O(scene_depth). Rebuilt only when
+    /// O(scene_depth x assignment_count) to O(scene_depth). Rebuilt only when
     /// [`Self::layer_index_dirty`] is set; otherwise reused across frames.
     pub layer_index: HashMap<i32, LayerType>,
     /// Marks [`Self::layer_index`] as stale. Set whenever code mutates
@@ -94,6 +94,10 @@ pub struct RenderSpaceState {
     /// Reused dedup set for [`resolve_mesh_layers_from_assignments`]'s ensure-cache pass; cleared
     /// at the start of every resolve and refilled by walking unique renderer node ids.
     pub layer_resolve_seen_scratch: hashbrown::HashSet<i32>,
+    /// Reused per-renderer batch grouping for the parallel blendshape weight apply path.
+    /// Cleared at the start of every apply that crosses the parallel threshold; reused so the
+    /// HashMap and inner Vec capacities persist across frames.
+    pub blendshape_apply_groups: HashMap<usize, Vec<std::ops::Range<usize>>>,
     /// Render-context-local transform substitutions from the host.
     pub render_transform_overrides: Vec<RenderTransformOverrideEntry>,
     /// Render-context-local material substitutions from the host.
@@ -101,7 +105,7 @@ pub struct RenderSpaceState {
 }
 
 impl RenderSpaceState {
-    /// Applies non–transform fields from a host update and recomputes [`Self::view_transform`].
+    /// Applies non-transform fields from a host update and recomputes [`Self::view_transform`].
     pub fn apply_update_header(&mut self, update: &RenderSpaceUpdate) {
         self.is_active = update.is_active;
         self.is_overlay = update.is_overlay;
@@ -154,6 +158,7 @@ impl Default for RenderSpaceState {
             resolved_layer_cache: HashMap::new(),
             hierarchy_dirty: true,
             layer_resolve_seen_scratch: hashbrown::HashSet::new(),
+            blendshape_apply_groups: HashMap::new(),
             render_transform_overrides: Vec::new(),
             render_material_overrides: Vec::new(),
         }

@@ -1,17 +1,17 @@
-//! Filament-style analytic Cook–Torrance BRDF and clustered direct-light terms for PBS materials
+//! Filament-style analytic Cook-Torrance BRDF and clustered direct-light terms for PBS materials
 //! (metallic / specular workflows).
 //!
 //! Math reference: Filament `surface_brdf.fs`, `surface_material.fs`, `surface_shading_*.fs`. Specifically
-//! - D: GGX/Trowbridge–Reitz, Karis-style numerically stable form (`d_ggx`).
-//! - V: height-correlated Smith–GGX visibility (`v_smith_ggx_correlated`); already folds in the
-//!   `1/(4·NoL·NoV)` denominator, so the assembled specular is `D · V · F` (no extra divide).
-//! - F: Schlick with `f90 = saturate(50·dot(f0, 1/3))` so dielectrics fade to zero at grazing.
-//! - Diffuse: Lambert (`1/π`); diffuse reflectance is pre-multiplied by `(1 − metallic)` (or by
-//!   `one_minus_reflectivity` in the specular workflow) — there is no extra `(1 − F)` discount on
+//! - D: GGX/Trowbridge-Reitz, Karis-style numerically stable form (`d_ggx`).
+//! - V: height-correlated Smith-GGX visibility (`v_smith_ggx_correlated`); already folds in the
+//!   `1/(4*NoL*NoV)` denominator, so the assembled specular is `D * V * F` (no extra divide).
+//! - F: Schlick with `f90 = saturate(50*dot(f0, 1/3))` so dielectrics fade to zero at grazing.
+//! - Diffuse: Lambert (`1/PI`); diffuse reflectance is pre-multiplied by `(1 - metallic)` (or by
+//!   `one_minus_reflectivity` in the specular workflow) -- there is no extra `(1 - F)` discount on
 //!   the *direct* term, which is the IBL split-sum convention rather than the analytic one.
 //!
-//! Public entry contract: callers pass **perceptual roughness** (`= 1 − smoothness`, clamped to
-//! `[0.045, 1.0]`). Squaring to linear `α` happens once inside this module, matching Unity BiRP's
+//! Public entry contract: callers pass **perceptual roughness** (`= 1 - smoothness`, clamped to
+//! `[0.045, 1.0]`). Squaring to linear `alpha` happens once inside this module, matching Unity BiRP's
 //! `BRDF1_Unity_PBS` convention so material shaders stay unchanged.
 //!
 //! Import with `#import renderide::pbs::brdf`. Depends on [`renderide::globals`] for [`GpuLight`].
@@ -21,7 +21,7 @@
 
 #define_import_path renderide::pbs::brdf
 
-/// Lower bound on linear roughness `α`. Below this the GGX lobe becomes a near-delta that produces
+/// Lower bound on linear roughness `alpha`. Below this the GGX lobe becomes a near-delta that produces
 /// fp16 sparkles and division-by-near-zero artefacts; matches Filament `MIN_ROUGHNESS` for desktop.
 const MIN_ALPHA: f32 = 0.002025;
 /// Pi.
@@ -42,12 +42,12 @@ const SPECULAR_AA_THRESHOLD: f32 = 0.18;
 /// normal jitter does not alias into the specular highlight. MSAA can only multisample geometric
 /// coverage; the fragment shader still runs once per pixel, so a narrow specular lobe evaluated
 /// at the pixel centre will sparkle on curved metals regardless of MSAA tier. This filter widens
-/// `α` per pixel based on `dpdx`/`dpdy` of the world normal, producing a softer pre-filtered lobe
+/// `alpha` per pixel based on `dpdx`/`dpdy` of the world normal, producing a softer pre-filtered lobe
 /// where the normal is changing fast.
 ///
-/// `perceptual_roughness` is `1 − smoothness` (this module's standard input), and the returned
-/// value is also perceptual — call sites can drop-in replace their existing `roughness` and the
-/// downstream BRDF squares to `α` once as before.
+/// `perceptual_roughness` is `1 - smoothness` (this module's standard input), and the returned
+/// value is also perceptual -- call sites can drop-in replace their existing `roughness` and the
+/// downstream BRDF squares to `alpha` once as before.
 ///
 /// Fragment-only (uses derivatives). Call once before the cluster light loop so the derivatives
 /// evaluate at uniform control flow and the widened roughness is shared across all light samples.
@@ -61,24 +61,24 @@ fn filter_perceptual_roughness(perceptual_roughness: f32, world_n: vec3<f32>) ->
     return sqrt(sqrt(alpha2));
 }
 
-/// `(1 − x)^5` — used by Schlick Fresnel.
+/// `(1 - x)^5` -- used by Schlick Fresnel.
 fn pow5(x: f32) -> f32 {
     let x2 = x * x;
     return x2 * x2 * x;
 }
 
-/// GGX/Trowbridge–Reitz NDF in Karis's numerically stable form.
+/// GGX/Trowbridge-Reitz NDF in Karis's numerically stable form.
 ///
-/// Returns `α² / (π · ((NoH²)(α²−1)+1)²)`, rearranged through `k = α / (1 − NoH² + (NoH·α)²)` so
-/// the squaring stays well-conditioned at very small `α`. `roughness` is **linear** (`α`).
+/// Returns `alpha^2 / (PI * ((NoH^2)(alpha^2-1)+1)^2)`, rearranged through `k = alpha / (1 - NoH^2 + (NoH*alpha)^2)` so
+/// the squaring stays well-conditioned at very small `alpha`. `roughness` is **linear** (`alpha`).
 fn d_ggx(n_dot_h: f32, roughness: f32) -> f32 {
     let a = n_dot_h * roughness;
     let k = roughness / max(1.0 - n_dot_h * n_dot_h + a * a, 1e-7);
     return min(k * k * (1.0 / 3.14159265), 65504.0);
 }
 
-/// Height-correlated Smith–GGX visibility (Heitz 2014). Returns `0.5 / (λV + λL)`, which already
-/// folds in the `1/(4·NoL·NoV)` denominator of Cook–Torrance. `roughness` is **linear** (`α`).
+/// Height-correlated Smith-GGX visibility (Heitz 2014). Returns `0.5 / (lambdaV + lambdaL)`, which already
+/// folds in the `1/(4*NoL*NoV)` denominator of Cook-Torrance. `roughness` is **linear** (`alpha`).
 fn v_smith_ggx_correlated(n_dot_v: f32, n_dot_l: f32, roughness: f32) -> f32 {
     let a2 = roughness * roughness;
     let lv = n_dot_l * sqrt((n_dot_v - a2 * n_dot_v) * n_dot_v + a2);
@@ -89,13 +89,13 @@ fn v_smith_ggx_correlated(n_dot_v: f32, n_dot_l: f32, roughness: f32) -> f32 {
 /// Schlick approximation of the Fresnel term.
 ///
 /// `f90` lets dielectrics with very low `f0` smoothly fade to zero at grazing instead of always
-/// snapping to white. Filament computes it as `saturate(50·dot(f0, 1/3))`, encoding "if the
+/// snapping to white. Filament computes it as `saturate(50*dot(f0, 1/3))`, encoding "if the
 /// material has any meaningful base reflectance, it should reach ~1 at grazing."
 fn f_schlick(f0: vec3<f32>, f90: f32, v_dot_h: f32) -> vec3<f32> {
     return f0 + (vec3<f32>(f90) - f0) * pow5(1.0 - v_dot_h);
 }
 
-/// Filament's `f90` from `f0`. `50·(1/3) ≈ 16.67`; saturated so very dark dielectrics don't go to white.
+/// Filament's `f90` from `f0`. `50*(1/3) ~= 16.67`; saturated so very dark dielectrics don't go to white.
 fn f90_from_f0(f0: vec3<f32>) -> f32 {
     return clamp(dot(f0, vec3<f32>(50.0 / 3.0)), 0.0, 1.0);
 }
@@ -186,7 +186,7 @@ fn perceptual_roughness_from_smoothness(smoothness: f32) -> f32 {
     return clamp(1.0 - smoothness, 0.045, 1.0);
 }
 
-/// Lambertian diffuse normalization (`1/π`).
+/// Lambertian diffuse normalization (`1/PI`).
 fn fd_lambert() -> f32 {
     return 1.0 / 3.14159265;
 }
@@ -235,9 +235,9 @@ fn eval_light(light: rg::GpuLight, world_pos: vec3<f32>) -> LightSample {
 
 /// Filament-style direct radiance for the metallic workflow.
 ///
-/// `roughness` is perceptual (caller passes `1 − smoothness`, clamped to `[0.045, 1.0]`). `f0` is
-/// the dielectric-↔-metal blend (`mix(0.04, base_color, metallic)`). Diffuse is pre-discounted by
-/// `(1 − metallic)` only — the `(1 − F)` term is intentionally absent for the analytic direct lobe.
+/// `roughness` is perceptual (caller passes `1 - smoothness`, clamped to `[0.045, 1.0]`). `f0` is
+/// the dielectric-<->-metal blend (`mix(0.04, base_color, metallic)`). Diffuse is pre-discounted by
+/// `(1 - metallic)` only -- the `(1 - F)` term is intentionally absent for the analytic direct lobe.
 fn direct_radiance_metallic(
     light: rg::GpuLight,
     world_pos: vec3<f32>,
@@ -277,7 +277,7 @@ fn direct_radiance_metallic(
 /// `roughness` is perceptual. `f0` is the tinted specular color from the host (already encodes the
 /// dielectric/metal split chosen by the artist). `one_minus_reflectivity` is the diffuse-energy
 /// discount derived from `f0`'s peak channel (Unity `EnergyConservationBetweenDiffuseAndSpecular`).
-/// As in the metallic path, no extra `(1 − F)` is applied to direct diffuse.
+/// As in the metallic path, no extra `(1 - F)` is applied to direct diffuse.
 fn direct_radiance_specular(
     light: rg::GpuLight,
     world_pos: vec3<f32>,
@@ -313,7 +313,7 @@ fn direct_radiance_specular(
 }
 
 /// Lambertian direct radiance only (specular highlights disabled), metallic path. Diffuse is
-/// pre-discounted by `(1 − metallic)` so disabling specular on a metal still produces a near-black
+/// pre-discounted by `(1 - metallic)` so disabling specular on a metal still produces a near-black
 /// surface (correct: a perfect metal has no diffuse channel).
 fn diffuse_only_metallic(
     light: rg::GpuLight,

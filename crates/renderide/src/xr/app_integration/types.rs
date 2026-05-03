@@ -32,6 +32,17 @@ impl XrSessionBundle {
     }
 }
 
+impl Drop for XrSessionBundle {
+    fn drop(&mut self) {
+        // Defensive: in normal shutdown the parent `RenderTarget` drops `gpu` (and with it
+        // `DriverThread`, which joins the worker draining queued finalize) before the
+        // session bundle. If a future code path swaps out a bundle while the driver is
+        // still processing a finalize for it, the in-flight `xrEndFrame` would race with
+        // the drop of `XrSessionState::frame_stream`. Waiting here closes that hole.
+        self.handles.xr_session.await_finalize_pending();
+    }
+}
+
 /// Cached OpenXR frame state after a single `wait_frame` (no second wait per tick).
 ///
 /// Stereo view data is consumed by the multiview HMD path and host IPC; the desktop window mirror

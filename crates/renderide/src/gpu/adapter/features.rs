@@ -5,12 +5,13 @@
 
 /// Intersects [`wgpu::Adapter::features`] with the feature bits Renderide requires for rendering.
 ///
-/// When the `tracy` Cargo feature is active, also requests the subset of
-/// `TIMESTAMP_QUERY | TIMESTAMP_QUERY_INSIDE_ENCODERS` that the adapter supports. Pass-level
-/// queries only need `TIMESTAMP_QUERY`; `TIMESTAMP_QUERY_INSIDE_ENCODERS` additionally enables
-/// encoder-level queries. Either feature being absent is gracefully tolerated:
-/// [`crate::profiling::GpuProfilerHandle::try_new`] returns [`None`] only when
-/// `TIMESTAMP_QUERY` itself is missing.
+/// Always requests the subset of `TIMESTAMP_QUERY | TIMESTAMP_QUERY_INSIDE_ENCODERS` that the
+/// adapter supports, regardless of Cargo features. The debug HUD's frame-bracket GPU timing
+/// uses encoder-level `write_timestamp` calls on the driver thread; the `tracy`-gated
+/// [`crate::profiling::GpuProfilerHandle`] consumes the same features for its pass-level path.
+/// Either feature being absent is gracefully tolerated: the frame-bracket falls back to
+/// callback-latency reporting and [`crate::profiling::GpuProfilerHandle::try_new`] returns
+/// [`None`].
 pub(crate) fn adapter_render_features_intersection(adapter: &wgpu::Adapter) -> wgpu::Features {
     let compression = wgpu::Features::TEXTURE_COMPRESSION_BC
         | wgpu::Features::TEXTURE_COMPRESSION_ETC2

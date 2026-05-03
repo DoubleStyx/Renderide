@@ -53,7 +53,7 @@ use super::super::transforms_apply::{
 /// Owned per-space payload bundle: every shared-memory buffer referenced by one
 /// [`RenderSpaceUpdate`] pre-read into [`Vec`]s, ready for parallel apply.
 ///
-/// Each `Option<…>` field mirrors the corresponding `Option<…>` on [`RenderSpaceUpdate`] and is
+/// Each `Option<...>` field mirrors the corresponding `Option<...>` on [`RenderSpaceUpdate`] and is
 /// `None` when the host omitted that update kind for this tick.
 pub struct ExtractedRenderSpaceUpdate {
     /// Render space identity for this chunk (mirrors [`RenderSpaceUpdate::id`]).

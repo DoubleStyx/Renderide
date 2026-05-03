@@ -1,7 +1,7 @@
 //! Resolve shader asset names from on-disk **Unity AssetBundle** files using `unity-asset`.
 //!
 //! [`crate::shared::ShaderUpload::file`] is typically an **extensionless path** (or any path) whose bytes
-//! parse as UnityFS / AssetBundle data—not a Unity `.asset` YAML file. The resolved name is taken **only**
+//! parse as UnityFS / AssetBundle data--not a Unity `.asset` YAML file. The resolved name is taken **only**
 //! from [`unity_asset::environment::Environment::bundle_container_entries`]: `AssetBundle.m_Container`
 //! asset paths matched to embedded Shader objects, then stemmed (e.g. `.../ui_unlit.shader` -> `ui_unlit`).
 //!
@@ -166,7 +166,7 @@ impl FileBinaryProbe {
     /// One short [`logger::warn!`] line; full fields via [`Self::log_debug_detail`].
     fn warn_short(&self, path: &Path, reason: &str) {
         logger::warn!(
-            "shader_unity_asset: {:?} — {} | bytes={} hex8={} | bundle_ok={} | err {:?}",
+            "shader_unity_asset: {:?} -- {} | bytes={} hex8={} | bundle_ok={} | err {:?}",
             path.display(),
             reason,
             self.bytes_len,
@@ -226,7 +226,7 @@ fn truncate_display(err: impl Display, max: usize) -> String {
     if s.len() <= max {
         return s;
     }
-    format!("{}…", &s[..max.saturating_sub(1)])
+    format!("{}...", &s[..max.saturating_sub(1)])
 }
 
 fn try_from_directory(dir: &Path) -> Option<String> {
@@ -301,7 +301,7 @@ fn try_from_directory(dir: &Path) -> Option<String> {
     }
 
     logger::warn!(
-        "shader_unity_asset: directory {:?} — no shader name (files_total={} examined={} cap={} bundle_hits={})",
+        "shader_unity_asset: directory {:?} -- no shader name (files_total={} examined={} cap={} bundle_hits={})",
         dir.display(),
         files_total,
         examined,
@@ -445,7 +445,7 @@ mod tests {
     fn truncate_display_preserves_short_errors_and_truncates_long_errors() {
         assert_eq!(truncate_display("short", 16), "short");
         let truncated = truncate_display("abcdefghijklmnopqrstuvwxyz", 8);
-        assert_eq!(truncated, "abcdefg…");
+        assert_eq!(truncated, "abcdefg...");
     }
 
     #[test]

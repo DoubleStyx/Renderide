@@ -432,7 +432,7 @@ impl VideoPlayer {
 
     /// Samples this player's clock error against the host's most recently received playback request.
     ///
-    /// Mirrors `UnityVideoTextureBehaviour`: the error is `pipeline_position − adjusted_host_position`,
+    /// Mirrors `UnityVideoTextureBehaviour`: the error is `pipeline_position - adjusted_host_position`,
     /// where the adjusted position advances unconditionally at real-time from
     /// [`VideoTextureUpdate::decoded_time`] (set by the IPC unpack at receive time). Returns `None`
     /// until at least one update has arrived or when the pipeline position cannot be queried.

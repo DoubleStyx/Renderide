@@ -13,24 +13,59 @@ pub(super) mod asset_ids {
     pub(in crate::host::scene_session) const SPHERE_MESH: i32 = 2;
     /// Sphere material asset id; same rationale as [`SPHERE_MESH`].
     pub(in crate::host::scene_session) const SPHERE_MATERIAL: i32 = 4;
-    /// Buffer id for the sphere mesh shared-memory region.
-    pub(in crate::host::scene_session) const SPHERE_MESH_BUFFER: i32 = 0;
+    /// Torus mesh asset id; distinct from the sphere id so a future multi-case session can
+    /// keep both resident.
+    pub(in crate::host::scene_session) const TORUS_MESH: i32 = 3;
+    /// Torus material asset id.
+    pub(in crate::host::scene_session) const TORUS_MATERIAL: i32 = 5;
+    /// Buffer id for any mesh shared-memory region (sphere or torus). Each case re-uses
+    /// buffer id 0 for its own session.
+    pub(in crate::host::scene_session) const MESH_BUFFER: i32 = 0;
     /// Buffer id for the scene-state shared-memory region (pose updates, additions, mesh
     /// states, packed material ids).
     pub(in crate::host::scene_session) const SCENE_STATE_BUFFER: i32 = 1;
+    /// Base buffer id for a `MaterialsUpdateBatch` payload. The row stream takes this id;
+    /// the int and float4 side buffers take `+1` and `+2` respectively.
+    pub(in crate::host::scene_session) const MATERIAL_UPDATE_BASE_BUFFER: i32 = 2;
+    /// Buffer id for the Texture2D pixel data shared-memory region.
+    pub(in crate::host::scene_session) const TEXTURE_DATA_BUFFER: i32 = 5;
+    /// Shader asset id used by the torus case to attach an unlit embedded WGSL stem.
+    pub(in crate::host::scene_session) const TORUS_SHADER: i32 = 6;
+    /// Texture asset id for the procedural Perlin noise bound to the torus material's `_Tex`.
+    pub(in crate::host::scene_session) const TORUS_TEXTURE: i32 = 7;
+    /// Update batch id echoed back in `MaterialsUpdateBatchResult`.
+    pub(in crate::host::scene_session) const MATERIAL_UPDATE_BATCH_ID: i32 = 1;
+    /// Request id echoed back in `MaterialPropertyIdResult` when looking up unlit material
+    /// property names (`_Tex`, `_Tex_ST`).
+    pub(in crate::host::scene_session) const PROPERTY_ID_REQUEST_ID: i32 = 1;
     /// Render-space id for the sole render space the harness submits.
     pub(in crate::host::scene_session) const RENDER_SPACE: i32 = 1;
 }
 
 /// Procedural sphere tessellation that stands in for "a real scene".
 ///
-/// Values must match the golden image's vertex layout — changing them invalidates the committed
+/// Values must match the golden image's vertex layout -- changing them invalidates the committed
 /// `goldens/sphere.png`.
 pub(super) mod sphere_tessellation {
     /// Number of latitude bands; `16` produces enough silhouette smoothness for SSIM stability.
     pub(in crate::host::scene_session) const LATITUDE_BANDS: u32 = 16;
     /// Number of longitude bands; `24` keeps triangle count small while preserving the silhouette.
     pub(in crate::host::scene_session) const LONGITUDE_BANDS: u32 = 24;
+}
+
+/// Procedural torus tessellation and dimensions.
+///
+/// Values must match the golden image's vertex layout -- changing them invalidates the committed
+/// `goldens/torus.png`.
+pub(super) mod torus_geometry {
+    /// Number of segments around the major circle.
+    pub(in crate::host::scene_session) const MAJOR_SEGMENTS: u32 = 48;
+    /// Number of segments around the tube cross-section.
+    pub(in crate::host::scene_session) const MINOR_SEGMENTS: u32 = 24;
+    /// Major radius (center of tube to torus center).
+    pub(in crate::host::scene_session) const MAJOR_RADIUS: f32 = 0.65;
+    /// Minor radius (tube cross-section).
+    pub(in crate::host::scene_session) const MINOR_RADIUS: f32 = 0.25;
 }
 
 /// Wall-clock timing parameters governing PNG readback, lockstep pumping, and shutdown.

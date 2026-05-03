@@ -108,17 +108,17 @@ mod tests {
     fn boundary_index_lands_in_correct_element() {
         let mut data = [0u32; 3];
         let mut span = BitSpanMut::new(&mut data);
-        // Bit 0 → element 0 / bit 0
+        // Bit 0 -> element 0 / bit 0
         span.set(0, true);
-        // Bit 31 → element 0 / bit 31
+        // Bit 31 -> element 0 / bit 31
         span.set(31, true);
-        // Bit 32 → element 1 / bit 0
+        // Bit 32 -> element 1 / bit 0
         span.set(32, true);
-        // Bit 33 → element 1 / bit 1
+        // Bit 33 -> element 1 / bit 1
         span.set(33, true);
-        // Bit 63 → element 1 / bit 31
+        // Bit 63 -> element 1 / bit 31
         span.set(63, true);
-        // Bit 64 → element 2 / bit 0
+        // Bit 64 -> element 2 / bit 0
         span.set(64, true);
         assert_eq!(data[0], 1u32 | (1u32 << 31));
         assert_eq!(data[1], 1u32 | (1u32 << 1) | (1u32 << 31));

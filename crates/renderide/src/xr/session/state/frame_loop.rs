@@ -1,27 +1,50 @@
-//! OpenXR frame wait, view location, and frame-end submission.
+//! OpenXR frame wait, view location, and pre-begin synchronisation with deferred finalize.
+//!
+//! `xrEndFrame` for the previous tick runs on the renderer's driver thread (see
+//! [`crate::gpu::driver_thread::run_xr_finalize`]). [`XrSessionState::wait_frame`] consumes
+//! the matching finalize signal before issuing `xrBeginFrame` so the OpenXR begin/end
+//! ordering invariant is preserved across the deferred handoff.
 
-use openxr as xr;
-use openxr::{CompositionLayerProjection, CompositionLayerProjectionView, SwapchainSubImage};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use super::super::end_frame_watchdog::EndFrameWatchdog;
-use super::XrSessionState;
+use openxr as xr;
 
-/// Deadline for a single `xrEndFrame` call before the watchdog logs a compositor stall.
-///
-/// 500 ms is an order of magnitude above normal VR frame budgets (<= ~16 ms at 60 Hz, ~11 ms at
-/// 90 Hz) while short enough that a true freeze surfaces within one log-visible interval.
-const END_FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(500);
+use super::XrSessionState;
+use crate::gpu::driver_thread::wait_for_finalize;
 
 impl XrSessionState {
     /// Blocks until the next frame, begins the frame stream. Returns `None` if not ready or idle.
     ///
-    /// On a successful `frame_stream.begin()` sets [`Self::frame_open`] so the outer loop knows a
-    /// matching `end_frame_*` must be called.
+    /// Steps in order:
+    /// 1. Drain any pending finalize signal from the previous tick. This is the one place
+    ///    the main thread synchronises with the driver thread for VR finalize. In the
+    ///    steady state the receiver is already signaled (an entire main-thread tick has
+    ///    elapsed since the finalize was queued), so the wait costs nothing.
+    /// 2. If the driver recorded a finalize error, surface it instead of beginning a new
+    ///    frame. The existing recovery paths handle the failure one tick later.
+    /// 3. Run the regular `xrWaitFrame` + `xrBeginFrame` sequence under the queue access
+    ///    gate.
+    ///
+    /// On a successful `frame_stream.begin()` sets [`Self::frame_open`] (atomic, mirrored
+    /// to the driver thread for the deferred end-frame to clear) so the outer loop knows
+    /// a matching `end_frame_*` must be queued.
     pub fn wait_frame(
         &mut self,
         gpu_queue_access_gate: &crate::gpu::GpuQueueAccessGate,
     ) -> Result<Option<xr::FrameState>, xr::sys::Result> {
+        if let Some(rx) = self.pending_finalize.take() {
+            profiling::scope!("xr::wait_previous_finalize");
+            // Timeout means the driver thread is unresponsive; existing
+            // `take_pending_error` plumbing surfaces driver crashes separately so we
+            // log here and fall through to the error-slot drain below.
+            if wait_for_finalize(rx).is_err() {
+                logger::warn!("xr: timed out waiting for previous-frame finalize");
+            }
+        }
+        if let Some(err) = self.take_finalize_error() {
+            return Err(err);
+        }
         if !self.session_running {
             std::thread::sleep(Duration::from_millis(10));
             return Ok(None);
@@ -30,100 +53,10 @@ impl XrSessionState {
         {
             profiling::scope!("xr::frame_stream_begin");
             let _gate = gpu_queue_access_gate.lock();
-            self.frame_stream.begin()?;
+            self.frame_stream.lock().begin()?;
         };
-        self.frame_open = true;
+        self.frame_open.store(true, Ordering::Release);
         Ok(Some(state))
-    }
-
-    /// Ends the frame with no composition layers (mirror path, or visibility fallback).
-    pub fn end_frame_empty(
-        &mut self,
-        predicted_display_time: xr::Time,
-        gpu_queue_access_gate: &crate::gpu::GpuQueueAccessGate,
-    ) -> Result<(), xr::sys::Result> {
-        profiling::scope!("xr::end_frame_empty");
-        let wd = EndFrameWatchdog::arm(END_FRAME_WATCHDOG_TIMEOUT, "end_frame_empty");
-        let res = {
-            let _gate = gpu_queue_access_gate.lock();
-            self.frame_stream
-                .end(predicted_display_time, self.environment_blend_mode, &[])
-        };
-        self.frame_open = false;
-        wd.disarm();
-        res
-    }
-
-    /// Ends the frame via [`Self::end_frame_empty`] only if a frame scope is currently open; a
-    /// no-op otherwise. Error paths in `xr::app_integration` call this after bailing out of HMD
-    /// submit so the begin/end frame contract is honoured regardless of where submission failed.
-    pub fn end_frame_if_open(
-        &mut self,
-        predicted_display_time: xr::Time,
-        gpu_queue_access_gate: &crate::gpu::GpuQueueAccessGate,
-    ) -> Result<(), xr::sys::Result> {
-        if !self.frame_open {
-            return Ok(());
-        }
-        self.end_frame_empty(predicted_display_time, gpu_queue_access_gate)
-    }
-
-    /// Submits a stereo projection layer referencing the acquired swapchain image.
-    ///
-    /// For the primary stereo view configuration (`PRIMARY_STEREO`), `views[0]` is the left eye and
-    /// `views[1]` the right eye. Composition layer 0 / `image_array_index` 0 is the left eye, layer
-    /// 1 / index 1 the right eye, matching multiview `view_index` in the stereo path.
-    pub fn end_frame_projection(
-        &mut self,
-        predicted_display_time: xr::Time,
-        swapchain: &xr::Swapchain<xr::Vulkan>,
-        views: &[xr::View],
-        image_rect: xr::Rect2Di,
-        gpu_queue_access_gate: &crate::gpu::GpuQueueAccessGate,
-    ) -> Result<(), xr::sys::Result> {
-        profiling::scope!("xr::end_frame");
-        if views.len() < 2 {
-            return self.end_frame_empty(predicted_display_time, gpu_queue_access_gate);
-        }
-        let v0 = &views[0]; // left eye
-        let v1 = &views[1]; // right eye
-        let pose0 = sanitize_pose_for_end_frame(v0.pose);
-        let pose1 = sanitize_pose_for_end_frame(v1.pose);
-        let projection_views = [
-            CompositionLayerProjectionView::new()
-                .pose(pose0)
-                .fov(v0.fov)
-                .sub_image(
-                    SwapchainSubImage::new()
-                        .swapchain(swapchain)
-                        .image_array_index(0)
-                        .image_rect(image_rect),
-                ),
-            CompositionLayerProjectionView::new()
-                .pose(pose1)
-                .fov(v1.fov)
-                .sub_image(
-                    SwapchainSubImage::new()
-                        .swapchain(swapchain)
-                        .image_array_index(1)
-                        .image_rect(image_rect),
-                ),
-        ];
-        let layer = CompositionLayerProjection::new()
-            .space(&self.stage)
-            .views(&projection_views);
-        let wd = EndFrameWatchdog::arm(END_FRAME_WATCHDOG_TIMEOUT, "end_frame_projection");
-        let res = {
-            let _gate = gpu_queue_access_gate.lock();
-            self.frame_stream.end(
-                predicted_display_time,
-                self.environment_blend_mode,
-                &[&layer],
-            )
-        };
-        self.frame_open = false;
-        wd.disarm();
-        res
     }
 
     /// Locates stereo views for the predicted display time.
@@ -134,57 +67,17 @@ impl XrSessionState {
         let (_, views) = self.session.locate_views(
             xr::ViewConfigurationType::PRIMARY_STEREO,
             predicted_display_time,
-            &self.stage,
+            self.stage.as_ref(),
         )?;
         Ok(views)
     }
-}
 
-/// OpenXR requires a unit quaternion; some runtimes briefly report `(0,0,0,0)`, which makes
-/// `xrEndFrame` fail with `XR_ERROR_POSE_INVALID`.
-fn sanitize_pose_for_end_frame(pose: xr::Posef) -> xr::Posef {
-    let o = pose.orientation;
-    let len_sq =
-        o.w.mul_add(o.w, o.z.mul_add(o.z, o.x.mul_add(o.x, o.y * o.y)));
-    if len_sq.is_finite() && len_sq >= 1e-10 {
-        pose
-    } else {
-        xr::Posef {
-            orientation: xr::Quaternionf {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-                w: 1.0,
-            },
-            position: pose.position,
+    /// Drains a pending finalize signal without beginning a new frame. Called from the
+    /// shutdown path so we do not destroy the session while the driver thread is still
+    /// holding `xr::FrameStream` / `xr::Swapchain` references.
+    pub(in crate::xr) fn await_finalize_pending(&mut self) {
+        if let Some(rx) = self.pending_finalize.take() {
+            let _ = wait_for_finalize(rx);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sanitize_pose_replaces_invalid_orientation_with_identity() {
-        let pose = xr::Posef {
-            orientation: xr::Quaternionf {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-                w: 0.0,
-            },
-            position: xr::Vector3f {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0,
-            },
-        };
-        let sanitized = sanitize_pose_for_end_frame(pose);
-        assert_eq!(sanitized.orientation.x, 0.0);
-        assert_eq!(sanitized.orientation.y, 0.0);
-        assert_eq!(sanitized.orientation.z, 0.0);
-        assert_eq!(sanitized.orientation.w, 1.0);
-        assert_eq!(sanitized.position, pose.position);
     }
 }

@@ -252,7 +252,7 @@ impl PassNode {
     }
 }
 
-// SAFETY: every variant payload (`RasterPass`, `ComputePass`, …) is a `Box<dyn Trait + Send>`;
+// SAFETY: every variant payload (`RasterPass`, `ComputePass`, ...) is a `Box<dyn Trait + Send>`;
 // therefore every field of `PassNode` is `Send`, and the enum as a whole may be safely shared
 // across rayon worker threads when recording per-view encoders.
 unsafe impl Send for PassNode {}

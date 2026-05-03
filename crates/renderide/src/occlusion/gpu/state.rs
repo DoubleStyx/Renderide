@@ -1,7 +1,7 @@
 //! Per-view Hi-Z GPU state: CPU snapshots, GPU scratch, and the readback ring lifecycle.
 //!
 //! [`HiZGpuState`] is the single piece of state guarded by a `parking_lot::Mutex` per view in
-//! [`crate::occlusion::OcclusionSystem`]. It deliberately avoids heavy logic — encode (in
+//! [`crate::occlusion::OcclusionSystem`]. It deliberately avoids heavy logic -- encode (in
 //! [`super::encode`]) and readback drain (in [`super::readback`]) operate on `&mut HiZGpuState`
 //! through narrow entry points so the lock-held footprint stays small.
 
@@ -104,7 +104,7 @@ impl HiZGpuState {
     }
 
     /// Records that the driver-thread submit carrying a copy-to-staging ticket has
-    /// completed. Does not touch wgpu — [`Self::start_ready_maps`] promotes the slot to a real
+    /// completed. Does not touch wgpu -- [`Self::start_ready_maps`] promotes the slot to a real
     /// `map_async` on the main thread. Keeping this callback pure (just a flag flip) avoids
     /// running any wgpu call from inside a [`wgpu::Device::poll`] callback, which can hold
     /// wgpu-internal locks that also serialize [`wgpu::Queue::write_texture`] and would

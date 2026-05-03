@@ -17,7 +17,7 @@ use self::entry::{
 pub use self::entry::{SkinCacheEntry, SkinCacheFrameStats};
 pub use self::key::{EntryNeed, SkinCacheKey, SkinCacheRendererKind};
 
-/// Three arenas for deform outputs; ranges are tracked by [`crate::mesh_deform::range_alloc::RangeAllocator`].
+/// Arenas for deform outputs; ranges are tracked by [`crate::mesh_deform::range_alloc::RangeAllocator`].
 pub struct GpuSkinCache {
     arenas: SkinArenas,
     entries: HashMap<SkinCacheKey, SkinCacheEntry>,
@@ -28,7 +28,7 @@ pub struct GpuSkinCache {
 }
 
 impl GpuSkinCache {
-    /// Creates three empty arenas with the default initial capacity (clamped to `max_buffer_size`).
+    /// Creates empty arenas with the default initial capacity (clamped to `max_buffer_size`).
     pub fn new(device: &wgpu::Device, max_buffer_size: u64) -> Self {
         Self {
             arenas: SkinArenas::new(device, max_buffer_size),
@@ -56,7 +56,7 @@ impl GpuSkinCache {
         self.stats
     }
 
-    /// Total VRAM for the three arenas (bytes).
+    /// Total VRAM for the arenas (bytes).
     #[inline]
     pub fn resident_bytes(&self) -> u64 {
         self.arenas.resident_bytes()
@@ -74,7 +74,13 @@ impl GpuSkinCache {
         self.arenas.normals()
     }
 
-    /// Blendshape → skin intermediate positions when both passes run.
+    /// Full tangents arena for deformed tangents.
+    #[inline]
+    pub fn tangents_arena(&self) -> &wgpu::Buffer {
+        self.arenas.tangents()
+    }
+
+    /// Blendshape -> skin intermediate positions when both passes run.
     #[inline]
     pub fn temp_arena(&self) -> &wgpu::Buffer {
         self.arenas.temp()
@@ -113,7 +119,7 @@ impl GpuSkinCache {
         vertex_count: u32,
     ) -> Option<&SkinCacheEntry> {
         self.get_or_alloc_with_arenas(device, encoder, key, need, vertex_count)
-            .map(|(e, _, _, _)| e)
+            .map(|(e, _, _, _, _)| e)
     }
 
     /// Like [`Self::get_or_alloc`], also returns arena buffers for encode passes (single borrow).
@@ -124,7 +130,13 @@ impl GpuSkinCache {
         key: SkinCacheKey,
         need: EntryNeed,
         vertex_count: u32,
-    ) -> Option<(&SkinCacheEntry, &wgpu::Buffer, &wgpu::Buffer, &wgpu::Buffer)> {
+    ) -> Option<(
+        &SkinCacheEntry,
+        &wgpu::Buffer,
+        &wgpu::Buffer,
+        &wgpu::Buffer,
+        &wgpu::Buffer,
+    )> {
         if vertex_count == 0 {
             return None;
         }
@@ -189,7 +201,10 @@ impl GpuSkinCache {
             SkinCacheEntry {
                 positions: ranges.positions,
                 normals: ranges.normals,
+                tangents: ranges.tangents,
                 temp: ranges.temp,
+                temp_normals: ranges.temp_normals,
+                temp_tangents: ranges.temp_tangents,
                 vertex_count,
                 last_touched_frame: self.frame_counter,
             },
@@ -199,12 +214,19 @@ impl GpuSkinCache {
     fn entry_and_arenas(
         &self,
         key: &SkinCacheKey,
-    ) -> Option<(&SkinCacheEntry, &wgpu::Buffer, &wgpu::Buffer, &wgpu::Buffer)> {
+    ) -> Option<(
+        &SkinCacheEntry,
+        &wgpu::Buffer,
+        &wgpu::Buffer,
+        &wgpu::Buffer,
+        &wgpu::Buffer,
+    )> {
         let entry = self.entries.get(key)?;
         Some((
             entry,
             self.arenas.positions(),
             self.arenas.normals(),
+            self.arenas.tangents(),
             self.arenas.temp(),
         ))
     }

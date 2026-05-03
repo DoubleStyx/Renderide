@@ -1,22 +1,22 @@
-//! Renderide: host–renderer IPC, window loop, and GPU presentation (skeleton).
+//! Renderide: host-renderer IPC, window loop, and GPU presentation (skeleton).
 //!
 //! The library exposes [`run`] for the `renderide` binary. Shared IPC types live in [`shared`] and
 //! are generated; regenerate from **`SharedTypeGenerator`** instead of editing by hand.
 //!
 //! ## Layering
 //!
-//! - **[`frontend`]** — IPC queues, shared memory accessor, init handshake, lock-step frame gating,
+//! - **[`frontend`]** -- IPC queues, shared memory accessor, init handshake, lock-step frame gating,
 //!   and window [`input`](crate::frontend::input) (winit to [`InputState`](crate::shared::InputState)).
-//! - **[`scene`]** — Render spaces, transforms, mesh renderables, host light cache (no wgpu).
-//! - **[`backend`]** — GPU device usage, mesh/texture pools, material property store, uploads,
+//! - **[`scene`]** -- Render spaces, transforms, mesh renderables, host light cache (no wgpu).
+//! - **[`backend`]** -- GPU device usage, mesh/texture pools, material property store, uploads,
 //!   [`MeshPreprocessPipelines`](crate::mesh_deform::MeshPreprocessPipelines), and the compiled
 //!   [`render_graph`](crate::render_graph).
 //!
 //! [`RendererRuntime`](crate::runtime::RendererRuntime) composes these three; prefer adding new
-//! logic in the appropriate module rather than growing the façade.
+//! logic in the appropriate module rather than growing the facade.
 //!
 //! A future optional **`renderide-scene`** crate could hold [`scene`](crate::scene) types with **no
-//! `wgpu` dependency**, enforcing the “no GPU in scene” rule via Cargo boundaries; the current
+//! `wgpu` dependency**, enforcing the "no GPU in scene" rule via Cargo boundaries; the current
 //! single crate keeps iteration cheaper until the scene API stabilizes.
 
 mod process_io;
@@ -27,15 +27,15 @@ pub(crate) use process_io::native_stdio;
 
 /// Winit-driven application: startup, frame loop / pacing, and the [`app::run`] entry point.
 pub mod app;
-/// Mesh / texture / material / shader asset integration (host IPC → GPU pools).
+/// Mesh / texture / material / shader asset integration (host IPC -> GPU pools).
 pub mod assets;
-/// GPU resource pools, material tables, mesh/texture uploads, preprocess pipelines — **backend** layer.
+/// GPU resource pools, material tables, mesh/texture uploads, preprocess pipelines -- **backend** layer.
 pub mod backend;
 /// `config.toml` loading and [`config::RendererSettings`] (process-wide defaults).
 pub mod config;
 /// Developer overlay: Dear ImGui frame snapshot + HUD ([`diagnostics::DebugHud`]).
 pub mod diagnostics;
-/// Host IPC, shared memory, init, lock-step — **frontend** layer.
+/// Host IPC, shared memory, init, lock-step -- **frontend** layer.
 pub mod frontend;
 /// wgpu device + adapter init, instance/device limits, MSAA helpers, present + VR mirror.
 pub mod gpu;
@@ -62,7 +62,7 @@ pub mod skybox;
 /// Reflection probes: nonblocking GPU SH2 projection for host reflection-probe tasks.
 pub mod reflection_probes;
 
-/// Render-graph pass implementations (skybox, ACES tonemap, bloom, GTAO, world-mesh forward, …).
+/// Render-graph pass implementations (skybox, ACES tonemap, bloom, GTAO, world-mesh forward, ...).
 pub mod passes;
 
 /// Host camera state (`HostCameraFrame`, `StereoViewMatrices`), view identity (`ViewId`),
@@ -75,7 +75,7 @@ pub mod ipc;
 pub use ipc::connection;
 /// Material registry, shader routing, pipeline cache, and naga-reflection-driven layout.
 pub mod materials;
-/// Host `HeadOutputDevice` → VR / OpenXR GPU path. Lives in `xr/` (was top-level `output_device.rs`).
+/// Host `HeadOutputDevice` -> VR / OpenXR GPU path. Lives in `xr/` (was top-level `output_device.rs`).
 pub use crate::xr::output_device;
 /// GPU resource pools and VRAM hooks (meshes, Texture2D, Texture3D, cubemaps, video textures).
 pub mod gpu_pools;
@@ -84,9 +84,9 @@ pub mod gpu_pools;
 pub mod profiling;
 /// Compiled render-graph IR, pass nodes, transient pool, parallel recording, and execution.
 pub mod render_graph;
-/// Per-tick orchestration façade ([`runtime::RendererRuntime`]) wiring frontend, scene, and backend.
+/// Per-tick orchestration facade ([`runtime::RendererRuntime`]) wiring frontend, scene, and backend.
 pub mod runtime;
-/// Transforms, render spaces, mesh renderables — **scene** layer (no wgpu).
+/// Transforms, render spaces, mesh renderables -- **scene** layer (no wgpu).
 pub mod scene;
 
 /// Generated IPC structs and enums shared with the host (regenerate via `SharedTypeGenerator`).
@@ -99,7 +99,7 @@ pub mod world_mesh;
 pub mod xr;
 
 /// Small set of types for embedding the renderer; import everything else via submodules
-/// (for example `crate::materials::MaterialRegistry` in-tree, `renderide::materials::…` externally).
+/// (for example `crate::materials::MaterialRegistry` in-tree, `renderide::materials::...` externally).
 pub mod prelude {
     pub use crate::camera::HostCameraFrame;
     pub use crate::config::{MsaaSampleCount, RendererSettings, RendererSettingsHandle};

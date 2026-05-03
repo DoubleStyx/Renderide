@@ -1,8 +1,9 @@
-//! Frame timing HUD window — MangoHud-style overlay with FPS, CPU/GPU, RAM/VRAM and a frametime graph.
+//! Frame timing HUD window -- MangoHud-style overlay with FPS, CPU/GPU, RAM/VRAM and a frametime graph.
 
 use imgui::WindowFlags;
 
 use crate::diagnostics::FrameTimingHudSnapshot;
+use crate::gpu::frame_cpu_gpu_timing::GpuMsSource;
 
 use super::super::layout::{self, Viewport, WindowSlot};
 use super::super::state::HudUiState;
@@ -26,7 +27,7 @@ const COL_SECONDARY_VALUE_X: f32 = 196.0;
 const CONTENT_WIDTH: f32 = 320.0;
 const GRAPH_HEIGHT: f32 = 46.0;
 
-/// **Frame timing** HUD window — anchored under the **Renderer config** column.
+/// **Frame timing** HUD window -- anchored under the **Renderer config** column.
 pub struct FrameTimingWindow;
 
 impl HudWindow for FrameTimingWindow {
@@ -69,7 +70,7 @@ impl HudWindow for FrameTimingWindow {
     }
 }
 
-/// FPS color: green ≥90, yellow ≥45, red below.
+/// FPS color: green >=90, yellow >=45, red below.
 fn fps_color(fps: f64) -> [f32; 4] {
     if fps >= 90.0 {
         [0.50, 1.00, 0.55, 1.0]
@@ -87,25 +88,37 @@ fn render_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
         ("FPS", FPS_HEAD_COLOR),
         (format!("{fps:6.1}"), fps_color(fps)),
         Some(("Frame", LABEL_COLOR)),
-        Some((format!("{:5.2} ms", t.wall_frame_time_ms), VALUE_COLOR)),
+        Some((
+            format!("{:5.2} ms", t.wall_frame_time_ms_smoothed),
+            VALUE_COLOR,
+        )),
+        Some(FRAME_TOOLTIP),
     );
 
-    let cpu_ms = ms_or_dash(t.cpu_frame_ms);
+    let cpu_ms = ms_or_dash(t.cpu_frame_ms_smoothed);
     row(
         ui,
         ("CPU", CPU_HEAD_COLOR),
         (format!("{cpu_ms} ms"), VALUE_COLOR),
         Some(("util", LABEL_COLOR)),
         Some((format!("{:5.1}%", t.host_cpu_usage_percent), VALUE_COLOR)),
+        Some(CPU_TOOLTIP),
     );
 
-    let gpu_ms = ms_or_dash(t.gpu_frame_ms);
+    let gpu_ms = ms_or_dash(t.gpu_frame_ms_smoothed);
+    let (gpu_label, gpu_tooltip) = match t.gpu_ms_source {
+        Some(GpuMsSource::CallbackLatency) => ("GPU latency", GPU_LATENCY_TOOLTIP),
+        // Default to the standard label until the first GPU value lands; once it does we know
+        // whether the adapter is supplying real timestamps.
+        _ => ("GPU", GPU_TOOLTIP),
+    };
     row(
         ui,
-        ("GPU", GPU_HEAD_COLOR),
+        (gpu_label, GPU_HEAD_COLOR),
         (format!("{gpu_ms} ms"), VALUE_COLOR),
         None,
         None,
+        Some(gpu_tooltip),
     );
 
     let proc_ram = t
@@ -123,8 +136,27 @@ fn render_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
         (proc_ram, VALUE_COLOR),
         Some(("host", DIM_COLOR)),
         Some((format!("{host_ram} ({host_ram_pct:.0}%)"), DIM_COLOR)),
+        None,
     );
 }
+
+const FRAME_TOOLTIP: &str = "\
+Wall-clock between consecutive winit ticks. Includes vsync, FPS-gating sleeps, and lockstep \
+waits. EMA-smoothed for display; the graph below shows raw samples.";
+
+const CPU_TOOLTIP: &str = "\
+Main-thread tick duration: from frame start to the moment the renderer finishes dispatching \
+this tick's submit. Excludes FPS-gating sleeps, lockstep waits, and event-loop idles. \
+EMA-smoothed.";
+
+const GPU_TOOLTIP: &str = "\
+Real GPU compute time, measured by hardware timestamp queries that bracket the tick's command \
+buffers. Computed as (end - begin) * Queue::get_timestamp_period / 1e6. EMA-smoothed.";
+
+const GPU_LATENCY_TOOLTIP: &str = "\
+Adapter does not advertise TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS, so this is the \
+wall-clock between Queue::submit returning and on_submitted_work_done firing -- submit-to-callback \
+latency, NOT actual GPU compute time. EMA-smoothed.";
 
 fn row(
     ui: &imgui::Ui,
@@ -132,11 +164,17 @@ fn row(
     (value, value_color): (String, [f32; 4]),
     secondary_label: Option<(&str, [f32; 4])>,
     secondary_value: Option<(String, [f32; 4])>,
+    tooltip: Option<&str>,
 ) {
     if COL_LABEL_X > 0.0 {
         ui.same_line_with_pos(COL_LABEL_X);
     }
     ui.text_colored(label_color, label);
+    if let Some(text) = tooltip
+        && ui.is_item_hovered()
+    {
+        ui.tooltip_text(text);
+    }
 
     ui.same_line_with_pos(COL_PRIMARY_X);
     ui.text_colored(value_color, value);

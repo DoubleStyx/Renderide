@@ -4,13 +4,13 @@
 //! (`limits`, `device`, `queue`, `gpu_queue_access_gate`, `adapter_info`). All other
 //! inherent methods are split across thematic submodules:
 //!
-//! - [`init`] — three constructors (windowed, headless, OpenXR-bootstrap) + assemble helpers.
-//! - [`surface`] — present mode / max latency / resize / acquire-with-recovery.
-//! - [`depth_attachment`] — main forward depth target ensure/recreate.
-//! - [`headless_targets`] — [`headless_targets::PrimaryOffscreenTargets`] state and accessors.
-//! - [`submission`] — driver-thread submit / present facade.
-//! - [`profiler`] — frame-timing + GPU profiler facade and HUD-facing readouts.
-//! - [`msaa_state`] — supported / effective MSAA tier state for desktop and stereo paths.
+//! - [`init`] -- three constructors (windowed, headless, OpenXR-bootstrap) + assemble helpers.
+//! - [`surface`] -- present mode / max latency / resize / acquire-with-recovery.
+//! - [`depth_attachment`] -- main forward depth target ensure/recreate.
+//! - [`headless_targets`] -- [`headless_targets::PrimaryOffscreenTargets`] state and accessors.
+//! - [`submission`] -- driver-thread submit / present facade.
+//! - [`profiler`] -- frame-timing + GPU profiler facade and HUD-facing readouts.
+//! - [`msaa_state`] -- supported / effective MSAA tier state for desktop and stereo paths.
 
 use std::sync::Arc;
 
@@ -43,13 +43,13 @@ pub struct GpuContext {
     ///
     /// Declared **first** so it drops before `queue`, `surface`, and `device`. On drop the
     /// driver pushes a shutdown sentinel, the worker drains remaining batches (dropping any
-    /// unpresented [`wgpu::SurfaceTexture`] cleanly), and the thread joins — after which
+    /// unpresented [`wgpu::SurfaceTexture`] cleanly), and the thread joins -- after which
     /// the queue and surface are safe to tear down.
     submission: GpuSubmissionState,
     /// Adapter metadata from construction (for diagnostics).
     adapter_info: wgpu::AdapterInfo,
     /// MSAA tiers supported for the configured surface color format and forward depth/stencil format.
-    /// (sorted ascending: 2, 4, …). Empty means MSAA is unavailable.
+    /// (sorted ascending: 2, 4, ...). Empty means MSAA is unavailable.
     msaa_supported_sample_counts: Vec<u32>,
     /// MSAA tiers supported for **2D array** color + forward depth/stencil format on the OpenXR
     /// path (sorted ascending). Empty when the adapter lacks

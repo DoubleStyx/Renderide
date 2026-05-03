@@ -378,6 +378,47 @@ fn extract_blendshape_sparse_keeps_nonzero_position_rows_only() {
     assert_eq!(pack.frame_ranges[0].first_entry, 0);
     assert_eq!(pack.frame_ranges[0].entry_count, 1);
     assert_eq!(pack.sparse_deltas.len(), BLENDSHAPE_SPARSE_ENTRY_SIZE);
+    assert!(pack.has_position_deltas);
+    assert!(!pack.has_normal_deltas);
+    assert!(!pack.has_tangent_deltas);
+}
+
+#[test]
+fn extract_blendshape_sparse_merges_normal_and_tangent_channels() {
+    let vertex_count = 1i32;
+    let attrs = [VertexAttributeDescriptor {
+        attribute: VertexAttributeType::Position,
+        format: VertexAttributeFormat::Float32,
+        dimensions: 3,
+    }];
+    let stride = compute_vertex_stride(&attrs);
+    let blend = [BlendshapeBufferDescriptor {
+        blendshape_index: 0,
+        frame_index: 0,
+        frame_weight: 1.0,
+        data_flags: BlendshapeDataFlags(
+            BlendshapeDataFlags::NORMALS | BlendshapeDataFlags::TANGETS,
+        ),
+    }];
+    let layout =
+        compute_mesh_buffer_layout(stride, vertex_count, 0, 2, 0, 0, Some(&blend)).expect("layout");
+    let mut full = vec![0u8; layout.total_buffer_length];
+    let off = layout.blendshape_data_start;
+    full[off..off + 4].copy_from_slice(&0.25f32.to_le_bytes());
+    full[off + 12..off + 16].copy_from_slice(&0.5f32.to_le_bytes());
+
+    let pack = extract_blendshape_offsets(&full, &layout, &blend, vertex_count).expect("pack");
+
+    assert_eq!(pack.frame_ranges[0].entry_count, 1);
+    assert!(!pack.has_position_deltas);
+    assert!(pack.has_normal_deltas);
+    assert!(pack.has_tangent_deltas);
+    let pos_x = f32::from_le_bytes(pack.sparse_deltas[4..8].try_into().expect("pos x"));
+    let normal_x = f32::from_le_bytes(pack.sparse_deltas[16..20].try_into().expect("normal x"));
+    let tangent_x = f32::from_le_bytes(pack.sparse_deltas[28..32].try_into().expect("tangent x"));
+    assert_eq!(pos_x, 0.0);
+    assert_eq!(normal_x, 0.25);
+    assert_eq!(tangent_x, 0.5);
 }
 
 #[test]

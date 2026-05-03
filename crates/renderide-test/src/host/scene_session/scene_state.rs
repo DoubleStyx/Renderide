@@ -1,6 +1,7 @@
 //! Builds the scene-state shared-memory region and pumps the lockstep until the renderer has
 //! seen at least one frame submission carrying the scene.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use renderide_shared::ipc::HostDualQueueIpc;
@@ -14,6 +15,15 @@ use crate::error::HarnessError;
 
 use super::super::lockstep::LockstepDriver;
 use super::consts::{asset_ids, timing};
+
+/// Mesh / material asset id pair the scene state should reference.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SceneAssetIds {
+    /// Mesh asset id resolved from the per-template upload.
+    pub mesh: i32,
+    /// Material asset id paired with the mesh.
+    pub material: i32,
+}
 
 /// Holds the scene SHM writer alive so the renderer can keep reading the descriptor over many
 /// lockstep ticks. [`Drop`] releases the shared-memory mapping.
@@ -29,6 +39,8 @@ pub(super) struct SceneState {
 /// `RenderSpaceUpdate` into the lockstep driver so subsequent `FrameSubmitData` carries the scene.
 pub(super) fn build_scene_state(
     prefix: &str,
+    backing_dir: &Path,
+    asset_id_pair: SceneAssetIds,
     lockstep: &mut LockstepDriver,
 ) -> Result<SceneState, HarnessError> {
     let defaults = SphereSceneInputs::default();
@@ -36,14 +48,15 @@ pub(super) fn build_scene_state(
         render_space_id: asset_ids::RENDER_SPACE,
         camera_world_pose: defaults.camera_world_pose,
         object_pose: defaults.object_pose,
-        mesh_asset_id: asset_ids::SPHERE_MESH,
-        material_asset_id: asset_ids::SPHERE_MATERIAL,
+        mesh_asset_id: asset_id_pair.mesh,
+        material_asset_id: asset_id_pair.material,
     };
     let regions = SphereSceneSharedMemoryRegions::build(&inputs);
     let total_bytes = regions.total_bytes();
     let cfg = SharedMemoryWriterConfig {
         prefix: prefix.to_string(),
         destroy_on_drop: true,
+        dir_override: Some(backing_dir.to_path_buf()),
     };
     let mut writer = SharedMemoryWriter::open(cfg, asset_ids::SCENE_STATE_BUFFER, total_bytes)
         .map_err(|e| {

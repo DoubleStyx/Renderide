@@ -11,8 +11,9 @@ use crate::materials::raster_pipeline::{
     ShaderModuleBuildRefs, VertexStreamToggles, create_reflective_raster_mesh_forward_pipelines,
 };
 use crate::materials::{
-    MaterialBlendMode, MaterialRenderState, RasterFrontFace, ReflectedRasterLayout,
-    ReflectedVertexInputFormat, SnapshotRequirements, materialized_pass_for_blend_mode,
+    MaterialBlendMode, MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology,
+    ReflectedRasterLayout, ReflectedVertexInputFormat, SnapshotRequirements,
+    materialized_pass_for_blend_mode,
 };
 
 /// Host material identity and blend/render state for embedded raster pipeline creation (separate from WGSL build inputs).
@@ -27,6 +28,8 @@ pub(crate) struct EmbeddedRasterPipelineSource {
     pub render_state: MaterialRenderState,
     /// Front-face winding selected from draw transform handedness.
     pub front_face: RasterFrontFace,
+    /// Primitive topology selected from the mesh's per-submesh topology.
+    pub primitive_topology: RasterPrimitiveTopology,
 }
 
 /// Cache key for reflection-derived metadata on a composed embedded target.
@@ -261,7 +264,7 @@ pub fn embedded_stem_uses_scene_color_snapshot(
         .uses_scene_color
 }
 
-/// Composed target stem for an embedded base stem (e.g. `unlit_default` → `unlit_multiview`).
+/// Composed target stem for an embedded base stem (e.g. `unlit_default` -> `unlit_multiview`).
 pub fn embedded_composed_stem_for_permutation(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -298,6 +301,7 @@ pub(crate) fn create_embedded_render_pipelines(
         blend_mode,
         render_state,
         front_face,
+        primitive_topology,
     } = source;
     let shader = refs.with_label("embedded_raster_material");
     let streams = VertexStreamToggles {
@@ -323,6 +327,7 @@ pub(crate) fn create_embedded_render_pipelines(
         &materialized_passes,
         render_state,
         front_face,
+        primitive_topology,
     )
 }
 

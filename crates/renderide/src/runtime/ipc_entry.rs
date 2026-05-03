@@ -3,7 +3,7 @@
 //! Owns the per-tick command drain ([`Self::poll_ipc`]) and the `pub(crate)` shims invoked by
 //! [`crate::frontend::dispatch::ipc_init::dispatch_ipc_command`] when classifying commands by
 //! init phase. Keeping every IPC ingress on one file makes the boundary between the runtime
-//! façade and the dispatch routers explicit.
+//! facade and the dispatch routers explicit.
 
 use crate::frontend::InitState;
 use crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag;

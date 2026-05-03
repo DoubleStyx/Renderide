@@ -24,7 +24,7 @@ fn normalized_flag_token(arg: &str) -> String {
     crate::cli::normalize_flag_token(arg)
 }
 
-/// Returns `true` when `args` already specify `FrooxEngine` output via `-Screen` or `-Device …`.
+/// Returns `true` when `args` already specify `FrooxEngine` output via `-Screen` or `-Device ...`.
 ///
 /// Any `-Device` token counts as explicit (even if the following value is invalid for the host).
 pub(crate) fn host_args_have_explicit_output_device(args: &[String]) -> bool {
@@ -91,7 +91,7 @@ pub fn sanitize_linux_display_env() {
 ///
 /// Returns `false` when explicit output flags are already present, `CI` is set,
 /// [`ENV_SKIP_VR_DIALOG`] is set, or (on Linux) neither `DISPLAY` nor `WAYLAND_DISPLAY`
-/// is set — the latter case is logged at `warn` level so headless launches are not silent.
+/// is set -- the latter case is logged at `warn` level so headless launches are not silent.
 pub(crate) fn should_prompt_vr_dialog(host_args: &[String]) -> bool {
     if host_args_have_explicit_output_device(host_args) {
         return false;

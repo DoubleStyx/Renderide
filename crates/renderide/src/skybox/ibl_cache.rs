@@ -218,7 +218,7 @@ pub(crate) struct SkyboxIblCache {
     cube_pipeline: Option<ComputePipeline>,
     /// Lazily-built equirect mip-0 pipeline.
     equirect_pipeline: Option<ComputePipeline>,
-    /// Lazily-built GGX convolve pipeline (cube → cube via solid-angle source mip selection).
+    /// Lazily-built GGX convolve pipeline (cube -> cube via solid-angle source mip selection).
     convolve_pipeline: Option<ComputePipeline>,
     /// Cached input sampler used by all producers and the convolve pass.
     input_sampler: Option<Arc<wgpu::Sampler>>,
@@ -661,9 +661,9 @@ fn create_ibl_cube(device: &wgpu::Device, face_size: u32, mip_levels: u32) -> Ib
 
 /// Creates a cube-dimension sampling view of mip 0 only, used as the convolve input source.
 ///
-/// The view must not overlap any storage-bound mip in the same compute dispatch — wgpu treats
+/// The view must not overlap any storage-bound mip in the same compute dispatch -- wgpu treats
 /// overlapping subresources as a usage conflict between `RESOURCE` and `STORAGE_WRITE_ONLY`.
-/// A mip-0-only view is non-overlapping with every per-mip storage view (mip ≥ 1).
+/// A mip-0-only view is non-overlapping with every per-mip storage view (mip >= 1).
 fn create_mip0_cube_sample_view(texture: &wgpu::Texture) -> wgpu::TextureView {
     texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("skybox_ibl_cube_mip0_sample_view"),
@@ -1037,7 +1037,7 @@ fn encode_convolve_mips(ctx: ConvolveEncodeContext<'_>, resources: &mut PendingB
     if ctx.mip_levels <= 1 {
         return;
     }
-    // Source view is mip 0 only (see create_mip0_cube_sample_view) — clamp source LOD to zero so
+    // Source view is mip 0 only (see create_mip0_cube_sample_view) -- clamp source LOD to zero so
     // the shader's solid-angle source-mip selection collapses to a plain mip-0 sample.
     let src_max_lod = 0.0_f32;
     for mip in 1..ctx.mip_levels {

@@ -58,6 +58,38 @@ pub struct EntryNeed {
     pub needs_blend: bool,
     /// Linear blend skinning runs.
     pub needs_skin: bool,
+    /// Blendshape scatter needs a normal output stream before final drawing or skinning.
+    pub needs_blend_normals: bool,
+    /// Final tangent output is needed for this deform entry.
+    pub needs_tangents: bool,
+    /// Blendshape scatter needs a tangent output stream before final drawing or skinning.
+    pub needs_blend_tangents: bool,
+}
+
+impl EntryNeed {
+    /// Returns whether a final normal range is required.
+    #[inline]
+    pub fn needs_normals(self) -> bool {
+        self.needs_skin || self.needs_blend_normals
+    }
+
+    /// Returns whether blendshape output must feed skinning through a temp position range.
+    #[inline]
+    pub fn needs_temp_positions(self) -> bool {
+        self.needs_blend && self.needs_skin
+    }
+
+    /// Returns whether blendshape normal deltas must feed skinning through a temp normal range.
+    #[inline]
+    pub fn needs_temp_normals(self) -> bool {
+        self.needs_skin && self.needs_blend_normals
+    }
+
+    /// Returns whether blendshape tangent deltas must feed skinning through a temp tangent range.
+    #[inline]
+    pub fn needs_temp_tangents(self) -> bool {
+        self.needs_skin && self.needs_tangents && self.needs_blend_tangents
+    }
 }
 
 #[cfg(test)]

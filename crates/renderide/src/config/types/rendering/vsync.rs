@@ -6,9 +6,9 @@ labeled_enum! {
     /// Swapchain vsync mode persisted in `config.toml` as `[rendering] vsync`.
     ///
     /// Three values matching what desktop and VR titles typically expose: **Off** (tearing,
-    /// lowest latency), **On** (no tearing, low latency — prefers `Mailbox` over `Fifo`),
+    /// lowest latency), **On** (no tearing, low latency -- prefers `Mailbox` over `Fifo`),
     /// **Auto** (vsync when the renderer hits the deadline, tear instead of stutter when it
-    /// misses — `FifoRelaxed`). Defaults to [`Self::Off`].
+    /// misses -- `FifoRelaxed`). Defaults to [`Self::Off`].
     ///
     /// Resolution to a [`wgpu::PresentMode`] happens in [`VsyncMode::resolve_present_mode`],
     /// which probes the surface's actual capabilities rather than trusting wgpu's `Auto*`
@@ -60,9 +60,9 @@ impl VsyncMode {
     ///
     /// | Variant            | Preference order                            | Behavior                                                          |
     /// | ------------------ | ------------------------------------------- | ----------------------------------------------------------------- |
-    /// | [`Self::Off`]      | `Immediate` → `Mailbox` → `Fifo`            | Lowest latency; tears                                             |
-    /// | [`Self::On`]       | `Mailbox` → `Fifo`                          | No-tear vsync without the FIFO queue depth                        |
-    /// | [`Self::Auto`]     | `FifoRelaxed` → `Fifo`                      | Vsync until a frame misses; then tear once instead of half-rate   |
+    /// | [`Self::Off`]      | `Immediate` -> `Mailbox` -> `Fifo`            | Lowest latency; tears                                             |
+    /// | [`Self::On`]       | `Mailbox` -> `Fifo`                          | No-tear vsync without the FIFO queue depth                        |
+    /// | [`Self::Auto`]     | `FifoRelaxed` -> `Fifo`                      | Vsync until a frame misses; then tear once instead of half-rate   |
     ///
     /// Unlike `wgpu::PresentMode::AutoVsync` (which always resolves to plain `Fifo`) the
     /// [`Self::On`] arm probes for `Mailbox` first, which avoids the extra queueing on desktop

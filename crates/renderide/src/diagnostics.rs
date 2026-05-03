@@ -5,6 +5,7 @@
 //!
 //! Also hosts the cooperative renderer hang/hitch detector ([`Watchdog`]).
 
+mod ema;
 mod encode_error;
 mod frame_history;
 mod host_metrics;
@@ -14,6 +15,7 @@ pub mod per_view;
 mod snapshots;
 mod watchdog;
 
+pub use ema::{EMA_HISTORY_LEN, EmaScalar, FrameTimingEma};
 pub use encode_error::DebugHudEncodeError;
 pub use frame_history::{FRAME_TIME_HISTORY_LEN, FrameTimeHistory};
 pub use host_metrics::HostHudGatherer;

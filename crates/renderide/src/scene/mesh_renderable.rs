@@ -1,4 +1,4 @@
-//! Per–render-space mesh instances: static (`MeshRenderer`) and skinned (`SkinnedMeshRenderer`) tables.
+//! Per-render-space mesh instances: static (`MeshRenderer`) and skinned (`SkinnedMeshRenderer`) tables.
 //!
 //! Dense **`renderable_index`** from [`crate::shared::MeshRendererState`] maps to **`Vec` index**
 //! after host removals (swap-with-last, buffer order). Static and skinned renderables use
@@ -80,7 +80,7 @@ pub struct SkinnedMeshRenderer {
     /// Host-computed posed AABB for this skinned renderable, expressed in the space of
     /// [`Self::root_bone_transform_id`] (the renderer-root local frame the host sends to us in
     /// [`crate::shared::SkinnedMeshBoundsUpdate::local_bounds`]). `None` until the host has sent
-    /// the first bounds row for this renderable — culling falls back to the mesh bind-pose AABB
+    /// the first bounds row for this renderable -- culling falls back to the mesh bind-pose AABB
     /// transformed by the renderable's root matrix.
     pub posed_object_bounds: Option<RenderBoundingBox>,
 }

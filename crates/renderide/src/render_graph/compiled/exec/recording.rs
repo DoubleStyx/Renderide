@@ -371,10 +371,10 @@ impl CompiledRenderGraph {
 
     /// Dispatches one pass node to its correct execution path.
     ///
-    /// - `Raster` → opens `wgpu::RenderPass` from template, calls `record_raster`.
-    /// - `Compute` → calls `record_compute` with raw encoder.
-    /// - `Copy` → calls `record_copy` with raw encoder.
-    /// - `Callback` → calls `run_callback` (no encoder).
+    /// - `Raster` -> opens `wgpu::RenderPass` from template, calls `record_raster`.
+    /// - `Compute` -> calls `record_compute` with raw encoder.
+    /// - `Copy` -> calls `record_copy` with raw encoder.
+    /// - `Callback` -> calls `run_callback` (no encoder).
     ///
     /// Takes `&self` so per-view recording can be hoisted onto rayon workers without serialising
     /// on the [`CompiledRenderGraph`] handle. All pass `record_*` methods already require only

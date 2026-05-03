@@ -1,5 +1,5 @@
 //! Audit: every WGSL material that samples a host-uploaded `@group(1)` 2D texture must rely on
-//! the unified Unity-orientation convention — sampled storage is V=0 bottom (Unity), mesh UVs
+//! the unified Unity-orientation convention -- sampled storage is V=0 bottom (Unity), mesh UVs
 //! are also V=0 bottom, so material shaders apply no V flip and use the plain `apply_st` helper.
 //!
 //! This guard exists to prevent the previous per-binding `_<Tex>_StorageVInverted` flag (and the

@@ -2,13 +2,13 @@
 //!
 //! Internal organisation:
 //!
-//! - [`once`] — one-shot lazy slot ([`OnceGpu`]).
-//! - [`cache`] — generic locked map with double-check insertion (private).
-//! - [`pipeline`] — typed wrapper around the generic cache for [`wgpu::RenderPipeline`].
-//! - [`bindgroup`] — typed wrapper for [`wgpu::BindGroup`].
-//! - [`shader`] — WGSL shader-module construction helper.
-//! - [`samplers`] — sampler / view / uniform-buffer helpers.
-//! - [`fullscreen`] — fullscreen-triangle pipeline builders + stereo multiview mask helpers.
+//! - [`once`] -- one-shot lazy slot ([`OnceGpu`]).
+//! - [`cache`] -- generic locked map with double-check insertion (private).
+//! - [`pipeline`] -- typed wrapper around the generic cache for [`wgpu::RenderPipeline`].
+//! - [`bindgroup`] -- typed wrapper for [`wgpu::BindGroup`].
+//! - [`shader`] -- WGSL shader-module construction helper.
+//! - [`samplers`] -- sampler / view / uniform-buffer helpers.
+//! - [`fullscreen`] -- fullscreen-triangle pipeline builders + stereo multiview mask helpers.
 
 mod bindgroup;
 mod cache;
@@ -30,17 +30,6 @@ pub(crate) use samplers::{
     create_d2_array_view, create_linear_clamp_sampler, create_uniform_buffer,
 };
 pub(crate) use shader::create_wgsl_shader_module;
-
-// Bind-group layout entry helpers moved to `crate::gpu::bind_layout`. Re-exported here so
-// existing render_graph internal callers keep using `super::gpu_cache::*` paths.
-#[expect(
-    unused_imports,
-    reason = "back-compat: render_graph internals reach these via super::gpu_cache::*"
-)]
-pub(crate) use crate::gpu::bind_layout::{
-    fragment_filterable_d2_array_entry, fragment_filtering_sampler_entry, sampler_layout_entry,
-    storage_texture_layout_entry, texture_layout_entry, uniform_buffer_layout_entry,
-};
 
 #[cfg(test)]
 mod tests {

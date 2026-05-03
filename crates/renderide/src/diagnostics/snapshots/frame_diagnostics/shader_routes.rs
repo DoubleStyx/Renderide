@@ -1,4 +1,4 @@
-//! Host-shader → renderer-pipeline routing fragment of [`super::FrameDiagnosticsSnapshot`].
+//! Host-shader -> renderer-pipeline routing fragment of [`super::FrameDiagnosticsSnapshot`].
 //!
 //! Implemented routes precede fallback routes; within each group, rows are id-ascending so the
 //! HUD displays a stable, scannable list across captures.

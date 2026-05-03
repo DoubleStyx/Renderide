@@ -1,4 +1,4 @@
-//! Tracy profiling integration — zero cost by default, enabled by the `tracy` Cargo feature.
+//! Tracy profiling integration -- zero cost by default, enabled by the `tracy` Cargo feature.
 //!
 //! # How to enable
 //!
@@ -46,7 +46,7 @@ pub use profiling::scope;
 /// `"renderer-main"` in the active profiler.
 ///
 /// Must be called exactly once, before any other `profiling::scope!` macro or
-/// [`GpuProfilerHandle::try_new`] runs — the `profiling` crate's tracy backend expects a running
+/// [`GpuProfilerHandle::try_new`] runs -- the `profiling` crate's tracy backend expects a running
 /// `tracy_client::Client` on every span, so the client has to be live first.
 ///
 /// Expands to nothing when the `tracy` feature is off.
@@ -86,7 +86,7 @@ pub fn emit_render_submit_frame_mark() {
 }
 
 /// Records the FPS cap currently applied by
-/// the app driver's `about_to_wait` handler — either
+/// the app driver's `about_to_wait` handler -- either
 /// [`crate::config::DisplaySettings::focused_fps_cap`] or
 /// [`crate::config::DisplaySettings::unfocused_fps_cap`], whichever matches the current focus
 /// state. Zero means uncapped (winit is told `ControlFlow::Poll`); a VR tick emits zero because
@@ -137,11 +137,29 @@ pub fn plot_event_loop_wait_ms(ms: f64) {
     let _ = ms;
 }
 
+/// Records the driver-thread submit backlog (`submits_pushed - submits_done`) as a Tracy
+/// plot.
+///
+/// Call once per tick from the frame epilogue. A steady-state value of `0` or `1` is
+/// healthy (one frame in flight on the driver matches the ring's nominal pipelining
+/// depth); a sustained value at the ring capacity means the producer is back-pressured
+/// by the driver and CPU/GPU pacing is bound by submit throughput. Useful next to
+/// [`plot_event_loop_idle_ms`] when diagnosing why the main thread is sleeping.
+///
+/// Expands to nothing when the `tracy` feature is off.
+#[inline]
+pub fn plot_driver_submit_backlog(count: u64) {
+    #[cfg(feature = "tracy")]
+    tracy_client::plot!("driver_submit_backlog", count as f64);
+    #[cfg(not(feature = "tracy"))]
+    let _ = count;
+}
+
 /// Records, in milliseconds, the wall-clock gap between the end of the previous
 /// app-driver redraw tick and the start of the current one.
 ///
 /// Complements [`plot_event_loop_wait_ms`] (the *requested* wait) by showing the *actual* slept
-/// duration — divergence between the two points at additional blocking outside the pacing cap
+/// duration -- divergence between the two points at additional blocking outside the pacing cap
 /// (for example compositor vsync via `surface.get_current_texture`, which is itself already
 /// covered by a dedicated `gpu::get_current_texture` scope).
 ///
@@ -183,8 +201,8 @@ pub fn plot_surface_acquire_outcome(acquired: bool, skipped: bool, reconfigured:
 /// how many instance batches and how many input draws were submitted in that subpass.
 ///
 /// One sample lands on the Tracy timeline per opaque or intersection subpass record, so the
-/// plot trace shows fragmentation visually: when batches ≈ draws, the merge isn't compressing;
-/// when batches ≪ draws, instancing is collapsing same-mesh runs as intended. Pair with
+/// plot trace shows fragmentation visually: when batches ~= draws, the merge isn't compressing;
+/// when batches << draws, instancing is collapsing same-mesh runs as intended. Pair with
 /// [`crate::world_mesh::WorldMeshDrawStats::gpu_instances_emitted`] in the HUD for a
 /// per-frame integral. Expands to nothing when the `tracy` feature is off.
 #[inline]
@@ -339,27 +357,21 @@ pub fn rayon_thread_start_handler() -> impl Fn(usize) + Send + Sync + 'static {
 /// Requests the GPU features needed for timestamp-query-based profiling.
 ///
 /// Returns the subset of `{TIMESTAMP_QUERY, TIMESTAMP_QUERY_INSIDE_ENCODERS}` that the adapter
-/// actually supports. If `cfg(feature = "tracy")` is not active, always returns empty.
+/// actually supports. Always queries the adapter regardless of Cargo features so the debug HUD's
+/// frame-bracket GPU timing can use real hardware timestamps even in non-Tracy builds; the
+/// `tracy`-gated [`GpuProfilerHandle`] consumes the same features for its pass-level path.
 ///
 /// Call this in [`crate::gpu::context`]'s feature-intersection helpers and OR the result into
 /// the device's requested features. `TIMESTAMP_QUERY` alone is enough for pass-level profiling;
-/// `TIMESTAMP_QUERY_INSIDE_ENCODERS` unlocks encoder-level queries on adapters that offer it.
+/// `TIMESTAMP_QUERY_INSIDE_ENCODERS` unlocks encoder-level queries on adapters that offer it,
+/// which is what the frame-bracket writes use to surround the entire tick of work.
 pub fn timestamp_query_features_if_supported(adapter: &wgpu::Adapter) -> wgpu::Features {
-    #[cfg(feature = "tracy")]
-    {
-        let needed =
-            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-        adapter.features() & needed
-    }
-    #[cfg(not(feature = "tracy"))]
-    {
-        let _ = adapter;
-        wgpu::Features::empty()
-    }
+    let needed = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+    adapter.features() & needed
 }
 
 // ---------------------------------------------------------------------------
-// PhaseQuery — GPU timestamp query token, with a no-op stub when `tracy` is off
+// PhaseQuery -- GPU timestamp query token, with a no-op stub when `tracy` is off
 // ---------------------------------------------------------------------------
 
 /// GPU timestamp query token returned by [`GpuProfilerHandle::begin_query`] /
@@ -431,7 +443,7 @@ pub fn compute_pass_timestamp_writes(
 }
 
 // ---------------------------------------------------------------------------
-// GPU profiler handle — real implementation when `tracy` is on
+// GPU profiler handle -- real implementation when `tracy` is on
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "tracy")]
@@ -463,7 +475,7 @@ mod gpu_profiler_impl {
         /// Connects to the running Tracy client so GPU timestamps appear on Tracy's GPU timeline;
         /// the client is expected to be started from
         /// [`super::register_main_thread`]. If the Tracy client is unavailable
-        /// (e.g. test harness), falls back to a non-Tracy-bridged profiler — spans still resolve
+        /// (e.g. test harness), falls back to a non-Tracy-bridged profiler -- spans still resolve
         /// but do not reach the Tracy GUI.
         ///
         /// Returns [`None`] when timestamp queries are unavailable; callers fall back to CPU-only
@@ -526,7 +538,7 @@ mod gpu_profiler_impl {
 
         /// Opens an encoder-level GPU timestamp query.
         ///
-        /// Writes `WriteTimestamp` commands into `encoder` — requires
+        /// Writes `WriteTimestamp` commands into `encoder` -- requires
         /// [`wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`]. If the adapter lacks that
         /// feature the query is silently a no-op. Prefer [`Self::begin_pass_query`] for
         /// individual passes. The returned [`PhaseQuery`] must be closed via [`Self::end_query`]
@@ -637,7 +649,7 @@ mod gpu_profiler_impl {
 }
 
 // ---------------------------------------------------------------------------
-// GPU profiler handle — zero-sized stub when `tracy` is off
+// GPU profiler handle -- zero-sized stub when `tracy` is off
 // ---------------------------------------------------------------------------
 
 #[cfg(not(feature = "tracy"))]
@@ -794,7 +806,7 @@ mod tests {
     }
 
     /// The no-tracy `render_pass_timestamp_writes` helper must always return `None` regardless
-    /// of what `query` is — the `PhaseQuery` placeholder carries no data to reserve writes from.
+    /// of what `query` is -- the `PhaseQuery` placeholder carries no data to reserve writes from.
     #[cfg(not(feature = "tracy"))]
     #[test]
     fn render_pass_timestamp_writes_is_none_without_tracy() {

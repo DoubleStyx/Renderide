@@ -128,9 +128,9 @@ impl RasterPass for WorldMeshForwardColorResolvePass {
         {
             let mut r = b.raster();
             // `Load` (not `Clear`) is essential because the same compiled graph runs across
-            // views with different runtime sample counts: the swapchain may be at MSAA 4×
-            // while an offscreen render-texture camera is hardcoded to 1× (`compiled.rs`
-            // `OffscreenRt` arm). In the 1× per-view case our fragment shader doesn't run
+            // views with different runtime sample counts: the swapchain may be at MSAA 4x
+            // while an offscreen render-texture camera is hardcoded to 1x (`compiled.rs`
+            // `OffscreenRt` arm). In the 1x per-view case our fragment shader doesn't run
             // (sample_count == 1 early-return below), so `Load` preserves the single-sample
             // data the intersect pass already wrote via `frame_sampled_color`'s single-sample
             // target. In the MSAA per-view case the fullscreen draw overwrites every pixel, so
@@ -178,7 +178,7 @@ impl RasterPass for WorldMeshForwardColorResolvePass {
 
         // Per-view runtime sample count: 1 for offscreen render-texture cameras (forced by
         // `compiled.rs` `OffscreenRt` arm), >1 for swapchain / HMD targets when MSAA is
-        // active. Skip the draw in the 1× case — the framework's render-pass open/close with
+        // active. Skip the draw in the 1x case -- the framework's render-pass open/close with
         // `LoadOp::Load` is a no-op against `scene_color_hdr`, preserving the data intersect
         // already wrote there.
         let sample_count = frame.view.sample_count;

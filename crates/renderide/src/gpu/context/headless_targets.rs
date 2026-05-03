@@ -28,7 +28,7 @@ impl GpuContext {
     /// Returns the lazy-allocated primary offscreen color/depth pair owned by this context.
     ///
     /// Returns [`None`] when the context is windowed (it has a real swapchain instead). On the
-    /// first call in headless mode, allocates the persistent textures matching `config.width ×
+    /// first call in headless mode, allocates the persistent textures matching `config.width x
     /// config.height` and the configured color format. Subsequent calls return the same handles
     /// until the context is dropped.
     ///

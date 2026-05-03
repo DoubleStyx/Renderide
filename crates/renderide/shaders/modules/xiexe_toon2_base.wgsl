@@ -30,7 +30,7 @@ const ALPHA_FADE: u32 = 5u;
 /// Standard alpha-blend transparent (RGB pre-multiplied by alpha by the caller).
 const ALPHA_TRANSPARENT: u32 = 6u;
 
-/// 8×8 Bayer matrix used by the dithered/A2C alpha modes (values in [1, 64]).
+/// 8x8 Bayer matrix used by the dithered/A2C alpha modes (values in [1, 64]).
 const BAYER_GRID: array<f32, 64> = array<f32, 64>(
     1.0, 49.0, 13.0, 61.0,  4.0, 52.0, 16.0, 64.0,
     33.0, 17.0, 45.0, 29.0, 36.0, 20.0, 48.0, 32.0,
@@ -150,7 +150,7 @@ struct XiexeToon2Material {
     _ShadowSharpness: f32,
     /// Centre of the shadow-rim smoothstep window.
     _ShadowRimRange: f32,
-    /// Power applied to (1 − NdotL) when modulating shadow-rim by shadowed-side.
+    /// Power applied to (1 - NdotL) when modulating shadow-rim by shadowed-side.
     _ShadowRimThreshold: f32,
     /// Smoothstep half-width around `_ShadowRimRange`.
     _ShadowRimSharpness: f32,
@@ -325,7 +325,7 @@ struct VertexOutput {
     @location(0) world_pos: vec3<f32>,
     /// World-space geometric normal (pre-perturbation).
     @location(1) world_n: vec3<f32>,
-    /// World-space tangent (orthonormalised against `world_n`).
+    /// World-space tangent from the MikkTSpace basis.
     @location(2) world_t: vec3<f32>,
     /// World-space bitangent (signed by `tangent.w`).
     @location(3) world_b: vec3<f32>,
@@ -335,7 +335,7 @@ struct VertexOutput {
     @location(5) uv_secondary: vec2<f32>,
     /// Vertex color; alpha is repurposed by the outline pass to flag "is-outline".
     @location(6) color: vec4<f32>,
-    /// Object-space position normalised to the unit sphere — passed through for any
+    /// Object-space position normalised to the unit sphere -- passed through for any
     /// effects that need a stable per-vertex direction.
     @location(7) obj_pos: vec3<f32>,
     /// Stereo view layer (0 = left/mono, 1 = right). Flat-interpolated for cluster lookups.
@@ -355,9 +355,9 @@ struct SurfaceData {
     raw_normal: vec3<f32>,
     /// Final perturbed world-space normal (post-detail blend, post-back-face flip).
     normal: vec3<f32>,
-    /// World-space tangent matching `normal` after re-orthonormalisation.
+    /// World-space tangent matching `normal` after normal-map perturbation.
     tangent: vec3<f32>,
-    /// World-space bitangent matching `normal` after re-orthonormalisation.
+    /// World-space bitangent matching `normal` after normal-map perturbation.
     bitangent: vec3<f32>,
     /// Final metallic factor.
     metallic: f32,
@@ -413,7 +413,7 @@ fn saturate_vec(v: vec3<f32>) -> vec3<f32> {
     return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-/// `(1 − x)^5` — shared by Fresnel helpers in the stylised specular and reflection paths.
+/// `(1 - x)^5` -- shared by Fresnel helpers in the stylised specular and reflection paths.
 fn pow5(x: f32) -> f32 {
     let x2 = x * x;
     return x2 * x2 * x;
@@ -519,7 +519,7 @@ fn uv_select(uv_primary: vec2<f32>, uv_secondary: vec2<f32>, set_id: f32) -> vec
     return select(uv_primary, uv_secondary, set_id > 0.5);
 }
 
-/// Looks up the 8×8 Bayer threshold for a fragment-space pixel.
+/// Looks up the 8x8 Bayer threshold for a fragment-space pixel.
 fn bayer_threshold(frag_xy: vec2<f32>) -> f32 {
     let x = u32(floor(frag_xy.x)) & 7u;
     let y = u32(floor(frag_xy.y)) & 7u;
@@ -530,19 +530,4 @@ fn bayer_threshold(frag_xy: vec2<f32>) -> f32 {
 /// to the left view; multi-view builds branch on the eye index.
 fn view_projection_for_draw(d: pd::PerDrawUniforms, view_idx: u32) -> mat4x4<f32> {
     return mv::select_view_proj(d, view_idx);
-}
-
-/// Builds a Gram-Schmidt-orthonormalised TBN from a world-space normal and a Unity-style
-/// `vec4` tangent (xyz = world tangent, w = bitangent handedness sign). Falls back to the
-/// branchless `pbs::normal::orthonormal_tbn` if the supplied tangent is degenerate.
-fn tangent_frame(world_n: vec3<f32>, world_tangent: vec4<f32>) -> mat3x3<f32> {
-    let n = rmath::safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0));
-    let t_raw = world_tangent.xyz - n * dot(world_tangent.xyz, n);
-    if (dot(t_raw, t_raw) <= 1e-10) {
-        return pnorm::orthonormal_tbn(n);
-    }
-    let t = normalize(t_raw);
-    let sign = select(1.0, -1.0, world_tangent.w < 0.0);
-    let b = rmath::safe_normalize(cross(n, t) * sign, pnorm::orthonormal_tbn(n)[1]);
-    return mat3x3<f32>(t, b, n);
 }

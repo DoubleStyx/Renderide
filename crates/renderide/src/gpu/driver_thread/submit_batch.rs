@@ -10,6 +10,8 @@
 
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
+use super::xr_finalize::XrFinalizeWork;
+use crate::gpu::frame_bracket::FrameBracketReadback;
 use crate::gpu::frame_cpu_gpu_timing::FrameTimingTrack;
 
 /// One frame's worth of GPU work queued for the driver thread.
@@ -38,11 +40,24 @@ pub struct SubmitBatch {
     /// `None` for non-tracked submits (e.g. probe-bake one-shots that should not contribute to
     /// the per-frame HUD readouts).
     pub frame_timing: Option<FrameTimingTrack>,
+    /// Real-GPU-timestamp readback for this batch. When `Some`, the driver thread schedules
+    /// `map_async` on the readback buffer immediately after submit; the resulting
+    /// `gpu_frame_ms` value is published into the same [`FrameTimingTrack`] handle as the
+    /// callback-latency fallback would have used. `None` on adapters that lack the required
+    /// timestamp features (the driver thread falls back to the callback path) and on
+    /// non-tracked submits.
+    pub frame_bracket_readback: Option<FrameBracketReadback>,
     /// Optional oneshot fired after submit + present complete on the driver thread.
     ///
     /// Use this when the main thread must block until the frame is known to be on the
-    /// wire — e.g. headless tests that read back the presented image synchronously.
+    /// wire -- e.g. headless tests that read back the presented image synchronously.
     pub wait: Option<SubmitWait>,
+    /// Optional OpenXR finalize work to run on the driver thread immediately after this
+    /// batch's `Queue::submit` returns. When attached the driver releases the swapchain
+    /// image and calls `xrEndFrame` under the queue access gate, then signals the
+    /// finalize oneshot so the next tick's `wait_frame` can proceed. Used by the VR HMD
+    /// path to keep the main thread out of `xrReleaseSwapchainImage`/`xrEndFrame`.
+    pub xr_finalize: Option<XrFinalizeWork>,
     /// Monotonic frame counter, surfaced in [`super::DriverError`] and Tracy zone labels.
     pub frame_seq: u64,
 }

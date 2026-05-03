@@ -6,8 +6,11 @@
 //! textures (`scene_color_hdr_msaa` / `forward_msaa_depth`) and resolve into this swapchain each
 //! frame so the compositor and VR mirror always see a single-sample image.
 
+use std::sync::Arc;
+
 use ash::vk::{self, Handle};
 use openxr as xr;
+use parking_lot::Mutex;
 use thiserror::Error;
 use wgpu::TextureUses;
 use wgpu::hal::api::Vulkan as HalVulkan;
@@ -41,8 +44,11 @@ pub enum XrSwapchainError {
 
 /// OpenXR swapchain plus one wgpu texture + D2Array view per swapchain image.
 pub struct XrStereoSwapchain {
-    /// Runtime swapchain handle (acquire / release / composition).
-    pub handle: xr::Swapchain<xr::Vulkan>,
+    /// Runtime swapchain handle (acquire / release / composition). Behind a [`Mutex`]
+    /// so the driver thread can release the image and reference the swapchain in the
+    /// projection layer for `xrEndFrame` while the main thread retains shared
+    /// ownership across ticks.
+    pub handle: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
     /// Per-eye rectangle size in pixels.
     pub resolution: (u32, u32),
     /// One entry per swapchain buffer index.
@@ -150,7 +156,7 @@ impl XrStereoSwapchain {
         }
 
         Ok(Self {
-            handle,
+            handle: Arc::new(Mutex::new(handle)),
             resolution,
             wgpu_buffers,
         })

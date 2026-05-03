@@ -1,7 +1,7 @@
 //! Six-plane view frustum and world AABB tests for CPU mesh culling.
 //!
 //! **Production culling** uses [`world_aabb_visible_in_homogeneous_clip`], which matches
-//! `clip = view_proj * vec4(world, 1)` exactly (same as WGSL `mat4x4` × `vec4`).
+//! `clip = view_proj * vec4(world, 1)` exactly (same as WGSL `mat4x4` x `vec4`).
 //!
 //! [`Frustum`] / six-plane tests remain for debugging and optional comparisons.
 
@@ -29,12 +29,12 @@ pub fn mesh_bounds_degenerate_for_cull(bounds: &RenderBoundingBox) -> bool {
     m < DEGENERATE_MESH_BOUNDS_EXTENT_EPS
 }
 
-/// A plane `n · x + d = 0` with unit `n`.
+/// A plane `n * x + d = 0` with unit `n`.
 #[derive(Clone, Copy, Debug)]
 pub struct Plane {
     /// Outward-facing unit normal of the clip half-space.
     pub normal: Vec3,
-    /// Signed distance term in `n · x + d = 0`.
+    /// Signed distance term in `n * x + d = 0`.
     pub distance: f32,
 }
 
@@ -71,7 +71,7 @@ pub struct Frustum {
 
 impl Frustum {
     /// Extracts frustum planes from `view_proj` using the transpose + row combination method
-    /// (Gribb–Hartmann style), matching common HLSL references for column-major matrices.
+    /// (Gribb-Hartmann style), matching common HLSL references for column-major matrices.
     pub fn from_view_proj(view_proj: Mat4) -> Self {
         let m = view_proj.transpose();
         let r0 = m.row(0);
@@ -257,7 +257,7 @@ pub fn world_aabb_visible_in_homogeneous_clip(
 ) -> bool {
     // Eight corners are the Cartesian product of (min/max).{x,y,z}. Lay them out as two halves of
     // four corners each, with the x coordinate constant inside each half (`min.x` for `lo`,
-    // `max.x` for `hi`) and y/z varying as a 2×2 sub-product. The two halves share the y/z
+    // `max.x` for `hi`) and y/z varying as a 2x2 sub-product. The two halves share the y/z
     // pattern, so we only need one (ys, zs) Vec4 pair.
     let xs_lo = Vec4::splat(world_min.x);
     let xs_hi = Vec4::splat(world_max.x);
@@ -275,7 +275,7 @@ pub fn world_aabb_visible_in_homogeneous_clip(
     //     r.x * xs + r.y * ys + r.z * zs + r.w * 1.0
     // Each lane of the resulting Vec4 holds one corner's component, so the four lanes are SoA
     // ready for the half-space tests below. Inlining the multiplies keeps everything in vector
-    // registers — glam Vec4 ops compile to SIMD on x86_64 / aarch64.
+    // registers -- glam Vec4 ops compile to SIMD on x86_64 / aarch64.
     let dot4 = |r: Vec4, xs: Vec4| -> Vec4 {
         Vec4::splat(r.x) * xs + Vec4::splat(r.y) * ys + Vec4::splat(r.z) * zs + Vec4::splat(r.w)
     };
@@ -291,10 +291,10 @@ pub fn world_aabb_visible_in_homogeneous_clip(
 
     // For each half-space test "all corners satisfy expr ?op? threshold", reduce both halves with
     // `Vec4::max` / `Vec4::min`, then collapse to a scalar via `max_element` / `min_element`.
-    //   "all w <= EPS"     ⇔ max(w over all corners) <= EPS
-    //   "all x + w < -EPS" ⇔ max(x + w over all corners) < -EPS
-    //   "all w - x < -EPS" ⇔ max(w - x over all corners) < -EPS  (equivalently min(x - w) > EPS)
-    //   …and similar for y, z half-spaces and the reverse-Z near/far tests.
+    //   "all w <= EPS"     <=> max(w over all corners) <= EPS
+    //   "all x + w < -EPS" <=> max(x + w over all corners) < -EPS
+    //   "all w - x < -EPS" <=> max(w - x over all corners) < -EPS  (equivalently min(x - w) > EPS)
+    //   ...and similar for y, z half-spaces and the reverse-Z near/far tests.
     let max_w = cw_lo.max(cw_hi).max_element();
     if max_w <= HOMOGENEOUS_CLIP_EPS {
         return false;
@@ -331,7 +331,7 @@ pub fn world_aabb_visible_in_homogeneous_clip(
     true
 }
 
-/// Scalar reference implementation of [`world_aabb_visible_in_homogeneous_clip`] — corner-by-corner
+/// Scalar reference implementation of [`world_aabb_visible_in_homogeneous_clip`] -- corner-by-corner
 /// `view_proj` multiply followed by seven sequential `iter().all(...)` predicates. Retained for the
 /// SIMD-vs-scalar parity property test below.
 #[cfg(test)]

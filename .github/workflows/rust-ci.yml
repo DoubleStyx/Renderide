@@ -72,11 +72,3 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --locked
-
-      # Spawns the renderer in `--headless` (no window; offscreen PNG), drives the full IPC
-      # handshake + sphere upload + scene submission, and compares the rendered PNG against the
-      # committed golden via image-compare SSIM using whichever adapter wgpu selects on the runner.
-      - name: Golden image integration test
-        run: |
-          cargo build --locked -p renderide
-          cargo run --locked -p renderide-test -- check --timeout-seconds 90

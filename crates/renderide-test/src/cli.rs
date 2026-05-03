@@ -13,7 +13,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 
 use crate::error::HarnessError;
-use crate::host::{HarnessRunOutcome, HostHarness, HostHarnessConfig};
+use crate::host::{HarnessRunOutcome, HostHarness, HostHarnessConfig, SessionTemplate};
 
 /// CLI entry point.
 pub fn run() -> ExitCode {
@@ -166,6 +166,7 @@ fn run_harness(common: &CommonOpts) -> Result<HarnessRunOutcome, HarnessError> {
         interval_ms: common.interval_ms,
         timeout,
         verbose_renderer: common.verbose_renderer,
+        template: SessionTemplate::Sphere,
     };
     let mut harness = HostHarness::start(cfg)?;
     let outcome = harness.run()?;
@@ -189,11 +190,11 @@ pub fn parse_resolution(s: &str) -> (u32, u32) {
 /// Cargo build profile selecting which `target/<profile>/renderide` binary to spawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BuildProfile {
-    /// `target/debug/renderide` — default `cargo build` profile.
+    /// `target/debug/renderide` -- default `cargo build` profile.
     Debug,
-    /// `target/release/renderide` — `cargo build --release`.
+    /// `target/release/renderide` -- `cargo build --release`.
     Release,
-    /// `target/dev-fast/renderide` — the project's `dev-fast` workspace profile.
+    /// `target/dev-fast/renderide` -- the project's `dev-fast` workspace profile.
     DevFast,
 }
 

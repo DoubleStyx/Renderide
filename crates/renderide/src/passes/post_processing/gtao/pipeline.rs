@@ -1,14 +1,14 @@
 //! Cached pipelines, bind layouts, sampler, and per-pass uniform buffer for the GTAO
-//! three-pass chain (`gtao_main` → optional `gtao_denoise` → `gtao_apply`).
+//! three-pass chain (`gtao_main` -> optional `gtao_denoise` -> `gtao_apply`).
 //!
 //! Three independent caches are exposed:
 //!
-//! - [`GtaoMainPipelineCache`] — main AO production pass with two `R8Unorm` color targets
+//! - [`GtaoMainPipelineCache`] -- main AO production pass with two `R8Unorm` color targets
 //!   (visibility scaled by `1 / OCCLUSION_TERM_SCALE` + packed edges). Built manually
 //!   because the shared fullscreen helper is single-color-target only.
-//! - [`GtaoDenoisePipelineCache`] — bilateral denoise iteration with one `R8Unorm` color
+//! - [`GtaoDenoisePipelineCache`] -- bilateral denoise iteration with one `R8Unorm` color
 //!   target (denoised AO).
-//! - [`GtaoApplyPipelineCache`] — final-apply pass that folds the denoise kernel into HDR
+//! - [`GtaoApplyPipelineCache`] -- final-apply pass that folds the denoise kernel into HDR
 //!   modulation; one color target whose format follows the post-processing chain.
 //!
 //! Each cache holds mono + multiview variants. One process-wide `GtaoParams` uniform buffer
@@ -29,12 +29,14 @@ use crate::embedded_shaders::{
     GTAO_APPLY_DEFAULT_WGSL, GTAO_APPLY_MULTIVIEW_WGSL, GTAO_DENOISE_DEFAULT_WGSL,
     GTAO_DENOISE_MULTIVIEW_WGSL, GTAO_MAIN_DEFAULT_WGSL, GTAO_MAIN_MULTIVIEW_WGSL,
 };
+use crate::gpu::bind_layout::{
+    fragment_filterable_d2_array_entry, fragment_filtering_sampler_entry, texture_layout_entry,
+    uniform_buffer_layout_entry,
+};
 use crate::render_graph::gpu_cache::{
     BindGroupMap, FullscreenPipelineVariantDesc, FullscreenShaderVariants, OnceGpu,
     RenderPipelineMap, create_d2_array_view, create_linear_clamp_sampler, create_uniform_buffer,
-    create_wgsl_shader_module, fragment_filterable_d2_array_entry,
-    fragment_filtering_sampler_entry, fullscreen_pipeline_variant, stereo_mask_or_template,
-    texture_layout_entry, uniform_buffer_layout_entry,
+    create_wgsl_shader_module, fullscreen_pipeline_variant, stereo_mask_or_template,
 };
 
 /// AO term and packed-edges target format. R8 unorm matches XeGTAO's reference shape (the AO

@@ -81,8 +81,8 @@ fn fs_main(
 ) -> @location(0) vec4<f32> {
     var normal_ts = vec3<f32>(0.0, 0.0, 1.0);
     if (uvu::kw_enabled(mat._NORMALMAP)) {
-        normal_ts = nd::decode_ts_normal_with_placeholder(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_normal).xyz,
+        normal_ts = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(_NormalMap, _NormalMap_sampler, uv_normal),
             1.0,
         );
     }

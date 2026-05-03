@@ -127,7 +127,7 @@ impl GpuContext {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Ok(t),
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                logger::info!("surface Lost or Outdated — reconfiguring");
+                logger::info!("surface Lost or Outdated -- reconfiguring");
                 let size = self.window.as_ref().map(|w| w.inner_size());
                 if let Some(s) = size {
                     self.reconfigure(s.width, s.height);

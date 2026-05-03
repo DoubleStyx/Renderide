@@ -1,11 +1,15 @@
 //! Incremental world-matrix propagation and child index for transform hierarchies.
 
 use glam::Mat4;
+use rayon::prelude::*;
 
 use crate::shared::RenderTransform;
 
 use super::error::SceneError;
 use super::math::{render_transform_has_degenerate_scale, render_transform_to_matrix};
+
+/// Node count above which a bulk rebuild fans out across rayon by hierarchy depth level.
+const WORLD_BULK_REBUILD_PARALLEL_MIN: usize = 1024;
 
 /// Per-space cache: world matrices and incremental recompute bookkeeping.
 #[derive(Debug)]
@@ -24,10 +28,20 @@ pub struct WorldTransformCache {
     pub(super) visit_epoch: Vec<u32>,
     /// Incremented before each upward walk.
     pub(super) walk_epoch: u32,
-    /// Parent → children lists; rebuilt when structure changes.
+    /// Parent -> children lists; rebuilt when structure changes.
     pub(super) children: Vec<Vec<usize>>,
     /// `children` must be rebuilt before descendant marking.
     pub(super) children_dirty: bool,
+    /// Bulk-rebuild scratch: depth per node (`u32::MAX` for cycle nodes). Reused across frames.
+    pub(super) bfs_depth: Vec<u32>,
+    /// Bulk-rebuild scratch: per-depth-level node-index buckets. Inner Vec capacities persist
+    /// across frames so a stable scene re-uses the same storage every solve.
+    pub(super) bfs_levels: Vec<Vec<usize>>,
+    /// Bulk-rebuild scratch: indices of nodes whose ancestor chain forms a cycle.
+    pub(super) bfs_cycle_nodes: Vec<usize>,
+    /// Bulk-rebuild scratch: per-level computed (world matrix, degenerate flag) pairs before
+    /// they are written back to [`Self::world_matrices`] and [`Self::degenerate_scales`].
+    pub(super) bfs_writes: Vec<(Mat4, bool)>,
 }
 
 impl Default for WorldTransformCache {
@@ -42,6 +56,10 @@ impl Default for WorldTransformCache {
             walk_epoch: 0,
             children: Vec::new(),
             children_dirty: true,
+            bfs_depth: Vec::new(),
+            bfs_levels: Vec::new(),
+            bfs_cycle_nodes: Vec::new(),
+            bfs_writes: Vec::new(),
         }
     }
 }
@@ -57,7 +75,7 @@ pub(crate) fn fixup_transform_id(old: i32, removed_id: i32, last_index: usize) -
     }
 }
 
-/// Rebuilds parent → children adjacency.
+/// Rebuilds parent -> children adjacency.
 pub(super) fn rebuild_children(node_parents: &[i32], n: usize, children: &mut Vec<Vec<usize>>) {
     children.resize_with(n, Vec::new);
     for c in children.iter_mut() {
@@ -137,7 +155,193 @@ fn get_local_matrix(
     }
 }
 
+/// Returns `true` when every entry of `computed` is `false`, signalling a bulk rebuild.
+#[inline]
+fn cache_is_fully_dirty(computed: &[bool]) -> bool {
+    !computed.iter().any(|c| *c)
+}
+
+/// Fills `depth` / `levels` / `cycle_nodes` from a parent-array tree, reusing the supplied
+/// buffers' allocations. After this call `levels[d]` lists every node at depth `d` whose
+/// ancestor chain reaches a root, and `cycle_nodes` lists every node whose ancestor chain
+/// forms a cycle. Cycle nodes get a local-only fallback matrix (matching
+/// [`WorldTransformCache::compute_world_matrices_incremental`]).
+fn classify_nodes_by_depth(
+    node_parents: &[i32],
+    n: usize,
+    depth: &mut Vec<u32>,
+    levels: &mut Vec<Vec<usize>>,
+    cycle_nodes: &mut Vec<usize>,
+) {
+    depth.clear();
+    depth.resize(n, u32::MAX);
+    cycle_nodes.clear();
+    for inner in levels.iter_mut() {
+        inner.clear();
+    }
+
+    // Repeatedly resolve depths in a sweep order: a node knows its depth once its parent does.
+    // For a typical mostly-sorted host order this converges in 1-2 sweeps; cap at n iterations to
+    // exit deterministically when a cycle leaves a residue of unresolved nodes.
+    for (i, slot) in depth.iter_mut().enumerate().take(n) {
+        let p = node_parents.get(i).copied().unwrap_or(-1);
+        if p < 0 || (p as usize) >= n || p == i as i32 {
+            *slot = 0;
+        }
+    }
+    let mut changed = true;
+    let mut sweep = 0usize;
+    while changed && sweep < n {
+        changed = false;
+        for i in 0..n {
+            if depth[i] != u32::MAX {
+                continue;
+            }
+            let p = node_parents[i];
+            if p >= 0 && (p as usize) < n {
+                let pd = depth[p as usize];
+                if pd != u32::MAX {
+                    depth[i] = pd + 1;
+                    changed = true;
+                }
+            }
+        }
+        sweep += 1;
+    }
+
+    let max_depth = depth
+        .iter()
+        .filter(|&&d| d != u32::MAX)
+        .copied()
+        .max()
+        .unwrap_or(0) as usize;
+    if levels.len() < max_depth + 1 {
+        levels.resize_with(max_depth + 1, Vec::new);
+    }
+    for (i, &d) in depth.iter().enumerate() {
+        if d == u32::MAX {
+            cycle_nodes.push(i);
+        } else {
+            levels[d as usize].push(i);
+        }
+    }
+}
+
 impl WorldTransformCache {
+    /// Bulk rebuild: recomputes every world matrix from scratch using a level-synchronous BFS
+    /// over the transform hierarchy. Each level is independent across siblings, so the inner
+    /// matrix multiplications fan out across rayon.
+    ///
+    /// Cycle nodes (transforms whose ancestor chain loops back) fall back to a local-only matrix,
+    /// matching [`Self::compute_world_matrices_incremental`].
+    fn compute_world_matrices_bulk_rebuild(
+        &mut self,
+        scene_id: i32,
+        nodes: &[RenderTransform],
+        node_parents: &[i32],
+    ) {
+        profiling::scope!("scene::world_bulk_rebuild");
+        let n = nodes.len();
+        if self.visit_epoch.len() < n {
+            self.visit_epoch.resize(n, 0);
+        }
+        if self.degenerate_scales.len() < n {
+            self.degenerate_scales.resize(n, false);
+        }
+
+        // Materialize every local matrix once. Read-only after this point so the parallel level
+        // sweep below can capture &[Mat4] instead of fighting borrow rules around lazy materialise.
+        for ((local, dirty), node) in self
+            .local_matrices
+            .iter_mut()
+            .zip(self.local_dirty.iter_mut())
+            .zip(nodes.iter())
+            .take(n)
+        {
+            *local = render_transform_to_matrix(node);
+            *dirty = false;
+        }
+
+        // Reused scratch state lives on the cache so the bulk-rebuild path only allocates on
+        // the first call and grows lazily as the scene gets bigger.
+        let WorldTransformCache {
+            world_matrices,
+            computed,
+            local_matrices,
+            degenerate_scales,
+            bfs_depth,
+            bfs_levels,
+            bfs_cycle_nodes,
+            bfs_writes,
+            ..
+        } = self;
+
+        classify_nodes_by_depth(node_parents, n, bfs_depth, bfs_levels, bfs_cycle_nodes);
+
+        for cycle_id in bfs_cycle_nodes.iter() {
+            logger::trace!(
+                "parent cycle at scene {} transform {} -- local-only fallback",
+                scene_id,
+                cycle_id
+            );
+            let local = local_matrices[*cycle_id];
+            world_matrices[*cycle_id] = local;
+            degenerate_scales[*cycle_id] = render_transform_has_degenerate_scale(&nodes[*cycle_id]);
+            computed[*cycle_id] = true;
+        }
+
+        // Roots (depth 0) have no parent contribution; world = local.
+        if let Some(roots) = bfs_levels.first()
+            && !roots.is_empty()
+        {
+            let local_ro: &[Mat4] = local_matrices;
+            bfs_writes.clear();
+            roots
+                .par_iter()
+                .map(|&i| {
+                    (
+                        local_ro[i],
+                        render_transform_has_degenerate_scale(&nodes[i]),
+                    )
+                })
+                .collect_into_vec(bfs_writes);
+            for (slot, &i) in bfs_writes.iter().zip(roots.iter()) {
+                world_matrices[i] = slot.0;
+                degenerate_scales[i] = slot.1;
+                computed[i] = true;
+            }
+        }
+
+        // Subsequent levels read the previous level's world / degenerate state, multiply locally,
+        // and write back disjoint indices. The collect-then-apply split avoids needing unsafe
+        // disjoint-index access into world_matrices.
+        for level in bfs_levels.iter().skip(1) {
+            if level.is_empty() {
+                continue;
+            }
+            let local_ro: &[Mat4] = local_matrices;
+            let world_ro: &[Mat4] = world_matrices;
+            let degen_ro: &[bool] = degenerate_scales;
+            bfs_writes.clear();
+            level
+                .par_iter()
+                .map(|&i| {
+                    let p = node_parents[i] as usize;
+                    let parent_world = world_ro[p];
+                    let parent_degen = degen_ro[p];
+                    let local = local_ro[i];
+                    let degen_self = render_transform_has_degenerate_scale(&nodes[i]);
+                    (parent_world * local, parent_degen | degen_self)
+                })
+                .collect_into_vec(bfs_writes);
+            for (slot, &i) in bfs_writes.iter().zip(level.iter()) {
+                world_matrices[i] = slot.0;
+                degenerate_scales[i] = slot.1;
+                computed[i] = true;
+            }
+        }
+    }
+
     /// Incremental world matrices: only recomputes indices with `computed[i] == false`.
     pub(super) fn compute_world_matrices_incremental(
         &mut self,
@@ -188,7 +392,7 @@ impl WorldTransformCache {
                     if visit_epoch[id] == epoch {
                         cycle_detected = true;
                         logger::trace!(
-                            "parent cycle at scene {} transform {} — local-only fallback",
+                            "parent cycle at scene {} transform {} -- local-only fallback",
                             scene_id,
                             id
                         );
@@ -270,6 +474,12 @@ pub(super) fn ensure_cache_shapes(
 }
 
 /// Runs incremental solve if anything is dirty or sizes changed.
+///
+/// Routes to the level-synchronous parallel bulk rebuild when the cache is fully dirty (typical
+/// after a structural change or a force-invalidate) and the node count crosses
+/// [`WORLD_BULK_REBUILD_PARALLEL_MIN`]. Smaller spaces and incremental updates keep using the
+/// existing serial upward-walk algorithm where the per-node bookkeeping cost still dominates the
+/// rayon dispatch overhead.
 pub fn compute_world_matrices_for_space(
     scene_id: i32,
     nodes: &[RenderTransform],
@@ -288,6 +498,11 @@ pub fn compute_world_matrices_for_space(
     if cache.children_dirty {
         rebuild_children(node_parents, n, &mut cache.children);
         cache.children_dirty = false;
+    }
+
+    if n >= WORLD_BULK_REBUILD_PARALLEL_MIN && cache_is_fully_dirty(&cache.computed) {
+        cache.compute_world_matrices_bulk_rebuild(scene_id, nodes, node_parents);
+        return Ok(());
     }
 
     cache.compute_world_matrices_incremental(scene_id, nodes, node_parents)
@@ -503,6 +718,87 @@ mod tests {
             cache.world_matrices[1].abs_diff_eq(local1, 1e-5),
             "cycle fallback must store local matrix unchanged"
         );
+    }
+
+    #[test]
+    fn parallel_bulk_rebuild_matches_serial_on_large_chain() {
+        // Constructed chain: each node parents the previous one. Above
+        // WORLD_BULK_REBUILD_PARALLEL_MIN, the bulk-rebuild path triggers; the result must
+        // be bit-identical to the existing serial incremental algorithm.
+        let n = WORLD_BULK_REBUILD_PARALLEL_MIN + 7;
+        let mut nodes = Vec::with_capacity(n);
+        let mut parents = Vec::with_capacity(n);
+        for i in 0..n {
+            nodes.push(translation_xform(0.5, 0.0, 0.0));
+            parents.push(if i == 0 { -1 } else { (i - 1) as i32 });
+        }
+
+        let mut parallel = WorldTransformCache::default();
+        compute_world_matrices_for_space(0, &nodes, &parents, &mut parallel)
+            .expect("parallel bulk");
+
+        // Force the serial path: sub-threshold node count below WORLD_BULK_REBUILD_PARALLEL_MIN
+        // still uses incremental, so we run it here and compare deeper subset
+        // by directly invoking the incremental method via a fresh cache.
+        let mut serial = WorldTransformCache::default();
+        ensure_cache_shapes(&mut serial, n, false);
+        if serial.children_dirty {
+            rebuild_children(&parents, n, &mut serial.children);
+            serial.children_dirty = false;
+        }
+        serial
+            .compute_world_matrices_incremental(0, &nodes, &parents)
+            .expect("serial");
+
+        for i in 0..n {
+            assert!(
+                parallel.world_matrices[i].abs_diff_eq(serial.world_matrices[i], 1e-5),
+                "world matrix mismatch at index {i}"
+            );
+            assert_eq!(parallel.degenerate_scales[i], serial.degenerate_scales[i]);
+            assert!(parallel.computed[i] && serial.computed[i]);
+        }
+    }
+
+    #[test]
+    fn parallel_bulk_rebuild_handles_wide_tree() {
+        // Multiple roots and a wide layer at depth 1: exercises level fan-out.
+        let root_count = 16;
+        let children_per_root = WORLD_BULK_REBUILD_PARALLEL_MIN / root_count + 8;
+        let n = root_count + root_count * children_per_root;
+        let mut nodes = Vec::with_capacity(n);
+        let mut parents = Vec::with_capacity(n);
+        for _ in 0..root_count {
+            nodes.push(translation_xform(1.0, 0.0, 0.0));
+            parents.push(-1);
+        }
+        for r in 0..root_count {
+            for _ in 0..children_per_root {
+                nodes.push(translation_xform(0.0, 1.0, 0.0));
+                parents.push(r as i32);
+            }
+        }
+
+        let mut parallel = WorldTransformCache::default();
+        compute_world_matrices_for_space(0, &nodes, &parents, &mut parallel)
+            .expect("parallel bulk");
+
+        let mut serial = WorldTransformCache::default();
+        ensure_cache_shapes(&mut serial, n, false);
+        if serial.children_dirty {
+            rebuild_children(&parents, n, &mut serial.children);
+            serial.children_dirty = false;
+        }
+        serial
+            .compute_world_matrices_incremental(0, &nodes, &parents)
+            .expect("serial");
+
+        for i in 0..n {
+            assert!(
+                parallel.world_matrices[i].abs_diff_eq(serial.world_matrices[i], 1e-5),
+                "world matrix mismatch at index {i}"
+            );
+        }
     }
 
     #[test]

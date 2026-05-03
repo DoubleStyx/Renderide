@@ -2,18 +2,18 @@
 //!
 //! ## Precedence
 //!
-//! 1. **Struct defaults** — [`RendererSettings::default`].
-//! 2. **File** — first match from resolution (see below).
-//! 3. **Environment** — variables prefixed with `RENDERIDE_`, nested keys use `__` (for example
+//! 1. **Struct defaults** -- [`RendererSettings::default`].
+//! 2. **File** -- first match from resolution (see below).
+//! 3. **Environment** -- variables prefixed with `RENDERIDE_`, nested keys use `__` (for example
 //!    `RENDERIDE_DEBUG__GPU_VALIDATION_LAYERS=true`). Applied via the figment crate.
-//! 4. **`RENDERIDE_GPU_VALIDATION`** — if set, overrides [`DebugSettings::gpu_validation_layers`]
+//! 4. **`RENDERIDE_GPU_VALIDATION`** -- if set, overrides [`DebugSettings::gpu_validation_layers`]
 //!    after the above (see [`apply_renderide_gpu_validation_env`]).
 //!
 //! ## Resolution order
 //!
-//! 1. **`RENDERIDE_CONFIG`** — path to `config.toml`. If set and the path is missing, a warning is
+//! 1. **`RENDERIDE_CONFIG`** -- path to `config.toml`. If set and the path is missing, a warning is
 //!    logged and resolution continues.
-//! 2. **Search** — `config.toml` under:
+//! 2. **Search** -- `config.toml` under:
 //!    - next to the current executable and its parent (binary output directory, e.g. `target/debug/`),
 //!    - a discovered workspace root (directory containing `Cargo.toml` and
 //!      `crates/renderide/Cargo.toml`, from cwd and the executable path),

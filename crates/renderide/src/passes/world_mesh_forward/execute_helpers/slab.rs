@@ -17,7 +17,10 @@ use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 use super::super::vp::compute_per_draw_vp_matrices;
 
 /// Minimum draws before parallelizing per-draw VP / model uniform packing (rayon overhead).
-const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = 256;
+///
+/// Same shape as `PER_DRAW_SLAB_PARALLEL_MIN`: each slot is a small POD memcpy, so 2048 draws
+/// of work is the rayon dispatch break-even.
+const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = 2048;
 
 /// Per-frame inputs to [`pack_and_upload_per_draw_slab`].
 ///

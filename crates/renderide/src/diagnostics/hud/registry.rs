@@ -4,7 +4,7 @@
 //! [`OverlayFeatureFlags`] captures which windows are enabled by [`crate::config::RendererSettings`]
 //! at the start of a HUD frame. The dispatch loop in
 //! [`crate::diagnostics::DebugHud::encode_overlay`] iterates [`DebugWindow::ALL`] and calls a
-//! `match` per variant — no `Box<dyn HudWindow<...>>` GAT pain, exhaustiveness-checked at compile
+//! `match` per variant -- no `Box<dyn HudWindow<...>>` GAT pain, exhaustiveness-checked at compile
 //! time, zero overhead.
 
 use crate::config::RendererSettingsHandle;
@@ -25,7 +25,7 @@ pub enum DebugWindow {
 }
 
 impl DebugWindow {
-    /// Static dispatch order — controls draw order and tab ordering.
+    /// Static dispatch order -- controls draw order and tab ordering.
     pub const ALL: &'static [Self] = &[
         Self::FrameTiming,
         Self::Main,
@@ -37,7 +37,7 @@ impl DebugWindow {
     /// Returns `true` when this window should render this frame.
     ///
     /// The four debug windows are gated by their dedicated [`crate::config::DebugSettings`] flag.
-    /// **Renderer config** has no settings gate — its visibility is driven by the close-button
+    /// **Renderer config** has no settings gate -- its visibility is driven by the close-button
     /// open flag persisted in [`crate::diagnostics::HudUiState::renderer_config_open`].
     pub fn enabled(self, flags: OverlayFeatureFlags) -> bool {
         match self {

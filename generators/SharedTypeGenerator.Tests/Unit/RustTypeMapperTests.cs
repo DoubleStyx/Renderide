@@ -82,7 +82,7 @@ public sealed class RustTypeMapperTests
         Assert.Equal(expected, RustTypeMapper.BitsToRustUintType(bits));
     }
 
-    /// <summary><see cref="RustTypeMapper.NormalizeRustTypeName"/> strips one <c>Option&lt;…&gt;</c> wrapper.</summary>
+    /// <summary><see cref="RustTypeMapper.NormalizeRustTypeName"/> strips one <c>Option&lt;...&gt;</c> wrapper.</summary>
     [Fact]
     public void NormalizeRustTypeName_strips_single_option_only()
     {

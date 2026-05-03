@@ -23,7 +23,7 @@ pub(super) fn ensure_stereo_swapchain(bundle: &mut XrSessionBundle) -> bool {
     match res {
         Ok(sc) => {
             logger::info!(
-                "OpenXR swapchain {}×{} (stereo array)",
+                "OpenXR swapchain {}x{} (stereo array)",
                 sc.resolution.0,
                 sc.resolution.1
             );

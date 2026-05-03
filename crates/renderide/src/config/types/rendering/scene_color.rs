@@ -7,7 +7,7 @@ labeled_enum! {
     /// Intermediate scene color format for the forward pass (pre-compose, pre-post-processing).
     ///
     /// Persist tokens match the on-disk format that the original `#[serde(rename_all =
-    /// "snake_case")]` derive produced — serde inserts an underscore before each internal
+    /// "snake_case")]` derive produced -- serde inserts an underscore before each internal
     /// uppercase letter, so `Rgba16Float` writes as `"rgba16_float"`. The compact-suffix form
     /// (`"rgba16float"`) is accepted as an alias for forgiveness.
     pub enum SceneColorFormat: "scene-color format" {

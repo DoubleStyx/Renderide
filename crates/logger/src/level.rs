@@ -106,7 +106,7 @@ pub fn tag_to_level(tag: u8) -> LogLevel {
 
 /// Scans `exe` then args for a case-insensitive `-LogLevel` flag followed by a level value.
 ///
-/// If multiple `-LogLevel` flags appear, the **first** valid flag–value pair wins; remaining argv is
+/// If multiple `-LogLevel` flags appear, the **first** valid flag-value pair wins; remaining argv is
 /// not scanned for overrides.
 fn parse_loglevel_from_string_iter<I>(iter: I) -> Option<LogLevel>
 where

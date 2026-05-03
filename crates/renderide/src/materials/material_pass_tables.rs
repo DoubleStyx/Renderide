@@ -30,7 +30,7 @@ pub(crate) fn unity_compare_function(value: u8) -> wgpu::CompareFunction {
 /// host's layout.
 ///
 /// Depth-test comparisons invert under reverse-Z (near fragments have greater depth), so e.g.
-/// `ZTest.LessOrEqual` — the usual opaque-pass default — becomes `wgpu::CompareFunction::GreaterEqual`.
+/// `ZTest.LessOrEqual` -- the usual opaque-pass default -- becomes `wgpu::CompareFunction::GreaterEqual`.
 pub(crate) fn froox_ztest_depth_compare_function(value: u8) -> Option<wgpu::CompareFunction> {
     match value {
         0 => Some(wgpu::CompareFunction::Greater),
@@ -214,7 +214,7 @@ mod tests {
             unity_stencil_operation(7),
             wgpu::StencilOperation::DecrementWrap
         );
-        // Unknown → Keep (stable, matches Unity default).
+        // Unknown -> Keep (stable, matches Unity default).
         assert_eq!(unity_stencil_operation(200), wgpu::StencilOperation::Keep);
     }
 
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn blend_state_none_when_opaque_one_zero() {
-        // `Blend One Zero` → opaque, no wgpu blend state needed.
+        // `Blend One Zero` -> opaque, no wgpu blend state needed.
         assert!(unity_blend_state(1, 0).is_none());
     }
 

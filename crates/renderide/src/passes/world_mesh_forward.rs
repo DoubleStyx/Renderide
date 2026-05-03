@@ -4,29 +4,29 @@
 //!
 //! World-mesh forward rendering is split across these graph passes:
 //!
-//! 1. [`WorldMeshForwardPreparePass`] — **[`CallbackPass`]** that collects + sorts draws, packs
+//! 1. [`WorldMeshForwardPreparePass`] -- **[`CallbackPass`]** that collects + sorts draws, packs
 //!    per-draw VP/model uniforms (rayon-parallel above the existing threshold), and uploads the
 //!    per-draw slab and frame uniforms via `Queue::write_buffer`. Stores the prepared state in
 //!    [`WorldMeshForwardPlanSlot`] for downstream passes.
-//! 2. [`WorldMeshForwardOpaquePass`] — **[`RasterPass`]** that opens the HDR color + depth
+//! 2. [`WorldMeshForwardOpaquePass`] -- **[`RasterPass`]** that opens the HDR color + depth
 //!    attachments with `LoadOp::Clear` and records opaque draws.
-//! 3. [`WorldMeshDepthSnapshotPass`] — **[`ComputePass`]** that resolves MSAA depth (when active)
+//! 3. [`WorldMeshDepthSnapshotPass`] -- **[`ComputePass`]** that resolves MSAA depth (when active)
 //!    and copies single-sample depth into the scene-depth snapshot for intersection materials.
-//! 4. [`WorldMeshForwardIntersectPass`] — **[`RasterPass`]** that draws intersection materials.
-//! 5. [`WorldMeshForwardColorResolvePass`] — optional **[`RasterPass`]** that resolves MSAA
+//! 4. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws intersection materials.
+//! 5. [`WorldMeshForwardColorResolvePass`] -- optional **[`RasterPass`]** that resolves MSAA
 //!    scene color before the grab-pass snapshot.
-//! 6. [`WorldMeshColorSnapshotPass`] — **[`ComputePass`]** that copies resolved HDR color into
+//! 6. [`WorldMeshColorSnapshotPass`] -- **[`ComputePass`]** that copies resolved HDR color into
 //!    the grab-pass scene-color snapshot.
-//! 7. [`WorldMeshForwardTransparentPass`] — **[`RasterPass`]** that draws grab-pass transparent
+//! 7. [`WorldMeshForwardTransparentPass`] -- **[`RasterPass`]** that draws grab-pass transparent
 //!    materials into the active frame-sampled HDR target.
-//! 8. [`WorldMeshForwardColorResolvePass`] — optional final **[`RasterPass`]** that resolves
+//! 8. [`WorldMeshForwardColorResolvePass`] -- optional final **[`RasterPass`]** that resolves
 //!    MSAA scene color after grab-pass transparent draws.
-//! 9. [`WorldMeshForwardDepthResolvePass`] — **[`ComputePass`]** that resolves the final MSAA
+//! 9. [`WorldMeshForwardDepthResolvePass`] -- **[`ComputePass`]** that resolves the final MSAA
 //!    depth into the single-sample frame depth used by Hi-Z.
 //!
 //! ## VR stereo world draws
 //!
-//! OpenXR per-eye view–projection maps **stage** space to clip. For non-overlay draws with
+//! OpenXR per-eye view-projection maps **stage** space to clip. For non-overlay draws with
 //! [`crate::camera::StereoViewMatrices`], identity is used instead of the host
 //! `view_transform` world-to-camera to avoid mixing stage with the host rig. Overlays keep
 //! `view` for orthographic / UI alignment. Matrix composition lives in [`vp`].
@@ -54,6 +54,7 @@ use std::num::NonZeroU32;
 use crate::render_graph::compiled::{DepthAttachmentTemplate, RenderPassTemplate};
 use crate::render_graph::context::{CallbackCtx, ComputePassCtx, RasterPassCtx};
 use crate::render_graph::error::{RenderPassError, SetupError};
+use crate::render_graph::frame_params::MsaaViewsSlot;
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::pass::{CallbackPass, ComputePass, PassBuilder, RasterPass};
 use crate::render_graph::resources::{
@@ -67,8 +68,7 @@ use execute_helpers::{
     encode_world_mesh_forward_depth_snapshot, prepare_world_mesh_forward_frame,
     record_world_mesh_forward_intersection_graph_raster,
     record_world_mesh_forward_opaque_graph_raster,
-    record_world_mesh_forward_transparent_graph_raster, resolve_forward_msaa_views,
-    stencil_load_ops,
+    record_world_mesh_forward_transparent_graph_raster, stencil_load_ops,
 };
 use skybox::{SkyboxRenderer, record_prepared_skybox};
 
@@ -402,23 +402,17 @@ impl ComputePass for WorldMeshDepthSnapshotPass {
     fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::depth_snapshot_record");
         let frame = &mut *ctx.pass_frame;
-        let msaa_views = resolve_forward_msaa_views(
-            ctx.graph_resources,
-            self.resources,
-            frame.view.sample_count,
-            frame.view.multiview_stereo,
-        );
-
         let Some(mut prepared) = ctx.blackboard.take::<WorldMeshForwardPlanSlot>() else {
             return Ok(());
         };
+        let msaa_views = ctx.blackboard.get::<MsaaViewsSlot>();
         let msaa_depth_resolve = frame.view.msaa_depth_resolve.clone();
         let recorded = encode_world_mesh_forward_depth_snapshot(
             ctx.device,
             ctx.encoder,
             frame,
             &prepared,
-            msaa_views.as_ref(),
+            msaa_views,
             msaa_depth_resolve.as_deref(),
             ctx.profiler,
         );
@@ -442,7 +436,7 @@ impl RasterPass for WorldMeshForwardIntersectPass {
             // and resolved by [`WorldMeshForwardColorResolvePass`] using the Karis HDR-aware
             // bracket. wgpu's automatic linear average underestimates very bright samples at
             // contrast edges, producing visible aliasing where bright/dark samples meet (e.g.
-            // specular sparks against dark surfaces) — the custom resolve fixes that.
+            // specular sparks against dark surfaces) -- the custom resolve fixes that.
             r.frame_sampled_color(
                 self.resources.scene_color_hdr,
                 self.resources.scene_color_hdr_msaa,
@@ -693,22 +687,16 @@ impl ComputePass for WorldMeshForwardDepthResolvePass {
     fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::depth_resolve_record");
         let frame = &mut *ctx.pass_frame;
-        let msaa_views = resolve_forward_msaa_views(
-            ctx.graph_resources,
-            self.resources,
-            frame.view.sample_count,
-            frame.view.multiview_stereo,
-        );
+        let msaa_views = ctx.blackboard.get::<MsaaViewsSlot>();
         let msaa_depth_resolve = frame.view.msaa_depth_resolve.clone();
         encode_msaa_depth_resolve_after_clear_only(
             ctx.device,
             ctx.encoder,
             frame,
-            msaa_views.as_ref(),
+            msaa_views,
             msaa_depth_resolve.as_deref(),
             ctx.profiler,
         );
-        // No blackboard interaction needed: depth resolve is purely encoder-driven.
         Ok(())
     }
 }

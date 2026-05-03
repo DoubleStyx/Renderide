@@ -2,14 +2,15 @@
 //!
 //! Layout: [`context`] ([`GpuContext`]), [`instance_limits`] ([`instance_flags_for_gpu_init`]),
 //! [`frame_globals`] ([`FrameGpuUniforms`]), [`frame_cpu_gpu_timing`] (debug HUD CPU/GPU intervals),
-//! [`present`] (surface acquire / clear helpers), [`vr_mirror`] (HMD eye → staging → window).
+//! [`present`] (surface acquire / clear helpers), [`vr_mirror`] (HMD eye -> staging -> window).
 
 mod adapter;
 pub mod bind_layout;
 mod context;
 pub mod depth;
 pub mod driver_thread;
-mod frame_cpu_gpu_timing;
+pub(crate) mod frame_bracket;
+pub(crate) mod frame_cpu_gpu_timing;
 mod instance_limits;
 pub mod limits;
 pub mod msaa_depth_resolve;

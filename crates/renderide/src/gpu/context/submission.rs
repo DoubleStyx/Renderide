@@ -20,7 +20,7 @@ impl GpuContext {
 
     /// Same as [`Self::submit_tracked_frame_commands`] but accepts an externally-held
     /// [`wgpu::Queue`] reference. Retained for API compatibility with the pre-driver-thread
-    /// call sites — the reference is ignored because submit now always runs on the driver
+    /// call sites -- the reference is ignored because submit now always runs on the driver
     /// thread with its own cloned [`Arc<wgpu::Queue>`].
     pub fn submit_tracked_frame_commands_with_queue(
         &self,
@@ -32,7 +32,7 @@ impl GpuContext {
 
     /// Submits multiple command buffers through the driver thread in a single
     /// [`wgpu::Queue::submit`] call, tracked for frame timing. No surface is presented on
-    /// this path — for swapchain frames use [`Self::submit_frame_batch`] with a
+    /// this path -- for swapchain frames use [`Self::submit_frame_batch`] with a
     /// [`wgpu::SurfaceTexture`].
     ///
     /// All `Queue::write_buffer` calls on the main thread must have occurred before this
@@ -77,15 +77,71 @@ impl GpuContext {
         self.submit_frame_batch_inner(cmds, surface_texture, wait, extra_on_submitted_work_done);
     }
 
+    /// Same as [`Self::submit_frame_batch_with_callbacks`] but also attaches an OpenXR
+    /// finalize payload (`xrReleaseSwapchainImage` + `xrEndFrame`) to be executed on the
+    /// driver thread immediately after `Queue::submit` returns. Used by the VR HMD path
+    /// to keep the main thread off the OpenXR critical path.
+    pub fn submit_frame_batch_with_xr_finalize(
+        &self,
+        cmds: Vec<wgpu::CommandBuffer>,
+        xr_finalize: crate::gpu::driver_thread::XrFinalizeWork,
+    ) {
+        self.submit_frame_batch_inner_full(cmds, None, None, Vec::new(), Some(xr_finalize));
+    }
+
+    /// Pushes a zero-work driver batch carrying only an OpenXR finalize payload.
+    ///
+    /// Used when the trailing render submit of the tick was skipped (HMD render bailed out
+    /// after acquiring the swapchain image, or `end_frame_if_open` is closing an opened-
+    /// but-not-rendered frame). The driver still needs to release the image (when applicable)
+    /// and call `xrEndFrame`; the empty submit takes the queue access gate the same way a
+    /// real submit would, preserving the OpenXR external-sync contract. Bypasses the
+    /// frame-timing helper because there is no rendering work to attribute the GPU time to.
+    pub fn submit_finalize_only(&self, xr_finalize: crate::gpu::driver_thread::XrFinalizeWork) {
+        let batch = crate::gpu::driver_thread::SubmitBatch {
+            command_buffers: Vec::new(),
+            surface_texture: None,
+            on_submitted_work_done: Vec::new(),
+            frame_timing: None,
+            frame_bracket_readback: None,
+            wait: None,
+            xr_finalize: Some(xr_finalize),
+            frame_seq: 0,
+        };
+        self.submission.driver_thread.submit(batch);
+    }
+
     /// Internal helper that builds the [`crate::gpu::driver_thread::SubmitBatch`] (including the
-    /// frame-timing track) and pushes it into the driver thread's ring. Blocks when the ring
-    /// is full — that block is the frame-pacing backpressure.
+    /// frame-timing track and an optional frame-bracket timestamp readback) and pushes it into
+    /// the driver thread's ring. Blocks when the ring is full -- that block is the frame-pacing
+    /// backpressure.
     fn submit_frame_batch_inner(
         &self,
         command_buffers: Vec<wgpu::CommandBuffer>,
         surface_texture: Option<wgpu::SurfaceTexture>,
         wait: Option<crate::gpu::driver_thread::SubmitWait>,
         extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
+    ) {
+        self.submit_frame_batch_inner_full(
+            command_buffers,
+            surface_texture,
+            wait,
+            extra_on_submitted_work_done,
+            None,
+        );
+    }
+
+    /// Variant of [`Self::submit_frame_batch_inner`] that also accepts an OpenXR finalize
+    /// payload. Kept private; public callers go through [`Self::submit_frame_batch`],
+    /// [`Self::submit_frame_batch_with_callbacks`],
+    /// [`Self::submit_frame_batch_with_xr_finalize`], or [`Self::submit_finalize_only`].
+    fn submit_frame_batch_inner_full(
+        &self,
+        mut command_buffers: Vec<wgpu::CommandBuffer>,
+        surface_texture: Option<wgpu::SurfaceTexture>,
+        wait: Option<crate::gpu::driver_thread::SubmitWait>,
+        extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
+        xr_finalize: Option<crate::gpu::driver_thread::XrFinalizeWork>,
     ) {
         if !command_buffers.is_empty() {
             crate::profiling::emit_render_submit_frame_mark();
@@ -106,13 +162,28 @@ impl GpuContext {
                 frame_start,
             }
         });
+        // Only bracket tracked submits with non-empty work -- empty submits (driver flush
+        // sentinels) have no GPU time to measure, and untracked submits have no HUD slot.
+        let frame_bracket_readback = if track.is_some() && !command_buffers.is_empty() {
+            self.submission.frame_bracket.open_session().map(|session| {
+                let begin = session.begin_command_buffer();
+                let end = session.end_command_buffer();
+                command_buffers.insert(0, begin);
+                command_buffers.push(end);
+                session.into_readback()
+            })
+        } else {
+            None
+        };
         let frame_seq = track.map_or(0, |(_, seq, _)| u64::from(seq));
         let batch = crate::gpu::driver_thread::SubmitBatch {
             command_buffers,
             surface_texture,
             on_submitted_work_done: extra_on_submitted_work_done,
             frame_timing,
+            frame_bracket_readback,
             wait,
+            xr_finalize,
             frame_seq,
         };
         self.submission.driver_thread.submit(batch);
@@ -124,6 +195,14 @@ impl GpuContext {
     /// existing device-recovery path (same as a swapchain `SurfaceError::Lost`).
     pub fn take_driver_error(&self) -> Option<crate::gpu::driver_thread::DriverError> {
         self.submission.driver_thread.take_pending_error()
+    }
+
+    /// Snapshot of the driver-thread submit counters: `(pushed, done)`. The instantaneous
+    /// gap is the number of batches still owed by the driver and is suitable for a Tracy
+    /// plot. Cheap (two atomic loads); call once per tick from the frame epilogue.
+    pub fn driver_submit_backlog(&self) -> u64 {
+        let (pushed, done) = self.submission.driver_thread.submit_counter_snapshot();
+        pushed.saturating_sub(done)
     }
 
     /// Blocks until the driver thread has processed every previously-submitted batch.

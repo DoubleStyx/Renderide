@@ -242,7 +242,7 @@ impl<'a> FrameView<'a> {
     }
 
     /// `true` when this view both targets a multiview attachment AND the host camera carries stereo
-    /// matrices — i.e. the per-view record path should emit stereo clustering / multiview draws.
+    /// matrices -- i.e. the per-view record path should emit stereo clustering / multiview draws.
     ///
     /// Single source of truth; every caller that gates on "is this the stereo multiview view?"
     /// goes through this method rather than re-deriving the AND-chain.
@@ -449,9 +449,9 @@ pub struct CompiledRenderGraph {
     /// Single source of truth for pass ordering, phase, and wave membership.
     pub schedule: FrameSchedule,
     /// When this graph is the main frame graph from [`super::build_main_graph`], transient handles
-    /// for MSAA color/depth/R32 resources.
+    /// for the MSAA depth and R32-float depth-resolve scratch resources.
     pub(super) main_graph_msaa_transient_handles:
-        Option<[crate::render_graph::resources::TextureHandle; 3]>,
+        Option<[crate::render_graph::resources::TextureHandle; 2]>,
 }
 
 pub(super) struct ResolvedView<'a> {

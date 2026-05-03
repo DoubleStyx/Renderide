@@ -7,6 +7,7 @@ use glam::Mat4;
 use crate::assets::mesh::{
     BlendshapeFrameRange, BlendshapeFrameSpan, GpuMesh, blendshape_deform_is_active,
 };
+use crate::mesh_deform::EntryNeed;
 
 /// GPU buffer handles + metadata copied from [`crate::assets::mesh::GpuMesh`] so we can hold
 /// deform state without borrowing the mesh pool across preprocess/scratch access.
@@ -19,6 +20,7 @@ pub(super) struct MeshDeformSnapshot {
     pub(super) has_skeleton: bool,
     pub(super) positions_buffer: Option<Arc<wgpu::Buffer>>,
     pub(super) normals_buffer: Option<Arc<wgpu::Buffer>>,
+    pub(super) tangent_buffer: Option<Arc<wgpu::Buffer>>,
     pub(super) blendshape_sparse_buffer: Option<Arc<wgpu::Buffer>>,
     /// Per-frame sparse ranges into [`Self::blendshape_sparse_buffer`] (scatter dispatch).
     pub(super) blendshape_frame_ranges: Vec<BlendshapeFrameRange>,
@@ -27,6 +29,9 @@ pub(super) struct MeshDeformSnapshot {
     pub(super) bone_indices_buffer: Option<Arc<wgpu::Buffer>>,
     pub(super) bone_weights_vec4_buffer: Option<Arc<wgpu::Buffer>>,
     pub(super) skinning_bind_matrices: Vec<Mat4>,
+    pub(super) blendshape_has_position_deltas: bool,
+    pub(super) blendshape_has_normal_deltas: bool,
+    pub(super) blendshape_has_tangent_deltas: bool,
 }
 
 impl MeshDeformSnapshot {
@@ -39,6 +44,7 @@ impl MeshDeformSnapshot {
             has_skeleton: m.has_skeleton,
             positions_buffer: m.positions_buffer.clone(),
             normals_buffer: m.normals_buffer.clone(),
+            tangent_buffer: m.tangent_buffer.clone(),
             blendshape_sparse_buffer: m.blendshape_sparse_buffer.clone(),
             blendshape_frame_ranges: m.blendshape_frame_ranges.clone(),
             blendshape_shape_frame_spans: m.blendshape_shape_frame_spans.clone(),
@@ -49,6 +55,9 @@ impl MeshDeformSnapshot {
             } else {
                 Vec::new()
             },
+            blendshape_has_position_deltas: m.blendshape_has_position_deltas,
+            blendshape_has_normal_deltas: m.blendshape_has_normal_deltas,
+            blendshape_has_tangent_deltas: m.blendshape_has_tangent_deltas,
         }
     }
 }
@@ -75,17 +84,43 @@ pub(super) fn gpu_mesh_needs_deform_dispatch(
     deform_needs_blend_mesh(m, blend_weights) || deform_needs_skin_mesh(m, bone_transform_indices)
 }
 
+/// Builds the skin-cache layout need for one mesh snapshot and renderer instance.
+pub(super) fn entry_need_for_snapshot(
+    mesh: &MeshDeformSnapshot,
+    bone_transform_indices: Option<&[i32]>,
+    blend_weights: &[f32],
+) -> EntryNeed {
+    let needs_blend = deform_needs_blend_snapshot(mesh, blend_weights);
+    let needs_skin = deform_needs_skin_snapshot(mesh, bone_transform_indices);
+    let tangent_stream_ready = mesh.tangent_buffer.is_some();
+    EntryNeed {
+        needs_blend,
+        needs_skin,
+        needs_blend_normals: needs_blend
+            && mesh.blendshape_has_normal_deltas
+            && mesh.normals_buffer.is_some(),
+        needs_tangents: tangent_stream_ready && (needs_blend || needs_skin),
+        needs_blend_tangents: needs_blend
+            && tangent_stream_ready
+            && mesh.blendshape_has_tangent_deltas,
+    }
+}
+
 /// Snapshot variant of [`deform_needs_blend_mesh`].
 pub(super) fn deform_needs_blend_snapshot(
     mesh: &MeshDeformSnapshot,
     blend_weights: &[f32],
 ) -> bool {
+    let has_supported_channel = mesh.blendshape_has_position_deltas
+        || (mesh.blendshape_has_normal_deltas && mesh.normals_buffer.is_some())
+        || (mesh.blendshape_has_tangent_deltas && mesh.tangent_buffer.is_some());
     blendshape_deform_is_active(
         mesh.num_blendshapes,
         &mesh.blendshape_shape_frame_spans,
         &mesh.blendshape_frame_ranges,
         blend_weights,
     ) && mesh.blendshape_sparse_buffer.is_some()
+        && has_supported_channel
 }
 
 /// Snapshot variant of [`deform_needs_skin_mesh`].

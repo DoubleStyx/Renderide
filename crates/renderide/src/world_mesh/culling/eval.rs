@@ -1,6 +1,6 @@
 //! CPU frustum and Hi-Z culling helpers for [`crate::world_mesh::draw_prep::collect_and_sort_draws`].
 //!
-//! Shares one bounds evaluation per draw slot using the same view–projection rules as the forward pass
+//! Shares one bounds evaluation per draw slot using the same view-projection rules as the forward pass
 //! ([`super::build_world_mesh_cull_proj_params`]), including
 //! [`crate::camera::HostCameraFrame::explicit_world_to_view`] when an explicit camera view is
 //! present (e.g. for secondary render-texture cameras).

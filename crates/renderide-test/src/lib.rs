@@ -12,5 +12,6 @@ pub mod golden;
 pub mod host;
 pub mod logging;
 pub mod scene;
+pub mod scene_dsl;
 
 pub use error::HarnessError;

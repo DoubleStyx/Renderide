@@ -1,6 +1,6 @@
 //! Stable identifiers for render spaces and dense transform indices.
 
-/// Host `RenderSpaceUpdate.id` — distinct root for a transform hierarchy.
+/// Host `RenderSpaceUpdate.id` -- distinct root for a transform hierarchy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct RenderSpaceId(pub i32);

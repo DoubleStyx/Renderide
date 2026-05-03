@@ -36,7 +36,7 @@ mod tests {
     use super::RunError;
 
     /// Constant-string variants have stable [`std::fmt::Display`] output used by the process exit
-    /// log line — regressions here change what operators see in `logs/renderer/*.log`.
+    /// log line -- regressions here change what operators see in `logs/renderer/*.log`.
     #[test]
     fn timeout_and_fatal_ipc_variants_have_stable_display_messages() {
         assert_eq!(

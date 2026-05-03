@@ -73,14 +73,14 @@ pub const fn renderer_exit_watcher_poll_interval() -> Duration {
     Duration::from_millis(RENDERER_EXIT_WATCHER_POLL_INTERVAL_MS)
 }
 
-/// Returns the macOS `SIGINT` → `SIGTERM` shutdown grace period.
+/// Returns the macOS `SIGINT` -> `SIGTERM` shutdown grace period.
 #[cfg(target_os = "macos")]
 #[inline]
 pub(crate) fn macos_shutdown_sigint_to_sigterm_delay() -> Duration {
     Duration::from_millis(MACOS_SHUTDOWN_SIGINT_TO_SIGTERM_DELAY_MS)
 }
 
-/// Returns the macOS `SIGTERM` → `SIGKILL` shutdown grace period.
+/// Returns the macOS `SIGTERM` -> `SIGKILL` shutdown grace period.
 #[cfg(target_os = "macos")]
 #[inline]
 pub(crate) fn macos_shutdown_sigterm_to_sigkill_delay() -> Duration {

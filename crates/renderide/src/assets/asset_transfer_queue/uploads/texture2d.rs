@@ -75,7 +75,7 @@ pub fn on_set_texture_2d_format(
         !existed_before,
     );
     logger::trace!(
-        "texture {} format {:?} {}×{} mips={} (resident_bytes≈{})",
+        "texture {} format {:?} {}x{} mips={} (resident_bytes~={})",
         id,
         f.format,
         f.width,
@@ -160,7 +160,7 @@ pub fn on_unload_texture_2d(queue: &mut AssetTransferQueue, u: UnloadTexture2D) 
     queue.catalogs.texture_properties.remove(&id);
     if queue.pools.texture_pool.remove(id) {
         logger::info!(
-            "texture {id} unloaded (mesh≈{} tex≈{} total≈{})",
+            "texture {id} unloaded (mesh~={} tex~={} total~={})",
             queue.pools.mesh_pool.accounting().mesh_resident_bytes(),
             queue
                 .pools

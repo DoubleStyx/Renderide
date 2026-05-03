@@ -1,4 +1,4 @@
-//! **Stats** tab — frame index, GPU adapter, host allocator, IPC, draw stats, resources.
+//! **Stats** tab -- frame index, GPU adapter, host allocator, IPC, draw stats, resources.
 //!
 //! The body composes a fixed list of [`StatsSection`] impls so each section borrows exactly the
 //! sub-fragment(s) it consumes and the tab's render path is one `for section in SECTIONS` loop.
@@ -52,7 +52,7 @@ impl TabView for StatsTab {
     fn render(&self, ui: &imgui::Ui, data: Self::Data<'_>, _state: &mut Self::State) {
         let (renderer, frame) = data;
         if renderer.is_none() && frame.is_none() {
-            ui.text("Waiting for snapshot…");
+            ui.text("Waiting for snapshot...");
             return;
         }
         let ctx = StatsContext { renderer, frame };
@@ -66,7 +66,7 @@ impl StatsSection for FrameLineSection {
     fn render(&self, ui: &imgui::Ui, ctx: &StatsContext<'_>) {
         if let Some(r) = ctx.renderer {
             ui.text(format!(
-                "Frame index {}  |  viewport {}×{}",
+                "Frame index {}  |  viewport {}x{}",
                 r.last_frame_index, r.viewport_px.0, r.viewport_px.1
             ));
         } else if ctx.frame.is_some() {
@@ -97,15 +97,15 @@ impl StatsSection for GpuAdapterSection {
             r.surface_format, r.present_mode
         ));
         ui.text(format!(
-            "MSAA: requested {}×  |  effective {}×  |  max {}×",
+            "MSAA: requested {}x  |  effective {}x  |  max {}x",
             r.msaa_requested_samples, r.msaa_effective_samples, r.msaa_max_samples
         ));
         ui.text(format!(
-            "MSAA (VR stereo): effective {}×  |  max {}×",
+            "MSAA (VR stereo): effective {}x  |  max {}x",
             r.msaa_effective_samples_stereo, r.msaa_max_samples_stereo
         ));
         ui.text(format!(
-            "Limits: tex2d≤{}  max_buf={}  storage_bind={}  |  base_instance={}  multiview={}",
+            "Limits: tex2d<={}  max_buf={}  storage_bind={}  |  base_instance={}  multiview={}",
             r.gpu_max_texture_dim_2d,
             r.gpu_max_buffer_size,
             r.gpu_max_storage_binding,

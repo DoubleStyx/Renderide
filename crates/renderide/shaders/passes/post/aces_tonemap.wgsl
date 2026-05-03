@@ -2,7 +2,7 @@
 //! linear in [0, 1]) to the HDR scene color and writes the post-processing chain output.
 //!
 //! Build script composes this source into `aces_tonemap_default` (mono) and
-//! `aces_tonemap_multiview` (stereo, `view_index` selects array layer) targets — see the build
+//! `aces_tonemap_multiview` (stereo, `view_index` selects array layer) targets -- see the build
 //! script's post-shader composition loop and [`crate::embedded_shaders`].
 
 #import renderide::fullscreen as fs

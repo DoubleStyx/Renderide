@@ -22,7 +22,7 @@ use super::openxr_actions::OpenxrInputActions;
 pub struct ProfileExtensionGates {
     /// `XR_KHR_generic_controller`.
     pub khr_generic_controller: bool,
-    /// `XR_BD_controller_interaction` — gates both Pico 4 and Pico Neo3.
+    /// `XR_BD_controller_interaction` -- gates both Pico 4 and Pico Neo3.
     pub bd_controller: bool,
     /// `XR_EXT_hp_mixed_reality_controller`.
     pub ext_hp_mixed_reality_controller: bool,
@@ -92,8 +92,8 @@ impl<'a> ActionHandleRef<'a> {
 /// Submits every manifest-declared binding table to the runtime, honouring extension gates.
 ///
 /// Succeeds if **any** profile accepted bindings; returns the last error otherwise. Each profile
-/// result is logged separately (info on accept, warn on reject) so runtime mismatches — e.g. a
-/// profile rejected because the runtime does not recognise a path — are diagnosable rather than
+/// result is logged separately (info on accept, warn on reject) so runtime mismatches -- e.g. a
+/// profile rejected because the runtime does not recognise a path -- are diagnosable rather than
 /// silently swallowed.
 ///
 /// `actions_by_id` must cover every action id referenced in `manifest.profiles[*].bindings`; the

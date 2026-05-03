@@ -305,9 +305,14 @@ impl AppDriver {
         let Some(target) = self.target.as_ref() else {
             return;
         };
-        if let Some(err) = target.gpu().take_driver_error() {
+        let gpu = target.gpu();
+        if let Some(err) = gpu.take_driver_error() {
             logger::error!("{err}");
         }
+        // Cheap (two atomic loads); plotted alongside `event_loop_idle_ms` so a regression
+        // in driver-thread pipelining is visible in the same Tracy trace as a regression in
+        // frame timing.
+        crate::profiling::plot_driver_submit_backlog(gpu.driver_submit_backlog());
     }
 
     fn end_frame_timing_and_hud_capture(&mut self) {
@@ -315,6 +320,10 @@ impl AppDriver {
             return;
         };
         let gpu = target.gpu_mut();
+        // Capture the main-thread CPU duration just before finalizing the frame's timing --
+        // every per-frame submit has been dispatched by now, but the event loop has not yet
+        // yielded, so this represents the time the main thread spent on this tick.
+        gpu.record_main_thread_cpu_end(Instant::now());
         gpu.end_frame_timing();
         gpu.end_gpu_profiler_frame();
         self.runtime.capture_debug_hud_after_frame_end(gpu);

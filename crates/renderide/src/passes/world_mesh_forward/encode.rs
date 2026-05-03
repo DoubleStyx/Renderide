@@ -55,7 +55,7 @@ pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
 ///
 /// Each group is one `draw_indexed` covering a contiguous slab range of identical instances.
 /// The `precomputed` cursor advances on each group's `representative_draw_idx`, which is
-/// monotonically increasing across the group list — O(1) amortised. Pipelines and `@group(1)`
+/// monotonically increasing across the group list -- O(1) amortised. Pipelines and `@group(1)`
 /// bind groups are bound directly from the table; no cache lookups occur during recording.
 pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
     profiling::scope!("world_mesh::draw_subset");
@@ -116,7 +116,7 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
         );
 
         let Some(pipelines) = pc.pipelines.as_ref() else {
-            continue; // pipeline unavailable for this batch — skip draws
+            continue; // pipeline unavailable for this batch -- skip draws
         };
 
         // Bind @group(1) once per unique batch; skip when the cursor hasn't advanced.
@@ -241,7 +241,7 @@ fn issue_material_pipeline_passes(
 
 /// Resolves the `instance_range` argument to `draw_indexed` for one [`DrawGroup`].
 ///
-/// On base-instance-capable devices, the group's slab range is passed verbatim — the GPU
+/// On base-instance-capable devices, the group's slab range is passed verbatim -- the GPU
 /// `instance_index` walks `instance_range.start..instance_range.end`, addressing the
 /// per-draw slab directly. On downlevel devices, every group has `instance_range.len() == 1`
 /// (forced by `build_plan`'s `supports_base_instance = false` gate), and the slab

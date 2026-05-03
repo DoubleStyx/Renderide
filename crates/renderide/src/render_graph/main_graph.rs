@@ -2,8 +2,8 @@
 //! post-processing chain.
 //!
 //! This module is the *application* of the render-graph framework: it wires the renderer's
-//! built-in passes together to produce the frame the host expects (mesh deform → clustered lights
-//! → forward → Hi-Z → post-processing → HDR scene-color compose). The framework primitives it
+//! built-in passes together to produce the frame the host expects (mesh deform -> clustered lights
+//! -> forward -> Hi-Z -> post-processing -> HDR scene-color compose). The framework primitives it
 //! consumes (builder, compiled graph, resources, post-processing chain) live in their respective
 //! sibling modules.
 
@@ -186,7 +186,7 @@ fn create_main_graph_transient_resources(
     });
     // Use [`TransientExtent::Backbuffer`] for forward MSAA targets: [`build_default_main_graph`]
     // uses a placeholder [`GraphCacheKey::surface_extent`]; baking that into `Custom` extent would
-    // allocate 1×1 textures while resolve / imported frame color stay at the real swapchain size.
+    // allocate 1x1 textures while resolve / imported frame color stay at the real swapchain size.
     // Execute-time resolution uses each view's viewport (see [`crate::render_graph::compiled::helpers::resolve_transient_extent`]).
     //
     // Multisampled forward attachments use [`TransientSampleCount::Frame`] so pool allocations match
@@ -315,7 +315,7 @@ fn add_main_graph_passes_and_edges(
     // Color resolve replaces the wgpu automatic linear `resolve_target`. The pre-grab resolve
     // makes a single-sample HDR snapshot available to grab-pass shaders; the final resolve moves
     // any grab-pass transparent MSAA color back into the single-sample HDR target consumed by
-    // post-processing. In 1× mode each forward pass writes `scene_color_hdr` directly.
+    // post-processing. In 1x mode each forward pass writes `scene_color_hdr` directly.
     let color_resolve_resources = crate::passes::WorldMeshForwardColorResolveGraphResources {
         scene_color_hdr_msaa: h.scene_color_hdr_msaa,
         scene_color_hdr: h.scene_color_hdr,
@@ -388,7 +388,7 @@ fn add_main_graph_passes_and_edges(
 
 /// Builds the canonical post-processing chain shipped with the renderer.
 ///
-/// Execution order is GTAO → bloom → ACES tonemap. GTAO runs first so ambient occlusion
+/// Execution order is GTAO -> bloom -> ACES tonemap. GTAO runs first so ambient occlusion
 /// modulates linear HDR light before bloom scatter; bloom runs in HDR-linear space so its
 /// dual-filter pyramid operates on scene-referred radiance; then ACES compresses the combined
 /// HDR signal to display-referred `[0, 1]`. Each effect gates itself via
@@ -439,11 +439,7 @@ pub fn build_main_graph(
     );
     let mut builder = GraphBuilder::new();
     let handles = import_main_graph_resources(&mut builder);
-    let msaa_handles = [
-        handles.scene_color_hdr_msaa,
-        handles.forward_msaa_depth,
-        handles.forward_msaa_depth_r32,
-    ];
+    let msaa_handles = [handles.forward_msaa_depth, handles.forward_msaa_depth_r32];
     let mut graph = add_main_graph_passes_and_edges(
         builder,
         handles,

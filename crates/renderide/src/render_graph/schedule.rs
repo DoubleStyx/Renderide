@@ -341,7 +341,7 @@ mod tests {
             ],
             core::iter::once(0..2).collect(),
         );
-        // Step 1 is PerView after a FrameGlobal — that part is fine — but wave_idx 0 < 1.
+        // Step 1 is PerView after a FrameGlobal -- that part is fine -- but wave_idx 0 < 1.
         let err = sched.validate().unwrap_err();
         assert!(matches!(
             err,

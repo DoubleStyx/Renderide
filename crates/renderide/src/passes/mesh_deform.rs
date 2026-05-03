@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use rayon::prelude::*;
 
 use crate::gpu_pools::MeshPool;
-use crate::mesh_deform::{EntryNeed, SkinCacheKey, SkinCacheRendererKind};
+use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder, PassPhase};
@@ -22,8 +22,8 @@ use self::encode::{
     MeshDeformEncodeGpu, MeshDeformRecordInputs, MeshDeformRecordStats, record_mesh_deform,
 };
 use self::snapshot::{
-    MeshDeformSnapshot, deform_needs_blend_snapshot, deform_needs_skin_mesh,
-    deform_needs_skin_snapshot, gpu_mesh_needs_deform_dispatch,
+    MeshDeformSnapshot, deform_needs_skin_mesh, entry_need_for_snapshot,
+    gpu_mesh_needs_deform_dispatch,
 };
 
 /// Encodes mesh deformation compute for all active render spaces.
@@ -304,12 +304,10 @@ impl ComputePass for MeshDeformPass {
         let (mut dispatch_stats, mut skipped_allocations) =
             (MeshDeformRecordStats::default(), 0u64);
         for item in &scratch.work {
-            let need = EntryNeed {
-                needs_blend: deform_needs_blend_snapshot(&item.mesh, &item.blend_weights),
-                needs_skin: deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()),
-            };
-            let Some((cache_entry, positions_arena, normals_arena, temp_arena)) = skin_cache
-                .get_or_alloc_with_arenas(
+            let need =
+                entry_need_for_snapshot(&item.mesh, item.skinned.as_deref(), &item.blend_weights);
+            let Some((cache_entry, positions_arena, normals_arena, tangents_arena, temp_arena)) =
+                skin_cache.get_or_alloc_with_arenas(
                     ctx.device,
                     ctx.encoder,
                     item.skin_cache_key,
@@ -347,6 +345,7 @@ impl ComputePass for MeshDeformPass {
                     skin_cache_entry: cache_entry,
                     positions_arena,
                     normals_arena,
+                    tangents_arena,
                     temp_arena,
                 },
             );

@@ -5,14 +5,14 @@ use std::sync::Arc;
 use hashbrown::HashSet;
 use parking_lot::Mutex;
 
-use crate::materials::ShaderPermutation;
 use crate::passes::PipelineVariantKey;
 
-use super::cache::{MaterialPipelineCache, MaterialPipelineCacheStats, MaterialPipelineSet};
+use super::cache::{
+    MaterialPipelineCache, MaterialPipelineCacheStats, MaterialPipelineSet,
+    MaterialPipelineVariantSpec,
+};
 use super::family::MaterialPipelineDesc;
-use super::material_passes::MaterialBlendMode;
 use super::pipeline_kind::RasterPipelineKind;
-use super::render_state::{MaterialRenderState, RasterFrontFace};
 use super::resolve_raster::resolve_raster_pipeline;
 use super::router::MaterialRouter;
 
@@ -24,14 +24,9 @@ struct PipelineLookupRequest<'a> {
     kind: &'a RasterPipelineKind,
     /// Attachment formats and sample count.
     desc: &'a MaterialPipelineDesc,
-    /// Shader permutation for mono vs stereo targets.
-    permutation: ShaderPermutation,
-    /// Material blend mode for pipeline materialization.
-    blend_mode: MaterialBlendMode,
-    /// Runtime material render state for pipeline materialization.
-    render_state: MaterialRenderState,
-    /// Front-face winding selected from draw transform handedness.
-    front_face: RasterFrontFace,
+    /// Material-driven pipeline-state selectors (permutation, blend, render state, front face,
+    /// primitive topology).
+    variant: MaterialPipelineVariantSpec,
 }
 
 /// Owning table of material routing and pipeline cache.
@@ -57,19 +52,9 @@ impl MaterialRegistry {
             shader_asset_id,
             kind,
             desc,
-            permutation,
-            blend_mode,
-            render_state,
-            front_face,
+            variant,
         } = request;
-        let err = match self.cache.get_or_create(
-            kind,
-            desc,
-            permutation,
-            blend_mode,
-            render_state,
-            front_face,
-        ) {
+        let err = match self.cache.get_or_create(kind, desc, variant) {
             Ok(p) => return Some(p),
             Err(e) => e,
         };
@@ -97,14 +82,7 @@ impl MaterialRegistry {
             }
         }
         let fallback = RasterPipelineKind::Null;
-        match self.cache.get_or_create(
-            &fallback,
-            desc,
-            permutation,
-            blend_mode,
-            render_state,
-            front_face,
-        ) {
+        match self.cache.get_or_create(&fallback, desc, variant) {
             Ok(p) => Some(p),
             Err(e2) => {
                 logger::error!("fallback Null pipeline build failed: {e2}");
@@ -178,20 +156,14 @@ impl MaterialRegistry {
         &self,
         shader_asset_id: i32,
         desc: &MaterialPipelineDesc,
-        permutation: ShaderPermutation,
-        blend_mode: MaterialBlendMode,
-        render_state: MaterialRenderState,
-        front_face: RasterFrontFace,
+        variant: MaterialPipelineVariantSpec,
     ) -> Option<MaterialPipelineSet> {
         let kind = resolve_raster_pipeline(shader_asset_id, &self.router);
         self.try_pipeline_with_fallback(PipelineLookupRequest {
             shader_asset_id: Some(shader_asset_id),
             kind: &kind,
             desc,
-            permutation,
-            blend_mode,
-            render_state,
-            front_face,
+            variant,
         })
     }
 
@@ -200,19 +172,13 @@ impl MaterialRegistry {
         &self,
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
-        permutation: ShaderPermutation,
-        blend_mode: MaterialBlendMode,
-        render_state: MaterialRenderState,
-        front_face: RasterFrontFace,
+        variant: MaterialPipelineVariantSpec,
     ) -> Option<MaterialPipelineSet> {
         self.try_pipeline_with_fallback(PipelineLookupRequest {
             shader_asset_id: None,
             kind,
             desc,
-            permutation,
-            blend_mode,
-            render_state,
-            front_face,
+            variant,
         })
     }
 
@@ -221,19 +187,13 @@ impl MaterialRegistry {
         &self,
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
-        permutation: ShaderPermutation,
-        blend_mode: MaterialBlendMode,
-        render_state: MaterialRenderState,
-        front_face: RasterFrontFace,
+        variant: MaterialPipelineVariantSpec,
     ) -> Option<MaterialPipelineSet> {
         self.try_pipeline_with_fallback(PipelineLookupRequest {
             shader_asset_id: None,
             kind,
             desc,
-            permutation,
-            blend_mode,
-            render_state,
-            front_face,
+            variant,
         })
     }
 

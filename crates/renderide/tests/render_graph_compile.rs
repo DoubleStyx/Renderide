@@ -1,5 +1,5 @@
 //! Integration test: compile a small render graph through the crate's public API and inspect the
-//! compiled output. No GPU is involved — the builder is descriptor-only and `build()` never opens a
+//! compiled output. No GPU is involved -- the builder is descriptor-only and `build()` never opens a
 //! `wgpu::Device`.
 //!
 //! These tests mirror a few of the in-crate builder unit tests but go through the external public
@@ -257,7 +257,7 @@ fn dead_pass_without_exports_is_culled() -> Result<(), GraphBuildError> {
 }
 
 /// Two transients with disjoint lifetimes must share a physical alias slot. Mirrors the in-crate
-/// `aliased_handles_share_slot_when_lifetimes_disjoint` pattern (write → read-and-export, twice,
+/// `aliased_handles_share_slot_when_lifetimes_disjoint` pattern (write -> read-and-export, twice,
 /// with an explicit edge forcing the second write to happen after the first read).
 #[test]
 fn disjoint_lifetimes_share_alias_slot() -> Result<(), GraphBuildError> {

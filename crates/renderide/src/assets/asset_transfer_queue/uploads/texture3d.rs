@@ -71,7 +71,7 @@ pub fn on_set_texture_3d_format(
         !existed_before,
     );
     logger::trace!(
-        "texture3d {} format {:?} {}×{}×{} mips={} (resident_bytes≈{})",
+        "texture3d {} format {:?} {}x{}x{} mips={} (resident_bytes~={})",
         id,
         f.format,
         f.width,
@@ -154,7 +154,7 @@ pub fn on_unload_texture_3d(queue: &mut AssetTransferQueue, u: UnloadTexture3D) 
     queue.catalogs.texture3d_properties.remove(&id);
     if queue.pools.texture3d_pool.remove(id) {
         logger::info!(
-            "texture3d {id} unloaded (tex≈{} total≈{})",
+            "texture3d {id} unloaded (tex~={} total~={})",
             queue
                 .pools
                 .texture3d_pool

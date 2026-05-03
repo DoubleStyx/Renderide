@@ -149,32 +149,58 @@ fn first_two_layer_views(texture: &ResolvedGraphTexture) -> Option<[wgpu::Textur
     ])
 }
 
+/// Creates a single-layer `D2` view of `texture` with `DepthOnly` aspect, suitable for sampling
+/// the multisampled depth attachment in the depth-resolve compute shader.
+fn depth_sample_view(texture: &ResolvedGraphTexture, layer: Option<u32>) -> wgpu::TextureView {
+    texture.texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some("forward-msaa-depth-sample-view"),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        base_array_layer: layer.unwrap_or(0),
+        array_layer_count: Some(1),
+        aspect: wgpu::TextureAspect::DepthOnly,
+        ..Default::default()
+    })
+}
+
+fn first_two_depth_sample_layer_views(
+    texture: &ResolvedGraphTexture,
+) -> Option<[wgpu::TextureView; 2]> {
+    if texture.layer_views.len() < 2 {
+        return None;
+    }
+    Some([
+        depth_sample_view(texture, Some(0)),
+        depth_sample_view(texture, Some(1)),
+    ])
+}
+
 /// Resolves MSAA attachment views from graph transient textures for the main graph.
 ///
 /// Returns `None` when MSAA is inactive (`sample_count <= 1`) or the transient handles are
 /// unavailable. The executor inserts the returned value into the
 /// per-view [`super::super::blackboard::Blackboard`] as a
-/// [`super::super::frame_params::MsaaViewsSlot`].
+/// [`super::super::frame_params::MsaaViewsSlot`]. Depth views are produced with `DepthOnly`
+/// aspect so they are directly bindable as `texture_multisampled_2d<f32>` in the depth-resolve
+/// compute shader.
 pub(super) fn resolve_forward_msaa_views_from_graph_resources(
     frame: &GraphPassFrame<'_>,
     graph_resources: &GraphResolvedResources,
-    msaa_handles: Option<[TextureHandle; 3]>,
+    msaa_handles: Option<[TextureHandle; 2]>,
 ) -> Option<super::super::frame_params::MsaaViews> {
     let handles = msaa_handles?;
-    let [color_h, depth_h, r32_h] = handles;
+    let [depth_h, r32_h] = handles;
     if frame.view.sample_count <= 1 {
         return None;
     }
-    let color = graph_resources.transient_texture(color_h)?;
     let depth = graph_resources.transient_texture(depth_h)?;
     let r32 = graph_resources.transient_texture(r32_h)?;
+    let depth_view = depth_sample_view(depth, None);
 
     if frame.view.multiview_stereo {
-        let depth_layers = first_two_layer_views(depth)?;
+        let depth_layers = first_two_depth_sample_layer_views(depth)?;
         let r32_layers = first_two_layer_views(r32)?;
         Some(super::super::frame_params::MsaaViews {
-            msaa_color_view: color.view.clone(),
-            msaa_depth_view: depth.view.clone(),
+            msaa_depth_view: depth_view,
             msaa_depth_resolve_r32_view: r32.view.clone(),
             msaa_depth_is_array: true,
             msaa_stereo_depth_layer_views: Some(depth_layers),
@@ -182,8 +208,7 @@ pub(super) fn resolve_forward_msaa_views_from_graph_resources(
         })
     } else {
         Some(super::super::frame_params::MsaaViews {
-            msaa_color_view: color.view.clone(),
-            msaa_depth_view: depth.view.clone(),
+            msaa_depth_view: depth_view,
             msaa_depth_resolve_r32_view: r32.view.clone(),
             msaa_depth_is_array: false,
             msaa_stereo_depth_layer_views: None,
@@ -269,7 +294,7 @@ pub(super) fn clamp_viewport_for_transient_alloc(
     let h = oh.min(max_texture_dimension_2d);
     if w != ow || h != oh {
         logger::warn!(
-            "transient alloc: viewport {}×{} clamped to {}×{} (max_texture_dimension_2d={max_texture_dimension_2d})",
+            "transient alloc: viewport {}x{} clamped to {}x{} (max_texture_dimension_2d={max_texture_dimension_2d})",
             ow,
             oh,
             w,

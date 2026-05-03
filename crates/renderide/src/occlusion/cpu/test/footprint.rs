@@ -20,7 +20,7 @@ pub(super) struct AabbScreenFootprint {
 /// Projects the eight AABB corners through `view_proj` and gathers the screen-space footprint.
 ///
 /// Returns `None` (caller should keep the draw) when any corner has `clip.w <= 0` (straddles the
-/// near plane / behind the camera) or the projection produces non-finite NDC values — these are
+/// near plane / behind the camera) or the projection produces non-finite NDC values -- these are
 /// the same conservative early-outs the original corner-by-corner implementation used.
 ///
 /// Implementation packs the eight corners as two SoA `Vec4`-of-4 (low / high half), evaluating
@@ -128,7 +128,7 @@ fn aabb_corners(min: Vec3, max: Vec3) -> [Vec4; 8] {
     ]
 }
 
-/// Scalar reference implementation of [`project_aabb_to_screen`] — corner-by-corner `view_proj`
+/// Scalar reference implementation of [`project_aabb_to_screen`] -- corner-by-corner `view_proj`
 /// multiply followed by sequential min/max reductions. Retained for the SIMD-vs-scalar parity
 /// property test below.
 #[cfg(test)]

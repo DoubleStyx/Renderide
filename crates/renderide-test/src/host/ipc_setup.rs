@@ -1,14 +1,15 @@
-//! Authority-side IPC setup: opens the four Cloudtoid queues, sets the per-session
-//! `RENDERIDE_INTERPROCESS_DIR` tempdir, and generates unique `-QueueName` /
-//! `shared_memory_prefix` strings so multiple harness runs (or a stray dev session) do not collide
-//! on `/dev/shm/.cloudtoid/...` files.
+//! Authority-side IPC setup: opens the four Cloudtoid queues with an explicit per-session
+//! tempdir and generates unique `-QueueName` / `shared_memory_prefix` strings so multiple
+//! harness runs in the same process (e.g. `cargo test` parallel threads) do not collide on
+//! `/dev/shm/.cloudtoid/...` files. The renderer child process is given the matching tempdir
+//! via `Command::env("RENDERIDE_INTERPROCESS_DIR", ...)` (see `scene_session/spawn.rs`); the
+//! harness itself never mutates its own environment.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use renderide_shared::ipc::HostDualQueueIpc;
-use renderide_shared::ipc::RENDERIDE_INTERPROCESS_DIR_ENV;
 use renderide_shared::ipc::connection::ConnectionParams;
 
 use crate::error::HarnessError;
@@ -19,7 +20,7 @@ pub const DEFAULT_QUEUE_CAPACITY_BYTES: i64 = 8 * 1024 * 1024;
 
 /// Per-session naming + queue endpoints owned by the harness.
 pub(super) struct IpcSession {
-    /// Authority-side dual-queue (publishes on `…A`, subscribes on `…S`).
+    /// Authority-side dual-queue (publishes on `...A`, subscribes on `...S`).
     pub queues: HostDualQueueIpc,
     /// Connection params handed to the spawned renderer (`-QueueName <name> -QueueCapacity <cap>`).
     pub connection_params: ConnectionParams,
@@ -48,31 +49,27 @@ pub fn make_session_id() -> String {
 
 /// Opens the authority IPC for a fresh session.
 ///
-/// The caller passes the resolved tempdir before invocation so it can use the same directory for
-/// the spawned renderer's `RENDERIDE_INTERPROCESS_DIR` env var. We also `set_var` it on the
-/// current process so the [`renderide_shared::SharedMemoryWriter`] backing files land in the
-/// same directory the renderer reads from.
-///
-/// # Safety
-///
-/// Sets `RENDERIDE_INTERPROCESS_DIR` on the current process. The harness is the only consumer of
-/// this env var in the test binary, so the mutation is local to our run.
+/// The tempdir is owned by the returned [`IpcSession`] and is passed explicitly to
+/// [`HostDualQueueIpc::connect_with_dir`] and to subsequent [`renderide_shared::SharedMemoryWriter`]
+/// calls (via [`renderide_shared::SharedMemoryWriterConfig::dir_override`]). The renderer child
+/// receives the same directory through `Command::env("RENDERIDE_INTERPROCESS_DIR", ...)` at
+/// spawn time. The harness's own environment is never mutated, which is what makes parallel
+/// in-process sessions safe.
 pub(super) fn connect_session(queue_capacity_bytes: i64) -> Result<IpcSession, HarnessError> {
     let tempdir_guard = tempfile::Builder::new()
         .prefix("renderide-test-shm-")
         .tempdir()?;
     let tempdir_path: PathBuf = tempdir_guard.path().to_path_buf();
 
-    set_interprocess_dir_env(&tempdir_path);
-
     let session_id = make_session_id();
     let connection_params = ConnectionParams {
         queue_name: session_id.clone(),
         queue_capacity: queue_capacity_bytes,
     };
-    let queues = HostDualQueueIpc::connect(&connection_params).map_err(|e| {
-        HarnessError::QueueOptions(format!("HostDualQueueIpc::connect failed: {e:?}"))
-    })?;
+    let queues =
+        HostDualQueueIpc::connect_with_dir(&connection_params, &tempdir_path).map_err(|e| {
+            HarnessError::QueueOptions(format!("HostDualQueueIpc::connect_with_dir failed: {e:?}"))
+        })?;
 
     Ok(IpcSession {
         queues,
@@ -80,14 +77,6 @@ pub(super) fn connect_session(queue_capacity_bytes: i64) -> Result<IpcSession, H
         shared_memory_prefix: session_id,
         tempdir_guard,
     })
-}
-
-fn set_interprocess_dir_env(path: &std::path::Path) {
-    // SAFETY: single-threaded harness setup; no other code reads this env var before we invoke
-    // the renderer or open shared-memory writers.
-    unsafe {
-        std::env::set_var(RENDERIDE_INTERPROCESS_DIR_ENV, path);
-    }
 }
 
 #[cfg(test)]

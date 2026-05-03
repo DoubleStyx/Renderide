@@ -6,7 +6,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::shared::{
-    MeshUploadData, RenderBoundingBox, VertexAttributeDescriptor, VertexAttributeType,
+    IndexBufferFormat, MeshUploadData, RenderBoundingBox, SubmeshBufferDescriptor, SubmeshTopology,
+    VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType,
 };
 use glam::Mat4;
 
@@ -14,8 +15,9 @@ use super::layout::{
     BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout, color_float4_stream_bytes,
     extract_bind_poses, extract_blendshape_offsets, extract_float3_position_normal_as_vec4_streams,
     split_bone_weights_tail_for_gpu, synthetic_bone_data_for_blendshape_only,
-    uv0_float2_stream_bytes, vertex_float2_stream_bytes, vertex_float4_stream_bytes,
+    uv0_float2_stream_bytes, vertex_float2_stream_bytes,
 };
+use super::tangent_generation::tangent_stream_bytes;
 
 use crate::gpu::GpuLimits;
 
@@ -27,19 +29,27 @@ use super::upload_impl::{
 
 use super::gpu_mesh_hints::{
     blendshape_descriptor_count, derived_streams_compatible_for_in_place, validated_submesh_ranges,
+    validated_submesh_topologies,
 };
+
+use crate::materials::RasterPrimitiveTopology;
 
 #[derive(Clone)]
 pub(super) struct ExtendedVertexStreamSource {
     vertex_bytes: Arc<[u8]>,
+    index_bytes: Arc<[u8]>,
     vertex_attributes: Arc<[VertexAttributeDescriptor]>,
+    index_format: IndexBufferFormat,
+    submeshes: Arc<[SubmeshBufferDescriptor]>,
 }
 
 impl fmt::Debug for ExtendedVertexStreamSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExtendedVertexStreamSource")
             .field("vertex_bytes_len", &self.vertex_bytes.len())
+            .field("index_bytes_len", &self.index_bytes.len())
             .field("vertex_attributes_len", &self.vertex_attributes.len())
+            .field("submeshes_len", &self.submeshes.len())
             .finish()
     }
 }
@@ -61,7 +71,15 @@ pub struct GpuMesh {
     /// Total index elements across all submeshes.
     pub index_count: u32,
     /// Per-submesh `(first_index, index_count)` in elements of `index_format`.
+    ///
+    /// Aligned row-for-row with [`Self::submesh_topologies`].
     pub submeshes: Vec<(u32, u32)>,
+    /// Per-submesh primitive topology, aligned row-for-row with [`Self::submeshes`].
+    ///
+    /// Sourced from [`crate::shared::SubmeshBufferDescriptor::topology`] at upload time.
+    /// The synthesized fallback range used when the host sends no submeshes (or every submesh
+    /// fails validation) defaults to [`RasterPrimitiveTopology::TriangleList`].
+    pub submesh_topologies: Vec<RasterPrimitiveTopology>,
     /// Vertex count from the host upload (used for deform and draw ranges).
     pub vertex_count: u32,
     /// Byte stride of one interleaved vertex in `vertex_buffer`.
@@ -86,6 +104,12 @@ pub struct GpuMesh {
     pub blendshape_shape_frame_spans: Vec<BlendshapeFrameSpan>,
     /// Number of logical blendshape slots (`max(blendshape_index)+1`).
     pub num_blendshapes: u32,
+    /// Whether uploaded blendshape rows include nonzero position deltas.
+    pub blendshape_has_position_deltas: bool,
+    /// Whether uploaded blendshape rows include nonzero normal deltas.
+    pub blendshape_has_normal_deltas: bool,
+    /// Whether uploaded blendshape rows include nonzero tangent deltas.
+    pub blendshape_has_tangent_deltas: bool,
     /// Decomposed position stream (`vec4<f32>` per vertex) for compute + debug raster.
     pub positions_buffer: Option<Arc<wgpu::Buffer>>,
     /// Bind-pose normal stream (`vec4<f32>` per vertex; xyz used). Skinning writes deformed normals
@@ -108,7 +132,7 @@ pub struct GpuMesh {
     /// True when the host uploaded a real skeleton (`bone_count > 0`).
     pub has_skeleton: bool,
     /// Unity [`Mesh.bindposes`](https://docs.unity3d.com/ScriptReference/Mesh-bindposes.html):
-    /// inverse bind matrices (mesh space → bone bind space). Per-frame palette is
+    /// inverse bind matrices (mesh space -> bone bind space). Per-frame palette is
     /// `world_bone * skinning_bind_matrices[i]`.
     pub skinning_bind_matrices: Vec<Mat4>,
     /// Approximate VRAM (bytes), used by [`crate::gpu_pools::VramAccounting`].
@@ -155,11 +179,20 @@ pub(super) fn blendshape_and_deform_buffers_match_for_in_place(
         if mesh.num_blendshapes != n_blend {
             return false;
         }
+        if mesh.blendshape_has_position_deltas != extracted.has_position_deltas
+            || mesh.blendshape_has_normal_deltas != extracted.has_normal_deltas
+            || mesh.blendshape_has_tangent_deltas != extracted.has_tangent_deltas
+        {
+            return false;
+        }
     } else if mesh.num_blendshapes > 0
         || mesh.blendshape_sparse_buffer.is_some()
         || mesh.blendshape_shape_descriptor_buffer.is_some()
         || !mesh.blendshape_frame_ranges.is_empty()
         || !mesh.blendshape_shape_frame_spans.is_empty()
+        || mesh.blendshape_has_position_deltas
+        || mesh.blendshape_has_normal_deltas
+        || mesh.blendshape_has_tangent_deltas
     {
         return false;
     }
@@ -270,18 +303,50 @@ fn has_extended_vertex_attribute(attrs: &[VertexAttributeDescriptor]) -> bool {
     })
 }
 
+fn has_supported_vertex_attribute(
+    attrs: &[VertexAttributeDescriptor],
+    target: VertexAttributeType,
+    min_dimensions: i32,
+) -> bool {
+    attrs.iter().any(|attr| {
+        (attr.attribute as i16) == (target as i16)
+            && attr.format == VertexAttributeFormat::Float32
+            && attr.dimensions >= min_dimensions
+    })
+}
+
+fn can_generate_missing_tangents(data: &MeshUploadData, layout: &MeshBufferLayout) -> bool {
+    data.vertex_count > 0
+        && layout.index_buffer_length > 0
+        && data.submeshes.iter().any(|submesh| {
+            submesh.topology == SubmeshTopology::Triangles && submesh.index_count >= 3
+        })
+        && has_supported_vertex_attribute(&data.vertex_attributes, VertexAttributeType::Position, 3)
+        && has_supported_vertex_attribute(&data.vertex_attributes, VertexAttributeType::Normal, 3)
+        && has_supported_vertex_attribute(&data.vertex_attributes, VertexAttributeType::UV0, 2)
+}
+
 pub(super) fn extended_vertex_stream_source_from_raw(
     raw: &[u8],
     data: &MeshUploadData,
     layout: &MeshBufferLayout,
 ) -> Option<ExtendedVertexStreamSource> {
-    if !has_extended_vertex_attribute(&data.vertex_attributes) {
+    if !has_extended_vertex_attribute(&data.vertex_attributes)
+        && !can_generate_missing_tangents(data, layout)
+    {
         return None;
     }
     let vertex_bytes = raw.get(..layout.vertex_size)?.to_vec();
+    let index_end = layout
+        .index_buffer_start
+        .checked_add(layout.index_buffer_length)?;
+    let index_bytes = raw.get(layout.index_buffer_start..index_end)?.to_vec();
     Some(ExtendedVertexStreamSource {
         vertex_bytes: Arc::from(vertex_bytes),
+        index_bytes: Arc::from(index_bytes),
         vertex_attributes: Arc::from(data.vertex_attributes.clone()),
+        index_format: data.index_buffer_format,
+        submeshes: Arc::from(data.submeshes.clone()),
     })
 }
 
@@ -302,6 +367,7 @@ pub(super) fn extended_vertex_stream_bytes(mesh: &GpuMesh) -> u64 {
 pub(super) fn write_in_place_vertex_and_derived_streams(
     ctx: &MeshInPlaceWriteContext<'_>,
     write_vertex: bool,
+    write_index: bool,
 ) {
     if write_vertex {
         ctx.queue.write_buffer(
@@ -311,60 +377,68 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
         );
     }
     let vertex_slice = &ctx.raw[..ctx.layout.vertex_size];
-    if !write_vertex {
+    if !write_vertex && !write_index {
         return;
     }
-    if let (Some(pb), Some(nb), Some((pvec, nvec))) = (
-        ctx.mesh.positions_buffer.as_ref(),
-        ctx.mesh.normals_buffer.as_ref(),
-        extract_float3_position_normal_as_vec4_streams(
-            vertex_slice,
-            ctx.vertex_count,
-            ctx.vertex_stride,
-            &ctx.data.vertex_attributes,
-        )
-        .as_ref(),
-    ) {
-        ctx.queue.write_buffer(pb.as_ref(), 0, pvec);
-        ctx.queue.write_buffer(nb.as_ref(), 0, nvec);
-    }
+    if write_vertex {
+        if let (Some(pb), Some(nb), Some((pvec, nvec))) = (
+            ctx.mesh.positions_buffer.as_ref(),
+            ctx.mesh.normals_buffer.as_ref(),
+            extract_float3_position_normal_as_vec4_streams(
+                vertex_slice,
+                ctx.vertex_count,
+                ctx.vertex_stride,
+                &ctx.data.vertex_attributes,
+            )
+            .as_ref(),
+        ) {
+            ctx.queue.write_buffer(pb.as_ref(), 0, pvec);
+            ctx.queue.write_buffer(nb.as_ref(), 0, nvec);
+        }
 
-    if let (Some(uvb), Some(uv)) = (
-        ctx.mesh.uv0_buffer.as_ref(),
-        uv0_float2_stream_bytes(
-            vertex_slice,
-            ctx.vertex_count,
-            ctx.vertex_stride,
-            &ctx.data.vertex_attributes,
-        ),
-    ) {
-        ctx.queue.write_buffer(uvb.as_ref(), 0, &uv);
-    }
+        if let (Some(uvb), Some(uv)) = (
+            ctx.mesh.uv0_buffer.as_ref(),
+            uv0_float2_stream_bytes(
+                vertex_slice,
+                ctx.vertex_count,
+                ctx.vertex_stride,
+                &ctx.data.vertex_attributes,
+            ),
+        ) {
+            ctx.queue.write_buffer(uvb.as_ref(), 0, &uv);
+        }
 
-    if let (Some(cb), Some(c)) = (
-        ctx.mesh.color_buffer.as_ref(),
-        color_float4_stream_bytes(
-            vertex_slice,
-            ctx.vertex_count,
-            ctx.vertex_stride,
-            &ctx.data.vertex_attributes,
-        ),
-    ) {
-        ctx.queue.write_buffer(cb.as_ref(), 0, &c);
+        if let (Some(cb), Some(c)) = (
+            ctx.mesh.color_buffer.as_ref(),
+            color_float4_stream_bytes(
+                vertex_slice,
+                ctx.vertex_count,
+                ctx.vertex_stride,
+                &ctx.data.vertex_attributes,
+            ),
+        ) {
+            ctx.queue.write_buffer(cb.as_ref(), 0, &c);
+        }
     }
 
     if let (Some(tb), Some(t)) = (
         ctx.mesh.tangent_buffer.as_ref(),
-        vertex_float4_stream_bytes(
+        tangent_stream_bytes(
             vertex_slice,
+            &ctx.raw[ctx.layout.index_buffer_start
+                ..ctx.layout.index_buffer_start + ctx.layout.index_buffer_length],
             ctx.vertex_count,
             ctx.vertex_stride,
             &ctx.data.vertex_attributes,
-            VertexAttributeType::Tangent,
-            [1.0, 1.0, 1.0, 1.0],
+            ctx.data.index_buffer_format,
+            &ctx.data.submeshes,
         ),
     ) {
         ctx.queue.write_buffer(tb.as_ref(), 0, &t);
+    }
+
+    if !write_vertex {
+        return;
     }
 
     for (buffer, target) in [
@@ -403,19 +477,37 @@ pub(super) fn write_in_place_index_buffer(
     queue.write_buffer(mesh.index_buffer.as_ref(), 0, ib_slice);
 }
 
-/// Writes bone/synthetic bone buffers from `raw` according to hint flags.
-#[expect(
-    clippy::fn_params_excessive_bools,
-    reason = "per-buffer hint flags from the host; grouping them obscures the per-buffer intent"
-)]
+/// Per-buffer hint flags driving [`write_in_place_bone_buffers`].
+///
+/// Each field maps one-to-one to a host upload hint and selects which bone-related buffers are
+/// rewritten in this in-place update.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BoneBufferWriteHints {
+    /// Whole upload involves bone buffers; if `false`, the call is a no-op.
+    pub needs_bone_buffers: bool,
+    /// The mesh has no real bones and is using synthesised single-bone data for blendshape-only
+    /// skinning.
+    pub synthetic_bones: bool,
+    /// Full upload: every bone buffer should be rewritten irrespective of the per-buffer flags.
+    pub full: bool,
+    /// Bone counts and bone weights/indices should be rewritten.
+    pub write_bone_weights: bool,
+    /// Bind poses should be rewritten.
+    pub write_bind_poses: bool,
+}
+
+/// Writes bone/synthetic bone buffers from `raw` according to `hints`.
 pub(super) fn write_in_place_bone_buffers(
     ctx: &MeshInPlaceWriteContext<'_>,
-    needs_bone_buffers: bool,
-    synthetic_bones: bool,
-    full: bool,
-    write_bone_weights: bool,
-    write_bind_poses: bool,
+    hints: BoneBufferWriteHints,
 ) -> Option<()> {
+    let BoneBufferWriteHints {
+        needs_bone_buffers,
+        synthetic_bones,
+        full,
+        write_bone_weights,
+        write_bind_poses,
+    } = hints;
     if !needs_bone_buffers {
         return Some(());
     }
@@ -546,9 +638,12 @@ impl GpuMesh {
         );
         let num_blendshapes = blend_up.num_blendshapes;
 
-        let submeshes = {
+        let (submeshes, submesh_topologies) = {
             profiling::scope!("asset::mesh_validate_submesh_ranges");
-            validated_submesh_ranges(&data.submeshes, core.index_count_u32)
+            (
+                validated_submesh_ranges(&data.submeshes, core.index_count_u32),
+                validated_submesh_topologies(&data.submeshes, core.index_count_u32),
+            )
         };
 
         let resident_bytes = {
@@ -570,6 +665,7 @@ impl GpuMesh {
             index_format: core.index_format,
             index_count: core.index_count_u32,
             submeshes,
+            submesh_topologies,
             vertex_count: data.vertex_count.max(0) as u32,
             vertex_stride: core.vertex_stride,
             bounds: data.bounds,
@@ -582,6 +678,9 @@ impl GpuMesh {
             blendshape_frame_ranges: blend_up.frame_ranges,
             blendshape_shape_frame_spans: blend_up.shape_frame_spans,
             num_blendshapes,
+            blendshape_has_position_deltas: blend_up.has_position_deltas,
+            blendshape_has_normal_deltas: blend_up.has_normal_deltas,
+            blendshape_has_tangent_deltas: blend_up.has_tangent_deltas,
             positions_buffer: derived.positions_buffer,
             normals_buffer: derived.normals_buffer,
             uv0_buffer: derived.uv0_buffer,

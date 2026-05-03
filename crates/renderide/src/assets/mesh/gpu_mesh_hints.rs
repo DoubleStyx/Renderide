@@ -1,5 +1,6 @@
 //! Free helpers for index format, submesh ranges, selective upload hints, and in-place stream checks.
 
+use crate::materials::RasterPrimitiveTopology;
 use crate::shared::{
     BlendshapeBufferDescriptor, IndexBufferFormat, MeshUploadData, MeshUploadHintFlag,
     SubmeshBufferDescriptor, VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType,
@@ -26,11 +27,7 @@ pub(super) fn validated_submesh_ranges(
     }
     let valid: Vec<(u32, u32)> = submeshes
         .iter()
-        .filter(|s| {
-            s.index_count > 0
-                && (i64::from(s.index_start) + i64::from(s.index_count))
-                    <= i64::from(index_count_u32)
-        })
+        .filter(|s| valid_submesh_range(s, index_count_u32))
         .map(|s| (s.index_start as u32, s.index_count as u32))
         .collect();
     if valid.is_empty() && index_count_u32 > 0 {
@@ -38,6 +35,39 @@ pub(super) fn validated_submesh_ranges(
     } else {
         valid
     }
+}
+
+/// Per-submesh primitive topologies, row-aligned with [`validated_submesh_ranges`].
+///
+/// Mirrors the same filter and fallback policy as `validated_submesh_ranges` so the two arrays
+/// can be indexed by the same submesh index. When the host sends no submeshes (or every submesh
+/// fails validation but `index_count_u32 > 0`), the synthesized full-range entry defaults to
+/// [`RasterPrimitiveTopology::TriangleList`].
+pub(super) fn validated_submesh_topologies(
+    submeshes: &[SubmeshBufferDescriptor],
+    index_count_u32: u32,
+) -> Vec<RasterPrimitiveTopology> {
+    if submeshes.is_empty() {
+        if index_count_u32 > 0 {
+            return vec![RasterPrimitiveTopology::default()];
+        }
+        return Vec::new();
+    }
+    let valid: Vec<RasterPrimitiveTopology> = submeshes
+        .iter()
+        .filter(|s| valid_submesh_range(s, index_count_u32))
+        .map(|s| RasterPrimitiveTopology::from(s.topology))
+        .collect();
+    if valid.is_empty() && index_count_u32 > 0 {
+        vec![RasterPrimitiveTopology::default()]
+    } else {
+        valid
+    }
+}
+
+fn valid_submesh_range(s: &SubmeshBufferDescriptor, index_count_u32: u32) -> bool {
+    s.index_count > 0
+        && (i64::from(s.index_start) + i64::from(s.index_count)) <= i64::from(index_count_u32)
 }
 
 pub(super) fn derived_streams_compatible_for_in_place(
@@ -116,7 +146,7 @@ fn optional_stream_size_matches(buffer: Option<&wgpu::Buffer>, expected: Option<
     }
 }
 
-/// True when the host requests any selective (non–full-replace) upload region.
+/// True when the host requests any selective (non-full-replace) upload region.
 pub(crate) fn mesh_upload_hint_any_selective(h: MeshUploadHintFlag) -> bool {
     h.vertex_layout()
         || h.positions()
@@ -171,6 +201,19 @@ mod tests {
     fn submesh(start: i32, count: i32) -> SubmeshBufferDescriptor {
         SubmeshBufferDescriptor {
             topology: SubmeshTopology::default(),
+            index_start: start,
+            index_count: count,
+            ..Default::default()
+        }
+    }
+
+    fn submesh_with_topology(
+        start: i32,
+        count: i32,
+        topology: SubmeshTopology,
+    ) -> SubmeshBufferDescriptor {
+        SubmeshBufferDescriptor {
+            topology,
             index_start: start,
             index_count: count,
             ..Default::default()
@@ -239,6 +282,56 @@ mod tests {
             },
         ];
         assert_eq!(blendshape_descriptor_count(&d), 5);
+    }
+
+    #[test]
+    fn submesh_topologies_empty_with_zero_indices_yields_empty() {
+        assert!(validated_submesh_topologies(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn submesh_topologies_empty_with_indices_falls_back_to_triangle_list() {
+        assert_eq!(
+            validated_submesh_topologies(&[], 12),
+            vec![RasterPrimitiveTopology::TriangleList],
+        );
+    }
+
+    #[test]
+    fn submesh_topologies_round_trip_mixed_topologies() {
+        let s = [
+            submesh_with_topology(0, 6, SubmeshTopology::Points),
+            submesh_with_topology(6, 6, SubmeshTopology::Triangles),
+        ];
+        assert_eq!(
+            validated_submesh_topologies(&s, 12),
+            vec![
+                RasterPrimitiveTopology::PointList,
+                RasterPrimitiveTopology::TriangleList,
+            ],
+        );
+    }
+
+    #[test]
+    fn submesh_topologies_filter_aligns_with_ranges() {
+        let s = [
+            submesh_with_topology(0, 0, SubmeshTopology::Points),
+            submesh_with_topology(0, 6, SubmeshTopology::Triangles),
+        ];
+        assert_eq!(validated_submesh_ranges(&s, 6), vec![(0, 6)]);
+        assert_eq!(
+            validated_submesh_topologies(&s, 6),
+            vec![RasterPrimitiveTopology::TriangleList],
+        );
+    }
+
+    #[test]
+    fn submesh_topologies_all_invalid_falls_back_to_triangle_list() {
+        let s = [submesh_with_topology(100, 6, SubmeshTopology::Points)];
+        assert_eq!(
+            validated_submesh_topologies(&s, 12),
+            vec![RasterPrimitiveTopology::TriangleList],
+        );
     }
 
     #[test]

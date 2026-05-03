@@ -13,7 +13,7 @@ use super::{BufferRenderer, DEAD_TRANSFORM_ID, LightCache};
 impl LightCache {
     /// Applies [`crate::shared::LightsBufferRendererUpdate`]: removals, additions, then states.
     ///
-    /// Order is fixed (**removals → additions → states**) to mirror the host
+    /// Order is fixed (**removals -> additions -> states**) to mirror the host
     /// `RenderableManager.HandleUpdate`. Removal uses [`Vec::swap_remove`] so the renderer's
     /// dense list stays in lockstep with the host's swap-remove reindexing; additions append
     /// placeholder entries whose transform ids come from the `additions` buffer; state rows
