@@ -56,6 +56,8 @@ use super::snapshots::renderer_info::RendererInfoSnapshot;
 use super::snapshots::scene_transforms::SceneTransformsSnapshot;
 use super::snapshots::texture_debug::TextureDebugSnapshot;
 
+const IMGUI_INI_SAVE_RATE_SECS: f32 = 0.25;
+
 /// Dear ImGui overlay: frame timing, renderer stats, shader routes, scene transforms, and config UI.
 pub struct DebugHud {
     imgui: Context,
@@ -107,6 +109,7 @@ impl DebugHud {
             let io = imgui.io_mut();
             io.config_windows_move_from_title_bar_only = true;
             io.font_global_scale = hud_settings.resolved_ui_scale();
+            io.ini_saving_rate = IMGUI_INI_SAVE_RATE_SECS;
         }
         imgui.fonts().add_font(&[FontSource::DefaultFontData {
             config: Some(FontConfig {
@@ -268,11 +271,7 @@ impl DebugHud {
         }
     }
 
-    fn save_imgui_ini_if_requested(&mut self) {
-        if !self.imgui.io().want_save_ini_settings {
-            return;
-        }
-
+    fn save_imgui_ini_now(&mut self) {
         if self.current_hud_settings().persist_layout {
             let mut contents = String::new();
             self.imgui.save_ini_settings(&mut contents);
@@ -285,6 +284,12 @@ impl DebugHud {
         }
 
         self.imgui.io_mut().want_save_ini_settings = false;
+    }
+
+    fn save_imgui_ini_if_requested(&mut self) {
+        if self.imgui.io().want_save_ini_settings {
+            self.save_imgui_ini_now();
+        }
     }
 
     /// Returns `true` when at least one HUD window will draw something this frame.
@@ -417,6 +422,12 @@ impl DebugHud {
         self.persist_ui_state_to_config_if_changed();
         self.save_imgui_ini_if_requested();
         result
+    }
+}
+
+impl Drop for DebugHud {
+    fn drop(&mut self) {
+        self.save_imgui_ini_now();
     }
 }
 
