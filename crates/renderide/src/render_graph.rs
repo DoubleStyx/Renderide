@@ -10,14 +10,14 @@
 //! ## Portability
 //!
 //! [`TextureAccess`] and [`BufferAccess`] describe resource usage for ordering and validation. If
-//! this project ever targets a lower-level API than wgpu’s automatic barriers, the same access
+//! this project ever targets a lower-level API than wgpu's automatic barriers, the same access
 //! metadata is the natural input for barrier and layout transition planning.
 //!
 //! ## Responsibilities
 //!
 //! - **[`GraphBuilder`]** declares transient resources/imports, groups, and [`RenderPass`] nodes,
 //!   then calls each pass's setup hook to derive resource-ordering edges.
-//! - **[`CompiledRenderGraph`]** — immutable flattened pass list in dependency order with
+//! - **[`CompiledRenderGraph`]** -- immutable flattened pass list in dependency order with
 //!   transient usage unions and lifetime-based alias slots. At run time,
 //!   [`CompiledRenderGraph::execute`] / [`CompiledRenderGraph::execute_multi_view`] may acquire the
 //!   swapchain once when any pass writes the logical `backbuffer` resource, then present after the
@@ -43,22 +43,22 @@
 //! Runtime and passes combine to the following **logical** phases each frame (some CPU-side,
 //! some GPU passes in [`passes`]):
 //!
-//! 1. **LightPrep** — [`crate::backend::FrameResourceManager::prepare_lights_from_scene`] packs
+//! 1. **LightPrep** -- [`crate::backend::FrameResourceManager::prepare_lights_from_scene`] packs
 //!    clustered lights (see [`crate::world_mesh::cluster_frame_params`]); at most one full pack per winit tick (coalesced across graph entry points).
-//! 2. **Camera / cluster params** — [`frame_params::GraphPassFrame`] + [`crate::world_mesh::cluster_frame_params`] from
+//! 2. **Camera / cluster params** -- [`frame_params::GraphPassFrame`] + [`crate::world_mesh::cluster_frame_params`] from
 //!    host camera and [`HostCameraFrame`].
-//! 3. **Cull** — frustum and Hi-Z occlusion via [`crate::world_mesh::build_world_mesh_cull_proj_params`] and
+//! 3. **Cull** -- frustum and Hi-Z occlusion via [`crate::world_mesh::build_world_mesh_cull_proj_params`] and
 //!    [`crate::world_mesh::capture_hi_z_temporal`] (inputs to forward pass).
-//! 4. **Sort** — [`crate::world_mesh::collect_and_sort_draws`] builds draw order and batch keys.
-//! 5. **DrawPrep** — per-draw uniforms and material resolution inside [`passes::WorldMeshForwardPreparePass`].
-//! 6. **RenderPasses** — [`CompiledRenderGraph`] runs mesh deform (logical deform outputs producer),
+//! 4. **Sort** -- [`crate::world_mesh::collect_and_sort_draws`] builds draw order and batch keys.
+//! 5. **DrawPrep** -- per-draw uniforms and material resolution inside [`passes::WorldMeshForwardPreparePass`].
+//! 6. **RenderPasses** -- [`CompiledRenderGraph`] runs mesh deform (logical deform outputs producer),
 //!    clustered lights, then forward (see [`default_graph_tests`] / [`build_main_graph`]); frame-global
 //!    deform runs before per-view passes at execute time ([`CompiledRenderGraph::execute_multi_view`]).
-//! 7. **HiZ** — [`passes::HiZBuildPass`] after depth is written; CPU readback feeds next frame’s cull
+//! 7. **HiZ** -- [`passes::HiZBuildPass`] after depth is written; CPU readback feeds next frame's cull
 //!    ([`crate::render_graph::occlusion`]).
-//! 8. **SceneColorCompose** — [`passes::SceneColorComposePass`] copies HDR scene color into the swapchain
+//! 8. **SceneColorCompose** -- [`passes::SceneColorComposePass`] copies HDR scene color into the swapchain
 //!    / XR / offscreen output (hook for future post-processing).
-//! 9. **FrameEnd** — submit, optional debug HUD composite, present, Hi-Z frame bookkeeping.
+//! 9. **FrameEnd** -- submit, optional debug HUD composite, present, Hi-Z frame bookkeeping.
 
 pub(crate) mod blackboard;
 pub(crate) mod builder;

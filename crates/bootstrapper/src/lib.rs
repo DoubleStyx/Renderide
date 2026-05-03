@@ -1,11 +1,11 @@
 //! ResoBoot-compatible bootstrapper: launches Renderite Host, bridges clipboard/renderer over shared-memory queues.
 //!
 //! Queue backing paths follow [`interprocess::default_memory_dir`] on each OS unless
-//! `RENDERIDE_INTERPROCESS_DIR` is set—the Host must use the same directory (same env or defaults).
+//! `RENDERIDE_INTERPROCESS_DIR` is set--the Host must use the same directory (same env or defaults).
 //!
 //! When the Host spawns the renderer via the bootstrap queue, the bootstrapper tracks that
 //! [`std::process::Child`]. If the **renderer** exits first (for example the user closes the
-//! window), the bootstrapper terminates the **Host** process and exits—mirroring engine-side
+//! window), the bootstrapper terminates the **Host** process and exits--mirroring engine-side
 //! watchdog behavior so the session does not outlive the GPU process.
 //!
 //! The binary entry point is [`run`]; use [`BootstrapOptions`] to supply Host arguments and logging.

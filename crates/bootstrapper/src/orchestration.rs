@@ -93,7 +93,7 @@ fn install_macos_signal_handler(cancel: &Arc<AtomicBool>) {
 ///
 /// When the **renderer** exits first (e.g. user closes the window), the renderer watcher sets
 /// `cancel`, terminates the **Host** [`Child`], and the queue loop ends so the bootstrapper process
-/// exits—analogous to the engine-side watchdog that stops the session when the GPU process dies.
+/// exits--analogous to the engine-side watchdog that stops the session when the GPU process dies.
 fn spawn_watchdogs(
     config: &ResoBootConfig,
     cancel: Arc<AtomicBool>,

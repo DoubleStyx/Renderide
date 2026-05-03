@@ -52,7 +52,7 @@ fn reserve_blendshape_param_range(
     })
 }
 
-/// Sparse blendshape scatter: copy bind poses → cache range, then one scatter dispatch per weighted shape chunk.
+/// Sparse blendshape scatter: copy bind poses -> cache range, then one scatter dispatch per weighted shape chunk.
 pub(super) fn record_blendshape_deform(
     gpu: &mut MeshDeformEncodeGpu<'_>,
     mesh: &MeshDeformSnapshot,
@@ -297,7 +297,7 @@ fn pack_blendshape_scatter_params(
                 let wg = workgroup_count(sparse_count);
                 if !gpu.gpu_limits.compute_dispatch_fits(wg, 1, 1) {
                     logger::warn!(
-                        "mesh deform: blendshape scatter dispatch {}×1×1 exceeds max_compute_workgroups_per_dimension ({})",
+                        "mesh deform: blendshape scatter dispatch {}x1x1 exceeds max_compute_workgroups_per_dimension ({})",
                         wg,
                         max_wg
                     );

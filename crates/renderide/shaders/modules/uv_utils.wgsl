@@ -1,6 +1,6 @@
 //! Unity `_ST` tiling/offset, polar UV helpers, and keyword-float checks.
 //!
-//! Import with `#import renderide::uv_utils as uvu` (do **not** use alias `uv` — naga-oil rejects it).
+//! Import with `#import renderide::uv_utils as uvu` (do **not** use alias `uv` -- naga-oil rejects it).
 //!
 //! Sampled textures use Unity convention (V=0 at the bottom row of storage), matching mesh UVs
 //! authored in the same convention. Material sampling therefore needs no V flip in the shader,

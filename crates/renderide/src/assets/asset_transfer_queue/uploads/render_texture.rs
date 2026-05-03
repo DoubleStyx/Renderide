@@ -1,4 +1,4 @@
-//! Host render-texture format IPC → [`crate::gpu_pools::GpuRenderTexture`] pool.
+//! Host render-texture format IPC -> [`crate::gpu_pools::GpuRenderTexture`] pool.
 
 use crate::gpu_pools::GpuRenderTexture;
 use crate::ipc::DualQueueIpc;
@@ -52,7 +52,7 @@ pub fn on_set_render_texture_format(
     queue.maybe_warn_texture_vram_budget();
     send_render_texture_result(ipc, id, !existed_before);
     logger::trace!(
-        "render texture {} {}×{} depth_bits={} (resident_bytes≈{})",
+        "render texture {} {}x{} depth_bits={} (resident_bytes~={})",
         id,
         f.size.x,
         f.size.y,
@@ -71,7 +71,7 @@ pub fn on_unload_render_texture(queue: &mut AssetTransferQueue, u: UnloadRenderT
     queue.catalogs.render_texture_formats.remove(&id);
     if queue.pools.render_texture_pool.remove(id) {
         logger::info!(
-            "render texture {id} unloaded (tex≈{} total≈{})",
+            "render texture {id} unloaded (tex~={} total~={})",
             queue
                 .pools
                 .texture_pool

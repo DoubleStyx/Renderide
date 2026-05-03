@@ -1,6 +1,6 @@
 //! End-to-end exercise of the sphere asset pipeline:
-//! [`renderide_test::scene::sphere::generate_sphere`] →
-//! [`renderide_test::scene::mesh_payload::pack_sphere_mesh_upload`] →
+//! [`renderide_test::scene::sphere::generate_sphere`] ->
+//! [`renderide_test::scene::mesh_payload::pack_sphere_mesh_upload`] ->
 //! [`renderide_test::scene::mesh_payload::make_mesh_upload_data`].
 //!
 //! All three stages are pure CPU code; no GPU is touched.

@@ -10,9 +10,9 @@ const SH_C0: f32 = 0.2820948;
 const SH_C1: f32 = 0.48860252;
 /// Unity/Froox SH basis coefficient for xy/yz/xz second-band terms.
 const SH_C2: f32 = 1.0925485;
-/// Unity/Froox SH basis coefficient for the 3z²-1 second-band term.
+/// Unity/Froox SH basis coefficient for the 3z^2-1 second-band term.
 const SH_C3: f32 = 0.31539157;
-/// Unity/Froox SH basis coefficient for the x²-y² second-band term.
+/// Unity/Froox SH basis coefficient for the x^2-y^2 second-band term.
 const SH_C4: f32 = 0.54627424;
 /// Samples the frame SH2 probe for a world-space normal.
 fn ambient_probe(normal_ws: vec3<f32>) -> vec3<f32> {

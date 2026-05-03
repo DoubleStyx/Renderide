@@ -1,7 +1,7 @@
 //! Host-side encoder for `TransformsUpdate.pose_updates` shared-memory rows.
 //!
 //! Each row is a fixed 44 bytes: `i32 transform_id` + [`crate::shared::RenderTransform`]
-//! (40 bytes; pack order `position → scale → rotation` per the renderer-side parser at
+//! (40 bytes; pack order `position -> scale -> rotation` per the renderer-side parser at
 //! `crates/renderide/src/scene/transforms_apply.rs`).
 
 use crate::shared::{RENDER_TRANSFORM_HOST_ROW_BYTES, RenderTransform};
@@ -25,7 +25,7 @@ pub fn encode_transform_pose_updates(rows: &[TransformPoseRow]) -> Vec<u8> {
     for (i, row) in rows.iter().enumerate() {
         let base = i * TRANSFORM_POSE_ROW_BYTES;
         out[base..base + 4].copy_from_slice(&row.transform_id.to_le_bytes());
-        // RenderTransform is `position(Vec3) → scale(Vec3) → rotation(Quat)` per shared.rs.
+        // RenderTransform is `position(Vec3) -> scale(Vec3) -> rotation(Quat)` per shared.rs.
         let pos = row.pose.position;
         out[base + 4..base + 8].copy_from_slice(&pos.x.to_le_bytes());
         out[base + 8..base + 12].copy_from_slice(&pos.y.to_le_bytes());

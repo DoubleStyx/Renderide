@@ -49,7 +49,7 @@ pub struct SubmitBatch {
     /// Optional oneshot fired after submit + present complete on the driver thread.
     ///
     /// Use this when the main thread must block until the frame is known to be on the
-    /// wire — e.g. headless tests that read back the presented image synchronously.
+    /// wire -- e.g. headless tests that read back the presented image synchronously.
     pub wait: Option<SubmitWait>,
     /// Monotonic frame counter, surfaced in [`super::DriverError`] and Tracy zone labels.
     pub frame_seq: u64,

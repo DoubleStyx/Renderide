@@ -1,4 +1,4 @@
-//! [`SetTexture3DData`](crate::shared::SetTexture3DData) → [`wgpu::Queue::write_texture`] for [`wgpu::TextureDimension::D3`].
+//! [`SetTexture3DData`](crate::shared::SetTexture3DData) -> [`wgpu::Queue::write_texture`] for [`wgpu::TextureDimension::D3`].
 
 use std::sync::Arc;
 
@@ -23,9 +23,9 @@ struct Texture3dMipGeom {
     d: u32,
     /// Mip level index for diagnostics.
     level_idx: u32,
-    /// Tight byte length of one depth slice (stride × height).
+    /// Tight byte length of one depth slice (stride x height).
     slice_bytes: usize,
-    /// Tight byte length of the full volume (`slice_bytes × d`).
+    /// Tight byte length of the full volume (`slice_bytes x d`).
     vol_bytes: usize,
 }
 
@@ -229,7 +229,7 @@ impl Texture3dMipChainUploader {
             || tex_extent.depth_or_array_layers != base_d
         {
             return Err(TextureUploadError::from(format!(
-                "GPU texture {}×{}×{} does not match SetTexture3DFormat {}×{}×{} for asset {}",
+                "GPU texture {}x{}x{} does not match SetTexture3DFormat {}x{}x{} for asset {}",
                 tex_extent.width,
                 tex_extent.height,
                 tex_extent.depth_or_array_layers,

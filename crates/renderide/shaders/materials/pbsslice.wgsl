@@ -67,7 +67,7 @@ fn plane_distance(p: vec3<f32>, normal: vec3<f32>, offset: f32) -> f32 {
 }
 
 fn slice_position(world_pos: vec3<f32>, object_pos: vec3<f32>) -> vec3<f32> {
-    // Unity `#pragma multi_compile WORLD_SPACE OBJECT_SPACE` — default to world space when neither
+    // Unity `#pragma multi_compile WORLD_SPACE OBJECT_SPACE` -- default to world space when neither
     // keyword is set, honor explicit OBJECT_SPACE only when WORLD_SPACE is off.
     let use_world = uvu::kw_enabled(mat._WORLD_SPACE) || (!uvu::kw_enabled(mat._OBJECT_SPACE));
     return select(object_pos, world_pos, use_world);
@@ -89,19 +89,19 @@ fn sample_normal_world(
     uv_main: vec2<f32>,
     uv_detail: vec2<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
     front_facing: bool,
 ) -> vec3<f32> {
-    var n = normalize(world_n);
     let use_normal_map = uvu::kw_enabled(mat._NORMALMAP) || uvu::kw_enabled(mat._DETAIL_NORMALMAP);
     if (use_normal_map) {
-        let tbn = pnorm::orthonormal_tbn(n);
-        var ts = nd::decode_ts_normal_with_placeholder(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_main).xyz,
+        let tbn = pnorm::orthonormal_tbn(world_n, world_t);
+        var ts = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(_NormalMap, _NormalMap_sampler, uv_main),
             mat._NormalScale,
         );
         if (uvu::kw_enabled(mat._DETAIL_NORMALMAP)) {
-            let detail = nd::decode_ts_normal_with_placeholder(
-                textureSample(_DetailNormalMap, _DetailNormalMap_sampler, uv_detail).xyz,
+            let detail = nd::decode_ts_normal_with_placeholder_sample(
+                textureSample(_DetailNormalMap, _DetailNormalMap_sampler, uv_detail),
                 mat._DetailNormalMapScale,
             );
             ts = blend_detail_normal(ts, detail);
@@ -112,6 +112,7 @@ fn sample_normal_world(
         }
         return normalize(tbn * ts);
     }
+    var n = normalize(world_n);
     if (!front_facing) {
         n = -n;
     }
@@ -127,11 +128,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldObjectVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_object_vertex_main(instance_index, view_idx, pos, n, uv0);
+    return mv::world_object_vertex_main(instance_index, view_idx, pos, n, t, uv0);
 #else
-    return mv::world_object_vertex_main(instance_index, 0u, pos, n, uv0);
+    return mv::world_object_vertex_main(instance_index, 0u, pos, n, t, uv0);
 #endif
 }
 
@@ -143,8 +145,9 @@ fn fs_main(
     @location(0) world_pos: vec3<f32>,
     @location(1) object_pos: vec3<f32>,
     @location(2) world_n: vec3<f32>,
-    @location(3) uv0: vec2<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(3) world_t: vec4<f32>,
+    @location(4) uv0: vec2<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
     let uv_detail_albedo = uvu::apply_st(uv0, mat._DetailAlbedoMap_ST);
@@ -176,7 +179,7 @@ fn fs_main(
 
     let base_color = c.rgb;
     let alpha = c.a;
-    let n = sample_normal_world(uv_main, uv_detail_normal, world_n, front_facing);
+    let n = sample_normal_world(uv_main, uv_detail_normal, world_n, world_t, front_facing);
 
     var occlusion: f32 = 1.0;
     if (uvu::kw_enabled(mat._OCCLUSION)) {

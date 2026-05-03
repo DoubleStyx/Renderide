@@ -1,7 +1,7 @@
 //! Integration: [`logger::init_for`] sanitizes hostile timestamps before opening the log file.
 //!
-//! The sanitization is a defense-in-depth guard against future callers — or attacker-influenced
-//! input — passing path-like strings through the public API. The opened file must remain inside
+//! The sanitization is a defense-in-depth guard against future callers -- or attacker-influenced
+//! input -- passing path-like strings through the public API. The opened file must remain inside
 //! the resolved component directory and have a single safe `.log` extension.
 
 /// Verifies that a malicious timestamp containing path traversal segments cannot escape the

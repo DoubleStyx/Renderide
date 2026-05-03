@@ -1,4 +1,4 @@
-//! Trivial pool that always constructs with [`Default`] and drops on “return”.
+//! Trivial pool that always constructs with [`Default`] and drops on "return".
 
 use super::memory_packable::MemoryPackable;
 use super::memory_packer_entity_pool::MemoryPackerEntityPool;

@@ -30,7 +30,7 @@
 //!
 //! [`RenderSpaceState::static_mesh_renderers`](RenderSpaceState::static_mesh_renderers) and
 //! [`RenderSpaceState::skinned_mesh_renderers`](RenderSpaceState::skinned_mesh_renderers) use dense
-//! `renderable_index` ↔ `Vec` index, with removals in buffer order (swap-with-last).
+//! `renderable_index` <-> `Vec` index, with removals in buffer order (swap-with-last).
 //!
 //! ## Lights
 //!
@@ -41,9 +41,9 @@
 //!
 //! ## Layout
 //!
-//! - **`coordinator/`** — [`SceneCoordinator`] registry and [`FrameSubmitData`] orchestration; world-matrix helpers for render context / overlays live alongside in `world_queries`.
-//! - **IPC apply** — [`camera_apply`], [`transforms_apply`], [`mesh_apply`], [`lights`].
-//! - **`render_overrides/`** — host transform/material override mirror (`types`, `space_impl`, `apply`).
+//! - **`coordinator/`** -- [`SceneCoordinator`] registry and [`FrameSubmitData`] orchestration; world-matrix helpers for render context / overlays live alongside in `world_queries`.
+//! - **IPC apply** -- [`camera_apply`], [`transforms_apply`], [`mesh_apply`], [`lights`].
+//! - **`render_overrides/`** -- host transform/material override mirror (`types`, `space_impl`, `apply`).
 //!
 //! ## Reflection probes
 //!

@@ -8,7 +8,7 @@
 //!
 //! The landed implementation relies on the following concurrency-safe pieces:
 //!
-//! - `record(&self, …)` on every pass trait, plus `Send + Sync` pass trait bounds.
+//! - `record(&self, ...)` on every pass trait, plus `Send + Sync` pass trait bounds.
 //! - [`crate::render_graph::FrameUploadBatch`] for deferred `Queue::write_buffer` calls drained on
 //!   the main thread before submit.
 //! - Pre-resolved transient textures and buffers cloned per view before imported resources are

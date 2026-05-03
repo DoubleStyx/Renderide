@@ -44,11 +44,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> VertexOutput {
 #ifdef MULTIVIEW
-    let inner = fv::vertex_main(instance_index, view_idx, pos, n, uv0);
+    let inner = fv::vertex_main(instance_index, view_idx, pos, n, t, uv0);
 #else
-    let inner = fv::vertex_main(instance_index, 0u, pos, n, uv0);
+    let inner = fv::vertex_main(instance_index, 0u, pos, n, t, uv0);
 #endif
     var out: VertexOutput;
     out.clip_pos = inner.clip_pos;

@@ -55,11 +55,12 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldColorVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, uv, color);
+    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, t, uv, color);
 #else
-    return mv::world_color_vertex_main(instance_index, 0u, pos, n, uv, color);
+    return mv::world_color_vertex_main(instance_index, 0u, pos, n, t, uv, color);
 #endif
 }
 
@@ -69,7 +70,7 @@ fn fs_main(in: mv::WorldColorVertexOutput) -> @location(0) vec4<f32> {
     var n = normalize(in.world_n);
     if (mat._NORMALMAP > 0.99) {
         let uv_n = vec2<f32>(in.primary_uv.x, 1.0 - in.primary_uv.y);
-        let tbn = pnorm::orthonormal_tbn(n);
+        let tbn = pnorm::orthonormal_tbn(n, in.world_t);
         let ts_n = nd::decode_ts_normal_with_placeholder_sample(
             textureSample(_NormalMap, _NormalMap_sampler, uv_n),
             mat._NormalScale,

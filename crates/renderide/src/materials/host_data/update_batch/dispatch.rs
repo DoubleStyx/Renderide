@@ -217,7 +217,7 @@ fn apply_structural_opcode(
 ///   instance changed, because just changing the values doesn't seem to notify any of the mesh
 ///   renderers of this change"). Without this signal, the host's `MaterialAssetUpdated(false)`
 ///   path skips `AssetCreated()` / `Reinitialize()` and never re-emits the property block to
-///   renderers — the root cause of intermittent text-quad rendering.
+///   renderers -- the root cause of intermittent text-quad rendering.
 /// - **Material** ops return `true` only for structural ops that stick to the material instance:
 ///   `SetShader`, `SetInstancing`, `SetRenderQueue`, `SetRenderType`. Per-property writes
 ///   (`SetFloat`, `SetFloat4`, `SetFloat4x4`, `SetTexture`, array variants) return `false`.

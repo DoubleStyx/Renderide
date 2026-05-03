@@ -49,8 +49,8 @@ pub(super) struct OpenxrControllerRawInputs {
 
 /// Maps the active OpenXR profile to a host [`VRControllerState`] variant.
 ///
-/// Every profile that lacks a dedicated host variant — including
-/// [`ActiveControllerProfile::Generic`] and [`ActiveControllerProfile::Simple`] — is encoded as
+/// Every profile that lacks a dedicated host variant -- including
+/// [`ActiveControllerProfile::Generic`] and [`ActiveControllerProfile::Simple`] -- is encoded as
 /// [`VRControllerState::TouchControllerState`]. The host caches controllers by `device_id` and
 /// casts the cached instance to the incoming variant's type; emitting the same polymorphic
 /// shape across profile transitions is what keeps that cast valid when OpenXR transiently

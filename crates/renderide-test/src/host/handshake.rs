@@ -1,4 +1,4 @@
-//! Init handshake: sends `RendererInitData` → awaits `RendererInitResult` → sends
+//! Init handshake: sends `RendererInitData` -> awaits `RendererInitResult` -> sends
 //! `RendererInitFinalizeData`.
 //!
 //! Field defaults come from the production C# host (`FrooxEngine/RenderSystem.cs:197-222`):
@@ -23,7 +23,7 @@ pub(super) const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Drives the three-step init handshake. Pumps the lockstep loop while waiting for the result so
 /// any `FrameStartData` the renderer sends before finalize gets answered (the renderer's
 /// `frontend::begin_frame::begin_frame_allowed` only sends `FrameStartData` after `Finalized`,
-/// but we still want to keep `…S` drained so `KeepAlive`s don't pile up).
+/// but we still want to keep `...S` drained so `KeepAlive`s don't pile up).
 pub(super) fn run_handshake(
     queues: &mut HostDualQueueIpc,
     lockstep: &mut LockstepDriver,

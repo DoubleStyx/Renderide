@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn resolves_xiexe_outlined_from_underscore_filename() {
         // The underscore-spelled `XSToon2.0_Outlined.shader` is a distinct Unity asset from
-        // the space-spelled `XSToon2.0 Outlined.shader` — the normalizer preserves the
+        // the space-spelled `XSToon2.0 Outlined.shader` -- the normalizer preserves the
         // underscore/dash distinction so they resolve to different stems.
         assert_eq!(
             embedded_default_stem_for_shader_asset_name("XSToon2.0_Outlined").as_deref(),

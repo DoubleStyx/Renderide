@@ -6,15 +6,15 @@
 //!
 //! # Pipeline-state vs. shader-uniform boundary
 //!
-//! The host writes material properties as a flat `(property_id → value)` store. Each property
+//! The host writes material properties as a flat `(property_id -> value)` store. Each property
 //! lands in exactly one of three places:
 //!
 //! | Property kind | Examples | Resolved by | Lives in |
 //! |---|---|---|---|
 //! | Pipeline state | `_SrcBlend`, `_DstBlend`, `_ZWrite`, `_ZTest`, `_Cull`, `_Stencil*`, `_ColorMask`, `_OffsetFactor`, `_OffsetUnits` | [`MaterialBlendMode`] + [`MaterialRenderState`] | [`MaterialPipelineCacheKey`] (`wgpu::RenderPipeline` build) |
-//! | Shader uniform — value | `_Color`, `_Tint`, `_Cutoff`, `_Glossiness`, `*_ST` | Host property store, packed by reflection | `@group(1) @binding(0)` material struct |
-//! | Shader uniform — keyword | `_NORMALMAP`, `_ALPHATEST_ON`, `_ALPHABLEND_ON` | Host property OR [`crate::materials::embedded::uniform_pack`] inference (Unity routes these through `ShaderKeywords`, never on the wire) | `@group(1) @binding(0)` material struct |
-//! | Texture | `_MainTex`, `_NormalMap`, … | Host texture pools, bound by reflection | `@group(1) @binding(N)` |
+//! | Shader uniform -- value | `_Color`, `_Tint`, `_Cutoff`, `_Glossiness`, `*_ST` | Host property store, packed by reflection | `@group(1) @binding(0)` material struct |
+//! | Shader uniform -- keyword | `_NORMALMAP`, `_ALPHATEST_ON`, `_ALPHABLEND_ON` | Host property OR [`crate::materials::embedded::uniform_pack`] inference (Unity routes these through `ShaderKeywords`, never on the wire) | `@group(1) @binding(0)` material struct |
+//! | Texture | `_MainTex`, `_NormalMap`, ... | Host texture pools, bound by reflection | `@group(1) @binding(N)` |
 //!
 //! **Pipeline-state property names must NEVER appear in a shader's `@group(1) @binding(0)`
 //! uniform struct.** They are dead weight there: shaders never read them, but the host writes
@@ -25,7 +25,7 @@
 //! to distinct cached pipelines because [`MaterialPipelineCacheKey`] includes the resolved
 //! [`MaterialBlendMode`] and [`MaterialRenderState`].
 //!
-//! `_BlendMode` itself is not on the wire — FrooxEngine translates `MaterialProvider.SetBlendMode`
+//! `_BlendMode` itself is not on the wire -- FrooxEngine translates `MaterialProvider.SetBlendMode`
 //! to `_SrcBlend` / `_DstBlend` factors, and [`MaterialBlendMode::from_unity_blend_factors`]
 //! reconstructs the mode here.
 //!
@@ -40,7 +40,7 @@
 //! The directive does three things at once:
 //! 1. Selects which `@fragment` entry points become pipelines (and what to label them).
 //! 2. Picks a canonical render-state recipe ([`pass_from_kind`]).
-//! 3. Counts the draws per material — N directives ⇒ N pipelines ⇒ N `draw_indexed` calls.
+//! 3. Counts the draws per material -- N directives => N pipelines => N `draw_indexed` calls.
 //!
 //! Recognized kinds:
 //!
@@ -56,14 +56,14 @@
 //! | `overlay_behind` | overlay blend, inverted depth compare | layered draw behind existing geometry |
 //!
 //! **Why kind defaults exist when the host already sends pipeline state.** The host's IPC sends
-//! one `_SrcBlend`/`_ZWrite`/`_Cull`/etc. set per material — not per pass. The directive fills the
+//! one `_SrcBlend`/`_ZWrite`/`_Cull`/etc. set per material -- not per pass. The directive fills the
 //! gap host properties can't fill: multi-draw structure, auxiliary-pass state (e.g. `Outline`'s
 //! `Cull Front` when the host's `_Cull` belongs to the forward pass), and state Unity doesn't
 //! have a property for (`OverlayBehind`'s inverted depth compare). Each kind carries a policy for
 //! which host properties may still overlay the kind defaults; `depth_prepass`, for example, accepts
 //! stencil / depth-test / offset state but preserves its authored `ZWrite On` and `ColorMask 0`.
 //!
-//! **Every material WGSL must declare at least one `//#pass`** — the build script rejects empty
+//! **Every material WGSL must declare at least one `//#pass`** -- the build script rejects empty
 //! declarations. The runtime has no implicit "default forward" fallback; what you see in the
 //! WGSL is the entire pipeline topology of the material.
 //!
@@ -113,7 +113,7 @@ pub use embedded::{
     EmbeddedMaterialBindError, EmbeddedMaterialBindResources, EmbeddedTexturePools,
 };
 
-/// Unity shader asset names → embedded WGSL stems and permutation flags.
+/// Unity shader asset names -> embedded WGSL stems and permutation flags.
 pub use embedded_raster_pipeline::{
     EmbeddedStemQuery, embedded_composed_stem_for_permutation, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream,
@@ -150,7 +150,7 @@ pub use render_state::{
     RasterFrontFace, material_render_state_for_lookup, material_render_state_from_maps,
 };
 
-/// Naga reflection: composed WGSL → `wgpu` bind layouts, uniform block layout, stem fingerprints.
+/// Naga reflection: composed WGSL -> `wgpu` bind layouts, uniform block layout, stem fingerprints.
 pub use wgsl_reflect::{
     ReflectError, ReflectedMaterialUniformBlock, ReflectedRasterLayout, ReflectedUniformField,
     ReflectedUniformScalarKind, ReflectedVertexInput, ReflectedVertexInputFormat,

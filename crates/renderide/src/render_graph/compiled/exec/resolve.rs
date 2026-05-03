@@ -232,7 +232,7 @@ impl CompiledRenderGraph {
     ///
     /// Run after [`Self::resolve_transient_textures`] so the parent `wgpu::Texture` handles
     /// already exist. Subresources whose parent is not resolved (because the parent's transient
-    /// index is culled or its lifetime is `None`) are left as `None` — callers that look them up
+    /// index is culled or its lifetime is `None`) are left as `None` -- callers that look them up
     /// get a harmless `None` instead of an encoder-time panic.
     pub(super) fn resolve_subresource_views(&self, resources: &mut GraphResolvedResources) {
         if self.subresources.is_empty() {

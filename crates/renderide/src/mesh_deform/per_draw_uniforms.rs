@@ -2,7 +2,7 @@
 
 use glam::{Mat3, Mat4};
 
-/// Stride between consecutive draw slots in the uniform slab (`mat4`×3 + WGSL padding).
+/// Stride between consecutive draw slots in the uniform slab (`mat4`x3 + WGSL padding).
 pub const PER_DRAW_UNIFORM_STRIDE: usize = 256;
 
 /// Initial number of draw slots allocated for [`crate::backend::PerDrawResources`].
@@ -49,7 +49,7 @@ impl WgslMat3x3 {
         }
     }
 
-    /// `transpose(inverse(M))` for the upper 3×3 of `model`, packed for WGSL `normal_matrix`.
+    /// `transpose(inverse(M))` for the upper 3x3 of `model`, packed for WGSL `normal_matrix`.
     ///
     /// For singular or near-singular linear parts, returns identity to avoid NaNs in the shader.
     #[must_use]
@@ -64,13 +64,13 @@ impl WgslMat3x3 {
     }
 }
 
-/// GPU layout: left/right view–projection, `model`, inverse-transpose normal matrix, padding to 256 bytes.
+/// GPU layout: left/right view-projection, `model`, inverse-transpose normal matrix, padding to 256 bytes.
 ///
 /// Matches composed `shaders/target/null_*.wgsl` (`PerDrawUniforms` at `@group(2)`).
 ///
 /// **Contract:** [`Self::view_proj_left`] and [`Self::view_proj_right`] normally store
-/// **projection × view** (PV) only. Vertex shaders compute `clip = view_proj * (model * local_pos)`;
-/// premultiplying `model` into the view–projection would apply it twice for static meshes. The
+/// **projection x view** (PV) only. Vertex shaders compute `clip = view_proj * (model * local_pos)`;
+/// premultiplying `model` into the view-projection would apply it twice for static meshes. The
 /// null fallback's world-space-deformed path is the narrow exception: it stores `PV * inverse(model)`
 /// so the shader can keep the real model matrix for checker anchoring without double-transforming
 /// already-world-space vertices.
@@ -90,7 +90,7 @@ pub struct PaddedPerDrawUniforms {
     /// This is identity for most skinned meshes with world-space positions, except the null fallback
     /// keeps the real model matrix and compensates in [`Self::view_proj_left`] / [`Self::view_proj_right`].
     pub model: [f32; 16],
-    /// Inverse transpose of the upper 3×3 of [`Self::model`] for normal transforms.
+    /// Inverse transpose of the upper 3x3 of [`Self::model`] for normal transforms.
     pub normal_matrix: WgslMat3x3,
     /// Metadata plus padding to [`PER_DRAW_UNIFORM_STRIDE`] bytes.
     ///
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(size_of::<PaddedPerDrawUniforms>(), PER_DRAW_UNIFORM_STRIDE);
     }
 
-    /// Forward pass WGSL uses `clip = view_proj * (model * local)`. Packing PV×model into
+    /// Forward pass WGSL uses `clip = view_proj * (model * local)`. Packing PVxmodel into
     /// `view_proj` would apply `model` twice for static meshes (regression guard).
     #[test]
     fn shader_clip_uses_pv_times_model_once() {

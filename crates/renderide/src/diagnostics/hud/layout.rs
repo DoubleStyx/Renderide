@@ -58,7 +58,7 @@ pub struct Viewport {
 /// caller hands the slot to ImGui via `position` and `size_constraints`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WindowAnchor {
-    /// Pin to the viewport top-right, offset by [`MARGIN`]. Width-only anchor — ImGui's
+    /// Pin to the viewport top-right, offset by [`MARGIN`]. Width-only anchor -- ImGui's
     /// `ALWAYS_AUTO_RESIZE` is expected to drive the height.
     TopRight {
         /// First-use width.

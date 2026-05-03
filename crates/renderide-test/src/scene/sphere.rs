@@ -1,6 +1,6 @@
 //! UV sphere mesh generator.
 //!
-//! Produces a [`Mesh`] with smooth normals, UV coords in `[0,1]×[0,1]`, and clockwise winding.
+//! Produces a [`Mesh`] with smooth normals, UV coords in `[0,1]x[0,1]`, and clockwise winding.
 
 use glam::{Vec2, Vec3};
 

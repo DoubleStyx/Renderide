@@ -3,7 +3,7 @@
 /// CPU-reserved caps; buffers grow when exceeded.
 const INITIAL_MAX_BONES: u32 = 256;
 const INITIAL_MAX_BLENDSHAPES: u32 = 256;
-/// Initial staging for packed blendshape `Params` (32 bytes × chunks).
+/// Initial staging for packed blendshape `Params` (32 bytes x chunks).
 const INITIAL_BLENDSHAPE_PARAMS_STAGING: u64 = 4096;
 /// Initial number of 256-byte slots for per-dispatch `SkinDispatchParams` (32 B payload each).
 const INITIAL_SKIN_DISPATCH_SLOTS: u64 = 16;

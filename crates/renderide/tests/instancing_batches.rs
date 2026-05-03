@@ -3,7 +3,7 @@
 //!
 //! These tests run through the public renderer surface (`stats_from_sorted`,
 //! `sort_draws`) with no GPU and no IPC. The "fragmentation" cases below currently
-//! report an under-merged batch count — they are the regression guard for the Bevy-style
+//! report an under-merged batch count -- they are the regression guard for the Bevy-style
 //! `InstancePlan` refactor that decouples per-draw slab layout from sort order.
 //!
 //! The simple-adjacent case asserts the existing batcher still merges what it always could.
@@ -47,7 +47,7 @@ fn identical_opaque_draws_collapse_to_one_instance_batch() {
     assert_eq!(stats.intersect_pass_batches, 0);
 }
 
-/// Skinned draws never instance — each lands in its own singleton batch — even when the sort
+/// Skinned draws never instance -- each lands in its own singleton batch -- even when the sort
 /// would otherwise place them adjacent. Locks in the `can_merge_instances` skinned guard.
 #[test]
 fn skinned_draws_do_not_merge() {
@@ -77,7 +77,7 @@ fn skinned_draws_do_not_merge() {
 
 /// Fragmentation case: same opaque material, two distinct meshes (A=10, B=11), but each draw
 /// carries a different `sorting_order`. The opaque sort cascade orders within a `batch_key`
-/// run by *descending* `sorting_order` first, then `mesh_asset_id` — so when the host hands
+/// run by *descending* `sorting_order` first, then `mesh_asset_id` -- so when the host hands
 /// the renderer renderers with varying sorting_orders, copies of mesh A get split apart by
 /// intervening mesh-B draws and stop being adjacent. The current batcher requires adjacency,
 /// so the same-mesh runs fragment into singleton batches.
@@ -88,7 +88,7 @@ fn skinned_draws_do_not_merge() {
 #[test]
 fn varying_sorting_order_does_not_fragment_instancing() {
     // After sort (batch_key equal, then DESC sorting_order): [A(10), B(8), A(6), B(4), A(2)]
-    // — mesh A copies are non-adjacent, so adjacency-based merging falls back to 5 singletons.
+    // -- mesh A copies are non-adjacent, so adjacency-based merging falls back to 5 singletons.
     // Phase 2 must collapse to 2 groups (A with three instances, B with two).
     let pattern: [(i32, i32); 5] = [(10, 10), (11, 8), (10, 6), (11, 4), (10, 2)];
     let mut draws: Vec<_> = pattern
@@ -120,7 +120,7 @@ fn varying_sorting_order_does_not_fragment_instancing() {
 }
 
 /// Alpha-blended draws are singletons by design (`can_merge_instances` rejects
-/// `alpha_blended`), even after Phase 2 — back-to-front order matters, instancing must not
+/// `alpha_blended`), even after Phase 2 -- back-to-front order matters, instancing must not
 /// reorder them. Locks in the singleton-per-draw behaviour for the transparent path.
 #[test]
 fn alpha_blended_draws_stay_singletons() {

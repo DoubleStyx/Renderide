@@ -1,4 +1,4 @@
-//! Frame timing HUD window — MangoHud-style overlay with FPS, CPU/GPU, RAM/VRAM and a frametime graph.
+//! Frame timing HUD window -- MangoHud-style overlay with FPS, CPU/GPU, RAM/VRAM and a frametime graph.
 
 use imgui::WindowFlags;
 
@@ -27,7 +27,7 @@ const COL_SECONDARY_VALUE_X: f32 = 196.0;
 const CONTENT_WIDTH: f32 = 320.0;
 const GRAPH_HEIGHT: f32 = 46.0;
 
-/// **Frame timing** HUD window — anchored under the **Renderer config** column.
+/// **Frame timing** HUD window -- anchored under the **Renderer config** column.
 pub struct FrameTimingWindow;
 
 impl HudWindow for FrameTimingWindow {
@@ -70,7 +70,7 @@ impl HudWindow for FrameTimingWindow {
     }
 }
 
-/// FPS color: green ≥90, yellow ≥45, red below.
+/// FPS color: green >=90, yellow >=45, red below.
 fn fps_color(fps: f64) -> [f32; 4] {
     if fps >= 90.0 {
         [0.50, 1.00, 0.55, 1.0]
@@ -155,7 +155,7 @@ buffers. Computed as (end - begin) * Queue::get_timestamp_period / 1e6. EMA-smoo
 
 const GPU_LATENCY_TOOLTIP: &str = "\
 Adapter does not advertise TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS, so this is the \
-wall-clock between Queue::submit returning and on_submitted_work_done firing — submit-to-callback \
+wall-clock between Queue::submit returning and on_submitted_work_done firing -- submit-to-callback \
 latency, NOT actual GPU compute time. EMA-smoothed.";
 
 fn row(

@@ -133,7 +133,7 @@ pub(super) fn controller_pose_from_aim(position: Vec3, rotation: Quat) -> (Vec3,
 }
 
 /// Converts an [`xr::SpaceLocation`] into host-tracking-space `(position, rotation)` using only
-/// [`openxr_pose_to_host_tracking`] (OpenXR RH → FrooxEngine/Unity LH).
+/// [`openxr_pose_to_host_tracking`] (OpenXR RH -> FrooxEngine/Unity LH).
 ///
 /// Returns `None` when either position or orientation is invalid, so callers can fall back to
 /// aim-derived poses or keep the previous frame's state.
@@ -152,7 +152,7 @@ mod tests {
     use super::*;
 
     /// Bound-hand rotations for profiles Unity post-multiplies with `generic_fix` must have a
-    /// palm normal pointing inward (±X toward the other hand), not forward or down. Guards
+    /// palm normal pointing inward (+/-X toward the other hand), not forward or down. Guards
     /// against accidentally dropping `generic_fix`.
     #[test]
     fn neutral_grip_palm_faces_inward_not_forward_generic() {

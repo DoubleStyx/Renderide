@@ -1,7 +1,7 @@
 //! End-to-end integration test for the `torus_unlit_perlin` case.
 //!
 //! Skipped (with a logged message) when the renderer binary cannot be located next to the
-//! test executable — e.g. when running `cargo test -p renderide-test` without first building
+//! test executable -- e.g. when running `cargo test -p renderide-test` without first building
 //! the renderer. To run end-to-end:
 //!
 //! ```text

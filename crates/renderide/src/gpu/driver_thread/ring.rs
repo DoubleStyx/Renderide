@@ -60,13 +60,13 @@ impl<T> BoundedRing<T> {
     /// Pushes `item` into the ring, blocking the caller while the ring is full.
     ///
     /// Returns `Err(item)` if the consumer side has been marked dead while we were
-    /// waiting for space — the caller can then surface this through the existing driver
+    /// waiting for space -- the caller can then surface this through the existing driver
     /// error state instead of blocking the main render thread forever. While the ring has
     /// space the call always succeeds, so callers under normal operation never observe
     /// `Err`.
     ///
     /// On a poisoned mutex the contents are recovered via `into_inner`, matching the rest
-    /// of the project's "log and keep going" policy — driver failures surface via the
+    /// of the project's "log and keep going" policy -- driver failures surface via the
     /// separate error state rather than thread poisoning.
     pub(super) fn push(&self, item: T) -> Result<(), T> {
         let mut guard = self

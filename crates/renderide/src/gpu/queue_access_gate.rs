@@ -9,7 +9,7 @@
 //! at `memory_init.rs:271` takes `initialization_status` write for every texture
 //! referenced by the baked command buffers. With `write_texture` on the main thread and
 //! `submit` on the [`super::driver_thread::DriverThread`], the two inner locks form an
-//! ABBA cycle — observed as a futex hang with the main thread parked in
+//! ABBA cycle -- observed as a futex hang with the main thread parked in
 //! `Queue::write_texture` and the driver parked in
 //! `BakedCommands::initialize_texture_memory`.
 //!

@@ -1,7 +1,7 @@
-//! `gtao_denoise` raster pass — XeGTAO bilateral filter, intermediate iteration.
+//! `gtao_denoise` raster pass -- XeGTAO bilateral filter, intermediate iteration.
 //!
 //! Reads the AO term and packed edges produced by [`super::main_pass::GtaoMainPass`], runs
-//! the 3×3 edge-preserving kernel (`XeGTAO_Denoise` with `finalApply = false`), and writes
+//! the 3x3 edge-preserving kernel (`XeGTAO_Denoise` with `finalApply = false`), and writes
 //! a denoised AO term to a ping-pong target. Only registered when
 //! [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`. Intermediate iterations use
 //! `denoise_blur_beta / 5.0` so two iterations approximate the quality of a single soft

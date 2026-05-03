@@ -2,14 +2,14 @@
 //!
 //! ## Module layout
 //!
-//! * [`budget`] — VRAM accounting, residency tiers, streaming policy trait, residency-meta hints.
-//! * [`resource_pool`] — generic `GpuResourcePool<T, A>` + `PoolResourceAccess` trait + the two
+//! * [`budget`] -- VRAM accounting, residency tiers, streaming policy trait, residency-meta hints.
+//! * [`resource_pool`] -- generic `GpuResourcePool<T, A>` + `PoolResourceAccess` trait + the two
 //!   facade macros (streaming vs untracked).
-//! * [`sampler_state`] — unified [`SamplerState`] consumed by every texture-bearing pool and the
+//! * [`sampler_state`] -- unified [`SamplerState`] consumed by every texture-bearing pool and the
 //!   material bind layer.
-//! * [`texture_allocation`] — `wgpu::Texture` + `wgpu::TextureView` factory shared by the three
+//! * [`texture_allocation`] -- `wgpu::Texture` + `wgpu::TextureView` factory shared by the three
 //!   sampled-texture pools.
-//! * [`pools`] — concrete pool newtypes, one submodule per asset kind.
+//! * [`pools`] -- concrete pool newtypes, one submodule per asset kind.
 
 pub(crate) mod budget;
 pub(crate) mod pools;

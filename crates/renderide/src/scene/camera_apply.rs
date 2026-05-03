@@ -28,7 +28,7 @@ pub struct ExtractedCameraRenderablesUpdate {
     pub transform_ids: Option<Vec<i32>>,
 }
 
-/// One host camera renderable in a render space (dense table; `renderable_index` ↔ row in host state buffer).
+/// One host camera renderable in a render space (dense table; `renderable_index` <-> row in host state buffer).
 #[derive(Debug, Clone)]
 pub struct CameraRenderableEntry {
     /// Dense index in [`RenderSpaceState::cameras`] (matches [`CameraState::renderable_index`]).
@@ -224,10 +224,10 @@ mod tests {
         let cam = &space.cameras[0];
         // The camera's transform was at the last index (42) and is now at the freed slot (10).
         assert_eq!(cam.transform_id, 10);
-        // Selective list: the `10` entry was the removed transform → dropped. The `42` entry
-        // was the swapped-in last → rewritten to `10`.
+        // Selective list: the `10` entry was the removed transform -> dropped. The `42` entry
+        // was the swapped-in last -> rewritten to `10`.
         assert_eq!(cam.selective_transform_ids, vec![10]);
-        // Exclude list: `5` unaffected, `42` → `10`.
+        // Exclude list: `5` unaffected, `42` -> `10`.
         assert_eq!(cam.exclude_transform_ids, vec![5, 10]);
     }
 

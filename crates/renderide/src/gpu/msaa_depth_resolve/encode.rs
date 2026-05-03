@@ -15,7 +15,7 @@ use super::targets::{MsaaDepthResolveMonoTargets, MsaaDepthResolveStereoTargets}
 
 /// Encodes the desktop (non-multiview) MSAA depth resolve into `encoder`.
 ///
-/// Skips both passes when the 8×8-tiled compute dispatch would exceed
+/// Skips both passes when the 8x8-tiled compute dispatch would exceed
 /// [`GpuLimits::compute_dispatch_fits`] (logged), or when the destination format has no
 /// blit pipeline (logged).
 pub(super) fn encode_resolve(
@@ -38,7 +38,7 @@ pub(super) fn encode_resolve(
     let gy = h.div_ceil(8);
     if !limits.compute_dispatch_fits(gx, gy, 1) {
         logger::warn!(
-            "MSAA depth resolve: dispatch {}×{}×1 exceeds max_compute_workgroups_per_dimension ({})",
+            "MSAA depth resolve: dispatch {}x{}x1 exceeds max_compute_workgroups_per_dimension ({})",
             gx,
             gy,
             limits.max_compute_workgroups_per_dimension()
@@ -151,7 +151,7 @@ pub(super) fn encode_resolve_stereo(
     let gy = h.div_ceil(8);
     if !limits.compute_dispatch_fits(gx, gy, 1) {
         logger::warn!(
-            "MSAA depth resolve (stereo): dispatch {}×{}×1 exceeds max_compute_workgroups_per_dimension ({})",
+            "MSAA depth resolve (stereo): dispatch {}x{}x1 exceeds max_compute_workgroups_per_dimension ({})",
             gx,
             gy,
             limits.max_compute_workgroups_per_dimension()

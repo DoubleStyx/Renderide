@@ -102,7 +102,7 @@ mod tests {
     }
 
     /// When the renderer binary is not yet present (early-startup race or non-bundled deployment),
-    /// `ensure_link` must not create a dangling symlink — the linker stub is only useful when the
+    /// `ensure_link` must not create a dangling symlink -- the linker stub is only useful when the
     /// real `renderide` binary already exists in the renderer directory.
     #[test]
     fn ensure_link_is_noop_when_target_missing() {
@@ -155,7 +155,7 @@ mod tests_macos {
     }
 
     /// When the renderer binary is not yet present (early-startup race or non-bundled deployment),
-    /// `ensure_link` must not create a dangling hard link — the linker stub is only useful when the
+    /// `ensure_link` must not create a dangling hard link -- the linker stub is only useful when the
     /// real `renderide` binary already exists in the renderer directory.
     #[test]
     fn ensure_link_is_noop_when_target_missing() {

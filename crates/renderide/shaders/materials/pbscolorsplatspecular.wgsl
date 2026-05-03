@@ -104,7 +104,7 @@ fn unpack_normal_xy(xy: vec2<f32>, scale: f32) -> vec3<f32> {
     return vec3<f32>(scaled, z);
 }
 
-fn sample_normal_world(uv_albedo: vec2<f32>, world_n: vec3<f32>, weights: vec4<f32>) -> vec3<f32> {
+fn sample_normal_world(uv_albedo: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, weights: vec4<f32>) -> vec3<f32> {
     let n = normalize(world_n);
     if (!uvu::kw_enabled(mat._PACKED_NORMALMAP)) {
         return n;
@@ -116,7 +116,7 @@ fn sample_normal_world(uv_albedo: vec2<f32>, world_n: vec3<f32>, weights: vec4<f
     let n2 = unpack_normal_xy(n23.xy, mat._NormalScale2);
     let n3 = unpack_normal_xy(n23.zw, mat._NormalScale3);
     let blended = n0 * weights.x + n1 * weights.y + n2 * weights.z + n3 * weights.w;
-    let tbn = pnorm::orthonormal_tbn(n);
+    let tbn = pnorm::orthonormal_tbn(n, normalize(world_t));
     return normalize(tbn * normalize(blended));
 }
 
@@ -155,7 +155,7 @@ fn sample_emission(uv_albedo: vec2<f32>, weights: vec4<f32>) -> vec3<f32> {
     return blended.rgb;
 }
 
-fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>) -> SurfaceData {
+fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> SurfaceData {
     let uv_albedo = uvu::apply_st(uv0, mat._Albedo_ST);
     let uv_color = uvu::apply_st(uv0, mat._ColorMap_ST);
 
@@ -179,7 +179,7 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>) -> SurfaceData {
         f0,
         roughness,
         one_minus_reflectivity,
-        sample_normal_world(uv_albedo, world_n, weights),
+        sample_normal_world(uv_albedo, world_n, world_t, weights),
         sample_emission(uv_albedo, weights),
     );
 }
@@ -193,11 +193,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_vertex_main(instance_index, view_idx, pos, n, uv0);
+    return mv::world_vertex_main(instance_index, view_idx, pos, n, t, uv0);
 #else
-    return mv::world_vertex_main(instance_index, 0u, pos, n, uv0);
+    return mv::world_vertex_main(instance_index, 0u, pos, n, t, uv0);
 #endif
 }
 
@@ -207,10 +208,11 @@ fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, world_n);
+    let s = sample_surface(uv0, world_n, world_t);
     let surface = psurf::specular(
         s.base_color,
         s.alpha,

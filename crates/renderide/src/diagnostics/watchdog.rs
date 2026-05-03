@@ -4,7 +4,7 @@
 //!
 //! The existing fatal-crash handler ([`crate::fatal_crash_log`]) covers signals, SEH, and Mach
 //! exceptions, but a stuck render thread that does not panic produces no log line and no exit
-//! code — only a frozen window. The watchdog adds a second observer thread that, when the main
+//! code -- only a frozen window. The watchdog adds a second observer thread that, when the main
 //! thread (or any other registered thread) fails to update its heartbeat within the configured
 //! deadline, captures a stack trace of the stuck thread and emits a hang report.
 //!

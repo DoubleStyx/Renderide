@@ -7,7 +7,7 @@
 //!   positioning and styling lives in one impl rather than scattered through
 //!   [`crate::diagnostics::DebugHud::encode_overlay`].
 //! - [`TabView`] is the leaf flavor for tabs in a tab-bar: "render this tab body when the tab is
-//!   active." A single window — the **Renderide debug** main panel — composes a fixed list of
+//!   active." A single window -- the **Renderide debug** main panel -- composes a fixed list of
 //!   `TabView` impls.
 //!
 //! Both traits use [generic associated types][gat] so each impl can describe its own borrowed

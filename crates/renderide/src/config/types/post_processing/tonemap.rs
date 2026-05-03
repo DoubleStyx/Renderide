@@ -33,7 +33,7 @@ labeled_enum! {
             persist: "none",
             label: "None (HDR pass-through)",
         },
-        /// Stephen Hill ACES Fitted (sRGB → AP1, RRT+ODT, AP1 → sRGB). High-quality reference
+        /// Stephen Hill ACES Fitted (sRGB -> AP1, RRT+ODT, AP1 -> sRGB). High-quality reference
         /// curve used by Bevy and Unity HDRP.
         AcesFitted => {
             persist: "aces_fitted",

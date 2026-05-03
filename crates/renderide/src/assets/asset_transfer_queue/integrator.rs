@@ -1,4 +1,4 @@
-//! Priority queues and wall-clock–bounded draining for cooperative mesh/texture upload tasks.
+//! Priority queues and wall-clock-bounded draining for cooperative mesh/texture upload tasks.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -109,7 +109,7 @@ pub enum StepResult {
     YieldBackground,
 }
 
-/// Priority-separated cooperative upload queues ([`Renderite.Unity.AssetIntegrator`]–style).
+/// Priority-separated cooperative upload queues ([`Renderite.Unity.AssetIntegrator`]-style).
 #[derive(Debug, Default)]
 pub struct AssetIntegrator {
     /// [`MeshUploadData::high_priority`] / texture data `high_priority` tasks.
@@ -371,8 +371,8 @@ pub fn drain_asset_tasks(
     let normal_priority_budget_exhausted =
         drain_normal_priority_asset_tasks(asset, &gpu, shm, ipc, normal_deadline);
     if normal_priority_budget_exhausted {
-        // Tasks pending after wall-clock deadline. Not necessarily a bug — asset arrival can
-        // outpace integration on busy frames — but persistent backlog growth indicates the
+        // Tasks pending after wall-clock deadline. Not necessarily a bug -- asset arrival can
+        // outpace integration on busy frames -- but persistent backlog growth indicates the
         // budget is too tight or a task is stuck. Per-frame at trace level so it does not
         // spam the default-level log.
         logger::trace!(

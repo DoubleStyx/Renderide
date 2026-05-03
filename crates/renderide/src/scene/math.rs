@@ -1,4 +1,4 @@
-//! TRS → [`glam::Mat4`] for hierarchy and future GPU uploads.
+//! TRS -> [`glam::Mat4`] for hierarchy and future GPU uploads.
 
 use glam::{Mat4, Quat, Vec3};
 
@@ -58,7 +58,7 @@ pub fn render_transform_to_matrix(t: &RenderTransform) -> Mat4 {
 /// [`super::coordinator::SceneCoordinator::world_matrix`] already encodes the full parent chain
 /// for objects. The host uses [`RenderSpaceState::root_transform`](super::render_space::RenderSpaceState)
 /// for the **view / rig** basis; combining it with object matrices is only for exceptional host
-/// contracts—not default mesh, light, or skinning paths.
+/// contracts--not default mesh, light, or skinning paths.
 #[inline]
 pub fn multiply_root(world_local: Mat4, root: &RenderTransform) -> Mat4 {
     render_transform_to_matrix(root) * world_local

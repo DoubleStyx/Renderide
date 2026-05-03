@@ -1,8 +1,8 @@
 //! Multi-criterion image-comparison tolerance, modeled after Filament `renderdiff`.
 //!
-//! A [`Tolerance`] aggregates up to three criteria — SSIM-Y minimum, max per-channel absolute
+//! A [`Tolerance`] aggregates up to three criteria -- SSIM-Y minimum, max per-channel absolute
 //! pixel difference, and the maximum fraction of pixels allowed to exceed that absolute
-//! difference — combined with [`Combine::And`] or [`Combine::Or`]. Cases that need only a
+//! difference -- combined with [`Combine::And`] or [`Combine::Or`]. Cases that need only a
 //! single criterion construct it through one of the convenience helpers (e.g.
 //! [`Tolerance::ssim_at_least`]).
 
@@ -270,7 +270,7 @@ mod tests {
         let mut a = solid(4, 4, [10, 10, 10, 255]);
         let g = solid(4, 4, [10, 10, 10, 255]);
         a.put_pixel(0, 0, Rgba([200, 10, 10, 255]));
-        let tol = Tolerance::pixel_diff(5, 0.05); // 5/255 channel diff, ≤5% pixels
+        let tol = Tolerance::pixel_diff(5, 0.05); // 5/255 channel diff, <=5% pixels
         let eval = tol.evaluate(&a, &g).expect("evaluate");
         assert_eq!(eval.failing_pixel_fraction.unwrap(), 1.0 / 16.0);
         assert!(!eval.passed, "1/16 == 6.25% > 5%");

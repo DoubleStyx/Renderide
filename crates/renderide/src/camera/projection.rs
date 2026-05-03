@@ -12,7 +12,7 @@ use super::view::filter_scale_legacy;
 /// Mirrors a small positive host lower bound so `tan(fov/2)` stays finite and non-zero.
 pub const DESKTOP_FOV_DEGREES_MIN: f32 = 1e-4;
 
-/// Maximum desktop vertical FOV in **degrees** after clamping (non-inclusive of 180° degeneracy).
+/// Maximum desktop vertical FOV in **degrees** after clamping (non-inclusive of 180 deg degeneracy).
 pub const DESKTOP_FOV_DEGREES_MAX: f32 = 179.0;
 
 /// Default fallback when the host sends non-finite FOV (matches [`crate::camera::HostCameraFrame::default`]).
@@ -58,8 +58,8 @@ pub fn effective_head_output_clip_planes(
 /// is applied here (an asymmetric clamp would decouple X and Y and visibly squish the scene
 /// at low FOV / non-`16:9` aspects).
 ///
-/// * `vertical_fov` — vertical field of view in **radians**
-/// * `near` / `far` — positive distances (`far > near`)
+/// * `vertical_fov` -- vertical field of view in **radians**
+/// * `near` / `far` -- positive distances (`far > near`)
 pub fn reverse_z_perspective(aspect: f32, vertical_fov: f32, near: f32, far: f32) -> Mat4 {
     let tan_vertical_half = (vertical_fov / 2.0).tan();
     let f_y = 1.0 / tan_vertical_half;
@@ -92,7 +92,7 @@ fn reverse_z_perspective_from_scales(
 /// Asymmetric reverse-Z projection from OpenXR [`Fovf`] tangents (Khronos `XrMatrix4x4f_CreateProjectionFov` X/Y,
 /// with the same reverse-Z depth row as [`reverse_z_perspective`]).
 ///
-/// View space matches the renderer: **right-handed**, **−Z** forward, **+Y** up.
+/// View space matches the renderer: **right-handed**, **-Z** forward, **+Y** up.
 pub fn reverse_z_perspective_openxr_fov(fov: &Fovf, near: f32, far: f32) -> Mat4 {
     let tl = fov.angle_left.tan();
     let tr = fov.angle_right.tan();
@@ -102,7 +102,7 @@ pub fn reverse_z_perspective_openxr_fov(fov: &Fovf, near: f32, far: f32) -> Mat4
     let h = tu - td;
     if !(w.is_finite() && h.is_finite()) || w.abs() < 1e-6 || h.abs() < 1e-6 {
         logger::trace!(
-            "OpenXR FOV degenerate; using symmetric fallback (16:9, 45° vertical). raw angles rad: left={:.4} right={:.4} down={:.4} up={:.4} w={w} h={h}",
+            "OpenXR FOV degenerate; using symmetric fallback (16:9, 45 deg vertical). raw angles rad: left={:.4} right={:.4} down={:.4} up={:.4} w={w} h={h}",
             fov.angle_left,
             fov.angle_right,
             fov.angle_down,
@@ -228,7 +228,7 @@ mod projection_math_tests {
     }
 
     /// The reverse-Z perspective matrix must have positive scale on the diagonal, a `-1` on the
-    /// view-Z → clip-W row, and map the near/far view-space planes to clip depths `1` and `0`.
+    /// view-Z -> clip-W row, and map the near/far view-space planes to clip depths `1` and `0`.
     #[test]
     fn reverse_z_perspective_near_and_far_depth_values() {
         let near = 0.1_f32;
@@ -293,8 +293,8 @@ mod projection_math_tests {
 
     /// Regression: at low vertical FOV with non-`16:9` aspect ratios the projection's X and Y
     /// scales must stay tied through `f_x = f_y / aspect`. The previous implementation clamped
-    /// the *derived* horizontal FOV to `[0.1, π/2 - 0.1]` rad independently of the vertical
-    /// scale, which decoupled the axes for `vfov ≲ 3.2°` at 16:9 (and at much larger vfov for
+    /// the *derived* horizontal FOV to `[0.1, PI/2 - 0.1]` rad independently of the vertical
+    /// scale, which decoupled the axes for `vfov <~ 3.2 deg` at 16:9 (and at much larger vfov for
     /// portrait/square aspects) and visibly squished the rendered scene.
     #[test]
     fn perspective_preserves_aspect_at_low_vertical_fov() {
@@ -311,7 +311,7 @@ mod projection_math_tests {
                 let expected = 1.0 / aspect;
                 assert!(
                     (observed - expected).abs() < 1e-4 * expected.abs().max(1.0),
-                    "f_x / f_y mismatch for vfov={vfov_deg}° aspect={aspect}: \
+                    "f_x / f_y mismatch for vfov={vfov_deg} deg aspect={aspect}: \
                      expected {expected}, got {observed} (f_x={f_x}, f_y={f_y})"
                 );
             }
@@ -320,7 +320,7 @@ mod projection_math_tests {
 
     /// At wide vertical FOV the matrix must remain finite and keep the same canonical
     /// `f_x / f_y = 1 / aspect` relationship; previously the upper clamp on the derived
-    /// horizontal FOV could decouple the axes near the host upper bound (179°).
+    /// horizontal FOV could decouple the axes near the host upper bound (179 deg).
     #[test]
     fn perspective_preserves_aspect_at_wide_vertical_fov() {
         for &aspect in &[16.0 / 9.0, 1.0 / 4.0_f32] {
@@ -333,13 +333,13 @@ mod projection_math_tests {
             let expected = 1.0 / aspect;
             assert!(
                 (observed - expected).abs() < 1e-4 * expected.abs().max(1.0),
-                "f_x / f_y mismatch for vfov=170° aspect={aspect}: \
+                "f_x / f_y mismatch for vfov=170 deg aspect={aspect}: \
                  expected {expected}, got {observed}"
             );
         }
     }
 
-    /// Reverse-Z near/far depth invariants must hold independently of the input FOV — pin them
+    /// Reverse-Z near/far depth invariants must hold independently of the input FOV -- pin them
     /// at a small FOV so a future change to the X/Y scales can't silently regress the depth row.
     #[test]
     fn perspective_depth_row_holds_at_low_vertical_fov() {
@@ -350,7 +350,7 @@ mod projection_math_tests {
         assert!(project_depth(&m, -far).abs() < 1e-4);
     }
 
-    /// Defensive: a degenerate viewport with zero aspect must not produce NaN/inf — the
+    /// Defensive: a degenerate viewport with zero aspect must not produce NaN/inf -- the
     /// `aspect.max(f32::MIN_POSITIVE)` guard keeps the matrix finite (X scale becomes huge but
     /// stays representable in `f32`).
     #[test]

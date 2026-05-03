@@ -30,7 +30,7 @@ impl EndFrameWatchdog {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     logger::error!(
-                        "xr::{label} exceeded {}ms — compositor may be stalled",
+                        "xr::{label} exceeded {}ms -- compositor may be stalled",
                         timeout.as_millis()
                     );
                     // Block until the caller finally disarms so the log line pairs with the eventual

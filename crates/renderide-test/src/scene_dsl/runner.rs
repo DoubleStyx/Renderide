@@ -8,7 +8,7 @@
 //! 4. Evaluating [`super::tolerance::Tolerance`] and writing the per-case output layout
 //!    (actual / golden copy / diff / report.json).
 //!
-//! Cases are dispatched by [`super::cases::CaseTemplate`] — adding a new template means
+//! Cases are dispatched by [`super::cases::CaseTemplate`] -- adding a new template means
 //! adding an arm here and a builder in [`super::cases`].
 
 use std::path::Path;

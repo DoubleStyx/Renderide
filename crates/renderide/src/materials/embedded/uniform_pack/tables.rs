@@ -11,8 +11,8 @@ use super::helpers::{
 };
 
 /// Tolerance (in radians) for treating a `Projection360` `_FOV.xy` value as the default
-/// full-sphere `(TAU, π)`. Tighter than any FOV the host realistically writes (the host
-/// converts whole-degree values through `* π / 180`, so the residual is below `1e-6`).
+/// full-sphere `(TAU, PI)`. Tighter than any FOV the host realistically writes (the host
+/// converts whole-degree values through `* PI / 180`, so the residual is below `1e-6`).
 const PROJECTION360_FULL_SPHERE_EPSILON: f32 = 1e-3;
 
 /// Infers a scalar keyword uniform from host-visible material state.
@@ -223,9 +223,9 @@ const RENDER_TYPE_TRANSPARENT_CUTOUT: i32 = 1;
 const RENDER_TYPE_TRANSPARENT: i32 = 2;
 /// FrooxEngine `BlendMode.Cutout` discriminant (matches Unity Standard `_Mode = 1`).
 const BLEND_MODE_CUTOUT: i32 = 1;
-/// FrooxEngine `BlendMode.Alpha` discriminant — Unity Standard `_Mode = 2` (alpha-blend / fade).
+/// FrooxEngine `BlendMode.Alpha` discriminant -- Unity Standard `_Mode = 2` (alpha-blend / fade).
 const BLEND_MODE_ALPHA: i32 = 2;
-/// FrooxEngine `BlendMode.Transparent` discriminant — Unity Standard `_Mode = 3` (premultiplied).
+/// FrooxEngine `BlendMode.Transparent` discriminant -- Unity Standard `_Mode = 3` (premultiplied).
 const BLEND_MODE_TRANSPARENT_PREMULTIPLY: i32 = 3;
 /// `UnityEngine.Rendering.BlendMode.One`.
 const UNITY_BLEND_FACTOR_ONE: i32 = 1;
@@ -316,9 +316,9 @@ fn additive_blend_factors(
 enum InferredQueueRange {
     /// Below the AlphaTest threshold (Background / Geometry).
     Opaque,
-    /// `[2450, 3000)` — Unity AlphaTest range.
+    /// `[2450, 3000)` -- Unity AlphaTest range.
     AlphaTest,
-    /// `>= 3000` — Unity Transparent range and beyond.
+    /// `>= 3000` -- Unity Transparent range and beyond.
     Transparent,
 }
 
@@ -409,7 +409,7 @@ fn alpha_premultiply_on_inferred(
 /// | Keyword           | Host predicate                                         | Renderer probe                                        |
 /// |-------------------|--------------------------------------------------------|-------------------------------------------------------|
 /// | `_PERSPECTIVE`    | `Projection.Value == Mode.Perspective`                 | `_PerspectiveFOV` written (only sent in Perspective)  |
-/// | `OUTSIDE_CLAMP`   | `OutsideMode.Value == Outside.Clamp` (no wire signal)  | partial `_FOV` (full-sphere `(TAU, π)` keeps default) |
+/// | `OUTSIDE_CLAMP`   | `OutsideMode.Value == Outside.Clamp` (no wire signal)  | partial `_FOV` (full-sphere `(TAU, PI)` keeps default) |
 /// | `CUBEMAP_LOD`     | cubemap target + `CubemapLOD.Value.HasValue`           | `_MainCube`/`_SecondCube` texture + `_CubeLOD`        |
 /// | `CUBEMAP`         | cubemap target + no LOD                                | `_MainCube`/`_SecondCube` texture, no `_CubeLOD`      |
 /// | `SECOND_TEXTURE`  | `SecondaryTexture/Cubemap` set or `TextureLerp != 0`   | `_SecondTex`/`_SecondCube` texture                    |
@@ -524,7 +524,7 @@ fn pbs_displace_keyword_inferred(
 /// Reads the `.xy` of a `Float4` property, ignoring scalar `Float` writes.
 ///
 /// `_FOV` is always packed as a `float4` on the host (`Projection360Material.cs:445` writes
-/// `SetFloat4(_FOV, new float4(FieldOfView, AngleOffset) * (π/180))`); a scalar write would
+/// `SetFloat4(_FOV, new float4(FieldOfView, AngleOffset) * (PI/180))`); a scalar write would
 /// be a host-side bug, so we don't paper over it by accepting a bare `Float`.
 fn read_float4_xy(
     store: &MaterialPropertyStore,
@@ -537,7 +537,7 @@ fn read_float4_xy(
     }
 }
 
-/// `true` when the host has written *any* value to `property_id` — used to mirror the
+/// `true` when the host has written *any* value to `property_id` -- used to mirror the
 /// FrooxEngine predicate that gates whether a property is sent at all (e.g., `_PerspectiveFOV`
 /// only travels the wire when the material is in `Mode.Perspective`).
 fn uniform_property_present(
@@ -567,12 +567,12 @@ fn mul_rgb_by_alpha_inferred(
 }
 
 // Every uniform field reaching `build_embedded_uniform_bytes` is one of:
-//   1. A host-declared property — `MaterialPropertyStore` always has a value by the time the
+//   1. A host-declared property -- `MaterialPropertyStore` always has a value by the time the
 //      renderer reads (first material batch pushes every `Sync<X>` via `MaterialUpdateWriter` per
 //      `MaterialProviderBase.cs:48-51`).
-//   2. A multi-compile keyword field (`_NORMALMAP`, `_ALPHATEST_ON`, etc.) — inferred by
+//   2. A multi-compile keyword field (`_NORMALMAP`, `_ALPHATEST_ON`, etc.) -- inferred by
 //      [`inferred_keyword_float_f32`] from texture presence / blend factor reconstruction.
-//   3. `_TextMode` / `_RectClip` / `_OVERLAY` explicit-zero defaults and `_Cutoff` — handled
+//   3. `_TextMode` / `_RectClip` / `_OVERLAY` explicit-zero defaults and `_Cutoff` -- handled
 //      by special-case probes in the caller.
 //
 // Previously-held Unity-Properties{} fallback values are irrelevant: FrooxEngine supplies its own

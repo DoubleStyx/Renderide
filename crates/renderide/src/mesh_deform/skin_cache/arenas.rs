@@ -157,7 +157,7 @@ impl SkinArenas {
         &self.normals.buffer
     }
 
-    /// Blendshape → skin intermediate positions when both passes run.
+    /// Blendshape -> skin intermediate positions when both passes run.
     #[inline]
     pub fn temp(&self) -> &wgpu::Buffer {
         &self.temp.buffer

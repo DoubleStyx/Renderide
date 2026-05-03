@@ -3,7 +3,7 @@
 //! Dense per-space storage mirrors the host's `RenderableComponentManager` protocol: the host
 //! pre-assigns a `RenderableIndex` equal to its own list length and applies swap-remove on
 //! removals, and the renderer maintains an identically-ordered list so subsequent state rows
-//! can address renderables by index without any renderer→host handshake.
+//! can address renderables by index without any renderer->host handshake.
 //!
 //! The two host-renderable paths live in submodules: [`regular_lights`] holds the regular
 //! Unity-`Light`-component apply path and [`buffer_renderers`] the buffer-renderer apply path.
@@ -28,7 +28,7 @@ use super::types::{CachedLight, ResolvedLight};
 /// Local axis for light propagation before world transform (host forward = **+Z**).
 const LOCAL_LIGHT_PROPAGATION: Vec3 = Vec3::new(0.0, 0.0, 1.0);
 
-/// Sentinel marking an entry whose transform was removed outright — dropped during the retain
+/// Sentinel marking an entry whose transform was removed outright -- dropped during the retain
 /// pass at the end of [`LightCache::fixup_for_transform_removals`].
 const DEAD_TRANSFORM_ID: usize = usize::MAX;
 

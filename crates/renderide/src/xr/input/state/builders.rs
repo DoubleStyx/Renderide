@@ -43,7 +43,7 @@ pub(super) struct OpenxrHostControllerCtx {
     pub(super) select: bool,
 }
 
-/// Oculus Touch–class mapping (also used by profiles without a dedicated host variant).
+/// Oculus Touch-class mapping (also used by profiles without a dedicated host variant).
 fn host_state_touch_class_profile(ctx: OpenxrHostControllerCtx) -> VRControllerState {
     openxr_touch_class_controller_state(ctx)
 }
@@ -91,7 +91,7 @@ pub(super) fn dispatch_openxr_profile_to_host_state(
     }
 }
 
-/// Oculus Touch–class layout; the Quest-shaped host payload used by every OpenXR profile that
+/// Oculus Touch-class layout; the Quest-shaped host payload used by every OpenXR profile that
 /// lacks a dedicated host [`VRControllerState`] variant.
 fn openxr_touch_class_controller_state(ctx: OpenxrHostControllerCtx) -> VRControllerState {
     let OpenxrHostControllerCtx {

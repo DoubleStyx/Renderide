@@ -1,4 +1,4 @@
-//! Unity unlit `Shader "Unlit/Overlay"`: texture × tint with fixed `ZTest Always`, `ZWrite Off`,
+//! Unity unlit `Shader "Unlit/Overlay"`: texture x tint with fixed `ZTest Always`, `ZWrite Off`,
 //! and `Blend SrcAlpha OneMinusSrcAlpha` for HUD-style overlays.
 
 

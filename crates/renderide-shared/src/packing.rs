@@ -1,6 +1,6 @@
-//! Memory-oriented serialization for host–renderer IPC.
+//! Memory-oriented serialization for host-renderer IPC.
 //!
-//! Primitives, strings, and collection encodings match the layout produced by the host’s
+//! Primitives, strings, and collection encodings match the layout produced by the host's
 //! `MemoryPacker` / `MemoryUnpacker` types so a single binary contract works on all platforms.
 
 pub mod bit_span;

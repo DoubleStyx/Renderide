@@ -56,7 +56,7 @@ struct SkyboxViewUniforms {
     /// `.x`: ndc Y sign passed to the fragment shader (1.0 normal, -1.0 for offscreen-RT views).
     /// Offscreen-RT views pre-multiply a clip-space Y flip into the world view-projection so the
     /// render-texture lands V=0 bottom. The skybox is a fullscreen pass whose vertex Y flip is a
-    /// rasterization no-op, so we flip the ndc.y the fragment receives instead — that inverts the
+    /// rasterization no-op, so we flip the ndc.y the fragment receives instead -- that inverts the
     /// computed view ray, which is what actually changes which sky direction is sampled per
     /// framebuffer row. `.yzw` reserved padding.
     ndc_y_sign_pad: [f32; 4],

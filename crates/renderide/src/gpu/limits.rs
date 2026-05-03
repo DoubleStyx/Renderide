@@ -21,7 +21,7 @@ pub const REPORTED_MAX_TEXTURE_SIZE_FALLBACK_EDGE: u32 = 8192;
 /// Renderer-specific GPU limits and feature flags (immutable after construction).
 #[derive(Clone, Debug)]
 pub struct GpuLimits {
-    /// Full wgpu limits for the active device (post–`request_device` effective caps).
+    /// Full wgpu limits for the active device (post-`request_device` effective caps).
     pub wgpu: wgpu::Limits,
     /// Whether merged mesh draws may use non-zero `first_instance` ([`wgpu::DownlevelCapabilities::is_webgpu_compliant`]).
     pub supports_base_instance: bool,

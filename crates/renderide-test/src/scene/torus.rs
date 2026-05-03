@@ -1,6 +1,6 @@
 //! Procedural torus mesh generator.
 //!
-//! Produces a [`Mesh`] in object space with smooth normals and UVs spanning `[0,1]×[0,1]`,
+//! Produces a [`Mesh`] in object space with smooth normals and UVs spanning `[0,1]x[0,1]`,
 //! where U wraps around the major (large) circle and V wraps around the minor (tube) circle.
 //! Clockwise winding matches the renderer's `FrontFace::Cw` convention.
 

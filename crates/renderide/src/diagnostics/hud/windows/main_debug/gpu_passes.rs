@@ -1,4 +1,4 @@
-//! **GPU passes** tab — per-pass GPU timing breakdown.
+//! **GPU passes** tab -- per-pass GPU timing breakdown.
 //!
 //! Rows come from [`crate::gpu::GpuContext::latest_gpu_pass_timings_handle`], populated by
 //! [`crate::gpu::GpuContext::end_gpu_profiler_frame`] each tick. The table is empty until a
@@ -19,7 +19,7 @@ impl TabView for GpuPassesTab {
 
     fn render(&self, ui: &imgui::Ui, timings: Self::Data<'_>, _state: &mut Self::State) {
         if timings.is_empty() {
-            ui.text("Waiting for GPU pass timings…");
+            ui.text("Waiting for GPU pass timings...");
             ui.text_disabled(
                 "Requires the `tracy` Cargo feature and an adapter with TIMESTAMP_QUERY.",
             );
@@ -28,7 +28,7 @@ impl TabView for GpuPassesTab {
 
         let total_ms: f32 = timings.iter().filter(|e| e.depth == 0).map(|e| e.ms).sum();
         ui.text(format!(
-            "{} passes · {:.3} ms total (top-level sum)",
+            "{} passes * {:.3} ms total (top-level sum)",
             timings.len(),
             total_ms
         ));

@@ -73,7 +73,7 @@ pub(crate) struct UniformPackTextureContext<'a> {
 /// state for fields following the [`LOD_BIAS_SUFFIX`] convention (`_<Tex>_LodBias`), the host's
 /// property store (for host-declared properties), explicit-only zero-default fields such as UI
 /// text controls, [`inferred_keyword_float_f32`] for multi-compile keyword fields (`_NORMALMAP`,
-/// `_ALPHATEST_ON`, …) the host cannot write because FrooxEngine routes them through the
+/// `_ALPHATEST_ON`, ...) the host cannot write because FrooxEngine routes them through the
 /// `ShaderKeywords.Variant` bitmask the renderer never receives, or the scalar/vector default
 /// tables / a zero for the unobservable pre-first-batch window.
 pub(crate) fn build_embedded_uniform_bytes(

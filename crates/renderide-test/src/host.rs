@@ -3,12 +3,12 @@
 //!
 //! The implementation is split across:
 //!
-//! - [`ipc_setup`] — opens the four authority Cloudtoid queues + tempdir for SHM backing files.
-//! - [`handshake`] — `RendererInitData` → `RendererInitResult` → `RendererInitFinalizeData`.
-//! - [`lockstep`] — drains both `…S` queues and replies to every `FrameStartData` with a
+//! - [`ipc_setup`] -- opens the four authority Cloudtoid queues + tempdir for SHM backing files.
+//! - [`handshake`] -- `RendererInitData` -> `RendererInitResult` -> `RendererInitFinalizeData`.
+//! - [`lockstep`] -- drains both `...S` queues and replies to every `FrameStartData` with a
 //!   `FrameSubmitData`. Per-frame counter starts at 0 (matches `RenderSystem.cs:111`).
-//! - [`asset_upload`] — writes the sphere mesh into shared memory and waits for `MeshUploadResult`.
-//! - [`scene_session`] — top-level orchestration.
+//! - [`asset_upload`] -- writes the sphere mesh into shared memory and waits for `MeshUploadResult`.
+//! - [`scene_session`] -- top-level orchestration.
 
 use std::path::PathBuf;
 use std::time::Duration;

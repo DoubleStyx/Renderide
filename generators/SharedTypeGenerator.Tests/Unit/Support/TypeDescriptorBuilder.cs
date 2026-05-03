@@ -42,7 +42,7 @@ internal static class Ir
 
     /// <summary>Builds a <see cref="FieldKind.Object"/> <see cref="FieldDescriptor"/>.</summary>
     /// <param name="name">Name shared between <see cref="FieldDescriptor.CSharpName"/> and <see cref="FieldDescriptor.RustName"/>.</param>
-    /// <param name="rustType">Rust type string (may include <c>Option&lt;…&gt;</c>).</param>
+    /// <param name="rustType">Rust type string (may include <c>Option&lt;...&gt;</c>).</param>
     public static FieldDescriptor ObjectField(string name, string rustType) =>
         new()
         {

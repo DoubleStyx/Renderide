@@ -1,6 +1,6 @@
 //! Unity surface shader `Shader "Art/PaintPBS"`: metallic Standard lighting with a paint-pattern
 //! overlay sampled from four horizontal strips of `_PaintTex`. Faded at horizontal edges and
-//! gated through `pow(paint, _Pow)` × `_PaintGain` × `_OutputScale` for the final alpha mask.
+//! gated through `pow(paint, _Pow)` x `_PaintGain` x `_OutputScale` for the final alpha mask.
 //! Default render state is transparent (host-driven via `_SrcBlend` / `_DstBlend` / `_ZWrite`).
 
 

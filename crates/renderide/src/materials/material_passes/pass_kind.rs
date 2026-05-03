@@ -66,7 +66,7 @@ pub enum MaterialPassState {
     #[default]
     Static,
     /// Forward pass with material-driven blend: `Blend [_SrcBlend] [_DstBlend]`, `ZWrite [_ZWrite]`.
-    /// One pass per material — directional + local lights are accumulated in a single shader call.
+    /// One pass per material -- directional + local lights are accumulated in a single shader call.
     Forward,
     /// Overlay pass with material-driven `Blend [_SrcBlend][_DstBlend], One One`, `BlendOp Add, Max`.
     Overlay,
@@ -448,7 +448,7 @@ impl MaterialPassDesc {
     }
 }
 
-/// Inputs to [`default_pass`] — labels the two boolean knobs at every call site.
+/// Inputs to [`default_pass`] -- labels the two boolean knobs at every call site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DefaultPassParams {
     /// `true` selects the transparent variant (`ALPHA_BLENDING`, `ColorWrites::ALL`, no cull);
@@ -461,7 +461,7 @@ pub struct DefaultPassParams {
 /// Static opaque/transparent pass descriptor with no material-driven blend overlay.
 ///
 /// Only used by the null fallback raster pipeline (see
-/// [`crate::materials::null_pipeline::create_null_render_pipeline`]) — embedded material WGSL
+/// [`crate::materials::null_pipeline::create_null_render_pipeline`]) -- embedded material WGSL
 /// always reaches pipeline construction through their declared `//#pass` directives via
 /// [`pass_from_kind`] + [`materialized_pass_for_blend_mode`].
 pub const fn default_pass(params: DefaultPassParams) -> MaterialPassDesc {

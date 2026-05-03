@@ -2,17 +2,17 @@
 //!
 //! # Module map
 //!
-//! - **`asset_transfer_queue`** — [`AssetTransferQueue`]: IPC-driven mesh/texture/render-texture
+//! - **`asset_transfer_queue`** -- [`AssetTransferQueue`]: IPC-driven mesh/texture/render-texture
 //!   queues, per-poll upload budgets, CPU-side format/property tables, and
 //!   [`crate::gpu_pools::MeshPool`] / [`crate::gpu_pools::TexturePool`] / [`crate::gpu_pools::RenderTexturePool`].
 //!   Owned by [`crate::backend::RenderBackend`] after GPU attach.
-//! - **`mesh`** — Host [`mesh::MeshBufferLayout`] contract, [`mesh::GpuMesh`] construction, layout
+//! - **`mesh`** -- Host [`mesh::MeshBufferLayout`] contract, [`mesh::GpuMesh`] construction, layout
 //!   fingerprints, and upload validation. [`crate::gpu_pools::GpuResource`] is implemented for resident meshes.
-//! - **`shader`** — Resolving [`crate::shared::ShaderUpload`] AssetBundle paths to pipeline kinds for
+//! - **`shader`** -- Resolving [`crate::shared::ShaderUpload`] AssetBundle paths to pipeline kinds for
 //!   [`crate::materials::MaterialRegistry`].
-//! - **`texture`** — Host Texture2D format/layout, decode/swizzle, mip packing, and
+//! - **`texture`** -- Host Texture2D format/layout, decode/swizzle, mip packing, and
 //!   [`wgpu::Queue::write_texture`] uploads.
-//! - **`util`** — Small string helpers shared with [`crate::materials`] (e.g. Unity shader key normalization).
+//! - **`util`** -- Small string helpers shared with [`crate::materials`] (e.g. Unity shader key normalization).
 
 pub mod asset_transfer_queue;
 pub mod mesh;

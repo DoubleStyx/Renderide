@@ -75,9 +75,9 @@ impl<'a> MaterialDictionary<'a> {
     /// Returns the two inner property maps (material-side and property-block-side) for one
     /// [`MaterialPropertyLookupIds`] in a single outer-map probe.
     ///
-    /// Callers that iterate many property ids against the same lookup — e.g.
+    /// Callers that iterate many property ids against the same lookup -- e.g.
     /// [`crate::materials::material_render_state_for_lookup`] issuing ~30 `get_merged` calls per
-    /// material — use this to hoist the two outer probes out of the inner loop, reducing per-id
+    /// material -- use this to hoist the two outer probes out of the inner loop, reducing per-id
     /// cost to a single inner-map lookup on each side.
     pub fn fetch_property_maps(&self, ids: MaterialPropertyLookupIds) -> PropertyMapPair<'a> {
         let mat = self.store.material_properties.get(&ids.material_asset_id);
@@ -88,7 +88,7 @@ impl<'a> MaterialDictionary<'a> {
     }
 }
 
-/// Pair of inner `property_id → value` maps (material-side, property-block-side) returned by
+/// Pair of inner `property_id -> value` maps (material-side, property-block-side) returned by
 /// [`MaterialDictionary::fetch_property_maps`]. Either side may be `None` when no properties have
 /// been stored for the referenced id.
 pub type PropertyMapPair<'a> = (
@@ -139,7 +139,7 @@ impl MaterialPropertyStore {
     /// property-block generations are exposed separately so persistent caches can store both and
     /// avoid hash-collision ambiguity between pairs with the same XOR-rotated combination.
     ///
-    /// Not decremented on [`Self::remove_material`] — the counter stays in place so that a later
+    /// Not decremented on [`Self::remove_material`] -- the counter stays in place so that a later
     /// `set_material` bumps from the old value, preserving monotonicity across unload/reload
     /// cycles. Callers who cache a snapshot of this value can then safely compare it back to the
     /// current value to detect any intervening mutation.
@@ -259,7 +259,7 @@ impl MaterialPropertyStore {
         self.property_block_properties.len()
     }
 
-    /// Count of `set_shader` bindings (`material_id` → shader asset).
+    /// Count of `set_shader` bindings (`material_id` -> shader asset).
     pub fn material_shader_binding_count(&self) -> usize {
         self.shader_asset_by_material.len()
     }

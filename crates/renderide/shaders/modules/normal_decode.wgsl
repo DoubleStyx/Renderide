@@ -31,7 +31,7 @@ fn decode_ts_normal_with_placeholder(raw: vec3<f32>, scale: f32) -> vec3<f32> {
 /// (duplicate in **blue**); standard RGB normal maps use **RGB** only.
 ///
 /// Per-texel thresholds match Rust [`swizzle_bc3nm_normal_map_tile_if_detected`] (`BC3NM_R_CHANNEL_MIN`,
-/// `BC3NM_GB_MAX_DELTA`) in linear **0–1** space. Filtered samples can still diverge from per-tile CPU detection.
+/// `BC3NM_GB_MAX_DELTA`) in linear **0-1** space. Filtered samples can still diverge from per-tile CPU detection.
 fn decode_ts_normal_sample_raw(s: vec4<f32>) -> vec3<f32> {
     let uniform_white_rgb = all(s.rgb > vec3<f32>(0.99, 0.99, 0.99));
     if (uniform_white_rgb) {

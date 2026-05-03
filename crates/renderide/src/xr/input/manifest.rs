@@ -12,7 +12,7 @@
 //! locates them at runtime.
 //!
 //! Validation at parse time rejects manifests that would otherwise produce confusing runtime
-//! failures — unknown action references, duplicated action ids, misrouted haptic bindings, or
+//! failures -- unknown action references, duplicated action ids, misrouted haptic bindings, or
 //! unknown extension gate names.
 //!
 //! Parse is pure (`parse_action_manifest` / `parse_binding_profile` take string slices) so unit

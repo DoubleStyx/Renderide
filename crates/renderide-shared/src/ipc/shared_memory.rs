@@ -12,7 +12,7 @@
 //!
 //! Uses the same directory resolution as the bootstrapper
 //! ([`RENDERIDE_INTERPROCESS_DIR_ENV`]): if set to a non-empty path, that directory holds
-//! `{name}.qu` files; otherwise [`interprocess::default_memory_dir`] — Linux:
+//! `{name}.qu` files; otherwise [`interprocess::default_memory_dir`] -- Linux:
 //! `/dev/shm/.cloudtoid/interprocess/mmf`, **macOS and other Unix**: `std::env::temp_dir()` +
 //! `.cloudtoid/interprocess/mmf`. This matches the workspace `interprocess` crate and avoids
 //! assuming `/dev/shm` exists on non-Linux Unix.

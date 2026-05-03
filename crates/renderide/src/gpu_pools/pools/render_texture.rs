@@ -88,7 +88,7 @@ impl GpuRenderTexture {
         let max_dim = limits.max_texture_dimension_2d();
         if w > max_dim || h > max_dim {
             logger::warn!(
-                "render texture {}: size {}×{} exceeds max_texture_dimension_2d ({max_dim})",
+                "render texture {}: size {}x{} exceeds max_texture_dimension_2d ({max_dim})",
                 fmt.asset_id,
                 w,
                 h
@@ -124,7 +124,7 @@ impl GpuRenderTexture {
             Arc::new(color_texture.create_view(&wgpu::TextureViewDescriptor::default()));
 
         // Host `depth` is Unity depth-stencil bits; when zero the asset may still be used as a full
-        // scene target — we always allocate a depth attachment so the forward pass can run.
+        // scene target -- we always allocate a depth attachment so the forward pass can run.
         // `TEXTURE_BINDING` is required so Hi-Z build can bind the depth view for mip0 (`hi_z_mip0_d_bg`).
         let depth_format = crate::gpu::main_forward_depth_stencil_format(device.features());
         let dt = Arc::new(device.create_texture(&wgpu::TextureDescriptor {

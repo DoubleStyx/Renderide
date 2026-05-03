@@ -1,4 +1,4 @@
-//! Eye→staging blit for the VR desktop mirror.
+//! Eye->staging blit for the VR desktop mirror.
 //!
 //! Per-frame effect: copies one HMD eye into the persistent staging texture owned by
 //! [`super::resources::VrMirrorBlitResources`] and submits the resulting command buffer

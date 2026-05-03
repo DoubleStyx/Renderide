@@ -19,13 +19,13 @@
 //!    `gpu_frame_ms` value. The callback owns all its [`wgpu::Buffer`] / [`wgpu::QuerySet`]
 //!    references so the GPU resources stay alive until the read completes.
 //!
-//! Each tick uses fresh resources rather than a ring of pre-allocated slots — the per-frame
+//! Each tick uses fresh resources rather than a ring of pre-allocated slots -- the per-frame
 //! cost is one 2-entry timestamp query set plus two 16-byte buffers, which is negligible
 //! compared to the rest of the renderer's per-frame allocation.
 
 use std::sync::Arc;
 
-/// Number of bytes a 2-entry `Timestamp` query set resolves into (`u64 × 2`).
+/// Number of bytes a 2-entry `Timestamp` query set resolves into (`u64 x 2`).
 const TIMESTAMP_PAIR_BYTES: u64 = 16;
 
 /// Factory for per-tick frame-bracket sessions.
@@ -114,7 +114,7 @@ pub struct FrameBracketSession {
 }
 
 impl FrameBracketSession {
-    /// Builds the command buffer that opens the bracket — writes timestamp index 0.
+    /// Builds the command buffer that opens the bracket -- writes timestamp index 0.
     ///
     /// Submit this **before** any other tracked command buffer in the tick so its timestamp
     /// reflects the GPU clock right before the renderer's real work begins.
@@ -128,7 +128,7 @@ impl FrameBracketSession {
         enc.finish()
     }
 
-    /// Builds the command buffer that closes the bracket — writes timestamp 1, resolves both
+    /// Builds the command buffer that closes the bracket -- writes timestamp 1, resolves both
     /// timestamps into the resolve buffer, and copies the result into the mappable readback.
     ///
     /// Submit this **after** every other tracked command buffer in the tick so its timestamp

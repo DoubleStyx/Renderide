@@ -16,7 +16,7 @@ use crate::render_graph::resources::TextureHandle;
 
 /// Reads the chain HDR input at full resolution, samples bloom mip 0 (the terminating rung of the
 /// upsample ladder), combines them with the configured composite math in-shader (no blend state
-/// needed), and writes the chain output. This is the tail pass of the bloom subgraph — the one
+/// needed), and writes the chain output. This is the tail pass of the bloom subgraph -- the one
 /// whose `PassId` gets reported as `EffectPasses::last`.
 pub(super) struct BloomCompositePass {
     scene_input: TextureHandle,

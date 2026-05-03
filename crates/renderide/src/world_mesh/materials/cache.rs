@@ -11,7 +11,7 @@
 //! invalidates individual entries via monotonic generation counters maintained by
 //! [`crate::materials::host_data::MaterialPropertyStore`] and [`crate::materials::MaterialRouter`].
 //! A frame where nothing has changed touches each live entry with one HashMap probe and four
-//! `u64` comparisons — no dictionary or router lookups required.
+//! `u64` comparisons -- no dictionary or router lookups required.
 
 use hashbrown::HashMap;
 
@@ -48,7 +48,7 @@ struct CacheEntry {
     last_used_frame: u64,
 }
 
-/// Persistent `(material_asset_id, property_block_id)` → [`ResolvedMaterialBatch`] lookup table.
+/// Persistent `(material_asset_id, property_block_id)` -> [`ResolvedMaterialBatch`] lookup table.
 ///
 /// Owned by the renderer host and passed through per-view collection as an immutable reference.
 /// Call [`Self::refresh_for_frame`] once per frame before per-view draw
@@ -56,7 +56,7 @@ struct CacheEntry {
 /// entry (re-resolving on generation mismatch), and evicts entries not referenced this frame.
 ///
 /// In steady state (no material/router mutations, same shader permutation, same scene keys), this
-/// pass performs one HashMap probe and four `u64` compares per unique material — no dictionary or
+/// pass performs one HashMap probe and four `u64` compares per unique material -- no dictionary or
 /// router lookups, no allocations.
 pub struct FrameMaterialBatchCache {
     entries: HashMap<(i32, Option<i32>), CacheEntry>,
@@ -135,8 +135,8 @@ impl FrameMaterialBatchCache {
     /// `(material_asset_id, property_block_id)` key:
     ///
     /// - If an entry exists and all stored generations / shader permutation match the current
-    ///   values → stamp `last_used_frame` and keep.
-    /// - Otherwise → re-resolve via [`resolve_material_batch`] and overwrite.
+    ///   values -> stamp `last_used_frame` and keep.
+    /// - Otherwise -> re-resolve via [`resolve_material_batch`] and overwrite.
     ///
     /// After the walk, entries not touched this frame are evicted so the cache size tracks the
     /// live working set. Call once per frame before any per-view draw collection that reads the
@@ -193,7 +193,7 @@ impl FrameMaterialBatchCache {
                 active.extend(active_space_ids);
 
                 // Phase A: collect `(material_asset_id, property_block_id)` keys per space in
-                // parallel. The walk is O(renderers × slots); parallelising it across spaces
+                // parallel. The walk is O(renderers x slots); parallelising it across spaces
                 // keeps the serial Phase B work bounded by unique materials rather than per-draw
                 // references. Inner `Vec`s are reused across frames and cleared in place so the
                 // collect routine appends without reallocating in steady state.
@@ -228,7 +228,7 @@ impl FrameMaterialBatchCache {
         self.seen_scratch = seen;
 
         // Evict entries not referenced this frame so the cache tracks the live working set.
-        // Cheap — the cache typically holds a few dozen entries, and this touches them all once.
+        // Cheap -- the cache typically holds a few dozen entries, and this touches them all once.
         self.entries
             .retain(|_, entry| entry.last_used_frame == current_frame);
     }
@@ -237,7 +237,7 @@ impl FrameMaterialBatchCache {
     ///
     /// `FramePreparedRenderables` already resolves render-context material overrides and
     /// per-slot property blocks once for the frame. Reusing those keys avoids a second
-    /// O(renderers × material slots) scene walk in `render::build_frame_material_cache`.
+    /// O(renderers x material slots) scene walk in `render::build_frame_material_cache`.
     ///
     /// For larger draw lists the per-draw dedup walk is parallelised: rayon workers each dedup
     /// a [`PARALLEL_REFRESH_CHUNK_SIZE`]-sized chunk into their own buffer, and a single serial
@@ -297,7 +297,7 @@ impl FrameMaterialBatchCache {
                     }
                 });
             // Phase 2: serial merge over chunk-unique keys only. Total work here is bounded by
-            // (n_chunks × distinct materials), which is far smaller than the per-draw walk.
+            // (n_chunks x distinct materials), which is far smaller than the per-draw walk.
             for chunk_unique in &chunks_unique {
                 for &key in chunk_unique {
                     if seen.insert(key) {
@@ -425,7 +425,7 @@ mod tests {
             1,
         );
         assert!(cache.get(42, None).is_some());
-        // Unknown material id → shader id -1.
+        // Unknown material id -> shader id -1.
         assert_eq!(cache.get(42, None).unwrap().shader_asset_id, -1);
     }
 
@@ -453,7 +453,7 @@ mod tests {
         let after = cache.entries.get(&(1, None)).unwrap();
         assert_eq!(before.material_gen, after.material_gen);
         assert_eq!(before.router_gen, after.router_gen);
-        // last_used_frame advanced but generations did not — confirms no re-resolve.
+        // last_used_frame advanced but generations did not -- confirms no re-resolve.
         assert_eq!(after.last_used_frame, 2);
     }
 

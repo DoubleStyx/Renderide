@@ -1,15 +1,15 @@
-//! End-to-end orchestration of the harness lifecycle: open IPC → spawn renderer → handshake →
-//! upload mesh → swap to scene `FrameSubmitData` → wait for the renderer to write a fresh
-//! PNG → request shutdown.
+//! End-to-end orchestration of the harness lifecycle: open IPC -> spawn renderer -> handshake ->
+//! upload mesh -> swap to scene `FrameSubmitData` -> wait for the renderer to write a fresh
+//! PNG -> request shutdown.
 //!
 //! The implementation is split across focused submodules:
 //!
-//! - [`config`] — public configuration and outcome types.
-//! - [`consts`] — centralized timing, asset-id, and tessellation constants.
-//! - [`spawn`] — renderer process spawn + RAII guard.
-//! - [`scene_state`] — scene-state SHM construction and first-submit pump.
-//! - [`png_readback`] — PNG stability state machine + readback driver loop.
-//! - [`shutdown`] — graceful shutdown sequence.
+//! - [`config`] -- public configuration and outcome types.
+//! - [`consts`] -- centralized timing, asset-id, and tessellation constants.
+//! - [`spawn`] -- renderer process spawn + RAII guard.
+//! - [`scene_state`] -- scene-state SHM construction and first-submit pump.
+//! - [`png_readback`] -- PNG stability state machine + readback driver loop.
+//! - [`shutdown`] -- graceful shutdown sequence.
 
 use std::time::{Duration, Instant, SystemTime};
 

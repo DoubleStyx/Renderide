@@ -3,14 +3,14 @@
 //!
 //! Registers a three-stage chain on the post-processing graph builder:
 //!
-//! 1. [`main_pass::GtaoMainPass`] — produces the AO term (scaled by
+//! 1. [`main_pass::GtaoMainPass`] -- produces the AO term (scaled by
 //!    `1 / OCCLUSION_TERM_SCALE` per XeGTAO's headroom convention) and packed depth-edge
 //!    weights from the imported scene depth. The HDR scene-color input is *not* read here;
 //!    modulation is deferred to the apply stage so the bilateral denoiser can act on the AO
 //!    term first.
-//! 2. [`denoise_pass::GtaoDenoisePass`] — XeGTAO 3×3 edge-preserving bilateral filter.
+//! 2. [`denoise_pass::GtaoDenoisePass`] -- XeGTAO 3x3 edge-preserving bilateral filter.
 //!    Only registered when [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`.
-//! 3. [`apply_pass::GtaoApplyPass`] — final denoise iteration that multiplies the AO term by
+//! 3. [`apply_pass::GtaoApplyPass`] -- final denoise iteration that multiplies the AO term by
 //!    `OCCLUSION_TERM_SCALE` to recover the true visibility, then modulates HDR scene color
 //!    and writes the chain's HDR output. Always registered. The shader short-circuits the
 //!    kernel when `denoise_blur_beta <= 0`, so `denoise_passes == 0` collapses to a
@@ -195,7 +195,7 @@ mod tests {
         assert!(!e.is_enabled(&s), "master off disables even if gtao on");
     }
 
-    /// The WGSL `GtaoParams` struct is 32 bytes (8 × 4); changes here require updating
+    /// The WGSL `GtaoParams` struct is 32 bytes (8 x 4); changes here require updating
     /// `gtao_main.wgsl`, `gtao_denoise.wgsl`, and `gtao_apply.wgsl` simultaneously.
     #[test]
     fn gtao_params_gpu_size_is_32_bytes() {

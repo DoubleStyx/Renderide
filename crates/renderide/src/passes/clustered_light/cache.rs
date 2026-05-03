@@ -14,10 +14,10 @@ use crate::camera::ViewId;
 /// Interior-mutable per-view bind group cache for the clustered light compute pass.
 ///
 /// Wraps a [`Mutex`] around a map of `(cluster_version, BindGroup)` pairs so that
-/// `record(&self, …)` can safely insert and look up bind groups without requiring
+/// `record(&self, ...)` can safely insert and look up bind groups without requiring
 /// `&mut self` on the pass, enabling concurrent per-view recording.
 ///
-/// Uses [`parking_lot::Mutex`] to keep the `lock` API infallible — the hot per-view
+/// Uses [`parking_lot::Mutex`] to keep the `lock` API infallible -- the hot per-view
 /// recording path must not defensively `.expect()` on every access.
 pub(super) struct ClusteredLightBindGroupCache(Mutex<HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)>>);
 
@@ -98,7 +98,7 @@ mod tests {
         // the version-check helper logic directly.
         let cache: HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
 
-        // Simulate an already-populated entry for version 5 (using a dummy slot —
+        // Simulate an already-populated entry for version 5 (using a dummy slot --
         // this would fail if we actually ran the Arc::new path, but the test only
         // exercises the `needs_rebuild_for_version` pure function).
         let version: u64 = 5;
@@ -107,7 +107,7 @@ mod tests {
         // We cannot insert without a BindGroup, so we test that the absence branch fires:
         assert!(needs_rebuild_for_version(&cache, ViewId::Main, version));
 
-        // After we simulate a populated entry (version 5), same version → no rebuild.
+        // After we simulate a populated entry (version 5), same version -> no rebuild.
         // Since we can't create BindGroups here, we test only the version-mismatch branch.
         // Insert a fake entry by exploiting that Arc::clone is cheap (no GPU object needed).
         // This is intentionally left as a compile-check only; runtime correctness is covered
@@ -120,7 +120,7 @@ mod tests {
         // Verify the is_none_or branch for version mismatch.
         // Uses only the pure logic function, not the Mutex wrapper.
         let cache: HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
-        // Any version on an empty cache → rebuild needed.
+        // Any version on an empty cache -> rebuild needed.
         assert!(needs_rebuild_for_version(&cache, ViewId::Main, 0));
         assert!(needs_rebuild_for_version(&cache, ViewId::Main, 99));
     }

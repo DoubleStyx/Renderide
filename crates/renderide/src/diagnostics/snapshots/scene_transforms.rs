@@ -1,10 +1,10 @@
-//! Read-only snapshot of per–render-space world transforms for the debug HUD (no ImGui types).
+//! Read-only snapshot of per-render-space world transforms for the debug HUD (no ImGui types).
 
 use glam::{Quat, Vec3};
 
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 
-/// One frame’s world-space transform samples for every tracked render space.
+/// One frame's world-space transform samples for every tracked render space.
 #[derive(Clone, Debug, Default)]
 pub struct SceneTransformsSnapshot {
     /// Sorted by [`RenderSpaceTransformsSnapshot::space_id`] for stable UI tab order.

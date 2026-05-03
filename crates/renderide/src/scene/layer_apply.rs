@@ -118,7 +118,7 @@ pub(crate) fn apply_layer_update_extracted(
 /// Combined renderer count above which the per-renderer layer resolve fans out to the rayon pool.
 ///
 /// Each call to [`resolve_layer_for_node`] walks the parent chain and scans `layer_assignments`,
-/// so per-renderer cost scales with scene depth × assignment count. Above this threshold the
+/// so per-renderer cost scales with scene depth x assignment count. Above this threshold the
 /// parallel dispatch pays for itself; below it the serial path avoids rayon overhead.
 const LAYER_RESOLVE_PARALLEL_MIN: usize = 256;
 
@@ -302,7 +302,7 @@ fn resolve_layer_for_node(
 
 /// Layer-assignment count above which the per-removal fixup sweep fans out to the rayon pool.
 ///
-/// Each entry's `fixup_transform_id` is a trivial branch, but removals × assignments can grow
+/// Each entry's `fixup_transform_id` is a trivial branch, but removals x assignments can grow
 /// into the tens of thousands during bulky scene teardowns.
 const LAYER_FIXUP_PARALLEL_MIN: usize = 128;
 

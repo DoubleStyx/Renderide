@@ -6,7 +6,7 @@
 //! [`super::super::pass::PassPhase::FrameGlobal`] and [`super::super::pass::PassPhase::PerView`]
 //! passes.
 //!
-//! This is not a hot-path facility — it is emitted on demand from the diagnostics HUD or a
+//! This is not a hot-path facility -- it is emitted on demand from the diagnostics HUD or a
 //! developer-triggered dump. `to_dot` allocates a single [`String`]; callers decide what to do
 //! with it (write to stdout, file, or the imgui overlay).
 

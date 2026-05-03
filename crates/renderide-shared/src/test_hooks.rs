@@ -1,5 +1,5 @@
 //! Test-only hooks shared between the harness and renderer. These do not affect production
-//! behavior — the production host never produces the prefix below, so the renderer's
+//! behavior -- the production host never produces the prefix below, so the renderer's
 //! AssetBundle resolution path is unchanged when running attached to a real host.
 //!
 //! When the renderer integration harness wants to drive a particular embedded WGSL stem

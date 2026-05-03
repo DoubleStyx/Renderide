@@ -11,7 +11,7 @@
 //!    target identity, sends `SIGUSR2` via `pthread_kill` (or `tgkill` on Linux for fewer
 //!    indirections), and busy-waits with short sleeps for the handler to flip the "done" flag.
 //! 3. The watchdog reads the captured instruction pointers out of the static buffer and then
-//!    symbolicates them — heap allocation is fine here because we are no longer in signal context.
+//!    symbolicates them -- heap allocation is fine here because we are no longer in signal context.
 //!
 //! Modeled after the existing two-phase pattern in [`crate::fatal_crash_log`] (signal-safe IP
 //! capture, deferred symbolication via [`backtrace::resolve`]).
@@ -38,7 +38,7 @@ static CAPTURE_DONE: AtomicBool = AtomicBool::new(false);
 /// before it walks. Defends against spurious `SIGUSR2` deliveries to other threads.
 static CAPTURE_TARGET_TID: AtomicI64 = AtomicI64::new(0);
 
-/// Serializes [`request_capture`] calls — the static buffers above are process-wide.
+/// Serializes [`request_capture`] calls -- the static buffers above are process-wide.
 static CAPTURE_LOCK: Mutex<()> = Mutex::new(());
 
 /// One-shot guard so [`install`] is idempotent.
@@ -144,7 +144,7 @@ pub(super) fn install() -> Result<(), String> {
     // points to writable memory inside `sa`.
     unsafe { libc::sigemptyset(core::ptr::addr_of_mut!(sa.sa_mask)) };
     // SAFETY: registers a process-wide handler for `SIGUSR2`; the handler is async-signal-safe
-    // (see its doc-comment). Old handler is discarded — `SIGUSR2` is otherwise unused in the
+    // (see its doc-comment). Old handler is discarded -- `SIGUSR2` is otherwise unused in the
     // renderer, so there is no preexisting handler to chain to.
     let rc = unsafe {
         libc::sigaction(
@@ -230,7 +230,7 @@ fn send_capture_signal(os_tid: i64, pthread_handle: usize) -> i32 {
 
 /// Best-effort symbolicate `frames` as a multi-line `"  #NN <name> at <file>:<line>"` string.
 ///
-/// Allocates freely — only call from the watchdog thread, never from a signal handler. Mirrors
+/// Allocates freely -- only call from the watchdog thread, never from a signal handler. Mirrors
 /// the Phase-2 symbolication in [`crate::fatal_crash_log`].
 pub(super) fn symbolicate(frames: &[usize]) -> String {
     use std::fmt::Write as _;

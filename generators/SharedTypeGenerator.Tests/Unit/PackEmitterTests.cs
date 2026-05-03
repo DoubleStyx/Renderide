@@ -154,7 +154,7 @@ public sealed class PackEmitterTests
         Assert.Contains("self._padding.copy_from_slice", text, StringComparison.Ordinal);
     }
 
-    /// <summary><see cref="PackEmitter"/> object unpack strips a single <c>Option&lt;…&gt;</c> for generic inference.</summary>
+    /// <summary><see cref="PackEmitter"/> object unpack strips a single <c>Option&lt;...&gt;</c> for generic inference.</summary>
     [Fact]
     public void UnpackObjectLine_strips_option_wrapper()
     {
@@ -165,7 +165,7 @@ public sealed class PackEmitterTests
         Assert.Contains("read_object::<FooBar>()", line, StringComparison.Ordinal);
     }
 
-    /// <summary>Polymorphic list unpack strips <c>Vec&lt;…&gt;</c> to the element decode name.</summary>
+    /// <summary>Polymorphic list unpack strips <c>Vec&lt;...&gt;</c> to the element decode name.</summary>
     [Fact]
     public void UnpackPolymorphicListLine_strips_vec_wrapper()
     {

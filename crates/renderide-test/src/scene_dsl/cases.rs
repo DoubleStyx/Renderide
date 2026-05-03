@@ -29,7 +29,7 @@ pub struct IntegrationCase {
     pub resolution: (u32, u32),
     /// Comparison tolerance applied during `check`.
     pub tolerance: Tolerance,
-    /// Scene template selector — drives which harness flow runs.
+    /// Scene template selector -- drives which harness flow runs.
     pub template: CaseTemplate,
 }
 
@@ -44,7 +44,7 @@ pub enum CaseTemplate {
     SphereNull,
     /// Procedural torus rendered through the harness; a deterministic CPU-generated Perlin
     /// noise RGBA texture is also written to the per-case output directory as a side artifact
-    /// (`perlin_texture.png`). This proves the suite is modular — different geometry plus a
+    /// (`perlin_texture.png`). This proves the suite is modular -- different geometry plus a
     /// CPU-generated content artifact alongside the renderer's PNG.
     TorusUnlitPerlin {
         /// Perlin noise generator parameters used for the side artifact.
@@ -90,7 +90,7 @@ pub fn unlit_sphere() -> IntegrationCase {
 /// `actual.png` to exercise the suite's modular content pipeline.
 ///
 /// The renderer pipeline path is the same Null/checkerboard fallback as
-/// [`unlit_sphere`] — only the geometry differs and an additional artifact is written.
+/// [`unlit_sphere`] -- only the geometry differs and an additional artifact is written.
 /// Tolerance loosened the same way as `unlit_sphere` to absorb adapter variance.
 pub fn torus_unlit_perlin() -> IntegrationCase {
     IntegrationCase {

@@ -64,7 +64,7 @@ fn sample_layer(
     return textureSample(tex, samp, sample_uv) * tint;
 }
 
-/// Same UV as [`sample_layer`], base mip — for `_Cutoff` vs composited alpha only.
+/// Same UV as [`sample_layer`], base mip -- for `_Cutoff` vs composited alpha only.
 fn sample_layer_lod0(
     tex: texture_2d<f32>,
     samp: sampler,

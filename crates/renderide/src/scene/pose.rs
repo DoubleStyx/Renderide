@@ -129,7 +129,7 @@ mod tests {
         assert!(!PoseValidation { pose: &pose }.is_valid());
     }
 
-    /// The rotation quaternion is only required to be finite — no normalization or threshold check
+    /// The rotation quaternion is only required to be finite -- no normalization or threshold check
     /// applies. Rotations with large or non-unit components are still accepted.
     #[test]
     fn rotation_threshold_is_not_applied() {

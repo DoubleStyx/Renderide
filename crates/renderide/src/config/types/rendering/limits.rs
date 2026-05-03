@@ -21,7 +21,7 @@ pub const MAX_MAX_FRAME_LATENCY: u32 = 3;
 /// [`DEFAULT_MAX_FRAME_LATENCY`] rather than being promoted to `MIN_MAX_FRAME_LATENCY`.
 pub type MaxFrameLatency = Clamped<MIN_MAX_FRAME_LATENCY, MAX_MAX_FRAME_LATENCY>;
 
-/// Default helper for `#[serde(default = …)]` so a missing field round-trips to
+/// Default helper for `#[serde(default = ...)]` so a missing field round-trips to
 /// [`DEFAULT_MAX_FRAME_LATENCY`] rather than `0`.
 pub(super) fn default_max_frame_latency() -> u32 {
     DEFAULT_MAX_FRAME_LATENCY

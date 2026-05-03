@@ -1,4 +1,4 @@
-//! Per-draw view–projection and model matrices for world mesh forward shading.
+//! Per-draw view-projection and model matrices for world mesh forward shading.
 //!
 //! See module docs on [`super::WorldMeshForwardOpaquePass`] for VR vs overlay rules.
 

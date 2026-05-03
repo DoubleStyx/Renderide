@@ -12,7 +12,7 @@
 //! - a directory containing that file (the per-OS basename from [`openxr_loader_library_filename`]
 //!   is appended).
 //!
-//! This is checked after the executable’s directory and before optional standard install locations
+//! This is checked after the executable's directory and before optional standard install locations
 //! (Windows only) and the platform default search used by [`openxr::Entry::load`].
 //!
 //! # Khronos arch mapping

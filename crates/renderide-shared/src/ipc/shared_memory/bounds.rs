@@ -1,8 +1,8 @@
-//! Validates `[offset, offset+length)` against a mapped buffer’s total length.
+//! Validates `[offset, offset+length)` against a mapped buffer's total length.
 
 use crate::buffer::SharedMemoryBufferDescriptor;
 
-/// Minimum byte capacity required to map `descriptor`’s byte range (`offset + length`), capped by host `buffer_capacity`.
+/// Minimum byte capacity required to map `descriptor`'s byte range (`offset + length`), capped by host `buffer_capacity`.
 ///
 /// Returns [`None`] when `length <= 0` or the computed capacity is non-positive.
 pub(super) fn required_view_capacity(d: &SharedMemoryBufferDescriptor) -> Option<i32> {

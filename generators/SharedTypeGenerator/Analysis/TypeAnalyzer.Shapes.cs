@@ -117,7 +117,7 @@ public partial class TypeAnalyzer
 
         // Non-explicit C# structs still map to `#[repr(C)]` scalars in Rust. When every field is a
         // plain scalar and classified as `Pod`, the layout matches `bytemuck::Pod` (same rule as
-        // blittable rows used for shared-memory copy helpers — e.g. `MaterialOverrideState`).
+        // blittable rows used for shared-memory copy helpers -- e.g. `MaterialOverrideState`).
         if (!isPod
             && fieldDescriptors.Count > 0
             && fieldDescriptors.All(f => f.Kind == FieldKind.Pod && IsPlainRustScalarLayoutType(f.RustType)))

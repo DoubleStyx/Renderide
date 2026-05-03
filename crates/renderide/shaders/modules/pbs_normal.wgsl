@@ -1,4 +1,4 @@
-//! Tangent-space → world-space normal-mapping primitives shared across all PBS materials.
+//! Tangent-space -> world-space normal-mapping primitives shared across all PBS materials.
 //!
 //! Each PBS material file owns its own `sample_normal_world` wrapper because per-material details
 //! (single-UV vs multi-UV vs triplanar, dual-sided front_facing flip, detail-mask blending, etc.)
@@ -12,27 +12,35 @@
 //! Import with `#import renderide::pbs::normal as pnorm`.
 
 #define_import_path renderide::pbs::normal
+#import renderide::math as rmath
+
+/// Builds a Gram-Schmidt-orthonormalised TBN from a world-space normal and a Unity-style
+/// `vec4` tangent (xyz = world tangent, w = bitangent handedness sign). Falls back to the
+/// branchless `pbs::normal::orthonormal_tbn_fallback` if the supplied tangent is degenerate.
+fn orthonormal_tbn(world_n: vec3<f32>, world_t: vec4<f32>) -> mat3x3<f32> {
+    let n = rmath::safe_normalize(world_n, vec3<f32>(0.0, 0.0, 1.0));
+    let t_raw = world_t.xyz - n * dot(world_t.xyz, n);
+    if (dot(t_raw, t_raw) <= 1e-10) {
+        return orthonormal_tbn_fallback(n);
+    }
+    let t = normalize(t_raw);
+    let sign = select(1.0, -1.0, world_t.w < 0.0);
+    let b = rmath::safe_normalize(cross(n, t) * sign, orthonormal_tbn_fallback(n)[1]);
+    return mat3x3<f32>(t, b, n);
+}
 
 /// Branchless orthonormal basis from a unit world normal.
 ///
 /// Construction follows *Building an Orthonormal Basis, Revisited* (Duff et al., JCGT 2017) so
-/// there is no discontinuity near `n.z = ±1` (unlike a fixed world-up cross). Returns the matrix
+/// there is no discontinuity near `n.z = +/-1` (unlike a fixed world-up cross). Returns the matrix
 /// `[T B N]` with columns the tangent, bitangent, and the input normal.
-fn orthonormal_tbn(n: vec3<f32>) -> mat3x3<f32> {
+fn orthonormal_tbn_fallback(n: vec3<f32>) -> mat3x3<f32> {
     let sign = select(-1.0, 1.0, n.z >= 0.0);
     let a = -1.0 / (sign + n.z);
     let b = n.x * n.y * a;
     let t = vec3<f32>(1.0 + sign * n.x * n.x * a, sign * b, -sign * n.x);
     let bitan = vec3<f32>(b, sign + n.y * n.y * a, -n.y);
     return mat3x3<f32>(normalize(t), normalize(bitan), n);
-}
-
-/// Apply a tangent-space normal `ts_n` to a geometric world normal `world_n`, returning the
-/// perturbed world-space normal. `world_n` is assumed non-zero; it is normalized internally.
-fn tangent_to_world(world_n: vec3<f32>, ts_n: vec3<f32>) -> vec3<f32> {
-    let n = normalize(world_n);
-    let tbn = orthonormal_tbn(n);
-    return normalize(tbn * ts_n);
 }
 
 /// Flip a normal for back-facing fragments. Dual-sided materials use this so geometry seen from

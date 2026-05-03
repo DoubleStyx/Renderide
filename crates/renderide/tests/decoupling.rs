@@ -45,7 +45,7 @@ fn set_decoupling_config_updates_thresholds() {
 }
 
 /// While coupled, `effective_asset_integration_budget_ms` returns the local default unchanged
-/// (clamped to ≥ 1).
+/// (clamped to >= 1).
 #[test]
 fn coupled_budget_returns_local_default() {
     let frontend = RendererFrontend::new(None);
@@ -64,7 +64,7 @@ fn coupled_budget_returns_local_default() {
 }
 
 /// `update_decoupling_activation` is a no-op when no outgoing `FrameStartData` has been recorded
-/// yet — there's no wait window to compare against the threshold.
+/// yet -- there's no wait window to compare against the threshold.
 #[test]
 fn update_activation_no_op_without_recorded_send() {
     let mut frontend = RendererFrontend::new(None);
@@ -73,7 +73,7 @@ fn update_activation_no_op_without_recorded_send() {
     assert!(!frontend.is_decoupled());
 }
 
-/// `note_frame_submit_processed` is safe to call before any decoupling config arrives — it must
+/// `note_frame_submit_processed` is safe to call before any decoupling config arrives -- it must
 /// not activate decoupling on its own.
 #[test]
 fn note_frame_submit_processed_does_not_activate_decoupling() {

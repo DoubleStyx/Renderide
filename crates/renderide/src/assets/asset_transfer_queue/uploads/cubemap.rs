@@ -70,7 +70,7 @@ pub fn on_set_cubemap_format(
         !existed_before,
     );
     logger::trace!(
-        "cubemap {} format {:?} size={} mips={} (resident_bytes≈{})",
+        "cubemap {} format {:?} size={} mips={} (resident_bytes~={})",
         id,
         f.format,
         f.size,
@@ -151,7 +151,7 @@ pub fn on_unload_cubemap(queue: &mut AssetTransferQueue, u: UnloadCubemap) {
     queue.catalogs.cubemap_properties.remove(&id);
     if queue.pools.cubemap_pool.remove(id) {
         logger::info!(
-            "cubemap {id} unloaded (tex≈{} total≈{})",
+            "cubemap {id} unloaded (tex~={} total~={})",
             queue
                 .pools
                 .cubemap_pool

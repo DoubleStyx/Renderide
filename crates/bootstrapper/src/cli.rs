@@ -16,7 +16,7 @@ use crate::vr_prompt;
 ///
 /// Used by argv scanning to compare a flag-shaped token against canonical lowercase forms
 /// regardless of leading dashes or letter case, matching `FrooxEngine`'s normalized argv tokens.
-/// Only one leading `-` is stripped — `--log-level` normalizes to `-log-level`, not `log-level`.
+/// Only one leading `-` is stripped -- `--log-level` normalizes to `-log-level`, not `log-level`.
 pub(crate) fn normalize_flag_token(token: &str) -> String {
     let s = token.trim();
     if let Some(rest) = s.strip_prefix('-') {
@@ -65,7 +65,7 @@ pub fn parse_host_args_tokens(args: &[String]) -> (Vec<String>, Option<LogLevel>
 ///
 /// `prompt` is invoked with no arguments and must return `Some(true)` for VR, `Some(false)` for
 /// desktop, or [`None`] if the user cancelled. The dialog implementation is supplied by the
-/// caller so this function — and the bootstrapper library as a whole — does not depend on
+/// caller so this function -- and the bootstrapper library as a whole -- does not depend on
 /// `rfd`; the production implementation lives in the bin-only `dialog` module
 /// (`crates/bootstrapper/src/dialog.rs`). See `vr_prompt`'s module docs for why keeping `rfd`
 /// out of the library is a hard requirement on Windows.

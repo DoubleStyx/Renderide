@@ -1,4 +1,4 @@
-//! **Shader routes** tab — host shader → renderer pipeline routing list.
+//! **Shader routes** tab -- host shader -> renderer pipeline routing list.
 
 use crate::diagnostics::FrameDiagnosticsSnapshot;
 
@@ -14,7 +14,7 @@ impl TabView for ShaderRoutesTab {
 
     fn render(&self, ui: &imgui::Ui, data: Self::Data<'_>, state: &mut Self::State) {
         let Some(d) = data else {
-            ui.text("Waiting for frame diagnostics…");
+            ui.text("Waiting for frame diagnostics...");
             return;
         };
         ui.checkbox(

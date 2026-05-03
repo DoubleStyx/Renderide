@@ -62,7 +62,7 @@ fn sample_light(light: rg::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
     return xb::LightSample(l, light.color.xyz, attenuation, false);
 }
 
-/// Toon ramp lookup. The half-Lambert remap (`NdotL · 0.5 + 0.5`) maps to the U axis;
+/// Toon ramp lookup. The half-Lambert remap (`NdotL * 0.5 + 0.5`) maps to the U axis;
 /// the ramp-mask sample maps to the V axis. `_ShadowSharpness` sharpens the
 /// attenuation before it multiplies half-Lambert so the banding stays on the shadow
 /// transition rather than on the ramp itself.

@@ -64,7 +64,7 @@ impl GpuContext {
         {
             if requested > 1 && effective != requested {
                 logger::info!(
-                    "VR MSAA clamped: requested {}× → effective {}× (supported={:?})",
+                    "VR MSAA clamped: requested {}x -> effective {}x (supported={:?})",
                     requested,
                     effective,
                     self.msaa_supported_sample_counts_stereo

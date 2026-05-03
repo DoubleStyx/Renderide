@@ -21,7 +21,7 @@ impl RasterFrontFace {
     /// Conservative determinant threshold below which a transform is treated as degenerate.
     const MIN_DETERMINANT: f32 = 1e-20;
 
-    /// Resolves a front-face winding from the upper 3×3 determinant of a draw model matrix.
+    /// Resolves a front-face winding from the upper 3x3 determinant of a draw model matrix.
     #[must_use]
     pub fn from_model_matrix(model: Mat4) -> Self {
         let det = Mat3::from_mat4(model).determinant();
@@ -60,7 +60,7 @@ pub enum MaterialCullOverride {
     /// No `_Cull` / `_Culling` property (or unknown enum value): use the pass default.
     #[default]
     Unspecified,
-    /// `Cull Off` — disable backface culling.
+    /// `Cull Off` -- disable backface culling.
     Off,
     /// `Cull Front`.
     Front,

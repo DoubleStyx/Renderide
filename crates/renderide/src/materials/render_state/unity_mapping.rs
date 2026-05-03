@@ -1,4 +1,4 @@
-//! Float → Unity-domain integer conversions used by the material render-state resolver.
+//! Float -> Unity-domain integer conversions used by the material render-state resolver.
 
 /// Rounds and clamps an `f32` Unity property value to a `u8` enum byte.
 pub(super) fn unity_u8(v: f32) -> u8 {

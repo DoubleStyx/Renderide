@@ -10000,7 +10000,7 @@ impl EnumRepr for TouchControllerModel {
     }
 }
 
-// Roundtrip dispatch for C#–Rust serialization tests. Called by the roundtrip binary.
+// Roundtrip dispatch for C#-Rust serialization tests. Called by the roundtrip binary.
 pub fn roundtrip_dispatch(type_name: &str, input: &[u8]) -> std::io::Result<Vec<u8>> {
     use super::packing::default_entity_pool::DefaultEntityPool;
     let mut pool = DefaultEntityPool;

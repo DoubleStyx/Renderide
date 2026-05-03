@@ -7,7 +7,7 @@
 use crate::materials::RasterPipelineKind;
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
-/// One host-shader → renderer-pipeline routing row captured for the **Shader routes** HUD tab.
+/// One host-shader -> renderer-pipeline routing row captured for the **Shader routes** HUD tab.
 #[derive(Clone, Debug)]
 pub struct ShaderRouteSnapshot {
     /// Host-assigned shader asset id.
@@ -35,7 +35,7 @@ pub struct BackendDiagSnapshot {
     pub render_texture_pool_len: usize,
     /// Resident mesh entries in the renderer's [`crate::gpu_pools::MeshPool`].
     pub mesh_pool_entry_count: usize,
-    /// Host-shader → pipeline routing rows for the **Shader routes** HUD tab.
+    /// Host-shader -> pipeline routing rows for the **Shader routes** HUD tab.
     pub shader_routes: Vec<ShaderRouteSnapshot>,
     /// Latest world-mesh draw stats published by the previous frame.
     pub last_world_mesh_draw_stats: WorldMeshDrawStats,

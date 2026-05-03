@@ -1,4 +1,4 @@
-//! Per-draw instance data (`@group(2)`) shared by mesh materials — storage buffer indexed by
+//! Per-draw instance data (`@group(2)`) shared by mesh materials -- storage buffer indexed by
 //! `@builtin(instance_index)`.
 //! Import with `#import renderide::per_draw as pd` from `shaders/materials/*.wgsl` and use
 //! `pd::get_draw(instance_index)` in `vs_main`. Do not redeclare `@group(2)` in material roots.
@@ -11,7 +11,7 @@ struct PerDrawUniforms {
     view_proj_left: mat4x4<f32>,
     view_proj_right: mat4x4<f32>,
     model: mat4x4<f32>,
-    /// Inverse transpose of the upper 3×3 of `model` (correct normals under non-uniform scale).
+    /// Inverse transpose of the upper 3x3 of `model` (correct normals under non-uniform scale).
     normal_matrix: mat3x3<f32>,
     /// Metadata plus reserved padding. `x` is non-zero when `@location(0)` positions are already world-space.
     _pad: vec4<f32>,

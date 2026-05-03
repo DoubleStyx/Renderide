@@ -16,10 +16,10 @@ use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 /// Selects left/right camera world-space positions fed into frame globals for shader view-direction math.
 ///
 /// Preference order:
-/// 1. `explicit_view.world_position` — secondary RT cameras carry their own pose.
-/// 2. `stereo` eye positions — HMD left/right eyes for multiview shader view-vector math.
-/// 3. `eye_world_position` — main-space eye derived from the active render space's `view_transform`.
-/// 4. `head_output_transform.col(3)` — last-ditch fallback (the render-space *root*, used by overlay
+/// 1. `explicit_view.world_position` -- secondary RT cameras carry their own pose.
+/// 2. `stereo` eye positions -- HMD left/right eyes for multiview shader view-vector math.
+/// 3. `eye_world_position` -- main-space eye derived from the active render space's `view_transform`.
+/// 4. `head_output_transform.col(3)` -- last-ditch fallback (the render-space *root*, used by overlay
 ///    positioning) for any path that has not yet propagated the eye position. Using this as the
 ///    camera caused PBS specular highlights to converge at the space root (typically "the player's
 ///    feet") because every fragment's `v = normalize(cam - world_pos)` then pointed at the root.

@@ -1,4 +1,4 @@
-//! Cooperative [`SetCubemapData`] integration: one face × mip per step.
+//! Cooperative [`SetCubemapData`] integration: one face x mip per step.
 
 use std::sync::Arc;
 

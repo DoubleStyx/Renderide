@@ -8,8 +8,9 @@
 #import renderide::globals as rg
 #import renderide::material::fresnel as mf
 #import renderide::mesh::vertex as mv
-#import renderide::pbs::sampling as psamp
+#import renderide::pbs::normal as pnorm
 #import renderide::uv_utils as uvu
+#import renderide::normal_decode as nd
 
 struct OverlayFresnelMaterial {
     _BehindFarColor: vec4<f32>,
@@ -50,11 +51,12 @@ fn vs_main(
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv: vec2<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_model_normal_vertex_main(instance_index, view_idx, pos, n, uv);
+    return mv::world_model_normal_vertex_main(instance_index, view_idx, pos, n, t, uv);
 #else
-    return mv::world_model_normal_vertex_main(instance_index, 0u, pos, n, uv);
+    return mv::world_model_normal_vertex_main(instance_index, 0u, pos, n, t, uv);
 #endif
 }
 
@@ -72,10 +74,18 @@ fn sample_overlay_tex(
 
 fn overlay_normal(in: mv::WorldVertexOutput) -> vec3<f32> {
     var n = normalize(in.world_n);
+    let t = normalize(in.world_t);
     if (mat._NORMALMAP > 0.5) {
-        let uv_n = uvu::apply_st(in.primary_uv, mat._NormalMap_ST);
-        let ts_n = psamp::sample_tangent_normal(_NormalMap, _NormalMap_sampler, uv_n, 0.0, 1.0);
-        n = psamp::tangent_to_world(n, ts_n);
+        let uv_n = uvu::apply_st(
+            in.primary_uv,
+            mat._NormalMap_ST,
+        );
+        let tbn = pnorm::orthonormal_tbn(n, t);
+        let ts_n = nd::decode_ts_normal_with_placeholder_sample(
+            textureSample(_NormalMap, _NormalMap_sampler, uv_n),
+            1.0,
+        );
+        n = normalize(tbn * ts_n);
     }
     return n;
 }

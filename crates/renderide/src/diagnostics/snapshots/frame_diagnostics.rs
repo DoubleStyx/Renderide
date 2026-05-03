@@ -1,7 +1,7 @@
 //! Per-frame diagnostics for the **Frame** debug HUD tab (CPU/GPU timing, allocator, draws)
 //! and the **GPU memory** tab (throttled full [`wgpu::AllocatorReport`]).
 //!
-//! [`FrameDiagnosticsSnapshot`] composes seven independent fragments — one per concern — so each
+//! [`FrameDiagnosticsSnapshot`] composes seven independent fragments -- one per concern -- so each
 //! HUD section can borrow exactly the data it consumes without threading the whole snapshot
 //! through the call tree.
 
@@ -63,7 +63,7 @@ pub struct FrameDiagnosticsSnapshot {
     pub gpu_allocator: GpuAllocatorFragment,
     /// World mesh draw stats, draw-state rows, and resident pool counts.
     pub mesh_draw: MeshDrawFragment,
-    /// Sorted host-shader → pipeline routing rows.
+    /// Sorted host-shader -> pipeline routing rows.
     pub shader_routes: ShaderRoutesFragment,
     /// IPC outbound queue health plus host-command failure counters.
     pub ipc_health: IpcHealthFragment,

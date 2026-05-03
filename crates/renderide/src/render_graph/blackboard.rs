@@ -11,8 +11,8 @@
 //! ## Scoping
 //!
 //! Two independent instances are used per tick:
-//! - **Frame blackboard** — shared across all views; populated by [`super::pass::PassPhase::FrameGlobal`] passes.
-//! - **View blackboard** — one instance per [`super::compiled::FrameView`]; populated and consumed by
+//! - **Frame blackboard** -- shared across all views; populated by [`super::pass::PassPhase::FrameGlobal`] passes.
+//! - **View blackboard** -- one instance per [`super::compiled::FrameView`]; populated and consumed by
 //!   [`super::pass::PassPhase::PerView`] passes for that view.
 
 use std::any::{Any, TypeId};

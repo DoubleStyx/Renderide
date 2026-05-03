@@ -1,4 +1,4 @@
-//! Renderer façade: orchestrates **frontend** (IPC / shared memory / lock-step), **scene** (host
+//! Renderer facade: orchestrates **frontend** (IPC / shared memory / lock-step), **scene** (host
 //! logical state), and **backend** (GPU pools, material store, uploads).
 //!
 //! [`RendererRuntime`] *composes* a [`RendererFrontend`], a [`SceneCoordinator`], and a
@@ -12,18 +12,18 @@
 //! The authoritative call site is the app driver's redraw tick; this
 //! module's methods correspond to the named phases:
 //!
-//! 1. **Wall-clock prologue** — [`RendererRuntime::tick_frame_wall_clock_begin`]; resets per-tick flags.
-//! 2. **IPC poll** — [`RendererRuntime::poll_ipc`]; drains incoming `RendererCommand`s before any work runs.
-//! 3. **Asset integration** — [`RendererRuntime::run_asset_integration`]; time-sliced cooperative
+//! 1. **Wall-clock prologue** -- [`RendererRuntime::tick_frame_wall_clock_begin`]; resets per-tick flags.
+//! 2. **IPC poll** -- [`RendererRuntime::poll_ipc`]; drains incoming `RendererCommand`s before any work runs.
+//! 3. **Asset integration** -- [`RendererRuntime::run_asset_integration`]; time-sliced cooperative
 //!    mesh/texture/material uploads via [`crate::assets::asset_transfer_queue::drain_asset_tasks`].
-//! 4. **Optional XR begin** — `xr_begin_tick` in `app/`; OpenXR `wait_frame` / `locate_views` so the
+//! 4. **Optional XR begin** -- `xr_begin_tick` in `app/`; OpenXR `wait_frame` / `locate_views` so the
 //!    same view snapshot is visible to lock-step input.
-//! 5. **Lock-step exchange** — [`RendererRuntime::pre_frame`] emits
+//! 5. **Lock-step exchange** -- [`RendererRuntime::pre_frame`] emits
 //!    [`FrameStartData`](crate::shared::FrameStartData) when allowed; the gating predicate
 //!    [`RendererFrontend::should_send_begin_frame`] keeps the lock-step *state* in
 //!    [`RendererFrontend`] (this module owns no lock-step counters).
-//! 6. **Render** — desktop multi-view or HMD path through [`crate::render_graph`].
-//! 7. **Present + HUD** — present surface, blit VR mirror, capture ImGui debug snapshots.
+//! 6. **Render** -- desktop multi-view or HMD path through [`crate::render_graph`].
+//! 7. **Present + HUD** -- present surface, blit VR mirror, capture ImGui debug snapshots.
 //!
 //! Lock-step is driven by the `last_frame_index` field of [`FrameStartData`](crate::shared::FrameStartData)
 //! on the **outgoing** `frame_start_data` the renderer sends from [`RendererRuntime::pre_frame`].
@@ -38,18 +38,18 @@
 //! Per-tick logic is split by concern; every submodule extends [`RendererRuntime`] through its
 //! own `impl` block:
 //!
-//! - [`accessors`] — thin façade pass-throughs to the frontend, backend, scene, and settings.
-//! - [`asset_integration`] — cooperative asset-integration phase + once-per-tick gating.
-//! - [`debug_hud_frame`] — per-tick wiring for the diagnostics ImGui overlay.
-//! - [`frame_extract`] — immutable per-tick view extraction, draw collection, submit packet.
-//! - [`frame_render`] — render-mode dispatch, MSAA prep, frame-extract entry.
-//! - [`frame_view_plan`] — per-view CPU intent (target, clear, viewport, host camera).
-//! - [`gpu_services`] — GPU-facing helpers run once per tick (Hi-Z drain, async jobs, transient eviction).
-//! - [`ipc_entry`] — IPC poll + the `pub(crate)` shims invoked by `crate::frontend::dispatch`.
-//! - [`lockstep`] — diagnostic helper for duplicate frame indices.
-//! - [`tick`] — tick prologue, lock-step / output forwards, the two `tick_one_frame*` orchestrators.
-//! - [`view_planning`] — collection of HMD / secondary RT / main swapchain plans.
-//! - [`xr_glue`] — `XrHostCameraSync` and `XrFrameRenderer` impls for [`RendererRuntime`].
+//! - [`accessors`] -- thin facade pass-throughs to the frontend, backend, scene, and settings.
+//! - [`asset_integration`] -- cooperative asset-integration phase + once-per-tick gating.
+//! - [`debug_hud_frame`] -- per-tick wiring for the diagnostics ImGui overlay.
+//! - [`frame_extract`] -- immutable per-tick view extraction, draw collection, submit packet.
+//! - [`frame_render`] -- render-mode dispatch, MSAA prep, frame-extract entry.
+//! - [`frame_view_plan`] -- per-view CPU intent (target, clear, viewport, host camera).
+//! - [`gpu_services`] -- GPU-facing helpers run once per tick (Hi-Z drain, async jobs, transient eviction).
+//! - [`ipc_entry`] -- IPC poll + the `pub(crate)` shims invoked by `crate::frontend::dispatch`.
+//! - [`lockstep`] -- diagnostic helper for duplicate frame indices.
+//! - [`tick`] -- tick prologue, lock-step / output forwards, the two `tick_one_frame*` orchestrators.
+//! - [`view_planning`] -- collection of HMD / secondary RT / main swapchain plans.
+//! - [`xr_glue`] -- `XrHostCameraSync` and `XrFrameRenderer` impls for [`RendererRuntime`].
 //!
 //! IPC dispatch (RendererCommand routing, frame submit, lights/shader/material IPC, init handshake)
 //! lives in `crate::frontend::dispatch`. Dispatch reaches into `RendererRuntime`'s `pub(crate)`

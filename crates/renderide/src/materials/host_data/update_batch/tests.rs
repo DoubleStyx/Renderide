@@ -575,16 +575,16 @@ fn instance_changed_material_set_instancing_is_true() {
 #[test]
 fn instance_changed_mixed_targets_indexed_materials_first_then_pbs() {
     let stream: Vec<u8> = [
-        // Material #0 with only SetFloat → bit 0 false
+        // Material #0 with only SetFloat -> bit 0 false
         update_bytes(40, MaterialPropertyUpdateType::SelectTarget),
         update_bytes(1, MaterialPropertyUpdateType::SetFloat),
-        // Material #1 with SetShader → bit 1 true
+        // Material #1 with SetShader -> bit 1 true
         update_bytes(41, MaterialPropertyUpdateType::SelectTarget),
         update_bytes(99, MaterialPropertyUpdateType::SetShader),
-        // PB #0 with SetFloat → bit 2 true
+        // PB #0 with SetFloat -> bit 2 true
         update_bytes(50, MaterialPropertyUpdateType::SelectTarget),
         update_bytes(2, MaterialPropertyUpdateType::SetFloat),
-        // PB #1 with no payload after select → bit 3 still true (PB initial)
+        // PB #1 with no payload after select -> bit 3 still true (PB initial)
         update_bytes(51, MaterialPropertyUpdateType::SelectTarget),
         update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
     ]

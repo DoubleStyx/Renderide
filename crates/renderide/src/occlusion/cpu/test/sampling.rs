@@ -1,4 +1,4 @@
-//! Hi-Z mip selection and 2×2-block min sampling for AABB occlusion tests.
+//! Hi-Z mip selection and 2x2-block min sampling for AABB occlusion tests.
 
 use crate::occlusion::cpu::pyramid::{mip_byte_offset_floats, mip_dimensions};
 use crate::occlusion::cpu::snapshot::HiZCpuSnapshot;
@@ -33,7 +33,7 @@ pub(super) fn select_hi_z_mip(extent_base_px: f32, snapshot_mip_levels: u32) -> 
         .min(snapshot_mip_levels.saturating_sub(1))
 }
 
-/// Minimum depth in a 2×2 block anchored at `(sx, sy)` (clamped), reverse-Z.
+/// Minimum depth in a 2x2 block anchored at `(sx, sy)` (clamped), reverse-Z.
 ///
 /// Using the **minimum** (farthest surface in the neighborhood) is visibility-conservative: fewer
 /// false-positive culls when a single texel spikes closer than its neighbors.

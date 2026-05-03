@@ -11,7 +11,7 @@
 //! renderer-side reads find the mapping.
 //!
 //! - Unix: `{prefix}_{bufferId:X}.qu` under `{RENDERIDE_INTERPROCESS_DIR or default_memory_dir()}`.
-//! - Windows: named file mapping `CT_IP_{prefix}_{bufferId:X}` (anonymous backing — no on-disk file).
+//! - Windows: named file mapping `CT_IP_{prefix}_{bufferId:X}` (anonymous backing -- no on-disk file).
 //!
 //! ## Lifetime
 //!

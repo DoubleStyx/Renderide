@@ -8,7 +8,7 @@ namespace SharedTypeGenerator.Analysis;
 /// No side effects -- the caller is responsible for queueing.</summary>
 /// <remarks>
 /// Host <c>RenderVector*</c> / <c>RenderQuaternion</c> / <c>RenderMatrix4x4</c> map to <c>glam</c>
-/// (<c>Vec2</c>, <c>IVec2</c>, …, <c>Quat</c>, <c>Mat4</c>). Composite explicit-layout structs may omit
+/// (<c>Vec2</c>, <c>IVec2</c>, ..., <c>Quat</c>, <c>Mat4</c>). Composite explicit-layout structs may omit
 /// whole-struct <c>Pod</c> when SIMD alignment adds padding; see <see cref="IsGlamRustTypeRequiringCompositeNonPod"/>.
 /// </remarks>
 public static class RustTypeMapper
@@ -134,7 +134,7 @@ public static class RustTypeMapper
         return "i32";
     }
 
-    /// <summary>Returns the Rust type name without surrounding <c>Option&lt;…&gt;</c> when present.</summary>
+    /// <summary>Returns the Rust type name without surrounding <c>Option&lt;...&gt;</c> when present.</summary>
     public static string NormalizeRustTypeName(string rustType)
     {
         string t = rustType.Trim();

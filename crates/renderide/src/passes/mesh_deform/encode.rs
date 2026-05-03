@@ -66,7 +66,7 @@ pub(super) struct MeshDeformRecordInputs<'a, 'b> {
     pub blend_param_cursor: &'b mut u64,
     /// Running offset into the skin-dispatch uniform slab (256 B steps per dispatch).
     pub skin_dispatch_cursor: &'b mut u64,
-    /// Resolved cache line for this instance’s deform outputs.
+    /// Resolved cache line for this instance's deform outputs.
     pub skin_cache_entry: &'a SkinCacheEntry,
     pub positions_arena: &'a wgpu::Buffer,
     pub normals_arena: &'a wgpu::Buffer,
@@ -173,7 +173,7 @@ fn validate_deform_preconditions(
     let skin_wg = workgroup_count(vc);
     if needs_skin && !gpu_limits.compute_dispatch_fits(skin_wg, 1, 1) {
         logger::warn!(
-            "mesh deform: skinning dispatch {}×1×1 exceeds max_compute_workgroups_per_dimension ({})",
+            "mesh deform: skinning dispatch {}x1x1 exceeds max_compute_workgroups_per_dimension ({})",
             skin_wg,
             gpu_limits.max_compute_workgroups_per_dimension()
         );

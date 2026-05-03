@@ -1,7 +1,7 @@
 //! Dual-queue IPC: Primary and Background subscriber/publisher pairs for [`RendererCommand`].
 //!
-//! Naming matches the managed client when the renderer is **non-authority**: subscribe on `…A`,
-//! publish on `…S` (see `Renderite.Shared.MessagingManager.Connect`).
+//! Naming matches the managed client when the renderer is **non-authority**: subscribe on `...A`,
+//! publish on `...S` (see `Renderite.Shared.MessagingManager.Connect`).
 
 use interprocess::{Publisher, QueueFactory, QueueOptions, Subscriber};
 
@@ -23,7 +23,7 @@ const INVALID_MESSAGE_LOG_PREFIX: &str = "IPC";
 /// After this many consecutive `try_enqueue` failures on one channel, log at [`logger::error!`].
 const IPC_CONSECUTIVE_DROP_ERROR_AFTER: u32 = 16;
 
-/// Host ↔ renderer IPC over two Cloudtoid queue pairs (Primary and Background).
+/// Host <-> renderer IPC over two Cloudtoid queue pairs (Primary and Background).
 pub struct DualQueueIpc {
     primary_subscriber: Subscriber,
     background_subscriber: Subscriber,

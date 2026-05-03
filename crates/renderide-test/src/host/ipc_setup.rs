@@ -20,7 +20,7 @@ pub const DEFAULT_QUEUE_CAPACITY_BYTES: i64 = 8 * 1024 * 1024;
 
 /// Per-session naming + queue endpoints owned by the harness.
 pub(super) struct IpcSession {
-    /// Authority-side dual-queue (publishes on `…A`, subscribes on `…S`).
+    /// Authority-side dual-queue (publishes on `...A`, subscribes on `...S`).
     pub queues: HostDualQueueIpc,
     /// Connection params handed to the spawned renderer (`-QueueName <name> -QueueCapacity <cap>`).
     pub connection_params: ConnectionParams,

@@ -22,7 +22,7 @@ const WAIT_IMAGE_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Renders to the OpenXR stereo swapchain and calls [`crate::xr::session::XrSessionState::end_frame_projection`].
 ///
-/// Uses the same [`xr::FrameState`] as [`openxr_begin_frame_tick`] — no second `wait_frame`.
+/// Uses the same [`xr::FrameState`] as [`openxr_begin_frame_tick`] -- no second `wait_frame`.
 pub fn try_openxr_hmd_multiview_submit(
     gpu: &mut GpuContext,
     bundle: &mut XrSessionBundle,

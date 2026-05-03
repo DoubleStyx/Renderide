@@ -1,4 +1,4 @@
-//! [`RenderBackend`] — thin facade for frame execution and IPC-facing GPU work.
+//! [`RenderBackend`] -- thin facade for frame execution and IPC-facing GPU work.
 //!
 //! Core subsystems live in [`super::MaterialSystem`], [`crate::assets::AssetTransferQueue`],
 //! [`super::FrameResourceManager`], and [`crate::occlusion::OcclusionSystem`]; this type wires attach,
@@ -256,7 +256,7 @@ impl RenderBackend {
     /// Seeded into each view's blackboard as [`crate::passes::post_processing::settings_slot::BloomSettingsSlot`]
     /// so the first downsample's params UBO and the upsample blend constants reflect slider
     /// changes without rebuilding the compiled render graph. The effective `max_mip_dimension`
-    /// is the one exception — it drives mip-chain texture sizes, so it lives on the chain
+    /// is the one exception -- it drives mip-chain texture sizes, so it lives on the chain
     /// signature and triggers a rebuild instead.
     pub(crate) fn live_bloom_settings(&self) -> crate::config::BloomSettings {
         self.renderer_settings

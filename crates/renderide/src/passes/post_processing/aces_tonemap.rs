@@ -1,7 +1,7 @@
 //! Stephen Hill ACES Fitted tonemap render pass.
 //!
-//! Reads an HDR scene-color array texture, applies the ACES Fitted curve (sRGB → AP1 → RRT+ODT
-//! polynomial → AP1 → sRGB → saturate), and writes a chain HDR transient that the next post pass
+//! Reads an HDR scene-color array texture, applies the ACES Fitted curve (sRGB -> AP1 -> RRT+ODT
+//! polynomial -> AP1 -> sRGB -> saturate), and writes a chain HDR transient that the next post pass
 //! (or [`crate::passes::SceneColorComposePass`]) consumes. Output is in `[0, 1]`
 //! linear sRGB so the existing sRGB swapchain encodes gamma correctly without a separate gamma
 //! pass.

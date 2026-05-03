@@ -5,11 +5,13 @@
 //! the shader declares the forward base + forward additive passes and keeps culling disabled.
 
 #import renderide::mesh::vertex as mv
+#import renderide::pbs::normal as pnorm
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::alpha_clip_sample as acs
 #import renderide::uv_utils as uvu
+#import renderide::normal_decode as nd
 
 struct PbsDualSidedSpecularMaterial {
     _Color: vec4<f32>,
@@ -51,20 +53,27 @@ struct SurfaceData {
     emission: vec3<f32>,
 }
 
-fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, front_facing: bool) -> vec3<f32> {
-    var ts_n = vec3<f32>(0.0, 0.0, 1.0);
-    if (uvu::kw_enabled(mat._NORMALMAP)) {
-        ts_n = psamp::sample_tangent_normal(_NormalMap, _NormalMap_sampler, uv_main, 0.0, mat._NormalScale);
-    }
+fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
+    var ts_n = psamp::sample_optional_world_normal(
+        uvu::kw_enabled(mat._NORMALMAP),
+        _NormalMap,
+        _NormalMap_sampler,
+        uv_main,
+        0.0,
+        mat._NormalScale,
+        world_n,
+        world_t,
+    );
     if (!front_facing) {
         ts_n.z = -ts_n.z;
     }
-    return psamp::tangent_to_world(world_n, ts_n);
+    return ts_n;
 }
 
 fn sample_surface(
     uv0: vec2<f32>,
     world_n: vec3<f32>,
+    world_t: vec4<f32>,
     front_facing: bool,
     vertex_color: vec4<f32>,
 ) -> SurfaceData {
@@ -123,7 +132,7 @@ fn sample_surface(
         f0,
         roughness,
         occlusion,
-        sample_normal_world(uv_main, world_n, front_facing),
+        sample_normal_world(uv_main, world_n, world_t, front_facing),
         emission,
     );
 }
@@ -138,11 +147,12 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) t: vec4<f32>,
 ) -> mv::WorldColorVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, uv0, color);
+    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, t, uv0, color);
 #else
-    return mv::world_color_vertex_main(instance_index, 0u, pos, n, uv0, color);
+    return mv::world_color_vertex_main(instance_index, 0u, pos, n, t, uv0, color);
 #endif
 }
 
@@ -153,11 +163,12 @@ fn fs_forward_base(
     @builtin(front_facing) front_facing: bool,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
-    @location(2) uv0: vec2<f32>,
-    @location(3) color: vec4<f32>,
-    @location(4) @interpolate(flat) view_layer: u32,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) color: vec4<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let s = sample_surface(uv0, world_n, front_facing, color);
+    let s = sample_surface(uv0, world_n, world_t, front_facing, color);
     let surface = psurf::specular(
         s.base_color,
         s.alpha,

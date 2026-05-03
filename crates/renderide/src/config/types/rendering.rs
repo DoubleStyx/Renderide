@@ -34,7 +34,7 @@ pub struct RenderingSettings {
     #[serde(rename = "asset_integration_budget_ms")]
     pub asset_integration_budget_ms: u32,
     /// Upper bound for [`crate::shared::RendererInitResult::max_texture_size`] sent to the host.
-    /// `0` means use the GPU’s [`wgpu::Limits::max_texture_dimension_2d`] (after device creation).
+    /// `0` means use the GPU's [`wgpu::Limits::max_texture_dimension_2d`] (after device creation).
     /// Non-zero values are clamped to the GPU maximum.
     #[serde(rename = "reported_max_texture_size")]
     pub reported_max_texture_size: u32,
@@ -48,8 +48,8 @@ pub struct RenderingSettings {
     #[serde(rename = "texture_vram_budget_mib")]
     pub texture_vram_budget_mib: u32,
     /// Multisample anti-aliasing for the main window forward path (clustered forward). Effective
-    /// sample count is clamped to the GPU’s supported maximum for the swapchain format. VR and
-    /// offscreen host render textures stay at 1× until extended separately.
+    /// sample count is clamped to the GPU's supported maximum for the swapchain format. VR and
+    /// offscreen host render textures stay at 1x until extended separately.
     pub msaa: MsaaSampleCount,
     /// Format for the **scene-color** HDR target the forward pass renders into before
     /// [`crate::passes::SceneColorComposePass`] writes the displayable target.
@@ -79,7 +79,7 @@ pub struct RenderingSettings {
     /// Maximum number of frames the GPU may queue ahead of CPU recording. Mirrors
     /// [`wgpu::SurfaceConfiguration::desired_maximum_frame_latency`].
     ///
-    /// `1` minimizes input → photon latency but serializes CPU and GPU: the main thread blocks
+    /// `1` minimizes input -> photon latency but serializes CPU and GPU: the main thread blocks
     /// inside [`wgpu::Surface::get_current_texture`] waiting for the previous frame's `present`
     /// to complete, which itself waits on the previous frame's GPU submission. The CPU can only
     /// start recording frame N+1 *after* frame N's GPU work has finished, leaving a large

@@ -8,7 +8,7 @@ const RENDERER_MAX_TEXTURE_DIMENSION_2D: u32 = 16384;
 ///
 /// Starts from the adapter's full reported [`wgpu::Limits`] so the device is granted everything
 /// the GPU advertises (wgpu only hands the device the fields explicitly listed in
-/// `required_limits` — the adapter's headroom is not implicit). Then applies renderer-policy
+/// `required_limits` -- the adapter's headroom is not implicit). Then applies renderer-policy
 /// clamps where we deliberately stay below the adapter's max for stability or to match the host:
 /// [`wgpu::Limits::max_texture_dimension_2d`] is capped at
 /// [`RENDERER_MAX_TEXTURE_DIMENSION_2D`].
