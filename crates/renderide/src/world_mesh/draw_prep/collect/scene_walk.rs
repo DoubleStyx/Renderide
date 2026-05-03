@@ -199,7 +199,15 @@ fn push_draws_for_renderer(
         .mesh
         .supports_active_blendshape_deform(&draw.renderer.blend_shape_weights);
 
-    let cached_cull = compute_cached_cull(ctx, &draw, is_overlay);
+    // Cull hoist: when a renderer expands to multiple material slots, every slot's cull would
+    // otherwise re-test the same world AABB / Hi-Z. Compute it once and feed every slot the
+    // cached outcome. For single-slot renderers (the common case for static scenery) the hoist
+    // has no work to amortize, so let `push_one_slot_draw` cull inline via its `None` branch.
+    let cached_cull = if n_slot > 1 {
+        compute_cached_cull(ctx, &draw, is_overlay)
+    } else {
+        None
+    };
 
     for (slot_index, slot) in slots.iter().enumerate() {
         let Some((first_index, index_count)) =
@@ -304,6 +312,33 @@ fn push_one_slot_draw(
             }
             CachedCull::Accepted(m) => {
                 rigid_world_matrix = *m;
+            }
+        }
+    } else if !draw.skinned
+        && let Some(culling) = ctx.culling
+    {
+        // Single-slot renderer that bypassed the hoist: do the cull inline so the per-slot work
+        // is identical to the cached path without paying the `CachedCull` enum / wrapper cost.
+        acc.cull_stats.0 += 1;
+        let target = MeshCullTarget {
+            scene: ctx.scene,
+            space_id: draw.space_id,
+            mesh: draw.mesh,
+            skinned: draw.skinned,
+            skinned_renderer: draw.skinned_renderer,
+            node_id: draw.renderer.node_id,
+        };
+        match mesh_draw_passes_cpu_cull(&target, is_overlay, culling, ctx.render_context) {
+            Err(CpuCullFailure::Frustum) => {
+                acc.cull_stats.1 += 1;
+                return;
+            }
+            Err(CpuCullFailure::HiZ) => {
+                acc.cull_stats.2 += 1;
+                return;
+            }
+            Ok(m) => {
+                rigid_world_matrix = m;
             }
         }
     }
