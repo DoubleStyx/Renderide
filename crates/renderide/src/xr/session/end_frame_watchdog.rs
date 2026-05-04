@@ -1,9 +1,13 @@
-//! Watchdog that logs [`logger::error!`] when a wrapped OpenXR call exceeds a deadline.
+//! Watchdog that logs when a wrapped OpenXR call exceeds a deadline.
 //!
 //! Wraps calls that may block on the compositor (`xrEndFrame`, `xrWaitSwapchainImage`) so a stalled
-//! runtime surfaces in `logs/renderer/*.log` instead of silently freezing the frame loop. OpenXR has
-//! no per-call cancellation API, so the watchdog observes but cannot interrupt.
+//! runtime surfaces in `logs/renderer/*.log` instead of silently freezing the frame loop. Normal
+//! frame stalls are errors; shutdown stalls are warnings because the compositor may already be
+//! unwinding the session. OpenXR has no per-call cancellation API, so the watchdog observes but
+//! cannot interrupt.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -23,16 +27,30 @@ impl EndFrameWatchdog {
     /// Spawns the watchdog thread. The returned guard must be [`Self::disarm`]ed within `timeout`
     /// or the worker will log one error and then wait for the final disconnect.
     pub(crate) fn arm(timeout: Duration, label: &'static str) -> Self {
+        Self::arm_inner(timeout, label, None)
+    }
+
+    /// Spawns a watchdog that lowers stall severity after cooperative shutdown starts.
+    pub(crate) fn arm_shutdown_aware(
+        timeout: Duration,
+        label: &'static str,
+        shutdown_requested: Arc<AtomicBool>,
+    ) -> Self {
+        Self::arm_inner(timeout, label, Some(shutdown_requested))
+    }
+
+    fn arm_inner(
+        timeout: Duration,
+        label: &'static str,
+        shutdown_requested: Option<Arc<AtomicBool>>,
+    ) -> Self {
         let (tx, rx) = mpsc::sync_channel::<()>(0);
         let handle = thread::Builder::new()
             .name(format!("xr-end-frame-watchdog:{label}"))
             .spawn(move || match rx.recv_timeout(timeout) {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    logger::error!(
-                        "xr::{label} exceeded {}ms -- compositor may be stalled",
-                        timeout.as_millis()
-                    );
+                    log_watchdog_timeout(label, timeout, shutdown_requested.as_deref());
                     // Block until the caller finally disarms so the log line pairs with the eventual
                     // unblock; otherwise the operator sees an error with no follow-up.
                     let _ = rx.recv();
@@ -52,6 +70,24 @@ impl EndFrameWatchdog {
             let _ = h.join();
         }
     }
+}
+
+fn log_watchdog_timeout(
+    label: &'static str,
+    timeout: Duration,
+    shutdown_requested: Option<&AtomicBool>,
+) {
+    if shutdown_requested.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        logger::warn!(
+            "xr::{label} exceeded {}ms during shutdown -- compositor may be stalled",
+            timeout.as_millis()
+        );
+        return;
+    }
+    logger::error!(
+        "xr::{label} exceeded {}ms -- compositor may be stalled",
+        timeout.as_millis()
+    );
 }
 
 impl Drop for EndFrameWatchdog {

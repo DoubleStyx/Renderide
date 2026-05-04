@@ -89,6 +89,8 @@ impl AppDriver {
 
         self.lock_step_exchange();
         if self.handle_frame_exit_requests(event_loop) {
+            self.queue_empty_openxr_frame_if_needed(xr_tick);
+            self.poll_graceful_shutdown(event_loop);
             return FrameTickOutcome::ExitRequested;
         }
 

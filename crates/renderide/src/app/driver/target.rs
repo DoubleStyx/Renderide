@@ -15,6 +15,7 @@ use crate::xr::output_device::head_output_device_wants_openxr;
 use super::super::bootstrap::GpuStartupConfig;
 use super::super::exit::ExitReason;
 use super::super::window_icon::try_embedded_window_icon;
+use super::shutdown::GracefulShutdown;
 
 /// Fully initialized windowed render target.
 pub(super) struct RenderTarget {
@@ -153,6 +154,48 @@ impl RenderTarget {
             .unwrap_or_else(|| self.gpu.surface_extent_px());
         self.gpu.reconfigure(width, height);
     }
+
+    /// Advances graceful target shutdown and returns `true` once resources are quiescent.
+    pub(super) fn poll_graceful_shutdown(&mut self, shutdown: &mut GracefulShutdown) -> bool {
+        profiling::scope!("app::target_graceful_shutdown");
+        self.gpu.wait_for_previous_present();
+        match &mut self.mode {
+            RenderTargetMode::Desktop => true,
+            RenderTargetMode::Openxr { session } => {
+                poll_openxr_shutdown(&mut session.handles.xr_session, shutdown)
+            }
+        }
+    }
+}
+
+fn poll_openxr_shutdown(
+    xr_session: &mut crate::xr::XrSessionState,
+    shutdown: &mut GracefulShutdown,
+) -> bool {
+    xr_session.begin_shutdown();
+
+    if !xr_session.poll_finalize_pending() {
+        return false;
+    }
+
+    if let Err(error) = xr_session.poll_events() {
+        logger::warn!("OpenXR shutdown poll_events failed: {error:?}");
+    }
+    if xr_session.shutdown_quiesced() {
+        return true;
+    }
+
+    if !shutdown.openxr_exit_requested() {
+        if let Err(error) = xr_session.request_exit_for_shutdown() {
+            logger::warn!("OpenXR shutdown request_exit failed: {error:?}");
+        }
+        shutdown.mark_openxr_exit_requested();
+    }
+
+    if let Err(error) = xr_session.poll_events() {
+        logger::warn!("OpenXR shutdown poll_events after request_exit failed: {error:?}");
+    }
+    xr_session.shutdown_quiesced()
 }
 
 fn create_main_window(event_loop: &ActiveEventLoop) -> Result<Arc<Window>, TargetInitError> {

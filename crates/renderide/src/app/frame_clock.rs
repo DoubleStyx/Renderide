@@ -304,7 +304,7 @@ mod tests {
             plan_redraw(RedrawInputs {
                 has_window: true,
                 exit_requested: true,
-                vr_active: false,
+                vr_active: true,
                 window_focused: true,
                 focused_fps_cap: 60,
                 unfocused_fps_cap: 15,

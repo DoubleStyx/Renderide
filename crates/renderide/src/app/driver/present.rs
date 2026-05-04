@@ -45,7 +45,9 @@ impl AppDriver {
         super::frame::tick_phase_trace("present_and_diagnostics");
         let plan = PresentationPlan::from_frame(self.runtime.vr_active(), hmd_projection_ended);
         self.present_vr_plan(plan);
-        self.end_openxr_frame_if_needed(xr_tick, hmd_projection_ended);
+        if !hmd_projection_ended {
+            self.queue_empty_openxr_frame_if_needed(xr_tick);
+        }
     }
 
     fn present_vr_plan(&mut self, plan: PresentationPlan) {
@@ -100,17 +102,10 @@ impl AppDriver {
         }
     }
 
-    fn end_openxr_frame_if_needed(
-        &mut self,
-        xr_tick: Option<OpenxrFrameTick>,
-        hmd_projection_ended: bool,
-    ) {
+    pub(super) fn queue_empty_openxr_frame_if_needed(&mut self, xr_tick: Option<OpenxrFrameTick>) {
         let Some(tick) = xr_tick else {
             return;
         };
-        if hmd_projection_ended {
-            return;
-        }
         let Some(target) = self.target.as_mut() else {
             return;
         };

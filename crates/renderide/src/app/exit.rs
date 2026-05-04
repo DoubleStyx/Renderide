@@ -62,6 +62,14 @@ impl ExitReason {
             }
         }
     }
+
+    /// Whether this exit reason should run the cooperative renderer shutdown drain.
+    pub(crate) const fn uses_graceful_shutdown(self) -> bool {
+        matches!(
+            self,
+            Self::WindowClosed | Self::ExternalShutdown | Self::OpenxrExit | Self::HostShutdown
+        )
+    }
 }
 
 /// First normal exit request observed by the app driver.
@@ -81,7 +89,6 @@ impl ExitRequest {
     }
 
     /// Source reason for diagnostics and tests.
-    #[cfg(test)]
     pub(crate) const fn reason(self) -> ExitReason {
         self.reason
     }
@@ -162,5 +169,15 @@ mod tests {
             ExitReason::OpenxrMirrorSurfaceFailed.run_exit(),
             RunExit::Code(2)
         );
+    }
+
+    #[test]
+    fn only_normal_runtime_exits_use_graceful_shutdown() {
+        assert!(ExitReason::WindowClosed.uses_graceful_shutdown());
+        assert!(ExitReason::ExternalShutdown.uses_graceful_shutdown());
+        assert!(ExitReason::OpenxrExit.uses_graceful_shutdown());
+        assert!(ExitReason::HostShutdown.uses_graceful_shutdown());
+        assert!(!ExitReason::FatalIpc.uses_graceful_shutdown());
+        assert!(!ExitReason::OpenxrInitFailed.uses_graceful_shutdown());
     }
 }
