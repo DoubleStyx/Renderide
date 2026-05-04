@@ -10,19 +10,21 @@
 //!    [`WorldMeshForwardPlanSlot`] for downstream passes.
 //! 2. [`WorldMeshForwardOpaquePass`] -- **[`RasterPass`]** that opens the HDR color + depth
 //!    attachments with `LoadOp::Clear` and records opaque draws.
-//! 3. [`WorldMeshDepthSnapshotPass`] -- **[`ComputePass`]** that resolves MSAA depth (when active)
+//! 3. [`WorldMeshForwardNormalPass`] -- optional **[`RasterPass`]** that writes smooth
+//!    view-space vertex normals for GTAO, using the opaque depth buffer as an equality mask.
+//! 4. [`WorldMeshDepthSnapshotPass`] -- **[`ComputePass`]** that resolves MSAA depth (when active)
 //!    and copies single-sample depth into the scene-depth snapshot for intersection materials.
-//! 4. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws intersection materials.
-//! 5. [`WorldMeshForwardColorResolvePass`] -- optional **[`RasterPass`]** that resolves MSAA
+//! 5. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws intersection materials.
+//! 6. [`WorldMeshForwardColorResolvePass`] -- optional **[`RasterPass`]** that resolves MSAA
 //!    scene color before the grab-pass snapshot.
-//! 6. [`WorldMeshColorSnapshotPass`] -- **[`ComputePass`]** that copies resolved HDR color into
+//! 7. [`WorldMeshColorSnapshotPass`] -- **[`ComputePass`]** that copies resolved HDR color into
 //!    the grab-pass scene-color snapshot.
-//! 7. [`WorldMeshForwardTransparentPass`] -- **[`RasterPass`]** that draws grab-pass transparent
+//! 8. [`WorldMeshForwardTransparentPass`] -- **[`RasterPass`]** that draws grab-pass transparent
 //!    materials into the active frame-sampled HDR target.
-//! 8. [`WorldMeshForwardColorResolvePass`] -- optional final **[`RasterPass`]** that resolves
+//! 9. [`WorldMeshForwardColorResolvePass`] -- optional final **[`RasterPass`]** that resolves
 //!    MSAA scene color after grab-pass transparent draws.
-//! 9. [`WorldMeshForwardDepthResolvePass`] -- **[`ComputePass`]** that resolves the final MSAA
-//!    depth into the single-sample frame depth used by Hi-Z.
+//! 10. [`WorldMeshForwardDepthResolvePass`] -- **[`ComputePass`]** that resolves the final MSAA
+//!     depth into the single-sample frame depth used by Hi-Z.
 //!
 //! ## VR stereo world draws
 //!
@@ -36,6 +38,7 @@ mod current_view_textures;
 mod encode;
 mod execute_helpers;
 mod material_batch;
+mod normal_pass;
 mod skybox;
 mod state;
 mod vp;
@@ -44,6 +47,8 @@ pub use color_resolve::{
     WorldMeshForwardColorResolveGraphResources, WorldMeshForwardColorResolvePass,
 };
 pub(crate) use material_batch::{MaterialBatchPacket, MaterialDrawResolver, PipelineVariantKey};
+pub(crate) use normal_pass::GTAO_VIEW_NORMAL_FORMAT;
+pub use normal_pass::{WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass};
 pub(crate) use state::{
     PrefetchedWorldMeshDrawsSlot, PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState,
     WorldMeshForwardPlanSlot,

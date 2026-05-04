@@ -7,7 +7,9 @@ use wgpu::util::DeviceExt;
 use super::super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::super::layout::StemMaterialLayout;
 use super::super::texture_pools::EmbeddedTexturePools;
-use super::super::uniform_pack::{UniformPackTextureContext, build_embedded_uniform_bytes};
+use super::super::uniform_pack::{
+    UniformPackTextureContext, build_embedded_uniform_bytes_with_value_spaces,
+};
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
 /// Cached GPU uniform buffer, last store-mutation generation, and last bound-texture state signature.
@@ -84,9 +86,10 @@ impl EmbeddedMaterialBindResources {
                 return Ok(entry.buffer);
             }
             profiling::scope!("materials::embedded_uniform_refresh");
-            let uniform_bytes = build_embedded_uniform_bytes(
+            let uniform_bytes = build_embedded_uniform_bytes_with_value_spaces(
                 &layout.reflected,
                 layout.ids.as_ref(),
+                &layout.uniform_value_spaces,
                 store,
                 lookup,
                 &tex_ctx,
@@ -104,9 +107,10 @@ impl EmbeddedMaterialBindResources {
             return Ok(entry.buffer);
         }
         profiling::scope!("materials::embedded_uniform_create");
-        let uniform_bytes = build_embedded_uniform_bytes(
+        let uniform_bytes = build_embedded_uniform_bytes_with_value_spaces(
             &layout.reflected,
             layout.ids.as_ref(),
+            &layout.uniform_value_spaces,
             store,
             lookup,
             &tex_ctx,

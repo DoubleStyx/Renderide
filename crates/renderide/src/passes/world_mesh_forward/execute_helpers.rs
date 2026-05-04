@@ -16,6 +16,6 @@ pub(super) use msaa_depth::{
 pub(super) use prepare::prepare_world_mesh_forward_frame;
 pub(super) use raster_recording::{
     record_world_mesh_forward_intersection_graph_raster,
-    record_world_mesh_forward_opaque_graph_raster,
+    record_world_mesh_forward_normal_graph_raster, record_world_mesh_forward_opaque_graph_raster,
     record_world_mesh_forward_transparent_graph_raster, stencil_load_ops,
 };

@@ -24,6 +24,16 @@ pub(super) struct EmbeddedVertexStreamFlags {
 }
 
 impl EmbeddedVertexStreamFlags {
+    /// Primary position + normal streams only.
+    fn primary_only() -> Self {
+        Self {
+            embedded_uv: false,
+            embedded_color: false,
+            embedded_uv1: false,
+            embedded_extended_vertex_streams: false,
+        }
+    }
+
     /// Slot used by the compact UV1 layout when the pipeline does not use full extended streams.
     fn compact_uv1_slot(self) -> Option<usize> {
         if !self.embedded_uv1 || self.embedded_extended_vertex_streams {
@@ -142,6 +152,33 @@ pub(super) fn draw_mesh_submesh_instanced(
     rpass.draw_indexed(first..end, 0, instances);
 }
 
+/// Binds position and normal streams and issues one indexed draw for the GTAO normal prepass.
+pub(super) fn draw_mesh_submesh_normals_instanced(
+    rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'_>,
+    instances: std::ops::Range<u32>,
+    last_mesh: &mut LastMeshBindState,
+) {
+    let streams = EmbeddedVertexStreamFlags::primary_only();
+    let Some(mesh) = resident_draw_mesh(item, gpu, streams) else {
+        return;
+    };
+    let Some(normals_bind) = mesh.normals_buffer.as_deref() else {
+        return;
+    };
+
+    if !bind_primary_vertex_streams(rpass, item, gpu, mesh, normals_bind, last_mesh) {
+        return;
+    }
+
+    bind_index_buffer_if_changed(rpass, mesh, last_mesh);
+
+    let first = item.first_index;
+    let end = first.saturating_add(item.index_count);
+    rpass.draw_indexed(first..end, 0, instances);
+}
+
 /// Returns the resident mesh for a drawable item after validating required stream readiness.
 fn resident_draw_mesh<'a>(
     item: &WorldMeshDrawItem,
@@ -181,7 +218,8 @@ fn bind_primary_vertex_streams(
     normals_bind: &wgpu::Buffer,
     last_mesh: &mut LastMeshBindState,
 ) -> bool {
-    if item.world_space_deformed || item.blendshape_deformed {
+    if item.world_space_deformed || (item.blendshape_deformed && mesh.blendshape_has_tangent_deltas)
+    {
         bind_deformed_primary_streams(rpass, item, gpu, normals_bind, last_mesh)
     } else {
         bind_static_primary_streams(rpass, mesh, normals_bind, last_mesh)

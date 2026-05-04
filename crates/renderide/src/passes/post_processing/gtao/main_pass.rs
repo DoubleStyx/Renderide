@@ -1,7 +1,7 @@
 //! `gtao_main` raster pass -- XeGTAO production stage.
 //!
-//! Reads the imported scene depth, reconstructs view-space normals from depth derivatives,
-//! evaluates the GTAO horizon search, and writes:
+//! Reads the XeGTAO view-space depth mip chain plus the smooth view-space normal prepass,
+//! evaluates the horizon search, and writes:
 //!
 //! - `@location(0)` -- `saturate(visibility / OCCLUSION_TERM_SCALE)` to an `R8Unorm` ping-pong
 //!   target. The `1 / 1.5` scale is XeGTAO's `XeGTAO_OutputWorkingTerm` headroom convention;
@@ -21,14 +21,16 @@ use crate::render_graph::frame_params::PerViewFramePlanSlot;
 use crate::render_graph::gpu_cache::raster_stereo_mask_override;
 use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::resources::{
-    BufferAccess, ImportedBufferHandle, ImportedTextureHandle, TextureAccess, TextureHandle,
+    BufferAccess, ImportedBufferHandle, TextureAccess, TextureHandle,
 };
 
 /// Graph handles bound to one [`GtaoMainPass`] instance.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct GtaoMainResources {
-    /// Imported scene-depth attachment sampled by the AO horizon search.
-    pub depth: ImportedTextureHandle,
+    /// View-space depth mip chain sampled by the AO horizon search.
+    pub view_depth: TextureHandle,
+    /// Smooth view-space normal texture produced by the forward normal prepass.
+    pub view_normals: TextureHandle,
     /// Frame-uniforms buffer used as a fallback when the per-view buffer slot is absent.
     pub frame_uniforms: ImportedBufferHandle,
     /// Transient AO-term color attachment written by this pass (`@location(0)`).
@@ -66,8 +68,14 @@ impl RasterPass for GtaoMainPass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        b.import_texture(
-            self.resources.depth,
+        b.read_texture_resource(
+            self.resources.view_depth,
+            TextureAccess::Sampled {
+                stages: wgpu::ShaderStages::FRAGMENT,
+            },
+        );
+        b.read_texture_resource(
+            self.resources.view_normals,
             TextureAccess::Sampled {
                 stages: wgpu::ShaderStages::FRAGMENT,
             },
@@ -143,25 +151,32 @@ impl RasterPass for GtaoMainPass {
         // Production stage doesn't run the bilateral kernel; `denoise_blur_beta = 0` and
         // `final_apply = 0` keep the shared UBO unambiguous (the production shader doesn't
         // read either field but the apply / denoise shaders share the layout).
-        let params = GtaoParamsGpu {
-            radius_world: live.radius_meters.max(0.0),
-            max_pixel_radius: live.max_pixel_radius.max(1.0),
-            intensity: live.intensity.max(0.0),
-            step_count: live.step_count.max(1),
-            falloff_range: live.falloff_range.clamp(0.05, 1.0),
-            albedo_multibounce: live.albedo_multibounce.clamp(0.0, 0.99),
-            denoise_blur_beta: 0.0,
-            final_apply: 0,
-        };
+        let params = GtaoParamsGpu::from_settings(live, 0.0, false);
         let params_buffer = self.pipelines.params.get(ctx.device);
         ctx.upload_batch
             .write_buffer(params_buffer, 0, bytemuck::bytes_of(&params));
+
+        let Some(view_depth_tex) = graph_resources.transient_texture(self.resources.view_depth)
+        else {
+            return Err(missing_pass_resource(
+                self.name(),
+                format_args!("missing view_depth {:?}", self.resources.view_depth),
+            ));
+        };
+        let Some(view_normals_tex) = graph_resources.transient_texture(self.resources.view_normals)
+        else {
+            return Err(missing_pass_resource(
+                self.name(),
+                format_args!("missing view_normals {:?}", self.resources.view_normals),
+            ));
+        };
 
         let pipeline = self.pipelines.main.pipeline(ctx.device, multiview_stereo);
         let bind_group = self.pipelines.main.bind_group(
             ctx.device,
             multiview_stereo,
-            frame.view.depth_texture,
+            &view_depth_tex.texture,
+            &view_normals_tex.texture,
             &frame_uniform_buffer,
             params_buffer,
         );

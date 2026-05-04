@@ -20,9 +20,10 @@ use super::ping_pong::{PingPongCursor, PingPongHdrSlots};
 pub struct PostProcessChainSignature {
     /// Ground-Truth Ambient Occlusion pass active.
     pub gtao: bool,
-    /// Number of GTAO depth-aware denoise iterations baked into the graph (`0..=2`).
+    /// Number of GTAO depth-aware denoise iterations baked into the graph (`0..=3`).
     /// Topology field: `>= 2` adds an intermediate denoise pass and a second AO ping-pong
-    /// transient, so a change must rebuild. `0` when GTAO is inactive.
+    /// transient; `3` adds another ping-pong iteration, so a change must rebuild. `0` when
+    /// GTAO is inactive.
     pub gtao_denoise_passes: u32,
     /// Dual-filter bloom pass active.
     pub bloom: bool,
@@ -47,7 +48,7 @@ impl PostProcessChainSignature {
         Self {
             gtao,
             gtao_denoise_passes: if gtao {
-                settings.gtao.denoise_passes.min(2)
+                settings.gtao.denoise_passes.min(3)
             } else {
                 0
             },
@@ -459,6 +460,24 @@ mod tests {
 
         s.enabled = false;
         assert!(PostProcessChainSignature::from_settings(&s).is_empty());
+    }
+
+    #[test]
+    fn signature_clamps_gtao_denoise_topology_to_soft_preset() {
+        let mut s = PostProcessingSettings {
+            enabled: true,
+            tonemap: TonemapSettings {
+                mode: TonemapMode::None,
+            },
+            ..Default::default()
+        };
+        s.bloom.enabled = false;
+        s.gtao.denoise_passes = 99;
+
+        let sig = PostProcessChainSignature::from_settings(&s);
+
+        assert!(sig.gtao);
+        assert_eq!(sig.gtao_denoise_passes, 3);
     }
 
     #[test]

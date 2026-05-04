@@ -88,8 +88,6 @@ struct DeformWorkItem {
 struct MeshDeformRecordCursors {
     /// Current byte offset in the bone palette upload buffer.
     bone: u64,
-    /// Current byte offset in the blendshape weight upload buffer.
-    blend_weight: u64,
     /// Current byte offset in the packed blendshape parameter upload buffer.
     blend_param: u64,
     /// Current index in the skin dispatch staging buffer.
@@ -350,7 +348,6 @@ impl ComputePass for MeshDeformPass {
                     head_output_transform,
                     blend_weights: &item.blend_weights,
                     bone_cursor: &mut cursors.bone,
-                    blend_weight_cursor: &mut cursors.blend_weight,
                     blend_param_cursor: &mut cursors.blend_param,
                     skin_dispatch_cursor: &mut cursors.skin_dispatch,
                     skin_cache_entry: cache_entry,

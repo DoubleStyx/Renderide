@@ -8,7 +8,8 @@ use crate::gpu::GpuLimits;
 use crate::render_graph::frame_params::GraphPassFrame;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
-use super::super::encode::{ForwardDrawBatch, draw_subset};
+use super::super::encode::{ForwardDrawBatch, NormalDrawBatch, draw_normals_subset, draw_subset};
+use super::super::normal_pass::WorldMeshForwardNormalPipelineCache;
 
 /// Returns stencil load/store ops when the active depth format has a stencil aspect.
 pub(in crate::passes::world_mesh_forward) fn stencil_load_ops(
@@ -170,6 +171,46 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_opaque_gr
     prepared: &PreparedWorldMeshForwardFrame,
 ) -> bool {
     record_world_mesh_forward_graph_raster(rpass, frame, prepared, ForwardSubpassKind::Opaque)
+}
+
+/// Records the GTAO normal draw subset into a render pass already opened by the graph.
+pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_graph_raster(
+    rpass: &mut wgpu::RenderPass<'_>,
+    device: &wgpu::Device,
+    frame: &GraphPassFrame<'_>,
+    prepared: &PreparedWorldMeshForwardFrame,
+    pipelines: &WorldMeshForwardNormalPipelineCache,
+) -> bool {
+    let groups = &prepared.plan.regular_groups;
+    if groups.is_empty() {
+        return true;
+    }
+
+    let Some(per_draw_bg) = frame
+        .shared
+        .frame_resources
+        .per_view_per_draw(frame.view.view_id)
+        .map(|d| d.lock().bind_group.clone())
+    else {
+        return false;
+    };
+    let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
+        return false;
+    };
+    let mut encode_refs = frame.world_mesh_forward_encode_refs();
+    draw_normals_subset(NormalDrawBatch {
+        rpass,
+        groups,
+        draws: &prepared.draws,
+        encode: &mut encode_refs,
+        gpu_limits: gpu_limits.as_ref(),
+        per_draw_bind_group: per_draw_bg.as_ref(),
+        supports_base_instance: prepared.supports_base_instance,
+        pipeline: &prepared.pipeline,
+        device,
+        normal_pipelines: pipelines,
+    });
+    true
 }
 
 /// Records the intersection draw subset into a render pass already opened by the graph.

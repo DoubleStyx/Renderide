@@ -1,25 +1,25 @@
 //! Sparse blendshape buffer size checks and scatter dispatch chunking for [`wgpu::Limits`].
 
-use crate::assets::mesh::{BLENDSHAPE_SPARSE_ENTRY_SIZE, BlendshapeGpuPack};
+use crate::assets::mesh::{BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE, BlendshapeGpuPack};
 
 /// Minimum storage buffer size used when a mesh has blendshapes but zero sparse bytes (padding).
 pub const BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES: u64 = 16;
 
-/// Returns `false` when sparse or frame-descriptor payloads cannot exist on the device or be bound
-/// as a single storage read (typical WebGPU path).
+/// Returns `false` when sparse payloads cannot exist on the device or be bound as one storage read.
 pub fn blendshape_sparse_buffers_fit_device(
     pack: &BlendshapeGpuPack,
     max_buffer_size: u64,
     max_storage_buffer_binding_size: u64,
 ) -> bool {
-    let sparse_len = pack.sparse_deltas.len().max(BLENDSHAPE_SPARSE_ENTRY_SIZE);
+    let sparse_len = pack
+        .sparse_deltas
+        .len()
+        .max(BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE);
     let sparse_u64 = sparse_len as u64;
-    let desc_len = pack.shape_descriptor_bytes.len();
-    let desc_u64 = desc_len as u64;
-    if sparse_u64 > max_buffer_size || desc_u64 > max_buffer_size {
+    if sparse_u64 > max_buffer_size {
         return false;
     }
-    if sparse_u64 > max_storage_buffer_binding_size || desc_u64 > max_storage_buffer_binding_size {
+    if sparse_u64 > max_storage_buffer_binding_size {
         return false;
     }
     true
@@ -54,8 +54,7 @@ mod tests {
     use super::*;
 
     use crate::assets::mesh::{
-        BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE, BLENDSHAPE_SPARSE_ENTRY_SIZE, BlendshapeFrameRange,
-        BlendshapeFrameSpan,
+        BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE, BlendshapeFrameRange, BlendshapeFrameSpan,
     };
 
     #[test]
@@ -73,14 +72,17 @@ mod tests {
     #[test]
     fn sparse_fit_accepts_tiny_pack() {
         let pack = BlendshapeGpuPack {
-            sparse_deltas: vec![0u8; BLENDSHAPE_SPARSE_ENTRY_SIZE],
-            shape_descriptor_bytes: vec![0u8; BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE],
+            sparse_deltas: vec![0u8; BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE],
             frame_ranges: vec![BlendshapeFrameRange {
                 shape_index: 0,
                 frame_index: 0,
                 frame_weight: 1.0,
-                first_entry: 0,
-                entry_count: 1,
+                position_first_word: 0,
+                position_count: 1,
+                normal_first_word: 4,
+                normal_count: 0,
+                tangent_first_word: 4,
+                tangent_count: 0,
             }],
             shape_frame_spans: vec![BlendshapeFrameSpan {
                 first_frame: 0,
@@ -90,6 +92,7 @@ mod tests {
             has_position_deltas: true,
             has_normal_deltas: false,
             has_tangent_deltas: false,
+            clamped_packed_deltas: false,
         };
         assert!(blendshape_sparse_buffers_fit_device(&pack, 1024, 1024));
     }

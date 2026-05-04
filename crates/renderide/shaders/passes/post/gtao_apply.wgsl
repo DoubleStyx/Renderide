@@ -1,8 +1,8 @@
 //! Fullscreen pass: GTAO depth-aware denoise (final iteration) + HDR modulation.
 //!
 //! Reads the post-processing chain's HDR scene-color input plus the AO term and packed edges
-//! (from `gtao_main` directly when `denoise_passes in {0, 1}`, or from the intermediate
-//! denoise ping-pong target when `denoise_passes == 2`). Runs XeGTAO's edge-preserving 3x3
+//! (from `gtao_main` directly when `denoise_passes in {0, 1}`, or from the last intermediate
+//! denoise ping-pong target when `denoise_passes >= 2`). Runs XeGTAO's edge-preserving 3x3
 //! bilateral kernel at the full `denoise_blur_beta` (`XeGTAO_Denoise` with
 //! `finalApply = true`), multiplies the resulting AO factor by `OCCLUSION_TERM_SCALE` to
 //! recover the true visibility (the production pass stored `visibility / 1.5` for kernel
@@ -33,13 +33,21 @@
 
 struct GtaoParams {
     radius_world: f32,
+    radius_multiplier: f32,
     max_pixel_radius: f32,
     intensity: f32,
-    step_count: u32,
     falloff_range: f32,
+    sample_distribution_power: f32,
+    thin_occluder_compensation: f32,
+    final_value_power: f32,
+    depth_mip_sampling_offset: f32,
     albedo_multibounce: f32,
     denoise_blur_beta: f32,
+    slice_count: u32,
+    steps_per_slice: u32,
     final_apply: u32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 @group(0) @binding(4) var<uniform> gtao: GtaoParams;

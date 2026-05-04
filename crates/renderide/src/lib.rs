@@ -31,6 +31,7 @@ pub mod app;
 pub mod assets;
 /// GPU resource pools, material tables, mesh/texture uploads, preprocess pipelines -- **backend** layer.
 pub mod backend;
+mod color_space;
 /// `config.toml` loading and [`config::RendererSettings`] (process-wide defaults).
 pub mod config;
 /// Developer overlay: Dear ImGui frame snapshot + HUD ([`diagnostics::DebugHud`]).

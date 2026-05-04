@@ -4,15 +4,24 @@
 //! profiler's pass-level timestamp queries; both feed the same `submission` bundle so the
 //! main tick reads them without blocking.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+use crate::gpu::driver_thread::SubmitToken;
+use crate::gpu::submission_state::PendingGpuProfilerEnd;
 
 use super::GpuContext;
 
 impl GpuContext {
     /// Call at the start of each winit frame tick (same instant as [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`]).
-    pub fn begin_frame_timing(&self, frame_start: Instant) {
+    pub fn begin_frame_timing(&mut self, frame_start: Instant) {
         profiling::scope!("gpu::begin_frame_timing");
+        self.finish_deferred_gpu_profiler_frame_if_ready();
+        self.drain_gpu_profiler_results();
+        self.submission
+            .last_frame_submit_token
+            .store(0, Ordering::Release);
         self.submission
             .frame_timing
             .lock()
@@ -71,6 +80,8 @@ impl GpuContext {
     /// Does nothing when no GPU profiler is active.
     pub fn end_gpu_profiler_frame(&mut self) {
         profiling::scope!("gpu::drain_gpu_profiler");
+        self.finish_deferred_gpu_profiler_frame_if_ready();
+        self.drain_gpu_profiler_results();
         if self.submission.gpu_profiler.is_none() {
             return;
         }
@@ -78,29 +89,73 @@ impl GpuContext {
             self.submission.gpu_profiler.as_ref().is_some_and(
                 crate::profiling::GpuProfilerHandle::has_queries_opened_since_frame_end,
             );
-        if had_queries {
-            // `wgpu_profiler::end_frame` calls `map_async` on the same Query Read Buffer that
-            // `resolve_queries` just wrote a copy into. The render graph hands those resolve
-            // command buffers to the driver thread for an asynchronous `Queue::submit`, so if
-            // the driver has not yet drained the ring by the time we reach this point,
-            // `map_async` would put the buffer in pending-mapped state before the submit runs
-            // and wgpu validation would reject it with "buffer is still mapped". Flushing the
-            // driver guarantees every prior submit has completed before we transition the
-            // buffer. Empty redraw ticks skip the flush and the profiler frame close.
-            self.submission.driver_thread.flush();
+        if !had_queries {
+            return;
         }
-        if let Some(p) = self.submission.gpu_profiler.as_mut() {
-            p.end_frame_if_queries_opened();
-            let ts_period = self.queue.get_timestamp_period();
-            let mut latest_timings = None;
-            while let Some(timings) = p.process_finished_frame(ts_period) {
-                latest_timings = Some(timings);
-            }
-            if let Some(timings) = latest_timings
-                && let Ok(mut slot) = self.submission.latest_gpu_pass_timings.lock()
-            {
-                *slot = timings;
-            }
+        let Some(submit_token) = self.last_frame_submit_token() else {
+            logger::warn!("GPU profiler frame had queries but no tracked submit token");
+            self.end_active_gpu_profiler_frame();
+            self.drain_gpu_profiler_results();
+            return;
+        };
+        if self.submission.driver_thread.is_submit_done(submit_token) {
+            self.end_active_gpu_profiler_frame();
+            self.drain_gpu_profiler_results();
+            return;
+        }
+        if let Some(profiler) = self.submission.gpu_profiler.take() {
+            self.submission.pending_gpu_profiler_end = Some(PendingGpuProfilerEnd {
+                submit_token,
+                profiler,
+            });
+        }
+    }
+
+    fn last_frame_submit_token(&self) -> Option<SubmitToken> {
+        let raw = self
+            .submission
+            .last_frame_submit_token
+            .load(Ordering::Acquire);
+        (raw != 0).then(|| SubmitToken::new(raw))
+    }
+
+    fn finish_deferred_gpu_profiler_frame_if_ready(&mut self) {
+        let Some(pending) = self.submission.pending_gpu_profiler_end.as_ref() else {
+            return;
+        };
+        if !self
+            .submission
+            .driver_thread
+            .is_submit_done(pending.submit_token)
+        {
+            return;
+        }
+        let Some(mut pending) = self.submission.pending_gpu_profiler_end.take() else {
+            return;
+        };
+        pending.profiler.end_frame_if_queries_opened();
+        self.submission.gpu_profiler = Some(pending.profiler);
+    }
+
+    fn end_active_gpu_profiler_frame(&mut self) {
+        if let Some(profiler) = self.submission.gpu_profiler.as_mut() {
+            profiler.end_frame_if_queries_opened();
+        }
+    }
+
+    fn drain_gpu_profiler_results(&mut self) {
+        let Some(profiler) = self.submission.gpu_profiler.as_mut() else {
+            return;
+        };
+        let ts_period = self.queue.get_timestamp_period();
+        let mut latest_timings = None;
+        while let Some(timings) = profiler.process_finished_frame(ts_period) {
+            latest_timings = Some(timings);
+        }
+        if let Some(timings) = latest_timings
+            && let Ok(mut slot) = self.submission.latest_gpu_pass_timings.lock()
+        {
+            *slot = timings;
         }
     }
 

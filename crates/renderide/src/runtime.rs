@@ -121,6 +121,8 @@ pub struct RendererRuntime {
     pub(super) last_submit_render_task_count: usize,
     /// Cached full [`wgpu::AllocatorReport`] for the **GPU memory** HUD tab (refreshed on a timer).
     pub(super) allocator_report_hud: Option<crate::diagnostics::GpuAllocatorReportHud>,
+    /// Cached allocator totals from the same throttled report as [`Self::allocator_report_hud`].
+    pub(super) allocator_report_totals: crate::diagnostics::GpuAllocatorHud,
     /// Wall clock when a **GPU memory** tab refresh was last attempted (typically every 2s while the main debug HUD runs).
     pub(super) allocator_report_last_refresh: Option<Instant>,
     /// Set when [`Self::run_asset_integration`] completed for the current winit tick (cleared in [`Self::tick_frame_wall_clock_begin`]).
@@ -164,6 +166,7 @@ impl RendererRuntime {
             frame_timing_ema: crate::diagnostics::FrameTimingEma::default(),
             last_submit_render_task_count: 0,
             allocator_report_hud: None,
+            allocator_report_totals: crate::diagnostics::GpuAllocatorHud::default(),
             allocator_report_last_refresh: None,
             did_integrate_this_tick: false,
             frame_submit_apply_failures: 0,

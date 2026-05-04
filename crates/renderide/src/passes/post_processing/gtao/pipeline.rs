@@ -1,8 +1,10 @@
-//! Cached pipelines, bind layouts, sampler, and per-pass uniform buffer for the GTAO
-//! three-pass chain (`gtao_main` -> optional `gtao_denoise` -> `gtao_apply`).
+//! Cached pipelines, bind layouts, sampler, and per-pass uniform buffer for the GTAO chain
+//! (`gtao_prefilter_*` -> `gtao_main` -> optional `gtao_denoise` -> `gtao_apply`).
 //!
-//! Three independent caches are exposed:
+//! Four independent caches are exposed:
 //!
+//! - [`GtaoDepthPrefilterPipelineCache`] -- compute depth prefilter pipelines for raw depth ->
+//!   view-space mip 0 and weighted mip downsampling.
 //! - [`GtaoMainPipelineCache`] -- main AO production pass with two `R8Unorm` color targets
 //!   (visibility scaled by `1 / OCCLUSION_TERM_SCALE` + packed edges). Built manually
 //!   because the shared fullscreen helper is single-color-target only.
@@ -25,13 +27,15 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::config::GtaoSettings;
 use crate::embedded_shaders::{
     GTAO_APPLY_DEFAULT_WGSL, GTAO_APPLY_MULTIVIEW_WGSL, GTAO_DENOISE_DEFAULT_WGSL,
     GTAO_DENOISE_MULTIVIEW_WGSL, GTAO_MAIN_DEFAULT_WGSL, GTAO_MAIN_MULTIVIEW_WGSL,
+    GTAO_PREFILTER_DOWNSAMPLE_WGSL, GTAO_PREFILTER_MIP0_WGSL,
 };
 use crate::gpu::bind_layout::{
-    fragment_filterable_d2_array_entry, fragment_filtering_sampler_entry, texture_layout_entry,
-    uniform_buffer_layout_entry,
+    fragment_filterable_d2_array_entry, fragment_filtering_sampler_entry,
+    storage_texture_layout_entry, texture_layout_entry, uniform_buffer_layout_entry,
 };
 use crate::render_graph::gpu_cache::{
     BindGroupMap, FullscreenPipelineVariantDesc, FullscreenShaderVariants, OnceGpu,
@@ -46,6 +50,10 @@ use crate::render_graph::gpu_cache::{
 pub(super) const AO_TERM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 /// Packed-edges target format (mirrors the AO term).
 pub(super) const EDGES_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// View-space depth prefilter format.
+pub(super) const VIEW_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+/// Number of view-space depth mips generated for XeGTAO horizon sampling.
+pub(super) const VIEW_DEPTH_MIP_COUNT: u32 = 5;
 
 /// Upper bound for cached bind groups per cache before the cache is flushed.
 ///
@@ -54,7 +62,7 @@ pub(super) const EDGES_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unor
 /// churn.
 const MAX_CACHED_BIND_GROUPS: usize = 16;
 
-/// CPU mirror of the WGSL `GtaoParams` uniform (32 bytes, 16-byte aligned).
+/// CPU mirror of the WGSL `GtaoParams` uniform (64 bytes, 16-byte aligned).
 ///
 /// Rewritten every record from the live [`crate::config::GtaoSettings`] (with `final_apply`
 /// and `denoise_blur_beta` adjusted per-stage). Kept separate from `FrameGpuUniforms` so
@@ -64,14 +72,22 @@ const MAX_CACHED_BIND_GROUPS: usize = 16;
 pub(super) struct GtaoParamsGpu {
     /// World-space search radius (meters).
     pub radius_world: f32,
+    /// Radius scale used to compensate for screen-space bias.
+    pub radius_multiplier: f32,
     /// Cap on the horizon search in pixels.
     pub max_pixel_radius: f32,
     /// AO strength exponent applied to the raw visibility factor.
     pub intensity: f32,
-    /// Horizon steps per side.
-    pub step_count: u32,
     /// Distance-falloff range as a fraction of `radius_world`.
     pub falloff_range: f32,
+    /// Step-distribution power; higher values bias samples toward the center pixel.
+    pub sample_distribution_power: f32,
+    /// Depth thickness compensation for thin occluders.
+    pub thin_occluder_compensation: f32,
+    /// Final visibility power applied after slice averaging.
+    pub final_value_power: f32,
+    /// Bias for selecting the prefiltered depth mip used by horizon samples.
+    pub depth_mip_sampling_offset: f32,
     /// Gray-albedo proxy for the multi-bounce fit (paper Eq. 10).
     pub albedo_multibounce: f32,
     /// Bilateral blur strength for the active denoise stage. Production binds `0.0` (kernel
@@ -79,12 +95,86 @@ pub(super) struct GtaoParamsGpu {
     /// (XeGTAO's intermediate ratio); the apply pass binds the full `denoise_blur_beta`, or
     /// `0.0` when the user disabled the denoise filter (which short-circuits the kernel).
     pub denoise_blur_beta: f32,
+    /// Number of slice directions selected from the quality preset.
+    pub slice_count: u32,
+    /// Number of steps per slice selected from the quality preset.
+    pub steps_per_slice: u32,
     /// Set to `1` on the apply stage, `0` on production and intermediate denoise. Forwarded as
     /// a `u32` to align with WGSL's lack of `bool` in uniform structs.
     pub final_apply: u32,
+    /// Padding to keep the uniform block size 16-byte aligned.
+    pub _pad0: u32,
+    /// Padding to keep the uniform block size 16-byte aligned.
+    pub _pad1: u32,
 }
 
-/// Process-wide `GtaoParams` uniform buffer, shared across the three pipeline caches.
+impl GtaoParamsGpu {
+    /// Builds stage-specific GPU parameters from live settings.
+    pub(super) fn from_settings(
+        settings: GtaoSettings,
+        denoise_blur_beta: f32,
+        final_apply: bool,
+    ) -> Self {
+        let preset = GtaoQualityPreset::from_level(settings.quality_level, settings.step_count);
+        Self {
+            radius_world: settings.radius_meters.max(0.0),
+            radius_multiplier: settings.radius_multiplier.clamp(0.3, 3.0),
+            max_pixel_radius: settings.max_pixel_radius.max(1.0),
+            intensity: settings.intensity.max(0.0),
+            falloff_range: settings.falloff_range.clamp(0.05, 1.0),
+            sample_distribution_power: settings.sample_distribution_power.clamp(1.0, 3.0),
+            thin_occluder_compensation: settings.thin_occluder_compensation.clamp(0.0, 0.7),
+            final_value_power: settings.final_value_power.clamp(0.5, 5.0),
+            depth_mip_sampling_offset: settings.depth_mip_sampling_offset.clamp(0.0, 30.0),
+            albedo_multibounce: settings.albedo_multibounce.clamp(0.0, 0.99),
+            denoise_blur_beta,
+            slice_count: preset.slice_count,
+            steps_per_slice: preset.steps_per_slice,
+            final_apply: u32::from(final_apply),
+            _pad0: 0,
+            _pad1: 0,
+        }
+    }
+}
+
+/// XeGTAO sampling preset selected by `GtaoSettings::quality_level`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct GtaoQualityPreset {
+    /// Slice directions evaluated by the horizon search.
+    pub(super) slice_count: u32,
+    /// Steps evaluated per slice direction.
+    pub(super) steps_per_slice: u32,
+}
+
+impl GtaoQualityPreset {
+    /// Maps XeGTAO quality levels to the reference slice/step layouts.
+    pub(super) fn from_level(level: u32, step_count_floor: u32) -> Self {
+        let preset = match level.min(3) {
+            0 => Self {
+                slice_count: 1,
+                steps_per_slice: 2,
+            },
+            1 => Self {
+                slice_count: 2,
+                steps_per_slice: 2,
+            },
+            2 => Self {
+                slice_count: 3,
+                steps_per_slice: 3,
+            },
+            _ => Self {
+                slice_count: 9,
+                steps_per_slice: 3,
+            },
+        };
+        Self {
+            slice_count: preset.slice_count,
+            steps_per_slice: preset.steps_per_slice.max(step_count_floor.clamp(1, 8)),
+        }
+    }
+}
+
+/// Process-wide `GtaoParams` uniform buffer, shared across the pipeline caches.
 #[derive(Default)]
 pub(super) struct GtaoParamsBuffer {
     buffer: OnceGpu<wgpu::Buffer>,
@@ -103,7 +193,8 @@ impl GtaoParamsBuffer {
 /// Cache key for [`GtaoMainPipelineCache::bind_groups`].
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct GtaoMainBindGroupKey {
-    scene_depth_texture: wgpu::Texture,
+    view_depth_texture: wgpu::Texture,
+    view_normals_texture: wgpu::Texture,
     frame_uniforms: wgpu::Buffer,
     multiview_stereo: bool,
 }
@@ -156,12 +247,19 @@ impl GtaoMainPipelineCache {
                     texture_layout_entry(
                         0,
                         wgpu::ShaderStages::FRAGMENT,
-                        wgpu::TextureSampleType::Depth,
+                        wgpu::TextureSampleType::Float { filterable: false },
                         depth_view_dim,
                         false,
                     ),
-                    uniform_buffer_layout_entry(1, wgpu::ShaderStages::FRAGMENT, None),
+                    texture_layout_entry(
+                        1,
+                        wgpu::ShaderStages::FRAGMENT,
+                        wgpu::TextureSampleType::Float { filterable: false },
+                        depth_view_dim,
+                        false,
+                    ),
                     uniform_buffer_layout_entry(2, wgpu::ShaderStages::FRAGMENT, None),
+                    uniform_buffer_layout_entry(3, wgpu::ShaderStages::FRAGMENT, None),
                 ],
             })
         })
@@ -235,12 +333,14 @@ impl GtaoMainPipelineCache {
         &self,
         device: &wgpu::Device,
         multiview_stereo: bool,
-        scene_depth_texture: &wgpu::Texture,
+        view_depth_texture: &wgpu::Texture,
+        view_normals_texture: &wgpu::Texture,
         frame_uniforms: &wgpu::Buffer,
         params_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         let key = GtaoMainBindGroupKey {
-            scene_depth_texture: scene_depth_texture.clone(),
+            view_depth_texture: view_depth_texture.clone(),
+            view_normals_texture: view_normals_texture.clone(),
             frame_uniforms: frame_uniforms.clone(),
             multiview_stereo,
         };
@@ -251,11 +351,22 @@ impl GtaoMainPipelineCache {
                 (wgpu::TextureViewDimension::D2, Some(1))
             };
             let depth_view = key
-                .scene_depth_texture
+                .view_depth_texture
                 .create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("gtao_main_scene_depth"),
-                    aspect: wgpu::TextureAspect::DepthOnly,
+                    label: Some("gtao_main_view_depth"),
+                    aspect: wgpu::TextureAspect::All,
                     dimension: Some(depth_dim),
+                    mip_level_count: Some(VIEW_DEPTH_MIP_COUNT),
+                    array_layer_count: depth_layer_count,
+                    ..Default::default()
+                });
+            let normals_view = key
+                .view_normals_texture
+                .create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("gtao_main_view_normals"),
+                    aspect: wgpu::TextureAspect::All,
+                    dimension: Some(depth_dim),
+                    mip_level_count: Some(1),
                     array_layer_count: depth_layer_count,
                     ..Default::default()
                 });
@@ -269,15 +380,144 @@ impl GtaoMainPipelineCache {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: key.frame_uniforms.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(&normals_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
+                        resource: key.frame_uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
                         resource: params_buffer.as_entire_binding(),
                     },
                 ],
             })
         })
+    }
+}
+
+// ---- depth prefilter pipeline cache ---------------------------------------
+
+/// Compute pipelines and layouts for the XeGTAO view-space depth prefilter.
+#[derive(Default)]
+pub(super) struct GtaoDepthPrefilterPipelineCache {
+    mip0_bind_group_layout: OnceGpu<wgpu::BindGroupLayout>,
+    downsample_bind_group_layout: OnceGpu<wgpu::BindGroupLayout>,
+    mip0_pipeline: OnceGpu<Arc<wgpu::ComputePipeline>>,
+    downsample_pipeline: OnceGpu<Arc<wgpu::ComputePipeline>>,
+}
+
+impl GtaoDepthPrefilterPipelineCache {
+    /// Bind group layout for raw depth -> view-space mip 0.
+    pub(super) fn mip0_bind_group_layout(&self, device: &wgpu::Device) -> &wgpu::BindGroupLayout {
+        self.mip0_bind_group_layout.get_or_create(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("gtao-prefilter-mip0"),
+                entries: &[
+                    texture_layout_entry(
+                        0,
+                        wgpu::ShaderStages::COMPUTE,
+                        wgpu::TextureSampleType::Depth,
+                        wgpu::TextureViewDimension::D2,
+                        false,
+                    ),
+                    uniform_buffer_layout_entry(1, wgpu::ShaderStages::COMPUTE, None),
+                    uniform_buffer_layout_entry(2, wgpu::ShaderStages::COMPUTE, None),
+                    storage_texture_layout_entry(
+                        3,
+                        wgpu::ShaderStages::COMPUTE,
+                        wgpu::StorageTextureAccess::WriteOnly,
+                        VIEW_DEPTH_FORMAT,
+                        wgpu::TextureViewDimension::D2,
+                    ),
+                ],
+            })
+        })
+    }
+
+    /// Bind group layout for view-space mip N -> mip N+1.
+    pub(super) fn downsample_bind_group_layout(
+        &self,
+        device: &wgpu::Device,
+    ) -> &wgpu::BindGroupLayout {
+        self.downsample_bind_group_layout.get_or_create(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("gtao-prefilter-downsample"),
+                entries: &[
+                    texture_layout_entry(
+                        0,
+                        wgpu::ShaderStages::COMPUTE,
+                        wgpu::TextureSampleType::Float { filterable: false },
+                        wgpu::TextureViewDimension::D2,
+                        false,
+                    ),
+                    uniform_buffer_layout_entry(1, wgpu::ShaderStages::COMPUTE, None),
+                    storage_texture_layout_entry(
+                        2,
+                        wgpu::ShaderStages::COMPUTE,
+                        wgpu::StorageTextureAccess::WriteOnly,
+                        VIEW_DEPTH_FORMAT,
+                        wgpu::TextureViewDimension::D2,
+                    ),
+                ],
+            })
+        })
+    }
+
+    /// Compute pipeline for raw depth -> view-space mip 0.
+    pub(super) fn mip0_pipeline(&self, device: &wgpu::Device) -> Arc<wgpu::ComputePipeline> {
+        self.mip0_pipeline
+            .get_or_create(|| {
+                let shader = create_wgsl_shader_module(
+                    device,
+                    "gtao_prefilter_mip0",
+                    GTAO_PREFILTER_MIP0_WGSL,
+                );
+                let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("gtao_prefilter_mip0"),
+                    bind_group_layouts: &[Some(self.mip0_bind_group_layout(device))],
+                    immediate_size: 0,
+                });
+                Arc::new(
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("gtao_prefilter_mip0"),
+                        layout: Some(&layout),
+                        module: &shader,
+                        entry_point: Some("cs_main"),
+                        compilation_options: Default::default(),
+                        cache: None,
+                    }),
+                )
+            })
+            .clone()
+    }
+
+    /// Compute pipeline for view-space depth downsampling.
+    pub(super) fn downsample_pipeline(&self, device: &wgpu::Device) -> Arc<wgpu::ComputePipeline> {
+        self.downsample_pipeline
+            .get_or_create(|| {
+                let shader = create_wgsl_shader_module(
+                    device,
+                    "gtao_prefilter_downsample",
+                    GTAO_PREFILTER_DOWNSAMPLE_WGSL,
+                );
+                let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("gtao_prefilter_downsample"),
+                    bind_group_layouts: &[Some(self.downsample_bind_group_layout(device))],
+                    immediate_size: 0,
+                });
+                Arc::new(
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("gtao_prefilter_downsample"),
+                        layout: Some(&layout),
+                        module: &shader,
+                        entry_point: Some("cs_main"),
+                        compilation_options: Default::default(),
+                        cache: None,
+                    }),
+                )
+            })
+            .clone()
     }
 }
 
@@ -523,10 +763,11 @@ impl GtaoApplyPipelineCache {
     }
 }
 
-/// Bundles the three pipeline caches plus the shared GTAO params UBO so callers can grab
+/// Bundles the pipeline caches plus the shared GTAO params UBO so callers can grab
 /// them from a single process-wide singleton (see `gtao_pipelines()` in the parent module).
 #[derive(Default)]
 pub(super) struct GtaoPipelines {
+    pub(super) depth_prefilter: GtaoDepthPrefilterPipelineCache,
     pub(super) main: GtaoMainPipelineCache,
     pub(super) denoise: GtaoDenoisePipelineCache,
     pub(super) apply: GtaoApplyPipelineCache,

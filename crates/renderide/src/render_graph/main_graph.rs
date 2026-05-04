@@ -265,6 +265,80 @@ fn create_main_graph_transient_resources(
     )
 }
 
+fn gtao_post_processing_active(settings: &crate::config::PostProcessingSettings) -> bool {
+    settings.enabled && settings.gtao.enabled
+}
+
+fn create_gtao_view_normal_transients(
+    builder: &mut GraphBuilder,
+) -> (TextureHandle, TextureHandle) {
+    let extent = TransientExtent::Backbuffer;
+    let normals = builder.create_texture(TransientTextureDesc {
+        label: "gtao_view_normals",
+        format: TransientTextureFormat::Fixed(crate::passes::GTAO_VIEW_NORMAL_FORMAT),
+        extent,
+        mip_levels: 1,
+        sample_count: TransientSampleCount::Fixed(1),
+        dimension: wgpu::TextureDimension::D2,
+        array_layers: TransientArrayLayers::Frame,
+        base_usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        alias: true,
+    });
+    let normals_msaa = builder.create_texture(TransientTextureDesc {
+        label: "gtao_view_normals_msaa",
+        format: TransientTextureFormat::Fixed(crate::passes::GTAO_VIEW_NORMAL_FORMAT),
+        extent,
+        mip_levels: 1,
+        sample_count: TransientSampleCount::Frame,
+        dimension: wgpu::TextureDimension::D2,
+        array_layers: TransientArrayLayers::Frame,
+        base_usage: wgpu::TextureUsages::empty(),
+        alias: true,
+    });
+    (normals, normals_msaa)
+}
+
+struct GtaoNormalPrepassNode {
+    view_normals: TextureHandle,
+    pass: PassId,
+}
+
+fn main_forward_resources(h: &MainGraphHandles) -> crate::passes::WorldMeshForwardGraphResources {
+    crate::passes::WorldMeshForwardGraphResources {
+        scene_color_hdr: h.scene_color_hdr,
+        scene_color_hdr_msaa: h.scene_color_hdr_msaa,
+        depth: h.depth,
+        msaa_depth: h.forward_msaa_depth,
+        msaa_depth_r32: h.forward_msaa_depth_r32,
+        cluster_light_counts: h.cluster_light_counts,
+        cluster_light_indices: h.cluster_light_indices,
+        lights: h.lights,
+        per_draw_slab: h.per_draw_slab,
+        frame_uniforms: h.frame_uniforms,
+    }
+}
+
+fn add_gtao_normal_prepass_if_active(
+    builder: &mut GraphBuilder,
+    h: &MainGraphHandles,
+    post_processing_settings: &crate::config::PostProcessingSettings,
+) -> Option<GtaoNormalPrepassNode> {
+    if !gtao_post_processing_active(post_processing_settings) {
+        return None;
+    }
+    let (view_normals, normals_msaa) = create_gtao_view_normal_transients(builder);
+    let pass = builder.add_raster_pass(Box::new(crate::passes::WorldMeshForwardNormalPass::new(
+        crate::passes::WorldMeshForwardNormalGraphResources {
+            normals: view_normals,
+            normals_msaa,
+            depth: h.depth,
+            msaa_depth: h.forward_msaa_depth,
+            per_draw_slab: h.per_draw_slab,
+        },
+    )));
+    Some(GtaoNormalPrepassNode { view_normals, pass })
+}
+
 /// Wires imported frame targets and main-graph transients into `builder` for [`build_main_graph`].
 fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGraphHandles {
     let (color, depth, hi_z_current) = import_main_graph_textures(builder);
@@ -325,24 +399,15 @@ fn add_main_graph_passes_and_edges(
         },
         cluster_assignment,
     )));
-    let forward_resources = crate::passes::WorldMeshForwardGraphResources {
-        scene_color_hdr: h.scene_color_hdr,
-        scene_color_hdr_msaa: h.scene_color_hdr_msaa,
-        depth: h.depth,
-        msaa_depth: h.forward_msaa_depth,
-        msaa_depth_r32: h.forward_msaa_depth_r32,
-        cluster_light_counts: h.cluster_light_counts,
-        cluster_light_indices: h.cluster_light_indices,
-        lights: h.lights,
-        per_draw_slab: h.per_draw_slab,
-        frame_uniforms: h.frame_uniforms,
-    };
+    let forward_resources = main_forward_resources(&h);
     let forward_prepare = builder.add_callback_pass(Box::new(
         crate::passes::WorldMeshForwardPreparePass::new(forward_resources),
     ));
     let forward_opaque = builder.add_raster_pass(Box::new(
         crate::passes::WorldMeshForwardOpaquePass::new(forward_resources),
     ));
+    let gtao_normals =
+        add_gtao_normal_prepass_if_active(&mut builder, &h, post_processing_settings);
     let depth_snapshot = builder.add_compute_pass(Box::new(
         crate::passes::WorldMeshDepthSnapshotPass::new(forward_resources),
     ));
@@ -387,6 +452,7 @@ fn add_main_graph_passes_and_edges(
         &h,
         post_processing_settings,
         post_processing_resources,
+        gtao_normals.as_ref().map(|node| node.view_normals),
     );
     let chain_output =
         chain.build_into_graph(&mut builder, h.scene_color_hdr, post_processing_settings);
@@ -401,7 +467,12 @@ fn add_main_graph_passes_and_edges(
     builder.add_edge(deform, clustered);
     builder.add_edge(clustered, forward_prepare);
     builder.add_edge(forward_prepare, forward_opaque);
-    builder.add_edge(forward_opaque, depth_snapshot);
+    if let Some(gtao_normals) = gtao_normals {
+        builder.add_edge(forward_opaque, gtao_normals.pass);
+        builder.add_edge(gtao_normals.pass, depth_snapshot);
+    } else {
+        builder.add_edge(forward_opaque, depth_snapshot);
+    }
     builder.add_edge(depth_snapshot, forward_intersect);
     if let Some(pre_grab_color_resolve) = pre_grab_color_resolve {
         builder.add_edge(forward_intersect, pre_grab_color_resolve);
@@ -432,19 +503,24 @@ fn add_main_graph_passes_and_edges(
 ///
 /// `GtaoEffect` is parameterised with the current [`crate::config::GtaoSettings`] snapshot and
 /// the imported `frame_uniforms` handle (used to access per-eye projection coefficients and the
-/// frame index at record time). `BloomEffect` captures a [`crate::config::BloomSettings`]
-/// snapshot for its shared params UBO and per-mip blend constants.
+/// frame index at record time). It is registered only when the graph also created the matching
+/// view-normal texture. `BloomEffect` captures a [`crate::config::BloomSettings`] snapshot for its
+/// shared params UBO and per-mip blend constants.
 fn build_default_post_processing_chain(
     h: &MainGraphHandles,
     post_processing_settings: &crate::config::PostProcessingSettings,
     post_processing_resources: &MainGraphPostProcessingResources,
+    gtao_view_normals: Option<TextureHandle>,
 ) -> post_processing::PostProcessChain {
     let mut chain = post_processing::PostProcessChain::new();
-    chain.push(Box::new(crate::passes::GtaoEffect {
-        settings: post_processing_settings.gtao,
-        depth: h.depth,
-        frame_uniforms: h.frame_uniforms,
-    }));
+    if let Some(view_normals) = gtao_view_normals {
+        chain.push(Box::new(crate::passes::GtaoEffect {
+            settings: post_processing_settings.gtao,
+            depth: h.depth,
+            view_normals,
+            frame_uniforms: h.frame_uniforms,
+        }));
+    }
     chain.push(Box::new(crate::passes::AutoExposureEffect::new(
         post_processing_resources.auto_exposure_state_cache(),
     )));
@@ -585,6 +661,27 @@ mod tests {
         }
     }
 
+    fn gtao_enabled_post() -> PostProcessingSettings {
+        PostProcessingSettings {
+            enabled: true,
+            gtao: GtaoSettings {
+                enabled: true,
+                ..Default::default()
+            },
+            bloom: BloomSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            auto_exposure: crate::config::AutoExposureSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            tonemap: TonemapSettings {
+                mode: TonemapMode::None,
+            },
+        }
+    }
+
     #[test]
     fn default_main_needs_surface_and_eleven_passes() {
         let g = build_main_graph(smoke_key(), &no_post()).expect("default graph");
@@ -670,6 +767,40 @@ mod tests {
         assert!(auto_apply_pos < bloom_downsample_pos);
         assert!(bloom_downsample_pos < bloom_composite_pos);
         assert!(bloom_composite_pos < aces_tonemap_pos);
+    }
+
+    #[test]
+    fn enabling_gtao_adds_normal_prepass_before_gtao_main() {
+        let post = gtao_enabled_post();
+        let mut key = smoke_key();
+        key.post_processing = PostProcessChainSignature::from_settings(&post);
+        let g = build_main_graph(key, &post).expect("gtao graph");
+        let pass_names: Vec<&str> = g.pass_info.iter().map(|p| p.name.as_str()).collect();
+        let normal_pos = pass_names
+            .iter()
+            .position(|name| *name == "WorldMeshForwardNormals")
+            .expect("GTAO normal prepass");
+        let depth_snapshot_pos = pass_names
+            .iter()
+            .position(|name| *name == "WorldMeshDepthSnapshot")
+            .expect("depth snapshot pass");
+        let gtao_main_pos = pass_names
+            .iter()
+            .position(|name| *name == "GtaoMain")
+            .expect("GTAO main pass");
+
+        assert!(normal_pos < depth_snapshot_pos);
+        assert!(depth_snapshot_pos < gtao_main_pos);
+        assert!(
+            g.transient_textures
+                .iter()
+                .any(|t| t.desc.label == "gtao_view_normals")
+        );
+        assert!(
+            g.transient_textures
+                .iter()
+                .any(|t| t.desc.label == "gtao_view_normals_msaa")
+        );
     }
 
     #[test]

@@ -2,7 +2,6 @@
 
 /// CPU-reserved caps; buffers grow when exceeded.
 const INITIAL_MAX_BONES: u32 = 256;
-const INITIAL_MAX_BLENDSHAPES: u32 = 256;
 /// Initial staging for packed blendshape `Params` (32 bytes x chunks).
 const INITIAL_BLENDSHAPE_PARAMS_STAGING: u64 = 4096;
 /// Initial number of 256-byte slots for per-dispatch `SkinDispatchParams` (32 B payload each).
@@ -10,9 +9,6 @@ const INITIAL_SKIN_DISPATCH_SLOTS: u64 = 16;
 
 /// Bytes per skinning palette matrix (column-major `mat4`).
 const BONE_MATRIX_BYTES: u64 = 64;
-/// Bytes per blendshape weight (`f32`).
-const BLENDSHAPE_WEIGHT_BYTES: u64 = 4;
-
 /// Pads to the per-draw slab stride (matches [`crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE`]).
 ///
 /// The device's `min_storage_buffer_offset_alignment` is verified to be `<= 256` in
@@ -93,12 +89,6 @@ const BLENDSHAPE_PARAMS_STAGING: GrowableBuffer = GrowableBuffer {
     min_size: INITIAL_BLENDSHAPE_PARAMS_STAGING,
 };
 
-const BLENDSHAPE_WEIGHTS: GrowableBuffer = GrowableBuffer {
-    label: "mesh_deform_blendshape_weights",
-    usage: wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_DST),
-    min_size: 16,
-};
-
 const SKIN_DISPATCH: GrowableBuffer = GrowableBuffer {
     label: "mesh_deform_skin_dispatch",
     usage: wgpu::BufferUsages::UNIFORM.union(wgpu::BufferUsages::COPY_DST),
@@ -117,12 +107,6 @@ const DUMMY_VEC4_WRITE: GrowableBuffer = GrowableBuffer {
     min_size: 16,
 };
 
-const DUMMY_VEC4_WRITE_ALT: GrowableBuffer = GrowableBuffer {
-    label: "mesh_deform_dummy_vec4_write_alt",
-    usage: wgpu::BufferUsages::STORAGE,
-    min_size: 16,
-};
-
 /// Scratch storage written each frame before compute dispatches.
 pub struct MeshDeformScratch {
     /// Linear blend skinning bone palette (`mat4` column-major, 64 bytes each); subranges use 256-byte-aligned offsets.
@@ -131,20 +115,12 @@ pub struct MeshDeformScratch {
     pub blendshape_params: wgpu::Buffer,
     /// Upload + copy source slab for packed scatter `Params` before `copy_buffer_to_buffer` into `blendshape_params`.
     pub blendshape_params_staging: wgpu::Buffer,
-    /// `f32` weight per blendshape; subranges use 256-byte-aligned offsets between meshes.
-    pub blendshape_weights: wgpu::Buffer,
     /// Slab of `mesh_skinning.wgsl` [`SkinDispatchParams`] (32 bytes per dispatch at 256-byte-aligned offsets).
     pub skin_dispatch: wgpu::Buffer,
     /// Dummy read-only storage used for optional shader input bindings when an attribute path is disabled.
     pub dummy_vec4_read: wgpu::Buffer,
     /// Dummy writable storage used for optional shader output bindings when an attribute path is disabled.
     pub dummy_vec4_write: wgpu::Buffer,
-    /// Alternate dummy writable storage for a second optional output binding in the same dispatch.
-    pub dummy_vec4_write_alt: wgpu::Buffer,
-    /// Reusable byte buffer for one mesh's blendshape weight binding before [`crate::render_graph::frame_upload_batch::FrameUploadBatch::write_buffer`].
-    ///
-    /// Cleared (length-only, capacity retained) at the start of each blendshape record call.
-    pub blend_weight_bytes: Vec<u8>,
     /// Reusable byte buffer for one skinning palette before it is copied into the frame upload batch.
     ///
     /// Cleared (length-only, capacity retained) at the start of each skinning record call.
@@ -157,8 +133,11 @@ pub struct MeshDeformScratch {
     ///
     /// Cleared (length-only, capacity retained) at the start of each blendshape record call.
     pub scatter_dispatch_wgs: Vec<u32>,
+    /// Reusable blendshape output channel per scatter dispatch chunk.
+    ///
+    /// Cleared (length-only, capacity retained) at the start of each blendshape record call.
+    pub scatter_dispatch_targets: Vec<u32>,
     max_bones: u32,
-    max_shapes: u32,
     /// [`wgpu::Limits::max_buffer_size`]; growth refuses past this cap.
     max_buffer_size: u64,
 }
@@ -169,25 +148,20 @@ impl MeshDeformScratch {
     /// `max_buffer_size` must be [`wgpu::Device::limits`].`max_buffer_size` (see [`crate::gpu::GpuLimits::max_buffer_size`]).
     pub fn new(device: &wgpu::Device, max_buffer_size: u64) -> Self {
         let bone_bytes = u64::from(INITIAL_MAX_BONES) * BONE_MATRIX_BYTES;
-        let weight_bytes = u64::from(INITIAL_MAX_BLENDSHAPES) * BLENDSHAPE_WEIGHT_BYTES;
         let skin_dispatch_bytes = INITIAL_SKIN_DISPATCH_SLOTS.saturating_mul(256);
         Self {
             bone_matrices: BONE_MATRICES.create(device, bone_bytes),
             blendshape_params: BLENDSHAPE_PARAMS.create(device, BLENDSHAPE_PARAMS.min_size),
             blendshape_params_staging: BLENDSHAPE_PARAMS_STAGING
                 .create(device, BLENDSHAPE_PARAMS_STAGING.min_size),
-            blendshape_weights: BLENDSHAPE_WEIGHTS.create(device, weight_bytes),
             skin_dispatch: SKIN_DISPATCH.create(device, skin_dispatch_bytes),
             dummy_vec4_read: DUMMY_VEC4_READ.create(device, DUMMY_VEC4_READ.min_size),
             dummy_vec4_write: DUMMY_VEC4_WRITE.create(device, DUMMY_VEC4_WRITE.min_size),
-            dummy_vec4_write_alt: DUMMY_VEC4_WRITE_ALT
-                .create(device, DUMMY_VEC4_WRITE_ALT.min_size),
-            blend_weight_bytes: Vec::new(),
             bone_palette_bytes: Vec::new(),
             packed_scatter_params: Vec::new(),
             scatter_dispatch_wgs: Vec::new(),
+            scatter_dispatch_targets: Vec::new(),
             max_bones: INITIAL_MAX_BONES,
-            max_shapes: INITIAL_MAX_BLENDSHAPES,
             max_buffer_size,
         }
     }
@@ -214,33 +188,6 @@ impl MeshDeformScratch {
         BONE_MATRICES.ensure(
             device,
             &mut self.bone_matrices,
-            end_exclusive,
-            self.max_buffer_size,
-        );
-    }
-
-    /// Ensures the blendshape weight buffer fits at least `need_shapes` floats for a single-mesh dispatch.
-    pub fn ensure_shape_weight_capacity(&mut self, device: &wgpu::Device, need_shapes: u32) {
-        if need_shapes <= self.max_shapes {
-            return;
-        }
-        let next = need_shapes.next_power_of_two().max(INITIAL_MAX_BLENDSHAPES);
-        let weight_bytes = u64::from(next) * BLENDSHAPE_WEIGHT_BYTES;
-        if BLENDSHAPE_WEIGHTS.ensure(
-            device,
-            &mut self.blendshape_weights,
-            weight_bytes,
-            self.max_buffer_size,
-        ) {
-            self.max_shapes = next;
-        }
-    }
-
-    /// Ensures the weight slab can address bytes `[0, end_exclusive)`.
-    pub fn ensure_blend_weight_byte_capacity(&mut self, device: &wgpu::Device, end_exclusive: u64) {
-        BLENDSHAPE_WEIGHTS.ensure(
-            device,
-            &mut self.blendshape_weights,
             end_exclusive,
             self.max_buffer_size,
         );

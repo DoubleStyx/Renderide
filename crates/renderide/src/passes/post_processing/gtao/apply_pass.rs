@@ -2,8 +2,8 @@
 //! kernel.
 //!
 //! Reads the post-processing chain's HDR scene-color input plus the AO term and packed
-//! edges (from `gtao_main` directly when `denoise_passes in {0, 1}`, or from the intermediate
-//! denoise ping-pong target when `denoise_passes == 2`), runs the bilateral kernel at the
+//! edges (from `gtao_main` directly when `denoise_passes in {0, 1}`, or from the last
+//! intermediate ping-pong target when `denoise_passes >= 2`), runs the bilateral kernel at the
 //! full `denoise_blur_beta`, multiplies the resulting AO term by `OCCLUSION_TERM_SCALE` to
 //! recover the true visibility (the production pass stored `visibility / 1.5` for kernel
 //! headroom), then modulates HDR scene color and writes the chain's HDR output. The shader
@@ -133,16 +133,7 @@ impl RasterPass for GtaoApplyPass {
         } else {
             live.denoise_blur_beta.max(0.0)
         };
-        let params = GtaoParamsGpu {
-            radius_world: live.radius_meters.max(0.0),
-            max_pixel_radius: live.max_pixel_radius.max(1.0),
-            intensity: live.intensity.max(0.0),
-            step_count: live.step_count.max(1),
-            falloff_range: live.falloff_range.clamp(0.05, 1.0),
-            albedo_multibounce: live.albedo_multibounce.clamp(0.0, 0.99),
-            denoise_blur_beta: beta,
-            final_apply: 1,
-        };
+        let params = GtaoParamsGpu::from_settings(live, beta, true);
         let params_buffer = self.pipelines.params.get(ctx.device);
         ctx.upload_batch
             .write_buffer(params_buffer, 0, bytemuck::bytes_of(&params));

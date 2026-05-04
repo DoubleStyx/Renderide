@@ -108,6 +108,51 @@ mod text_uniform_packing_tests {
         (reflected, ids, registry)
     }
 
+    fn reflected_with_uniform_fields(
+        field_specs: &[(&str, ReflectedUniformScalarKind, u32, u32)],
+    ) -> (
+        ReflectedRasterLayout,
+        StemEmbeddedPropertyIds,
+        PropertyIdRegistry,
+    ) {
+        let registry = PropertyIdRegistry::new();
+        let mut fields = HashMap::new();
+        let mut total_size = 0u32;
+        for (field_name, field_kind, field_size, field_offset) in field_specs {
+            fields.insert(
+                (*field_name).to_string(),
+                ReflectedUniformField {
+                    offset: *field_offset,
+                    size: *field_size,
+                    kind: *field_kind,
+                },
+            );
+            total_size = total_size.max(field_offset.saturating_add(*field_size));
+        }
+        let reflected = ReflectedRasterLayout {
+            layout_fingerprint: 0,
+            material_entries: Vec::new(),
+            per_draw_entries: Vec::new(),
+            material_uniform: Some(ReflectedMaterialUniformBlock {
+                binding: 0,
+                total_size,
+                fields,
+            }),
+            material_group1_names: HashMap::new(),
+            vs_vertex_inputs: Vec::new(),
+            vs_max_vertex_location: None,
+            uses_scene_depth_snapshot: false,
+            uses_scene_color_snapshot: false,
+            requires_intersection_pass: false,
+        };
+        let ids = StemEmbeddedPropertyIds::build(
+            Arc::new(EmbeddedSharedKeywordIds::new(&registry)),
+            &registry,
+            &reflected,
+        );
+        (reflected, ids, registry)
+    }
+
     /// Packs an asset id as a host render-texture material property.
     fn packed_render_texture(asset_id: i32) -> i32 {
         use crate::assets::texture::HostTextureAssetKind;
@@ -123,6 +168,206 @@ mod text_uniform_packing_tests {
         let type_bits = 3u32;
         let pack_type_shift = 32u32.saturating_sub(type_bits);
         asset_id | ((HostTextureAssetKind::Texture2D as i32) << pack_type_shift)
+    }
+
+    #[test]
+    fn srgb_material_color_vec4_uniforms_linearize_rgb_only() {
+        let (reflected, ids, registry) = reflected_with_uniform_fields(&[
+            ("_Color", ReflectedUniformScalarKind::Vec4, 16, 0),
+            ("_Blend", ReflectedUniformScalarKind::Vec4, 16, 16),
+            ("_EdgeEmission", ReflectedUniformScalarKind::Vec4, 16, 32),
+        ]);
+        let mut store = MaterialPropertyStore::new();
+        let input = [0.5, 0.25, -0.5, 0.75];
+        store.set_material(
+            27,
+            registry.intern("_Color"),
+            MaterialPropertyValue::Float4(input),
+        );
+        store.set_material(
+            27,
+            registry.intern("_Blend"),
+            MaterialPropertyValue::Float4(input),
+        );
+        store.set_material(
+            27,
+            registry.intern("_EdgeEmission"),
+            MaterialPropertyValue::Float4(input),
+        );
+        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+        let pools = EmbeddedTexturePools {
+            texture: &texture,
+            texture3d: &texture3d,
+            cubemap: &cubemap,
+            render_texture: &render_texture,
+            video_texture: &video_texture,
+        };
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+        let value_spaces =
+            MaterialUniformValueSpaces::for_stem("pbsvoronoicrystal_default", &reflected);
+        let expected = srgb_vec4_rgb_to_linear(input);
+
+        let bytes = build_embedded_uniform_bytes_with_value_spaces(
+            &reflected,
+            &ids,
+            &value_spaces,
+            &store,
+            lookup(27),
+            &tex_ctx,
+        )
+        .expect("uniform bytes");
+
+        assert_eq!(read_f32x4(&bytes, 0), expected);
+        assert_eq!(read_f32x4(&bytes, 16), expected);
+        assert_eq!(read_f32x4(&bytes, 32), expected);
+    }
+
+    #[test]
+    fn color_named_texture_transform_vec4_uniforms_remain_raw() {
+        let (reflected, ids, registry) = reflected_with_uniform_fields(&[
+            ("_MainTex_ST", ReflectedUniformScalarKind::Vec4, 16, 0),
+            ("_ColorMap_ST", ReflectedUniformScalarKind::Vec4, 16, 16),
+            ("_ColorMask_ST", ReflectedUniformScalarKind::Vec4, 16, 32),
+            ("_TintTex_ST", ReflectedUniformScalarKind::Vec4, 16, 48),
+        ]);
+        let mut store = MaterialPropertyStore::new();
+        let input = [2.0, 3.0, 0.25, 0.75];
+        for field in [
+            "_MainTex_ST",
+            "_ColorMap_ST",
+            "_ColorMask_ST",
+            "_TintTex_ST",
+        ] {
+            store.set_material(
+                28,
+                registry.intern(field),
+                MaterialPropertyValue::Float4(input),
+            );
+        }
+        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+        let pools = EmbeddedTexturePools {
+            texture: &texture,
+            texture3d: &texture3d,
+            cubemap: &cubemap,
+            render_texture: &render_texture,
+            video_texture: &video_texture,
+        };
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+        let value_spaces =
+            MaterialUniformValueSpaces::for_stem("pbscolorsplat_default", &reflected);
+
+        let bytes = build_embedded_uniform_bytes_with_value_spaces(
+            &reflected,
+            &ids,
+            &value_spaces,
+            &store,
+            lookup(28),
+            &tex_ctx,
+        )
+        .expect("uniform bytes");
+
+        assert_eq!(read_f32x4(&bytes, 0), input);
+        assert_eq!(read_f32x4(&bytes, 16), input);
+        assert_eq!(read_f32x4(&bytes, 32), input);
+        assert_eq!(read_f32x4(&bytes, 48), input);
+    }
+
+    #[test]
+    fn srgb_material_color_arrays_linearize_only_when_metadata_marks_them() {
+        let (reflected, ids, registry) = reflected_with_uniform_fields(&[(
+            "_TintColors",
+            ReflectedUniformScalarKind::Unsupported,
+            32,
+            0,
+        )]);
+        let mut store = MaterialPropertyStore::new();
+        let input = vec![[0.5, 0.25, -0.5, 0.75], [0.04045, 1.25, 0.0, 0.5]];
+        store.set_material(
+            29,
+            registry.intern("_TintColors"),
+            MaterialPropertyValue::Float4Array(input.clone()),
+        );
+        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+        let pools = EmbeddedTexturePools {
+            texture: &texture,
+            texture3d: &texture3d,
+            cubemap: &cubemap,
+            render_texture: &render_texture,
+            video_texture: &video_texture,
+        };
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+        let value_spaces =
+            MaterialUniformValueSpaces::for_stem("pbsdistancelerp_default", &reflected);
+
+        let bytes = build_embedded_uniform_bytes_with_value_spaces(
+            &reflected,
+            &ids,
+            &value_spaces,
+            &store,
+            lookup(29),
+            &tex_ctx,
+        )
+        .expect("uniform bytes");
+
+        assert_eq!(read_f32x4(&bytes, 0), srgb_vec4_rgb_to_linear(input[0]));
+        assert_eq!(read_f32x4(&bytes, 16), srgb_vec4_rgb_to_linear(input[1]));
+    }
+
+    #[test]
+    fn linear_material_color_arrays_remain_raw() {
+        let (reflected, ids, registry) = reflected_with_uniform_fields(&[
+            ("_Color0", ReflectedUniformScalarKind::Unsupported, 16, 0),
+            ("_Color1", ReflectedUniformScalarKind::Unsupported, 16, 16),
+        ]);
+        let mut store = MaterialPropertyStore::new();
+        let color0 = [0.25, 0.5, 0.75, 1.0];
+        let color1 = [0.75, 0.5, 0.25, 1.0];
+        store.set_material(
+            30,
+            registry.intern("_Color0"),
+            MaterialPropertyValue::Float4Array(vec![color0]),
+        );
+        store.set_material(
+            30,
+            registry.intern("_Color1"),
+            MaterialPropertyValue::Float4Array(vec![color1]),
+        );
+        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+        let pools = EmbeddedTexturePools {
+            texture: &texture,
+            texture3d: &texture3d,
+            cubemap: &cubemap,
+            render_texture: &render_texture,
+            video_texture: &video_texture,
+        };
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+        let value_spaces =
+            MaterialUniformValueSpaces::for_stem("gradientskybox_default", &reflected);
+
+        let bytes = build_embedded_uniform_bytes_with_value_spaces(
+            &reflected,
+            &ids,
+            &value_spaces,
+            &store,
+            lookup(30),
+            &tex_ctx,
+        )
+        .expect("uniform bytes");
+
+        assert_eq!(read_f32x4(&bytes, 0), color0);
+        assert_eq!(read_f32x4(&bytes, 16), color1);
     }
 
     #[test]
@@ -1729,6 +1974,48 @@ mod storage_orientation_uniform_tests {
             8,
             registry.intern("_FontAtlas"),
             MaterialPropertyValue::Texture(42),
+        );
+        let tex_ctx = UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        };
+
+        let bytes =
+            build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(8), &tex_ctx).unwrap();
+        assert_eq!(read_f32_at(&bytes, 0), 0.0);
+    }
+
+    #[test]
+    fn font_atlas_lod_bias_field_resolves_font_atlas_binding() {
+        let texture_pool = TexturePool::default_pool();
+        let texture3d_pool = Texture3dPool::default_pool();
+        let cubemap_pool = CubemapPool::default_pool();
+        let render_texture_pool = RenderTexturePool::new();
+        let video_texture_pool = VideoTexturePool::new();
+        let pools = EmbeddedTexturePools {
+            texture: &texture_pool,
+            texture3d: &texture3d_pool,
+            cubemap: &cubemap_pool,
+            render_texture: &render_texture_pool,
+            video_texture: &video_texture_pool,
+        };
+        let (reflected, ids, registry) = reflected_with_texture_and_field(
+            "_FontAtlas",
+            wgpu::TextureViewDimension::D2,
+            "_FontAtlas_LodBias",
+            ReflectedUniformScalarKind::F32,
+            4,
+        );
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(
+            8,
+            registry.intern("_FontAtlas"),
+            MaterialPropertyValue::Texture(42),
+        );
+        store.set_material(
+            8,
+            registry.intern("_FontAtlas_LodBias"),
+            MaterialPropertyValue::Float(7.0),
         );
         let tex_ctx = UniformPackTextureContext {
             pools: &pools,

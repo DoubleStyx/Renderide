@@ -2,8 +2,9 @@
 //!
 //! Reads the AO term and packed edges produced by [`super::main_pass::GtaoMainPass`], runs
 //! the 3x3 edge-preserving kernel (`XeGTAO_Denoise` with `finalApply = false`), and writes
-//! a denoised AO term to a ping-pong target. Only registered when
-//! [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`. Intermediate iterations use
+//! a denoised AO term to a ping-pong target. Registered when
+//! [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`; a second instance is added for
+//! `denoise_passes >= 3`. Intermediate iterations use
 //! `denoise_blur_beta / 5.0` so two iterations approximate the quality of a single soft
 //! pass without over-smoothing silhouettes.
 
@@ -105,16 +106,8 @@ impl RasterPass for GtaoDenoisePass {
             .map_or(self.settings, |slot| slot.0);
         // XeGTAO splits the requested blur energy: intermediate uses `beta / 5`, final uses
         // `beta`. Two iterations at full beta would over-smooth.
-        let params = GtaoParamsGpu {
-            radius_world: live.radius_meters.max(0.0),
-            max_pixel_radius: live.max_pixel_radius.max(1.0),
-            intensity: live.intensity.max(0.0),
-            step_count: live.step_count.max(1),
-            falloff_range: live.falloff_range.clamp(0.05, 1.0),
-            albedo_multibounce: live.albedo_multibounce.clamp(0.0, 0.99),
-            denoise_blur_beta: live.denoise_blur_beta.max(0.0) / 5.0,
-            final_apply: 0,
-        };
+        let params =
+            GtaoParamsGpu::from_settings(live, live.denoise_blur_beta.max(0.0) / 5.0, false);
         let params_buffer = self.pipelines.params.get(ctx.device);
         ctx.upload_batch
             .write_buffer(params_buffer, 0, bytemuck::bytes_of(&params));

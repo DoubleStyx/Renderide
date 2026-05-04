@@ -14,6 +14,22 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Monotonic token assigned to one batch pushed onto the renderer driver thread.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SubmitToken(u64);
+
+impl SubmitToken {
+    /// Builds a token from its raw monotonic value.
+    pub(crate) fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// Raw monotonic token value.
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 /// Monotonic producer/consumer counters for driver-thread submit observability.
 ///
 /// `submits_pushed` is incremented by [`Self::note_pushed`] on the main thread when a
@@ -37,11 +53,9 @@ impl Default for SubmitCounters {
 }
 
 impl SubmitCounters {
-    /// Records that a batch has been pushed to the driver ring. Single-producer call site
-    /// (the main thread inside [`super::DriverThread::submit`]); the value returned is the
-    /// new push count and can be ignored by callers that only need the side effect.
-    pub(super) fn note_pushed(&self) -> u64 {
-        self.submits_pushed.fetch_add(1, Ordering::AcqRel) + 1
+    /// Records that a batch has been pushed to the driver ring and returns its submit token.
+    pub(super) fn note_pushed(&self) -> SubmitToken {
+        SubmitToken::new(self.submits_pushed.fetch_add(1, Ordering::AcqRel) + 1)
     }
 
     /// Records that a batch's `Queue::submit` has returned. Driver-thread call site only.
@@ -54,6 +68,11 @@ impl SubmitCounters {
         let pushed = self.submits_pushed.load(Ordering::Acquire);
         let done = self.submits_done.load(Ordering::Acquire);
         (pushed, done)
+    }
+
+    /// Returns `true` once the driver thread has returned from `Queue::submit` for `token`.
+    pub(super) fn is_submit_done(&self, token: SubmitToken) -> bool {
+        self.submits_done.load(Ordering::Acquire) >= token.raw()
     }
 }
 
@@ -70,11 +89,25 @@ mod tests {
     #[test]
     fn note_pushed_returns_monotonic_token_and_advances_snapshot() {
         let c = SubmitCounters::default();
-        assert_eq!(c.note_pushed(), 1);
-        assert_eq!(c.note_pushed(), 2);
+        assert_eq!(c.note_pushed().raw(), 1);
+        assert_eq!(c.note_pushed().raw(), 2);
         assert_eq!(c.snapshot(), (2, 0));
         c.note_submit_done();
         assert_eq!(c.snapshot(), (2, 1));
+    }
+
+    #[test]
+    fn submit_done_tracks_tokens_individually() {
+        let c = SubmitCounters::default();
+        let first = c.note_pushed();
+        let second = c.note_pushed();
+        assert!(!c.is_submit_done(first));
+        assert!(!c.is_submit_done(second));
+        c.note_submit_done();
+        assert!(c.is_submit_done(first));
+        assert!(!c.is_submit_done(second));
+        c.note_submit_done();
+        assert!(c.is_submit_done(second));
     }
 
     #[test]

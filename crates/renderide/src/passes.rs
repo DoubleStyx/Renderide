@@ -24,11 +24,14 @@ pub use post_processing::{
 };
 pub use scene_color_compose::{SceneColorComposeGraphResources, SceneColorComposePass};
 pub use swapchain_clear::SwapchainClearPass;
-pub(crate) use world_mesh_forward::{PipelineVariantKey, PrefetchedWorldMeshDrawsSlot};
+pub(crate) use world_mesh_forward::{
+    GTAO_VIEW_NORMAL_FORMAT, PipelineVariantKey, PrefetchedWorldMeshDrawsSlot,
+};
 pub use world_mesh_forward::{
     WorldMeshColorSnapshotPass, WorldMeshDepthSnapshotPass,
     WorldMeshForwardColorResolveGraphResources, WorldMeshForwardColorResolvePass,
     WorldMeshForwardDepthResolvePass, WorldMeshForwardGraphResources,
-    WorldMeshForwardIntersectPass, WorldMeshForwardOpaquePass, WorldMeshForwardPreparePass,
+    WorldMeshForwardIntersectPass, WorldMeshForwardNormalGraphResources,
+    WorldMeshForwardNormalPass, WorldMeshForwardOpaquePass, WorldMeshForwardPreparePass,
     WorldMeshForwardTransparentPass,
 };

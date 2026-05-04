@@ -13,7 +13,9 @@ pub mod shader_routes;
 pub mod timing;
 pub mod xr_health;
 
-pub use gpu_allocator::{GpuAllocatorFragment, GpuAllocatorHudRefresh, GpuAllocatorReportHud};
+pub use gpu_allocator::{
+    GpuAllocatorFragment, GpuAllocatorHud, GpuAllocatorHudRefresh, GpuAllocatorReportHud,
+};
 pub use host::HostCpuMemoryHud;
 pub use ipc_health::{FrameDiagnosticsIpcQueues, IpcHealthFragment};
 pub use mesh_draw::MeshDrawFragment;
@@ -27,7 +29,7 @@ use crate::gpu::GpuContext;
 /// Inputs for [`FrameDiagnosticsSnapshot::capture`], grouped like
 /// [`crate::diagnostics::RendererInfoSnapshotCapture`].
 pub struct FrameDiagnosticsSnapshotCapture<'a> {
-    /// GPU timing and allocator byte totals for this tick.
+    /// GPU timing state for this tick.
     pub gpu: &'a GpuContext,
     /// Wall-clock redraw interval (ms).
     pub wall_frame_time_ms: f64,
@@ -91,7 +93,7 @@ impl FrameDiagnosticsSnapshot {
         Self {
             timing: FrameTimingFragment::capture(gpu, wall_frame_time_ms),
             host,
-            gpu_allocator: GpuAllocatorFragment::capture(gpu, allocator),
+            gpu_allocator: GpuAllocatorFragment::capture(allocator),
             mesh_draw: MeshDrawFragment::capture(backend, last_submit_render_task_count),
             shader_routes: ShaderRoutesFragment::capture(backend),
             ipc_health: IpcHealthFragment::capture(

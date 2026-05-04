@@ -1,5 +1,6 @@
 //! Reflection-probe renderable state mirrored from host updates.
 
+use crate::color_space::srgb_vec4_rgb_to_linear;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{
     REFLECTION_PROBE_CHANGE_RENDER_TASK_HOST_ROW_BYTES, REFLECTION_PROBE_STATE_HOST_ROW_BYTES,
@@ -20,7 +21,7 @@ pub struct ReflectionProbeEntry {
     pub renderable_index: i32,
     /// Dense transform index that owns the probe component.
     pub transform_id: i32,
-    /// Latest probe state row sent by the host.
+    /// Latest probe state row sent by the host; `background_color` is normalized to linear RGB on apply.
     pub state: ReflectionProbeState,
 }
 
@@ -123,8 +124,10 @@ pub(crate) fn apply_reflection_probe_renderables_update_extracted(
         let Some(entry) = space.reflection_probes.get_mut(idx) else {
             continue;
         };
+        let mut state = *state;
+        state.background_color = srgb_vec4_rgb_to_linear(state.background_color);
         entry.renderable_index = state.renderable_index;
-        entry.state = *state;
+        entry.state = state;
     }
     space.pending_reflection_probe_render_changes.extend(
         extracted
@@ -204,6 +207,32 @@ mod tests {
         assert!(!reflection_probe_skybox_only(0b010));
         assert!(!reflection_probe_hdr(0b001));
         assert!(!reflection_probe_use_box_projection(0b011));
+    }
+
+    #[test]
+    fn reflection_probe_update_linearizes_background_color() {
+        let mut space = RenderSpaceState::default();
+        space.reflection_probes.push(ReflectionProbeEntry {
+            renderable_index: 0,
+            transform_id: 1,
+            state: ReflectionProbeState::default(),
+        });
+        let update = ExtractedReflectionProbeRenderablesUpdate {
+            states: vec![ReflectionProbeState {
+                renderable_index: 0,
+                background_color: glam::Vec4::new(0.5, 0.04045, 1.25, 0.33),
+                ..ReflectionProbeState::default()
+            }],
+            ..ExtractedReflectionProbeRenderablesUpdate::default()
+        };
+
+        apply_reflection_probe_renderables_update_extracted(&mut space, &update);
+
+        let color = space.reflection_probes[0].state.background_color;
+        assert!((color.x - 0.214_041_14).abs() < 0.000_001);
+        assert!((color.y - (0.04045 / 12.92)).abs() < 0.000_001);
+        assert_eq!(color.z, 1.25);
+        assert_eq!(color.w, 0.33);
     }
 
     #[test]

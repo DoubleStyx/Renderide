@@ -24,9 +24,10 @@ pub use input::{DebugHudInput, sanitize_input_state_for_imgui_host};
 pub use per_view::{PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot};
 pub use snapshots::{
     BackendDiagSnapshot, FrameDiagnosticsIpcQueues, FrameDiagnosticsSnapshot,
-    FrameDiagnosticsSnapshotCapture, FrameTimingHudSnapshot, GpuAllocatorHudRefresh,
-    GpuAllocatorReportHud, RenderSpaceTransformsSnapshot, RendererInfoSnapshot,
-    RendererInfoSnapshotCapture, SceneTransformsSnapshot, ShaderRouteSnapshot, TextureDebugRow,
-    TextureDebugSnapshot, TransformRow, WorldTransformSample, XrRecoverableFailureCounts,
+    FrameDiagnosticsSnapshotCapture, FrameTimingHudSnapshot, GpuAllocatorHud,
+    GpuAllocatorHudRefresh, GpuAllocatorReportHud, RenderSpaceTransformsSnapshot,
+    RendererInfoSnapshot, RendererInfoSnapshotCapture, SceneTransformsSnapshot,
+    ShaderRouteSnapshot, TextureDebugRow, TextureDebugSnapshot, TransformRow, WorldTransformSample,
+    XrRecoverableFailureCounts,
 };
 pub use watchdog::{Heartbeat, Watchdog, WatchdogPause};

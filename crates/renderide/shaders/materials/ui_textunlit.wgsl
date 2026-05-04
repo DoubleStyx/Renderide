@@ -23,6 +23,7 @@
 #import renderide::per_draw as pd
 #import renderide::mesh::vertex as mv
 #import renderide::text_sdf as tsdf
+#import renderide::texture_sampling as ts
 #import renderide::scene_depth_sample as sds
 #import renderide::ui::rect_clip as uirc
 #import renderide::uv_utils as uvu
@@ -43,8 +44,7 @@ struct UiTextUnlitMaterial {
     _RectClip: f32,
     /// `1` when overlay depth compositing is enabled (Unity `OVERLAY`).
     _OVERLAY: f32,
-    /// Padding for 16-byte uniform alignment.
-    _pad: f32,
+    _FontAtlas_LodBias: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: UiTextUnlitMaterial;
@@ -103,7 +103,12 @@ fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    let atlas_color = textureSample(_FontAtlas, _FontAtlas_sampler, vout.uv);
+    let atlas_color = ts::sample_tex_2d(
+        _FontAtlas,
+        _FontAtlas_sampler,
+        vout.uv,
+        mat._FontAtlas_LodBias,
+    );
     let style = tsdf::distance_field_style(
         mat._TintColor,
         mat._OutlineColor,

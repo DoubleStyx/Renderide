@@ -35,6 +35,7 @@ use std::thread;
 
 pub use error::{DriverError, DriverErrorKind};
 pub use submit_batch::{SubmitBatch, SubmitWait};
+pub use submit_counters::SubmitToken;
 pub use xr_finalize::{
     XrFinalizeErrorSlot, XrFinalizeKind, XrFinalizeReceiver, XrFinalizeSignal, XrFinalizeWork,
     XrProjectionFinalize, wait_for_finalize,
@@ -107,23 +108,23 @@ impl DriverThread {
         })
     }
 
-    /// Enqueues a batch for the driver thread to submit and present. Blocks while the
-    /// ring is full -- that block is the frame-pacing backpressure.
+    /// Enqueues a batch for the driver thread to submit and present, returning its submit token.
+    /// Blocks while the ring is full -- that block is the frame-pacing backpressure.
     ///
     /// When the batch carries a [`wgpu::SurfaceTexture`], the submitted counter is bumped
     /// so [`Self::wait_for_previous_present`] can gate the next acquire precisely on the
     /// previous present completing (rather than flushing the whole ring).
     ///
-    /// If the driver thread has exited (clean shutdown or panic), the batch is dropped
-    /// rather than blocking the caller forever; the existing
+    /// Returns [`None`] if the driver thread has exited (clean shutdown or panic), in which case
+    /// the batch is dropped rather than blocking the caller forever; the existing
     /// [`Self::take_pending_error`] path surfaces the underlying failure to the main
     /// render loop on the next tick.
-    pub fn submit(&self, batch: SubmitBatch) {
+    pub fn submit(&self, batch: SubmitBatch) -> Option<SubmitToken> {
         let has_surface = batch.surface_texture.is_some();
         if has_surface {
             self.surface_counters.note_submitted();
         }
-        self.submit_counters.note_pushed();
+        let token = self.submit_counters.note_pushed();
         if let Err(_dropped) = self.ring.push(DriverMessage::Submit(Box::new(batch))) {
             if has_surface {
                 // Roll back the submitted counter so `wait_for_previous_present` does not
@@ -134,6 +135,7 @@ impl DriverThread {
             // show a phantom in-flight batch.
             self.submit_counters.note_submit_done();
             logger::warn!("driver thread exited; dropping submit batch");
+            return None;
         }
         // Tracy plot of how full the driver ring is right after the push so saturation
         // (depth equal to RING_CAPACITY = the main thread blocked) and steady-state pipelining
@@ -142,6 +144,7 @@ impl DriverThread {
         // `tracy_client` dependency, matching every other plot call in this crate.
         #[cfg(feature = "tracy")]
         tracy_client::plot!("driver/ring_depth", self.ring.depth() as f64);
+        Some(token)
     }
 
     /// Blocks until every previously-submitted surface-carrying batch has reached
@@ -169,6 +172,11 @@ impl DriverThread {
         self.submit_counters.snapshot()
     }
 
+    /// Returns `true` once the driver has returned from `Queue::submit` for `token`.
+    pub fn is_submit_done(&self, token: SubmitToken) -> bool {
+        self.submit_counters.is_submit_done(token)
+    }
+
     /// Blocks the caller until the driver thread has processed every batch currently in
     /// the ring.
     ///
@@ -190,11 +198,7 @@ impl DriverThread {
             xr_finalize: None,
             frame_seq: 0,
         };
-        if self
-            .ring
-            .push(DriverMessage::Submit(Box::new(batch)))
-            .is_err()
-        {
+        if self.submit(batch).is_none() {
             // Driver thread is gone; no signal will ever arrive, so skip the wait.
             return;
         }

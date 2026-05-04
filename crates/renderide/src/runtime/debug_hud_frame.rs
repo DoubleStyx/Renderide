@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::diagnostics::DebugHudEncodeError;
+use crate::diagnostics::GpuAllocatorHud;
 use crate::diagnostics::GpuAllocatorReportHud;
 use crate::gpu::GpuContext;
 
@@ -23,6 +24,10 @@ impl RendererRuntime {
         }
         self.allocator_report_last_refresh = Some(now);
         if let Some(rep) = gpu.device().generate_allocator_report() {
+            self.allocator_report_totals = GpuAllocatorHud {
+                allocated_bytes: Some(rep.total_allocated_bytes),
+                reserved_bytes: Some(rep.total_reserved_bytes),
+            };
             let mut order: Vec<usize> = (0..rep.allocations.len()).collect();
             order.sort_by_key(|&i| std::cmp::Reverse(rep.allocations[i].size));
             self.allocator_report_hud = Some(GpuAllocatorReportHud {
@@ -69,6 +74,7 @@ impl RendererRuntime {
                     xr_locate_views_failures: self.xr_locate_views_failures,
                 },
                 allocator: crate::diagnostics::GpuAllocatorHudRefresh {
+                    gpu_allocator_totals: self.allocator_report_totals,
                     gpu_allocator_report: self.allocator_report_hud.clone(),
                     gpu_allocator_report_next_refresh_in_secs: next_refresh_in_secs,
                 },
@@ -157,6 +163,7 @@ impl RendererRuntime {
         } else {
             self.backend.clear_debug_hud_stats_snapshots();
             self.allocator_report_hud = None;
+            self.allocator_report_totals = GpuAllocatorHud::default();
             self.allocator_report_last_refresh = None;
         }
 

@@ -10,11 +10,14 @@ use crate::embedded_shaders;
 use crate::materials::host_data::PropertyIdRegistry;
 use crate::materials::{ReflectedRasterLayout, reflect_raster_material_wgsl};
 
+use super::uniform_pack::MaterialUniformValueSpaces;
+
 /// Cached reflection and layout for one composed shader stem.
 pub(crate) struct StemMaterialLayout {
     pub(crate) bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) reflected: ReflectedRasterLayout,
     pub(crate) ids: Arc<StemEmbeddedPropertyIds>,
+    pub(crate) uniform_value_spaces: MaterialUniformValueSpaces,
 }
 
 /// Pre-interned property ids used by [`super::uniform_pack::inferred_keyword_float_f32`] to
@@ -284,11 +287,13 @@ pub(crate) fn build_stem_material_layout(
         property_registry,
         &reflected,
     ));
+    let uniform_value_spaces = MaterialUniformValueSpaces::for_stem(stem, &reflected);
 
     Ok(Arc::new(StemMaterialLayout {
         bind_group_layout,
         reflected,
         ids,
+        uniform_value_spaces,
     }))
 }
 

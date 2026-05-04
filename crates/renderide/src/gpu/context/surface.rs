@@ -22,6 +22,7 @@ impl GpuContext {
         }
         self.config.present_mode = resolved;
         if let Some(surface) = self.surface.as_ref() {
+            self.wait_for_previous_present();
             surface.configure(&self.device, &self.config);
         }
         logger::info!(
@@ -47,6 +48,7 @@ impl GpuContext {
         let previous = self.config.desired_maximum_frame_latency;
         self.config.desired_maximum_frame_latency = max_frame_latency;
         if let Some(surface) = self.surface.as_ref() {
+            self.wait_for_previous_present();
             surface.configure(&self.device, &self.config);
         }
         logger::info!(
@@ -73,6 +75,7 @@ impl GpuContext {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         if let Some(surface) = self.surface.as_ref() {
+            self.wait_for_previous_present();
             surface.configure(&self.device, &self.config);
         }
         self.depth_attachment = None;
@@ -123,6 +126,7 @@ impl GpuContext {
         let Some(surface) = self.surface.as_ref() else {
             return Err(wgpu::CurrentSurfaceTexture::Lost);
         };
+        self.wait_for_previous_present();
         match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Ok(t),

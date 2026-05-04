@@ -3,8 +3,6 @@
 
 use std::sync::Arc;
 
-use crate::gpu::GpuContext;
-
 /// Optional wgpu allocator totals when the backend exposes a report.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GpuAllocatorHud {
@@ -30,20 +28,24 @@ pub struct GpuAllocatorReportHud {
 /// Throttled full GPU allocator report and refresh timer for the **GPU memory** HUD tab.
 #[derive(Clone, Debug, Default)]
 pub struct GpuAllocatorHudRefresh {
+    /// Allocator byte totals from the most recent throttled report.
+    pub gpu_allocator_totals: GpuAllocatorHud,
     /// Live allocator report when supported (`None` before first refresh).
     pub gpu_allocator_report: Option<GpuAllocatorReportHud>,
     /// Seconds until the runtime replaces [`Self::gpu_allocator_report`] on the next capture.
     pub gpu_allocator_report_next_refresh_in_secs: f32,
 }
 
-/// GPU allocator fragment: per-tick totals plus the throttled full report.
+/// GPU allocator fragment: cached totals plus the throttled full report.
 ///
-/// Stats-tab totals ([`Self::totals`]) refresh every capture; the full report
-/// ([`Self::report`]) follows the runtime's throttled refresh interval driven by
+/// Stats-tab totals ([`Self::totals`]) come from the same throttled report as the full
+/// allocation table. This avoids asking wgpu for an allocator report on every HUD capture while
+/// the main debug HUD is visible. The full report ([`Self::report`]) follows the runtime's
+/// throttled refresh interval driven by
 /// [`Self::report_next_refresh_in_secs`].
 #[derive(Clone, Debug, Default)]
 pub struct GpuAllocatorFragment {
-    /// Per-tick allocated/reserved totals (refreshed every capture).
+    /// Allocated/reserved totals from the most recent throttled allocator report.
     pub totals: GpuAllocatorHud,
     /// Throttled full allocator report for the **GPU memory** tab (`None` if unsupported or
     /// before first refresh).
@@ -53,14 +55,10 @@ pub struct GpuAllocatorFragment {
 }
 
 impl GpuAllocatorFragment {
-    /// Builds the fragment from current device totals plus the runtime's throttled refresh state.
-    pub fn capture(gpu: &GpuContext, refresh: GpuAllocatorHudRefresh) -> Self {
-        let (allocated_bytes, reserved_bytes) = gpu.gpu_allocator_bytes();
+    /// Builds the fragment from the runtime's throttled allocator refresh state.
+    pub fn capture(refresh: GpuAllocatorHudRefresh) -> Self {
         Self {
-            totals: GpuAllocatorHud {
-                allocated_bytes,
-                reserved_bytes,
-            },
+            totals: refresh.gpu_allocator_totals,
             report: refresh.gpu_allocator_report,
             report_next_refresh_in_secs: refresh.gpu_allocator_report_next_refresh_in_secs,
         }
@@ -69,7 +67,7 @@ impl GpuAllocatorFragment {
 
 #[cfg(test)]
 mod tests {
-    use super::{GpuAllocatorFragment, GpuAllocatorHud};
+    use super::{GpuAllocatorFragment, GpuAllocatorHud, GpuAllocatorHudRefresh};
 
     #[test]
     fn fragment_default_has_zero_refresh_countdown_and_no_report() {
@@ -93,5 +91,21 @@ mod tests {
         assert_eq!(f.totals.allocated_bytes, Some(123));
         assert_eq!(f.totals.reserved_bytes, Some(456));
         assert_eq!(f.report_next_refresh_in_secs, 1.5);
+    }
+
+    #[test]
+    fn capture_uses_cached_refresh_totals_without_device_report() {
+        let f = GpuAllocatorFragment::capture(GpuAllocatorHudRefresh {
+            gpu_allocator_totals: GpuAllocatorHud {
+                allocated_bytes: Some(1024),
+                reserved_bytes: Some(2048),
+            },
+            gpu_allocator_report: None,
+            gpu_allocator_report_next_refresh_in_secs: 0.75,
+        });
+        assert_eq!(f.totals.allocated_bytes, Some(1024));
+        assert_eq!(f.totals.reserved_bytes, Some(2048));
+        assert!(f.report.is_none());
+        assert_eq!(f.report_next_refresh_in_secs, 0.75);
     }
 }

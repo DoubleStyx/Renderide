@@ -12,9 +12,12 @@ use super::texture_resolve::{
     ResolvedTextureBinding, resolved_texture_binding_for_host, texture_property_ids_for_binding,
 };
 
+mod color_space;
 mod helpers;
 mod tables;
 
+pub(crate) use crate::color_space::srgb_f32x4_rgb_to_linear as srgb_vec4_rgb_to_linear;
+pub(crate) use color_space::MaterialUniformValueSpaces;
 use helpers::{default_f32_for_field, default_vec4_for_field, shader_writer_unescaped_field_name};
 use tables::inferred_keyword_float_f32;
 
@@ -64,6 +67,21 @@ fn write_f32x4_array_at(buf: &mut [u8], field: &ReflectedUniformField, values: &
     }
 }
 
+fn write_srgb_f32x4_array_at(buf: &mut [u8], field: &ReflectedUniformField, values: &[[f32; 4]]) {
+    let off = field.offset as usize;
+    let max_values = (field.size as usize) / 16;
+    for (i, value) in values.iter().take(max_values).enumerate() {
+        let elem_off = off + i * 16;
+        if elem_off + 16 > buf.len() {
+            return;
+        }
+        for (component, v) in srgb_vec4_rgb_to_linear(*value).iter().enumerate() {
+            let component_off = elem_off + component * 4;
+            buf[component_off..component_off + 4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+}
+
 /// Auxiliary inputs required to populate texture-sourced uniform fields.
 ///
 /// Threads resident texture pools into the packer so f32 fields following texture suffix
@@ -85,9 +103,29 @@ pub(crate) struct UniformPackTextureContext<'a> {
 /// fields (`_NORMALMAP`, `_ALPHATEST_ON`, ...) the host cannot write because FrooxEngine routes
 /// them through the `ShaderKeywords.Variant` bitmask the renderer never receives, or the
 /// scalar/vector default tables / a zero for the unobservable pre-first-batch window.
+#[cfg(test)]
 pub(crate) fn build_embedded_uniform_bytes(
     reflected: &ReflectedRasterLayout,
     ids: &StemEmbeddedPropertyIds,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> Option<Vec<u8>> {
+    build_embedded_uniform_bytes_with_value_spaces(
+        reflected,
+        ids,
+        &MaterialUniformValueSpaces::default(),
+        store,
+        lookup,
+        tex_ctx,
+    )
+}
+
+/// Builds CPU bytes for the reflected material uniform block using explicit per-field value-space metadata.
+pub(crate) fn build_embedded_uniform_bytes_with_value_spaces(
+    reflected: &ReflectedRasterLayout,
+    ids: &StemEmbeddedPropertyIds,
+    value_spaces: &MaterialUniformValueSpaces,
     store: &MaterialPropertyStore,
     lookup: MaterialPropertyLookupIds,
     tex_ctx: &UniformPackTextureContext<'_>,
@@ -100,12 +138,15 @@ pub(crate) fn build_embedded_uniform_bytes(
         let pid = *ids.uniform_field_ids.get(field_name)?;
         match field.kind {
             ReflectedUniformScalarKind::Vec4 => {
-                let v =
+                let mut v =
                     if let Some(MaterialPropertyValue::Float4(c)) = store.get_merged(lookup, pid) {
                         *c
                     } else {
                         default_vec4_for_field(shader_writer_unescaped_field_name(field_name))
                     };
+                if value_spaces.is_srgb_vec4(field_name) {
+                    v = srgb_vec4_rgb_to_linear(v);
+                }
                 write_f32x4_at(&mut buf, field, &v);
             }
             ReflectedUniformScalarKind::F32 => {
@@ -144,7 +185,11 @@ pub(crate) fn build_embedded_uniform_bytes(
                 if let Some(MaterialPropertyValue::Float4Array(values)) =
                     store.get_merged(lookup, pid)
                 {
-                    write_f32x4_array_at(&mut buf, field, values);
+                    if value_spaces.is_srgb_vec4_array(field_name) {
+                        write_srgb_f32x4_array_at(&mut buf, field, values);
+                    } else {
+                        write_f32x4_array_at(&mut buf, field, values);
+                    }
                 }
             }
         }

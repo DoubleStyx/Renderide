@@ -97,10 +97,38 @@ fn normal_sampling_guarded_by_keyword(src: &str) -> bool {
     call[..call_end].contains("uvu::kw_enabled(mat._NORMALMAP)")
 }
 
+fn count_font_atlas_lod_bias_samples(src: &str) -> usize {
+    src.match_indices("ts::sample_tex_2d(")
+        .filter(|(sample_pos, _)| {
+            let call = &src[*sample_pos..];
+            let call_end = call.find(");").unwrap_or(call.len());
+            call[..call_end].contains("_FontAtlas")
+        })
+        .count()
+}
+
 #[test]
 fn text_shaders_use_one_font_atlas_sample_for_coverage() -> io::Result<()> {
     for file_name in ["ui_textunlit.wgsl", "textunlit.wgsl", "textunit.wgsl"] {
         let src = material_source(file_name)?;
+        assert!(
+            src.contains("#import renderide::texture_sampling as ts"),
+            "{file_name} must import biased texture sampling for _FontAtlas"
+        );
+        assert!(
+            declares_f32_field(&src, "_FontAtlas_LodBias"),
+            "{file_name} must expose _FontAtlas_LodBias in the material uniform"
+        );
+        assert_eq!(
+            count_font_atlas_lod_bias_samples(&src),
+            1,
+            "{file_name} must sample _FontAtlas exactly once through the LOD-bias helper"
+        );
+        assert!(
+            !src.contains("textureSample(_FontAtlas")
+                && !src.contains("textureSampleLevel(_FontAtlas"),
+            "{file_name} must not directly sample _FontAtlas outside the shared helper"
+        );
         assert!(
             !src.contains("texture_rgba_base_mip(_FontAtlas"),
             "{file_name} must not force base-mip atlas sampling for text coverage"
@@ -116,6 +144,30 @@ fn text_shaders_use_one_font_atlas_sample_for_coverage() -> io::Result<()> {
         !module_src.contains("atlas_clip"),
         "text_sdf.wgsl must not expose a second atlas sample for coverage"
     );
+    Ok(())
+}
+
+#[test]
+fn text_shaders_route_font_extra_data_through_normal_stream() -> io::Result<()> {
+    for file_name in ["ui_textunlit.wgsl", "textunlit.wgsl", "textunit.wgsl"] {
+        let src = material_source(file_name)?;
+        assert!(
+            src.contains("@location(1) extra_n: vec4<f32>"),
+            "{file_name} must read glyph extra data from the normal stream"
+        );
+        assert!(
+            src.contains("@location(2) uv: vec2<f32>"),
+            "{file_name} must keep atlas UVs on vertex location 2"
+        );
+        assert!(
+            src.contains("@location(3) color: vec4<f32>"),
+            "{file_name} must keep vertex tint on vertex location 3"
+        );
+        assert!(
+            src.contains("out.extra_data = extra_n;"),
+            "{file_name} must pass glyph extra data through to the fragment shader"
+        );
+    }
     Ok(())
 }
 
@@ -241,6 +293,64 @@ fn pbs_dualsided_shaders_use_visible_side_tbn_for_backfaces() -> io::Result<()> 
         "PBS DualSided shaders must orient normals through the shared visible-side TBN:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
+}
+
+/// Standard PBS parallax must project the view vector into the material's tangent frame before
+/// offsetting UVs so height maps behave consistently as lighting and camera state become active.
+#[test]
+fn pbs_standard_parallax_uses_tangent_space_view_dir() -> io::Result<()> {
+    let module_src = fs::read_to_string(manifest_dir().join("shaders/modules/pbs/parallax.wgsl"))?;
+    for required in [
+        "#define_import_path renderide::pbs::parallax",
+        "rg::view_dir_for_world_pos(world_pos, view_layer)",
+        "pnorm::orthonormal_tbn(world_n, world_t)",
+        "dot(world_view, tbn[0])",
+        "dot(world_view, tbn[1])",
+        "dot(world_view, tbn[2])",
+        "UNITY_PARALLAX_VIEW_Z_BIAS: f32 = 0.42",
+        "height_sample * height_scale - height_scale * 0.5",
+    ] {
+        assert!(
+            module_src.contains(required),
+            "parallax module should contain `{required}`"
+        );
+    }
+
+    for file_name in ["pbsmetallic.wgsl", "pbsspecular.wgsl"] {
+        let src = material_source(file_name)?;
+        assert!(
+            src.contains("#import renderide::pbs::parallax as ppar"),
+            "{file_name} should use the shared parallax helper"
+        );
+        assert!(
+            src.contains(
+                "ts::sample_tex_2d(_ParallaxMap, _ParallaxMap_sampler, uv, mat._ParallaxMap_LodBias).g"
+            ),
+            "{file_name} should sample Unity Standard parallax height from the green channel"
+        );
+        assert!(
+            src.contains(
+                "ppar::unity_parallax_offset(h, mat._Parallax, world_pos, world_n, world_t, view_layer)"
+            ),
+            "{file_name} should offset parallax UVs from tangent-space view direction"
+        );
+        assert!(
+            src.contains("uv_with_parallax(uv_base, world_pos, world_n, world_t, view_layer)"),
+            "{file_name} should pass the surface frame into parallax sampling"
+        );
+
+        for forbidden in [
+            "view_dir.xy / max(abs(view_dir.z), 0.25)",
+            "rg::view_dir_for_world_pos(world_pos, view_layer)",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{file_name} should not contain the old world-space parallax expression `{forbidden}`"
+            );
+        }
+    }
+
     Ok(())
 }
 

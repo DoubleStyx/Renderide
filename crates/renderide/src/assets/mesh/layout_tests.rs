@@ -3,7 +3,8 @@
 use glam::Mat4;
 
 use super::layout::{
-    BLENDSHAPE_SPARSE_ENTRY_SIZE, BlendshapeFrameRange, BlendshapeFrameSpan,
+    BLENDSHAPE_PACKED_VECTOR_DELTA_RANGE, BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_SIZE,
+    BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE, BlendshapeFrameRange, BlendshapeFrameSpan,
     blendshape_deform_is_active, color_float4_stream_bytes, compute_index_count,
     compute_mesh_buffer_layout, compute_vertex_stride, extract_blendshape_offsets,
     extract_float3_position_normal_as_vec4_streams, index_bytes_per_element,
@@ -14,6 +15,49 @@ use crate::shared::{
     BlendshapeBufferDescriptor, BlendshapeDataFlags, IndexBufferFormat, SubmeshBufferDescriptor,
     SubmeshTopology, VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType,
 };
+
+fn position_frame_range(
+    shape_index: u32,
+    frame_index: i32,
+    frame_weight: f32,
+) -> BlendshapeFrameRange {
+    position_frame_range_at(shape_index, frame_index, frame_weight, 0)
+}
+
+fn position_frame_range_at(
+    shape_index: u32,
+    frame_index: i32,
+    frame_weight: f32,
+    first_word: u32,
+) -> BlendshapeFrameRange {
+    BlendshapeFrameRange {
+        shape_index,
+        frame_index,
+        frame_weight,
+        position_first_word: first_word,
+        position_count: 1,
+        normal_first_word: first_word + 4,
+        normal_count: 0,
+        tangent_first_word: first_word + 4,
+        tangent_count: 0,
+    }
+}
+
+fn unpack_snorm16_delta(bits: u32) -> f32 {
+    let raw = bits & 0xffff;
+    let signed = if raw & 0x8000 != 0 {
+        raw as i32 - 65536
+    } else {
+        raw as i32
+    };
+    (signed as f32 / 32767.0).max(-1.0) * BLENDSHAPE_PACKED_VECTOR_DELTA_RANGE
+}
+
+fn packed_delta_x(bytes: &[u8], first_word: u32) -> f32 {
+    let offset = first_word as usize * size_of::<u32>() + 4;
+    let xy = u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("xy"));
+    unpack_snorm16_delta(xy)
+}
 
 #[test]
 fn layout_no_bones_no_blend_matches_stride() {
@@ -375,16 +419,21 @@ fn extract_blendshape_sparse_keeps_nonzero_position_rows_only() {
             frame_count: 1,
         }
     );
-    assert_eq!(pack.frame_ranges[0].first_entry, 0);
-    assert_eq!(pack.frame_ranges[0].entry_count, 1);
-    assert_eq!(pack.sparse_deltas.len(), BLENDSHAPE_SPARSE_ENTRY_SIZE);
+    assert_eq!(pack.frame_ranges[0].position_first_word, 0);
+    assert_eq!(pack.frame_ranges[0].position_count, 1);
+    assert_eq!(pack.frame_ranges[0].normal_count, 0);
+    assert_eq!(pack.frame_ranges[0].tangent_count, 0);
+    assert_eq!(
+        pack.sparse_deltas.len(),
+        BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE
+    );
     assert!(pack.has_position_deltas);
     assert!(!pack.has_normal_deltas);
     assert!(!pack.has_tangent_deltas);
 }
 
 #[test]
-fn extract_blendshape_sparse_merges_normal_and_tangent_channels() {
+fn extract_blendshape_sparse_keeps_normal_and_tangent_channels_separate() {
     let vertex_count = 1i32;
     let attrs = [VertexAttributeDescriptor {
         attribute: VertexAttributeType::Position,
@@ -409,16 +458,121 @@ fn extract_blendshape_sparse_merges_normal_and_tangent_channels() {
 
     let pack = extract_blendshape_offsets(&full, &layout, &blend, vertex_count).expect("pack");
 
-    assert_eq!(pack.frame_ranges[0].entry_count, 1);
+    assert_eq!(pack.frame_ranges[0].position_count, 0);
+    assert_eq!(pack.frame_ranges[0].normal_first_word, 0);
+    assert_eq!(pack.frame_ranges[0].normal_count, 1);
+    assert_eq!(pack.frame_ranges[0].tangent_first_word, 3);
+    assert_eq!(pack.frame_ranges[0].tangent_count, 1);
+    assert_eq!(
+        pack.sparse_deltas.len(),
+        BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_SIZE * 2
+    );
     assert!(!pack.has_position_deltas);
     assert!(pack.has_normal_deltas);
     assert!(pack.has_tangent_deltas);
-    let pos_x = f32::from_le_bytes(pack.sparse_deltas[4..8].try_into().expect("pos x"));
-    let normal_x = f32::from_le_bytes(pack.sparse_deltas[16..20].try_into().expect("normal x"));
-    let tangent_x = f32::from_le_bytes(pack.sparse_deltas[28..32].try_into().expect("tangent x"));
-    assert_eq!(pos_x, 0.0);
-    assert_eq!(normal_x, 0.25);
-    assert_eq!(tangent_x, 0.5);
+    assert!((packed_delta_x(&pack.sparse_deltas, 0) - 0.25).abs() < 0.0001);
+    assert!((packed_delta_x(&pack.sparse_deltas, 3) - 0.5).abs() < 0.0001);
+}
+
+#[test]
+fn extract_blendshape_sparse_does_not_union_channels_on_different_vertices() {
+    let vertex_count = 2i32;
+    let attrs = [VertexAttributeDescriptor {
+        attribute: VertexAttributeType::Position,
+        format: VertexAttributeFormat::Float32,
+        dimensions: 3,
+    }];
+    let stride = compute_vertex_stride(&attrs);
+    let blend = [BlendshapeBufferDescriptor {
+        blendshape_index: 0,
+        frame_index: 0,
+        frame_weight: 1.0,
+        data_flags: BlendshapeDataFlags(
+            BlendshapeDataFlags::POSITIONS | BlendshapeDataFlags::NORMALS,
+        ),
+    }];
+    let layout =
+        compute_mesh_buffer_layout(stride, vertex_count, 0, 2, 0, 0, Some(&blend)).expect("layout");
+    let mut full = vec![0u8; layout.total_buffer_length];
+    let off = layout.blendshape_data_start;
+    full[off..off + 4].copy_from_slice(&1.0f32.to_le_bytes());
+    let normals_off = off + vertex_count as usize * 12;
+    full[normals_off + 12..normals_off + 16].copy_from_slice(&0.5f32.to_le_bytes());
+
+    let pack = extract_blendshape_offsets(&full, &layout, &blend, vertex_count).expect("pack");
+
+    assert_eq!(pack.frame_ranges[0].position_count, 1);
+    assert_eq!(pack.frame_ranges[0].normal_count, 1);
+    assert_eq!(pack.frame_ranges[0].tangent_count, 0);
+    assert_eq!(
+        pack.sparse_deltas.len(),
+        BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE + BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_SIZE
+    );
+}
+
+#[test]
+fn extract_blendshape_sparse_all_channels_on_one_vertex_is_no_larger_than_old_union_row() {
+    let vertex_count = 1i32;
+    let attrs = [VertexAttributeDescriptor {
+        attribute: VertexAttributeType::Position,
+        format: VertexAttributeFormat::Float32,
+        dimensions: 3,
+    }];
+    let stride = compute_vertex_stride(&attrs);
+    let blend = [BlendshapeBufferDescriptor {
+        blendshape_index: 0,
+        frame_index: 0,
+        frame_weight: 1.0,
+        data_flags: BlendshapeDataFlags(
+            BlendshapeDataFlags::POSITIONS
+                | BlendshapeDataFlags::NORMALS
+                | BlendshapeDataFlags::TANGETS,
+        ),
+    }];
+    let layout =
+        compute_mesh_buffer_layout(stride, vertex_count, 0, 2, 0, 0, Some(&blend)).expect("layout");
+    let mut full = vec![0u8; layout.total_buffer_length];
+    let off = layout.blendshape_data_start;
+    full[off..off + 4].copy_from_slice(&1.0f32.to_le_bytes());
+    full[off + 12..off + 16].copy_from_slice(&0.25f32.to_le_bytes());
+    full[off + 24..off + 28].copy_from_slice(&0.5f32.to_le_bytes());
+
+    let pack = extract_blendshape_offsets(&full, &layout, &blend, vertex_count).expect("pack");
+
+    assert_eq!(pack.frame_ranges[0].position_count, 1);
+    assert_eq!(pack.frame_ranges[0].normal_count, 1);
+    assert_eq!(pack.frame_ranges[0].tangent_count, 1);
+    assert_eq!(
+        pack.sparse_deltas.len(),
+        BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE + BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_SIZE * 2
+    );
+}
+
+#[test]
+fn extract_blendshape_packed_deltas_clamp_to_supported_range() {
+    let vertex_count = 1i32;
+    let attrs = [VertexAttributeDescriptor {
+        attribute: VertexAttributeType::Position,
+        format: VertexAttributeFormat::Float32,
+        dimensions: 3,
+    }];
+    let stride = compute_vertex_stride(&attrs);
+    let blend = [BlendshapeBufferDescriptor {
+        blendshape_index: 0,
+        frame_index: 0,
+        frame_weight: 1.0,
+        data_flags: BlendshapeDataFlags(BlendshapeDataFlags::NORMALS),
+    }];
+    let layout =
+        compute_mesh_buffer_layout(stride, vertex_count, 0, 2, 0, 0, Some(&blend)).expect("layout");
+    let mut full = vec![0u8; layout.total_buffer_length];
+    let off = layout.blendshape_data_start;
+    full[off..off + 4].copy_from_slice(&3.0f32.to_le_bytes());
+
+    let pack = extract_blendshape_offsets(&full, &layout, &blend, vertex_count).expect("pack");
+
+    assert!(pack.clamped_packed_deltas);
+    assert!((packed_delta_x(&pack.sparse_deltas, 0) - 2.0).abs() < 0.0001);
 }
 
 #[test]
@@ -475,12 +629,13 @@ fn extract_blendshape_frame_ranges_follow_blendshape_indices_not_descriptor_orde
         ]
     );
     assert_eq!(pack.frame_ranges[0].shape_index, 0);
-    assert_eq!(pack.frame_ranges[0].first_entry, 0);
+    assert_eq!(pack.frame_ranges[0].position_first_word, 0);
     assert_eq!(pack.frame_ranges[1].shape_index, 2);
-    assert_eq!(pack.frame_ranges[1].first_entry, 1);
+    assert_eq!(pack.frame_ranges[1].position_first_word, 4);
     let first_dx = f32::from_le_bytes(pack.sparse_deltas[4..8].try_into().expect("dx"));
+    let second_offset = BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE + 4;
     let second_dx = f32::from_le_bytes(
-        pack.sparse_deltas[BLENDSHAPE_SPARSE_ENTRY_SIZE + 4..BLENDSHAPE_SPARSE_ENTRY_SIZE + 8]
+        pack.sparse_deltas[second_offset..second_offset + 4]
             .try_into()
             .expect("dx"),
     );
@@ -525,9 +680,9 @@ fn extract_blendshape_two_frames_are_not_collapsed() {
 
     assert_eq!(pack.shape_frame_spans[0].frame_count, 2);
     assert_eq!(pack.frame_ranges[0].frame_weight, 0.0);
-    assert_eq!(pack.frame_ranges[0].first_entry, 0);
+    assert_eq!(pack.frame_ranges[0].position_first_word, 0);
     assert_eq!(pack.frame_ranges[1].frame_weight, 100.0);
-    assert_eq!(pack.frame_ranges[1].first_entry, 1);
+    assert_eq!(pack.frame_ranges[1].position_first_word, 4);
 }
 
 #[test]
@@ -564,20 +719,14 @@ fn extract_blendshape_duplicate_same_frame_is_skipped_deterministically() {
     let pack = extract_blendshape_offsets(&full, &layout, &blend, vertex_count).expect("pack");
 
     assert_eq!(pack.shape_frame_spans[0].frame_count, 1);
-    assert_eq!(pack.frame_ranges[0].entry_count, 1);
+    assert_eq!(pack.frame_ranges[0].position_count, 1);
     let dx = f32::from_le_bytes(pack.sparse_deltas[4..8].try_into().expect("dx"));
     assert_eq!(dx, 1.0);
 }
 
 #[test]
 fn blendshape_coefficients_single_frame_scale_by_frame_weight() {
-    let one_weight_frame = [BlendshapeFrameRange {
-        shape_index: 0,
-        frame_index: 0,
-        frame_weight: 1.0,
-        first_entry: 0,
-        entry_count: 1,
-    }];
+    let one_weight_frame = [position_frame_range(0, 0, 1.0)];
     let spans = [BlendshapeFrameSpan {
         first_frame: 0,
         frame_count: 1,
@@ -587,13 +736,7 @@ fn blendshape_coefficients_single_frame_scale_by_frame_weight() {
 
     assert_eq!(one_weight[0].expect("coefficient").effective_weight, 0.25);
 
-    let hundred_weight_frame = [BlendshapeFrameRange {
-        shape_index: 0,
-        frame_index: 0,
-        frame_weight: 100.0,
-        first_entry: 0,
-        entry_count: 1,
-    }];
+    let hundred_weight_frame = [position_frame_range(0, 0, 100.0)];
 
     let selected = select_blendshape_frame_coefficients(0, 25.0, &spans, &hundred_weight_frame);
 
@@ -605,20 +748,8 @@ fn blendshape_coefficients_single_frame_scale_by_frame_weight() {
 #[test]
 fn blendshape_coefficients_two_frames_interpolate_and_extrapolate() {
     let frames = [
-        BlendshapeFrameRange {
-            shape_index: 0,
-            frame_index: 0,
-            frame_weight: 0.0,
-            first_entry: 0,
-            entry_count: 1,
-        },
-        BlendshapeFrameRange {
-            shape_index: 0,
-            frame_index: 1,
-            frame_weight: 100.0,
-            first_entry: 1,
-            entry_count: 1,
-        },
+        position_frame_range_at(0, 0, 0.0, 0),
+        position_frame_range_at(0, 1, 100.0, 4),
     ];
     let spans = [BlendshapeFrameSpan {
         first_frame: 0,
@@ -640,13 +771,7 @@ fn blendshape_coefficients_two_frames_interpolate_and_extrapolate() {
 
 #[test]
 fn blendshape_active_predicate_uses_frame_coefficients() {
-    let frames = [BlendshapeFrameRange {
-        shape_index: 0,
-        frame_index: 0,
-        frame_weight: 100.0,
-        first_entry: 0,
-        entry_count: 1,
-    }];
+    let frames = [position_frame_range(0, 0, 100.0)];
     let spans = [BlendshapeFrameSpan {
         first_frame: 0,
         frame_count: 1,

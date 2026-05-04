@@ -3,6 +3,7 @@
 mod events;
 mod frame;
 mod present;
+mod shutdown;
 mod target;
 mod xr;
 
@@ -10,11 +11,12 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use logger::LogLevel;
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
 use crate::frontend::input::{CursorOutputTracking, WindowInputAccumulator};
 use crate::runtime::RendererRuntime;
 
+use self::shutdown::GracefulShutdown;
 use self::target::RenderTarget;
 use self::xr::XrInputCache;
 use super::bootstrap::{
@@ -34,6 +36,7 @@ pub(crate) struct AppDriver {
     target: Option<RenderTarget>,
     exit: ExitState,
     log_flush: LogFlushCadence,
+    shutdown: GracefulShutdown,
     input: WindowInputAccumulator,
     cursor_output_tracking: CursorOutputTracking,
     frame_clock: FrameClock,
@@ -58,6 +61,7 @@ impl AppDriver {
             target: None,
             exit: ExitState::default(),
             log_flush: LogFlushCadence::default(),
+            shutdown: GracefulShutdown::default(),
             input: WindowInputAccumulator::default(),
             cursor_output_tracking: CursorOutputTracking::default(),
             frame_clock: FrameClock::default(),
@@ -73,8 +77,19 @@ impl AppDriver {
     }
 
     fn request_exit(&mut self, reason: ExitReason, event_loop: &ActiveEventLoop) {
-        self.exit.request(reason);
-        event_loop.exit();
+        let first_request = !self.exit.is_requested();
+        let request = self.exit.request(reason);
+        if !request.reason().uses_graceful_shutdown() {
+            event_loop.exit();
+            return;
+        }
+        if first_request && self.shutdown.begin(Instant::now()) {
+            logger::info!("Graceful renderer shutdown started: {:?}", request.reason());
+        }
+        if self.openxr_frame_open() {
+            return;
+        }
+        self.poll_graceful_shutdown(event_loop);
     }
 
     fn check_external_shutdown(&mut self, event_loop: &ActiveEventLoop) -> bool {
@@ -89,6 +104,43 @@ impl AppDriver {
         }
         self.request_exit(ExitReason::ExternalShutdown, event_loop);
         true
+    }
+
+    fn poll_graceful_shutdown(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        if !self.shutdown.is_started() {
+            return false;
+        }
+
+        let now = Instant::now();
+        let complete = self
+            .target
+            .as_mut()
+            .is_none_or(|target| target.poll_graceful_shutdown(&mut self.shutdown));
+
+        if complete {
+            logger::info!("Graceful renderer shutdown completed");
+            event_loop.exit();
+            return true;
+        }
+
+        if self.shutdown.timed_out(now) {
+            logger::warn!(
+                "Graceful renderer shutdown timed out after {}ms; exiting",
+                self.shutdown.timeout().as_millis()
+            );
+            event_loop.exit();
+            return true;
+        }
+
+        event_loop.set_control_flow(ControlFlow::WaitUntil(now + self.shutdown.poll_interval()));
+        false
+    }
+
+    fn openxr_frame_open(&self) -> bool {
+        self.target
+            .as_ref()
+            .and_then(RenderTarget::xr_session)
+            .is_some_and(|session| session.handles.xr_session.frame_open())
     }
 
     fn sync_log_level_from_settings(&self) {

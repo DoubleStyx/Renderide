@@ -1,10 +1,16 @@
 //! Submission, frame timing, and GPU profiling state owned by [`super::GpuContext`].
 
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
-use super::driver_thread::DriverThread;
+use super::driver_thread::{DriverThread, SubmitToken};
 use super::frame_bracket::FrameBracket;
 use super::frame_cpu_gpu_timing::FrameCpuGpuTimingHandle;
+
+pub(super) struct PendingGpuProfilerEnd {
+    pub(super) submit_token: SubmitToken,
+    pub(super) profiler: crate::profiling::GpuProfilerHandle,
+}
 
 /// Long-lived state used when handing recorded command buffers to the driver thread.
 pub(super) struct GpuSubmissionState {
@@ -17,6 +23,10 @@ pub(super) struct GpuSubmissionState {
     pub(super) frame_bracket: FrameBracket,
     /// GPU timestamp profiler for the Tracy timeline.
     pub(super) gpu_profiler: Option<crate::profiling::GpuProfilerHandle>,
+    /// GPU profiler frame waiting for the driver thread to submit this tick's command buffers.
+    pub(super) pending_gpu_profiler_end: Option<PendingGpuProfilerEnd>,
+    /// Last submit token recorded for the current app-driver frame tick. Zero means none.
+    pub(super) last_frame_submit_token: AtomicU64,
     /// Flattened per-pass GPU timings from the most recently drained profiling frame.
     pub(super) latest_gpu_pass_timings: Arc<Mutex<Vec<crate::profiling::GpuPassEntry>>>,
 }
@@ -35,6 +45,8 @@ impl GpuSubmissionState {
             frame_timing,
             frame_bracket,
             gpu_profiler,
+            pending_gpu_profiler_end: None,
+            last_frame_submit_token: AtomicU64::new(0),
             latest_gpu_pass_timings,
         }
     }

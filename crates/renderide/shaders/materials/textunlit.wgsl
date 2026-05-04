@@ -5,6 +5,7 @@
 #import renderide::per_draw as pd
 #import renderide::mesh::vertex as mv
 #import renderide::text_sdf as tsdf
+#import renderide::texture_sampling as ts
 #import renderide::uv_utils as uvu
 
 struct TextUnlitMaterial {
@@ -16,9 +17,9 @@ struct TextUnlitMaterial {
     _FaceSoftness: f32,
     _OutlineSize: f32,
     _TextMode: f32,
+    _FontAtlas_LodBias: f32,
     _pad0: f32,
     _pad1: f32,
-    _pad2: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: TextUnlitMaterial;
@@ -62,7 +63,12 @@ fn vs_main(
 @fragment
 fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     let vtx_color = vout.vtx_color;
-    let atlas_color = textureSample(_FontAtlas, _FontAtlas_sampler, vout.uv);
+    let atlas_color = ts::sample_tex_2d(
+        _FontAtlas,
+        _FontAtlas_sampler,
+        vout.uv,
+        mat._FontAtlas_LodBias,
+    );
     let style = tsdf::distance_field_style(
         mat._TintColor,
         mat._OutlineColor,

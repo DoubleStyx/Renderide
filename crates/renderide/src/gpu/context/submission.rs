@@ -6,6 +6,7 @@
 //! track is attached here so the driver thread can update CPU/GPU intervals asynchronously.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::GpuContext;
 
@@ -186,7 +187,11 @@ impl GpuContext {
             xr_finalize,
             frame_seq,
         };
-        self.submission.driver_thread.submit(batch);
+        if let Some(token) = self.submission.driver_thread.submit(batch) {
+            self.submission
+                .last_frame_submit_token
+                .store(token.raw(), Ordering::Release);
+        }
     }
 
     /// Drains any driver-thread error captured since the last check, leaving the slot empty.
