@@ -98,7 +98,7 @@ impl Default for AutoExposureSettings {
             speed_brighten: 3.0,
             speed_darken: 3.0,
             exponential_transition_distance: 1.5,
-            compensation_ev: -2.0,
+            compensation_ev: -3.0,
         }
     }
 }
