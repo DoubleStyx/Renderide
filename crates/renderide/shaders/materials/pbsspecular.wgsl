@@ -5,9 +5,9 @@
 //! material properties. ForwardAdd, lightmaps, and reflection probes are not implemented yet.
 
 
-#import renderide::globals as rg
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::normal as pnorm
+#import renderide::pbs::parallax as ppar
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::surface as psurf
 #import renderide::alpha_clip_sample as acs
@@ -110,14 +110,12 @@ fn smoothness_from_albedo_alpha() -> bool {
     return mat._SmoothnessTextureChannel > 0.5 || kw(mat._SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A);
 }
 
-fn uv_with_parallax(uv: vec2<f32>, world_pos: vec3<f32>, view_layer: u32) -> vec2<f32> {
+fn uv_with_parallax(uv: vec2<f32>, world_pos: vec3<f32>, world_n: vec3<f32>, world_t: vec4<f32>, view_layer: u32) -> vec2<f32> {
     if (!kw(mat._PARALLAXMAP)) {
         return uv;
     }
-    let h = ts::sample_tex_2d(_ParallaxMap, _ParallaxMap_sampler, uv, mat._ParallaxMap_LodBias).r;
-    let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
-    let view_xy = view_dir.xy / max(abs(view_dir.z), 0.25);
-    return uv + (h - 0.5) * mat._Parallax * view_xy;
+    let h = ts::sample_tex_2d(_ParallaxMap, _ParallaxMap_sampler, uv, mat._ParallaxMap_LodBias).g;
+    return uv + ppar::unity_parallax_offset(h, mat._Parallax, world_pos, world_n, world_t, view_layer);
 }
 
 fn sample_normal_world(
@@ -155,7 +153,7 @@ fn detail_uv(uv0: vec2<f32>, uv1: vec2<f32>) -> vec2<f32> {
 
 fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n: vec3<f32>, world_t: vec4<f32>, view_layer: u32) -> SurfaceData {
     let uv_base = uvu::apply_st(uv0, mat._MainTex_ST);
-    let uv_main = uv_with_parallax(uv_base, world_pos, view_layer);
+    let uv_main = uv_with_parallax(uv_base, world_pos, world_n, world_t, view_layer);
     let uv_detail = detail_uv(uv0, uv1);
 
     let albedo_sample = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
