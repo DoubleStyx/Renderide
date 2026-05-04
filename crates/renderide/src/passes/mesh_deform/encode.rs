@@ -33,8 +33,7 @@ pub(super) struct MeshDeformEncodeGpu<'a> {
     pub pre: &'a crate::mesh_deform::MeshPreprocessPipelines,
     /// Scratch buffers and slab cursors backing.
     pub scratch: &'a mut crate::mesh_deform::MeshDeformScratch,
-    /// Deferred [`wgpu::Queue::write_buffer`] sink shared with the rest of the frame; used for
-    /// the per-mesh blendshape weight writes to keep them off the inline encode path.
+    /// Deferred [`wgpu::Queue::write_buffer`] sink shared with the rest of the frame.
     pub upload_batch: &'a crate::render_graph::frame_upload_batch::FrameUploadBatch,
     /// GPU profiler for per-dispatch pass-level timestamp queries; [`None`] when disabled.
     pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
@@ -60,8 +59,6 @@ pub(super) struct MeshDeformRecordInputs<'a, 'b> {
     pub blend_weights: &'a [f32],
     /// Running offset into the bone matrix slab.
     pub bone_cursor: &'b mut u64,
-    /// Running offset into the blend weight staging slab.
-    pub blend_weight_cursor: &'b mut u64,
     /// Running offset into the blendshape scatter-param staging slab.
     pub blend_param_cursor: &'b mut u64,
     /// Running offset into the skin-dispatch uniform slab (256 B steps per dispatch).
@@ -106,7 +103,6 @@ pub(super) fn record_mesh_deform(
             &mut gpu,
             inputs.mesh,
             inputs.blend_weights,
-            inputs.blend_weight_cursor,
             inputs.blend_param_cursor,
             BlendshapeCacheCtx {
                 cache_entry: inputs.skin_cache_entry,

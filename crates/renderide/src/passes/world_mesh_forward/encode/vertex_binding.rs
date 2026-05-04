@@ -181,7 +181,8 @@ fn bind_primary_vertex_streams(
     normals_bind: &wgpu::Buffer,
     last_mesh: &mut LastMeshBindState,
 ) -> bool {
-    if item.world_space_deformed || item.blendshape_deformed {
+    if item.world_space_deformed || (item.blendshape_deformed && mesh.blendshape_has_tangent_deltas)
+    {
         bind_deformed_primary_streams(rpass, item, gpu, normals_bind, last_mesh)
     } else {
         bind_static_primary_streams(rpass, mesh, normals_bind, last_mesh)

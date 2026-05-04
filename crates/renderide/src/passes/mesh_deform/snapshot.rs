@@ -99,7 +99,8 @@ pub(super) fn entry_need_for_snapshot(
         needs_blend_normals: needs_blend
             && mesh.blendshape_has_normal_deltas
             && mesh.normals_buffer.is_some(),
-        needs_tangents: tangent_stream_ready && (needs_blend || needs_skin),
+        needs_tangents: tangent_stream_ready
+            && (needs_skin || (needs_blend && mesh.blendshape_has_tangent_deltas)),
         needs_blend_tangents: needs_blend
             && tangent_stream_ready
             && mesh.blendshape_has_tangent_deltas,

@@ -8,16 +8,23 @@ use crate::shared::{
 };
 use hashbrown::{HashMap, HashSet};
 
-/// Bytes per sparse blendshape entry on the GPU:
-/// `vertex_index: u32` + position, normal, and tangent `delta.xyz: f32` channels (36 bytes)
-/// -- matches [`blendshape_scatter_main`] struct layout.
-pub const BLENDSHAPE_SPARSE_ENTRY_SIZE: usize = 40;
+/// Bytes per sparse position entry on the GPU: `vertex_index: u32` + `delta.xyz: f32`.
+pub const BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE: usize = 16;
 
-/// Bytes per frame range row: `first_entry: u32`, `entry_count: u32`.
-pub const BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE: usize = 8;
+/// Bytes per sparse packed normal or tangent entry: `vertex_index: u32` + three snorm16 channels.
+pub const BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_SIZE: usize = 12;
+
+/// Number of `u32` words per sparse position entry in the GPU buffer.
+pub const BLENDSHAPE_POSITION_SPARSE_ENTRY_WORDS: u32 = 4;
+
+/// Number of `u32` words per sparse packed normal or tangent entry in the GPU buffer.
+pub const BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_WORDS: u32 = 3;
+
+/// Packed normal and tangent deltas are clamped to this absolute component range.
+pub const BLENDSHAPE_PACKED_VECTOR_DELTA_RANGE: f32 = 2.0;
 
 /// Deltas smaller than this magnitude (length squared) are dropped as non-influencing.
-pub const BLENDSHAPE_POSITION_EPSILON_SQ: f32 = 1e-14;
+pub const BLENDSHAPE_DELTA_EPSILON_SQ: f32 = 1e-14;
 
 fn vertex_format_size(format: VertexAttributeFormat) -> i32 {
     match format {
@@ -175,31 +182,6 @@ pub fn compute_mesh_buffer_layout(
     })
 }
 
-/// Identity matrix (column-major) for synthetic bind poses.
-pub fn identity_bind_pose() -> [[f32; 4]; 4] {
-    [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ]
-}
-
-/// Synthetic bone streams for blendshape-only meshes (`bone_count == 0`, blendshapes present).
-pub fn synthetic_bone_data_for_blendshape_only(
-    vertex_count: i32,
-) -> (Vec<[[f32; 4]; 4]>, Vec<u8>, Vec<u8>) {
-    let vc = vertex_count.max(0) as usize;
-    let bind_poses = vec![identity_bind_pose()];
-    let bone_counts = vec![1u8; vc];
-    let mut bone_weights = Vec::with_capacity(vc * 8);
-    for _ in 0..vc {
-        bone_weights.extend_from_slice(&1.0f32.to_le_bytes());
-        bone_weights.extend_from_slice(&0i32.to_le_bytes());
-    }
-    (bind_poses, bone_counts, bone_weights)
-}
-
 /// Extracts bind pose matrices from raw bytes (64 bytes per matrix).
 pub fn extract_bind_poses(raw: &[u8], bone_count: usize) -> Option<Vec<[[f32; 4]; 4]>> {
     const MATRIX_BYTES: usize = 64;
@@ -216,15 +198,10 @@ pub fn extract_bind_poses(raw: &[u8], bone_count: usize) -> Option<Vec<[[f32; 4]
     Some(poses)
 }
 
-/// GPU-ready sparse blendshape deltas and a small per-frame descriptor table (`first_entry`, `entry_count`).
-///
-/// Position, normal, and tangent channels share one sparse row per vertex so scatter dispatches can
-/// update every deformed attribute stream with the same frame coefficient.
+/// GPU-ready channel-sparse blendshape deltas and CPU scatter ranges.
 pub struct BlendshapeGpuPack {
-    /// Tightly packed rows of `vertex_index: u32` followed by position, normal, and tangent deltas.
+    /// Tightly packed `u32` words containing position, normal, and tangent sparse sections.
     pub sparse_deltas: Vec<u8>,
-    /// One `(first_entry, entry_count)` descriptor row per frame as little-endian `u32` pairs, padded to one empty row when all frames are empty.
-    pub shape_descriptor_bytes: Vec<u8>,
     /// Per-frame sparse ranges sorted by shape and frame weight.
     pub frame_ranges: Vec<BlendshapeFrameRange>,
     /// Per-shape spans into [`Self::frame_ranges`].
@@ -237,6 +214,8 @@ pub struct BlendshapeGpuPack {
     pub has_normal_deltas: bool,
     /// Whether any sparse row carries a nonzero tangent delta.
     pub has_tangent_deltas: bool,
+    /// Whether any packed normal or tangent component was clamped to the supported delta range.
+    pub clamped_packed_deltas: bool,
 }
 
 /// Sparse range and metadata for one Unity blendshape frame.
@@ -248,10 +227,18 @@ pub struct BlendshapeFrameRange {
     pub frame_index: i32,
     /// Unity frame weight from [`BlendshapeBufferDescriptor::frame_weight`].
     pub frame_weight: f32,
-    /// First sparse entry in [`BlendshapeGpuPack::sparse_deltas`].
-    pub first_entry: u32,
-    /// Number of sparse entries in this frame.
-    pub entry_count: u32,
+    /// First `u32` word of this frame's position entries in [`BlendshapeGpuPack::sparse_deltas`].
+    pub position_first_word: u32,
+    /// Number of sparse position entries in this frame.
+    pub position_count: u32,
+    /// First `u32` word of this frame's packed normal entries in [`BlendshapeGpuPack::sparse_deltas`].
+    pub normal_first_word: u32,
+    /// Number of sparse packed normal entries in this frame.
+    pub normal_count: u32,
+    /// First `u32` word of this frame's packed tangent entries in [`BlendshapeGpuPack::sparse_deltas`].
+    pub tangent_first_word: u32,
+    /// Number of sparse packed tangent entries in this frame.
+    pub tangent_count: u32,
 }
 
 /// Span of frame rows belonging to one logical blendshape.
@@ -338,13 +325,17 @@ fn maybe_frame_coefficient(
     effective_weight: f32,
     range: &BlendshapeFrameRange,
 ) -> Option<BlendshapeFrameCoefficient> {
-    if range.entry_count == 0 || !coefficient_is_active(effective_weight) {
+    if !frame_range_has_entries(range) || !coefficient_is_active(effective_weight) {
         return None;
     }
     Some(BlendshapeFrameCoefficient {
         frame_range_index,
         effective_weight,
     })
+}
+
+fn frame_range_has_entries(range: &BlendshapeFrameRange) -> bool {
+    range.position_count != 0 || range.normal_count != 0 || range.tangent_count != 0
 }
 
 /// Selects up to two sparse frame ranges for a Unity blendshape runtime weight.
@@ -478,7 +469,7 @@ fn blendshape_slot_count(blendshape_buffers: &[BlendshapeBufferDescriptor]) -> O
 fn vector_has_nonzero_delta(delta: [f32; 3]) -> bool {
     let [x, y, z] = delta;
     let mag_sq = z.mul_add(z, x.mul_add(x, y * y));
-    mag_sq > BLENDSHAPE_POSITION_EPSILON_SQ
+    mag_sq > BLENDSHAPE_DELTA_EPSILON_SQ
 }
 
 /// Reads one descriptor channel into sparse pending entries.
@@ -612,14 +603,12 @@ fn build_blendshape_gpu_pack(
 ) -> BlendshapeGpuPack {
     let mut sparse_deltas = Vec::new();
     let frame_count: usize = per_shape.iter().map(Vec::len).sum();
-    let descriptor_row_count = frame_count.max(1);
-    let mut shape_descriptor_bytes =
-        vec![0u8; descriptor_row_count * BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE];
     let mut frame_ranges = Vec::with_capacity(frame_count);
     let mut shape_frame_spans = vec![BlendshapeFrameSpan::default(); num_blendshapes];
     let mut has_position_deltas = false;
     let mut has_normal_deltas = false;
     let mut has_tangent_deltas = false;
+    let mut clamped_packed_deltas = false;
 
     for (s, frames) in per_shape.iter_mut().enumerate() {
         frames.sort_by(|a, b| {
@@ -631,11 +620,11 @@ fn build_blendshape_gpu_pack(
         append_sorted_pending_frames(
             frames,
             &mut sparse_deltas,
-            &mut shape_descriptor_bytes,
             &mut frame_ranges,
             &mut has_position_deltas,
             &mut has_normal_deltas,
             &mut has_tangent_deltas,
+            &mut clamped_packed_deltas,
         );
         shape_frame_spans[s] = BlendshapeFrameSpan {
             first_frame,
@@ -645,13 +634,13 @@ fn build_blendshape_gpu_pack(
 
     BlendshapeGpuPack {
         sparse_deltas,
-        shape_descriptor_bytes,
         frame_ranges,
         shape_frame_spans,
         num_blendshapes: num_blendshapes as i32,
         has_position_deltas,
         has_normal_deltas,
         has_tangent_deltas,
+        clamped_packed_deltas,
     }
 }
 
@@ -659,14 +648,13 @@ fn build_blendshape_gpu_pack(
 fn append_sorted_pending_frames(
     frames: &[PendingBlendshapeFrame],
     sparse_deltas: &mut Vec<u8>,
-    shape_descriptor_bytes: &mut [u8],
     frame_ranges: &mut Vec<BlendshapeFrameRange>,
     has_position_deltas: &mut bool,
     has_normal_deltas: &mut bool,
     has_tangent_deltas: &mut bool,
+    clamped_packed_deltas: &mut bool,
 ) {
     for frame in frames {
-        let first_entry = (sparse_deltas.len() / BLENDSHAPE_SPARSE_ENTRY_SIZE) as u32;
         let mut entries: Vec<(u32, PendingBlendshapeDelta)> = frame
             .entries
             .iter()
@@ -675,37 +663,95 @@ fn append_sorted_pending_frames(
             })
             .collect();
         entries.sort_by_key(|(vertex_index, _)| *vertex_index);
-        let count = entries.len() as u32;
-        for (vi, d) in entries {
-            *has_position_deltas |= vector_has_nonzero_delta(d.position);
-            *has_normal_deltas |= vector_has_nonzero_delta(d.normal);
-            *has_tangent_deltas |= vector_has_nonzero_delta(d.tangent);
-            sparse_deltas.extend_from_slice(&vi.to_le_bytes());
-            for channel_delta in [d.position, d.normal, d.tangent] {
-                sparse_deltas.extend_from_slice(&channel_delta[0].to_le_bytes());
-                sparse_deltas.extend_from_slice(&channel_delta[1].to_le_bytes());
-                sparse_deltas.extend_from_slice(&channel_delta[2].to_le_bytes());
-            }
+        let position_first_word = sparse_word_len(sparse_deltas);
+        let mut position_count = 0;
+        for (vi, delta) in entries.iter().filter_map(|(vi, delta)| {
+            vector_has_nonzero_delta(delta.position).then_some((*vi, *delta))
+        }) {
+            *has_position_deltas = true;
+            append_position_sparse_entry(sparse_deltas, vi, delta.position);
+            position_count += 1;
         }
-        let base = frame_ranges
-            .len()
-            .saturating_mul(BLENDSHAPE_SHAPE_DESCRIPTOR_SIZE);
-        shape_descriptor_bytes[base..base + 4].copy_from_slice(&first_entry.to_le_bytes());
-        shape_descriptor_bytes[base + 4..base + 8].copy_from_slice(&count.to_le_bytes());
+
+        let normal_first_word = sparse_word_len(sparse_deltas);
+        let mut normal_count = 0;
+        for (vi, delta) in entries.iter().filter_map(|(vi, delta)| {
+            vector_has_nonzero_delta(delta.normal).then_some((*vi, *delta))
+        }) {
+            *has_normal_deltas = true;
+            *clamped_packed_deltas |=
+                append_packed_vector_sparse_entry(sparse_deltas, vi, delta.normal);
+            normal_count += 1;
+        }
+
+        let tangent_first_word = sparse_word_len(sparse_deltas);
+        let mut tangent_count = 0;
+        for (vi, delta) in entries.iter().filter_map(|(vi, delta)| {
+            vector_has_nonzero_delta(delta.tangent).then_some((*vi, *delta))
+        }) {
+            *has_tangent_deltas = true;
+            *clamped_packed_deltas |=
+                append_packed_vector_sparse_entry(sparse_deltas, vi, delta.tangent);
+            tangent_count += 1;
+        }
+
         frame_ranges.push(BlendshapeFrameRange {
             shape_index: frame.shape_index,
             frame_index: frame.frame_index,
             frame_weight: frame.frame_weight,
-            first_entry,
-            entry_count: count,
+            position_first_word,
+            position_count,
+            normal_first_word,
+            normal_count,
+            tangent_first_word,
+            tangent_count,
         });
     }
 }
 
+fn sparse_word_len(sparse_deltas: &[u8]) -> u32 {
+    (sparse_deltas.len() / size_of::<u32>()) as u32
+}
+
+fn append_position_sparse_entry(sparse_deltas: &mut Vec<u8>, vertex_index: u32, delta: [f32; 3]) {
+    sparse_deltas.extend_from_slice(&vertex_index.to_le_bytes());
+    for component in delta {
+        sparse_deltas.extend_from_slice(&component.to_le_bytes());
+    }
+}
+
+fn append_packed_vector_sparse_entry(
+    sparse_deltas: &mut Vec<u8>,
+    vertex_index: u32,
+    delta: [f32; 3],
+) -> bool {
+    let (x, x_clamped) = pack_snorm16_delta_component(delta[0]);
+    let (y, y_clamped) = pack_snorm16_delta_component(delta[1]);
+    let (z, z_clamped) = pack_snorm16_delta_component(delta[2]);
+    let xy = u32::from(x) | (u32::from(y) << 16);
+    let z_word = u32::from(z);
+    sparse_deltas.extend_from_slice(&vertex_index.to_le_bytes());
+    sparse_deltas.extend_from_slice(&xy.to_le_bytes());
+    sparse_deltas.extend_from_slice(&z_word.to_le_bytes());
+    x_clamped || y_clamped || z_clamped
+}
+
+fn pack_snorm16_delta_component(component: f32) -> (u16, bool) {
+    let finite = component.is_finite();
+    let input = if finite { component } else { 0.0 };
+    let clamped = input.clamp(
+        -BLENDSHAPE_PACKED_VECTOR_DELTA_RANGE,
+        BLENDSHAPE_PACKED_VECTOR_DELTA_RANGE,
+    );
+    let scaled = (clamped / BLENDSHAPE_PACKED_VECTOR_DELTA_RANGE * 32767.0).round();
+    let signed = scaled.clamp(-32767.0, 32767.0) as i16;
+    (signed as u16, !finite || clamped != input)
+}
+
 /// Repacks host blendshape position, normal, and tangent deltas into frame-aware sparse GPU storage.
 ///
-/// Missing channels are encoded as zero deltas so one sparse row can update all deformed attribute
-/// streams selected by the compute path.
+/// Position, normal, and tangent deltas are encoded as separate sparse channel ranges so empty
+/// channels and vertices do not allocate GPU rows.
 pub fn extract_blendshape_offsets(
     raw: &[u8],
     layout: &MeshBufferLayout,
@@ -1037,7 +1083,7 @@ fn decode_vertex_color(
 /// `array<vec4<u32>>` joint indices and `array<vec4<f32>>` weights per vertex.
 ///
 /// Supports either **4 influences** (`32 * vertex_count` bytes as `(f32 weight, i32 index)` tuples)
-/// or **1 influence** (`8 * vertex_count` bytes) as produced by [`super::synthetic_bone_data_for_blendshape_only`].
+/// or **1 influence** (`8 * vertex_count` bytes).
 pub fn split_bone_weights_tail_for_gpu(
     bone_weights_tail: &[u8],
     vertex_count: usize,

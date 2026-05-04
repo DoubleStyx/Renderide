@@ -14,7 +14,7 @@ use super::super::gpu_mesh_hints::{
 };
 use super::super::layout::{
     MeshBufferLayout, blendshape_deform_is_active, compute_index_count, compute_vertex_stride,
-    extract_bind_poses, synthetic_bone_data_for_blendshape_only,
+    extract_bind_poses,
 };
 use super::super::upload_impl::{
     ExtendedVertexUploadSource, upload_default_extended_vertex_streams,
@@ -23,9 +23,8 @@ use super::super::upload_impl::{
 use super::{
     BoneBufferWriteHints, ExtendedVertexStreamSource, GpuMesh, MeshInPlaceWriteContext,
     blendshape_and_deform_buffers_match_for_in_place, compatible_for_in_place_real_skeleton,
-    compatible_for_in_place_synthetic_blendshape_skeleton, extended_vertex_stream_bytes,
-    extended_vertex_stream_source_from_raw, write_in_place_blendshape_buffer,
-    write_in_place_bone_buffers, write_in_place_index_buffer,
+    extended_vertex_stream_bytes, extended_vertex_stream_source_from_raw,
+    write_in_place_blendshape_buffer, write_in_place_bone_buffers, write_in_place_index_buffer,
     write_in_place_vertex_and_derived_streams,
 };
 
@@ -190,14 +189,13 @@ impl GpuMesh {
         let vertex_stride_us = vertex_stride as usize;
         let vertex_slice = &raw[..layout.vertex_size];
 
-        let needs_bone_buffers = data.bone_count > 0 || (use_blendshapes && data.vertex_count > 0);
+        let needs_bone_buffers = data.bone_count > 0;
 
         let no_gpu_bones = self.bone_counts_buffer.is_none()
             && self.bone_indices_buffer.is_none()
             && self.bone_weights_vec4_buffer.is_none()
             && self.bind_poses_buffer.is_none();
         let no_gpu_blend = self.blendshape_sparse_buffer.is_none()
-            && self.blendshape_shape_descriptor_buffer.is_none()
             && self.num_blendshapes == 0
             && self.blendshape_frame_ranges.is_empty()
             && self.blendshape_shape_frame_spans.is_empty();
@@ -259,16 +257,6 @@ impl GpuMesh {
             );
         }
 
-        if use_blendshapes && data.vertex_count > 0 {
-            return compatible_for_in_place_synthetic_blendshape_skeleton(
-                self,
-                data,
-                vertex_slice,
-                vc_usize,
-                vertex_stride_us,
-            );
-        }
-
         false
     }
 
@@ -326,7 +314,6 @@ impl GpuMesh {
                 &write_context,
                 BoneBufferWriteHints {
                     needs_bone_buffers: deform.needs_bone_buffers,
-                    synthetic_bones: deform.synthetic_bones,
                     full: flags.full,
                     write_bone_weights: flags.write_bone_weights,
                     write_bind_poses: flags.write_bind_poses,
@@ -338,7 +325,7 @@ impl GpuMesh {
             write_in_place_blendshape_buffer(self, queue, raw, layout, data, flags.write_blend)?;
         }
 
-        let skinning = updated_in_place_skinning_matrices(self, raw, data, layout, flags, deform);
+        let skinning = updated_in_place_skinning_matrices(self, raw, data, layout, flags);
 
         let extended_vertex_stream_source = {
             profiling::scope!("asset::mesh_write_in_place::update_extended_stream_source");
@@ -366,7 +353,6 @@ impl GpuMesh {
 #[derive(Clone, Copy)]
 struct InPlaceDeformStreams {
     needs_bone_buffers: bool,
-    synthetic_bones: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -381,11 +367,8 @@ struct InPlaceWriteFlags {
 
 fn classify_in_place_deform_streams(data: &MeshUploadData) -> InPlaceDeformStreams {
     profiling::scope!("asset::mesh_write_in_place::classify_deform_streams");
-    let use_blendshapes =
-        data.upload_hint.flags.blendshapes() && !data.blendshape_buffers.is_empty();
     InPlaceDeformStreams {
-        needs_bone_buffers: data.bone_count > 0 || (use_blendshapes && data.vertex_count > 0),
-        synthetic_bones: data.bone_count == 0 && use_blendshapes && data.vertex_count > 0,
+        needs_bone_buffers: data.bone_count > 0,
     }
 }
 
@@ -408,7 +391,6 @@ fn updated_in_place_skinning_matrices(
     data: &MeshUploadData,
     layout: &MeshBufferLayout,
     flags: InPlaceWriteFlags,
-    deform: InPlaceDeformStreams,
 ) -> Vec<Mat4> {
     profiling::scope!("asset::mesh_write_in_place::update_skinning_matrices");
     let mut skinning = mesh.skinning_bind_matrices.clone();
@@ -418,14 +400,6 @@ fn updated_in_place_skinning_matrices(
         if let Some(arr) = extract_bind_poses(bp_raw, data.bone_count as usize) {
             skinning = arr.iter().map(Mat4::from_cols_array_2d).collect();
         }
-    } else if deform.synthetic_bones
-        && (flags.full || flags.write_bone_weights || flags.write_bind_poses)
-    {
-        let (bind_poses_arr, _, _) = synthetic_bone_data_for_blendshape_only(data.vertex_count);
-        skinning = bind_poses_arr
-            .iter()
-            .map(Mat4::from_cols_array_2d)
-            .collect();
     }
     skinning
 }
@@ -455,7 +429,6 @@ fn rebuild_mesh_after_in_place_write(
         bone_weights_vec4_buffer: mesh.bone_weights_vec4_buffer.clone(),
         bind_poses_buffer: mesh.bind_poses_buffer.clone(),
         blendshape_sparse_buffer: mesh.blendshape_sparse_buffer.clone(),
-        blendshape_shape_descriptor_buffer: mesh.blendshape_shape_descriptor_buffer.clone(),
         blendshape_frame_ranges: mesh.blendshape_frame_ranges.clone(),
         blendshape_shape_frame_spans: mesh.blendshape_shape_frame_spans.clone(),
         num_blendshapes: mesh.num_blendshapes,

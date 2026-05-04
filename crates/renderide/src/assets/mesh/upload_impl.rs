@@ -19,7 +19,7 @@ use super::layout::{
     BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout, color_float4_stream_bytes,
     compute_index_count, compute_vertex_stride, extract_bind_poses, extract_blendshape_offsets,
     extract_float3_position_normal_as_vec4_streams, split_bone_weights_tail_for_gpu,
-    synthetic_bone_data_for_blendshape_only, uv0_float2_stream_bytes, vertex_float2_stream_bytes,
+    uv0_float2_stream_bytes, vertex_float2_stream_bytes,
 };
 use super::tangent_generation::tangent_stream_bytes;
 
@@ -521,58 +521,7 @@ fn upload_skeleton_bone_buffers(
     })
 }
 
-fn upload_synthetic_blend_bone_buffers(
-    device: &wgpu::Device,
-    data: &MeshUploadData,
-    vc_usize: usize,
-) -> BoneSkinUpload {
-    profiling::scope!("asset::mesh_upload_synthetic_bone_buffers");
-    let (bind_poses_arr, bone_counts, bone_weights) =
-        synthetic_bone_data_for_blendshape_only(data.vertex_count);
-    let bp_bytes: Vec<u8> = bind_poses_arr
-        .iter()
-        .flat_map(|m| bytemuck::bytes_of(m).iter().copied())
-        .collect();
-    let skinning: Vec<Mat4> = bind_poses_arr
-        .iter()
-        .map(Mat4::from_cols_array_2d)
-        .collect();
-    let (bi_buf, bw_buf) = split_bone_weights_tail_for_gpu(&bone_weights, vc_usize).map_or(
-        (None, None),
-        |(ib, wb)| {
-            let bi = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("mesh {} bone_indices synth", data.asset_id)),
-                contents: &ib,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-            let bwt = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("mesh {} bone_weights_vec4 synth", data.asset_id)),
-                contents: &wb,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-            (Some(Arc::new(bi)), Some(Arc::new(bwt)))
-        },
-    );
-    let bc_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(&format!("mesh {} bone_counts synth", data.asset_id)),
-        contents: &bone_counts,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-    let bp_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(&format!("mesh {} bind_poses synth", data.asset_id)),
-        contents: &bp_bytes,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-    BoneSkinUpload {
-        bone_counts_buffer: Some(Arc::new(bc_buf)),
-        bone_indices_buffer: bi_buf,
-        bone_weights_vec4_buffer: bw_buf,
-        bind_poses_buffer: Some(Arc::new(bp_buf)),
-        skinning_bind_matrices: skinning,
-    }
-}
-
-/// Bone indices/weights, bind poses, and skinning matrices for skeleton or blendshape-only paths.
+/// Bone indices/weights, bind poses, and skinning matrices for real skeleton paths.
 ///
 /// Returns [`None`] when the real-skeleton bind-pose slice is invalid ([`extract_bind_poses`]).
 pub(super) fn upload_bone_and_skin_buffers(
@@ -580,14 +529,11 @@ pub(super) fn upload_bone_and_skin_buffers(
     raw: &[u8],
     data: &MeshUploadData,
     layout: &MeshBufferLayout,
-    use_blendshapes: bool,
     vc_usize: usize,
 ) -> Option<BoneSkinUpload> {
     profiling::scope!("asset::mesh_upload_bone_skin_buffers");
     if data.bone_count > 0 {
         upload_skeleton_bone_buffers(device, raw, data, layout, vc_usize)
-    } else if use_blendshapes && data.vertex_count > 0 {
-        Some(upload_synthetic_blend_bone_buffers(device, data, vc_usize))
     } else {
         Some(BoneSkinUpload {
             bone_counts_buffer: None,
@@ -601,10 +547,8 @@ pub(super) fn upload_bone_and_skin_buffers(
 
 /// Sparse GPU buffers and CPU scatter ranges produced by `layout::extract_blendshape_offsets`.
 pub(super) struct BlendshapeBuffersUpload {
-    /// Storage buffer of packed sparse position deltas (padded when empty; see `BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES`).
+    /// Storage buffer of packed sparse channel deltas (padded when empty; see `BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES`).
     pub sparse_buffer: Option<Arc<wgpu::Buffer>>,
-    /// Storage buffer of per-frame `(first_entry, entry_count)` descriptor rows.
-    pub shape_descriptor_buffer: Option<Arc<wgpu::Buffer>>,
     /// Copy of frame rows for CPU-side scatter dispatch.
     pub frame_ranges: Vec<BlendshapeFrameRange>,
     /// Per-shape spans into [`Self::frame_ranges`].
@@ -643,7 +587,6 @@ pub(super) fn upload_blendshape_buffer(
     if !use_blendshapes {
         return BlendshapeBuffersUpload {
             sparse_buffer: None,
-            shape_descriptor_buffer: None,
             frame_ranges: Vec::new(),
             shape_frame_spans: Vec::new(),
             num_blendshapes: 0,
@@ -657,7 +600,6 @@ pub(super) fn upload_blendshape_buffer(
     else {
         return BlendshapeBuffersUpload {
             sparse_buffer: None,
-            shape_descriptor_buffer: None,
             frame_ranges: Vec::new(),
             shape_frame_spans: Vec::new(),
             num_blendshapes: 0,
@@ -674,12 +616,11 @@ pub(super) fn upload_blendshape_buffer(
         gpu_limits.wgpu.max_storage_buffer_binding_size,
     ) {
         logger::warn!(
-            "mesh {}: blendshapes dropped (sparse or descriptor bytes exceed buffer / binding limits)",
+            "mesh {}: blendshapes dropped (sparse bytes exceed buffer / binding limits)",
             data.asset_id
         );
         return BlendshapeBuffersUpload {
             sparse_buffer: None,
-            shape_descriptor_buffer: None,
             frame_ranges: Vec::new(),
             shape_frame_spans: Vec::new(),
             num_blendshapes: 0,
@@ -688,9 +629,14 @@ pub(super) fn upload_blendshape_buffer(
             has_tangent_deltas: false,
         };
     }
+    if pack.clamped_packed_deltas {
+        logger::warn!(
+            "mesh {}: blendshape normal/tangent deltas exceeded packed range and were clamped",
+            data.asset_id
+        );
+    }
 
     let sparse_bytes = padded_sparse_bytes(&pack.sparse_deltas);
-    let desc_bytes = pack.shape_descriptor_bytes.clone();
 
     let sparse_label = format!("mesh {} blendshape_sparse", data.asset_id);
     let sparse_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -699,16 +645,8 @@ pub(super) fn upload_blendshape_buffer(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
-    let desc_label = format!("mesh {} blendshape_shape_desc", data.asset_id);
-    let desc_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(&desc_label),
-        contents: &desc_bytes,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
     BlendshapeBuffersUpload {
         sparse_buffer: Some(Arc::new(sparse_buf)),
-        shape_descriptor_buffer: Some(Arc::new(desc_buf)),
         frame_ranges: pack.frame_ranges,
         shape_frame_spans: pack.shape_frame_spans,
         num_blendshapes: n_u32,
@@ -732,7 +670,6 @@ pub(super) fn resident_bytes_for_mesh_upload(
     derived: &DerivedStreams,
     bone_skin: &BoneSkinUpload,
     blend_sparse: Option<&Arc<wgpu::Buffer>>,
-    blend_shape_desc: Option<&Arc<wgpu::Buffer>>,
 ) -> u64 {
     let mut n = core_vb.size() + core_ib.size();
     n += sum_optional_buffer_bytes(&[
@@ -750,9 +687,6 @@ pub(super) fn resident_bytes_for_mesh_upload(
         derived.uv3_buffer.as_ref(),
     ]);
     if let Some(b) = blend_sparse {
-        n += b.size();
-    }
-    if let Some(b) = blend_shape_desc {
         n += b.size();
     }
     n

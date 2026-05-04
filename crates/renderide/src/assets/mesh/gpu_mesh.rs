@@ -14,8 +14,7 @@ use glam::Mat4;
 use super::layout::{
     BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout, color_float4_stream_bytes,
     extract_bind_poses, extract_blendshape_offsets, extract_float3_position_normal_as_vec4_streams,
-    split_bone_weights_tail_for_gpu, synthetic_bone_data_for_blendshape_only,
-    uv0_float2_stream_bytes, vertex_float2_stream_bytes,
+    split_bone_weights_tail_for_gpu, uv0_float2_stream_bytes, vertex_float2_stream_bytes,
 };
 use super::tangent_generation::tangent_stream_bytes;
 
@@ -86,7 +85,7 @@ pub struct GpuMesh {
     pub vertex_stride: u32,
     /// Axis-aligned bounds in mesh space (from host).
     pub bounds: RenderBoundingBox,
-    /// Optional 1 byte per vertex (skinned / synthetic for blendshape-only).
+    /// Optional 1 byte per vertex for skinned meshes.
     pub bone_counts_buffer: Option<Arc<wgpu::Buffer>>,
     /// Per-vertex joint indices as `vec4<u32>` (16 bytes / vertex) for skinning compute.
     pub bone_indices_buffer: Option<Arc<wgpu::Buffer>>,
@@ -94,10 +93,8 @@ pub struct GpuMesh {
     pub bone_weights_vec4_buffer: Option<Arc<wgpu::Buffer>>,
     /// Column-major `float4x4` bind poses (64 bytes per bone).
     pub bind_poses_buffer: Option<Arc<wgpu::Buffer>>,
-    /// Sparse packed position deltas (`vertex_index`, `delta.xyz`) for all shapes ([`crate::assets::mesh::BLENDSHAPE_SPARSE_ENTRY_SIZE`] bytes/entry).
+    /// Sparse packed blendshape delta words for all shapes.
     pub blendshape_sparse_buffer: Option<Arc<wgpu::Buffer>>,
-    /// Per-frame `(first_entry, entry_count)` rows (`u32` pairs) mirroring [`Self::blendshape_frame_ranges`].
-    pub blendshape_shape_descriptor_buffer: Option<Arc<wgpu::Buffer>>,
     /// CPU copy of each sparse frame range for scatter dispatch.
     pub blendshape_frame_ranges: Vec<BlendshapeFrameRange>,
     /// Per-shape spans into [`Self::blendshape_frame_ranges`].
@@ -164,12 +161,6 @@ pub(super) fn blendshape_and_deform_buffers_match_for_in_place(
         if sb.size() != sparse_expect.len() as u64 {
             return false;
         }
-        let Some(db) = mesh.blendshape_shape_descriptor_buffer.as_ref() else {
-            return false;
-        };
-        if db.size() != extracted.shape_descriptor_bytes.len() as u64 {
-            return false;
-        }
         if mesh.blendshape_frame_ranges != extracted.frame_ranges {
             return false;
         }
@@ -187,7 +178,6 @@ pub(super) fn blendshape_and_deform_buffers_match_for_in_place(
         }
     } else if mesh.num_blendshapes > 0
         || mesh.blendshape_sparse_buffer.is_some()
-        || mesh.blendshape_shape_descriptor_buffer.is_some()
         || !mesh.blendshape_frame_ranges.is_empty()
         || !mesh.blendshape_shape_frame_spans.is_empty()
         || mesh.blendshape_has_position_deltas
@@ -235,46 +225,6 @@ pub(super) fn compatible_for_in_place_real_skeleton(
         return false;
     }
     if mesh.skinning_bind_matrices.len() != data.bone_count.max(0) as usize {
-        return false;
-    }
-    derived_streams_compatible_for_in_place(mesh, vertex_slice, data, vc_usize, vertex_stride_us)
-}
-
-/// Blendshape-only synthetic bone layout: single bind pose + split indices/weights.
-pub(super) fn compatible_for_in_place_synthetic_blendshape_skeleton(
-    mesh: &GpuMesh,
-    data: &MeshUploadData,
-    vertex_slice: &[u8],
-    vc_usize: usize,
-    vertex_stride_us: usize,
-) -> bool {
-    let (bind_poses_arr, bone_counts, bone_weights) =
-        synthetic_bone_data_for_blendshape_only(data.vertex_count);
-    if mesh.bone_counts_buffer.as_ref().map(|b| b.size()) != Some(bone_counts.len() as u64) {
-        return false;
-    }
-    if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(&bone_weights, vc_usize) {
-        if mesh.bone_indices_buffer.as_ref().map(|b| b.size()) != Some(ib.len() as u64) {
-            return false;
-        }
-        if mesh.bone_weights_vec4_buffer.as_ref().map(|b| b.size()) != Some(wb.len() as u64) {
-            return false;
-        }
-    } else {
-        return false;
-    }
-
-    if mesh.bind_poses_buffer.as_ref().map(|b| b.size())
-        != Some(
-            bind_poses_arr
-                .iter()
-                .flat_map(|m| bytemuck::bytes_of(m).iter().copied())
-                .count() as u64,
-        )
-    {
-        return false;
-    }
-    if mesh.skinning_bind_matrices.len() != 1 {
         return false;
     }
     derived_streams_compatible_for_in_place(mesh, vertex_slice, data, vc_usize, vertex_stride_us)
@@ -507,9 +457,6 @@ pub(super) fn write_in_place_index_buffer(
 pub(super) struct BoneBufferWriteHints {
     /// Whole upload involves bone buffers; if `false`, the call is a no-op.
     pub needs_bone_buffers: bool,
-    /// The mesh has no real bones and is using synthesised single-bone data for blendshape-only
-    /// skinning.
-    pub synthetic_bones: bool,
     /// Full upload: every bone buffer should be rewritten irrespective of the per-buffer flags.
     pub full: bool,
     /// Bone counts and bone weights/indices should be rewritten.
@@ -526,7 +473,6 @@ pub(super) fn write_in_place_bone_buffers(
     profiling::scope!("asset::mesh_write_in_place::bone_buffers");
     let BoneBufferWriteHints {
         needs_bone_buffers,
-        synthetic_bones,
         full,
         write_bone_weights,
         write_bind_poses,
@@ -534,29 +480,7 @@ pub(super) fn write_in_place_bone_buffers(
     if !needs_bone_buffers {
         return Some(());
     }
-    if synthetic_bones && (full || write_bone_weights || write_bind_poses) {
-        profiling::scope!("asset::mesh_write_in_place::synthetic_bone_buffers");
-        let (bind_poses_arr, bone_counts, bone_weights) =
-            synthetic_bone_data_for_blendshape_only(ctx.data.vertex_count);
-        if let Some(bc) = &ctx.mesh.bone_counts_buffer {
-            ctx.queue.write_buffer(bc.as_ref(), 0, &bone_counts);
-        }
-        if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(&bone_weights, ctx.vertex_count) {
-            if let Some(bi) = &ctx.mesh.bone_indices_buffer {
-                ctx.queue.write_buffer(bi.as_ref(), 0, &ib);
-            }
-            if let Some(bwt) = &ctx.mesh.bone_weights_vec4_buffer {
-                ctx.queue.write_buffer(bwt.as_ref(), 0, &wb);
-            }
-        }
-        let bp_bytes: Vec<u8> = bind_poses_arr
-            .iter()
-            .flat_map(|m| bytemuck::bytes_of(m).iter().copied())
-            .collect();
-        if let Some(bp) = &ctx.mesh.bind_poses_buffer {
-            ctx.queue.write_buffer(bp.as_ref(), 0, &bp_bytes);
-        }
-    } else if ctx.data.bone_count > 0 {
+    if ctx.data.bone_count > 0 {
         profiling::scope!("asset::mesh_write_in_place::real_bone_buffers");
         if full || write_bone_weights {
             let bc = &ctx.raw[ctx.layout.bone_counts_start
@@ -591,7 +515,7 @@ pub(super) fn write_in_place_bone_buffers(
     Some(())
 }
 
-/// Sparse blendshape GPU buffers and CPU ranges (`write_buffer` for both storage blobs).
+/// Sparse blendshape GPU buffer and CPU ranges.
 pub(super) fn write_in_place_blendshape_buffer(
     mesh: &GpuMesh,
     queue: &wgpu::Queue,
@@ -607,9 +531,6 @@ pub(super) fn write_in_place_blendshape_buffer(
     let Some(sb) = mesh.blendshape_sparse_buffer.as_ref() else {
         return Some(());
     };
-    let Some(db) = mesh.blendshape_shape_descriptor_buffer.as_ref() else {
-        return Some(());
-    };
     let extracted = {
         profiling::scope!("asset::mesh_write_in_place::extract_blendshape_offsets");
         extract_blendshape_offsets(raw, layout, &data.blendshape_buffers, data.vertex_count)?
@@ -621,7 +542,6 @@ pub(super) fn write_in_place_blendshape_buffer(
     {
         profiling::scope!("asset::mesh_write_in_place::write_blendshape_gpu_buffers");
         queue.write_buffer(sb.as_ref(), 0, &sparse);
-        queue.write_buffer(db.as_ref(), 0, &extracted.shape_descriptor_bytes);
     }
     Some(())
 }
@@ -658,8 +578,7 @@ impl GpuMesh {
             extended_vertex_stream_source_from_raw(raw, data, layout)
         };
 
-        let bone_skin =
-            upload_bone_and_skin_buffers(device, raw, data, layout, use_blendshapes, vc_usize)?;
+        let bone_skin = upload_bone_and_skin_buffers(device, raw, data, layout, vc_usize)?;
 
         let blend_up = upload_blendshape_buffer(
             device,
@@ -688,7 +607,6 @@ impl GpuMesh {
                 &derived,
                 &bone_skin,
                 blend_up.sparse_buffer.as_ref(),
-                blend_up.shape_descriptor_buffer.as_ref(),
             )
         };
 
@@ -708,7 +626,6 @@ impl GpuMesh {
             bone_weights_vec4_buffer: bone_skin.bone_weights_vec4_buffer,
             bind_poses_buffer: bone_skin.bind_poses_buffer,
             blendshape_sparse_buffer: blend_up.sparse_buffer,
-            blendshape_shape_descriptor_buffer: blend_up.shape_descriptor_buffer,
             blendshape_frame_ranges: blend_up.frame_ranges,
             blendshape_shape_frame_spans: blend_up.shape_frame_spans,
             num_blendshapes,
