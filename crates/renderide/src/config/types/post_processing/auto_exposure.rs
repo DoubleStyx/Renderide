@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// Persisted as `[post_processing.auto_exposure]`. The renderer builds a log-luminance histogram
 /// from HDR scene color, filters dark and bright percentile tails, and adapts exposure in EV stops
-/// toward middle gray before tonemapping. Defaults match the Bevy-style histogram path and keep
-/// adaptation fast when brightening while darkening more conservatively.
+/// toward middle gray before bloom and tonemapping. Defaults match the Bevy-style histogram path
+/// and keep adaptation fast when brightening while darkening more conservatively.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AutoExposureSettings {
@@ -91,14 +91,14 @@ impl Default for AutoExposureSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            min_ev: -16.0,
-            max_ev: 16.0,
+            min_ev: -8.0,
+            max_ev: 8.0,
             low_percent: 0.10,
             high_percent: 0.90,
             speed_brighten: 3.0,
-            speed_darken: 3.0,
+            speed_darken: 1.0,
             exponential_transition_distance: 1.5,
-            compensation_ev: -2.0,
+            compensation_ev: 0.0,
         }
     }
 }

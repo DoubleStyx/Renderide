@@ -214,7 +214,22 @@ impl RasterPass for AutoExposureApplyPass {
 }
 
 /// Effect descriptor that contributes auto-exposure compute and apply passes to the chain.
-pub struct AutoExposureEffect;
+pub struct AutoExposureEffect {
+    state_cache: Arc<AutoExposureStateCache>,
+}
+
+impl AutoExposureEffect {
+    /// Creates an auto-exposure effect backed by a shared per-view state cache.
+    pub(crate) fn new(state_cache: Arc<AutoExposureStateCache>) -> Self {
+        Self { state_cache }
+    }
+}
+
+impl Default for AutoExposureEffect {
+    fn default() -> Self {
+        Self::new(Arc::new(AutoExposureStateCache::default()))
+    }
+}
 
 impl PostProcessEffect for AutoExposureEffect {
     fn id(&self) -> PostProcessEffectId {
@@ -231,15 +246,14 @@ impl PostProcessEffect for AutoExposureEffect {
         input: TextureHandle,
         output: TextureHandle,
     ) -> EffectPasses {
-        let state_cache = Arc::new(AutoExposureStateCache::default());
         let compute = builder.add_compute_pass(Box::new(AutoExposureComputePass::new(
             input,
-            Arc::clone(&state_cache),
+            Arc::clone(&self.state_cache),
         )));
         let apply = builder.add_raster_pass(Box::new(AutoExposureApplyPass::new(
             input,
             output,
-            state_cache,
+            Arc::clone(&self.state_cache),
         )));
         builder.add_edge(compute, apply);
         EffectPasses {
@@ -249,8 +263,9 @@ impl PostProcessEffect for AutoExposureEffect {
     }
 }
 
+/// Per-view GPU state retained while auto-exposure can be re-enabled for the same view.
 #[derive(Default)]
-struct AutoExposureStateCache {
+pub(crate) struct AutoExposureStateCache {
     per_view: Mutex<HashMap<ViewId, Arc<ViewAutoExposureGpuState>>>,
 }
 
@@ -264,7 +279,8 @@ impl AutoExposureStateCache {
         )
     }
 
-    fn retire_views(&self, retired_views: &[ViewId]) {
+    /// Releases exposure state for views that are no longer active.
+    pub(crate) fn retire_views(&self, retired_views: &[ViewId]) {
         if retired_views.is_empty() {
             return;
         }
@@ -380,7 +396,7 @@ mod tests {
 
     #[test]
     fn effect_id_and_enable_gate_match_settings() {
-        let effect = AutoExposureEffect;
+        let effect = AutoExposureEffect::default();
         assert_eq!(effect.id(), PostProcessEffectId::AutoExposure);
         assert!(effect.is_enabled(&PostProcessingSettings::default()));
 

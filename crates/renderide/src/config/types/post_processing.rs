@@ -26,9 +26,9 @@ pub struct PostProcessingSettings {
     pub enabled: bool,
     /// Ground-Truth Ambient Occlusion (pre-tonemap HDR modulation). See [`GtaoSettings`].
     pub gtao: GtaoSettings,
-    /// Dual-filter physically-based bloom (pre-tonemap HDR). See [`BloomSettings`].
+    /// Dual-filter physically-based bloom (post-exposure, pre-tonemap HDR). See [`BloomSettings`].
     pub bloom: BloomSettings,
-    /// Histogram-based adaptive exposure (pre-tonemap HDR). See [`AutoExposureSettings`].
+    /// Histogram-based adaptive exposure (pre-bloom HDR). See [`AutoExposureSettings`].
     pub auto_exposure: AutoExposureSettings,
     /// Tonemapping (HDR -> display-referred 0..1 linear). See [`TonemapSettings`].
     pub tonemap: TonemapSettings,

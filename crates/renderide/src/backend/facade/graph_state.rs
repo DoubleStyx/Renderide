@@ -4,7 +4,9 @@
 //! graph resources across the backend facade.
 
 use crate::camera::ViewId;
-use crate::render_graph::{GraphCache, TransientPool};
+use crate::render_graph::{
+    GraphCache, TransientPool, main_graph::MainGraphPostProcessingResources,
+};
 
 use super::super::{HistoryRegistry, ViewResourceRegistry};
 
@@ -19,6 +21,8 @@ pub(super) struct RenderGraphState {
     history_registry: HistoryRegistry,
     /// Retained logical-view ownership for every backend cache that lives beyond one frame.
     view_resources: ViewResourceRegistry,
+    /// Post-processing resources that must survive compiled graph rebuilds.
+    post_processing_resources: MainGraphPostProcessingResources,
 }
 
 impl RenderGraphState {
@@ -29,6 +33,7 @@ impl RenderGraphState {
             transient_pool: TransientPool::new(),
             history_registry: HistoryRegistry::new(),
             view_resources: ViewResourceRegistry::new(),
+            post_processing_resources: MainGraphPostProcessingResources::default(),
         }
     }
 
@@ -53,6 +58,11 @@ impl RenderGraphState {
         (&mut self.transient_pool, &mut self.history_registry)
     }
 
+    /// Long-lived post-processing resources for main-graph rebuilds.
+    pub(super) fn post_processing_resources(&self) -> &MainGraphPostProcessingResources {
+        &self.post_processing_resources
+    }
+
     /// Synchronizes active view ownership and releases graph-owned view resources immediately.
     pub(super) fn sync_active_views<I>(&mut self, active_views: I) -> Vec<ViewId>
     where
@@ -60,6 +70,28 @@ impl RenderGraphState {
     {
         let retired = self.view_resources.sync_active_views(active_views);
         self.frame_graph_cache.release_view_resources(&retired);
+        self.post_processing_resources.retire_views(&retired);
         retired
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn auto_exposure_cache_is_stable_across_resource_accesses() {
+        let state = RenderGraphState::new();
+
+        let first = state
+            .post_processing_resources()
+            .auto_exposure_state_cache();
+        let second = state
+            .post_processing_resources()
+            .auto_exposure_state_cache();
+
+        assert!(Arc::ptr_eq(&first, &second));
     }
 }
