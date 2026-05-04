@@ -32,14 +32,14 @@ pub use video_texture::{
     on_video_texture_start_audio_track, on_video_texture_update,
 };
 
-/// Max queued [`MeshUploadData`](crate::shared::MeshUploadData) when GPU is not ready yet (host data stays in shared memory).
+/// Deferred [`MeshUploadData`](crate::shared::MeshUploadData) count that emits queue-pressure diagnostics.
 pub const MAX_PENDING_MESH_UPLOADS: usize = 256;
 
-/// Max queued texture data commands when GPU or format is not ready.
+/// Deferred texture data command count that emits queue-pressure diagnostics.
 pub const MAX_PENDING_TEXTURE_UPLOADS: usize = 256;
 
-/// Max queued Texture3D data commands when GPU or format is not ready.
+/// Deferred Texture3D data command count that emits queue-pressure diagnostics.
 pub const MAX_PENDING_TEXTURE3D_UPLOADS: usize = 256;
 
-/// Max queued cubemap data commands when GPU or format is not ready.
+/// Deferred cubemap data command count that emits queue-pressure diagnostics.
 pub const MAX_PENDING_CUBEMAP_UPLOADS: usize = 256;

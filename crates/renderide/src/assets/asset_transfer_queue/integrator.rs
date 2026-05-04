@@ -14,8 +14,16 @@ use super::mesh_task::MeshUploadTask;
 use super::texture_task::TextureUploadTask;
 use super::texture3d_task::Texture3dUploadTask;
 
-/// Maximum combined queued integration tasks (high + normal). Beyond this, new tasks are dropped with a warning.
-pub const MAX_ASSET_INTEGRATION_QUEUED: usize = 2048;
+/// Combined queued integration task count that emits queue-pressure diagnostics.
+pub const ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD: usize = 2048;
+
+/// Compatibility alias for the asset-integration backlog warning threshold.
+///
+/// This is no longer a hard capacity; queued asset integration work is retained beyond this count.
+pub const MAX_ASSET_INTEGRATION_QUEUED: usize = ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD;
+
+/// Queue-pressure log stride after [`ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD`] is exceeded.
+const ASSET_INTEGRATION_QUEUE_WARN_STRIDE: usize = 1024;
 
 /// Minimum extra wall-clock slice granted to high-priority integration before yielding.
 const MIN_HIGH_PRIORITY_EMERGENCY_BUDGET: Duration = Duration::from_millis(1);
@@ -39,6 +47,8 @@ pub struct AssetIntegrationDrainSummary {
     pub normal_priority_budget_exhausted: bool,
     /// Wall-clock time spent in the drain.
     pub elapsed: Duration,
+    /// Highest combined queued task count observed since startup.
+    pub peak_queued: usize,
 }
 
 impl AssetIntegrationDrainSummary {
@@ -66,6 +76,7 @@ impl AssetIntegrationDrainSummary {
         self.high_priority_budget_exhausted = high_priority_budget_exhausted;
         self.normal_priority_budget_exhausted = normal_priority_budget_exhausted;
         self.elapsed = drain_start.elapsed();
+        self.peak_queued = asset.integrator.peak_queued();
         self
     }
 
@@ -116,12 +127,19 @@ pub struct AssetIntegrator {
     pub high_priority: VecDeque<AssetTask>,
     /// Standard-priority tasks.
     pub normal_priority: VecDeque<AssetTask>,
+    /// Highest combined queue depth observed since startup.
+    max_total_queued: usize,
 }
 
 impl AssetIntegrator {
     /// Total queued tasks.
     pub fn total_queued(&self) -> usize {
         self.high_priority.len() + self.normal_priority.len()
+    }
+
+    /// Highest combined queued task count observed since startup.
+    pub fn peak_queued(&self) -> usize {
+        self.max_total_queued
     }
 
     /// Pops the next task, preferring the high-priority queue.
@@ -140,18 +158,35 @@ impl AssetIntegrator {
         }
     }
 
-    /// Enqueues at the back, or returns `false` if the integrator is full.
-    pub fn try_enqueue(&mut self, task: AssetTask, high_priority: bool) -> bool {
-        if self.total_queued() >= MAX_ASSET_INTEGRATION_QUEUED {
-            return false;
-        }
+    /// Enqueues at the back of the requested priority lane.
+    pub fn enqueue(&mut self, task: AssetTask, high_priority: bool) {
         if high_priority {
             self.high_priority.push_back(task);
         } else {
             self.normal_priority.push_back(task);
         }
-        true
+        self.record_queue_depth();
     }
+
+    fn record_queue_depth(&mut self) {
+        let queued = self.total_queued();
+        self.max_total_queued = self.max_total_queued.max(queued);
+        if should_log_asset_integration_queue_pressure(queued) {
+            logger::warn!(
+                "asset integrator backlog high: queued={} high_priority={} normal_priority={} threshold={}",
+                queued,
+                self.high_priority.len(),
+                self.normal_priority.len(),
+                ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD
+            );
+        }
+    }
+}
+
+fn should_log_asset_integration_queue_pressure(queued: usize) -> bool {
+    queued == ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD
+        || (queued > ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD
+            && queued.is_multiple_of(ASSET_INTEGRATION_QUEUE_WARN_STRIDE))
 }
 
 /// Returns a stable tag for [`AssetTask`] variants, used as Tracy zone data.
@@ -509,8 +544,8 @@ mod tests {
     #[test]
     fn pop_next_prefers_high_priority_queue() {
         let mut integrator = AssetIntegrator::default();
-        assert!(integrator.try_enqueue(texture_task(false), false));
-        assert!(integrator.try_enqueue(texture_task(true), true));
+        integrator.enqueue(texture_task(false), false);
+        integrator.enqueue(texture_task(true), true);
 
         let first = integrator.pop_next().unwrap();
         let second = integrator.pop_next().unwrap();
@@ -534,13 +569,19 @@ mod tests {
     }
 
     #[test]
-    fn try_enqueue_rejects_when_combined_capacity_is_full() {
+    fn enqueue_accepts_beyond_warning_threshold() {
         let mut integrator = AssetIntegrator::default();
-        for _ in 0..MAX_ASSET_INTEGRATION_QUEUED {
-            assert!(integrator.try_enqueue(texture_task(false), false));
+        for _ in 0..=ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD {
+            integrator.enqueue(texture_task(false), false);
         }
 
-        assert!(!integrator.try_enqueue(texture_task(true), true));
-        assert_eq!(integrator.total_queued(), MAX_ASSET_INTEGRATION_QUEUED);
+        assert_eq!(
+            integrator.total_queued(),
+            ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD + 1
+        );
+        assert_eq!(
+            integrator.peak_queued(),
+            ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD + 1
+        );
     }
 }

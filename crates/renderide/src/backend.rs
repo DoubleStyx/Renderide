@@ -28,11 +28,11 @@ pub use cluster_gpu::{
     MAX_LIGHTS_PER_TILE, TILE_SIZE,
 };
 pub use debug_hud_bundle::DebugHudBundle;
-pub(crate) use facade::{BackendGraphAccess, ExtractedFrameShared, WorldMeshForwardEncodeRefs};
 pub use facade::{
-    MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
-    RenderBackend, RenderBackendAttachDesc, RenderBackendAttachError,
+    ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD, MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS,
+    MAX_PENDING_TEXTURE_UPLOADS, RenderBackend, RenderBackendAttachDesc, RenderBackendAttachError,
 };
+pub(crate) use facade::{BackendGraphAccess, ExtractedFrameShared, WorldMeshForwardEncodeRefs};
 pub use frame_gpu::{
     EmptyMaterialBindGroup, FrameGpuResources, FrameSceneSnapshotTextureViews,
     empty_material_bind_group_layout,

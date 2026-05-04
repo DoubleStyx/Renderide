@@ -26,6 +26,17 @@ impl RenderBackend {
         asset_uploads::drain_asset_tasks(&mut self.asset_transfers, shm, ipc, normal_deadline)
     }
 
+    /// Whether upload or material work is queued or deferred on missing prerequisites.
+    pub fn has_pending_asset_work(&self) -> bool {
+        self.asset_transfers.has_pending_asset_work()
+            || self.materials.has_pending_material_batches()
+    }
+
+    /// Whether GPU handles required by the upload integrator are attached.
+    pub fn asset_gpu_ready(&self) -> bool {
+        self.asset_transfers.asset_gpu_ready()
+    }
+
     /// Handle [`SetTexture2DFormat`](crate::shared::SetTexture2DFormat).
     pub fn on_set_texture_2d_format(
         &mut self,
@@ -206,9 +217,9 @@ impl RenderBackend {
         self.materials.flush_pending_material_batches(shm, ipc);
     }
 
-    /// Queue a materials batch when shared memory is not yet available. Returns `false` if queue full.
-    pub fn enqueue_materials_batch_no_shm(&mut self, batch: MaterialsUpdateBatch) -> bool {
-        self.materials.enqueue_materials_batch_no_shm(batch)
+    /// Queue a materials batch when shared memory is not yet available.
+    pub fn enqueue_materials_batch_no_shm(&mut self, batch: MaterialsUpdateBatch) {
+        self.materials.enqueue_materials_batch_no_shm(batch);
     }
 
     /// Apply one host materials batch (shared memory must be valid for the batch descriptors).

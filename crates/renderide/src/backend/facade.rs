@@ -42,7 +42,8 @@ pub(crate) use graph_access::BackendGraphAccess;
 use graph_state::RenderGraphState;
 
 pub use crate::assets::asset_transfer_queue::{
-    MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
+    ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD, MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS,
+    MAX_PENDING_TEXTURE_UPLOADS,
 };
 pub(crate) use frame_packet::ExtractedFrameShared;
 
