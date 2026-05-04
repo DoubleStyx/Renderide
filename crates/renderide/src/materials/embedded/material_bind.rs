@@ -145,6 +145,10 @@ impl EmbeddedMaterialBindResources {
 
     /// Same as [`Self::embedded_material_bind_group`], plus the cache key so callers can skip redundant
     /// [`wgpu::RenderPass::set_bind_group`] calls when the key matches the previous draw.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "wgpu bind path needs stem, queue, store, pools, lookup, offscreen RT, and uniform epoch together"
+    )]
     pub(crate) fn embedded_material_bind_group_with_cache_key(
         &self,
         stem: &str,

@@ -89,8 +89,8 @@ mod tests {
     #[test]
     fn volume_fog_queue_is_transparent_and_before_overlay() {
         assert!(render_queue_is_transparent(UNITY_RENDER_QUEUE_VOLUME_FOG));
-        assert!(UNITY_RENDER_QUEUE_VOLUME_FOG < UNITY_RENDER_QUEUE_OVERLAY);
-        assert!(UNITY_RENDER_QUEUE_VOLUME_FOG > UNITY_RENDER_QUEUE_TRANSPARENT);
+        const { assert!(UNITY_RENDER_QUEUE_VOLUME_FOG < UNITY_RENDER_QUEUE_OVERLAY) };
+        const { assert!(UNITY_RENDER_QUEUE_VOLUME_FOG > UNITY_RENDER_QUEUE_TRANSPARENT) };
     }
 
     #[test]

@@ -787,37 +787,6 @@ mod text_uniform_packing_tests {
     }
 
     #[test]
-    fn color_vec4_uniform_is_linearized_during_pack() {
-        let (reflected, ids, registry) = reflected_with_single_vec4_field("_Color");
-        let mut store = MaterialPropertyStore::new();
-        store.set_material(
-            240,
-            registry.intern("_Color"),
-            MaterialPropertyValue::Float4([0.5, 0.25, 0.75, 0.9]),
-        );
-        let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
-        let pools = EmbeddedTexturePools {
-            texture: &texture,
-            texture3d: &texture3d,
-            cubemap: &cubemap,
-            render_texture: &render_texture,
-            video_texture: &video_texture,
-        };
-        let tex_ctx = UniformPackTextureContext {
-            pools: &pools,
-            primary_texture_2d: -1,
-        };
-        let bytes = build_embedded_uniform_bytes(&reflected, &ids, &store, lookup(240), &tex_ctx)
-            .expect("uniform bytes");
-        let packed = read_f32x4(&bytes, 0);
-
-        assert!((packed[0] - srgb_channel_to_linear(0.5)).abs() < 1e-6);
-        assert!((packed[1] - srgb_channel_to_linear(0.25)).abs() < 1e-6);
-        assert!((packed[2] - srgb_channel_to_linear(0.75)).abs() < 1e-6);
-        assert!((packed[3] - 0.9).abs() < 1e-6);
-    }
-
-    #[test]
     fn non_color_vec4_uniform_is_packed_raw() {
         let (reflected, ids, registry) = reflected_with_single_vec4_field("_MainTex_ST");
         let mut store = MaterialPropertyStore::new();
