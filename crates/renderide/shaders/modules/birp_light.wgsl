@@ -6,7 +6,7 @@
 const BIRP_ATTENUATION_QUADRATIC: f32 = 25.0;
 
 /// Temporary direct-light multiplier used to match BiRP-authored scene brightness.
-const INTENSITY_BOOST: f32 = 2.0;
+const INTENSITY_BOOST: f32 = 1.0;
 
 /// Quartic window that masks punctual attenuation to zero at the light range.
 fn range_fade(t: f32) -> f32 {

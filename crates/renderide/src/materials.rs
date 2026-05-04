@@ -181,5 +181,7 @@ pub use shader_permutation::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 
 /// Unified scene-snapshot requirement flags surfaced by reflected raster materials.
 pub use snapshot_requirements::SnapshotRequirements;
-pub use system::{MAX_PENDING_MATERIAL_BATCHES, MaterialSystem};
+pub use system::{
+    MAX_PENDING_MATERIAL_BATCHES, MaterialSystem, PENDING_MATERIAL_BATCH_WARN_THRESHOLD,
+};
 pub use wgsl::{WgslPatch, compose_wgsl};

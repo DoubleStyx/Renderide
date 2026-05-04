@@ -36,6 +36,8 @@ use super::world::{
     rebuild_children,
 };
 
+const TRANSFORM_POSE_UPDATE_TERMINATOR_ROWS: usize = 1;
+
 /// Per-node dirty mask for one [`apply_transforms_update_extracted`] call.
 ///
 /// Replaces the previous [`std::collections::HashSet<usize>`] tracker so pose / parent updates
@@ -163,6 +165,16 @@ fn grow_transform_buffers_to_target(
     }
 }
 
+fn transform_pose_update_copy_max_bytes(update: &TransformsUpdate) -> i32 {
+    let target_rows = update.target_transform_count.max(0) as usize;
+    let target_sized_bytes = target_rows
+        .saturating_add(TRANSFORM_POSE_UPDATE_TERMINATOR_ROWS)
+        .saturating_mul(TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES);
+    target_sized_bytes
+        .max(SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES as usize)
+        .min(i32::MAX as usize) as i32
+}
+
 /// Reads every shared-memory buffer referenced by [`TransformsUpdate`] into owned vectors.
 pub fn extract_transforms_update(
     shm: &mut SharedMemoryAccessor,
@@ -192,10 +204,12 @@ pub fn extract_transforms_update(
     }
     if update.pose_updates.length > 0 {
         let ctx = format!("transforms pose_updates scene_id={sid}");
+        let max_bytes = transform_pose_update_copy_max_bytes(update);
         out.pose_updates = shm
-            .access_copy_memory_packable_rows::<TransformPoseUpdate>(
+            .access_copy_memory_packable_rows_with_max::<TransformPoseUpdate>(
                 &update.pose_updates,
                 TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES,
+                max_bytes,
                 Some(&ctx),
             )
             .map_err(SceneError::SharedMemoryAccess)?;
@@ -362,6 +376,36 @@ mod tests {
         assert_eq!(space.nodes.len(), 2);
         assert!((space.nodes[0].position.x - 2.0).abs() < 1e-5);
         assert!((space.nodes[1].position.x - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn pose_update_copy_max_allows_target_sized_large_pose_slabs() {
+        let rows_over_default = (SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES as usize
+            / TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES)
+            + 1;
+        let update = TransformsUpdate {
+            target_transform_count: rows_over_default as i32,
+            ..Default::default()
+        };
+        let max_bytes = transform_pose_update_copy_max_bytes(&update);
+        let required_bytes = (rows_over_default + TRANSFORM_POSE_UPDATE_TERMINATOR_ROWS)
+            * TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES;
+
+        assert!(required_bytes > SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES as usize);
+        assert!(max_bytes as usize >= required_bytes);
+    }
+
+    #[test]
+    fn pose_update_copy_max_keeps_default_guard_for_small_targets() {
+        let update = TransformsUpdate {
+            target_transform_count: 4,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            transform_pose_update_copy_max_bytes(&update),
+            SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES
+        );
     }
 
     /// [`NodeDirtyMask::mark`] grows the underlying `Vec<bool>` to fit indices that exceed the

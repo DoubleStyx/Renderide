@@ -194,6 +194,11 @@ impl RendererFrontend {
             .is_allowed()
     }
 
+    /// Whether the renderer is waiting for the host's next [`crate::shared::FrameSubmitData`].
+    pub fn awaiting_frame_submit(&self) -> bool {
+        self.lockstep.awaiting_submit()
+    }
+
     /// Appends reflection-probe render completion rows for the next outgoing frame-start.
     pub fn enqueue_rendered_reflection_probes(
         &mut self,

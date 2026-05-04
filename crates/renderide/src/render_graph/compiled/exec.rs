@@ -162,6 +162,10 @@ pub(super) struct PerViewRecordShared<'a> {
     /// Live bloom settings snapshot for the frame, seeded into each view's blackboard so the
     /// bloom passes' UBO / blend constants / pipeline variants reflect current slider values.
     pub(super) live_bloom_settings: crate::config::BloomSettings,
+    /// Live auto-exposure settings snapshot for the frame, seeded into each view's blackboard.
+    pub(super) live_auto_exposure_settings: crate::config::AutoExposureSettings,
+    /// Wall-frame delta used by temporal post-processing effects.
+    pub(super) wall_frame_delta_seconds: f32,
 }
 
 impl GraphResolveKey {
@@ -498,6 +502,8 @@ impl CompiledRenderGraph {
             msaa_depth_resolve: mv_ctx.backend.msaa_depth_resolve(),
             live_gtao_settings: mv_ctx.backend.live_gtao_settings(),
             live_bloom_settings: mv_ctx.backend.live_bloom_settings(),
+            live_auto_exposure_settings: mv_ctx.backend.live_auto_exposure_settings(),
+            wall_frame_delta_seconds: mv_ctx.backend.wall_frame_delta_seconds(),
         };
         let mut per_view_profiler = mv_ctx.gpu.take_gpu_profiler();
         let record_result = (|| -> Result<RecordedPerViewBatch, GraphExecuteError> {

@@ -104,7 +104,7 @@ pub struct FramePreparedRenderables {
     /// First-seen unique `(material_asset_id, property_block_id)` keys referenced by
     /// [`Self::draws`]. Material caches consume this list once per shader permutation instead of
     /// materializing and deduping every prepared draw.
-    material_property_keys: Vec<(i32, Option<i32>)>,
+    pub(super) material_property_keys: Vec<(i32, Option<i32>)>,
     /// Render context used when resolving material overrides; must match the per-view contexts
     /// (the main renderer uses [`SceneCoordinator::active_main_render_context`] for every view
     /// in the same frame).
@@ -115,7 +115,7 @@ pub struct FramePreparedRenderables {
     /// across frames so the steady-state path does not reallocate the per-space buffers.
     space_scratch: Vec<Vec<FramePreparedDraw>>,
     /// Reused dedup set for rebuilding [`Self::material_property_keys`].
-    material_property_seen_scratch: HashSet<(i32, Option<i32>)>,
+    pub(super) material_property_seen_scratch: HashSet<(i32, Option<i32>)>,
 }
 
 impl FramePreparedRenderables {
@@ -345,7 +345,7 @@ struct RenderableExpansion<'a> {
 ///
 /// Runs are detected post-build instead of plumbed through the parallel expansion so the
 /// multi-space worker output can be merged with `Vec::append` without per-space offset adjustment.
-fn populate_runs_and_material_keys(
+pub(super) fn populate_runs_and_material_keys(
     draws: &[FramePreparedDraw],
     runs: &mut Vec<FramePreparedRun>,
     material_property_keys: &mut Vec<(i32, Option<i32>)>,
@@ -384,7 +384,7 @@ fn populate_runs_and_material_keys(
 /// buffers. The 2x multiplier reflects the typical 2-slot-per-renderer expansion observed across
 /// the existing scene corpus; over-estimation is cheap (`Vec::reserve` only grows), under-estimation
 /// triggers the doubling growth path.
-fn estimated_draw_count(scene: &SceneCoordinator, space_id: RenderSpaceId) -> usize {
+pub(super) fn estimated_draw_count(scene: &SceneCoordinator, space_id: RenderSpaceId) -> usize {
     scene.space(space_id).map_or(0, |s| {
         s.static_mesh_renderers
             .len()
@@ -394,7 +394,7 @@ fn estimated_draw_count(scene: &SceneCoordinator, space_id: RenderSpaceId) -> us
 }
 
 /// Expands every valid renderer (static and skinned) in `space_id` into `out`.
-fn expand_space_into(
+pub(super) fn expand_space_into(
     out: &mut Vec<FramePreparedDraw>,
     scene: &SceneCoordinator,
     mesh_pool: &MeshPool,

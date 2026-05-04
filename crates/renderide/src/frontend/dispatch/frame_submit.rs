@@ -50,16 +50,22 @@ pub(crate) fn process_frame_submit(runtime: &mut RendererRuntime, data: FrameSub
     if let Some(ref mut shm) = runtime.frontend.shared_memory_mut() {
         {
             profiling::scope!("scene::frame_submit_apply_scene");
-            if let Err(e) = runtime.scene.apply_frame_submit(shm, &data) {
-                logger::error!("scene apply_frame_submit failed: {e}");
-                apply_failed = true;
+            match runtime.scene.apply_frame_submit(shm, &data) {
+                Ok(report) => runtime.backend.note_scene_apply_report(&report),
+                Err(e) => {
+                    logger::error!("scene apply_frame_submit failed: {e}");
+                    apply_failed = true;
+                }
             }
         }
         {
             profiling::scope!("scene::frame_submit_flush_world_caches");
-            if let Err(e) = runtime.scene.flush_world_caches() {
-                logger::error!("scene flush_world_caches failed: {e}");
-                apply_failed = true;
+            match runtime.scene.flush_world_caches() {
+                Ok(report) => runtime.backend.note_scene_cache_flush_report(&report),
+                Err(e) => {
+                    logger::error!("scene flush_world_caches failed: {e}");
+                    apply_failed = true;
+                }
             }
         }
         if !apply_failed {

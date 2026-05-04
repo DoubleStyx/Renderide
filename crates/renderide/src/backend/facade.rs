@@ -30,7 +30,9 @@ use crate::materials::host_data::MaterialPropertyStore;
 use crate::materials::{MaterialRouter, RasterPipelineKind};
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::render_graph::TransientPool;
-use crate::world_mesh::{FrameMaterialBatchCache, WorldMeshDrawStateRow, WorldMeshDrawStats};
+use crate::world_mesh::{
+    FrameMaterialBatchCache, RenderWorld, WorldMeshDrawStateRow, WorldMeshDrawStats,
+};
 
 use super::FrameGpuBindingsError;
 use super::FrameResourceManager;
@@ -42,7 +44,8 @@ pub(crate) use graph_access::BackendGraphAccess;
 use graph_state::RenderGraphState;
 
 pub use crate::assets::asset_transfer_queue::{
-    MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS, MAX_PENDING_TEXTURE_UPLOADS,
+    ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD, MAX_ASSET_INTEGRATION_QUEUED, MAX_PENDING_MESH_UPLOADS,
+    MAX_PENDING_TEXTURE_UPLOADS,
 };
 pub(crate) use frame_packet::ExtractedFrameShared;
 
@@ -123,10 +126,8 @@ pub struct RenderBackend {
     /// throwaway local cache inside `collect_view_draws`).
     pub(crate) material_batch_caches:
         hashbrown::HashMap<crate::materials::ShaderPermutation, FrameMaterialBatchCache>,
-    /// Pooled prepared-renderables snapshot, rebuilt in place each frame to retain the
-    /// underlying `Vec` capacities across frames. Built fresh by
-    /// [`Self::extract_frame_shared`] before per-view draw collection consumes it.
-    pub(crate) prepared_renderables: crate::world_mesh::FramePreparedRenderables,
+    /// Backend-owned CPU render-world cache used to amortize world-mesh draw preparation.
+    pub(crate) render_world: RenderWorld,
     /// Nonblocking reflection-probe SH2 GPU projection service.
     pub(crate) reflection_probe_sh2: crate::reflection_probes::ReflectionProbeSh2System,
     /// Unified IBL prefilter cache covering analytic, cubemap, and equirect skybox sources.
@@ -202,9 +203,7 @@ impl RenderBackend {
             renderer_settings: None,
             record_parallelism: crate::config::RecordParallelism::PerViewParallel,
             material_batch_caches: hashbrown::HashMap::new(),
-            prepared_renderables: crate::world_mesh::FramePreparedRenderables::empty(
-                crate::shared::RenderingContext::default(),
-            ),
+            render_world: RenderWorld::new(crate::shared::RenderingContext::default()),
             reflection_probe_sh2: crate::reflection_probes::ReflectionProbeSh2System::new(),
             skybox_ibl: crate::skybox::SkyboxIblCache::new(),
         }
@@ -263,6 +262,19 @@ impl RenderBackend {
             .as_ref()
             .and_then(|h| h.read().ok())
             .map(|s| s.post_processing.bloom)
+            .unwrap_or_default()
+    }
+
+    /// Snapshot of the live auto-exposure settings for the current frame.
+    ///
+    /// Seeded into each view's blackboard as
+    /// [`crate::passes::post_processing::settings_slot::AutoExposureSettingsSlot`] so histogram
+    /// settings and adaptation speed edits take effect without rebuilding the compiled graph.
+    pub(crate) fn live_auto_exposure_settings(&self) -> crate::config::AutoExposureSettings {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok())
+            .map(|s| s.post_processing.auto_exposure)
             .unwrap_or_default()
     }
 
@@ -757,6 +769,8 @@ impl RenderBackend {
         let msaa_depth_resolve = self.msaa_depth_resolve.clone();
         let live_gtao_settings = self.live_gtao_settings();
         let live_bloom_settings = self.live_bloom_settings();
+        let live_auto_exposure_settings = self.live_auto_exposure_settings();
+        let wall_frame_time_ms = self.debug_frame_time_ms();
         let (transient_pool, history_registry) = self.graph_state.execution_resources_mut();
         BackendGraphAccess {
             occlusion: &mut self.occlusion,
@@ -776,6 +790,8 @@ impl RenderBackend {
             msaa_depth_resolve,
             live_gtao_settings,
             live_bloom_settings,
+            live_auto_exposure_settings,
+            wall_frame_time_ms,
         }
     }
 
@@ -855,6 +871,7 @@ mod post_processing_rebuild_tests {
             cached_graph_key(&backend).post_processing,
             PostProcessChainSignature {
                 aces_tonemap: true,
+                auto_exposure: true,
                 bloom: true,
                 bloom_max_mip_dimension: 512,
                 gtao: true,

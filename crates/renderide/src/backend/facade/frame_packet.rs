@@ -6,7 +6,7 @@ use crate::gpu_pools::MeshPool;
 use crate::materials::ShaderPermutation;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyStore};
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter};
-use crate::scene::SceneCoordinator;
+use crate::scene::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
 use crate::shared::RenderingContext;
 use crate::world_mesh::{
     FrameMaterialBatchCache, FramePreparedRenderables, WorldMeshDrawCollectParallelism,
@@ -37,8 +37,7 @@ pub(crate) struct ExtractedFrameShared<'a> {
     /// collection looks up the entry matching the view's permutation rather than building a
     /// per-view local cache (the previous mono-only fast path is now subsumed by this map).
     pub(crate) material_caches: &'a HashMap<ShaderPermutation, FrameMaterialBatchCache>,
-    /// Dense per-frame walk of renderables pre-expanded once before per-view collection.
-    /// Borrowed from the backend-owned pool so the underlying `Vec`s retain capacity.
+    /// Dense draw-prep snapshot from the backend render-world cache.
     pub(crate) prepared_renderables: &'a FramePreparedRenderables,
     /// Shared occlusion state used for Hi-Z snapshots and temporal cull data.
     pub(crate) occlusion: &'a OcclusionSystem,
@@ -47,6 +46,16 @@ pub(crate) struct ExtractedFrameShared<'a> {
 }
 
 impl RenderBackend {
+    /// Applies scene mutation reports to backend-owned CPU render-world caches.
+    pub(crate) fn note_scene_apply_report(&mut self, report: &SceneApplyReport) {
+        self.render_world.note_scene_apply_report(report);
+    }
+
+    /// Applies world-cache flush reports to backend-owned CPU render-world caches.
+    pub(crate) fn note_scene_cache_flush_report(&mut self, report: &SceneCacheFlushReport) {
+        self.render_world.note_cache_flush_report(report);
+    }
+
     /// Prepares clustered-light frame resources from the current scene once for the tick.
     pub(crate) fn prepare_lights_from_scene(&mut self, scene: &SceneCoordinator) {
         self.frame_resources.prepare_lights_from_scene(scene);
@@ -79,13 +88,13 @@ impl RenderBackend {
             .map_or(&self.null_material_router, |registry| &registry.router);
         let pipeline_property_ids = self.materials.pipeline_property_resolver().resolve();
 
-        {
+        let prepared_renderables = {
             profiling::scope!("render::build_frame_prepared_renderables");
-            self.prepared_renderables.rebuild_for_frame(
+            self.render_world.prepare_for_frame(
                 scene,
                 self.asset_transfers.mesh_pool(),
                 render_context,
-            );
+            )
         };
 
         {
@@ -97,7 +106,7 @@ impl RenderBackend {
                 .entry(ShaderPermutation(0))
                 .or_default()
                 .refresh_for_prepared(
-                    &self.prepared_renderables,
+                    prepared_renderables,
                     &dict,
                     router,
                     &pipeline_property_ids,
@@ -111,7 +120,7 @@ impl RenderBackend {
                     .entry(perm)
                     .or_default()
                     .refresh_for_prepared(
-                        &self.prepared_renderables,
+                        prepared_renderables,
                         &dict,
                         router,
                         &pipeline_property_ids,
@@ -128,7 +137,7 @@ impl RenderBackend {
             pipeline_property_ids,
             render_context,
             material_caches: &self.material_batch_caches,
-            prepared_renderables: &self.prepared_renderables,
+            prepared_renderables,
             occlusion: &self.occlusion,
             inner_parallelism,
         }

@@ -17,6 +17,7 @@ mod collect;
 mod filter;
 pub(crate) mod item;
 mod prepared_renderables;
+mod render_world;
 mod sort;
 
 pub use collect::{
@@ -26,6 +27,7 @@ pub use collect::{
 pub use filter::{CameraTransformDrawFilter, draw_filter_from_camera_entry};
 pub use item::{WorldMeshDrawCollection, WorldMeshDrawItem, resolved_material_slots};
 pub use prepared_renderables::FramePreparedRenderables;
+pub use render_world::RenderWorld;
 pub use sort::{pack_sort_prefix, sort_draws};
 
 #[cfg(test)]

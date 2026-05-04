@@ -63,6 +63,7 @@ pub fn on_set_cubemap_format(
         return;
     };
     let existed_before = queue.pools.cubemap_pool.insert(tex);
+    replay_pending_cubemap_uploads_for_asset(queue, id);
     send_cubemap_result(
         ipc,
         id,
@@ -110,7 +111,7 @@ pub fn on_set_cubemap_data(
         data: d,
         kind: "cubemap",
         format_command: "SetCubemapData",
-        max_pending: MAX_PENDING_CUBEMAP_UPLOADS,
+        pending_warn_threshold: MAX_PENDING_CUBEMAP_UPLOADS,
         queue,
         has_format: |queue, id| queue.catalogs.cubemap_formats.contains_key(&id),
         pending_len: |queue| queue.pending.pending_cubemap_uploads.len(),
@@ -128,9 +129,7 @@ pub fn on_set_cubemap_data(
         d.high_priority,
     );
 
-    if !enqueue_cubemap_upload_task(queue, d) {
-        logger::warn!("cubemap {asset_id}: asset integration queue full; dropping data upload",);
-    }
+    enqueue_cubemap_upload_task(queue, d);
 }
 
 /// Replay pending cubemap data after GPU attach.
@@ -141,7 +140,9 @@ pub fn try_cubemap_upload_with_device(
     _ipc: Option<&mut DualQueueIpc>,
     _consume_texture_upload_budget: bool,
 ) {
-    let _ = enqueue_cubemap_upload_task(queue, data);
+    if !enqueue_cubemap_upload_task(queue, data.clone()) {
+        queue.pending.pending_cubemap_uploads.push_back(data);
+    }
 }
 
 /// Remove a cubemap asset from CPU tables and the pool.
@@ -149,6 +150,7 @@ pub fn on_unload_cubemap(queue: &mut AssetTransferQueue, u: UnloadCubemap) {
     let id = u.asset_id;
     queue.catalogs.cubemap_formats.remove(&id);
     queue.catalogs.cubemap_properties.remove(&id);
+    remove_pending_cubemap_uploads_for_asset(queue, id);
     if queue.pools.cubemap_pool.remove(id) {
         logger::info!(
             "cubemap {id} unloaded (tex~={} total~={})",
@@ -174,7 +176,39 @@ fn enqueue_cubemap_upload_task(queue: &mut AssetTransferQueue, d: SetCubemapData
     };
     let high = d.high_priority;
     let task = AssetTask::Cubemap(CubemapUploadTask::new(d, fmt, wgpu_fmt));
-    queue.integrator_mut().try_enqueue(task, high)
+    queue.integrator_mut().enqueue(task, high);
+    true
+}
+
+fn replay_pending_cubemap_uploads_for_asset(queue: &mut AssetTransferQueue, asset_id: i32) {
+    let pending = std::mem::take(&mut queue.pending.pending_cubemap_uploads);
+    let mut replayed = 0usize;
+    for data in pending {
+        if data.asset_id == asset_id {
+            if enqueue_cubemap_upload_task(queue, data.clone()) {
+                replayed += 1;
+            } else {
+                queue.pending.pending_cubemap_uploads.push_back(data);
+            }
+        } else {
+            queue.pending.pending_cubemap_uploads.push_back(data);
+        }
+    }
+    if replayed > 0 {
+        logger::debug!("cubemap {asset_id}: replayed {replayed} deferred data upload(s)");
+    }
+}
+
+fn remove_pending_cubemap_uploads_for_asset(queue: &mut AssetTransferQueue, asset_id: i32) {
+    let pending_before = queue.pending.pending_cubemap_uploads.len();
+    queue
+        .pending
+        .pending_cubemap_uploads
+        .retain(|upload| upload.asset_id != asset_id);
+    let removed = pending_before.saturating_sub(queue.pending.pending_cubemap_uploads.len());
+    if removed > 0 {
+        logger::debug!("cubemap {asset_id}: removed {removed} deferred upload(s) on unload");
+    }
 }
 
 #[cfg(test)]
@@ -243,12 +277,13 @@ mod tests {
     }
 
     #[test]
-    fn data_without_format_is_dropped_before_pending_queue() {
+    fn data_without_format_is_deferred_until_format() {
         let mut queue = AssetTransferQueue::new();
 
         on_set_cubemap_data(&mut queue, data(11), None, None);
 
-        assert!(queue.pending.pending_cubemap_uploads.is_empty());
+        assert_eq!(queue.pending.pending_cubemap_uploads.len(), 1);
+        assert_eq!(queue.pending.pending_cubemap_uploads[0].asset_id, 11);
     }
 
     #[test]

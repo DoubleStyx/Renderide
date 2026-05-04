@@ -13,8 +13,9 @@ use super::ping_pong::{PingPongCursor, PingPongHdrSlots};
 /// Changes to any field force a render-graph rebuild. Non-topology parameters (intensity,
 /// threshold, composite mode, etc.) flow to the passes via per-view blackboard slots
 /// ([`crate::passes::post_processing::settings_slot::BloomSettingsSlot`],
-/// [`crate::passes::post_processing::settings_slot::GtaoSettingsSlot`]) and therefore do **not** need to be
-/// tracked here.
+/// [`crate::passes::post_processing::settings_slot::GtaoSettingsSlot`],
+/// [`crate::passes::post_processing::settings_slot::AutoExposureSettingsSlot`]) and therefore do
+/// **not** need to be tracked here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PostProcessChainSignature {
     /// Ground-Truth Ambient Occlusion pass active.
@@ -26,6 +27,8 @@ pub struct PostProcessChainSignature {
     pub gtao_denoise_passes: u32,
     /// Dual-filter bloom pass active.
     pub bloom: bool,
+    /// Histogram-based auto-exposure pass active.
+    pub auto_exposure: bool,
     /// Stephen Hill ACES Fitted tonemap pass active.
     pub aces_tonemap: bool,
     /// Effective bloom mip 0 target height (px). Baked into the mip-chain transient texture
@@ -41,6 +44,7 @@ impl PostProcessChainSignature {
         let master = settings.enabled;
         let gtao = master && settings.gtao.enabled;
         let bloom = master && settings.bloom.enabled && settings.bloom.intensity > 0.0;
+        let auto_exposure = master && settings.auto_exposure.enabled;
         Self {
             gtao,
             gtao_denoise_passes: if gtao {
@@ -49,6 +53,7 @@ impl PostProcessChainSignature {
                 0
             },
             bloom,
+            auto_exposure,
             aces_tonemap: master && matches!(settings.tonemap.mode, TonemapMode::AcesFitted),
             bloom_max_mip_dimension: if bloom {
                 settings.bloom.effective_max_mip_dimension()
@@ -60,12 +65,15 @@ impl PostProcessChainSignature {
 
     /// Returns `true` when no effects are active and the chain should be skipped entirely.
     pub fn is_empty(self) -> bool {
-        !self.gtao && !self.bloom && !self.aces_tonemap
+        !self.gtao && !self.bloom && !self.auto_exposure && !self.aces_tonemap
     }
 
     /// Number of active effects.
     pub fn active_count(self) -> usize {
-        usize::from(self.gtao) + usize::from(self.bloom) + usize::from(self.aces_tonemap)
+        usize::from(self.gtao)
+            + usize::from(self.bloom)
+            + usize::from(self.auto_exposure)
+            + usize::from(self.aces_tonemap)
     }
 }
 
@@ -417,13 +425,16 @@ mod tests {
         assert!(sig.aces_tonemap);
         assert!(sig.gtao);
         assert!(sig.bloom);
-        assert_eq!(sig.active_count(), 3);
+        assert!(sig.auto_exposure);
+        assert_eq!(sig.active_count(), 4);
 
         s.tonemap.mode = TonemapMode::None;
         assert!(PostProcessChainSignature::from_settings(&s).gtao);
         assert!(PostProcessChainSignature::from_settings(&s).bloom);
+        assert!(PostProcessChainSignature::from_settings(&s).auto_exposure);
         s.gtao.enabled = false;
         s.bloom.enabled = false;
+        s.auto_exposure.enabled = false;
         assert!(PostProcessChainSignature::from_settings(&s).is_empty());
     }
 
@@ -437,6 +448,7 @@ mod tests {
             ..Default::default()
         };
         s.bloom.enabled = false;
+        s.auto_exposure.enabled = false;
         let sig = PostProcessChainSignature::from_settings(&s);
         assert!(sig.gtao);
         assert!(!sig.aces_tonemap);
@@ -478,6 +490,7 @@ mod tests {
             ..Default::default()
         };
         s.gtao.enabled = false;
+        s.auto_exposure.enabled = false;
         s.bloom.enabled = false;
         assert!(PostProcessChainSignature::from_settings(&s).is_empty());
 
@@ -504,12 +517,34 @@ mod tests {
             ..Default::default()
         };
         s.gtao.enabled = false;
+        s.auto_exposure.enabled = false;
         s.bloom.max_mip_dimension = 511;
 
         let sig = PostProcessChainSignature::from_settings(&s);
 
         assert!(sig.bloom);
         assert_eq!(sig.bloom_max_mip_dimension, 256);
+    }
+
+    #[test]
+    fn signature_tracks_auto_exposure_toggle_independently_of_tonemap() {
+        let mut s = PostProcessingSettings {
+            enabled: true,
+            tonemap: TonemapSettings {
+                mode: TonemapMode::None,
+            },
+            ..Default::default()
+        };
+        s.gtao.enabled = false;
+        s.bloom.enabled = false;
+
+        let sig = PostProcessChainSignature::from_settings(&s);
+
+        assert!(sig.auto_exposure);
+        assert_eq!(sig.active_count(), 1);
+
+        s.auto_exposure.enabled = false;
+        assert!(PostProcessChainSignature::from_settings(&s).is_empty());
     }
 
     #[test]

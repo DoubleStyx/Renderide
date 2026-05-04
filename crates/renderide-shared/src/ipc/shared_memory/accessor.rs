@@ -184,12 +184,31 @@ impl SharedMemoryAccessor {
         element_stride: usize,
         context: Option<&str>,
     ) -> Result<Vec<T>, String> {
+        self.access_copy_memory_packable_rows_with_max(
+            descriptor,
+            element_stride,
+            Self::MAX_ACCESS_COPY_BYTES,
+            context,
+        )
+    }
+
+    /// Copies shared memory into host-sized rows with a caller-specified byte ceiling.
+    ///
+    /// Use this for row buffers that are expected to exceed [`Self::MAX_ACCESS_COPY_BYTES`] after
+    /// independent protocol validation has established a safe upper bound.
+    pub fn access_copy_memory_packable_rows_with_max<T: MemoryPackable + Default>(
+        &mut self,
+        descriptor: &SharedMemoryBufferDescriptor,
+        element_stride: usize,
+        max_bytes: i32,
+        context: Option<&str>,
+    ) -> Result<Vec<T>, String> {
         profiling::scope!("shared_memory::access_packable_rows");
         let prefix_err = make_context_prefixer(context);
         if element_stride == 0 {
             return Err(prefix_err("element_stride must be nonzero"));
         }
-        validate_access_copy_descriptor(descriptor, Self::MAX_ACCESS_COPY_BYTES, &prefix_err)?;
+        validate_access_copy_descriptor(descriptor, max_bytes, &prefix_err)?;
         let buffer_id = descriptor.buffer_id;
         let path_for_diag = self.shm_path_for_buffer(buffer_id);
         let Some(view) = self.get_view(descriptor) else {
@@ -400,5 +419,26 @@ mod access_copy_diagnostic_tests {
             .expect_err("negative length");
         assert!(err.starts_with("mesh_upload:"), "unexpected message: {err}");
         assert!(err.contains("length<=0"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn access_copy_packable_rows_respects_caller_max() {
+        let mut acc = SharedMemoryAccessor::new("pfx".into());
+        let d = SharedMemoryBufferDescriptor {
+            buffer_id: 4,
+            buffer_capacity: 4096,
+            offset: 0,
+            length: 128,
+        };
+        let err = acc
+            .access_copy_memory_packable_rows_with_max::<crate::shared::TransformPoseUpdate>(
+                &d,
+                crate::shared::TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES,
+                64,
+                Some("pose_rows"),
+            )
+            .expect_err("custom max should reject before mapping");
+        assert!(err.starts_with("pose_rows:"), "unexpected message: {err}");
+        assert!(err.contains("exceeds max 64"), "unexpected message: {err}");
     }
 }

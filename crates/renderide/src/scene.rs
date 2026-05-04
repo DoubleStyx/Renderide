@@ -70,7 +70,7 @@ mod transforms_apply;
 mod world;
 
 pub use camera_apply::CameraRenderableEntry;
-pub use coordinator::SceneCoordinator;
+pub use coordinator::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
 pub use error::SceneError;
 pub use ids::{RenderSpaceId, TransformIndex};
 pub use lights::{CachedLight, LightCache, ResolvedLight, light_casts_shadows, light_contributes};

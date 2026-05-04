@@ -34,8 +34,9 @@ use crate::shared::VideoTextureClockErrorState;
 use catalogs::AssetCatalogs;
 use gpu_runtime::AssetGpuRuntime;
 pub use integrator::{
-    AssetIntegrationDrainSummary, AssetIntegrator, AssetTask, MAX_ASSET_INTEGRATION_QUEUED,
-    StepResult, drain_asset_tasks, drain_asset_tasks_unbounded,
+    ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD, AssetIntegrationDrainSummary, AssetIntegrator,
+    AssetTask, MAX_ASSET_INTEGRATION_QUEUED, StepResult, drain_asset_tasks,
+    drain_asset_tasks_unbounded,
 };
 use pending::PendingAssetUploads;
 use pools::ResidentAssetPools;
@@ -72,6 +73,20 @@ impl AssetTransferQueue {
     /// Mutably borrows the cooperative asset integrator.
     pub(crate) fn integrator_mut(&mut self) -> &mut AssetIntegrator {
         &mut self.integrator
+    }
+
+    /// Whether any upload work is queued or deferred on missing prerequisites.
+    pub(crate) fn has_pending_asset_work(&self) -> bool {
+        self.integrator.total_queued() > 0
+            || !self.pending.pending_mesh_uploads.is_empty()
+            || !self.pending.pending_texture_uploads.is_empty()
+            || !self.pending.pending_texture3d_uploads.is_empty()
+            || !self.pending.pending_cubemap_uploads.is_empty()
+    }
+
+    /// Whether GPU handles required by the asset integrator are attached.
+    pub(crate) fn asset_gpu_ready(&self) -> bool {
+        self.gpu.is_attached()
     }
 
     /// Stores GPU handles and limits after backend attach.

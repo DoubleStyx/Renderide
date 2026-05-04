@@ -10,6 +10,7 @@
 //!
 //! See [`crate::passes::post_processing`] for concrete effect implementations:
 //! [`GtaoEffect`](crate::passes::post_processing::GtaoEffect),
+//! [`AutoExposureEffect`](crate::passes::post_processing::AutoExposureEffect),
 //! [`BloomEffect`](crate::passes::post_processing::BloomEffect), and
 //! [`AcesTonemapPass`](crate::passes::post_processing::AcesTonemapPass).
 

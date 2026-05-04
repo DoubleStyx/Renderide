@@ -92,8 +92,13 @@ impl RenderBackend {
                 key.cluster_assignment,
             );
         }
+        let post_processing_resources = self.graph_state.post_processing_resources().clone();
         if let Err(error) = self.graph_state.frame_graph_cache.ensure(key, || {
-            crate::render_graph::build_main_graph(key, post_processing)
+            crate::render_graph::main_graph::build_main_graph_with_resources(
+                key,
+                post_processing,
+                &post_processing_resources,
+            )
         }) {
             logger::warn!("render graph build failed: {error}");
         }

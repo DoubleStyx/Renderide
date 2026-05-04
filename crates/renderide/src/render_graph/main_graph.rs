@@ -11,6 +11,7 @@ use super::builder::GraphBuilder;
 use super::cache::GraphCacheKey;
 use super::compiled::CompiledRenderGraph;
 use super::error::GraphBuildError;
+use super::ids::PassId;
 use super::post_processing;
 use super::resources::{
     BackendFrameBufferKind, BufferAccess, BufferHandle, BufferImportSource, BufferSizePolicy,
@@ -19,6 +20,27 @@ use super::resources::{
     TransientArrayLayers, TransientBufferDesc, TransientExtent, TransientSampleCount,
     TransientTextureDesc, TransientTextureFormat,
 };
+
+/// Long-lived resources shared by post-processing passes across main-graph rebuilds.
+#[derive(Clone, Default)]
+pub(crate) struct MainGraphPostProcessingResources {
+    auto_exposure_state_cache:
+        std::sync::Arc<crate::passes::post_processing::AutoExposureStateCache>,
+}
+
+impl MainGraphPostProcessingResources {
+    /// Shared auto-exposure state cache used by graph instances built for the same backend.
+    pub(crate) fn auto_exposure_state_cache(
+        &self,
+    ) -> std::sync::Arc<crate::passes::post_processing::AutoExposureStateCache> {
+        std::sync::Arc::clone(&self.auto_exposure_state_cache)
+    }
+
+    /// Releases view-scoped post-processing resources for views that are no longer active.
+    pub(crate) fn retire_views(&self, retired_views: &[crate::camera::ViewId]) {
+        self.auto_exposure_state_cache.retire_views(retired_views);
+    }
+}
 
 /// Imported buffers/transients wired into [`build_main_graph`].
 struct MainGraphHandles {
@@ -278,7 +300,7 @@ fn create_gtao_view_normal_transients(
 
 struct GtaoNormalPrepassNode {
     view_normals: TextureHandle,
-    pass: crate::render_graph::ids::PassId,
+    pass: PassId,
 }
 
 fn main_forward_resources(h: &MainGraphHandles) -> crate::passes::WorldMeshForwardGraphResources {
@@ -345,10 +367,25 @@ fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGraphHandles {
     }
 }
 
+fn connect_post_processing_edges(
+    builder: &mut GraphBuilder,
+    forward_tail: PassId,
+    chain_output: post_processing::ChainOutput,
+    compose: PassId,
+) {
+    if let Some((first_post, last_post)) = chain_output.pass_range() {
+        builder.add_edge(forward_tail, first_post);
+        builder.add_edge(last_post, compose);
+    } else {
+        builder.add_edge(forward_tail, compose);
+    }
+}
+
 fn add_main_graph_passes_and_edges(
     mut builder: GraphBuilder,
     h: MainGraphHandles,
     post_processing_settings: &crate::config::PostProcessingSettings,
+    post_processing_resources: &MainGraphPostProcessingResources,
     msaa_sample_count: u8,
     multiview_stereo: bool,
     cluster_assignment: crate::config::ClusterAssignmentMode,
@@ -416,6 +453,7 @@ fn add_main_graph_passes_and_edges(
         &h,
         post_processing_settings,
         multiview_stereo,
+        post_processing_resources,
         gtao_normals.as_ref().map(|node| node.view_normals),
     );
     let chain_output =
@@ -452,22 +490,16 @@ fn add_main_graph_passes_and_edges(
         builder.add_edge(forward_transparent, depth_resolve);
     }
     builder.add_edge(depth_resolve, hiz);
-    // Sequence post-processing after the final forward HDR target is available.
-    if let Some((first_post, last_post)) = chain_output.pass_range() {
-        builder.add_edge(hiz, first_post);
-        builder.add_edge(last_post, compose);
-    } else {
-        builder.add_edge(hiz, compose);
-    }
+    connect_post_processing_edges(&mut builder, hiz, chain_output, compose);
     builder.build()
 }
 
 /// Builds the canonical post-processing chain shipped with the renderer.
 ///
-/// Execution order is GTAO -> bloom -> ACES tonemap. GTAO runs first so ambient occlusion
-/// modulates linear HDR light before bloom scatter; bloom runs in HDR-linear space so its
-/// dual-filter pyramid operates on scene-referred radiance; then ACES compresses the combined
-/// HDR signal to display-referred `[0, 1]`. Each effect gates itself via
+/// Execution order is GTAO -> auto-exposure -> bloom -> ACES tonemap. GTAO runs first so ambient
+/// occlusion modulates linear HDR light before metering; auto-exposure meters and scales the HDR
+/// scene before bloom; bloom scatters exposed HDR light; then ACES compresses the final exposed HDR
+/// signal to display-referred `[0, 1]`. Each effect gates itself via
 /// [`super::post_processing::PostProcessEffect::is_enabled`] against the live
 /// [`crate::config::PostProcessingSettings`].
 ///
@@ -480,6 +512,7 @@ fn build_default_post_processing_chain(
     h: &MainGraphHandles,
     post_processing_settings: &crate::config::PostProcessingSettings,
     multiview_stereo: bool,
+    post_processing_resources: &MainGraphPostProcessingResources,
     gtao_view_normals: Option<TextureHandle>,
 ) -> post_processing::PostProcessChain {
     let mut chain = post_processing::PostProcessChain::new();
@@ -492,6 +525,9 @@ fn build_default_post_processing_chain(
             multiview_stereo,
         }));
     }
+    chain.push(Box::new(crate::passes::AutoExposureEffect::new(
+        post_processing_resources.auto_exposure_state_cache(),
+    )));
     chain.push(Box::new(crate::passes::BloomEffect {
         settings: post_processing_settings.bloom,
     }));
@@ -515,6 +551,19 @@ pub fn build_main_graph(
     key: GraphCacheKey,
     post_processing_settings: &crate::config::PostProcessingSettings,
 ) -> Result<CompiledRenderGraph, GraphBuildError> {
+    build_main_graph_with_resources(
+        key,
+        post_processing_settings,
+        &MainGraphPostProcessingResources::default(),
+    )
+}
+
+/// Builds the main frame graph using caller-owned post-processing resources.
+pub(crate) fn build_main_graph_with_resources(
+    key: GraphCacheKey,
+    post_processing_settings: &crate::config::PostProcessingSettings,
+    post_processing_resources: &MainGraphPostProcessingResources,
+) -> Result<CompiledRenderGraph, GraphBuildError> {
     logger::info!(
         "main render graph: scene color HDR format = {:?}, post-processing = {} effect(s)",
         key.scene_color_format,
@@ -527,6 +576,7 @@ pub fn build_main_graph(
         builder,
         handles,
         post_processing_settings,
+        post_processing_resources,
         key.msaa_sample_count,
         key.multiview_stereo,
         key.cluster_assignment,
@@ -606,6 +656,10 @@ mod tests {
                 enabled: false,
                 ..Default::default()
             },
+            auto_exposure: crate::config::AutoExposureSettings {
+                enabled: false,
+                ..Default::default()
+            },
             tonemap: TonemapSettings {
                 mode: TonemapMode::AcesFitted,
             },
@@ -620,6 +674,10 @@ mod tests {
                 ..Default::default()
             },
             bloom: BloomSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            auto_exposure: crate::config::AutoExposureSettings {
                 enabled: false,
                 ..Default::default()
             },
@@ -731,6 +789,40 @@ mod tests {
             .find(|texture| texture.desc.label == "gtao_view_depth")
             .expect("gtao view depth transient");
         assert_eq!(view_depth.desc.array_layers, TransientArrayLayers::Fixed(2));
+    }
+
+    #[test]
+    fn default_post_processing_orders_exposure_before_bloom_and_tonemap_last() {
+        let post = PostProcessingSettings::default();
+        let mut key = smoke_key();
+        key.post_processing = PostProcessChainSignature::from_settings(&post);
+        let graph = build_main_graph(key, &post).expect("default post-processing graph");
+        let pass_names: Vec<&str> = graph.pass_info.iter().map(|p| p.name.as_str()).collect();
+        let auto_compute_pos = pass_names
+            .iter()
+            .position(|name| *name == "AutoExposureCompute")
+            .expect("auto-exposure compute pass");
+        let auto_apply_pos = pass_names
+            .iter()
+            .position(|name| *name == "AutoExposureApply")
+            .expect("auto-exposure apply pass");
+        let bloom_downsample_pos = pass_names
+            .iter()
+            .position(|name| *name == "BloomDownsampleFirst")
+            .expect("first bloom downsample pass");
+        let bloom_composite_pos = pass_names
+            .iter()
+            .position(|name| *name == "BloomComposite")
+            .expect("bloom composite pass");
+        let aces_tonemap_pos = pass_names
+            .iter()
+            .position(|name| *name == "AcesTonemap")
+            .expect("ACES tonemap pass");
+
+        assert!(auto_compute_pos < auto_apply_pos);
+        assert!(auto_apply_pos < bloom_downsample_pos);
+        assert!(bloom_downsample_pos < bloom_composite_pos);
+        assert!(bloom_composite_pos < aces_tonemap_pos);
     }
 
     #[test]

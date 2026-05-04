@@ -16,8 +16,13 @@ use crate::materials::embedded::{EmbeddedMaterialBindError, EmbeddedMaterialBind
 use crate::shared::bit_span::BitSpanMut;
 use crate::shared::{MaterialsUpdateBatch, MaterialsUpdateBatchResult, RendererCommand};
 
-/// Max queued [`MaterialsUpdateBatch`] when shared memory is not available.
-pub const MAX_PENDING_MATERIAL_BATCHES: usize = 256;
+/// Deferred [`MaterialsUpdateBatch`] count that emits queue-pressure diagnostics.
+pub const PENDING_MATERIAL_BATCH_WARN_THRESHOLD: usize = 256;
+
+/// Compatibility alias for the deferred material-batch backlog warning threshold.
+///
+/// This is no longer a hard capacity; deferred material batches are retained beyond this count.
+pub const MAX_PENDING_MATERIAL_BATCHES: usize = PENDING_MATERIAL_BATCH_WARN_THRESHOLD;
 
 /// Host material tables, GPU registry/cache, embedded bind builder, and deferred shader routes.
 pub struct MaterialSystem {
@@ -173,23 +178,34 @@ impl MaterialSystem {
         }
     }
 
-    /// Queue a materials batch when shared memory is not yet available. Returns `false` if queue full.
-    pub fn enqueue_materials_batch_no_shm(&mut self, batch: MaterialsUpdateBatch) -> bool {
-        if self.pending_material_batches.len() >= MAX_PENDING_MATERIAL_BATCHES {
-            logger::warn!(
-                "materials update batch {} dropped: pending queue full (no shared memory)",
-                batch.update_batch_id
-            );
-            return false;
-        }
+    /// Queue a materials batch when shared memory is not yet available.
+    pub fn enqueue_materials_batch_no_shm(&mut self, batch: MaterialsUpdateBatch) {
         logger::trace!(
-            "materials update batch {} deferred: pending_no_shm_queue={}/{}",
+            "materials update batch {} deferred: pending_no_shm_queue={}",
             batch.update_batch_id,
             self.pending_material_batches.len() + 1,
-            MAX_PENDING_MATERIAL_BATCHES,
         );
         self.pending_material_batches.push_back(batch);
-        true
+        self.log_pending_material_batch_pressure();
+    }
+
+    fn log_pending_material_batch_pressure(&self) {
+        let pending = self.pending_material_batches.len();
+        if pending == PENDING_MATERIAL_BATCH_WARN_THRESHOLD
+            || (pending > PENDING_MATERIAL_BATCH_WARN_THRESHOLD
+                && pending.is_multiple_of(PENDING_MATERIAL_BATCH_WARN_THRESHOLD))
+        {
+            logger::warn!(
+                "materials: deferred update batch backlog high: pending={} threshold={} reason=shared memory unavailable",
+                pending,
+                PENDING_MATERIAL_BATCH_WARN_THRESHOLD
+            );
+        }
+    }
+
+    /// Whether any material batches are waiting for shared memory.
+    pub fn has_pending_material_batches(&self) -> bool {
+        !self.pending_material_batches.is_empty()
     }
 
     /// Apply one host materials batch (shared memory must be valid for the batch descriptors).

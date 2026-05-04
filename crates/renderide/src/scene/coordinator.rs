@@ -10,7 +10,8 @@ use glam::Mat4;
 
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{
-    FrameSubmitData, ReflectionProbeChangeRenderResult, RenderSH2, RenderingContext,
+    FrameSubmitData, ReflectionProbeChangeRenderResult, RenderSH2, RenderSpaceUpdate,
+    RenderingContext,
 };
 
 use super::error::SceneError;
@@ -38,6 +39,27 @@ fn warn_if_multiple_active_non_overlay_spaces(data: &FrameSubmitData) {
             "FrameSubmitData: {active_non_overlay} active non-overlay render spaces (expected at most one for main camera parity)"
         );
     }
+}
+
+fn render_world_header_changed(
+    space: Option<&RenderSpaceState>,
+    update: &RenderSpaceUpdate,
+) -> bool {
+    let Some(space) = space else {
+        return true;
+    };
+    space.is_active != update.is_active
+        || space.is_overlay != update.is_overlay
+        || space.view_position_is_external != update.view_position_is_external
+}
+
+fn extracted_update_affects_render_world(update: &ExtractedRenderSpaceUpdate) -> bool {
+    update.transforms.is_some()
+        || update.meshes.is_some()
+        || update.skinned_meshes.is_some()
+        || update.layers.is_some()
+        || update.transform_overrides.is_some()
+        || update.material_overrides.is_some()
 }
 
 #[cfg(test)]
@@ -95,6 +117,62 @@ pub(super) struct ApplyWorkSlot {
     pub(super) removal_events: Vec<TransformRemovalEvent>,
     /// Whether applying this slot dirtied the world transform cache.
     pub(super) world_dirty: bool,
+}
+
+/// Scene changes observed while applying one host frame submission.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SceneApplyReport {
+    /// Host frame index from [`FrameSubmitData::frame_index`].
+    pub frame_index: i32,
+    /// Render spaces present in the submission.
+    pub submitted_spaces: Vec<RenderSpaceId>,
+    /// Render spaces whose header or body payload may have changed scene-renderable state.
+    pub changed_spaces: Vec<RenderSpaceId>,
+    /// Render spaces removed because they were absent from the submission.
+    pub removed_spaces: Vec<RenderSpaceId>,
+}
+
+impl SceneApplyReport {
+    /// Creates an empty report for `frame_index`.
+    fn new(frame_index: i32) -> Self {
+        Self {
+            frame_index,
+            submitted_spaces: Vec::new(),
+            changed_spaces: Vec::new(),
+            removed_spaces: Vec::new(),
+        }
+    }
+
+    /// Records a render space that appeared in the host submission.
+    fn note_submitted_space(&mut self, id: RenderSpaceId) {
+        self.submitted_spaces.push(id);
+    }
+
+    /// Records a render space that needs render-world maintenance.
+    fn note_changed_space(&mut self, id: RenderSpaceId) {
+        if !self.changed_spaces.contains(&id) {
+            self.changed_spaces.push(id);
+        }
+    }
+
+    /// Returns `true` when no render-world-affecting scene change was observed.
+    pub fn is_empty(&self) -> bool {
+        self.changed_spaces.is_empty() && self.removed_spaces.is_empty()
+    }
+}
+
+/// World-cache flushes completed after scene apply.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SceneCacheFlushReport {
+    /// Render spaces whose world transform caches were successfully refreshed.
+    pub flushed_spaces: Vec<RenderSpaceId>,
+}
+
+impl SceneCacheFlushReport {
+    /// Returns `true` when no world transform cache was flushed.
+    pub fn is_empty(&self) -> bool {
+        self.flushed_spaces.is_empty()
+    }
 }
 
 impl Default for SceneCoordinator {
@@ -272,10 +350,11 @@ impl SceneCoordinator {
     /// solve in parallel via rayon, and reinsert successful results afterwards. On error the
     /// offending space is left marked dirty so the next flush retries; the first error observed
     /// is surfaced as the function result.
-    pub fn flush_world_caches(&mut self) -> Result<(), SceneError> {
+    pub fn flush_world_caches(&mut self) -> Result<SceneCacheFlushReport, SceneError> {
         profiling::scope!("scene::flush_world_caches");
         use rayon::prelude::*;
 
+        let mut report = SceneCacheFlushReport::default();
         self.world_dirty_flush_scratch.clear();
         self.world_dirty_flush_scratch
             .extend(self.world_dirty.iter().copied());
@@ -295,7 +374,7 @@ impl SceneCoordinator {
         }
 
         if work.is_empty() {
-            return Ok(());
+            return Ok(report);
         }
 
         // `&self.spaces` is a shared borrow across rayon workers; `BTreeMap::get` is `Sync` for
@@ -330,6 +409,7 @@ impl SceneCoordinator {
                 Ok(cache) => {
                     self.world_caches.insert(id, cache);
                     self.world_dirty.remove(&id);
+                    report.flushed_spaces.push(id);
                 }
                 Err(e) => {
                     if first_err.is_none() {
@@ -343,7 +423,7 @@ impl SceneCoordinator {
         if let Some(e) = first_err {
             return Err(e);
         }
-        Ok(())
+        Ok(report)
     }
 
     /// Applies [`FrameSubmitData`]: transforms, meshes, skinned meshes, lights (Unity order).
@@ -363,9 +443,10 @@ impl SceneCoordinator {
         &mut self,
         shm: &mut SharedMemoryAccessor,
         data: &FrameSubmitData,
-    ) -> Result<(), SceneError> {
+    ) -> Result<SceneApplyReport, SceneError> {
         profiling::scope!("scene::apply_frame_submit");
         warn_if_multiple_active_non_overlay_spaces(data);
+        let mut report = SceneApplyReport::new(data.frame_index);
 
         // Clear last frame's per-space removal events; Phase B refills them, Phase C consumes.
         // Retain the per-space `Vec` allocations to keep the steady-state path allocation-free.
@@ -387,6 +468,8 @@ impl SceneCoordinator {
             for update in &data.render_spaces {
                 let id = RenderSpaceId(update.id);
                 seen.insert(id);
+                report.note_submitted_space(id);
+                let header_dirty = render_world_header_changed(self.spaces.get(&id), update);
                 let space = self.spaces.entry(id).or_insert_with(|| RenderSpaceState {
                     id,
                     ..Default::default()
@@ -396,6 +479,9 @@ impl SceneCoordinator {
                 self.world_caches.entry(id).or_default();
 
                 let extracted = extract_render_space_update(shm, update, data.frame_index)?;
+                if header_dirty || extracted_update_affects_render_world(&extracted) {
+                    report.note_changed_space(id);
+                }
                 extracted_per_space.push(extracted);
             }
         }
@@ -433,22 +519,27 @@ impl SceneCoordinator {
             }
         }
 
-        self.remove_render_spaces_not_in_submit(&seen);
+        self.remove_render_spaces_not_in_submit(&seen, &mut report.removed_spaces);
 
         // Restore the scratch containers (capacities retained for next frame).
         seen.clear();
         self.apply_seen_scratch = seen;
         debug_assert!(extracted_per_space.is_empty());
         self.apply_extracted_scratch = extracted_per_space;
-        Ok(())
+        Ok(report)
     }
 
     /// Drops render spaces that were absent from this submit's id set.
-    fn remove_render_spaces_not_in_submit(&mut self, seen: &HashSet<RenderSpaceId>) {
+    fn remove_render_spaces_not_in_submit(
+        &mut self,
+        seen: &HashSet<RenderSpaceId>,
+        removed: &mut Vec<RenderSpaceId>,
+    ) {
         self.remove_spaces_scratch.clear();
         self.remove_spaces_scratch
             .extend(self.spaces.keys().copied().filter(|id| !seen.contains(id)));
         for id in self.remove_spaces_scratch.iter().copied() {
+            removed.push(id);
             self.light_cache.remove_space(id.0);
             self.spaces.remove(&id);
             self.world_caches.remove(&id);

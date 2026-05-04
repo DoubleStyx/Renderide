@@ -24,6 +24,8 @@ pub struct MeshPool {
     inner: GpuResourcePool<GpuMesh, StreamingAccess>,
     /// Last successful [`MeshBufferLayout`] for [`mesh_upload_input_fingerprint`](crate::assets::mesh::mesh_upload_input_fingerprint) (skips `compute_mesh_buffer_layout` on hot uploads).
     layout_cache: HashMap<i32, (u64, MeshBufferLayout)>,
+    /// Monotonic generation bumped whenever resident mesh membership or contents change.
+    mutation_generation: u64,
 }
 
 impl MeshPool {
@@ -32,6 +34,7 @@ impl MeshPool {
         Self {
             inner: GpuResourcePool::new(StreamingAccess::mesh(streaming)),
             layout_cache: HashMap::new(),
+            mutation_generation: 0,
         }
     }
 
@@ -40,6 +43,7 @@ impl MeshPool {
         Self {
             inner: GpuResourcePool::new(StreamingAccess::mesh_noop()),
             layout_cache: HashMap::new(),
+            mutation_generation: 0,
         }
     }
 
@@ -64,6 +68,7 @@ impl MeshPool {
     /// Inserts or replaces a mesh; returns `true` if a previous entry was replaced.
     #[inline]
     pub fn insert(&mut self, mesh: GpuMesh) -> bool {
+        self.mutation_generation = self.mutation_generation.wrapping_add(1);
         self.inner.insert(mesh)
     }
 
@@ -71,7 +76,17 @@ impl MeshPool {
     /// layout for the asset.
     pub fn remove(&mut self, asset_id: i32) -> bool {
         self.layout_cache.remove(&asset_id);
-        self.inner.remove(asset_id)
+        let removed = self.inner.remove(asset_id);
+        if removed {
+            self.mutation_generation = self.mutation_generation.wrapping_add(1);
+        }
+        removed
+    }
+
+    /// Monotonic generation for resident mesh insert/remove/replace events.
+    #[inline]
+    pub fn mutation_generation(&self) -> u64 {
+        self.mutation_generation
     }
 
     /// Borrows a resident mesh by host asset id.

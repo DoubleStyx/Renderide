@@ -128,6 +128,15 @@ impl ApplicationHandler for AppDriver {
             return;
         }
 
+        if self
+            .runtime
+            .run_asset_integration_while_waiting_for_submit(std::time::Instant::now())
+        {
+            event_loop.set_control_flow(ControlFlow::Poll);
+            self.flush_logs_if_due();
+            return;
+        }
+
         let (focused_fps_cap, unfocused_fps_cap) = self
             .runtime
             .settings()

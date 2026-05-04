@@ -94,10 +94,17 @@ struct MeshDeformRecordCursors {
     skin_dispatch: u64,
 }
 
+struct MeshDeformDispatchResult {
+    work_item_count: u64,
+    dispatch_stats: MeshDeformRecordStats,
+    skipped_allocations: u64,
+}
+
 /// Collects deform work items for one render space (read-only scene + mesh pool).
 fn collect_deform_work_for_space(
     scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
+    visible_filter: Option<&hashbrown::HashSet<SkinCacheKey>>,
     space_id: RenderSpaceId,
     work: &mut Vec<DeformWorkItem>,
 ) {
@@ -112,6 +119,11 @@ fn collect_deform_work_for_space(
         if r.mesh_asset_id < 0 {
             continue;
         }
+        let skin_cache_key =
+            SkinCacheKey::new(space_id, SkinCacheRendererKind::Static, r.instance_id);
+        if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
+            continue;
+        }
         let Some(m) = mesh_pool.get(r.mesh_asset_id) else {
             continue;
         };
@@ -120,11 +132,7 @@ fn collect_deform_work_for_space(
         }
         work.push(DeformWorkItem {
             space_id,
-            skin_cache_key: SkinCacheKey::new(
-                space_id,
-                SkinCacheRendererKind::Static,
-                r.instance_id,
-            ),
+            skin_cache_key,
             mesh: MeshDeformSnapshot::from_mesh(m, false),
             skinned: None,
             smr_node_id: -1,
@@ -134,6 +142,11 @@ fn collect_deform_work_for_space(
     for skinned in &space.skinned_mesh_renderers {
         let r = &skinned.base;
         if r.mesh_asset_id < 0 {
+            continue;
+        }
+        let skin_cache_key =
+            SkinCacheKey::new(space_id, SkinCacheRendererKind::Skinned, r.instance_id);
+        if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
             continue;
         }
         let Some(m) = mesh_pool.get(r.mesh_asset_id) else {
@@ -146,11 +159,7 @@ fn collect_deform_work_for_space(
         let clone_bind = deform_needs_skin_mesh(m, Some(bone_ix));
         work.push(DeformWorkItem {
             space_id,
-            skin_cache_key: SkinCacheKey::new(
-                space_id,
-                SkinCacheRendererKind::Skinned,
-                r.instance_id,
-            ),
+            skin_cache_key,
             mesh: MeshDeformSnapshot::from_mesh(m, clone_bind),
             skinned: Some(skinned.bone_transform_indices.clone()),
             smr_node_id: r.node_id,
@@ -180,8 +189,19 @@ fn collect_deform_work_into_scratch(
     scratch: &mut MeshDeformScratch,
     scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
+    frame_resources: &crate::backend::FrameResourceManager,
 ) {
     profiling::scope!("mesh_deform::collect_work");
+    let visible_filter = frame_resources.visible_mesh_deform_keys_snapshot();
+    let visible_filter = visible_filter.as_ref();
+    if visible_filter.is_some_and(|keys| keys.is_empty()) {
+        scratch.space_ids.clear();
+        scratch.work.clear();
+        for chunk in &mut scratch.chunks {
+            chunk.clear();
+        }
+        return;
+    }
     let est = deform_work_upper_bound(scene);
     scratch.space_ids.clear();
     scratch.space_ids.extend(scene.render_space_ids());
@@ -198,6 +218,7 @@ fn collect_deform_work_into_scratch(
             collect_deform_work_for_space(
                 scene,
                 mesh_pool,
+                visible_filter,
                 scratch.space_ids[0],
                 &mut scratch.chunks[0],
             );
@@ -210,7 +231,13 @@ fn collect_deform_work_into_scratch(
                 .copied()
                 .zip(chunks.par_iter_mut())
                 .for_each(|(space_id, chunk)| {
-                    collect_deform_work_for_space(scene, mesh_pool, space_id, chunk);
+                    collect_deform_work_for_space(
+                        scene,
+                        mesh_pool,
+                        visible_filter,
+                        space_id,
+                        chunk,
+                    );
                 });
         }
     }
@@ -249,6 +276,78 @@ fn report_mesh_deform_stats(
     }
 }
 
+fn dispatch_mesh_deform_work(
+    gpu: MeshDeformEncodeGpu<'_>,
+    scene: &SceneCoordinator,
+    skin_cache: &mut crate::mesh_deform::GpuSkinCache,
+    work: &[DeformWorkItem],
+    render_context: crate::shared::RenderingContext,
+    head_output_transform: glam::Mat4,
+) -> MeshDeformDispatchResult {
+    profiling::scope!("mesh_deform::dispatch");
+    let mut cursors = MeshDeformRecordCursors::default();
+    let mut result = MeshDeformDispatchResult {
+        work_item_count: work.len() as u64,
+        dispatch_stats: MeshDeformRecordStats::default(),
+        skipped_allocations: 0,
+    };
+    for item in work {
+        let need =
+            entry_need_for_snapshot(&item.mesh, item.skinned.as_deref(), &item.blend_weights);
+        let Some((cache_entry, positions_arena, normals_arena, tangents_arena, temp_arena)) =
+            skin_cache.get_or_alloc_with_arenas(
+                gpu.device,
+                &mut *gpu.encoder,
+                item.skin_cache_key,
+                need,
+                item.mesh.vertex_count,
+            )
+        else {
+            result.skipped_allocations = result.skipped_allocations.saturating_add(1);
+            continue;
+        };
+
+        let stats = record_mesh_deform(
+            MeshDeformEncodeGpu {
+                device: gpu.device,
+                gpu_limits: gpu.gpu_limits,
+                encoder: &mut *gpu.encoder,
+                pre: gpu.pre,
+                scratch: &mut *gpu.scratch,
+                upload_batch: gpu.upload_batch,
+                profiler: gpu.profiler,
+            },
+            MeshDeformRecordInputs {
+                scene,
+                space_id: item.space_id,
+                mesh: &item.mesh,
+                bone_transform_indices: item.skinned.as_deref(),
+                smr_node_id: item.smr_node_id,
+                render_context,
+                head_output_transform,
+                blend_weights: &item.blend_weights,
+                bone_cursor: &mut cursors.bone,
+                blend_param_cursor: &mut cursors.blend_param,
+                skin_dispatch_cursor: &mut cursors.skin_dispatch,
+                skin_cache_entry: cache_entry,
+                positions_arena,
+                normals_arena,
+                tangents_arena,
+                temp_arena,
+            },
+        );
+        result.dispatch_stats.blend_dispatches = result
+            .dispatch_stats
+            .blend_dispatches
+            .saturating_add(stats.blend_dispatches);
+        result.dispatch_stats.skin_dispatches = result
+            .dispatch_stats
+            .skin_dispatches
+            .saturating_add(stats.skin_dispatches);
+    }
+    result
+}
+
 impl MeshDeformPass {
     /// Creates a mesh deform pass with empty scratch buffers (filled lazily on first execute).
     pub fn new() -> Self {
@@ -285,7 +384,12 @@ impl ComputePass for MeshDeformPass {
         let mesh_pool = frame.shared.asset_transfers.mesh_pool();
 
         let mut scratch = self.scratch.lock();
-        collect_deform_work_into_scratch(&mut scratch, frame.shared.scene, mesh_pool);
+        collect_deform_work_into_scratch(
+            &mut scratch,
+            frame.shared.scene,
+            mesh_pool,
+            frame.shared.frame_resources,
+        );
 
         let Some(pre) = frame.shared.mesh_preprocess else {
             scratch.work.clear();
@@ -300,78 +404,36 @@ impl ComputePass for MeshDeformPass {
             return Ok(());
         };
 
-        let mut cursors = MeshDeformRecordCursors::default();
         let render_context = frame.shared.scene.active_main_render_context();
         let head_output_transform = frame.view.host_camera.head_output_transform;
-
-        profiling::scope!("mesh_deform::dispatch");
         // Iterate `scratch.work` in place under the lock and clear afterwards: previous code
         // did `drain(..).collect()` which heap-allocated a fresh Vec per frame just to drop
         // the lock early. The mutex is uncontended in practice (the pass runs single-threaded
         // before per-view fan-out), and clearing keeps the buffer's capacity for next frame.
-        let work_item_count = scratch.work.len() as u64;
-        let (mut dispatch_stats, mut skipped_allocations) =
-            (MeshDeformRecordStats::default(), 0u64);
-        for item in &scratch.work {
-            let need =
-                entry_need_for_snapshot(&item.mesh, item.skinned.as_deref(), &item.blend_weights);
-            let Some((cache_entry, positions_arena, normals_arena, tangents_arena, temp_arena)) =
-                skin_cache.get_or_alloc_with_arenas(
-                    ctx.device,
-                    ctx.encoder,
-                    item.skin_cache_key,
-                    need,
-                    item.mesh.vertex_count,
-                )
-            else {
-                skipped_allocations = skipped_allocations.saturating_add(1);
-                continue;
-            };
-
-            let stats = record_mesh_deform(
-                MeshDeformEncodeGpu {
-                    device: ctx.device,
-                    gpu_limits: ctx.gpu_limits,
-                    encoder: ctx.encoder,
-                    pre,
-                    scratch: deform_scratch,
-                    upload_batch: ctx.upload_batch,
-                    profiler: ctx.profiler,
-                },
-                MeshDeformRecordInputs {
-                    scene: frame.shared.scene,
-                    space_id: item.space_id,
-                    mesh: &item.mesh,
-                    bone_transform_indices: item.skinned.as_deref(),
-                    smr_node_id: item.smr_node_id,
-                    render_context,
-                    head_output_transform,
-                    blend_weights: &item.blend_weights,
-                    bone_cursor: &mut cursors.bone,
-                    blend_param_cursor: &mut cursors.blend_param,
-                    skin_dispatch_cursor: &mut cursors.skin_dispatch,
-                    skin_cache_entry: cache_entry,
-                    positions_arena,
-                    normals_arena,
-                    tangents_arena,
-                    temp_arena,
-                },
-            );
-            dispatch_stats.blend_dispatches = dispatch_stats
-                .blend_dispatches
-                .saturating_add(stats.blend_dispatches);
-            dispatch_stats.skin_dispatches = dispatch_stats
-                .skin_dispatches
-                .saturating_add(stats.skin_dispatches);
-        }
+        let dispatch = dispatch_mesh_deform_work(
+            MeshDeformEncodeGpu {
+                device: ctx.device,
+                gpu_limits: ctx.gpu_limits,
+                encoder: ctx.encoder,
+                pre,
+                scratch: deform_scratch,
+                upload_batch: ctx.upload_batch,
+                profiler: ctx.profiler,
+            },
+            frame.shared.scene,
+            skin_cache,
+            &scratch.work,
+            render_context,
+            head_output_transform,
+        );
         scratch.work.clear();
         drop(scratch);
 
         let fc = skin_cache.frame_counter();
         report_mesh_deform_stats(
-            work_item_count,
-            dispatch_stats,
-            skipped_allocations,
+            dispatch.work_item_count,
+            dispatch.dispatch_stats,
+            dispatch.skipped_allocations,
             skin_cache,
         );
         skin_cache.sweep_stale(fc.saturating_sub(2));

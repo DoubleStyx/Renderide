@@ -5,6 +5,7 @@ use crossbeam_channel::{Receiver, TryRecvError, bounded};
 use crate::assets::{ResolvedShaderUpload, resolve_shader_upload};
 use crate::backend::RenderBackend;
 use crate::frontend::RendererFrontend;
+use crate::materials::RasterPipelineKind;
 use crate::shared::{
     MaterialsUpdateBatch, RendererCommand, ShaderUnload, ShaderUpload, ShaderUploadResult,
 };
@@ -71,6 +72,16 @@ pub(crate) fn drain_pending_shader_resolutions(
         }
     });
     for (asset_id, resolved) in completed {
+        if matches!(resolved.pipeline, RasterPipelineKind::Null) {
+            match resolved.shader_asset_name.as_deref() {
+                Some(name) => logger::warn!(
+                    "shader_upload: asset_id={asset_id} resolved shader_asset_name={name:?} has no embedded raster route; using Null pipeline"
+                ),
+                None => logger::warn!(
+                    "shader_upload: asset_id={asset_id} did not resolve a shader asset name; using Null pipeline"
+                ),
+            }
+        }
         logger::info!(
             "shader_upload: asset_id={} shader_asset_name={:?} raster_pipeline={:?}",
             asset_id,
@@ -106,9 +117,7 @@ pub(crate) fn on_materials_update_batch(
             batch.material_updates.len(),
             batch.material_update_count,
         );
-        if !backend.enqueue_materials_batch_no_shm(batch) {
-            // already logged
-        }
+        backend.enqueue_materials_batch_no_shm(batch);
         return;
     }
     let (shm, ipc) = frontend.transport_pair_mut();

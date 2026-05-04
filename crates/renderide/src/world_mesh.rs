@@ -22,7 +22,7 @@ pub use diagnostics::{
     WorldMeshDrawStateRow, WorldMeshDrawStats, state_rows_from_sorted, stats_from_sorted,
 };
 pub use draw_prep::{
-    CameraTransformDrawFilter, DrawCollectionContext, FramePreparedRenderables,
+    CameraTransformDrawFilter, DrawCollectionContext, FramePreparedRenderables, RenderWorld,
     WorldMeshDrawCollectParallelism, WorldMeshDrawCollection, WorldMeshDrawItem,
     collect_and_sort_draws, collect_and_sort_draws_with_parallelism, draw_filter_from_camera_entry,
     resolved_material_slots, sort_draws,

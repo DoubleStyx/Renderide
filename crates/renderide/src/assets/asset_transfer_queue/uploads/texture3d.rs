@@ -64,6 +64,7 @@ pub fn on_set_texture_3d_format(
         return;
     };
     let existed_before = queue.pools.texture3d_pool.insert(tex);
+    replay_pending_texture3d_uploads_for_asset(queue, id);
     send_texture_3d_result(
         ipc,
         id,
@@ -113,7 +114,7 @@ pub fn on_set_texture_3d_data(
         data: d,
         kind: "texture3d",
         format_command: "SetTexture3DData",
-        max_pending: MAX_PENDING_TEXTURE3D_UPLOADS,
+        pending_warn_threshold: MAX_PENDING_TEXTURE3D_UPLOADS,
         queue,
         has_format: |queue, id| queue.catalogs.texture3d_formats.contains_key(&id),
         pending_len: |queue| queue.pending.pending_texture3d_uploads.len(),
@@ -131,9 +132,7 @@ pub fn on_set_texture_3d_data(
         d.high_priority,
     );
 
-    if !enqueue_texture3d_upload_task(queue, d) {
-        logger::warn!("texture3d {asset_id}: asset integration queue full; dropping data upload",);
-    }
+    enqueue_texture3d_upload_task(queue, d);
 }
 
 /// Replay pending Texture3D data after GPU attach.
@@ -144,7 +143,9 @@ pub fn try_texture3d_upload_with_device(
     _ipc: Option<&mut DualQueueIpc>,
     _consume_texture_upload_budget: bool,
 ) {
-    let _ = enqueue_texture3d_upload_task(queue, data);
+    if !enqueue_texture3d_upload_task(queue, data.clone()) {
+        queue.pending.pending_texture3d_uploads.push_back(data);
+    }
 }
 
 /// Remove a Texture3D asset from CPU tables and the pool.
@@ -152,6 +153,7 @@ pub fn on_unload_texture_3d(queue: &mut AssetTransferQueue, u: UnloadTexture3D) 
     let id = u.asset_id;
     queue.catalogs.texture3d_formats.remove(&id);
     queue.catalogs.texture3d_properties.remove(&id);
+    remove_pending_texture3d_uploads_for_asset(queue, id);
     if queue.pools.texture3d_pool.remove(id) {
         logger::info!(
             "texture3d {id} unloaded (tex~={} total~={})",
@@ -177,7 +179,39 @@ fn enqueue_texture3d_upload_task(queue: &mut AssetTransferQueue, d: SetTexture3D
     };
     let high = d.high_priority;
     let task = AssetTask::Texture3d(Texture3dUploadTask::new(d, fmt, wgpu_fmt));
-    queue.integrator_mut().try_enqueue(task, high)
+    queue.integrator_mut().enqueue(task, high);
+    true
+}
+
+fn replay_pending_texture3d_uploads_for_asset(queue: &mut AssetTransferQueue, asset_id: i32) {
+    let pending = std::mem::take(&mut queue.pending.pending_texture3d_uploads);
+    let mut replayed = 0usize;
+    for data in pending {
+        if data.asset_id == asset_id {
+            if enqueue_texture3d_upload_task(queue, data.clone()) {
+                replayed += 1;
+            } else {
+                queue.pending.pending_texture3d_uploads.push_back(data);
+            }
+        } else {
+            queue.pending.pending_texture3d_uploads.push_back(data);
+        }
+    }
+    if replayed > 0 {
+        logger::debug!("texture3d {asset_id}: replayed {replayed} deferred data upload(s)");
+    }
+}
+
+fn remove_pending_texture3d_uploads_for_asset(queue: &mut AssetTransferQueue, asset_id: i32) {
+    let pending_before = queue.pending.pending_texture3d_uploads.len();
+    queue
+        .pending
+        .pending_texture3d_uploads
+        .retain(|upload| upload.asset_id != asset_id);
+    let removed = pending_before.saturating_sub(queue.pending.pending_texture3d_uploads.len());
+    if removed > 0 {
+        logger::debug!("texture3d {asset_id}: removed {removed} deferred upload(s) on unload");
+    }
 }
 
 #[cfg(test)]
@@ -252,12 +286,13 @@ mod tests {
     }
 
     #[test]
-    fn data_without_format_is_dropped_before_pending_queue() {
+    fn data_without_format_is_deferred_until_format() {
         let mut queue = AssetTransferQueue::new();
 
         on_set_texture_3d_data(&mut queue, data(9), None, None);
 
-        assert!(queue.pending.pending_texture3d_uploads.is_empty());
+        assert_eq!(queue.pending.pending_texture3d_uploads.len(), 1);
+        assert_eq!(queue.pending.pending_texture3d_uploads[0].asset_id, 9);
     }
 
     #[test]

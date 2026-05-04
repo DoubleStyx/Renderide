@@ -9,6 +9,7 @@ use rayon::prelude::*;
 
 use crate::backend::{ExtractedFrameShared, RenderBackend};
 use crate::gpu::GpuContext;
+use crate::mesh_deform::SkinCacheKey;
 use crate::occlusion::HiZCullData;
 use crate::render_graph::{FrameView, GraphExecuteError, WorldMeshDrawPlan};
 use crate::world_mesh::{
@@ -156,9 +157,34 @@ impl SubmitFrame<'_> {
         scene: &crate::scene::SceneCoordinator,
         backend: &mut RenderBackend,
     ) -> Result<(), GraphExecuteError> {
+        let visible_deform_keys = visible_mesh_deform_keys_from_draw_plans(&self.view_draws);
+        backend
+            .frame_resources
+            .set_visible_mesh_deform_keys(visible_deform_keys);
         let mut views = self.prepared_views.build_execution_views(self.view_draws);
         backend.execute_multi_view_frame(gpu, scene, &mut views, true)
     }
+}
+
+fn visible_mesh_deform_keys_from_draw_plans(
+    draw_plans: &[WorldMeshDrawPlan],
+) -> hashbrown::HashSet<SkinCacheKey> {
+    let mut keys = hashbrown::HashSet::new();
+    for collection in draw_plans
+        .iter()
+        .filter_map(WorldMeshDrawPlan::as_prefetched)
+    {
+        for item in &collection.items {
+            if item.world_space_deformed || item.blendshape_deformed {
+                keys.insert(SkinCacheKey::from_draw_parts(
+                    item.space_id,
+                    item.skinned,
+                    item.instance_id,
+                ));
+            }
+        }
+    }
+    keys
 }
 
 /// Frustum + Hi-Z cull inputs for one planned view.
@@ -355,8 +381,11 @@ fn cull_snapshot_for_view(
 #[cfg(test)]
 mod tests {
     use crate::camera::{HostCameraFrame, ViewId};
+    use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
     use crate::render_graph::FrameViewClear;
+    use crate::render_graph::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
     use crate::world_mesh::WorldMeshDrawCollectParallelism;
+    use crate::world_mesh::{PrefetchedWorldMeshViewDraws, WorldMeshDrawCollection};
 
     use super::super::frame_view_plan::{FrameViewPlan, FrameViewPlanTarget};
     use super::*;
@@ -410,5 +439,67 @@ mod tests {
             ),
             WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
         );
+    }
+
+    #[test]
+    fn visible_deform_keys_include_only_visible_deformed_draws() {
+        let mut rigid = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 10,
+            node_id: 0,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        rigid.world_space_deformed = false;
+        rigid.blendshape_deformed = false;
+
+        let mut blend = rigid.clone();
+        blend.node_id = 4;
+        blend.renderable_index = 4;
+        blend.instance_id = crate::scene::MeshRendererInstanceId(5);
+        blend.blendshape_deformed = true;
+
+        let mut skinned = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 2,
+            property_block: None,
+            skinned: true,
+            sorting_order: 0,
+            mesh_asset_id: 11,
+            node_id: 8,
+            slot_index: 0,
+            collect_order: 1,
+            alpha_blended: false,
+        });
+        skinned.world_space_deformed = true;
+
+        let plans = [WorldMeshDrawPlan::Prefetched(Box::new(
+            PrefetchedWorldMeshViewDraws::new(
+                WorldMeshDrawCollection {
+                    items: vec![rigid, blend.clone(), skinned.clone()],
+                    draws_pre_cull: 3,
+                    draws_culled: 0,
+                    draws_hi_z_culled: 0,
+                },
+                None,
+            ),
+        ))];
+
+        let keys = visible_mesh_deform_keys_from_draw_plans(&plans);
+
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&SkinCacheKey::new(
+            blend.space_id,
+            SkinCacheRendererKind::Static,
+            blend.instance_id,
+        )));
+        assert!(keys.contains(&SkinCacheKey::new(
+            skinned.space_id,
+            SkinCacheRendererKind::Skinned,
+            skinned.instance_id,
+        )));
     }
 }

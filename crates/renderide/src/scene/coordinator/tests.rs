@@ -5,11 +5,12 @@ use glam::{Mat4, Quat, Vec3};
 use crate::camera::{view_matrix_for_world_mesh_render_space, view_matrix_from_render_transform};
 use crate::scene::render_overrides::RenderTransformOverrideEntry;
 use crate::scene::render_space::RenderSpaceState;
-use crate::shared::{RenderTransform, RenderingContext};
+use crate::shared::{RenderSpaceUpdate, RenderTransform, RenderingContext};
 
 use super::super::ids::RenderSpaceId;
 use super::super::world::{WorldTransformCache, compute_world_matrices_for_space};
-use super::SceneCoordinator;
+use super::parallel_apply::ExtractedRenderSpaceUpdate;
+use super::{SceneCoordinator, extracted_update_affects_render_world, render_world_header_changed};
 
 impl SceneCoordinator {
     /// Overrides [`RenderSpaceState::is_active`] for a seeded space (unit tests only).
@@ -56,6 +57,102 @@ impl SceneCoordinator {
     pub(crate) fn test_insert_space(&mut self, id: RenderSpaceId, space: RenderSpaceState) {
         self.spaces.insert(id, space);
     }
+}
+
+fn empty_extracted_render_space_update() -> ExtractedRenderSpaceUpdate {
+    ExtractedRenderSpaceUpdate {
+        space_id: RenderSpaceId(1),
+        cameras: None,
+        reflection_probes: None,
+        transforms: None,
+        meshes: None,
+        skinned_meshes: None,
+        layers: None,
+        transform_overrides: None,
+        material_overrides: None,
+    }
+}
+
+#[test]
+fn render_world_header_dirty_ignores_view_only_header_changes() {
+    let space = RenderSpaceState {
+        is_active: true,
+        is_overlay: false,
+        view_position_is_external: false,
+        root_transform: RenderTransform {
+            position: Vec3::new(1.0, 2.0, 3.0),
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        },
+        ..Default::default()
+    };
+    let update = RenderSpaceUpdate {
+        is_active: true,
+        is_overlay: false,
+        view_position_is_external: false,
+        root_transform: RenderTransform {
+            position: Vec3::new(9.0, 8.0, 7.0),
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        },
+        ..RenderSpaceUpdate::default()
+    };
+
+    assert!(!render_world_header_changed(Some(&space), &update));
+}
+
+#[test]
+fn render_world_header_dirty_tracks_draw_prep_header_changes() {
+    let space = RenderSpaceState {
+        is_active: true,
+        is_overlay: false,
+        view_position_is_external: false,
+        ..Default::default()
+    };
+
+    assert!(render_world_header_changed(
+        Some(&space),
+        &RenderSpaceUpdate {
+            is_active: false,
+            is_overlay: false,
+            view_position_is_external: false,
+            ..RenderSpaceUpdate::default()
+        },
+    ));
+    assert!(render_world_header_changed(
+        Some(&space),
+        &RenderSpaceUpdate {
+            is_active: true,
+            is_overlay: true,
+            view_position_is_external: false,
+            ..RenderSpaceUpdate::default()
+        },
+    ));
+    assert!(render_world_header_changed(
+        Some(&space),
+        &RenderSpaceUpdate {
+            is_active: true,
+            is_overlay: false,
+            view_position_is_external: true,
+            ..RenderSpaceUpdate::default()
+        },
+    ));
+}
+
+#[test]
+fn extracted_render_world_dirty_ignores_camera_only_updates() {
+    let mut update = empty_extracted_render_space_update();
+    update.cameras = Some(super::super::camera_apply::ExtractedCameraRenderablesUpdate::default());
+
+    assert!(!extracted_update_affects_render_world(&update));
+}
+
+#[test]
+fn extracted_render_world_dirty_tracks_transform_updates() {
+    let mut update = empty_extracted_render_space_update();
+    update.transforms = Some(super::super::transforms_apply::ExtractedTransformsUpdate::default());
+
+    assert!(extracted_update_affects_render_world(&update));
 }
 
 /// Builds a unit-scale test transform at the origin.

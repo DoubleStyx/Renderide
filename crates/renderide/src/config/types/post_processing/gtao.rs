@@ -70,12 +70,12 @@ impl Default for GtaoSettings {
         Self {
             enabled: true,
             quality_level: 2,
-            radius_meters: 0.5,
+            radius_meters: 1.0,
             radius_multiplier: 1.457,
             intensity: 1.0,
             max_pixel_radius: 256.0,
-            step_count: 3,
-            falloff_range: 0.615,
+            step_count: 16,
+            falloff_range: 1.0,
             sample_distribution_power: 2.0,
             thin_occluder_compensation: 0.0,
             final_value_power: 2.2,
@@ -99,12 +99,12 @@ mod tests {
 
         assert!(settings.enabled);
         assert_eq!(settings.quality_level, 2);
-        assert_eq!(settings.radius_meters, 0.5);
+        assert_eq!(settings.radius_meters, 1.0);
         assert_eq!(settings.radius_multiplier, 1.457);
         assert_eq!(settings.intensity, 1.0);
         assert_eq!(settings.max_pixel_radius, 256.0);
-        assert_eq!(settings.step_count, 3);
-        assert_eq!(settings.falloff_range, 0.615);
+        assert_eq!(settings.step_count, 16);
+        assert_eq!(settings.falloff_range, 1.0);
         assert_eq!(settings.sample_distribution_power, 2.0);
         assert_eq!(settings.thin_occluder_compensation, 0.0);
         assert_eq!(settings.final_value_power, 2.2);

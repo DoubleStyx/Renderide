@@ -14,9 +14,10 @@ pub type BloomMaxMipDimension =
 ///
 /// Persisted as `[post_processing.bloom]`. Implements the Call of Duty: Advanced Warfare
 /// dual-filter technique (13-tap downsample + 3x3 tent upsample) with Karis-average firefly
-/// reduction on the first downsample. Runs **pre-tonemap** so it scatters HDR-linear light; the
-/// tonemap pass then compresses the combined value. Defaults favor energy-conserving scatter
-/// without thresholding, so dim HDR-linear contributions can still participate in the bloom pyramid.
+/// reduction on the first downsample. Runs after auto-exposure and before tonemapping so it scatters
+/// exposed HDR-linear light; the tonemap pass then compresses the combined value. Defaults favor
+/// energy-conserving scatter without thresholding, so dim HDR-linear contributions can still
+/// participate in the bloom pyramid.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BloomSettings {

@@ -21,10 +21,12 @@ use super::{
     GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem,
     TransientTextureResolveSurfaceParams,
 };
+use crate::backend::BackendGraphAccess;
 use crate::diagnostics::PerViewHudOutputsSlot;
 use crate::passes::PrefetchedWorldMeshDrawsSlot;
 use crate::passes::post_processing::settings_slot::{
-    BloomSettingsSlot, BloomSettingsValue, GtaoSettingsSlot, GtaoSettingsValue,
+    AutoExposureSettingsSlot, AutoExposureSettingsValue, BloomSettingsSlot, BloomSettingsValue,
+    GtaoSettingsSlot, GtaoSettingsValue,
 };
 
 impl CompiledRenderGraph {
@@ -97,6 +99,10 @@ impl CompiledRenderGraph {
         // params UBO and the upsamples use it to compute per-mip blend constants + pick
         // EnergyConserving vs Additive pipeline variants, so slider edits propagate next frame.
         view_blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(shared.live_bloom_settings));
+        view_blackboard.insert::<AutoExposureSettingsSlot>(AutoExposureSettingsValue {
+            settings: shared.live_auto_exposure_settings,
+            delta_seconds: shared.wall_frame_delta_seconds,
+        });
 
         {
             profiling::scope!("graph::per_view::pass_loop");
@@ -223,6 +229,9 @@ impl CompiledRenderGraph {
         upload_batch: &super::super::super::frame_upload_batch::FrameUploadBatch,
     ) -> Result<Option<wgpu::CommandBuffer>, GraphExecuteError> {
         profiling::scope!("graph::frame_global");
+        if self.frame_global_passes_are_inactive(mv_ctx.backend) {
+            return Ok(None);
+        }
         let MultiViewExecutionContext {
             gpu,
             scene,
@@ -233,9 +242,6 @@ impl CompiledRenderGraph {
             backbuffer_view_holder,
         } = mv_ctx;
 
-        if self.schedule.frame_global_steps().next().is_none() {
-            return Ok(None);
-        }
         let first = views.first().ok_or(GraphExecuteError::NoViewsInBatch)?;
         let mut encoder = {
             profiling::scope!("graph::frame_global::create_encoder");
@@ -333,6 +339,20 @@ impl CompiledRenderGraph {
         Ok(Some(command_buffer))
     }
 
+    fn frame_global_passes_are_inactive(&self, backend: &BackendGraphAccess<'_>) -> bool {
+        let mut indices = self.schedule.frame_global_pass_indices().iter().copied();
+        let Some(pass_idx) = indices.next() else {
+            return true;
+        };
+        if indices.next().is_some() {
+            return false;
+        }
+        self.passes[pass_idx].name() == "MeshDeform"
+            && backend
+                .frame_resources()
+                .visible_mesh_deform_filter_is_empty()
+    }
+
     fn finish_frame_global_encoder(
         gpu: &mut crate::gpu::GpuContext,
         mut encoder: wgpu::CommandEncoder,
@@ -360,7 +380,7 @@ impl CompiledRenderGraph {
         resolved: &ResolvedView<'_>,
         transient_by_key: &'t mut HashMap<GraphResolveKey, GraphResolvedResources>,
         device: &wgpu::Device,
-        backend: &mut crate::backend::BackendGraphAccess<'_>,
+        backend: &mut BackendGraphAccess<'_>,
         gpu_limits: &crate::gpu::GpuLimits,
     ) -> Result<&'t mut GraphResolvedResources, GraphExecuteError> {
         let key = GraphResolveKey::from_resolved(resolved);

@@ -35,7 +35,7 @@ use super::frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 use super::light_gpu::{GpuLight, MAX_LIGHTS, order_lights_for_clustered_shading_in_place};
 use super::per_draw_resources::PerDrawResources;
 use super::per_view_resource_map::PerViewResourceMap;
-use crate::mesh_deform::PaddedPerDrawUniforms;
+use crate::mesh_deform::{PaddedPerDrawUniforms, SkinCacheKey};
 use crate::scene::{ResolvedLight, SceneCoordinator, light_contributes};
 
 /// Per-view `@group(0)` frame uniform buffer + bind group.
@@ -194,6 +194,8 @@ pub struct FrameResourceManager {
     /// In VR, the HMD graph runs mesh deform first; secondary cameras skip it via this flag.
     /// Reset with [`Self::reset_light_prep_for_tick`].
     mesh_deform_dispatched_this_tick: AtomicBool,
+    /// Optional visible deform filter derived from prefetched per-view draw lists.
+    visible_mesh_deform_keys: Mutex<Option<HashSet<SkinCacheKey>>>,
     /// Reused per-view scratch for per-draw VP/pack before [`crate::mesh_deform::write_per_draw_uniform_slab`].
     ///
     /// Each view owns its own mutex-wrapped slot so rayon workers never alias the same scratch.
@@ -224,6 +226,7 @@ impl FrameResourceManager {
             light_prep_done_this_tick: false,
             lights_gpu_uploaded_this_tick: AtomicBool::new(false),
             mesh_deform_dispatched_this_tick: AtomicBool::new(false),
+            visible_mesh_deform_keys: Mutex::new(None),
             per_view_per_draw_scratch: PerViewResourceMap::new(),
             lights_overflow_warned: false,
         }
@@ -260,6 +263,7 @@ impl FrameResourceManager {
             .store(false, Ordering::Release);
         self.mesh_deform_dispatched_this_tick
             .store(false, Ordering::Release);
+        *self.visible_mesh_deform_keys.lock() = None;
     }
 
     /// Whether [`crate::passes::ClusteredLightPass`] already uploaded lights this tick.
@@ -285,6 +289,32 @@ impl FrameResourceManager {
     pub fn set_mesh_deform_dispatched_this_tick(&self) {
         self.mesh_deform_dispatched_this_tick
             .store(true, Ordering::Release);
+    }
+
+    /// Replaces the optional visible deform filter for this graph frame.
+    pub fn set_visible_mesh_deform_keys(&mut self, keys: HashSet<SkinCacheKey>) {
+        *self.visible_mesh_deform_keys.get_mut() = Some(keys);
+    }
+
+    /// Returns whether the deform pass should process `key` for the current graph frame.
+    pub fn mesh_deform_key_is_visible(&self, key: SkinCacheKey) -> bool {
+        self.visible_mesh_deform_keys
+            .lock()
+            .as_ref()
+            .is_none_or(|keys| keys.contains(&key))
+    }
+
+    /// Clones the current visible deform filter for lock-free worker iteration.
+    pub fn visible_mesh_deform_keys_snapshot(&self) -> Option<HashSet<SkinCacheKey>> {
+        self.visible_mesh_deform_keys.lock().clone()
+    }
+
+    /// Returns `true` when draw collection proved there is no visible deform work this frame.
+    pub fn visible_mesh_deform_filter_is_empty(&self) -> bool {
+        self.visible_mesh_deform_keys
+            .lock()
+            .as_ref()
+            .is_some_and(HashSet::is_empty)
     }
 
     /// Packed GPU lights from the last [`Self::prepare_lights_from_scene`] call.
