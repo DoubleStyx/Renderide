@@ -20,6 +20,7 @@ use hashbrown::HashMap;
 
 use glam::{Mat4, Vec3};
 
+use crate::color_space::srgb_vec3_to_linear;
 use crate::scene::transforms_apply::TransformRemovalEvent;
 use crate::shared::{LightData, LightsBufferRendererState};
 
@@ -52,7 +53,9 @@ struct BufferRenderer {
 pub struct LightCache {
     /// Monotonic change counter; advanced on any mutation.
     version: u64,
-    /// Shared [`LightData`] payloads keyed by `global_unique_id`. Referenced by every
+    /// Shared [`LightData`] payloads keyed by `global_unique_id`.
+    ///
+    /// Color channels are normalized to linear RGB before storage. Referenced by every
     /// [`BufferRenderer`] whose `state.global_unique_id` matches.
     buffers: HashMap<i32, Vec<LightData>>,
     /// Flattened per-space output, rebuilt after each apply from [`Self::regular_lights`] and
@@ -90,9 +93,13 @@ impl LightCache {
         self.version = self.version.wrapping_add(1);
     }
 
-    /// Stores full [`LightData`] rows from a host submission (overwrites prior buffer id) and
-    /// rebuilds every render space that has a [`BufferRenderer`] pointing at this `global_unique_id`.
-    pub fn store_full(&mut self, lights_buffer_unique_id: i32, light_data: Vec<LightData>) {
+    /// Stores full [`LightData`] rows from a host submission (overwrites prior buffer id), normalizes
+    /// submitted sRGB color to linear RGB, and rebuilds every render space that has a
+    /// [`BufferRenderer`] pointing at this `global_unique_id`.
+    pub fn store_full(&mut self, lights_buffer_unique_id: i32, mut light_data: Vec<LightData>) {
+        for light in &mut light_data {
+            light.color = srgb_vec3_to_linear(light.color);
+        }
         self.buffers.insert(lights_buffer_unique_id, light_data);
         let mut dirty_spaces: Vec<i32> = self
             .buffer_renderers

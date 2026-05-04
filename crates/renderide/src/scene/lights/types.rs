@@ -7,7 +7,7 @@ use crate::shared::{LightData, LightType, LightsBufferRendererState, ShadowType}
 /// Cached light entry combining pose data from submission with state from updates.
 #[derive(Clone, Debug)]
 pub struct CachedLight {
-    /// Local-space pose and color from [`LightsBufferRendererSubmission`](crate::shared::LightsBufferRendererSubmission) payload rows.
+    /// Local-space pose and linear RGB color from [`LightsBufferRendererSubmission`](crate::shared::LightsBufferRendererSubmission) payload rows.
     pub data: LightData,
     /// Renderable index, type, and shadow params from frame updates.
     pub state: LightsBufferRendererState,
@@ -33,7 +33,7 @@ pub struct ResolvedLight {
     pub world_position: Vec3,
     /// World-space propagation direction (normalized): local **+Z** after transform.
     pub world_direction: Vec3,
-    /// RGB color.
+    /// Linear RGB color.
     pub color: Vec3,
     /// Light intensity.
     pub intensity: f32,

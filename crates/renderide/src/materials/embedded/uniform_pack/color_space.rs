@@ -62,31 +62,6 @@ impl MaterialUniformValueSpaces {
     }
 }
 
-/// Converts a material color from host sRGB storage to shader-linear RGB, preserving alpha.
-pub(crate) fn srgb_vec4_rgb_to_linear(mut color: [f32; 4]) -> [f32; 4] {
-    color[0] = srgb_channel_to_linear(color[0]);
-    color[1] = srgb_channel_to_linear(color[1]);
-    color[2] = srgb_channel_to_linear(color[2]);
-    color
-}
-
-fn srgb_channel_to_linear(mut value: f32) -> f32 {
-    let sign = if value < 0.0 {
-        value = -value;
-        -1.0
-    } else {
-        1.0
-    };
-    let linear = if value >= 1.0 {
-        value
-    } else if value <= 0.04045 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
-    };
-    linear * sign
-}
-
 fn srgb_vec4_uniform_field(field_name: &str) -> bool {
     matches!(
         field_name,
@@ -183,7 +158,7 @@ mod tests {
 
     #[test]
     fn srgb_conversion_matches_elements_material_profile_rules() {
-        let linear = srgb_vec4_rgb_to_linear([-0.5, 0.04045, 1.25, 0.33]);
+        let linear = crate::color_space::srgb_f32x4_rgb_to_linear([-0.5, 0.04045, 1.25, 0.33]);
 
         assert!((linear[0] - -0.214_041_14).abs() < 0.000_001);
         assert!((linear[1] - (0.04045 / 12.92)).abs() < 0.000_001);

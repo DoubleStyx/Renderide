@@ -1,5 +1,6 @@
 //! [`CameraRenderablesUpdate`] ingestion from shared memory (FrooxEngine `CamerasManager` parity).
 
+use crate::color_space::srgb_vec4_rgb_to_linear;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{CAMERA_STATE_HOST_ROW_BYTES, CameraRenderablesUpdate, CameraState};
 
@@ -35,7 +36,7 @@ pub struct CameraRenderableEntry {
     pub renderable_index: i32,
     /// Node / transform index for the camera component.
     pub transform_id: i32,
-    /// Latest packed state from shared memory.
+    /// Latest state from shared memory; `background_color` is normalized to linear RGB on apply.
     pub state: CameraState,
     /// When non-empty, only these transform indices are drawn (Unity selective list).
     pub selective_transform_ids: Vec<i32>,
@@ -113,8 +114,10 @@ pub(crate) fn apply_camera_renderables_update_extracted(
         let Some(entry) = space.cameras.get_mut(idx) else {
             continue;
         };
+        let mut state = *state;
+        state.background_color = srgb_vec4_rgb_to_linear(state.background_color);
         entry.renderable_index = state.renderable_index;
-        entry.state = *state;
+        entry.state = state;
         let sel = state.selective_render_count.max(0) as usize;
         let excl = state.exclude_render_count.max(0) as usize;
         let need = sel.saturating_add(excl);
@@ -209,6 +212,27 @@ mod tests {
             exclude_transform_ids: exclude,
         });
         space
+    }
+
+    #[test]
+    fn camera_update_linearizes_background_color() {
+        let mut space = space_with_camera(7, vec![], vec![]);
+        let update = ExtractedCameraRenderablesUpdate {
+            states: vec![CameraState {
+                renderable_index: 0,
+                background_color: glam::Vec4::new(0.5, 0.04045, 1.25, 0.33),
+                ..CameraState::default()
+            }],
+            ..ExtractedCameraRenderablesUpdate::default()
+        };
+
+        apply_camera_renderables_update_extracted(&mut space, &update);
+
+        let color = space.cameras[0].state.background_color;
+        assert!((color.x - 0.214_041_14).abs() < 0.000_001);
+        assert!((color.y - (0.04045 / 12.92)).abs() < 0.000_001);
+        assert_eq!(color.z, 1.25);
+        assert_eq!(color.w, 0.33);
     }
 
     #[test]

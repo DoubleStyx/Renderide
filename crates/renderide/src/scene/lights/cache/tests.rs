@@ -6,6 +6,17 @@ use crate::shared::{LightData, LightState, LightType, LightsBufferRendererState,
 
 use super::LightCache;
 
+const EPS: f32 = 0.000_001;
+const SRGB_HALF_LINEAR: f32 = 0.214_041_14;
+const SRGB_THRESHOLD_LINEAR: f32 = 0.04045 / 12.92;
+
+fn assert_close(actual: f32, expected: f32) {
+    assert!(
+        (actual - expected).abs() < EPS,
+        "expected {expected}, got {actual}"
+    );
+}
+
 fn make_light_data(pos: (f32, f32, f32), color: (f32, f32, f32)) -> LightData {
     LightData {
         point: Vec3::new(pos.0, pos.1, pos.2),
@@ -54,6 +65,27 @@ fn make_regular_state(renderable_index: i32, intensity: f32, range: f32) -> Ligh
         shadow_type: ShadowType::None,
         _padding: [0; 2],
     }
+}
+
+#[test]
+fn store_full_linearizes_submitted_light_colors() {
+    let mut cache = LightCache::new();
+    let space_id = 0;
+    cache.store_full(
+        100,
+        vec![make_light_data((1.0, 0.0, 0.0), (0.5, 0.04045, 1.25))],
+    );
+    cache.apply_update(space_id, &[], &[0], &[make_state(0, 100, LightType::Point)]);
+
+    let lights = cache
+        .get_lights_for_space(space_id)
+        .expect("test setup: space should have lights");
+    assert_eq!(lights.len(), 1);
+    assert_close(lights[0].data.color.x, SRGB_HALF_LINEAR);
+    assert_close(lights[0].data.color.y, SRGB_THRESHOLD_LINEAR);
+    assert_eq!(lights[0].data.color.z, 1.25);
+    assert_eq!(lights[0].data.intensity, 1.0);
+    assert_eq!(lights[0].data.range, 10.0);
 }
 
 #[test]
@@ -188,6 +220,28 @@ fn light_cache_removals() {
     // rebuilt from the dense list so output order is [guid=100, guid=102].
     assert_eq!(lights[0].state.global_unique_id, 100);
     assert_eq!(lights[1].state.global_unique_id, 102);
+}
+
+#[test]
+fn regular_light_update_linearizes_state_color() {
+    let mut cache = LightCache::new();
+    let space_id = 0;
+    let mut state = make_regular_state(0, 2.0, 30.0);
+    state.color = glam::Vec4::new(0.5, 0.04045, 1.25, 0.75);
+    state.shadow_strength = 0.5;
+
+    cache.apply_regular_lights_update(space_id, &[], &[0], &[state]);
+
+    let lights = cache
+        .get_lights_for_space(space_id)
+        .expect("test setup: space should have lights");
+    assert_eq!(lights.len(), 1);
+    assert_close(lights[0].data.color.x, SRGB_HALF_LINEAR);
+    assert_close(lights[0].data.color.y, SRGB_THRESHOLD_LINEAR);
+    assert_eq!(lights[0].data.color.z, 1.25);
+    assert_eq!(lights[0].data.intensity, 2.0);
+    assert_eq!(lights[0].data.range, 30.0);
+    assert_eq!(lights[0].state.shadow_strength, 0.5);
 }
 
 #[test]

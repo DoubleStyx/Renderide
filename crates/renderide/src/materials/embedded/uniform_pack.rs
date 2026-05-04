@@ -16,7 +16,8 @@ mod color_space;
 mod helpers;
 mod tables;
 
-pub(crate) use color_space::{MaterialUniformValueSpaces, srgb_vec4_rgb_to_linear};
+pub(crate) use crate::color_space::srgb_f32x4_rgb_to_linear as srgb_vec4_rgb_to_linear;
+pub(crate) use color_space::MaterialUniformValueSpaces;
 use helpers::{default_f32_for_field, default_vec4_for_field, shader_writer_unescaped_field_name};
 use tables::inferred_keyword_float_f32;
 
