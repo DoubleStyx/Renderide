@@ -248,7 +248,7 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
         },
         PassKind::ForwardTransparent => {
             transparent_forward_pass(base, None, MaterialRenderStatePolicy::FORWARD)
-        },
+        }
         PassKind::ForwardTransparentCullFront => transparent_forward_pass(
             base,
             Some(wgpu::Face::Front),

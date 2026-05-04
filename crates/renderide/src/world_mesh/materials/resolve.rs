@@ -4,13 +4,13 @@ use crate::materials::ShaderPermutation;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
     MaterialBlendMode, MaterialPipelinePropertyIds, MaterialRenderState, MaterialRouter,
-    RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology, embedded_stem_needs_color_stream,
-    embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream,
-    embedded_stem_needs_uv1_stream, embedded_stem_requires_intersection_pass,
-    embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
-    embedded_stem_uses_scene_depth_snapshot, fallback_render_queue_for_material,
-    material_blend_mode_from_maps, material_render_queue_from_maps,
-    material_render_state_from_maps, resolve_raster_pipeline, UNITY_RENDER_QUEUE_VOLUME_FOG,
+    RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology, UNITY_RENDER_QUEUE_VOLUME_FOG,
+    embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
+    embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream,
+    embedded_stem_requires_intersection_pass, embedded_stem_uses_alpha_blending,
+    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
+    fallback_render_queue_for_material, material_blend_mode_from_maps,
+    material_render_queue_from_maps, material_render_state_from_maps, resolve_raster_pipeline,
 };
 
 use super::FrameMaterialBatchCache;
@@ -353,9 +353,6 @@ mod tests {
             apply_fogbox_render_queue_floor(&pipeline, true, 3000),
             UNITY_RENDER_QUEUE_VOLUME_FOG
         );
-        assert_eq!(
-            apply_fogbox_render_queue_floor(&pipeline, true, 4100),
-            4100
-        );
+        assert_eq!(apply_fogbox_render_queue_floor(&pipeline, true, 4100), 4100);
     }
 }

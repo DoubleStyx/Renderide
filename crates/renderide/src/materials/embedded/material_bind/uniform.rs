@@ -117,7 +117,8 @@ impl EmbeddedMaterialBindResources {
                 buffer: entry.buffer.clone(),
                 last_written_generation: mutation_gen,
                 last_written_texture_state_sig: texture_state_sig,
-                fog_uniform_warmup_exclusive_end_epoch: entry.fog_uniform_warmup_exclusive_end_epoch,
+                fog_uniform_warmup_exclusive_end_epoch: entry
+                    .fog_uniform_warmup_exclusive_end_epoch,
             };
             let _ = self.uniform_cache.put(*uniform_key, refreshed);
             return Ok(entry.buffer);
@@ -141,10 +142,8 @@ impl EmbeddedMaterialBindResources {
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 }),
         );
-        let fog_warmup_exclusive_end =
-            fogbox_volume_stem(stem).then(|| {
-                uniform_upload_epoch.saturating_add(FOG_VOLUME_UNIFORM_WARMUP_EPOCHS)
-            });
+        let fog_warmup_exclusive_end = fogbox_volume_stem(stem)
+            .then(|| uniform_upload_epoch.saturating_add(FOG_VOLUME_UNIFORM_WARMUP_EPOCHS));
         let entry = CachedUniformEntry {
             buffer: buf.clone(),
             last_written_generation: mutation_gen,

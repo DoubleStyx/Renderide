@@ -255,11 +255,8 @@ mod text_uniform_packing_tests {
 
     #[test]
     fn fogbox_fog_keywords_infer_linear_when_accumulation_missing() {
-        let (_reflected, ids, _registry) = reflected_with_f32_fields(&[
-            ("FOG_LINEAR", 0),
-            ("FOG_EXP", 4),
-            ("FOG_EXP2", 8),
-        ]);
+        let (_reflected, ids, _registry) =
+            reflected_with_f32_fields(&[("FOG_LINEAR", 0), ("FOG_EXP", 4), ("FOG_EXP2", 8)]);
         let store = MaterialPropertyStore::new();
         let mid = 701;
         assert_eq!(
@@ -278,11 +275,8 @@ mod text_uniform_packing_tests {
 
     #[test]
     fn fogbox_fog_keywords_infer_from_accumulation_mode() {
-        let (_reflected, ids, registry) = reflected_with_f32_fields(&[
-            ("FOG_LINEAR", 0),
-            ("FOG_EXP", 4),
-            ("FOG_EXP2", 8),
-        ]);
+        let (_reflected, ids, registry) =
+            reflected_with_f32_fields(&[("FOG_LINEAR", 0), ("FOG_EXP", 4), ("FOG_EXP2", 8)]);
         let mid = 702;
         let mut store = MaterialPropertyStore::new();
         store.set_material(
@@ -306,11 +300,8 @@ mod text_uniform_packing_tests {
 
     #[test]
     fn fogbox_explicit_fog_keyword_float_wins_over_accumulation_mode() {
-        let (_reflected, ids, registry) = reflected_with_f32_fields(&[
-            ("FOG_LINEAR", 0),
-            ("FOG_EXP", 4),
-            ("FOG_EXP2", 8),
-        ]);
+        let (_reflected, ids, registry) =
+            reflected_with_f32_fields(&[("FOG_LINEAR", 0), ("FOG_EXP", 4), ("FOG_EXP2", 8)]);
         let mid = 703;
         let mut store = MaterialPropertyStore::new();
         store.set_material(

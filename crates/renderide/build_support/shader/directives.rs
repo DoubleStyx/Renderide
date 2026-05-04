@@ -45,7 +45,9 @@ impl BuildPassKind {
             "forward_transparent_cull_front" | "transparent_cull_front" | "transparent_front" => {
                 Ok(Self::ForwardTransparentCullFront)
             }
-            "forward_transparent_volume" | "transparent_volume" => Ok(Self::ForwardTransparentVolume),
+            "forward_transparent_volume" | "transparent_volume" => {
+                Ok(Self::ForwardTransparentVolume)
+            }
             "forward_transparent_cull_back" | "transparent_cull_back" | "transparent_back" => {
                 Ok(Self::ForwardTransparentCullBack)
             }
