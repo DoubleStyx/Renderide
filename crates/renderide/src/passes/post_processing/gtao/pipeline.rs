@@ -194,6 +194,7 @@ impl GtaoParamsBuffer {
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct GtaoMainBindGroupKey {
     view_depth_texture: wgpu::Texture,
+    view_normals_texture: wgpu::Texture,
     frame_uniforms: wgpu::Buffer,
     multiview_stereo: bool,
 }
@@ -250,8 +251,15 @@ impl GtaoMainPipelineCache {
                         depth_view_dim,
                         false,
                     ),
-                    uniform_buffer_layout_entry(1, wgpu::ShaderStages::FRAGMENT, None),
+                    texture_layout_entry(
+                        1,
+                        wgpu::ShaderStages::FRAGMENT,
+                        wgpu::TextureSampleType::Float { filterable: false },
+                        depth_view_dim,
+                        false,
+                    ),
                     uniform_buffer_layout_entry(2, wgpu::ShaderStages::FRAGMENT, None),
+                    uniform_buffer_layout_entry(3, wgpu::ShaderStages::FRAGMENT, None),
                 ],
             })
         })
@@ -326,11 +334,13 @@ impl GtaoMainPipelineCache {
         device: &wgpu::Device,
         multiview_stereo: bool,
         view_depth_texture: &wgpu::Texture,
+        view_normals_texture: &wgpu::Texture,
         frame_uniforms: &wgpu::Buffer,
         params_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         let key = GtaoMainBindGroupKey {
             view_depth_texture: view_depth_texture.clone(),
+            view_normals_texture: view_normals_texture.clone(),
             frame_uniforms: frame_uniforms.clone(),
             multiview_stereo,
         };
@@ -350,6 +360,16 @@ impl GtaoMainPipelineCache {
                     array_layer_count: depth_layer_count,
                     ..Default::default()
                 });
+            let normals_view = key
+                .view_normals_texture
+                .create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("gtao_main_view_normals"),
+                    aspect: wgpu::TextureAspect::All,
+                    dimension: Some(depth_dim),
+                    mip_level_count: Some(1),
+                    array_layer_count: depth_layer_count,
+                    ..Default::default()
+                });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("gtao_main"),
                 layout: self.bind_group_layout(device, key.multiview_stereo),
@@ -360,10 +380,14 @@ impl GtaoMainPipelineCache {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: key.frame_uniforms.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(&normals_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
+                        resource: key.frame_uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
                         resource: params_buffer.as_entire_binding(),
                     },
                 ],

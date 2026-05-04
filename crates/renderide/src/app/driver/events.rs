@@ -39,6 +39,9 @@ impl AppDriver {
 impl ApplicationHandler for AppDriver {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         profiling::scope!("app::resumed");
+        if self.exit.is_requested() {
+            return;
+        }
         event_loop.listen_device_events(DeviceEvents::Always);
         self.ensure_render_target(event_loop);
     }
@@ -50,6 +53,9 @@ impl ApplicationHandler for AppDriver {
         event: DeviceEvent,
     ) {
         profiling::scope!("app::device_event");
+        if self.exit.is_requested() {
+            return;
+        }
         apply_device_event(&mut self.input, &event);
     }
 
@@ -76,12 +82,19 @@ impl ApplicationHandler for AppDriver {
             }
             WindowEvent::Resized(size) => {
                 profiling::scope!("app::window_event_resize");
-                if let Some(target) = self.target.as_mut() {
+                if !self.exit.is_requested()
+                    && let Some(target) = self.target.as_mut()
+                {
                     target.reconfigure_physical_size(size.width, size.height);
                 }
             }
             WindowEvent::RedrawRequested => {
                 profiling::scope!("app::redraw_requested");
+                if self.exit.is_requested() {
+                    self.poll_graceful_shutdown(event_loop);
+                    self.flush_logs_if_due();
+                    return;
+                }
                 if let Some(target) = self.target.as_ref() {
                     self.input
                         .sync_window_resolution_logical(target.window().as_ref());
@@ -90,7 +103,9 @@ impl ApplicationHandler for AppDriver {
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 profiling::scope!("app::window_event_scale_factor");
-                if let Some(target) = self.target.as_mut() {
+                if !self.exit.is_requested()
+                    && let Some(target) = self.target.as_mut()
+                {
                     target.reconfigure_for_window();
                 }
             }
@@ -103,6 +118,11 @@ impl ApplicationHandler for AppDriver {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         profiling::scope!("app::about_to_wait");
         crate::profiling::plot_window_focused(self.input.window_focused);
+        if self.exit.is_requested() {
+            self.poll_graceful_shutdown(event_loop);
+            self.flush_logs_if_due();
+            return;
+        }
         if self.check_external_shutdown(event_loop) {
             self.flush_logs_if_due();
             return;

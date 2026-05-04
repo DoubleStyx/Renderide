@@ -7,9 +7,9 @@
 //!    depth and builds the five-mip depth chain sampled by the horizon search.
 //! 2. [`main_pass::GtaoMainPass`] -- produces the AO term (scaled by
 //!    `1 / OCCLUSION_TERM_SCALE` per XeGTAO's headroom convention) and packed depth-edge
-//!    weights from the prefiltered depth chain. The HDR scene-color input is *not* read here;
-//!    modulation is deferred to the apply stage so the bilateral denoiser can act on the AO
-//!    term first.
+//!    weights from the prefiltered depth chain plus the forward view-normal prepass. The HDR
+//!    scene-color input is *not* read here; modulation is deferred to the apply stage so the
+//!    bilateral denoiser can act on the AO term first.
 //! 3. [`denoise_pass::GtaoDenoisePass`] -- XeGTAO 3x3 edge-preserving bilateral filter.
 //!    Registered once when [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`, and
 //!    twice when it is `>= 3`.
@@ -74,6 +74,8 @@ pub struct GtaoEffect {
     pub settings: GtaoSettings,
     /// Imported depth texture handle (declared as a sampled read for scheduling).
     pub depth: ImportedTextureHandle,
+    /// Smooth view-space normal target produced after opaque forward rendering.
+    pub view_normals: TextureHandle,
     /// Imported frame-uniforms buffer handle (fallback / scheduling; actual bind sources from
     /// [`crate::render_graph::frame_params::PerViewFramePlanSlot`] at record time).
     pub frame_uniforms: ImportedBufferHandle,
@@ -117,6 +119,7 @@ impl PostProcessEffect for GtaoEffect {
         let main = builder.add_raster_pass(Box::new(GtaoMainPass::new(
             GtaoMainResources {
                 view_depth,
+                view_normals: self.view_normals,
                 frame_uniforms: self.frame_uniforms,
                 ao_term: ao_term_a,
                 edges,
@@ -345,6 +348,7 @@ mod tests {
         let e = GtaoEffect {
             settings: GtaoSettings::default(),
             depth: ImportedTextureHandle(0),
+            view_normals: TextureHandle(0),
             frame_uniforms: ImportedBufferHandle(0),
             multiview_stereo: false,
         };
@@ -357,6 +361,7 @@ mod tests {
         let e = GtaoEffect {
             settings: GtaoSettings::default(),
             depth: ImportedTextureHandle(0),
+            view_normals: TextureHandle(0),
             frame_uniforms: ImportedBufferHandle(0),
             multiview_stereo: false,
         };

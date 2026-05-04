@@ -94,6 +94,8 @@ pub enum XrFinalizeKind {
         predicted_display_time: xr::Time,
         /// Atomic mirror of `XrSessionState::frame_open`; cleared after `xrEndFrame`.
         frame_open: Arc<AtomicBool>,
+        /// Shared shutdown flag used to lower expected compositor-stall log severity.
+        shutdown_requested: Arc<AtomicBool>,
     },
 }
 
@@ -115,6 +117,8 @@ pub struct XrProjectionFinalize {
     pub rect: xr::Rect2Di,
     /// Atomic mirror of `XrSessionState::frame_open`; cleared after `xrEndFrame`.
     pub frame_open: Arc<AtomicBool>,
+    /// Shared shutdown flag used to lower expected compositor-stall log severity.
+    pub shutdown_requested: Arc<AtomicBool>,
 }
 
 /// Convenience for callers that need to consume a pending finalize on shutdown or before
@@ -162,8 +166,15 @@ pub(super) fn run_xr_finalize(gate: &GpuQueueAccessGate, work: XrFinalizeWork) {
             env_blend_mode,
             predicted_display_time,
             frame_open,
+            shutdown_requested,
         } => {
-            let res = end_frame_empty(gate, &frame_stream, env_blend_mode, predicted_display_time);
+            let res = end_frame_empty(
+                gate,
+                &frame_stream,
+                env_blend_mode,
+                predicted_display_time,
+                &shutdown_requested,
+            );
             frame_open.store(false, Ordering::Release);
             res
         }
@@ -211,7 +222,11 @@ fn end_frame_projection(
     let v1 = &payload.views[1];
     let pose0 = sanitize_pose_for_end_frame(v0.pose);
     let pose1 = sanitize_pose_for_end_frame(v1.pose);
-    let wd = EndFrameWatchdog::arm(END_FRAME_WATCHDOG_TIMEOUT, "end_frame_projection");
+    let wd = EndFrameWatchdog::arm_shutdown_aware(
+        END_FRAME_WATCHDOG_TIMEOUT,
+        "end_frame_projection",
+        Arc::clone(&payload.shutdown_requested),
+    );
     let res = {
         let _gate = gate.lock();
         let swapchain_guard = payload.swapchain.lock();
@@ -255,9 +270,14 @@ fn end_frame_empty(
     frame_stream: &Mutex<xr::FrameStream<xr::Vulkan>>,
     env_blend_mode: xr::EnvironmentBlendMode,
     predicted_display_time: xr::Time,
+    shutdown_requested: &Arc<AtomicBool>,
 ) -> Result<(), xr::sys::Result> {
     profiling::scope!("driver::xr_end_frame_empty");
-    let wd = EndFrameWatchdog::arm(END_FRAME_WATCHDOG_TIMEOUT, "end_frame_empty");
+    let wd = EndFrameWatchdog::arm_shutdown_aware(
+        END_FRAME_WATCHDOG_TIMEOUT,
+        "end_frame_empty",
+        Arc::clone(shutdown_requested),
+    );
     let res = {
         let _gate = gate.lock();
         frame_stream

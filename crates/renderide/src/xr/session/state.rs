@@ -44,6 +44,9 @@ pub struct XrSessionState {
     /// Set when the runtime requests teardown (`EXITING` / `LOSS_PENDING` / instance loss);
     /// read by the app loop to trigger `event_loop.exit()`.
     pub(super) exit_requested: bool,
+    /// Set when the app is draining shutdown; shared with deferred finalizers so watchdog
+    /// messages can distinguish expected compositor stalls from runtime-frame stalls.
+    pub(super) shutdown_requested: Arc<AtomicBool>,
     /// Blocks until the compositor signals frame timing.
     pub(super) frame_wait: xr::FrameWaiter,
     /// Submits composition layers to the compositor. Behind a [`Mutex`] so the driver
@@ -98,6 +101,7 @@ impl XrSessionState {
             last_session_state: TrackedSessionState::Unknown,
             frame_open: Arc::new(AtomicBool::new(false)),
             exit_requested: false,
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
             frame_wait: desc.frame_wait,
             frame_stream: Arc::new(Mutex::new(desc.frame_stream)),
             stage: Arc::new(desc.stage),
@@ -132,6 +136,11 @@ impl XrSessionState {
         self.exit_requested
     }
 
+    /// Marks that the renderer has started cooperative shutdown for this session.
+    pub(crate) fn begin_shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::Release);
+    }
+
     /// Whether a frame scope is currently open (`xrBeginFrame` called without matching
     /// `xrEndFrame`). Reads through the shared atomic so the value reflects the deferred
     /// finalize on the driver thread as well as `wait_frame` on the main thread.
@@ -163,6 +172,50 @@ impl XrSessionState {
         self.finalize_error_slot.lock().take()
     }
 
+    /// Polls a pending deferred finalize without blocking the app loop.
+    ///
+    /// Returns `true` when no finalize is pending or when the pending one has completed.
+    pub(crate) fn poll_finalize_pending(&mut self) -> bool {
+        let Some(rx) = self.pending_finalize.take() else {
+            return true;
+        };
+        match rx.try_recv() {
+            Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(error) = self.take_finalize_error() {
+                    logger::warn!("OpenXR finalize failed during shutdown: {error:?}");
+                }
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.pending_finalize = Some(rx);
+                false
+            }
+        }
+    }
+
+    /// Requests OpenXR session exit as part of app-driven shutdown.
+    pub(crate) fn request_exit_for_shutdown(&mut self) -> Result<(), xr::sys::Result> {
+        self.begin_shutdown();
+        if self.exit_requested || !self.session_running {
+            return Ok(());
+        }
+        match self.session.request_exit() {
+            Ok(()) => Ok(()),
+            Err(xr::sys::Result::ERROR_SESSION_NOT_RUNNING) => {
+                self.session_running = false;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Whether OpenXR is quiet enough for the app driver to leave the event loop.
+    pub(crate) fn shutdown_quiesced(&self) -> bool {
+        !self.frame_open()
+            && self.pending_finalize.is_none()
+            && (self.exit_requested || !self.session_running)
+    }
+
     /// Builds a stereo-projection finalize payload referencing the just-rendered swapchain
     /// image. The returned receiver should be stored on [`Self::set_pending_finalize`] so
     /// the next `wait_frame` waits on it.
@@ -186,6 +239,7 @@ impl XrSessionState {
             views,
             rect,
             frame_open: Arc::clone(&self.frame_open),
+            shutdown_requested: Arc::clone(&self.shutdown_requested),
         };
         let work = crate::gpu::driver_thread::XrFinalizeWork {
             kind: crate::gpu::driver_thread::XrFinalizeKind::Projection(Box::new(payload)),
@@ -211,6 +265,7 @@ impl XrSessionState {
                 env_blend_mode: self.environment_blend_mode,
                 predicted_display_time,
                 frame_open: Arc::clone(&self.frame_open),
+                shutdown_requested: Arc::clone(&self.shutdown_requested),
             },
             signal,
             error_slot: Arc::clone(&self.finalize_error_slot),
