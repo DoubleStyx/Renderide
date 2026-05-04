@@ -5,7 +5,7 @@ use crate::shared::{MeshUnload, MeshUploadData};
 
 use super::super::AssetTransferQueue;
 use super::super::integrator::AssetTask;
-use super::super::mesh_task::MeshUploadTask;
+use super::super::mesh_task::{MeshUploadTask, complete_empty_mesh_upload};
 use super::MAX_PENDING_MESH_UPLOADS;
 
 /// Remove a mesh from the pool.
@@ -37,9 +37,12 @@ pub fn try_process_mesh_upload(
     queue: &mut AssetTransferQueue,
     data: MeshUploadData,
     _shm: &mut SharedMemoryAccessor,
-    _ipc: Option<&mut DualQueueIpc>,
+    ipc: Option<&mut DualQueueIpc>,
 ) {
     if data.buffer.length <= 0 {
+        let device = queue.gpu.gpu_device.clone();
+        let mut ipc = ipc;
+        complete_empty_mesh_upload(queue, &data, device.as_deref(), &mut ipc);
         return;
     }
     if queue.gpu.gpu_device.is_none() {
@@ -110,5 +113,25 @@ mod tests {
 
         assert_eq!(queue.pending.pending_mesh_uploads.len(), 1);
         assert_eq!(queue.pending.pending_mesh_uploads[0].asset_id, 8);
+    }
+
+    #[test]
+    fn empty_mesh_without_gpu_is_completed_without_defer_or_enqueue() {
+        let mut queue = AssetTransferQueue::new();
+        let mut shm = SharedMemoryAccessor::new(String::new());
+        let data = MeshUploadData {
+            asset_id: 7,
+            buffer: SharedMemoryBufferDescriptor {
+                length: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        try_process_mesh_upload(&mut queue, data, &mut shm, None);
+
+        assert!(queue.pending.pending_mesh_uploads.is_empty());
+        assert_eq!(queue.integrator.total_queued(), 0);
+        assert!(queue.pools.mesh_pool.is_empty());
     }
 }

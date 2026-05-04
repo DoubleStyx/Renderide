@@ -13,8 +13,9 @@ use glam::Mat4;
 
 use super::layout::{
     BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout, color_float4_stream_bytes,
-    extract_bind_poses, extract_blendshape_offsets, extract_float3_position_normal_as_vec4_streams,
-    split_bone_weights_tail_for_gpu, uv0_float2_stream_bytes, vertex_float2_stream_bytes,
+    compute_vertex_stride, extract_bind_poses, extract_blendshape_offsets,
+    extract_float3_position_normal_as_vec4_streams, split_bone_weights_tail_for_gpu,
+    uv0_float2_stream_bytes, vertex_float2_stream_bytes,
 };
 use super::tangent_generation::tangent_stream_bytes;
 
@@ -32,6 +33,8 @@ use super::gpu_mesh_hints::{
 };
 
 use crate::materials::RasterPrimitiveTopology;
+
+const EMPTY_MESH_PLACEHOLDER_BYTES: u64 = 4;
 
 #[derive(Clone)]
 pub(super) struct ExtendedVertexStreamSource {
@@ -547,6 +550,63 @@ pub(super) fn write_in_place_blendshape_buffer(
 }
 
 impl GpuMesh {
+    /// Creates a resident mesh entry for a host upload with no geometry payload.
+    pub fn empty(device: &wgpu::Device, data: &MeshUploadData) -> Self {
+        profiling::scope!("asset::mesh_empty_gpu_upload");
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("mesh {} empty vertices", data.asset_id)),
+            size: EMPTY_MESH_PLACEHOLDER_BYTES,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("mesh {} empty indices", data.asset_id)),
+            size: EMPTY_MESH_PLACEHOLDER_BYTES,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let resident_bytes = vertex_buffer.size() + index_buffer.size();
+
+        Self {
+            asset_id: data.asset_id,
+            vertex_buffer: Arc::new(vertex_buffer),
+            index_buffer: Arc::new(index_buffer),
+            index_format: match data.index_buffer_format {
+                IndexBufferFormat::UInt16 => wgpu::IndexFormat::Uint16,
+                IndexBufferFormat::UInt32 => wgpu::IndexFormat::Uint32,
+            },
+            index_count: 0,
+            submeshes: Vec::new(),
+            submesh_topologies: Vec::new(),
+            vertex_count: 0,
+            vertex_stride: compute_vertex_stride(&data.vertex_attributes).max(1) as u32,
+            bounds: data.bounds,
+            bone_counts_buffer: None,
+            bone_indices_buffer: None,
+            bone_weights_vec4_buffer: None,
+            bind_poses_buffer: None,
+            blendshape_sparse_buffer: None,
+            blendshape_frame_ranges: Vec::new(),
+            blendshape_shape_frame_spans: Vec::new(),
+            num_blendshapes: 0,
+            blendshape_has_position_deltas: false,
+            blendshape_has_normal_deltas: false,
+            blendshape_has_tangent_deltas: false,
+            positions_buffer: None,
+            normals_buffer: None,
+            uv0_buffer: None,
+            color_buffer: None,
+            tangent_buffer: None,
+            uv1_buffer: None,
+            uv2_buffer: None,
+            uv3_buffer: None,
+            extended_vertex_stream_source: None,
+            has_skeleton: false,
+            skinning_bind_matrices: Vec::new(),
+            resident_bytes,
+        }
+    }
+
     /// Uploads mesh data from a raw byte slice covering at least `layout.total_buffer_length`.
     ///
     /// `raw` must be the mapping for `data.buffer` only for the duration of this call.

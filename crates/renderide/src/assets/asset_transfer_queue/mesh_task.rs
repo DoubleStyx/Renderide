@@ -8,10 +8,46 @@ use crate::assets::mesh::{
 };
 use crate::gpu::GpuLimits;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
-use crate::shared::MeshUploadData;
+use crate::shared::{MeshUploadData, MeshUploadResult, RendererCommand};
 
 use super::AssetTransferQueue;
 use super::integrator::StepResult;
+
+/// Completes a host mesh upload that carries no geometry payload.
+pub(super) fn complete_empty_mesh_upload(
+    queue: &mut AssetTransferQueue,
+    data: &MeshUploadData,
+    device: Option<&wgpu::Device>,
+    ipc: &mut Option<&mut DualQueueIpc>,
+) -> MeshUploadResult {
+    profiling::scope!("asset::mesh_empty_upload_finalize");
+    let asset_id = data.asset_id;
+    let (resident_replaced, resident_stored) = if let Some(device) = device {
+        let mesh = GpuMesh::empty(device, data);
+        (queue.pools.mesh_pool.insert(mesh), true)
+    } else {
+        (queue.pools.mesh_pool.remove(asset_id), false)
+    };
+    let result = MeshUploadResult {
+        asset_id,
+        instance_changed: !resident_replaced,
+    };
+    send_mesh_upload_result(ipc, result.clone());
+    logger::trace!(
+        "mesh {} completed empty upload (replaced={} resident_stored={} resident_bytes~={})",
+        asset_id,
+        resident_replaced,
+        resident_stored,
+        queue.pools.mesh_pool.accounting().total_resident_bytes()
+    );
+    result
+}
+
+fn send_mesh_upload_result(ipc: &mut Option<&mut DualQueueIpc>, result: MeshUploadResult) {
+    if let Some(ipc) = ipc.as_mut() {
+        let _ = ipc.send_background(RendererCommand::MeshUploadResult(result));
+    }
+}
 
 /// Stage for a single mesh upload task ([`Renderite.Unity.MeshAsset.Upload`]-style splitting).
 #[derive(Debug)]
@@ -57,7 +93,7 @@ impl MeshUploadTask {
     ) -> StepResult {
         let asset_id = self.data.asset_id;
         if matches!(self.stage, MeshStage::PendingLayout) {
-            return self.start_pending_layout(queue, device, gpu_limits, gpu_queue, shm);
+            return self.start_pending_layout(queue, device, gpu_limits, gpu_queue, shm, ipc);
         }
         if let MeshStage::Decoding { rx } = &mut self.stage {
             return Self::poll_background_upload(asset_id, rx, queue, ipc);
@@ -73,10 +109,12 @@ impl MeshUploadTask {
         gpu_limits: &Arc<GpuLimits>,
         gpu_queue: &Arc<wgpu::Queue>,
         shm: &mut SharedMemoryAccessor,
+        ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         profiling::scope!("asset::mesh_pending_layout");
         let asset_id = self.data.asset_id;
         if self.data.buffer.length <= 0 {
+            complete_empty_mesh_upload(queue, &self.data, Some(device.as_ref()), ipc);
             return StepResult::Done;
         }
         let Some(layout) = self.resolve_layout(queue) else {
@@ -195,13 +233,13 @@ impl MeshUploadTask {
         };
         profiling::scope!("asset::mesh_upload_finalize");
         let existed_before = queue.pools.mesh_pool.insert(mesh);
-        if let Some(ipc) = ipc.as_mut() {
-            use crate::shared::{MeshUploadResult, RendererCommand};
-            let _ = ipc.send_background(RendererCommand::MeshUploadResult(MeshUploadResult {
+        send_mesh_upload_result(
+            ipc,
+            MeshUploadResult {
                 asset_id,
                 instance_changed: !existed_before,
-            }));
-        }
+            },
+        );
         logger::trace!(
             "mesh {} uploaded via integrator (replaced={} resident_bytes~={})",
             asset_id,
@@ -209,5 +247,37 @@ impl MeshUploadTask {
             queue.pools.mesh_pool.accounting().total_resident_bytes()
         );
         StepResult::Done
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::shared::buffer::SharedMemoryBufferDescriptor;
+
+    use super::*;
+
+    fn empty_upload(asset_id: i32) -> MeshUploadData {
+        MeshUploadData {
+            asset_id,
+            buffer: SharedMemoryBufferDescriptor {
+                length: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_mesh_without_gpu_completes_host_callback_semantics() {
+        let mut queue = AssetTransferQueue::new();
+        let mut ipc = None;
+
+        let result = complete_empty_mesh_upload(&mut queue, &empty_upload(42), None, &mut ipc);
+
+        assert_eq!(result.asset_id, 42);
+        assert!(result.instance_changed);
+        assert!(queue.pools.mesh_pool.is_empty());
+        assert_eq!(queue.integrator.total_queued(), 0);
+        assert!(queue.pending.pending_mesh_uploads.is_empty());
     }
 }
