@@ -1,7 +1,7 @@
 //! `gtao_main` raster pass -- XeGTAO production stage.
 //!
-//! Reads the XeGTAO view-space depth mip chain, reconstructs edge-weighted view-space normals
-//! from depth derivatives, evaluates the horizon search, and writes:
+//! Reads the XeGTAO view-space depth mip chain plus the smooth view-space normal prepass,
+//! evaluates the horizon search, and writes:
 //!
 //! - `@location(0)` -- `saturate(visibility / OCCLUSION_TERM_SCALE)` to an `R8Unorm` ping-pong
 //!   target. The `1 / 1.5` scale is XeGTAO's `XeGTAO_OutputWorkingTerm` headroom convention;
@@ -29,6 +29,8 @@ use crate::render_graph::resources::{
 pub(super) struct GtaoMainResources {
     /// View-space depth mip chain sampled by the AO horizon search.
     pub view_depth: TextureHandle,
+    /// Smooth view-space normal texture produced by the forward normal prepass.
+    pub view_normals: TextureHandle,
     /// Frame-uniforms buffer used as a fallback when the per-view buffer slot is absent.
     pub frame_uniforms: ImportedBufferHandle,
     /// Transient AO-term color attachment written by this pass (`@location(0)`).
@@ -68,6 +70,12 @@ impl RasterPass for GtaoMainPass {
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.read_texture_resource(
             self.resources.view_depth,
+            TextureAccess::Sampled {
+                stages: wgpu::ShaderStages::FRAGMENT,
+            },
+        );
+        b.read_texture_resource(
+            self.resources.view_normals,
             TextureAccess::Sampled {
                 stages: wgpu::ShaderStages::FRAGMENT,
             },
@@ -155,12 +163,20 @@ impl RasterPass for GtaoMainPass {
                 format_args!("missing view_depth {:?}", self.resources.view_depth),
             ));
         };
+        let Some(view_normals_tex) = graph_resources.transient_texture(self.resources.view_normals)
+        else {
+            return Err(missing_pass_resource(
+                self.name(),
+                format_args!("missing view_normals {:?}", self.resources.view_normals),
+            ));
+        };
 
         let pipeline = self.pipelines.main.pipeline(ctx.device, multiview_stereo);
         let bind_group = self.pipelines.main.bind_group(
             ctx.device,
             multiview_stereo,
             &view_depth_tex.texture,
+            &view_normals_tex.texture,
             &frame_uniform_buffer,
             params_buffer,
         );

@@ -14,9 +14,11 @@ use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::world_mesh::{DrawGroup, WorldMeshDrawItem};
 
 use super::MaterialBatchPacket;
+use super::normal_pass::{WorldMeshForwardNormalPipelineCache, WorldMeshForwardNormalPipelineKey};
 
 use vertex_binding::{
-    LastMeshBindState, draw_mesh_submesh_instanced, gpu_refs_for_encode, streams_for_item,
+    LastMeshBindState, draw_mesh_submesh_instanced, draw_mesh_submesh_normals_instanced,
+    gpu_refs_for_encode, streams_for_item,
 };
 
 /// Pre-grouped draws, bind groups, and precomputed-batch table for one mesh-forward raster subpass.
@@ -49,6 +51,46 @@ pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
     /// false, every group carries `instance_range.len() == 1` and the per-draw slab is
     /// addressed via dynamic offset instead.
     pub supports_base_instance: bool,
+}
+
+/// Pre-grouped draws and normal-prepass state for one mesh-forward raster subpass.
+pub(crate) struct NormalDrawBatch<'a, 'b, 'c, 'd> {
+    /// Active render pass.
+    pub rpass: &'a mut wgpu::RenderPass<'b>,
+    /// Pre-built regular draw groups in ascending representative order.
+    pub groups: &'c [DrawGroup],
+    /// Full sorted world mesh draw list for the view.
+    pub draws: &'c [WorldMeshDrawItem],
+    /// Mesh pool and skin cache for vertex/index binding.
+    pub encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
+    /// Device limits snapshot for dynamic storage-buffer offsets.
+    pub gpu_limits: &'a GpuLimits,
+    /// Per-draw storage slab bound at `@group(0)` for the normal prepass.
+    pub per_draw_bind_group: &'a wgpu::BindGroup,
+    /// Whether `draw_indexed` may use non-zero `first_instance`.
+    pub supports_base_instance: bool,
+    /// Pipeline state resolved for the active world-mesh view.
+    pub pipeline: &'a super::WorldMeshForwardPipelineState,
+    /// GPU device used for lazy normal-prepass pipeline creation.
+    pub device: &'a wgpu::Device,
+    /// Shared normal-prepass pipeline cache.
+    pub normal_pipelines: &'a WorldMeshForwardNormalPipelineCache,
+}
+
+/// Per-draw slab bind request for one draw group.
+struct PerDrawSlabBind<'a> {
+    /// Pipeline bind-group index used by the active shader.
+    bind_group_index: u32,
+    /// Per-draw storage bind group.
+    bind_group: &'a wgpu::BindGroup,
+    /// Device limits snapshot.
+    gpu_limits: &'a GpuLimits,
+    /// First row in slab coordinates.
+    slab_first_instance: usize,
+    /// Number of instances in the draw group.
+    instance_count: u32,
+    /// Whether instance indices directly address slab rows.
+    supports_base_instance: bool,
 }
 
 /// Records one raster subpass by walking pre-built [`DrawGroup`]s.
@@ -132,11 +174,14 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
             let instance_count = group.instance_range.end - group.instance_range.start;
             bind_per_draw_slab_if_changed(
                 rpass,
-                per_draw_bind_group,
-                gpu_limits,
-                slab_first_instance,
-                instance_count,
-                supports_base_instance,
+                PerDrawSlabBind {
+                    bind_group_index: 2,
+                    bind_group: per_draw_bind_group,
+                    gpu_limits,
+                    slab_first_instance,
+                    instance_count,
+                    supports_base_instance,
+                },
                 &mut last_per_draw_dyn_offset,
             );
 
@@ -169,7 +214,68 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
     }
 }
 
-/// Updates @group(2) dynamic offset and rebinds the per-draw slab when the row offset changes.
+/// Records the GTAO normal prepass draw subset.
+pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
+    profiling::scope!("world_mesh::draw_normals_subset");
+    let NormalDrawBatch {
+        rpass,
+        groups,
+        draws,
+        encode,
+        gpu_limits,
+        per_draw_bind_group,
+        supports_base_instance,
+        pipeline,
+        device,
+        normal_pipelines,
+    } = batch;
+
+    let mut last_mesh = LastMeshBindState::new();
+    let mut last_per_draw_dyn_offset: Option<u32> = None;
+    let mut last_pipeline: Option<*const wgpu::RenderPipeline> = None;
+
+    for group in groups {
+        let representative = group.representative_draw_idx;
+        let Some(item) = draws.get(representative) else {
+            continue;
+        };
+        let Some(key) = WorldMeshForwardNormalPipelineKey::for_draw(
+            pipeline,
+            item.batch_key.front_face,
+            item.batch_key.primitive_topology,
+        ) else {
+            continue;
+        };
+
+        let slab_first_instance = group.instance_range.start as usize;
+        let instance_count = group.instance_range.end - group.instance_range.start;
+        bind_per_draw_slab_if_changed(
+            rpass,
+            PerDrawSlabBind {
+                bind_group_index: 0,
+                bind_group: per_draw_bind_group,
+                gpu_limits,
+                slab_first_instance,
+                instance_count,
+                supports_base_instance,
+            },
+            &mut last_per_draw_dyn_offset,
+        );
+
+        let pipeline = normal_pipelines.pipeline(device, key);
+        let pipeline_id: *const wgpu::RenderPipeline = pipeline.as_ref();
+        if last_pipeline != Some(pipeline_id) {
+            rpass.set_pipeline(pipeline.as_ref());
+            last_pipeline = Some(pipeline_id);
+        }
+
+        let inst_range = instance_range_for_draw_group(group, supports_base_instance);
+        let gpu_refs = gpu_refs_for_encode(encode);
+        draw_mesh_submesh_normals_instanced(rpass, item, gpu_refs, inst_range, &mut last_mesh);
+    }
+}
+
+/// Updates a per-draw storage dynamic offset and rebinds the slab when the row offset changes.
 ///
 /// `slab_first_instance` is the slab-coordinate start of the current group's
 /// `instance_range`. On base-instance-capable devices the dynamic offset is always zero
@@ -178,13 +284,17 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
 /// via the dynamic offset.
 fn bind_per_draw_slab_if_changed(
     rpass: &mut wgpu::RenderPass<'_>,
-    per_draw_bind_group: &wgpu::BindGroup,
-    gpu_limits: &GpuLimits,
-    slab_first_instance: usize,
-    instance_count: u32,
-    supports_base_instance: bool,
+    bind: PerDrawSlabBind<'_>,
     last_per_draw_dyn_offset: &mut Option<u32>,
 ) {
+    let PerDrawSlabBind {
+        bind_group_index,
+        bind_group,
+        gpu_limits,
+        slab_first_instance,
+        instance_count,
+        supports_base_instance,
+    } = bind;
     let storage_align = gpu_limits.min_storage_buffer_offset_alignment();
     let per_draw_dyn_offset = if supports_base_instance {
         // Base-instance path: all rows accessed via `first_instance`; dynamic offset is
@@ -202,7 +312,7 @@ fn bind_per_draw_slab_if_changed(
         raw
     };
     if *last_per_draw_dyn_offset != Some(per_draw_dyn_offset) {
-        rpass.set_bind_group(2, per_draw_bind_group, &[per_draw_dyn_offset]);
+        rpass.set_bind_group(bind_group_index, bind_group, &[per_draw_dyn_offset]);
         *last_per_draw_dyn_offset = Some(per_draw_dyn_offset);
     }
 }
