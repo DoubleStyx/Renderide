@@ -266,6 +266,19 @@ impl RenderBackend {
             .unwrap_or_default()
     }
 
+    /// Snapshot of the live auto-exposure settings for the current frame.
+    ///
+    /// Seeded into each view's blackboard as
+    /// [`crate::passes::post_processing::settings_slot::AutoExposureSettingsSlot`] so histogram
+    /// settings and adaptation speed edits take effect without rebuilding the compiled graph.
+    pub(crate) fn live_auto_exposure_settings(&self) -> crate::config::AutoExposureSettings {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok())
+            .map(|s| s.post_processing.auto_exposure)
+            .unwrap_or_default()
+    }
+
     /// Count of host Texture2D asset ids that have received a [`crate::shared::SetTexture2DFormat`] (CPU-side table).
     pub fn texture_format_registration_count(&self) -> usize {
         self.asset_transfers.texture_format_registration_count()
@@ -757,6 +770,8 @@ impl RenderBackend {
         let msaa_depth_resolve = self.msaa_depth_resolve.clone();
         let live_gtao_settings = self.live_gtao_settings();
         let live_bloom_settings = self.live_bloom_settings();
+        let live_auto_exposure_settings = self.live_auto_exposure_settings();
+        let wall_frame_time_ms = self.debug_frame_time_ms();
         let (transient_pool, history_registry) = self.graph_state.execution_resources_mut();
         BackendGraphAccess {
             occlusion: &mut self.occlusion,
@@ -776,6 +791,8 @@ impl RenderBackend {
             msaa_depth_resolve,
             live_gtao_settings,
             live_bloom_settings,
+            live_auto_exposure_settings,
+            wall_frame_time_ms,
         }
     }
 
@@ -855,6 +872,7 @@ mod post_processing_rebuild_tests {
             cached_graph_key(&backend).post_processing,
             PostProcessChainSignature {
                 aces_tonemap: true,
+                auto_exposure: true,
                 bloom: true,
                 bloom_max_mip_dimension: 512,
                 gtao: true,

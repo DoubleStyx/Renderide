@@ -462,10 +462,11 @@ fn add_main_graph_passes_and_edges(
 
 /// Builds the canonical post-processing chain shipped with the renderer.
 ///
-/// Execution order is GTAO -> bloom -> ACES tonemap. GTAO runs first so ambient occlusion
+/// Execution order is GTAO -> bloom -> auto-exposure -> ACES tonemap. GTAO runs first so ambient occlusion
 /// modulates linear HDR light before bloom scatter; bloom runs in HDR-linear space so its
-/// dual-filter pyramid operates on scene-referred radiance; then ACES compresses the combined
-/// HDR signal to display-referred `[0, 1]`. Each effect gates itself via
+/// dual-filter pyramid operates on scene-referred radiance; auto-exposure meters the composed HDR
+/// signal before tonemapping; then ACES compresses the exposed signal to display-referred `[0, 1]`.
+/// Each effect gates itself via
 /// [`super::post_processing::PostProcessEffect::is_enabled`] against the live
 /// [`crate::config::PostProcessingSettings`].
 ///
@@ -491,6 +492,7 @@ fn build_default_post_processing_chain(
     chain.push(Box::new(crate::passes::BloomEffect {
         settings: post_processing_settings.bloom,
     }));
+    chain.push(Box::new(crate::passes::AutoExposureEffect));
     chain.push(Box::new(crate::passes::AcesTonemapEffect));
     chain
 }
@@ -598,6 +600,10 @@ mod tests {
                 ..Default::default()
             },
             bloom: BloomSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            auto_exposure: crate::config::AutoExposureSettings {
                 enabled: false,
                 ..Default::default()
             },

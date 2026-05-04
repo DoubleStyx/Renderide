@@ -24,7 +24,8 @@ use super::{
 use crate::diagnostics::PerViewHudOutputsSlot;
 use crate::passes::PrefetchedWorldMeshDrawsSlot;
 use crate::passes::post_processing::settings_slot::{
-    BloomSettingsSlot, BloomSettingsValue, GtaoSettingsSlot, GtaoSettingsValue,
+    AutoExposureSettingsSlot, AutoExposureSettingsValue, BloomSettingsSlot, BloomSettingsValue,
+    GtaoSettingsSlot, GtaoSettingsValue,
 };
 
 impl CompiledRenderGraph {
@@ -97,6 +98,10 @@ impl CompiledRenderGraph {
         // params UBO and the upsamples use it to compute per-mip blend constants + pick
         // EnergyConserving vs Additive pipeline variants, so slider edits propagate next frame.
         view_blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(shared.live_bloom_settings));
+        view_blackboard.insert::<AutoExposureSettingsSlot>(AutoExposureSettingsValue {
+            settings: shared.live_auto_exposure_settings,
+            delta_seconds: shared.wall_frame_delta_seconds,
+        });
 
         {
             profiling::scope!("graph::per_view::pass_loop");

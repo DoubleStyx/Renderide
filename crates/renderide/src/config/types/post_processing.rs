@@ -2,10 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
+mod auto_exposure;
 mod bloom;
 mod gtao;
 mod tonemap;
 
+pub use auto_exposure::AutoExposureSettings;
 pub use bloom::{BloomCompositeMode, BloomSettings};
 pub use gtao::GtaoSettings;
 pub use tonemap::{TonemapMode, TonemapSettings};
@@ -26,6 +28,8 @@ pub struct PostProcessingSettings {
     pub gtao: GtaoSettings,
     /// Dual-filter physically-based bloom (pre-tonemap HDR). See [`BloomSettings`].
     pub bloom: BloomSettings,
+    /// Histogram-based adaptive exposure (pre-tonemap HDR). See [`AutoExposureSettings`].
+    pub auto_exposure: AutoExposureSettings,
     /// Tonemapping (HDR -> display-referred 0..1 linear). See [`TonemapSettings`].
     pub tonemap: TonemapSettings,
 }
@@ -36,6 +40,7 @@ impl Default for PostProcessingSettings {
             enabled: true,
             gtao: GtaoSettings::default(),
             bloom: BloomSettings::default(),
+            auto_exposure: AutoExposureSettings::default(),
             tonemap: TonemapSettings::default(),
         }
     }
@@ -43,13 +48,17 @@ impl Default for PostProcessingSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::{PostProcessingSettings, TonemapMode};
+    use super::{AutoExposureSettings, PostProcessingSettings, TonemapMode};
     use crate::config::types::RendererSettings;
 
     #[test]
     fn defaults_enable_stack_with_aces_selected() {
         let s = PostProcessingSettings::default();
         assert!(s.enabled, "post-processing should default to enabled");
+        assert!(
+            s.auto_exposure.enabled,
+            "auto-exposure should default to enabled"
+        );
         assert_eq!(s.tonemap.mode, TonemapMode::AcesFitted);
     }
 
@@ -81,11 +90,19 @@ mod tests {
             "expected `[post_processing.tonemap]` sub-table, got:\n{toml}"
         );
         assert!(
+            toml.contains("[post_processing.auto_exposure]"),
+            "expected `[post_processing.auto_exposure]` sub-table, got:\n{toml}"
+        );
+        assert!(
             toml.contains("mode = \"aces_fitted\""),
             "expected snake_case mode value, got:\n{toml}"
         );
         let back: RendererSettings = toml::from_str(&toml).expect("deserialize");
         assert!(back.post_processing.enabled);
+        assert_eq!(
+            back.post_processing.auto_exposure,
+            AutoExposureSettings::default()
+        );
         assert_eq!(back.post_processing.tonemap.mode, TonemapMode::AcesFitted);
     }
 

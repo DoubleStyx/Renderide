@@ -18,6 +18,8 @@ pub enum PostProcessEffectId {
     Gtao,
     /// Dual-filter physically-based bloom (COD: Advanced Warfare / Bevy style), pre-tonemap HDR.
     Bloom,
+    /// Histogram-based exposure adaptation, pre-tonemap HDR scale.
+    AutoExposure,
     /// Stephen Hill ACES Fitted tonemap (HDR linear -> display-referred 0..1 linear).
     AcesTonemap,
 }
@@ -28,6 +30,7 @@ impl PostProcessEffectId {
         match self {
             Self::Gtao => "GTAO",
             Self::Bloom => "Bloom",
+            Self::AutoExposure => "Auto Exposure",
             Self::AcesTonemap => "ACES Tonemap",
         }
     }

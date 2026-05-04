@@ -135,6 +135,7 @@ mod tests {
         let off = key_with_post(PostProcessChainSignature::default());
         let on = key_with_post(PostProcessChainSignature {
             aces_tonemap: true,
+            auto_exposure: false,
             bloom: false,
             bloom_max_mip_dimension: 0,
             gtao: false,

@@ -36,3 +36,31 @@ impl BlackboardSlot for BloomSettingsSlot {
 /// Live [`crate::config::BloomSettings`] carried on the per-view blackboard.
 #[derive(Clone, Copy, Debug)]
 pub struct BloomSettingsValue(pub crate::config::BloomSettings);
+
+/// Blackboard slot for the live [`crate::config::AutoExposureSettings`] snapshot.
+///
+/// Seeded each frame from [`crate::config::RendererSettings`] before per-view recording so the
+/// auto-exposure histogram pass can update its GPU settings buffer without rebuilding the graph.
+/// The frame delta is carried alongside the settings because exposure adaptation is temporal.
+pub struct AutoExposureSettingsSlot;
+impl BlackboardSlot for AutoExposureSettingsSlot {
+    type Value = AutoExposureSettingsValue;
+}
+
+/// Live auto-exposure settings and frame delta carried on the per-view blackboard.
+#[derive(Clone, Copy, Debug)]
+pub struct AutoExposureSettingsValue {
+    /// Current renderer-config auto-exposure settings.
+    pub settings: crate::config::AutoExposureSettings,
+    /// Wall-clock delta for temporal adaptation, in seconds.
+    pub delta_seconds: f32,
+}
+
+impl Default for AutoExposureSettingsValue {
+    fn default() -> Self {
+        Self {
+            settings: crate::config::AutoExposureSettings::default(),
+            delta_seconds: 1.0 / 60.0,
+        }
+    }
+}

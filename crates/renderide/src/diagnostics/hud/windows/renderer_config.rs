@@ -9,9 +9,9 @@ use std::path::Path;
 use imgui::{Drag, TabItem, TabItemFlags};
 
 use crate::config::{
-    BloomCompositeMode, ClusterAssignmentMode, DebugHudRendererConfigTab, DebugHudSettings,
-    MsaaSampleCount, PowerPreferenceSetting, RendererSettings, RendererSettingsHandle,
-    SceneColorFormat, TonemapMode, VsyncMode, save_renderer_settings,
+    AutoExposureSettings, BloomCompositeMode, ClusterAssignmentMode, DebugHudRendererConfigTab,
+    DebugHudSettings, MsaaSampleCount, PowerPreferenceSetting, RendererSettings,
+    RendererSettingsHandle, SceneColorFormat, TonemapMode, VsyncMode, save_renderer_settings,
 };
 
 use super::super::layout::{self, Viewport, WindowSlot};
@@ -325,6 +325,8 @@ fn post_processing_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut
     ui.separator();
     post_processing_bloom(ui, g, dirty);
     ui.separator();
+    post_processing_auto_exposure(ui, g, dirty);
+    ui.separator();
     post_processing_tonemap(ui, g, dirty);
     ui.unindent();
 }
@@ -474,6 +476,90 @@ fn post_processing_bloom(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut b
         ui.text_disabled(format!(
             "Effective max mip dimension: {effective_max_mip_dimension} px (rounded down to power of two)."
         ));
+    }
+}
+
+fn post_processing_auto_exposure(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
+    let _id = ui.push_id("auto_exposure");
+    ui.text_disabled(
+        "Auto-exposure: builds a log-luminance histogram from HDR scene color, ignores dark/bright percentile tails, and adapts exposure before tonemapping.",
+    );
+    if ui.checkbox(
+        "Enable auto-exposure",
+        &mut g.post_processing.auto_exposure.enabled,
+    ) {
+        *dirty = true;
+    }
+    let auto = &mut g.post_processing.auto_exposure;
+    if ui
+        .slider_config("Min EV", -16.0_f32, 16.0_f32)
+        .display_format("%.2f")
+        .build(&mut auto.min_ev)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Max EV", -16.0_f32, 16.0_f32)
+        .display_format("%.2f")
+        .build(&mut auto.max_ev)
+    {
+        *dirty = true;
+    }
+    let (min_ev, max_ev) = auto.resolved_ev_range();
+    if (min_ev, max_ev) != (auto.min_ev, auto.max_ev) {
+        ui.text_disabled(format!("Effective EV range: {min_ev:.2} to {max_ev:.2}."));
+    }
+    if ui
+        .slider_config("Low percentile", 0.0_f32, 1.0_f32)
+        .display_format("%.2f")
+        .build(&mut auto.low_percent)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("High percentile", 0.0_f32, 1.0_f32)
+        .display_format("%.2f")
+        .build(&mut auto.high_percent)
+    {
+        *dirty = true;
+    }
+    let (low, high) = auto.resolved_filter();
+    if (low, high) != (auto.low_percent, auto.high_percent) {
+        ui.text_disabled(format!(
+            "Effective percentile filter: {low:.2} to {high:.2}."
+        ));
+    }
+    if ui
+        .slider_config("Brighten speed (EV/s)", 0.0_f32, 12.0_f32)
+        .display_format("%.2f")
+        .build(&mut auto.speed_brighten)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Darken speed (EV/s)", 0.0_f32, 12.0_f32)
+        .display_format("%.2f")
+        .build(&mut auto.speed_darken)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config(
+            "Transition distance (EV)",
+            AutoExposureSettings::MIN_TRANSITION_DISTANCE,
+            8.0_f32,
+        )
+        .display_format("%.2f")
+        .build(&mut auto.exponential_transition_distance)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Compensation (EV)", -8.0_f32, 8.0_f32)
+        .display_format("%.2f")
+        .build(&mut auto.compensation_ev)
+    {
+        *dirty = true;
     }
 }
 

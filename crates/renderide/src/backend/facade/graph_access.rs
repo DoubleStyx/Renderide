@@ -67,6 +67,10 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(super) live_gtao_settings: crate::config::GtaoSettings,
     /// Bloom settings snapshot selected before graph execution borrows backend fields.
     pub(super) live_bloom_settings: crate::config::BloomSettings,
+    /// Auto-exposure settings snapshot selected before graph execution borrows backend fields.
+    pub(super) live_auto_exposure_settings: crate::config::AutoExposureSettings,
+    /// Wall-frame delta snapshot in milliseconds.
+    pub(super) wall_frame_time_ms: f64,
 }
 
 impl<'a> BackendGraphAccess<'a> {
@@ -108,6 +112,16 @@ impl<'a> BackendGraphAccess<'a> {
     /// Live bloom settings snapshot for this graph frame.
     pub(crate) fn live_bloom_settings(&self) -> crate::config::BloomSettings {
         self.live_bloom_settings
+    }
+
+    /// Live auto-exposure settings snapshot for this graph frame.
+    pub(crate) fn live_auto_exposure_settings(&self) -> crate::config::AutoExposureSettings {
+        self.live_auto_exposure_settings
+    }
+
+    /// Wall-frame delta snapshot for this graph frame, in seconds.
+    pub(crate) fn wall_frame_delta_seconds(&self) -> f32 {
+        (self.wall_frame_time_ms / 1000.0).clamp(0.0, 1.0) as f32
     }
 
     /// Shared frame resources.

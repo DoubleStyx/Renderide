@@ -24,8 +24,8 @@ pub use debug::{
 };
 pub use display::DisplaySettings;
 pub use post_processing::{
-    BloomCompositeMode, BloomSettings, GtaoSettings, PostProcessingSettings, TonemapMode,
-    TonemapSettings,
+    AutoExposureSettings, BloomCompositeMode, BloomSettings, GtaoSettings, PostProcessingSettings,
+    TonemapMode, TonemapSettings,
 };
 pub use rendering::{
     ClusterAssignmentMode, MsaaSampleCount, RecordParallelism, RenderingSettings, SceneColorFormat,
