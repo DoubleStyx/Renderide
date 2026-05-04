@@ -178,19 +178,25 @@ impl WorldMeshForwardNormalPipelineCache {
         self.per_draw_layout.get_or_create(|| {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("gtao_view_normals_per_draw"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: true,
-                        min_binding_size: wgpu::BufferSize::new(PER_DRAW_UNIFORM_STRIDE as u64),
-                    },
-                    count: None,
-                }],
+                entries: &normal_per_draw_layout_entries(),
             })
         })
     }
+}
+
+fn normal_per_draw_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
+    [wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        // The normal prepass reuses the forward per-draw bind group, so this visibility must match
+        // the reflected `null_per_draw` layout even though this shader reads it only in vertex.
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: true,
+            min_binding_size: wgpu::BufferSize::new(PER_DRAW_UNIFORM_STRIDE as u64),
+        },
+        count: None,
+    }]
 }
 
 impl WorldMeshForwardNormalPipelineKey {
@@ -341,8 +347,9 @@ impl RasterPass for WorldMeshForwardNormalPass {
 
 #[cfg(test)]
 mod tests {
-    use super::triangle_normal_topology;
+    use super::{normal_per_draw_layout_entries, triangle_normal_topology};
     use crate::materials::RasterPrimitiveTopology;
+    use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 
     #[test]
     fn normal_prepass_only_supports_triangle_topologies() {
@@ -365,6 +372,23 @@ mod tests {
         assert_eq!(
             triangle_normal_topology(RasterPrimitiveTopology::PointList),
             None
+        );
+    }
+
+    #[test]
+    fn normal_prepass_per_draw_layout_matches_forward_visibility() {
+        let [entry] = normal_per_draw_layout_entries();
+        assert_eq!(
+            entry.visibility,
+            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
+        );
+        assert_eq!(
+            entry.ty,
+            wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: true,
+                min_binding_size: wgpu::BufferSize::new(PER_DRAW_UNIFORM_STRIDE as u64),
+            }
         );
     }
 }
