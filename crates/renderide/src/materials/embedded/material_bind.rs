@@ -19,6 +19,7 @@ pub(crate) use cache::MaterialBindCacheKey;
 
 use hashbrown::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use lru::LruCache;
 use parking_lot::Mutex;
@@ -65,6 +66,8 @@ pub struct EmbeddedMaterialBindResources {
     /// Texture-debug HUD cache stays a single mutex: per-stem call frequency is low and the
     /// HUD does not run inside the per-view rayon fan-out, so sharding has no benefit here.
     texture_debug_cache: Mutex<LruCache<TextureDebugCacheKey, Arc<[i32]>>>,
+    /// Incremented when world-mesh forward resolves embedded binds so fog volume uniforms can warm-upload.
+    uniform_upload_epoch: AtomicU64,
 }
 
 impl EmbeddedMaterialBindResources {
@@ -95,7 +98,18 @@ impl EmbeddedMaterialBindResources {
             uniform_cache: ShardedLru::new(max_cached_embedded_uniforms(), EMBEDDED_CACHE_SHARDS),
             sampler_cache: ShardedLru::new(max_cached_embedded_samplers(), EMBEDDED_CACHE_SHARDS),
             texture_debug_cache: Mutex::new(LruCache::new(max_cached_texture_debug_ids())),
+            uniform_upload_epoch: AtomicU64::new(0),
         })
+    }
+
+    /// Monotonic epoch; paired with per-fog-buffer warm-up in [`Self::get_or_create_embedded_uniform_buffer`].
+    pub fn uniform_upload_epoch_latest(&self) -> u64 {
+        self.uniform_upload_epoch.load(Ordering::Relaxed)
+    }
+
+    /// Bumps the uniform upload epoch once per world-mesh material batch resolution (per view).
+    pub(crate) fn bump_uniform_upload_epoch(&self) -> u64 {
+        self.uniform_upload_epoch.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Uploads white texel into every placeholder texture (call once after creation with queue).
@@ -116,6 +130,7 @@ impl EmbeddedMaterialBindResources {
         lookup: MaterialPropertyLookupIds,
         offscreen_write_render_texture_asset_id: Option<i32>,
     ) -> Result<Arc<wgpu::BindGroup>, EmbeddedMaterialBindError> {
+        let epoch = self.uniform_upload_epoch_latest();
         self.embedded_material_bind_group_with_cache_key(
             stem,
             queue,
@@ -123,12 +138,17 @@ impl EmbeddedMaterialBindResources {
             pools,
             lookup,
             offscreen_write_render_texture_asset_id,
+            epoch,
         )
         .map(|(_, g)| g)
     }
 
     /// Same as [`Self::embedded_material_bind_group`], plus the cache key so callers can skip redundant
     /// [`wgpu::RenderPass::set_bind_group`] calls when the key matches the previous draw.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "wgpu bind path needs stem, queue, store, pools, lookup, offscreen RT, and uniform epoch together"
+    )]
     pub(crate) fn embedded_material_bind_group_with_cache_key(
         &self,
         stem: &str,
@@ -137,6 +157,7 @@ impl EmbeddedMaterialBindResources {
         pools: &EmbeddedTexturePools<'_>,
         lookup: MaterialPropertyLookupIds,
         offscreen_write_render_texture_asset_id: Option<i32>,
+        uniform_upload_epoch: u64,
     ) -> Result<(MaterialBindCacheKey, Arc<wgpu::BindGroup>), EmbeddedMaterialBindError> {
         profiling::scope!("materials::embedded_bind_group");
         let EmbeddedBindInputResolution {
@@ -183,6 +204,7 @@ impl EmbeddedMaterialBindResources {
                     pools,
                     primary_texture_2d: texture_2d_asset_id,
                     texture_state_sig,
+                    uniform_upload_epoch,
                 })?;
             return Ok((bind_key, bg));
         }
@@ -200,6 +222,7 @@ impl EmbeddedMaterialBindResources {
                 pools,
                 primary_texture_2d: texture_2d_asset_id,
                 texture_state_sig,
+                uniform_upload_epoch,
             })?;
 
         let (keepalive_views, keepalive_samplers) = self.resolve_group1_textures_and_samplers(

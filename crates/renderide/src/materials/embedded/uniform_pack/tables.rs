@@ -29,6 +29,11 @@ pub(super) fn inferred_keyword_float_f32(
         return Some(1.0);
     }
 
+    if let Some(value) = fogbox_volume_accumulation_keyword_inferred(field_name, store, lookup, ids)
+    {
+        return Some(value);
+    }
+
     let kw = ids.shared.as_ref();
     if let Some(value) = blend_keyword_inferred(field_name, store, lookup, kw) {
         return Some(value);
@@ -54,6 +59,37 @@ pub(super) fn inferred_keyword_float_f32(
         None => return None,
     };
     Some(if inferred { 1.0 } else { 0.0 })
+}
+
+/// FrooxEngine / Unity `FogBoxVolumeMaterial` drives fog mode via `_AccumulationMode` (0=Linear,
+/// 1=Exp, 2=Exp2). Shader keyword uniforms `FOG_LINEAR` / `FOG_EXP` / `FOG_EXP2` are often absent
+/// until the user toggles the enum in UI, which previously left all three at 0 and forced the
+/// exponential branch in WGSL.
+fn fogbox_volume_accumulation_keyword_inferred(
+    field_name: &str,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    ids: &StemEmbeddedPropertyIds,
+) -> Option<f32> {
+    let idx = match field_name {
+        "FOG_LINEAR" | "FOG_EXP" | "FOG_EXP2" => {
+            let shared = ids.shared.as_ref();
+            let mode = first_float_by_pids(
+                store,
+                lookup,
+                &[shared.accumulation_mode, shared.accumulation_mode_legacy],
+            )
+            .unwrap_or(0.0);
+            (mode.round() as i32).clamp(0, 2)
+        }
+        _ => return None,
+    };
+    Some(match field_name {
+        "FOG_LINEAR" => f32::from(idx == 0),
+        "FOG_EXP" => f32::from(idx == 1),
+        "FOG_EXP2" => f32::from(idx == 2),
+        _ => 0.0,
+    })
 }
 
 /// Infers scalar keyword fields that are driven by non-keyword host properties.

@@ -140,7 +140,7 @@ pub use pipeline_kind::RasterPipelineKind;
 pub use render_queue::{
     UNITY_OPAQUE_RENDER_QUEUE_MAX, UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_BACKGROUND,
     UNITY_RENDER_QUEUE_GEOMETRY, UNITY_RENDER_QUEUE_OVERLAY, UNITY_RENDER_QUEUE_TRANSPARENT,
-    UNITY_TRANSPARENT_RENDER_QUEUE_MIN, render_queue_is_transparent,
+    UNITY_RENDER_QUEUE_VOLUME_FOG, UNITY_TRANSPARENT_RENDER_QUEUE_MIN, render_queue_is_transparent,
 };
 pub(crate) use render_queue::{
     fallback_render_queue_for_material, material_render_queue_from_maps,

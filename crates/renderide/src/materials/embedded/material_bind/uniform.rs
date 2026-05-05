@@ -22,6 +22,9 @@ pub(super) struct CachedUniformEntry {
     pub(super) buffer: Arc<wgpu::Buffer>,
     pub(super) last_written_generation: u64,
     pub(super) last_written_texture_state_sig: u64,
+    /// `FogBoxVolume` materials: host sometimes finishes keyword / mode properties after the first
+    /// uniform pack. Re-upload for a few [`super::FOG_VOLUME_UNIFORM_WARMUP_EPOCHS`] after create.
+    pub(super) fog_uniform_warmup_exclusive_end_epoch: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -44,6 +47,15 @@ pub(super) struct EmbeddedUniformBufferRequest<'a> {
     pub(super) pools: &'a EmbeddedTexturePools<'a>,
     pub(super) primary_texture_2d: i32,
     pub(super) texture_state_sig: u64,
+    /// From [`super::EmbeddedMaterialBindResources::bump_uniform_upload_epoch`]; drives fog warm-up.
+    pub(super) uniform_upload_epoch: u64,
+}
+
+/// Exclusive epoch span after buffer creation: re-upload fog uniforms while `epoch < create_epoch + this`.
+const FOG_VOLUME_UNIFORM_WARMUP_EPOCHS: u64 = 4;
+
+fn fogbox_volume_stem(stem: &str) -> bool {
+    stem.contains("fogboxvolume")
 }
 
 use super::EmbeddedMaterialBindResources;
@@ -67,6 +79,7 @@ impl EmbeddedMaterialBindResources {
             pools,
             primary_texture_2d,
             texture_state_sig,
+            uniform_upload_epoch,
         } = req;
         let tex_ctx = UniformPackTextureContext {
             pools,
@@ -79,8 +92,13 @@ impl EmbeddedMaterialBindResources {
         // where two workers miss the same key concurrently.
         let cached = self.uniform_cache.get_cloned(uniform_key);
         if let Some(entry) = cached {
+            let fog_warmup_force = fogbox_volume_stem(stem)
+                && entry
+                    .fog_uniform_warmup_exclusive_end_epoch
+                    .is_some_and(|end| uniform_upload_epoch < end);
             if entry.last_written_generation == mutation_gen
                 && entry.last_written_texture_state_sig == texture_state_sig
+                && !fog_warmup_force
             {
                 profiling::scope!("materials::embedded_uniform_cache_hit");
                 return Ok(entry.buffer);
@@ -102,6 +120,8 @@ impl EmbeddedMaterialBindResources {
                 buffer: entry.buffer.clone(),
                 last_written_generation: mutation_gen,
                 last_written_texture_state_sig: texture_state_sig,
+                fog_uniform_warmup_exclusive_end_epoch: entry
+                    .fog_uniform_warmup_exclusive_end_epoch,
             };
             let _ = self.uniform_cache.put(*uniform_key, refreshed);
             return Ok(entry.buffer);
@@ -126,10 +146,13 @@ impl EmbeddedMaterialBindResources {
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 }),
         );
+        let fog_warmup_exclusive_end = fogbox_volume_stem(stem)
+            .then(|| uniform_upload_epoch.saturating_add(FOG_VOLUME_UNIFORM_WARMUP_EPOCHS));
         let entry = CachedUniformEntry {
             buffer: buf.clone(),
             last_written_generation: mutation_gen,
             last_written_texture_state_sig: texture_state_sig,
+            fog_uniform_warmup_exclusive_end_epoch: fog_warmup_exclusive_end,
         };
         if let Some(evicted) = self.uniform_cache.put(*uniform_key, entry) {
             drop(evicted);

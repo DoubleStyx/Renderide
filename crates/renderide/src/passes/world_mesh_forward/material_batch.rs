@@ -184,16 +184,25 @@ impl<'a> MaterialDrawResolver<'a> {
             return Vec::new();
         }
 
+        let uniform_upload_epoch = self
+            .embedded_bind
+            .map(|bind| bind.bump_uniform_upload_epoch())
+            .unwrap_or(0);
+
         let boundaries = collect_material_batch_boundaries(draws);
         if boundaries.len() < 2 {
             boundaries
                 .into_iter()
-                .map(|(first, last)| self.resolve_one_batch(draws, first, last))
+                .map(|(first, last)| {
+                    self.resolve_one_batch(draws, first, last, uniform_upload_epoch)
+                })
                 .collect()
         } else {
             boundaries
                 .into_par_iter()
-                .map(|(first, last)| self.resolve_one_batch(draws, first, last))
+                .map(|(first, last)| {
+                    self.resolve_one_batch(draws, first, last, uniform_upload_epoch)
+                })
                 .collect()
         }
     }
@@ -204,6 +213,7 @@ impl<'a> MaterialDrawResolver<'a> {
         draws: &[WorldMeshDrawItem],
         first: usize,
         last: usize,
+        uniform_upload_epoch: u64,
     ) -> MaterialBatchPacket {
         let item = &draws[first];
         let mut pipeline_key =
@@ -217,7 +227,7 @@ impl<'a> MaterialDrawResolver<'a> {
         }
 
         let pipelines = self.resolve_pipelines(pipeline_key);
-        let bind_group = self.resolve_embedded_bind_group(item);
+        let bind_group = self.resolve_embedded_bind_group(item, uniform_upload_epoch);
 
         MaterialBatchPacket {
             first_draw_idx: first,
@@ -268,6 +278,7 @@ impl<'a> MaterialDrawResolver<'a> {
     fn resolve_embedded_bind_group(
         &self,
         item: &WorldMeshDrawItem,
+        uniform_upload_epoch: u64,
     ) -> Option<Arc<wgpu::BindGroup>> {
         let batch_key = &item.batch_key;
         if !matches!(&batch_key.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
@@ -294,6 +305,7 @@ impl<'a> MaterialDrawResolver<'a> {
                     &self.pools,
                     item.lookup_ids,
                     self.offscreen_write_render_texture_asset_id,
+                    uniform_upload_epoch,
                 )
                 .ok()
                 .map(|(_, bg)| bg)
