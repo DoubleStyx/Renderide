@@ -44,17 +44,24 @@ use crate::config::{GtaoSettings, PostProcessingSettings};
 use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::post_processing::{EffectPasses, PostProcessEffect, PostProcessEffectId};
 use crate::render_graph::resources::{
-    ImportedBufferHandle, ImportedTextureHandle, TextureHandle, TransientArrayLayers,
-    TransientExtent, TransientSampleCount, TransientSubresourceDesc, TransientTextureDesc,
-    TransientTextureFormat,
+    ImportedBufferHandle, ImportedTextureHandle, SubresourceHandle, TextureHandle,
+    TransientArrayLayers, TransientExtent, TransientSampleCount, TransientSubresourceDesc,
+    TransientTextureDesc, TransientTextureFormat,
 };
 
-const GTAO_VIEW_DEPTH_LABELS: [[&str; 2]; VIEW_DEPTH_MIP_COUNT as usize] = [
-    ["gtao_view_depth_mip0_l0", "gtao_view_depth_mip0_l1"],
-    ["gtao_view_depth_mip1_l0", "gtao_view_depth_mip1_l1"],
-    ["gtao_view_depth_mip2_l0", "gtao_view_depth_mip2_l1"],
-    ["gtao_view_depth_mip3_l0", "gtao_view_depth_mip3_l1"],
-    ["gtao_view_depth_mip4_l0", "gtao_view_depth_mip4_l1"],
+const GTAO_VIEW_DEPTH_LAYER0_LABELS: [&str; VIEW_DEPTH_MIP_COUNT as usize] = [
+    "gtao_view_depth_mip0_l0",
+    "gtao_view_depth_mip1_l0",
+    "gtao_view_depth_mip2_l0",
+    "gtao_view_depth_mip3_l0",
+    "gtao_view_depth_mip4_l0",
+];
+const GTAO_VIEW_DEPTH_LAYER1_LABELS: [&str; VIEW_DEPTH_MIP_COUNT as usize] = [
+    "gtao_view_depth_mip0_l1",
+    "gtao_view_depth_mip1_l1",
+    "gtao_view_depth_mip2_l1",
+    "gtao_view_depth_mip3_l1",
+    "gtao_view_depth_mip4_l1",
 ];
 
 /// Effect descriptor that contributes the GTAO pass chain to the post-processing chain.
@@ -72,6 +79,8 @@ pub struct GtaoEffect {
     /// Imported frame-uniforms buffer handle (fallback / scheduling; actual bind sources from
     /// [`crate::render_graph::frame_params::PerViewFramePlanSlot`] at record time).
     pub frame_uniforms: ImportedBufferHandle,
+    /// Whether this graph is compiled for OpenXR multiview stereo.
+    pub multiview_stereo: bool,
 }
 
 impl PostProcessEffect for GtaoEffect {
@@ -92,8 +101,10 @@ impl PostProcessEffect for GtaoEffect {
         let pipelines = gtao_pipelines();
         let denoise_passes = self.settings.denoise_passes.min(3);
 
-        let view_depth = builder.create_texture(view_depth_desc("gtao_view_depth"));
-        let view_depth_mips = create_view_depth_subresources(builder, view_depth);
+        let view_depth =
+            builder.create_texture(view_depth_desc("gtao_view_depth", self.multiview_stereo));
+        let view_depth_mips =
+            create_view_depth_subresources(builder, view_depth, self.multiview_stereo);
         let (first_prefilter, last_prefilter) =
             add_view_depth_prefilter(builder, view_depth_mips, self, pipelines);
 
@@ -169,28 +180,59 @@ impl PostProcessEffect for GtaoEffect {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ViewDepthSubresources {
+    layer0: [SubresourceHandle; VIEW_DEPTH_MIP_COUNT as usize],
+    layer1: Option<[SubresourceHandle; VIEW_DEPTH_MIP_COUNT as usize]>,
+}
+
+impl ViewDepthSubresources {
+    fn layer_count(self) -> u32 {
+        if self.layer1.is_some() { 2 } else { 1 }
+    }
+
+    fn layer(self, layer: u32) -> Option<[SubresourceHandle; VIEW_DEPTH_MIP_COUNT as usize]> {
+        match layer {
+            0 => Some(self.layer0),
+            1 => self.layer1,
+            _ => None,
+        }
+    }
+}
+
 fn create_view_depth_subresources(
     builder: &mut GraphBuilder,
     view_depth: TextureHandle,
-) -> [[crate::render_graph::resources::SubresourceHandle; 2]; VIEW_DEPTH_MIP_COUNT as usize] {
-    std::array::from_fn(|mip| {
-        std::array::from_fn(|layer| {
+    multiview_stereo: bool,
+) -> ViewDepthSubresources {
+    let layer0 = std::array::from_fn(|mip| {
+        builder.create_subresource(TransientSubresourceDesc {
+            parent: view_depth,
+            label: GTAO_VIEW_DEPTH_LAYER0_LABELS[mip],
+            base_mip_level: mip as u32,
+            mip_level_count: 1,
+            base_array_layer: 0,
+            array_layer_count: 1,
+        })
+    });
+    let layer1 = multiview_stereo.then(|| {
+        std::array::from_fn(|mip| {
             builder.create_subresource(TransientSubresourceDesc {
                 parent: view_depth,
-                label: GTAO_VIEW_DEPTH_LABELS[mip][layer],
+                label: GTAO_VIEW_DEPTH_LAYER1_LABELS[mip],
                 base_mip_level: mip as u32,
                 mip_level_count: 1,
-                base_array_layer: layer as u32,
+                base_array_layer: 1,
                 array_layer_count: 1,
             })
         })
-    })
+    });
+    ViewDepthSubresources { layer0, layer1 }
 }
 
 fn add_view_depth_prefilter(
     builder: &mut GraphBuilder,
-    view_depth_mips: [[crate::render_graph::resources::SubresourceHandle; 2];
-        VIEW_DEPTH_MIP_COUNT as usize],
+    view_depth_mips: ViewDepthSubresources,
     effect: &GtaoEffect,
     pipelines: &'static GtaoPipelines,
 ) -> (
@@ -201,7 +243,7 @@ fn add_view_depth_prefilter(
         depth: effect.depth,
         frame_uniforms: effect.frame_uniforms,
         source_mip: None,
-        output_mip: view_depth_mips[0][0],
+        output_mip: view_depth_mips.layer0[0],
     };
     let first = builder.add_compute_pass(Box::new(GtaoDepthPrefilterPass::mip0(
         first_resources,
@@ -210,14 +252,16 @@ fn add_view_depth_prefilter(
         0,
     )));
     let mut last = first;
-    for mip in 0..VIEW_DEPTH_MIP_COUNT {
-        for layer in 0..2 {
+    for layer in 0..view_depth_mips.layer_count() {
+        let Some(layer_mips) = view_depth_mips.layer(layer) else {
+            continue;
+        };
+        for mip in 0..VIEW_DEPTH_MIP_COUNT {
             if mip == 0 && layer == 0 {
                 continue;
             }
-            let layer_idx = layer as usize;
-            let output_mip = view_depth_mips[mip as usize][layer_idx];
-            let source_mip = (mip > 0).then(|| view_depth_mips[mip as usize - 1][layer_idx]);
+            let output_mip = layer_mips[mip as usize];
+            let source_mip = (mip > 0).then(|| layer_mips[mip as usize - 1]);
             let resources = GtaoDepthPrefilterResources {
                 depth: effect.depth,
                 frame_uniforms: effect.frame_uniforms,
@@ -249,6 +293,10 @@ fn gtao_pipelines() -> &'static GtaoPipelines {
     &CACHE
 }
 
+fn should_record_depth_prefilter_layer(layer: u32, multiview_stereo: bool) -> bool {
+    layer == 0 || (layer == 1 && multiview_stereo)
+}
+
 /// Transient texture descriptor for the AO term ping-pong buffers (`R8Unorm`, frame array
 /// layers).
 fn ao_buffer_desc(label: &'static str) -> TransientTextureDesc {
@@ -273,7 +321,7 @@ fn ao_buffer_desc_format(
     }
 }
 
-fn view_depth_desc(label: &'static str) -> TransientTextureDesc {
+fn view_depth_desc(label: &'static str, multiview_stereo: bool) -> TransientTextureDesc {
     TransientTextureDesc {
         label,
         format: TransientTextureFormat::Fixed(VIEW_DEPTH_FORMAT),
@@ -281,7 +329,11 @@ fn view_depth_desc(label: &'static str) -> TransientTextureDesc {
         mip_levels: VIEW_DEPTH_MIP_COUNT,
         sample_count: TransientSampleCount::Fixed(1),
         dimension: wgpu::TextureDimension::D2,
-        array_layers: TransientArrayLayers::Frame,
+        array_layers: if multiview_stereo {
+            TransientArrayLayers::Fixed(2)
+        } else {
+            TransientArrayLayers::Frame
+        },
         base_usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         alias: true,
     }
@@ -298,6 +350,7 @@ mod tests {
             depth: ImportedTextureHandle(0),
             view_normals: TextureHandle(0),
             frame_uniforms: ImportedBufferHandle(0),
+            multiview_stereo: false,
         };
         assert_eq!(e.id(), PostProcessEffectId::Gtao);
         assert_eq!(e.id().label(), "GTAO");
@@ -310,6 +363,7 @@ mod tests {
             depth: ImportedTextureHandle(0),
             view_normals: TextureHandle(0),
             frame_uniforms: ImportedBufferHandle(0),
+            multiview_stereo: false,
         };
         let mut s = PostProcessingSettings {
             enabled: false,
@@ -369,5 +423,55 @@ mod tests {
     #[test]
     fn pipeline_caches_default_construct() {
         let _ = GtaoPipelines::default();
+    }
+
+    #[test]
+    fn mono_view_depth_declares_only_layer_zero() {
+        let mut builder = GraphBuilder::new();
+        let texture = builder.create_texture(view_depth_desc("gtao_view_depth", false));
+        let mips = create_view_depth_subresources(&mut builder, texture, false);
+
+        assert_eq!(mips.layer_count(), 1);
+        assert!(mips.layer(1).is_none());
+        assert!(
+            builder
+                .subresources
+                .iter()
+                .all(|desc| desc.base_array_layer == 0)
+        );
+        assert!(
+            builder
+                .subresources
+                .iter()
+                .all(|desc| !desc.label.ends_with("_l1"))
+        );
+    }
+
+    #[test]
+    fn stereo_view_depth_declares_layer_one() {
+        let mut builder = GraphBuilder::new();
+        let texture = builder.create_texture(view_depth_desc("gtao_view_depth", true));
+        let mips = create_view_depth_subresources(&mut builder, texture, true);
+
+        assert_eq!(mips.layer_count(), 2);
+        assert!(mips.layer(1).is_some());
+        assert!(
+            builder
+                .subresources
+                .iter()
+                .any(|desc| desc.label == "gtao_view_depth_mip4_l1")
+        );
+        assert_eq!(
+            builder.textures[texture.index()].array_layers,
+            TransientArrayLayers::Fixed(2)
+        );
+    }
+
+    #[test]
+    fn depth_prefilter_record_gate_matches_view_layers() {
+        assert!(should_record_depth_prefilter_layer(0, false));
+        assert!(should_record_depth_prefilter_layer(0, true));
+        assert!(!should_record_depth_prefilter_layer(1, false));
+        assert!(should_record_depth_prefilter_layer(1, true));
     }
 }

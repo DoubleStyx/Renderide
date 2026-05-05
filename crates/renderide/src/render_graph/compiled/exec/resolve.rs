@@ -244,7 +244,7 @@ impl CompiledRenderGraph {
                 continue;
             };
             if !desc.fits_resolved_parent(parent.mip_levels, parent.array_layers) {
-                logger::warn!(
+                logger::trace!(
                     "render graph subresource '{}' skipped: mip {}+{} layer {}+{} exceeds \
                      resolved parent {:?} (mips={}, layers={})",
                     desc.label,

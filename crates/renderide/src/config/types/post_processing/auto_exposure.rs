@@ -116,14 +116,14 @@ mod tests {
         let settings = AutoExposureSettings::default();
 
         assert!(settings.enabled);
-        assert_eq!(settings.min_ev, -8.0);
-        assert_eq!(settings.max_ev, 8.0);
+        assert_eq!(settings.min_ev, -16.0);
+        assert_eq!(settings.max_ev, 16.0);
         assert_eq!(settings.low_percent, 0.10);
         assert_eq!(settings.high_percent, 0.90);
         assert_eq!(settings.speed_brighten, 3.0);
-        assert_eq!(settings.speed_darken, 1.0);
+        assert_eq!(settings.speed_darken, 3.0);
         assert_eq!(settings.exponential_transition_distance, 1.5);
-        assert_eq!(settings.compensation_ev, 0.0);
+        assert_eq!(settings.compensation_ev, -3.0);
     }
 
     #[test]
