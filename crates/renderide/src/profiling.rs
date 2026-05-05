@@ -232,6 +232,155 @@ pub fn plot_frame_upload_batch(writes: usize, bytes: usize) {
     }
 }
 
+/// CPU timings and counts for one render-graph command-encoding slice.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CommandEncodingProfileSample {
+    /// Number of views encoded by the graph.
+    pub view_count: usize,
+    /// Number of command buffers submitted in the batch.
+    pub command_buffers: usize,
+    /// Frame-global pass count in the compiled schedule.
+    pub frame_global_passes: usize,
+    /// Per-view pass count in the compiled schedule.
+    pub per_view_passes: usize,
+    /// Declared transient texture handles in the compiled graph.
+    pub transient_textures: usize,
+    /// Physical transient texture slots after aliasing.
+    pub transient_texture_slots: usize,
+    /// Transient texture allocation misses during this frame.
+    pub transient_texture_misses: usize,
+    /// Transient buffer allocation misses during this frame.
+    pub transient_buffer_misses: usize,
+    /// Deferred upload writes drained before submit.
+    pub upload_writes: usize,
+    /// Deferred upload payload bytes drained before submit.
+    pub upload_bytes: usize,
+    /// CPU time spent resolving transient resources for all views.
+    pub pre_resolve_ms: f64,
+    /// CPU time spent preparing shared/per-view resources before recording.
+    pub prepare_resources_ms: f64,
+    /// CPU time spent encoding frame-global work before `CommandEncoder::finish`.
+    pub frame_global_encode_ms: f64,
+    /// CPU time spent inside frame-global `CommandEncoder::finish`.
+    pub frame_global_finish_ms: f64,
+    /// CPU time spent encoding per-view work before `CommandEncoder::finish`.
+    pub per_view_encode_ms: f64,
+    /// Total CPU time spent inside per-view `CommandEncoder::finish` calls.
+    pub per_view_finish_ms: f64,
+    /// CPU time spent draining deferred uploads.
+    pub upload_drain_ms: f64,
+    /// CPU time spent inside the upload encoder `CommandEncoder::finish`.
+    pub upload_finish_ms: f64,
+    /// CPU time spent allocating and assembling the final command-buffer batch.
+    pub command_batch_assembly_ms: f64,
+    /// CPU time spent enqueueing the submit batch to the GPU driver thread.
+    pub submit_enqueue_ms: f64,
+    /// Largest single encoder finish observed in this frame.
+    pub max_encoder_finish_ms: f64,
+    /// World-mesh draw items visible to the command recorder.
+    pub world_mesh_draws: usize,
+    /// World-mesh indexed draw groups emitted by the command recorder.
+    pub world_mesh_instance_batches: usize,
+    /// World-mesh pipeline-pass draw submissions after multi-pass material expansion.
+    pub world_mesh_pipeline_pass_submits: usize,
+}
+
+/// Records command-encoding timings and pressure counters for the current frame.
+#[inline]
+pub fn plot_command_encoding(sample: CommandEncodingProfileSample) {
+    #[cfg(feature = "tracy")]
+    {
+        tracy_client::plot!("command_encoding::views", sample.view_count as f64);
+        tracy_client::plot!(
+            "command_encoding::command_buffers",
+            sample.command_buffers as f64
+        );
+        tracy_client::plot!(
+            "command_encoding::frame_global_passes",
+            sample.frame_global_passes as f64
+        );
+        tracy_client::plot!(
+            "command_encoding::per_view_passes",
+            sample.per_view_passes as f64
+        );
+        tracy_client::plot!(
+            "command_encoding::transient_textures",
+            sample.transient_textures as f64
+        );
+        tracy_client::plot!(
+            "command_encoding::transient_texture_slots",
+            sample.transient_texture_slots as f64
+        );
+        tracy_client::plot!(
+            "command_encoding::transient_texture_misses",
+            sample.transient_texture_misses as f64
+        );
+        tracy_client::plot!(
+            "command_encoding::transient_buffer_misses",
+            sample.transient_buffer_misses as f64
+        );
+        tracy_client::plot!(
+            "command_encoding::upload_writes",
+            sample.upload_writes as f64
+        );
+        tracy_client::plot!("command_encoding::upload_bytes", sample.upload_bytes as f64);
+        tracy_client::plot!("command_encoding::pre_resolve_ms", sample.pre_resolve_ms);
+        tracy_client::plot!(
+            "command_encoding::prepare_resources_ms",
+            sample.prepare_resources_ms
+        );
+        tracy_client::plot!(
+            "command_encoding::frame_global_encode_ms",
+            sample.frame_global_encode_ms
+        );
+        tracy_client::plot!(
+            "command_encoding::frame_global_finish_ms",
+            sample.frame_global_finish_ms
+        );
+        tracy_client::plot!(
+            "command_encoding::per_view_encode_ms",
+            sample.per_view_encode_ms
+        );
+        tracy_client::plot!(
+            "command_encoding::per_view_finish_ms",
+            sample.per_view_finish_ms
+        );
+        tracy_client::plot!("command_encoding::upload_drain_ms", sample.upload_drain_ms);
+        tracy_client::plot!(
+            "command_encoding::upload_finish_ms",
+            sample.upload_finish_ms
+        );
+        tracy_client::plot!(
+            "command_encoding::command_batch_assembly_ms",
+            sample.command_batch_assembly_ms
+        );
+        tracy_client::plot!(
+            "command_encoding::submit_enqueue_ms",
+            sample.submit_enqueue_ms
+        );
+        tracy_client::plot!(
+            "command_encoding::max_encoder_finish_ms",
+            sample.max_encoder_finish_ms
+        );
+        tracy_client::plot!(
+            "command_encoding::world_mesh_draws",
+            sample.world_mesh_draws as f64
+        );
+        tracy_client::plot!(
+            "command_encoding::world_mesh_instance_batches",
+            sample.world_mesh_instance_batches as f64
+        );
+        tracy_client::plot!(
+            "command_encoding::world_mesh_pipeline_pass_submits",
+            sample.world_mesh_pipeline_pass_submits as f64
+        );
+    }
+    #[cfg(not(feature = "tracy"))]
+    {
+        let _ = sample;
+    }
+}
+
 /// Asset-integration backlog and budget-exhaustion counters for one drain.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AssetIntegrationProfileSample {
@@ -286,10 +435,18 @@ pub fn plot_asset_integration(sample: AssetIntegrationProfileSample) {
 pub struct MeshDeformProfileSample {
     /// Deform work items collected for this frame.
     pub work_items: u64,
+    /// Compute passes opened while recording mesh deformation.
+    pub compute_passes: u64,
+    /// Bind groups created while recording mesh deformation.
+    pub bind_groups_created: u64,
+    /// Encoder copy operations recorded by mesh deformation.
+    pub copy_ops: u64,
     /// Sparse blendshape compute dispatches recorded.
     pub blend_dispatches: u64,
     /// Skinning compute dispatches recorded.
     pub skin_dispatches: u64,
+    /// Scratch-buffer grow operations triggered by this frame.
+    pub scratch_buffer_grows: u64,
     /// Work items skipped because the skin cache could not allocate safely.
     pub skipped_allocations: u64,
     /// Skin-cache entries reused.
@@ -310,6 +467,12 @@ pub fn plot_mesh_deform(sample: MeshDeformProfileSample) {
     #[cfg(feature = "tracy")]
     {
         tracy_client::plot!("mesh_deform::work_items", sample.work_items as f64);
+        tracy_client::plot!("mesh_deform::compute_passes", sample.compute_passes as f64);
+        tracy_client::plot!(
+            "mesh_deform::bind_groups_created",
+            sample.bind_groups_created as f64
+        );
+        tracy_client::plot!("mesh_deform::copy_ops", sample.copy_ops as f64);
         tracy_client::plot!(
             "mesh_deform::blend_dispatches",
             sample.blend_dispatches as f64
@@ -317,6 +480,10 @@ pub fn plot_mesh_deform(sample: MeshDeformProfileSample) {
         tracy_client::plot!(
             "mesh_deform::skin_dispatches",
             sample.skin_dispatches as f64
+        );
+        tracy_client::plot!(
+            "mesh_deform::scratch_buffer_grows",
+            sample.scratch_buffer_grows as f64
         );
         tracy_client::plot!(
             "mesh_deform::skipped_allocations",

@@ -26,6 +26,7 @@ pub use scene_color_compose::{SceneColorComposeGraphResources, SceneColorCompose
 pub use swapchain_clear::SwapchainClearPass;
 pub(crate) use world_mesh_forward::{
     GTAO_VIEW_NORMAL_FORMAT, PipelineVariantKey, PrefetchedWorldMeshDrawsSlot,
+    WorldMeshForwardPlanSlot,
 };
 pub use world_mesh_forward::{
     WorldMeshColorSnapshotPass, WorldMeshDepthSnapshotPass,

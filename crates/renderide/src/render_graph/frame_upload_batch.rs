@@ -16,6 +16,7 @@
 use std::cell::Cell;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use parking_lot::Mutex;
 
@@ -179,6 +180,33 @@ pub struct FrameUploadBatch {
     fallback_sequence: AtomicU64,
 }
 
+/// Deferred-upload traffic drained into the frame submit batch.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameUploadBatchStats {
+    /// Number of queued buffer writes drained.
+    pub writes: usize,
+    /// Total payload bytes drained.
+    pub bytes: usize,
+    /// Writes served by the staging-buffer copy path.
+    pub staged_writes: usize,
+    /// Writes replayed through [`wgpu::Queue::write_buffer`] because they were not copy-aligned.
+    pub fallback_writes: usize,
+    /// Size of the staging buffer allocated for aligned writes.
+    pub staging_bytes: u64,
+    /// Number of [`wgpu::CommandEncoder::copy_buffer_to_buffer`] operations recorded.
+    pub copy_ops: usize,
+    /// CPU time spent inside the upload encoder [`wgpu::CommandEncoder::finish`] call.
+    pub finish_ms: f64,
+}
+
+/// Upload command buffer plus the traffic statistics that produced it.
+pub struct FrameUploadFlush {
+    /// Recorded copy command buffer for staged writes.
+    pub command_buffer: wgpu::CommandBuffer,
+    /// Upload traffic and finish timing for diagnostics.
+    pub stats: FrameUploadBatchStats,
+}
+
 impl FrameUploadBatch {
     /// Creates a new empty batch.
     pub fn new() -> Self {
@@ -262,12 +290,12 @@ impl FrameUploadBatch {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) -> Option<wgpu::CommandBuffer> {
+    ) -> Option<FrameUploadFlush> {
         crate::profiling::scope!("frame_upload::drain_and_flush");
-        let (writes, payload_bytes) = self.take_recorded_uploads()?;
-        let (plans, staging_size) = plan_staging_writes(&writes);
+        let (writes, payload_bytes, mut stats) = self.take_recorded_uploads()?;
+        let (plans, staging_size) = plan_staging_writes(&writes, &mut stats);
         let staging = build_staging_buffer(device, &writes, &plans, &payload_bytes, staging_size);
-        let cmd = record_upload_command_buffer(
+        let (command_buffer, finish_ms) = record_upload_command_buffer(
             device,
             queue,
             &writes,
@@ -275,18 +303,27 @@ impl FrameUploadBatch {
             &payload_bytes,
             staging.as_ref(),
         );
+        stats.finish_ms = finish_ms;
         self.restore_recorded_upload_capacity(writes, payload_bytes);
-        Some(cmd)
+        Some(FrameUploadFlush {
+            command_buffer,
+            stats,
+        })
     }
 
     /// Takes pending writes and payload bytes while preserving reusable capacity for restore.
-    fn take_recorded_uploads(&self) -> Option<(Vec<QueueWrite>, Vec<u8>)> {
+    fn take_recorded_uploads(&self) -> Option<(Vec<QueueWrite>, Vec<u8>, FrameUploadBatchStats)> {
         crate::profiling::scope!("frame_upload::take_recorded");
         let mut recorded = self.recorded.lock();
         crate::profiling::plot_frame_upload_batch(recorded.writes.len(), recorded.bytes.len());
         if recorded.writes.is_empty() {
             return None;
         }
+        let stats = FrameUploadBatchStats {
+            writes: recorded.writes.len(),
+            bytes: recorded.bytes.len(),
+            ..FrameUploadBatchStats::default()
+        };
         if !recorded.writes.is_sorted_by_key(queue_write_order) {
             crate::profiling::scope!("frame_upload::sort_writes");
             recorded.writes.sort_by_key(queue_write_order);
@@ -294,6 +331,7 @@ impl FrameUploadBatch {
         Some((
             std::mem::take(&mut recorded.writes),
             std::mem::take(&mut recorded.bytes),
+            stats,
         ))
     }
 
@@ -331,7 +369,10 @@ impl Default for FrameUploadBatch {
 }
 
 /// Assigns each aligned write a staging-buffer slot and marks unaligned writes for fallback.
-fn plan_staging_writes(writes: &[QueueWrite]) -> (Vec<WritePlan>, u64) {
+fn plan_staging_writes(
+    writes: &[QueueWrite],
+    stats: &mut FrameUploadBatchStats,
+) -> (Vec<WritePlan>, u64) {
     crate::profiling::scope!("frame_upload::plan_staging");
     let mut plans = Vec::with_capacity(writes.len());
     let mut staging_size: u64 = 0;
@@ -348,10 +389,14 @@ fn plan_staging_writes(writes: &[QueueWrite]) -> (Vec<WritePlan>, u64) {
                 len,
             });
             staging_size = aligned_off + len;
+            stats.staged_writes = stats.staged_writes.saturating_add(1);
         } else {
             plans.push(WritePlan::Fallback);
+            stats.fallback_writes = stats.fallback_writes.saturating_add(1);
         }
     }
+    stats.staging_bytes = staging_size;
+    stats.copy_ops = stats.staged_writes;
     (plans, staging_size)
 }
 
@@ -418,7 +463,7 @@ fn record_upload_command_buffer(
     plans: &[WritePlan],
     payload_bytes: &[u8],
     staging: Option<&wgpu::Buffer>,
-) -> wgpu::CommandBuffer {
+) -> (wgpu::CommandBuffer, f64) {
     crate::profiling::scope!("frame_upload::record_encoder");
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("frame_upload_staging_belt"),
@@ -428,7 +473,10 @@ fn record_upload_command_buffer(
     }
     {
         crate::profiling::scope!("CommandEncoder::finish::frame_upload");
-        encoder.finish()
+        let finish_start = Instant::now();
+        let command_buffer = encoder.finish();
+        let finish_ms = finish_start.elapsed().as_secs_f64() * 1000.0;
+        (command_buffer, finish_ms)
     }
 }
 

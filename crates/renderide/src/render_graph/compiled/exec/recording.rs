@@ -2,6 +2,7 @@
 
 use hashbrown::HashMap;
 use hashbrown::hash_map::Entry;
+use std::time::Instant;
 
 use super::super::super::blackboard::Blackboard;
 use super::super::super::context::{
@@ -11,15 +12,15 @@ use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_params::{
     FrameSystemsShared, MsaaViewsSlot, PerViewFramePlan, PerViewFramePlanSlot,
 };
-use super::super::super::frame_upload_batch::FrameUploadScope;
+use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadScope};
 use super::super::super::pass::PassKind;
 use super::super::helpers;
 use super::super::{
     CompiledRenderGraph, FrameView, MultiViewExecutionContext, ResolvedView, WorldMeshDrawPlan,
 };
 use super::{
-    GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem,
-    TransientTextureResolveSurfaceParams,
+    GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem, TimedCommandBuffer,
+    TransientTextureResolveSurfaceParams, WorldMeshCommandStats, elapsed_ms,
 };
 use crate::backend::BackendGraphAccess;
 use crate::diagnostics::PerViewHudOutputsSlot;
@@ -29,6 +30,49 @@ use crate::passes::post_processing::settings_slot::{
     GtaoSettingsSlot, GtaoSettingsValue,
 };
 
+fn world_mesh_command_stats_from_blackboard(blackboard: &Blackboard) -> WorldMeshCommandStats {
+    let Some(prepared) = blackboard.get::<crate::passes::WorldMeshForwardPlanSlot>() else {
+        return WorldMeshCommandStats::default();
+    };
+    let group_pipeline_passes = |group: &crate::world_mesh::DrawGroup| {
+        prepared
+            .precomputed_batches
+            .get(group.material_packet_idx)
+            .and_then(|packet| packet.pipelines.as_ref())
+            .map_or(0, |pipelines| pipelines.len())
+    };
+    let regular_pipeline_passes: usize = prepared
+        .plan
+        .regular_groups
+        .iter()
+        .map(&group_pipeline_passes)
+        .sum();
+    let intersect_pipeline_passes: usize = prepared
+        .plan
+        .intersect_groups
+        .iter()
+        .map(&group_pipeline_passes)
+        .sum();
+    let transparent_pipeline_passes: usize = prepared
+        .plan
+        .transparent_groups
+        .iter()
+        .map(group_pipeline_passes)
+        .sum();
+    WorldMeshCommandStats {
+        draws: prepared.draws.len(),
+        instance_batches: prepared
+            .plan
+            .regular_groups
+            .len()
+            .saturating_add(prepared.plan.intersect_groups.len())
+            .saturating_add(prepared.plan.transparent_groups.len()),
+        pipeline_pass_submits: regular_pipeline_passes
+            .saturating_add(intersect_pipeline_passes)
+            .saturating_add(transparent_pipeline_passes),
+    }
+}
+
 impl CompiledRenderGraph {
     /// Records the per-view pass phase into one command buffer for `work_item`.
     pub(super) fn record_one_view(
@@ -36,10 +80,11 @@ impl CompiledRenderGraph {
         shared: &PerViewRecordShared<'_>,
         work_item: PerViewWorkItem,
         transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
-        upload_batch: &super::super::super::frame_upload_batch::FrameUploadBatch,
+        upload_batch: &FrameUploadBatch,
         profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<PerViewEncodeOutput, GraphExecuteError> {
         profiling::scope!("graph::per_view");
+        let encode_start = Instant::now();
         let device = shared.device;
         let PerViewWorkItem {
             view_idx,
@@ -130,14 +175,22 @@ impl CompiledRenderGraph {
         {
             prof.end_query(&mut encoder, query);
         }
+        let world_mesh = world_mesh_command_stats_from_blackboard(&view_blackboard);
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
-        let command_buffer = {
+        let encode_ms = elapsed_ms(encode_start);
+        let (command_buffer, finish_ms) = {
             profiling::scope!("CommandEncoder::finish::graph_per_view");
-            encoder.finish()
+            let finish_start = Instant::now();
+            let command_buffer = encoder.finish();
+            let finish_ms = elapsed_ms(finish_start);
+            (command_buffer, finish_ms)
         };
         Ok(PerViewEncodeOutput {
             command_buffer,
             hud_outputs,
+            encode_ms,
+            finish_ms,
+            world_mesh,
         })
     }
 
@@ -226,12 +279,13 @@ impl CompiledRenderGraph {
         mv_ctx: &mut MultiViewExecutionContext<'_, '_>,
         views: &[FrameView<'_>],
         transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
-        upload_batch: &super::super::super::frame_upload_batch::FrameUploadBatch,
-    ) -> Result<Option<wgpu::CommandBuffer>, GraphExecuteError> {
+        upload_batch: &FrameUploadBatch,
+    ) -> Result<Option<TimedCommandBuffer>, GraphExecuteError> {
         profiling::scope!("graph::frame_global");
         if self.frame_global_passes_are_inactive(mv_ctx.backend) {
             return Ok(None);
         }
+        let encode_start = Instant::now();
         let MultiViewExecutionContext {
             gpu,
             scene,
@@ -301,15 +355,8 @@ impl CompiledRenderGraph {
                     first.clear,
                 )
             };
-            // Frame-global blackboard (one per tick). MSAA views are per-view, not frame-global,
-            // so no MSAA seed here. Frame-global passes (e.g. mesh deform) don't need MSAA views.
-            let mut frame_blackboard = {
-                profiling::scope!("graph::frame_global::build_blackboard");
-                Blackboard::new()
-            };
+            let mut frame_blackboard = Self::build_frame_global_blackboard();
 
-            // Iterate the cached frame-global `pass_idx` slice from `FrameSchedule` to avoid
-            // rebuilding a scratch `Vec<usize>` every frame.
             {
                 profiling::scope!("graph::frame_global::pass_loop");
                 for &pass_idx in self.schedule.frame_global_pass_indices() {
@@ -334,8 +381,8 @@ impl CompiledRenderGraph {
 
         gpu.restore_gpu_profiler(pass_profiler);
         record_result?;
-        // Return the encoded command buffer WITHOUT submitting; the caller handles single submit.
-        let command_buffer = Self::finish_frame_global_encoder(gpu, encoder, gpu_query);
+        let encode_ms = elapsed_ms(encode_start);
+        let command_buffer = Self::finish_frame_global_encoder(gpu, encoder, gpu_query, encode_ms);
         Ok(Some(command_buffer))
     }
 
@@ -353,11 +400,17 @@ impl CompiledRenderGraph {
                 .visible_mesh_deform_filter_is_empty()
     }
 
+    fn build_frame_global_blackboard() -> Blackboard {
+        profiling::scope!("graph::frame_global::build_blackboard");
+        Blackboard::new()
+    }
+
     fn finish_frame_global_encoder(
         gpu: &mut crate::gpu::GpuContext,
         mut encoder: wgpu::CommandEncoder,
         gpu_query: Option<crate::profiling::PhaseQuery>,
-    ) -> wgpu::CommandBuffer {
+        encode_ms: f64,
+    ) -> TimedCommandBuffer {
         if let Some(query) = gpu_query
             && let Some(prof) = gpu.gpu_profiler_mut()
         {
@@ -367,7 +420,14 @@ impl CompiledRenderGraph {
         }
         {
             profiling::scope!("CommandEncoder::finish::graph_frame_global");
-            encoder.finish()
+            let finish_start = Instant::now();
+            let command_buffer = encoder.finish();
+            let finish_ms = elapsed_ms(finish_start);
+            TimedCommandBuffer {
+                command_buffer,
+                encode_ms,
+                finish_ms,
+            }
         }
     }
 
@@ -461,7 +521,7 @@ impl CompiledRenderGraph {
         device: &'a wgpu::Device,
         gpu_limits: &'a crate::gpu::GpuLimits,
         queue_arc: &'a std::sync::Arc<wgpu::Queue>,
-        upload_batch: &super::super::super::frame_upload_batch::FrameUploadBatch,
+        upload_batch: &FrameUploadBatch,
         profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
     ) -> Result<(), GraphExecuteError> {
         let _upload_scope = upload_batch.enter_scope(upload_scope);

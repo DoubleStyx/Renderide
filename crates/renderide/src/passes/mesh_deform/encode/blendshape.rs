@@ -11,7 +11,7 @@ use crate::mesh_deform::SkinCacheEntry;
 use crate::mesh_deform::plan_blendshape_scatter_chunks;
 
 use super::super::snapshot::MeshDeformSnapshot;
-use super::{MeshDeformEncodeGpu, workgroup_count};
+use super::{MeshDeformEncodeGpu, MeshDeformRecordStats, workgroup_count};
 
 /// Arena subranges for blendshape scatter / copy destination.
 pub(super) struct BlendshapeCacheCtx<'a> {
@@ -79,8 +79,9 @@ pub(super) fn record_blendshape_deform(
     blend_weights: &[f32],
     blend_param_cursor: &mut u64,
     ctx: BlendshapeCacheCtx<'_>,
-) -> u64 {
+) -> MeshDeformRecordStats {
     profiling::scope!("mesh_deform::record_blendshape");
+    let mut stats = MeshDeformRecordStats::default();
     let BlendshapeCacheCtx {
         cache_entry,
         positions_arena,
@@ -90,14 +91,14 @@ pub(super) fn record_blendshape_deform(
         blend_then_skin,
     } = ctx;
     let Some(ref positions) = mesh.positions_buffer else {
-        return 0;
+        return stats;
     };
     let Some(ref sparse) = mesh.blendshape_sparse_buffer else {
-        return 0;
+        return stats;
     };
     let shape_count = mesh.num_blendshapes;
     if shape_count == 0 {
-        return 0;
+        return stats;
     }
     if mesh.blendshape_shape_frame_spans.len() != shape_count as usize {
         logger::warn!(
@@ -105,7 +106,7 @@ pub(super) fn record_blendshape_deform(
             mesh.blendshape_shape_frame_spans.len(),
             shape_count
         );
-        return 0;
+        return stats;
     }
 
     let Some(destinations) = resolve_blendshape_destinations(
@@ -117,26 +118,32 @@ pub(super) fn record_blendshape_deform(
         temp_arena,
         blend_then_skin,
     ) else {
-        return 0;
+        return stats;
     };
 
-    copy_base_blendshape_streams(gpu.encoder, mesh, positions.as_ref(), &destinations);
+    stats.copy_ops = stats.copy_ops.saturating_add(copy_base_blendshape_streams(
+        gpu.encoder,
+        mesh,
+        positions.as_ref(),
+        &destinations,
+    ));
 
     let max_wg = gpu.gpu_limits.max_compute_workgroups_per_dimension();
     if !pack_blendshape_scatter_params(gpu, mesh, blend_weights, &destinations, max_wg) {
-        return 0;
+        return stats;
     }
 
     if gpu.scratch.packed_scatter_params.is_empty() {
-        return 0;
+        return stats;
     }
 
-    blendshape_record_scatter_compute_passes(
+    stats.add(blendshape_record_scatter_compute_passes(
         gpu,
         &destinations,
         sparse.as_ref(),
         blend_param_cursor,
-    )
+    ));
+    stats
 }
 
 fn resolve_blendshape_destinations<'a>(
@@ -200,7 +207,8 @@ fn copy_base_blendshape_streams(
     mesh: &MeshDeformSnapshot,
     positions: &wgpu::Buffer,
     destinations: &BlendshapeDestinations<'_>,
-) {
+) -> u64 {
+    let mut copy_ops = 1u64;
     let copy_len = u64::from(mesh.vertex_count).saturating_mul(16).max(16);
     encoder.copy_buffer_to_buffer(
         positions,
@@ -220,6 +228,7 @@ fn copy_base_blendshape_streams(
             u64::from(destinations.base_nrm_e).saturating_mul(16),
             copy_len,
         );
+        copy_ops = copy_ops.saturating_add(1);
     }
     if destinations.copy_tangents
         && let (Some(tangents), Some(dst_tangents)) =
@@ -232,7 +241,9 @@ fn copy_base_blendshape_streams(
             u64::from(destinations.base_tan_e).saturating_mul(16),
             copy_len,
         );
+        copy_ops = copy_ops.saturating_add(1);
     }
+    copy_ops
 }
 
 /// Records compute passes that scatter blendshape deltas using packed params and per-dispatch
@@ -243,12 +254,13 @@ fn blendshape_record_scatter_compute_passes(
     destinations: &BlendshapeDestinations<'_>,
     sparse: &wgpu::Buffer,
     blend_param_cursor: &mut u64,
-) -> u64 {
+) -> MeshDeformRecordStats {
+    let mut stats = MeshDeformRecordStats::default();
     let Some(param_reservation) = reserve_blendshape_param_range(
         *blend_param_cursor,
         gpu.scratch.packed_scatter_params.len() as u64,
     ) else {
-        return 0;
+        return stats;
     };
     gpu.scratch.ensure_blendshape_params_staging(
         gpu.device,
@@ -263,7 +275,6 @@ fn blendshape_record_scatter_compute_passes(
     );
     *blend_param_cursor = param_reservation.next_cursor;
 
-    let dispatch_count = gpu.scratch.scatter_dispatch_wgs.len() as u64;
     for (i, (&scatter_wg, &target)) in gpu
         .scratch
         .scatter_dispatch_wgs
@@ -281,6 +292,7 @@ fn blendshape_record_scatter_compute_passes(
             0,
             32,
         );
+        stats.copy_ops = stats.copy_ops.saturating_add(1);
         let output = match target {
             BLENDSHAPE_CHANNEL_POSITION => destinations.positions_buffer,
             BLENDSHAPE_CHANNEL_NORMAL => destinations
@@ -326,12 +338,15 @@ fn blendshape_record_scatter_compute_passes(
             cpass.set_bind_group(0, &blend_bg, &[]);
             cpass.dispatch_workgroups(scatter_wg, 1, 1);
         };
+        stats.compute_passes = stats.compute_passes.saturating_add(1);
+        stats.bind_groups_created = stats.bind_groups_created.saturating_add(1);
+        stats.blend_dispatches = stats.blend_dispatches.saturating_add(1);
         if let (Some(p), Some(q)) = (gpu.profiler, pass_query) {
             p.end_query(gpu.encoder, q);
         }
     }
 
-    dispatch_count
+    stats
 }
 
 /// Builds the packed scatter `Params` and per-dispatch workgroup counts into

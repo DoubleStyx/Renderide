@@ -18,6 +18,8 @@
 //! - `Callback` -> no encoder; calls `run_callback`.
 
 use hashbrown::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use crate::backend::BackendGraphAccess;
 use crate::gpu::GpuContext;
@@ -26,12 +28,21 @@ use crate::scene::SceneCoordinator;
 use super::super::context::{GraphResolvedResources, PostSubmitContext};
 use super::super::error::GraphExecuteError;
 use super::super::frame_params::FrameViewClear;
+use super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatchStats};
+use super::super::pool::TransientPoolMetrics;
 use super::{
     CompiledRenderGraph, FrameView, FrameViewTarget, MultiViewExecutionContext, ResolvedView,
     WorldMeshDrawPlan,
 };
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::diagnostics::PerViewHudOutputs;
+
+const SLOW_ENCODER_FINISH_WARN_MS: f64 = 2.0;
+static COMMAND_ENCODING_SLOW_LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn elapsed_ms(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1000.0
+}
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -49,6 +60,12 @@ pub(super) struct PerViewEncodeOutput {
     pub(super) command_buffer: wgpu::CommandBuffer,
     /// Deferred HUD payload merged on the main thread after recording.
     pub(super) hud_outputs: Option<PerViewHudOutputs>,
+    /// CPU time spent before this view's encoder finish.
+    pub(super) encode_ms: f64,
+    /// CPU time spent inside this view's encoder finish.
+    pub(super) finish_ms: f64,
+    /// World-mesh command counts captured from the final per-view blackboard.
+    pub(super) world_mesh: WorldMeshCommandStats,
 }
 
 /// Completed per-view recording result, including ordering metadata for single-submit assembly.
@@ -61,6 +78,43 @@ pub(super) struct PerViewRecordOutput {
     pub(super) command_buffer: wgpu::CommandBuffer,
     /// Deferred HUD payload merged on the main thread after recording.
     pub(super) hud_outputs: Option<PerViewHudOutputs>,
+    /// CPU time spent before this view's encoder finish.
+    pub(super) encode_ms: f64,
+    /// CPU time spent inside this view's encoder finish.
+    pub(super) finish_ms: f64,
+    /// World-mesh command counts captured from this view.
+    pub(super) world_mesh: WorldMeshCommandStats,
+}
+
+/// Command buffer plus CPU timings for one encoder.
+pub(super) struct TimedCommandBuffer {
+    /// Encoded GPU work.
+    pub(super) command_buffer: wgpu::CommandBuffer,
+    /// CPU time spent before `finish`.
+    pub(super) encode_ms: f64,
+    /// CPU time spent inside `finish`.
+    pub(super) finish_ms: f64,
+}
+
+/// Lightweight world-mesh counts attached to command-encoding diagnostics.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct WorldMeshCommandStats {
+    /// Sorted draw items recorded for the view.
+    pub(super) draws: usize,
+    /// Indexed draw groups emitted across the forward subpasses.
+    pub(super) instance_batches: usize,
+    /// Pipeline-pass draw submissions after material multi-pass expansion.
+    pub(super) pipeline_pass_submits: usize,
+}
+
+impl WorldMeshCommandStats {
+    fn add(&mut self, other: Self) {
+        self.draws = self.draws.saturating_add(other.draws);
+        self.instance_batches = self.instance_batches.saturating_add(other.instance_batches);
+        self.pipeline_pass_submits = self
+            .pipeline_pass_submits
+            .saturating_add(other.pipeline_pass_submits);
+    }
 }
 
 /// Owned clone of a resolved view so per-view workers can borrow it without touching [`GpuContext`].
@@ -186,7 +240,7 @@ struct PerViewRecordInputs<'a> {
     /// Pre-resolved transient pool leases keyed by view layout.
     transient_by_key: &'a HashMap<GraphResolveKey, GraphResolvedResources>,
     /// Deferred upload sink drained on the main thread after recording.
-    upload_batch: &'a super::super::frame_upload_batch::FrameUploadBatch,
+    upload_batch: &'a FrameUploadBatch,
     /// Shared frame systems and view-independent GPU state.
     per_view_shared: &'a PerViewRecordShared<'a>,
     /// Optional GPU profiler handle that must be shared across workers by reference.
@@ -203,6 +257,202 @@ struct RecordedPerViewBatch {
     per_view_hud_outputs: Vec<Option<PerViewHudOutputs>>,
     /// Optional command buffer that resolves per-view GPU profiler queries.
     per_view_profiler_cmd: Option<wgpu::CommandBuffer>,
+    /// Aggregate CPU time spent before per-view encoder finishes.
+    encode_ms: f64,
+    /// Aggregate CPU time spent inside per-view encoder finishes.
+    finish_ms: f64,
+    /// Largest single per-view encoder finish.
+    max_finish_ms: f64,
+    /// Aggregate world-mesh command counts across views.
+    world_mesh: WorldMeshCommandStats,
+}
+
+/// Submit-batch timings and upload counters captured after recording.
+#[derive(Clone, Copy, Debug, Default)]
+struct SubmitFrameBatchStats {
+    /// CPU time spent draining deferred uploads.
+    upload_drain_ms: f64,
+    /// CPU time spent inside the upload encoder finish.
+    upload_finish_ms: f64,
+    /// CPU time spent allocating and assembling command buffers.
+    command_batch_assembly_ms: f64,
+    /// CPU time spent enqueueing the submit batch to the driver thread.
+    submit_enqueue_ms: f64,
+    /// Number of command buffers submitted.
+    command_buffer_count: usize,
+    /// Deferred upload traffic.
+    upload_stats: FrameUploadBatchStats,
+}
+
+#[derive(Debug)]
+struct DrainedUploadCommand {
+    command_buffer: Option<wgpu::CommandBuffer>,
+    stats: FrameUploadBatchStats,
+    drain_ms: f64,
+}
+
+/// Per-frame graph command-encoding diagnostics.
+#[derive(Clone, Copy, Debug)]
+struct CommandEncodingDiagnostics {
+    view_count: usize,
+    command_buffers: usize,
+    frame_global_passes: usize,
+    per_view_passes: usize,
+    transient_texture_count: usize,
+    transient_texture_slots: usize,
+    pre_resolve_ms: f64,
+    prepare_resources_ms: f64,
+    frame_global_encode_ms: f64,
+    frame_global_finish_ms: f64,
+    per_view_encode_ms: f64,
+    per_view_finish_ms: f64,
+    per_view_max_finish_ms: f64,
+    upload_drain_ms: f64,
+    upload_finish_ms: f64,
+    command_batch_assembly_ms: f64,
+    submit_enqueue_ms: f64,
+    transient_delta: TransientPoolMetricsDelta,
+    upload_stats: FrameUploadBatchStats,
+    world_mesh: WorldMeshCommandStats,
+}
+
+impl CommandEncodingDiagnostics {
+    fn new(graph: &CompiledRenderGraph, view_count: usize) -> Self {
+        Self {
+            view_count,
+            command_buffers: 0,
+            frame_global_passes: graph.schedule.frame_global_pass_indices().len(),
+            per_view_passes: graph.schedule.per_view_pass_indices().len(),
+            transient_texture_count: graph.compile_stats.transient_texture_count,
+            transient_texture_slots: graph.compile_stats.transient_texture_slots,
+            pre_resolve_ms: 0.0,
+            prepare_resources_ms: 0.0,
+            frame_global_encode_ms: 0.0,
+            frame_global_finish_ms: 0.0,
+            per_view_encode_ms: 0.0,
+            per_view_finish_ms: 0.0,
+            per_view_max_finish_ms: 0.0,
+            upload_drain_ms: 0.0,
+            upload_finish_ms: 0.0,
+            command_batch_assembly_ms: 0.0,
+            submit_enqueue_ms: 0.0,
+            transient_delta: TransientPoolMetricsDelta::default(),
+            upload_stats: FrameUploadBatchStats::default(),
+            world_mesh: WorldMeshCommandStats::default(),
+        }
+    }
+
+    fn apply_frame_global(&mut self, command: &TimedCommandBuffer) {
+        self.frame_global_encode_ms = command.encode_ms;
+        self.frame_global_finish_ms = command.finish_ms;
+    }
+
+    fn apply_per_view(&mut self, batch: &RecordedPerViewBatch) {
+        self.per_view_encode_ms = batch.encode_ms;
+        self.per_view_finish_ms = batch.finish_ms;
+        self.per_view_max_finish_ms = batch.max_finish_ms;
+        self.world_mesh = batch.world_mesh;
+    }
+
+    fn apply_submit(&mut self, submit: SubmitFrameBatchStats) {
+        self.command_buffers = submit.command_buffer_count;
+        self.upload_drain_ms = submit.upload_drain_ms;
+        self.upload_finish_ms = submit.upload_finish_ms;
+        self.command_batch_assembly_ms = submit.command_batch_assembly_ms;
+        self.submit_enqueue_ms = submit.submit_enqueue_ms;
+        self.upload_stats = submit.upload_stats;
+    }
+
+    fn max_encoder_finish_ms(&self) -> f64 {
+        self.frame_global_finish_ms
+            .max(self.per_view_max_finish_ms)
+            .max(self.upload_finish_ms)
+    }
+
+    fn plot(&self) {
+        crate::profiling::plot_command_encoding(crate::profiling::CommandEncodingProfileSample {
+            view_count: self.view_count,
+            command_buffers: self.command_buffers,
+            frame_global_passes: self.frame_global_passes,
+            per_view_passes: self.per_view_passes,
+            transient_textures: self.transient_texture_count,
+            transient_texture_slots: self.transient_texture_slots,
+            transient_texture_misses: self.transient_delta.texture_misses,
+            transient_buffer_misses: self.transient_delta.buffer_misses,
+            upload_writes: self.upload_stats.writes,
+            upload_bytes: self.upload_stats.bytes,
+            pre_resolve_ms: self.pre_resolve_ms,
+            prepare_resources_ms: self.prepare_resources_ms,
+            frame_global_encode_ms: self.frame_global_encode_ms,
+            frame_global_finish_ms: self.frame_global_finish_ms,
+            per_view_encode_ms: self.per_view_encode_ms,
+            per_view_finish_ms: self.per_view_finish_ms,
+            upload_drain_ms: self.upload_drain_ms,
+            upload_finish_ms: self.upload_finish_ms,
+            command_batch_assembly_ms: self.command_batch_assembly_ms,
+            submit_enqueue_ms: self.submit_enqueue_ms,
+            max_encoder_finish_ms: self.max_encoder_finish_ms(),
+            world_mesh_draws: self.world_mesh.draws,
+            world_mesh_instance_batches: self.world_mesh.instance_batches,
+            world_mesh_pipeline_pass_submits: self.world_mesh.pipeline_pass_submits,
+        });
+    }
+
+    fn log_if_slow(&self) {
+        let max_finish_ms = self.max_encoder_finish_ms();
+        if max_finish_ms < SLOW_ENCODER_FINISH_WARN_MS {
+            return;
+        }
+        let count = COMMAND_ENCODING_SLOW_LOG_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+        if count > 5 && !count.is_multiple_of(120) {
+            return;
+        }
+        logger::warn!(
+            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} transients(textures/slots)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} world_mesh(draws/instance_batches/pipeline_pass_submits)={}/{}/{}",
+            max_finish_ms,
+            self.frame_global_finish_ms,
+            self.per_view_max_finish_ms,
+            self.upload_finish_ms,
+            self.view_count,
+            self.command_buffers,
+            self.frame_global_passes,
+            self.per_view_passes,
+            self.transient_texture_count,
+            self.transient_texture_slots,
+            self.transient_delta.texture_misses,
+            self.transient_delta.buffer_misses,
+            self.upload_stats.writes,
+            self.upload_stats.bytes,
+            self.upload_stats.staged_writes,
+            self.upload_stats.fallback_writes,
+            self.pre_resolve_ms,
+            self.prepare_resources_ms,
+            self.frame_global_encode_ms,
+            self.per_view_encode_ms,
+            self.upload_drain_ms,
+            self.command_batch_assembly_ms,
+            self.submit_enqueue_ms,
+            self.world_mesh.draws,
+            self.world_mesh.instance_batches,
+            self.world_mesh.pipeline_pass_submits,
+        );
+    }
+}
+
+/// Transient-pool hit/miss deltas for one frame.
+#[derive(Clone, Copy, Debug, Default)]
+struct TransientPoolMetricsDelta {
+    texture_misses: usize,
+    buffer_misses: usize,
+}
+
+impl TransientPoolMetricsDelta {
+    fn from_metrics(before: TransientPoolMetrics, after: TransientPoolMetrics) -> Self {
+        Self {
+            texture_misses: after.texture_misses.saturating_sub(before.texture_misses),
+            buffer_misses: after.buffer_misses.saturating_sub(before.buffer_misses),
+        }
+    }
 }
 
 /// Releases all transient resource leases back to the pool and ticks the global GC counter.
@@ -242,9 +492,70 @@ struct SubmitFrameInputs<'a> {
     /// Optional swapchain backbuffer view for the HUD encoder.
     backbuffer_view_holder: &'a Option<wgpu::TextureView>,
     /// Deferred upload batch drained before submit.
-    upload_batch: &'a super::super::frame_upload_batch::FrameUploadBatch,
+    upload_batch: &'a FrameUploadBatch,
     /// Shared queue handle used for the HUD encoder.
     queue_arc: &'a std::sync::Arc<wgpu::Queue>,
+}
+
+fn drain_upload_command_buffer(
+    upload_batch: &FrameUploadBatch,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> DrainedUploadCommand {
+    profiling::scope!("gpu::drain_upload_batch");
+    let upload_drain_start = Instant::now();
+    let upload_flush = upload_batch.drain_and_flush(device, queue);
+    let drain_ms = elapsed_ms(upload_drain_start);
+    if let Some(flush) = upload_flush {
+        DrainedUploadCommand {
+            command_buffer: Some(flush.command_buffer),
+            stats: flush.stats,
+            drain_ms,
+        }
+    } else {
+        DrainedUploadCommand {
+            command_buffer: None,
+            stats: FrameUploadBatchStats::default(),
+            drain_ms,
+        }
+    }
+}
+
+fn assemble_submit_command_batch(
+    upload_cmd: Option<wgpu::CommandBuffer>,
+    frame_global_cmd: Option<wgpu::CommandBuffer>,
+    per_view_cmds: Vec<wgpu::CommandBuffer>,
+    per_view_profiler_cmd: Option<wgpu::CommandBuffer>,
+    hud_cmd: Option<wgpu::CommandBuffer>,
+) -> (Vec<wgpu::CommandBuffer>, f64) {
+    let command_batch_assembly_start = Instant::now();
+    let mut all_cmds: Vec<wgpu::CommandBuffer> = {
+        profiling::scope!("graph::single_submit::allocate_command_batch");
+        Vec::with_capacity(
+            upload_cmd.is_some() as usize
+                + frame_global_cmd.is_some() as usize
+                + per_view_cmds.len()
+                + per_view_profiler_cmd.is_some() as usize
+                + hud_cmd.is_some() as usize,
+        )
+    };
+    {
+        profiling::scope!("graph::single_submit::assemble_command_batch");
+        all_cmds.extend(upload_cmd);
+        all_cmds.extend(frame_global_cmd);
+        all_cmds.extend(per_view_cmds);
+        all_cmds.extend(per_view_profiler_cmd);
+        all_cmds.extend(hud_cmd);
+    }
+    let command_batch_assembly_ms = elapsed_ms(command_batch_assembly_start);
+    (all_cmds, command_batch_assembly_ms)
+}
+
+fn views_include_swapchain_target(views: &[FrameView<'_>]) -> bool {
+    profiling::scope!("graph::single_submit::classify_targets");
+    views
+        .iter()
+        .any(|v| matches!(v.target, FrameViewTarget::Swapchain))
 }
 
 /// View surface properties used when resolving transient [`TextureKey`] values for a graph view.
@@ -294,7 +605,7 @@ impl CompiledRenderGraph {
         &self,
         work_item: PerViewWorkItem,
         transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
-        upload_batch: &super::super::frame_upload_batch::FrameUploadBatch,
+        upload_batch: &FrameUploadBatch,
         per_view_shared: &PerViewRecordShared<'_>,
         profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<(usize, PerViewRecordOutput), GraphExecuteError> {
@@ -315,6 +626,9 @@ impl CompiledRenderGraph {
                 host_camera,
                 command_buffer: encoded.command_buffer,
                 hud_outputs: encoded.hud_outputs,
+                encode_ms: encoded.encode_ms,
+                finish_ms: encoded.finish_ms,
+                world_mesh: encoded.world_mesh,
             },
         ))
     }
@@ -358,7 +672,9 @@ impl CompiledRenderGraph {
         let device = device_arc.as_ref();
         let gpu_limits = limits_arc.as_ref();
 
+        let transient_metrics_before = backend.transient_pool_mut().metrics();
         backend.transient_pool_mut().begin_generation();
+        let mut command_diagnostics = CommandEncodingDiagnostics::new(self, views.len());
 
         let mut mv_ctx = MultiViewExecutionContext {
             gpu,
@@ -375,16 +691,24 @@ impl CompiledRenderGraph {
         // Pre-resolve transient textures and buffers for every unique view key before any
         // per-view recording begins. The record loop then reads `transient_by_key` without
         // touching the shared transient pool.
+        let pre_resolve_start = Instant::now();
         self.pre_resolve_transients_for_views(&mut mv_ctx, views, &mut transient_by_key)?;
+        command_diagnostics.pre_resolve_ms = elapsed_ms(pre_resolve_start);
+        command_diagnostics.transient_delta = TransientPoolMetricsDelta::from_metrics(
+            transient_metrics_before,
+            mv_ctx.backend.transient_pool_mut().metrics(),
+        );
 
         // Deferred `queue.write_buffer` sink shared by frame-global and per-view record paths.
         // Drained onto the main thread after all recording completes and before submit.
-        let upload_batch = super::super::frame_upload_batch::FrameUploadBatch::new();
+        let upload_batch = FrameUploadBatch::new();
 
         // Shared frame resources, per-view slots, mesh extended streams, and material pipelines
         // are warmed up front so later per-view recording can run with read-only shared state
         // plus per-view interior mutability.
+        let prepare_resources_start = Instant::now();
         Self::prepare_view_resources_for_views(&mut mv_ctx, views)?;
+        command_diagnostics.prepare_resources_ms = elapsed_ms(prepare_resources_start);
 
         // -- Frame-global pass (optional) -----------------------------------------------------
         let frame_global_cmd = self.encode_frame_global_passes(
@@ -393,6 +717,10 @@ impl CompiledRenderGraph {
             &mut transient_by_key,
             &upload_batch,
         )?;
+        let frame_global_cmd = frame_global_cmd.map(|command| {
+            command_diagnostics.apply_frame_global(&command);
+            command.command_buffer
+        });
         let per_view_work_items = self.prepare_per_view_work_items(&mut mv_ctx, views)?;
 
         // -- Per-view recording (no submit per view) ------------------------------------------
@@ -401,14 +729,19 @@ impl CompiledRenderGraph {
             per_view_occlusion_info,
             per_view_hud_outputs,
             per_view_profiler_cmd,
-        } = self.record_per_view_batch(
-            &mut mv_ctx,
-            per_view_work_items,
-            &transient_by_key,
-            &upload_batch,
-        )?;
+            ..
+        } = {
+            let batch = self.record_per_view_batch(
+                &mut mv_ctx,
+                per_view_work_items,
+                &transient_by_key,
+                &upload_batch,
+            )?;
+            command_diagnostics.apply_per_view(&batch);
+            batch
+        };
 
-        self.submit_frame_batch(
+        let submit_stats = self.submit_frame_batch(
             &mut mv_ctx,
             SubmitFrameInputs {
                 views,
@@ -423,6 +756,9 @@ impl CompiledRenderGraph {
                 queue_arc: &queue_arc,
             },
         )?;
+        command_diagnostics.apply_submit(submit_stats);
+        command_diagnostics.plot();
+        command_diagnostics.log_if_slow();
 
         self.run_post_submit_passes(&mut mv_ctx, views, device, &per_view_occlusion_info)?;
 
@@ -479,7 +815,7 @@ impl CompiledRenderGraph {
         mv_ctx: &mut MultiViewExecutionContext<'_, '_>,
         per_view_work_items: Vec<PerViewWorkItem>,
         transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
-        upload_batch: &super::super::frame_upload_batch::FrameUploadBatch,
+        upload_batch: &FrameUploadBatch,
     ) -> Result<RecordedPerViewBatch, GraphExecuteError> {
         let n_views = per_view_work_items.len();
         let device = mv_ctx.device;
@@ -523,7 +859,15 @@ impl CompiledRenderGraph {
                 Vec::with_capacity(n_views);
             let mut per_view_hud_outputs: Vec<Option<PerViewHudOutputs>> =
                 Vec::with_capacity(n_views);
+            let mut encode_ms = 0.0;
+            let mut finish_ms = 0.0;
+            let mut max_finish_ms = 0.0;
+            let mut world_mesh = WorldMeshCommandStats::default();
             for output in per_view_outputs {
+                encode_ms += output.encode_ms;
+                finish_ms += output.finish_ms;
+                max_finish_ms = f64::max(max_finish_ms, output.finish_ms);
+                world_mesh.add(output.world_mesh);
                 per_view_cmds.push(output.command_buffer);
                 per_view_occlusion_info.push((output.view_id, output.host_camera));
                 per_view_hud_outputs.push(output.hud_outputs);
@@ -546,6 +890,10 @@ impl CompiledRenderGraph {
                 per_view_occlusion_info,
                 per_view_hud_outputs,
                 per_view_profiler_cmd,
+                encode_ms,
+                finish_ms,
+                max_finish_ms,
+                world_mesh,
             })
         })();
         mv_ctx.gpu.restore_gpu_profiler(per_view_profiler);
@@ -559,7 +907,7 @@ impl CompiledRenderGraph {
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_, '_>,
         inputs: SubmitFrameInputs<'_>,
-    ) -> Result<(), GraphExecuteError> {
+    ) -> Result<SubmitFrameBatchStats, GraphExecuteError> {
         profiling::scope!("graph::single_submit");
         let SubmitFrameInputs {
             views,
@@ -573,12 +921,7 @@ impl CompiledRenderGraph {
             upload_batch,
             queue_arc,
         } = inputs;
-        let target_is_swapchain = {
-            profiling::scope!("graph::single_submit::classify_targets");
-            views
-                .iter()
-                .any(|v| matches!(v.target, FrameViewTarget::Swapchain))
-        };
+        let target_is_swapchain = views_include_swapchain_target(views);
         let queue_ref: &wgpu::Queue = queue_arc.as_ref();
 
         let hud_cmd = {
@@ -591,41 +934,21 @@ impl CompiledRenderGraph {
             )
         }?;
 
-        // Drain the deferred upload arena into one staging buffer + N copy_buffer_to_buffer ops on
-        // a dedicated upload encoder. Submitted at the head of the batch so subsequent encoders'
-        // reads see the freshly copied uniforms / storage data.
-        let upload_cmd = {
-            profiling::scope!("gpu::drain_upload_batch");
-            upload_batch.drain_and_flush(mv_ctx.device, queue_ref)
-        };
-
-        let has_upload_cmd = upload_cmd.is_some();
+        let upload = drain_upload_command_buffer(upload_batch, mv_ctx.device, queue_ref);
+        let upload_finish_ms = upload.stats.finish_ms;
+        let has_upload_cmd = upload.command_buffer.is_some();
         let has_frame_global_cmd = frame_global_cmd.is_some();
         let per_view_command_count = per_view_cmds.len();
         let has_per_view_profiler_cmd = per_view_profiler_cmd.is_some();
         let has_hud_cmd = hud_cmd.is_some();
-        // Build the submit batch with exact pre-allocation. The prior `into_iter().chain().collect()`
-        // pattern relied on `size_hint()` from the chained iterators; with `Option::into_iter()`
-        // mixed in, the hint was inexact and `collect()` walked the doubling growth path on the
-        // backing `Vec`.
-        let mut all_cmds: Vec<wgpu::CommandBuffer> = {
-            profiling::scope!("graph::single_submit::allocate_command_batch");
-            Vec::with_capacity(
-                has_upload_cmd as usize
-                    + has_frame_global_cmd as usize
-                    + per_view_command_count
-                    + has_per_view_profiler_cmd as usize
-                    + has_hud_cmd as usize,
-            )
-        };
-        {
-            profiling::scope!("graph::single_submit::assemble_command_batch");
-            all_cmds.extend(upload_cmd);
-            all_cmds.extend(frame_global_cmd);
-            all_cmds.extend(per_view_cmds);
-            all_cmds.extend(per_view_profiler_cmd);
-            all_cmds.extend(hud_cmd);
-        }
+
+        let (all_cmds, command_batch_assembly_ms) = assemble_submit_command_batch(
+            upload.command_buffer,
+            frame_global_cmd,
+            per_view_cmds,
+            per_view_profiler_cmd,
+            hud_cmd,
+        );
         let command_buffer_count = all_cmds.len();
 
         // Hand the swapchain texture (if any) to the driver thread so `queue.submit` and
@@ -657,24 +980,40 @@ impl CompiledRenderGraph {
             hi_z_callbacks.len(),
         );
 
-        {
+        let submit_enqueue_ms = {
             profiling::scope!("graph::single_submit::driver_enqueue");
             profiling::scope!("gpu::queue_submit");
+            let submit_enqueue_start = Instant::now();
             mv_ctx.gpu.submit_frame_batch_with_callbacks(
                 all_cmds,
                 surface_tex,
                 None,
                 hi_z_callbacks,
             );
+            elapsed_ms(submit_enqueue_start)
         };
-
+        logger::trace!(
+            "graph submit enqueue timing: upload_drain_ms={:.3} upload_finish_ms={:.3} command_batch_assembly_ms={:.3} submit_enqueue_ms={:.3}",
+            upload.drain_ms,
+            upload_finish_ms,
+            command_batch_assembly_ms,
+            submit_enqueue_ms,
+        );
+        let submit_stats = SubmitFrameBatchStats {
+            upload_drain_ms: upload.drain_ms,
+            upload_finish_ms,
+            command_batch_assembly_ms,
+            submit_enqueue_ms,
+            command_buffer_count,
+            upload_stats: upload.stats,
+        };
         {
             profiling::scope!("graph::single_submit::apply_hud_outputs");
             for outputs in per_view_hud_outputs.iter().flatten() {
                 mv_ctx.backend.apply_per_view_hud_outputs(outputs);
             }
         }
-        Ok(())
+        Ok(submit_stats)
     }
 
     /// Runs frame-global and per-view `post_submit` hooks on every pass in schedule order.

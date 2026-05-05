@@ -140,6 +140,8 @@ pub struct MeshDeformScratch {
     max_bones: u32,
     /// [`wgpu::Limits::max_buffer_size`]; growth refuses past this cap.
     max_buffer_size: u64,
+    /// Grow operations observed since the previous diagnostics drain.
+    frame_grow_count: u64,
 }
 
 impl MeshDeformScratch {
@@ -163,6 +165,7 @@ impl MeshDeformScratch {
             scatter_dispatch_targets: Vec::new(),
             max_bones: INITIAL_MAX_BONES,
             max_buffer_size,
+            frame_grow_count: 0,
         }
     }
 
@@ -173,34 +176,46 @@ impl MeshDeformScratch {
         }
         let next = need_bones.next_power_of_two().max(INITIAL_MAX_BONES);
         let bone_bytes = u64::from(next) * BONE_MATRIX_BYTES;
+        let old_size = self.bone_matrices.size();
         if BONE_MATRICES.ensure(
             device,
             &mut self.bone_matrices,
             bone_bytes,
             self.max_buffer_size,
         ) {
+            if self.bone_matrices.size() > old_size {
+                self.frame_grow_count = self.frame_grow_count.saturating_add(1);
+            }
             self.max_bones = next;
         }
     }
 
     /// Ensures the bone buffer is large enough for byte range `[0, end_exclusive)`.
     pub fn ensure_bone_byte_capacity(&mut self, device: &wgpu::Device, end_exclusive: u64) {
-        BONE_MATRICES.ensure(
+        let old_size = self.bone_matrices.size();
+        if BONE_MATRICES.ensure(
             device,
             &mut self.bone_matrices,
             end_exclusive,
             self.max_buffer_size,
-        );
+        ) && self.bone_matrices.size() > old_size
+        {
+            self.frame_grow_count = self.frame_grow_count.saturating_add(1);
+        }
     }
 
     /// Ensures staging holds at least `need_bytes` for packed blendshape chunk params.
     pub fn ensure_blendshape_params_staging(&mut self, device: &wgpu::Device, need_bytes: u64) {
-        BLENDSHAPE_PARAMS_STAGING.ensure(
+        let old_size = self.blendshape_params_staging.size();
+        if BLENDSHAPE_PARAMS_STAGING.ensure(
             device,
             &mut self.blendshape_params_staging,
             need_bytes,
             self.max_buffer_size,
-        );
+        ) && self.blendshape_params_staging.size() > old_size
+        {
+            self.frame_grow_count = self.frame_grow_count.saturating_add(1);
+        }
     }
 
     /// Ensures the skin-dispatch uniform slab can address byte range `[0, end_exclusive)`.
@@ -212,12 +227,23 @@ impl MeshDeformScratch {
         device: &wgpu::Device,
         end_exclusive: u64,
     ) {
-        SKIN_DISPATCH.ensure(
+        let old_size = self.skin_dispatch.size();
+        if SKIN_DISPATCH.ensure(
             device,
             &mut self.skin_dispatch,
             end_exclusive,
             self.max_buffer_size,
-        );
+        ) && self.skin_dispatch.size() > old_size
+        {
+            self.frame_grow_count = self.frame_grow_count.saturating_add(1);
+        }
+    }
+
+    /// Returns and clears the grow count accumulated since the previous diagnostics drain.
+    pub fn take_frame_grow_count(&mut self) -> u64 {
+        let count = self.frame_grow_count;
+        self.frame_grow_count = 0;
+        count
     }
 }
 

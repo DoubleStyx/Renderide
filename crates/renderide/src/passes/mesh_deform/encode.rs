@@ -74,10 +74,29 @@ pub(super) struct MeshDeformRecordInputs<'a, 'b> {
 /// Compute dispatch counts emitted while recording one deform work item.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct MeshDeformRecordStats {
+    /// Compute passes opened.
+    pub compute_passes: u64,
+    /// Bind groups created.
+    pub bind_groups_created: u64,
+    /// Encoder copy operations recorded.
+    pub copy_ops: u64,
     /// Sparse blendshape scatter dispatches.
     pub blend_dispatches: u64,
     /// Linear skinning dispatches.
     pub skin_dispatches: u64,
+}
+
+impl MeshDeformRecordStats {
+    /// Adds `other` into this stats packet with saturating arithmetic.
+    pub fn add(&mut self, other: Self) {
+        self.compute_passes = self.compute_passes.saturating_add(other.compute_passes);
+        self.bind_groups_created = self
+            .bind_groups_created
+            .saturating_add(other.bind_groups_created);
+        self.copy_ops = self.copy_ops.saturating_add(other.copy_ops);
+        self.blend_dispatches = self.blend_dispatches.saturating_add(other.blend_dispatches);
+        self.skin_dispatches = self.skin_dispatches.saturating_add(other.skin_dispatches);
+    }
 }
 
 /// Records blendshape and / or skinning compute for one deform work item.
@@ -99,7 +118,7 @@ pub(super) fn record_mesh_deform(
     let mut stats = MeshDeformRecordStats::default();
 
     if deform_guard.needs_blend {
-        stats.blend_dispatches = record_blendshape_deform(
+        stats.add(record_blendshape_deform(
             &mut gpu,
             inputs.mesh,
             inputs.blend_weights,
@@ -112,7 +131,7 @@ pub(super) fn record_mesh_deform(
                 temp_arena: inputs.temp_arena,
                 blend_then_skin,
             },
-        );
+        ));
     }
 
     if deform_guard.needs_skin
@@ -138,7 +157,9 @@ pub(super) fn record_mesh_deform(
             },
         )
     {
-        stats.skin_dispatches = 1;
+        stats.compute_passes = stats.compute_passes.saturating_add(1);
+        stats.bind_groups_created = stats.bind_groups_created.saturating_add(1);
+        stats.skin_dispatches = stats.skin_dispatches.saturating_add(1);
     }
     stats
 }

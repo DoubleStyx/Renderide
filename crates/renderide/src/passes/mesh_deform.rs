@@ -253,14 +253,19 @@ fn collect_deform_work_into_scratch(
 fn report_mesh_deform_stats(
     work_item_count: u64,
     dispatch_stats: MeshDeformRecordStats,
+    scratch_buffer_grows: u64,
     skipped_allocations: u64,
     skin_cache: &crate::mesh_deform::GpuSkinCache,
 ) {
     let cache_stats = skin_cache.frame_stats();
     crate::profiling::plot_mesh_deform(crate::profiling::MeshDeformProfileSample {
         work_items: work_item_count,
+        compute_passes: dispatch_stats.compute_passes,
+        bind_groups_created: dispatch_stats.bind_groups_created,
+        copy_ops: dispatch_stats.copy_ops,
         blend_dispatches: dispatch_stats.blend_dispatches,
         skin_dispatches: dispatch_stats.skin_dispatches,
+        scratch_buffer_grows,
         skipped_allocations,
         cache_reuses: cache_stats.reuses,
         cache_allocations: cache_stats.allocations,
@@ -336,14 +341,7 @@ fn dispatch_mesh_deform_work(
                 temp_arena,
             },
         );
-        result.dispatch_stats.blend_dispatches = result
-            .dispatch_stats
-            .blend_dispatches
-            .saturating_add(stats.blend_dispatches);
-        result.dispatch_stats.skin_dispatches = result
-            .dispatch_stats
-            .skin_dispatches
-            .saturating_add(stats.skin_dispatches);
+        result.dispatch_stats.add(stats);
     }
     result
 }
@@ -428,11 +426,13 @@ impl ComputePass for MeshDeformPass {
         );
         scratch.work.clear();
         drop(scratch);
+        let scratch_buffer_grows = deform_scratch.take_frame_grow_count();
 
         let fc = skin_cache.frame_counter();
         report_mesh_deform_stats(
             dispatch.work_item_count,
             dispatch.dispatch_stats,
+            scratch_buffer_grows,
             dispatch.skipped_allocations,
             skin_cache,
         );
