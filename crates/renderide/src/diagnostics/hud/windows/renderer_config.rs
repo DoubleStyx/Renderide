@@ -10,14 +10,21 @@ use imgui::{Drag, TabItem, TabItemFlags};
 
 use crate::config::{
     AutoExposureSettings, BloomCompositeMode, ClusterAssignmentMode, DebugHudRendererConfigTab,
-    DebugHudSettings, GraphicsApiSetting, MsaaSampleCount, PowerPreferenceSetting,
-    RendererSettings, RendererSettingsHandle, SceneColorFormat, TonemapMode, VsyncMode,
-    save_renderer_settings,
+    DebugHudSettings, GraphicsApiSetting, GtaoSettings, MsaaSampleCount, PowerPreferenceSetting,
+    RecordParallelism, RendererSettings, RendererSettingsHandle, SceneColorFormat, TonemapMode,
+    VsyncMode, WatchdogAction, save_renderer_settings,
 };
 
 use super::super::layout::{self, Viewport, WindowSlot};
 use super::super::state::HudUiState;
 use super::super::view::HudWindow;
+
+const MAX_ASSET_INTEGRATION_BUDGET_MS: u32 = 100;
+const MAX_REPORTED_TEXTURE_SIZE: u32 = 65_536;
+const MAX_TEXTURE_VRAM_BUDGET_MIB: u32 = 65_536;
+const MIN_WATCHDOG_POLL_INTERVAL_MS: u32 = 10;
+const MAX_WATCHDOG_POLL_INTERVAL_MS: u32 = 10_000;
+const MAX_WATCHDOG_THRESHOLD_MS: u32 = 600_000;
 
 /// Inputs for [`RendererConfigWindow`]: live settings handle, disk save target, and the
 /// startup-extract failure flag.
@@ -191,9 +198,42 @@ fn display_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
     ui.unindent();
 }
 
+fn drag_u32_setting(
+    ui: &imgui::Ui,
+    label: &str,
+    value: &mut u32,
+    min: u32,
+    max: u32,
+    speed: f32,
+) -> bool {
+    let mut edited = *value as f32;
+    if Drag::new(label)
+        .range(min as f32, max as f32)
+        .speed(speed)
+        .build(ui, &mut edited)
+    {
+        *value = edited.round().clamp(min as f32, max as f32) as u32;
+        return true;
+    }
+    false
+}
+
 /// VSync, MSAA, scene color format, clustered light backend.
 fn rendering_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
     ui.text("Rendering");
+    ui.indent();
+    rendering_presentation_section(ui, g, dirty);
+    ui.separator();
+    rendering_graph_section(ui, g, dirty);
+    ui.separator();
+    rendering_asset_section(ui, g, dirty);
+    ui.separator();
+    rendering_host_limits_section(ui, g, dirty);
+    ui.unindent();
+}
+
+fn rendering_presentation_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
+    ui.text("Presentation");
     ui.indent();
     ui.text_disabled("VSync (swapchain present mode; applies immediately, no restart).");
     for (i, &mode) in VsyncMode::ALL.iter().enumerate() {
@@ -207,6 +247,13 @@ fn rendering_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool)
             *dirty = true;
         }
     }
+    if ui
+        .slider_config("Max frame latency", 1_u32, 3_u32)
+        .build(&mut g.rendering.max_frame_latency)
+    {
+        *dirty = true;
+    }
+    ui.text_disabled("Backbuffers queued ahead of CPU recording; applies immediately.");
     ui.text_disabled(
         "Graphics API (startup only; restart required, falls back to Auto if unavailable).",
     );
@@ -221,6 +268,12 @@ fn rendering_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool)
             *dirty = true;
         }
     }
+    ui.unindent();
+}
+
+fn rendering_graph_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
+    ui.text("Graph");
+    ui.indent();
     ui.text_disabled("MSAA (main window forward path; clamped to GPU max).");
     for (i, &msaa) in MsaaSampleCount::ALL.iter().enumerate() {
         let _id = ui.push_id_int(i as i32);
@@ -247,6 +300,18 @@ fn rendering_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool)
             *dirty = true;
         }
     }
+    ui.text_disabled("Per-view encoder recording strategy; applies on the next graph execution.");
+    for (i, &mode) in RecordParallelism::ALL.iter().enumerate() {
+        let _id = ui.push_id_int(500 + i as i32);
+        if ui
+            .selectable_config(mode.label())
+            .selected(g.rendering.record_parallelism == mode)
+            .build()
+        {
+            g.rendering.record_parallelism = mode;
+            *dirty = true;
+        }
+    }
     ui.text_disabled("Clustered-light assignment backend.");
     for (i, &mode) in ClusterAssignmentMode::ALL.iter().enumerate() {
         let _id = ui.push_id_int(300 + i as i32);
@@ -262,9 +327,74 @@ fn rendering_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool)
     ui.unindent();
 }
 
+fn rendering_asset_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
+    ui.text("Assets");
+    ui.indent();
+    if drag_u32_setting(
+        ui,
+        "Asset integration budget (ms)",
+        &mut g.rendering.asset_integration_budget_ms,
+        0,
+        MAX_ASSET_INTEGRATION_BUDGET_MS,
+        1.0,
+    ) {
+        *dirty = true;
+    }
+    ui.text_disabled("Cooperative per-frame mesh/texture integration budget.");
+    if ui.checkbox(
+        "HDR render texture color",
+        &mut g.rendering.render_texture_hdr_color,
+    ) {
+        *dirty = true;
+    }
+    ui.text_disabled("Uses Rgba16Float for future host render-texture allocations.");
+    if drag_u32_setting(
+        ui,
+        "Texture VRAM budget (MiB, 0 = disabled)",
+        &mut g.rendering.texture_vram_budget_mib,
+        0,
+        MAX_TEXTURE_VRAM_BUDGET_MIB,
+        16.0,
+    ) {
+        *dirty = true;
+    }
+    ui.text_disabled("Warning threshold for resident Texture2D, render-texture, and video bytes.");
+    ui.unindent();
+}
+
+fn rendering_host_limits_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
+    ui.text("Host limits");
+    ui.indent();
+    if drag_u32_setting(
+        ui,
+        "Reported max texture size (0 = GPU limit)",
+        &mut g.rendering.reported_max_texture_size,
+        0,
+        MAX_REPORTED_TEXTURE_SIZE,
+        64.0,
+    ) {
+        *dirty = true;
+    }
+    ui.text_disabled(
+        "Upper bound sent to the host during renderer init; restart or reconnect required.",
+    );
+    ui.unindent();
+}
+
 /// Debug HUD toggles, logging, validation layers, power preference.
 fn debug_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
     ui.text("Debug");
+    ui.indent();
+    debug_hud_section(ui, g, dirty);
+    ui.separator();
+    debug_diagnostics_section(ui, g, dirty);
+    ui.separator();
+    watchdog_section(ui, g, dirty);
+    ui.unindent();
+}
+
+fn debug_hud_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
+    ui.text("HUD");
     ui.indent();
     if ui.checkbox("Frame timing HUD", &mut g.debug.debug_hud_frame_timing) {
         *dirty = true;
@@ -306,6 +436,12 @@ fn debug_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
         );
         *dirty = true;
     }
+    ui.unindent();
+}
+
+fn debug_diagnostics_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
+    ui.text("Diagnostics");
+    ui.indent();
     if ui.checkbox("Log verbose", &mut g.debug.log_verbose) {
         *dirty = true;
     }
@@ -324,6 +460,58 @@ fn debug_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
             .build()
         {
             g.debug.power_preference = pref;
+            *dirty = true;
+        }
+    }
+    ui.unindent();
+}
+
+fn watchdog_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
+    ui.text("Watchdog");
+    ui.indent();
+    ui.text_disabled("Cooperative hitch/hang detector; restart required to apply changes.");
+    if ui.checkbox("Enable watchdog", &mut g.watchdog.enabled) {
+        *dirty = true;
+    }
+    if drag_u32_setting(
+        ui,
+        "Poll interval (ms)",
+        &mut g.watchdog.poll_interval_ms,
+        MIN_WATCHDOG_POLL_INTERVAL_MS,
+        MAX_WATCHDOG_POLL_INTERVAL_MS,
+        10.0,
+    ) {
+        *dirty = true;
+    }
+    if drag_u32_setting(
+        ui,
+        "Hitch threshold (ms, 0 = disabled)",
+        &mut g.watchdog.hitch_threshold_ms,
+        0,
+        MAX_WATCHDOG_THRESHOLD_MS,
+        50.0,
+    ) {
+        *dirty = true;
+    }
+    if drag_u32_setting(
+        ui,
+        "Hang threshold (ms)",
+        &mut g.watchdog.hang_threshold_ms,
+        1,
+        MAX_WATCHDOG_THRESHOLD_MS,
+        100.0,
+    ) {
+        *dirty = true;
+    }
+    ui.text("Hang action");
+    for (i, &action) in WatchdogAction::ALL.iter().enumerate() {
+        let _id = ui.push_id_int(600 + i as i32);
+        if ui
+            .selectable_config(action.label())
+            .selected(g.watchdog.action == action)
+            .build()
+        {
+            g.watchdog.action = action;
             *dirty = true;
         }
     }
@@ -371,10 +559,45 @@ fn post_processing_gtao(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bo
         *dirty = true;
     }
     let gtao = &mut g.post_processing.gtao;
+    gtao_quality_controls(ui, gtao, dirty);
+    gtao_sampling_controls(ui, gtao, dirty);
+    gtao_denoise_controls(ui, gtao, dirty);
+}
+
+fn gtao_quality_controls(ui: &imgui::Ui, gtao: &mut GtaoSettings, dirty: &mut bool) {
+    ui.text("Quality");
+    ui.indent();
+    if ui
+        .slider_config("Quality level", 0_u32, 3_u32)
+        .build(&mut gtao.quality_level)
+    {
+        *dirty = true;
+    }
+    ui.text_disabled("0 = low, 1 = medium, 2 = high, 3 = ultra.");
+    if ui
+        .slider_config("Step floor", 1_u32, 8_u32)
+        .build(&mut gtao.step_count)
+    {
+        *dirty = true;
+    }
+    ui.text_disabled("Advanced floor for steps per slice; quality preset remains primary.");
+    ui.unindent();
+}
+
+fn gtao_sampling_controls(ui: &imgui::Ui, gtao: &mut GtaoSettings, dirty: &mut bool) {
+    ui.text("Sampling");
+    ui.indent();
     if ui
         .slider_config("Radius (m)", 0.05_f32, 2.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.radius_meters)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Radius multiplier", 0.3_f32, 3.0_f32)
+        .display_format("%.3f")
+        .build(&mut gtao.radius_multiplier)
     {
         *dirty = true;
     }
@@ -393,15 +616,37 @@ fn post_processing_gtao(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bo
         *dirty = true;
     }
     if ui
-        .slider_config("Steps", 2_u32, 16_u32)
-        .build(&mut gtao.step_count)
+        .slider_config("Falloff range", 0.05_f32, 1.0_f32)
+        .display_format("%.2f")
+        .build(&mut gtao.falloff_range)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Falloff range", 0.05_f32, 1.0_f32)
+        .slider_config("Sample distribution power", 1.0_f32, 3.0_f32)
         .display_format("%.2f")
-        .build(&mut gtao.falloff_range)
+        .build(&mut gtao.sample_distribution_power)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Thin occluder compensation", 0.0_f32, 0.7_f32)
+        .display_format("%.2f")
+        .build(&mut gtao.thin_occluder_compensation)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Final value power", 0.5_f32, 5.0_f32)
+        .display_format("%.2f")
+        .build(&mut gtao.final_value_power)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Depth mip sampling offset", 0.0_f32, 30.0_f32)
+        .display_format("%.2f")
+        .build(&mut gtao.depth_mip_sampling_offset)
     {
         *dirty = true;
     }
@@ -412,6 +657,26 @@ fn post_processing_gtao(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bo
     {
         *dirty = true;
     }
+    ui.unindent();
+}
+
+fn gtao_denoise_controls(ui: &imgui::Ui, gtao: &mut GtaoSettings, dirty: &mut bool) {
+    ui.text("Denoise");
+    ui.indent();
+    if ui
+        .slider_config("Denoise passes", 0_u32, 3_u32)
+        .build(&mut gtao.denoise_passes)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Denoise blur beta", 0.0_f32, 8.0_f32)
+        .display_format("%.2f")
+        .build(&mut gtao.denoise_blur_beta)
+    {
+        *dirty = true;
+    }
+    ui.unindent();
 }
 
 fn post_processing_bloom(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {

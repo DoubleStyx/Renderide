@@ -478,16 +478,7 @@ impl RenderBackend {
             gpu_queue_access_gate,
             Arc::clone(&gpu_limits),
         );
-        {
-            let s = renderer_settings
-                .read()
-                .map(|g| g.clone())
-                .unwrap_or_default();
-            self.asset_transfers.apply_runtime_settings(
-                s.rendering.render_texture_hdr_color,
-                u64::from(s.rendering.texture_vram_budget_mib).saturating_mul(1024 * 1024),
-            );
-        };
+        self.sync_asset_runtime_settings_from_config();
         let max_buffer_size = gpu_limits.max_buffer_size();
         self.mesh_deform_scratch = Some(MeshDeformScratch::new(device.as_ref(), max_buffer_size));
         self.frame_resources

@@ -15,6 +15,26 @@ use crate::assets::asset_transfer_queue::{self as asset_uploads, AssetIntegratio
 use super::RenderBackend;
 
 impl RenderBackend {
+    /// Applies live renderer settings that affect asset allocation and budget diagnostics.
+    pub(super) fn sync_asset_runtime_settings_from_config(&mut self) {
+        let Some((render_texture_hdr_color, texture_vram_budget_bytes)) =
+            self.renderer_settings.as_ref().and_then(|settings| {
+                settings.read().ok().map(|guard| {
+                    (
+                        guard.rendering.render_texture_hdr_color,
+                        u64::from(guard.rendering.texture_vram_budget_mib)
+                            .saturating_mul(1024 * 1024),
+                    )
+                })
+            })
+        else {
+            return;
+        };
+
+        self.asset_transfers
+            .apply_runtime_settings(render_texture_hdr_color, texture_vram_budget_bytes);
+    }
+
     /// Cooperative mesh/texture uploads ([`crate::runtime::RendererRuntime::run_asset_integration`]):
     /// all high-priority tasks run to completion, then normal-priority work until `normal_deadline`.
     pub fn drain_asset_tasks(
@@ -23,6 +43,7 @@ impl RenderBackend {
         ipc: &mut Option<&mut DualQueueIpc>,
         normal_deadline: std::time::Instant,
     ) -> AssetIntegrationDrainSummary {
+        self.sync_asset_runtime_settings_from_config();
         asset_uploads::drain_asset_tasks(&mut self.asset_transfers, shm, ipc, normal_deadline)
     }
 
@@ -159,6 +180,7 @@ impl RenderBackend {
         f: SetRenderTextureFormat,
         ipc: Option<&mut DualQueueIpc>,
     ) {
+        self.sync_asset_runtime_settings_from_config();
         asset_uploads::on_set_render_texture_format(&mut self.asset_transfers, f, ipc);
     }
 
