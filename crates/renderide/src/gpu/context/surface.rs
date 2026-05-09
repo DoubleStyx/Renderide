@@ -54,14 +54,14 @@ impl GpuContext {
         self.surface.is_none()
     }
 
-    /// Live `inner_size` of the window stored inside this context, if windowed.
+    /// Live `surface_size` of the window stored inside this context, if windowed.
     ///
     /// Re-queries the window each call so callers handling `WindowEvent::ScaleFactorChanged` can
-    /// pick up the new logical size without holding a separate `Arc<Window>`. Returns [`None`] in
+    /// pick up the new logical size without holding a separate `Arc<dyn Window>`. Returns [`None`] in
     /// headless mode.
     pub fn window_inner_size(&self) -> Option<(u32, u32)> {
         self.window.as_ref().map(|w| {
-            let s = w.inner_size();
+            let s = w.surface_size();
             (s.width, s.height)
         })
     }
@@ -94,7 +94,7 @@ impl GpuContext {
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Ok(t),
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 logger::info!("surface Lost or Outdated -- reconfiguring");
-                let size = self.window.as_ref().map(|w| w.inner_size());
+                let size = self.window.as_ref().map(|w| w.surface_size());
                 if let Some(s) = size {
                     self.reconfigure(s.width, s.height);
                 }

@@ -83,9 +83,9 @@ pub struct GpuContext {
     /// reconfigures the swapchain at runtime. Empty in headless mode (no surface, no caps to query).
     supported_present_modes: Vec<wgpu::PresentMode>,
     /// Window the surface was created from, kept so swapchain Lost/Outdated recovery can call
-    /// [`Window::inner_size`] without threading `&Window` through every render-path signature.
+    /// [`Window::surface_size`] without threading `&Window` through every render-path signature.
     /// [`None`] in headless mode (no winit window exists).
-    window: Option<Arc<Window>>,
+    window: Option<Arc<dyn Window>>,
     /// Depth target matching [`Self::config`] extent; recreated after resize.
     depth_attachment: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_extent_px: (u32, u32),

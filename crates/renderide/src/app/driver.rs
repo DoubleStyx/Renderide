@@ -7,6 +7,8 @@ mod shutdown;
 mod target;
 mod xr;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -23,7 +25,7 @@ use self::xr::XrInputCache;
 use super::bootstrap::{
     ExternalShutdownCoordinator, GpuStartupConfig, effective_renderer_log_level,
 };
-use super::exit::{ExitReason, ExitState, RunExit};
+use super::exit::{ExitReason, ExitState};
 use super::frame_clock::FrameClock;
 
 /// Interval between log flushes when using file logging in the winit handler.
@@ -35,7 +37,7 @@ pub(crate) struct AppDriver {
     startup_gpu: GpuStartupConfig,
     log_level_cli: Option<LogLevel>,
     target: Option<RenderTarget>,
-    exit: ExitState,
+    exit: Rc<RefCell<ExitState>>,
     log_flush: LogFlushCadence,
     shutdown: GracefulShutdown,
     input: WindowInputAccumulator,
@@ -56,13 +58,14 @@ impl AppDriver {
         log_level_cli: Option<LogLevel>,
         external_shutdown: Option<ExternalShutdownCoordinator>,
         main_heartbeat: Option<crate::diagnostics::Heartbeat>,
+        exit: Rc<RefCell<ExitState>>,
     ) -> Self {
         Self {
             runtime,
             startup_gpu,
             log_level_cli,
             target: None,
-            exit: ExitState::default(),
+            exit: exit,
             log_flush: LogFlushCadence::default(),
             shutdown: GracefulShutdown::default(),
             input: WindowInputAccumulator::default(),
@@ -75,14 +78,17 @@ impl AppDriver {
         }
     }
 
-    /// Returns the normal process exit requested by this app driver.
-    pub(crate) fn into_run_exit(self) -> RunExit {
-        self.exit.run_exit()
+    /// Returns whether an exit has already been requested.
+    pub(crate) fn exit_is_requested(&self) -> bool {
+        self.exit
+            .try_borrow()
+            .map(|exit_state| exit_state.is_requested())
+            .unwrap_or(true)
     }
 
-    fn request_exit(&mut self, reason: ExitReason, event_loop: &ActiveEventLoop) {
-        let first_request = !self.exit.is_requested();
-        let request = self.exit.request(reason);
+    fn request_exit(&mut self, reason: ExitReason, event_loop: &dyn ActiveEventLoop) {
+        let first_request = !self.exit_is_requested();
+        let request = self.exit.borrow_mut().request(reason);
         if !request.reason().uses_graceful_shutdown() {
             event_loop.exit();
             return;
@@ -97,7 +103,7 @@ impl AppDriver {
         self.poll_graceful_shutdown(event_loop);
     }
 
-    fn check_external_shutdown(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    fn check_external_shutdown(&mut self, event_loop: &dyn ActiveEventLoop) -> bool {
         let Some(coord) = self.external_shutdown.as_ref() else {
             return false;
         };
@@ -111,7 +117,7 @@ impl AppDriver {
         true
     }
 
-    fn poll_graceful_shutdown(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    fn poll_graceful_shutdown(&mut self, event_loop: &dyn ActiveEventLoop) -> bool {
         if !self.shutdown.is_started() {
             return false;
         }

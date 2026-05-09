@@ -3,10 +3,11 @@
 use glam::IVec2;
 #[cfg(not(target_os = "macos"))]
 use glam::Vec2;
-use winit::dpi::LogicalPosition;
-#[cfg(not(target_os = "macos"))]
-use winit::dpi::LogicalSize;
-use winit::window::{CursorGrabMode, Window};
+use winit::dpi::{LogicalPosition, LogicalSize, Position};
+use winit::window::{
+    CursorGrabMode, ImeCapabilities, ImeEnableRequest, ImeHint, ImePurpose, ImeRequest,
+    ImeRequestData, Window,
+};
 
 use super::accumulator::WindowInputAccumulator;
 use crate::shared::OutputState;
@@ -19,10 +20,9 @@ pub struct CursorOutputTracking {
     last_lock_position: Option<IVec2>,
 }
 
-fn warp_cursor_logical(window: &Window, p: IVec2) -> Result<(), winit::error::ExternalError> {
+fn warp_cursor_logical(window: &dyn Window, p: IVec2) -> Result<(), winit::error::RequestError> {
     let logical = LogicalPosition::new(f64::from(p.x), f64::from(p.y));
-    let physical = logical.to_physical::<f64>(window.scale_factor());
-    window.set_cursor_position(physical)
+    window.set_cursor_position(Position::Logical(logical))
 }
 
 /// Reapplies grab and warp **every frame** while the host requests cursor lock: the cursor is
@@ -32,10 +32,10 @@ fn warp_cursor_logical(window: &Window, p: IVec2) -> Result<(), winit::error::Ex
 /// look and IPC [`crate::shared::MouseState::window_position`] stay aligned with the OS cursor.
 #[cfg(not(target_os = "macos"))]
 pub fn apply_per_frame_cursor_lock_when_locked(
-    window: &Window,
+    window: &dyn Window,
     acc: &mut WindowInputAccumulator,
     lock_cursor_position: Option<IVec2>,
-) -> Result<(), winit::error::ExternalError> {
+) -> Result<(), winit::error::RequestError> {
     let sf = window.scale_factor();
     acc.sync_window_resolution_logical(window);
 
@@ -51,13 +51,12 @@ pub fn apply_per_frame_cursor_lock_when_locked(
             .set_cursor_grab(CursorGrabMode::Locked)
             .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))?;
         window.set_cursor_visible(false);
-        let physical = window.inner_size();
+        let physical = window.surface_size();
         let logical_sz: LogicalSize<f64> = physical.to_logical(sf);
         let cx = (logical_sz.width / 2.0) as f32;
         let cy = (logical_sz.height / 2.0) as f32;
         let logical_center = LogicalPosition::new(f64::from(cx), f64::from(cy));
-        let phys_center = logical_center.to_physical::<f64>(sf);
-        window.set_cursor_position(phys_center)?;
+        window.set_cursor_position(Position::Logical(logical_center))?;
         acc.set_window_position_from_logical(Vec2::new(cx, cy), sf);
     }
     Ok(())
@@ -70,10 +69,10 @@ pub fn apply_per_frame_cursor_lock_when_locked(
 /// [`apply_output_state_to_window`]; only continuous re-centering is omitted.
 #[cfg(target_os = "macos")]
 pub fn apply_per_frame_cursor_lock_when_locked(
-    _window: &Window,
+    _window: &dyn Window,
     _acc: &mut WindowInputAccumulator,
     _lock_cursor_position: Option<IVec2>,
-) -> Result<(), winit::error::ExternalError> {
+) -> Result<(), winit::error::RequestError> {
     Ok(())
 }
 
@@ -81,11 +80,19 @@ pub fn apply_per_frame_cursor_lock_when_locked(
 /// [`apply_per_frame_cursor_lock_when_locked`] each frame while locked for continuous re-centering
 /// (a no-op on macOS; see that function's documentation).
 pub fn apply_output_state_to_window(
-    window: &Window,
+    window: &dyn Window,
     state: &OutputState,
     track: &mut CursorOutputTracking,
-) -> Result<(), winit::error::ExternalError> {
-    window.set_ime_allowed(state.keyboard_input_active);
+) -> Result<(), winit::error::RequestError> {
+    if state.keyboard_input_active {
+        if let None = window.ime_capabilities() {
+            enable_ime_on_window(window);
+        }
+    } else {
+        if let Some(_) = window.ime_capabilities() {
+            let _ = window.request_ime_update(ImeRequest::Disable);
+        }
+    }
 
     if let Some(p) = state.lock_cursor_position {
         let _ = warp_cursor_logical(window, p);
@@ -122,4 +129,18 @@ pub fn apply_output_state_to_window(
         let _ = warp_cursor_logical(window, p);
     }
     Ok(())
+}
+
+pub fn enable_ime_on_window(window: &dyn Window) {
+    // Pretty much a copy of the deprecatied Window::set_ime_allowed(true)
+    let position = LogicalPosition::new(0, 0);
+    let size = LogicalSize::new(0, 0);
+    let ime_caps = ImeCapabilities::new()
+        .with_hint_and_purpose()
+        .with_cursor_area();
+    let request_data = ImeRequestData::default()
+        .with_hint_and_purpose(ImeHint::NONE, ImePurpose::Normal)
+        .with_cursor_area(position.into(), size.into());
+    let action = ImeRequest::Enable(ImeEnableRequest::new(ime_caps, request_data).unwrap());
+    let _ = window.request_ime_update(action);
 }

@@ -10,6 +10,7 @@ mod winit;
 pub use accumulator::WindowInputAccumulator;
 pub use cursor::{
     CursorOutputTracking, apply_output_state_to_window, apply_per_frame_cursor_lock_when_locked,
+    enable_ime_on_window,
 };
 pub use vr_session::vr_inputs_for_session;
 pub use winit::{apply_device_event, apply_window_event};

@@ -13,7 +13,7 @@ use super::super::frame_clock::{RedrawDecision, RedrawInputs, plan_redraw};
 use super::{AppDriver, RenderTarget};
 
 impl AppDriver {
-    fn ensure_render_target(&mut self, event_loop: &ActiveEventLoop) {
+    fn ensure_render_target(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.target.is_some() {
             return;
         }
@@ -39,9 +39,13 @@ impl AppDriver {
 }
 
 impl ApplicationHandler for AppDriver {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.ensure_render_target(event_loop);
+    }
+
+    fn resumed(&mut self, event_loop: &dyn ActiveEventLoop) {
         profiling::scope!("app::resumed");
-        if self.exit.is_requested() {
+        if self.exit_is_requested() {
             return;
         }
         event_loop.listen_device_events(DeviceEvents::Always);
@@ -50,12 +54,12 @@ impl ApplicationHandler for AppDriver {
 
     fn device_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
-        _device_id: winit::event::DeviceId,
+        _event_loop: &dyn ActiveEventLoop,
+        _device_id: Option<winit::event::DeviceId>,
         event: DeviceEvent,
     ) {
         profiling::scope!("app::device_event");
-        if self.exit.is_requested() {
+        if self.exit_is_requested() {
             return;
         }
         apply_device_event(&mut self.input, &event);
@@ -63,7 +67,7 @@ impl ApplicationHandler for AppDriver {
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         window_id: WindowId,
         event: WindowEvent,
     ) {
@@ -102,9 +106,9 @@ impl ApplicationHandler for AppDriver {
                 logger::info!("Window close requested");
                 self.request_exit(ExitReason::WindowClosed, event_loop);
             }
-            WindowEvent::Resized(size) => {
+            WindowEvent::SurfaceResized(size) => {
                 profiling::scope!("app::window_event_resize");
-                if !self.exit.is_requested()
+                if !self.exit_is_requested()
                     && let Some(target) = self.target.as_mut()
                 {
                     target.reconfigure_physical_size(size.width, size.height);
@@ -112,7 +116,7 @@ impl ApplicationHandler for AppDriver {
             }
             WindowEvent::RedrawRequested => {
                 profiling::scope!("app::redraw_requested");
-                if self.exit.is_requested() {
+                if self.exit_is_requested() {
                     self.poll_graceful_shutdown(event_loop);
                     self.flush_logs_if_due();
                     return;
@@ -126,7 +130,7 @@ impl ApplicationHandler for AppDriver {
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 profiling::scope!("app::window_event_scale_factor");
-                if !self.exit.is_requested()
+                if !self.exit_is_requested()
                     && let Some(target) = self.target.as_mut()
                 {
                     target.reconfigure_for_window();
@@ -138,10 +142,10 @@ impl ApplicationHandler for AppDriver {
         self.flush_logs_if_due();
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         profiling::scope!("app::about_to_wait");
         crate::profiling::plot_window_focused(self.input.window_focused);
-        if self.exit.is_requested() {
+        if self.exit_is_requested() {
             self.poll_graceful_shutdown(event_loop);
             self.flush_logs_if_due();
             return;
@@ -173,7 +177,7 @@ impl ApplicationHandler for AppDriver {
             .unwrap_or((0, 0));
         let plan = plan_redraw(RedrawInputs {
             has_window: self.target.is_some(),
-            exit_requested: self.exit.is_requested(),
+            exit_requested: self.exit_is_requested(),
             vr_active: self.runtime.vr_active(),
             window_focused: self.input.window_focused,
             focused_fps_cap,
@@ -199,7 +203,7 @@ impl ApplicationHandler for AppDriver {
             RedrawDecision::Idle => {}
         }
 
-        if !self.exit.is_requested() {
+        if !self.exit_is_requested() {
             event_loop.set_control_flow(ControlFlow::Poll);
         }
         self.flush_logs_if_due();

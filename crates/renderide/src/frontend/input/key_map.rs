@@ -127,8 +127,8 @@ fn map_keycode_nav_function_modifiers(code: KeyCode) -> Option<Key> {
         KeyCode::ControlRight => Key::RightControl,
         KeyCode::AltLeft => Key::LeftAlt,
         KeyCode::AltRight => Key::RightAlt,
-        KeyCode::SuperLeft => Key::LeftWindows,
-        KeyCode::SuperRight => Key::RightWindows,
+        KeyCode::MetaLeft => Key::LeftWindows,
+        KeyCode::MetaRight => Key::RightWindows,
         KeyCode::Delete => Key::Delete,
         KeyCode::PrintScreen => Key::Print,
         KeyCode::Pause => Key::Pause,
@@ -301,8 +301,8 @@ mod tests {
             (KeyCode::ControlRight, Key::RightControl),
             (KeyCode::AltLeft, Key::LeftAlt),
             (KeyCode::AltRight, Key::RightAlt),
-            (KeyCode::SuperLeft, Key::LeftWindows),
-            (KeyCode::SuperRight, Key::RightWindows),
+            (KeyCode::MetaLeft, Key::LeftWindows),
+            (KeyCode::MetaRight, Key::RightWindows),
         ] {
             assert_eq!(
                 winit_key_to_renderite_key(PhysicalKey::Code(code)),

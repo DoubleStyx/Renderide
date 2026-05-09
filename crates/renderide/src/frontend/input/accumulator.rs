@@ -123,9 +123,9 @@ impl WindowInputAccumulator {
         self.last_cursor_pixel.y = position.y.round() as i32;
     }
 
-    /// Refreshes [`Self::window_resolution`] from [`Window::inner_size`] in **logical** pixels.
-    pub fn sync_window_resolution_logical(&mut self, window: &Window) {
-        let physical = window.inner_size();
+    /// Refreshes [`Self::window_resolution`] from [`Window::surface_size`] in **logical** pixels.
+    pub fn sync_window_resolution_logical(&mut self, window: &dyn Window) {
+        let physical = window.surface_size();
         let logical: LogicalSize<f64> = physical.to_logical(window.scale_factor());
         self.window_resolution = (logical.width.round() as u32, logical.height.round() as u32);
     }

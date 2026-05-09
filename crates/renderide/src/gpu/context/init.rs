@@ -78,7 +78,7 @@ struct GpuContextParts {
     /// Surface present modes.
     supported_present_modes: Vec<wgpu::PresentMode>,
     /// Optional window owner.
-    window: Option<Arc<Window>>,
+    window: Option<Arc<dyn Window>>,
 }
 
 /// Windowed adapter-selection result before device creation.
@@ -132,7 +132,7 @@ fn assemble_context(parts: GpuContextParts) -> GpuContext {
 }
 
 async fn select_window_adapter_with_fallback(
-    window: &Arc<Window>,
+    window: &Arc<dyn Window>,
     graphics_api: GraphicsApiSetting,
     gpu_validation_layers: bool,
     power_preference: wgpu::PowerPreference,
@@ -164,7 +164,7 @@ async fn select_window_adapter_with_fallback(
 }
 
 async fn select_window_adapter(
-    window: &Arc<Window>,
+    window: &Arc<dyn Window>,
     graphics_api: GraphicsApiSetting,
     gpu_validation_layers: bool,
     power_preference: wgpu::PowerPreference,
@@ -172,7 +172,7 @@ async fn select_window_adapter(
     let (instance, instance_flags, active_backends) =
         build_wgpu_instance(gpu_validation_layers, graphics_api.requested_backends());
 
-    // `Arc<Window>` is `Into<SurfaceTarget<'static>>`, so the returned `Surface` is
+    // `Arc<dyn Window>` is `Into<SurfaceTarget<'static>>`, so the returned `Surface` is
     // already `'static` -- no `transmute` is required to extend the borrow.
     let surface: wgpu::Surface<'static> = instance
         .create_surface(Arc::clone(window))
@@ -251,7 +251,7 @@ impl GpuContext {
     /// explicit API is retried with [`GraphicsApiSetting::Auto`] when it finds no compatible
     /// adapter. The final backend set may still be overridden by `WGPU_BACKEND`.
     pub async fn new(
-        window: Arc<Window>,
+        window: Arc<dyn Window>,
         vsync: VsyncMode,
         max_frame_latency: u32,
         gpu_validation_layers: bool,
@@ -272,7 +272,7 @@ impl GpuContext {
         let (device, queue) = request_device_for_adapter(&adapter, required_features).await?;
 
         let limits = GpuLimits::try_new(device.as_ref(), &adapter)?;
-        let size = window.inner_size();
+        let size = window.surface_size();
         let supported_present_modes = surface_safe.get_capabilities(&adapter).present_modes;
         let mut config = surface_safe
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -455,17 +455,17 @@ impl GpuContext {
         adapter: &wgpu::Adapter,
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
-        window: Arc<Window>,
+        window: Arc<dyn Window>,
         vsync: VsyncMode,
         max_frame_latency: u32,
     ) -> Result<Self, GpuError> {
         install_uncaptured_error_handler(device.as_ref());
-        // `Arc<Window>` is `Into<SurfaceTarget<'static>>`, so the returned `Surface` is
+        // `Arc<dyn Window>` is `Into<SurfaceTarget<'static>>`, so the returned `Surface` is
         // already `'static` -- no `transmute` is required to extend the borrow.
         let surface_safe: wgpu::Surface<'static> = instance
             .create_surface(window.clone())
             .map_err(|e| GpuError::Surface(format!("{e:?}")))?;
-        let size = window.inner_size();
+        let size = window.surface_size();
         let supported_present_modes = surface_safe.get_capabilities(adapter).present_modes;
         let mut config = surface_safe
             .get_default_config(adapter, size.width.max(1), size.height.max(1))

@@ -5,11 +5,14 @@ mod logging;
 mod runtime;
 pub(crate) mod services;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use winit::event_loop::EventLoop;
 
-use crate::connection::try_claim_renderer_singleton;
 use crate::ipc::get_headless_params;
 use crate::run_error::RunError;
+use crate::{app::exit::ExitState, connection::try_claim_renderer_singleton};
 
 use self::services::AppServices;
 use super::driver::AppDriver;
@@ -50,20 +53,23 @@ pub fn run() -> Result<RunExit, RunError> {
         RunError::event_loop_create(e)
     })?;
 
+    let exit_state = Rc::new(RefCell::new(ExitState::default()));
+
     let AppServices {
         external_shutdown,
         watchdog,
         main_heartbeat,
     } = services;
-    let mut app = AppDriver::new(
+    let app = AppDriver::new(
         runtime,
         app_config.gpu,
         logging.log_level_cli,
         external_shutdown,
         main_heartbeat,
+        exit_state.clone(),
     );
 
-    let _ = event_loop.run_app(&mut app);
+    let _ = event_loop.run_app(app);
     drop(watchdog);
-    Ok(app.into_run_exit())
+    Ok(exit_state.borrow().run_exit())
 }

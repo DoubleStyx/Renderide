@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use thiserror::Error;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Fullscreen, Window};
+use winit::monitor::Fullscreen;
+use winit::window::{Window, WindowAttributes};
 
+use crate::frontend::input::enable_ime_on_window;
 use crate::frontend::output_device::head_output_device_wants_openxr;
 use crate::gpu::{GpuContext, GpuError};
 use crate::runtime::RendererRuntime;
@@ -19,7 +21,7 @@ use super::shutdown::GracefulShutdown;
 
 /// Fully initialized windowed render target.
 pub(super) struct RenderTarget {
-    window: Arc<Window>,
+    window: Arc<dyn Window>,
     gpu: GpuContext,
     output_device: HeadOutputDevice,
     mode: RenderTargetMode,
@@ -67,7 +69,7 @@ impl TargetInitError {
 impl RenderTarget {
     /// Creates the window, selects desktop vs OpenXR mode, and attaches the GPU to the runtime.
     pub(super) fn create(
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         runtime: &mut RendererRuntime,
         startup_gpu: GpuStartupConfig,
     ) -> Result<Self, TargetInitError> {
@@ -85,7 +87,7 @@ impl RenderTarget {
         };
 
         runtime.attach_gpu(&gpu);
-        window.set_ime_allowed(true);
+        enable_ime_on_window(window.as_ref());
 
         Ok(Self {
             window,
@@ -96,7 +98,7 @@ impl RenderTarget {
     }
 
     /// Main winit window.
-    pub(super) fn window(&self) -> &Arc<Window> {
+    pub(super) fn window(&self) -> &Arc<dyn Window> {
         &self.window
     }
 
@@ -216,8 +218,10 @@ fn poll_openxr_shutdown(
     xr_session.shutdown_quiesced()
 }
 
-fn create_main_window(event_loop: &ActiveEventLoop) -> Result<Arc<Window>, TargetInitError> {
-    let attrs = Window::default_attributes()
+fn create_main_window(
+    event_loop: &dyn ActiveEventLoop,
+) -> Result<Arc<dyn Window>, TargetInitError> {
+    let attrs = WindowAttributes::default()
         .with_title("Renderide")
         .with_maximized(true)
         .with_visible(true)
@@ -225,12 +229,12 @@ fn create_main_window(event_loop: &ActiveEventLoop) -> Result<Arc<Window>, Targe
 
     event_loop
         .create_window(attrs)
-        .map(Arc::new)
+        .map(Arc::from)
         .map_err(|error| TargetInitError::WindowCreate(error.to_string()))
 }
 
 fn create_desktop_target(
-    window: &Arc<Window>,
+    window: &Arc<dyn Window>,
     startup_gpu: GpuStartupConfig,
 ) -> Result<(GpuContext, RenderTargetMode), TargetInitError> {
     pollster::block_on(GpuContext::new(
@@ -249,7 +253,7 @@ fn create_desktop_target(
 }
 
 fn create_openxr_target(
-    window: &Arc<Window>,
+    window: &Arc<dyn Window>,
     startup_gpu: GpuStartupConfig,
 ) -> Result<(GpuContext, RenderTargetMode), TargetInitError> {
     if !startup_gpu.graphics_api.is_openxr_compatible() {
@@ -287,7 +291,7 @@ fn effective_output_device_for_gpu(pending: Option<&RendererInitData>) -> HeadOu
     pending.map_or(HeadOutputDevice::Screen, |init| init.output_device)
 }
 
-fn apply_window_title_from_init(window: &Arc<Window>, init: &RendererInitData) {
+fn apply_window_title_from_init(window: &Arc<dyn Window>, init: &RendererInitData) {
     if let Some(ref title) = init.window_title {
         window.set_title(title);
     }

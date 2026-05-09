@@ -77,6 +77,7 @@ pub(super) fn write_task_answer(bytes: &mut [u8], offset: usize, answer: TaskAns
 
 /// Debug helper that asserts every active row has been moved out of `Scheduled`.
 pub(super) fn debug_assert_no_scheduled_rows(bytes: &[u8]) {
+    let _ = bytes;
     #[cfg(debug_assertions)]
     {
         const RESULT_OFFSET: usize = std::mem::offset_of!(ReflectionProbeSH2Task, result);

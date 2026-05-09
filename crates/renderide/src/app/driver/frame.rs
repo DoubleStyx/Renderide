@@ -51,7 +51,7 @@ pub(super) struct RenderViewsOutcome {
 
 impl AppDriver {
     /// One winit redraw tick.
-    pub(super) fn tick_frame(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn tick_frame(&mut self, event_loop: &dyn ActiveEventLoop) {
         profiling::scope!("tick::frame");
         let frame_start = Instant::now();
         if let Some(heartbeat) = self.main_heartbeat.as_ref() {
@@ -63,7 +63,7 @@ impl AppDriver {
 
     fn drive_frame_phases(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         frame_start: Instant,
     ) -> FrameTickOutcome {
         self.frame_tick_prologue(frame_start);
@@ -196,7 +196,7 @@ impl AppDriver {
         }
     }
 
-    fn handle_frame_exit_requests(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    fn handle_frame_exit_requests(&mut self, event_loop: &dyn ActiveEventLoop) -> bool {
         if let Some(target) = self.target.as_ref()
             && let Some(session) = target.xr_session()
             && session.handles.xr_session.exit_requested()
@@ -223,7 +223,7 @@ impl AppDriver {
 
     fn render_views(
         &mut self,
-        window: &Arc<Window>,
+        window: &Arc<dyn Window>,
         xr_tick: Option<&OpenxrFrameTick>,
     ) -> Option<RenderViewsOutcome> {
         profiling::scope!("tick::render_views");

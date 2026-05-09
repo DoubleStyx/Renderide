@@ -60,7 +60,7 @@ pub(crate) fn mouse_button_transition(
         MouseButton::Middle => MouseButtonSlot::Middle,
         MouseButton::Back => MouseButtonSlot::Button4,
         MouseButton::Forward => MouseButtonSlot::Button5,
-        MouseButton::Other(_) => return None,
+        _ => return None,
     };
     Some(MouseButtonTransition {
         slot,
@@ -123,7 +123,7 @@ mod tests {
             mouse_button_transition(ElementState::Pressed, MouseButton::Back).expect("mapped");
         assert_eq!(transition.slot, MouseButtonSlot::Button4);
         assert!(transition.pressed);
-        assert!(mouse_button_transition(ElementState::Pressed, MouseButton::Other(9)).is_none());
+        assert!(mouse_button_transition(ElementState::Pressed, MouseButton::Button9).is_none());
     }
 
     #[test]

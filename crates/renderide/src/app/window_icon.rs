@@ -7,7 +7,7 @@
 //! way to supply a shell icon on many Linux desktops. On **macOS**, dock branding is primarily
 //! driven by bundle assets (e.g. `.icns`), not the window icon API.
 
-use winit::window::Icon;
+use winit::icon::{Icon, RgbaIcon};
 
 /// PNG bytes for [`try_embedded_window_icon`], resolved from this crate's manifest directory.
 const EMBEDDED_LOGO_PNG: &[u8] = include_bytes!(concat!(
@@ -28,8 +28,8 @@ pub(crate) fn try_embedded_window_icon() -> Option<Icon> {
     };
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
-    match Icon::from_rgba(rgba.into_raw(), width, height) {
-        Ok(icon) => Some(icon),
+    match RgbaIcon::new(rgba.into_raw(), width, height) {
+        Ok(icon) => Some(icon.into()),
         Err(e) => {
             logger::warn!("embedded window icon: winit rejected RGBA buffer: {e}");
             None

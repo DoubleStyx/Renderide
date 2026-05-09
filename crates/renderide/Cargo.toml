@@ -83,7 +83,7 @@ notify = "8.2"
 naga = { version = "29.0", features = ["wgsl-in", "wgsl-out", "termcolor"] }
 unity-asset = "0.2"
 wgpu = "29.0"
-winit = "0.30"
+winit = "0.31.0-beta.2"
 ash = "0.38"
 openxr = { version = "0.21", default-features = false, features = ["loaded"] }
 imgui = { version = "0.12", features = ["tables-api"] }

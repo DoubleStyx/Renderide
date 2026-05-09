@@ -4,7 +4,8 @@ use std::path::Path;
 
 use winit::dpi::LogicalSize;
 use winit::event::{
-    DeviceEvent, ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent,
+    ButtonSource, DeviceEvent, ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta,
+    WindowEvent,
 };
 use winit::window::Window;
 
@@ -18,9 +19,13 @@ use super::event_transition::{
 ///
 /// [`WindowEvent::Resized`], [`WindowEvent::ScaleFactorChanged`], and cursor move use the same
 /// **logical** pixel space as [`WindowInputAccumulator::window_position`].
-pub fn apply_window_event(acc: &mut WindowInputAccumulator, window: &Window, event: &WindowEvent) {
+pub fn apply_window_event(
+    acc: &mut WindowInputAccumulator,
+    window: &dyn Window,
+    event: &WindowEvent,
+) {
     match event {
-        WindowEvent::Resized(size) => {
+        WindowEvent::SurfaceResized(size) => {
             profiling::scope!("frontend::window_event", "resize");
             let logical: LogicalSize<f64> = size.to_logical(window.scale_factor());
             acc.window_resolution = (logical.width.round() as u32, logical.height.round() as u32);
@@ -29,15 +34,15 @@ pub fn apply_window_event(acc: &mut WindowInputAccumulator, window: &Window, eve
             profiling::scope!("frontend::window_event", "scale_factor");
             acc.sync_window_resolution_logical(window);
         }
-        WindowEvent::CursorMoved { position, .. } => {
+        WindowEvent::PointerMoved { position, .. } => {
             profiling::scope!("frontend::window_event", "cursor_moved");
             acc.set_cursor_from_physical(*position, window.scale_factor());
         }
-        WindowEvent::CursorEntered { .. } => {
+        WindowEvent::PointerEntered { .. } => {
             profiling::scope!("frontend::window_event", "cursor_entered");
             acc.mouse_active = true;
         }
-        WindowEvent::CursorLeft { .. } => {
+        WindowEvent::PointerLeft { .. } => {
             profiling::scope!("frontend::window_event", "cursor_left");
             acc.mouse_active = false;
         }
@@ -52,9 +57,11 @@ pub fn apply_window_event(acc: &mut WindowInputAccumulator, window: &Window, eve
             profiling::scope!("frontend::window_event", "modifiers");
             acc.set_keyboard_modifiers(modifiers.state());
         }
-        WindowEvent::MouseInput { state, button, .. } => {
+        WindowEvent::PointerButton { state, button, .. } => {
             profiling::scope!("frontend::window_event", "mouse_button");
-            apply_mouse_button(acc, *state, *button);
+            if let ButtonSource::Mouse(mouse_button) = button {
+                apply_mouse_button(acc, *state, *mouse_button);
+            }
         }
         WindowEvent::MouseWheel { delta, .. } => {
             profiling::scope!("frontend::window_event", "scroll");
@@ -75,12 +82,17 @@ pub fn apply_window_event(acc: &mut WindowInputAccumulator, window: &Window, eve
             profiling::scope!("frontend::window_event", "ime");
             match ime {
                 Ime::Commit(s) => acc.push_ime_commit(s.as_str()),
-                Ime::Enabled | Ime::Disabled | Ime::Preedit(_, _) => {}
+                Ime::Enabled
+                | Ime::Disabled
+                | Ime::Preedit(_, _)
+                | Ime::DeleteSurrounding { .. } => {}
             }
         }
-        WindowEvent::DroppedFile(path) => {
+        WindowEvent::DragDropped { paths, .. } => {
             profiling::scope!("frontend::window_event", "dropped_file");
-            acc.push_dropped_file_path(path_to_string_lossy(path));
+            for path in paths {
+                acc.push_dropped_file_path(path_to_string_lossy(path));
+            }
         }
         _ => {}
     }
@@ -135,7 +147,7 @@ fn path_to_string_lossy(path: &Path) -> String {
 
 /// Applies relative pointer motion when the cursor is captured (locked / confined).
 pub fn apply_device_event(acc: &mut WindowInputAccumulator, event: &DeviceEvent) {
-    if let DeviceEvent::MouseMotion { delta } = event {
+    if let DeviceEvent::PointerMotion { delta } = event {
         profiling::scope!("frontend::device_event", "mouse_motion");
         acc.mouse_delta.x += delta.0 as f32;
         acc.mouse_delta.y -= delta.1 as f32;

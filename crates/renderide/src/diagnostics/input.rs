@@ -63,7 +63,7 @@ impl DebugHudInput {
     /// Cursor is **`WindowInputAccumulator::window_position` (logical) x scale factor**, matching the
     /// swapchain / ImGui framebuffer in **physical** pixels.
     pub fn from_winit(
-        window: &winit::window::Window,
+        window: &dyn winit::window::Window,
         acc: &mut crate::frontend::input::WindowInputAccumulator,
     ) -> Self {
         let sf = window.scale_factor() as f32;
