@@ -60,6 +60,7 @@ ahash = "0.8"
 bytemuck = { version = "1.25", features = ["derive"] }
 glam = { version = "0.32", features = ["bytemuck"] }
 logger = { path = "../logger" }
+tracing = { version = "0.1.44", features = ["log-always"] }
 renderide-shared = { path = "../renderide-shared" }
 interprocess = { path = "../interprocess" }
 pollster = "0.4"

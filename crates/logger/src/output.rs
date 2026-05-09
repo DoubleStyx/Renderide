@@ -39,6 +39,34 @@ struct Logger {
     max_level: AtomicU8,
 }
 
+impl log::Log for Logger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        let level: LogLevel = metadata.level().into();
+        let mut max_level = current_max_level(self);
+        if max_level == LogLevel::Debug && metadata.target().starts_with("naga") {
+            // naga's Debug messages ought to be Trace, really
+            max_level = LogLevel::Info;
+        }
+        level <= max_level
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            let level: LogLevel = record.level().into();
+            with_line_buf(|buf| {
+                format_log_line_into(buf, record.target(), level, record.args().to_owned());
+                write_line_locked(self, level, buf.as_bytes());
+            });
+        }
+    }
+
+    fn flush(&self) {
+        if let Ok(mut file) = self.file.lock() {
+            let _ = file.flush();
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct MirrorWriter {
     max_level: LogLevel,
@@ -104,6 +132,11 @@ pub fn init_with_mirror(
         max_level: AtomicU8::new(max_level as u8),
     };
     let _ = LOGGER.set(logger);
+    if let Some(logger) = LOGGER.get() {
+        if let Ok(()) = log::set_logger(logger) {
+            log::set_max_level(max_level.into());
+        }
+    }
     Ok(())
 }
 
@@ -173,16 +206,23 @@ pub fn flush() {
     }
 }
 
-/// Writes a full log line into `out` in the canonical `[HH:MM:SS.mmm] LEVEL message\n` shape.
+/// Writes a full log line into `out` in the canonical `[HH:MM:SS.mmm] [TARGET] LEVEL message\n` shape.
 ///
 /// `out` is cleared first so the buffer can be reused across calls without observable carry-over.
-fn format_log_line_into(out: &mut String, level: LogLevel, args: std::fmt::Arguments<'_>) {
+fn format_log_line_into(
+    out: &mut String,
+    target: &str,
+    level: LogLevel,
+    args: std::fmt::Arguments<'_>,
+) {
     out.clear();
     if out.capacity() < LINE_BUF_INITIAL_CAPACITY {
         out.reserve(LINE_BUF_INITIAL_CAPACITY - out.capacity());
     }
     out.push('[');
     write_line_timestamp(out);
+    out.push_str("] [");
+    out.push_str(target);
     out.push_str("] ");
     out.push_str(level.as_label());
     out.push(' ');
@@ -238,7 +278,7 @@ pub fn log(level: LogLevel, args: std::fmt::Arguments<'_>) {
         return;
     }
     with_line_buf(|buf| {
-        format_log_line_into(buf, level, args);
+        format_log_line_into(buf, "renderide", level, args);
         write_line_locked(logger, level, buf.as_bytes());
     });
 }
@@ -264,7 +304,7 @@ pub fn try_log(level: LogLevel, args: std::fmt::Arguments<'_>) -> bool {
         return false;
     }
     with_line_buf(|buf| {
-        format_log_line_into(buf, level, args);
+        format_log_line_into(buf, "renderide", level, args);
         let bytes = buf.as_bytes();
         if let Ok(mut file) = logger.file.try_lock() {
             let _ = file.write_all(bytes);
@@ -351,16 +391,21 @@ mod tests {
     #[test]
     fn format_log_line_into_clears_existing_buffer_content() {
         let mut buf = String::from("stale_should_be_overwritten");
-        format_log_line_into(&mut buf, LogLevel::Info, format_args!("fresh_line"));
+        format_log_line_into(
+            &mut buf,
+            "renderide",
+            LogLevel::Info,
+            format_args!("fresh_line"),
+        );
         assert!(!buf.contains("stale_should_be_overwritten"));
-        assert!(buf.contains(" INFO fresh_line\n"));
+        assert!(buf.contains(" [renderide] INFO fresh_line\n"));
         assert!(buf.starts_with('['));
     }
 
     #[test]
     fn format_log_line_into_grows_capacity_to_initial() {
         let mut buf = String::new();
-        format_log_line_into(&mut buf, LogLevel::Trace, format_args!("x"));
+        format_log_line_into(&mut buf, "renderide", LogLevel::Trace, format_args!("x"));
         assert!(buf.capacity() >= LINE_BUF_INITIAL_CAPACITY);
     }
 
@@ -369,9 +414,18 @@ mod tests {
     #[test]
     fn format_log_line_into_emits_bracketed_timestamp_level_and_newline() {
         let mut buf = String::new();
-        format_log_line_into(&mut buf, LogLevel::Info, format_args!("hello_world"));
+        format_log_line_into(
+            &mut buf,
+            "renderide",
+            LogLevel::Info,
+            format_args!("hello_world"),
+        );
         assert!(buf.starts_with('['), "expected leading '[' in {buf:?}");
         assert!(buf.contains("] "), "expected '] ' separator in {buf:?}");
+        assert!(
+            buf.contains(" [renderide] "),
+            "expected ' [renderide] ' token in {buf:?}"
+        );
         assert!(buf.contains(" INFO "), "expected ' INFO ' token in {buf:?}");
         assert!(buf.contains("hello_world"), "expected message in {buf:?}");
         assert!(buf.ends_with('\n'), "expected trailing newline in {buf:?}");
@@ -388,7 +442,7 @@ mod tests {
     fn format_log_line_into_uses_correct_label_for_each_level() {
         let mut buf = String::new();
         for level in LogLevel::all() {
-            format_log_line_into(&mut buf, level, format_args!("body"));
+            format_log_line_into(&mut buf, "renderide", level, format_args!("body"));
             let token = format!(" {} body", level.as_label());
             assert!(
                 buf.contains(&token),
@@ -402,7 +456,7 @@ mod tests {
     #[test]
     fn format_log_line_into_handles_empty_message() {
         let mut buf = String::new();
-        format_log_line_into(&mut buf, LogLevel::Warn, format_args!(""));
+        format_log_line_into(&mut buf, "renderide", LogLevel::Warn, format_args!(""));
         assert!(buf.starts_with('['));
         assert!(buf.ends_with(" WARN \n"), "got {buf:?}");
         assert_eq!(buf.matches('\n').count(), 1);
@@ -414,7 +468,12 @@ mod tests {
     #[test]
     fn format_log_line_into_preserves_embedded_newlines() {
         let mut buf = String::new();
-        format_log_line_into(&mut buf, LogLevel::Error, format_args!("first\nsecond"));
+        format_log_line_into(
+            &mut buf,
+            "renderide",
+            LogLevel::Error,
+            format_args!("first\nsecond"),
+        );
         assert!(buf.contains("first\nsecond"), "got {buf:?}");
         assert!(buf.ends_with('\n'));
         assert_eq!(

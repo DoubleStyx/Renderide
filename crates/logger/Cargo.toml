@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 thiserror = "2.0"
+log = "0.4"
 
 [dev-dependencies]
 tempfile = "3.27"

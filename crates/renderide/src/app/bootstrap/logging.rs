@@ -20,7 +20,11 @@ pub(crate) fn init_logging() -> Result<LoggingBootstrap, RunError> {
     let log_path = logger::init_for(LogComponent::Renderer, &timestamp, initial_log_level, false)
         .map_err(RunError::logging_init)?;
 
-    logger::info!("Logging to {}", log_path.display());
+    logger::info!(
+        "Logging to {} at max level {:?}",
+        log_path.display(),
+        initial_log_level
+    );
 
     crate::native_stdio::ensure_stdio_forwarded_to_logger();
     crate::fatal_crash_log::install(&log_path);

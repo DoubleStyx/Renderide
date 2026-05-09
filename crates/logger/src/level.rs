@@ -89,6 +89,30 @@ impl std::fmt::Display for LogLevel {
     }
 }
 
+impl From<log::Level> for LogLevel {
+    fn from(level: log::Level) -> LogLevel {
+        match level {
+            log::Level::Trace => LogLevel::Trace,
+            log::Level::Debug => LogLevel::Debug,
+            log::Level::Info => LogLevel::Info,
+            log::Level::Warn => LogLevel::Warn,
+            log::Level::Error => LogLevel::Error,
+        }
+    }
+}
+
+impl From<LogLevel> for log::LevelFilter {
+    fn from(level: LogLevel) -> log::LevelFilter {
+        match level {
+            LogLevel::Trace => log::LevelFilter::Trace,
+            LogLevel::Debug => log::LevelFilter::Debug,
+            LogLevel::Info => log::LevelFilter::Info,
+            LogLevel::Warn => log::LevelFilter::Warn,
+            LogLevel::Error => log::LevelFilter::Error,
+        }
+    }
+}
+
 /// Maps a stored `0..=4` tag back to [`LogLevel`]. Values above `4` clamp to [`LogLevel::Trace`].
 ///
 /// The forward direction is `level as u8`; this decoder is needed because `AtomicU8` storage can
