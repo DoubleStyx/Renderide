@@ -572,9 +572,9 @@ fn xiexe_transparent_on_inferred(
 /// | `OUTSIDE_CLAMP`   | `OutsideMode.Value == Outside.Clamp` (no wire signal)  | partial `_FOV` (full-sphere `(TAU, PI)` keeps default) |
 /// | `CUBEMAP_LOD`     | cubemap target + `CubemapLOD.Value.HasValue`           | `_MainCube`/`_SecondCube` texture + `_CubeLOD`        |
 /// | `CUBEMAP`         | cubemap target + no LOD                                | `_MainCube`/`_SecondCube` texture, no `_CubeLOD`      |
-/// | `SECOND_TEXTURE`  | `SecondaryTexture/Cubemap` set or `TextureLerp != 0`   | `_SecondTex`/`_SecondCube` texture                    |
+/// | `SECOND_TEXTURE`  | `SecondaryTexture/Cubemap` set and `TextureLerp != 0`  | `_SecondTex`/`_SecondCube` texture                    |
 /// | `_OFFSET`         | `OffsetTexture.Asset != null`                          | `_OffsetTex` texture                                  |
-/// | `_CLAMP_INTENSITY`| `MaxIntensity.HasValue || HDR texture`                 | `_MaxIntensity` written (only sent when enabled)      |
+/// | `_CLAMP_INTENSITY`| `MaxIntensity.HasValue`                                | `_MaxIntensity` written (only sent when enabled)      |
 /// | `TINT_TEX_LERP`   | `TintTexture` + `TintTextureMode == Lerp`              | `_TintTex` texture + `_Tint0` written (Lerp-only send)|
 /// | `TINT_TEX_DIRECT` | `TintTexture` + `TintTextureMode == Direct`            | `_TintTex` texture, no `_Tint0`                       |
 ///
@@ -631,7 +631,7 @@ fn projection360_keyword_inferred(
         "_PERSPECTIVE" => uniform_written("_PerspectiveFOV"),
         "CUBEMAP_LOD" => cubemap_present && cube_lod_written,
         "CUBEMAP" => cubemap_present && !cube_lod_written,
-        "SECOND_TEXTURE" => secondary_texture_present || texture_lerp_nonzero,
+        "SECOND_TEXTURE" => secondary_texture_present && texture_lerp_nonzero,
         "_OFFSET" => texture_property_present_pids(store, lookup, &[kw.offset_tex]),
         "_CLAMP_INTENSITY" => uniform_written("_MaxIntensity"),
         "TINT_TEX_LERP" => tint_tex_present && tint0_written,

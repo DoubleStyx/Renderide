@@ -255,7 +255,7 @@ fn projection360_cubemap_with_cube_lod_enables_cubemap_lod_keyword() {
     );
 }
 
-/// Secondary 2D texture bound on `_SecondTex` enables `SECOND_TEXTURE`.
+/// Secondary 2D texture bound on `_SecondTex` and `TextureLerp != 0` enables `SECOND_TEXTURE`.
 #[test]
 fn projection360_secondary_texture_enables_second_texture_keyword() {
     let mut store = MaterialPropertyStore::new();
@@ -270,28 +270,13 @@ fn projection360_secondary_texture_enables_second_texture_keyword() {
             crate::assets::texture::HostTextureAssetKind::Texture2D,
         )),
     );
-    assert_eq!(
-        inferred_keyword_float_f32("SECOND_TEXTURE", &store, lookup(44), &ids),
-        Some(1.0)
-    );
-}
-
-/// `TextureLerp != 0` on its own enables `SECOND_TEXTURE` (mirrors the host's
-/// `state2 = ... || TextureLerp.Value != 0f` predicate). Even without a secondary
-/// asset, the host turns on the keyword so the shader's lerp branch runs.
-#[test]
-fn projection360_nonzero_texture_lerp_enables_second_texture_keyword() {
-    let mut store = MaterialPropertyStore::new();
-    let reg = PropertyIdRegistry::new();
-    let ids = projection360_ids(&reg);
-    set_full_sphere_fov(&mut store, &reg, 45);
     store.set_material(
-        45,
+        44,
         reg.intern("_TextureLerp"),
         MaterialPropertyValue::Float(0.5),
     );
     assert_eq!(
-        inferred_keyword_float_f32("SECOND_TEXTURE", &store, lookup(45), &ids),
+        inferred_keyword_float_f32("SECOND_TEXTURE", &store, lookup(44), &ids),
         Some(1.0)
     );
 }
@@ -317,7 +302,7 @@ fn projection360_offset_texture_enables_offset_keyword() {
     );
 }
 
-/// `_MaxIntensity` is sent only when `MaxIntensity.HasValue || HDR texture` -- its
+/// `_MaxIntensity` is sent only when `MaxIntensity.HasValue` -- its
 /// presence drives `_CLAMP_INTENSITY`.
 #[test]
 fn projection360_max_intensity_present_enables_clamp_intensity_keyword() {
