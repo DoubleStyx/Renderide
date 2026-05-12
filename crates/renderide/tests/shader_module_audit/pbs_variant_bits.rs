@@ -449,8 +449,8 @@ fn pbsslice_decodes_keywords_from_variant_bits() -> io::Result<()> {
             ("PBSSLICE_KW_EMISSIONTEX", 4),
             ("PBSSLICE_KW_METALLICMAP", 5),
             ("PBSSLICE_KW_NORMALMAP", 6),
-            ("PBSSLICE_KW_OBJECT_SPACE", 7),
-            ("PBSSLICE_KW_OCCLUSION", 8),
+            ("PBSSLICE_KW_OCCLUSION", 7),
+            ("PBSSLICE_KW_OBJECT_SPACE", 8),
             ("PBSSLICE_KW_WORLD_SPACE", 9),
         ],
     )
@@ -481,8 +481,8 @@ fn pbsslicespecular_decodes_keywords_from_variant_bits() -> io::Result<()> {
             ("PBSSLICESPECULAR_KW_EMISSIONTEX", 4),
             ("PBSSLICESPECULAR_KW_METALLICMAP", 5),
             ("PBSSLICESPECULAR_KW_NORMALMAP", 6),
-            ("PBSSLICESPECULAR_KW_OBJECT_SPACE", 7),
-            ("PBSSLICESPECULAR_KW_OCCLUSION", 8),
+            ("PBSSLICESPECULAR_KW_OCCLUSION", 7),
+            ("PBSSLICESPECULAR_KW_OBJECT_SPACE", 8),
             ("PBSSLICESPECULAR_KW_WORLD_SPACE", 9),
         ],
     )
@@ -510,8 +510,8 @@ fn pbsslicetransparent_decodes_keywords_from_variant_bits() -> io::Result<()> {
             ("PBSSLICETRANSPARENT_KW_EMISSIONTEX", 3),
             ("PBSSLICETRANSPARENT_KW_METALLICMAP", 4),
             ("PBSSLICETRANSPARENT_KW_NORMALMAP", 5),
-            ("PBSSLICETRANSPARENT_KW_OBJECT_SPACE", 6),
-            ("PBSSLICETRANSPARENT_KW_OCCLUSION", 7),
+            ("PBSSLICETRANSPARENT_KW_OCCLUSION", 6),
+            ("PBSSLICETRANSPARENT_KW_OBJECT_SPACE", 7),
             ("PBSSLICETRANSPARENT_KW_WORLD_SPACE", 8),
         ],
     )
@@ -540,8 +540,8 @@ fn pbsslicetransparentspecular_decodes_keywords_from_variant_bits() -> io::Resul
             ("PBSSLICETRANSPARENTSPECULAR_KW_EMISSIONTEX", 3),
             ("PBSSLICETRANSPARENTSPECULAR_KW_METALLICMAP", 4),
             ("PBSSLICETRANSPARENTSPECULAR_KW_NORMALMAP", 5),
-            ("PBSSLICETRANSPARENTSPECULAR_KW_OBJECT_SPACE", 6),
-            ("PBSSLICETRANSPARENTSPECULAR_KW_OCCLUSION", 7),
+            ("PBSSLICETRANSPARENTSPECULAR_KW_OCCLUSION", 6),
+            ("PBSSLICETRANSPARENTSPECULAR_KW_OBJECT_SPACE", 7),
             ("PBSSLICETRANSPARENTSPECULAR_KW_WORLD_SPACE", 8),
         ],
     )
@@ -566,6 +566,7 @@ fn pbsspecular_decodes_keywords_from_variant_bits() -> io::Result<()> {
             "_SPECULARHIGHLIGHTS_OFF",
         ],
         &[
+            ("PBSSPECULAR_KW_ALPHABLEND_ON", 0),
             ("PBSSPECULAR_KW_ALPHAPREMULTIPLY_ON", 1),
             ("PBSSPECULAR_KW_ALPHATEST_ON", 2),
             ("PBSSPECULAR_KW_DETAIL_MULX2", 3),
