@@ -34,7 +34,7 @@ Prerequisites: a Vulkan-, Metal-, or DirectX 12-capable GPU and a Steam installa
 1. Run the bootstrapper:
 
    ```bash
-   ./target/release/bootstrapper
+   ./target/release/renderide
    ```
 
 The bootstrapper will launch the Resonite host and connect Renderide automatically.
