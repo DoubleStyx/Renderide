@@ -138,7 +138,6 @@ impl WindowInputAccumulator {
 
     /// Sets [`Self::window_position`] from **logical** coordinates and updates [`Self::last_cursor_pixel`]
     /// to the corresponding physical point (for drag/drop parity).
-    #[cfg(not(target_os = "macos"))]
     pub fn set_window_position_from_logical(&mut self, logical: Vec2, scale_factor: f64) {
         self.window_position = logical;
         let logical_pos = LogicalPosition::new(f64::from(logical.x), f64::from(logical.y));
@@ -293,7 +292,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
     fn set_window_position_from_logical_updates_physical_pixel() {
         let mut w = WindowInputAccumulator::default();
         w.set_window_position_from_logical(Vec2::new(100.0, 200.0), 2.0);

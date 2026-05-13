@@ -176,6 +176,7 @@ impl AppDriver {
                 target.window().as_ref(),
                 &mut self.input,
                 lock_pos,
+                &self.cursor_output_tracking,
             ) {
                 logger::trace!("apply_per_frame_cursor_lock_when_locked: {error:?}");
             }
