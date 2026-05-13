@@ -43,6 +43,8 @@ The bootstrapper will launch the Resonite host and connect Renderide automatical
 
 - Inspect logs in the `logs/` folder for panics, crashes, backtraces, and validation errors.
 
+- You can add Steam-style launch arguments after the bootstrapper to enable mods: `<path-to-bootstrapper> -LoadAssembly Libraries/ResoniteModLoader.dll` 
+
 ## Design goals
 
 - **Cross-platform parity** - Linux, macOS, and Windows are all first-class. Mobile is a future direction; portability constraints are respected today.
