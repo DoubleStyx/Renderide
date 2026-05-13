@@ -151,9 +151,8 @@ pub(crate) fn default_2d_texture_color_for_host(host_name: &str) -> DefaultTextu
     let host_name = shader_writer_unescaped_property_name(host_name);
     match host_name {
         "_MetallicMap" | "_MetallicMap1" | "_MetallicMap2" | "_MetallicMap3"
-        | "_MetallicGloss01" | "_MetallicGloss23" | "_PackedNormalMap01" | "_PackedNormalMap23" => {
-            DefaultTextureColor::Black
-        }
+        | "_MetallicGloss01" | "_MetallicGloss23" | "_PackedNormalMap01" | "_PackedNormalMap23"
+        | "_SecondTex" | "_SecondCube" | "" => DefaultTextureColor::Black,
         "_BumpMap" | "_NormalMap" | "_NormalMap0" | "_NormalMap1" | "_DetailNormalMap" => {
             DefaultTextureColor::FlatNormal
         }
@@ -384,6 +383,18 @@ mod tests {
             "_PackedNormalMap23",
             "_PackedNormalMap01X_naga_oil_mod_XOJSW4ZDFOJUWIZJ2HJ4GSZLYMU5DU5DPN5XDEX",
         ] {
+            assert_eq!(
+                default_2d_texture_color_for_host(host_name),
+                DefaultTextureColor::Black,
+                "{host_name} should bind the black placeholder"
+            );
+        }
+    }
+
+    #[test]
+    fn projection_secondary_maps_use_black_default_texture() {
+        // https://github.com/Yellow-Dog-Man/Resonite.UnityShaders/blob/main/Assets/Shaders/Common/Projection360.shader#L10
+        for host_name in ["_SecondTex", "_SecondCube"] {
             assert_eq!(
                 default_2d_texture_color_for_host(host_name),
                 DefaultTextureColor::Black,
