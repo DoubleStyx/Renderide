@@ -23,6 +23,7 @@ const _: fn() = || {
 
 use super::limits::{GpuLimits, GpuLimitsError};
 use super::submission_state::GpuSubmissionState;
+use super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use mapped_buffer_recovery::MappedBufferRecoveryFrame;
 use thiserror::Error;
 use winit::window::Window;
@@ -168,6 +169,11 @@ impl GpuContext {
     pub(crate) fn mark_mapped_buffers_invalid(&self, reason: impl AsRef<str>) {
         self.mapped_buffer_recovery
             .mark_mapped_buffers_invalid(reason);
+    }
+
+    /// Shared mapped-buffer invalidation generation used by async GPU owners.
+    pub(crate) fn mapped_buffer_health(&self) -> Arc<GpuMappedBufferHealth> {
+        self.mapped_buffer_recovery.health()
     }
 
     /// Begins mapped-buffer recovery bookkeeping for a render frame.

@@ -51,6 +51,11 @@ impl GpuMappedBufferRecovery {
         self.health.mark_invalid(reason);
     }
 
+    /// Shared mapped-buffer invalidation generation for GPU owners outside [`GpuContext`].
+    pub(crate) fn health(&self) -> Arc<GpuMappedBufferHealth> {
+        Arc::clone(&self.health)
+    }
+
     /// Begins mapped-buffer recovery bookkeeping for a render frame.
     pub(crate) fn begin_mapped_buffer_recovery_frame(&mut self) -> MappedBufferRecoveryFrame {
         let generation = self.health.generation();

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
-use crate::gpu::GpuLimits;
+use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::mesh_deform::{
     BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES, blendshape_sparse_buffers_fit_device,
 };
@@ -30,6 +30,9 @@ type ExtendedVertexStreams = (
     Option<Arc<wgpu::Buffer>>,
     Option<Arc<wgpu::Buffer>>,
 );
+
+/// Pair of optional derived vertex buffers.
+type OptionalBufferPair = (Option<Arc<wgpu::Buffer>>, Option<Arc<wgpu::Buffer>>);
 
 /// CPU-side mesh source required to build lazy tangent and UV1-UV3 vertex streams.
 pub(super) struct ExtendedVertexUploadSource<'a> {
@@ -88,6 +91,21 @@ pub(super) struct CoreBuffers {
     pub vertex_stride: u32,
     pub vertex_stride_us: usize,
     pub index_count_u32: u32,
+}
+
+/// GPU handles and mapped-buffer generation captured for one mesh upload.
+#[derive(Clone, Copy)]
+pub(crate) struct MeshGpuUploadContext<'a> {
+    /// Logical device used to create mesh buffers.
+    pub device: &'a wgpu::Device,
+    /// Queue used to initialize mesh buffers without mapped-at-creation writes.
+    pub queue: &'a wgpu::Queue,
+    /// Effective device limits used for upload validation.
+    pub gpu_limits: &'a GpuLimits,
+    /// Shared mapped-buffer invalidation generation from the active GPU context.
+    pub mapped_buffer_health: &'a GpuMappedBufferHealth,
+    /// Invalidation generation captured before the upload began.
+    pub mapped_buffer_generation: u64,
 }
 
 /// Aggregated bone/skin GPU state and skinning matrices.
@@ -182,41 +200,70 @@ pub(super) fn validate_mesh_upload_layout(
     true
 }
 
+fn queue_init_buffer_size(contents_len: usize) -> wgpu::BufferAddress {
+    let unpadded_size = contents_len as wgpu::BufferAddress;
+    if unpadded_size == 0 {
+        return 0;
+    }
+
+    let align_mask = wgpu::COPY_BUFFER_ALIGNMENT - 1;
+    ((unpadded_size + align_mask) & !align_mask).max(wgpu::COPY_BUFFER_ALIGNMENT)
+}
+
+fn mapped_buffer_generation_still_current(
+    health: &GpuMappedBufferHealth,
+    expected_generation: u64,
+) -> bool {
+    health.generation() == expected_generation
+}
+
+fn reject_if_mapped_buffer_generation_changed(
+    health: &GpuMappedBufferHealth,
+    expected_generation: u64,
+    label: Option<&str>,
+) -> bool {
+    if mapped_buffer_generation_still_current(health, expected_generation) {
+        return false;
+    }
+    let current_generation = health.generation();
+    logger::debug!(
+        "mesh upload: buffer {:?} rejected after mapped-buffer invalidation generation changed (expected={}, current={})",
+        label,
+        expected_generation,
+        current_generation
+    );
+    true
+}
+
 /// Creates a buffer with initial contents while capturing validation errors.
 ///
-/// Mirrors [`wgpu::util::DeviceExt::create_buffer_init`] but pops a validation
-/// error scope between [`wgpu::Device::create_buffer`] and
-/// [`wgpu::Buffer::get_mapped_range_mut`] so an invalid `Buffer` cannot reach
-/// the mapped-range write, which panics fatally when the buffer is invalid.
+/// This intentionally avoids [`wgpu::util::DeviceExt::create_buffer_init`]'s
+/// mapped-at-creation path. Device-loss and surface-validation failures can leave
+/// new buffers invalid, and asking wgpu for a mapped range on that invalid buffer
+/// is fatal. Queue-backed initialization lets validation stay inside error scopes
+/// and lets the caller reject work when the shared invalidation generation changes.
 ///
 /// Returns [`None`] when buffer creation failed validation; the helper logs the
 /// underlying wgpu error with label, content size, and usage flags.
 fn try_create_buffer_init(
-    device: &wgpu::Device,
+    ctx: MeshGpuUploadContext<'_>,
     desc: &wgpu::util::BufferInitDescriptor<'_>,
 ) -> Option<wgpu::Buffer> {
-    let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    if reject_if_mapped_buffer_generation_changed(
+        ctx.mapped_buffer_health,
+        ctx.mapped_buffer_generation,
+        desc.label,
+    ) {
+        return None;
+    }
 
-    let unpadded_size = desc.contents.len() as wgpu::BufferAddress;
-    let buffer = if unpadded_size == 0 {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: desc.label,
-            size: 0,
-            usage: desc.usage,
-            mapped_at_creation: false,
-        })
-    } else {
-        let align_mask = wgpu::COPY_BUFFER_ALIGNMENT - 1;
-        let padded_size =
-            ((unpadded_size + align_mask) & !align_mask).max(wgpu::COPY_BUFFER_ALIGNMENT);
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: desc.label,
-            size: padded_size,
-            usage: desc.usage,
-            mapped_at_creation: true,
-        })
-    };
-
+    let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: desc.label,
+        size: queue_init_buffer_size(desc.contents.len()),
+        usage: desc.usage,
+        mapped_at_creation: false,
+    });
     if let Some(err) = pollster::block_on(error_scope.pop()) {
         logger::error!(
             "mesh upload: buffer create failed for {:?} ({} B, usage {:?}): {}",
@@ -228,15 +275,38 @@ fn try_create_buffer_init(
         return None;
     }
 
-    if unpadded_size != 0 {
-        buffer
-            .get_mapped_range_mut(..)
-            .slice(..unpadded_size as usize)
-            .copy_from_slice(desc.contents);
-        buffer.unmap();
+    if reject_if_mapped_buffer_generation_changed(
+        ctx.mapped_buffer_health,
+        ctx.mapped_buffer_generation,
+        desc.label,
+    ) {
+        return None;
     }
 
-    Some(buffer)
+    if !desc.contents.is_empty() {
+        let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        ctx.queue.write_buffer(&buffer, 0, desc.contents);
+        if let Some(err) = pollster::block_on(error_scope.pop()) {
+            logger::error!(
+                "mesh upload: queue write failed for {:?} ({} B, usage {:?}): {}",
+                desc.label,
+                desc.contents.len(),
+                desc.usage,
+                err,
+            );
+            return None;
+        }
+    }
+
+    if reject_if_mapped_buffer_generation_changed(
+        ctx.mapped_buffer_health,
+        ctx.mapped_buffer_generation,
+        desc.label,
+    ) {
+        None
+    } else {
+        Some(buffer)
+    }
 }
 
 /// Creates core vertex and index buffers from the layout-validated `raw` slice.
@@ -244,7 +314,7 @@ fn try_create_buffer_init(
 /// Returns [`None`] when either buffer fails wgpu validation; the caller must
 /// abort the mesh upload in that case.
 pub(super) fn create_core_vertex_index_buffers(
-    device: &wgpu::Device,
+    ctx: MeshGpuUploadContext<'_>,
     raw: &[u8],
     data: &MeshUploadData,
     layout: &MeshBufferLayout,
@@ -256,7 +326,7 @@ pub(super) fn create_core_vertex_index_buffers(
     let index_count_u32 = index_count.max(0) as u32;
 
     let vb = try_create_buffer_init(
-        device,
+        ctx,
         &wgpu::util::BufferInitDescriptor {
             label: Some(&format!("mesh {} vertices", data.asset_id)),
             contents: &raw[..layout.vertex_size],
@@ -268,7 +338,7 @@ pub(super) fn create_core_vertex_index_buffers(
     let ib_slice =
         &raw[layout.index_buffer_start..layout.index_buffer_start + layout.index_buffer_length];
     let ib = try_create_buffer_init(
-        device,
+        ctx,
         &wgpu::util::BufferInitDescriptor {
             label: Some(&format!("mesh {} indices", data.asset_id)),
             contents: ib_slice,
@@ -290,12 +360,12 @@ pub(super) fn create_core_vertex_index_buffers(
 }
 
 fn upload_positions_normals(
-    device: &wgpu::Device,
+    ctx: MeshGpuUploadContext<'_>,
     data: &MeshUploadData,
     vertex_slice: &[u8],
     vc_usize: usize,
     vertex_stride_us: usize,
-) -> (Option<Arc<wgpu::Buffer>>, Option<Arc<wgpu::Buffer>>) {
+) -> Option<OptionalBufferPair> {
     if let Some((pb, nb)) = extract_float3_position_normal_as_vec4_streams(
         vertex_slice,
         vc_usize,
@@ -306,70 +376,82 @@ fn upload_positions_normals(
             | wgpu::BufferUsages::VERTEX
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC;
-        let pbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("mesh {} positions_stream", data.asset_id)),
-            contents: &pb,
-            usage,
-        });
+        let pbuf = try_create_buffer_init(
+            ctx,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("mesh {} positions_stream", data.asset_id)),
+                contents: &pb,
+                usage,
+            },
+        )?;
         crate::profiling::note_resource_churn!(Buffer, "assets::mesh_positions_stream");
-        let nbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("mesh {} normals_stream", data.asset_id)),
-            contents: &nb,
-            usage,
-        });
+        let nbuf = try_create_buffer_init(
+            ctx,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("mesh {} normals_stream", data.asset_id)),
+                contents: &nb,
+                usage,
+            },
+        )?;
         crate::profiling::note_resource_churn!(Buffer, "assets::mesh_normals_stream");
-        (Some(Arc::new(pbuf)), Some(Arc::new(nbuf)))
+        Some((Some(Arc::new(pbuf)), Some(Arc::new(nbuf))))
     } else {
         logger::warn!(
             "mesh {}: missing float3 position+normal attributes -- debug/deform path disabled",
             data.asset_id
         );
-        (None, None)
+        Some((None, None))
     }
 }
 
 fn upload_uv0_color(
-    device: &wgpu::Device,
+    ctx: MeshGpuUploadContext<'_>,
     data: &MeshUploadData,
     vertex_slice: &[u8],
     vc_usize: usize,
     vertex_stride_us: usize,
-) -> (Option<Arc<wgpu::Buffer>>, Option<Arc<wgpu::Buffer>>) {
-    let uv0_buffer = uv0_float2_stream_bytes(
+) -> Option<OptionalBufferPair> {
+    let uv0_buffer = match uv0_float2_stream_bytes(
         vertex_slice,
         vc_usize,
         vertex_stride_us,
         &data.vertex_attributes,
-    )
-    .map(|uv_bytes| {
-        let buffer = Arc::new(
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("mesh {} uv0_stream", data.asset_id)),
-                contents: &uv_bytes,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            }),
-        );
-        crate::profiling::note_resource_churn!(Buffer, "assets::mesh_uv0_stream");
-        buffer
-    });
-    let color_buffer = color_float4_stream_bytes(
+    ) {
+        Some(uv_bytes) => {
+            let buffer = Arc::new(try_create_buffer_init(
+                ctx,
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("mesh {} uv0_stream", data.asset_id)),
+                    contents: &uv_bytes,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                },
+            )?);
+            crate::profiling::note_resource_churn!(Buffer, "assets::mesh_uv0_stream");
+            Some(buffer)
+        }
+        None => None,
+    };
+    let color_buffer = match color_float4_stream_bytes(
         vertex_slice,
         vc_usize,
         vertex_stride_us,
         &data.vertex_attributes,
-    )
-    .map(|color_bytes| {
-        let buffer = Arc::new(
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("mesh {} color_stream", data.asset_id)),
-                contents: &color_bytes,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            }),
-        );
-        crate::profiling::note_resource_churn!(Buffer, "assets::mesh_color_stream");
-        buffer
-    });
-    (uv0_buffer, color_buffer)
+    ) {
+        Some(color_bytes) => {
+            let buffer = Arc::new(try_create_buffer_init(
+                ctx,
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("mesh {} color_stream", data.asset_id)),
+                    contents: &color_bytes,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                },
+            )?);
+            crate::profiling::note_resource_churn!(Buffer, "assets::mesh_color_stream");
+            Some(buffer)
+        }
+        None => None,
+    };
+    Some((uv0_buffer, color_buffer))
 }
 
 fn float4_default_stream_bytes(vertex_count: usize, default: [f32; 4]) -> Vec<u8> {
@@ -571,21 +653,21 @@ pub(super) fn upload_default_extended_vertex_streams(
 
 /// Builds optional position/normal streams plus UV0 and vertex color buffers.
 pub(super) fn extract_derived_vertex_streams(
-    device: &wgpu::Device,
+    ctx: MeshGpuUploadContext<'_>,
     raw: &[u8],
     data: &MeshUploadData,
     layout: &MeshBufferLayout,
     core: &CoreBuffers,
-) -> DerivedStreams {
+) -> Option<DerivedStreams> {
     profiling::scope!("asset::mesh_extract_derived_streams");
     let vc_usize = data.vertex_count.max(0) as usize;
     let vertex_slice = &raw[..layout.vertex_size];
     let (positions_buffer, normals_buffer) =
-        upload_positions_normals(device, data, vertex_slice, vc_usize, core.vertex_stride_us);
+        upload_positions_normals(ctx, data, vertex_slice, vc_usize, core.vertex_stride_us)?;
     let (uv0_buffer, color_buffer) =
-        upload_uv0_color(device, data, vertex_slice, vc_usize, core.vertex_stride_us);
+        upload_uv0_color(ctx, data, vertex_slice, vc_usize, core.vertex_stride_us)?;
     //perf xlinka: tangent/UV1-3 are big; build them only if a shader actually asks for them.
-    DerivedStreams {
+    Some(DerivedStreams {
         positions_buffer,
         normals_buffer,
         uv0_buffer,
@@ -594,11 +676,11 @@ pub(super) fn extract_derived_vertex_streams(
         uv1_buffer: None,
         uv2_buffer: None,
         uv3_buffer: None,
-    }
+    })
 }
 
 fn upload_skeleton_bone_buffers(
-    device: &wgpu::Device,
+    ctx: MeshGpuUploadContext<'_>,
     raw: &[u8],
     data: &MeshUploadData,
     layout: &MeshBufferLayout,
@@ -621,17 +703,23 @@ fn upload_skeleton_bone_buffers(
         &raw[layout.bone_weights_start..layout.bone_weights_start + layout.bone_weights_length];
     let (bi_buf, bw_buf) = if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(bc, bw, vc_usize)
     {
-        let bi = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("mesh {} bone_indices", data.asset_id)),
-            contents: &ib,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let bi = try_create_buffer_init(
+            ctx,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("mesh {} bone_indices", data.asset_id)),
+                contents: &ib,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            },
+        )?;
         crate::profiling::note_resource_churn!(Buffer, "assets::mesh_bone_indices");
-        let bwt = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("mesh {} bone_weights_vec4", data.asset_id)),
-            contents: &wb,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let bwt = try_create_buffer_init(
+            ctx,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("mesh {} bone_weights_vec4", data.asset_id)),
+                contents: &wb,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            },
+        )?;
         crate::profiling::note_resource_churn!(Buffer, "assets::mesh_bone_weights_vec4");
         (Some(Arc::new(bi)), Some(Arc::new(bwt)))
     } else {
@@ -642,17 +730,23 @@ fn upload_skeleton_bone_buffers(
         (None, None)
     };
 
-    let bc_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(&format!("mesh {} bone_counts", data.asset_id)),
-        contents: bc,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
+    let bc_buf = try_create_buffer_init(
+        ctx,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("mesh {} bone_counts", data.asset_id)),
+            contents: bc,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        },
+    )?;
     crate::profiling::note_resource_churn!(Buffer, "assets::mesh_bone_counts");
-    let bp_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(&format!("mesh {} bind_poses", data.asset_id)),
-        contents: &bp_bytes,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
+    let bp_buf = try_create_buffer_init(
+        ctx,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("mesh {} bind_poses", data.asset_id)),
+            contents: &bp_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        },
+    )?;
     crate::profiling::note_resource_churn!(Buffer, "assets::mesh_bind_poses");
     Some(BoneSkinUpload {
         bone_counts_buffer: Some(Arc::new(bc_buf)),
@@ -667,7 +761,7 @@ fn upload_skeleton_bone_buffers(
 ///
 /// Returns [`None`] when the real-skeleton bind-pose slice is invalid ([`extract_bind_poses`]).
 pub(super) fn upload_bone_and_skin_buffers(
-    device: &wgpu::Device,
+    ctx: MeshGpuUploadContext<'_>,
     raw: &[u8],
     data: &MeshUploadData,
     layout: &MeshBufferLayout,
@@ -675,7 +769,7 @@ pub(super) fn upload_bone_and_skin_buffers(
 ) -> Option<BoneSkinUpload> {
     profiling::scope!("asset::mesh_upload_bone_skin_buffers");
     if data.bone_count > 0 {
-        upload_skeleton_bone_buffers(device, raw, data, layout, vc_usize)
+        upload_skeleton_bone_buffers(ctx, raw, data, layout, vc_usize)
     } else {
         Some(BoneSkinUpload {
             bone_counts_buffer: None,
@@ -717,17 +811,16 @@ pub(super) fn padded_sparse_bytes(sparse_deltas: &[u8]) -> Vec<u8> {
 
 /// Builds sparse / descriptor GPU buffers (or empty upload when blendshapes are disabled).
 pub(super) fn upload_blendshape_buffer(
-    device: &wgpu::Device,
-    gpu_limits: &GpuLimits,
+    ctx: MeshGpuUploadContext<'_>,
     raw: &[u8],
     data: &MeshUploadData,
     layout: &MeshBufferLayout,
     use_blendshapes: bool,
     max_buf: u64,
-) -> BlendshapeBuffersUpload {
+) -> Option<BlendshapeBuffersUpload> {
     profiling::scope!("asset::mesh_upload_blendshape_buffers");
     if !use_blendshapes {
-        return BlendshapeBuffersUpload {
+        return Some(BlendshapeBuffersUpload {
             sparse_buffer: None,
             frame_ranges: Vec::new(),
             shape_frame_spans: Vec::new(),
@@ -735,12 +828,12 @@ pub(super) fn upload_blendshape_buffer(
             has_position_deltas: false,
             has_normal_deltas: false,
             has_tangent_deltas: false,
-        };
+        });
     }
     let Some(pack) =
         extract_blendshape_offsets(raw, layout, &data.blendshape_buffers, data.vertex_count)
     else {
-        return BlendshapeBuffersUpload {
+        return Some(BlendshapeBuffersUpload {
             sparse_buffer: None,
             frame_ranges: Vec::new(),
             shape_frame_spans: Vec::new(),
@@ -748,20 +841,20 @@ pub(super) fn upload_blendshape_buffer(
             has_position_deltas: false,
             has_normal_deltas: false,
             has_tangent_deltas: false,
-        };
+        });
     };
 
     let n_u32 = pack.num_blendshapes.max(0) as u32;
     if !blendshape_sparse_buffers_fit_device(
         &pack,
         max_buf,
-        gpu_limits.wgpu.max_storage_buffer_binding_size,
+        ctx.gpu_limits.wgpu.max_storage_buffer_binding_size,
     ) {
         logger::warn!(
             "mesh {}: blendshapes dropped (sparse bytes exceed buffer / binding limits)",
             data.asset_id
         );
-        return BlendshapeBuffersUpload {
+        return Some(BlendshapeBuffersUpload {
             sparse_buffer: None,
             frame_ranges: Vec::new(),
             shape_frame_spans: Vec::new(),
@@ -769,7 +862,7 @@ pub(super) fn upload_blendshape_buffer(
             has_position_deltas: false,
             has_normal_deltas: false,
             has_tangent_deltas: false,
-        };
+        });
     }
     if pack.clamped_packed_deltas {
         logger::warn!(
@@ -781,14 +874,17 @@ pub(super) fn upload_blendshape_buffer(
     let sparse_bytes = padded_sparse_bytes(&pack.sparse_deltas);
 
     let sparse_label = format!("mesh {} blendshape_sparse", data.asset_id);
-    let sparse_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(&sparse_label),
-        contents: &sparse_bytes,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
+    let sparse_buf = try_create_buffer_init(
+        ctx,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some(&sparse_label),
+            contents: &sparse_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        },
+    )?;
     crate::profiling::note_resource_churn!(Buffer, "assets::mesh_blendshape_sparse");
 
-    BlendshapeBuffersUpload {
+    Some(BlendshapeBuffersUpload {
         sparse_buffer: Some(Arc::new(sparse_buf)),
         frame_ranges: pack.frame_ranges,
         shape_frame_spans: pack.shape_frame_spans,
@@ -796,7 +892,7 @@ pub(super) fn upload_blendshape_buffer(
         has_position_deltas: pack.has_position_deltas,
         has_normal_deltas: pack.has_normal_deltas,
         has_tangent_deltas: pack.has_tangent_deltas,
-    }
+    })
 }
 
 pub(super) fn sum_optional_buffer_bytes(buffers: &[Option<&Arc<wgpu::Buffer>>]) -> u64 {
@@ -837,7 +933,38 @@ pub(super) fn resident_bytes_for_mesh_upload(
 
 #[cfg(test)]
 mod tests {
-    use super::{tangent_stream_usage, vertex_stream_usage};
+    use crate::gpu::GpuMappedBufferHealth;
+
+    use super::{
+        mapped_buffer_generation_still_current, queue_init_buffer_size, tangent_stream_usage,
+        vertex_stream_usage,
+    };
+
+    #[test]
+    fn queue_init_buffer_size_matches_wgpu_copy_alignment() {
+        assert_eq!(queue_init_buffer_size(0), 0);
+        assert_eq!(queue_init_buffer_size(1), wgpu::COPY_BUFFER_ALIGNMENT);
+        assert_eq!(
+            queue_init_buffer_size(wgpu::COPY_BUFFER_ALIGNMENT as usize),
+            wgpu::COPY_BUFFER_ALIGNMENT
+        );
+        assert_eq!(
+            queue_init_buffer_size(wgpu::COPY_BUFFER_ALIGNMENT as usize + 1),
+            wgpu::COPY_BUFFER_ALIGNMENT * 2
+        );
+    }
+
+    #[test]
+    fn mapped_buffer_generation_check_rejects_stale_uploads() {
+        let health = GpuMappedBufferHealth::new();
+        let generation = health.generation();
+
+        assert!(mapped_buffer_generation_still_current(&health, generation));
+
+        health.mark_invalid("test invalidation");
+
+        assert!(!mapped_buffer_generation_still_current(&health, generation));
+    }
 
     #[test]
     fn tangent_streams_can_feed_deform_compute_and_forward_draws() {

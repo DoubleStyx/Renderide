@@ -83,6 +83,10 @@ mod tests {
             "Validation Error",
             "In Buffer::map_async Buffer with 'frame_bracket_readback' label is invalid",
         ));
+        assert!(validation_mentions_mapped_buffer_invalidation(
+            "Validation Error",
+            "In Buffer::get_mapped_range Buffer with 'mesh 12 vertices' label is invalid",
+        ));
         assert!(!validation_mentions_mapped_buffer_invalidation(
             "Validation Error",
             "Texture view format mismatch",

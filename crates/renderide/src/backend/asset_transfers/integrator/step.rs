@@ -9,6 +9,7 @@ use crate::shared::{
 
 use super::super::AssetTransferQueue;
 use super::super::cubemap_task::CubemapUploadTask;
+use super::super::mesh_task::MeshTaskGpu;
 use super::super::mesh_task::MeshUploadTask;
 use super::super::texture_task::TextureUploadTask;
 use super::super::texture_task_common::TextureTaskGpu;
@@ -212,7 +213,17 @@ fn step_mesh_upload_task(
     let Some(gpu) = gpu else {
         return StepResult::YieldBackground;
     };
-    task.step(asset, gpu.device, gpu.gpu_limits, gpu.queue, shm, ipc)
+    task.step(
+        asset,
+        MeshTaskGpu {
+            device: gpu.device,
+            gpu_limits: gpu.gpu_limits,
+            queue: gpu.queue,
+            mapped_buffer_health: gpu.mapped_buffer_health,
+        },
+        shm,
+        ipc,
+    )
 }
 
 fn step_texture_upload_task(

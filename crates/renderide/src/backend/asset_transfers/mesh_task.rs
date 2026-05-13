@@ -3,15 +3,27 @@
 use std::sync::Arc;
 
 use crate::assets::mesh::{
-    GpuMesh, compute_and_validate_mesh_layout, mesh_upload_input_fingerprint,
+    GpuMesh, MeshGpuUploadContext, compute_and_validate_mesh_layout, mesh_upload_input_fingerprint,
     try_upload_mesh_from_raw,
 };
-use crate::gpu::GpuLimits;
+use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{MeshUploadData, MeshUploadResult, RendererCommand};
 
 use super::AssetTransferQueue;
 use super::integrator::StepResult;
+
+/// GPU handles needed by a mesh upload task.
+pub(super) struct MeshTaskGpu<'a> {
+    /// Logical device for mesh resource creation.
+    pub(super) device: &'a Arc<wgpu::Device>,
+    /// Effective GPU limits used by mesh upload validation.
+    pub(super) gpu_limits: &'a Arc<GpuLimits>,
+    /// Queue used for buffer writes.
+    pub(super) queue: &'a Arc<wgpu::Queue>,
+    /// Shared mapped-buffer invalidation generation from the active GPU context.
+    pub(super) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
+}
 
 /// Completes a host mesh upload that carries no geometry payload.
 pub(super) fn complete_empty_mesh_upload(
@@ -83,18 +95,16 @@ impl MeshUploadTask {
     }
 
     /// Runs at most one stage (layout, then GPU upload).
-    pub fn step(
+    pub(super) fn step(
         &mut self,
         queue: &mut AssetTransferQueue,
-        device: &Arc<wgpu::Device>,
-        gpu_limits: &Arc<GpuLimits>,
-        gpu_queue: &Arc<wgpu::Queue>,
+        gpu: MeshTaskGpu<'_>,
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         let asset_id = self.data.asset_id;
         if matches!(self.stage, MeshStage::PendingLayout) {
-            return self.start_pending_layout(queue, device, gpu_limits, gpu_queue, shm, ipc);
+            return self.start_pending_layout(queue, gpu, shm, ipc);
         }
         if let MeshStage::Decoding { rx } = &mut self.stage {
             return Self::poll_background_upload(asset_id, rx, queue, ipc);
@@ -106,16 +116,14 @@ impl MeshUploadTask {
     fn start_pending_layout(
         &mut self,
         queue: &mut AssetTransferQueue,
-        device: &Arc<wgpu::Device>,
-        gpu_limits: &Arc<GpuLimits>,
-        gpu_queue: &Arc<wgpu::Queue>,
+        gpu: MeshTaskGpu<'_>,
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         profiling::scope!("asset::mesh_pending_layout");
         let asset_id = self.data.asset_id;
         if self.data.buffer.length <= 0 {
-            complete_empty_mesh_upload(queue, &self.data, Some(device.as_ref()), ipc);
+            complete_empty_mesh_upload(queue, &self.data, Some(gpu.device.as_ref()), ipc);
             return StepResult::Done;
         }
         let Some(layout) = self.resolve_layout(queue) else {
@@ -145,20 +153,42 @@ impl MeshUploadTask {
         };
 
         let (tx, rx) = crossbeam_channel::bounded(1);
-        let device_clone = Arc::clone(device);
-        let gpu_limits_clone = Arc::clone(gpu_limits);
-        let gpu_queue_clone = Arc::clone(gpu_queue);
+        let device_clone = Arc::clone(gpu.device);
+        let gpu_limits_clone = Arc::clone(gpu.gpu_limits);
+        let gpu_queue_clone = Arc::clone(gpu.queue);
+        let mapped_buffer_health_clone = Arc::clone(gpu.mapped_buffer_health);
+        let mapped_buffer_generation = mapped_buffer_health_clone.generation();
         rayon::spawn(move || {
             profiling::scope!("asset::mesh_upload_background");
+            if mapped_buffer_health_clone.generation() != mapped_buffer_generation {
+                logger::debug!(
+                    "mesh {}: background upload skipped after mapped-buffer invalidation generation changed before GPU writes",
+                    data.asset_id
+                );
+                let _ = tx.send(None);
+                return;
+            }
             let mesh = try_upload_mesh_from_raw(
-                device_clone.as_ref(),
-                gpu_limits_clone.as_ref(),
-                Some(gpu_queue_clone.as_ref()),
+                MeshGpuUploadContext {
+                    device: device_clone.as_ref(),
+                    queue: gpu_queue_clone.as_ref(),
+                    gpu_limits: gpu_limits_clone.as_ref(),
+                    mapped_buffer_health: mapped_buffer_health_clone.as_ref(),
+                    mapped_buffer_generation,
+                },
                 &raw,
                 &data,
                 existing,
                 &layout,
             );
+            if mapped_buffer_health_clone.generation() != mapped_buffer_generation {
+                logger::debug!(
+                    "mesh {}: background upload rejected after mapped-buffer invalidation generation changed during GPU writes",
+                    data.asset_id
+                );
+                let _ = tx.send(None);
+                return;
+            }
             let _ = tx.send(mesh);
         });
 

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::gpu::{GpuLimits, GpuQueueAccessGate, GpuQueueAccessMode};
+use crate::gpu::{GpuLimits, GpuMappedBufferHealth, GpuQueueAccessGate, GpuQueueAccessMode};
 
 use super::super::AssetTransferQueue;
 
@@ -13,6 +13,7 @@ pub(super) struct GpuHandles {
     gpu_limits: Arc<GpuLimits>,
     queue: Arc<wgpu::Queue>,
     gate: GpuQueueAccessGate,
+    mapped_buffer_health: Arc<GpuMappedBufferHealth>,
 }
 
 impl GpuHandles {
@@ -27,6 +28,7 @@ impl GpuHandles {
             queue: &self.queue,
             gpu_queue_access_gate: &self.gate,
             queue_access_mode,
+            mapped_buffer_health: &self.mapped_buffer_health,
         }
     }
 }
@@ -39,13 +41,17 @@ pub(super) fn collect_gpu_handles(asset: &AssetTransferQueue) -> Option<GpuHandl
         asset.gpu.gpu_limits.clone(),
         asset.gpu.gpu_queue.clone(),
         asset.gpu.gpu_queue_access_gate.clone(),
+        asset.gpu.mapped_buffer_health.clone(),
     ) {
-        (Some(device), Some(gpu_limits), Some(queue), Some(gate)) => Some(GpuHandles {
-            device,
-            gpu_limits,
-            queue,
-            gate,
-        }),
+        (Some(device), Some(gpu_limits), Some(queue), Some(gate), Some(mapped_buffer_health)) => {
+            Some(GpuHandles {
+                device,
+                gpu_limits,
+                queue,
+                gate,
+                mapped_buffer_health,
+            })
+        }
         _ => None,
     }
 }
@@ -63,4 +69,6 @@ pub(super) struct AssetUploadGpuContext<'a> {
     pub(super) gpu_queue_access_gate: &'a GpuQueueAccessGate,
     /// Queue-gate acquisition policy for texture writes in this drain.
     pub(super) queue_access_mode: GpuQueueAccessMode,
+    /// Shared mapped-buffer invalidation generation from the active GPU context.
+    pub(super) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
 }

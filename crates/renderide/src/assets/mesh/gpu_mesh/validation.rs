@@ -1,14 +1,13 @@
 //! Layout validation and [`try_upload_mesh_from_raw`] entry point (uses [`super::GpuMesh`]).
 
-use crate::gpu::GpuLimits;
 use crate::shared::MeshUploadData;
 
 use super::super::layout::{
     MeshBufferLayout, compute_index_count, compute_mesh_buffer_layout, compute_vertex_stride,
     index_bytes_per_element,
 };
-use super::GpuMesh;
 use super::fingerprint::mesh_layout_fingerprint;
+use super::{GpuMesh, upload::MeshGpuUploadContext};
 
 /// Computes [`MeshBufferLayout`] from [`MeshUploadData`] and validates bone region lengths.
 pub fn compute_and_validate_mesh_layout(data: &MeshUploadData) -> Option<MeshBufferLayout> {
@@ -54,13 +53,12 @@ pub fn compute_and_validate_mesh_layout(data: &MeshUploadData) -> Option<MeshBuf
 
 /// Builds layout and uploads; returns [`GpuMesh`] if validation and GPU creation succeed.
 ///
-/// When `queue` and `existing` refer to the resident [`GpuMesh`] for `data.asset_id`, and topology
-/// matches, **reuses** existing `wgpu::Buffer` allocations and uses [`wgpu::Queue::write_buffer`]
-/// instead of allocating new buffers with `create_buffer_init`.
+/// When `existing` refers to the resident [`GpuMesh`] for `data.asset_id`, and topology matches,
+/// **reuses** existing `wgpu::Buffer` allocations and uses [`wgpu::Queue::write_buffer`] instead
+/// of allocating new buffers. Full uploads also use queue-backed initialization so invalid buffers
+/// cannot reach mapped-range writes after device loss.
 pub fn try_upload_mesh_from_raw(
-    device: &wgpu::Device,
-    gpu_limits: &GpuLimits,
-    queue: Option<&wgpu::Queue>,
+    ctx: MeshGpuUploadContext<'_>,
     raw: &[u8],
     data: &MeshUploadData,
     existing: Option<GpuMesh>,
@@ -88,11 +86,26 @@ pub fn try_upload_mesh_from_raw(
     };
     let hint = data.upload_hint.flags;
 
-    if let (Some(queue), Some(existing)) = (queue, existing) {
+    if ctx.mapped_buffer_health.generation() != ctx.mapped_buffer_generation {
+        logger::debug!(
+            "mesh {}: upload skipped after mapped-buffer invalidation generation changed before GPU writes",
+            data.asset_id
+        );
+        return None;
+    }
+
+    if let Some(existing) = existing {
         profiling::scope!("asset::mesh_in_place_compatibility");
         if existing.compatible_for_in_place_update(data, layout, raw) {
             profiling::scope!("asset::mesh_in_place_upload");
-            if let Some(mesh) = existing.write_in_place(queue, raw, data, layout, hint) {
+            if let Some(mesh) = existing.write_in_place(ctx.queue, raw, data, layout, hint) {
+                if ctx.mapped_buffer_health.generation() != ctx.mapped_buffer_generation {
+                    logger::debug!(
+                        "mesh {}: in-place upload rejected after mapped-buffer invalidation generation changed during GPU writes",
+                        data.asset_id
+                    );
+                    return None;
+                }
                 if trace_enabled {
                     logger::trace!(
                         "mesh {}: in-place upload (layout_fp={:#x})",
@@ -112,7 +125,7 @@ pub fn try_upload_mesh_from_raw(
             layout_fp
         );
     }
-    GpuMesh::upload(device, gpu_limits, raw, data, layout)
+    GpuMesh::upload(ctx, raw, data, layout)
 }
 
 #[cfg(test)]

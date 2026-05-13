@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::backend::asset_transfers as asset_uploads;
 use crate::config::{PostProcessingSettings, RendererSettingsHandle};
-use crate::gpu::GpuLimits;
+use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::materials::embedded::EmbeddedMaterialBindError;
 
 use super::super::{FrameGpuBindingsError, RenderBackend};
@@ -37,6 +37,8 @@ pub struct RenderBackendAttachDesc {
     pub gpu_queue_access_gate: crate::gpu::GpuQueueAccessGate,
     /// Capabilities for buffer sizing and MSAA.
     pub gpu_limits: Arc<GpuLimits>,
+    /// Shared mapped-buffer invalidation generation from the active GPU context.
+    pub mapped_buffer_health: Arc<GpuMappedBufferHealth>,
     /// Swapchain / main surface format for HUD and pipelines.
     pub surface_format: wgpu::TextureFormat,
     /// Live renderer settings (HUD, VR budgets, etc.).
@@ -70,6 +72,7 @@ impl RenderBackend {
             queue,
             gpu_queue_access_gate,
             gpu_limits,
+            mapped_buffer_health,
             surface_format,
             renderer_settings,
             config_save_path,
@@ -84,6 +87,7 @@ impl RenderBackend {
             queue.clone(),
             gpu_queue_access_gate,
             Arc::clone(&gpu_limits),
+            mapped_buffer_health,
         );
         self.frame_services
             .attach(device.as_ref(), queue.as_ref(), Arc::clone(&gpu_limits))?;
