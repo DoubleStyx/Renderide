@@ -4,7 +4,10 @@ use glam::{Quat, Vec3};
 
 use crate::shared::Chirality;
 
-use super::pose::{bound_hand_pose_defaults, controller_pose_from_aim, touch_pose_correction};
+use super::pose::{
+    bound_hand_pose_defaults, controller_pose_from_aim, openxr_grip_to_steamvr_raw,
+    touch_pose_correction,
+};
 use super::profile::ActiveControllerProfile;
 
 /// Resolved controller and optional bound-hand pose in tracking space.
@@ -22,75 +25,9 @@ pub(super) struct ControllerFrame {
     pub(super) hand_rotation: Quat,
 }
 
-/// Touch-only: apply the `SteamVRDriver.UpdateController` Touch grip correction, else fall back
-/// to an aim-derived pose.
-fn resolve_touch_controller_frame(
-    side: Chirality,
-    grip_pose: Option<(Vec3, Quat)>,
-    aim_pose: Option<(Vec3, Quat)>,
-    has_bound_hand: bool,
-    hand_position_default: Vec3,
-    hand_rotation_default: Quat,
-) -> Option<ControllerFrame> {
-    if let Some((grip_position, grip_rotation)) = grip_pose {
-        let (position, rotation) = touch_pose_correction(side, grip_position, grip_rotation);
-        Some(ControllerFrame {
-            position,
-            rotation,
-            has_bound_hand,
-            hand_position: hand_position_default,
-            hand_rotation: hand_rotation_default,
-        })
-    } else if let Some((aim_position, aim_rotation)) = aim_pose {
-        let (position, rotation) = controller_pose_from_aim(aim_position, aim_rotation);
-        Some(ControllerFrame {
-            position,
-            rotation,
-            has_bound_hand,
-            hand_position: hand_position_default,
-            hand_rotation: hand_rotation_default,
-        })
-    } else {
-        None
-    }
-}
-
-/// All non-Touch profiles: use the raw grip pose directly (matching `SteamVRDriver`, which
-/// applies no grip correction for Index / Vive / WMR / HP Reverb / Cosmos / Pico / Generic),
-/// else fall back to an aim-derived pose.
-fn resolve_generic_controller_frame(
-    grip_pose: Option<(Vec3, Quat)>,
-    aim_pose: Option<(Vec3, Quat)>,
-    has_bound_hand: bool,
-    hand_position_default: Vec3,
-    hand_rotation_default: Quat,
-) -> Option<ControllerFrame> {
-    if let Some((grip_position, grip_rotation)) = grip_pose {
-        Some(ControllerFrame {
-            position: grip_position,
-            rotation: grip_rotation,
-            has_bound_hand,
-            hand_position: hand_position_default,
-            hand_rotation: hand_rotation_default,
-        })
-    } else if let Some((aim_position, aim_rotation)) = aim_pose {
-        let (position, rotation) = controller_pose_from_aim(aim_position, aim_rotation);
-        Some(ControllerFrame {
-            position,
-            rotation,
-            has_bound_hand,
-            hand_position: hand_position_default,
-            hand_rotation: hand_rotation_default,
-        })
-    } else {
-        None
-    }
-}
-
-/// Per-profile pose resolution. Only Oculus Touch routes through
-/// [`resolve_touch_controller_frame`]; every other profile uses the raw grip pose so the Rust
-/// renderer matches `SteamVRDriver.UpdateController`, which applies no per-device grip correction
-/// outside the Touch path.
+/// Per-profile pose resolution. Grip poses are preferred; aim poses are used only as a fallback.
+/// The selected OpenXR pose is converted to a SteamVR raw-style controller pose before any
+/// host-specific Touch correction is applied.
 pub(super) fn resolve_controller_frame(
     profile: ActiveControllerProfile,
     side: Chirality,
@@ -99,23 +36,23 @@ pub(super) fn resolve_controller_frame(
 ) -> Option<ControllerFrame> {
     let (has_bound_hand, hand_position_default, hand_rotation_default) =
         bound_hand_pose_defaults(profile, side);
-    match profile {
-        ActiveControllerProfile::Touch => resolve_touch_controller_frame(
-            side,
-            grip_pose,
-            aim_pose,
-            has_bound_hand,
-            hand_position_default,
-            hand_rotation_default,
-        ),
-        _ => resolve_generic_controller_frame(
-            grip_pose,
-            aim_pose,
-            has_bound_hand,
-            hand_position_default,
-            hand_rotation_default,
-        ),
-    }
+    let (grip_position, grip_rotation) = grip_pose.or_else(|| {
+        aim_pose.map(|(position, rotation)| controller_pose_from_aim(position, rotation))
+    })?;
+    let (position, rotation) =
+        openxr_grip_to_steamvr_raw(profile, side, grip_position, grip_rotation);
+    let (position, rotation) = match profile {
+        ActiveControllerProfile::Touch => touch_pose_correction(side, position, rotation),
+        _ => (position, rotation),
+    };
+
+    Some(ControllerFrame {
+        position,
+        rotation,
+        has_bound_hand,
+        hand_position: hand_position_default,
+        hand_rotation: hand_rotation_default,
+    })
 }
 
 #[cfg(test)]
@@ -124,7 +61,9 @@ mod tests {
 
     use crate::shared::Chirality;
 
-    use super::super::pose::{controller_pose_from_aim, touch_pose_correction};
+    use super::super::pose::{
+        controller_pose_from_aim, openxr_grip_to_steamvr_raw, touch_pose_correction,
+    };
     use super::super::profile::ActiveControllerProfile;
     use super::resolve_controller_frame;
 
@@ -144,8 +83,17 @@ mod tests {
         );
     }
 
+    fn rotation_delta_angle(a: Quat, b: Quat) -> f32 {
+        2.0 * a
+            .normalize()
+            .dot(b.normalize())
+            .abs()
+            .clamp(-1.0, 1.0)
+            .acos()
+    }
+
     #[test]
-    fn index_uses_grip_directly_with_identity_bound_hand() {
+    fn index_grip_is_raw_pose_corrected_with_identity_bound_hand() {
         let grip_position = Vec3::new(0.2, 1.3, -0.4);
         let grip_rotation = (Quat::from_rotation_y(0.6) * Quat::from_rotation_x(-0.2)).normalize();
         let aim_position = Vec3::new(0.24, 1.34, -0.28);
@@ -159,15 +107,21 @@ mod tests {
         )
         .expect("frame");
 
-        assert_vec3_near(frame.position, grip_position);
-        assert_quat_near(frame.rotation, grip_rotation);
+        let (expected_position, expected_rotation) = openxr_grip_to_steamvr_raw(
+            ActiveControllerProfile::Index,
+            Chirality::Left,
+            grip_position,
+            grip_rotation,
+        );
+        assert_vec3_near(frame.position, expected_position);
+        assert_quat_near(frame.rotation, expected_rotation);
         assert!(frame.has_bound_hand);
         assert_vec3_near(frame.hand_position, Vec3::ZERO);
         assert_quat_near(frame.hand_rotation, Quat::IDENTITY);
     }
 
     #[test]
-    fn index_aim_only_matches_controller_pose_from_aim() {
+    fn index_aim_fallback_is_raw_pose_corrected() {
         let aim_position = Vec3::new(0.24, 1.34, -0.28);
         let aim_rotation = (Quat::from_rotation_y(0.75) * Quat::from_rotation_x(-0.1)).normalize();
         let frame = resolve_controller_frame(
@@ -177,10 +131,16 @@ mod tests {
             Some((aim_position, aim_rotation)),
         )
         .expect("frame");
-        let (expected_controller_position, expected_controller_rotation) =
+        let (aim_grip_position, aim_grip_rotation) =
             controller_pose_from_aim(aim_position, aim_rotation);
-        assert_vec3_near(frame.position, expected_controller_position);
-        assert_quat_near(frame.rotation, expected_controller_rotation);
+        let (expected_position, expected_rotation) = openxr_grip_to_steamvr_raw(
+            ActiveControllerProfile::Index,
+            Chirality::Left,
+            aim_grip_position,
+            aim_grip_rotation,
+        );
+        assert_vec3_near(frame.position, expected_position);
+        assert_quat_near(frame.rotation, expected_rotation);
     }
 
     #[test]
@@ -211,10 +171,18 @@ mod tests {
             Some((aim_position, aim_rotation)),
         )
         .expect("frame");
-        let (expected_controller_position, expected_controller_rotation) =
+        let (aim_grip_position, aim_grip_rotation) =
             controller_pose_from_aim(aim_position, aim_rotation);
-        assert_vec3_near(frame.position, expected_controller_position);
-        assert_quat_near(frame.rotation, expected_controller_rotation);
+        let (raw_position, raw_rotation) = openxr_grip_to_steamvr_raw(
+            ActiveControllerProfile::Touch,
+            Chirality::Left,
+            aim_grip_position,
+            aim_grip_rotation,
+        );
+        let (expected_position, expected_rotation) =
+            touch_pose_correction(Chirality::Left, raw_position, raw_rotation);
+        assert_vec3_near(frame.position, expected_position);
+        assert_quat_near(frame.rotation, expected_rotation);
     }
 
     #[test]
@@ -230,27 +198,53 @@ mod tests {
             Some((aim_position, aim_rotation)),
         )
         .expect("frame");
+        let (raw_position, raw_rotation) = openxr_grip_to_steamvr_raw(
+            ActiveControllerProfile::Touch,
+            Chirality::Left,
+            grip_position,
+            grip_rotation,
+        );
         let (expected_pos, expected_rot) =
-            touch_pose_correction(Chirality::Left, grip_position, grip_rotation);
+            touch_pose_correction(Chirality::Left, raw_position, raw_rotation);
         assert_vec3_near(frame.position, expected_pos);
         assert_quat_near(frame.rotation, expected_rot);
     }
 
-    /// Pico / Reverb / WMR / Vive / Cosmos / Focus3 / Generic / Simple / Index all go through
-    /// the generic path: grip is used directly with no per-device correction.
     #[test]
-    fn non_touch_profiles_use_grip_directly() {
+    fn non_touch_profiles_skip_touch_correction() {
         let grip_position = Vec3::new(0.3, 1.2, -0.5);
         let grip_rotation = Quat::from_rotation_x(0.25).normalize();
         for profile in [
             ActiveControllerProfile::Index,
+            ActiveControllerProfile::ViveFocus3,
+            ActiveControllerProfile::Vive,
+            ActiveControllerProfile::Generic,
+        ] {
+            let frame = resolve_controller_frame(
+                profile,
+                Chirality::Right,
+                Some((grip_position, grip_rotation)),
+                None,
+            )
+            .unwrap_or_else(|| panic!("frame for {profile:?}"));
+            let (expected_position, expected_rotation) =
+                openxr_grip_to_steamvr_raw(profile, Chirality::Right, grip_position, grip_rotation);
+            assert_vec3_near(frame.position, expected_position);
+            assert_quat_near(frame.rotation, expected_rotation);
+        }
+    }
+
+    #[test]
+    fn identity_offset_profiles_pass_grip_through() {
+        let grip_position = Vec3::new(0.3, 1.2, -0.5);
+        let grip_rotation = Quat::from_rotation_x(0.25).normalize();
+        for profile in [
             ActiveControllerProfile::Vive,
             ActiveControllerProfile::WindowsMr,
             ActiveControllerProfile::HpReverbG2,
             ActiveControllerProfile::Pico4,
             ActiveControllerProfile::PicoNeo3,
             ActiveControllerProfile::ViveCosmos,
-            ActiveControllerProfile::ViveFocus3,
             ActiveControllerProfile::Generic,
             ActiveControllerProfile::Simple,
         ] {
@@ -263,6 +257,33 @@ mod tests {
             .unwrap_or_else(|| panic!("frame for {profile:?}"));
             assert_vec3_near(frame.position, grip_position);
             assert_quat_near(frame.rotation, grip_rotation);
+        }
+    }
+
+    #[test]
+    fn raw_corrected_profiles_shift_grip_pose() {
+        let grip_position = Vec3::new(0.3, 1.2, -0.5);
+        let grip_rotation = Quat::from_rotation_x(0.25).normalize();
+        for profile in [
+            ActiveControllerProfile::Index,
+            ActiveControllerProfile::Touch,
+            ActiveControllerProfile::ViveFocus3,
+        ] {
+            let frame = resolve_controller_frame(
+                profile,
+                Chirality::Right,
+                Some((grip_position, grip_rotation)),
+                None,
+            )
+            .unwrap_or_else(|| panic!("frame for {profile:?}"));
+            assert!(
+                (frame.position - grip_position).length() > 0.05,
+                "{profile:?}: expected non-trivial raw-pose position correction",
+            );
+            assert!(
+                rotation_delta_angle(frame.rotation, grip_rotation) > 0.2,
+                "{profile:?}: expected non-trivial raw-pose rotation correction",
+            );
         }
     }
 }
