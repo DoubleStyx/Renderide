@@ -31,7 +31,7 @@ public partial class RustEmitter
                 string rustName = t.RustName;
                 _w.Line($"    \"{t.CSharpName}\" => {{ let mut x = {rustName}::default(); x.unpack(&mut unpacker).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?; x.pack(&mut packer); }}");
             }
-            _w.Line("    _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!(\"Unknown type: {}\", type_name))),");
+            _w.Line("    _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!(\"Unknown type: {type_name}\"))),");
             _w.Line("}");
             _w.BlankLine();
             _w.Line("let written = original_len - packer.remaining_len();");

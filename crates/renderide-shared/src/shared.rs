@@ -4316,15 +4316,14 @@ impl MemoryPackable for GaussianRotationFormat {
         unpacker: &mut MemoryUnpacker<'_, '_, P>,
     ) -> Result<(), WireDecodeError> {
         let raw = unpacker.read::<i32>()?;
-        *self = match raw {
-            0 => Self::PackedNorm10,
-            _ => {
-                trace!(
-                    "invalid GaussianRotationFormat wire value {}; using default",
-                    raw
-                );
-                Self::PackedNorm10
-            }
+        *self = if raw == 0 {
+            Self::PackedNorm10
+        } else {
+            trace!(
+                "invalid GaussianRotationFormat wire value {}; using default",
+                raw
+            );
+            Self::PackedNorm10
         };
         Ok(())
     }
@@ -4335,15 +4334,14 @@ impl EnumRepr for GaussianRotationFormat {
         self as i32
     }
     fn from_i32(i: i32) -> Self {
-        match i {
-            0 => Self::PackedNorm10,
-            _ => {
-                trace!(
-                    "invalid GaussianRotationFormat discriminant {}; using default",
-                    i
-                );
-                Self::PackedNorm10
-            }
+        if i == 0 {
+            Self::PackedNorm10
+        } else {
+            trace!(
+                "invalid GaussianRotationFormat discriminant {}; using default",
+                i
+            );
+            Self::PackedNorm10
         }
     }
 }
@@ -10773,7 +10771,7 @@ pub fn roundtrip_dispatch(type_name: &str, input: &[u8]) -> std::io::Result<Vec<
         _ => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Unknown type: {}", type_name),
+                format!("Unknown type: {type_name}"),
             ));
         }
     }

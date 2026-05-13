@@ -53,16 +53,31 @@ public partial class RustEmitter
         // No bytemuck `Pod` / `Zeroable` impls: restricted-variant enums have invalid bit patterns
         // (e.g. byte 4 for a 0..=3 `ShadowCastMode`). Reading those via `pod_read_unaligned` is UB,
         // and on Rust 1.94+ the resulting enum-validity trap aborts the process. The wire path goes
-        // through `MemoryPackable::unpack`, which validates bytes via the `match` arms above.
+        // through `MemoryPackable::unpack`, which validates bytes through the decode path above.
     }
 
-    /// <summary>Emits <c>*self = match raw { ... }</c> for value enum wire decode.</summary>
+    /// <summary>Emits value enum wire decode without transmute.</summary>
     private void EmitValueEnumUnpackMatch(string enumRustName, string rustType, List<EnumMember> members)
     {
         EnumMember defaultMember = members.First(static m => m.IsDefault);
         string defaultVariant = defaultMember.Name.HumanizeVariant();
 
         _w.Line($"let raw = unpacker.read::<{rustType}>()?;");
+        if (members.Count == 1)
+        {
+            EnumMember member = members[0];
+            string lit = FormatRustPatternLiteralForUnderlying(member.Value, rustType);
+            _w.Line($"*self = if raw == {lit} {{");
+            _w.Line($"    Self::{member.Name.HumanizeVariant()}");
+            _w.Line("} else {");
+            _w.Line(
+                $"    trace!(\"invalid {enumRustName} wire value {{}}; using default\", raw);");
+            _w.Line($"    Self::{defaultVariant}");
+            _w.Line("};");
+            _w.Line("Ok(())");
+            return;
+        }
+
         _w.Line("*self = match raw {");
         foreach (EnumMember member in members)
         {
@@ -79,13 +94,13 @@ public partial class RustEmitter
         _w.Line("Ok(())");
     }
 
-    /// <summary>Emits <c>match i { ... }</c> for <see cref="EnumRepr"/> without transmute.</summary>
+    /// <summary>Emits <see cref="EnumRepr"/> conversion without transmute.</summary>
     private void EmitValueEnumFromI32Match(string enumRustName, List<EnumMember> members)
     {
         EnumMember defaultMember = members.First(static m => m.IsDefault);
         string defaultVariant = defaultMember.Name.HumanizeVariant();
+        List<(int Arm, string Variant)> arms = [];
 
-        _w.Line("match i {");
         foreach (EnumMember member in members)
         {
             long v = Convert.ToInt64(member.Value, CultureInfo.InvariantCulture);
@@ -98,7 +113,33 @@ public partial class RustEmitter
             }
 
             int arm = (int)v;
-            _w.Line($"    {arm} => Self::{member.Name.HumanizeVariant()},");
+            arms.Add((arm, member.Name.HumanizeVariant()));
+        }
+
+        if (arms.Count == 1)
+        {
+            (int arm, string variant) = arms[0];
+            _w.Line($"if i == {arm} {{");
+            _w.Line($"    Self::{variant}");
+            _w.Line("} else {");
+            _w.Line(
+                $"    trace!(\"invalid {enumRustName} discriminant {{}}; using default\", i);");
+            _w.Line($"    Self::{defaultVariant}");
+            _w.Line("}");
+            return;
+        }
+
+        if (arms.Count == 0)
+        {
+            _w.Line($"trace!(\"invalid {enumRustName} discriminant {{}}; using default\", i);");
+            _w.Line($"Self::{defaultVariant}");
+            return;
+        }
+
+        _w.Line("match i {");
+        foreach ((int arm, string variant) in arms)
+        {
+            _w.Line($"    {arm} => Self::{variant},");
         }
 
         _w.Line("    _ => {");
