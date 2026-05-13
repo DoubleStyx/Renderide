@@ -11,7 +11,7 @@ use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::world_mesh::WorldMeshDrawItem;
 
 /// Embedded material vertex stream requirements for one draw (matches pipeline reflection flags).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct EmbeddedVertexStreamFlags {
     /// UV0 stream at `@location(2)`.
     embedded_uv: bool,
@@ -19,6 +19,10 @@ pub(super) struct EmbeddedVertexStreamFlags {
     embedded_color: bool,
     /// Tangent at `@location(4)`.
     embedded_tangent: bool,
+    /// Whether `@location(4)` carries raw shader payload instead of a geometric tangent.
+    embedded_raw_tangent_payload: bool,
+    /// Whether `@location(1)` carries raw shader payload instead of a lighting normal.
+    embedded_raw_normal_payload: bool,
     /// UV1 at `@location(5)`.
     embedded_uv1: bool,
     /// UV2 at `@location(6)`.
@@ -198,7 +202,7 @@ pub(super) fn draw_mesh_submesh_instanced(
         return;
     };
 
-    if !bind_primary_vertex_streams(rpass, item, gpu, mesh, normals_bind, last_mesh) {
+    if !bind_primary_vertex_streams(rpass, item, gpu, mesh, normals_bind, streams, last_mesh) {
         return;
     }
     if !bind_optional_vertex_streams(rpass, item, gpu, mesh, streams, last_mesh) {
@@ -227,7 +231,15 @@ pub(super) fn draw_mesh_submesh_normals_instanced(
         return;
     };
 
-    if !bind_primary_vertex_streams(rpass, item, gpu, mesh, normals_bind, last_mesh) {
+    if !bind_primary_vertex_streams(
+        rpass,
+        item,
+        gpu,
+        mesh,
+        normals_bind,
+        EmbeddedVertexStreamFlags::default(),
+        last_mesh,
+    ) {
         return;
     }
 
@@ -271,7 +283,20 @@ fn resident_draw_mesh<'a>(
         return None;
     }
     let mesh = gpu.mesh_pool.get(item.mesh_asset_id)?;
-    if streams.embedded_tangent && !mesh.tangent_vertex_stream_ready() {
+    if streams.embedded_tangent
+        && streams.embedded_raw_tangent_payload
+        && !mesh.raw_tangent_vertex_stream_ready()
+    {
+        logger::trace!(
+            "WorldMeshForward: raw tangent payload stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
+            item.mesh_asset_id
+        );
+        return None;
+    }
+    if streams.embedded_tangent
+        && !streams.embedded_raw_tangent_payload
+        && !mesh.tangent_vertex_stream_ready()
+    {
         logger::trace!(
             "WorldMeshForward: tangent vertex stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
             item.mesh_asset_id
@@ -320,10 +345,13 @@ fn bind_primary_vertex_streams(
     gpu: WorldMeshDrawGpuRefs<'_>,
     mesh: &GpuMesh,
     normals_bind: &wgpu::Buffer,
+    streams: EmbeddedVertexStreamFlags,
     last_mesh: &mut LastMeshBindState,
 ) -> bool {
-    if draw_uses_deformed_primary_streams(item) {
+    if draw_uses_deformed_primary_streams(item) && !streams.embedded_raw_normal_payload {
         bind_deformed_primary_streams(rpass, item, gpu, normals_bind, last_mesh)
+    } else if draw_uses_deformed_primary_streams(item) {
+        bind_deformed_position_static_normal(rpass, item, gpu, normals_bind, last_mesh)
     } else {
         bind_static_primary_streams(rpass, mesh, normals_bind, last_mesh)
     }
@@ -463,6 +491,48 @@ fn bind_deformed_primary_streams(
     true
 }
 
+/// Binds deformed positions while preserving static normal-slot payload data.
+fn bind_deformed_position_static_normal(
+    rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'_>,
+    normals_bind: &wgpu::Buffer,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    let Some(cache) = gpu.skin_cache else {
+        return false;
+    };
+    let key = SkinCacheKey::from_draw_parts(item.space_id, item.skinned, item.instance_id);
+    let Some(entry) = cache.lookup_current(&key) else {
+        logger::trace!(
+            "world mesh forward: current skin cache miss for raw-normal payload draw in space {:?} renderable {} instance {:?} node {}",
+            item.space_id,
+            item.renderable_index,
+            item.instance_id,
+            item.node_id
+        );
+        return false;
+    };
+    let pos_buf = cache.positions_arena();
+    let pos_range = entry.positions.byte_range();
+    let (pos_start, pos_end) = (pos_range.start, pos_range.end);
+    bind_vertex_if_changed!(
+        rpass,
+        0,
+        pos_buf.slice(pos_range),
+        BufferBindId::ranged(pos_buf, pos_start, pos_end),
+        last_mesh.vertex
+    );
+    bind_vertex_if_changed!(
+        rpass,
+        1,
+        normals_bind.slice(..),
+        BufferBindId::full(normals_bind),
+        last_mesh.vertex
+    );
+    true
+}
+
 /// Binds UV, color, tangent, and extra UV streams required by the material reflection.
 fn bind_optional_vertex_streams(
     rpass: &mut wgpu::RenderPass<'_>,
@@ -497,7 +567,7 @@ fn bind_optional_vertex_streams(
         );
     }
     if let Some(slot) = streams.tangent_slot()
-        && !bind_tangent_stream(rpass, item, gpu, mesh, slot, last_mesh)
+        && !bind_tangent_stream(rpass, item, gpu, mesh, streams, slot, last_mesh)
     {
         return false;
     }
@@ -545,9 +615,24 @@ fn bind_tangent_stream(
     item: &WorldMeshDrawItem,
     gpu: WorldMeshDrawGpuRefs<'_>,
     mesh: &GpuMesh,
+    streams: EmbeddedVertexStreamFlags,
     slot: usize,
     last_mesh: &mut LastMeshBindState,
 ) -> bool {
+    if streams.embedded_raw_tangent_payload {
+        let Some(tangent) = mesh.raw_tangent_buffer.as_deref() else {
+            return false;
+        };
+        bind_vertex_if_changed!(
+            rpass,
+            slot,
+            tangent.slice(..),
+            BufferBindId::full(tangent),
+            last_mesh.vertex
+        );
+        return true;
+    }
+
     if draw_uses_deformed_tangent_stream(item, mesh) {
         let Some(cache) = gpu.skin_cache else {
             return false;
@@ -625,6 +710,8 @@ pub(super) fn streams_for_item(item: &WorldMeshDrawItem) -> EmbeddedVertexStream
         embedded_uv: item.batch_key.embedded_needs_uv0,
         embedded_color: item.batch_key.embedded_needs_color,
         embedded_tangent: item.batch_key.embedded_needs_tangent,
+        embedded_raw_tangent_payload: item.batch_key.embedded_raw_tangent_payload,
+        embedded_raw_normal_payload: item.batch_key.embedded_raw_normal_payload,
         embedded_uv1: item.batch_key.embedded_needs_uv1,
         embedded_uv2: item.batch_key.embedded_needs_uv2,
         embedded_uv3: item.batch_key.embedded_needs_uv3,

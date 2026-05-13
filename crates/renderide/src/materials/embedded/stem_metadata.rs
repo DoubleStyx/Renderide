@@ -24,7 +24,8 @@ pub use vertex_streams::{
     EmbeddedVertexStreamMask, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_tangent_stream,
     embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
-    embedded_stem_needs_uv3_stream,
+    embedded_stem_needs_uv3_stream, embedded_stem_uses_raw_normal_payload,
+    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_ui_transparent_fallback,
 };
 
 use hashbrown::HashMap;
@@ -307,7 +308,12 @@ pub(in crate::materials) fn create_embedded_render_pipelines(
     }
     let materialized_passes = declared_passes
         .iter()
-        .map(|p| materialized_pass_for_blend_mode(p, blend_mode))
+        .map(|p| {
+            materialized_pass_for_blend_mode(
+                p,
+                effective_blend_mode_for_stem(stem.as_ref(), blend_mode),
+            )
+        })
         .collect::<Vec<_>>();
     create_reflective_raster_mesh_forward_pipelines(
         shader,
@@ -317,6 +323,16 @@ pub(in crate::materials) fn create_embedded_render_pipelines(
         front_face,
         primitive_topology,
     )
+}
+
+fn effective_blend_mode_for_stem(stem: &str, blend_mode: MaterialBlendMode) -> MaterialBlendMode {
+    if blend_mode == MaterialBlendMode::StemDefault
+        && embedded_stem_uses_ui_transparent_fallback(stem)
+    {
+        MaterialBlendMode::UnityBlend { src: 5, dst: 10 }
+    } else {
+        blend_mode
+    }
 }
 
 #[cfg(test)]
@@ -438,6 +454,22 @@ mod tests {
         ));
 
         assert!(embedded_stem_uses_alpha_blending("circle_default"));
+    }
+
+    #[test]
+    fn ui_stem_default_blend_uses_alpha_until_host_state_arrives() {
+        assert_eq!(
+            effective_blend_mode_for_stem("ui_unlit_default", MaterialBlendMode::StemDefault),
+            MaterialBlendMode::UnityBlend { src: 5, dst: 10 }
+        );
+        assert_eq!(
+            effective_blend_mode_for_stem("ui_unlit_default", MaterialBlendMode::Opaque),
+            MaterialBlendMode::Opaque
+        );
+        assert_eq!(
+            effective_blend_mode_for_stem("unlit_default", MaterialBlendMode::StemDefault),
+            MaterialBlendMode::StemDefault
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@ use super::layout::{
     blendshape_deform_is_active, color_float4_stream_bytes, compute_index_count,
     compute_mesh_buffer_layout, compute_vertex_stride, extract_blendshape_offsets,
     extract_float3_position_normal_as_vec4_streams, index_bytes_per_element,
-    select_blendshape_frame_coefficients, split_bone_weights_tail_for_gpu, uv0_float2_stream_bytes,
-    vertex_float2_stream_bytes, vertex_float4_stream_bytes,
+    raw_float4_stream_bytes, select_blendshape_frame_coefficients, split_bone_weights_tail_for_gpu,
+    uv0_float2_stream_bytes, vertex_float2_stream_bytes, vertex_float4_stream_bytes,
 };
 use crate::shared::{
     BlendshapeBufferDescriptor, BlendshapeDataFlags, IndexBufferFormat, SubmeshBufferDescriptor,
@@ -166,6 +166,24 @@ fn position_normal_stream_decodes_half_positions_and_signed_normals() {
 
     assert_eq!(pos0, [1.0, 2.0, 3.0, 1.0]);
     assert_eq!(nrm0, [0.0, 1.0, 0.0, 0.0]);
+}
+
+#[test]
+fn raw_normal_payload_stream_preserves_unorm_payload_values() {
+    let attrs = [VertexAttributeDescriptor {
+        attribute: VertexAttributeType::Normal,
+        format: VertexAttributeFormat::UNorm8,
+        dimensions: 3,
+    }];
+    let raw = [0u8, 128u8, 255u8];
+    let out = raw_float4_stream_bytes(&raw, 1, 3, &attrs, VertexAttributeType::Normal, [0.0; 4])
+        .expect("raw normal payload stream");
+    let payload: [f32; 4] = bytemuck::pod_read_unaligned(&out[..16]);
+
+    assert_eq!(payload[0], 0.0);
+    assert!((payload[1] - (128.0 / 255.0)).abs() < 1e-6);
+    assert_eq!(payload[2], 1.0);
+    assert_eq!(payload[3], 0.0);
 }
 
 #[test]

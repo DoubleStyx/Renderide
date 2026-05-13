@@ -81,10 +81,10 @@ fn vs_main(
     let world_p = mv::world_position(d, pos);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);
-    let layer = view_idx;
+    let layer = mv::packed_view_layer(instance_index, view_idx);
 #else
     let vp = mv::select_view_proj(d, 0u);
-    let layer = 0u;
+    let layer = mv::packed_view_layer(instance_index, 0u);
 #endif
 
     var out: VertexOutput;

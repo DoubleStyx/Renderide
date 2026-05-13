@@ -89,12 +89,44 @@ pub fn embedded_stem_needs_extended_vertex_streams(
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_extended_vertex_streams()
 }
 
+/// `true` when `@location(4)` carries raw shader payload rather than a geometric tangent.
+pub fn embedded_stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
+    matches!(
+        canonical_stem_name(base_stem),
+        "ui_circlesegment" | "ui_unlit"
+    )
+}
+
+/// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
+pub fn embedded_stem_uses_raw_normal_payload(base_stem: &str) -> bool {
+    matches!(canonical_stem_name(base_stem), "ui_textunlit")
+}
+
+/// `true` when the stem should fall back to transparent UI state until host state arrives.
+pub fn embedded_stem_uses_ui_transparent_fallback(base_stem: &str) -> bool {
+    matches!(
+        canonical_stem_name(base_stem),
+        "ui_circlesegment" | "ui_textunlit" | "ui_unlit"
+    )
+}
+
+fn canonical_stem_name(base_stem: &str) -> &str {
+    base_stem
+        .strip_suffix("_default")
+        .or_else(|| base_stem.strip_suffix("_multiview"))
+        .unwrap_or(base_stem)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::materials::SHADER_PERM_MULTIVIEW_STEREO;
     use crate::materials::ShaderPermutation;
 
-    use super::{embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream};
+    use super::{
+        embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream,
+        embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
+        embedded_stem_uses_ui_transparent_fallback,
+    };
 
     #[test]
     fn null_no_uv0_stream() {
@@ -140,5 +172,34 @@ mod tests {
             "ui_textunlit_default",
             SHADER_PERM_MULTIVIEW_STEREO,
         ));
+    }
+
+    #[test]
+    fn ui_payload_stems_mark_raw_semantics() {
+        assert!(embedded_stem_uses_raw_tangent_payload(
+            "ui_circlesegment_default"
+        ));
+        assert!(embedded_stem_uses_raw_tangent_payload("ui_unlit_default"));
+        assert!(!embedded_stem_uses_raw_tangent_payload(
+            "pbsmetallic_default"
+        ));
+
+        assert!(embedded_stem_uses_raw_normal_payload(
+            "ui_textunlit_default"
+        ));
+        assert!(!embedded_stem_uses_raw_normal_payload("unlit_default"));
+    }
+
+    #[test]
+    fn ui_stems_use_transparent_fallback_defaults() {
+        for stem in [
+            "ui_circlesegment_default",
+            "ui_textunlit_default",
+            "ui_unlit_default",
+            "ui_unlit_multiview",
+        ] {
+            assert!(embedded_stem_uses_ui_transparent_fallback(stem), "{stem}");
+        }
+        assert!(!embedded_stem_uses_ui_transparent_fallback("unlit_default"));
     }
 }

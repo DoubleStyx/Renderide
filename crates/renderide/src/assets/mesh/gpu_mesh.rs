@@ -27,7 +27,9 @@ use super::layout::{
     extract_float3_position_normal_as_vec4_streams, split_bone_weights_tail_for_gpu,
     uv0_float2_stream_bytes, vertex_float2_stream_bytes,
 };
-use tangent_generation::{TangentStreamSource, tangent_stream_bytes};
+use tangent_generation::{
+    TangentStreamSource, raw_tangent_payload_stream_bytes, tangent_stream_bytes,
+};
 
 use upload::{
     create_core_vertex_index_buffers, extract_derived_vertex_streams, padded_sparse_bytes,
@@ -135,6 +137,8 @@ pub struct GpuMesh {
     pub color_buffer: Option<Arc<wgpu::Buffer>>,
     /// `vec4<f32>` tangent stream for shaders using extended vertex inputs.
     pub tangent_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Raw `vec4<f32>` tangent payload for UI shaders that use the tangent semantic as data.
+    pub raw_tangent_buffer: Option<Arc<wgpu::Buffer>>,
     /// Tangent fallback policy used for the current tangent stream.
     pub tangent_fallback_mode: EmbeddedTangentFallbackMode,
     /// `vec2<f32>` UV1 stream for shaders using extended vertex inputs.
@@ -336,6 +340,7 @@ pub(super) fn extended_vertex_stream_source_from_raw(
 pub(super) fn extended_vertex_stream_bytes(mesh: &GpuMesh) -> u64 {
     [
         mesh.tangent_buffer.as_ref(),
+        mesh.raw_tangent_buffer.as_ref(),
         mesh.uv1_buffer.as_ref(),
         mesh.uv2_buffer.as_ref(),
         mesh.uv3_buffer.as_ref(),
@@ -420,21 +425,25 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
 
     {
         profiling::scope!("asset::mesh_write_in_place::write_tangent_stream");
+        let source = TangentStreamSource {
+            vertex_data: vertex_slice,
+            index_data: &ctx.raw[ctx.layout.index_buffer_start
+                ..ctx.layout.index_buffer_start + ctx.layout.index_buffer_length],
+            vertex_count: ctx.vertex_count,
+            stride: ctx.vertex_stride,
+            attrs: &ctx.data.vertex_attributes,
+            index_format: ctx.data.index_buffer_format,
+            submeshes: &ctx.data.submeshes,
+        };
         if let (Some(tb), Some(t)) = (
             ctx.mesh.tangent_buffer.as_ref(),
-            tangent_stream_bytes(
-                TangentStreamSource {
-                    vertex_data: vertex_slice,
-                    index_data: &ctx.raw[ctx.layout.index_buffer_start
-                        ..ctx.layout.index_buffer_start + ctx.layout.index_buffer_length],
-                    vertex_count: ctx.vertex_count,
-                    stride: ctx.vertex_stride,
-                    attrs: &ctx.data.vertex_attributes,
-                    index_format: ctx.data.index_buffer_format,
-                    submeshes: &ctx.data.submeshes,
-                },
-                ctx.mesh.tangent_fallback_mode.generate_missing(),
-            ),
+            tangent_stream_bytes(source, ctx.mesh.tangent_fallback_mode.generate_missing()),
+        ) {
+            write_mesh_queue_buffer(ctx.queue, tb.as_ref(), 0, &t);
+        }
+        if let (Some(tb), Some(t)) = (
+            ctx.mesh.raw_tangent_buffer.as_ref(),
+            raw_tangent_payload_stream_bytes(source),
         ) {
             write_mesh_queue_buffer(ctx.queue, tb.as_ref(), 0, &t);
         }
@@ -633,6 +642,7 @@ impl GpuMesh {
             uv0_buffer: None,
             color_buffer: None,
             tangent_buffer: None,
+            raw_tangent_buffer: None,
             tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
             uv1_buffer: None,
             uv2_buffer: None,
@@ -725,6 +735,7 @@ impl GpuMesh {
             uv0_buffer: derived.uv0_buffer,
             color_buffer: derived.color_buffer,
             tangent_buffer: derived.tangent_buffer,
+            raw_tangent_buffer: derived.raw_tangent_buffer,
             tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
             uv1_buffer: derived.uv1_buffer,
             uv2_buffer: derived.uv2_buffer,

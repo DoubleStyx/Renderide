@@ -83,6 +83,7 @@ pub(super) fn derived_streams_compatible_for_in_place(
             && gpu.uv0_buffer.is_none()
             && gpu.color_buffer.is_none()
             && gpu.tangent_buffer.is_none()
+            && gpu.raw_tangent_buffer.is_none()
             && gpu.uv1_buffer.is_none()
             && gpu.uv2_buffer.is_none()
             && gpu.uv3_buffer.is_none();
@@ -115,6 +116,9 @@ pub(super) fn derived_streams_compatible_for_in_place(
         return false;
     }
     if !optional_stream_size_matches(gpu.tangent_buffer.as_deref(), Some(vec4_bytes)) {
+        return false;
+    }
+    if !optional_stream_size_matches(gpu.raw_tangent_buffer.as_deref(), Some(vec4_bytes)) {
         return false;
     }
     for buffer in [&gpu.uv1_buffer, &gpu.uv2_buffer, &gpu.uv3_buffer] {

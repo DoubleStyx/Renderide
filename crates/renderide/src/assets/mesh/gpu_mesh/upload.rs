@@ -22,7 +22,9 @@ use super::super::layout::{
     uv0_float2_stream_bytes, vertex_float2_stream_bytes,
 };
 use super::hints::wgpu_index_format;
-use super::tangent_generation::{TangentStreamSource, tangent_stream_bytes};
+use super::tangent_generation::{
+    TangentStreamSource, raw_tangent_payload_stream_bytes, tangent_stream_bytes,
+};
 
 /// Tangent plus UV1-UV3 optional vertex buffers from extended stream upload.
 type ExtendedVertexStreams = (
@@ -125,6 +127,7 @@ pub(super) struct DerivedStreams {
     pub uv0_buffer: Option<Arc<wgpu::Buffer>>,
     pub color_buffer: Option<Arc<wgpu::Buffer>>,
     pub tangent_buffer: Option<Arc<wgpu::Buffer>>,
+    pub raw_tangent_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv1_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv2_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv3_buffer: Option<Arc<wgpu::Buffer>>,
@@ -602,6 +605,39 @@ pub(super) fn upload_tangent_vertex_stream(
     ))
 }
 
+pub(super) fn upload_raw_tangent_vertex_stream(
+    device: &wgpu::Device,
+    asset_id: i32,
+    source: ExtendedVertexUploadSource<'_>,
+) -> Option<Arc<wgpu::Buffer>> {
+    if source.vertex_count == 0 {
+        return None;
+    }
+    let tangent_bytes = raw_tangent_payload_stream_bytes(source.tangent_source())
+        .unwrap_or_else(|| float4_default_stream_bytes(source.vertex_count, [1.0; 4]));
+    Some(create_tangent_stream_buffer(
+        device,
+        asset_id,
+        &tangent_bytes,
+    ))
+}
+
+pub(super) fn upload_default_raw_tangent_vertex_stream(
+    device: &wgpu::Device,
+    asset_id: i32,
+    vc_usize: usize,
+) -> Option<Arc<wgpu::Buffer>> {
+    if vc_usize == 0 {
+        return None;
+    }
+    let tangent_bytes = float4_default_stream_bytes(vc_usize, [1.0; 4]);
+    Some(create_tangent_stream_buffer(
+        device,
+        asset_id,
+        &tangent_bytes,
+    ))
+}
+
 pub(super) fn upload_default_tangent_vertex_stream(
     device: &wgpu::Device,
     asset_id: i32,
@@ -707,6 +743,7 @@ pub(super) fn extract_derived_vertex_streams(
         uv0_buffer,
         color_buffer,
         tangent_buffer: None,
+        raw_tangent_buffer: None,
         uv1_buffer: None,
         uv2_buffer: None,
         uv3_buffer: None,
@@ -955,6 +992,7 @@ pub(super) fn resident_bytes_for_mesh_upload(
         derived.uv0_buffer.as_ref(),
         derived.color_buffer.as_ref(),
         derived.tangent_buffer.as_ref(),
+        derived.raw_tangent_buffer.as_ref(),
         derived.uv1_buffer.as_ref(),
         derived.uv2_buffer.as_ref(),
         derived.uv3_buffer.as_ref(),

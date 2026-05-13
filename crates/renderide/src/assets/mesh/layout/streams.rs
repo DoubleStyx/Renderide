@@ -8,6 +8,8 @@ use super::buffer_layout::vertex_format_size;
 /// Attribute semantic used when expanding host vertex scalars into float streams.
 #[derive(Clone, Copy)]
 pub(in crate::assets::mesh) enum VertexDecodeKind {
+    /// Data payloads that should preserve the host-authored scalar values.
+    Raw,
     /// Object-space position data.
     Position,
     /// Direction vectors such as normals and tangents.
@@ -156,14 +158,14 @@ pub fn vertex_float2_stream_bytes(
 /// Dense `vec4<f32>` vertex stream for an arbitrary float attribute.
 ///
 /// Missing or unsupported attributes return `default` per vertex.
-#[cfg(test)]
-pub fn vertex_float4_stream_bytes(
+fn vertex_float4_stream_bytes_with_kind(
     vertex_data: &[u8],
     vertex_count: usize,
     stride: usize,
     attrs: &[VertexAttributeDescriptor],
     target: VertexAttributeType,
     default: [f32; 4],
+    kind: VertexDecodeKind,
 ) -> Option<Vec<u8>> {
     if vertex_count == 0 || stride == 0 {
         return None;
@@ -180,15 +182,9 @@ pub fn vertex_float4_stream_bytes(
         }
     }
 
-    let Some(reader) = AttributeReader::from_attrs(
-        vertex_data,
-        vertex_count,
-        stride,
-        attrs,
-        target,
-        VertexDecodeKind::Position,
-        1,
-    ) else {
+    let Some(reader) =
+        AttributeReader::from_attrs(vertex_data, vertex_count, stride, attrs, target, kind, 1)
+    else {
         return Some(out);
     };
     for i in 0..vertex_count {
@@ -198,6 +194,51 @@ pub fn vertex_float4_stream_bytes(
     }
 
     Some(out)
+}
+
+/// Dense raw `vec4<f32>` payload stream for attributes used as shader data instead of geometry.
+///
+/// Missing or unsupported attributes return `default` per vertex.
+pub fn raw_float4_stream_bytes(
+    vertex_data: &[u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &[VertexAttributeDescriptor],
+    target: VertexAttributeType,
+    default: [f32; 4],
+) -> Option<Vec<u8>> {
+    vertex_float4_stream_bytes_with_kind(
+        vertex_data,
+        vertex_count,
+        stride,
+        attrs,
+        target,
+        default,
+        VertexDecodeKind::Raw,
+    )
+}
+
+/// Dense `vec4<f32>` vertex stream for an arbitrary float attribute.
+///
+/// Missing or unsupported attributes return `default` per vertex.
+#[cfg(test)]
+pub fn vertex_float4_stream_bytes(
+    vertex_data: &[u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &[VertexAttributeDescriptor],
+    target: VertexAttributeType,
+    default: [f32; 4],
+) -> Option<Vec<u8>> {
+    vertex_float4_stream_bytes_with_kind(
+        vertex_data,
+        vertex_count,
+        stride,
+        attrs,
+        target,
+        default,
+        VertexDecodeKind::Position,
+    )
 }
 
 /// Dense `vec4<f32>` color stream (`16` bytes per vertex) for UI / text embedded materials.
@@ -379,7 +420,7 @@ fn apply_unsigned_integer(value: f32, max_value: f32, kind: VertexDecodeKind) ->
     match kind {
         VertexDecodeKind::Color => value / max_value,
         VertexDecodeKind::Direction => (value / max_value).mul_add(2.0, -1.0),
-        VertexDecodeKind::Position | VertexDecodeKind::TexCoord => value,
+        VertexDecodeKind::Raw | VertexDecodeKind::Position | VertexDecodeKind::TexCoord => value,
     }
 }
 

@@ -27,6 +27,11 @@ impl GpuMesh {
         self.tangent_buffer.is_some()
     }
 
+    /// `true` when this mesh has the raw tangent payload stream required by UI payload shaders.
+    pub fn raw_tangent_vertex_stream_ready(&self) -> bool {
+        self.raw_tangent_buffer.is_some()
+    }
+
     /// `true` when this mesh has the standalone UV2 stream required by compact shaders.
     pub fn uv2_vertex_stream_ready(&self) -> bool {
         self.uv2_buffer.is_some()

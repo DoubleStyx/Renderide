@@ -37,6 +37,10 @@ pub struct MaterialDrawBatchKey {
     pub embedded_needs_tangent: bool,
     /// Tangent fallback policy for lazy tangent upload.
     pub embedded_tangent_fallback_mode: EmbeddedTangentFallbackMode,
+    /// Whether the tangent stream carries raw shader payload instead of a geometric tangent.
+    pub embedded_raw_tangent_payload: bool,
+    /// Whether the normal stream carries raw shader payload instead of a lighting normal.
+    pub embedded_raw_normal_payload: bool,
     /// Whether the embedded stem needs a UV2 vertex stream at `@location(6)`.
     pub embedded_needs_uv2: bool,
     /// Whether the embedded stem needs a UV3 vertex stream at `@location(7)`.

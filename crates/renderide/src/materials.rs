@@ -111,8 +111,9 @@ pub(crate) use embedded::{
     embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
     embedded_stem_needs_uv3_stream, embedded_stem_pipeline_pass_count,
     embedded_stem_requires_intersection_pass, embedded_stem_tangent_fallback_mode,
-    embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
-    embedded_stem_uses_scene_depth_snapshot,
+    embedded_stem_uses_alpha_blending, embedded_stem_uses_raw_normal_payload,
+    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_scene_color_snapshot,
+    embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_ui_transparent_fallback,
 };
 
 #[cfg(test)]

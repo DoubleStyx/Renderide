@@ -10,10 +10,11 @@ use crate::materials::{
     embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
     embedded_stem_needs_uv3_stream, embedded_stem_requires_intersection_pass,
     embedded_stem_tangent_fallback_mode, embedded_stem_uses_alpha_blending,
+    embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
     embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
-    fallback_render_queue_for_material, first_float_from_maps, first_vec4_from_maps,
-    material_blend_mode_from_maps, material_render_queue_from_maps,
-    material_render_state_from_maps, resolve_raster_pipeline,
+    embedded_stem_uses_ui_transparent_fallback, fallback_render_queue_for_material,
+    first_float_from_maps, first_vec4_from_maps, material_blend_mode_from_maps,
+    material_render_queue_from_maps, material_render_state_from_maps, resolve_raster_pipeline,
 };
 
 use super::FrameMaterialBatchCache;
@@ -50,6 +51,10 @@ pub(crate) struct ResolvedMaterialBatch {
     pub embedded_needs_tangent: bool,
     /// Tangent fallback policy for lazy tangent upload.
     pub embedded_tangent_fallback_mode: EmbeddedTangentFallbackMode,
+    /// Whether the tangent stream carries raw shader payload instead of a geometric tangent.
+    pub embedded_raw_tangent_payload: bool,
+    /// Whether the normal stream carries raw shader payload instead of a lighting normal.
+    pub embedded_raw_normal_payload: bool,
     /// Whether the active shader permutation requires a UV2 vertex stream.
     pub embedded_needs_uv2: bool,
     /// Whether the active shader permutation requires a UV3 vertex stream.
@@ -112,6 +117,8 @@ struct EmbeddedMaterialFeatures {
     needs_uv1: bool,
     needs_tangent: bool,
     tangent_fallback_mode: EmbeddedTangentFallbackMode,
+    raw_tangent_payload: bool,
+    raw_normal_payload: bool,
     needs_uv2: bool,
     needs_uv3: bool,
     needs_extended_vertex_streams: bool,
@@ -119,6 +126,7 @@ struct EmbeddedMaterialFeatures {
     uses_scene_depth_snapshot: bool,
     uses_scene_color_snapshot: bool,
     uses_alpha_blending: bool,
+    uses_ui_transparent_fallback: bool,
 }
 
 fn embedded_material_features(
@@ -135,6 +143,8 @@ fn embedded_material_features(
         needs_uv1: embedded_stem_needs_uv1_stream(stem, shader_perm),
         needs_tangent: embedded_stem_needs_tangent_stream(stem, shader_perm),
         tangent_fallback_mode: embedded_stem_tangent_fallback_mode(stem, shader_perm),
+        raw_tangent_payload: embedded_stem_uses_raw_tangent_payload(stem),
+        raw_normal_payload: embedded_stem_uses_raw_normal_payload(stem),
         needs_uv2: embedded_stem_needs_uv2_stream(stem, shader_perm),
         needs_uv3: embedded_stem_needs_uv3_stream(stem, shader_perm),
         needs_extended_vertex_streams: embedded_stem_needs_extended_vertex_streams(
@@ -145,6 +155,7 @@ fn embedded_material_features(
         uses_scene_depth_snapshot: embedded_stem_uses_scene_depth_snapshot(stem, shader_perm),
         uses_scene_color_snapshot: embedded_stem_uses_scene_color_snapshot(stem, shader_perm),
         uses_alpha_blending: embedded_stem_uses_alpha_blending(stem),
+        uses_ui_transparent_fallback: embedded_stem_uses_ui_transparent_fallback(stem),
     }
 }
 
@@ -240,7 +251,10 @@ pub(crate) fn resolve_material_batch(
     let (mat_map, pb_map) = dict.fetch_property_maps(lookup_ids);
     let blend_mode = material_blend_mode_from_maps(mat_map, pb_map, pipeline_property_ids);
     let render_state = material_render_state_from_maps(mat_map, pb_map, pipeline_property_ids);
-    let alpha_blended = embedded.uses_alpha_blending
+    let ui_stem_default_transparent =
+        embedded.uses_ui_transparent_fallback && blend_mode == MaterialBlendMode::StemDefault;
+    let alpha_blended = ui_stem_default_transparent
+        || embedded.uses_alpha_blending
         || blend_mode.is_transparent()
         || embedded.uses_scene_color_snapshot;
     let render_queue = material_render_queue_from_maps(
@@ -258,6 +272,8 @@ pub(crate) fn resolve_material_batch(
         embedded_needs_uv1: embedded.needs_uv1,
         embedded_needs_tangent: embedded.needs_tangent,
         embedded_tangent_fallback_mode: embedded.tangent_fallback_mode,
+        embedded_raw_tangent_payload: embedded.raw_tangent_payload,
+        embedded_raw_normal_payload: embedded.raw_normal_payload,
         embedded_needs_uv2: embedded.needs_uv2,
         embedded_needs_uv3: embedded.needs_uv3,
         embedded_needs_extended_vertex_streams: embedded.needs_extended_vertex_streams,
@@ -295,6 +311,8 @@ fn batch_key_from_resolved(
         embedded_needs_uv1: r.embedded_needs_uv1,
         embedded_needs_tangent: r.embedded_needs_tangent,
         embedded_tangent_fallback_mode: r.embedded_tangent_fallback_mode,
+        embedded_raw_tangent_payload: r.embedded_raw_tangent_payload,
+        embedded_raw_normal_payload: r.embedded_raw_normal_payload,
         embedded_needs_uv2: r.embedded_needs_uv2,
         embedded_needs_uv3: r.embedded_needs_uv3,
         embedded_needs_extended_vertex_streams: r.embedded_needs_extended_vertex_streams,
@@ -317,7 +335,10 @@ mod ui_rect_clip_tests {
     use crate::materials::host_data::{
         MaterialPropertyStore, MaterialPropertyValue, PropertyIdRegistry,
     };
-    use crate::materials::{MaterialRouter, RasterPipelineKind};
+    use crate::materials::{
+        MaterialRouter, RasterPipelineKind, UNITY_RENDER_QUEUE_GEOMETRY,
+        UNITY_RENDER_QUEUE_TRANSPARENT,
+    };
 
     struct Fixture {
         registry: PropertyIdRegistry,
@@ -434,5 +455,49 @@ mod ui_rect_clip_tests {
             key.embedded_tangent_fallback_mode,
             EmbeddedTangentFallbackMode::GenerateMissing
         );
+    }
+
+    #[test]
+    fn ui_stem_default_state_falls_back_to_transparent_queue() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(std::sync::Arc::from("ui_unlit_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&PropertyIdRegistry::new());
+
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+
+        assert!(resolved.alpha_blended);
+        assert_eq!(resolved.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
+        assert!(resolved.embedded_raw_tangent_payload);
+    }
+
+    #[test]
+    fn explicit_opaque_ui_blend_keeps_opaque_queue_fallback() {
+        let registry = PropertyIdRegistry::new();
+        let src = registry.intern("_SrcBlend");
+        let dst = registry.intern("_DstBlend");
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        store.set_material(7, src, MaterialPropertyValue::Float(1.0));
+        store.set_material(7, dst, MaterialPropertyValue::Float(0.0));
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(std::sync::Arc::from("ui_unlit_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&registry);
+
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+
+        assert!(!resolved.alpha_blended);
+        assert_eq!(resolved.render_queue, UNITY_RENDER_QUEUE_GEOMETRY);
     }
 }

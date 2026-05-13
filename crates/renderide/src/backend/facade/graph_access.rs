@@ -26,6 +26,7 @@ use crate::occlusion::OcclusionSystem;
 struct ViewAssetPrewarmRequests {
     uv1_stream_meshes: HashSet<i32>,
     tangent_stream_meshes: HashSet<i32>,
+    raw_tangent_stream_meshes: HashSet<i32>,
     tangent_fallback_modes: HashMap<i32, EmbeddedTangentFallbackMode>,
     uv2_stream_meshes: HashSet<i32>,
     uv3_stream_meshes: HashSet<i32>,
@@ -39,7 +40,9 @@ impl ViewAssetPrewarmRequests {
         if item.batch_key.embedded_needs_uv1 {
             self.uv1_stream_meshes.insert(item.mesh_asset_id);
         }
-        if item.batch_key.embedded_needs_tangent {
+        if item.batch_key.embedded_needs_tangent && item.batch_key.embedded_raw_tangent_payload {
+            self.raw_tangent_stream_meshes.insert(item.mesh_asset_id);
+        } else if item.batch_key.embedded_needs_tangent {
             self.tangent_stream_meshes.insert(item.mesh_asset_id);
             let mode = self
                 .tangent_fallback_modes
@@ -234,10 +237,11 @@ impl<'a> BackendGraphAccess<'a> {
         profiling::scope!("graph::pre_warm_view_assets");
         let requests = collect_view_asset_prewarm_requests(views);
         logger::trace!(
-            "graph pre-warm view assets: views={} uv1_stream_meshes={} tangent_stream_meshes={} generated_tangent_meshes={} uv2_stream_meshes={} uv3_stream_meshes={}",
+            "graph pre-warm view assets: views={} uv1_stream_meshes={} tangent_stream_meshes={} raw_tangent_stream_meshes={} generated_tangent_meshes={} uv2_stream_meshes={} uv3_stream_meshes={}",
             views.len(),
             requests.uv1_stream_meshes.len(),
             requests.tangent_stream_meshes.len(),
+            requests.raw_tangent_stream_meshes.len(),
             requests.generated_tangent_mesh_count(),
             requests.uv2_stream_meshes.len(),
             requests.uv3_stream_meshes.len(),
@@ -287,6 +291,12 @@ impl<'a> BackendGraphAccess<'a> {
                     mesh_asset_id,
                     requests.tangent_fallback_mode(mesh_asset_id),
                 );
+        }
+        for &mesh_asset_id in &requests.raw_tangent_stream_meshes {
+            let _ = self
+                .asset_transfers
+                .mesh_pool_mut()
+                .ensure_raw_tangent_vertex_stream(device, mesh_asset_id);
         }
         for &mesh_asset_id in &requests.uv2_stream_meshes {
             if mesh_ids_needing_all_extended_streams.contains(&mesh_asset_id) {

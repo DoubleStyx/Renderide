@@ -29,6 +29,6 @@ pub(in crate::assets::mesh) use streams::{
 };
 pub use streams::{
     attribute_offset_and_size, color_float4_stream_bytes,
-    extract_float3_position_normal_as_vec4_streams, uv0_float2_stream_bytes,
-    vertex_float2_stream_bytes,
+    extract_float3_position_normal_as_vec4_streams, raw_float4_stream_bytes,
+    uv0_float2_stream_bytes, vertex_float2_stream_bytes,
 };

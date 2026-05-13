@@ -136,6 +136,17 @@ impl MeshPool {
         })
     }
 
+    /// Lazily creates the raw tangent payload buffer for UI shaders declaring `@location(4)`.
+    pub fn ensure_raw_tangent_vertex_stream(
+        &mut self,
+        device: &wgpu::Device,
+        asset_id: i32,
+    ) -> bool {
+        self.ensure_stream(asset_id, |mesh| {
+            mesh.ensure_raw_tangent_vertex_stream(device)
+        })
+    }
+
     /// Lazily creates the UV2 buffer for meshes drawn by shaders declaring `@location(6)`.
     pub fn ensure_uv2_vertex_stream(&mut self, device: &wgpu::Device, asset_id: i32) -> bool {
         self.ensure_stream(asset_id, |mesh| mesh.ensure_uv2_vertex_stream(device))
