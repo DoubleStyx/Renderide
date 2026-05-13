@@ -236,9 +236,9 @@ impl BuildProfile {
 
 fn default_renderer_path(profile: BuildProfile) -> PathBuf {
     let exe = if cfg!(windows) {
-        "renderide.exe"
+        "renderide-renderer.exe"
     } else {
-        "renderide"
+        "renderide-renderer"
     };
     PathBuf::from("target").join(profile.target_dir()).join(exe)
 }
@@ -267,9 +267,9 @@ fn renderide_next_to_this_test_binary() -> Option<PathBuf> {
         return None;
     }
     let candidate = profile_dir.join(if cfg!(windows) {
-        "renderide.exe"
+        "renderide-renderer.exe"
     } else {
-        "renderide"
+        "renderide-renderer"
     });
     candidate.is_file().then_some(candidate)
 }
@@ -344,9 +344,9 @@ mod cli_tests {
 
     fn expected_exe() -> &'static str {
         if cfg!(windows) {
-            "renderide.exe"
+            "renderide-renderer.exe"
         } else {
-            "renderide"
+            "renderide-renderer"
         }
     }
 }
