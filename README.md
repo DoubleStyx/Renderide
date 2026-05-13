@@ -41,7 +41,7 @@ The bootstrapper will launch the Resonite host and connect Renderide automatical
 
 - Enable validation layers in the config hud to get more detailed error messages for GPU crashes. Requires a restart.
 
-- Inspect logs in the `logs/` folder for panics, crashes, backtraces, and validation errors.
+- Renderer logs are timestamped files under `<logs-root>/renderer/`; local checkout runs normally use this repository's `logs/renderer/` folder. Release binaries use the current user's platform log directory (`$XDG_STATE_HOME/renderide/logs` or `~/.local/state/renderide/logs` on Linux, `~/Library/Logs/Renderide` on macOS, `%LOCALAPPDATA%\Renderide\logs` on Windows). Set `RENDERIDE_LOGS_ROOT` to override the root for all component logs. The Renderer config HUD also shows the selected log folder and includes an "Open log folder" button.
 
 - You can add Steam-style launch arguments after the bootstrapper to enable mods: `<path-to-bootstrapper> -LoadAssembly Libraries/ResoniteModLoader.dll`
 
