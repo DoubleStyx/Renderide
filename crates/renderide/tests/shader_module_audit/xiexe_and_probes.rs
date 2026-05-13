@@ -330,7 +330,6 @@ fn xiexe_static_stems_use_static_vertexlight_keyword_layout() -> io::Result<()> 
     for required in [
         "fn normal_map_enabled_for_layout(keyword_layout: u32) -> bool",
         "fn emission_map_enabled_for_layout(keyword_layout: u32) -> bool",
-        "if (static_vertexlight_layout(keyword_layout)) {\n        return false;\n    }\n    let c = xb::mat._EmissionColor.rgb;",
         "fn matcap_enabled_for_layout(keyword_layout: u32) -> bool",
         "fn reflection_uses_pbr_for_layout(keyword_layout: u32) -> bool",
     ] {

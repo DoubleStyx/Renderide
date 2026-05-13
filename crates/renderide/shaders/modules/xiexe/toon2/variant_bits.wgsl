@@ -203,23 +203,14 @@ fn normal_map_enabled_for_layout(keyword_layout: u32) -> bool {
     return kw_NORMAL_MAP_for_layout(keyword_layout);
 }
 
-/// True when the emission term should be evaluated for this material. Mirrors the
-/// `EMISSION_MAP` keyword and falls back to a non-black `_EmissionColor` so materials that
-/// drive emission purely through the color slider still light up.
+/// True when the emission term should be evaluated for this material.
 fn emission_map_enabled() -> bool {
     return emission_map_enabled_for_layout(XTOON_KEYWORD_LAYOUT_GENERIC);
 }
 
 /// True when the emission term should be evaluated for a selected keyword layout.
 fn emission_map_enabled_for_layout(keyword_layout: u32) -> bool {
-    if (kw_EMISSION_MAP_for_layout(keyword_layout)) {
-        return true;
-    }
-    if (static_vertexlight_layout(keyword_layout)) {
-        return false;
-    }
-    let c = xb::mat._EmissionColor.rgb;
-    return dot(c, c) > 1e-8;
+    return kw_EMISSION_MAP_for_layout(keyword_layout);
 }
 
 /// True when the metallic-gloss map should be sampled (expanded from `OCCLUSION_METALLIC`).
