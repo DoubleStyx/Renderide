@@ -1,6 +1,6 @@
 //! Adapter enumeration, scoring, and selection.
 //!
-//! Pure scoring policy ([`power_preference_score`], [`pick_adapter_index`]) plus
+//! Pure scoring policy ([`power_preference_score`], adapter attempt ranking) plus
 //! the IO-bearing wrappers ([`build_wgpu_instance`], [`select_adapter`]) that drive
 //! [`crate::gpu::GpuContext`] construction. Kept separate from device creation so the
 //! ranking rules can be exercised by unit tests without a live wgpu device.
@@ -29,29 +29,26 @@ pub(crate) fn power_preference_score(
     }
 }
 
-/// Returns the index of the best compatible adapter, or [`None`] if none pass `is_compatible`.
+/// Returns compatible adapter indices in the order they should be attempted.
 ///
 /// Ranking uses [`power_preference_score`]; ties break on enumeration order so the result is
 /// deterministic given the same adapter list.
-fn pick_adapter_index<F>(
-    adapters: &[wgpu::Adapter],
+fn ranked_compatible_adapter_indices<F, G>(
+    adapter_count: usize,
     is_compatible: F,
+    device_type: G,
     power_preference: wgpu::PowerPreference,
-) -> Option<usize>
+) -> Vec<usize>
 where
-    F: Fn(&wgpu::Adapter) -> bool,
+    F: Fn(usize) -> bool,
+    G: Fn(usize) -> wgpu::DeviceType,
 {
-    adapters
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| is_compatible(a))
-        .min_by_key(|(i, a)| {
-            (
-                power_preference_score(a.get_info().device_type, power_preference),
-                *i,
-            )
-        })
-        .map(|(i, _)| i)
+    let mut indices = (0..adapter_count)
+        .filter(|&i| is_compatible(i))
+        .collect::<Vec<_>>();
+    indices
+        .sort_unstable_by_key(|&i| (power_preference_score(device_type(i), power_preference), i));
+    indices
 }
 
 /// Logs every enumerated adapter at info level so users can see what wgpu found and why one was chosen.
@@ -106,17 +103,11 @@ pub(crate) async fn select_adapter(
     power_preference: wgpu::PowerPreference,
     active_backends: wgpu::Backends,
 ) -> Result<wgpu::Adapter, GpuError> {
-    let adapters = instance.enumerate_adapters(active_backends).await;
-    log_adapter_candidates(active_backends, &adapters);
-    let chosen = match surface {
-        Some(s) => pick_adapter_index(&adapters, |a| a.is_surface_supported(s), power_preference),
-        None => pick_adapter_index(&adapters, |_| true, power_preference),
-    }
-    .ok_or_else(|| adapter_not_found_error(surface, adapters.len(), active_backends))?;
+    let adapters = select_adapters(instance, surface, power_preference, active_backends).await?;
     let adapter = adapters
         .into_iter()
-        .nth(chosen)
-        .ok_or_else(|| GpuError::Adapter("adapter index out of range".into()))?;
+        .next()
+        .ok_or_else(|| GpuError::Adapter("adapter list unexpectedly empty".into()))?;
     let info = adapter.get_info();
     let label = if surface.is_some() {
         "wgpu adapter selected"
@@ -131,6 +122,46 @@ pub(crate) async fn select_adapter(
         power_preference,
     );
     Ok(adapter)
+}
+
+/// Enumerates adapters, logs all candidates, and returns every compatible adapter in attempt order.
+///
+/// When `surface` is [`Some`], adapters that cannot present to it are filtered out. Callers that
+/// need runtime validation beyond [`wgpu::Adapter::is_surface_supported`] can try each returned
+/// adapter until device creation and surface configuration both succeed.
+pub(crate) async fn select_adapters(
+    instance: &wgpu::Instance,
+    surface: Option<&wgpu::Surface<'_>>,
+    power_preference: wgpu::PowerPreference,
+    active_backends: wgpu::Backends,
+) -> Result<Vec<wgpu::Adapter>, GpuError> {
+    let adapters = instance.enumerate_adapters(active_backends).await;
+    log_adapter_candidates(active_backends, &adapters);
+    let ranked_indices = match surface {
+        Some(s) => ranked_compatible_adapter_indices(
+            adapters.len(),
+            |i| adapters[i].is_surface_supported(s),
+            |i| adapters[i].get_info().device_type,
+            power_preference,
+        ),
+        None => ranked_compatible_adapter_indices(
+            adapters.len(),
+            |_| true,
+            |i| adapters[i].get_info().device_type,
+            power_preference,
+        ),
+    };
+    if ranked_indices.is_empty() {
+        return Err(adapter_not_found_error(
+            surface,
+            adapters.len(),
+            active_backends,
+        ));
+    }
+    Ok(ranked_indices
+        .into_iter()
+        .map(|i| adapters[i].clone())
+        .collect())
 }
 
 /// Builds the user-facing adapter-selection failure for the active path.
@@ -216,5 +247,78 @@ mod tests {
 
         assert!(error.contains("no headless adapter found"));
         assert!(error.contains("supported wgpu backend"));
+    }
+
+    #[test]
+    fn high_performance_ranked_attempt_order_prefers_discrete() {
+        let types = [
+            wgpu::DeviceType::IntegratedGpu,
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::Cpu,
+        ];
+
+        let ranked = ranked_compatible_adapter_indices(
+            types.len(),
+            |_| true,
+            |i| types[i],
+            wgpu::PowerPreference::HighPerformance,
+        );
+
+        assert_eq!(ranked, vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn low_power_ranked_attempt_order_prefers_integrated() {
+        let types = [
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::IntegratedGpu,
+            wgpu::DeviceType::Cpu,
+        ];
+
+        let ranked = ranked_compatible_adapter_indices(
+            types.len(),
+            |_| true,
+            |i| types[i],
+            wgpu::PowerPreference::LowPower,
+        );
+
+        assert_eq!(ranked, vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn ranked_attempt_order_excludes_incompatible_candidates() {
+        let types = [
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::IntegratedGpu,
+            wgpu::DeviceType::VirtualGpu,
+        ];
+        let compatible = [false, true, true];
+
+        let ranked = ranked_compatible_adapter_indices(
+            types.len(),
+            |i| compatible[i],
+            |i| types[i],
+            wgpu::PowerPreference::HighPerformance,
+        );
+
+        assert_eq!(ranked, vec![1, 2]);
+    }
+
+    #[test]
+    fn ranked_attempt_order_keeps_enumeration_order_for_ties() {
+        let types = [
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::DiscreteGpu,
+        ];
+
+        let ranked = ranked_compatible_adapter_indices(
+            types.len(),
+            |_| true,
+            |i| types[i],
+            wgpu::PowerPreference::HighPerformance,
+        );
+
+        assert_eq!(ranked, vec![0, 1, 2]);
     }
 }

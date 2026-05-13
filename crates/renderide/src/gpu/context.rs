@@ -67,6 +67,13 @@ pub struct GpuContext {
     /// must outlive this value (owned alongside it in the app handler). [`None`] in headless mode
     /// (see [`Self::new_headless`]).
     surface: Option<wgpu::Surface<'static>>,
+    /// Whether the active window surface has successfully completed [`wgpu::Surface::configure`].
+    ///
+    /// wgpu leaves a surface unconfigured when configure reports a validation error. Presentation
+    /// paths must check this before calling [`wgpu::Surface::get_current_texture`], because an
+    /// unconfigured surface can otherwise be reported as a fatal error by backends that have not
+    /// installed a surface error sink yet.
+    surface_configured: bool,
     /// Surface configuration. In headless mode this is synthesized to describe the offscreen color
     /// format and target extent so [`Self::config_format`] / [`Self::surface_extent_px`] still
     /// return useful values.
@@ -105,6 +112,9 @@ pub enum GpuError {
     /// Surface could not be created from the window.
     #[error("create_surface failed: {0}")]
     Surface(String),
+    /// Surface could not be configured for presentation.
+    #[error("surface configure failed: {0}")]
+    SurfaceConfigure(String),
     /// Dedicated renderer-driver thread could not be spawned.
     #[error("driver thread spawn failed: {0}")]
     DriverThreadSpawn(#[source] std::io::Error),

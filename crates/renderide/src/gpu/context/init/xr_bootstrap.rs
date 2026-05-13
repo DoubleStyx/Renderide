@@ -52,7 +52,8 @@ impl GpuContext {
             .ok_or(GpuError::SurfaceUnsupported)?;
         config.present_mode = vsync.resolve_present_mode(&supported_present_modes);
         config.desired_maximum_frame_latency = max_frame_latency;
-        surface_safe.configure(&device, &config);
+        GpuContext::configure_surface_checked(&surface_safe, device.as_ref(), &config)
+            .map_err(GpuError::SurfaceConfigure)?;
         let adapter_info = adapter.get_info();
         let limits = GpuLimits::try_new(device.as_ref(), adapter)?;
         let depth_stencil_format = crate::gpu::main_forward_depth_stencil_format(device.features());

@@ -6,6 +6,47 @@ use crate::config::VsyncMode;
 use super::GpuContext;
 
 impl GpuContext {
+    /// Configures `surface` and reports wgpu validation/internal/OOM errors to the caller.
+    pub(super) fn configure_surface_checked(
+        surface: &wgpu::Surface<'_>,
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> Result<(), String> {
+        let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        surface.configure(device, config);
+        let validation_error = pollster::block_on(validation_scope.pop());
+        let internal_error = pollster::block_on(internal_scope.pop());
+        let out_of_memory_error = pollster::block_on(out_of_memory_scope.pop());
+        validation_error
+            .or(internal_error)
+            .or(out_of_memory_error)
+            .map_or(Ok(()), |error| Err(format_wgpu_error(error)))
+    }
+
+    fn configure_current_surface(&mut self) -> Result<(), String> {
+        if self.surface.is_none() {
+            self.surface_configured = false;
+            return Ok(());
+        }
+        self.wait_for_previous_present();
+        let Some(surface) = self.surface.as_ref() else {
+            self.surface_configured = false;
+            return Ok(());
+        };
+        match Self::configure_surface_checked(surface, &self.device, &self.config) {
+            Ok(()) => {
+                self.surface_configured = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.surface_configured = false;
+                Err(error)
+            }
+        }
+    }
+
     /// Updates the swapchain present mode and reconfigures the surface (hot-reload from settings).
     ///
     /// Resolves [`VsyncMode`] against the surface's actual capabilities via
@@ -15,14 +56,24 @@ impl GpuContext {
     /// from the runtime are cheap.
     pub fn set_present_mode(&mut self, mode: VsyncMode) {
         let resolved = mode.resolve_present_mode(&self.supported_present_modes);
-        if self.config.present_mode == resolved {
+        if self.config.present_mode == resolved
+            && (self.surface.is_none() || self.surface_configured)
+        {
             return;
         }
         let previous = self.config.present_mode;
         self.config.present_mode = resolved;
-        if let Some(surface) = self.surface.as_ref() {
-            self.wait_for_previous_present();
-            surface.configure(&self.device, &self.config);
+        if let Err(error) = self.configure_current_surface() {
+            logger::warn!(
+                "Present mode reconfigure failed: {:?} -> {:?} (vsync={:?} extent={}x{} format={:?}): {error}",
+                previous,
+                self.config.present_mode,
+                mode,
+                self.config.width,
+                self.config.height,
+                self.config.format,
+            );
+            return;
         }
         logger::info!(
             "Present mode set: {:?} -> {:?} (vsync={:?} extent={}x{} format={:?})",
@@ -47,12 +98,20 @@ impl GpuContext {
         let old = (self.config.width, self.config.height);
         self.config.width = width.max(1);
         self.config.height = height.max(1);
-        if let Some(surface) = self.surface.as_ref() {
-            self.wait_for_previous_present();
-            surface.configure(&self.device, &self.config);
-        }
         self.depth_attachment = None;
         self.depth_extent_px = (0, 0);
+        if let Err(error) = self.configure_current_surface() {
+            logger::warn!(
+                "Surface reconfigure failed: old_extent={}x{} new_extent={}x{} format={:?} present_mode={:?}: {error}",
+                old.0,
+                old.1,
+                self.config.width,
+                self.config.height,
+                self.config.format,
+                self.config.present_mode,
+            );
+            return;
+        }
         logger::info!(
             "Surface reconfigured: old_extent={}x{} new_extent={}x{} format={:?} present_mode={:?}",
             old.0,
@@ -103,6 +162,10 @@ impl GpuContext {
         let Some(surface) = self.surface.as_ref() else {
             return Err(wgpu::CurrentSurfaceTexture::Lost);
         };
+        if !self.surface_configured {
+            logger::debug!("surface acquire skipped because the surface is not configured");
+            return Err(wgpu::CurrentSurfaceTexture::Validation);
+        }
         self.wait_for_previous_present();
         match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
@@ -118,6 +181,9 @@ impl GpuContext {
                 if let Some(s) = size {
                     self.reconfigure(s.width, s.height);
                 }
+                if !self.surface_configured {
+                    return Err(wgpu::CurrentSurfaceTexture::Validation);
+                }
                 let Some(surface) = self.surface.as_ref() else {
                     return Err(wgpu::CurrentSurfaceTexture::Lost);
                 };
@@ -128,6 +194,24 @@ impl GpuContext {
                 }
             }
             other => Err(other),
+        }
+    }
+}
+
+fn format_wgpu_error(error: wgpu::Error) -> String {
+    match error {
+        wgpu::Error::OutOfMemory { source } => format!("out of memory ({source})"),
+        wgpu::Error::Validation {
+            description,
+            source,
+        } => {
+            format!("{description} ({source})")
+        }
+        wgpu::Error::Internal {
+            description,
+            source,
+        } => {
+            format!("{description} ({source})")
         }
     }
 }

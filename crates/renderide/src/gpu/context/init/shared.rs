@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use winit::window::Window;
 
 use super::super::super::adapter::msaa_support::MsaaSupport;
-use super::super::super::adapter::selection::{build_wgpu_instance, select_adapter};
+use super::super::super::adapter::selection::{
+    build_wgpu_instance, select_adapter, select_adapters,
+};
 use super::super::super::limits::GpuLimits;
 use super::super::super::profiling::frame_bracket::FrameBracket;
 use super::super::super::profiling::frame_cpu_gpu_timing::{
@@ -96,8 +98,8 @@ pub(super) struct WindowAdapterSelection {
     pub(super) active_backends: wgpu::Backends,
     /// Surface created from the same wgpu instance used for adapter selection.
     pub(super) surface: wgpu::Surface<'static>,
-    /// Selected adapter.
-    pub(super) adapter: wgpu::Adapter,
+    /// Compatible adapters in the order the windowed path should attempt them.
+    pub(super) adapters: Vec<wgpu::Adapter>,
 }
 
 #[derive(Clone, Copy)]
@@ -185,6 +187,7 @@ pub(super) fn assemble_context(parts: GpuContextParts) -> GpuContext {
         mapped_buffer_recovery: super::super::mapped_buffer_recovery::GpuMappedBufferRecovery::new(
             parts.mapped_buffer_health,
         ),
+        surface_configured: parts.surface.is_some(),
         surface: parts.surface,
         config: parts.config,
         supported_present_modes: parts.supported_present_modes,
@@ -195,13 +198,13 @@ pub(super) fn assemble_context(parts: GpuContextParts) -> GpuContext {
     }
 }
 
-pub(super) async fn select_window_adapter_with_fallback(
+pub(super) async fn select_window_adapters_with_fallback(
     window: &Arc<dyn Window>,
     graphics_api: GraphicsApiSetting,
     gpu_validation_layers: bool,
     power_preference: wgpu::PowerPreference,
 ) -> Result<WindowAdapterSelection, GpuError> {
-    match select_window_adapter(
+    match select_window_adapters(
         window,
         graphics_api,
         gpu_validation_layers,
@@ -215,7 +218,7 @@ pub(super) async fn select_window_adapter_with_fallback(
                 "Configured graphics_api={} did not produce a compatible windowed adapter: {error}. Retrying with graphics_api=auto.",
                 graphics_api.as_persist_str()
             );
-            select_window_adapter(
+            select_window_adapters(
                 window,
                 GraphicsApiSetting::Auto,
                 gpu_validation_layers,
@@ -227,7 +230,7 @@ pub(super) async fn select_window_adapter_with_fallback(
     }
 }
 
-async fn select_window_adapter(
+async fn select_window_adapters(
     window: &Arc<dyn Window>,
     graphics_api: GraphicsApiSetting,
     gpu_validation_layers: bool,
@@ -242,15 +245,15 @@ async fn select_window_adapter(
         .create_surface(Arc::clone(window))
         .map_err(|e| GpuError::Surface(format!("{e:?}")))?;
 
-    let adapter =
-        select_adapter(&instance, Some(&surface), power_preference, active_backends).await?;
+    let adapters =
+        select_adapters(&instance, Some(&surface), power_preference, active_backends).await?;
 
     Ok(WindowAdapterSelection {
         graphics_api,
         instance_flags,
         active_backends,
         surface,
-        adapter,
+        adapters,
     })
 }
 
