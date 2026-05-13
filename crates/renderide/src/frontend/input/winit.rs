@@ -47,11 +47,11 @@ pub fn apply_window_event(
         }
         WindowEvent::PointerEntered { .. } => {
             profiling::scope!("frontend::window_event", "cursor_entered");
-            let _ = apply_mouse_pointer_presence(acc, event);
+            let _ = apply_mouse_pointer_enter(acc, window.scale_factor(), event);
         }
         WindowEvent::PointerLeft { .. } => {
             profiling::scope!("frontend::window_event", "cursor_left");
-            let _ = apply_mouse_pointer_presence(acc, event);
+            let _ = apply_mouse_pointer_left(acc, window.scale_factor(), event);
         }
         WindowEvent::Focused(focused) => {
             profiling::scope!("frontend::window_event", "focus");
@@ -70,7 +70,7 @@ pub fn apply_window_event(
             ..
         } => {
             profiling::scope!("frontend::window_event", "mouse_button");
-            apply_mouse_button(acc, *state, *mouse_button);
+            apply_mouse_button(acc, window.scale_factor(), event, *state, *mouse_button);
         }
         WindowEvent::MouseWheel { delta, .. } => {
             profiling::scope!("frontend::window_event", "scroll");
@@ -120,22 +120,43 @@ fn apply_mouse_pointer_move(
         return false;
     }
     acc.set_cursor_from_physical(*position, scale_factor);
+    acc.mouse_active = true;
     true
 }
 
-fn apply_mouse_pointer_presence(acc: &mut WindowInputAccumulator, event: &WindowEvent) -> bool {
+fn apply_mouse_pointer_enter(
+    acc: &mut WindowInputAccumulator,
+    scale_factor: f64,
+    event: &WindowEvent,
+) -> bool {
     match event {
         WindowEvent::PointerEntered {
+            position,
             kind: PointerKind::Mouse,
             ..
         } => {
+            acc.set_cursor_from_physical(*position, scale_factor);
             acc.mouse_active = true;
             true
         }
+        _ => false,
+    }
+}
+
+fn apply_mouse_pointer_left(
+    acc: &mut WindowInputAccumulator,
+    scale_factor: f64,
+    event: &WindowEvent,
+) -> bool {
+    match event {
         WindowEvent::PointerLeft {
+            position,
             kind: PointerKind::Mouse,
             ..
         } => {
+            if let Some(position) = position {
+                acc.set_cursor_from_physical(*position, scale_factor);
+            }
             acc.mouse_active = false;
             true
         }
@@ -156,7 +177,17 @@ fn apply_drag_dropped_paths(
 }
 
 /// Updates per-button held flags for a [`WindowEvent::PointerButton`].
-fn apply_mouse_button(acc: &mut WindowInputAccumulator, state: ElementState, button: MouseButton) {
+fn apply_mouse_button(
+    acc: &mut WindowInputAccumulator,
+    scale_factor: f64,
+    event: &WindowEvent,
+    state: ElementState,
+    button: MouseButton,
+) {
+    if let WindowEvent::PointerButton { position, .. } = event {
+        acc.set_cursor_from_physical(*position, scale_factor);
+        acc.mouse_active = true;
+    }
     let Some(transition) = mouse_button_transition(state, button) else {
         return;
     };
@@ -221,10 +252,14 @@ mod tests {
     use glam::{IVec2, Vec2};
     use winit::dpi::PhysicalPosition;
     use winit::event::{
-        DeviceId, FingerId, PointerSource, TabletToolData, TabletToolKind, WindowEvent,
+        ButtonSource, DeviceId, ElementState, FingerId, MouseButton, PointerKind, PointerSource,
+        TabletToolData, TabletToolKind, WindowEvent,
     };
 
-    use super::{apply_drag_dropped_paths, apply_mouse_pointer_move};
+    use super::{
+        apply_drag_dropped_paths, apply_mouse_button, apply_mouse_pointer_enter,
+        apply_mouse_pointer_left, apply_mouse_pointer_move,
+    };
     use crate::frontend::input::WindowInputAccumulator;
 
     fn pointer_moved(source: PointerSource) -> WindowEvent {
@@ -236,17 +271,46 @@ mod tests {
         }
     }
 
+    fn pointer_entered() -> WindowEvent {
+        WindowEvent::PointerEntered {
+            device_id: Some(DeviceId::from_raw(7)),
+            position: PhysicalPosition::new(24.0, 12.0),
+            primary: true,
+            kind: PointerKind::Mouse,
+        }
+    }
+
+    fn pointer_left(position: Option<PhysicalPosition<f64>>) -> WindowEvent {
+        WindowEvent::PointerLeft {
+            device_id: Some(DeviceId::from_raw(7)),
+            position,
+            primary: true,
+            kind: PointerKind::Mouse,
+        }
+    }
+
+    fn pointer_button(state: ElementState, button: MouseButton) -> WindowEvent {
+        WindowEvent::PointerButton {
+            device_id: Some(DeviceId::from_raw(7)),
+            state,
+            position: PhysicalPosition::new(28.0, 14.0),
+            primary: true,
+            button: ButtonSource::Mouse(button),
+        }
+    }
+
     #[test]
-    fn mouse_pointer_move_updates_cursor_position() {
+    fn mouse_pointer_move_updates_cursor_position_and_activates_mouse() {
         let mut acc = WindowInputAccumulator::default();
         let event = pointer_moved(PointerSource::Mouse);
 
         assert!(apply_mouse_pointer_move(&mut acc, 2.0, &event));
         assert_eq!(acc.window_position, Vec2::new(10.0, 5.0));
+        assert!(acc.mouse_active);
     }
 
     #[test]
-    fn non_mouse_pointer_move_does_not_update_cursor_position() {
+    fn non_mouse_pointer_move_does_not_update_cursor_position_or_activate_mouse() {
         for source in [
             PointerSource::Touch {
                 finger_id: FingerId::from_raw(1),
@@ -263,7 +327,48 @@ mod tests {
 
             assert!(!apply_mouse_pointer_move(&mut acc, 2.0, &event));
             assert_eq!(acc.window_position, Vec2::new(3.0, 4.0));
+            assert!(!acc.mouse_active);
         }
+    }
+
+    #[test]
+    fn mouse_pointer_enter_updates_cursor_position_and_activates_mouse() {
+        let mut acc = WindowInputAccumulator::default();
+        let event = pointer_entered();
+
+        assert!(apply_mouse_pointer_enter(&mut acc, 2.0, &event));
+        assert_eq!(acc.window_position, Vec2::new(12.0, 6.0));
+        assert!(acc.mouse_active);
+    }
+
+    #[test]
+    fn mouse_button_updates_cursor_position_activates_mouse_and_sets_button_state() {
+        let mut acc = WindowInputAccumulator::default();
+        let event = pointer_button(ElementState::Pressed, MouseButton::Left);
+
+        apply_mouse_button(
+            &mut acc,
+            2.0,
+            &event,
+            ElementState::Pressed,
+            MouseButton::Left,
+        );
+
+        assert_eq!(acc.window_position, Vec2::new(14.0, 7.0));
+        assert!(acc.mouse_active);
+        assert!(acc.left_held);
+    }
+
+    #[test]
+    fn mouse_pointer_left_updates_last_position_and_deactivates_mouse() {
+        let mut acc = WindowInputAccumulator::default();
+        acc.mouse_active = true;
+        acc.window_position = Vec2::new(1.0, 2.0);
+        let event = pointer_left(Some(PhysicalPosition::new(30.0, 16.0)));
+
+        assert!(apply_mouse_pointer_left(&mut acc, 2.0, &event));
+        assert_eq!(acc.window_position, Vec2::new(15.0, 8.0));
+        assert!(!acc.mouse_active);
     }
 
     #[test]
