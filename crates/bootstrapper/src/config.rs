@@ -80,7 +80,7 @@ impl ResoBootConfig {
             .unwrap_or_else(|| current_directory.clone());
         let renderite_directory = exe_dir.clone();
         let renderite_executable = exe_dir.join(if cfg!(windows) {
-            "renderide.exe"
+            "renderide-renderer.exe"
         } else {
             "Renderite.Renderer"
         });
@@ -152,7 +152,7 @@ mod tests {
             .and_then(|n| n.to_str())
             .expect("file name");
         if cfg!(windows) {
-            assert_eq!(exe_name, "renderide.exe");
+            assert_eq!(exe_name, "renderide-renderer.exe");
         } else {
             assert_eq!(exe_name, "Renderite.Renderer");
         }

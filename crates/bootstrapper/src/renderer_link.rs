@@ -22,7 +22,7 @@ pub fn ensure_link(config: &ResoBootConfig) {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let symlink = &config.renderite_executable;
-        let target = config.renderite_directory.join("renderide");
+        let target = config.renderite_directory.join("renderide-renderer");
         let needs_renderer_stub = target.exists() && {
             #[cfg(target_os = "linux")]
             {
@@ -75,7 +75,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("bootstrapper_stub_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
-        let target = tmp.join("renderide");
+        let target = tmp.join("renderide-renderer");
         fs::write(&target, b"").unwrap();
         let link = tmp.join("Renderite.Renderer");
         let c = cfg_with_dirs(&tmp, &link);
@@ -91,7 +91,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("bootstrapper_stub2_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
-        let target = tmp.join("renderide");
+        let target = tmp.join("renderide-renderer");
         fs::write(&target, b"").unwrap();
         let link = tmp.join("Renderite.Renderer");
         std::os::unix::fs::symlink(tmp.join("wrong"), &link).unwrap();
@@ -145,7 +145,7 @@ mod tests_macos {
             std::env::temp_dir().join(format!("bootstrapper_stub_mac_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
-        let target = tmp.join("renderide");
+        let target = tmp.join("renderide-renderer");
         fs::write(&target, b"bin").unwrap();
         let link = tmp.join("Renderite.Renderer");
         let c = cfg_with_dirs(&tmp, &link);
