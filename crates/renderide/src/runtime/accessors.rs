@@ -132,6 +132,7 @@ impl RendererRuntime {
                 queue,
                 gpu_queue_access_gate,
                 gpu_limits: Arc::clone(gpu.limits()),
+                mapped_buffer_health: gpu.mapped_buffer_health(),
                 surface_format: gpu.config_format(),
                 renderer_settings,
                 config_save_path,

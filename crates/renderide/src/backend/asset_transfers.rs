@@ -24,7 +24,7 @@ mod video_runtime;
 
 use std::sync::Arc;
 
-use crate::gpu::GpuLimits;
+use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::gpu_pools::{
     CubemapPool, GpuVideoTexture, MeshPool, RenderTexturePool, Texture3dPool, TexturePool,
     VideoTexturePool,
@@ -93,8 +93,10 @@ impl AssetTransferQueue {
         queue: Arc<wgpu::Queue>,
         gate: crate::gpu::GpuQueueAccessGate,
         limits: Arc<GpuLimits>,
+        mapped_buffer_health: Arc<GpuMappedBufferHealth>,
     ) {
-        self.gpu.attach(device, queue, gate, limits);
+        self.gpu
+            .attach(device, queue, gate, limits, mapped_buffer_health);
     }
 
     /// Resident mesh pool.

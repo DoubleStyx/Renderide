@@ -5,8 +5,9 @@ mod layout;
 #[cfg(test)]
 mod layout_tests;
 
-pub use gpu_mesh::{
-    GpuMesh, compute_and_validate_mesh_layout, mesh_upload_input_fingerprint,
+pub use gpu_mesh::GpuMesh;
+pub(crate) use gpu_mesh::{
+    MeshGpuUploadContext, compute_and_validate_mesh_layout, mesh_upload_input_fingerprint,
     try_upload_mesh_from_raw,
 };
 pub use layout::{

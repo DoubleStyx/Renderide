@@ -8,8 +8,9 @@ mod update;
 mod upload;
 mod validation;
 
-pub use fingerprint::mesh_upload_input_fingerprint;
-pub use validation::{compute_and_validate_mesh_layout, try_upload_mesh_from_raw};
+pub(crate) use fingerprint::mesh_upload_input_fingerprint;
+pub(crate) use upload::MeshGpuUploadContext;
+pub(crate) use validation::{compute_and_validate_mesh_layout, try_upload_mesh_from_raw};
 
 use std::fmt;
 use std::sync::Arc;
@@ -27,8 +28,6 @@ use super::layout::{
     uv0_float2_stream_bytes, vertex_float2_stream_bytes,
 };
 use tangent_generation::{TangentStreamSource, tangent_stream_bytes};
-
-use crate::gpu::GpuLimits;
 
 use upload::{
     create_core_vertex_index_buffers, extract_derived_vertex_streams, padded_sparse_bytes,
@@ -633,17 +632,16 @@ impl GpuMesh {
     ///
     /// `raw` must be the mapping for `data.buffer` only for the duration of this call.
     pub fn upload(
-        device: &wgpu::Device,
-        gpu_limits: &GpuLimits,
+        ctx: MeshGpuUploadContext<'_>,
         raw: &[u8],
         data: &MeshUploadData,
         layout: &MeshBufferLayout,
     ) -> Option<Self> {
         profiling::scope!("asset::mesh_full_gpu_upload");
-        let max_buf = gpu_limits.max_buffer_size();
+        let max_buf = ctx.gpu_limits.max_buffer_size();
         {
             profiling::scope!("asset::mesh_validate_upload_layout");
-            if !validate_mesh_upload_layout(raw, data, layout, gpu_limits) {
+            if !validate_mesh_upload_layout(raw, data, layout, ctx.gpu_limits) {
                 return None;
             }
         }
@@ -651,26 +649,18 @@ impl GpuMesh {
         let use_blendshapes =
             data.upload_hint.flags.blendshapes() && !data.blendshape_buffers.is_empty();
 
-        let core = create_core_vertex_index_buffers(device, raw, data, layout)?;
+        let core = create_core_vertex_index_buffers(ctx, raw, data, layout)?;
         let vc_usize = data.vertex_count.max(0) as usize;
 
-        let derived = extract_derived_vertex_streams(device, raw, data, layout, &core);
+        let derived = extract_derived_vertex_streams(ctx, raw, data, layout, &core)?;
         let extended_vertex_stream_source = {
             profiling::scope!("asset::mesh_capture_extended_stream_source");
             extended_vertex_stream_source_from_raw(raw, data, layout)
         };
 
-        let bone_skin = upload_bone_and_skin_buffers(device, raw, data, layout, vc_usize)?;
+        let bone_skin = upload_bone_and_skin_buffers(ctx, raw, data, layout, vc_usize)?;
 
-        let blend_up = upload_blendshape_buffer(
-            device,
-            gpu_limits,
-            raw,
-            data,
-            layout,
-            use_blendshapes,
-            max_buf,
-        );
+        let blend_up = upload_blendshape_buffer(ctx, raw, data, layout, use_blendshapes, max_buf)?;
         let num_blendshapes = blend_up.num_blendshapes;
 
         let (submeshes, submesh_topologies) = {

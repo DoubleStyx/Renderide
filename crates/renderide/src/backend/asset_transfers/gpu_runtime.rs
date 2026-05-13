@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::gpu::GpuLimits;
+use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 
 /// Device, queue, and limits captured after backend attach.
 #[derive(Default)]
@@ -15,6 +15,8 @@ pub(crate) struct AssetGpuRuntime {
     pub(crate) gpu_queue_access_gate: Option<crate::gpu::GpuQueueAccessGate>,
     /// Effective device limits snapshot.
     pub(crate) gpu_limits: Option<Arc<GpuLimits>>,
+    /// Shared mapped-buffer invalidation generation from the active GPU context.
+    pub(crate) mapped_buffer_health: Option<Arc<GpuMappedBufferHealth>>,
 }
 
 impl AssetGpuRuntime {
@@ -30,10 +32,12 @@ impl AssetGpuRuntime {
         queue: Arc<wgpu::Queue>,
         gate: crate::gpu::GpuQueueAccessGate,
         limits: Arc<GpuLimits>,
+        mapped_buffer_health: Arc<GpuMappedBufferHealth>,
     ) {
         self.gpu_device = Some(device);
         self.gpu_queue = Some(queue);
         self.gpu_queue_access_gate = Some(gate);
         self.gpu_limits = Some(limits);
+        self.mapped_buffer_health = Some(mapped_buffer_health);
     }
 }
