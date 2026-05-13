@@ -47,13 +47,30 @@ impl BlackboardSlot for AutoExposureSettingsSlot {
     type Value = AutoExposureSettingsValue;
 }
 
-/// Live auto-exposure settings and frame delta carried on the per-view blackboard.
+/// Live auto-exposure settings, frame delta, and adaptation policy carried on the per-view blackboard.
 #[derive(Clone, Copy, Debug)]
 pub struct AutoExposureSettingsValue {
     /// Current renderer-config auto-exposure settings.
     pub settings: crate::config::AutoExposureSettings,
     /// Wall-clock delta for temporal adaptation, in seconds.
     pub delta_seconds: f32,
+    /// Whether exposure should snap to the current metered target for this view.
+    pub instant_adaptation: bool,
+}
+
+impl AutoExposureSettingsValue {
+    /// Builds a per-view auto-exposure settings value from the live renderer settings.
+    pub(crate) fn for_view(
+        settings: crate::config::AutoExposureSettings,
+        delta_seconds: f32,
+        view_id: crate::camera::ViewId,
+    ) -> Self {
+        Self {
+            settings,
+            delta_seconds,
+            instant_adaptation: matches!(view_id, crate::camera::ViewId::CameraRenderTask(_)),
+        }
+    }
 }
 
 impl Default for AutoExposureSettingsValue {
@@ -61,6 +78,44 @@ impl Default for AutoExposureSettingsValue {
         Self {
             settings: crate::config::AutoExposureSettings::default(),
             delta_seconds: 1.0 / 60.0,
+            instant_adaptation: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::camera::ViewId;
+    use crate::config::AutoExposureSettings;
+    use crate::scene::RenderSpaceId;
+
+    use super::AutoExposureSettingsValue;
+
+    #[test]
+    fn camera_render_tasks_use_instant_auto_exposure_adaptation() {
+        let value = AutoExposureSettingsValue::for_view(
+            AutoExposureSettings::default(),
+            1.0 / 60.0,
+            ViewId::camera_render_task(RenderSpaceId(7), 0),
+        );
+
+        assert!(value.instant_adaptation);
+    }
+
+    #[test]
+    fn persistent_views_keep_temporal_auto_exposure_adaptation() {
+        let main = AutoExposureSettingsValue::for_view(
+            AutoExposureSettings::default(),
+            1.0 / 60.0,
+            ViewId::Main,
+        );
+        let secondary = AutoExposureSettingsValue::for_view(
+            AutoExposureSettings::default(),
+            1.0 / 60.0,
+            ViewId::secondary_camera(RenderSpaceId(7), 3),
+        );
+
+        assert!(!main.instant_adaptation);
+        assert!(!secondary.instant_adaptation);
     }
 }

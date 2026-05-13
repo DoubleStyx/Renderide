@@ -18,7 +18,7 @@ struct AutoExposureParams {
     target_ev: f32,
     delta_time_seconds: f32,
     layer_count: u32,
-    _pad: u32,
+    instant_adaptation: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: AutoExposureParams;
@@ -67,6 +67,9 @@ fn compute_histogram(
 }
 
 fn adapt_exposure(current: f32, target_ev: f32) -> f32 {
+    if (params.instant_adaptation != 0u) {
+        return target_ev;
+    }
     let delta = target_ev - current;
     if (delta > 0.0) {
         let speed = params.speed_brighten * params.delta_time_seconds;
