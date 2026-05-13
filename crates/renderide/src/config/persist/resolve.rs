@@ -295,9 +295,8 @@ pub(super) fn legacy_search_candidates() -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::Mutex;
 
-    static CWD_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static RESOLVE_STATE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     /// Restores test resolution overrides when dropped so other tests see normal resolution.
     struct UserConfigOverride {
@@ -400,6 +399,7 @@ mod tests {
 
     #[test]
     fn save_path_defaults_to_user_config_path() {
+        let _state_guard = RESOLVE_STATE_TEST_LOCK.lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let user_config = dir.path().join("user-config").join(FILE_NAME_TOML);
         let _iso = UserConfigOverride::new(user_config.clone());
@@ -415,6 +415,7 @@ mod tests {
 
     #[test]
     fn resolve_config_path_env_file_wins_over_user_config() {
+        let _state_guard = RESOLVE_STATE_TEST_LOCK.lock();
         let _env_guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
         let dir = tempfile::tempdir().expect("tempdir");
         let env_path = dir.path().join("env-config.toml");
@@ -440,7 +441,7 @@ mod tests {
 
     #[test]
     fn load_creates_default_config_in_user_dir() {
-        let _guard = CWD_TEST_LOCK.lock().expect("lock");
+        let _state_guard = RESOLVE_STATE_TEST_LOCK.lock();
         let _env_guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
         // SAFETY: env mutation in test; serialized via CONFIG_ENV_TEST_LOCK.
         unsafe {
@@ -470,7 +471,7 @@ mod tests {
 
     #[test]
     fn invalid_env_override_blocks_default_creation_and_migration() {
-        let _guard = CWD_TEST_LOCK.lock().expect("lock");
+        let _state_guard = RESOLVE_STATE_TEST_LOCK.lock();
         let _env_guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -501,7 +502,7 @@ mod tests {
 
     #[test]
     fn existing_user_config_prevents_legacy_migration() {
-        let _guard = CWD_TEST_LOCK.lock().expect("lock");
+        let _state_guard = RESOLVE_STATE_TEST_LOCK.lock();
         let _env_guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
         // SAFETY: env mutation in test; serialized via CONFIG_ENV_TEST_LOCK.
         unsafe {
@@ -542,7 +543,7 @@ mod tests {
 
     #[test]
     fn load_migrates_legacy_config_from_binary_dir() {
-        let _guard = CWD_TEST_LOCK.lock().expect("lock");
+        let _state_guard = RESOLVE_STATE_TEST_LOCK.lock();
         let _env_guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
         // SAFETY: env mutation in test; serialized via CONFIG_ENV_TEST_LOCK.
         unsafe {
