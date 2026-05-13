@@ -216,6 +216,7 @@ impl XrSessionState {
     pub(crate) fn build_projection_finalize(
         &self,
         swapchain: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
+        imported_color_texture: wgpu::Texture,
         predicted_display_time: xr::Time,
         views: [xr::View; 2],
         rect: xr::Rect2Di,
@@ -226,6 +227,7 @@ impl XrSessionState {
         let (signal, rx) = crate::gpu::driver_thread::XrFinalizeSignal::new();
         let payload = crate::gpu::driver_thread::XrProjectionFinalize {
             swapchain,
+            imported_color_texture: Some(imported_color_texture),
             frame_stream: Arc::clone(&self.frame_stream),
             stage: Arc::clone(&self.stage),
             env_blend_mode: self.environment_blend_mode,

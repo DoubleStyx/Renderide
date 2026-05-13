@@ -1,10 +1,12 @@
-//! OpenXR stereo swapchain images imported as wgpu [`wgpu::Texture`] / array [`wgpu::TextureView`].
+//! OpenXR stereo swapchain images imported into wgpu for the acquired frame.
 //!
 //! These images are always created with `sample_count = 1` and act as the **resolve** target for
 //! the stereo forward pass when [`crate::gpu::GpuContext::swapchain_msaa_effective_stereo`] > 1.
 //! The multisampled 2-layer `D2Array` color and depth targets live as graph-owned transient
 //! textures (`scene_color_hdr_msaa` / `forward_msaa_depth`) and resolve into this swapchain each
-//! frame so the compositor and VR mirror always see a single-sample image.
+//! frame so the compositor and VR mirror always see a single-sample image. Each acquired
+//! OpenXR-owned `VkImage` is wrapped in wgpu only for the current acquire/release interval so
+//! wgpu's Vulkan layout tracker cannot carry stale state across compositor ownership handoffs.
 
 use std::sync::Arc;
 
@@ -39,38 +41,76 @@ pub enum XrSwapchainError {
     /// Device is not Vulkan / hal interop unavailable.
     #[error("wgpu device is not Vulkan or as_hal failed")]
     NotVulkanHal,
+    /// OpenXR returned a swapchain image index outside the enumerated image table.
+    #[error("OpenXR swapchain image index {index} out of range for {image_count} image(s)")]
+    ImageIndexOutOfRange {
+        /// Image index returned by `xrAcquireSwapchainImage`.
+        index: u32,
+        /// Number of images returned by `xrEnumerateSwapchainImages`.
+        image_count: u32,
+    },
 }
 
-/// OpenXR swapchain plus one wgpu texture + D2Array view per swapchain image.
-///
-/// Field order is load-bearing: `wgpu_buffers` must drop before `handle` so the wgpu
-/// `Texture` Drops (which run as no-ops with respect to `VkImage` thanks to the
-/// drop_callback passed in [`import_openxr_swapchain_image`]) release wgpu's internal
-/// bookkeeping before `xrDestroySwapchain` frees the underlying images.
+/// OpenXR swapchain plus raw Vulkan image handles enumerated from the runtime.
 pub struct XrStereoSwapchain {
-    /// One entry per swapchain buffer index. wgpu does **not** call `vkDestroyImage` on
-    /// these textures (see the drop_callback in [`import_openxr_swapchain_image`]); the
-    /// underlying `VkImage`s are owned by the OpenXR runtime and freed via
-    /// `xrDestroySwapchain` when [`Self::handle`] drops.
-    pub wgpu_buffers: Vec<(wgpu::Texture, wgpu::TextureView)>,
+    images: Vec<vk::Image>,
     /// Per-eye rectangle size in pixels.
     pub resolution: (u32, u32),
     /// Runtime swapchain handle (acquire / release / composition). Behind a [`Mutex`]
     /// so the driver thread can release the image and reference the swapchain in the
-    /// projection layer for `xrEndFrame` while the main thread retains shared
-    /// ownership across ticks. Declared last so it drops after `wgpu_buffers`: the
-    /// runtime is the sole owner of the underlying `VkImage`s and frees them on
-    /// `xrDestroySwapchain`.
+    /// projection layer for `xrEndFrame` while the main thread retains shared ownership
+    /// across ticks. The runtime is the sole owner of the underlying `VkImage`s and frees
+    /// them on `xrDestroySwapchain`.
     pub handle: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
 }
 
+/// Per-frame wgpu wrapper for an acquired OpenXR swapchain image.
+///
+/// The wrapper owns the imported wgpu texture and its two-layer array view. It must stay alive
+/// until all command buffers referencing the acquired image have been submitted to the GPU queue.
+/// The OpenXR runtime owns the underlying `VkImage`; dropping this value only releases wgpu's
+/// tracking wrapper.
+pub struct XrAcquiredSwapchainImage {
+    texture: wgpu::Texture,
+    array_view: wgpu::TextureView,
+}
+
+impl XrAcquiredSwapchainImage {
+    /// Two-layer color target view used by the HMD multiview render graph.
+    pub fn array_view(&self) -> &wgpu::TextureView {
+        &self.array_view
+    }
+
+    /// Single-eye [`wgpu::TextureView`] (`D2`) for sampling one layer of the acquired image.
+    ///
+    /// `layer` must be `<` [`XR_VIEW_COUNT`] (0 = left, 1 = right).
+    pub fn color_layer_view(&self, layer: u32) -> Option<wgpu::TextureView> {
+        if layer >= XR_VIEW_COUNT {
+            return None;
+        }
+        let view = self.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("xr_swapchain_layer"),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_array_layer: layer,
+            array_layer_count: Some(1),
+            ..Default::default()
+        });
+        crate::profiling::note_resource_churn!(TextureView, "xr::swapchain_layer_view");
+        Some(view)
+    }
+
+    /// Consumes the acquired-image wrapper, leaving the imported wgpu texture alive.
+    pub fn into_texture(self) -> wgpu::Texture {
+        self.texture
+    }
+}
+
 impl XrStereoSwapchain {
-    /// Creates an OpenXR swapchain and imports each Vulkan image into wgpu.
+    /// Creates an OpenXR swapchain and records the runtime-owned Vulkan images.
     pub fn new(handles: &XrWgpuHandles) -> Result<Self, XrSwapchainError> {
         let session = handles.xr_session.xr_vulkan_session();
         let xr_instance = handles.xr_session.xr_instance();
         let system_id = handles.xr_system_id;
-        let device = handles.device.as_ref();
         let views = xr_instance.enumerate_view_configuration_views(
             system_id,
             xr::ViewConfigurationType::PRIMARY_STEREO,
@@ -91,8 +131,7 @@ impl XrStereoSwapchain {
 
         let handle = session.create_swapchain(&xr::SwapchainCreateInfo {
             create_flags: xr::SwapchainCreateFlags::EMPTY,
-            usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT
-                | xr::SwapchainUsageFlags::SAMPLED,
+            usage_flags: xr_swapchain_usage_flags(),
             format: XR_VK_FORMAT.as_raw() as u32,
             sample_count: 1,
             width: resolution.0,
@@ -111,65 +150,44 @@ impl XrStereoSwapchain {
             resolution.1,
             XR_VIEW_COUNT,
         );
-        let wgpu_buffers = import_openxr_swapchain_images(device, resolution, images)?;
+        let images = images.into_iter().map(vk::Image::from_raw).collect();
 
         Ok(Self {
-            wgpu_buffers,
+            images,
             resolution,
             handle: Arc::new(Mutex::new(handle)),
         })
     }
 
-    /// `wgpu` color array view for a swapchain image index from [`xr::Swapchain::acquire_image`].
-    pub fn color_view_for_image(&self, image_index: usize) -> Option<&wgpu::TextureView> {
-        self.wgpu_buffers.get(image_index).map(|(_, v)| v)
+    /// Number of runtime-owned images in the swapchain.
+    pub fn image_count(&self) -> usize {
+        self.images.len()
     }
 
-    /// Single-eye [`wgpu::TextureView`] (`D2`) for sampling one layer of the acquired swapchain image.
-    ///
-    /// `layer` must be `<` [`XR_VIEW_COUNT`] (0 = left, 1 = right).
-    pub fn color_layer_view_for_image(
+    /// Imports the acquired swapchain image into wgpu for the current frame.
+    pub fn import_acquired_image(
         &self,
+        device: &wgpu::Device,
         image_index: usize,
-        layer: u32,
-    ) -> Option<wgpu::TextureView> {
-        let (tex, _) = self.wgpu_buffers.get(image_index)?;
-        if layer >= XR_VIEW_COUNT {
-            return None;
-        }
-        let view = tex.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("xr_swapchain_layer"),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            base_array_layer: layer,
-            array_layer_count: Some(1),
-            ..Default::default()
-        });
-        crate::profiling::note_resource_churn!(TextureView, "xr::swapchain_layer_view");
-        Some(view)
-    }
-}
+    ) -> Result<XrAcquiredSwapchainImage, XrSwapchainError> {
+        let Some(vk_image) = self.images.get(image_index).copied() else {
+            return Err(XrSwapchainError::ImageIndexOutOfRange {
+                index: u32_saturating_from_usize(image_index),
+                image_count: u32_saturating_from_usize(self.images.len()),
+            });
+        };
 
-fn import_openxr_swapchain_images(
-    device: &wgpu::Device,
-    resolution: (u32, u32),
-    images: Vec<u64>,
-) -> Result<Vec<(wgpu::Texture, wgpu::TextureView)>, XrSwapchainError> {
-    // SAFETY: `XrWgpuHandles` is produced by XR bootstrap from the same Vulkan device used to
-    // create the OpenXR session, and this function is only called from `XrStereoSwapchain::new`.
-    let hal_device =
-        unsafe { device.as_hal::<HalVulkan>() }.ok_or(XrSwapchainError::NotVulkanHal)?;
-
-    let mut wgpu_buffers = Vec::with_capacity(images.len());
-    for vk_handle in images {
-        let vk_image = vk::Image::from_raw(vk_handle);
-        wgpu_buffers.push(import_openxr_swapchain_image(
+        // SAFETY: `XrWgpuHandles` is produced by XR bootstrap from the same Vulkan device used to
+        // create the OpenXR session, and `self.images` came from the session's swapchain.
+        let hal_device =
+            unsafe { device.as_hal::<HalVulkan>() }.ok_or(XrSwapchainError::NotVulkanHal)?;
+        Ok(import_openxr_swapchain_image(
             device,
             &hal_device,
             vk_image,
-            resolution,
-        ));
+            self.resolution,
+        ))
     }
-    Ok(wgpu_buffers)
 }
 
 fn import_openxr_swapchain_image(
@@ -177,23 +195,22 @@ fn import_openxr_swapchain_image(
     hal_device: &<HalVulkan as hal::Api>::Device,
     vk_image: vk::Image,
     resolution: (u32, u32),
-) -> (wgpu::Texture, wgpu::TextureView) {
+) -> XrAcquiredSwapchainImage {
     let hal_desc = xr_swapchain_hal_descriptor(resolution);
     // Hand wgpu a no-op drop callback so its `destroy_texture` sees
     // `texture.drop_guard.is_some()` and skips `vkDestroyImage`. The OpenXR runtime is the sole
     // owner of `vk_image` and frees it on `xrDestroySwapchain`; calling `vkDestroyImage` from
-    // wgpu would double-free during shutdown. A no-op closure is correct because field ordering
-    // on `XrStereoSwapchain` keeps the `xr::Swapchain` alive until after the wgpu textures drop;
-    // capturing the swapchain `Arc` in this closure would create a per-image owning back-edge
-    // and prevent the swapchain from ever being destroyed.
+    // wgpu would double-free during shutdown. A no-op closure is correct because callers import
+    // only images enumerated from a live OpenXR swapchain and keep that swapchain alive until the
+    // per-frame wrapper has been dropped.
     let drop_callback: hal::DropCallback = Box::new(|| {});
     // SAFETY: `vk_image` was returned by `xrEnumerateSwapchainImages` on a swapchain created from
     // the OpenXR session inside `XrWgpuHandles`; that session and `hal_device` come from the same
     // bootstrap-created Vulkan device. The descriptor mirrors the swapchain create info. The
     // non-null `drop_callback` signals to wgpu-hal that the `VkImage` is externally owned (the
     // OpenXR runtime); wgpu must not call `vkDestroyImage` on it. The runtime keeps the image
-    // valid until `xrDestroySwapchain`, which the field-drop order on `XrStereoSwapchain`
-    // guarantees runs after every wgpu `Texture` borrowing this handle has been dropped.
+    // valid until `xrDestroySwapchain`, and callers keep the swapchain alive while the returned
+    // wgpu wrapper exists.
     let hal_tex = unsafe {
         hal_device.texture_from_raw(
             vk_image,
@@ -206,14 +223,29 @@ fn import_openxr_swapchain_image(
     // SAFETY: `hal_tex` was imported from the Vulkan device backing `device`, and `wgpu_desc`
     // matches the HAL descriptor used for the import.
     let texture = unsafe { device.create_texture_from_hal::<HalVulkan>(hal_tex, &wgpu_desc) };
-    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+    let array_view = texture.create_view(&wgpu::TextureViewDescriptor {
         label: Some("xr_swapchain_array"),
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         array_layer_count: Some(XR_VIEW_COUNT),
         ..Default::default()
     });
     crate::profiling::note_resource_churn!(TextureView, "xr::swapchain_array_view");
-    (texture, view)
+    XrAcquiredSwapchainImage {
+        texture,
+        array_view,
+    }
+}
+
+fn xr_swapchain_usage_flags() -> xr::SwapchainUsageFlags {
+    xr::SwapchainUsageFlags::COLOR_ATTACHMENT | xr::SwapchainUsageFlags::SAMPLED
+}
+
+fn u32_saturating_from_usize(value: usize) -> u32 {
+    if value > u32::MAX as usize {
+        u32::MAX
+    } else {
+        value as u32
+    }
 }
 
 fn xr_swapchain_hal_descriptor(resolution: (u32, u32)) -> hal::TextureDescriptor<'static> {
@@ -228,10 +260,7 @@ fn xr_swapchain_hal_descriptor(resolution: (u32, u32)) -> hal::TextureDescriptor
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: XR_COLOR_FORMAT,
-        usage: TextureUses::COLOR_TARGET
-            | TextureUses::COPY_DST
-            | TextureUses::COPY_SRC
-            | TextureUses::RESOURCE,
+        usage: TextureUses::COLOR_TARGET | TextureUses::RESOURCE,
         memory_flags: MemoryFlags::empty(),
         view_formats: Vec::new(),
     }
@@ -247,10 +276,7 @@ fn xr_swapchain_wgpu_descriptor(
         sample_count: hal_desc.sample_count,
         dimension: hal_desc.dimension,
         format: XR_COLOR_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     }
 }
@@ -304,4 +330,34 @@ pub fn create_stereo_depth_texture(
     });
     crate::profiling::note_resource_churn!(TextureView, "xr::stereo_depth_array_view");
     Some((tex, view))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swapchain_create_usage_matches_import_descriptors() {
+        let xr_usage = xr_swapchain_usage_flags();
+        assert_eq!(
+            xr_usage,
+            xr::SwapchainUsageFlags::COLOR_ATTACHMENT | xr::SwapchainUsageFlags::SAMPLED
+        );
+
+        let hal_desc = xr_swapchain_hal_descriptor((2496, 2688));
+        assert_eq!(
+            hal_desc.usage,
+            TextureUses::COLOR_TARGET | TextureUses::RESOURCE
+        );
+        assert!(!hal_desc.usage.contains(TextureUses::COPY_SRC));
+        assert!(!hal_desc.usage.contains(TextureUses::COPY_DST));
+
+        let wgpu_desc = xr_swapchain_wgpu_descriptor(&hal_desc);
+        assert_eq!(
+            wgpu_desc.usage,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+        );
+        assert!(!wgpu_desc.usage.contains(wgpu::TextureUsages::COPY_SRC));
+        assert!(!wgpu_desc.usage.contains(wgpu::TextureUsages::COPY_DST));
+    }
 }

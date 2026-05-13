@@ -42,6 +42,12 @@ impl VrMirrorBlitResources {
         self.ensure_surface_uniform(device);
 
         let Some(staging_tex) = self.staging_texture() else {
+            logger::debug!(
+                "vr mirror eye staging texture unavailable; submitting XR finalize only"
+            );
+            if let Some(finalize) = xr_finalize {
+                gpu.submit_finalize_only(finalize);
+            }
             return;
         };
         let staging_view = staging_tex.create_view(&wgpu::TextureViewDescriptor::default());
