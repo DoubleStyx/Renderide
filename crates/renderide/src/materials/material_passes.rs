@@ -29,6 +29,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) use blend_mode::material_blend_mode_for_lookup;
 pub use blend_mode::{MaterialBlendMode, material_blend_mode_from_maps};
+pub(crate) use pass_kind::materialized_embedded_pass_for_blend_mode;
 #[cfg(test)]
 pub(crate) use pass_kind::{COLOR_WRITES_NONE, MaterialPassState};
 pub use pass_kind::{

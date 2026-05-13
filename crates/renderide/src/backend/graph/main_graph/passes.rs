@@ -15,10 +15,7 @@ pub(super) struct MainGraphPassIds {
     pub(super) gtao_normals: Option<GtaoNormalPrepassNode>,
     pub(super) depth_snapshot: PassId,
     pub(super) forward_intersect: PassId,
-    pub(super) pre_grab_color_resolve: Option<PassId>,
-    pub(super) color_snapshot: PassId,
-    pub(super) forward_transparent: PassId,
-    pub(super) final_color_resolve: Option<PassId>,
+    pub(super) forward_transparent_sequence: PassId,
     pub(super) depth_resolve: PassId,
     pub(super) hiz: PassId,
 }
@@ -57,15 +54,14 @@ fn add_world_mesh_depth_prepass(builder: &mut GraphBuilder, h: &MainGraphHandles
 /// Registers every pre-post-processing pass for the main render graph and returns their ids.
 ///
 /// Order matches execution: mesh deform compute, clustered lights, world-mesh depth prepass and
-/// forward opaque raster, optional GTAO normal prepass, depth snapshot, forward intersect, optional
-/// pre-grab MSAA color resolve, color snapshot, forward transparent, optional final MSAA color
-/// resolve, depth resolve compute, and Hi-Z build. Edge wiring is performed separately by
+/// forward opaque raster, optional GTAO normal prepass, depth snapshot, forward intersect,
+/// transparent sequence, depth resolve compute, and Hi-Z build. Edge wiring is performed separately by
 /// [`super::edges::add_main_graph_edges`].
 pub(super) fn register_main_graph_passes(
     builder: &mut GraphBuilder,
     h: &MainGraphHandles,
     post_processing_settings: &crate::config::PostProcessingSettings,
-    msaa_sample_count: u8,
+    _msaa_sample_count: u8,
 ) -> MainGraphPassIds {
     let deform = builder.add_compute_pass(Box::new(crate::passes::MeshDeformPass::new()));
     let clustered = builder.add_compute_pass(Box::new(crate::passes::ClusteredLightPass::new(
@@ -88,30 +84,9 @@ pub(super) fn register_main_graph_passes(
     let forward_intersect = builder.add_raster_pass(Box::new(
         crate::passes::WorldMeshForwardIntersectPass::new(forward_resources),
     ));
-    // Color resolve replaces the wgpu automatic linear `resolve_target`. The pre-grab resolve
-    // makes a single-sample HDR snapshot available to grab-pass shaders; the final resolve moves
-    // any grab-pass transparent MSAA color back into the single-sample HDR target consumed by
-    // post-processing. In 1x mode each forward pass writes `scene_color_hdr` directly.
-    let color_resolve_resources = crate::passes::WorldMeshForwardColorResolveGraphResources {
-        scene_color_hdr_msaa: h.scene_color_hdr_msaa,
-        scene_color_hdr: h.scene_color_hdr,
-    };
-    let pre_grab_color_resolve = (msaa_sample_count > 1).then(|| {
-        builder.add_raster_pass(Box::new(
-            crate::passes::WorldMeshForwardColorResolvePass::new_pre_grab(color_resolve_resources),
-        ))
-    });
-    let color_snapshot = builder.add_compute_pass(Box::new(
-        crate::passes::WorldMeshColorSnapshotPass::new(forward_resources),
+    let forward_transparent_sequence = builder.add_encoder_pass(Box::new(
+        crate::passes::WorldMeshForwardTransparentSequencePass::new(forward_resources),
     ));
-    let forward_transparent = builder.add_raster_pass(Box::new(
-        crate::passes::WorldMeshForwardTransparentPass::new(forward_resources),
-    ));
-    let final_color_resolve = (msaa_sample_count > 1).then(|| {
-        builder.add_raster_pass(Box::new(
-            crate::passes::WorldMeshForwardColorResolvePass::new_final(color_resolve_resources),
-        ))
-    });
     let depth_resolve = builder.add_compute_pass(Box::new(
         crate::passes::WorldMeshForwardDepthResolvePass::new(forward_resources),
     ));
@@ -129,10 +104,7 @@ pub(super) fn register_main_graph_passes(
         gtao_normals,
         depth_snapshot,
         forward_intersect,
-        pre_grab_color_resolve,
-        color_snapshot,
-        forward_transparent,
-        final_color_resolve,
+        forward_transparent_sequence,
         depth_resolve,
         hiz,
     }

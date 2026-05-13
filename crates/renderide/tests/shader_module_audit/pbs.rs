@@ -272,6 +272,7 @@ fn shared_pbs_lighting_roots_do_not_duplicate_clustered_lighting() -> io::Result
     Ok(())
 }
 
+#[test]
 fn pbs_dualsided_emission_is_keyword_gated_only() -> io::Result<()> {
     for file_name in ["pbsdualsidedspecular.wgsl", "pbsdualsidedtransparent.wgsl"] {
         let src = material_source(file_name)?;

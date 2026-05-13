@@ -79,6 +79,14 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         None,
     );
     assert_resolved_pass(
+        pass_from_kind(PassKind::ForwardFilter, "fs_main"),
+        disabled_depth,
+        wgpu::ColorWrites::ALL,
+        false,
+        wgpu::CompareFunction::Always,
+        None,
+    );
+    assert_resolved_pass(
         pass_from_kind(PassKind::ForwardTwoSided, "fs_main"),
         disabled_depth,
         wgpu::ColorWrites::ALL,

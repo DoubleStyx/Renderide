@@ -12,26 +12,25 @@
 //! sandwich approximates "tonemap each sample, average, untonemap" while keeping an HDR result
 //! for downstream bloom and tonemap to consume.
 //!
-//! Registered in the graph when MSAA is active (sample count > 1). The pre-grab instance resolves
-//! opaque/intersection color before the scene-color snapshot, while the final instance resolves
-//! grab-pass transparent draws before post-processing and composition. When MSAA is off, forward
-//! passes write directly to the single-sample `scene_color_hdr` and the resolve pass is skipped.
+//! The transparent sequence pass uses the cached fullscreen resolve internally before each
+//! grab-pass snapshot and after the transparent tail. The main graph no longer brackets grab
+//! materials with one global pre-grab snapshot. When MSAA is off, forward passes write directly to
+//! the single-sample `scene_color_hdr` and the resolve draw is skipped.
 
 mod pipeline;
 
-use std::num::NonZeroU32;
 use std::sync::LazyLock;
 
 use pipeline::{MsaaResolveHdrPipelineCache, ResolveParamsUbo};
 
-use crate::render_graph::context::RasterPassCtx;
-use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::gpu_cache::raster_stereo_mask_override;
-use crate::render_graph::pass::RenderPassTemplate;
-use crate::render_graph::pass::{PassBuilder, RasterPass};
-use crate::render_graph::resources::{ImportedTextureHandle, TextureAccess, TextureHandle};
+use crate::render_graph::context::GraphResolvedResources;
+use crate::render_graph::error::RenderPassError;
+use crate::render_graph::frame_params::GraphPassFrame;
+use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::render_graph::gpu_cache::stereo_mask_or_template;
+use crate::render_graph::resources::TextureHandle;
 
-/// Graph handles for [`WorldMeshForwardColorResolvePass`].
+/// Graph handles for the HDR-aware color resolve used by the transparent sequence.
 #[derive(Clone, Copy, Debug)]
 pub struct WorldMeshForwardColorResolveGraphResources {
     /// Multisampled HDR scene-color source produced by the forward opaque + intersect passes.
@@ -40,53 +39,24 @@ pub struct WorldMeshForwardColorResolveGraphResources {
     pub scene_color_hdr: TextureHandle,
 }
 
-/// Resolves multisampled HDR scene color to single-sample HDR using the Karis bracket.
-pub struct WorldMeshForwardColorResolvePass {
-    /// Graph resources read and written by this resolve pass.
-    resources: WorldMeshForwardColorResolveGraphResources,
-    /// Logical stage for pass naming and runtime skip policy.
-    stage: WorldMeshForwardColorResolveStage,
-    /// Shared color-resolve pipeline cache.
-    pipelines: &'static MsaaResolveHdrPipelineCache,
-}
-
-/// Logical position of an MSAA color resolve within the world-mesh forward path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WorldMeshForwardColorResolveStage {
-    /// Resolves opaque/intersection scene color before copying the grab-pass snapshot.
-    PreGrabSnapshot,
-    /// Resolves grab-pass transparent scene color before post-processing.
-    FinalSceneColor,
-}
-
-impl WorldMeshForwardColorResolveStage {
-    /// Render-graph pass label for this resolve stage.
-    fn pass_name(self) -> &'static str {
-        match self {
-            Self::PreGrabSnapshot => "WorldMeshForwardColorResolvePreGrab",
-            Self::FinalSceneColor => "WorldMeshForwardColorResolveFinal",
-        }
-    }
-}
-
-impl WorldMeshForwardColorResolvePass {
-    /// Creates the pre-grab color-resolve pass instance.
-    pub fn new_pre_grab(resources: WorldMeshForwardColorResolveGraphResources) -> Self {
-        Self {
-            resources,
-            stage: WorldMeshForwardColorResolveStage::PreGrabSnapshot,
-            pipelines: pipeline_cache(),
-        }
-    }
-
-    /// Creates the final color-resolve pass instance.
-    pub fn new_final(resources: WorldMeshForwardColorResolveGraphResources) -> Self {
-        Self {
-            resources,
-            stage: WorldMeshForwardColorResolveStage::FinalSceneColor,
-            pipelines: pipeline_cache(),
-        }
-    }
+/// Inputs required to encode one HDR-aware color resolve draw.
+pub(super) struct WorldMeshForwardColorResolveEncodeContext<'a, 'encoder, 'frame> {
+    /// WGPU device used for pipeline and bind-group cache lookup.
+    pub(super) device: &'a wgpu::Device,
+    /// Resolved graph resources for this recording scope.
+    pub(super) graph_resources: &'a GraphResolvedResources,
+    /// Command encoder receiving the resolve pass.
+    pub(super) encoder: &'encoder mut wgpu::CommandEncoder,
+    /// Per-view frame data.
+    pub(super) frame: &'frame GraphPassFrame<'a>,
+    /// Deferred graph upload sink for resolve uniforms.
+    pub(super) uploads: GraphUploadSink<'frame>,
+    /// Graph handles for resolve source and destination.
+    pub(super) resources: WorldMeshForwardColorResolveGraphResources,
+    /// Optional GPU profiler for pass timestamp queries.
+    pub(super) profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+    /// Debug/profiler label for this resolve pass.
+    pub(super) label: &'static str,
 }
 
 fn pipeline_cache() -> &'static MsaaResolveHdrPipelineCache {
@@ -95,172 +65,81 @@ fn pipeline_cache() -> &'static MsaaResolveHdrPipelineCache {
     &CACHE
 }
 
-/// Returns whether a runtime view needs this MSAA color resolve draw.
-fn color_resolve_raster_needed(
-    stage: WorldMeshForwardColorResolveStage,
-    sample_count: u32,
-    has_grab_pass_transparent_work: bool,
-) -> bool {
-    sample_count > 1
-        && match stage {
-            WorldMeshForwardColorResolveStage::PreGrabSnapshot => true,
-            WorldMeshForwardColorResolveStage::FinalSceneColor => has_grab_pass_transparent_work,
-        }
-}
+/// Encodes an HDR-aware MSAA color resolve into `scene_color_hdr` using a caller-owned encoder.
+pub(in crate::passes::world_mesh_forward) fn encode_world_mesh_forward_msaa_color_resolve(
+    ctx: WorldMeshForwardColorResolveEncodeContext<'_, '_, '_>,
+) -> Result<bool, RenderPassError> {
+    let WorldMeshForwardColorResolveEncodeContext {
+        device,
+        graph_resources,
+        encoder,
+        frame,
+        uploads,
+        resources,
+        profiler,
+        label,
+    } = ctx;
 
-impl RasterPass for WorldMeshForwardColorResolvePass {
-    fn name(&self) -> &str {
-        self.stage.pass_name()
+    profiling::scope!("world_mesh_forward::manual_color_resolve_record");
+    let sample_count = frame.view.sample_count;
+    if sample_count <= 1 {
+        return Ok(false);
     }
 
-    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        b.read_texture_resource(
-            self.resources.scene_color_hdr_msaa,
-            TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::FRAGMENT,
-            },
-        );
-        {
-            let mut r = b.raster();
-            // `Load` (not `Clear`) is essential because the same compiled graph runs across
-            // views with different runtime sample counts: the main/photo paths may use the master
-            // MSAA tier while utility offscreen captures can remain 1x. In the 1x per-view case
-            // our fragment shader doesn't run (sample_count == 1 early-return below), so `Load`
-            // preserves the single-sample data the intersect pass already wrote via
-            // `frame_sampled_color`'s single-sample target. In the MSAA per-view case the
-            // fullscreen draw overwrites every pixel, so the loaded contents are discarded.
-            r.color(
-                self.resources.scene_color_hdr,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                Option::<ImportedTextureHandle>::None,
-            );
-        };
-        Ok(())
-    }
+    let Some(src) = graph_resources.transient_texture(resources.scene_color_hdr_msaa) else {
+        return Err(RenderPassError::FrameParamsRequired {
+            pass: format!(
+                "{label} (missing transient scene_color_hdr_msaa {:?})",
+                resources.scene_color_hdr_msaa
+            ),
+        });
+    };
+    let Some(dst) = graph_resources.transient_texture(resources.scene_color_hdr) else {
+        return Err(RenderPassError::FrameParamsRequired {
+            pass: format!(
+                "{label} (missing transient scene_color_hdr {:?})",
+                resources.scene_color_hdr
+            ),
+        });
+    };
 
-    fn multiview_mask_override(
-        &self,
-        ctx: &RasterPassCtx<'_, '_>,
-        template: &RenderPassTemplate,
-    ) -> Option<NonZeroU32> {
-        raster_stereo_mask_override(ctx, template)
-    }
+    let multiview_stereo = frame.view.multiview_stereo;
+    let pipelines = pipeline_cache();
+    let pipeline = pipelines.pipeline(device, dst.texture.format(), multiview_stereo);
+    let params = ResolveParamsUbo {
+        sample_count,
+        _pad: [0; 3],
+    };
+    let params_ubo = pipelines.params_ubo(device);
+    uploads.write_buffer(params_ubo, 0, bytemuck::bytes_of(&params));
+    let bind_group = pipelines.bind_group(device, &src.texture, params_ubo, multiview_stereo);
 
-    fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        let frame = &*ctx.pass_frame;
-        let has_grab_pass_transparent_work = ctx
-            .blackboard
-            .get::<super::WorldMeshForwardPlanSlot>()
-            .is_some_and(|prepared| !prepared.plan.transparent_groups.is_empty());
-        Ok(color_resolve_raster_needed(
-            self.stage,
-            frame.view.sample_count,
-            has_grab_pass_transparent_work,
-        ))
-    }
-
-    fn record(
-        &self,
-        ctx: &mut RasterPassCtx<'_, '_>,
-        rpass: &mut wgpu::RenderPass<'_>,
-    ) -> Result<(), RenderPassError> {
-        profiling::scope!("world_mesh_forward::color_resolve_record");
-        let frame = &*ctx.pass_frame;
-
-        // Per-view runtime sample count: 1 for single-sample targets, >1 for swapchain / HMD /
-        // photo offscreen targets when MSAA is active. Skip the draw in the 1x case -- the
-        // framework's render-pass open/close with `LoadOp::Load` is a no-op against
-        // `scene_color_hdr`, preserving the data intersect already wrote there.
-        let sample_count = frame.view.sample_count;
-        if sample_count <= 1 {
-            return Ok(());
-        }
-
-        let graph_resources = ctx.graph_resources;
-        let Some(src) = graph_resources.transient_texture(self.resources.scene_color_hdr_msaa)
-        else {
-            return Err(RenderPassError::FrameParamsRequired {
-                pass: format!(
-                    "{} (missing transient scene_color_hdr_msaa {:?})",
-                    self.name(),
-                    self.resources.scene_color_hdr_msaa
-                ),
-            });
-        };
-
-        let multiview_stereo = frame.view.multiview_stereo;
-        let pipeline = self
-            .pipelines
-            .pipeline(ctx.device, src.texture.format(), multiview_stereo);
-
-        // Upload sample count to the per-frame UBO. Single u32 plus 12 bytes of padding.
-        let params = ResolveParamsUbo {
-            sample_count,
-            _pad: [0; 3],
-        };
-        let params_ubo = self.pipelines.params_ubo(ctx.device);
-        ctx.write_buffer(params_ubo, 0, bytemuck::bytes_of(&params));
-
-        let bind_group =
-            self.pipelines
-                .bind_group(ctx.device, &src.texture, params_ubo, multiview_stereo);
-
+    let color_attachments = [Some(wgpu::RenderPassColorAttachment {
+        view: &dst.view,
+        resolve_target: None,
+        ops: wgpu::Operations {
+            load: wgpu::LoadOp::Load,
+            store: wgpu::StoreOp::Store,
+        },
+        depth_slice: None,
+    })];
+    let pass_query = profiler.map(|p| p.begin_pass_query(label, encoder));
+    let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
+    {
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes,
+            multiview_mask: stereo_mask_or_template(multiview_stereo, None),
+        });
         rpass.set_pipeline(pipeline.as_ref());
         rpass.set_bind_group(0, &bind_group, &[]);
         rpass.draw(0..3, 0..1);
-        Ok(())
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{WorldMeshForwardColorResolveStage, color_resolve_raster_needed};
-
-    /// Runtime 1x views skip both resolve stages.
-    #[test]
-    fn color_resolve_raster_needed_skips_runtime_one_sample_views() {
-        assert!(!color_resolve_raster_needed(
-            WorldMeshForwardColorResolveStage::PreGrabSnapshot,
-            1,
-            true
-        ));
-        assert!(!color_resolve_raster_needed(
-            WorldMeshForwardColorResolveStage::FinalSceneColor,
-            1,
-            true
-        ));
+    if let (Some(p), Some(q)) = (profiler, pass_query) {
+        p.end_query(encoder, q);
     }
-
-    /// Pre-grab resolve always runs in MSAA so downstream passes have resolved HDR scene color.
-    #[test]
-    fn pre_grab_color_resolve_raster_needed_tracks_runtime_sample_count() {
-        assert!(color_resolve_raster_needed(
-            WorldMeshForwardColorResolveStage::PreGrabSnapshot,
-            2,
-            false
-        ));
-        assert!(color_resolve_raster_needed(
-            WorldMeshForwardColorResolveStage::PreGrabSnapshot,
-            4,
-            true
-        ));
-    }
-
-    /// Final resolve only runs when the grab-pass transparent tail can change MSAA scene color.
-    #[test]
-    fn final_color_resolve_raster_needed_when_grab_pass_active() {
-        assert!(!color_resolve_raster_needed(
-            WorldMeshForwardColorResolveStage::FinalSceneColor,
-            4,
-            false
-        ));
-        assert!(color_resolve_raster_needed(
-            WorldMeshForwardColorResolveStage::FinalSceneColor,
-            4,
-            true
-        ));
-    }
+    Ok(true)
 }

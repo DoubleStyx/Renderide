@@ -22,8 +22,8 @@ use super::compiled::{
 use super::error::GraphBuildError;
 use super::ids::{GroupId, PassId};
 use super::pass::{
-    ColorAttachmentTemplate, ComputePass, DepthAttachmentTemplate, GroupScope, PassBuilder,
-    PassNode, PassPhase, RasterPass, RenderPassTemplate,
+    ColorAttachmentTemplate, ComputePass, DepthAttachmentTemplate, EncoderPass, GroupScope,
+    PassBuilder, PassNode, PassPhase, RasterPass, RenderPassTemplate,
 };
 use super::resources::{
     BufferHandle, FrameTargetRole, ImportSource, ImportedBufferDecl, ImportedBufferHandle,
@@ -162,6 +162,11 @@ impl GraphBuilder {
     /// Appends a compute pass to the default group for its phase.
     pub fn add_compute_pass(&mut self, pass: Box<dyn ComputePass>) -> PassId {
         self.add_pass(PassNode::Compute(pass))
+    }
+
+    /// Appends an encoder pass to the default group for its phase.
+    pub fn add_encoder_pass(&mut self, pass: Box<dyn EncoderPass>) -> PassId {
+        self.add_pass(PassNode::Encoder(pass))
     }
 
     /// Appends a raster pass to a specific group.

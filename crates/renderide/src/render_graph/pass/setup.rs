@@ -66,6 +66,12 @@ impl PassSetup {
         match self.kind {
             PassKind::Raster if !has_attachment => Err(SetupError::RasterWithoutAttachments),
             PassKind::Compute if has_attachment => Err(SetupError::NonRasterPassHasAttachment),
+            PassKind::Encoder
+                if self.color_attachments.is_empty() && self.depth_stencil_attachment.is_none() =>
+            {
+                Ok(self)
+            }
+            PassKind::Encoder => Err(SetupError::NonRasterPassHasAttachment),
             _ => Ok(self),
         }
     }

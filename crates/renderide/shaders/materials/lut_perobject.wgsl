@@ -53,7 +53,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward
+//#pass forward_filter
 @fragment
 fn fs_main(in: fv::RectVertexOutput) -> @location(0) vec4<f32> {
     if (uirc::should_clip_rect_kw(in.obj_xy, mat._Rect, kw_RECTCLIP())) {

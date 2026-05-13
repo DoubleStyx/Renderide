@@ -152,7 +152,7 @@ fn sample_blur(center_uv: vec2<f32>, spread: vec2<f32>, iterations: f32, view_la
     return c / clamped_iterations;
 }
 
-//#pass forward
+//#pass forward_filter
 @fragment
 fn fs_main(in: BlurVertexOutput) -> @location(0) vec4<f32> {
     if (uirc::should_clip_rect_kw(in.obj_xy, mat._Rect, kw_RECTCLIP())) {

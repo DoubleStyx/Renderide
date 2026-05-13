@@ -59,7 +59,7 @@ fn vs_main(
     return out;
 }
 
-//#pass forward
+//#pass forward_filter
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,

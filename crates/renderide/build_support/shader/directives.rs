@@ -7,6 +7,8 @@ use super::error::BuildError;
 pub(super) enum BuildPassKind {
     /// Main forward material pass.
     Forward,
+    /// Filter forward pass with Unity separate alpha max blending.
+    ForwardFilter,
     /// Main forward material pass with authored two-sided culling.
     ForwardTwoSided,
     /// Fixed straight-alpha forward material pass.
@@ -40,6 +42,7 @@ impl BuildPassKind {
     fn parse(value: &str, file: &str, line: usize) -> Result<Self, BuildError> {
         match value.trim().to_ascii_lowercase().as_str() {
             "forward" => Ok(Self::Forward),
+            "forward_filter" | "filter" | "grab_filter" => Ok(Self::ForwardFilter),
             "forward_two_sided" | "forwardtwosided" | "two_sided" | "twosided" => {
                 Ok(Self::ForwardTwoSided)
             }
@@ -72,6 +75,7 @@ impl BuildPassKind {
     const fn rust_variant(self) -> &'static str {
         match self {
             Self::Forward => "Forward",
+            Self::ForwardFilter => "ForwardFilter",
             Self::ForwardTwoSided => "ForwardTwoSided",
             Self::ForwardAlphaBlend => "ForwardAlphaBlend",
             Self::ForwardPremultipliedTransparent => "ForwardPremultipliedTransparent",
@@ -444,6 +448,11 @@ fn fs_fade() -> @location(0) vec4<f32> {
 fn fs_premul() -> @location(0) vec4<f32> {
     return vec4<f32>(1.0);
 }
+//#pass forward_filter
+@fragment
+fn fs_filter() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
 "#,
             "test.wgsl",
         )?;
@@ -483,7 +492,19 @@ fn fs_premul() -> @location(0) vec4<f32> {
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
+                BuildPassDirective {
+                    kind: BuildPassKind::ForwardFilter,
+                    fragment_entry: "fs_filter".to_string(),
+                    vertex_entry: "vs_main".to_string(),
+                    alpha_to_coverage: false,
+                    depth_bias_slope_scale_bits: 0.0f32.to_bits(),
+                    depth_bias_constant: 0,
+                },
             ]
+        );
+        assert_eq!(
+            pass_literal(&passes[4]),
+            "crate::materials::pass_from_kind(crate::materials::PassKind::ForwardFilter, \"fs_filter\")"
         );
         Ok(())
     }

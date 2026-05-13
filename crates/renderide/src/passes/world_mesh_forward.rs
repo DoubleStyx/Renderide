@@ -18,16 +18,10 @@
 //! 5. [`WorldMeshDepthSnapshotPass`] -- **[`ComputePass`]** that resolves MSAA depth (when active)
 //!    and copies single-sample depth into the scene-depth snapshot for intersection materials.
 //! 6. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws intersection materials.
-//! 7. [`WorldMeshForwardColorResolvePass`] -- optional **[`RasterPass`]** that resolves MSAA
-//!    scene color before the grab-pass snapshot.
-//! 8. [`WorldMeshColorSnapshotPass`] -- **[`ComputePass`]** that copies resolved HDR color into
-//!    the grab-pass scene-color snapshot.
-//! 9. [`WorldMeshForwardTransparentPass`] -- **[`RasterPass`]** that draws grab-pass transparent
-//!    materials into the active frame-sampled HDR target.
-//! 10. [`WorldMeshForwardColorResolvePass`] -- optional final **[`RasterPass`]** that resolves
-//!     MSAA scene color after grab-pass transparent draws.
-//! 11. [`WorldMeshForwardDepthResolvePass`] -- **[`ComputePass`]** that resolves the final MSAA
-//!     depth into the single-sample frame depth used by Hi-Z.
+//! 7. [`WorldMeshForwardTransparentSequencePass`] -- **[`EncoderPass`]** that draws the sorted
+//!    transparent tail, resolving/copying a fresh scene-color snapshot immediately before each
+//!    grab-pass group.
+//! 8. [`WorldMeshForwardDepthResolvePass`] -- **[`ComputePass`]** that resolves the final MSAA depth into the single-sample frame depth used by Hi-Z.
 //!
 //! ## VR stereo world draws
 //!
@@ -53,11 +47,9 @@ mod raster_recording;
 mod skybox;
 mod slab;
 mod state;
+mod transparent_sequence;
 mod vp;
 
-pub use color_resolve::{
-    WorldMeshForwardColorResolveGraphResources, WorldMeshForwardColorResolvePass,
-};
 pub use depth_prepass::{WorldMeshForwardDepthPrepass, WorldMeshForwardDepthPrepassGraphResources};
 pub(crate) use material_batch::{MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver};
 pub(crate) use normal_pass::GTAO_VIEW_NORMAL_FORMAT;
@@ -67,6 +59,7 @@ pub(crate) use skybox::SkyboxRenderer as WorldMeshForwardSkyboxRenderer;
 pub(crate) use state::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,
 };
+pub use transparent_sequence::WorldMeshForwardTransparentSequencePass;
 
 use std::num::NonZeroU32;
 
@@ -82,14 +75,11 @@ use crate::render_graph::resources::{
 };
 use crate::world_mesh::InstancePlan;
 
-use color_snapshot::encode_world_mesh_forward_color_snapshot;
 use depth_resolve::encode_msaa_depth_resolve_after_clear_only;
 use depth_snapshot::encode_world_mesh_forward_depth_snapshot;
 use raster_recording::{
     record_world_mesh_forward_intersection_graph_raster,
-    record_world_mesh_forward_opaque_graph_raster,
-    record_world_mesh_forward_post_skybox_graph_raster,
-    record_world_mesh_forward_transparent_graph_raster, stencil_load_ops,
+    record_world_mesh_forward_opaque_graph_raster, stencil_load_ops,
 };
 use skybox::record_prepared_skybox;
 
@@ -112,21 +102,9 @@ pub struct WorldMeshDepthSnapshotPass {
     resources: WorldMeshForwardGraphResources,
 }
 
-/// Draws intersection materials and resolves forward color when MSAA is active.
+/// Draws intersection materials after the scene-depth snapshot is available.
 #[derive(Debug)]
 pub struct WorldMeshForwardIntersectPass {
-    resources: WorldMeshForwardGraphResources,
-}
-
-/// Copies the resolved forward color into the scene-color snapshot for grab-pass materials.
-#[derive(Debug)]
-pub struct WorldMeshColorSnapshotPass {
-    resources: WorldMeshForwardGraphResources,
-}
-
-/// Draws grab-pass transparent materials after the scene-color snapshot is available.
-#[derive(Debug)]
-pub struct WorldMeshForwardTransparentPass {
     resources: WorldMeshForwardGraphResources,
 }
 
@@ -220,11 +198,6 @@ fn forward_intersection_raster_needed(opaque_recorded: bool, plan: &InstancePlan
     opaque_recorded && !plan.intersect_groups.is_empty()
 }
 
-/// Returns whether the grab-pass transparent raster tail has view-local work to record.
-fn forward_transparent_raster_needed(opaque_recorded: bool, plan: &InstancePlan) -> bool {
-    opaque_recorded && !plan.transparent_groups.is_empty()
-}
-
 impl WorldMeshForwardOpaquePass {
     /// Creates a graph-managed opaque world mesh forward pass instance.
     pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
@@ -246,20 +219,6 @@ impl WorldMeshForwardIntersectPass {
     }
 }
 
-impl WorldMeshColorSnapshotPass {
-    /// Creates a world mesh color snapshot pass instance.
-    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
-    }
-}
-
-impl WorldMeshForwardTransparentPass {
-    /// Creates a world mesh grab-pass transparent raster pass instance.
-    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
-    }
-}
-
 impl WorldMeshForwardDepthResolvePass {
     /// Creates a world mesh final depth-resolve pass instance.
     pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
@@ -267,7 +226,10 @@ impl WorldMeshForwardDepthResolvePass {
     }
 }
 
-fn declare_forward_draw_reads(b: &mut PassBuilder<'_>, resources: WorldMeshForwardGraphResources) {
+pub(in crate::passes::world_mesh_forward) fn declare_forward_draw_reads(
+    b: &mut PassBuilder<'_>,
+    resources: WorldMeshForwardGraphResources,
+) {
     b.import_buffer(
         resources.cluster_light_counts,
         BufferAccess::Storage {
@@ -388,14 +350,7 @@ impl RasterPass for WorldMeshForwardOpaquePass {
             .skybox
             .as_ref()
             .is_none_or(|skybox| record_prepared_skybox(rpass, frame, ctx.blackboard, skybox));
-        let post_skybox_recorded = record_world_mesh_forward_post_skybox_graph_raster(
-            rpass,
-            ctx.device,
-            frame,
-            ctx.blackboard,
-            &prepared,
-        );
-        prepared.opaque_recorded = pre_skybox_recorded && skybox_recorded && post_skybox_recorded;
+        prepared.opaque_recorded = pre_skybox_recorded && skybox_recorded;
         ctx.blackboard.insert::<WorldMeshForwardPlanSlot>(prepared);
         Ok(())
     }
@@ -471,7 +426,7 @@ impl RasterPass for WorldMeshForwardIntersectPass {
         {
             let mut r = b.raster();
             // No `resolve_target` here: when MSAA is active, the multisampled buffer is preserved
-            // and resolved by [`WorldMeshForwardColorResolvePass`] using the Karis HDR-aware
+            // and resolved by the transparent sequence using the Karis HDR-aware
             // bracket. wgpu's automatic linear average underestimates very bright samples at
             // contrast edges, producing visible aliasing where bright/dark samples meet (e.g.
             // specular sparks against dark surfaces) -- the custom resolve fixes that.
@@ -564,142 +519,6 @@ impl RasterPass for WorldMeshForwardIntersectPass {
     }
 }
 
-impl ComputePass for WorldMeshColorSnapshotPass {
-    fn name(&self) -> &str {
-        "WorldMeshColorSnapshot"
-    }
-
-    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        b.compute();
-        b.read_texture(self.resources.scene_color_hdr, TextureAccess::CopySrc);
-        Ok(())
-    }
-
-    fn should_record(&self, ctx: &ComputePassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
-        Ok(ctx
-            .blackboard
-            .get::<WorldMeshForwardPlanSlot>()
-            .is_some_and(|prepared| prepared.helper_needs.color_snapshot))
-    }
-
-    fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
-        profiling::scope!("world_mesh_forward::color_snapshot_record");
-        let frame = &mut *ctx.pass_frame;
-        let Some(prepared) = ctx.blackboard.get::<WorldMeshForwardPlanSlot>() else {
-            return Ok(());
-        };
-        encode_world_mesh_forward_color_snapshot(
-            ctx.graph_resources,
-            ctx.encoder,
-            frame,
-            prepared,
-            self.resources,
-        );
-        Ok(())
-    }
-}
-
-impl RasterPass for WorldMeshForwardTransparentPass {
-    fn name(&self) -> &str {
-        "WorldMeshForwardTransparent"
-    }
-
-    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        {
-            let mut r = b.raster();
-            // Keep grab-pass transparent draws on the same active color/depth sample tier as the
-            // opaque/intersection passes. In MSAA mode this preserves the current MSAA stencil
-            // attachment for UI masks; a final color resolve moves the updated HDR color back to
-            // the single-sample scene target for post-processing.
-            r.frame_sampled_color(
-                self.resources.scene_color_hdr,
-                self.resources.scene_color_hdr_msaa,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                Option::<ImportedTextureHandle>::None,
-            );
-            r.frame_sampled_depth(
-                self.resources.depth,
-                self.resources.msaa_depth,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                None,
-            );
-        };
-        declare_forward_draw_reads(b, self.resources);
-        Ok(())
-    }
-
-    fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(ctx
-            .blackboard
-            .get::<WorldMeshForwardPlanSlot>()
-            .is_some_and(|prepared| {
-                forward_transparent_raster_needed(prepared.opaque_recorded, &prepared.plan)
-            }))
-    }
-
-    fn multiview_mask_override(
-        &self,
-        ctx: &RasterPassCtx<'_, '_>,
-        template: &RenderPassTemplate,
-    ) -> Option<NonZeroU32> {
-        let use_multiview = ctx
-            .blackboard
-            .get::<WorldMeshForwardPlanSlot>()
-            .is_some_and(|prepared| prepared.pipeline.use_multiview);
-        stereo_mask_or_template(use_multiview, template.multiview_mask)
-    }
-
-    fn stencil_ops_override(
-        &self,
-        ctx: &RasterPassCtx<'_, '_>,
-        depth: &DepthAttachmentTemplate,
-    ) -> Option<wgpu::Operations<u32>> {
-        let Some(format) = ctx
-            .blackboard
-            .get::<WorldMeshForwardPlanSlot>()
-            .and_then(|prepared| prepared.pipeline.pass_desc.depth_stencil_format)
-        else {
-            return depth.stencil;
-        };
-        stencil_load_ops(Some(format))
-    }
-
-    fn record(
-        &self,
-        ctx: &mut RasterPassCtx<'_, '_>,
-        rpass: &mut wgpu::RenderPass<'_>,
-    ) -> Result<(), RenderPassError> {
-        profiling::scope!("world_mesh_forward::transparent_record");
-        let frame = &mut *ctx.pass_frame;
-
-        let Some(mut prepared) = ctx.blackboard.take::<WorldMeshForwardPlanSlot>() else {
-            return Ok(());
-        };
-        let recorded = if prepared.opaque_recorded {
-            record_world_mesh_forward_transparent_graph_raster(
-                rpass,
-                ctx.device,
-                frame,
-                ctx.blackboard,
-                &prepared,
-            )
-        } else {
-            false
-        };
-        if recorded {
-            prepared.tail_raster_recorded = true;
-        }
-        ctx.blackboard.insert::<WorldMeshForwardPlanSlot>(prepared);
-        Ok(())
-    }
-}
-
 impl ComputePass for WorldMeshForwardDepthResolvePass {
     fn name(&self) -> &str {
         "WorldMeshForwardDepthResolve"
@@ -753,7 +572,8 @@ impl ComputePass for WorldMeshForwardDepthResolvePass {
 #[cfg(test)]
 mod tests {
     use super::{
-        InstancePlan, forward_intersection_raster_needed, forward_transparent_raster_needed,
+        InstancePlan, forward_intersection_raster_needed,
+        transparent_sequence::forward_transparent_sequence_needed,
     };
     use crate::world_mesh::DrawGroup;
 
@@ -762,7 +582,7 @@ mod tests {
     fn helper_raster_needed_requires_matching_groups() {
         let empty = InstancePlan::default();
         assert!(!forward_intersection_raster_needed(true, &empty));
-        assert!(!forward_transparent_raster_needed(true, &empty));
+        assert!(!forward_transparent_sequence_needed(true, &empty));
 
         let mut intersect = InstancePlan::default();
         intersect.intersect_groups.push(DrawGroup {
@@ -774,12 +594,12 @@ mod tests {
         assert!(!forward_intersection_raster_needed(false, &intersect));
 
         let mut transparent = InstancePlan::default();
-        transparent.transparent_groups.push(DrawGroup {
+        transparent.post_skybox_groups.push(DrawGroup {
             representative_draw_idx: 0,
             instance_range: 0..1,
             material_packet_idx: 0,
         });
-        assert!(forward_transparent_raster_needed(true, &transparent));
-        assert!(!forward_transparent_raster_needed(false, &transparent));
+        assert!(forward_transparent_sequence_needed(true, &transparent));
+        assert!(!forward_transparent_sequence_needed(false, &transparent));
     }
 }

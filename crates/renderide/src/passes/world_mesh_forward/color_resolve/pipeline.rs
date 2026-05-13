@@ -1,4 +1,4 @@
-//! Cached pipelines, bind layouts, and per-frame UBO for [`super::WorldMeshForwardColorResolvePass`].
+//! Cached pipelines, bind layouts, and per-frame UBO for HDR-aware color resolves.
 //!
 //! The pass replaces wgpu's automatic linear MSAA color resolve with a Karis HDR-aware bracket
 //! (compress / linear-average / uncompress) so contrast edges between very bright and very dark

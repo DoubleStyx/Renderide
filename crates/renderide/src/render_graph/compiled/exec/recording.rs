@@ -5,7 +5,9 @@ use hashbrown::hash_map::Entry;
 use std::time::Instant;
 
 use super::super::super::blackboard::{Blackboard, GraphCommandStatsSlot};
-use super::super::super::context::{ComputePassCtx, GraphResolvedResources, RasterPassCtx};
+use super::super::super::context::{
+    ComputePassCtx, EncoderPassCtx, GraphResolvedResources, RasterPassCtx,
+};
 use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_params::{
     FrameSystemsShared, MsaaViewsSlot, PerViewFramePlan, PerViewFramePlanSlot,
@@ -451,6 +453,7 @@ impl CompiledRenderGraph {
     ///
     /// - `Raster` -> opens `wgpu::RenderPass` from template, calls `record_raster`.
     /// - `Compute` -> calls `record_compute` with raw encoder.
+    /// - `Encoder` -> calls `record_encoder` with raw encoder.
     ///
     /// Takes `&self` so per-view recording can be hoisted onto rayon workers without serialising
     /// on the [`CompiledRenderGraph`] handle. All pass `record_*` methods already require only
@@ -536,6 +539,37 @@ impl CompiledRenderGraph {
                     {
                         profiling::scope!("graph::record_compute::pass_record");
                         pass.record_compute(&mut ctx)
+                            .map_err(GraphExecuteError::Pass)?;
+                    }
+                    if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
+                        p.end_query(ctx.encoder, q);
+                    }
+                }
+            }
+            PassKind::Encoder => {
+                profiling::scope!("graph::record_encoder");
+                let mut ctx = {
+                    profiling::scope!("graph::record_encoder::build_context");
+                    EncoderPassCtx {
+                        device,
+                        encoder,
+                        pass_frame: frame_params,
+                        uploads,
+                        graph_resources,
+                        blackboard,
+                        profiler,
+                    }
+                };
+                if pass
+                    .should_record_encoder(&ctx)
+                    .map_err(GraphExecuteError::Pass)?
+                {
+                    let pass_query = ctx
+                        .profiler
+                        .map(|p| p.begin_query(pass.profiling_label(), ctx.encoder));
+                    {
+                        profiling::scope!("graph::record_encoder::pass_record");
+                        pass.record_encoder(&mut ctx)
                             .map_err(GraphExecuteError::Pass)?;
                     }
                     if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {

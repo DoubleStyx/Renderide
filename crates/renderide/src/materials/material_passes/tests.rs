@@ -461,6 +461,62 @@ fn overlay_pass_preserves_explicit_blend_one_zero_for_alpha_max() {
 }
 
 #[test]
+fn filter_pass_preserves_explicit_blend_one_zero_for_alpha_max() {
+    let pass = pass_from_kind(PassKind::ForwardFilter, "fs_main");
+    let materialized =
+        materialized_pass_for_blend_mode(&pass, MaterialBlendMode::UnityBlend { src: 1, dst: 0 });
+    let blend = materialized.blend.expect("filter blend");
+
+    assert_eq!(pass.name, "forward_filter");
+    assert_eq!(materialized.material_state, MaterialPassState::Filter);
+    assert!(materialized.depth_write);
+    assert_eq!(materialized.write_mask, wgpu::ColorWrites::ALL);
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero);
+    assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max);
+}
+
+#[test]
+fn base_refract_embedded_policy_ignores_host_ztest() {
+    let pass = pass_from_kind(PassKind::ForwardFilter, "fs_main");
+    let materialized = materialized_embedded_pass_for_blend_mode(
+        "refract_default",
+        &pass,
+        MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
+    );
+    let state = MaterialRenderState {
+        depth_compare: Some(ZTEST_ALWAYS),
+        ..MaterialRenderState::default()
+    };
+
+    assert_eq!(
+        materialized.resolved_depth_compare(state),
+        crate::gpu::MAIN_FORWARD_DEPTH_COMPARE
+    );
+}
+
+#[test]
+fn refract_perobject_keeps_host_ztest_policy() {
+    let pass = pass_from_kind(PassKind::ForwardFilter, "fs_main");
+    let materialized = materialized_embedded_pass_for_blend_mode(
+        "refract_perobject_default",
+        &pass,
+        MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
+    );
+    let state = MaterialRenderState {
+        depth_compare: Some(ZTEST_ALWAYS),
+        ..MaterialRenderState::default()
+    };
+
+    assert_eq!(
+        materialized.resolved_depth_compare(state),
+        wgpu::CompareFunction::Always
+    );
+}
+
+#[test]
 fn overlay_always_pass_matches_fixed_overlay_shader_state() {
     let pass = pass_from_kind(PassKind::OverlayAlways, "fs_main");
     let blend = pass.blend.expect("overlay blend");

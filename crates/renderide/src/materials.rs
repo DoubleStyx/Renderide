@@ -47,6 +47,7 @@
 //! | Kind | Render-state recipe | Use case |
 //! |---|---|---|
 //! | `forward` | `Cull Back`, `ZWrite On`, blend driven by host `_SrcBlend`/`_DstBlend` at draw time | the main color draw |
+//! | `forward_filter` | `forward` plus Unity separate alpha `Max` blending even for `Blend One Zero` | grab-pass filter materials |
 //! | `forward_two_sided` | `Cull Off`, `ZWrite On`, blend driven by host `_SrcBlend`/`_DstBlend` at draw time | main color draw for authored two-sided materials |
 //! | `transparent_rgb` | `Blend SrcAlpha OneMinusSrcAlpha`, `ColorMask RGB`, `ZWrite Off`, `Cull Off` | fixed-state transparent RGB-only unlit draw |
 //! | `outline` | `Cull Front` | silhouette over an inflated geometry shell |
@@ -119,7 +120,8 @@ pub(crate) use embedded::{
 pub(crate) use material_passes::MaterialPassState;
 pub(crate) use material_passes::{
     MaterialBlendMode, MaterialPassDesc, MaterialPipelinePropertyIds, PassKind,
-    material_blend_mode_from_maps, materialized_pass_for_blend_mode, pass_from_kind,
+    material_blend_mode_from_maps, materialized_embedded_pass_for_blend_mode,
+    materialized_pass_for_blend_mode, pass_from_kind,
 };
 pub(crate) use material_passes::{PropertyMapRef, first_float_from_maps, first_vec4_from_maps};
 pub(crate) use pipeline_build_error::PipelineBuildError;

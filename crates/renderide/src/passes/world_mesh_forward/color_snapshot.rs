@@ -1,4 +1,4 @@
-//! Scene-color snapshot helper for the graph-managed world-mesh forward pass.
+//! Scene-color snapshot helper for the world-mesh transparent sequence.
 
 use crate::render_graph::context::GraphResolvedResources;
 use crate::render_graph::frame_params::GraphPassFrame;
@@ -8,8 +8,8 @@ use super::PreparedWorldMeshForwardFrame;
 
 use super::WorldMeshForwardGraphResources;
 
-/// Copies the resolved HDR scene color into the sampled scene-color snapshot used by grab-pass
-/// transparent materials.
+/// Copies the resolved HDR scene color into the sampled scene-color snapshot used by the next
+/// grab-pass material group.
 pub(crate) fn encode_world_mesh_forward_color_snapshot(
     graph_resources: &GraphResolvedResources,
     encoder: &mut wgpu::CommandEncoder,

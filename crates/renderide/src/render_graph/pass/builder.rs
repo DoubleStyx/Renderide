@@ -2,7 +2,7 @@
 //!
 //! [`PassBuilder`] is the single entry-point a pass's `setup` method uses to declare:
 //! - What kind of GPU work it performs ([`PassKind`] via [`PassBuilder::raster`] or
-//!   [`PassBuilder::compute`]).
+//!   [`PassBuilder::compute`] / [`PassBuilder::encoder`]).
 //! - Which resources it reads or writes (textures/buffers, transient or imported).
 //! - For raster passes: color and depth-stencil attachments with their load/store ops.
 //! - Whether the pass is exempt from dead-pass culling ([`PassBuilder::cull_exempt`]).
@@ -75,6 +75,11 @@ impl<'a> PassBuilder<'a> {
     /// Declares this pass as compute.
     pub fn compute(&mut self) {
         self.kind = PassKind::Compute;
+    }
+
+    /// Declares this pass as encoder-driven mixed work.
+    pub fn encoder(&mut self) {
+        self.kind = PassKind::Encoder;
     }
 
     /// Keeps the pass even when it has no graph-visible export.

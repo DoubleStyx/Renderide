@@ -87,7 +87,7 @@ fn vs_main(
     return out;
 }
 
-fn refract_offset(uv0: vec2<f32>, view_n: vec3<f32>, view_t: vec4<f32>, clip_recip_w: f32) -> vec2<f32> {
+fn refract_offset(uv0: vec2<f32>, view_n: vec3<f32>, view_t: vec4<f32>, clip_w: f32) -> vec2<f32> {
     var n = normalize(view_n);
     if (kw_NORMALMAP()) {
         let ts = nd::decode_ts_normal_with_placeholder_sample(
@@ -96,7 +96,7 @@ fn refract_offset(uv0: vec2<f32>, view_n: vec3<f32>, view_t: vec4<f32>, clip_rec
         );
         n = normalize(pnorm::orthonormal_tbn(n, view_t) * ts);
     }
-    return n.xy * clip_recip_w * mat._RefractionStrength;
+    return (n.xy / clip_w) * mat._RefractionStrength;
 }
 
 fn refracted_screen_uv(
@@ -119,7 +119,7 @@ fn refracted_screen_uv(
     return grab_uv;
 }
 
-//#pass forward
+//#pass forward_filter
 @fragment
 fn fs_main(in: RefractVertexOutput) -> @location(0) vec4<f32> {
     if (uirc::should_clip_rect_kw(in.obj_xy, mat._Rect, kw_RECTCLIP())) {

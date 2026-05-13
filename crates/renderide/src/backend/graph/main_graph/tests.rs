@@ -92,11 +92,11 @@ fn gtao_enabled_post() -> PostProcessingSettings {
 }
 
 #[test]
-fn default_main_needs_surface_and_eleven_passes() {
+fn default_main_needs_surface_and_ten_passes() {
     let g = build_main_graph(smoke_key(), &no_post()).expect("default graph");
     assert!(g.needs_surface_acquire());
-    assert_eq!(g.pass_count(), 11);
-    assert_eq!(g.compile_stats.topo_levels, 11);
+    assert_eq!(g.pass_count(), 10);
+    assert_eq!(g.compile_stats.topo_levels, 10);
     assert_eq!(g.compile_stats.transient_texture_count, 4);
     assert!(
         !g.pass_info
@@ -116,33 +116,32 @@ fn default_main_needs_surface_and_eleven_passes() {
 }
 
 #[test]
-fn msaa_main_graph_brackets_grab_pass_with_color_resolves() {
+fn msaa_main_graph_uses_transparent_sequence_for_grab_resolves() {
     let mut key = smoke_key();
     key.msaa_sample_count = 4;
     let g = build_main_graph(key, &no_post()).expect("MSAA graph");
     let pass_names: Vec<&str> = g.pass_info.iter().map(|p| p.name.as_str()).collect();
-    let pre_grab_resolve_pos = pass_names
+    let intersect_pos = pass_names
         .iter()
-        .position(|name| *name == "WorldMeshForwardColorResolvePreGrab")
-        .expect("pre-grab color resolve pass");
-    let snapshot_pos = pass_names
+        .position(|name| *name == "WorldMeshForwardIntersect")
+        .expect("intersect pass");
+    let sequence_pos = pass_names
         .iter()
-        .position(|name| *name == "WorldMeshColorSnapshot")
-        .expect("color snapshot pass");
-    let transparent_pos = pass_names
+        .position(|name| *name == "WorldMeshForwardTransparentSequence")
+        .expect("transparent sequence pass");
+    let depth_resolve_pos = pass_names
         .iter()
-        .position(|name| *name == "WorldMeshForwardTransparent")
-        .expect("transparent pass");
-    let final_resolve_pos = pass_names
-        .iter()
-        .position(|name| *name == "WorldMeshForwardColorResolveFinal")
-        .expect("final color resolve pass");
+        .position(|name| *name == "WorldMeshForwardDepthResolve")
+        .expect("depth resolve pass");
 
-    assert!(pre_grab_resolve_pos < snapshot_pos);
-    assert!(snapshot_pos < transparent_pos);
-    assert!(transparent_pos < final_resolve_pos);
-    assert_eq!(g.pass_count(), 13);
-    assert_eq!(g.compile_stats.topo_levels, 13);
+    assert!(intersect_pos < sequence_pos);
+    assert!(sequence_pos < depth_resolve_pos);
+    assert!(!pass_names.contains(&"WorldMeshForwardColorResolvePreGrab"));
+    assert!(!pass_names.contains(&"WorldMeshColorSnapshot"));
+    assert!(!pass_names.contains(&"WorldMeshForwardTransparent"));
+    assert!(!pass_names.contains(&"WorldMeshForwardColorResolveFinal"));
+    assert_eq!(g.pass_count(), 10);
+    assert_eq!(g.compile_stats.topo_levels, 10);
 }
 
 #[test]

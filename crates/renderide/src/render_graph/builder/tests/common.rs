@@ -1,11 +1,11 @@
 //! Shared render-graph builder test fixtures.
 
 pub(super) use super::super::GraphBuilder;
-pub(super) use crate::render_graph::context::{ComputePassCtx, RasterPassCtx};
+pub(super) use crate::render_graph::context::{ComputePassCtx, EncoderPassCtx, RasterPassCtx};
 pub(super) use crate::render_graph::error::{GraphBuildError, RenderPassError, SetupError};
 pub(super) use crate::render_graph::ids::PassId;
 pub(super) use crate::render_graph::pass::{
-    ComputePass, GroupScope, PassBuilder, PassMergeHint, PassPhase, RasterPass,
+    ComputePass, EncoderPass, GroupScope, PassBuilder, PassMergeHint, PassPhase, RasterPass,
 };
 pub(super) use crate::render_graph::resources::{
     BufferAccess, BufferHandle, BufferImportSource, BufferSizePolicy, FrameTargetRole,
@@ -117,6 +117,61 @@ impl ComputePass for TestComputePass {
     }
 
     fn record(&self, _ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
+        Ok(())
+    }
+}
+
+/// Minimal encoder test pass.
+pub(super) struct TestEncoderPass {
+    pub(super) name: &'static str,
+    pub(super) texture_reads: Vec<TextureHandle>,
+    pub(super) texture_color_writes: Vec<TextureHandle>,
+    pub(super) imported_texture_writes: Vec<ImportedTextureHandle>,
+}
+
+impl TestEncoderPass {
+    pub(super) fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            texture_reads: Vec::new(),
+            texture_color_writes: Vec::new(),
+            imported_texture_writes: Vec::new(),
+        }
+    }
+}
+
+impl EncoderPass for TestEncoderPass {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.encoder();
+        for &h in &self.texture_reads {
+            b.read_texture(
+                h,
+                TextureAccess::Sampled {
+                    stages: wgpu::ShaderStages::FRAGMENT,
+                },
+            );
+        }
+        for &h in &self.texture_color_writes {
+            b.write_texture(
+                h,
+                TextureAccess::ColorAttachment {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                    resolve_to: None,
+                },
+            );
+        }
+        for &h in &self.imported_texture_writes {
+            b.import_texture(h, TextureAccess::Present);
+        }
+        Ok(())
+    }
+
+    fn record(&self, _ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         Ok(())
     }
 }

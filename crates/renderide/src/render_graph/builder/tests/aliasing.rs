@@ -168,3 +168,30 @@ fn compute_pass_with_attachment_rejected() {
         })
     ));
 }
+
+#[test]
+fn encoder_pass_allows_manual_attachment_access() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    let tex = b.create_texture(tex_desc("manual-color"));
+    let bb = b.import_texture(backbuffer_import());
+    let mut manual = TestEncoderPass::new("manual");
+    manual.texture_color_writes.push(tex);
+    let mut export = TestRasterPass::new("export", bb);
+    export.texture_reads.push(tex);
+
+    b.add_encoder_pass(Box::new(manual));
+    b.add_raster_pass(Box::new(export));
+
+    let g = b.build()?;
+    assert_eq!(g.pass_info[0].name, "manual");
+    assert_eq!(
+        g.pass_info[0].kind,
+        crate::render_graph::pass::PassKind::Encoder
+    );
+    assert!(
+        g.transient_textures[tex.index()]
+            .usage
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    );
+    Ok(())
+}

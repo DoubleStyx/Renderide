@@ -8,7 +8,7 @@
 
 use super::super::render_state::MaterialRenderState;
 use super::blend_mode::MaterialBlendMode;
-use super::wire_tables::{unity_blend_state, unity_overlay_blend_state};
+use super::wire_tables::{unity_blend_state, unity_filter_blend_state, unity_overlay_blend_state};
 
 /// Const zero color-write mask for build-script-emitted pass tables.
 pub const COLOR_WRITES_NONE: wgpu::ColorWrites = wgpu::ColorWrites::empty();
@@ -84,6 +84,8 @@ pub enum MaterialPassState {
     Forward,
     /// Overlay pass with material-driven `Blend [_SrcBlend][_DstBlend], One One`, `BlendOp Add, Max`.
     Overlay,
+    /// Filter pass with material-driven RGB blend and explicit Unity alpha `Max` blending.
+    Filter,
 }
 
 /// Controls which host-authored render-state fields may override a declared shader pass.
@@ -210,6 +212,8 @@ impl MaterialRenderStatePolicy {
 pub enum PassKind {
     /// Forward pass with material-driven blend / depth-write driven by `_SrcBlend`/`_DstBlend`/`_ZWrite`.
     Forward,
+    /// Filter forward pass with Unity separate alpha max blending.
+    ForwardFilter,
     /// Forward pass with material-driven blend / depth-write and authored `Cull Off`.
     ForwardTwoSided,
     /// Fixed straight-alpha forward pass: `Blend SrcAlpha OneMinusSrcAlpha`, `ZWrite Off`.
@@ -245,24 +249,14 @@ pub enum PassKind {
 /// [`MaterialRenderStatePolicy`], and blend state via [`materialized_pass_for_blend_mode`] when the
 /// kind's [`MaterialPassState`] is not [`MaterialPassState::Static`].
 pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> MaterialPassDesc {
-    let base = MaterialPassDesc {
-        name: pass_kind_label(kind),
-        vertex_entry: "vs_main",
-        fragment_entry,
-        depth_compare: crate::gpu::MAIN_FORWARD_DEPTH_COMPARE,
-        depth_write: true,
-        cull_mode: Some(wgpu::Face::Back),
-        blend: None,
-        write_mask: wgpu::ColorWrites::COLOR,
-        depth_bias_slope_scale: 0.0,
-        depth_bias_constant: 0,
-        alpha_to_coverage: false,
-        material_state: MaterialPassState::Static,
-        render_state_policy: MaterialRenderStatePolicy::FORWARD,
-    };
+    let base = base_pass_desc(kind, fragment_entry);
     match kind {
         PassKind::Forward => MaterialPassDesc {
             material_state: MaterialPassState::Forward,
+            ..base
+        },
+        PassKind::ForwardFilter => MaterialPassDesc {
+            material_state: MaterialPassState::Filter,
             ..base
         },
         PassKind::ForwardTwoSided => MaterialPassDesc {
@@ -327,21 +321,40 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
             render_state_policy: MaterialRenderStatePolicy::STATIC,
             ..base
         },
-        PassKind::OverlayFront => MaterialPassDesc {
-            material_state: MaterialPassState::Overlay,
-            blend: Some(OVERLAY_NOOP_COLOR_MAX_ALPHA_BLEND),
-            write_mask: wgpu::ColorWrites::ALL,
-            render_state_policy: MaterialRenderStatePolicy::OVERLAY,
-            ..base
-        },
-        PassKind::OverlayBehind => MaterialPassDesc {
-            material_state: MaterialPassState::Overlay,
-            depth_compare: wgpu::CompareFunction::Less,
-            blend: Some(OVERLAY_NOOP_COLOR_MAX_ALPHA_BLEND),
-            write_mask: wgpu::ColorWrites::ALL,
-            render_state_policy: MaterialRenderStatePolicy::OVERLAY,
-            ..base
-        },
+        PassKind::OverlayFront => overlay_pass(base, wgpu::CompareFunction::GreaterEqual),
+        PassKind::OverlayBehind => overlay_pass(base, wgpu::CompareFunction::Less),
+    }
+}
+
+const fn base_pass_desc(kind: PassKind, fragment_entry: &'static str) -> MaterialPassDesc {
+    MaterialPassDesc {
+        name: pass_kind_label(kind),
+        vertex_entry: "vs_main",
+        fragment_entry,
+        depth_compare: crate::gpu::MAIN_FORWARD_DEPTH_COMPARE,
+        depth_write: true,
+        cull_mode: Some(wgpu::Face::Back),
+        blend: None,
+        write_mask: wgpu::ColorWrites::COLOR,
+        depth_bias_slope_scale: 0.0,
+        depth_bias_constant: 0,
+        alpha_to_coverage: false,
+        material_state: MaterialPassState::Static,
+        render_state_policy: MaterialRenderStatePolicy::FORWARD,
+    }
+}
+
+const fn overlay_pass(
+    base: MaterialPassDesc,
+    depth_compare: wgpu::CompareFunction,
+) -> MaterialPassDesc {
+    MaterialPassDesc {
+        material_state: MaterialPassState::Overlay,
+        depth_compare,
+        blend: Some(OVERLAY_NOOP_COLOR_MAX_ALPHA_BLEND),
+        write_mask: wgpu::ColorWrites::ALL,
+        render_state_policy: MaterialRenderStatePolicy::OVERLAY,
+        ..base
     }
 }
 
@@ -379,6 +392,7 @@ const fn transparent_forward_pass(
 const fn pass_kind_label(kind: PassKind) -> &'static str {
     match kind {
         PassKind::Forward => "forward",
+        PassKind::ForwardFilter => "forward_filter",
         PassKind::ForwardTwoSided => "forward_two_sided",
         PassKind::ForwardAlphaBlend => "forward_alpha_blend",
         PassKind::ForwardPremultipliedTransparent => "forward_premultiplied_transparent",
@@ -575,5 +589,34 @@ pub fn materialized_pass_for_blend_mode(
             let blend = unity_overlay_blend_state(src, dst);
             MaterialPassDesc { blend, ..*pass }
         }
+        MaterialPassState::Filter => {
+            let Some((src, dst)) = blend_mode.unity_blend_factors() else {
+                return *pass;
+            };
+            let blend = unity_filter_blend_state(src, dst);
+            MaterialPassDesc {
+                blend,
+                write_mask: if blend.is_some() {
+                    wgpu::ColorWrites::ALL
+                } else {
+                    wgpu::ColorWrites::COLOR
+                },
+                depth_write: src == 1 && dst == 0,
+                ..*pass
+            }
+        }
     }
+}
+
+/// Applies runtime blend plus embedded-stem-specific pass-state parity.
+pub(crate) fn materialized_embedded_pass_for_blend_mode(
+    stem: &str,
+    pass: &MaterialPassDesc,
+    blend_mode: MaterialBlendMode,
+) -> MaterialPassDesc {
+    let mut materialized = materialized_pass_for_blend_mode(pass, blend_mode);
+    if matches!(stem, "refract" | "refract_default" | "refract_multiview") {
+        materialized.render_state_policy.depth_compare = false;
+    }
+    materialized
 }

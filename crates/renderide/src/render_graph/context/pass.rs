@@ -80,6 +80,27 @@ impl ComputePassCtx<'_, '_, '_> {
     }
 }
 
+/// Context for [`crate::render_graph::pass::EncoderPass::record`].
+///
+/// The pass receives the raw [`wgpu::CommandEncoder`] and may issue copies, resolves, or manually
+/// opened render/compute passes. Resource dependencies still come from the pass setup declarations.
+pub struct EncoderPassCtx<'a, 'encoder, 'frame> {
+    /// WGPU device.
+    pub device: &'a wgpu::Device,
+    /// Active command encoder for this recording slice.
+    pub encoder: &'encoder mut wgpu::CommandEncoder,
+    /// Scene, backend system handles, and per-view frame state for this pass.
+    pub pass_frame: &'frame mut GraphPassFrame<'a>,
+    /// Deferred graph upload sink drained before submit.
+    pub uploads: GraphUploadSink<'frame>,
+    /// Typed graph resources resolved for this execution scope.
+    pub graph_resources: &'a GraphResolvedResources,
+    /// Per-scope typed blackboard (read/write; populated before or during this scope).
+    pub blackboard: &'frame mut Blackboard,
+    /// GPU profiler handle for encoder-level timestamp queries.
+    pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+}
+
 /// Context passed to `post_submit` after a per-view or frame-global submit.
 ///
 /// Runs on the CPU **after** [`wgpu::Queue::submit`] so passes can start `map_async` work on

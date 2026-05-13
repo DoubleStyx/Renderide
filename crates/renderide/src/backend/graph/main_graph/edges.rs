@@ -20,8 +20,8 @@ fn connect_post_processing_edges(
     }
 }
 
-/// Adds every dependency edge between main render graph passes, optional GTAO normals, optional
-/// MSAA color resolves, and the post-processing chain leading into compose.
+/// Adds every dependency edge between main render graph passes, optional GTAO normals, and the
+/// post-processing chain leading into compose.
 pub(super) fn add_main_graph_edges(
     builder: &mut GraphBuilder,
     passes: &MainGraphPassIds,
@@ -38,19 +38,11 @@ pub(super) fn add_main_graph_edges(
         builder.add_edge(passes.forward_opaque, passes.depth_snapshot);
     }
     builder.add_edge(passes.depth_snapshot, passes.forward_intersect);
-    if let Some(pre_grab_color_resolve) = passes.pre_grab_color_resolve {
-        builder.add_edge(passes.forward_intersect, pre_grab_color_resolve);
-        builder.add_edge(pre_grab_color_resolve, passes.color_snapshot);
-    } else {
-        builder.add_edge(passes.forward_intersect, passes.color_snapshot);
-    }
-    builder.add_edge(passes.color_snapshot, passes.forward_transparent);
-    if let Some(final_color_resolve) = passes.final_color_resolve {
-        builder.add_edge(passes.forward_transparent, final_color_resolve);
-        builder.add_edge(final_color_resolve, passes.depth_resolve);
-    } else {
-        builder.add_edge(passes.forward_transparent, passes.depth_resolve);
-    }
+    builder.add_edge(
+        passes.forward_intersect,
+        passes.forward_transparent_sequence,
+    );
+    builder.add_edge(passes.forward_transparent_sequence, passes.depth_resolve);
     builder.add_edge(passes.depth_resolve, passes.hiz);
     connect_post_processing_edges(builder, passes.hiz, chain_output, compose);
 }

@@ -6,8 +6,10 @@
 
 use std::borrow::Cow;
 
-use super::{ComputePass, RasterPass};
-use crate::render_graph::context::{ComputePassCtx, PostSubmitContext, RasterPassCtx};
+use super::{ComputePass, EncoderPass, RasterPass};
+use crate::render_graph::context::{
+    ComputePassCtx, EncoderPassCtx, PostSubmitContext, RasterPassCtx,
+};
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::builder::PassBuilder;
 use crate::render_graph::pass::{DepthAttachmentTemplate, RenderPassTemplate};
@@ -22,6 +24,8 @@ pub enum PassKind {
     Raster,
     /// Encoder-driven compute pass.
     Compute,
+    /// Encoder-driven pass that may interleave copies, resolves, and manually opened passes.
+    Encoder,
 }
 
 /// Scheduling phase: when in the multi-view loop a pass runs.
@@ -82,6 +86,8 @@ pub enum PassNode {
     Raster(Box<dyn RasterPass>),
     /// Encoder-driven compute pass.
     Compute(Box<dyn ComputePass>),
+    /// Encoder-driven mixed pass.
+    Encoder(Box<dyn EncoderPass>),
 }
 
 impl PassNode {
@@ -90,6 +96,7 @@ impl PassNode {
         match self {
             Self::Raster(p) => p.name(),
             Self::Compute(p) => p.name(),
+            Self::Encoder(p) => p.name(),
         }
     }
 
@@ -98,6 +105,7 @@ impl PassNode {
         match self {
             Self::Raster(p) => p.profiling_label(),
             Self::Compute(p) => p.profiling_label(),
+            Self::Encoder(p) => p.profiling_label(),
         }
     }
 
@@ -106,6 +114,7 @@ impl PassNode {
         match self {
             Self::Raster(_) => PassKind::Raster,
             Self::Compute(_) => PassKind::Compute,
+            Self::Encoder(_) => PassKind::Encoder,
         }
     }
 
@@ -114,6 +123,7 @@ impl PassNode {
         match self {
             Self::Raster(p) => p.phase(),
             Self::Compute(p) => p.phase(),
+            Self::Encoder(p) => p.phase(),
         }
     }
 
@@ -125,6 +135,7 @@ impl PassNode {
         match self {
             Self::Raster(p) => p.setup(builder),
             Self::Compute(p) => p.setup(builder),
+            Self::Encoder(p) => p.setup(builder),
         }
     }
 
@@ -135,7 +146,7 @@ impl PassNode {
     ) -> Result<(), RenderPassError> {
         match self {
             Self::Compute(p) => p.record(ctx),
-            Self::Raster(_) => Ok(()),
+            Self::Raster(_) | Self::Encoder(_) => Ok(()),
         }
     }
 
@@ -146,7 +157,29 @@ impl PassNode {
     ) -> Result<bool, RenderPassError> {
         match self {
             Self::Compute(p) => p.should_record(ctx),
-            Self::Raster(_) => Ok(true),
+            Self::Raster(_) | Self::Encoder(_) => Ok(true),
+        }
+    }
+
+    /// Records encoder commands into the encoder held in `ctx`. Returns `Ok(())` for non-encoder variants.
+    pub(crate) fn record_encoder(
+        &self,
+        ctx: &mut EncoderPassCtx<'_, '_, '_>,
+    ) -> Result<(), RenderPassError> {
+        match self {
+            Self::Encoder(p) => p.record(ctx),
+            Self::Raster(_) | Self::Compute(_) => Ok(()),
+        }
+    }
+
+    /// Returns whether an encoder pass should be recorded for this view. Returns `true` for non-encoder variants.
+    pub(crate) fn should_record_encoder(
+        &self,
+        ctx: &EncoderPassCtx<'_, '_, '_>,
+    ) -> Result<bool, RenderPassError> {
+        match self {
+            Self::Encoder(p) => p.should_record(ctx),
+            Self::Raster(_) | Self::Compute(_) => Ok(true),
         }
     }
 
@@ -159,7 +192,7 @@ impl PassNode {
     ) -> Result<(), RenderPassError> {
         match self {
             Self::Raster(p) => p.record(ctx, rpass),
-            Self::Compute(_) => Ok(()),
+            Self::Compute(_) | Self::Encoder(_) => Ok(()),
         }
     }
 
@@ -170,7 +203,7 @@ impl PassNode {
     ) -> Result<bool, RenderPassError> {
         match self {
             Self::Raster(p) => p.should_record(ctx),
-            Self::Compute(_) => Ok(true),
+            Self::Compute(_) | Self::Encoder(_) => Ok(true),
         }
     }
 
@@ -182,7 +215,7 @@ impl PassNode {
     ) -> Option<std::num::NonZeroU32> {
         match self {
             Self::Raster(p) => p.multiview_mask_override(ctx, template),
-            Self::Compute(_) => template.multiview_mask,
+            Self::Compute(_) | Self::Encoder(_) => template.multiview_mask,
         }
     }
 
@@ -194,7 +227,7 @@ impl PassNode {
     ) -> Option<wgpu::Operations<u32>> {
         match self {
             Self::Raster(p) => p.stencil_ops_override(ctx, depth),
-            Self::Compute(_) => depth.stencil,
+            Self::Compute(_) | Self::Encoder(_) => depth.stencil,
         }
     }
 
@@ -206,6 +239,7 @@ impl PassNode {
         match self {
             Self::Raster(p) => p.post_submit(ctx),
             Self::Compute(p) => p.post_submit(ctx),
+            Self::Encoder(p) => p.post_submit(ctx),
         }
     }
 
@@ -214,6 +248,7 @@ impl PassNode {
         match self {
             Self::Raster(p) => p.release_view_resources(retired_views),
             Self::Compute(p) => p.release_view_resources(retired_views),
+            Self::Encoder(p) => p.release_view_resources(retired_views),
         }
     }
 }

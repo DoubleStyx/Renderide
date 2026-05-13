@@ -40,7 +40,7 @@ use crate::materials::raster_pipeline::{
 use crate::materials::{
     MaterialBlendMode, MaterialPassDesc, MaterialRenderState, RasterFrontFace,
     RasterPrimitiveTopology, ReflectedRasterLayout, SnapshotRequirements,
-    materialized_pass_for_blend_mode,
+    materialized_embedded_pass_for_blend_mode,
 };
 
 use self::tangent_fallback::tangent_fallback_mode_for_stem;
@@ -307,7 +307,7 @@ pub(in crate::materials) fn create_embedded_render_pipelines(
     }
     let materialized_passes = declared_passes
         .iter()
-        .map(|p| materialized_pass_for_blend_mode(p, blend_mode))
+        .map(|p| materialized_embedded_pass_for_blend_mode(stem.as_ref(), p, blend_mode))
         .collect::<Vec<_>>();
     create_reflective_raster_mesh_forward_pipelines(
         shader,
