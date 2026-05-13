@@ -15,7 +15,7 @@ naga_oil = { version = "0.22", default-features = false }
 thiserror = "2"
 
 [[bin]]
-name = "renderide"
+name = "renderide-renderer"
 path = "src/main.rs"
 
 [[bin]]
