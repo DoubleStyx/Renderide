@@ -426,3 +426,39 @@ fn depth_prepass_rejects_unsafe_embedded_stems() {
 
     assert!(!depth_prepass_item_eligible(&item, ShaderPermutation(0)));
 }
+
+#[test]
+fn parallel_instance_plan_matches_serial_windows() {
+    let mut draws = Vec::new();
+    for material in 1..=16 {
+        for n in 0..80 {
+            let node = material * 100 + n;
+            let mut item = opaque(10 + n % 5, material, n % 13, node);
+            item.first_index = ((n % 3) * 12) as u32;
+            item.index_count = (6 + (n % 2) * 3) as u32;
+            match material % 4 {
+                0 => item.batch_key.embedded_requires_intersection_pass = true,
+                2 => item.batch_key.render_state.depth_write = Some(false),
+                3 => {
+                    item.batch_key.embedded_uses_scene_color_snapshot = true;
+                    item.batch_key.alpha_blended = true;
+                }
+                _ => {}
+            }
+            refresh_sort_keys(&mut item);
+            draws.push(item);
+        }
+    }
+    sort_draws(&mut draws);
+
+    let windows = collect_batch_windows(&draws, true);
+    assert!(should_parallelize_instance_plan(draws.len(), windows.len()));
+    let serial = build_plan_from_windows_serial(&draws, &windows);
+    let parallel = build_plan(&draws, true);
+
+    assert_eq!(parallel, serial);
+    assert!(!parallel.regular_groups.is_empty());
+    assert!(!parallel.post_skybox_groups.is_empty());
+    assert!(!parallel.intersect_groups.is_empty());
+    assert!(!parallel.transparent_groups.is_empty());
+}

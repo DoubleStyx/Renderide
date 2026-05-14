@@ -8,7 +8,9 @@ use crate::world_mesh::draw_prep::item::WorldMeshDrawItem;
 use crate::world_mesh::materials::compute_batch_key_hash;
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
-use super::{cmp_transparent_intra_run, opaque_depth_bucket, pack_sort_prefix, sort_draws_serial};
+use super::{
+    cmp_transparent_intra_run, opaque_depth_bucket, pack_sort_prefix, sort_draws, sort_draws_serial,
+};
 
 /// Full structural comparator equivalent to the pre-packing `cmp_world_mesh_draw_items`.
 ///
@@ -91,6 +93,25 @@ fn set_render_queue(item: &mut WorldMeshDrawItem, render_queue: i32) {
         item._opaque_depth_bucket,
         item.batch_key_hash,
     );
+}
+
+fn draw_order_signature(
+    items: &[WorldMeshDrawItem],
+) -> Vec<(u64, i32, u32, i32, i32, usize, usize)> {
+    items
+        .iter()
+        .map(|item| {
+            (
+                item.sort_prefix,
+                item.sorting_order,
+                item.camera_distance_sq.to_bits(),
+                item.mesh_asset_id,
+                item.node_id,
+                item.slot_index,
+                item.collect_order,
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -278,4 +299,71 @@ fn pack_sort_prefix_keeps_depth_and_hash_for_opaque() {
     let same_depth_lo_hash = pack_sort_prefix(false, 0, 10, 0);
     let same_depth_hi_hash = pack_sort_prefix(false, 0, 10, u64::MAX);
     assert!(same_depth_lo_hash < same_depth_hi_hash);
+}
+
+#[test]
+fn parallel_opaque_intra_prefix_resort_matches_serial() {
+    let mut draws: Vec<_> = (0..1_500)
+        .rev()
+        .map(|n| {
+            let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 7,
+                property_block: None,
+                skinned: false,
+                sorting_order: n,
+                mesh_asset_id: 3,
+                node_id: n,
+                slot_index: 0,
+                collect_order: n as usize,
+                alpha_blended: false,
+            });
+            set_camera_distance(&mut item, 8.0);
+            item
+        })
+        .collect();
+    let mut serial = draws.clone();
+
+    sort_draws(&mut draws);
+    sort_draws_serial(&mut serial);
+
+    assert_eq!(draw_order_signature(&draws), draw_order_signature(&serial));
+    assert!(
+        draws
+            .windows(2)
+            .all(|w| w[0].sorting_order >= w[1].sorting_order)
+    );
+}
+
+#[test]
+fn parallel_transparent_intra_prefix_resort_matches_serial() {
+    let mut draws: Vec<_> = (0..1_500)
+        .rev()
+        .map(|n| {
+            let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 7,
+                property_block: None,
+                skinned: false,
+                sorting_order: n % 3,
+                mesh_asset_id: 3,
+                node_id: n,
+                slot_index: 0,
+                collect_order: n as usize,
+                alpha_blended: true,
+            });
+            set_camera_distance(&mut item, (n + 1) as f32);
+            set_render_queue(&mut item, UNITY_RENDER_QUEUE_TRANSPARENT);
+            item
+        })
+        .collect();
+    let mut serial = draws.clone();
+
+    sort_draws(&mut draws);
+    sort_draws_serial(&mut serial);
+
+    assert_eq!(draw_order_signature(&draws), draw_order_signature(&serial));
+    assert!(draws.windows(2).all(|w| {
+        w[0].sorting_order < w[1].sorting_order
+            || (w[0].sorting_order == w[1].sorting_order
+                && w[0].camera_distance_sq >= w[1].camera_distance_sq)
+    }));
 }

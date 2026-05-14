@@ -1,9 +1,14 @@
 //! Dense vertex stream extraction for embedded material vertex buffers.
 
+use rayon::prelude::*;
+
 use crate::shared::{VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType};
 
 use super::super::gpu_mesh::attribute_reader::AttributeReader;
 use super::buffer_layout::vertex_format_size;
+
+/// Vertex count above which stream expansion fans out across Rayon workers.
+const VERTEX_STREAM_PARALLEL_MIN: usize = 1_024;
 
 /// Attribute semantic used when expanding host vertex scalars into float streams.
 #[derive(Clone, Copy)]
@@ -70,31 +75,82 @@ pub fn extract_float3_position_normal_as_vec4_streams(
     let mut pos_out = vec![0u8; vertex_count * 16];
     let mut nrm_out = vec![0u8; vertex_count * 16];
     let one = 1.0f32.to_le_bytes();
-    fill_normal_stream_with_forward_z(&mut nrm_out);
+    if normal_reader.is_none() {
+        fill_normal_stream_with_forward_z(&mut nrm_out);
+    }
+    let normal_reader = normal_reader.as_ref();
 
-    for i in 0..vertex_count {
-        let position = position_reader.read_vec3(i)?;
-        let po = i * 16;
-        write_f32s(&mut pos_out[po..po + 12], &position);
-        pos_out[po + 12..po + 16].copy_from_slice(&one);
-
-        if let Some(nr) = &normal_reader {
-            let normal = nr.read_vec3(i)?;
-            let no = i * 16;
-            write_f32s(&mut nrm_out[no..no + 12], &normal);
+    if should_parallelize_vertex_stream(vertex_count) {
+        pos_out
+            .par_chunks_exact_mut(16)
+            .zip(nrm_out.par_chunks_exact_mut(16))
+            .enumerate()
+            .try_for_each(|(i, (pos_slot, nrm_slot))| {
+                write_position_normal_vertex(
+                    i,
+                    &position_reader,
+                    normal_reader,
+                    pos_slot,
+                    nrm_slot,
+                    one,
+                )
+            })?;
+    } else {
+        for (i, (pos_slot, nrm_slot)) in pos_out
+            .chunks_exact_mut(16)
+            .zip(nrm_out.chunks_exact_mut(16))
+            .enumerate()
+        {
+            write_position_normal_vertex(
+                i,
+                &position_reader,
+                normal_reader,
+                pos_slot,
+                nrm_slot,
+                one,
+            )?;
         }
     }
     Some((pos_out, nrm_out))
 }
 
+fn should_parallelize_vertex_stream(vertex_count: usize) -> bool {
+    vertex_count >= VERTEX_STREAM_PARALLEL_MIN
+}
+
+fn write_position_normal_vertex(
+    vertex: usize,
+    position_reader: &AttributeReader<'_>,
+    normal_reader: Option<&AttributeReader<'_>>,
+    pos_slot: &mut [u8],
+    nrm_slot: &mut [u8],
+    one: [u8; 4],
+) -> Option<()> {
+    let position = position_reader.read_vec3(vertex)?;
+    write_f32s(&mut pos_slot[..12], &position);
+    pos_slot[12..16].copy_from_slice(&one);
+
+    if let Some(reader) = normal_reader {
+        let normal = reader.read_vec3(vertex)?;
+        write_f32s(&mut nrm_slot[..12], &normal);
+    }
+
+    Some(())
+}
+
 fn fill_normal_stream_with_forward_z(out: &mut [u8]) {
     let zero = 0.0f32.to_le_bytes();
     let one = 1.0f32.to_le_bytes();
-    for chunk in out.chunks_exact_mut(16) {
+    let write_chunk = |chunk: &mut [u8]| {
         chunk[0..4].copy_from_slice(&zero);
         chunk[4..8].copy_from_slice(&zero);
         chunk[8..12].copy_from_slice(&one);
         chunk[12..16].copy_from_slice(&zero);
+    };
+    if should_parallelize_vertex_stream(out.len() / 16) {
+        out.par_chunks_exact_mut(16).for_each(write_chunk);
+    } else {
+        out.chunks_exact_mut(16).for_each(write_chunk);
     }
 }
 
@@ -147,12 +203,22 @@ pub fn vertex_float2_stream_bytes(
     ) else {
         return Some(out);
     };
-    for i in 0..vertex_count {
-        let uv = reader.read_vec2(i)?;
-        let o = i * 8;
-        write_f32s(&mut out[o..o + 8], &uv);
+    if should_parallelize_vertex_stream(vertex_count) {
+        out.par_chunks_exact_mut(8)
+            .enumerate()
+            .try_for_each(|(i, slot)| write_vertex_float2(&reader, i, slot))?;
+    } else {
+        for (i, slot) in out.chunks_exact_mut(8).enumerate() {
+            write_vertex_float2(&reader, i, slot)?;
+        }
     }
     Some(out)
+}
+
+fn write_vertex_float2(reader: &AttributeReader<'_>, vertex: usize, slot: &mut [u8]) -> Option<()> {
+    let uv = reader.read_vec2(vertex)?;
+    write_f32s(slot, &uv);
+    Some(())
 }
 
 /// Dense `vec4<f32>` vertex stream for an arbitrary float attribute.
@@ -175,25 +241,35 @@ fn vertex_float4_stream_bytes_with_kind(
         return None;
     }
     let mut out = vec![0u8; vertex_count * 16];
-    for chunk in out.chunks_exact_mut(16) {
-        for (component, value) in default.iter().enumerate() {
-            let o = component * 4;
-            chunk[o..o + 4].copy_from_slice(&value.to_le_bytes());
-        }
-    }
+    fill_float4_stream_with_default(&mut out, default);
 
     let Some(reader) =
         AttributeReader::from_attrs(vertex_data, vertex_count, stride, attrs, target, kind, 1)
     else {
         return Some(out);
     };
-    for i in 0..vertex_count {
-        let values = reader.read_vec4(i, default)?;
-        let o = i * 16;
-        write_f32s(&mut out[o..o + 16], &values);
+    if should_parallelize_vertex_stream(vertex_count) {
+        out.par_chunks_exact_mut(16)
+            .enumerate()
+            .try_for_each(|(i, slot)| write_vertex_float4(&reader, i, slot, default))?;
+    } else {
+        for (i, slot) in out.chunks_exact_mut(16).enumerate() {
+            write_vertex_float4(&reader, i, slot, default)?;
+        }
     }
 
     Some(out)
+}
+
+fn write_vertex_float4(
+    reader: &AttributeReader<'_>,
+    vertex: usize,
+    slot: &mut [u8],
+    default: [f32; 4],
+) -> Option<()> {
+    let values = reader.read_vec4(vertex, default)?;
+    write_f32s(slot, &values);
+    Some(())
 }
 
 /// Dense raw `vec4<f32>` payload stream for attributes used as shader data instead of geometry.
@@ -273,23 +349,36 @@ pub fn color_float4_stream_bytes(
         return Some(out);
     };
 
-    for i in 0..vertex_count {
-        let rgba = reader.read_vec4(i, [1.0; 4])?;
-        let o = i * 16;
-        write_f32s(&mut out[o..o + 16], &rgba);
+    if should_parallelize_vertex_stream(vertex_count) {
+        out.par_chunks_exact_mut(16)
+            .enumerate()
+            .try_for_each(|(i, slot)| write_vertex_float4(&reader, i, slot, [1.0; 4]))?;
+    } else {
+        for (i, slot) in out.chunks_exact_mut(16).enumerate() {
+            write_vertex_float4(&reader, i, slot, [1.0; 4])?;
+        }
     }
 
     Some(out)
 }
 
-fn fill_color_stream_with_white(out: &mut [u8]) {
-    let one = 1.0f32.to_le_bytes();
-    for chunk in out.chunks_exact_mut(16) {
-        chunk[0..4].copy_from_slice(&one);
-        chunk[4..8].copy_from_slice(&one);
-        chunk[8..12].copy_from_slice(&one);
-        chunk[12..16].copy_from_slice(&one);
+fn fill_float4_stream_with_default(out: &mut [u8], default: [f32; 4]) {
+    let default = default.map(|value| value.to_le_bytes());
+    let write_chunk = |chunk: &mut [u8]| {
+        for (component, value) in default.iter().enumerate() {
+            let offset = component * 4;
+            chunk[offset..offset + 4].copy_from_slice(value);
+        }
+    };
+    if should_parallelize_vertex_stream(out.len() / 16) {
+        out.par_chunks_exact_mut(16).for_each(write_chunk);
+    } else {
+        out.chunks_exact_mut(16).for_each(write_chunk);
     }
+}
+
+fn fill_color_stream_with_white(out: &mut [u8]) {
+    fill_float4_stream_with_default(out, [1.0; 4]);
 }
 
 fn decode_vertex_scalar(

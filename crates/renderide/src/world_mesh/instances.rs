@@ -15,6 +15,8 @@ mod scratch;
 
 use std::ops::Range;
 
+use rayon::prelude::*;
+
 use crate::materials::{
     RasterPipelineKind, ShaderPermutation, UNITY_RENDER_QUEUE_ALPHA_TEST,
     embedded_stem_depth_prepass_pass, render_queue_is_transparent,
@@ -24,6 +26,11 @@ use super::draw_prep::WorldMeshDrawItem;
 
 use batch_window::{BatchWindow, emit_group, next_batch_window, subpass_groups};
 use scratch::InstancePlanScratch;
+
+/// Draw count above which [`build_plan`] may split batch windows across worker threads.
+const INSTANCE_PLAN_PARALLEL_MIN_DRAWS: usize = 1_024;
+/// Minimum independent batch windows needed to amortize Rayon scheduling and merge overhead.
+const INSTANCE_PLAN_PARALLEL_MIN_WINDOWS: usize = 4;
 
 /// One emitted indexed draw covering a contiguous slab range of identical instances.
 ///
@@ -55,7 +62,7 @@ pub struct DrawGroup {
 /// directly. `representative_draw_idx` for each group list is monotonically increasing; backend
 /// frame planning attaches material packet indices after packet resolution so recording does not
 /// search packet boundaries.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InstancePlan {
     /// New slab order. `slab_layout[i]` is the sorted-draw index whose per-draw uniforms
     /// go into per-draw slot `i`. Length equals `draws.len()` (every draw gets one slot).
@@ -75,9 +82,10 @@ pub struct InstancePlan {
 
 /// Builds the per-view [`InstancePlan`] from a sorted draw list.
 ///
-/// Walks `draws` once. Same-`batch_key` runs are already adjacent because of the sort, so
-/// grouping happens in a small per-window `HashMap<MeshSubmeshKey, group_idx>` that is
-/// cleared between windows. Singleton-per-draw groups are produced when:
+/// Same-`batch_key` runs are already adjacent because of the sort, so grouping happens in a
+/// small per-window `HashMap<MeshSubmeshKey, group_idx>` that is cleared between windows. Large
+/// plans with enough independent material windows build those windows on Rayon workers and merge
+/// the resulting slab ranges in sorted-window order. Singleton-per-draw groups are produced when:
 /// - `supports_base_instance` is false (downlevel devices set `instance_count == 1`), or
 /// - the run is `skinned` (vertex deform path differs per draw), or
 /// - the run is `alpha_blended` (back-to-front order is load-bearing -- must not collapse).
@@ -91,6 +99,24 @@ pub fn build_plan(draws: &[WorldMeshDrawItem], supports_base_instance: bool) -> 
         return InstancePlan::default();
     }
 
+    if draws.len() < INSTANCE_PLAN_PARALLEL_MIN_DRAWS {
+        return build_plan_serial(draws, supports_base_instance);
+    }
+
+    let windows = collect_batch_windows(draws, supports_base_instance);
+    if should_parallelize_instance_plan(draws.len(), windows.len()) {
+        build_plan_parallel(draws, &windows)
+    } else {
+        build_plan_from_windows_serial(draws, &windows)
+    }
+}
+
+fn should_parallelize_instance_plan(draw_count: usize, window_count: usize) -> bool {
+    draw_count >= INSTANCE_PLAN_PARALLEL_MIN_DRAWS
+        && window_count >= INSTANCE_PLAN_PARALLEL_MIN_WINDOWS
+}
+
+fn build_plan_serial(draws: &[WorldMeshDrawItem], supports_base_instance: bool) -> InstancePlan {
     let mut builder = InstancePlanBuilder::with_capacity(draws.len());
     let mut i = 0usize;
     while i < draws.len() {
@@ -100,6 +126,108 @@ pub fn build_plan(draws: &[WorldMeshDrawItem], supports_base_instance: bool) -> 
     }
 
     builder.finish()
+}
+
+fn collect_batch_windows(
+    draws: &[WorldMeshDrawItem],
+    supports_base_instance: bool,
+) -> Vec<BatchWindow> {
+    let mut windows = Vec::new();
+    let mut i = 0usize;
+    while i < draws.len() {
+        let window = next_batch_window(draws, i, supports_base_instance);
+        i = window.range.end;
+        windows.push(window);
+    }
+    windows
+}
+
+fn build_plan_from_windows_serial(
+    draws: &[WorldMeshDrawItem],
+    windows: &[BatchWindow],
+) -> InstancePlan {
+    let mut builder = InstancePlanBuilder::with_capacity(draws.len());
+    for window in windows {
+        builder.process_window(draws, window.clone());
+    }
+    builder.finish()
+}
+
+fn build_plan_parallel(draws: &[WorldMeshDrawItem], windows: &[BatchWindow]) -> InstancePlan {
+    profiling::scope!("mesh::build_plan_parallel_windows");
+    let partials: Vec<_> = windows
+        .par_iter()
+        .map(|window| {
+            profiling::scope!("mesh::build_plan_window_worker");
+            let mut builder = InstancePlanBuilder::with_capacity(window.range.len());
+            builder.process_window(draws, window.clone());
+            builder.finish()
+        })
+        .collect();
+    merge_partial_instance_plans(draws.len(), partials)
+}
+
+fn merge_partial_instance_plans(draw_count: usize, partials: Vec<InstancePlan>) -> InstancePlan {
+    let mut plan = InstancePlan {
+        slab_layout: Vec::with_capacity(draw_count),
+        regular_groups: Vec::new(),
+        post_skybox_groups: Vec::new(),
+        intersect_groups: Vec::new(),
+        transparent_groups: Vec::new(),
+    };
+
+    for partial in partials {
+        let slab_offset = plan.slab_layout.len() as u32;
+        plan.slab_layout.extend(partial.slab_layout);
+        append_groups_with_slab_offset(
+            &mut plan.regular_groups,
+            partial.regular_groups,
+            slab_offset,
+        );
+        append_groups_with_slab_offset(
+            &mut plan.post_skybox_groups,
+            partial.post_skybox_groups,
+            slab_offset,
+        );
+        append_groups_with_slab_offset(
+            &mut plan.intersect_groups,
+            partial.intersect_groups,
+            slab_offset,
+        );
+        append_groups_with_slab_offset(
+            &mut plan.transparent_groups,
+            partial.transparent_groups,
+            slab_offset,
+        );
+    }
+
+    debug_assert_plan_group_order(&plan);
+    plan
+}
+
+fn append_groups_with_slab_offset(
+    target: &mut Vec<DrawGroup>,
+    groups: Vec<DrawGroup>,
+    slab_offset: u32,
+) {
+    target.extend(groups.into_iter().map(|mut group| {
+        group.instance_range =
+            group.instance_range.start + slab_offset..group.instance_range.end + slab_offset;
+        group
+    }));
+}
+
+fn debug_assert_plan_group_order(plan: &InstancePlan) {
+    debug_assert!(groups_are_monotonic(&plan.regular_groups));
+    debug_assert!(groups_are_monotonic(&plan.post_skybox_groups));
+    debug_assert!(groups_are_monotonic(&plan.intersect_groups));
+    debug_assert!(groups_are_monotonic(&plan.transparent_groups));
+}
+
+fn groups_are_monotonic(groups: &[DrawGroup]) -> bool {
+    groups
+        .windows(2)
+        .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx)
 }
 
 /// Returns whether a regular draw group may be mirrored by the generic opaque depth prepass.

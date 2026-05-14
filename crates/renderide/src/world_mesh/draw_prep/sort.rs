@@ -8,6 +8,12 @@ use crate::materials::render_queue_is_transparent;
 
 use super::item::WorldMeshDrawItem;
 
+/// Equal-prefix run length above which the secondary structural resort uses Rayon.
+///
+/// The primary prefix sort already used the worker pool. This gate is for large transparent
+/// buckets and opaque hash-prefix buckets where the tie-breaker comparator can still dominate.
+const INTRA_PREFIX_RUN_PARALLEL_MIN: usize = 1_024;
+
 /// Bit width of the render-queue field inside [`WorldMeshDrawItem::sort_prefix`].
 const SORT_PREFIX_RENDER_QUEUE_BITS: u32 = 18;
 /// Maximum render-queue value representable inside [`WorldMeshDrawItem::sort_prefix`].
@@ -114,7 +120,7 @@ fn cmp_opaque_intra_prefix(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Orde
 ///   zeros the depth-bucket and hash bits for transparent items so they all collide on the
 ///   primary key; the transparent comparator then sorts by `sorting_order`, back-to-front
 ///   `camera_distance_sq`, then `collect_order`.
-fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem]) {
+fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem], allow_parallel: bool) {
     profiling::scope!("mesh::sort_intra_prefix_runs");
     let mut start = 0;
     while start < items.len() {
@@ -126,12 +132,33 @@ fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem]) {
         if end - start > 1 {
             let is_transparent = render_queue_is_transparent(items[start].batch_key.render_queue);
             if is_transparent {
-                items[start..end].sort_unstable_by(cmp_transparent_intra_run);
+                sort_intra_prefix_run(
+                    &mut items[start..end],
+                    cmp_transparent_intra_run,
+                    allow_parallel,
+                );
             } else {
-                items[start..end].sort_unstable_by(cmp_opaque_intra_prefix);
+                sort_intra_prefix_run(
+                    &mut items[start..end],
+                    cmp_opaque_intra_prefix,
+                    allow_parallel,
+                );
             }
         }
         start = end;
+    }
+}
+
+fn sort_intra_prefix_run(
+    run: &mut [WorldMeshDrawItem],
+    cmp: fn(&WorldMeshDrawItem, &WorldMeshDrawItem) -> Ordering,
+    allow_parallel: bool,
+) {
+    if allow_parallel && run.len() >= INTRA_PREFIX_RUN_PARALLEL_MIN {
+        profiling::scope!("mesh::sort_intra_prefix_run_parallel");
+        run.par_sort_unstable_by(cmp);
+    } else {
+        run.sort_unstable_by(cmp);
     }
 }
 
@@ -145,14 +172,14 @@ fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem]) {
 pub fn sort_draws(items: &mut [WorldMeshDrawItem]) {
     profiling::scope!("mesh::sort_draws");
     items.par_sort_unstable_by_key(|item| item.sort_prefix);
-    resort_intra_prefix_runs(items);
+    resort_intra_prefix_runs(items, true);
 }
 
 /// Same ordering as [`sort_draws`] without rayon (for nested parallel batches).
 pub(super) fn sort_draws_serial(items: &mut [WorldMeshDrawItem]) {
     profiling::scope!("mesh::sort_draws_serial");
     items.sort_unstable_by_key(|item| item.sort_prefix);
-    resort_intra_prefix_runs(items);
+    resort_intra_prefix_runs(items, false);
 }
 
 #[cfg(test)]
