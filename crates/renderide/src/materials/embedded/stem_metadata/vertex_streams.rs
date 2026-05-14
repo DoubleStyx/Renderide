@@ -1,4 +1,4 @@
-//! Vertex-stream queries derived from `vs_main` reflection on a composed embedded WGSL stem.
+//! Vertex-stream queries derived from pass vertex-entry reflection on a composed embedded WGSL stem.
 
 use crate::materials::ShaderPermutation;
 use crate::materials::{ReflectedRasterLayout, ReflectedVertexInputFormat};
@@ -51,37 +51,37 @@ pub(super) fn derive_vertex_stream_mask(
     mask
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(2)` as a UV0 vertex stream.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use UV0.
 pub fn embedded_stem_needs_uv0_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv0_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(3)` as vertex color.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use vertex color.
 pub fn embedded_stem_needs_color_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_color_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(4)` as tangent.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use tangent.
 pub fn embedded_stem_needs_tangent_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_tangent_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(5)` as UV1.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use UV1.
 pub fn embedded_stem_needs_uv1_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv1_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(6)` as UV2.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use UV2.
 pub fn embedded_stem_needs_uv2_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv2_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(7)` as UV3.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use UV3.
 pub fn embedded_stem_needs_uv3_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv3_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses tangent/UV2/UV3.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use tangent/UV2/UV3.
 pub fn embedded_stem_needs_extended_vertex_streams(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -123,9 +123,9 @@ mod tests {
     use crate::materials::ShaderPermutation;
 
     use super::{
-        embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream,
-        embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
-        embedded_stem_uses_ui_transparent_fallback,
+        embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_tangent_stream,
+        embedded_stem_needs_uv0_stream, embedded_stem_uses_raw_normal_payload,
+        embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_ui_transparent_fallback,
     };
 
     #[test]
@@ -170,6 +170,38 @@ mod tests {
         ));
         assert!(!embedded_stem_needs_extended_vertex_streams(
             "ui_textunlit_default",
+            SHADER_PERM_MULTIVIEW_STEREO,
+        ));
+    }
+
+    #[test]
+    fn furfx_pass_vertex_entries_need_uv0_stream() {
+        assert!(embedded_stem_needs_uv0_stream(
+            "furfx-basic-10layer_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_uv0_stream(
+            "furfx-basic-10layer_default",
+            SHADER_PERM_MULTIVIEW_STEREO,
+        ));
+    }
+
+    #[test]
+    fn furfx_modern_pass_vertex_entries_need_tangent_stream() {
+        assert!(embedded_stem_needs_tangent_stream(
+            "furfx-3.0-shell-10layer_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_extended_vertex_streams(
+            "furfx-3.0-shell-10layer_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_tangent_stream(
+            "furfx-3.0-shell-10layer_default",
+            SHADER_PERM_MULTIVIEW_STEREO,
+        ));
+        assert!(embedded_stem_needs_extended_vertex_streams(
+            "furfx-3.0-shell-10layer_default",
             SHADER_PERM_MULTIVIEW_STEREO,
         ));
     }

@@ -39,7 +39,7 @@ pub struct ReflectedMaterialUniformBlock {
     pub fields: HashMap<String, ReflectedUniformField>,
 }
 
-/// Vertex attribute format reflected from `vs_main` input arguments.
+/// Vertex attribute format reflected from material vertex entry point input arguments.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ReflectedVertexInputFormat {
     /// `vec2<f32>`.
@@ -50,7 +50,7 @@ pub enum ReflectedVertexInputFormat {
     Unsupported,
 }
 
-/// One reflected `vs_main` vertex input location and its shader-visible format.
+/// One reflected material vertex input location and its shader-visible format.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ReflectedVertexInput {
     /// Shader input location.
@@ -73,9 +73,9 @@ pub struct ReflectedRasterLayout {
     pub material_uniform: Option<ReflectedMaterialUniformBlock>,
     /// `@group(1)` `@binding` -> WGSL global identifier (matches Unity host property names where applicable).
     pub material_group1_names: HashMap<u32, String>,
-    /// Exact `vs_main` vertex input locations and formats, sorted by location.
+    /// Exact vertex input locations and formats required by the reflected material entry points, sorted by location.
     pub vs_vertex_inputs: Vec<ReflectedVertexInput>,
-    /// Highest `@location` index on `vs_main` vertex inputs (excluding builtins); `>= 2` implies a UV stream at `location(2)`.
+    /// Highest `@location` index on reflected vertex inputs, excluding builtins.
     #[cfg(test)]
     pub vs_max_vertex_location: Option<u32>,
     /// `true` when the shader declares a scene-depth snapshot binding at `@group(0)`.
@@ -111,6 +111,26 @@ pub enum ReflectError {
     /// Layouter could not compute buffer/struct sizes.
     #[error("layout computation: {0}")]
     Layout(String),
+    /// A requested vertex entry point was not declared by the material WGSL.
+    #[error(
+        "vertex entry point `{entry}` was requested during material reflection but is not declared"
+    )]
+    VertexEntryPointMissing {
+        /// Requested vertex entry point name.
+        entry: String,
+    },
+    /// Requested vertex entry points disagree about the shader-visible format at one location.
+    #[error(
+        "vertex input @location({location}) has incompatible formats {first:?} and {second:?} across requested material vertex entry points"
+    )]
+    VertexInputFormatConflict {
+        /// Shader input location.
+        location: u32,
+        /// First reflected shader-visible format.
+        first: ReflectedVertexInputFormat,
+        /// Conflicting reflected shader-visible format.
+        second: ReflectedVertexInputFormat,
+    },
     /// `@group(0)` sizes did not match frame globals, light/cluster buffers, or declared reflection-probe metadata.
     #[error(
         "group(0) must have uniform binding 0 size {expected_frame}, storage binding 1 stride {expected_light}, binding 2 range stride {expected_cluster_range}, binding 3 index stride {expected_cluster_index}, optional binding 12 stride {expected_probe}; got b0={got0:?} b1={got1:?} b2={got2:?} b3={got3:?} b12={got12:?}"

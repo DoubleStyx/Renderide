@@ -1,13 +1,14 @@
-//! `@group(1)` uniform struct reflection and `vs_main` vertex input analysis.
+//! `@group(1)` uniform struct reflection and material vertex input analysis.
 
 use hashbrown::HashMap;
+use std::collections::BTreeMap;
 
 use naga::proc::Layouter;
 use naga::{AddressSpace, Binding, Module, ShaderStage, TypeInner, VectorSize};
 
 use super::resource::resource_data_ty;
 use super::types::{
-    ReflectedMaterialUniformBlock, ReflectedUniformField, ReflectedUniformScalarKind,
+    ReflectError, ReflectedMaterialUniformBlock, ReflectedUniformField, ReflectedUniformScalarKind,
     ReflectedVertexInput, ReflectedVertexInputFormat,
 };
 
@@ -52,6 +53,42 @@ fn vertex_input_format(
         }
         _ => ReflectedVertexInputFormat::Unsupported,
     }
+}
+
+pub(super) fn reflect_vertex_entry_inputs(
+    module: &Module,
+    entry_names: &[&str],
+) -> Result<Vec<ReflectedVertexInput>, ReflectError> {
+    let mut inputs_by_location = BTreeMap::new();
+    for entry_name in entry_names {
+        let ep = module
+            .entry_points
+            .iter()
+            .find(|e| e.stage == ShaderStage::Vertex && e.name == *entry_name)
+            .ok_or_else(|| ReflectError::VertexEntryPointMissing {
+                entry: (*entry_name).to_string(),
+            })?;
+        for arg in &ep.function.arguments {
+            let Some(Binding::Location { location, .. }) = arg.binding else {
+                continue;
+            };
+            let format = vertex_input_format(module, arg.ty);
+            match inputs_by_location.insert(location, format) {
+                Some(existing) if existing != format => {
+                    return Err(ReflectError::VertexInputFormatConflict {
+                        location,
+                        first: existing,
+                        second: format,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(inputs_by_location
+        .into_iter()
+        .map(|(location, format)| ReflectedVertexInput { location, format })
+        .collect())
 }
 
 pub(super) fn reflect_vs_main_vertex_inputs(module: &Module) -> Vec<ReflectedVertexInput> {
@@ -222,5 +259,142 @@ fn vs_main(
             location: 3,
             format: ReflectedVertexInputFormat::Float32x4,
         }));
+    }
+
+    #[test]
+    fn reflects_requested_vertex_entry_without_vs_main() {
+        let module = parse_str(
+            r#"
+struct VsOut {
+    @builtin(position) position: vec4<f32>,
+};
+
+@vertex
+fn vs_fur_layer(
+    @location(0) position: vec4<f32>,
+    @location(1) normal: vec4<f32>,
+    @location(2) uv0: vec2<f32>,
+) -> VsOut {
+    var out: VsOut;
+    out.position = position + normal * 0.0 + vec4<f32>(uv0, 0.0, 0.0) * 0.0;
+    return out;
+}
+"#,
+        )
+        .expect("parse synthetic vertex shader");
+
+        let inputs =
+            reflect_vertex_entry_inputs(&module, &["vs_fur_layer"]).expect("reflect vertex entry");
+        assert_eq!(
+            inputs,
+            vec![
+                ReflectedVertexInput {
+                    location: 0,
+                    format: ReflectedVertexInputFormat::Float32x4,
+                },
+                ReflectedVertexInput {
+                    location: 1,
+                    format: ReflectedVertexInputFormat::Float32x4,
+                },
+                ReflectedVertexInput {
+                    location: 2,
+                    format: ReflectedVertexInputFormat::Float32x2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn reflects_union_of_requested_vertex_entries() {
+        let module = parse_str(
+            r#"
+struct VsOut {
+    @builtin(position) position: vec4<f32>,
+};
+
+@vertex
+fn vs_base(
+    @location(0) position: vec4<f32>,
+    @location(2) uv0: vec2<f32>,
+) -> VsOut {
+    var out: VsOut;
+    out.position = position + vec4<f32>(uv0, 0.0, 0.0) * 0.0;
+    return out;
+}
+
+@vertex
+fn vs_tangent(
+    @location(0) position: vec4<f32>,
+    @location(4) tangent: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
+) -> VsOut {
+    var out: VsOut;
+    out.position = position + tangent * 0.0 + vec4<f32>(uv1, 0.0, 0.0) * 0.0;
+    return out;
+}
+"#,
+        )
+        .expect("parse synthetic vertex shader");
+
+        let inputs =
+            reflect_vertex_entry_inputs(&module, &["vs_base", "vs_tangent"]).expect("reflect");
+        assert_eq!(
+            inputs,
+            vec![
+                ReflectedVertexInput {
+                    location: 0,
+                    format: ReflectedVertexInputFormat::Float32x4,
+                },
+                ReflectedVertexInput {
+                    location: 2,
+                    format: ReflectedVertexInputFormat::Float32x2,
+                },
+                ReflectedVertexInput {
+                    location: 4,
+                    format: ReflectedVertexInputFormat::Float32x4,
+                },
+                ReflectedVertexInput {
+                    location: 5,
+                    format: ReflectedVertexInputFormat::Float32x2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_requested_vertex_entry_formats() {
+        let module = parse_str(
+            r#"
+struct VsOut {
+    @builtin(position) position: vec4<f32>,
+};
+
+@vertex
+fn vs_uv(@location(2) uv0: vec2<f32>) -> VsOut {
+    var out: VsOut;
+    out.position = vec4<f32>(uv0, 0.0, 1.0);
+    return out;
+}
+
+@vertex
+fn vs_color(@location(2) color: vec4<f32>) -> VsOut {
+    var out: VsOut;
+    out.position = color;
+    return out;
+}
+"#,
+        )
+        .expect("parse synthetic vertex shader");
+
+        let err = reflect_vertex_entry_inputs(&module, &["vs_uv", "vs_color"])
+            .expect_err("location format conflict should fail");
+        assert!(matches!(
+            err,
+            ReflectError::VertexInputFormatConflict {
+                location: 2,
+                first: ReflectedVertexInputFormat::Float32x2,
+                second: ReflectedVertexInputFormat::Float32x4,
+            }
+        ));
     }
 }

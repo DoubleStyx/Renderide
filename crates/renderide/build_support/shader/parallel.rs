@@ -259,6 +259,7 @@ mod tests {
             targets: vec![CompiledShaderTarget {
                 target_stem: target_stem.to_string(),
                 wgsl: "wgsl".to_string(),
+                pass_directives: Vec::new(),
             }],
         }
     }

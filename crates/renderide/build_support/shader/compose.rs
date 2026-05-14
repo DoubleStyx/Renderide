@@ -1,9 +1,10 @@
 //! Per-source shader composition.
 
+use naga::ShaderStage;
 use naga::valid::Capabilities;
 use naga_oil::compose::{Composer, NagaModuleDescriptor, ShaderType};
 
-use super::directives::parse_pass_directives;
+use super::directives::{BuildPassDirective, parse_pass_directives};
 use super::error::BuildError;
 use super::model::{CompiledShader, CompiledShaderTarget, ShaderJob, ShaderVariant};
 use super::modules::{ShaderModuleSources, register_composable_modules};
@@ -51,6 +52,81 @@ fn validate_view_index_contract(
         )));
     }
     Ok(())
+}
+
+fn remapped_pass_directives_for_output(
+    source_module: &naga::Module,
+    output_wgsl: &str,
+    pass_directives: &[BuildPassDirective],
+    label: &str,
+) -> Result<Vec<BuildPassDirective>, BuildError> {
+    if pass_directives.is_empty() {
+        return Ok(Vec::new());
+    }
+    let output_module = naga::front::wgsl::parse_str(output_wgsl)
+        .map_err(|e| BuildError::Message(format!("parse flattened WGSL {label}: {e}")))?;
+    let vertex_names =
+        entry_point_name_pairs(source_module, &output_module, ShaderStage::Vertex, label)?;
+    let fragment_names =
+        entry_point_name_pairs(source_module, &output_module, ShaderStage::Fragment, label)?;
+    pass_directives
+        .iter()
+        .map(|pass| {
+            let mut remapped = pass.clone();
+            remapped.vertex_entry =
+                remapped_entry_point_name(&vertex_names, &pass.vertex_entry, label, "vertex")?;
+            remapped.fragment_entry = remapped_entry_point_name(
+                &fragment_names,
+                &pass.fragment_entry,
+                label,
+                "fragment",
+            )?;
+            Ok(remapped)
+        })
+        .collect()
+}
+
+fn entry_point_name_pairs(
+    source_module: &naga::Module,
+    output_module: &naga::Module,
+    stage: ShaderStage,
+    label: &str,
+) -> Result<Vec<(String, String)>, BuildError> {
+    let source_names = entry_point_names(source_module, stage);
+    let output_names = entry_point_names(output_module, stage);
+    if source_names.len() != output_names.len() {
+        return Err(BuildError::Message(format!(
+            "{label}: flattened WGSL changed {stage:?} entry point count from {} to {}",
+            source_names.len(),
+            output_names.len(),
+        )));
+    }
+    Ok(source_names.into_iter().zip(output_names).collect())
+}
+
+fn entry_point_names(module: &naga::Module, stage: ShaderStage) -> Vec<String> {
+    module
+        .entry_points
+        .iter()
+        .filter(|entry| entry.stage == stage)
+        .map(|entry| entry.name.clone())
+        .collect()
+}
+
+fn remapped_entry_point_name(
+    name_pairs: &[(String, String)],
+    requested: &str,
+    label: &str,
+    stage_name: &str,
+) -> Result<String, BuildError> {
+    name_pairs
+        .iter()
+        .find_map(|(source, output)| (source == requested).then(|| output.clone()))
+        .ok_or_else(|| {
+            BuildError::Message(format!(
+                "{label}: requested {stage_name} entry point `{requested}` was not found before WGSL flattening"
+            ))
+        })
 }
 
 /// Compiles one source shader into one or two flattened WGSL targets without writing files.
@@ -114,22 +190,39 @@ pub(super) fn compile_shader_job(
     )?;
 
     let targets = if default_wgsl == multiview_wgsl {
+        let pass_directives = remapped_pass_directives_for_output(
+            &default_module,
+            &default_wgsl,
+            &pass_directives,
+            &format!("{stem} ({})", ShaderVariant::Default.label()),
+        )?;
         vec![CompiledShaderTarget {
             target_stem: stem.to_string(),
             wgsl: default_wgsl,
+            pass_directives,
         }]
     } else {
         let variants = [
-            (ShaderVariant::Default, default_wgsl),
-            (ShaderVariant::Multiview, multiview_wgsl),
+            (ShaderVariant::Default, &default_module, default_wgsl),
+            (ShaderVariant::Multiview, &multiview_module, multiview_wgsl),
         ];
         let mut targets = Vec::with_capacity(variants.len());
-        for (variant, wgsl) in variants {
+        for (variant, module, wgsl) in variants {
             let target_stem = variant.target_stem(stem);
             if job.validation.validate_view_index {
                 validate_view_index_contract(&target_stem, &wgsl, variant)?;
             }
-            targets.push(CompiledShaderTarget { target_stem, wgsl });
+            let pass_directives = remapped_pass_directives_for_output(
+                module,
+                &wgsl,
+                &pass_directives,
+                &format!("{stem} ({})", variant.label()),
+            )?;
+            targets.push(CompiledShaderTarget {
+                target_stem,
+                wgsl,
+                pass_directives,
+            });
         }
         targets
     };

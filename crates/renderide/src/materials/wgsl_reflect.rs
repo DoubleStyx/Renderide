@@ -34,11 +34,27 @@ use self::fingerprint::fingerprint_layout;
 use self::frame_group0::{reflect_frame_snapshot_usage, validate_frame_group0};
 use self::uniform_vertex::{
     material_uniform_requires_intersection_subpass, reflect_first_group1_uniform_struct,
-    reflect_group1_global_binding_names, reflect_vs_main_vertex_inputs,
+    reflect_group1_global_binding_names, reflect_vertex_entry_inputs,
+    reflect_vs_main_vertex_inputs,
 };
 
 /// Parses and validates WGSL, checks frame globals, and builds layout entries for groups 1 and 2.
 pub fn reflect_raster_material_wgsl(source: &str) -> Result<ReflectedRasterLayout, ReflectError> {
+    reflect_raster_material_wgsl_inner(source, None)
+}
+
+/// Parses and validates WGSL using the material pass vertex entries for vertex stream reflection.
+pub(in crate::materials) fn reflect_raster_material_wgsl_with_vertex_entries(
+    source: &str,
+    vertex_entries: &[&str],
+) -> Result<ReflectedRasterLayout, ReflectError> {
+    reflect_raster_material_wgsl_inner(source, Some(vertex_entries))
+}
+
+fn reflect_raster_material_wgsl_inner(
+    source: &str,
+    vertex_entries: Option<&[&str]>,
+) -> Result<ReflectedRasterLayout, ReflectError> {
     let module = parse_str(source).map_err(|e| ReflectError::Parse(e.to_string()))?;
     let mut validator = Validator::new(ValidationFlags::all(), Capabilities::all());
     validator
@@ -85,7 +101,11 @@ pub fn reflect_raster_material_wgsl(source: &str) -> Result<ReflectedRasterLayou
 
     let material_uniform = reflect_first_group1_uniform_struct(&module, &layouter);
     let material_group1_names = reflect_group1_global_binding_names(&module);
-    let vs_vertex_inputs = reflect_vs_main_vertex_inputs(&module);
+    let vs_vertex_inputs = if let Some(vertex_entries) = vertex_entries {
+        reflect_vertex_entry_inputs(&module, vertex_entries)?
+    } else {
+        reflect_vs_main_vertex_inputs(&module)
+    };
     let snapshot_usage = reflect_frame_snapshot_usage(&module);
 
     #[cfg(test)]
@@ -379,6 +399,29 @@ mod tests {
             Some(1),
             "null fallback: position + normal only"
         );
+    }
+
+    #[test]
+    fn reflects_embedded_pass_vertex_entries_without_vs_main() -> Result<(), ReflectError> {
+        let stem = "furfx-3.0-10layer_default";
+        let wgsl = crate::embedded_shaders::embedded_target_wgsl(stem)
+            .ok_or(ReflectError::EmbeddedTargetMissing(stem))?;
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        let vertex_entries = passes
+            .iter()
+            .map(|pass| pass.vertex_entry)
+            .collect::<Vec<_>>();
+        let reflected = reflect_raster_material_wgsl_with_vertex_entries(wgsl, &vertex_entries)?;
+
+        assert!(reflected.vs_vertex_inputs.contains(&ReflectedVertexInput {
+            location: 2,
+            format: ReflectedVertexInputFormat::Float32x2,
+        }));
+        assert!(reflected.vs_vertex_inputs.contains(&ReflectedVertexInput {
+            location: 4,
+            format: ReflectedVertexInputFormat::Float32x4,
+        }));
+        Ok(())
     }
 
     #[test]

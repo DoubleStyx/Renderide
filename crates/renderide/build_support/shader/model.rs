@@ -135,6 +135,8 @@ pub(super) struct CompiledShaderTarget {
     pub target_stem: String,
     /// Fully flattened WGSL source text.
     pub wgsl: String,
+    /// Pass metadata remapped to the entry point names emitted in [`Self::wgsl`].
+    pub pass_directives: Vec<BuildPassDirective>,
 }
 
 /// Full build-time output for one source shader prior to serial file emission.
