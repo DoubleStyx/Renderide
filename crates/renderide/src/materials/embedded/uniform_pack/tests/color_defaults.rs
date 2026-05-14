@@ -117,6 +117,44 @@ fn color_named_texture_transform_vec4_uniforms_remain_raw() {
 }
 
 #[test]
+fn unwritten_texture_transform_vec4_uniforms_pack_unity_identity() {
+    let (reflected, ids, _) = reflected_with_uniform_fields(&[
+        ("_MainTex_ST", ReflectedUniformScalarKind::Vec4, 16, 0),
+        ("_NormalMap_ST", ReflectedUniformScalarKind::Vec4, 16, 16),
+        ("_FarTex0_ST", ReflectedUniformScalarKind::Vec4, 16, 32),
+        ("_NearTex1_ST", ReflectedUniformScalarKind::Vec4, 16, 48),
+        ("_Tint", ReflectedUniformScalarKind::Vec4, 16, 64),
+    ]);
+    let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+    let pools = EmbeddedTexturePools {
+        texture: &texture,
+        texture3d: &texture3d,
+        cubemap: &cubemap,
+        render_texture: &render_texture,
+        video_texture: &video_texture,
+    };
+
+    let bytes = build_embedded_uniform_bytes(
+        &reflected,
+        &ids,
+        &MaterialPropertyStore::new(),
+        lookup(31),
+        &UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        },
+    )
+    .expect("uniform bytes");
+
+    let unity_identity = [1.0, 1.0, 0.0, 0.0];
+    assert_eq!(read_f32x4(&bytes, 0), unity_identity);
+    assert_eq!(read_f32x4(&bytes, 16), unity_identity);
+    assert_eq!(read_f32x4(&bytes, 32), unity_identity);
+    assert_eq!(read_f32x4(&bytes, 48), unity_identity);
+    assert_eq!(read_f32x4(&bytes, 64), [0.0; 4]);
+}
+
+#[test]
 fn srgb_material_color_arrays_linearize_only_when_metadata_marks_them() {
     let (reflected, ids, registry) = reflected_with_uniform_fields(&[(
         "_TintColors",

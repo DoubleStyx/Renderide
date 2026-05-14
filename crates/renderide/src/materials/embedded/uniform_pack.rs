@@ -25,6 +25,10 @@ use tables::inferred_shader_variant_bits_u32;
 const LOD_BIAS_SUFFIX: &str = "_LodBias";
 /// Suffix convention that opts a uniform field in to storage V-inversion population.
 const STORAGE_V_INVERTED_SUFFIX: &str = "_StorageVInverted";
+/// Suffix convention Unity uses for texture scale/offset uniforms.
+const TEXTURE_TRANSFORM_SUFFIX: &str = "_ST";
+/// Unity's implicit identity scale/offset value for unwritten texture transform uniforms.
+const UNITY_TEXTURE_TRANSFORM_IDENTITY: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
 
 fn write_f32_at(buf: &mut [u8], field: &ReflectedUniformField, v: f32) {
     let off = field.offset as usize;
@@ -94,6 +98,15 @@ fn write_srgb_f32x4_array_at(buf: &mut [u8], field: &ReflectedUniformField, valu
     }
 }
 
+/// Returns the reflected `vec4<f32>` fallback value for a missing host property.
+fn missing_vec4_uniform_default(field_name: &str) -> [f32; 4] {
+    if shader_writer_unescaped_field_name(field_name).ends_with(TEXTURE_TRANSFORM_SUFFIX) {
+        UNITY_TEXTURE_TRANSFORM_IDENTITY
+    } else {
+        [0.0; 4]
+    }
+}
+
 /// Auxiliary inputs required to populate texture-sourced uniform fields.
 ///
 /// Threads resident texture pools into the packer so f32 fields following texture suffix
@@ -110,11 +123,9 @@ pub(crate) struct UniformPackTextureContext<'a> {
 /// Every value comes from one of several sources, in priority order: texture storage-orientation
 /// flags for fields following the [`STORAGE_V_INVERTED_SUFFIX`] convention, host-sourced sampler
 /// state for fields following the [`LOD_BIAS_SUFFIX`] convention (`_<Tex>_LodBias`), the host's
-/// property store (for host-declared properties), or the renderer-reserved
-/// `_RenderideVariantBits` variant bitfield. Anything else falls through to zero -- the host's
-/// `MaterialProviderBase` bootstraps every `Sync<X>` on the first batch for a material, so the
-/// renderer's only observable state is the host's authoritative writes; deltas come from later
-/// batches. The pre-first-batch window is never visible.
+/// property store (for host-declared properties), Unity's identity texture transform for missing
+/// `*_ST` vec4 fields, or the renderer-reserved `_RenderideVariantBits` variant bitfield. Other
+/// missing fields fall through to zero.
 #[cfg(test)]
 pub(crate) fn build_embedded_uniform_bytes(
     reflected: &ReflectedRasterLayout,
@@ -156,7 +167,7 @@ pub(crate) fn build_embedded_uniform_bytes_with_value_spaces(
                     if let Some(MaterialPropertyValue::Float4(c)) = store.get_merged(lookup, pid) {
                         *c
                     } else {
-                        [0.0; 4]
+                        missing_vec4_uniform_default(field_name)
                     };
                 if value_spaces.is_srgb_vec4(field_name) {
                     v = srgb_vec4_rgb_to_linear(v);
