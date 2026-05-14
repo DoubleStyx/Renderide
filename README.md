@@ -2,6 +2,8 @@
 
 A modern Rust + wgpu renderer for [Resonite](https://store.steampowered.com/app/2519830/Resonite/). Unofficial Renderide thread discussion [here](https://discord.com/channels/1040316820650991766/1156348246973751487) (in the Resonite Discord).
 
+Also available as an [AUR package](https://aur.archlinux.org/packages/renderide-git).
+
 ## Status
 
 Experimental: performance, stability, and platform support are still evolving.
