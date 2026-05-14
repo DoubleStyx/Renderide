@@ -156,15 +156,6 @@ pub fn on_unload_cubemap(queue: &mut AssetTransferQueue, u: UnloadCubemap) {
         queue
             .integrator_mut()
             .enqueue_delayed_removal(RetiredAssetResource::Cubemap(cubemap));
-        logger::info!(
-            "cubemap {id} unloaded; GPU handle queued for delayed removal (tex~={} total~={})",
-            queue
-                .pools
-                .cubemap_pool
-                .accounting()
-                .texture_resident_bytes(),
-            queue.pools.mesh_pool.accounting().total_resident_bytes()
-        );
     }
 }
 

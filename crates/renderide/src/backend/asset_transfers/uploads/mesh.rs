@@ -27,11 +27,6 @@ pub fn on_mesh_unload(queue: &mut AssetTransferQueue, u: MeshUnload) {
         queue
             .integrator_mut()
             .enqueue_delayed_removal(RetiredAssetResource::Mesh(Box::new(mesh)));
-        logger::info!(
-            "mesh {} unloaded; GPU handle queued for delayed removal (resident_bytes~={})",
-            u.asset_id,
-            queue.pools.mesh_pool.accounting().total_resident_bytes()
-        );
     }
 }
 

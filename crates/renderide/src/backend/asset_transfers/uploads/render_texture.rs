@@ -70,14 +70,5 @@ pub fn on_unload_render_texture(queue: &mut AssetTransferQueue, u: UnloadRenderT
         queue
             .integrator_mut()
             .enqueue_delayed_removal(RetiredAssetResource::RenderTexture(texture));
-        logger::info!(
-            "render texture {id} unloaded; GPU handle queued for delayed removal (tex~={} total~={})",
-            queue
-                .pools
-                .texture_pool
-                .accounting()
-                .texture_resident_bytes(),
-            queue.pools.mesh_pool.accounting().total_resident_bytes()
-        );
     }
 }

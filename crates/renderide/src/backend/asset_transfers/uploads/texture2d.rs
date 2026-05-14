@@ -165,16 +165,6 @@ pub fn on_unload_texture_2d(queue: &mut AssetTransferQueue, u: UnloadTexture2D) 
         queue
             .integrator_mut()
             .enqueue_delayed_removal(RetiredAssetResource::Texture2d(texture));
-        logger::info!(
-            "texture {id} unloaded; GPU handle queued for delayed removal (mesh~={} tex~={} total~={})",
-            queue.pools.mesh_pool.accounting().mesh_resident_bytes(),
-            queue
-                .pools
-                .texture_pool
-                .accounting()
-                .texture_resident_bytes(),
-            queue.pools.mesh_pool.accounting().total_resident_bytes()
-        );
     }
 }
 
