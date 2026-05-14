@@ -4,10 +4,11 @@ use hashbrown::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use crate::diagnostics::log_throttle::LogThrottle;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::materials::RasterPipelineKind;
 use crate::materials::host_data::{
-    MaterialPropertyStore, ParseMaterialBatchOptions, PropertyIdRegistry,
+    MaterialBatchParseReport, MaterialPropertyStore, ParseMaterialBatchOptions, PropertyIdRegistry,
     parse_materials_update_batch_into_store_with_instance_changed,
 };
 
@@ -18,6 +19,31 @@ use crate::shared::{MaterialsUpdateBatch, MaterialsUpdateBatchResult, RendererCo
 
 /// Deferred [`MaterialsUpdateBatch`] count that emits queue-pressure diagnostics.
 pub const PENDING_MATERIAL_BATCH_WARN_THRESHOLD: usize = 256;
+
+/// Parsed update row count that emits a single debug summary for unusually large batches.
+const LARGE_MATERIAL_BATCH_UPDATE_THRESHOLD: usize = 2048;
+
+/// Parsed target count that emits a single debug summary for unusually broad batches.
+const LARGE_MATERIAL_BATCH_TARGET_THRESHOLD: usize = 512;
+
+/// Throttle for recoverable material batch parse anomaly logs.
+static MATERIAL_BATCH_PARSE_ANOMALY_LOG: LogThrottle = LogThrottle::new();
+
+/// Throttle for unusually large material batch summaries.
+static LARGE_MATERIAL_BATCH_LOG: LogThrottle = LogThrottle::new();
+
+/// Snapshot of deferred material work and GPU material-system attachment state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MaterialSystemDiagnosticSnapshot {
+    /// Host material batches waiting for shared-memory availability.
+    pub(crate) pending_material_batches: usize,
+    /// Shader routes captured before GPU material registry attachment.
+    pub(crate) pending_shader_routes: usize,
+    /// Whether the GPU material registry has been attached.
+    pub(crate) material_registry_attached: bool,
+    /// Whether embedded material bind resources have been attached.
+    pub(crate) embedded_bind_attached: bool,
+}
 
 /// Host material tables, GPU registry/cache, embedded bind builder, and deferred shader routes.
 pub struct MaterialSystem {
@@ -188,6 +214,16 @@ impl MaterialSystem {
         !self.pending_material_batches.is_empty()
     }
 
+    /// Returns a compact snapshot for lifecycle diagnostics.
+    pub(crate) fn diagnostic_snapshot(&self) -> MaterialSystemDiagnosticSnapshot {
+        MaterialSystemDiagnosticSnapshot {
+            pending_material_batches: self.pending_material_batches.len(),
+            pending_shader_routes: self.pending_shader_routes.len(),
+            material_registry_attached: self.material_registry.is_some(),
+            embedded_bind_attached: self.embedded_material_bind.is_some(),
+        }
+    }
+
     /// Moves material batches that were waiting for shared memory out for cooperative integration.
     pub fn take_pending_material_batches(&mut self) -> Vec<MaterialsUpdateBatch> {
         self.pending_material_batches.drain(..).collect()
@@ -244,13 +280,14 @@ impl MaterialSystem {
         instance_changed.clear();
         instance_changed.resize(bit_capacity, false);
 
-        parse_materials_update_batch_into_store_with_instance_changed(
-            shm,
-            &batch,
-            &mut self.material_property_store,
-            &opts,
-            instance_changed,
-        );
+        let parse_report: MaterialBatchParseReport =
+            parse_materials_update_batch_into_store_with_instance_changed(
+                shm,
+                &batch,
+                &mut self.material_property_store,
+                &opts,
+                instance_changed,
+            );
         logger::trace!(
             "materials update batch {update_batch_id}: material_updates={} material_count={} int_buffers={} float_buffers={} float4_buffers={} matrix_buffers={} instance_changed_bits={}",
             batch.material_updates.len(),
@@ -261,6 +298,40 @@ impl MaterialSystem {
             batch.matrix_buffers.len(),
             instance_changed.iter().filter(|&&flag| flag).count(),
         );
+        if parse_report.has_anomaly() {
+            if let Some(occurrence) = MATERIAL_BATCH_PARSE_ANOMALY_LOG.should_log(8, 128) {
+                logger::warn!(
+                    "materials update batch {update_batch_id}: parse anomalies update_end_seen={} missing_payload_reads={} missing_ints={} missing_floats={} missing_float4s={} missing_matrices={} updates_read={} select_targets={} instance_changed_bits={}/{} occurrence={}",
+                    parse_report.update_batch_end_seen,
+                    parse_report.missing_payload_reads(),
+                    parse_report.missing_ints,
+                    parse_report.missing_floats,
+                    parse_report.missing_float4s,
+                    parse_report.missing_matrices,
+                    parse_report.updates_read,
+                    parse_report.select_targets,
+                    parse_report.instance_changed_set_bits,
+                    parse_report.instance_changed_capacity_bits,
+                    occurrence,
+                );
+            }
+        } else if material_batch_is_large(parse_report.updates_read, parse_report.select_targets)
+            && logger::enabled(logger::LogLevel::Debug)
+            && let Some(occurrence) = LARGE_MATERIAL_BATCH_LOG.should_log(4, 64)
+        {
+            logger::debug!(
+                "materials update batch {update_batch_id}: large batch parsed updates_read={} select_targets={} ints={} floats={} float4s={} matrices={} instance_changed_bits={}/{} occurrence={}",
+                parse_report.updates_read,
+                parse_report.select_targets,
+                parse_report.ints_read,
+                parse_report.floats_read,
+                parse_report.float4s_read,
+                parse_report.matrices_read,
+                parse_report.instance_changed_set_bits,
+                parse_report.instance_changed_capacity_bits,
+                occurrence,
+            );
+        }
 
         if batch.instance_changed_buffer.length > 0 {
             profiling::scope!("material::write_instance_changed_bits");
@@ -317,5 +388,35 @@ impl MaterialSystem {
         if let Some(embedded) = self.embedded_material_bind.as_ref() {
             embedded.purge_texture_reference_caches();
         }
+    }
+}
+
+/// Returns whether a parsed materials batch is large enough for summary diagnostics.
+fn material_batch_is_large(updates_read: usize, select_targets: usize) -> bool {
+    updates_read >= LARGE_MATERIAL_BATCH_UPDATE_THRESHOLD
+        || select_targets >= LARGE_MATERIAL_BATCH_TARGET_THRESHOLD
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LARGE_MATERIAL_BATCH_TARGET_THRESHOLD, LARGE_MATERIAL_BATCH_UPDATE_THRESHOLD,
+        material_batch_is_large,
+    };
+
+    #[test]
+    fn material_batch_large_thresholds_are_inclusive() {
+        assert!(!material_batch_is_large(
+            LARGE_MATERIAL_BATCH_UPDATE_THRESHOLD - 1,
+            LARGE_MATERIAL_BATCH_TARGET_THRESHOLD - 1,
+        ));
+        assert!(material_batch_is_large(
+            LARGE_MATERIAL_BATCH_UPDATE_THRESHOLD,
+            0,
+        ));
+        assert!(material_batch_is_large(
+            0,
+            LARGE_MATERIAL_BATCH_TARGET_THRESHOLD,
+        ));
     }
 }

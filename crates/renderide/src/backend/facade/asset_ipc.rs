@@ -46,6 +46,20 @@ impl RenderBackend {
             || self.materials.has_pending_material_batches()
     }
 
+    /// Snapshot of queued and deferred asset-transfer work for lifecycle diagnostics.
+    pub(crate) fn asset_transfer_diagnostics(
+        &self,
+    ) -> crate::backend::asset_transfers::AssetTransferDiagnosticSnapshot {
+        self.asset_transfers.diagnostic_snapshot()
+    }
+
+    /// Snapshot of deferred material work and GPU material attachment state.
+    pub(crate) fn material_system_diagnostics(
+        &self,
+    ) -> crate::materials::MaterialSystemDiagnosticSnapshot {
+        self.materials.diagnostic_snapshot()
+    }
+
     /// Starts cooperative shutdown for backend-owned video texture players.
     pub(crate) fn begin_video_shutdown(&mut self) {
         self.asset_transfers.begin_video_shutdown();

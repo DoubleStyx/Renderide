@@ -7,6 +7,7 @@
 
 pub(crate) mod crash_context;
 mod hud;
+pub(crate) mod log_once;
 pub(crate) mod log_throttle;
 pub(crate) mod per_view;
 mod snapshots;

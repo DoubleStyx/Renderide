@@ -159,6 +159,67 @@ fn chained_material_update_buffers() {
 }
 
 #[test]
+fn parse_report_detects_missing_float_payload() {
+    let stream: Vec<u8> = [
+        update_bytes(10, MaterialPropertyUpdateType::SelectTarget),
+        update_bytes(2, MaterialPropertyUpdateType::SetFloat),
+        update_bytes(0, MaterialPropertyUpdateType::UpdateBatchEnd),
+    ]
+    .concat();
+    let mut loader = TestLoader {
+        blobs: vec![stream.clone()],
+    };
+    let batch = MaterialsUpdateBatch {
+        material_updates: vec![desc(0, &stream)],
+        material_update_count: 1,
+        ..Default::default()
+    };
+    let mut store = MaterialPropertyStore::new();
+
+    let report = parse_materials_update_batch_into_store(
+        &mut loader,
+        &batch,
+        &mut store,
+        &ParseMaterialBatchOptions::default(),
+    );
+
+    assert!(report.has_anomaly());
+    assert!(report.update_batch_end_seen);
+    assert_eq!(report.missing_floats, 1);
+    assert_eq!(report.missing_payload_reads(), 1);
+}
+
+#[test]
+fn parse_report_detects_missing_update_batch_end() {
+    let stream: Vec<u8> = [
+        update_bytes(10, MaterialPropertyUpdateType::SelectTarget),
+        update_bytes(99, MaterialPropertyUpdateType::SetShader),
+    ]
+    .concat();
+    let mut loader = TestLoader {
+        blobs: vec![stream.clone()],
+    };
+    let batch = MaterialsUpdateBatch {
+        material_updates: vec![desc(0, &stream)],
+        material_update_count: 1,
+        ..Default::default()
+    };
+    let mut store = MaterialPropertyStore::new();
+
+    let report = parse_materials_update_batch_into_store(
+        &mut loader,
+        &batch,
+        &mut store,
+        &ParseMaterialBatchOptions::default(),
+    );
+
+    assert!(report.has_anomaly());
+    assert!(!report.update_batch_end_seen);
+    assert_eq!(report.updates_read, 2);
+    assert_eq!(report.select_targets, 1);
+}
+
+#[test]
 fn set_float4x4_persisted_when_option_on() {
     let stream: Vec<u8> = [
         update_bytes(20, MaterialPropertyUpdateType::SelectTarget),

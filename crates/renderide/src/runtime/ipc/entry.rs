@@ -8,8 +8,16 @@ use crate::frontend::InitState;
 use crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag;
 use crate::shared::RendererCommand;
 
+use crate::diagnostics::log_throttle::LogThrottle;
+
 use super::super::RendererRuntime;
 use super::shader_material;
+
+/// IPC command count that starts emitting throttled large-batch diagnostics.
+const LARGE_IPC_BATCH_LOG_THRESHOLD: usize = 256;
+
+/// Throttle for large IPC batches so burst diagnostics remain bounded.
+static LARGE_IPC_BATCH_LOG: LogThrottle = LogThrottle::new();
 
 impl RendererRuntime {
     /// Total number of post-handshake IPC commands logged as unhandled (sum of per-variant counters).
@@ -37,6 +45,11 @@ impl RendererRuntime {
             self.frontend.init_state(),
             self.ipc_state.pending_shader_resolutions.len(),
         );
+        log_large_ipc_batch_if_needed(
+            &batch,
+            self.frontend.init_state(),
+            self.ipc_state.pending_shader_resolutions.len(),
+        );
         for cmd in batch.drain(..) {
             let _tag = renderer_command_variant_tag(&cmd);
             profiling::scope!("ipc::dispatch", _tag);
@@ -58,4 +71,46 @@ fn trace_ipc_batch(batch: &[RendererCommand], init_state: InitState, pending_sha
         pending_shaders,
         kinds,
     );
+}
+
+/// Emits a throttled debug summary for unusually large IPC command batches.
+fn log_large_ipc_batch_if_needed(
+    batch: &[RendererCommand],
+    init_state: InitState,
+    pending_shaders: usize,
+) {
+    if !ipc_batch_is_large(batch.len()) {
+        return;
+    }
+    if !logger::enabled(logger::LogLevel::Debug) {
+        return;
+    }
+    let Some(observation) = LARGE_IPC_BATCH_LOG.should_log(4, 64) else {
+        return;
+    };
+    let kinds = crate::runtime::state::ipc::summarize_renderer_command_mix(batch.iter());
+    logger::debug!(
+        "IPC large poll batch: commands={} init_state={:?} pending_shader_resolutions={} occurrence={} kinds=[{}]",
+        batch.len(),
+        init_state,
+        pending_shaders,
+        observation,
+        kinds,
+    );
+}
+
+/// Returns whether a polled IPC batch is large enough for summary diagnostics.
+fn ipc_batch_is_large(command_count: usize) -> bool {
+    command_count >= LARGE_IPC_BATCH_LOG_THRESHOLD
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LARGE_IPC_BATCH_LOG_THRESHOLD, ipc_batch_is_large};
+
+    #[test]
+    fn ipc_batch_large_threshold_is_inclusive() {
+        assert!(!ipc_batch_is_large(LARGE_IPC_BATCH_LOG_THRESHOLD - 1));
+        assert!(ipc_batch_is_large(LARGE_IPC_BATCH_LOG_THRESHOLD));
+    }
 }

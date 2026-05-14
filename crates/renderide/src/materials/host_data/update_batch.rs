@@ -24,6 +24,7 @@ use {
 
 use dispatch::apply_material_batch_property_opcode;
 use readers::BatchParser;
+pub use readers::MaterialBatchParseReport;
 use wire::{MaterialBatchTarget, select_target_kind};
 
 /// Options for [`parse_materials_update_batch_into_store`].
@@ -66,6 +67,8 @@ impl MaterialBatchBlobLoader for crate::ipc::SharedMemoryAccessor {
 
 /// Applies all material updates in `batch` into `store` using `loader`.
 ///
+/// Returns parser telemetry used by runtime diagnostics.
+///
 /// See [`parse_materials_update_batch_into_store_with_instance_changed`] for the variant that
 /// also reports per-target instance-changed bits required by the host's `MaterialAssetUpdated`
 /// dispatch.
@@ -75,18 +78,20 @@ pub fn parse_materials_update_batch_into_store(
     batch: &MaterialsUpdateBatch,
     store: &mut MaterialPropertyStore,
     options: &ParseMaterialBatchOptions,
-) {
+) -> MaterialBatchParseReport {
     parse_materials_update_batch_into_store_with_instance_changed(
         loader,
         batch,
         store,
         options,
         &mut [],
-    );
+    )
 }
 
 /// Same as [`parse_materials_update_batch_into_store`] but writes per-target instance-changed
 /// flags into `instance_changed_out`.
+///
+/// Returns parser telemetry used by runtime diagnostics.
 ///
 /// `instance_changed_out` is indexed by `SelectTarget` order: bit `i` corresponds to the `i`-th
 /// `SelectTarget` opcode encountered (materials first, then property blocks). When the slice is
@@ -108,7 +113,7 @@ pub fn parse_materials_update_batch_into_store_with_instance_changed(
     store: &mut MaterialPropertyStore,
     options: &ParseMaterialBatchOptions,
     instance_changed_out: &mut [bool],
-) {
+) -> MaterialBatchParseReport {
     profiling::scope!("material::parse_update_batch");
     let _ = options.record_wire_metrics;
     let mut p = BatchParser::new(loader, batch);
@@ -116,6 +121,7 @@ pub fn parse_materials_update_batch_into_store_with_instance_changed(
     let material_update_count = batch.material_update_count.max(0) as usize;
     let mut select_target_index: usize = 0;
     let mut current: Option<MaterialBatchTarget> = None;
+    let mut update_batch_end_seen = false;
     // Index into `instance_changed_out` for the active target. Lags `select_target_index` by one
     // because `select_target_index` is incremented by `select_target_kind` *before* we've finished
     // accumulating bits for the previous target.
@@ -123,11 +129,13 @@ pub fn parse_materials_update_batch_into_store_with_instance_changed(
 
     while let Some(update) = p.next_update() {
         if update.update_type == MaterialPropertyUpdateType::UpdateBatchEnd {
+            update_batch_end_seen = true;
             break;
         }
 
         let Some(target) = current else {
             if update.update_type == MaterialPropertyUpdateType::SelectTarget {
+                p.record_select_target();
                 let bit_index = select_target_index;
                 let kind = select_target_kind(
                     update.property_id,
@@ -143,6 +151,7 @@ pub fn parse_materials_update_batch_into_store_with_instance_changed(
 
         match update.update_type {
             MaterialPropertyUpdateType::SelectTarget => {
+                p.record_select_target();
                 let bit_index = select_target_index;
                 let kind = select_target_kind(
                     update.property_id,
@@ -153,7 +162,10 @@ pub fn parse_materials_update_batch_into_store_with_instance_changed(
                 active_bit_index = Some(bit_index);
                 current = Some(kind);
             }
-            MaterialPropertyUpdateType::UpdateBatchEnd => break,
+            MaterialPropertyUpdateType::UpdateBatchEnd => {
+                update_batch_end_seen = true;
+                break;
+            }
             other => {
                 let instance_changed = apply_material_batch_property_opcode(
                     &mut p,
@@ -172,6 +184,12 @@ pub fn parse_materials_update_batch_into_store_with_instance_changed(
             }
         }
     }
+    let instance_changed_set_bits = instance_changed_out.iter().filter(|&&flag| flag).count();
+    p.finish_report(
+        update_batch_end_seen,
+        instance_changed_set_bits,
+        instance_changed_out.len(),
+    )
 }
 
 fn begin_target_bit(

@@ -168,4 +168,4 @@ pub(crate) use router::{MaterialRouter, resolve_raster_pipeline};
 /// Static shader feature flags (multiview, etc.) keyed into the pipeline cache.
 pub(crate) use shader_permutation::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 
-pub(crate) use system::MaterialSystem;
+pub(crate) use system::{MaterialSystem, MaterialSystemDiagnosticSnapshot};

@@ -64,7 +64,10 @@ impl RuntimeIpcState {
                 && (count - DEFERRED_PRE_FINALIZE_WARN_THRESHOLD)
                     .is_multiple_of(DEFERRED_PRE_FINALIZE_WARN_THRESHOLD))
         {
-            logger::warn!("IPC: {count} commands queued while waiting for init finalization");
+            let mix = summarize_renderer_command_mix(self.deferred_pre_finalize_commands.iter());
+            logger::warn!(
+                "IPC: {count} commands queued while waiting for init finalization kinds=[{mix}]"
+            );
         }
     }
 

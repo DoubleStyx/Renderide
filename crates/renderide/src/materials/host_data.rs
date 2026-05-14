@@ -9,5 +9,6 @@ pub use properties::{
 };
 pub use property_registry::PropertyIdRegistry;
 pub use update_batch::{
-    ParseMaterialBatchOptions, parse_materials_update_batch_into_store_with_instance_changed,
+    MaterialBatchParseReport, ParseMaterialBatchOptions,
+    parse_materials_update_batch_into_store_with_instance_changed,
 };

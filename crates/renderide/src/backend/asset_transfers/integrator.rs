@@ -12,6 +12,7 @@ mod video_poll;
 mod tests;
 
 pub use drain::{drain_asset_tasks, drain_asset_tasks_unbounded};
+pub(crate) use queue::AssetIntegratorDiagnosticSnapshot;
 pub use queue::{AssetIntegrator, AssetTaskLane};
 pub use retired::RetiredAssetResource;
 pub use step::{AssetTask, ShaderRouteTask, StepResult};

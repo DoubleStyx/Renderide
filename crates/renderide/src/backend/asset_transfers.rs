@@ -34,6 +34,7 @@ use crate::shared::VideoTextureClockErrorState;
 
 use catalogs::AssetCatalogs;
 use gpu_runtime::AssetGpuRuntime;
+pub(crate) use integrator::AssetIntegratorDiagnosticSnapshot;
 pub use integrator::{
     AssetIntegrationDrainSummary, AssetIntegrator, AssetTask, AssetTaskLane, ShaderRouteTask,
     drain_asset_tasks, drain_asset_tasks_unbounded,
@@ -54,6 +55,23 @@ pub use uploads::{
     on_video_texture_start_audio_track, on_video_texture_update, try_process_mesh_upload,
 };
 use video_runtime::VideoAssetRuntime;
+
+/// Snapshot of queued and deferred asset-transfer work.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AssetTransferDiagnosticSnapshot {
+    /// Cooperative integration queue depths by lane.
+    pub(crate) integrator: AssetIntegratorDiagnosticSnapshot,
+    /// Mesh uploads waiting for GPU or shared memory prerequisites.
+    pub(crate) pending_mesh_uploads: usize,
+    /// Texture2D uploads waiting for GPU, format, residency, or shared memory prerequisites.
+    pub(crate) pending_texture_uploads: usize,
+    /// Texture3D uploads waiting for GPU, format, residency, or shared memory prerequisites.
+    pub(crate) pending_texture3d_uploads: usize,
+    /// Cubemap uploads waiting for GPU, format, residency, or shared memory prerequisites.
+    pub(crate) pending_cubemap_uploads: usize,
+    /// Video texture load commands waiting for GPU attach.
+    pub(crate) pending_video_texture_loads: usize,
+}
 
 /// Pending mesh/texture payloads, CPU texture tables, GPU device/queue, resident pools, and [`AssetIntegrator`].
 pub struct AssetTransferQueue {
@@ -84,6 +102,18 @@ impl AssetTransferQueue {
             || !self.pending.pending_texture_uploads.is_empty()
             || !self.pending.pending_texture3d_uploads.is_empty()
             || !self.pending.pending_cubemap_uploads.is_empty()
+    }
+
+    /// Returns a compact queue-depth snapshot for lifecycle diagnostics.
+    pub(crate) fn diagnostic_snapshot(&self) -> AssetTransferDiagnosticSnapshot {
+        AssetTransferDiagnosticSnapshot {
+            integrator: self.integrator.diagnostic_snapshot(),
+            pending_mesh_uploads: self.pending.pending_mesh_uploads.len(),
+            pending_texture_uploads: self.pending.pending_texture_uploads.len(),
+            pending_texture3d_uploads: self.pending.pending_texture3d_uploads.len(),
+            pending_cubemap_uploads: self.pending.pending_cubemap_uploads.len(),
+            pending_video_texture_loads: self.pending.pending_video_texture_loads.len(),
+        }
     }
 
     /// Stores GPU handles and limits after backend attach.

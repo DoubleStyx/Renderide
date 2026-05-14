@@ -6,7 +6,10 @@
 //! sits between the render entry point in [`super::render`] and the per-view extraction
 //! pipeline in [`super::extract`].
 
+use std::sync::LazyLock;
+
 use crate::camera::{ViewId, camera_state_enabled, host_camera_frame_for_render_texture};
+use crate::diagnostics::log_once::KeyedLogOnce;
 use crate::render_graph::{FrameViewClear, OffscreenSampleCountPolicy, ViewPostProcessing};
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
@@ -23,6 +26,14 @@ use super::view_plan::{FrameViewPlan, FrameViewPlanTarget, OffscreenRtHandles};
 /// persistent targets, so they render single-sample and avoid full-size transient MSAA stacks.
 const SECONDARY_CAMERA_SAMPLE_COUNT_POLICY: OffscreenSampleCountPolicy =
     OffscreenSampleCountPolicy::SingleSample;
+
+/// Once-only diagnostic gate for secondary render textures without a depth texture.
+static SECONDARY_RT_MISSING_DEPTH_LOG: LazyLock<KeyedLogOnce<i32>> =
+    LazyLock::new(KeyedLogOnce::new);
+
+/// Once-only diagnostic gate for secondary render textures without a depth view.
+static SECONDARY_RT_MISSING_DEPTH_VIEW_LOG: LazyLock<KeyedLogOnce<i32>> =
+    LazyLock::new(KeyedLogOnce::new);
 
 /// Returns the stable logical identity for one secondary camera view.
 pub(in crate::runtime) fn secondary_camera_view_id(
@@ -50,6 +61,24 @@ fn sort_secondary_view_tasks(tasks: &mut [(RenderSpaceId, f32, usize)]) {
 
 fn secondary_camera_render_context() -> RenderingContext {
     RenderingContext::Camera
+}
+
+/// Logs a missing secondary render-texture depth attachment once per render texture id.
+fn log_secondary_rt_missing_depth(rt_id: i32, sid: RenderSpaceId, cam_idx: usize) {
+    if SECONDARY_RT_MISSING_DEPTH_LOG.should_log(rt_id) {
+        logger::warn!(
+            "secondary camera: render texture {rt_id} missing depth; space={sid:?} camera_index={cam_idx}"
+        );
+    }
+}
+
+/// Logs a missing secondary render-texture depth view once per render texture id.
+fn log_secondary_rt_missing_depth_view(rt_id: i32, sid: RenderSpaceId, cam_idx: usize) {
+    if SECONDARY_RT_MISSING_DEPTH_VIEW_LOG.should_log(rt_id) {
+        logger::warn!(
+            "secondary camera: render texture {rt_id} missing depth view; space={sid:?} camera_index={cam_idx}"
+        );
+    }
 }
 
 impl RendererRuntime {
@@ -163,11 +192,11 @@ impl RendererRuntime {
                     continue;
                 };
                 let Some(dt) = rt.depth_texture.clone() else {
-                    logger::warn!("secondary camera: render texture {rt_id} missing depth");
+                    log_secondary_rt_missing_depth(rt_id, sid, cam_idx);
                     continue;
                 };
                 let Some(dv) = rt.depth_view.clone() else {
-                    logger::warn!("secondary camera: render texture {rt_id} missing depth view");
+                    log_secondary_rt_missing_depth_view(rt_id, sid, cam_idx);
                     continue;
                 };
                 (

@@ -29,6 +29,25 @@ pub enum AssetTaskLane {
     Particle,
 }
 
+/// Snapshot of cooperative asset-integration queue depths.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AssetIntegratorDiagnosticSnapshot {
+    /// Renderer-main-thread tasks waiting to run.
+    pub(crate) main_queued: usize,
+    /// Urgent upload tasks waiting to run.
+    pub(crate) high_priority_queued: usize,
+    /// Wgpu render-lane tasks waiting to run.
+    pub(crate) render_queued: usize,
+    /// Standard-priority upload tasks waiting to run.
+    pub(crate) normal_priority_queued: usize,
+    /// Dynamic-buffer and particle tasks waiting to run.
+    pub(crate) particle_queued: usize,
+    /// Total queued work across every lane.
+    pub(crate) total_queued: usize,
+    /// Highest total queued depth observed since startup.
+    pub(crate) peak_queued: usize,
+}
+
 /// Priority-separated cooperative upload queues.
 #[derive(Debug, Default)]
 pub struct AssetIntegrator {
@@ -65,6 +84,19 @@ impl AssetIntegrator {
     /// Highest combined queued task count observed since startup.
     pub fn peak_queued(&self) -> usize {
         self.max_total_queued
+    }
+
+    /// Returns a compact queue-depth snapshot for lifecycle diagnostics.
+    pub(crate) fn diagnostic_snapshot(&self) -> AssetIntegratorDiagnosticSnapshot {
+        AssetIntegratorDiagnosticSnapshot {
+            main_queued: self.main.len(),
+            high_priority_queued: self.high_priority.len(),
+            render_queued: self.render.len(),
+            normal_priority_queued: self.normal_priority.len(),
+            particle_queued: self.particle.len(),
+            total_queued: self.total_queued(),
+            peak_queued: self.peak_queued(),
+        }
     }
 
     /// Pops the next task, preferring the high-priority queue.
