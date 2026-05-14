@@ -11,9 +11,9 @@ use super::math::{render_transform_has_degenerate_scale, render_transform_to_mat
 /// Node count above which a fully dirty cache routes through the bulk rebuild path.
 const WORLD_BULK_REBUILD_PARALLEL_MIN: usize = 128;
 
-/// Node count in one hierarchy depth level above which that level fans out across rayon.
-const WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN: usize = 32;
 const WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE: usize = 64;
+/// Node count in one hierarchy depth level above which that level fans out across rayon.
+const WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN: usize = WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE * 2;
 
 #[inline]
 fn should_parallelize_bulk_level(node_count: usize) -> bool {
@@ -585,6 +585,10 @@ mod tests {
 
     #[test]
     fn bulk_level_parallel_gate_requires_meaningful_width() {
+        assert_eq!(
+            WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN,
+            WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE * 2
+        );
         assert!(!should_parallelize_bulk_level(
             WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN - 1
         ));
