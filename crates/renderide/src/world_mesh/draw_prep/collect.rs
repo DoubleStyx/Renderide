@@ -236,7 +236,10 @@ fn collect_world_mesh_chunks(
             profiling::scope!("mesh::collect_prepared::parallel_chunks");
             run_chunks
                 .par_iter()
-                .map(|runs| collect_prepared_chunk(draws, runs, ctx, cache, filter_masks))
+                .map(|runs| {
+                    profiling::scope!("mesh::collect_prepared::chunk_worker");
+                    collect_prepared_chunk(draws, runs, ctx, cache, filter_masks)
+                })
                 .collect()
         } else {
             profiling::scope!("mesh::collect_prepared::serial_chunks");
@@ -255,7 +258,10 @@ fn collect_world_mesh_chunks(
             profiling::scope!("mesh::collect::parallel_chunks");
             chunks
                 .par_iter()
-                .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
+                .map(|spec| {
+                    profiling::scope!("mesh::collect::chunk_worker");
+                    collect_chunk(spec, ctx, cache, filter_masks)
+                })
                 .collect()
         } else {
             profiling::scope!("mesh::collect::serial_chunks");

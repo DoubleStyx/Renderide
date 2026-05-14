@@ -9,14 +9,46 @@ use super::error::SceneError;
 use super::math::{render_transform_has_degenerate_scale, render_transform_to_matrix};
 
 /// Node count above which a fully dirty cache routes through the bulk rebuild path.
-const WORLD_BULK_REBUILD_PARALLEL_MIN: usize = 256;
+const WORLD_BULK_REBUILD_PARALLEL_MIN: usize = 128;
 
 /// Node count in one hierarchy depth level above which that level fans out across rayon.
-const WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN: usize = 64;
+const WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN: usize = 32;
+const WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE: usize = 64;
 
 #[inline]
 fn should_parallelize_bulk_level(node_count: usize) -> bool {
     node_count >= WORLD_BULK_REBUILD_PARALLEL_LEVEL_MIN
+}
+
+fn collect_bulk_level_parallel<F>(
+    indices: &[usize],
+    chunks: &mut Vec<Vec<(Mat4, bool)>>,
+    out: &mut Vec<(Mat4, bool)>,
+    compute_one: F,
+) where
+    F: Fn(&usize) -> (Mat4, bool) + Sync + Send,
+{
+    let chunk_count = indices
+        .len()
+        .div_ceil(WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE);
+    if chunks.len() < chunk_count {
+        chunks.resize_with(chunk_count, Vec::new);
+    }
+    chunks
+        .par_iter_mut()
+        .take(chunk_count)
+        .zip(indices.par_chunks(WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE))
+        .for_each(|(chunk_out, chunk_indices)| {
+            profiling::scope!("scene::world_bulk_rebuild::chunk_worker");
+            chunk_out.clear();
+            chunk_out.reserve(chunk_indices.len());
+            chunk_out.extend(chunk_indices.iter().map(&compute_one));
+        });
+    out.clear();
+    out.reserve(indices.len());
+    for chunk in chunks.iter_mut().take(chunk_count) {
+        out.append(chunk);
+    }
 }
 
 /// Per-space cache: world matrices and incremental recompute bookkeeping.
@@ -50,6 +82,8 @@ pub struct WorldTransformCache {
     /// Bulk-rebuild scratch: per-level computed (world matrix, degenerate flag) pairs before
     /// they are written back to [`Self::world_matrices`] and [`Self::degenerate_scales`].
     pub(super) bfs_writes: Vec<(Mat4, bool)>,
+    /// Bulk-rebuild scratch: per-worker chunk outputs used to give Tracy one span per Rayon task.
+    pub(super) bfs_parallel_writes: Vec<Vec<(Mat4, bool)>>,
 }
 
 impl Default for WorldTransformCache {
@@ -68,6 +102,7 @@ impl Default for WorldTransformCache {
             bfs_levels: Vec::new(),
             bfs_cycle_nodes: Vec::new(),
             bfs_writes: Vec::new(),
+            bfs_parallel_writes: Vec::new(),
         }
     }
 }
@@ -281,6 +316,7 @@ impl WorldTransformCache {
             bfs_levels,
             bfs_cycle_nodes,
             bfs_writes,
+            bfs_parallel_writes,
             ..
         } = self;
 
@@ -305,15 +341,12 @@ impl WorldTransformCache {
             let local_ro: &[Mat4] = local_matrices;
             bfs_writes.clear();
             if should_parallelize_bulk_level(roots.len()) {
-                roots
-                    .par_iter()
-                    .map(|&i| {
-                        (
-                            local_ro[i],
-                            render_transform_has_degenerate_scale(&nodes[i]),
-                        )
-                    })
-                    .collect_into_vec(bfs_writes);
+                collect_bulk_level_parallel(roots, bfs_parallel_writes, bfs_writes, |&i| {
+                    (
+                        local_ro[i],
+                        render_transform_has_degenerate_scale(&nodes[i]),
+                    )
+                });
             } else {
                 bfs_writes.extend(roots.iter().map(|&i| {
                     (
@@ -349,10 +382,7 @@ impl WorldTransformCache {
                 (parent_world * local, parent_degen | degen_self)
             };
             if should_parallelize_bulk_level(level.len()) {
-                level
-                    .par_iter()
-                    .map(compute_one)
-                    .collect_into_vec(bfs_writes);
+                collect_bulk_level_parallel(level, bfs_parallel_writes, bfs_writes, compute_one);
             } else {
                 bfs_writes.extend(level.iter().map(compute_one));
             }

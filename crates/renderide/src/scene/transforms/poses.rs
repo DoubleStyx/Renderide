@@ -14,7 +14,7 @@ use super::NodeDirtyMask;
 
 /// Minimum pose-update count before [`collect_pose_rows`] fans out collection across rayon
 /// workers. Below this threshold the scalar loop is faster than rayon dispatch overhead.
-const POSE_UPDATE_PARALLEL_MIN_ROWS: usize = 256;
+const POSE_UPDATE_PARALLEL_MIN_ROWS: usize = 128;
 
 /// In-bounds pose row ready for serial repair and commit into [`RenderSpaceState::nodes`].
 struct PoseRow {

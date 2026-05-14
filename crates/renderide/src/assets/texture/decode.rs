@@ -8,7 +8,7 @@ use crate::shared::TextureFormat;
 ///
 /// Most tail mips in a chain are smaller than 128x128, so they keep the serial path and
 /// avoid rayon dispatch overhead. Above 128x128 the decode is large enough to amortize.
-const PARALLEL_DECODE_MIN_TEXELS: usize = 16_384;
+const PARALLEL_DECODE_MIN_TEXELS: usize = 8_192;
 
 /// Texel count per rayon chunk during parallel decode.
 ///

@@ -20,7 +20,8 @@ use super::vp::compute_per_draw_vp_matrices;
 ///
 /// Each draw performs scene lookups and matrix packing, so medium draw lists can amortize worker
 /// dispatch earlier than the raw slab copy path.
-const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = 256;
+const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = 128;
+const PER_DRAW_VP_PARALLEL_CHUNK_DRAWS: usize = 64;
 
 /// Per-frame inputs to [`pack_and_upload_per_draw_slab`].
 ///
@@ -147,9 +148,18 @@ fn pack_per_draw_vp_uniforms(
     };
     if inputs.draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS {
         uniforms
-            .par_iter_mut()
-            .zip(inputs.slab_layout.par_iter())
-            .for_each(|(slot, &draw_idx)| pack_one(slot, &inputs.draws[draw_idx]));
+            .par_chunks_mut(PER_DRAW_VP_PARALLEL_CHUNK_DRAWS)
+            .zip(
+                inputs
+                    .slab_layout
+                    .par_chunks(PER_DRAW_VP_PARALLEL_CHUNK_DRAWS),
+            )
+            .for_each(|(slots, layout)| {
+                profiling::scope!("world_mesh::pack_vp_matrices::worker");
+                for (slot, &draw_idx) in slots.iter_mut().zip(layout.iter()) {
+                    pack_one(slot, &inputs.draws[draw_idx]);
+                }
+            });
     } else {
         for (slot, &draw_idx) in uniforms.iter_mut().zip(inputs.slab_layout.iter()) {
             pack_one(slot, &inputs.draws[draw_idx]);

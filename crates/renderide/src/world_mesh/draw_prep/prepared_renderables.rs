@@ -28,7 +28,10 @@ use crate::world_mesh::culling::MeshCullGeometry;
 
 use expand::populate_runs_and_material_keys;
 
-pub(in crate::world_mesh::draw_prep) use expand::{estimated_draw_count, expand_space_into};
+pub(in crate::world_mesh::draw_prep) use expand::estimated_draw_count;
+#[cfg(test)]
+pub(in crate::world_mesh::draw_prep) use expand::expand_space_into;
+pub(in crate::world_mesh::draw_prep) use expand::expand_space_into_aggressive;
 
 /// One fully-resolved draw slot (renderer x material slot mapped to a submesh range) for the current frame.
 ///
@@ -196,7 +199,14 @@ impl FramePreparedRenderables {
             {
                 profiling::scope!("mesh::prepared_renderables::single_space_expand");
                 self.draws.reserve(estimated_draw_count(scene, space_id));
-                expand_space_into(&mut self.draws, scene, mesh_pool, render_context, space_id);
+                expand_space_into_aggressive(
+                    &mut self.draws,
+                    &mut self.space_scratch,
+                    scene,
+                    mesh_pool,
+                    render_context,
+                    space_id,
+                );
             }
             populate_runs_and_material_keys(
                 &self.draws,
@@ -224,6 +234,7 @@ impl FramePreparedRenderables {
                 .par_iter_mut()
                 .zip(active_space_ids.par_iter())
                 .for_each(|(out, &space_id)| {
+                    profiling::scope!("mesh::prepared_renderables::space_worker");
                     out.clear();
                     let estimate = estimated_draw_count(scene, space_id);
                     if estimate > out.capacity() {

@@ -23,7 +23,7 @@ use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_v
 ///
 /// Matches the scene-walk chunk width so per-view CPU cost stays bounded by the same per-task
 /// overhead as the scene-walk path.
-pub(super) const PREPARED_CHUNK_SIZE: usize = 128;
+pub(super) const PREPARED_CHUNK_SIZE: usize = 64;
 
 /// Returns true when two prepared slot entries came from the same source renderer.
 #[inline]
