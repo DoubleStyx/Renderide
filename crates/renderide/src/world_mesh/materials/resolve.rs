@@ -8,13 +8,14 @@ use crate::materials::{
     RasterPrimitiveTopology, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_tangent_stream,
     embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
-    embedded_stem_needs_uv3_stream, embedded_stem_requires_intersection_pass,
-    embedded_stem_tangent_fallback_mode, embedded_stem_uses_alpha_blending,
-    embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
-    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
-    embedded_stem_uses_ui_transparent_fallback, fallback_render_queue_for_material,
-    first_float_from_maps, first_vec4_from_maps, material_blend_mode_from_maps,
-    material_render_queue_from_maps, material_render_state_from_maps, resolve_raster_pipeline,
+    embedded_stem_needs_uv3_stream, embedded_stem_needs_wide_uv_stream,
+    embedded_stem_requires_intersection_pass, embedded_stem_tangent_fallback_mode,
+    embedded_stem_uses_alpha_blending, embedded_stem_uses_raw_normal_payload,
+    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_scene_color_snapshot,
+    embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_ui_transparent_fallback,
+    fallback_render_queue_for_material, first_float_from_maps, first_vec4_from_maps,
+    material_blend_mode_from_maps, material_render_queue_from_maps,
+    material_render_state_from_maps, resolve_raster_pipeline,
 };
 
 use super::FrameMaterialBatchCache;
@@ -59,6 +60,8 @@ pub(crate) struct ResolvedMaterialBatch {
     pub embedded_needs_uv2: bool,
     /// Whether the active shader permutation requires a UV3 vertex stream.
     pub embedded_needs_uv3: bool,
+    /// Whether the active shader permutation requires the packed UV0-UV7 stream.
+    pub embedded_needs_wide_uvs: bool,
     /// Whether the active shader permutation requires any stream outside UV0/color/UV1.
     pub embedded_needs_extended_vertex_streams: bool,
     /// Whether the material requires a second forward subpass with a depth snapshot.
@@ -121,6 +124,7 @@ struct EmbeddedMaterialFeatures {
     raw_normal_payload: bool,
     needs_uv2: bool,
     needs_uv3: bool,
+    needs_wide_uvs: bool,
     needs_extended_vertex_streams: bool,
     requires_intersection_pass: bool,
     uses_scene_depth_snapshot: bool,
@@ -147,6 +151,7 @@ fn embedded_material_features(
         raw_normal_payload: embedded_stem_uses_raw_normal_payload(stem),
         needs_uv2: embedded_stem_needs_uv2_stream(stem, shader_perm),
         needs_uv3: embedded_stem_needs_uv3_stream(stem, shader_perm),
+        needs_wide_uvs: embedded_stem_needs_wide_uv_stream(stem, shader_perm),
         needs_extended_vertex_streams: embedded_stem_needs_extended_vertex_streams(
             stem,
             shader_perm,
@@ -276,6 +281,7 @@ pub(crate) fn resolve_material_batch(
         embedded_raw_normal_payload: embedded.raw_normal_payload,
         embedded_needs_uv2: embedded.needs_uv2,
         embedded_needs_uv3: embedded.needs_uv3,
+        embedded_needs_wide_uvs: embedded.needs_wide_uvs,
         embedded_needs_extended_vertex_streams: embedded.needs_extended_vertex_streams,
         embedded_requires_intersection_pass: embedded.requires_intersection_pass,
         embedded_uses_scene_depth_snapshot: embedded.uses_scene_depth_snapshot,
@@ -315,6 +321,7 @@ fn batch_key_from_resolved(
         embedded_raw_normal_payload: r.embedded_raw_normal_payload,
         embedded_needs_uv2: r.embedded_needs_uv2,
         embedded_needs_uv3: r.embedded_needs_uv3,
+        embedded_needs_wide_uvs: r.embedded_needs_wide_uvs,
         embedded_needs_extended_vertex_streams: r.embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass: r.embedded_requires_intersection_pass,
         embedded_uses_scene_depth_snapshot: r.embedded_uses_scene_depth_snapshot,

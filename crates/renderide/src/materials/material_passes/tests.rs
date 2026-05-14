@@ -5,7 +5,8 @@
 //! the code they cover.
 
 use super::super::render_state::{
-    MaterialCullOverride, MaterialRenderState, material_render_state_for_lookup,
+    MaterialCullOverride, MaterialDepthCompareDomain, MaterialRenderState,
+    material_render_state_for_lookup,
 };
 use super::*;
 use crate::materials::host_data::{
@@ -314,6 +315,23 @@ fn ztest_property_overrides_pass_depth_compare_for_reverse_z() {
 }
 
 #[test]
+fn unity_ztest_domain_decodes_compare_function_for_reverse_z() {
+    let pass = MaterialPassDesc {
+        depth_compare_domain: MaterialDepthCompareDomain::UnityCompareFunction,
+        ..pass_from_kind(PassKind::Stencil, "fs_stencil")
+    };
+    let state = MaterialRenderState {
+        depth_compare: Some(4),
+        ..MaterialRenderState::default()
+    };
+
+    assert_eq!(
+        pass.resolved_depth_compare(state),
+        wgpu::CompareFunction::GreaterEqual
+    );
+}
+
+#[test]
 fn offset_properties_override_pass_depth_bias_for_reverse_z() {
     let reg = PropertyIdRegistry::new();
     let ids = MaterialPipelinePropertyIds::new(&reg);
@@ -438,6 +456,30 @@ fn fixed_alpha_blend_pass_matches_unity_fade_state() {
     };
     assert_eq!(pass.resolved_cull_mode(state), None);
     assert!(!pass.resolved_depth_write(state));
+}
+
+#[test]
+fn fixed_alpha_blend_zwrite_pass_matches_unity_fur_state() {
+    let pass = pass_from_kind(PassKind::ForwardAlphaBlendZWrite, "fs_forward_fur");
+    let blend = pass.blend.expect("fur blend");
+
+    assert_eq!(pass.name, "forward_alpha_blend_zwrite");
+    assert_eq!(pass.material_state, MaterialPassState::Static);
+    assert!(pass.depth_write);
+    assert_eq!(pass.cull_mode, Some(wgpu::Face::Back));
+    assert_eq!(pass.write_mask, wgpu::ColorWrites::ALL);
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+    assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::SrcAlpha);
+    assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+
+    let state = MaterialRenderState {
+        cull_override: MaterialCullOverride::Off,
+        depth_write: Some(false),
+        ..MaterialRenderState::default()
+    };
+    assert_eq!(pass.resolved_cull_mode(state), None);
+    assert!(pass.resolved_depth_write(state));
 }
 
 #[test]

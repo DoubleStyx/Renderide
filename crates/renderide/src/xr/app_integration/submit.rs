@@ -53,7 +53,7 @@ pub fn try_openxr_hmd_multiview_submit(
         log_hmd_submit_skip("stereo depth texture unavailable");
         return false;
     }
-    let Some(sc) = bundle.stereo_swapchain.as_mut() else {
+    let Some(sc) = bundle.stereo_swapchain.as_ref() else {
         log_hmd_submit_skip("stereo swapchain missing before acquire");
         return false;
     };
@@ -70,10 +70,13 @@ pub fn try_openxr_hmd_multiview_submit(
     if !wait_for_acquired_swapchain_image(gpu, &sc.handle) {
         return false;
     }
-    let Some(color_view) = sc.color_view_for_image(image_index) else {
-        let _ = release_swapchain_image(gpu, &sc.handle);
-        log_hmd_submit_skip("color view missing for acquired swapchain image");
-        return false;
+    let acquired_image = match sc.import_acquired_image(gpu.device().as_ref(), image_index) {
+        Ok(image) => image,
+        Err(e) => {
+            let _ = release_swapchain_image(gpu, &sc.handle);
+            log_hmd_submit_skip_with_display_error("swapchain image import failed", &e);
+            return false;
+        }
     };
     let Some(stereo_depth) = bundle.stereo_depth.as_ref() else {
         logger::debug!("OpenXR stereo depth texture missing after resize");
@@ -82,7 +85,7 @@ pub fn try_openxr_hmd_multiview_submit(
         return false;
     };
     let ext = ExternalFrameTargets {
-        color_view,
+        color_view: acquired_image.array_view(),
         depth_texture: &stereo_depth.0,
         depth_view: &stereo_depth.1,
         extent_px: extent,
@@ -117,13 +120,15 @@ pub fn try_openxr_hmd_multiview_submit(
         handles.xr_session.set_pending_finalize(rx);
         return true;
     };
+    let mirror_layer_view = acquired_image.color_layer_view(VR_MIRROR_EYE_LAYER);
     let (finalize, rx) = handles.xr_session.build_projection_finalize(
         Arc::clone(&sc.handle),
+        acquired_image.into_texture(),
         tick.predicted_display_time,
         projection_views,
         rect,
     );
-    if let Some(layer_view) = sc.color_layer_view_for_image(image_index, VR_MIRROR_EYE_LAYER) {
+    if let Some(layer_view) = mirror_layer_view {
         // Attach finalize to the mirror staging blit so the driver runs both submits and
         // then `xrReleaseSwapchainImage` + `xrEndFrame` in FIFO order with no main-thread
         // wait between them.
@@ -229,6 +234,14 @@ fn log_hmd_submit_skip_with_error(reason: &'static str, error: xr::sys::Result) 
     if let Some(occurrence) = HMD_SUBMIT_SKIP_LOG.should_log(4, 128) {
         logger::debug!(
             "OpenXR HMD submit skipped: reason={reason} error={error:?} occurrence={occurrence}"
+        );
+    }
+}
+
+fn log_hmd_submit_skip_with_display_error(reason: &'static str, error: &dyn std::fmt::Display) {
+    if let Some(occurrence) = HMD_SUBMIT_SKIP_LOG.should_log(4, 128) {
+        logger::debug!(
+            "OpenXR HMD submit skipped: reason={reason} error={error} occurrence={occurrence}"
         );
     }
 }

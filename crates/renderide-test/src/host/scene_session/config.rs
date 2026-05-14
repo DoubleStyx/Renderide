@@ -6,7 +6,7 @@ use std::time::Duration;
 /// Configuration for [`super::run_session`].
 #[derive(Clone, Debug)]
 pub struct SceneSessionConfig {
-    /// Path to the `renderide` binary to spawn.
+    /// Path to the `renderide-renderer` binary to spawn.
     pub renderer_path: PathBuf,
     /// Output PNG path the renderer writes to (also where the harness reads from).
     pub output_path: PathBuf,

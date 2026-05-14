@@ -10,7 +10,7 @@ use crate::shared::RenderingContext;
 ///
 /// Per-bone work is one world lookup plus a Mat4 multiply, so medium skinned meshes can amortize
 /// worker dispatch once the palette reaches a few hundred bones.
-const SKINNING_PALETTE_PARALLEL_MIN: usize = 256;
+const SKINNING_PALETTE_PARALLEL_MIN: usize = 128;
 
 /// Bytes per column-major `mat4<f32>` slot in the GPU-facing palette buffer.
 const PALETTE_BONE_BYTES: usize = 64;

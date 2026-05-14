@@ -5,6 +5,21 @@ use crate::shared::{VertexAttributeDescriptor, VertexAttributeFormat, VertexAttr
 use super::super::gpu_mesh::attribute_reader::AttributeReader;
 use super::buffer_layout::vertex_format_size;
 
+/// Host UV channels exposed through the mesh-forward vertex path.
+pub const UV_VERTEX_ATTRIBUTE_TYPES: [VertexAttributeType; 8] = [
+    VertexAttributeType::UV0,
+    VertexAttributeType::UV1,
+    VertexAttributeType::UV2,
+    VertexAttributeType::UV3,
+    VertexAttributeType::UV4,
+    VertexAttributeType::UV5,
+    VertexAttributeType::UV6,
+    VertexAttributeType::UV7,
+];
+
+/// Bytes per vertex in the wide UV pack: eight `vec4<f32>` rows.
+pub const WIDE_UV_VERTEX_STRIDE_BYTES: usize = UV_VERTEX_ATTRIBUTE_TYPES.len() * 16;
+
 /// Attribute semantic used when expanding host vertex scalars into float streams.
 #[derive(Clone, Copy)]
 pub(in crate::assets::mesh) enum VertexDecodeKind {
@@ -151,6 +166,50 @@ pub fn vertex_float2_stream_bytes(
         let uv = reader.read_vec2(i)?;
         let o = i * 8;
         write_f32s(&mut out[o..o + 8], &uv);
+    }
+    Some(out)
+}
+
+/// Dense wide UV stream for shaders that consume UV4-UV7 or 3D/4D UV channels.
+///
+/// Each vertex stores eight consecutive `vec4<f32>` rows (`UV0` through `UV7`). Missing UV
+/// channels and missing z/w components are zero-filled.
+pub fn wide_uv_stream_bytes(
+    vertex_data: &[u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &[VertexAttributeDescriptor],
+) -> Option<Vec<u8>> {
+    if vertex_count == 0 || stride == 0 {
+        return None;
+    }
+    let need = vertex_count.checked_mul(stride)?;
+    if vertex_data.len() < need {
+        return None;
+    }
+
+    let mut out = vec![0u8; vertex_count.checked_mul(WIDE_UV_VERTEX_STRIDE_BYTES)?];
+    let readers: [Option<AttributeReader<'_>>; 8] = UV_VERTEX_ATTRIBUTE_TYPES.map(|target| {
+        AttributeReader::from_attrs(
+            vertex_data,
+            vertex_count,
+            stride,
+            attrs,
+            target,
+            VertexDecodeKind::TexCoord,
+            2,
+        )
+    });
+
+    for vertex in 0..vertex_count {
+        for (channel, reader) in readers.iter().enumerate() {
+            let Some(reader) = reader else {
+                continue;
+            };
+            let uv = reader.read_vec4(vertex, [0.0; 4])?;
+            let offset = vertex * WIDE_UV_VERTEX_STRIDE_BYTES + channel * 16;
+            write_f32s(&mut out[offset..offset + 16], &uv);
+        }
     }
     Some(out)
 }

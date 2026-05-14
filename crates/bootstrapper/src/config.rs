@@ -47,9 +47,9 @@ pub struct ResoBootConfig {
     pub runtime_config: PathBuf,
 
     // --- Renderer binary (bootstrapper-relative) ---
-    /// Directory containing the Renderide / renderer binary (bootstrapper exe dir).
+    /// Directory containing the launcher and renderer binaries.
     pub renderite_directory: PathBuf,
-    /// Renderer executable path (`renderide.exe` on Windows, `Renderite.Renderer` elsewhere).
+    /// Renderer executable path (`renderide-renderer.exe` on Windows, `Renderite.Renderer` elsewhere).
     pub renderite_executable: PathBuf,
 
     // --- IPC identity ---
@@ -80,7 +80,7 @@ impl ResoBootConfig {
             .unwrap_or_else(|| current_directory.clone());
         let renderite_directory = exe_dir.clone();
         let renderite_executable = exe_dir.join(if cfg!(windows) {
-            "renderide.exe"
+            "renderide-renderer.exe"
         } else {
             "Renderite.Renderer"
         });
@@ -152,7 +152,7 @@ mod tests {
             .and_then(|n| n.to_str())
             .expect("file name");
         if cfg!(windows) {
-            assert_eq!(exe_name, "renderide.exe");
+            assert_eq!(exe_name, "renderide-renderer.exe");
         } else {
             assert_eq!(exe_name, "Renderite.Renderer");
         }

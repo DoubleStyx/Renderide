@@ -24,8 +24,9 @@ pub use vertex_streams::{
     EmbeddedVertexStreamMask, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_tangent_stream,
     embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
-    embedded_stem_needs_uv3_stream, embedded_stem_uses_raw_normal_payload,
-    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_ui_transparent_fallback,
+    embedded_stem_needs_uv3_stream, embedded_stem_needs_wide_uv_stream,
+    embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
+    embedded_stem_uses_ui_transparent_fallback,
 };
 
 use hashbrown::HashMap;
@@ -88,12 +89,12 @@ struct EmbeddedStemMetadata {
 }
 
 impl EmbeddedStemMetadata {
-    /// Exact mesh-forward vertex streams declared by `vs_main`.
+    /// Exact mesh-forward vertex streams declared by reflected material pass vertex entries.
     fn vertex_stream_mask(&self) -> EmbeddedVertexStreamMask {
         derive_vertex_stream_mask(self.reflected.as_ref())
     }
 
-    /// Whether `vs_main` needs any stream beyond UV0/color/UV1.
+    /// Whether reflected material pass vertex entries need any stream beyond UV0/color/UV1.
     fn needs_extended_vertex_streams(&self) -> bool {
         self.vertex_stream_mask().needs_extended_vertex_streams()
     }
@@ -123,42 +124,47 @@ impl EmbeddedStemQuery {
         }
     }
 
-    /// `true` when `vs_main` uses `@location(2)` or higher (UV0 stream).
+    /// `true` when reflected material pass vertex entries use `@location(2)` as a UV0 stream.
     pub fn needs_uv0_stream(&self) -> bool {
         self.vertex_stream_mask().uv0
     }
 
-    /// `true` when `vs_main` uses `@location(3)` as a `vec4<f32>` color stream.
+    /// `true` when reflected material pass vertex entries use `@location(3)` as a `vec4<f32>` color stream.
     pub fn needs_color_stream(&self) -> bool {
         self.vertex_stream_mask().color
     }
 
-    /// `true` when `vs_main` uses `@location(4)` as a `vec4<f32>` tangent stream.
+    /// `true` when reflected material pass vertex entries use `@location(4)` as a `vec4<f32>` tangent stream.
     pub fn needs_tangent_stream(&self) -> bool {
         self.vertex_stream_mask().tangent
     }
 
-    /// `true` when `vs_main` uses `@location(5)` as a `vec2<f32>` UV1 stream.
+    /// `true` when reflected material pass vertex entries use `@location(5)` as a `vec2<f32>` UV1 stream.
     pub fn needs_uv1_stream(&self) -> bool {
         self.vertex_stream_mask().uv1
     }
 
-    /// `true` when `vs_main` uses `@location(6)` as a `vec2<f32>` UV2 stream.
+    /// `true` when reflected material pass vertex entries use `@location(6)` as a `vec2<f32>` UV2 stream.
     pub fn needs_uv2_stream(&self) -> bool {
         self.vertex_stream_mask().uv2
     }
 
-    /// `true` when `vs_main` uses `@location(7)` as a `vec2<f32>` UV3 stream.
+    /// `true` when reflected material pass vertex entries use `@location(7)` as a `vec2<f32>` UV3 stream.
     pub fn needs_uv3_stream(&self) -> bool {
         self.vertex_stream_mask().uv3
     }
 
-    /// Exact mesh-forward vertex streams declared by `vs_main`.
+    /// `true` when reflected material pass vertex entries need the packed UV0-UV7 stream.
+    pub fn needs_wide_uv_stream(&self) -> bool {
+        self.vertex_stream_mask().wide_uvs
+    }
+
+    /// Exact mesh-forward vertex streams declared by reflected material pass vertex entries.
     pub fn vertex_stream_mask(&self) -> EmbeddedVertexStreamMask {
         self.metadata.vertex_stream_mask()
     }
 
-    /// `true` when `vs_main` needs any stream beyond UV0/color/UV1.
+    /// `true` when reflected material pass vertex entries need any stream beyond UV0/color/UV1.
     pub fn needs_extended_vertex_streams(&self) -> bool {
         self.metadata.needs_extended_vertex_streams()
     }
@@ -217,9 +223,18 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
 
     let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
     let wgsl = embedded_shaders::embedded_target_wgsl(&composed);
-    let reflected = wgsl
-        .and_then(|wgsl| crate::materials::wgsl_reflect::reflect_raster_material_wgsl(wgsl).ok());
     let passes = embedded_shaders::embedded_target_passes(&composed);
+    let vertex_entries = passes
+        .iter()
+        .map(|pass| pass.vertex_entry)
+        .collect::<Vec<_>>();
+    let reflected = wgsl.and_then(|wgsl| {
+        crate::materials::wgsl_reflect::reflect_raster_material_wgsl_with_vertex_entries(
+            wgsl,
+            &vertex_entries,
+        )
+        .ok()
+    });
     let depth_prepass_pass = depth_prepass_pass_for_target(wgsl, reflected.as_ref(), passes);
     let metadata = EmbeddedStemMetadata {
         reflected,
@@ -292,13 +307,13 @@ pub(in crate::materials) fn create_embedded_render_pipelines(
         front_face,
         primitive_topology,
     } = source;
-    let shader = refs.with_label("embedded_raster_material");
     let streams = VertexStreamToggles {
         include_uv_vertex_buffer: true,
         include_color_vertex_buffer: true,
         include_uv1_vertex_buffer: true,
     };
     let composed = embedded_composed_stem_for_permutation(stem.as_ref(), permutation);
+    let shader = refs.with_label(format!("embedded_raster_material__{composed}"));
     let declared_passes = embedded_shaders::embedded_target_passes(&composed);
     if declared_passes.is_empty() {
         // Build script enforces that every material WGSL declares at least one `//#pass`.

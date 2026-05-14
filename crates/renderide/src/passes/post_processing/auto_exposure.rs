@@ -102,6 +102,7 @@ impl ComputePass for AutoExposureComputePass {
             settings.settings,
             settings.delta_seconds,
             layer_count,
+            settings.instant_adaptation,
         );
         let state = self.state_cache.ensure(ctx.device, frame.view.view_id);
         ctx.write_buffer(&state.settings, 0, bytemuck::bytes_of(&params));

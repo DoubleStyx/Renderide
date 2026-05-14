@@ -17,8 +17,8 @@ use crate::shared::{
 /// Builds VR input for the host when the session targets a VR [`HeadOutputDevice`].
 ///
 /// `head_pose` is the center-eye pose from the last [`crate::xr::headset_center_pose_from_stereo_views`]
-/// update ([`crate::xr::openxr_pose_to_host_tracking`], same idea as Unity XR tracking), or `None`
-/// before the first XR tick. When `None`, the headset IPC object is still present but marked
+/// update using the same RH-to-LH tracking conversion as Unity XR tracking, or `None` before the
+/// first XR tick. When `None`, the headset IPC object is still present but marked
 /// `is_tracking = false` so the host can allocate the device without consuming fake origin poses.
 ///
 /// On the FrooxEngine side, **TrackedObject.Position** may differ from **RawPosition** when a

@@ -20,10 +20,10 @@ use crate::shared::{
 /// Touched-renderer count above which blendshape weight apply fans out across rayon.
 ///
 /// Batch count above which the grouping + worker dispatch cost is likely to pay off.
-const BLENDSHAPE_APPLY_PARALLEL_MIN: usize = 128;
+const BLENDSHAPE_APPLY_PARALLEL_MIN: usize = 64;
 
 /// Renderer count above which grouped blendshape apply has enough worker slots to fan out.
-const BLENDSHAPE_APPLY_PARALLEL_MIN_RENDERERS: usize = 64;
+const BLENDSHAPE_APPLY_PARALLEL_MIN_RENDERERS: usize = 32;
 
 #[inline]
 fn should_parallelize_blendshape_apply(accepted_count: usize, renderer_count: usize) -> bool {

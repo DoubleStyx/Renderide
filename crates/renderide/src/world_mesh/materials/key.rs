@@ -45,6 +45,8 @@ pub struct MaterialDrawBatchKey {
     pub embedded_needs_uv2: bool,
     /// Whether the embedded stem needs a UV3 vertex stream at `@location(7)`.
     pub embedded_needs_uv3: bool,
+    /// Whether the embedded stem needs the packed UV0-UV7 stream.
+    pub embedded_needs_wide_uvs: bool,
     /// Whether the embedded stem needs any stream outside UV0/color/UV1.
     pub embedded_needs_extended_vertex_streams: bool,
     /// Whether the material requires the intersection subpass with a depth snapshot.

@@ -26,7 +26,7 @@ pub use scene_session::{SceneSessionConfig, SessionTemplate};
 /// Configuration for [`HostHarness::start`].
 #[derive(Clone, Debug)]
 pub struct HostHarnessConfig {
-    /// Path to the `renderide` binary to spawn.
+    /// Path to the `renderide-renderer` binary to spawn.
     pub renderer_path: PathBuf,
     /// Optional explicit PNG output path (overrides the default tempfile under the OS temp dir).
     pub forced_output_path: Option<PathBuf>,

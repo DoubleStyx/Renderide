@@ -61,7 +61,7 @@ fn kw_world_space() -> bool {
 }
 
 fn kw_saturate_alpha() -> bool {
-    return fogbox_kw(FOGBOX_KW_SATURATE_ALPHA) || !fogbox_kw(FOGBOX_KW_SATURATE_COLOR);
+    return fogbox_kw(FOGBOX_KW_SATURATE_ALPHA);
 }
 
 fn accumulation_distance(raw_distance: f32) -> f32 {

@@ -1,7 +1,8 @@
 //! No-GPU coverage for pass-scoped material render-state policy.
 
 use super::super::render_state::{
-    MaterialCullOverride, MaterialDepthOffsetState, MaterialRenderState, MaterialStencilState,
+    MaterialCullOverride, MaterialDepthCompareDomain, MaterialDepthOffsetState,
+    MaterialRenderState, MaterialStencilState,
 };
 use super::*;
 
@@ -139,6 +140,17 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
     assert_eq!(
         overlay_always.resolved_depth_bias(enabled_depth),
         wgpu::DepthBiasState::default()
+    );
+
+    let fur_blend = pass_from_kind(PassKind::ForwardAlphaBlendZWrite, "fs_fur");
+    assert_eq!(
+        fur_blend.resolved_color_writes(disabled_depth),
+        wgpu::ColorWrites::ALL
+    );
+    assert!(fur_blend.resolved_depth_write(disabled_depth));
+    assert_eq!(
+        fur_blend.resolved_depth_compare(disabled_depth),
+        crate::gpu::MAIN_FORWARD_DEPTH_COMPARE
     );
 }
 
@@ -528,6 +540,10 @@ fn xstoon_stenciler_uses_source_stencil_pass_state() {
     assert_eq!(stencil_passes[0].name, "stencil", "xstoonstenciler_default");
     assert_eq!(stencil_passes[0].cull_mode, Some(wgpu::Face::Front));
     assert_eq!(stencil_passes[0].write_mask, wgpu::ColorWrites::ALL);
+    assert_eq!(
+        stencil_passes[0].depth_compare_domain,
+        MaterialDepthCompareDomain::UnityCompareFunction
+    );
     assert!(!stencil_passes[0].depth_write);
 }
 

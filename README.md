@@ -2,6 +2,8 @@
 
 A modern Rust + wgpu renderer for [Resonite](https://store.steampowered.com/app/2519830/Resonite/). Unofficial Renderide thread discussion [here](https://discord.com/channels/1040316820650991766/1156348246973751487) (in the Resonite Discord).
 
+Also available as an [AUR package](https://aur.archlinux.org/packages/renderide-git).
+
 ## Status
 
 Experimental: performance, stability, and platform support are still evolving.
@@ -31,19 +33,19 @@ Prerequisites: a Vulkan-, Metal-, or DirectX 12-capable GPU and a Steam installa
    cargo build --release
    ```
 
-1. Run the bootstrapper:
+1. Run the launcher:
 
    ```bash
-   ./target/release/bootstrapper
+   ./target/release/renderide
    ```
 
-The bootstrapper will launch the Resonite host and connect Renderide automatically.
+The launcher will start the Resonite host and connect Renderide automatically.
 
 - Enable validation layers in the config hud to get more detailed error messages for GPU crashes. Requires a restart.
 
 - Renderer logs are timestamped files under `<logs-root>/renderer/`; local checkout runs normally use this repository's `logs/renderer/` folder. Release binaries use the current user's platform log directory (`$XDG_STATE_HOME/renderide/logs` or `~/.local/state/renderide/logs` on Linux, `~/Library/Logs/Renderide` on macOS, `%LOCALAPPDATA%\Renderide\logs` on Windows). Set `RENDERIDE_LOGS_ROOT` to override the root for all component logs. The Renderer config HUD also shows the selected log folder and includes an "Open log folder" button.
 
-- You can add Steam-style launch arguments after the bootstrapper to enable mods: `<path-to-bootstrapper> -LoadAssembly Libraries/ResoniteModLoader.dll`
+- You can add Steam-style launch arguments after the launcher to enable mods: `<path-to-renderide> -LoadAssembly Libraries/ResoniteModLoader.dll`
 
 ## Design goals
 
@@ -64,7 +66,7 @@ Bootstrapper  --shm queues-->  Host (.NET / Resonite)
                               shm queues (Primary + Background)
                                    |
                                    v
-                              Renderer (renderide)
+                              Renderer (renderide-renderer)
 ```
 
 Inside the renderer, work is organized into three layers:
@@ -150,7 +152,7 @@ cargo build --profile dev-fast --features tracy
 1. Download the Tracy profiler GUI from the [Tracy releases page](https://github.com/wolfpld/tracy/releases)
    and launch it.
 
-1. Start Renderide normally (bootstrapper or renderer directly).
+1. Start Renderide normally (launcher or renderer directly).
 
 1. In the Tracy GUI, connect to `localhost` on port **8086**.
 

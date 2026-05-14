@@ -103,6 +103,13 @@ pub enum XrFinalizeKind {
 pub struct XrProjectionFinalize {
     /// Swapchain whose acquired image we must release before `xrEndFrame`.
     pub swapchain: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
+    /// Per-frame wgpu wrapper for the acquired OpenXR image.
+    ///
+    /// Kept in the driver batch until after `Queue::submit` returns so command buffers that
+    /// referenced the imported image cannot outlive the wrapper. The driver drops it before
+    /// `xrReleaseSwapchainImage` so wgpu does not retain tracking state while the compositor owns
+    /// the image.
+    pub imported_color_texture: Option<wgpu::Texture>,
     /// Frame stream the projection layer is submitted through.
     pub frame_stream: Arc<Mutex<xr::FrameStream<xr::Vulkan>>>,
     /// Reference space the projection layer is anchored in.
@@ -133,10 +140,10 @@ pub fn wait_for_finalize(rx: XrFinalizeReceiver) -> Result<(), RecvTimeoutError>
 /// Runs deferred OpenXR finalize work on the driver thread after the trailing batch's
 /// `Queue::submit` returns.
 ///
-/// For [`XrFinalizeKind::Projection`]: takes the queue access gate, releases the
-/// swapchain image, drops the gate, takes the gate again, calls `xrEndFrame` with a
-/// stereo projection layer, drops the gate, clears the `frame_open` flag, and signals.
-/// For [`XrFinalizeKind::Empty`]: takes the gate, calls `xrEndFrame` with no layers,
+/// For [`XrFinalizeKind::Projection`]: drops the per-frame wgpu image wrapper, takes the queue
+/// access gate, releases the swapchain image, drops the gate, takes the gate again, calls
+/// `xrEndFrame` with a stereo projection layer, drops the gate, clears the `frame_open` flag, and
+/// signals. For [`XrFinalizeKind::Empty`]: takes the gate, calls `xrEndFrame` with no layers,
 /// drops the gate, clears the flag, and signals.
 ///
 /// Errors are logged with [`logger::warn!`] and recorded in
@@ -150,7 +157,8 @@ pub(super) fn run_xr_finalize(gate: &GpuQueueAccessGate, work: XrFinalizeWork) {
     } = work;
 
     let result = match kind {
-        XrFinalizeKind::Projection(payload) => {
+        XrFinalizeKind::Projection(mut payload) => {
+            drop(payload.imported_color_texture.take());
             let release_res = release_swapchain_image_under_gate(gate, &payload.swapchain);
             if let Err(err) = release_res {
                 Err(err)
@@ -335,5 +343,13 @@ mod tests {
         drop(signal);
         let err = wait_for_finalize(rx).expect_err("dropped signal");
         assert!(matches!(err, RecvTimeoutError::Disconnected));
+    }
+
+    #[test]
+    fn finalize_work_can_cross_driver_thread_boundary() {
+        fn assert_send<T: Send>() {}
+
+        assert_send::<XrFinalizeWork>();
+        assert_send::<XrProjectionFinalize>();
     }
 }

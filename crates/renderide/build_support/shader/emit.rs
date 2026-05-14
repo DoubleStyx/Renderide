@@ -43,7 +43,7 @@ impl ComposedShaders {
     /// Records one compiled shader source into embedded shader registries.
     pub(super) fn record_compiled_shader(&mut self, compiled: &CompiledShader) {
         for target in &compiled.targets {
-            self.emit_embedded_target(&target.target_stem, &target.wgsl, &compiled.pass_directives);
+            self.emit_embedded_target(&target.target_stem, &target.wgsl, &target.pass_directives);
             self.push_stem(compiled.source_class, target.target_stem.clone());
         }
     }
@@ -181,7 +181,7 @@ pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use crate::shader::directives::{BuildPassDirective, BuildPassKind};
+    use crate::shader::directives::{BuildDepthCompareDomain, BuildPassDirective, BuildPassKind};
     use crate::shader::model::{CompiledShader, CompiledShaderTarget, ShaderSourceClass};
 
     use super::*;
@@ -233,6 +233,7 @@ mod tests {
                     fragment_entry: "fs_main".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: true,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -241,6 +242,7 @@ mod tests {
                     fragment_entry: "fs_outline".to_string(),
                     vertex_entry: "vs_outline".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -284,6 +286,7 @@ mod tests {
         targets: &[(&str, &str)],
         pass_directives: Vec<BuildPassDirective>,
     ) -> CompiledShader {
+        let target_pass_directives = pass_directives.clone();
         CompiledShader {
             compile_order,
             source_class,
@@ -293,6 +296,7 @@ mod tests {
                 .map(|(target_stem, wgsl)| CompiledShaderTarget {
                     target_stem: (*target_stem).to_string(),
                     wgsl: (*wgsl).to_string(),
+                    pass_directives: target_pass_directives.clone(),
                 })
                 .collect(),
         }

@@ -16,10 +16,11 @@ use crate::shared::{
 };
 
 use super::super::layout::{
-    BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout, color_float4_stream_bytes,
-    compute_index_count, compute_vertex_stride, extract_bind_poses, extract_blendshape_offsets,
-    extract_float3_position_normal_as_vec4_streams, split_bone_weights_tail_for_gpu,
-    uv0_float2_stream_bytes, vertex_float2_stream_bytes,
+    BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout, WIDE_UV_VERTEX_STRIDE_BYTES,
+    color_float4_stream_bytes, compute_index_count, compute_vertex_stride, extract_bind_poses,
+    extract_blendshape_offsets, extract_float3_position_normal_as_vec4_streams,
+    split_bone_weights_tail_for_gpu, uv0_float2_stream_bytes, vertex_float2_stream_bytes,
+    wide_uv_stream_bytes,
 };
 use super::hints::wgpu_index_format;
 use super::tangent_generation::{
@@ -131,6 +132,7 @@ pub(super) struct DerivedStreams {
     pub uv1_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv2_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv3_buffer: Option<Arc<wgpu::Buffer>>,
+    pub wide_uv_buffer: Option<Arc<wgpu::Buffer>>,
 }
 
 /// Validates raw length and device buffer-size limits, including per-derived-stream sizes
@@ -506,6 +508,10 @@ fn float2_zero_stream_bytes(vertex_count: usize) -> Vec<u8> {
     vec![0u8; vertex_count * 8]
 }
 
+fn wide_uv_zero_stream_bytes(vertex_count: usize) -> Vec<u8> {
+    vec![0u8; vertex_count * WIDE_UV_VERTEX_STRIDE_BYTES]
+}
+
 #[inline]
 fn vertex_stream_usage() -> wgpu::BufferUsages {
     wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
@@ -678,6 +684,43 @@ pub(super) fn upload_uv_vertex_stream(
     ))
 }
 
+pub(super) fn upload_wide_uv_vertex_stream(
+    device: &wgpu::Device,
+    asset_id: i32,
+    source: UvVertexUploadSource<'_>,
+) -> Option<Arc<wgpu::Buffer>> {
+    if source.vertex_count == 0 {
+        return None;
+    }
+    let uv_bytes = wide_uv_stream_bytes(
+        source.vertex_slice,
+        source.vertex_count,
+        source.vertex_stride,
+        source.vertex_attributes,
+    )
+    .unwrap_or_else(|| wide_uv_zero_stream_bytes(source.vertex_count));
+    Some(create_vertex_stream_buffer(
+        device,
+        asset_id,
+        source.label,
+        &uv_bytes,
+    ))
+}
+
+pub(super) fn upload_default_wide_uv_vertex_stream(
+    device: &wgpu::Device,
+    asset_id: i32,
+    vc_usize: usize,
+) -> Option<Arc<wgpu::Buffer>> {
+    if vc_usize == 0 {
+        return None;
+    }
+    let uv_bytes = wide_uv_zero_stream_bytes(vc_usize);
+    Some(create_vertex_stream_buffer(
+        device, asset_id, "wide_uv", &uv_bytes,
+    ))
+}
+
 pub(super) fn upload_default_uv_vertex_stream(
     device: &wgpu::Device,
     asset_id: i32,
@@ -747,6 +790,7 @@ pub(super) fn extract_derived_vertex_streams(
         uv1_buffer: None,
         uv2_buffer: None,
         uv3_buffer: None,
+        wide_uv_buffer: None,
     })
 }
 
@@ -996,6 +1040,7 @@ pub(super) fn resident_bytes_for_mesh_upload(
         derived.uv1_buffer.as_ref(),
         derived.uv2_buffer.as_ref(),
         derived.uv3_buffer.as_ref(),
+        derived.wide_uv_buffer.as_ref(),
     ]);
     if let Some(b) = blend_sparse {
         n += b.size();

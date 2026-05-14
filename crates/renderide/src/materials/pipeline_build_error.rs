@@ -17,6 +17,6 @@ pub enum PipelineBuildError {
     #[error("reflective raster pipeline requires at least one pass (stem `{label}`)")]
     EmptyPasses {
         /// Material stem label used in pipeline creation.
-        label: &'static str,
+        label: String,
     },
 }

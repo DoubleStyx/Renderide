@@ -69,13 +69,13 @@ enum Command {
 
 #[derive(Parser, Debug, Clone)]
 struct SuiteOpts {
-    /// Path to the renderide binary to spawn (defaults to `target/{profile}/renderide`).
+    /// Path to the renderer binary to spawn (defaults to `target/{profile}/renderide-renderer`).
     #[arg(long)]
     renderer: Option<PathBuf>,
-    /// Use the `dev-fast` profile renderer binary (`target/dev-fast/renderide`).
+    /// Use the `dev-fast` profile renderer binary (`target/dev-fast/renderide-renderer`).
     #[arg(long, default_value_t = false, conflicts_with = "release")]
     dev_fast: bool,
-    /// Use the release-mode renderer binary (`target/release/renderide`).
+    /// Use the release-mode renderer binary (`target/release/renderide-renderer`).
     #[arg(long, default_value_t = false, conflicts_with = "dev_fast")]
     release: bool,
     /// Case name to run. Repeat to run a subset; omitted means every registered case.
@@ -201,14 +201,14 @@ fn print_suite_outcome(
     );
 }
 
-/// Cargo build profile selecting which `target/<profile>/renderide` binary to spawn.
+/// Cargo build profile selecting which `target/<profile>/renderide-renderer` binary to spawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BuildProfile {
-    /// `target/debug/renderide` -- default `cargo build` profile.
+    /// `target/debug/renderide-renderer` -- default `cargo build` profile.
     Debug,
-    /// `target/release/renderide` -- `cargo build --release`.
+    /// `target/release/renderide-renderer` -- `cargo build --release`.
     Release,
-    /// `target/dev-fast/renderide` -- the project's `dev-fast` workspace profile.
+    /// `target/dev-fast/renderide-renderer` -- the project's `dev-fast` workspace profile.
     DevFast,
 }
 
@@ -236,15 +236,15 @@ impl BuildProfile {
 
 fn default_renderer_path(profile: BuildProfile) -> PathBuf {
     let exe = if cfg!(windows) {
-        "renderide.exe"
+        "renderide-renderer.exe"
     } else {
-        "renderide"
+        "renderide-renderer"
     };
     PathBuf::from("target").join(profile.target_dir()).join(exe)
 }
 
 /// Picks a renderer next to this binary when no `--release` / `--dev-fast` flags are set, so
-/// e.g. `target/dev-fast/renderide-test` uses `target/dev-fast/renderide` by default.
+/// e.g. `target/dev-fast/renderide-test` uses `target/dev-fast/renderide-renderer` by default.
 fn resolve_renderer_path(profile: BuildProfile) -> PathBuf {
     if profile != BuildProfile::Debug {
         return default_renderer_path(profile);
@@ -267,9 +267,9 @@ fn renderide_next_to_this_test_binary() -> Option<PathBuf> {
         return None;
     }
     let candidate = profile_dir.join(if cfg!(windows) {
-        "renderide.exe"
+        "renderide-renderer.exe"
     } else {
-        "renderide"
+        "renderide-renderer"
     });
     candidate.is_file().then_some(candidate)
 }
@@ -344,9 +344,9 @@ mod cli_tests {
 
     fn expected_exe() -> &'static str {
         if cfg!(windows) {
-            "renderide.exe"
+            "renderide-renderer.exe"
         } else {
-            "renderide"
+            "renderide-renderer"
         }
     }
 }

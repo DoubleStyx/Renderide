@@ -69,6 +69,20 @@ pub fn openxr_pose_to_engine(pose: &xr::Posef) -> (Vec3, Quat) {
     openxr_pose_to_host_tracking(pose)
 }
 
+/// Converts OpenXR right-handed tracking-space pose components into the host's Unity-style
+/// left-handed tracking basis.
+pub(crate) fn openxr_tracking_pose_to_host(position: Vec3, orientation: Quat) -> (Vec3, Quat) {
+    let p = Vec3::new(position.x, position.y, -position.z);
+    let q = Quat::from_xyzw(-orientation.x, -orientation.y, orientation.z, orientation.w);
+    let len_sq = q.length_squared();
+    let q = if len_sq.is_finite() && len_sq >= 1e-10 {
+        q.normalize()
+    } else {
+        Quat::IDENTITY
+    };
+    (p, q)
+}
+
 /// Position and orientation for **host IPC** (FrooxEngine [`crate::shared::HeadsetState`]).
 ///
 /// FrooxEngine/Resonite uses Unity left-handed space (+Z forward), while OpenXR is right-handed
@@ -77,16 +91,10 @@ pub fn openxr_pose_to_engine(pose: &xr::Posef) -> (Vec3, Quat) {
 ///   position:  `(x, y, -z)`
 ///   rotation:  `(-qx, -qy, qz, qw)`
 pub fn openxr_pose_to_host_tracking(pose: &xr::Posef) -> (Vec3, Quat) {
-    let p = Vec3::new(pose.position.x, pose.position.y, -pose.position.z);
+    let p = Vec3::new(pose.position.x, pose.position.y, pose.position.z);
     let o = pose.orientation;
-    let q = Quat::from_xyzw(-o.x, -o.y, o.z, o.w);
-    let len_sq = q.length_squared();
-    let q = if len_sq.is_finite() && len_sq >= 1e-10 {
-        q.normalize()
-    } else {
-        Quat::IDENTITY
-    };
-    (p, q)
+    let q = Quat::from_xyzw(o.x, o.y, o.z, o.w);
+    openxr_tracking_pose_to_host(p, q)
 }
 
 /// Headset pose for IPC in host tracking space ([`openxr_pose_to_host_tracking`]).

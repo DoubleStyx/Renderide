@@ -11,7 +11,7 @@ use super::super::mip_write_common::{
     mip_src_to_upload_pixels as shared_mip_src_to_upload_pixels,
 };
 
-const DOWNSAMPLE_PARALLEL_MIN_TEXELS: usize = 16_384;
+const DOWNSAMPLE_PARALLEL_MIN_TEXELS: usize = 8_192;
 
 #[inline]
 fn should_parallelize_downsample(dst_w: usize, dst_h: usize) -> bool {
@@ -228,8 +228,8 @@ mod tests {
 
     #[test]
     fn downsample_parallel_gate_starts_at_medium_mips() {
-        assert!(!should_parallelize_downsample(127, 128));
-        assert!(should_parallelize_downsample(128, 128));
+        assert!(!should_parallelize_downsample(127, 64));
+        assert!(should_parallelize_downsample(128, 64));
     }
 
     #[test]

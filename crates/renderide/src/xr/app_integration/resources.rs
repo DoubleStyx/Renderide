@@ -16,10 +16,10 @@ pub(super) fn ensure_stereo_swapchain(bundle: &mut XrSessionBundle) -> bool {
     match res {
         Ok(sc) => {
             logger::info!(
-                "OpenXR swapchain {}x{} (stereo array) imported_images={}",
+                "OpenXR swapchain {}x{} (stereo array) runtime_images={}",
                 sc.resolution.0,
                 sc.resolution.1,
-                sc.wgpu_buffers.len(),
+                sc.image_count(),
             );
             bundle.stereo_swapchain = Some(sc);
             true

@@ -24,7 +24,7 @@ const TANGENT_EPSILON_SQUARED: f32 = 1.0e-20;
 ///
 /// Production meshes cluster around 1k-8k vertices, so a threshold of 2048 lets medium avatar and
 /// prop meshes use the worker pool while tiny meshes stay serial.
-const VERTEX_STREAM_PARALLEL_MIN: usize = 2_048;
+const VERTEX_STREAM_PARALLEL_MIN: usize = 1_024;
 
 /// CPU-side mesh source used to extract or generate tangent streams.
 #[derive(Copy, Clone)]

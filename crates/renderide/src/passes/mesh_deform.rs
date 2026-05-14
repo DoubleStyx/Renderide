@@ -6,7 +6,7 @@
 mod encode;
 mod snapshot;
 
-use std::fmt;
+use std::{fmt, ops::Range};
 
 use hashbrown::HashSet;
 use parking_lot::Mutex;
@@ -116,6 +116,21 @@ struct MeshDeformDispatchCtx<'a> {
     head_output_transform: glam::Mat4,
 }
 
+const DEFORM_COLLECT_PARALLEL_MIN_RENDERERS: usize = 256;
+const DEFORM_COLLECT_RENDERER_CHUNK_SIZE: usize = 64;
+
+#[derive(Clone, Copy)]
+enum DeformCollectChunkKind {
+    Static,
+    Skinned,
+}
+
+#[derive(Clone)]
+struct DeformCollectChunkSpec {
+    kind: DeformCollectChunkKind,
+    range: Range<usize>,
+}
+
 /// Collects deform work items for one render space (read-only scene + mesh pool).
 fn collect_deform_work_for_space(
     scene: &SceneCoordinator,
@@ -132,58 +147,78 @@ fn collect_deform_work_for_space(
         return;
     }
     for r in space.static_mesh_renderers() {
-        if r.mesh_asset_id < 0 {
-            continue;
-        }
-        let skin_cache_key =
-            SkinCacheKey::new(space_id, SkinCacheRendererKind::Static, r.instance_id);
-        if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
-            continue;
-        }
-        let Some(m) = mesh_pool.get(r.mesh_asset_id) else {
-            continue;
-        };
-        if !gpu_mesh_needs_deform_dispatch(m, None, &r.blend_shape_weights) {
-            continue;
-        }
-        work.push(DeformWorkItem {
-            space_id,
-            skin_cache_key,
-            mesh: MeshDeformSnapshot::from_mesh(m, false),
-            mesh_pool_generation: mesh_pool.mutation_generation(),
-            skinned: None,
-            smr_node_id: -1,
-            blend_weights: r.blend_shape_weights.clone(),
-        });
+        push_static_deform_work(scene, mesh_pool, visible_filter, space_id, r, work);
     }
     for skinned in space.skinned_mesh_renderers() {
-        let r = &skinned.base;
-        if r.mesh_asset_id < 0 {
-            continue;
-        }
-        let skin_cache_key =
-            SkinCacheKey::new(space_id, SkinCacheRendererKind::Skinned, r.instance_id);
-        if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
-            continue;
-        }
-        let Some(m) = mesh_pool.get(r.mesh_asset_id) else {
-            continue;
-        };
-        let bone_ix = skinned.bone_transform_indices.as_slice();
-        if !gpu_mesh_needs_deform_dispatch(m, Some(bone_ix), &r.blend_shape_weights) {
-            continue;
-        }
-        let clone_bind = deform_needs_skin_mesh(m, Some(bone_ix));
-        work.push(DeformWorkItem {
-            space_id,
-            skin_cache_key,
-            mesh: MeshDeformSnapshot::from_mesh(m, clone_bind),
-            mesh_pool_generation: mesh_pool.mutation_generation(),
-            skinned: Some(skinned.bone_transform_indices.clone()),
-            smr_node_id: r.node_id,
-            blend_weights: r.blend_shape_weights.clone(),
-        });
+        push_skinned_deform_work(scene, mesh_pool, visible_filter, space_id, skinned, work);
     }
+}
+
+fn push_static_deform_work(
+    _scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    visible_filter: Option<&HashSet<SkinCacheKey>>,
+    space_id: RenderSpaceId,
+    r: &crate::scene::StaticMeshRenderer,
+    work: &mut Vec<DeformWorkItem>,
+) {
+    if r.mesh_asset_id < 0 {
+        return;
+    }
+    let skin_cache_key = SkinCacheKey::new(space_id, SkinCacheRendererKind::Static, r.instance_id);
+    if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
+        return;
+    }
+    let Some(m) = mesh_pool.get(r.mesh_asset_id) else {
+        return;
+    };
+    if !gpu_mesh_needs_deform_dispatch(m, None, &r.blend_shape_weights) {
+        return;
+    }
+    work.push(DeformWorkItem {
+        space_id,
+        skin_cache_key,
+        mesh: MeshDeformSnapshot::from_mesh(m, false),
+        mesh_pool_generation: mesh_pool.mutation_generation(),
+        skinned: None,
+        smr_node_id: -1,
+        blend_weights: r.blend_shape_weights.clone(),
+    });
+}
+
+fn push_skinned_deform_work(
+    _scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    visible_filter: Option<&HashSet<SkinCacheKey>>,
+    space_id: RenderSpaceId,
+    skinned: &crate::scene::SkinnedMeshRenderer,
+    work: &mut Vec<DeformWorkItem>,
+) {
+    let r = &skinned.base;
+    if r.mesh_asset_id < 0 {
+        return;
+    }
+    let skin_cache_key = SkinCacheKey::new(space_id, SkinCacheRendererKind::Skinned, r.instance_id);
+    if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
+        return;
+    }
+    let Some(m) = mesh_pool.get(r.mesh_asset_id) else {
+        return;
+    };
+    let bone_ix = skinned.bone_transform_indices.as_slice();
+    if !gpu_mesh_needs_deform_dispatch(m, Some(bone_ix), &r.blend_shape_weights) {
+        return;
+    }
+    let clone_bind = deform_needs_skin_mesh(m, Some(bone_ix));
+    work.push(DeformWorkItem {
+        space_id,
+        skin_cache_key,
+        mesh: MeshDeformSnapshot::from_mesh(m, clone_bind),
+        mesh_pool_generation: mesh_pool.mutation_generation(),
+        skinned: Some(skinned.bone_transform_indices.clone()),
+        smr_node_id: r.node_id,
+        blend_weights: r.blend_shape_weights.clone(),
+    });
 }
 
 /// Upper bound on deform work items (static + skinned) across active spaces for scratch reservation.
@@ -200,6 +235,119 @@ fn deform_work_upper_bound(scene: &SceneCoordinator) -> usize {
         }
     }
     est
+}
+
+fn renderer_count_for_deform_space(scene: &SceneCoordinator, space_id: RenderSpaceId) -> usize {
+    scene.space(space_id).map_or(0, |space| {
+        if space.is_active() {
+            space
+                .static_mesh_renderers()
+                .len()
+                .saturating_add(space.skinned_mesh_renderers().len())
+        } else {
+            0
+        }
+    })
+}
+
+fn push_deform_collect_chunks(
+    specs: &mut Vec<DeformCollectChunkSpec>,
+    kind: DeformCollectChunkKind,
+    len: usize,
+) {
+    let mut start = 0usize;
+    while start < len {
+        let end = len.min(start + DEFORM_COLLECT_RENDERER_CHUNK_SIZE);
+        specs.push(DeformCollectChunkSpec {
+            kind,
+            range: start..end,
+        });
+        start = end;
+    }
+}
+
+fn collect_deform_work_for_chunk(
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    visible_filter: Option<&HashSet<SkinCacheKey>>,
+    space_id: RenderSpaceId,
+    spec: &DeformCollectChunkSpec,
+    work: &mut Vec<DeformWorkItem>,
+) {
+    work.clear();
+    let Some(space) = scene.space(space_id) else {
+        return;
+    };
+    if !space.is_active() {
+        return;
+    }
+    match spec.kind {
+        DeformCollectChunkKind::Static => {
+            for renderable_index in spec.range.clone() {
+                let r = &space.static_mesh_renderers()[renderable_index];
+                push_static_deform_work(scene, mesh_pool, visible_filter, space_id, r, work);
+            }
+        }
+        DeformCollectChunkKind::Skinned => {
+            for renderable_index in spec.range.clone() {
+                let skinned = &space.skinned_mesh_renderers()[renderable_index];
+                push_skinned_deform_work(scene, mesh_pool, visible_filter, space_id, skinned, work);
+            }
+        }
+    }
+}
+
+fn collect_deform_work_for_space_aggressive(
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    visible_filter: Option<&HashSet<SkinCacheKey>>,
+    space_id: RenderSpaceId,
+    chunks: &mut Vec<Vec<DeformWorkItem>>,
+    work: &mut Vec<DeformWorkItem>,
+) {
+    work.clear();
+    if renderer_count_for_deform_space(scene, space_id) < DEFORM_COLLECT_PARALLEL_MIN_RENDERERS {
+        collect_deform_work_for_space(scene, mesh_pool, visible_filter, space_id, work);
+        return;
+    }
+    let Some(space) = scene.space(space_id) else {
+        return;
+    };
+    if !space.is_active() {
+        return;
+    }
+
+    let mut specs = Vec::new();
+    push_deform_collect_chunks(
+        &mut specs,
+        DeformCollectChunkKind::Static,
+        space.static_mesh_renderers().len(),
+    );
+    push_deform_collect_chunks(
+        &mut specs,
+        DeformCollectChunkKind::Skinned,
+        space.skinned_mesh_renderers().len(),
+    );
+    if specs.len() < 2 {
+        collect_deform_work_for_space(scene, mesh_pool, visible_filter, space_id, work);
+        return;
+    }
+    if chunks.len() < specs.len() {
+        chunks.resize_with(specs.len(), Vec::new);
+    }
+    chunks
+        .par_iter_mut()
+        .take(specs.len())
+        .zip(specs.par_iter())
+        .for_each(|(chunk, spec)| {
+            profiling::scope!("mesh_deform::collect_work::renderer_chunk_worker");
+            collect_deform_work_for_chunk(scene, mesh_pool, visible_filter, space_id, spec, chunk);
+        });
+    let est = chunks.iter().take(specs.len()).map(Vec::len).sum::<usize>();
+    work.reserve(est);
+    for chunk in chunks.iter_mut().take(specs.len()) {
+        work.append(chunk);
+    }
 }
 
 /// Fills `scratch` with deform work collected in parallel across all render spaces.
@@ -231,13 +379,16 @@ fn collect_deform_work_into_scratch(
     match space_count {
         0 => {}
         1 => {
-            collect_deform_work_for_space(
+            let space_id = scratch.space_ids[0];
+            collect_deform_work_for_space_aggressive(
                 scene,
                 mesh_pool,
                 visible_filter,
-                scratch.space_ids[0],
-                &mut scratch.chunks[0],
+                space_id,
+                &mut scratch.chunks,
+                &mut scratch.work,
             );
+            return;
         }
         _ => {
             let space_ids = &scratch.space_ids;
@@ -247,6 +398,7 @@ fn collect_deform_work_into_scratch(
                 .copied()
                 .zip(chunks.par_iter_mut())
                 .for_each(|(space_id, chunk)| {
+                    profiling::scope!("mesh_deform::collect_work::space_worker");
                     collect_deform_work_for_space(
                         scene,
                         mesh_pool,
@@ -498,6 +650,8 @@ impl ComputePass for MeshDeformPass {
 
 #[cfg(test)]
 mod palette_tests {
+    use super::*;
+    use crate::scene::{MeshRendererInstanceId, SceneCoordinator, StaticMeshRenderer};
     use glam::{Mat3, Mat4, Vec3};
 
     #[test]
@@ -515,5 +669,65 @@ mod palette_tests {
         let m3 = Mat3::from_axis_angle(Vec3::Z, 1.15);
         let inv_t = m3.inverse().transpose();
         assert!(inv_t.abs_diff_eq(m3, 1e-5));
+    }
+
+    fn assert_deform_chunk(
+        spec: &DeformCollectChunkSpec,
+        kind: DeformCollectChunkKind,
+        range: Range<usize>,
+    ) {
+        match (spec.kind, kind) {
+            (DeformCollectChunkKind::Static, DeformCollectChunkKind::Static)
+            | (DeformCollectChunkKind::Skinned, DeformCollectChunkKind::Skinned) => {}
+            _ => panic!("unexpected deform collection chunk kind"),
+        }
+        assert_eq!(spec.range, range);
+    }
+
+    #[test]
+    fn deform_collect_chunks_preserve_static_then_skinned_order() {
+        let mut specs = Vec::new();
+        push_deform_collect_chunks(&mut specs, DeformCollectChunkKind::Static, 130);
+        push_deform_collect_chunks(&mut specs, DeformCollectChunkKind::Skinned, 70);
+
+        assert_eq!(specs.len(), 5);
+        assert_deform_chunk(&specs[0], DeformCollectChunkKind::Static, 0..64);
+        assert_deform_chunk(&specs[1], DeformCollectChunkKind::Static, 64..128);
+        assert_deform_chunk(&specs[2], DeformCollectChunkKind::Static, 128..130);
+        assert_deform_chunk(&specs[3], DeformCollectChunkKind::Skinned, 0..64);
+        assert_deform_chunk(&specs[4], DeformCollectChunkKind::Skinned, 64..70);
+    }
+
+    #[test]
+    fn aggressive_deform_collect_matches_serial_for_missing_meshes() {
+        let mut scene = SceneCoordinator::new();
+        let space_id = RenderSpaceId(1);
+        let renderers = (0..DEFORM_COLLECT_PARALLEL_MIN_RENDERERS + 9)
+            .map(|idx| StaticMeshRenderer {
+                instance_id: MeshRendererInstanceId(idx as u64 + 1),
+                mesh_asset_id: 7,
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        scene.test_insert_static_mesh_renderers(space_id, renderers);
+        scene.test_set_space_active(space_id, true);
+        let mesh_pool = MeshPool::default_pool();
+        let mut serial = Vec::new();
+        let mut aggressive = Vec::new();
+        let mut chunks = Vec::new();
+
+        collect_deform_work_for_space(&scene, &mesh_pool, None, space_id, &mut serial);
+        collect_deform_work_for_space_aggressive(
+            &scene,
+            &mesh_pool,
+            None,
+            space_id,
+            &mut chunks,
+            &mut aggressive,
+        );
+
+        assert!(serial.is_empty());
+        assert_eq!(aggressive.len(), serial.len());
+        assert!(chunks.len() >= 2);
     }
 }

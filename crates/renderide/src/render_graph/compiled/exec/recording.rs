@@ -96,7 +96,7 @@ impl CompiledRenderGraph {
             per_view_frame_bg_and_buf,
             view_idx,
         );
-        Self::seed_live_post_process_settings(&mut view_blackboard, shared);
+        Self::seed_live_post_process_settings(&mut view_blackboard, shared, resolved.view_id);
 
         {
             profiling::scope!("graph::per_view::pass_loop");
@@ -216,6 +216,7 @@ impl CompiledRenderGraph {
     fn seed_live_post_process_settings(
         blackboard: &mut Blackboard,
         shared: &PerViewRecordShared<'_>,
+        view_id: crate::camera::ViewId,
     ) {
         // Propagate the live GTAO settings so the GTAO chain (`GtaoMainPass` / `GtaoDenoisePass`
         // / `GtaoApplyPass`) reads the current slider values every frame without rebuilding the
@@ -226,10 +227,11 @@ impl CompiledRenderGraph {
         // params UBO and the upsamples use it to compute per-mip blend constants + pick
         // EnergyConserving vs Additive pipeline variants, so slider edits propagate next frame.
         blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(shared.live_bloom_settings));
-        blackboard.insert::<AutoExposureSettingsSlot>(AutoExposureSettingsValue {
-            settings: shared.live_auto_exposure_settings,
-            delta_seconds: shared.wall_frame_delta_seconds,
-        });
+        blackboard.insert::<AutoExposureSettingsSlot>(AutoExposureSettingsValue::for_view(
+            shared.live_auto_exposure_settings,
+            shared.wall_frame_delta_seconds,
+            view_id,
+        ));
     }
 
     /// Encodes [`super::super::super::pass::PassPhase::FrameGlobal`] passes into a command buffer.

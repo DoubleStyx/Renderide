@@ -1,9 +1,16 @@
-//! Vertex-stream queries derived from `vs_main` reflection on a composed embedded WGSL stem.
+//! Vertex-stream queries derived from pass vertex-entry reflection on a composed embedded WGSL stem.
 
 use crate::materials::ShaderPermutation;
 use crate::materials::{ReflectedRasterLayout, ReflectedVertexInputFormat};
 
 use super::EmbeddedStemQuery;
+
+/// Mesh-forward UV channel count exposed to material vertex shaders.
+pub const EMBEDDED_UV_STREAM_COUNT: usize = 8;
+
+/// Shader input locations for UV0 through UV7.
+pub const EMBEDDED_UV_SHADER_LOCATIONS: [u32; EMBEDDED_UV_STREAM_COUNT] =
+    [2, 5, 6, 7, 8, 9, 10, 11];
 
 /// Exact vertex streams declared by one composed embedded material vertex shader.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -20,12 +27,14 @@ pub struct EmbeddedVertexStreamMask {
     pub uv2: bool,
     /// UV3 stream at `@location(7)`.
     pub uv3: bool,
+    /// Packed UV0-UV7 stream for UV4-UV7 or 3D/4D UV inputs.
+    pub wide_uvs: bool,
 }
 
 impl EmbeddedVertexStreamMask {
     /// `true` when any stream outside UV0/color/UV1 is needed.
     pub fn needs_extended_vertex_streams(self) -> bool {
-        self.tangent || self.uv2 || self.uv3
+        self.tangent || self.uv2 || self.uv3 || self.wide_uvs
     }
 }
 
@@ -45,43 +54,86 @@ pub(super) fn derive_vertex_stream_mask(
             (5, ReflectedVertexInputFormat::Float32x2) => mask.uv1 = true,
             (6, ReflectedVertexInputFormat::Float32x2) => mask.uv2 = true,
             (7, ReflectedVertexInputFormat::Float32x2) => mask.uv3 = true,
+            (location, format) if uv_channel_from_location(location).is_some() => {
+                apply_uv_requirement(&mut mask, location, format);
+            }
             _ => {}
         }
     }
     mask
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(2)` as a UV0 vertex stream.
+fn apply_uv_requirement(
+    mask: &mut EmbeddedVertexStreamMask,
+    location: u32,
+    format: ReflectedVertexInputFormat,
+) {
+    let Some(channel) = uv_channel_from_location(location) else {
+        return;
+    };
+    let supported = matches!(
+        format,
+        ReflectedVertexInputFormat::Float32x2
+            | ReflectedVertexInputFormat::Float32x3
+            | ReflectedVertexInputFormat::Float32x4
+    );
+    if !supported {
+        return;
+    }
+    match channel {
+        0 => mask.uv0 = true,
+        1 => mask.uv1 = true,
+        2 => mask.uv2 = true,
+        3 => mask.uv3 = true,
+        _ => {}
+    }
+    if channel >= 4 || format != ReflectedVertexInputFormat::Float32x2 {
+        mask.wide_uvs = true;
+    }
+}
+
+fn uv_channel_from_location(location: u32) -> Option<usize> {
+    EMBEDDED_UV_SHADER_LOCATIONS
+        .iter()
+        .position(|candidate| *candidate == location)
+}
+
+/// `true` when composed embedded WGSL's reflected pass vertex entries use UV0.
 pub fn embedded_stem_needs_uv0_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv0_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(3)` as vertex color.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use vertex color.
 pub fn embedded_stem_needs_color_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_color_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(4)` as tangent.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use tangent.
 pub fn embedded_stem_needs_tangent_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_tangent_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(5)` as UV1.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use UV1.
 pub fn embedded_stem_needs_uv1_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv1_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(6)` as UV2.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use UV2.
 pub fn embedded_stem_needs_uv2_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv2_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses `@location(7)` as UV3.
+/// `true` when composed embedded WGSL's reflected pass vertex entries use UV3.
 pub fn embedded_stem_needs_uv3_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv3_stream()
 }
 
-/// `true` when composed embedded WGSL's `vs_main` uses tangent/UV2/UV3.
+/// `true` when composed embedded WGSL's reflected pass vertex entries need the packed UV0-UV7 stream.
+pub fn embedded_stem_needs_wide_uv_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
+    EmbeddedStemQuery::for_stem(base_stem, permutation).needs_wide_uv_stream()
+}
+
+/// `true` when composed embedded WGSL's reflected pass vertex entries use tangent/UV2/UV3 or wide UVs.
 pub fn embedded_stem_needs_extended_vertex_streams(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -119,14 +171,34 @@ fn canonical_stem_name(base_stem: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use hashbrown::HashMap;
+
     use crate::materials::SHADER_PERM_MULTIVIEW_STEREO;
-    use crate::materials::ShaderPermutation;
+    use crate::materials::{
+        ReflectedRasterLayout, ReflectedVertexInput, ReflectedVertexInputFormat, ShaderPermutation,
+    };
 
     use super::{
-        embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_uv0_stream,
+        derive_vertex_stream_mask, embedded_stem_needs_extended_vertex_streams,
+        embedded_stem_needs_tangent_stream, embedded_stem_needs_uv0_stream,
         embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
         embedded_stem_uses_ui_transparent_fallback,
     };
+
+    fn reflected_with_inputs(inputs: Vec<ReflectedVertexInput>) -> ReflectedRasterLayout {
+        ReflectedRasterLayout {
+            layout_fingerprint: 0,
+            material_entries: Vec::new(),
+            per_draw_entries: Vec::new(),
+            material_uniform: None,
+            material_group1_names: HashMap::new(),
+            vs_vertex_inputs: inputs,
+            vs_max_vertex_location: None,
+            uses_scene_depth_snapshot: false,
+            uses_scene_color_snapshot: false,
+            requires_intersection_pass: false,
+        }
+    }
 
     #[test]
     fn null_no_uv0_stream() {
@@ -172,6 +244,69 @@ mod tests {
             "ui_textunlit_default",
             SHADER_PERM_MULTIVIEW_STEREO,
         ));
+    }
+
+    #[test]
+    fn furfx_pass_vertex_entries_need_uv0_stream() {
+        assert!(embedded_stem_needs_uv0_stream(
+            "furfx-basic-10layer_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_uv0_stream(
+            "furfx-basic-10layer_default",
+            SHADER_PERM_MULTIVIEW_STEREO,
+        ));
+    }
+
+    #[test]
+    fn furfx_modern_pass_vertex_entries_need_tangent_stream() {
+        assert!(embedded_stem_needs_tangent_stream(
+            "furfx-3.0-shell-10layer_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_extended_vertex_streams(
+            "furfx-3.0-shell-10layer_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_tangent_stream(
+            "furfx-3.0-shell-10layer_default",
+            SHADER_PERM_MULTIVIEW_STEREO,
+        ));
+        assert!(embedded_stem_needs_extended_vertex_streams(
+            "furfx-3.0-shell-10layer_default",
+            SHADER_PERM_MULTIVIEW_STEREO,
+        ));
+    }
+
+    #[test]
+    fn reflected_vec4_uv0_requests_compact_uv0_and_wide_uvs() {
+        let reflected = reflected_with_inputs(vec![ReflectedVertexInput {
+            location: 2,
+            format: ReflectedVertexInputFormat::Float32x4,
+        }]);
+
+        let mask = derive_vertex_stream_mask(Some(&reflected));
+
+        assert!(mask.uv0);
+        assert!(mask.wide_uvs);
+        assert!(mask.needs_extended_vertex_streams());
+    }
+
+    #[test]
+    fn reflected_uv7_requests_wide_uvs_without_compact_uv_alias() {
+        let reflected = reflected_with_inputs(vec![ReflectedVertexInput {
+            location: 11,
+            format: ReflectedVertexInputFormat::Float32x2,
+        }]);
+
+        let mask = derive_vertex_stream_mask(Some(&reflected));
+
+        assert!(!mask.uv0);
+        assert!(!mask.uv1);
+        assert!(!mask.uv2);
+        assert!(!mask.uv3);
+        assert!(mask.wide_uvs);
+        assert!(mask.needs_extended_vertex_streams());
     }
 
     #[test]

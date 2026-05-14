@@ -22,10 +22,11 @@ use crate::shared::{
 use glam::Mat4;
 
 use super::layout::{
-    BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout, color_float4_stream_bytes,
-    compute_vertex_stride, extract_bind_poses, extract_blendshape_offsets,
-    extract_float3_position_normal_as_vec4_streams, split_bone_weights_tail_for_gpu,
-    uv0_float2_stream_bytes, vertex_float2_stream_bytes,
+    BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout, UV_VERTEX_ATTRIBUTE_TYPES,
+    color_float4_stream_bytes, compute_vertex_stride, extract_bind_poses,
+    extract_blendshape_offsets, extract_float3_position_normal_as_vec4_streams,
+    split_bone_weights_tail_for_gpu, uv0_float2_stream_bytes, vertex_float2_stream_bytes,
+    wide_uv_stream_bytes,
 };
 use tangent_generation::{
     TangentStreamSource, raw_tangent_payload_stream_bytes, tangent_stream_bytes,
@@ -54,6 +55,8 @@ pub(super) struct ExtendedVertexStreamSource {
     index_format: IndexBufferFormat,
     submeshes: Arc<[SubmeshBufferDescriptor]>,
     can_generate_missing_tangents: bool,
+    has_compact_extended_payload: bool,
+    has_wide_uv_payload: bool,
 }
 
 impl fmt::Debug for ExtendedVertexStreamSource {
@@ -68,6 +71,11 @@ impl fmt::Debug for ExtendedVertexStreamSource {
                 "can_generate_missing_tangents",
                 &self.can_generate_missing_tangents,
             )
+            .field(
+                "has_compact_extended_payload",
+                &self.has_compact_extended_payload,
+            )
+            .field("has_wide_uv_payload", &self.has_wide_uv_payload)
             .finish()
     }
 }
@@ -147,6 +155,8 @@ pub struct GpuMesh {
     pub uv2_buffer: Option<Arc<wgpu::Buffer>>,
     /// `vec2<f32>` UV3 stream for shaders using extended vertex inputs.
     pub uv3_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Packed UV0-UV7 stream for shaders using UV4-UV7 or 3D/4D UV inputs.
+    pub wide_uv_buffer: Option<Arc<wgpu::Buffer>>,
     /// CPU vertex source kept only until lazy extended streams are created.
     extended_vertex_stream_source: Option<ExtendedVertexStreamSource>,
     /// True when the host uploaded a real skeleton (`bone_count > 0`).
@@ -281,6 +291,10 @@ pub(super) struct MeshInPlaceWriteContext<'a> {
 }
 
 fn has_extended_vertex_attribute(attrs: &[VertexAttributeDescriptor]) -> bool {
+    has_compact_extended_payload(attrs) || has_wide_uv_payload(attrs)
+}
+
+fn has_compact_extended_payload(attrs: &[VertexAttributeDescriptor]) -> bool {
     attrs.iter().any(|a| {
         matches!(
             a.attribute,
@@ -289,6 +303,26 @@ fn has_extended_vertex_attribute(attrs: &[VertexAttributeDescriptor]) -> bool {
                 | VertexAttributeType::UV2
                 | VertexAttributeType::UV3
         )
+    })
+}
+
+fn is_wide_uv_attribute(attr: VertexAttributeDescriptor) -> bool {
+    UV_VERTEX_ATTRIBUTE_TYPES
+        .iter()
+        .any(|uv| (attr.attribute as i16) == (*uv as i16))
+        && attr.dimensions > 2
+}
+
+fn has_wide_uv_payload(attrs: &[VertexAttributeDescriptor]) -> bool {
+    attrs.iter().any(|attr| {
+        is_wide_uv_attribute(*attr)
+            || matches!(
+                attr.attribute,
+                VertexAttributeType::UV4
+                    | VertexAttributeType::UV5
+                    | VertexAttributeType::UV6
+                    | VertexAttributeType::UV7
+            )
     })
 }
 
@@ -319,6 +353,9 @@ pub(super) fn extended_vertex_stream_source_from_raw(
     layout: &MeshBufferLayout,
 ) -> Option<ExtendedVertexStreamSource> {
     let can_generate_missing_tangents = can_generate_missing_tangents(data, layout);
+    let has_compact_extended_payload =
+        has_compact_extended_payload(&data.vertex_attributes) || can_generate_missing_tangents;
+    let has_wide_uv_payload = has_wide_uv_payload(&data.vertex_attributes);
     if !has_extended_vertex_attribute(&data.vertex_attributes) && !can_generate_missing_tangents {
         return None;
     }
@@ -334,6 +371,8 @@ pub(super) fn extended_vertex_stream_source_from_raw(
         index_format: data.index_buffer_format,
         submeshes: Arc::from(data.submeshes.clone()),
         can_generate_missing_tangents,
+        has_compact_extended_payload,
+        has_wide_uv_payload,
     })
 }
 
@@ -344,6 +383,7 @@ pub(super) fn extended_vertex_stream_bytes(mesh: &GpuMesh) -> u64 {
         mesh.uv1_buffer.as_ref(),
         mesh.uv2_buffer.as_ref(),
         mesh.uv3_buffer.as_ref(),
+        mesh.wide_uv_buffer.as_ref(),
     ]
     .into_iter()
     .flatten()
@@ -374,53 +414,10 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
         return;
     }
     if write_vertex {
-        {
-            profiling::scope!("asset::mesh_write_in_place::write_position_normal_streams");
-            if let (Some(pb), Some(nb), Some((pvec, nvec))) = (
-                ctx.mesh.positions_buffer.as_ref(),
-                ctx.mesh.normals_buffer.as_ref(),
-                extract_float3_position_normal_as_vec4_streams(
-                    vertex_slice,
-                    ctx.vertex_count,
-                    ctx.vertex_stride,
-                    &ctx.data.vertex_attributes,
-                )
-                .as_ref(),
-            ) {
-                write_mesh_queue_buffer(ctx.queue, pb.as_ref(), 0, pvec);
-                write_mesh_queue_buffer(ctx.queue, nb.as_ref(), 0, nvec);
-            }
-        }
-
-        {
-            profiling::scope!("asset::mesh_write_in_place::write_uv0_stream");
-            if let (Some(uvb), Some(uv)) = (
-                ctx.mesh.uv0_buffer.as_ref(),
-                uv0_float2_stream_bytes(
-                    vertex_slice,
-                    ctx.vertex_count,
-                    ctx.vertex_stride,
-                    &ctx.data.vertex_attributes,
-                ),
-            ) {
-                write_mesh_queue_buffer(ctx.queue, uvb.as_ref(), 0, &uv);
-            }
-        }
-
-        {
-            profiling::scope!("asset::mesh_write_in_place::write_color_stream");
-            if let (Some(cb), Some(c)) = (
-                ctx.mesh.color_buffer.as_ref(),
-                color_float4_stream_bytes(
-                    vertex_slice,
-                    ctx.vertex_count,
-                    ctx.vertex_stride,
-                    &ctx.data.vertex_attributes,
-                ),
-            ) {
-                write_mesh_queue_buffer(ctx.queue, cb.as_ref(), 0, &c);
-            }
-        }
+        write_in_place_position_normal_streams(ctx, vertex_slice);
+        write_in_place_uv0_stream(ctx, vertex_slice);
+        write_in_place_color_stream(ctx, vertex_slice);
+        write_in_place_wide_uv_stream(ctx, vertex_slice);
     }
 
     {
@@ -454,6 +451,69 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
     }
 
     write_in_place_uv1_to_uv3_streams(ctx, vertex_slice);
+}
+
+fn write_in_place_position_normal_streams(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
+    profiling::scope!("asset::mesh_write_in_place::write_position_normal_streams");
+    if let (Some(pb), Some(nb), Some((pvec, nvec))) = (
+        ctx.mesh.positions_buffer.as_ref(),
+        ctx.mesh.normals_buffer.as_ref(),
+        extract_float3_position_normal_as_vec4_streams(
+            vertex_slice,
+            ctx.vertex_count,
+            ctx.vertex_stride,
+            &ctx.data.vertex_attributes,
+        )
+        .as_ref(),
+    ) {
+        write_mesh_queue_buffer(ctx.queue, pb.as_ref(), 0, pvec);
+        write_mesh_queue_buffer(ctx.queue, nb.as_ref(), 0, nvec);
+    }
+}
+
+fn write_in_place_uv0_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
+    profiling::scope!("asset::mesh_write_in_place::write_uv0_stream");
+    if let (Some(uvb), Some(uv)) = (
+        ctx.mesh.uv0_buffer.as_ref(),
+        uv0_float2_stream_bytes(
+            vertex_slice,
+            ctx.vertex_count,
+            ctx.vertex_stride,
+            &ctx.data.vertex_attributes,
+        ),
+    ) {
+        write_mesh_queue_buffer(ctx.queue, uvb.as_ref(), 0, &uv);
+    }
+}
+
+fn write_in_place_color_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
+    profiling::scope!("asset::mesh_write_in_place::write_color_stream");
+    if let (Some(cb), Some(c)) = (
+        ctx.mesh.color_buffer.as_ref(),
+        color_float4_stream_bytes(
+            vertex_slice,
+            ctx.vertex_count,
+            ctx.vertex_stride,
+            &ctx.data.vertex_attributes,
+        ),
+    ) {
+        write_mesh_queue_buffer(ctx.queue, cb.as_ref(), 0, &c);
+    }
+}
+
+fn write_in_place_wide_uv_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
+    profiling::scope!("asset::mesh_write_in_place::write_wide_uv_stream");
+    if let (Some(uvb), Some(uv)) = (
+        ctx.mesh.wide_uv_buffer.as_ref(),
+        wide_uv_stream_bytes(
+            vertex_slice,
+            ctx.vertex_count,
+            ctx.vertex_stride,
+            &ctx.data.vertex_attributes,
+        ),
+    ) {
+        write_mesh_queue_buffer(ctx.queue, uvb.as_ref(), 0, &uv);
+    }
 }
 
 fn write_in_place_uv1_to_uv3_streams(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
@@ -647,6 +707,7 @@ impl GpuMesh {
             uv1_buffer: None,
             uv2_buffer: None,
             uv3_buffer: None,
+            wide_uv_buffer: None,
             extended_vertex_stream_source: None,
             has_skeleton: false,
             skinning_bind_matrices: Vec::new(),
@@ -740,10 +801,73 @@ impl GpuMesh {
             uv1_buffer: derived.uv1_buffer,
             uv2_buffer: derived.uv2_buffer,
             uv3_buffer: derived.uv3_buffer,
+            wide_uv_buffer: derived.wide_uv_buffer,
             extended_vertex_stream_source,
             has_skeleton: data.bone_count > 0,
             skinning_bind_matrices: bone_skin.skinning_bind_matrices,
             resident_bytes,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::layout::{compute_mesh_buffer_layout, index_bytes_per_element};
+    use super::*;
+    use crate::shared::VertexAttributeFormat;
+
+    fn uv_attr(attribute: VertexAttributeType, dimensions: i32) -> VertexAttributeDescriptor {
+        VertexAttributeDescriptor {
+            attribute,
+            format: VertexAttributeFormat::Float32,
+            dimensions,
+        }
+    }
+
+    fn source_for_attrs(
+        attrs: Vec<VertexAttributeDescriptor>,
+    ) -> Option<ExtendedVertexStreamSource> {
+        let layout = compute_mesh_buffer_layout(
+            compute_vertex_stride(&attrs),
+            1,
+            0,
+            index_bytes_per_element(IndexBufferFormat::UInt16),
+            0,
+            0,
+            None,
+        )
+        .expect("layout");
+        let raw = vec![0u8; layout.total_buffer_length];
+        let data = MeshUploadData {
+            vertex_count: 1,
+            index_buffer_format: IndexBufferFormat::UInt16,
+            vertex_attributes: attrs,
+            ..Default::default()
+        };
+
+        extended_vertex_stream_source_from_raw(&raw, &data, &layout)
+    }
+
+    #[test]
+    fn extended_source_captures_uv7_for_lazy_wide_uv_upload() {
+        let source =
+            source_for_attrs(vec![uv_attr(VertexAttributeType::UV7, 2)]).expect("wide uv source");
+
+        assert!(!source.has_compact_extended_payload);
+        assert!(source.has_wide_uv_payload);
+    }
+
+    #[test]
+    fn extended_source_captures_vec4_uv0_for_lazy_wide_uv_upload() {
+        let source =
+            source_for_attrs(vec![uv_attr(VertexAttributeType::UV0, 4)]).expect("wide uv source");
+
+        assert!(!source.has_compact_extended_payload);
+        assert!(source.has_wide_uv_payload);
+    }
+
+    #[test]
+    fn extended_source_ignores_plain_vec2_uv0() {
+        assert!(source_for_attrs(vec![uv_attr(VertexAttributeType::UV0, 2)]).is_none());
     }
 }

@@ -147,9 +147,10 @@ impl PaddedPerDrawUniforms {
 
 /// Slot count above which slab writes fan out to a rayon worker pool.
 ///
-/// Each slot is a 256-byte copy. At 512 slots the slab is already 128 KiB, large enough for
+/// Each slot is a 256-byte copy. At 256 slots the slab is already 64 KiB, large enough for
 /// memory-bandwidth fan-out to pay off on typical desktop CPUs.
-const PER_DRAW_SLAB_PARALLEL_MIN: usize = 512;
+const PER_DRAW_SLAB_PARALLEL_MIN: usize = 256;
+const PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS: usize = 64;
 
 /// Writes `count` consecutive [`PaddedPerDrawUniforms`] into `out` (must be `count * 256` bytes).
 ///
@@ -165,10 +166,16 @@ pub fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u
     profiling::scope!("mesh_deform::write_per_draw_uniform_slab");
     let dst = &mut out[..need];
     if slots.len() >= PER_DRAW_SLAB_PARALLEL_MIN {
-        dst.par_chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE)
-            .zip(slots.par_iter())
-            .for_each(|(slab, slot)| {
-                slab.copy_from_slice(bytemuck::bytes_of(slot));
+        dst.par_chunks_mut(PER_DRAW_UNIFORM_STRIDE * PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS)
+            .zip(slots.par_chunks(PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS))
+            .for_each(|(slabs, slots)| {
+                profiling::scope!("mesh_deform::write_per_draw_uniform_slab::worker");
+                for (slab, slot) in slabs
+                    .chunks_exact_mut(PER_DRAW_UNIFORM_STRIDE)
+                    .zip(slots.iter())
+                {
+                    slab.copy_from_slice(bytemuck::bytes_of(slot));
+                }
             });
     } else {
         for (slab, slot) in dst

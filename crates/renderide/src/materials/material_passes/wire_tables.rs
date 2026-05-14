@@ -45,6 +45,29 @@ pub(crate) fn froox_ztest_depth_compare_function(value: u8) -> Option<wgpu::Comp
     }
 }
 
+/// Maps a Unity `CompareFunction` `_ZTest` value to the reverse-Z equivalent
+/// `wgpu::CompareFunction`.
+///
+/// Unity shader properties that use `[Enum(UnityEngine.Rendering.CompareFunction)]` carry the
+/// engine enum layout: `Disabled=0, Never=1, Less=2, Equal=3, LessEqual=4, Greater=5,
+/// NotEqual=6, GreaterEqual=7, Always=8`. Depth comparisons invert under reverse-Z, while exact
+/// equality and always/never outcomes keep their meaning. `Disabled` is treated as `Always`
+/// because the renderer keeps a depth attachment bound for material passes.
+pub(crate) fn unity_ztest_depth_compare_function(value: u8) -> Option<wgpu::CompareFunction> {
+    match value {
+        0 => Some(wgpu::CompareFunction::Always),
+        1 => Some(wgpu::CompareFunction::Never),
+        2 => Some(wgpu::CompareFunction::Greater),
+        3 => Some(wgpu::CompareFunction::Equal),
+        4 => Some(wgpu::CompareFunction::GreaterEqual),
+        5 => Some(wgpu::CompareFunction::Less),
+        6 => Some(wgpu::CompareFunction::NotEqual),
+        7 => Some(wgpu::CompareFunction::LessEqual),
+        8 => Some(wgpu::CompareFunction::Always),
+        _ => None,
+    }
+}
+
 /// Maps a Unity `StencilOp` enum value to `wgpu::StencilOperation`.
 pub(crate) fn unity_stencil_operation(value: u8) -> wgpu::StencilOperation {
     match value {
@@ -203,6 +226,47 @@ mod tests {
         // Values outside the FrooxEngine `ZTest` enum fall back to the shader pass default.
         assert_eq!(froox_ztest_depth_compare_function(7), None);
         assert_eq!(froox_ztest_depth_compare_function(99), None);
+    }
+
+    #[test]
+    fn unity_ztest_depth_compare_inverts_for_reverse_z() {
+        assert_eq!(
+            unity_ztest_depth_compare_function(0),
+            Some(wgpu::CompareFunction::Always)
+        );
+        assert_eq!(
+            unity_ztest_depth_compare_function(1),
+            Some(wgpu::CompareFunction::Never)
+        );
+        assert_eq!(
+            unity_ztest_depth_compare_function(2),
+            Some(wgpu::CompareFunction::Greater)
+        );
+        assert_eq!(
+            unity_ztest_depth_compare_function(3),
+            Some(wgpu::CompareFunction::Equal)
+        );
+        assert_eq!(
+            unity_ztest_depth_compare_function(4),
+            Some(wgpu::CompareFunction::GreaterEqual)
+        );
+        assert_eq!(
+            unity_ztest_depth_compare_function(5),
+            Some(wgpu::CompareFunction::Less)
+        );
+        assert_eq!(
+            unity_ztest_depth_compare_function(6),
+            Some(wgpu::CompareFunction::NotEqual)
+        );
+        assert_eq!(
+            unity_ztest_depth_compare_function(7),
+            Some(wgpu::CompareFunction::LessEqual)
+        );
+        assert_eq!(
+            unity_ztest_depth_compare_function(8),
+            Some(wgpu::CompareFunction::Always)
+        );
+        assert_eq!(unity_ztest_depth_compare_function(99), None);
     }
 
     #[test]

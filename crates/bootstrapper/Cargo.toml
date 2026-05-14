@@ -8,7 +8,7 @@ description = "ResoBoot-aligned process bootstrap: spawns Renderite Host, IPC qu
 path = "src/lib.rs"
 
 [[bin]]
-name = "bootstrapper"
+name = "renderide"
 path = "src/main.rs"
 
 [dependencies]

@@ -38,7 +38,7 @@ pub const DEFAULT_INTERVAL_MS: u64 = 500;
 /// Inputs that vary between local development and CI but do not change per case.
 #[derive(Clone, Debug)]
 pub struct RunnerConfig {
-    /// Path to the `renderide` binary to spawn.
+    /// Path to the `renderide-renderer` binary to spawn.
     pub renderer_path: std::path::PathBuf,
     /// Per-case overall timeout. Defaults to [`DEFAULT_CASE_TIMEOUT`].
     pub timeout: Duration,
@@ -63,7 +63,7 @@ impl RunnerConfig {
     }
 
     /// Builds a config suitable for `#[test]` shims under `cargo test`. The renderer binary
-    /// is discovered next to the test binary in `target/<profile>/renderide`. Returns `None`
+    /// is discovered next to the test binary in `target/<profile>/renderide-renderer`. Returns `None`
     /// when invoked from a context that is not a cargo-built test binary, or when the
     /// renderer hasn't been built.
     pub fn for_cargo_test() -> Option<Self> {
@@ -72,14 +72,14 @@ impl RunnerConfig {
     }
 }
 
-/// Locates `target/<profile>/renderide(.exe)` next to the running test binary.
+/// Locates `target/<profile>/renderide-renderer(.exe)` next to the running test binary.
 pub fn renderer_next_to_current_exe() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let profile_dir = exe.parent()?;
     let renderer_name = if cfg!(windows) {
-        "renderide.exe"
+        "renderide-renderer.exe"
     } else {
-        "renderide"
+        "renderide-renderer"
     };
     let candidate = profile_dir.join(renderer_name);
     if candidate.is_file() {

@@ -6,7 +6,7 @@
 //! mapping from declared kind to pipeline state, and [`MaterialRenderStatePolicy`] decides
 //! which host runtime properties may override that state per pass.
 
-use super::super::render_state::MaterialRenderState;
+use super::super::render_state::{MaterialDepthCompareDomain, MaterialRenderState};
 use super::blend_mode::MaterialBlendMode;
 use super::wire_tables::{unity_blend_state, unity_filter_blend_state, unity_overlay_blend_state};
 
@@ -215,6 +215,8 @@ pub enum PassKind {
     ForwardTwoSided,
     /// Fixed straight-alpha forward pass: `Blend SrcAlpha OneMinusSrcAlpha`, `ZWrite Off`.
     ForwardAlphaBlend,
+    /// Fixed straight-alpha forward pass: `Blend SrcAlpha OneMinusSrcAlpha`, `ZWrite On`.
+    ForwardAlphaBlendZWrite,
     /// Fixed premultiplied-alpha forward pass: `Blend One OneMinusSrcAlpha`, `ZWrite Off`.
     ForwardPremultipliedTransparent,
     /// Transparent forward pass with Unity `alpha` defaults and material-driven overrides.
@@ -269,6 +271,12 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
             SRC_ALPHA_ONE_MINUS_SRC_ALPHA_BLEND,
             MaterialRenderStatePolicy::FIXED_TRANSPARENT,
         ),
+        PassKind::ForwardAlphaBlendZWrite => MaterialPassDesc {
+            blend: Some(SRC_ALPHA_ONE_MINUS_SRC_ALPHA_BLEND),
+            write_mask: wgpu::ColorWrites::ALL,
+            render_state_policy: MaterialRenderStatePolicy::FIXED_TRANSPARENT,
+            ..base
+        },
         PassKind::ForwardPremultipliedTransparent => fixed_transparent_pass(
             base,
             ONE_ONE_MINUS_SRC_ALPHA_BLEND,
@@ -341,6 +349,7 @@ const fn base_pass_desc(kind: PassKind, fragment_entry: &'static str) -> Materia
         vertex_entry: "vs_main",
         fragment_entry,
         depth_compare: crate::gpu::MAIN_FORWARD_DEPTH_COMPARE,
+        depth_compare_domain: MaterialDepthCompareDomain::FrooxZTest,
         depth_write: true,
         cull_mode: Some(wgpu::Face::Back),
         blend: None,
@@ -404,6 +413,7 @@ const fn pass_kind_label(kind: PassKind) -> &'static str {
         PassKind::ForwardFilter => "forward_filter",
         PassKind::ForwardTwoSided => "forward_two_sided",
         PassKind::ForwardAlphaBlend => "forward_alpha_blend",
+        PassKind::ForwardAlphaBlendZWrite => "forward_alpha_blend_zwrite",
         PassKind::ForwardPremultipliedTransparent => "forward_premultiplied_transparent",
         PassKind::ForwardTransparent => "forward_transparent",
         PassKind::ForwardTransparentCullFront => "forward_transparent_cull_front",
@@ -431,6 +441,8 @@ pub struct MaterialPassDesc {
     pub fragment_entry: &'static str,
     /// Depth comparison under reverse-Z. Unity `LEqual` maps to `GreaterEqual`; Unity `Greater` maps to `Less`.
     pub depth_compare: wgpu::CompareFunction,
+    /// Enum layout used when `_ZTest` overrides [`Self::depth_compare`].
+    pub depth_compare_domain: MaterialDepthCompareDomain,
     /// Whether this pass writes to the depth buffer.
     pub depth_write: bool,
     /// Backface culling mode (`None` = disabled).
@@ -479,7 +491,7 @@ impl MaterialPassDesc {
         render_state: MaterialRenderState,
     ) -> wgpu::CompareFunction {
         if self.render_state_policy.depth_compare {
-            render_state.depth_compare(self.depth_compare)
+            render_state.depth_compare_for_domain(self.depth_compare, self.depth_compare_domain)
         } else {
             self.depth_compare
         }
@@ -557,6 +569,7 @@ pub const fn default_pass(params: DefaultPassParams) -> MaterialPassDesc {
         vertex_entry: "vs_main",
         fragment_entry: "fs_main",
         depth_compare: crate::gpu::MAIN_FORWARD_DEPTH_COMPARE,
+        depth_compare_domain: MaterialDepthCompareDomain::FrooxZTest,
         depth_write: params.depth_write,
         cull_mode,
         blend,

@@ -42,6 +42,11 @@ impl GpuMesh {
         self.uv3_buffer.is_some()
     }
 
+    /// `true` when this mesh has the packed UV0-UV7 stream required by wide UV shaders.
+    pub fn wide_uv_vertex_stream_ready(&self) -> bool {
+        self.wide_uv_buffer.is_some()
+    }
+
     /// Returns whether this mesh has every GPU stream needed to produce world-space skinned output.
     pub fn supports_world_space_skin_deform(&self, bone_transform_indices: Option<&[i32]>) -> bool {
         bone_transform_indices.is_some()

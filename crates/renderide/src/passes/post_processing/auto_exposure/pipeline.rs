@@ -42,7 +42,7 @@ pub(super) struct AutoExposureParamsGpu {
     target_ev: f32,
     delta_time_seconds: f32,
     layer_count: u32,
-    _pad: u32,
+    instant_adaptation: u32,
 }
 
 impl AutoExposureParamsGpu {
@@ -50,6 +50,7 @@ impl AutoExposureParamsGpu {
         settings: AutoExposureSettings,
         delta_seconds: f32,
         layer_count: u32,
+        instant_adaptation: bool,
     ) -> Self {
         let (min_log_lum, max_log_lum) = settings.resolved_ev_range();
         let log_lum_range = max_log_lum - min_log_lum;
@@ -66,7 +67,7 @@ impl AutoExposureParamsGpu {
             target_ev: settings.resolved_target_ev(),
             delta_time_seconds: delta_seconds.max(0.0),
             layer_count: layer_count.max(1),
-            _pad: 0,
+            instant_adaptation: u32::from(instant_adaptation),
         }
     }
 }
@@ -424,7 +425,7 @@ mod tests {
     #[test]
     fn default_auto_exposure_params_target_middle_gray() {
         let params =
-            AutoExposureParamsGpu::from_settings(AutoExposureSettings::default(), 0.016, 1);
+            AutoExposureParamsGpu::from_settings(AutoExposureSettings::default(), 0.016, 1, false);
 
         assert!((params.target_ev - AutoExposureSettings::MIDDLE_GRAY_EV).abs() < 1e-6);
     }
@@ -432,7 +433,7 @@ mod tests {
     #[test]
     fn stereo_auto_exposure_params_meter_two_layers_into_shared_state() {
         let params =
-            AutoExposureParamsGpu::from_settings(AutoExposureSettings::default(), 0.016, 2);
+            AutoExposureParamsGpu::from_settings(AutoExposureSettings::default(), 0.016, 2, false);
 
         assert_eq!(params.layer_count, 2);
     }
@@ -440,7 +441,7 @@ mod tests {
     #[test]
     fn default_auto_exposure_params_use_trimmed_metering_window() {
         let params =
-            AutoExposureParamsGpu::from_settings(AutoExposureSettings::default(), 0.016, 1);
+            AutoExposureParamsGpu::from_settings(AutoExposureSettings::default(), 0.016, 1, false);
 
         assert_eq!(params.min_log_lum, -8.0);
         assert_eq!(params.log_lum_range, 16.0);
@@ -455,9 +456,20 @@ mod tests {
             compensation_ev: 1.0,
             ..Default::default()
         };
-        let params = AutoExposureParamsGpu::from_settings(settings, 0.016, 1);
+        let params = AutoExposureParamsGpu::from_settings(settings, 0.016, 1, false);
 
         assert!((params.target_ev - (AutoExposureSettings::MIDDLE_GRAY_EV + 1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn auto_exposure_params_encode_instant_adaptation_policy() {
+        let temporal =
+            AutoExposureParamsGpu::from_settings(AutoExposureSettings::default(), 0.016, 1, false);
+        let instant =
+            AutoExposureParamsGpu::from_settings(AutoExposureSettings::default(), 0.016, 1, true);
+
+        assert_eq!(temporal.instant_adaptation, 0);
+        assert_eq!(instant.instant_adaptation, 1);
     }
 
     #[test]
