@@ -120,7 +120,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.platform }}
+          key: release-${{ matrix.platform }}-cargo-binless-v1
+          cache-bin: "false"
+
+      - name: Verify Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v cargo
+          command -v rustup
+          rustup show active-toolchain
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
 
       - name: Build (release)
         run: cargo build --release --locked -p renderide -p bootstrapper
