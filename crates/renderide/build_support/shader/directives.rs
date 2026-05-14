@@ -97,6 +97,41 @@ impl BuildPassKind {
     }
 }
 
+/// `_ZTest` enum layout selected by a material pass directive.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum BuildDepthCompareDomain {
+    /// FrooxEngine `ZTest` layout used by host material-provider fields.
+    #[default]
+    FrooxZTest,
+    /// Unity `CompareFunction` layout used by BiRP shader properties.
+    UnityCompareFunction,
+}
+
+impl BuildDepthCompareDomain {
+    /// Parses a `ztest=` directive value.
+    fn parse(value: &str, file: &str, line: usize) -> Result<Self, BuildError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "froox" | "froox_ztest" | "frooxztest" => Ok(Self::FrooxZTest),
+            "unity" | "unity_compare" | "unity_compare_function" | "unitycomparefunction" => {
+                Ok(Self::UnityCompareFunction)
+            }
+            _ => Err(BuildError::Message(format!(
+                "{file}:{line}: `//#pass` override `ztest` expects `froox_ztest` or `unity_compare`, got `{value}`"
+            ))),
+        }
+    }
+
+    /// Rust expression used in generated embedded metadata.
+    const fn rust_literal(self) -> Option<&'static str> {
+        match self {
+            Self::FrooxZTest => None,
+            Self::UnityCompareFunction => {
+                Some("crate::materials::MaterialDepthCompareDomain::UnityCompareFunction")
+            }
+        }
+    }
+}
+
 /// One declared pass: the [`BuildPassKind`] tag and the fragment entry point it sits above.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BuildPassDirective {
@@ -108,6 +143,8 @@ pub(super) struct BuildPassDirective {
     pub vertex_entry: String,
     /// Whether this pass enables hardware alpha-to-coverage.
     pub alpha_to_coverage: bool,
+    /// `_ZTest` enum layout used when host material state overrides this pass.
+    pub depth_compare_domain: BuildDepthCompareDomain,
     /// Static reverse-Z slope depth bias emitted from Unity `Offset factor`.
     pub depth_bias_slope_scale_bits: u32,
     /// Static reverse-Z constant depth bias emitted from Unity `Offset units`.
@@ -190,6 +227,7 @@ pub(super) fn parse_pass_directives(
         let kind = BuildPassKind::parse(kind_value, file, line_no)?;
         let mut vertex_entry = "vs_main".to_string();
         let mut alpha_to_coverage = false;
+        let mut depth_compare_domain = BuildDepthCompareDomain::FrooxZTest;
         let mut depth_bias_slope_scale_bits = 0.0f32.to_bits();
         let mut depth_bias_constant = 0;
         for token in tokens {
@@ -203,6 +241,10 @@ pub(super) fn parse_pass_directives(
                 "a2c" | "alpha_to_coverage" => {
                     alpha_to_coverage = parse_bool_value(value.trim(), file, line_no, key.trim())?;
                 }
+                "ztest" | "z_test" | "depth_compare" | "depthcompare" => {
+                    depth_compare_domain =
+                        BuildDepthCompareDomain::parse(value.trim(), file, line_no)?;
+                }
                 "offset_factor" | "offsetfactor" => {
                     let factor = parse_f32_value(value.trim(), file, line_no, key.trim())?;
                     depth_bias_slope_scale_bits = reverse_z_offset_factor(factor).to_bits();
@@ -213,7 +255,7 @@ pub(super) fn parse_pass_directives(
                 }
                 _ => {
                     return Err(BuildError::Message(format!(
-                        "{file}:{line_no}: unknown `//#pass` override `{key}` (allowed: `vs=`, `a2c=`, `offset_factor=`, `offset_units=`)"
+                        "{file}:{line_no}: unknown `//#pass` override `{key}` (allowed: `vs=`, `a2c=`, `ztest=`, `offset_factor=`, `offset_units=`)"
                     )));
                 }
             }
@@ -224,6 +266,7 @@ pub(super) fn parse_pass_directives(
             fragment_entry,
             vertex_entry,
             alpha_to_coverage,
+            depth_compare_domain,
             depth_bias_slope_scale_bits,
             depth_bias_constant,
         });
@@ -330,6 +373,9 @@ pub(super) fn pass_literal(pass: &BuildPassDirective) -> String {
     if pass.alpha_to_coverage {
         overrides.push("alpha_to_coverage: true".to_string());
     }
+    if let Some(domain) = pass.depth_compare_domain.rust_literal() {
+        overrides.push(format!("depth_compare_domain: {domain}"));
+    }
     if pass.depth_bias_slope_scale_bits != 0.0f32.to_bits() || pass.depth_bias_constant != 0 {
         let slope = f32::from_bits(pass.depth_bias_slope_scale_bits);
         overrides.push(format!("depth_bias_slope_scale: {slope:?}"));
@@ -391,6 +437,7 @@ fn fs_outline() -> @location(0) vec4<f32> {
                 fragment_entry: "fs_outline".to_string(),
                 vertex_entry: "vs_outline".to_string(),
                 alpha_to_coverage: false,
+                depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                 depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                 depth_bias_constant: 0,
             }]
@@ -419,9 +466,43 @@ fn fs_main() -> @location(0) vec4<f32> {
                 fragment_entry: "fs_main".to_string(),
                 vertex_entry: "vs_main".to_string(),
                 alpha_to_coverage: true,
+                depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                 depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                 depth_bias_constant: 0,
             }]
+        );
+        Ok(())
+    }
+
+    /// Pass directives can select Unity `CompareFunction` decoding for `_ZTest`.
+    #[test]
+    fn pass_directive_extracts_ztest_domain() -> Result<(), BuildError> {
+        let passes = parse_pass_directives(
+            r#"
+//#pass stencil ztest=unity_compare
+@fragment
+fn fs_stencil() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+"#,
+            "stencil.wgsl",
+        )?;
+
+        assert_eq!(
+            passes,
+            [BuildPassDirective {
+                kind: BuildPassKind::Stencil,
+                fragment_entry: "fs_stencil".to_string(),
+                vertex_entry: "vs_main".to_string(),
+                alpha_to_coverage: false,
+                depth_compare_domain: BuildDepthCompareDomain::UnityCompareFunction,
+                depth_bias_slope_scale_bits: 0.0f32.to_bits(),
+                depth_bias_constant: 0,
+            }]
+        );
+        assert_eq!(
+            pass_literal(&passes[0]),
+            "crate::materials::MaterialPassDesc { depth_compare_domain: crate::materials::MaterialDepthCompareDomain::UnityCompareFunction, ..crate::materials::pass_from_kind(crate::materials::PassKind::Stencil, \"fs_stencil\") }"
         );
         Ok(())
     }
@@ -474,6 +555,7 @@ fn fs_volume() -> @location(0) vec4<f32> {
                     fragment_entry: "fs_depth_projection".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -482,6 +564,7 @@ fn fs_volume() -> @location(0) vec4<f32> {
                     fragment_entry: "fs_circle".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -490,6 +573,7 @@ fn fs_volume() -> @location(0) vec4<f32> {
                     fragment_entry: "fs_fade".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -498,6 +582,7 @@ fn fs_volume() -> @location(0) vec4<f32> {
                     fragment_entry: "fs_premul".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -506,6 +591,7 @@ fn fs_volume() -> @location(0) vec4<f32> {
                     fragment_entry: "fs_filter".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -514,6 +600,7 @@ fn fs_volume() -> @location(0) vec4<f32> {
                     fragment_entry: "fs_volume".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -584,6 +671,7 @@ fn fs_front_faces() -> @location(0) vec4<f32> {
                     fragment_entry: "fs_transparent".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -592,6 +680,7 @@ fn fs_front_faces() -> @location(0) vec4<f32> {
                     fragment_entry: "fs_back_faces".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -600,6 +689,7 @@ fn fs_front_faces() -> @location(0) vec4<f32> {
                     fragment_entry: "fs_front_faces".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },

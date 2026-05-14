@@ -5,7 +5,8 @@
 //! the code they cover.
 
 use super::super::render_state::{
-    MaterialCullOverride, MaterialRenderState, material_render_state_for_lookup,
+    MaterialCullOverride, MaterialDepthCompareDomain, MaterialRenderState,
+    material_render_state_for_lookup,
 };
 use super::*;
 use crate::materials::host_data::{
@@ -309,6 +310,23 @@ fn ztest_property_overrides_pass_depth_compare_for_reverse_z() {
     let state = material_render_state_for_lookup(&dict, lookup, &ids);
     assert_eq!(
         state.depth_compare(wgpu::CompareFunction::Always),
+        wgpu::CompareFunction::GreaterEqual
+    );
+}
+
+#[test]
+fn unity_ztest_domain_decodes_compare_function_for_reverse_z() {
+    let pass = MaterialPassDesc {
+        depth_compare_domain: MaterialDepthCompareDomain::UnityCompareFunction,
+        ..pass_from_kind(PassKind::Stencil, "fs_stencil")
+    };
+    let state = MaterialRenderState {
+        depth_compare: Some(4),
+        ..MaterialRenderState::default()
+    };
+
+    assert_eq!(
+        pass.resolved_depth_compare(state),
         wgpu::CompareFunction::GreaterEqual
     );
 }
