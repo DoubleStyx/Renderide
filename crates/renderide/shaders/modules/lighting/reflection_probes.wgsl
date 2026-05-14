@@ -324,6 +324,6 @@ fn indirect_specular(
     let n_dot_v = clamp(dot(n, v), 0.0, 1.0);
     let dfg = brdf::sample_ibl_dfg_lut(perceptual_roughness, n_dot_v);
     let energy = brdf::indirect_specular_energy_from_dfg(dfg, f0, true);
-    let specular_occlusion = brdf::specular_ao_lagarde(n_dot_v, occlusion, perceptual_roughness);
-    return indirect_specular_with_energy(world_pos, n, v, perceptual_roughness, energy, specular_occlusion, true, view_layer);
+    let specular_visibility = brdf::indirect_specular_visibility(n_dot_v, occlusion, perceptual_roughness, f0);
+    return indirect_specular_with_energy(world_pos, n, v, perceptual_roughness, energy * specular_visibility, 1.0, true, view_layer);
 }

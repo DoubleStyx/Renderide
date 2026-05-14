@@ -552,6 +552,68 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
 }
 
 #[test]
+fn pbs_direct_diffuse_uses_fresnel_transmission() -> io::Result<()> {
+    let brdf_src = module_source("pbs/brdf.wgsl")?;
+    for required in [
+        "fn max_component(v: vec3<f32>) -> f32",
+        "fn direct_diffuse_fresnel_transmission(f: vec3<f32>, f0: vec3<f32>) -> f32",
+        "return clamp((1.0 - f_peak) / max(1.0 - f0_peak, 1e-4), 0.0, 1.0);",
+        "let fd = diffuse_color * direct_diffuse_fresnel_transmission(f, f0) * fd_lambert();",
+    ] {
+        assert!(
+            brdf_src.contains(required),
+            "pbs/brdf.wgsl must contain `{required}`"
+        );
+    }
+
+    assert!(
+        !brdf_src.contains("let fd = diffuse_color * fd_lambert();"),
+        "PBS direct lighting must not bypass Fresnel diffuse transmission"
+    );
+    Ok(())
+}
+
+#[test]
+fn pbs_indirect_ao_uses_multibounce_visibility() -> io::Result<()> {
+    let brdf_src = module_source("pbs/brdf.wgsl")?;
+    for required in [
+        "fn multi_bounce_visibility(visibility: f32, albedo: vec3<f32>) -> vec3<f32>",
+        "let a = 2.0404 * clamped_albedo - vec3<f32>(0.3324);",
+        "let b = -4.7951 * clamped_albedo + vec3<f32>(0.6417);",
+        "let c = 2.7552 * clamped_albedo + vec3<f32>(0.6903);",
+        "fn indirect_diffuse_visibility(visibility: f32, diffuse_color: vec3<f32>) -> vec3<f32>",
+        "return multi_bounce_visibility(visibility, diffuse_color);",
+        "fn indirect_specular_visibility(",
+        "let single_bounce = specular_ao_lagarde(n_dot_v, visibility, perceptual_roughness);",
+        "return multi_bounce_visibility(single_bounce, f0);",
+        "let visibility = indirect_diffuse_visibility(occlusion, diffuse_color);",
+        "return ambient * diffuse_color * energy_scale * visibility;",
+    ] {
+        assert!(
+            brdf_src.contains(required),
+            "pbs/brdf.wgsl must contain `{required}`"
+        );
+    }
+
+    let lighting_src = module_source("pbs/lighting.wgsl")?;
+    for required in [
+        "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, s.roughness, specular_color);",
+        "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, s.roughness, s.specular_color);",
+        "specular_energy * specular_visibility",
+    ] {
+        assert!(
+            lighting_src.contains(required),
+            "pbs/lighting.wgsl must contain `{required}`"
+        );
+    }
+    assert!(
+        !lighting_src.contains("let specular_occlusion = brdf::specular_ao_lagarde"),
+        "PBS clustered lighting should route specular AO through multi-bounce visibility"
+    );
+    Ok(())
+}
+
+#[test]
 fn pbs_lerp_preserves_variant_channels_and_raw_lerp() -> io::Result<()> {
     let metallic = material_source("pbslerp.wgsl")?;
     for required in [
