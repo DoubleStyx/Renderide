@@ -13,6 +13,8 @@ pub(super) enum BuildPassKind {
     ForwardTwoSided,
     /// Fixed straight-alpha forward material pass.
     ForwardAlphaBlend,
+    /// Fixed straight-alpha forward material pass that preserves depth writes.
+    ForwardAlphaBlendZWrite,
     /// Fixed premultiplied-alpha forward material pass.
     ForwardPremultipliedTransparent,
     /// Transparent forward material pass.
@@ -49,6 +51,10 @@ impl BuildPassKind {
                 Ok(Self::ForwardTwoSided)
             }
             "forward_alpha_blend" | "alpha_blend" | "alphablend" => Ok(Self::ForwardAlphaBlend),
+            "forward_alpha_blend_zwrite"
+            | "alpha_blend_zwrite"
+            | "alphablend_zwrite"
+            | "forward_alpha_zwrite" => Ok(Self::ForwardAlphaBlendZWrite),
             "forward_premultiplied_transparent"
             | "premultiplied_transparent"
             | "premultiplied_alpha" => Ok(Self::ForwardPremultipliedTransparent),
@@ -81,6 +87,7 @@ impl BuildPassKind {
             Self::ForwardFilter => "ForwardFilter",
             Self::ForwardTwoSided => "ForwardTwoSided",
             Self::ForwardAlphaBlend => "ForwardAlphaBlend",
+            Self::ForwardAlphaBlendZWrite => "ForwardAlphaBlendZWrite",
             Self::ForwardPremultipliedTransparent => "ForwardPremultipliedTransparent",
             Self::ForwardTransparent => "ForwardTransparent",
             Self::ForwardTransparentCullFront => "ForwardTransparentCullFront",
@@ -526,6 +533,28 @@ fn fs_volume() -> @location(0) vec4<f32> {
         assert_eq!(
             pass_literal(&passes[5]),
             "crate::materials::pass_from_kind(crate::materials::PassKind::VolumeFront, \"fs_volume\")"
+        );
+        Ok(())
+    }
+
+    /// Fur shell passes need source-authored alpha blending while still writing depth.
+    #[test]
+    fn pass_directive_accepts_alpha_blend_zwrite() -> Result<(), BuildError> {
+        let passes = parse_pass_directives(
+            r#"
+//#pass alpha_blend_zwrite
+@fragment
+fn fs_fur() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+"#,
+            "furfx.wgsl",
+        )?;
+
+        assert_eq!(passes[0].kind, BuildPassKind::ForwardAlphaBlendZWrite);
+        assert_eq!(
+            pass_literal(&passes[0]),
+            "crate::materials::pass_from_kind(crate::materials::PassKind::ForwardAlphaBlendZWrite, \"fs_fur\")"
         );
         Ok(())
     }

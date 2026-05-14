@@ -215,6 +215,8 @@ pub enum PassKind {
     ForwardTwoSided,
     /// Fixed straight-alpha forward pass: `Blend SrcAlpha OneMinusSrcAlpha`, `ZWrite Off`.
     ForwardAlphaBlend,
+    /// Fixed straight-alpha forward pass: `Blend SrcAlpha OneMinusSrcAlpha`, `ZWrite On`.
+    ForwardAlphaBlendZWrite,
     /// Fixed premultiplied-alpha forward pass: `Blend One OneMinusSrcAlpha`, `ZWrite Off`.
     ForwardPremultipliedTransparent,
     /// Transparent forward pass with Unity `alpha` defaults and material-driven overrides.
@@ -269,6 +271,12 @@ pub const fn pass_from_kind(kind: PassKind, fragment_entry: &'static str) -> Mat
             SRC_ALPHA_ONE_MINUS_SRC_ALPHA_BLEND,
             MaterialRenderStatePolicy::FIXED_TRANSPARENT,
         ),
+        PassKind::ForwardAlphaBlendZWrite => MaterialPassDesc {
+            blend: Some(SRC_ALPHA_ONE_MINUS_SRC_ALPHA_BLEND),
+            write_mask: wgpu::ColorWrites::ALL,
+            render_state_policy: MaterialRenderStatePolicy::FIXED_TRANSPARENT,
+            ..base
+        },
         PassKind::ForwardPremultipliedTransparent => fixed_transparent_pass(
             base,
             ONE_ONE_MINUS_SRC_ALPHA_BLEND,
@@ -404,6 +412,7 @@ const fn pass_kind_label(kind: PassKind) -> &'static str {
         PassKind::ForwardFilter => "forward_filter",
         PassKind::ForwardTwoSided => "forward_two_sided",
         PassKind::ForwardAlphaBlend => "forward_alpha_blend",
+        PassKind::ForwardAlphaBlendZWrite => "forward_alpha_blend_zwrite",
         PassKind::ForwardPremultipliedTransparent => "forward_premultiplied_transparent",
         PassKind::ForwardTransparent => "forward_transparent",
         PassKind::ForwardTransparentCullFront => "forward_transparent_cull_front",

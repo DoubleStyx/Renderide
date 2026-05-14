@@ -652,3 +652,35 @@ fn resolves_toonstandard_from_asset_name() {
         Some("toonstandard_default")
     );
 }
+
+#[test]
+fn resolves_furfx_basic_from_asset_filename() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("FurFX Basic 10Layer").as_deref(),
+        Some("furfx-basic-10layer_default")
+    );
+}
+
+#[test]
+fn resolves_furfx_advanced_shell_from_asset_filename() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("FurFX Advanced Shell 20Layer").as_deref(),
+        Some("furfx-advanced-shell-20layer_default")
+    );
+}
+
+#[test]
+fn resolves_furfx_selfshadow_blend_from_asset_filename() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("FurFX SelfShadow Blend 10Layer").as_deref(),
+        Some("furfx-selfshadow-blend-10layer_default")
+    );
+}
+
+#[test]
+fn resolves_furfx_3_shell_from_asset_filename() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("FurFX 3.0 Shell 20Layer").as_deref(),
+        Some("furfx-3.0-shell-20layer_default")
+    );
+}

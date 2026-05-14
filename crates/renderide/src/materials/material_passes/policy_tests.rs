@@ -140,6 +140,17 @@ fn pass_policy_resolves_expected_material_overrides_by_kind() {
         overlay_always.resolved_depth_bias(enabled_depth),
         wgpu::DepthBiasState::default()
     );
+
+    let fur_blend = pass_from_kind(PassKind::ForwardAlphaBlendZWrite, "fs_fur");
+    assert_eq!(
+        fur_blend.resolved_color_writes(disabled_depth),
+        wgpu::ColorWrites::ALL
+    );
+    assert!(fur_blend.resolved_depth_write(disabled_depth));
+    assert_eq!(
+        fur_blend.resolved_depth_compare(disabled_depth),
+        crate::gpu::MAIN_FORWARD_DEPTH_COMPARE
+    );
 }
 
 /// Verifies fixed transparent RGB passes preserve Unity-authored state even when host overrides exist.
