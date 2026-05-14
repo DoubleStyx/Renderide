@@ -41,7 +41,7 @@ pub(crate) fn effective_renderer_log_level(cli: Option<LogLevel>, log_verbose: b
     } else if log_verbose {
         LogLevel::Trace
     } else {
-        LogLevel::Info
+        LogLevel::Debug
     }
 }
 
