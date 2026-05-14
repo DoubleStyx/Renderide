@@ -4,6 +4,9 @@
 //! No `#pragma multi_compile` user keywords on this shader; `_RenderideVariantBits` is
 //! reserved for layout consistency with the rest of the embedded materials and is never read.
 
+//#texture_default _MainTex white
+//#texture_default _MainTex2 white
+
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight

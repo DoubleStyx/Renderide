@@ -1,6 +1,9 @@
 //! Matcap (`Shader "Matcap"`): tangent-space normal map, view-space normal matcap lookup.
 
 
+//#texture_default _MainTex white
+//#texture_default _NormalMap bump
+
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::core::math as rmath

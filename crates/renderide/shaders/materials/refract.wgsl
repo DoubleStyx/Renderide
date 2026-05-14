@@ -3,6 +3,8 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes Refract's
 //! shader-specific keyword bits locally.
 
+//#texture_default _NormalMap bump
+
 #import renderide::post::filter_math as fm
 #import renderide::post::filter_vertex as fv
 #import renderide::frame::globals as rg

@@ -2,6 +2,61 @@
 
 use super::error::BuildError;
 
+/// Texture fallback token declared by `//#texture_default`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TextureDefaultKind {
+    /// Unity `"white"` default texture.
+    White,
+    /// Unity `"black"` default texture.
+    Black,
+    /// Unity `"gray"` / `"grey"` default texture.
+    Gray,
+    /// Unity `"bump"` default texture.
+    Bump,
+    /// Unity `"red"` default texture.
+    Red,
+    /// Empty Unity texture default (`""`), resolved by the runtime as Unity's gray placeholder.
+    Empty,
+}
+
+impl TextureDefaultKind {
+    /// Parses a source directive token.
+    fn parse(value: &str, file: &str, line: usize) -> Result<Self, BuildError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "white" => Ok(Self::White),
+            "black" => Ok(Self::Black),
+            "gray" | "grey" => Ok(Self::Gray),
+            "bump" => Ok(Self::Bump),
+            "red" => Ok(Self::Red),
+            "empty" => Ok(Self::Empty),
+            _ => Err(BuildError::Message(format!(
+                "{file}:{line}: unknown `//#texture_default` token `{value}` (allowed: white, black, gray, grey, bump, red, empty)"
+            ))),
+        }
+    }
+
+    /// Rust variant name used in generated embedded metadata.
+    const fn rust_variant(self) -> &'static str {
+        match self {
+            Self::White => "White",
+            Self::Black => "Black",
+            Self::Gray => "Gray",
+            Self::Bump => "Bump",
+            Self::Red => "Red",
+            Self::Empty => "Empty",
+        }
+    }
+}
+
+/// One texture fallback directive attached to a material WGSL source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct TextureDefaultDirective {
+    /// Reflected host texture property name, e.g. `_MainTex`.
+    pub property: String,
+    /// Unity default token for the texture slot.
+    pub kind: TextureDefaultKind,
+}
+
 /// Material pass kind declared by `//#pass`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BuildPassKind {
@@ -281,6 +336,67 @@ pub(super) fn parse_pass_directives(
     Ok(passes)
 }
 
+fn validate_texture_default_property(
+    property: &str,
+    file: &str,
+    line: usize,
+) -> Result<(), BuildError> {
+    if property.is_empty()
+        || property
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+    {
+        return Err(BuildError::Message(format!(
+            "{file}:{line}: `//#texture_default` property must be a WGSL-compatible identifier, got `{property}`"
+        )));
+    }
+    Ok(())
+}
+
+/// Parses texture fallback directives from WGSL source.
+pub(super) fn parse_texture_default_directives(
+    source: &str,
+    file: &str,
+) -> Result<Vec<TextureDefaultDirective>, BuildError> {
+    let mut defaults = Vec::new();
+    for (line_idx, line) in source.lines().enumerate() {
+        let line_no = line_idx + 1;
+        let Some(rest) = line.trim_start().strip_prefix("//#texture_default") else {
+            continue;
+        };
+        let mut tokens = rest.split_whitespace();
+        let Some(property) = tokens.next() else {
+            return Err(BuildError::Message(format!(
+                "{file}:{line_no}: `//#texture_default` requires a texture property name"
+            )));
+        };
+        let Some(default_token) = tokens.next() else {
+            return Err(BuildError::Message(format!(
+                "{file}:{line_no}: `//#texture_default` requires a Unity default token"
+            )));
+        };
+        if tokens.next().is_some() {
+            return Err(BuildError::Message(format!(
+                "{file}:{line_no}: `//#texture_default` accepts exactly two arguments"
+            )));
+        }
+        validate_texture_default_property(property, file, line_no)?;
+        if defaults
+            .iter()
+            .any(|d: &TextureDefaultDirective| d.property == property)
+        {
+            return Err(BuildError::Message(format!(
+                "{file}:{line_no}: duplicate `//#texture_default` for `{property}`"
+            )));
+        }
+        defaults.push(TextureDefaultDirective {
+            property: property.to_string(),
+            kind: TextureDefaultKind::parse(default_token, file, line_no)?,
+        });
+    }
+    Ok(defaults)
+}
+
 /// Parses a directive boolean value.
 fn parse_bool_value(value: &str, file: &str, line: usize, key: &str) -> Result<bool, BuildError> {
     match value.to_ascii_lowercase().as_str() {
@@ -398,6 +514,15 @@ pub(super) fn pass_literal(pass: &BuildPassDirective) -> String {
     }
 }
 
+/// Renders a generated Rust expression for one texture default directive.
+pub(super) fn texture_default_literal(default: &TextureDefaultDirective) -> String {
+    format!(
+        "EmbeddedTextureDefault {{ property: {property:?}, kind: EmbeddedTextureDefaultKind::{kind} }}",
+        property = default.property.as_str(),
+        kind = default.kind.rust_variant()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,6 +546,77 @@ mod tests {
             .expect_err("path aliases must be rejected");
 
         assert!(err.to_string().contains("sibling WGSL file stem"));
+    }
+
+    #[test]
+    fn texture_default_directives_parse_supported_tokens() -> Result<(), BuildError> {
+        let defaults = parse_texture_default_directives(
+            r#"
+//#texture_default _MainTex white
+//#texture_default _EmissionMap black
+//#texture_default _DetailAlbedoMap grey
+//#texture_default _BumpMap bump
+//#texture_default _NoiseTex empty
+//#texture_default _MaskTex red
+"#,
+            "test.wgsl",
+        )?;
+
+        assert_eq!(
+            defaults,
+            [
+                TextureDefaultDirective {
+                    property: "_MainTex".to_string(),
+                    kind: TextureDefaultKind::White,
+                },
+                TextureDefaultDirective {
+                    property: "_EmissionMap".to_string(),
+                    kind: TextureDefaultKind::Black,
+                },
+                TextureDefaultDirective {
+                    property: "_DetailAlbedoMap".to_string(),
+                    kind: TextureDefaultKind::Gray,
+                },
+                TextureDefaultDirective {
+                    property: "_BumpMap".to_string(),
+                    kind: TextureDefaultKind::Bump,
+                },
+                TextureDefaultDirective {
+                    property: "_NoiseTex".to_string(),
+                    kind: TextureDefaultKind::Empty,
+                },
+                TextureDefaultDirective {
+                    property: "_MaskTex".to_string(),
+                    kind: TextureDefaultKind::Red,
+                },
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn texture_default_directives_reject_duplicates() {
+        let err = parse_texture_default_directives(
+            r#"
+//#texture_default _MainTex white
+//#texture_default _MainTex black
+"#,
+            "test.wgsl",
+        )
+        .expect_err("duplicate texture defaults must fail");
+
+        assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn texture_default_literal_emits_embedded_struct() {
+        assert_eq!(
+            texture_default_literal(&TextureDefaultDirective {
+                property: "_MainTex".to_string(),
+                kind: TextureDefaultKind::White,
+            }),
+            "EmbeddedTextureDefault { property: \"_MainTex\", kind: EmbeddedTextureDefaultKind::White }"
+        );
     }
 
     /// Pass directives bind to the following fragment entry point.

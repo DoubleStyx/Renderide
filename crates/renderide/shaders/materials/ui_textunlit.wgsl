@@ -14,6 +14,8 @@
 //! Per-draw uniforms (`@group(2)`) use [`renderide::draw::per_draw`].
 
 
+//#texture_default _FontAtlas white
+
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv

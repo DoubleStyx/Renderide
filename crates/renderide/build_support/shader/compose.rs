@@ -139,7 +139,9 @@ pub(super) fn compile_shader_job(
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| BuildError::Message(format!("invalid stem: {}", source_path.display())))?;
-    let (source, file_path) = shader_source_for_compile(source_path)?;
+    let compile_source = shader_source_for_compile(source_path)?;
+    let source = compile_source.source;
+    let file_path = compile_source.file_path;
     let pass_directives = parse_pass_directives(&source, &file_path)?;
     if job.validation.require_pass_directive && pass_directives.is_empty() {
         return Err(BuildError::Message(format!(
@@ -231,6 +233,7 @@ pub(super) fn compile_shader_job(
         compile_order: job.compile_order,
         source_class: job.source_class,
         pass_directives,
+        texture_defaults: compile_source.texture_defaults,
         targets,
     })
 }

@@ -9,6 +9,9 @@
 //! `texcoord + texscale * (corner - 0.5)` into the expanded quad's UVs), so the WGSL only needs
 //! the bit reserved at its sorted index even though no fragment branch reads it.
 
+//#texture_default _Tex white
+//#texture_default _OffsetTex black
+
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::material::alpha_clip_sample as acs

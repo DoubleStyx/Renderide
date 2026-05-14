@@ -6,6 +6,11 @@
 //! preserve the host-facing material behavior.
 
 
+//#texture_default _MainTex white
+//#texture_default _SpecGlossMap white
+//#texture_default _BumpMap bump
+//#texture_default _EmissionMap white
+
 #import renderide::lighting::birp as bl
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd

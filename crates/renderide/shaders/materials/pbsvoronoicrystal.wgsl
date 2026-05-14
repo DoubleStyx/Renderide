@@ -8,6 +8,11 @@
 //! since-startup so the host must drive the animation directly).
 
 
+//#texture_default _ColorGradient white
+//#texture_default _GlossGradient white
+//#texture_default _EmissionGradient white
+//#texture_default _NormalMap bump
+
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::normal as pnorm

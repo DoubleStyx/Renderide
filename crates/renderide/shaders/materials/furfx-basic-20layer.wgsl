@@ -1,5 +1,8 @@
 //! FurFX Basic 20Layer material root.
 
+//#texture_default _MainTex white
+//#texture_default _NoiseTex white
+
 #import renderide::fur::classic_basic as fur
 #import renderide::fur::common as furc
 

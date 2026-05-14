@@ -7,6 +7,7 @@ use hashbrown::HashMap;
 use std::sync::Arc;
 
 use crate::embedded_shaders;
+use crate::embedded_shaders::EmbeddedTextureDefaultKind;
 use crate::materials::host_data::PropertyIdRegistry;
 use crate::materials::{ReflectedRasterLayout, reflect_raster_material_wgsl};
 
@@ -18,6 +19,7 @@ pub(crate) struct StemMaterialLayout {
     pub(crate) reflected: ReflectedRasterLayout,
     pub(crate) ids: Arc<StemEmbeddedPropertyIds>,
     pub(crate) uniform_value_spaces: MaterialUniformValueSpaces,
+    pub(crate) texture_default_by_binding: HashMap<u32, EmbeddedTextureDefaultKind>,
 }
 
 /// Per-stem stable property ids from WGSL reflection (uniform members and `@group(1)` texture globals), built once when the stem layout loads.
@@ -89,6 +91,44 @@ pub(crate) fn stem_hash(stem: &str) -> u64 {
     h.finish()
 }
 
+fn reflected_texture_bindings_by_name(reflected: &ReflectedRasterLayout) -> HashMap<String, u32> {
+    let mut bindings = HashMap::new();
+    for entry in &reflected.material_entries {
+        if matches!(entry.ty, wgpu::BindingType::Texture { .. })
+            && let Some(name) = reflected.material_group1_names.get(&entry.binding)
+        {
+            bindings.insert(
+                shader_writer_unescaped_property_name(name.as_str()).to_string(),
+                entry.binding,
+            );
+        }
+    }
+    bindings
+}
+
+fn texture_default_bindings_for_stem(
+    stem: &str,
+    reflected: &ReflectedRasterLayout,
+) -> Result<HashMap<u32, EmbeddedTextureDefaultKind>, String> {
+    let reflected_bindings = reflected_texture_bindings_by_name(reflected);
+    let mut defaults = HashMap::new();
+    for default in embedded_shaders::embedded_target_texture_defaults(stem) {
+        let property = shader_writer_unescaped_property_name(default.property);
+        let binding = reflected_bindings.get(property).copied().ok_or_else(|| {
+            format!(
+                "texture default `{property}` for stem `{stem}` has no reflected texture binding"
+            )
+        })?;
+        if let Some(previous) = defaults.insert(binding, default.kind) {
+            return Err(format!(
+                "texture default for stem `{stem}` binding {binding} was declared twice ({previous:?}, {:?})",
+                default.kind
+            ));
+        }
+    }
+    Ok(defaults)
+}
+
 /// Reflects embedded WGSL for `stem`, builds the `@group(1)` layout, and interns property ids.
 pub(crate) fn build_stem_material_layout(
     device: &wgpu::Device,
@@ -110,25 +150,33 @@ pub(crate) fn build_stem_material_layout(
         &reflected,
     ));
     let uniform_value_spaces = MaterialUniformValueSpaces::for_stem(stem, &reflected);
+    let texture_default_by_binding = texture_default_bindings_for_stem(stem, &reflected)?;
 
     Ok(Arc::new(StemMaterialLayout {
         bind_group_layout,
         reflected,
         ids,
         uniform_value_spaces,
+        texture_default_by_binding,
     }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{StemEmbeddedPropertyIds, shader_writer_unescaped_property_name};
+    use hashbrown::HashSet;
+
+    use super::{
+        StemEmbeddedPropertyIds, shader_writer_unescaped_property_name,
+        texture_default_bindings_for_stem,
+    };
+    use crate::embedded_shaders;
     use crate::materials::host_data::PropertyIdRegistry;
     use crate::materials::reflect_raster_material_wgsl;
 
     #[test]
     fn xiexe_module_textures_resolve_to_unmangled_property_ids() {
-        let wgsl = crate::embedded_shaders::embedded_target_wgsl("xstoon2.0_default")
-            .expect("xiexe target WGSL");
+        let wgsl =
+            embedded_shaders::embedded_target_wgsl("xstoon2.0_default").expect("xiexe target WGSL");
         let reflected = reflect_raster_material_wgsl(wgsl).expect("xiexe WGSL reflection");
         let registry = PropertyIdRegistry::new();
 
@@ -142,8 +190,8 @@ mod tests {
 
     #[test]
     fn xiexe_outline_emissive_typo_alias_is_preserved() {
-        let wgsl = crate::embedded_shaders::embedded_target_wgsl("xstoon2.0_default")
-            .expect("xiexe target WGSL");
+        let wgsl =
+            embedded_shaders::embedded_target_wgsl("xstoon2.0_default").expect("xiexe target WGSL");
         let reflected = reflect_raster_material_wgsl(wgsl).expect("xiexe WGSL reflection");
         let uniform = reflected
             .material_uniform
@@ -157,8 +205,8 @@ mod tests {
 
     #[test]
     fn xiexe_layout_drops_xstoon3_extension_bindings() {
-        let wgsl = crate::embedded_shaders::embedded_target_wgsl("xstoon2.0_default")
-            .expect("xiexe target WGSL");
+        let wgsl =
+            embedded_shaders::embedded_target_wgsl("xstoon2.0_default").expect("xiexe target WGSL");
         let reflected = reflect_raster_material_wgsl(wgsl).expect("xiexe WGSL reflection");
         let unmangled: Vec<String> = reflected
             .material_group1_names
@@ -179,6 +227,35 @@ mod tests {
                 !unmangled.iter().any(|n| n == forbidden),
                 "xstoon 2.0 must not bind XSToon3 extension `{forbidden}`: {unmangled:?}"
             );
+        }
+    }
+
+    #[test]
+    fn all_embedded_material_textures_declare_default_directives() {
+        for stem in embedded_shaders::COMPILED_MATERIAL_STEMS {
+            let wgsl = embedded_shaders::embedded_target_wgsl(stem).expect("embedded target WGSL");
+            let reflected = reflect_raster_material_wgsl(wgsl).expect("embedded reflection");
+            let reflected_texture_names = reflected
+                .material_entries
+                .iter()
+                .filter_map(|entry| {
+                    matches!(entry.ty, wgpu::BindingType::Texture { .. })
+                        .then(|| reflected.material_group1_names.get(&entry.binding))
+                        .flatten()
+                        .map(|name| shader_writer_unescaped_property_name(name).to_string())
+                })
+                .collect::<HashSet<_>>();
+            let default_names = embedded_shaders::embedded_target_texture_defaults(stem)
+                .iter()
+                .map(|default| shader_writer_unescaped_property_name(default.property).to_string())
+                .collect::<HashSet<_>>();
+
+            assert_eq!(
+                default_names, reflected_texture_names,
+                "{stem} texture defaults must match reflected texture bindings"
+            );
+            texture_default_bindings_for_stem(stem, &reflected)
+                .expect("texture defaults map to reflected texture bindings");
         }
     }
 }

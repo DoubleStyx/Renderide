@@ -5,6 +5,12 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes PBSIntersectSpecular's
 //! shader-specific keyword bits locally.
 
+//#texture_default _MainTex white
+//#texture_default _NormalMap bump
+//#texture_default _EmissionMap black
+//#texture_default _OcclusionMap white
+//#texture_default _SpecularMap white
+
 #import renderide::core::math as rmath
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv

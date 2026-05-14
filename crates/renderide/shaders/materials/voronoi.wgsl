@@ -9,6 +9,8 @@
 //! `_Time.y` directly; this matches the convention used by [`pbsvoronoicrystal`].
 
 
+//#texture_default _MainTex white
+
 #import renderide::post::filter_vertex as fv
 #import renderide::frame::globals as rg
 #import renderide::material::voronoi as vor

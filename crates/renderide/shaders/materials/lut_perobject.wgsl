@@ -1,6 +1,9 @@
 //! Per-object grab-pass 3D LUT filter (`Shader "Filters/LUT_PerObject"`).
 
 
+//#texture_default _LUT empty
+//#texture_default _SecondaryLUT empty
+
 #import renderide::post::filter_vertex as fv
 #import renderide::frame::globals as rg
 #import renderide::frame::grab_pass as gp

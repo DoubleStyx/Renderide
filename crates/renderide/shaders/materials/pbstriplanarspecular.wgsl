@@ -10,6 +10,12 @@
 //! PBSTriplanarSpecular's shader-specific keyword bits locally.
 
 
+//#texture_default _MainTex white
+//#texture_default _NormalMap bump
+//#texture_default _SpecularMap white
+//#texture_default _EmissionMap black
+//#texture_default _OcclusionMap white
+
 #import renderide::draw::per_draw as pd
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv

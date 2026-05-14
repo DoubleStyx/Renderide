@@ -3,6 +3,11 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes Fresnel's
 //! shader-specific keyword bits locally.
 
+//#texture_default _FarTex white
+//#texture_default _NearTex white
+//#texture_default _NormalMap bump
+//#texture_default _MaskTex white
+
 #import renderide::frame::globals as rg
 #import renderide::pbs::normal as pnorm
 #import renderide::material::alpha_clip_sample as acs

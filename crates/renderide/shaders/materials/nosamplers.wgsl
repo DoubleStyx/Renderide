@@ -3,6 +3,14 @@
 //! and `_EmissionMap`/`_EmissionMap1` are sampled with their own.
 
 
+//#texture_default _Albedo white
+//#texture_default _Albedo1 white
+//#texture_default _Albedo2 white
+//#texture_default _Albedo3 white
+//#texture_default _MetallicMap white
+//#texture_default _EmissionMap white
+//#texture_default _EmissionMap1 white
+
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight

@@ -9,6 +9,14 @@
 //! alphabetically-positioned `_METALLICMAP` bit.
 
 
+//#texture_default _MainTex white
+//#texture_default _NormalMap bump
+//#texture_default _EmissionMap black
+//#texture_default _OcclusionMap white
+//#texture_default _SpecularMap white
+//#texture_default _DetailAlbedoMap gray
+//#texture_default _DetailNormalMap bump
+
 #import renderide::mesh::vertex as mv
 #import renderide::material::variant_bits as vb
 #import renderide::pbs::families::slice as pslice

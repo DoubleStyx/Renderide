@@ -9,6 +9,11 @@
 //! PBSRimTransparentZWriteSpecular's shader-specific keyword bits locally.
 
 
+//#texture_default _NormalMap bump
+//#texture_default _EmissionMap black
+//#texture_default _OcclusionMap white
+//#texture_default _SpecularMap white
+
 #import renderide::frame::globals as rg
 #import renderide::material::fresnel as mf
 #import renderide::material::variant_bits as vb

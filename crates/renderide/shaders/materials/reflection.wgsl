@@ -8,6 +8,9 @@
 //! shader-specific keyword bits locally. `_OFFSET_TEXTURE` is reserved in the bit table so the
 //! serialized layout stays stable, but the shader body never consults it.
 
+//#texture_default _ReflectionTex white
+//#texture_default _NormalMap bump
+
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::material::alpha as ma

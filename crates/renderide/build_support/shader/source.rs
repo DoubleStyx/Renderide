@@ -3,9 +3,21 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::directives::parse_source_alias;
+use super::directives::{
+    TextureDefaultDirective, parse_source_alias, parse_texture_default_directives,
+};
 use super::error::BuildError;
 use super::model::{ShaderJob, ShaderSourceClass};
+
+/// WGSL source selected for composition plus source-level metadata from wrapper/alias directives.
+pub(super) struct ShaderCompileSource {
+    /// Source text passed to naga-oil.
+    pub source: String,
+    /// File path label passed to naga-oil and source diagnostics.
+    pub file_path: String,
+    /// Texture defaults parsed from the source or merged from alias + wrapper directives.
+    pub texture_defaults: Vec<TextureDefaultDirective>,
+}
 
 /// Lists every `.wgsl` file directly under `dir`, sorted lexicographically.
 pub(super) fn list_wgsl_files(dir: &Path) -> Result<Vec<PathBuf>, BuildError> {
@@ -39,10 +51,27 @@ pub(super) fn discover_shader_jobs(shader_root: &Path) -> Result<Vec<ShaderJob>,
     Ok(jobs)
 }
 
+fn merge_texture_defaults(
+    mut base: Vec<TextureDefaultDirective>,
+    overrides: Vec<TextureDefaultDirective>,
+) -> Vec<TextureDefaultDirective> {
+    for override_default in overrides {
+        if let Some(existing) = base
+            .iter_mut()
+            .find(|existing| existing.property == override_default.property)
+        {
+            *existing = override_default;
+        } else {
+            base.push(override_default);
+        }
+    }
+    base
+}
+
 /// Loads the WGSL source used for composition, following `//#source_alias` when present.
 pub(super) fn shader_source_for_compile(
     source_path: &Path,
-) -> Result<(String, String), BuildError> {
+) -> Result<ShaderCompileSource, BuildError> {
     let wrapper_source = fs::read_to_string(source_path)
         .map_err(|e| BuildError::Message(format!("read {}: {e}", source_path.display())))?;
     let wrapper_file_path = source_path.to_str().ok_or_else(|| {
@@ -51,8 +80,13 @@ pub(super) fn shader_source_for_compile(
             source_path.display()
         ))
     })?;
+    let wrapper_defaults = parse_texture_default_directives(&wrapper_source, wrapper_file_path)?;
     let Some(alias) = parse_source_alias(&wrapper_source, wrapper_file_path)? else {
-        return Ok((wrapper_source, wrapper_file_path.to_string()));
+        return Ok(ShaderCompileSource {
+            source: wrapper_source,
+            file_path: wrapper_file_path.to_string(),
+            texture_defaults: wrapper_defaults,
+        });
     };
     let alias_path = source_path.with_file_name(format!("{alias}.wgsl"));
     if alias_path == source_path {
@@ -68,7 +102,12 @@ pub(super) fn shader_source_for_compile(
             alias_path.display()
         ))
     })?;
-    Ok((alias_source, alias_file_path.to_string()))
+    let alias_defaults = parse_texture_default_directives(&alias_source, alias_file_path)?;
+    Ok(ShaderCompileSource {
+        source: alias_source,
+        file_path: alias_file_path.to_string(),
+        texture_defaults: merge_texture_defaults(alias_defaults, wrapper_defaults),
+    })
 }
 
 #[cfg(test)]
@@ -107,6 +146,54 @@ mod tests {
         assert_eq!(jobs[0].source_class, ShaderSourceClass::Material);
         assert_eq!(jobs[2].source_class, ShaderSourceClass::Post);
         assert_eq!(jobs[3].source_class, ShaderSourceClass::Compute);
+        Ok(())
+    }
+
+    #[test]
+    fn source_alias_inherits_and_overrides_texture_defaults() -> Result<(), BuildError> {
+        let root = tempfile::tempdir()?;
+        let alias_path = root.path().join("base.wgsl");
+        let wrapper_path = root.path().join("wrapper.wgsl");
+        fs::write(
+            &alias_path,
+            r#"
+//#texture_default _MainTex white
+//#texture_default _MaskTex black
+"#,
+        )?;
+        fs::write(
+            &wrapper_path,
+            r#"
+//#source_alias base
+//#texture_default _MaskTex white
+//#texture_default _OtherTex grey
+"#,
+        )?;
+
+        let source = shader_source_for_compile(&wrapper_path)?;
+
+        assert_eq!(source.file_path, alias_path.to_string_lossy().as_ref());
+        assert_eq!(
+            source
+                .texture_defaults
+                .iter()
+                .map(|d| (d.property.as_str(), d.kind))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "_MainTex",
+                    super::super::directives::TextureDefaultKind::White
+                ),
+                (
+                    "_MaskTex",
+                    super::super::directives::TextureDefaultKind::White
+                ),
+                (
+                    "_OtherTex",
+                    super::super::directives::TextureDefaultKind::Gray
+                ),
+            ]
+        );
         Ok(())
     }
 }

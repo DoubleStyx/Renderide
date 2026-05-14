@@ -4,6 +4,15 @@
 //!
 //! Reads tinted f0 + smoothness from `_SpecularColor` / `_SpecularMap` instead of metallic-gloss.
 
+//#texture_default _MainTex white
+//#texture_default _NormalMap bump
+//#texture_default _EmissionMap black
+//#texture_default _OcclusionMap white
+//#texture_default _SpecularMap white
+//#texture_default _VertexOffsetMap black
+//#texture_default _UVOffsetMap black
+//#texture_default _PositionOffsetMap black
+
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::draw::per_draw as pd

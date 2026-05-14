@@ -44,8 +44,8 @@ use uniform::{
     MaterialUniformCacheKey,
 };
 use white_texture::{
-    PlaceholderTexture, create_black, create_flat_normal, create_white, upload_black,
-    upload_flat_normal, upload_white,
+    PlaceholderTexture, create_black, create_flat_normal, create_gray, create_red, create_white,
+    upload_black, upload_flat_normal, upload_gray, upload_red, upload_white,
 };
 
 use resolve::EmbeddedBindInputResolution;
@@ -120,9 +120,17 @@ pub struct EmbeddedMaterialBindResources {
     device: Arc<wgpu::Device>,
     white_2d: PlaceholderTexture,
     black_2d: PlaceholderTexture,
+    gray_2d: PlaceholderTexture,
+    red_2d: PlaceholderTexture,
     flat_normal_2d: PlaceholderTexture,
     white_3d: PlaceholderTexture,
+    black_3d: PlaceholderTexture,
+    gray_3d: PlaceholderTexture,
+    red_3d: PlaceholderTexture,
     white_cube: PlaceholderTexture,
+    black_cube: PlaceholderTexture,
+    gray_cube: PlaceholderTexture,
+    red_cube: PlaceholderTexture,
     default_sampler: Arc<wgpu::Sampler>,
     property_registry: Arc<PropertyIdRegistry>,
     stem_cache: Mutex<HashMap<String, Arc<StemMaterialLayout>>>,
@@ -160,9 +168,17 @@ impl EmbeddedMaterialBindResources {
     ) -> Result<Self, EmbeddedMaterialBindError> {
         let white_2d = create_white(device.as_ref(), TextureBindKind::Tex2D);
         let black_2d = create_black(device.as_ref(), TextureBindKind::Tex2D);
+        let gray_2d = create_gray(device.as_ref(), TextureBindKind::Tex2D);
+        let red_2d = create_red(device.as_ref(), TextureBindKind::Tex2D);
         let flat_normal_2d = create_flat_normal(device.as_ref(), TextureBindKind::Tex2D);
         let white_3d = create_white(device.as_ref(), TextureBindKind::Tex3D);
+        let black_3d = create_black(device.as_ref(), TextureBindKind::Tex3D);
+        let gray_3d = create_gray(device.as_ref(), TextureBindKind::Tex3D);
+        let red_3d = create_red(device.as_ref(), TextureBindKind::Tex3D);
         let white_cube = create_white(device.as_ref(), TextureBindKind::Cube);
+        let black_cube = create_black(device.as_ref(), TextureBindKind::Cube);
+        let gray_cube = create_gray(device.as_ref(), TextureBindKind::Cube);
+        let red_cube = create_red(device.as_ref(), TextureBindKind::Cube);
 
         let default_sampler = Arc::new(default_embedded_sampler(device.as_ref()));
 
@@ -170,9 +186,17 @@ impl EmbeddedMaterialBindResources {
             device: device.clone(),
             white_2d,
             black_2d,
+            gray_2d,
+            red_2d,
             flat_normal_2d,
             white_3d,
+            black_3d,
+            gray_3d,
+            red_3d,
             white_cube,
+            black_cube,
+            gray_cube,
+            red_cube,
             default_sampler,
             property_registry,
             stem_cache: Mutex::new(HashMap::new()),
@@ -190,9 +214,17 @@ impl EmbeddedMaterialBindResources {
     pub fn write_default_textures(&self, queue: &wgpu::Queue) {
         upload_white(queue, &self.white_2d, TextureBindKind::Tex2D);
         upload_black(queue, &self.black_2d, TextureBindKind::Tex2D);
+        upload_gray(queue, &self.gray_2d, TextureBindKind::Tex2D);
+        upload_red(queue, &self.red_2d, TextureBindKind::Tex2D);
         upload_flat_normal(queue, &self.flat_normal_2d, TextureBindKind::Tex2D);
         upload_white(queue, &self.white_3d, TextureBindKind::Tex3D);
+        upload_black(queue, &self.black_3d, TextureBindKind::Tex3D);
+        upload_gray(queue, &self.gray_3d, TextureBindKind::Tex3D);
+        upload_red(queue, &self.red_3d, TextureBindKind::Tex3D);
         upload_white(queue, &self.white_cube, TextureBindKind::Cube);
+        upload_black(queue, &self.black_cube, TextureBindKind::Cube);
+        upload_gray(queue, &self.gray_cube, TextureBindKind::Cube);
+        upload_red(queue, &self.red_cube, TextureBindKind::Cube);
     }
 
     /// Purges embedded GPU cache entries tied to one unloaded material.

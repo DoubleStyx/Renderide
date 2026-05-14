@@ -3,7 +3,9 @@
 use std::fs;
 use std::path::Path;
 
-use super::directives::{BuildPassDirective, pass_literal};
+use super::directives::{
+    BuildPassDirective, TextureDefaultDirective, pass_literal, texture_default_literal,
+};
 use super::error::BuildError;
 use super::model::{CompiledShader, ShaderSourceClass};
 
@@ -23,6 +25,7 @@ pub(super) struct ComposedShaders {
     embedded_arms: String,
     embedded_macro_arms: String,
     embedded_pass_arms: String,
+    embedded_texture_default_arms: String,
 }
 
 impl ComposedShaders {
@@ -37,13 +40,19 @@ impl ComposedShaders {
             embedded_arms: String::new(),
             embedded_macro_arms: String::new(),
             embedded_pass_arms: String::new(),
+            embedded_texture_default_arms: String::new(),
         }
     }
 
     /// Records one compiled shader source into embedded shader registries.
     pub(super) fn record_compiled_shader(&mut self, compiled: &CompiledShader) {
         for target in &compiled.targets {
-            self.emit_embedded_target(&target.target_stem, &target.wgsl, &target.pass_directives);
+            self.emit_embedded_target(
+                &target.target_stem,
+                &target.wgsl,
+                &target.pass_directives,
+                &compiled.texture_defaults,
+            );
             self.push_stem(compiled.source_class, target.target_stem.clone());
         }
     }
@@ -65,6 +74,7 @@ impl ComposedShaders {
         target_stem: &str,
         wgsl: &str,
         pass_directives: &[BuildPassDirective],
+        texture_defaults: &[TextureDefaultDirective],
     ) {
         use std::fmt::Write as _;
 
@@ -86,6 +96,17 @@ impl ComposedShaders {
             let _ = writeln!(
                 self.embedded_pass_arms,
                 "        \"{target_stem}\" => const {{ &[\n            {pass_literals},\n        ] }},"
+            );
+        }
+        if !texture_defaults.is_empty() {
+            let default_literals = texture_defaults
+                .iter()
+                .map(texture_default_literal)
+                .collect::<Vec<_>>()
+                .join(",\n            ");
+            let _ = writeln!(
+                self.embedded_texture_default_arms,
+                "        \"{target_stem}\" => const {{ &[\n            {default_literals},\n        ] }},"
             );
         }
     }
@@ -150,6 +171,41 @@ macro_rules! embedded_wgsl {{
 
 pub(crate) use embedded_wgsl;
 
+/// Texture fallback token parsed from `//#texture_default` material directives.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmbeddedTextureDefaultKind {{
+    /// Unity `"white"` default texture.
+    White,
+    /// Unity `"black"` default texture.
+    Black,
+    /// Unity `"gray"` / `"grey"` default texture.
+    Gray,
+    /// Unity `"bump"` default texture.
+    Bump,
+    /// Unity `"red"` default texture.
+    Red,
+    /// Empty Unity texture default (`""`), resolved as Unity's gray placeholder.
+    Empty,
+}}
+
+const _: &[EmbeddedTextureDefaultKind] = &[
+    EmbeddedTextureDefaultKind::White,
+    EmbeddedTextureDefaultKind::Black,
+    EmbeddedTextureDefaultKind::Gray,
+    EmbeddedTextureDefaultKind::Bump,
+    EmbeddedTextureDefaultKind::Red,
+    EmbeddedTextureDefaultKind::Empty,
+];
+
+/// One reflected material texture property and its Unity fallback token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EmbeddedTextureDefault {{
+    /// Reflected host material texture property name.
+    pub property: &'static str,
+    /// Unity fallback token for the texture property.
+    pub kind: EmbeddedTextureDefaultKind,
+}}
+
 /// Flattened WGSL for `stem` (also written under `shaders/target/{{stem}}.wgsl` at build time).
 #[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
 pub fn embedded_target_wgsl(stem: &str) -> Option<&'static str> {{
@@ -166,6 +222,14 @@ pub fn embedded_target_passes(stem: &str) -> &'static [crate::materials::Materia
     }}
 }}
 
+/// Declared texture fallbacks for `stem`, parsed from `//#texture_default` directives in the source WGSL.
+#[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
+pub fn embedded_target_texture_defaults(stem: &str) -> &'static [EmbeddedTextureDefault] {{
+    match stem {{
+{embedded_texture_default_arms}        _ => &[],
+    }}
+}}
+
 /// Material target stems (composed from `shaders/materials/*.wgsl`).
 #[cfg(test)]
 pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
@@ -175,13 +239,17 @@ pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
         embedded_arms = c.embedded_arms,
         embedded_macro_arms = c.embedded_macro_arms,
         embedded_pass_arms = c.embedded_pass_arms,
+        embedded_texture_default_arms = c.embedded_texture_default_arms,
         material_stems = stems_list(&c.material_stems),
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::shader::directives::{BuildDepthCompareDomain, BuildPassDirective, BuildPassKind};
+    use crate::shader::directives::{
+        BuildDepthCompareDomain, BuildPassDirective, BuildPassKind, TextureDefaultDirective,
+        TextureDefaultKind,
+    };
     use crate::shader::model::{CompiledShader, CompiledShaderTarget, ShaderSourceClass};
 
     use super::*;
@@ -196,6 +264,7 @@ mod tests {
             ShaderSourceClass::Material,
             &[("single", "single wgsl")],
             Vec::new(),
+            Vec::new(),
         );
         let dual = fake_compiled_shader(
             1,
@@ -204,6 +273,7 @@ mod tests {
                 ("dual_default", "default wgsl"),
                 ("dual_multiview", "multiview wgsl"),
             ],
+            Vec::new(),
             Vec::new(),
         );
 
@@ -247,6 +317,16 @@ mod tests {
                     depth_bias_constant: 0,
                 },
             ],
+            vec![
+                TextureDefaultDirective {
+                    property: "_MainTex".to_string(),
+                    kind: TextureDefaultKind::White,
+                },
+                TextureDefaultDirective {
+                    property: "_EmissionMap".to_string(),
+                    kind: TextureDefaultKind::Black,
+                },
+            ],
         );
 
         emit_compiled_shader(&compiled, target_dir.path(), &mut composed)?;
@@ -260,6 +340,11 @@ mod tests {
             "MaterialPassDesc { vertex_entry: \"vs_outline\", ..crate::materials::pass_from_kind(crate::materials::PassKind::Outline, \"fs_outline\") }"
         ));
         assert!(embedded.contains("COMPILED_MATERIAL_STEMS"));
+        assert!(embedded.contains("EmbeddedTextureDefaultKind"));
+        assert!(embedded.contains(
+            "EmbeddedTextureDefault { property: \"_MainTex\", kind: EmbeddedTextureDefaultKind::White }"
+        ));
+        assert!(embedded.contains("embedded_target_texture_defaults"));
         assert!(embedded.contains("macro_rules! embedded_wgsl"));
         assert!(embedded.contains("\"outline_default\" => \"wgsl body\","));
         assert!(!embedded.contains("pub const OUTLINE_DEFAULT_WGSL"));
@@ -285,12 +370,14 @@ mod tests {
         source_class: ShaderSourceClass,
         targets: &[(&str, &str)],
         pass_directives: Vec<BuildPassDirective>,
+        texture_defaults: Vec<TextureDefaultDirective>,
     ) -> CompiledShader {
         let target_pass_directives = pass_directives.clone();
         CompiledShader {
             compile_order,
             source_class,
             pass_directives,
+            texture_defaults,
             targets: targets
                 .iter()
                 .map(|(target_stem, wgsl)| CompiledShaderTarget {

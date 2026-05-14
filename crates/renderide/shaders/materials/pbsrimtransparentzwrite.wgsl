@@ -8,6 +8,12 @@
 //! but gets no shader-local constant.
 
 
+//#texture_default _MainTex white
+//#texture_default _NormalMap bump
+//#texture_default _EmissionMap black
+//#texture_default _OcclusionMap white
+//#texture_default _MetallicMap black
+
 #import renderide::frame::globals as rg
 #import renderide::material::fresnel as mf
 #import renderide::material::variant_bits as vb

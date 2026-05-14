@@ -4,6 +4,8 @@
 //! Shares `pbsmetallic` shading; the only difference is the normal-scaled vertex offset.
 
 
+//#texture_default _MainTex white
+
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight

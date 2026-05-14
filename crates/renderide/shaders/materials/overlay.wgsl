@@ -2,6 +2,8 @@
 //! and `Blend SrcAlpha OneMinusSrcAlpha` for HUD-style overlays.
 
 
+//#texture_default _MainTexture white
+
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu

@@ -6,6 +6,9 @@
 //! multiply, vertex-color color-space conversion, polar UV, RGB premultiply, and alpha intensity.
 
 
+//#texture_default _BehindTex white
+//#texture_default _FrontTex white
+
 #import renderide::frame::globals as rg
 #import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb

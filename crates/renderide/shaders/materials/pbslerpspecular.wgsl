@@ -4,6 +4,18 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes PBSLerpSpecular's
 //! shader-specific keyword bits locally.
 
+//#texture_default _MainTex white
+//#texture_default _MainTex1 white
+//#texture_default _LerpTex white
+//#texture_default _NormalMap bump
+//#texture_default _NormalMap1 bump
+//#texture_default _EmissionMap black
+//#texture_default _EmissionMap1 black
+//#texture_default _Occlusion white
+//#texture_default _Occlusion1 white
+//#texture_default _SpecularMap white
+//#texture_default _SpecularMap1 white
+
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight

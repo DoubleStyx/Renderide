@@ -2,6 +2,8 @@
 //! `_TextureChannel` selects R (0) / G (1) / B (2) / A (3); other values pass the texture through.
 
 
+//#texture_default _MainTex white
+
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu

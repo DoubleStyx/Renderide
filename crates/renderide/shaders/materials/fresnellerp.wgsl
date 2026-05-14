@@ -3,6 +3,14 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes FresnelLerp's
 //! shader-specific keyword bits locally.
 
+//#texture_default _FarTex0 white
+//#texture_default _NearTex0 white
+//#texture_default _FarTex1 white
+//#texture_default _NearTex1 white
+//#texture_default _LerpTex black
+//#texture_default _NormalMap0 bump
+//#texture_default _NormalMap1 bump
+
 #import renderide::frame::globals as rg
 #import renderide::pbs::normal as pnorm
 #import renderide::material::fresnel as mf

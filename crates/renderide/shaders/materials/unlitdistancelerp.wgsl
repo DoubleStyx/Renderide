@@ -5,6 +5,9 @@
 //! shader-specific keyword bits locally.
 
 
+//#texture_default _NearTex white
+//#texture_default _FarTex white
+
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::material::alpha_clip_sample as acs

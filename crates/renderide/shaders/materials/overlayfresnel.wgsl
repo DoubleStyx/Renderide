@@ -8,6 +8,12 @@
 //! `UniqueKeywords` (`_MUL_ALPHA_INTENSITY`, `_NORMALMAP`, `_POLARUV`, `_TEXTURE`).
 
 
+//#texture_default _BehindFarTex white
+//#texture_default _BehindNearTex white
+//#texture_default _FrontFarTex white
+//#texture_default _FrontNearTex white
+//#texture_default _NormalMap bump
+
 #import renderide::frame::globals as rg
 #import renderide::material::fresnel as mf
 #import renderide::material::variant_bits as vb

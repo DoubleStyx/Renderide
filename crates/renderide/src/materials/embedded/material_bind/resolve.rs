@@ -16,6 +16,7 @@ use super::super::texture_resolve::{
 };
 use super::cache::EmbeddedSamplerCacheKey;
 use super::uniform::MaterialUniformCacheKey;
+use crate::embedded_shaders::EmbeddedTextureDefaultKind;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
 /// Texture views, samplers, and the matching bind signature captured from one pool read.
@@ -152,7 +153,7 @@ impl EmbeddedMaterialBindResources {
                         offscreen_write_render_texture_asset_id,
                     )
                     .unwrap_or_else(|| {
-                        self.default_texture_view_for_host(host_name, view_dimension)
+                        self.default_texture_view(layout, b, host_name, view_dimension)
                     });
                     views.push(tex_view);
                 }
@@ -201,7 +202,54 @@ impl EmbeddedMaterialBindResources {
         })
     }
 
-    fn default_texture_view_for_host(
+    fn default_texture_view(
+        &self,
+        layout: &StemMaterialLayout,
+        binding: u32,
+        host_name: &str,
+        view_dimension: wgpu::TextureViewDimension,
+    ) -> Arc<wgpu::TextureView> {
+        layout
+            .texture_default_by_binding
+            .get(&binding)
+            .copied()
+            .map_or_else(
+                || self.compatibility_default_texture_view_for_host(host_name, view_dimension),
+                |kind| self.default_texture_view_for_kind(kind, view_dimension),
+            )
+    }
+
+    fn default_texture_view_for_kind(
+        &self,
+        kind: EmbeddedTextureDefaultKind,
+        view_dimension: wgpu::TextureViewDimension,
+    ) -> Arc<wgpu::TextureView> {
+        match texture_default_placeholder(kind, view_dimension) {
+            TextureDefaultPlaceholder::White => match view_dimension {
+                wgpu::TextureViewDimension::D3 => self.white_3d.view.clone(),
+                wgpu::TextureViewDimension::Cube => self.white_cube.view.clone(),
+                _ => self.white_2d.view.clone(),
+            },
+            TextureDefaultPlaceholder::Black => match view_dimension {
+                wgpu::TextureViewDimension::D3 => self.black_3d.view.clone(),
+                wgpu::TextureViewDimension::Cube => self.black_cube.view.clone(),
+                _ => self.black_2d.view.clone(),
+            },
+            TextureDefaultPlaceholder::Gray => match view_dimension {
+                wgpu::TextureViewDimension::D3 => self.gray_3d.view.clone(),
+                wgpu::TextureViewDimension::Cube => self.gray_cube.view.clone(),
+                _ => self.gray_2d.view.clone(),
+            },
+            TextureDefaultPlaceholder::Red => match view_dimension {
+                wgpu::TextureViewDimension::D3 => self.red_3d.view.clone(),
+                wgpu::TextureViewDimension::Cube => self.red_cube.view.clone(),
+                _ => self.red_2d.view.clone(),
+            },
+            TextureDefaultPlaceholder::FlatNormal => self.flat_normal_2d.view.clone(),
+        }
+    }
+
+    fn compatibility_default_texture_view_for_host(
         &self,
         host_name: &str,
         view_dimension: wgpu::TextureViewDimension,
@@ -370,5 +418,91 @@ impl EmbeddedMaterialBindResources {
             }
         };
         sampled.unwrap_or_else(|| self.default_sampler.clone())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextureDefaultPlaceholder {
+    White,
+    Black,
+    Gray,
+    Red,
+    FlatNormal,
+}
+
+fn texture_default_placeholder(
+    kind: EmbeddedTextureDefaultKind,
+    view_dimension: wgpu::TextureViewDimension,
+) -> TextureDefaultPlaceholder {
+    match kind {
+        EmbeddedTextureDefaultKind::White => TextureDefaultPlaceholder::White,
+        EmbeddedTextureDefaultKind::Black => TextureDefaultPlaceholder::Black,
+        EmbeddedTextureDefaultKind::Gray | EmbeddedTextureDefaultKind::Empty => {
+            TextureDefaultPlaceholder::Gray
+        }
+        EmbeddedTextureDefaultKind::Red => TextureDefaultPlaceholder::Red,
+        EmbeddedTextureDefaultKind::Bump => match view_dimension {
+            wgpu::TextureViewDimension::D2 => TextureDefaultPlaceholder::FlatNormal,
+            _ => TextureDefaultPlaceholder::Gray,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TextureDefaultPlaceholder, texture_default_placeholder};
+    use crate::embedded_shaders::EmbeddedTextureDefaultKind;
+
+    #[test]
+    fn texture_default_tokens_map_to_unity_placeholder_colors() {
+        assert_eq!(
+            texture_default_placeholder(
+                EmbeddedTextureDefaultKind::White,
+                wgpu::TextureViewDimension::D2
+            ),
+            TextureDefaultPlaceholder::White
+        );
+        assert_eq!(
+            texture_default_placeholder(
+                EmbeddedTextureDefaultKind::Black,
+                wgpu::TextureViewDimension::D2
+            ),
+            TextureDefaultPlaceholder::Black
+        );
+        assert_eq!(
+            texture_default_placeholder(
+                EmbeddedTextureDefaultKind::Gray,
+                wgpu::TextureViewDimension::D2
+            ),
+            TextureDefaultPlaceholder::Gray
+        );
+        assert_eq!(
+            texture_default_placeholder(
+                EmbeddedTextureDefaultKind::Empty,
+                wgpu::TextureViewDimension::D2
+            ),
+            TextureDefaultPlaceholder::Gray
+        );
+        assert_eq!(
+            texture_default_placeholder(
+                EmbeddedTextureDefaultKind::Red,
+                wgpu::TextureViewDimension::D2
+            ),
+            TextureDefaultPlaceholder::Red
+        );
+        assert_eq!(
+            texture_default_placeholder(
+                EmbeddedTextureDefaultKind::Bump,
+                wgpu::TextureViewDimension::D2
+            ),
+            TextureDefaultPlaceholder::FlatNormal
+        );
+        assert_eq!(
+            texture_default_placeholder(
+                EmbeddedTextureDefaultKind::Bump,
+                wgpu::TextureViewDimension::Cube
+            ),
+            TextureDefaultPlaceholder::Gray
+        );
     }
 }

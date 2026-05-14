@@ -4,6 +4,9 @@
 //! Default render state is transparent (host-driven via `_SrcBlend` / `_DstBlend` / `_ZWrite`).
 
 
+//#texture_default _MainTex white
+//#texture_default _PaintTex white
+
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight

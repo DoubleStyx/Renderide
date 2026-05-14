@@ -3,6 +3,8 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes Grayscale's
 //! shader-specific keyword bits locally.
 
+//#texture_default _Gradient black
+
 #import renderide::post::filter_vertex as fv
 #import renderide::frame::globals as rg
 #import renderide::frame::grab_pass as gp

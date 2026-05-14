@@ -6,6 +6,24 @@
 //! (four separate textures gated by `_SPECULARMAP`).
 
 
+//#texture_default _ColorMap white
+//#texture_default _PackedHeightMap white
+//#texture_default _Albedo white
+//#texture_default _Albedo1 white
+//#texture_default _Albedo2 white
+//#texture_default _Albedo3 white
+//#texture_default _PackedNormalMap01 black
+//#texture_default _PackedNormalMap23 black
+//#texture_default _EmissionMap white
+//#texture_default _EmissionMap1 white
+//#texture_default _EmissionMap2 white
+//#texture_default _EmissionMap3 white
+//#texture_default _PackedEmissionMap white
+//#texture_default _SpecularMap white
+//#texture_default _SpecularMap1 white
+//#texture_default _SpecularMap2 white
+//#texture_default _SpecularMap3 white
+
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::normal as pnorm

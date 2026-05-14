@@ -8,6 +8,14 @@
 //! shader-specific keyword bits locally.
 
 
+//#texture_default _MainTex white
+//#texture_default _SecondaryAlbedo white
+//#texture_default _NormalMap bump
+//#texture_default _EmissionMap black
+//#texture_default _SecondaryEmissionMap black
+//#texture_default _MetallicMap black
+//#texture_default _OcclusionMap white
+
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::normal as pnorm

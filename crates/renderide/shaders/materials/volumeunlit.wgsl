@@ -1,5 +1,7 @@
 //! Volume unlit raymarch material (`Shader "Volume/Unlit"`).
 
+//#texture_default _Volume empty
+
 #import renderide::core::texture_sampling as ts
 #import renderide::draw::per_draw as pd
 #import renderide::frame::globals as rg

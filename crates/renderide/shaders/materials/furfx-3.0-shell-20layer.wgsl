@@ -1,5 +1,9 @@
 //! FurFX 3.0 Shell 20Layer material root.
 
+//#texture_default _MainTex white
+//#texture_default _NoiseTex white
+//#texture_default _Cube empty
+
 #import renderide::fur::modern as fur
 #import renderide::fur::common as furc
 

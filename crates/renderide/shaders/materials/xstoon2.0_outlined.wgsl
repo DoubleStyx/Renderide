@@ -6,6 +6,19 @@
 //! routes succeed. This file is the underscore-cased route; `xstoon2.0-outlined.wgsl`
 //! is the dash-cased peer. They share the same module pipeline by design.
 
+//#texture_default _MainTex white
+//#texture_default _BumpMap bump
+//#texture_default _MetallicGlossMap white
+//#texture_default _EmissionMap white
+//#texture_default _RampSelectionMask black
+//#texture_default _Ramp white
+//#texture_default _OcclusionMap white
+//#texture_default _OutlineMask white
+//#texture_default _ThicknessMap white
+//#texture_default _CutoutMask white
+//#texture_default _Matcap black
+//#texture_default _ReflectivityMask white
+
 #import renderide::xiexe::toon2 as xs
 #import renderide::xiexe::toon2::base as xb
 #import renderide::xiexe::toon2::variant_bits as xvb

@@ -9,6 +9,9 @@
 //! defaults to grayscale (`1 - r`).
 
 
+//#texture_default _MainTex white
+//#texture_default _DepthTex black
+
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv

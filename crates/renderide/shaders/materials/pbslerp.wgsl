@@ -7,6 +7,18 @@
 //! shader-specific keyword bits locally.
 
 
+//#texture_default _MainTex white
+//#texture_default _MainTex1 white
+//#texture_default _LerpTex white
+//#texture_default _NormalMap bump
+//#texture_default _NormalMap1 bump
+//#texture_default _EmissionMap black
+//#texture_default _EmissionMap1 black
+//#texture_default _Occlusion white
+//#texture_default _Occlusion1 white
+//#texture_default _MetallicMap black
+//#texture_default _MetallicMap1 black
+
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight

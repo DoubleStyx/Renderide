@@ -5,6 +5,8 @@
 //! and samples the cubemap. The `FLIP` variant bit (Unity `#pragma multi_compile _ FLIP`)
 //! negates the direction.
 
+//#texture_default _Cube empty
+
 #import renderide::skybox::cubemap_storage as cubemap_storage
 #import renderide::post::filter_vertex as fv
 #import renderide::frame::globals as rg

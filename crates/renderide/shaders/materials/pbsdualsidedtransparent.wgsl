@@ -8,6 +8,12 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes
 //! PBSDualSidedTransparent's shader-specific keyword bits locally.
 
+//#texture_default _MainTex white
+//#texture_default _NormalMap bump
+//#texture_default _EmissionMap black
+//#texture_default _OcclusionMap white
+//#texture_default _MetallicMap black
+
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::normal as pnorm
 #import renderide::pbs::lighting as plight

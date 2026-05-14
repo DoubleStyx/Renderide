@@ -6,6 +6,8 @@
 //! `_Rect` clip; both keywords come from Resonite's variant bitmask.
 
 
+//#texture_default _ResolutionTex white
+
 #import renderide::post::filter_math as fm
 #import renderide::post::filter_vertex as fv
 #import renderide::frame::globals as rg

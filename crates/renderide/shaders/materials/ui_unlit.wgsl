@@ -14,6 +14,9 @@
 //! Per-draw uniforms (`@group(2)`) use [`renderide::draw::per_draw`].
 
 
+//#texture_default _MainTex white
+//#texture_default _MaskTex white
+
 #import renderide::core::texture_sampling as ts
 #import renderide::frame::globals as rg
 #import renderide::material::alpha as ma

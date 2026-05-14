@@ -141,12 +141,12 @@ pub(crate) fn should_fallback_to_primary_texture(host_name: &str) -> bool {
     matches!(host_name, "_MainTex" | "_Tex")
 }
 
-/// Returns the default 2D placeholder color for a reflected host texture name.
+/// Returns the compatibility 2D placeholder color for a reflected host texture name.
 ///
-/// Slot routing follows Unity's `Properties` block conventions for the corresponding shader
-/// asset: metallic and packed-normal channels default to black (no contribution), tangent-space
-/// normal maps default to a flat normal, and every other slot defaults to white so the material
-/// uniform multiplier (`_Color`, `_EmissionColor`, ...) dominates an unset texture.
+/// Embedded shaders with `//#texture_default` directives bypass this heuristic. It remains as a
+/// fallback for custom or unannotated shader slots, preserving the old channel-name convention:
+/// metallic and packed-normal channels default to black, tangent-space normal maps default to a
+/// flat normal, and every other slot defaults to white.
 pub(crate) fn default_2d_texture_color_for_host(host_name: &str) -> DefaultTextureColor {
     let host_name = shader_writer_unescaped_property_name(host_name);
     match host_name {

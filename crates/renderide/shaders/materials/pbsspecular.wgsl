@@ -9,6 +9,16 @@
 //! reserves bit 0 but gets no shader-local constant.
 
 
+//#texture_default _MainTex white
+//#texture_default _SpecGlossMap white
+//#texture_default _BumpMap bump
+//#texture_default _ParallaxMap black
+//#texture_default _OcclusionMap white
+//#texture_default _EmissionMap white
+//#texture_default _DetailMask white
+//#texture_default _DetailAlbedoMap gray
+//#texture_default _DetailNormalMap bump
+
 #import renderide::mesh::vertex as mv
 #import renderide::material::variant_bits as vb
 #import renderide::pbs::normal as pnorm

@@ -8,6 +8,12 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes
 //! PBSVertexColorTransparent's shader-specific keyword bits locally.
 
+//#texture_default _MainTex white
+//#texture_default _NormalMap bump
+//#texture_default _EmissionMap black
+//#texture_default _OcclusionMap white
+//#texture_default _MetallicMap black
+
 #import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb
 #import renderide::core::math as rmath

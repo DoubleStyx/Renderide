@@ -3,6 +3,8 @@
 //! `textureSampleGrad` with reconstructed gradients.
 
 
+//#texture_default _MainTex white
+
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu

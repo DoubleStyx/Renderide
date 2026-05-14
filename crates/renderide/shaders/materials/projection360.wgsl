@@ -6,6 +6,14 @@
 //! placeholder still have an implicit first keyword when the material sets no bit; this
 //! shader reconstructs that default for the affected groups.
 
+//#texture_default _MainTex black
+//#texture_default _SecondTex black
+//#texture_default _TintTex white
+//#texture_default _OffsetTex black
+//#texture_default _OffsetMask white
+//#texture_default _MainCube black
+//#texture_default _SecondCube black
+
 #import renderide::skybox::cubemap_storage as cubemap_storage
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
