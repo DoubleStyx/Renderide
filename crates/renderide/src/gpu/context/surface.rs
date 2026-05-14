@@ -26,6 +26,10 @@ impl GpuContext {
     }
 
     fn configure_current_surface(&mut self) -> Result<(), String> {
+        if self.device_lost() {
+            self.surface_configured = false;
+            return Err(String::from("device lost"));
+        }
         if self.surface.is_none() {
             self.surface_configured = false;
             return Ok(());
@@ -55,6 +59,9 @@ impl GpuContext {
     /// Early-returns when the resolved mode matches the active configuration, so per-frame calls
     /// from the runtime are cheap.
     pub fn set_present_mode(&mut self, mode: VsyncMode) {
+        if self.device_lost() {
+            return;
+        }
         let resolved = mode.resolve_present_mode(&self.supported_present_modes);
         if self.config.present_mode == resolved
             && (self.surface.is_none() || self.surface_configured)
@@ -95,6 +102,11 @@ impl GpuContext {
     /// [`wgpu::CurrentSurfaceTexture::Outdated`].
     pub fn reconfigure(&mut self, width: u32, height: u32) {
         profiling::scope!("gpu::reconfigure_surface");
+        if self.device_lost() {
+            self.surface_configured = false;
+            logger::warn!("Surface reconfigure skipped because the GPU device is lost");
+            return;
+        }
         let old = (self.config.width, self.config.height);
         self.config.width = width.max(1);
         self.config.height = height.max(1);
@@ -159,6 +171,9 @@ impl GpuContext {
     pub fn acquire_with_recovery(
         &mut self,
     ) -> Result<wgpu::SurfaceTexture, wgpu::CurrentSurfaceTexture> {
+        if self.device_lost() {
+            return Err(wgpu::CurrentSurfaceTexture::Lost);
+        }
         let Some(surface) = self.surface.as_ref() else {
             return Err(wgpu::CurrentSurfaceTexture::Lost);
         };

@@ -40,6 +40,8 @@ pub(crate) enum ExitReason {
     HostShutdown,
     /// IPC entered a fatal state.
     FatalIpc,
+    /// The active GPU device was reported lost by wgpu.
+    GpuDeviceLost,
     /// Winit could not create the main window.
     WindowCreateFailed,
     /// Desktop GPU initialization failed.
@@ -55,7 +57,9 @@ impl ExitReason {
     pub(crate) const fn run_exit(self) -> RunExit {
         match self {
             Self::FatalIpc => RunExit::Code(4),
-            Self::WindowCreateFailed | Self::DesktopGpuInitFailed => RunExit::Code(1),
+            Self::WindowCreateFailed | Self::DesktopGpuInitFailed | Self::GpuDeviceLost => {
+                RunExit::Code(1)
+            }
             Self::OpenxrInitFailed | Self::OpenxrMirrorSurfaceFailed => RunExit::Code(2),
             Self::WindowClosed | Self::ExternalShutdown | Self::OpenxrExit | Self::HostShutdown => {
                 RunExit::Clean
@@ -67,7 +71,11 @@ impl ExitReason {
     pub(crate) const fn uses_graceful_shutdown(self) -> bool {
         matches!(
             self,
-            Self::WindowClosed | Self::ExternalShutdown | Self::OpenxrExit | Self::HostShutdown
+            Self::WindowClosed
+                | Self::ExternalShutdown
+                | Self::OpenxrExit
+                | Self::HostShutdown
+                | Self::GpuDeviceLost
         )
     }
 }
@@ -172,11 +180,17 @@ mod tests {
     }
 
     #[test]
+    fn gpu_device_loss_maps_to_gpu_failure_code() {
+        assert_eq!(ExitReason::GpuDeviceLost.run_exit(), RunExit::Code(1));
+    }
+
+    #[test]
     fn only_normal_runtime_exits_use_graceful_shutdown() {
         assert!(ExitReason::WindowClosed.uses_graceful_shutdown());
         assert!(ExitReason::ExternalShutdown.uses_graceful_shutdown());
         assert!(ExitReason::OpenxrExit.uses_graceful_shutdown());
         assert!(ExitReason::HostShutdown.uses_graceful_shutdown());
+        assert!(ExitReason::GpuDeviceLost.uses_graceful_shutdown());
         assert!(!ExitReason::FatalIpc.uses_graceful_shutdown());
         assert!(!ExitReason::OpenxrInitFailed.uses_graceful_shutdown());
     }

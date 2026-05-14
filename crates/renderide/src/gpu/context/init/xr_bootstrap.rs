@@ -7,6 +7,7 @@ use winit::window::Window;
 use super::super::super::adapter::device::{install_uncaptured_error_handler, try_gpu_profiler};
 use super::super::super::adapter::msaa_support::MsaaSupport;
 use super::super::super::limits::GpuLimits;
+use super::super::super::sync::device_health::GpuDeviceHealth;
 use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError};
 use super::shared::{
@@ -39,7 +40,12 @@ impl GpuContext {
             requested_size.height,
         );
         let mapped_buffer_health = Arc::new(GpuMappedBufferHealth::new());
-        install_uncaptured_error_handler(device.as_ref(), Arc::clone(&mapped_buffer_health));
+        let device_health = Arc::new(GpuDeviceHealth::new());
+        install_uncaptured_error_handler(
+            device.as_ref(),
+            Arc::clone(&mapped_buffer_health),
+            Arc::clone(&device_health),
+        );
         // `Arc<dyn Window>` is `Into<SurfaceTarget<'static>>`, so the returned `Surface` is
         // already `'static` -- no `transmute` is required to extend the borrow.
         let surface_safe: wgpu::Surface<'static> = instance
@@ -112,6 +118,7 @@ impl GpuContext {
             queue: runtime.queue,
             gpu_queue_access_gate: runtime.gpu_queue_access_gate,
             mapped_buffer_health,
+            device_health,
             surface: Some(surface_safe),
             config,
             supported_present_modes,

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use super::super::context::GpuError;
 use super::super::instance_setup::required_limits_for_adapter;
+use super::super::sync::device_health::GpuDeviceHealth;
 use super::super::sync::mapped_buffer_health::{
     GpuMappedBufferHealth, validation_mentions_mapped_buffer_invalidation,
 };
@@ -20,6 +21,7 @@ pub(crate) async fn request_device_for_adapter(
     adapter: &wgpu::Adapter,
     required_features: wgpu::Features,
     mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+    device_health: Arc<GpuDeviceHealth>,
 ) -> Result<(Arc<wgpu::Device>, wgpu::Queue), GpuError> {
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
@@ -30,7 +32,7 @@ pub(crate) async fn request_device_for_adapter(
         })
         .await
         .map_err(|e| GpuError::Device(format!("{e:?}")))?;
-    install_uncaptured_error_handler(&device, mapped_buffer_health);
+    install_uncaptured_error_handler(&device, mapped_buffer_health, device_health);
     Ok((Arc::new(device), queue))
 }
 
@@ -42,11 +44,13 @@ pub(crate) async fn request_device_for_adapter(
 pub(crate) fn install_uncaptured_error_handler(
     device: &wgpu::Device,
     mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+    device_health: Arc<GpuDeviceHealth>,
 ) {
     let lost_health = Arc::clone(&mapped_buffer_health);
     device.set_device_lost_callback(move |reason, message| {
         logger::error!("wgpu device lost: reason={reason:?} message={message}");
         lost_health.mark_invalid("wgpu device lost");
+        device_health.mark_lost(format!("{reason:?}: {message}"));
     });
 
     device.on_uncaptured_error(Arc::new(move |err: wgpu::Error| match err {

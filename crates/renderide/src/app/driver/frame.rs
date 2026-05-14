@@ -86,6 +86,9 @@ impl AppDriver {
         if self.handle_runtime_exit_requests(event_loop) {
             return FrameTickOutcome::ExitRequested;
         }
+        if self.handle_gpu_device_loss_request(event_loop) {
+            return FrameTickOutcome::ExitRequested;
+        }
         self.runtime.update_decoupling_activation(Instant::now());
         {
             profiling::scope!("tick::asset_integration");
@@ -122,7 +125,15 @@ impl AppDriver {
         let Some(render_outcome) = self.render_views(&window, xr_tick.as_ref()) else {
             return FrameTickOutcome::MissingTarget;
         };
-        self.present_and_diagnostics(xr_tick, render_outcome.hmd_projection_ended);
+        let hmd_projection_ended = render_outcome.hmd_projection_ended;
+        if self.handle_gpu_device_loss_request(event_loop) {
+            if !hmd_projection_ended {
+                self.queue_empty_openxr_frame_if_needed(xr_tick);
+            }
+            self.poll_graceful_shutdown(event_loop);
+            return FrameTickOutcome::ExitRequested;
+        }
+        self.present_and_diagnostics(xr_tick, hmd_projection_ended);
         FrameTickOutcome::Presented
     }
 
@@ -238,6 +249,22 @@ impl AppDriver {
         }
 
         self.request_exit(reason, event_loop);
+        true
+    }
+
+    /// Requests renderer shutdown when wgpu reports that the active device is lost.
+    fn handle_gpu_device_loss_request(&mut self, event_loop: &dyn ActiveEventLoop) -> bool {
+        let Some(generation) = self
+            .target
+            .as_mut()
+            .and_then(|target| target.gpu_mut().take_device_lost())
+        else {
+            return false;
+        };
+
+        logger::error!("GPU device lost; shutting down renderer: generation={generation}");
+        self.runtime.log_compact_renderer_summary("gpu-device-lost");
+        self.request_exit(ExitReason::GpuDeviceLost, event_loop);
         true
     }
 

@@ -242,14 +242,16 @@ impl FrameBracketReadback {
                 let _keep_resolve_buffer_alive = resolve_buffer;
                 let gpu_ms = match result {
                     Ok(()) => {
-                        let gpu_ms =
-                            if mapped_buffer_health.generation() == mapped_buffer_generation {
-                                read_gpu_ms(&buffer_for_callback, timestamp_period)
-                            } else {
-                                None
-                            };
-                        buffer_for_callback.unmap();
-                        gpu_ms
+                        if frame_bracket_readback_generation_current(
+                            mapped_buffer_health.as_ref(),
+                            mapped_buffer_generation,
+                        ) {
+                            let gpu_ms = read_gpu_ms(&buffer_for_callback, timestamp_period);
+                            buffer_for_callback.unmap();
+                            gpu_ms
+                        } else {
+                            None
+                        }
                     }
                     Err(_) => None,
                 };
@@ -269,6 +271,14 @@ fn read_gpu_ms(readback: &wgpu::Buffer, timestamp_period: f32) -> Option<f64> {
     gpu_ms
 }
 
+/// Returns whether a mapped readback callback still belongs to the active buffer generation.
+fn frame_bracket_readback_generation_current(
+    health: &GpuMappedBufferHealth,
+    expected_generation: u64,
+) -> bool {
+    health.generation() == expected_generation
+}
+
 fn timestamp_pair_bytes_to_ms(bytes: &[u8], timestamp_period: f32) -> Option<f64> {
     if bytes.len() < TIMESTAMP_PAIR_BYTES as usize {
         return None;
@@ -282,7 +292,8 @@ fn timestamp_pair_bytes_to_ms(bytes: &[u8], timestamp_period: f32) -> Option<f64
 
 #[cfg(test)]
 mod tests {
-    use super::timestamp_pair_bytes_to_ms;
+    use super::{frame_bracket_readback_generation_current, timestamp_pair_bytes_to_ms};
+    use crate::gpu::sync::mapped_buffer_health::GpuMappedBufferHealth;
 
     #[test]
     fn timestamp_pair_bytes_convert_to_ms() {
@@ -307,6 +318,22 @@ mod tests {
         let ms = timestamp_pair_bytes_to_ms(&bytes, 2.0).unwrap();
 
         assert_eq!(ms, 0.0);
+    }
+
+    #[test]
+    fn readback_generation_check_rejects_stale_callbacks() {
+        let health = GpuMappedBufferHealth::new();
+        let generation = health.generation();
+
+        assert!(frame_bracket_readback_generation_current(
+            &health, generation
+        ));
+
+        health.mark_invalid("test invalidation");
+
+        assert!(!frame_bracket_readback_generation_current(
+            &health, generation
+        ));
     }
 
     fn timestamp_bytes(begin: u64, end: u64) -> [u8; 16] {

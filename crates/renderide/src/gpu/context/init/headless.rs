@@ -6,6 +6,7 @@ use super::super::super::adapter::device::{request_device_for_adapter, try_gpu_p
 use super::super::super::adapter::features::adapter_render_features_intersection;
 use super::super::super::adapter::msaa_support::MsaaSupport;
 use super::super::super::limits::GpuLimits;
+use super::super::super::sync::device_health::GpuDeviceHealth;
 use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError};
 use super::shared::{
@@ -59,27 +60,20 @@ impl GpuContext {
         let adapter = selection.adapter;
 
         let mapped_buffer_health = Arc::new(GpuMappedBufferHealth::new());
+        let device_health = Arc::new(GpuDeviceHealth::new());
         let required_features = adapter_render_features_intersection(&adapter);
         let (device, queue) = request_device_for_adapter(
             &adapter,
             required_features,
             Arc::clone(&mapped_buffer_health),
+            Arc::clone(&device_health),
         )
         .await?;
 
         let limits = GpuLimits::try_new(device.as_ref(), &adapter)?;
 
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            format,
-            width: width.max(1),
-            height: height.max(1),
-            present_mode: wgpu::PresentMode::AutoNoVsync,
-            desired_maximum_frame_latency: max_frame_latency,
-            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-            view_formats: Vec::new(),
-        };
+        let config = headless_surface_config(width, height, max_frame_latency, format);
         let adapter_info = adapter.get_info();
         let depth_stencil_format = crate::gpu::main_forward_depth_stencil_format(required_features);
         let msaa = MsaaSupport::discover(
@@ -135,10 +129,30 @@ impl GpuContext {
             queue: runtime.queue,
             gpu_queue_access_gate: runtime.gpu_queue_access_gate,
             mapped_buffer_health,
+            device_health,
             surface: None,
             config,
             supported_present_modes: Vec::new(),
             window: None,
         }))
+    }
+}
+
+/// Builds the synthetic surface config used by the headless offscreen path.
+fn headless_surface_config(
+    width: u32,
+    height: u32,
+    max_frame_latency: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::SurfaceConfiguration {
+    wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        format,
+        width: width.max(1),
+        height: height.max(1),
+        present_mode: wgpu::PresentMode::AutoNoVsync,
+        desired_maximum_frame_latency: max_frame_latency,
+        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+        view_formats: Vec::new(),
     }
 }

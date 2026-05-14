@@ -23,6 +23,7 @@ const _: fn() = || {
 
 use super::limits::{GpuLimits, GpuLimitsError};
 use super::submission_state::GpuSubmissionState;
+use super::sync::device_health::GpuDeviceHealth;
 use super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use mapped_buffer_recovery::MappedBufferRecoveryFrame;
 use thiserror::Error;
@@ -64,6 +65,10 @@ pub struct GpuContext {
     gpu_queue_access_gate: super::GpuQueueAccessGate,
     /// Per-frame recovery policy for CPU-mapped GPU staging/readback buffers.
     mapped_buffer_recovery: mapped_buffer_recovery::GpuMappedBufferRecovery,
+    /// Shared fatal device-loss state set by wgpu callbacks.
+    device_health: Arc<GpuDeviceHealth>,
+    /// Last device-loss generation observed by the app frame loop.
+    seen_device_lost_generation: u64,
     /// Kept as `'static` so the context can move independently of the window borrow; the window
     /// must outlive this value (owned alongside it in the app handler). [`None`] in headless mode
     /// (see [`Self::new_headless`]).
@@ -198,5 +203,20 @@ impl GpuContext {
     pub(crate) fn mapped_buffer_invalidation_generation(&self) -> u64 {
         self.mapped_buffer_recovery
             .mapped_buffer_invalidation_generation()
+    }
+
+    /// Whether the active `wgpu::Device` has been reported lost.
+    pub(crate) fn device_lost(&self) -> bool {
+        self.device_health.is_lost()
+    }
+
+    /// Returns a newly observed device-loss generation once.
+    pub(crate) fn take_device_lost(&mut self) -> Option<u64> {
+        let generation = self.device_health.lost_generation();
+        if generation == 0 || generation == self.seen_device_lost_generation {
+            return None;
+        }
+        self.seen_device_lost_generation = generation;
+        Some(generation)
     }
 }

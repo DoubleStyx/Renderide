@@ -8,6 +8,7 @@ use super::super::super::adapter::device::{request_device_for_adapter, try_gpu_p
 use super::super::super::adapter::features::adapter_render_features_intersection;
 use super::super::super::adapter::msaa_support::MsaaSupport;
 use super::super::super::limits::GpuLimits;
+use super::super::super::sync::device_health::GpuDeviceHealth;
 use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError};
 use super::shared::{
@@ -21,6 +22,7 @@ use crate::gpu::submission_state::GpuSubmissionState;
 struct PreparedWindowGpu {
     adapter_info: wgpu::AdapterInfo,
     mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+    device_health: Arc<GpuDeviceHealth>,
     msaa: MsaaSupport,
     limits: Arc<GpuLimits>,
     device: Arc<wgpu::Device>,
@@ -138,11 +140,13 @@ async fn prepare_window_gpu_for_adapter(
     max_frame_latency: u32,
 ) -> Result<PreparedWindowGpu, GpuError> {
     let mapped_buffer_health = Arc::new(GpuMappedBufferHealth::new());
+    let device_health = Arc::new(GpuDeviceHealth::new());
     let required_features = adapter_render_features_intersection(adapter);
     let (device, queue) = request_device_for_adapter(
         adapter,
         required_features,
         Arc::clone(&mapped_buffer_health),
+        Arc::clone(&device_health),
     )
     .await?;
 
@@ -169,6 +173,7 @@ async fn prepare_window_gpu_for_adapter(
     Ok(PreparedWindowGpu {
         adapter_info,
         mapped_buffer_health,
+        device_health,
         msaa,
         limits,
         device,
@@ -224,6 +229,7 @@ fn assemble_window_context(
         queue: runtime.queue,
         gpu_queue_access_gate: runtime.gpu_queue_access_gate,
         mapped_buffer_health: prepared.mapped_buffer_health,
+        device_health: prepared.device_health,
         surface: Some(surface),
         config: prepared.config,
         supported_present_modes: prepared.supported_present_modes,

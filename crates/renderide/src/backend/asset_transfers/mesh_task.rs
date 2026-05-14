@@ -50,7 +50,7 @@ pub(super) fn complete_empty_mesh_upload(
         asset_id,
         resident_replaced,
         resident_stored,
-        queue.pools.mesh_pool.accounting().total_resident_bytes()
+        queue.pools.mesh_pool.accounting().mesh_resident_bytes()
     );
     result
 }

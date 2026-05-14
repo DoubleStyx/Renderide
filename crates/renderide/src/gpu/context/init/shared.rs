@@ -13,6 +13,7 @@ use super::super::super::profiling::frame_bracket::FrameBracket;
 use super::super::super::profiling::frame_cpu_gpu_timing::{
     FrameCpuGpuTiming, FrameCpuGpuTimingHandle,
 };
+use super::super::super::sync::device_health::GpuDeviceHealth;
 use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError, PrimaryOffscreenTargets};
 use crate::config::{GraphicsApiSetting, VsyncMode};
@@ -78,6 +79,8 @@ pub(super) struct GpuContextParts {
     pub(super) gpu_queue_access_gate: super::super::super::GpuQueueAccessGate,
     /// Shared mapped-buffer invalidation generation.
     pub(super) mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+    /// Shared device-loss generation.
+    pub(super) device_health: Arc<GpuDeviceHealth>,
     /// Optional window-backed surface.
     pub(super) surface: Option<wgpu::Surface<'static>>,
     /// Active surface/offscreen configuration.
@@ -187,6 +190,8 @@ pub(super) fn assemble_context(parts: GpuContextParts) -> GpuContext {
         mapped_buffer_recovery: super::super::mapped_buffer_recovery::GpuMappedBufferRecovery::new(
             parts.mapped_buffer_health,
         ),
+        device_health: parts.device_health,
+        seen_device_lost_generation: 0,
         surface_configured: parts.surface.is_some(),
         surface: parts.surface,
         config: parts.config,
