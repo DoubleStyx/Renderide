@@ -4,16 +4,21 @@ use rayon::prelude::*;
 
 use crate::shared::TextureFormat;
 
-/// Texel count above which mip decode fans out across rayon (64 KiB RGBA8 = 128x128).
-///
-/// Most tail mips in a chain are smaller than 128x128, so they keep the serial path and
-/// avoid rayon dispatch overhead. Above 128x128 the decode is large enough to amortize.
-const PARALLEL_DECODE_MIN_TEXELS: usize = 8_192;
-
 /// Texel count per rayon chunk during parallel decode.
 ///
 /// Larger chunks reduce rayon scheduler thrash and keep split counts bounded even on huge inputs.
 const PARALLEL_DECODE_TEXELS_PER_CHUNK: usize = 8_192;
+
+/// Texel count at which mip decode fans out across rayon (64 KiB RGBA8 = 128x128).
+///
+/// Most tail mips in a chain are smaller than 128x128, so they keep the serial path and
+/// avoid rayon dispatch overhead. At 128x128 and above, decode is large enough to amortize.
+const PARALLEL_DECODE_MIN_TEXELS: usize = PARALLEL_DECODE_TEXELS_PER_CHUNK * 2;
+
+#[inline]
+fn should_parallelize_decode(texel_count: usize) -> bool {
+    texel_count >= PARALLEL_DECODE_MIN_TEXELS
+}
 
 /// Runs `decode` over the full input/output, splitting into rayon chunks once `texel_count`
 /// crosses [`PARALLEL_DECODE_MIN_TEXELS`].
@@ -34,7 +39,7 @@ fn decode_in_chunks<F>(
     debug_assert!(dst_bytes_per_texel > 0);
     debug_assert_eq!(dst.len() % dst_bytes_per_texel, 0);
     let texel_count = dst.len() / dst_bytes_per_texel;
-    if texel_count >= PARALLEL_DECODE_MIN_TEXELS {
+    if should_parallelize_decode(texel_count) {
         let src_chunk = PARALLEL_DECODE_TEXELS_PER_CHUNK * src_bytes_per_texel;
         let dst_chunk = PARALLEL_DECODE_TEXELS_PER_CHUNK * dst_bytes_per_texel;
         dst.par_chunks_mut(dst_chunk)
@@ -655,8 +660,8 @@ mod tests {
 
     #[test]
     fn rgb24_parallel_path_matches_serial_reference() {
-        let w = 64usize;
-        let h = 64usize;
+        let w = 128usize;
+        let h = 128usize;
         let raw: Vec<u8> = (0..(w * h * 3))
             .map(|i| (i as u8).wrapping_mul(7))
             .collect();
@@ -668,8 +673,8 @@ mod tests {
 
     #[test]
     fn argb32_parallel_path_matches_serial_reference() {
-        let w = 64usize;
-        let h = 64usize;
+        let w = 128usize;
+        let h = 128usize;
         let raw: Vec<u8> = (0..(w * h * 4))
             .map(|i| (i as u8).wrapping_mul(11))
             .collect();
@@ -681,8 +686,8 @@ mod tests {
 
     #[test]
     fn bgra32_parallel_path_matches_serial_reference() {
-        let w = 64usize;
-        let h = 64usize;
+        let w = 128usize;
+        let h = 128usize;
         let raw: Vec<u8> = (0..(w * h * 4))
             .map(|i| (i as u8).wrapping_mul(13))
             .collect();
@@ -694,8 +699,8 @@ mod tests {
 
     #[test]
     fn r8_parallel_path_replicates_to_rgb_with_full_alpha() {
-        let w = 64usize;
-        let h = 64usize;
+        let w = 128usize;
+        let h = 128usize;
         let raw: Vec<u8> = (0..(w * h)).map(|i| (i as u8).wrapping_mul(3)).collect();
         let out = decode_mip_to_rgba8(TextureFormat::R8, w as u32, h as u32, false, &raw)
             .expect("decode");
@@ -710,7 +715,7 @@ mod tests {
     #[test]
     fn rgb565_parallel_path_matches_small_reference() {
         // Build a small (8x8 = 64 texel) input twice: once decoded via the small path, once tiled
-        // up to 64x64 to force the parallel path. Per-texel bits are identical so the tiled output
+        // up to 128x128 to force the parallel path. Per-texel bits are identical so the tiled output
         // must match the small output replicated.
         let w_small = 8usize;
         let h_small = 8usize;
@@ -726,8 +731,8 @@ mod tests {
         )
         .expect("decode small");
 
-        let w = 64usize;
-        let h = 64usize;
+        let w = 128usize;
+        let h = 128usize;
         let mut raw = Vec::with_capacity(w * h * 2);
         for _ in 0..(w * h / (w_small * h_small)) {
             raw.extend_from_slice(&raw_small);
@@ -739,6 +744,12 @@ mod tests {
             expected.extend_from_slice(&small_out);
         }
         assert_eq!(big_out, expected);
+    }
+
+    #[test]
+    fn decode_parallel_gate_requires_multiple_chunks() {
+        assert!(!should_parallelize_decode(PARALLEL_DECODE_TEXELS_PER_CHUNK));
+        assert!(should_parallelize_decode(PARALLEL_DECODE_MIN_TEXELS));
     }
 
     #[test]
