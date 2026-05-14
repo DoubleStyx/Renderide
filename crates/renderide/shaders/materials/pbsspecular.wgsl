@@ -117,6 +117,20 @@ fn smoothness_from_albedo_alpha() -> bool {
     return pbs_kw(PBSSPECULAR_KW_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A);
 }
 
+fn unity_standard_alpha(texture_alpha: f32) -> f32 {
+    if (smoothness_from_albedo_alpha()) {
+        return mat._Color.a;
+    }
+    return mat._Color.a * texture_alpha;
+}
+
+fn unity_standard_clip_alpha(uv: vec2<f32>) -> f32 {
+    if (smoothness_from_albedo_alpha()) {
+        return mat._Color.a;
+    }
+    return mat._Color.a * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv);
+}
+
 fn uv_with_parallax(uv: vec2<f32>, world_pos: vec3<f32>, world_n: vec3<f32>, world_t: vec4<f32>, view_layer: u32) -> vec2<f32> {
     if (!pbs_kw(PBSSPECULAR_KW_PARALLAXMAP)) {
         return uv;
@@ -164,8 +178,8 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
     let uv_detail = detail_uv(uv0, uv1);
 
     let albedo_sample = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
-    let base_alpha = mat._Color.a * albedo_sample.a;
-    let clip_alpha = mat._Color.a * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_main);
+    let base_alpha = unity_standard_alpha(albedo_sample.a);
+    let clip_alpha = unity_standard_clip_alpha(uv_main);
     if (alpha_test_enabled() && clip_alpha <= mat._Cutoff) {
         discard;
     }
