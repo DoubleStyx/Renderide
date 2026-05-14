@@ -1,7 +1,8 @@
 //! No-GPU coverage for pass-scoped material render-state policy.
 
 use super::super::render_state::{
-    MaterialCullOverride, MaterialDepthOffsetState, MaterialRenderState, MaterialStencilState,
+    MaterialCullOverride, MaterialDepthCompareDomain, MaterialDepthOffsetState,
+    MaterialRenderState, MaterialStencilState,
 };
 use super::*;
 
@@ -539,6 +540,10 @@ fn xstoon_stenciler_uses_source_stencil_pass_state() {
     assert_eq!(stencil_passes[0].name, "stencil", "xstoonstenciler_default");
     assert_eq!(stencil_passes[0].cull_mode, Some(wgpu::Face::Front));
     assert_eq!(stencil_passes[0].write_mask, wgpu::ColorWrites::ALL);
+    assert_eq!(
+        stencil_passes[0].depth_compare_domain,
+        MaterialDepthCompareDomain::UnityCompareFunction
+    );
     assert!(!stencil_passes[0].depth_write);
 }
 

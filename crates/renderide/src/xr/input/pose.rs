@@ -9,7 +9,7 @@ use glam::{EulerRot, Quat, Vec3};
 use openxr as xr;
 
 use crate::shared::Chirality;
-use crate::xr::session::openxr_pose_to_host_tracking;
+use crate::xr::session::openxr_tracking_pose_to_host;
 
 use super::profile::ActiveControllerProfile;
 
@@ -21,22 +21,44 @@ pub(super) fn unity_euler_deg(x: f32, y: f32, z: f32) -> Quat {
         * Quat::from_rotation_z(z.to_radians())
 }
 
-/// Converts an OpenXR grip pose into the SteamVR raw controller pose expected by host IPC.
-///
-/// OpenXR `/input/grip/pose` is a standardized hand grip frame. SteamVR raw poses are device
-/// model frames, so controller models where those frames differ need a fixed local transform
-/// before host-specific controller corrections are applied.
-///
-/// The constants are expressed in OpenXR right-handed grip space and converted into the host
-/// left-handed basis before composition. The stored transform is the inverse of the
-/// grip-from-raw calibration transform, decomposed as `(R^-1, -R^-1 * T)`.
-pub(super) fn openxr_grip_to_steamvr_raw(
+/// Local OpenXR-space transform from standardized grip pose to SteamVR-style raw controller pose.
+#[derive(Clone, Copy)]
+pub(super) struct RawFromGripTransform {
+    rotation: Quat,
+    translation: Vec3,
+}
+
+impl RawFromGripTransform {
+    fn identity() -> Self {
+        Self {
+            rotation: Quat::IDENTITY,
+            translation: Vec3::ZERO,
+        }
+    }
+
+    fn from_grip_from_raw(rotation: Quat, translation: Vec3) -> Self {
+        let rotation = rotation.normalize();
+        let raw_from_grip_rotation = rotation.inverse();
+        Self {
+            rotation: raw_from_grip_rotation,
+            translation: raw_from_grip_rotation * -translation,
+        }
+    }
+
+    fn apply(self, position: Vec3, rotation: Quat) -> (Vec3, Quat) {
+        (
+            position + rotation * self.translation,
+            (rotation * self.rotation).normalize(),
+        )
+    }
+}
+
+/// Returns the local OpenXR-space transform from grip pose to SteamVR raw controller pose.
+pub(super) fn steamvr_raw_from_openxr_grip(
     profile: ActiveControllerProfile,
     side: Chirality,
-    position: Vec3,
-    rotation: Quat,
-) -> (Vec3, Quat) {
-    let (openxr_rotation, openxr_translation) = match (profile, side) {
+) -> RawFromGripTransform {
+    let (grip_from_raw_rotation, grip_from_raw_translation) = match (profile, side) {
         (ActiveControllerProfile::Index, Chirality::Left) => (
             Quat::from_euler(
                 EulerRot::XYZ,
@@ -68,27 +90,29 @@ pub(super) fn openxr_grip_to_steamvr_raw(
             Quat::from_euler(EulerRot::XYZ, 20.6_f32.to_radians(), 0.0, 0.0),
             Vec3::new(-0.007, -0.001_829_41, 0.101_948_2),
         ),
-        _ => return (position, rotation),
+        _ => return RawFromGripTransform::identity(),
     };
+    RawFromGripTransform::from_grip_from_raw(grip_from_raw_rotation, grip_from_raw_translation)
+}
 
-    let host_rotation = Quat::from_xyzw(
-        -openxr_rotation.x,
-        -openxr_rotation.y,
-        openxr_rotation.z,
-        openxr_rotation.w,
-    );
-    let host_translation = Vec3::new(
-        openxr_translation.x,
-        openxr_translation.y,
-        -openxr_translation.z,
-    );
-    let raw_from_grip_rotation = host_rotation.inverse();
-    let raw_from_grip_translation = raw_from_grip_rotation * -host_translation;
-
-    (
-        position + rotation * raw_from_grip_translation,
-        rotation * raw_from_grip_rotation,
-    )
+/// Converts an OpenXR grip pose into the SteamVR raw controller pose expected by host IPC.
+///
+/// OpenXR `/input/grip/pose` is a standardized hand grip frame. SteamVR raw poses are device
+/// model frames, so controller models where those frames differ need a fixed local transform
+/// before host-specific controller corrections are applied.
+///
+/// Calibration is composed in OpenXR right-handed tracking space first. The calibrated raw pose is
+/// then converted into the host left-handed basis so controller frames and HMD frames enter
+/// FrooxEngine in the same tracking space.
+pub(super) fn openxr_grip_to_steamvr_raw(
+    profile: ActiveControllerProfile,
+    side: Chirality,
+    position: Vec3,
+    rotation: Quat,
+) -> (Vec3, Quat) {
+    let (raw_position, raw_rotation) =
+        steamvr_raw_from_openxr_grip(profile, side).apply(position, rotation);
+    openxr_tracking_pose_to_host(raw_position, raw_rotation)
 }
 
 /// Touch-only grip correction from `SteamVRDriver.UpdateController`: the real Oculus Touch is the
@@ -188,17 +212,15 @@ pub(super) fn bound_hand_pose_defaults(
     (true, position, rotation)
 }
 
-/// Derives a controller grip-style pose from an aim pose by stepping back along the forward axis
-/// to the approximate grip origin. Used only when the OpenXR grip pose is invalid but aim is
-/// still tracked.
+/// Derives a controller grip-style pose from an OpenXR aim pose by stepping back along the
+/// OpenXR forward axis to the approximate grip origin.
 pub(super) fn controller_pose_from_aim(position: Vec3, rotation: Quat) -> (Vec3, Quat) {
     let rotation = rotation.normalize();
-    let tip_offset = Vec3::new(0.0, 0.0, 0.075);
+    let tip_offset = Vec3::new(0.0, 0.0, -0.075);
     (position - rotation * tip_offset, rotation)
 }
 
-/// Converts an [`xr::SpaceLocation`] into host-tracking-space `(position, rotation)` using only
-/// [`openxr_pose_to_host_tracking`] (OpenXR RH -> FrooxEngine/Unity LH).
+/// Converts an [`xr::SpaceLocation`] into OpenXR tracking-space `(position, rotation)`.
 ///
 /// Returns `None` when either position or orientation is invalid, so callers can fall back to
 /// aim-derived poses or keep the previous frame's state.
@@ -209,12 +231,26 @@ pub(super) fn pose_from_location(location: &xr::SpaceLocation) -> Option<(Vec3, 
         && location
             .location_flags
             .contains(xr::SpaceLocationFlags::POSITION_VALID);
-    tracked.then(|| openxr_pose_to_host_tracking(&location.pose))
+    tracked.then(|| {
+        let pose = &location.pose;
+        let position = Vec3::new(pose.position.x, pose.position.y, pose.position.z);
+        let orientation = pose.orientation;
+        let rotation = Quat::from_xyzw(orientation.x, orientation.y, orientation.z, orientation.w);
+        let len_sq = rotation.length_squared();
+        let rotation = if len_sq.is_finite() && len_sq >= 1e-10 {
+            rotation.normalize()
+        } else {
+            Quat::IDENTITY
+        };
+        (position, rotation)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::xr::session::openxr_tracking_pose_to_host;
 
     fn assert_vec3_near(actual: Vec3, expected: Vec3) {
         let delta = (actual - expected).length();
@@ -237,7 +273,67 @@ mod tests {
     }
 
     #[test]
-    fn identity_offset_profiles_emit_grip_unchanged() {
+    fn calibrated_raw_from_grip_transforms_match_profile_table() {
+        for (profile, side, grip_from_raw_rotation, grip_from_raw_translation) in [
+            (
+                ActiveControllerProfile::Index,
+                Chirality::Left,
+                Quat::from_euler(
+                    EulerRot::XYZ,
+                    15.392_f32.to_radians(),
+                    -2.071_f32.to_radians(),
+                    0.303_f32.to_radians(),
+                ),
+                Vec3::new(0.0, -0.015, 0.13),
+            ),
+            (
+                ActiveControllerProfile::Index,
+                Chirality::Right,
+                Quat::from_euler(
+                    EulerRot::XYZ,
+                    15.392_f32.to_radians(),
+                    2.071_f32.to_radians(),
+                    -0.303_f32.to_radians(),
+                ),
+                Vec3::new(0.0, -0.015, 0.13),
+            ),
+            (
+                ActiveControllerProfile::Touch,
+                Chirality::Left,
+                Quat::from_euler(EulerRot::XYZ, 20.6_f32.to_radians(), 0.0, 0.0),
+                Vec3::new(0.007, -0.001_829_41, 0.101_948_2),
+            ),
+            (
+                ActiveControllerProfile::Touch,
+                Chirality::Right,
+                Quat::from_euler(EulerRot::XYZ, 20.6_f32.to_radians(), 0.0, 0.0),
+                Vec3::new(-0.007, -0.001_829_41, 0.101_948_2),
+            ),
+            (
+                ActiveControllerProfile::ViveFocus3,
+                Chirality::Left,
+                Quat::from_euler(EulerRot::XYZ, 20.6_f32.to_radians(), 0.0, 0.0),
+                Vec3::new(0.007, -0.001_829_41, 0.101_948_2),
+            ),
+            (
+                ActiveControllerProfile::ViveFocus3,
+                Chirality::Right,
+                Quat::from_euler(EulerRot::XYZ, 20.6_f32.to_radians(), 0.0, 0.0),
+                Vec3::new(-0.007, -0.001_829_41, 0.101_948_2),
+            ),
+        ] {
+            let actual = steamvr_raw_from_openxr_grip(profile, side);
+            let expected = RawFromGripTransform::from_grip_from_raw(
+                grip_from_raw_rotation,
+                grip_from_raw_translation,
+            );
+            assert_vec3_near(actual.translation, expected.translation);
+            assert_quat_near(actual.rotation, expected.rotation);
+        }
+    }
+
+    #[test]
+    fn identity_calibration_profiles_emit_openxr_grip_unchanged_before_host_conversion() {
         let grip_position = Vec3::new(0.25, 1.4, -0.35);
         let grip_rotation = (Quat::from_rotation_y(0.6) * Quat::from_rotation_x(-0.2)).normalize();
 
@@ -253,11 +349,29 @@ mod tests {
         ] {
             for side in [Chirality::Left, Chirality::Right] {
                 let (position, rotation) =
-                    openxr_grip_to_steamvr_raw(profile, side, grip_position, grip_rotation);
+                    steamvr_raw_from_openxr_grip(profile, side).apply(grip_position, grip_rotation);
                 assert_vec3_near(position, grip_position);
                 assert_quat_near(rotation, grip_rotation);
             }
         }
+    }
+
+    #[test]
+    fn identity_calibration_profiles_convert_result_to_host_tracking_space() {
+        let grip_position = Vec3::new(0.25, 1.4, -0.35);
+        let grip_rotation = (Quat::from_rotation_y(0.6) * Quat::from_rotation_x(-0.2)).normalize();
+        let (expected_position, expected_rotation) =
+            openxr_tracking_pose_to_host(grip_position, grip_rotation);
+
+        let (position, rotation) = openxr_grip_to_steamvr_raw(
+            ActiveControllerProfile::Vive,
+            Chirality::Left,
+            grip_position,
+            grip_rotation,
+        );
+
+        assert_vec3_near(position, expected_position);
+        assert_quat_near(rotation, expected_rotation);
     }
 
     #[test]
@@ -269,7 +383,7 @@ mod tests {
         ] {
             for side in [Chirality::Left, Chirality::Right] {
                 let (position, rotation) =
-                    openxr_grip_to_steamvr_raw(profile, side, Vec3::ZERO, Quat::IDENTITY);
+                    steamvr_raw_from_openxr_grip(profile, side).apply(Vec3::ZERO, Quat::IDENTITY);
                 assert!(
                     (position.length() - expected_translation).abs() < 1e-4,
                     "{profile:?} {side:?}: position offset {position:?}",
@@ -291,9 +405,11 @@ mod tests {
             ActiveControllerProfile::ViveFocus3,
         ] {
             let (left_position, left_rotation) =
-                openxr_grip_to_steamvr_raw(profile, Chirality::Left, Vec3::ZERO, Quat::IDENTITY);
+                steamvr_raw_from_openxr_grip(profile, Chirality::Left)
+                    .apply(Vec3::ZERO, Quat::IDENTITY);
             let (right_position, right_rotation) =
-                openxr_grip_to_steamvr_raw(profile, Chirality::Right, Vec3::ZERO, Quat::IDENTITY);
+                steamvr_raw_from_openxr_grip(profile, Chirality::Right)
+                    .apply(Vec3::ZERO, Quat::IDENTITY);
 
             assert!(
                 (left_position.x + right_position.x).abs() < 1e-4,
@@ -314,6 +430,33 @@ mod tests {
                 "{profile:?}: rotation angle should match: left={left_angle}, right={right_angle}",
             );
         }
+    }
+
+    #[test]
+    fn pose_from_location_returns_openxr_tracking_pose() {
+        let expected_rotation = Quat::from_rotation_y(0.35).normalize();
+        let location = xr::SpaceLocation {
+            location_flags: xr::SpaceLocationFlags::ORIENTATION_VALID
+                | xr::SpaceLocationFlags::POSITION_VALID,
+            pose: xr::Posef {
+                orientation: xr::Quaternionf {
+                    x: expected_rotation.x,
+                    y: expected_rotation.y,
+                    z: expected_rotation.z,
+                    w: expected_rotation.w,
+                },
+                position: xr::Vector3f {
+                    x: 1.0,
+                    y: 2.0,
+                    z: -3.0,
+                },
+            },
+        };
+
+        let (position, rotation) = pose_from_location(&location).expect("tracked pose");
+
+        assert_vec3_near(position, Vec3::new(1.0, 2.0, -3.0));
+        assert_quat_near(rotation, expected_rotation);
     }
 
     /// Bound-hand rotations for profiles Unity post-multiplies with `generic_fix` must have a

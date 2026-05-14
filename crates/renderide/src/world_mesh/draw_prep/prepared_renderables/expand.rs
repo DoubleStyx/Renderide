@@ -6,6 +6,8 @@
 
 use glam::Mat4;
 use hashbrown::HashSet;
+use rayon::prelude::*;
+use std::ops::Range;
 
 use crate::assets::mesh::GpuMesh;
 use crate::gpu_pools::MeshPool;
@@ -22,6 +24,23 @@ use crate::world_mesh::draw_prep::collect::prepared::prepared_draws_share_render
 
 use super::super::item::stacked_material_submesh_range;
 use super::{FramePreparedDraw, FramePreparedRun};
+
+/// Renderer count in one render space above which expansion fans out across Rayon chunks.
+pub(in crate::world_mesh::draw_prep) const PREPARED_EXPAND_PARALLEL_MIN_RENDERERS: usize = 256;
+/// Renderer slice width used by aggressive prepared-renderable expansion.
+pub(in crate::world_mesh::draw_prep) const PREPARED_EXPAND_RENDERER_CHUNK_SIZE: usize = 64;
+
+#[derive(Clone, Copy)]
+enum ExpansionChunkKind {
+    Static,
+    Skinned,
+}
+
+#[derive(Clone)]
+struct ExpansionChunkSpec {
+    kind: ExpansionChunkKind,
+    range: Range<usize>,
+}
 
 /// One renderable's identity and mesh handles, threaded into [`expand_renderer_slots`].
 ///
@@ -112,6 +131,22 @@ pub(in crate::world_mesh::draw_prep) fn estimated_draw_count(
     })
 }
 
+/// Total static + skinned renderer rows in one active render space.
+pub(in crate::world_mesh::draw_prep) fn renderer_count_for_space(
+    scene: &SceneCoordinator,
+    space_id: RenderSpaceId,
+) -> usize {
+    scene.space(space_id).map_or(0, |s| {
+        if s.is_active() {
+            s.static_mesh_renderers()
+                .len()
+                .saturating_add(s.skinned_mesh_renderers().len())
+        } else {
+            0
+        }
+    })
+}
+
 /// Expands every valid renderer (static and skinned) in `space_id` into `out`.
 pub(in crate::world_mesh::draw_prep) fn expand_space_into(
     out: &mut Vec<FramePreparedDraw>,
@@ -138,6 +173,100 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into(
     };
     expand_static_list(ctx.reborrow(), space.static_mesh_renderers());
     expand_skinned_list(ctx, space.skinned_mesh_renderers());
+}
+
+/// Expands every valid renderer in `space_id`, using chunked Rayon fan-out for large spaces.
+pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive(
+    out: &mut Vec<FramePreparedDraw>,
+    chunk_scratch: &mut Vec<Vec<FramePreparedDraw>>,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    render_context: RenderingContext,
+    space_id: RenderSpaceId,
+) {
+    if renderer_count_for_space(scene, space_id) < PREPARED_EXPAND_PARALLEL_MIN_RENDERERS {
+        expand_space_into(out, scene, mesh_pool, render_context, space_id);
+        return;
+    }
+    expand_space_into_parallel_chunks(
+        out,
+        chunk_scratch,
+        scene,
+        mesh_pool,
+        render_context,
+        space_id,
+    );
+}
+
+fn expand_space_into_parallel_chunks(
+    out: &mut Vec<FramePreparedDraw>,
+    chunk_scratch: &mut Vec<Vec<FramePreparedDraw>>,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    render_context: RenderingContext,
+    space_id: RenderSpaceId,
+) {
+    let Some(space) = scene.space(space_id) else {
+        return;
+    };
+    if !space.is_active() {
+        return;
+    }
+    let mut specs = Vec::new();
+    push_expansion_chunks(
+        &mut specs,
+        ExpansionChunkKind::Static,
+        space.static_mesh_renderers().len(),
+    );
+    push_expansion_chunks(
+        &mut specs,
+        ExpansionChunkKind::Skinned,
+        space.skinned_mesh_renderers().len(),
+    );
+    if specs.len() < 2 {
+        expand_space_into(out, scene, mesh_pool, render_context, space_id);
+        return;
+    }
+
+    if chunk_scratch.len() < specs.len() {
+        chunk_scratch.resize_with(specs.len(), Vec::new);
+    }
+    chunk_scratch
+        .par_iter_mut()
+        .take(specs.len())
+        .zip(specs.par_iter())
+        .for_each(|(chunk_out, spec)| {
+            profiling::scope!("mesh::prepared_renderables::renderer_chunk_worker");
+            chunk_out.clear();
+            chunk_out.reserve(spec.range.len().saturating_mul(2));
+            expand_space_chunk_into(chunk_out, scene, mesh_pool, render_context, space_id, spec);
+        });
+
+    let total = chunk_scratch
+        .iter()
+        .take(specs.len())
+        .map(Vec::len)
+        .sum::<usize>();
+    out.reserve(total);
+    for chunk in chunk_scratch.iter_mut().take(specs.len()) {
+        out.append(chunk);
+    }
+}
+
+fn push_expansion_chunks(
+    chunks: &mut Vec<ExpansionChunkSpec>,
+    kind: ExpansionChunkKind,
+    len: usize,
+) {
+    let mut start = 0usize;
+    while start < len {
+        let end = len.min(start + PREPARED_EXPAND_RENDERER_CHUNK_SIZE);
+        chunks.push(ExpansionChunkSpec {
+            kind,
+            range: start..end,
+        });
+        start = end;
+    }
 }
 
 /// Frame-time inputs that stay constant across all renderers in one render space.
@@ -178,6 +307,56 @@ fn expand_skinned_list(mut ctx: ExpandCtx<'_>, renderers: &[SkinnedMeshRenderer]
             /*skinned=*/ true,
             Some(sk),
         );
+    }
+}
+
+fn expand_space_chunk_into(
+    out: &mut Vec<FramePreparedDraw>,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    render_context: RenderingContext,
+    space_id: RenderSpaceId,
+    spec: &ExpansionChunkSpec,
+) {
+    let Some(space) = scene.space(space_id) else {
+        return;
+    };
+    if !space.is_active() {
+        return;
+    }
+    let mut ctx = ExpandCtx {
+        out,
+        scene,
+        mesh_pool,
+        render_context,
+        space_id,
+        space_is_overlay: space.is_overlay(),
+    };
+    match spec.kind {
+        ExpansionChunkKind::Static => {
+            for renderable_index in spec.range.clone() {
+                let r = &space.static_mesh_renderers()[renderable_index];
+                try_expand_one_renderer(
+                    &mut ctx,
+                    renderable_index,
+                    r,
+                    /*skinned=*/ false,
+                    None,
+                );
+            }
+        }
+        ExpansionChunkKind::Skinned => {
+            for renderable_index in spec.range.clone() {
+                let sk = &space.skinned_mesh_renderers()[renderable_index];
+                try_expand_one_renderer(
+                    &mut ctx,
+                    renderable_index,
+                    &sk.base,
+                    /*skinned=*/ true,
+                    Some(sk),
+                );
+            }
+        }
     }
 }
 
@@ -354,5 +533,33 @@ fn expand_renderer_slots(
             property_block_id: slot.property_block_id,
             cull_geometry,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_chunk(spec: &ExpansionChunkSpec, kind: ExpansionChunkKind, range: Range<usize>) {
+        match (spec.kind, kind) {
+            (ExpansionChunkKind::Static, ExpansionChunkKind::Static)
+            | (ExpansionChunkKind::Skinned, ExpansionChunkKind::Skinned) => {}
+            _ => panic!("unexpected expansion chunk kind"),
+        }
+        assert_eq!(spec.range, range);
+    }
+
+    #[test]
+    fn expansion_chunks_preserve_static_then_skinned_order() {
+        let mut specs = Vec::new();
+        push_expansion_chunks(&mut specs, ExpansionChunkKind::Static, 130);
+        push_expansion_chunks(&mut specs, ExpansionChunkKind::Skinned, 70);
+
+        assert_eq!(specs.len(), 5);
+        assert_chunk(&specs[0], ExpansionChunkKind::Static, 0..64);
+        assert_chunk(&specs[1], ExpansionChunkKind::Static, 64..128);
+        assert_chunk(&specs[2], ExpansionChunkKind::Static, 128..130);
+        assert_chunk(&specs[3], ExpansionChunkKind::Skinned, 0..64);
+        assert_chunk(&specs[4], ExpansionChunkKind::Skinned, 64..70);
     }
 }

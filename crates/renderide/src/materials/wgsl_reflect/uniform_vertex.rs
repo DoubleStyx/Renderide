@@ -47,6 +47,11 @@ fn vertex_input_format(
             ReflectedVertexInputFormat::Float32x2
         }
         TypeInner::Vector { size, scalar }
+            if scalar.kind == naga::ScalarKind::Float && *size == VectorSize::Tri =>
+        {
+            ReflectedVertexInputFormat::Float32x3
+        }
+        TypeInner::Vector { size, scalar }
             if scalar.kind == naga::ScalarKind::Float && *size == VectorSize::Quad =>
         {
             ReflectedVertexInputFormat::Float32x4
@@ -204,10 +209,11 @@ fn vs_main(
     @location(1) normal: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(3) color: vec4<f32>,
-    @location(5) uv1: vec2<f32>,
+    @location(5) uv1: vec3<f32>,
+    @location(8) uv4: vec4<f32>,
 ) -> VsOut {
     var out: VsOut;
-    out.position = position + normal * 0.0 + color * 0.0 + vec4<f32>(uv0, uv1) * 0.0;
+    out.position = position + normal * 0.0 + color * 0.0 + vec4<f32>(uv0, uv1.x, uv4.w) * 0.0;
     return out;
 }
 "#,
@@ -225,7 +231,11 @@ fn vs_main(
         }));
         assert!(inputs.contains(&ReflectedVertexInput {
             location: 5,
-            format: ReflectedVertexInputFormat::Float32x2,
+            format: ReflectedVertexInputFormat::Float32x3,
+        }));
+        assert!(inputs.contains(&ReflectedVertexInput {
+            location: 8,
+            format: ReflectedVertexInputFormat::Float32x4,
         }));
     }
 

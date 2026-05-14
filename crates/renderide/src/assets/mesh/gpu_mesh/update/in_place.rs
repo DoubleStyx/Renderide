@@ -314,6 +314,7 @@ fn rebuild_mesh_after_in_place_write(
         uv1_buffer: mesh.uv1_buffer.clone(),
         uv2_buffer: mesh.uv2_buffer.clone(),
         uv3_buffer: mesh.uv3_buffer.clone(),
+        wide_uv_buffer: mesh.wide_uv_buffer.clone(),
         extended_vertex_stream_source,
         has_skeleton: mesh.has_skeleton,
         skinning_bind_matrices: skinning,
@@ -332,12 +333,9 @@ fn updated_extended_vertex_stream_source(
     if !write_vertex && !write_index {
         return mesh.extended_vertex_stream_source.clone();
     }
-    if mesh.extended_vertex_streams_ready()
-        && !mesh.should_keep_extended_vertex_stream_source_for_tangent_upgrade()
-    {
-        return None;
-    }
-    extended_vertex_stream_source_from_raw(raw, data, layout)
+    let source = extended_vertex_stream_source_from_raw(raw, data, layout)?;
+    mesh.should_keep_extended_vertex_stream_source(&source)
+        .then_some(source)
 }
 
 #[cfg(test)]

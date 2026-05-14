@@ -13,7 +13,7 @@ use renderide_test::host::scene_session::spawn::renderer_spawn_args;
 fn spawn_args_table_covers_release_and_dev_paths() {
     let cases = [
         (
-            "target/release/renderide",
+            "target/release/renderide-renderer",
             "target/headless.png",
             1920u32,
             1080u32,
@@ -21,7 +21,7 @@ fn spawn_args_table_covers_release_and_dev_paths() {
             "queue-rel",
         ),
         (
-            "target/dev-fast/renderide",
+            "target/dev-fast/renderide-renderer",
             "/tmp/headless.png",
             64,
             32,
@@ -29,7 +29,7 @@ fn spawn_args_table_covers_release_and_dev_paths() {
             "queue-devfast",
         ),
         (
-            "target/debug/renderide",
+            "target/debug/renderide-renderer",
             "out/test.png",
             800,
             600,

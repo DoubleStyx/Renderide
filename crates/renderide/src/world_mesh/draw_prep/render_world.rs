@@ -5,13 +5,14 @@
 //! expensive to rediscover every frame.
 
 use hashbrown::{HashMap, HashSet};
+use rayon::prelude::*;
 
 use crate::gpu_pools::MeshPool;
 use crate::scene::{RenderSpaceId, SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
 use crate::shared::RenderingContext;
 
 use super::prepared_renderables::{
-    FramePreparedDraw, FramePreparedRenderables, estimated_draw_count, expand_space_into,
+    FramePreparedDraw, FramePreparedRenderables, estimated_draw_count, expand_space_into_aggressive,
 };
 
 /// Persistent renderer-facing cache of expanded world-mesh renderables.
@@ -27,6 +28,37 @@ pub struct RenderWorld {
 struct RenderWorldSpace {
     active: bool,
     draws: Vec<FramePreparedDraw>,
+    chunk_scratch: Vec<Vec<FramePreparedDraw>>,
+}
+
+struct DirtyRenderWorldSpace {
+    id: RenderSpaceId,
+    cached: RenderWorldSpace,
+}
+
+fn refresh_render_world_space(
+    cached: &mut RenderWorldSpace,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    render_context: RenderingContext,
+    id: RenderSpaceId,
+) {
+    cached.draws.clear();
+    if !cached.active {
+        return;
+    }
+    let estimate = estimated_draw_count(scene, id);
+    if estimate > cached.draws.capacity() {
+        cached.draws.reserve(estimate - cached.draws.capacity());
+    }
+    expand_space_into_aggressive(
+        &mut cached.draws,
+        &mut cached.chunk_scratch,
+        scene,
+        mesh_pool,
+        render_context,
+        id,
+    );
 }
 
 impl RenderWorld {
@@ -113,22 +145,42 @@ impl RenderWorld {
         render_context: RenderingContext,
     ) {
         let mut dirty_spaces = std::mem::take(&mut self.dirty_spaces);
+        let mut work = Vec::with_capacity(dirty_spaces.len());
         for id in dirty_spaces.drain() {
             let Some(space) = scene.space(id) else {
                 self.spaces.remove(&id);
                 continue;
             };
-            let cached = self.spaces.entry(id).or_default();
+            let mut cached = self.spaces.remove(&id).unwrap_or_default();
             cached.active = space.is_active();
-            cached.draws.clear();
-            if !space.is_active() {
-                continue;
+            work.push(DirtyRenderWorldSpace { id, cached });
+        }
+
+        if work.len() < 2 {
+            for mut slot in work.drain(..) {
+                refresh_render_world_space(
+                    &mut slot.cached,
+                    scene,
+                    mesh_pool,
+                    render_context,
+                    slot.id,
+                );
+                self.spaces.insert(slot.id, slot.cached);
             }
-            let estimate = estimated_draw_count(scene, id);
-            if estimate > cached.draws.capacity() {
-                cached.draws.reserve(estimate - cached.draws.capacity());
+        } else {
+            work.par_iter_mut().for_each(|slot| {
+                profiling::scope!("mesh::render_world::dirty_space_worker");
+                refresh_render_world_space(
+                    &mut slot.cached,
+                    scene,
+                    mesh_pool,
+                    render_context,
+                    slot.id,
+                );
+            });
+            for slot in work.drain(..) {
+                self.spaces.insert(slot.id, slot.cached);
             }
-            expand_space_into(&mut cached.draws, scene, mesh_pool, render_context, id);
         }
         self.dirty_spaces = dirty_spaces;
     }
@@ -184,6 +236,7 @@ mod tests {
             RenderWorldSpace {
                 active: true,
                 draws: Vec::new(),
+                ..Default::default()
             },
         );
         world.dirty_spaces.insert(RenderSpaceId(3));
@@ -260,6 +313,7 @@ mod tests {
             RenderWorldSpace {
                 active: true,
                 draws: Vec::new(),
+                ..Default::default()
             },
         );
         world.spaces.insert(
@@ -267,6 +321,7 @@ mod tests {
             RenderWorldSpace {
                 active: false,
                 draws: Vec::new(),
+                ..Default::default()
             },
         );
 

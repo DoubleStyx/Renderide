@@ -181,7 +181,7 @@ pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use crate::shader::directives::{BuildPassDirective, BuildPassKind};
+    use crate::shader::directives::{BuildDepthCompareDomain, BuildPassDirective, BuildPassKind};
     use crate::shader::model::{CompiledShader, CompiledShaderTarget, ShaderSourceClass};
 
     use super::*;
@@ -233,6 +233,7 @@ mod tests {
                     fragment_entry: "fs_main".to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: true,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },
@@ -241,6 +242,7 @@ mod tests {
                     fragment_entry: "fs_outline".to_string(),
                     vertex_entry: "vs_outline".to_string(),
                     alpha_to_coverage: false,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_bias_slope_scale_bits: 0.0f32.to_bits(),
                     depth_bias_constant: 0,
                 },

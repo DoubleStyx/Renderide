@@ -44,6 +44,8 @@ pub struct ReflectedMaterialUniformBlock {
 pub enum ReflectedVertexInputFormat {
     /// `vec2<f32>`.
     Float32x2,
+    /// `vec3<f32>`.
+    Float32x3,
     /// `vec4<f32>`.
     Float32x4,
     /// Any currently unsupported vertex input shape.

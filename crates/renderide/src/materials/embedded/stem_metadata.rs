@@ -24,8 +24,9 @@ pub use vertex_streams::{
     EmbeddedVertexStreamMask, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_tangent_stream,
     embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
-    embedded_stem_needs_uv3_stream, embedded_stem_uses_raw_normal_payload,
-    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_ui_transparent_fallback,
+    embedded_stem_needs_uv3_stream, embedded_stem_needs_wide_uv_stream,
+    embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
+    embedded_stem_uses_ui_transparent_fallback,
 };
 
 use hashbrown::HashMap;
@@ -151,6 +152,11 @@ impl EmbeddedStemQuery {
     /// `true` when reflected material pass vertex entries use `@location(7)` as a `vec2<f32>` UV3 stream.
     pub fn needs_uv3_stream(&self) -> bool {
         self.vertex_stream_mask().uv3
+    }
+
+    /// `true` when reflected material pass vertex entries need the packed UV0-UV7 stream.
+    pub fn needs_wide_uv_stream(&self) -> bool {
+        self.vertex_stream_mask().wide_uvs
     }
 
     /// Exact mesh-forward vertex streams declared by reflected material pass vertex entries.

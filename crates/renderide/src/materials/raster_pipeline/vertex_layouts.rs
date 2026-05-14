@@ -1,9 +1,13 @@
 //! Static `VertexBufferLayout` table for the mesh-forward raster pipeline.
 //!
-//! Mesh-forward shaders consume up to eight independent vertex streams (position, normal, uv0,
-//! color, tangent, uv1, uv2, uv3). The table is data-driven: each location is declared once with
-//! its stride and component format; [`mesh_forward_vertex_buffer_layout`] renders one layout for
-//! the compact buffer-slot order selected by pipeline reflection.
+//! Mesh-forward shaders consume compact vertex streams (position, normal, UV0, color, tangent,
+//! UV1, UV2, UV3) and optionally one packed wide-UV stream for UV0-UV7. The compact table is
+//! data-driven: each location is declared once with its stride and component format;
+//! [`mesh_forward_vertex_buffer_layout`] renders one layout for the compact buffer-slot order
+//! selected by pipeline reflection.
+
+/// Bytes per vertex in the packed wide-UV stream.
+pub(super) const WIDE_UV_VERTEX_STRIDE: u64 = 8 * 16;
 
 /// Per-stream descriptor used to materialise the mesh-forward vertex layout table.
 struct VertexStreamDescriptor {
@@ -81,6 +85,17 @@ pub(super) fn mesh_forward_vertex_buffer_layout(
     location: usize,
 ) -> wgpu::VertexBufferLayout<'static> {
     layout_at(location)
+}
+
+/// Returns a vertex buffer layout for the packed wide-UV stream.
+pub(super) fn mesh_forward_wide_uv_vertex_buffer_layout(
+    attributes: &[wgpu::VertexAttribute],
+) -> wgpu::VertexBufferLayout<'_> {
+    wgpu::VertexBufferLayout {
+        array_stride: WIDE_UV_VERTEX_STRIDE,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes,
+    }
 }
 
 const fn layout_at(index: usize) -> wgpu::VertexBufferLayout<'static> {

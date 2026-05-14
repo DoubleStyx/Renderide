@@ -60,6 +60,7 @@ mod tests {
     use glam::{Quat, Vec3};
 
     use crate::shared::Chirality;
+    use crate::xr::session::openxr_tracking_pose_to_host;
 
     use super::super::pose::{
         controller_pose_from_aim, openxr_grip_to_steamvr_raw, touch_pose_correction,
@@ -154,8 +155,10 @@ mod tests {
             Some((aim_position, aim_rotation)),
         )
         .expect("frame");
-        let (expected_controller_position, expected_controller_rotation) =
+        let (aim_grip_position, aim_grip_rotation) =
             controller_pose_from_aim(aim_position, aim_rotation);
+        let (expected_controller_position, expected_controller_rotation) =
+            openxr_tracking_pose_to_host(aim_grip_position, aim_grip_rotation);
         assert_vec3_near(frame.position, expected_controller_position);
         assert_quat_near(frame.rotation, expected_controller_rotation);
     }
@@ -255,8 +258,10 @@ mod tests {
                 None,
             )
             .unwrap_or_else(|| panic!("frame for {profile:?}"));
-            assert_vec3_near(frame.position, grip_position);
-            assert_quat_near(frame.rotation, grip_rotation);
+            let (expected_position, expected_rotation) =
+                openxr_tracking_pose_to_host(grip_position, grip_rotation);
+            assert_vec3_near(frame.position, expected_position);
+            assert_quat_near(frame.rotation, expected_rotation);
         }
     }
 
@@ -264,6 +269,8 @@ mod tests {
     fn raw_corrected_profiles_shift_grip_pose() {
         let grip_position = Vec3::new(0.3, 1.2, -0.5);
         let grip_rotation = Quat::from_rotation_x(0.25).normalize();
+        let (host_grip_position, host_grip_rotation) =
+            openxr_tracking_pose_to_host(grip_position, grip_rotation);
         for profile in [
             ActiveControllerProfile::Index,
             ActiveControllerProfile::Touch,
@@ -277,13 +284,33 @@ mod tests {
             )
             .unwrap_or_else(|| panic!("frame for {profile:?}"));
             assert!(
-                (frame.position - grip_position).length() > 0.05,
+                (frame.position - host_grip_position).length() > 0.05,
                 "{profile:?}: expected non-trivial raw-pose position correction",
             );
             assert!(
-                rotation_delta_angle(frame.rotation, grip_rotation) > 0.2,
+                rotation_delta_angle(frame.rotation, host_grip_rotation) > 0.2,
                 "{profile:?}: expected non-trivial raw-pose rotation correction",
             );
         }
+    }
+
+    #[test]
+    fn bound_hand_offsets_do_not_change_controller_pose() {
+        let grip_position = Vec3::new(0.3, 1.2, -0.5);
+        let grip_rotation = Quat::from_rotation_x(0.25).normalize();
+        let frame = resolve_controller_frame(
+            ActiveControllerProfile::Generic,
+            Chirality::Left,
+            Some((grip_position, grip_rotation)),
+            None,
+        )
+        .expect("frame");
+        let (expected_position, expected_rotation) =
+            openxr_tracking_pose_to_host(grip_position, grip_rotation);
+
+        assert_vec3_near(frame.position, expected_position);
+        assert_quat_near(frame.rotation, expected_rotation);
+        assert!(frame.hand_position.length() > 0.01);
+        assert!(rotation_delta_angle(frame.hand_rotation, Quat::IDENTITY) > 0.2);
     }
 }

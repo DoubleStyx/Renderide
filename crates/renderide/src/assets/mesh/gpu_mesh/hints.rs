@@ -1,5 +1,6 @@
 //! Free helpers for index format, submesh ranges, selective upload hints, and in-place stream checks.
 
+use crate::assets::mesh::layout::WIDE_UV_VERTEX_STRIDE_BYTES;
 use crate::materials::RasterPrimitiveTopology;
 use crate::shared::{
     BlendshapeBufferDescriptor, IndexBufferFormat, MeshUploadData, MeshUploadHintFlag,
@@ -86,7 +87,8 @@ pub(super) fn derived_streams_compatible_for_in_place(
             && gpu.raw_tangent_buffer.is_none()
             && gpu.uv1_buffer.is_none()
             && gpu.uv2_buffer.is_none()
-            && gpu.uv3_buffer.is_none();
+            && gpu.uv3_buffer.is_none()
+            && gpu.wide_uv_buffer.is_none();
     }
     let Some(needed_vertex_bytes) = vc_usize.checked_mul(vertex_stride_us) else {
         return false;
@@ -125,6 +127,10 @@ pub(super) fn derived_streams_compatible_for_in_place(
         if !optional_stream_size_matches(buffer.as_deref(), Some(uv_bytes)) {
             return false;
         }
+    }
+    let wide_uv_bytes = (vc_usize as u64).saturating_mul(WIDE_UV_VERTEX_STRIDE_BYTES as u64);
+    if !optional_stream_size_matches(gpu.wide_uv_buffer.as_deref(), Some(wide_uv_bytes)) {
+        return false;
     }
     true
 }

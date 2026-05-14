@@ -75,6 +75,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         embedded_raw_normal_payload: false,
         embedded_needs_uv2: false,
         embedded_needs_uv3: false,
+        embedded_needs_wide_uvs: false,
         embedded_needs_extended_vertex_streams: false,
         embedded_requires_intersection_pass: false,
         embedded_uses_scene_depth_snapshot: false,

@@ -11,7 +11,9 @@ use super::super::accumulator::WindowInputAccumulator;
 use super::ime::enable_ime_on_window;
 use crate::shared::OutputState;
 
+#[cfg(any(test, not(target_os = "macos")))]
 const CONFINED_RECENTER_MARGIN_PX: f32 = 8.0;
+#[cfg(any(test, not(target_os = "macos")))]
 const CONFINED_RECENTER_DRIFT_PX: f32 = 96.0;
 
 /// Tracks host [`OutputState`] cursor fields between frames so unchanged lock state avoids
@@ -81,6 +83,7 @@ fn lock_state_changed(state: &OutputState, track: &CursorOutputTracking) -> bool
         || state.lock_cursor_position != track.last_lock_position
 }
 
+#[cfg(any(test, not(target_os = "macos")))]
 fn should_recenter_confined_cursor(observed: Vec2, target: Vec2, resolution: (u32, u32)) -> bool {
     if resolution.0 == 0 || resolution.1 == 0 {
         return false;

@@ -6,7 +6,7 @@
 //! mapping from declared kind to pipeline state, and [`MaterialRenderStatePolicy`] decides
 //! which host runtime properties may override that state per pass.
 
-use super::super::render_state::MaterialRenderState;
+use super::super::render_state::{MaterialDepthCompareDomain, MaterialRenderState};
 use super::blend_mode::MaterialBlendMode;
 use super::wire_tables::{unity_blend_state, unity_filter_blend_state, unity_overlay_blend_state};
 
@@ -349,6 +349,7 @@ const fn base_pass_desc(kind: PassKind, fragment_entry: &'static str) -> Materia
         vertex_entry: "vs_main",
         fragment_entry,
         depth_compare: crate::gpu::MAIN_FORWARD_DEPTH_COMPARE,
+        depth_compare_domain: MaterialDepthCompareDomain::FrooxZTest,
         depth_write: true,
         cull_mode: Some(wgpu::Face::Back),
         blend: None,
@@ -440,6 +441,8 @@ pub struct MaterialPassDesc {
     pub fragment_entry: &'static str,
     /// Depth comparison under reverse-Z. Unity `LEqual` maps to `GreaterEqual`; Unity `Greater` maps to `Less`.
     pub depth_compare: wgpu::CompareFunction,
+    /// Enum layout used when `_ZTest` overrides [`Self::depth_compare`].
+    pub depth_compare_domain: MaterialDepthCompareDomain,
     /// Whether this pass writes to the depth buffer.
     pub depth_write: bool,
     /// Backface culling mode (`None` = disabled).
@@ -488,7 +491,7 @@ impl MaterialPassDesc {
         render_state: MaterialRenderState,
     ) -> wgpu::CompareFunction {
         if self.render_state_policy.depth_compare {
-            render_state.depth_compare(self.depth_compare)
+            render_state.depth_compare_for_domain(self.depth_compare, self.depth_compare_domain)
         } else {
             self.depth_compare
         }
@@ -566,6 +569,7 @@ pub const fn default_pass(params: DefaultPassParams) -> MaterialPassDesc {
         vertex_entry: "vs_main",
         fragment_entry: "fs_main",
         depth_compare: crate::gpu::MAIN_FORWARD_DEPTH_COMPARE,
+        depth_compare_domain: MaterialDepthCompareDomain::FrooxZTest,
         depth_write: params.depth_write,
         cull_mode,
         blend,

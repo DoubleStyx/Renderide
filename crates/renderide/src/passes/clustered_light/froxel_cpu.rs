@@ -4,7 +4,10 @@
 //! compact `cluster_light_indices`) so dense-light frames can use a light-centric alternative to
 //! the O(froxels x lights) GPU scan.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use glam::{Mat4, Vec2, Vec3, Vec4};
+use rayon::prelude::*;
 
 use crate::gpu::GpuLight;
 use crate::world_mesh::cluster::{
@@ -13,6 +16,8 @@ use crate::world_mesh::cluster::{
 
 /// Light count at which `Auto` mode starts considering CPU froxel assignment.
 pub(super) const AUTO_CPU_FROXEL_LIGHT_THRESHOLD: u32 = 128;
+const CPU_FROXEL_PARALLEL_MIN_LIGHTS: usize = 128;
+const CPU_FROXEL_LIGHT_CHUNK_SIZE: usize = 64;
 
 /// Point light tag in [`GpuLight::light_type`].
 const LIGHT_TYPE_POINT: u32 = 0;
@@ -77,6 +82,19 @@ pub(super) struct CpuFroxelStats {
     pub culled_lights: u32,
 }
 
+struct CpuFroxelCountChunk {
+    counts: Vec<u32>,
+    stats: CpuFroxelStats,
+}
+
+struct CpuFroxelParallelInputs<'a> {
+    lights: &'a [GpuLight],
+    eye_params: &'a [ClusterFrameParams],
+    layouts: &'a [FroxelLayout],
+    expected_clusters: usize,
+    total_clusters: usize,
+}
+
 /// Stateless CPU froxel assignment entry point.
 pub(super) struct FroxelLightPlanner;
 
@@ -91,60 +109,256 @@ impl FroxelLightPlanner {
         if eye_params.is_empty() {
             return Some(CpuClusterAssignments::default());
         }
-
-        let eye_count = eye_params.len();
-        let total_clusters = usize::try_from(clusters_per_eye)
-            .ok()?
-            .checked_mul(eye_count)?;
-        let mut counts = vec![0u32; total_clusters];
-        let mut stats = CpuFroxelStats::default();
-
-        for (eye_idx, params) in eye_params.iter().enumerate() {
-            let layout = FroxelLayout::from_cluster_params(params);
-            let expected_clusters = layout.cluster_count()?;
-            if expected_clusters != usize::try_from(clusters_per_eye).ok()? {
-                return None;
-            }
-            let cluster_base = eye_idx.checked_mul(expected_clusters)?;
-            let mut emit_count = |cluster_id: usize, _light_idx: u32| {
-                let Some(count) = counts.get_mut(cluster_id) else {
-                    return;
-                };
-                *count = count.saturating_add(1);
-                stats.assigned_memberships = stats.assigned_memberships.saturating_add(1);
-            };
-            stats.culled_lights = stats.culled_lights.saturating_add(assign_eye_lights(
-                lights,
-                *params,
-                layout,
-                cluster_base,
-                &mut emit_count,
-            ));
+        let layouts = validated_eye_layouts(eye_params, clusters_per_eye)?;
+        if lights.len() >= CPU_FROXEL_PARALLEL_MIN_LIGHTS {
+            build_parallel(lights, eye_params, &layouts, clusters_per_eye)
+        } else {
+            build_serial(lights, eye_params, &layouts, clusters_per_eye)
         }
-
-        let (ranges, total_indices) = prefix_counts_to_ranges(&counts)?;
-        let mut indices = vec![0u32; total_indices];
-        let mut cursors = vec![0u32; total_clusters];
-
-        for (eye_idx, params) in eye_params.iter().enumerate() {
-            let layout = FroxelLayout::from_cluster_params(params);
-            let expected_clusters = layout.cluster_count()?;
-            if expected_clusters != usize::try_from(clusters_per_eye).ok()? {
-                return None;
-            }
-            let cluster_base = eye_idx.checked_mul(expected_clusters)?;
-            let mut emit_index = |cluster_id: usize, light_idx: u32| {
-                write_membership(cluster_id, light_idx, &ranges, &mut cursors, &mut indices);
-            };
-            assign_eye_lights(lights, *params, layout, cluster_base, &mut emit_index);
-        }
-
-        Some(CpuClusterAssignments {
-            ranges,
-            indices,
-            stats,
-        })
     }
+}
+
+fn validated_eye_layouts(
+    eye_params: &[ClusterFrameParams],
+    clusters_per_eye: u32,
+) -> Option<Vec<FroxelLayout>> {
+    let expected = usize::try_from(clusters_per_eye).ok()?;
+    let mut layouts = Vec::with_capacity(eye_params.len());
+    for params in eye_params {
+        let layout = FroxelLayout::from_cluster_params(params);
+        if layout.cluster_count()? != expected {
+            return None;
+        }
+        layouts.push(layout);
+    }
+    Some(layouts)
+}
+
+fn total_cluster_count(clusters_per_eye: u32, eye_count: usize) -> Option<usize> {
+    usize::try_from(clusters_per_eye)
+        .ok()?
+        .checked_mul(eye_count)
+}
+
+fn build_serial(
+    lights: &[GpuLight],
+    eye_params: &[ClusterFrameParams],
+    layouts: &[FroxelLayout],
+    clusters_per_eye: u32,
+) -> Option<CpuClusterAssignments> {
+    let expected_clusters = usize::try_from(clusters_per_eye).ok()?;
+    let total_clusters = total_cluster_count(clusters_per_eye, eye_params.len())?;
+    let mut counts = vec![0u32; total_clusters];
+    let mut stats = CpuFroxelStats::default();
+
+    for (eye_idx, (params, &layout)) in eye_params.iter().zip(layouts.iter()).enumerate() {
+        let cluster_base = eye_idx.checked_mul(expected_clusters)?;
+        let mut emit_count = |cluster_id: usize, _light_idx: u32| {
+            let Some(count) = counts.get_mut(cluster_id) else {
+                return;
+            };
+            *count = count.saturating_add(1);
+            stats.assigned_memberships = stats.assigned_memberships.saturating_add(1);
+        };
+        stats.culled_lights = stats.culled_lights.saturating_add(assign_eye_lights(
+            lights,
+            *params,
+            layout,
+            cluster_base,
+            &mut emit_count,
+        ));
+    }
+
+    let (ranges, total_indices) = prefix_counts_to_ranges(&counts)?;
+    let mut indices = vec![0u32; total_indices];
+    let mut cursors = vec![0u32; total_clusters];
+
+    for (eye_idx, (params, &layout)) in eye_params.iter().zip(layouts.iter()).enumerate() {
+        let cluster_base = eye_idx.checked_mul(expected_clusters)?;
+        let mut emit_index = |cluster_id: usize, light_idx: u32| {
+            write_membership(cluster_id, light_idx, &ranges, &mut cursors, &mut indices);
+        };
+        assign_eye_lights(lights, *params, layout, cluster_base, &mut emit_index);
+    }
+
+    Some(CpuClusterAssignments {
+        ranges,
+        indices,
+        stats,
+    })
+}
+
+fn build_parallel(
+    lights: &[GpuLight],
+    eye_params: &[ClusterFrameParams],
+    layouts: &[FroxelLayout],
+    clusters_per_eye: u32,
+) -> Option<CpuClusterAssignments> {
+    profiling::scope!("clustered_light::cpu_froxel_parallel");
+    let expected_clusters = usize::try_from(clusters_per_eye).ok()?;
+    let total_clusters = total_cluster_count(clusters_per_eye, eye_params.len())?;
+    let inputs = CpuFroxelParallelInputs {
+        lights,
+        eye_params,
+        layouts,
+        expected_clusters,
+        total_clusters,
+    };
+    let chunks = count_parallel_light_chunks(&inputs);
+    let (counts, stats) = merge_parallel_chunk_counts(&chunks, total_clusters);
+    let (ranges, total_indices) = prefix_counts_to_ranges(&counts)?;
+    let chunk_offsets = build_parallel_chunk_offsets(&chunks, &ranges, total_clusters);
+    let indices = write_parallel_light_chunks(&inputs, &chunk_offsets, total_indices);
+
+    Some(CpuClusterAssignments {
+        ranges,
+        indices,
+        stats,
+    })
+}
+
+fn count_parallel_light_chunks(inputs: &CpuFroxelParallelInputs<'_>) -> Vec<CpuFroxelCountChunk> {
+    let chunk_count = inputs.lights.len().div_ceil(CPU_FROXEL_LIGHT_CHUNK_SIZE);
+    let mut chunks = (0..chunk_count)
+        .map(|_| CpuFroxelCountChunk {
+            counts: vec![0u32; inputs.total_clusters],
+            stats: CpuFroxelStats::default(),
+        })
+        .collect::<Vec<_>>();
+
+    chunks
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(chunk_idx, chunk)| {
+            profiling::scope!("clustered_light::cpu_froxel_count_worker");
+            let (light_start, light_end) = light_chunk_bounds(inputs.lights.len(), chunk_idx);
+            let light_slice = &inputs.lights[light_start..light_end];
+            for (eye_idx, (params, &layout)) in inputs
+                .eye_params
+                .iter()
+                .zip(inputs.layouts.iter())
+                .enumerate()
+            {
+                let cluster_base = eye_idx * inputs.expected_clusters;
+                let mut emit_count = |cluster_id: usize, _light_idx: u32| {
+                    let Some(count) = chunk.counts.get_mut(cluster_id) else {
+                        return;
+                    };
+                    *count = count.saturating_add(1);
+                    chunk.stats.assigned_memberships =
+                        chunk.stats.assigned_memberships.saturating_add(1);
+                };
+                chunk.stats.culled_lights =
+                    chunk
+                        .stats
+                        .culled_lights
+                        .saturating_add(assign_eye_lights_slice(
+                            light_slice,
+                            light_start,
+                            *params,
+                            layout,
+                            cluster_base,
+                            &mut emit_count,
+                        ));
+            }
+        });
+    chunks
+}
+
+fn merge_parallel_chunk_counts(
+    chunks: &[CpuFroxelCountChunk],
+    total_clusters: usize,
+) -> (Vec<u32>, CpuFroxelStats) {
+    let mut counts = vec![0u32; total_clusters];
+    let mut stats = CpuFroxelStats::default();
+    for chunk in chunks {
+        for (total, &count) in counts.iter_mut().zip(chunk.counts.iter()) {
+            *total = total.saturating_add(count);
+        }
+        stats.assigned_memberships = stats
+            .assigned_memberships
+            .saturating_add(chunk.stats.assigned_memberships);
+        stats.overflowed_memberships = stats
+            .overflowed_memberships
+            .saturating_add(chunk.stats.overflowed_memberships);
+        stats.culled_lights = stats
+            .culled_lights
+            .saturating_add(chunk.stats.culled_lights);
+    }
+    (counts, stats)
+}
+
+fn build_parallel_chunk_offsets(
+    chunks: &[CpuFroxelCountChunk],
+    ranges: &[[u32; 2]],
+    total_clusters: usize,
+) -> Vec<Vec<u32>> {
+    let chunk_count = chunks.len();
+    let mut chunk_offsets = (0..chunk_count)
+        .map(|_| vec![0u32; total_clusters])
+        .collect::<Vec<_>>();
+    for cluster_id in 0..total_clusters {
+        let mut next = ranges[cluster_id][0];
+        for (chunk_idx, chunk) in chunks.iter().enumerate() {
+            chunk_offsets[chunk_idx][cluster_id] = next;
+            next = next.saturating_add(chunk.counts[cluster_id]);
+        }
+    }
+    chunk_offsets
+}
+
+fn write_parallel_light_chunks(
+    inputs: &CpuFroxelParallelInputs<'_>,
+    chunk_offsets: &[Vec<u32>],
+    total_indices: usize,
+) -> Vec<u32> {
+    let indices_atomic = (0..total_indices)
+        .map(|_| AtomicU32::new(0))
+        .collect::<Vec<_>>();
+    chunk_offsets
+        .par_iter()
+        .enumerate()
+        .for_each(|(chunk_idx, offsets)| {
+            profiling::scope!("clustered_light::cpu_froxel_write_worker");
+            let (light_start, light_end) = light_chunk_bounds(inputs.lights.len(), chunk_idx);
+            let light_slice = &inputs.lights[light_start..light_end];
+            let mut cursors = vec![0u32; inputs.total_clusters];
+            for (eye_idx, (params, &layout)) in inputs
+                .eye_params
+                .iter()
+                .zip(inputs.layouts.iter())
+                .enumerate()
+            {
+                let cluster_base = eye_idx * inputs.expected_clusters;
+                let mut emit_index = |cluster_id: usize, light_idx: u32| {
+                    write_membership_atomic(
+                        cluster_id,
+                        light_idx,
+                        offsets,
+                        &mut cursors,
+                        &indices_atomic,
+                    );
+                };
+                assign_eye_lights_slice(
+                    light_slice,
+                    light_start,
+                    *params,
+                    layout,
+                    cluster_base,
+                    &mut emit_index,
+                );
+            }
+        });
+    indices_atomic
+        .into_iter()
+        .map(AtomicU32::into_inner)
+        .collect()
+}
+
+fn light_chunk_bounds(lights_len: usize, chunk_idx: usize) -> (usize, usize) {
+    let start = chunk_idx * CPU_FROXEL_LIGHT_CHUNK_SIZE;
+    let end = lights_len.min(start + CPU_FROXEL_LIGHT_CHUNK_SIZE);
+    (start, end)
 }
 
 /// Assigns every light to one eye's froxel grid.
@@ -155,12 +369,30 @@ fn assign_eye_lights(
     cluster_base: usize,
     emit: &mut impl FnMut(usize, u32),
 ) -> u32 {
+    assign_eye_lights_slice(lights, 0, params, layout, cluster_base, emit)
+}
+
+fn assign_eye_lights_slice(
+    lights: &[GpuLight],
+    light_index_base: usize,
+    params: ClusterFrameParams,
+    layout: FroxelLayout,
+    cluster_base: usize,
+    emit: &mut impl FnMut(usize, u32),
+) -> u32 {
     let view = params.world_to_view;
     let view_scale = params.world_to_view_scale_max();
     let mut culled_lights = 0u32;
-    for (light_idx, light) in lights.iter().enumerate() {
+    for (local_light_idx, light) in lights.iter().enumerate() {
+        let Some(light_idx) = light_index_base
+            .checked_add(local_light_idx)
+            .and_then(|idx| u32::try_from(idx).ok())
+        else {
+            culled_lights = culled_lights.saturating_add(1);
+            continue;
+        };
         if light.light_type == LIGHT_TYPE_DIRECTIONAL {
-            assign_directional(light_idx as u32, layout, cluster_base, emit);
+            assign_directional(light_idx, layout, cluster_base, emit);
             continue;
         }
         let Some(bounds) =
@@ -169,7 +401,7 @@ fn assign_eye_lights(
             culled_lights = culled_lights.saturating_add(1);
             continue;
         };
-        assign_bounded_light(light_idx as u32, bounds, layout, cluster_base, emit);
+        assign_bounded_light(light_idx, bounds, layout, cluster_base, emit);
     }
     culled_lights
 }
@@ -392,6 +624,30 @@ fn write_membership(
     *cursor += 1;
 }
 
+fn write_membership_atomic(
+    cluster_id: usize,
+    light_idx: u32,
+    offsets: &[u32],
+    cursors: &mut [u32],
+    indices: &[AtomicU32],
+) {
+    let Some(&base) = offsets.get(cluster_id) else {
+        return;
+    };
+    let Some(cursor) = cursors.get_mut(cluster_id) else {
+        return;
+    };
+    let index_offset = u64::from(base).checked_add(u64::from(*cursor));
+    let Some(index) = index_offset.and_then(|offset| usize::try_from(offset).ok()) else {
+        return;
+    };
+    let Some(dst) = indices.get(index) else {
+        return;
+    };
+    dst.store(light_idx, Ordering::Relaxed);
+    *cursor = cursor.saturating_add(1);
+}
+
 #[cfg(test)]
 mod tests {
     use glam::Mat4;
@@ -514,5 +770,30 @@ mod tests {
         assert!(assignments.ranges.iter().all(|range| range[1] == 70));
         assert_eq!(cluster_indices(&assignments, 0).len(), 70);
         assert_eq!(assignments.stats.overflowed_memberships, 0);
+    }
+
+    #[test]
+    fn parallel_froxel_build_matches_serial_build() {
+        let params = [test_params(), test_params()];
+        let clusters_per_eye =
+            params[0].cluster_count_x * params[0].cluster_count_y * CLUSTER_COUNT_Z;
+        let layouts = validated_eye_layouts(&params, clusters_per_eye).expect("layouts");
+        let lights = (0..CPU_FROXEL_PARALLEL_MIN_LIGHTS + 13)
+            .map(|idx| {
+                if idx % 5 == 0 {
+                    point_light(Vec3::new((idx % 3) as f32 - 1.0, 0.0, -5.0), 0.5)
+                } else {
+                    directional_light()
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let serial = build_serial(&lights, &params, &layouts, clusters_per_eye).expect("serial");
+        let parallel =
+            build_parallel(&lights, &params, &layouts, clusters_per_eye).expect("parallel");
+
+        assert_eq!(parallel.ranges, serial.ranges);
+        assert_eq!(parallel.indices, serial.indices);
+        assert_eq!(parallel.stats, serial.stats);
     }
 }

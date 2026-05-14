@@ -357,7 +357,7 @@ pub(in crate::runtime) fn select_inner_parallelism(
 
 /// Prepared-draw count above which two outer-parallel views are allowed to keep inner chunk
 /// parallelism enabled. Below this, nested rayon scheduling usually costs more than it saves.
-const MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM: usize = 2048;
+const MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM: usize = 512;
 
 /// Refines the frame-level inner parallelism once the backend has built the prepared draw list.
 ///
@@ -486,6 +486,18 @@ mod tests {
             select_inner_parallelism_for_prepared_work(
                 2,
                 MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM - 1,
+                WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch,
+            ),
+            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
+        );
+    }
+
+    #[test]
+    fn prepared_work_selector_keeps_three_view_frames_nested_serial() {
+        assert_eq!(
+            select_inner_parallelism_for_prepared_work(
+                3,
+                MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM.saturating_mul(4),
                 WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch,
             ),
             WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch

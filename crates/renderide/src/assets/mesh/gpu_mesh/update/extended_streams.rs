@@ -6,10 +6,11 @@ use crate::shared::VertexAttributeType;
 use super::super::upload::{
     ExtendedVertexUploadSource, UvVertexUploadSource, upload_default_extended_vertex_streams,
     upload_default_raw_tangent_vertex_stream, upload_default_tangent_vertex_stream,
-    upload_default_uv_vertex_stream, upload_extended_vertex_streams,
-    upload_raw_tangent_vertex_stream, upload_tangent_vertex_stream, upload_uv_vertex_stream,
+    upload_default_uv_vertex_stream, upload_default_wide_uv_vertex_stream,
+    upload_extended_vertex_streams, upload_raw_tangent_vertex_stream, upload_tangent_vertex_stream,
+    upload_uv_vertex_stream, upload_wide_uv_vertex_stream,
 };
-use super::super::{GpuMesh, extended_vertex_stream_bytes};
+use super::super::{ExtendedVertexStreamSource, GpuMesh, extended_vertex_stream_bytes};
 
 impl GpuMesh {
     /// Creates tangent / UV1-3 streams the first time an embedded shader needs all of them.
@@ -230,6 +231,51 @@ impl GpuMesh {
         )
     }
 
+    /// Creates the packed UV0-UV7 stream the first time a shader needs wide UV inputs.
+    pub(crate) fn ensure_wide_uv_vertex_stream(&mut self, device: &wgpu::Device) -> bool {
+        profiling::scope!("asset::mesh_ensure_wide_uv_vertex_stream");
+        if self.wide_uv_vertex_stream_ready() {
+            return true;
+        }
+
+        let old_bytes = self
+            .wide_uv_buffer
+            .as_ref()
+            .map_or(0, |buffer| buffer.size());
+        let vc_usize = self.vertex_count as usize;
+        let wide_uv_buffer = if let Some(source) = self.extended_vertex_stream_source.as_ref() {
+            upload_wide_uv_vertex_stream(
+                device,
+                self.asset_id,
+                UvVertexUploadSource {
+                    vertex_slice: source.vertex_bytes.as_ref(),
+                    vertex_count: vc_usize,
+                    vertex_stride: self.vertex_stride as usize,
+                    vertex_attributes: source.vertex_attributes.as_ref(),
+                    target: VertexAttributeType::UV0,
+                    label: "wide_uv",
+                },
+            )
+        } else {
+            upload_default_wide_uv_vertex_stream(device, self.asset_id, vc_usize)
+        };
+
+        let Some(wide_uv_buffer) = wide_uv_buffer else {
+            return false;
+        };
+        self.wide_uv_buffer = Some(wide_uv_buffer);
+        let new_bytes = self
+            .wide_uv_buffer
+            .as_ref()
+            .map_or(0, |buffer| buffer.size());
+        self.resident_bytes = self
+            .resident_bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
+        self.drop_extended_vertex_stream_source_if_complete();
+        true
+    }
+
     fn ensure_extra_uv_vertex_stream(
         &mut self,
         device: &wgpu::Device,
@@ -280,24 +326,55 @@ impl GpuMesh {
     }
 
     fn drop_extended_vertex_stream_source_if_complete(&mut self) {
-        if self.extended_vertex_streams_ready()
-            && !self.should_keep_extended_vertex_stream_source_for_tangent_upgrade()
-        {
+        if self.can_drop_extended_vertex_stream_source() {
             self.extended_vertex_stream_source = None;
         }
+    }
+
+    pub(super) fn can_drop_extended_vertex_stream_source(&self) -> bool {
+        !self
+            .extended_vertex_stream_source
+            .as_ref()
+            .is_some_and(|source| self.should_keep_extended_vertex_stream_source(source))
+    }
+
+    pub(super) fn should_keep_extended_vertex_stream_source(
+        &self,
+        source: &ExtendedVertexStreamSource,
+    ) -> bool {
+        self.should_keep_extended_vertex_stream_source_for_compact_streams(source)
+            || self.should_keep_extended_vertex_stream_source_for_wide_uv(source)
+            || self.should_keep_extended_vertex_stream_source_for_tangent_upgrade_from(
+                source.can_generate_missing_tangents,
+            )
+    }
+
+    fn should_keep_extended_vertex_stream_source_for_compact_streams(
+        &self,
+        source: &ExtendedVertexStreamSource,
+    ) -> bool {
+        !self.extended_vertex_streams_ready() && source.has_compact_extended_payload
+    }
+
+    fn should_keep_extended_vertex_stream_source_for_wide_uv(
+        &self,
+        source: &ExtendedVertexStreamSource,
+    ) -> bool {
+        self.wide_uv_buffer.is_none() && source.has_wide_uv_payload
     }
 
     fn tangent_fallback_needs_upgrade(&self, requested: EmbeddedTangentFallbackMode) -> bool {
         requested > self.tangent_fallback_mode
     }
 
-    pub(super) fn should_keep_extended_vertex_stream_source_for_tangent_upgrade(&self) -> bool {
+    fn should_keep_extended_vertex_stream_source_for_tangent_upgrade_from(
+        &self,
+        can_generate_missing_tangents: bool,
+    ) -> bool {
         should_keep_tangent_upgrade_source(
             self.tangent_buffer.is_some(),
             self.tangent_fallback_mode,
-            self.extended_vertex_stream_source
-                .as_ref()
-                .is_some_and(|source| source.can_generate_missing_tangents),
+            can_generate_missing_tangents,
         )
     }
 }

@@ -24,11 +24,12 @@ pub use buffer_layout::{
 pub use skinning::split_bone_weights_tail_for_gpu;
 #[cfg(test)]
 pub use streams::vertex_float4_stream_bytes;
+pub use streams::{
+    UV_VERTEX_ATTRIBUTE_TYPES, WIDE_UV_VERTEX_STRIDE_BYTES, attribute_offset_and_size,
+    color_float4_stream_bytes, extract_float3_position_normal_as_vec4_streams,
+    raw_float4_stream_bytes, uv0_float2_stream_bytes, vertex_float2_stream_bytes,
+    wide_uv_stream_bytes,
+};
 pub(in crate::assets::mesh) use streams::{
     VertexDecodeKind, decode_vertex_vec2, decode_vertex_vec3, decode_vertex_vec4,
-};
-pub use streams::{
-    attribute_offset_and_size, color_float4_stream_bytes,
-    extract_float3_position_normal_as_vec4_streams, raw_float4_stream_bytes,
-    uv0_float2_stream_bytes, vertex_float2_stream_bytes,
 };

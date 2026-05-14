@@ -30,6 +30,7 @@ struct ViewAssetPrewarmRequests {
     tangent_fallback_modes: HashMap<i32, EmbeddedTangentFallbackMode>,
     uv2_stream_meshes: HashSet<i32>,
     uv3_stream_meshes: HashSet<i32>,
+    wide_uv_stream_meshes: HashSet<i32>,
 }
 
 impl ViewAssetPrewarmRequests {
@@ -55,6 +56,9 @@ impl ViewAssetPrewarmRequests {
         }
         if item.batch_key.embedded_needs_uv3 {
             self.uv3_stream_meshes.insert(item.mesh_asset_id);
+        }
+        if item.batch_key.embedded_needs_wide_uvs {
+            self.wide_uv_stream_meshes.insert(item.mesh_asset_id);
         }
     }
 
@@ -237,7 +241,7 @@ impl<'a> BackendGraphAccess<'a> {
         profiling::scope!("graph::pre_warm_view_assets");
         let requests = collect_view_asset_prewarm_requests(views);
         logger::trace!(
-            "graph pre-warm view assets: views={} uv1_stream_meshes={} tangent_stream_meshes={} raw_tangent_stream_meshes={} generated_tangent_meshes={} uv2_stream_meshes={} uv3_stream_meshes={}",
+            "graph pre-warm view assets: views={} uv1_stream_meshes={} tangent_stream_meshes={} raw_tangent_stream_meshes={} generated_tangent_meshes={} uv2_stream_meshes={} uv3_stream_meshes={} wide_uv_stream_meshes={}",
             views.len(),
             requests.uv1_stream_meshes.len(),
             requests.tangent_stream_meshes.len(),
@@ -245,6 +249,7 @@ impl<'a> BackendGraphAccess<'a> {
             requests.generated_tangent_mesh_count(),
             requests.uv2_stream_meshes.len(),
             requests.uv3_stream_meshes.len(),
+            requests.wide_uv_stream_meshes.len(),
         );
         let mesh_ids_needing_all_extended_streams = requests.all_extended_stream_meshes();
         self.ensure_view_asset_prewarm_requests(
@@ -315,6 +320,12 @@ impl<'a> BackendGraphAccess<'a> {
                 .asset_transfers
                 .mesh_pool_mut()
                 .ensure_uv3_vertex_stream(device, mesh_asset_id);
+        }
+        for &mesh_asset_id in &requests.wide_uv_stream_meshes {
+            let _ = self
+                .asset_transfers
+                .mesh_pool_mut()
+                .ensure_wide_uv_vertex_stream(device, mesh_asset_id);
         }
     }
 

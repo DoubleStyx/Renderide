@@ -17,8 +17,8 @@ use per_renderer::push_draws_for_renderer;
 
 /// Renders per chunk (static or skinned slice of one render space).
 ///
-/// 128 keeps medium render-space slices split across workers without producing excessive tiny jobs.
-pub(super) const WORLD_MESH_COLLECT_CHUNK_SIZE: usize = 128;
+/// 64 keeps medium render-space slices split across workers under the aggressive fan-out policy.
+pub(super) const WORLD_MESH_COLLECT_CHUNK_SIZE: usize = 64;
 
 /// Submesh index range for one material slot pairing during draw collection.
 struct SubmeshSlotIndices {

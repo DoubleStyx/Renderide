@@ -81,7 +81,7 @@ mod tests {
 
     fn minimal_config() -> SceneSessionConfig {
         SceneSessionConfig {
-            renderer_path: PathBuf::from("target/debug/renderide"),
+            renderer_path: PathBuf::from("target/debug/renderide-renderer"),
             output_path: PathBuf::from("target/headless.png"),
             width: 64,
             height: 32,
