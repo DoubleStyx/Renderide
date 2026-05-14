@@ -26,7 +26,7 @@ use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 use crate::shared::RenderingContext;
 use crate::world_mesh::culling::MeshCullGeometry;
 
-use expand::populate_runs_and_material_keys;
+use expand::{empty_material_key_signature, populate_runs_and_material_keys};
 
 pub(in crate::world_mesh::draw_prep) use expand::estimated_draw_count;
 #[cfg(test)]
@@ -114,6 +114,8 @@ pub struct FramePreparedRenderables {
     /// [`Self::draws`]. Material caches consume this list once per shader permutation instead of
     /// materializing and deduping every prepared draw.
     material_property_keys: Vec<(i32, Option<i32>)>,
+    /// Deterministic signature of [`Self::material_property_keys`] membership and order.
+    material_property_key_signature: u64,
     /// Render context used when resolving material overrides; must match the per-view context.
     render_context: RenderingContext,
     /// Reused per-worker output buffers for the multi-space parallel expansion path. Outer
@@ -135,6 +137,7 @@ impl FramePreparedRenderables {
             draws: Vec::new(),
             runs: Vec::new(),
             material_property_keys: Vec::new(),
+            material_property_key_signature: empty_material_key_signature(),
             render_context,
             #[cfg(test)]
             space_scratch: Vec::new(),
@@ -208,7 +211,7 @@ impl FramePreparedRenderables {
                     space_id,
                 );
             }
-            populate_runs_and_material_keys(
+            self.material_property_key_signature = populate_runs_and_material_keys(
                 &self.draws,
                 &mut self.runs,
                 &mut self.material_property_keys,
@@ -253,7 +256,7 @@ impl FramePreparedRenderables {
             }
         }
         self.space_scratch = space_scratch;
-        populate_runs_and_material_keys(
+        self.material_property_key_signature = populate_runs_and_material_keys(
             &self.draws,
             &mut self.runs,
             &mut self.material_property_keys,
@@ -336,6 +339,13 @@ impl FramePreparedRenderables {
         &self.material_property_keys
     }
 
+    /// Signature of [`Self::unique_material_property_pairs`] used by frame caches to detect
+    /// unchanged prepared material membership without touching every key.
+    #[inline]
+    pub fn material_property_key_signature(&self) -> u64 {
+        self.material_property_key_signature
+    }
+
     /// Rebuilds this snapshot in place from the supplied iterator of cached `(space, draws)`
     /// pairs. Used by [`super::render_world::RenderWorld`] when refreshing its persistent cache.
     ///
@@ -355,7 +365,7 @@ impl FramePreparedRenderables {
             self.active_space_ids.push(id);
             self.draws.extend(draws.iter().cloned());
         }
-        populate_runs_and_material_keys(
+        self.material_property_key_signature = populate_runs_and_material_keys(
             &self.draws,
             &mut self.runs,
             &mut self.material_property_keys,
@@ -460,7 +470,7 @@ mod tests {
         let mut keys = Vec::new();
         let mut seen = HashSet::new();
 
-        populate_runs_and_material_keys(&draws, &mut runs, &mut keys, &mut seen);
+        let signature = populate_runs_and_material_keys(&draws, &mut runs, &mut keys, &mut seen);
 
         assert_eq!(
             runs,
@@ -470,6 +480,7 @@ mod tests {
             ]
         );
         assert_eq!(keys, vec![(7, None), (9, Some(3))]);
+        assert_ne!(signature, empty_material_key_signature());
     }
 
     #[test]

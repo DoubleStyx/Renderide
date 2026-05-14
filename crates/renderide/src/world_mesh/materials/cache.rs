@@ -81,6 +81,11 @@ pub struct FrameMaterialBatchCache {
     /// Snapshot of the [`ShaderPermutation`] the cache was last refreshed for; the gate skips the
     /// walk only when the next refresh targets the same permutation.
     last_refresh_shader_perm: Option<ShaderPermutation>,
+    /// Signature of the prepared material live set used by the most recent prepared refresh.
+    ///
+    /// `None` means the most recent refresh did not come from a prepared snapshot, so prepared
+    /// refreshes must walk keys before they can trust membership.
+    last_refresh_prepared_material_signature: Option<u64>,
 }
 
 impl Default for FrameMaterialBatchCache {
@@ -101,6 +106,7 @@ impl FrameMaterialBatchCache {
             last_refresh_router_gen: None,
             last_refresh_dict_global_gen: None,
             last_refresh_shader_perm: None,
+            last_refresh_prepared_material_signature: None,
         }
     }
 
@@ -140,10 +146,27 @@ impl FrameMaterialBatchCache {
         router_gen: u64,
         dict_global_gen: u64,
         shader_perm: ShaderPermutation,
+        prepared_material_signature: Option<u64>,
     ) {
         self.last_refresh_router_gen = Some(router_gen);
         self.last_refresh_dict_global_gen = Some(dict_global_gen);
         self.last_refresh_shader_perm = Some(shader_perm);
+        self.last_refresh_prepared_material_signature = prepared_material_signature;
+    }
+
+    /// Returns `true` when both the material dependency generations and prepared live-set
+    /// signature match the most recent prepared refresh.
+    fn try_prepared_fast_path_skip(
+        &self,
+        router_gen: u64,
+        dict_global_gen: u64,
+        shader_perm: ShaderPermutation,
+        prepared_material_signature: u64,
+    ) -> bool {
+        self.last_refresh_router_gen == Some(router_gen)
+            && self.last_refresh_dict_global_gen == Some(dict_global_gen)
+            && self.last_refresh_shader_perm == Some(shader_perm)
+            && self.last_refresh_prepared_material_signature == Some(prepared_material_signature)
     }
 
     /// Number of cached entries (debug / diagnostics).
@@ -276,7 +299,7 @@ impl FrameMaterialBatchCache {
         // Cheap -- the cache typically holds a few dozen entries, and this touches them all once.
         self.entries
             .retain(|_, entry| entry.last_used_frame == current_frame);
-        self.record_refresh_snapshot(router_gen, dict_global_gen, shader_perm);
+        self.record_refresh_snapshot(router_gen, dict_global_gen, shader_perm, None);
     }
 
     /// Refreshes the cache from a pre-expanded draw list instead of walking scene renderers.
@@ -300,7 +323,13 @@ impl FrameMaterialBatchCache {
         let current_frame = self.frame_counter;
         let router_gen = router.generation();
         let dict_global_gen = dict.global_generation();
-        if self.try_fast_path_skip(router_gen, dict_global_gen, shader_perm, current_frame) {
+        let prepared_material_signature = prepared.material_property_key_signature();
+        if self.try_prepared_fast_path_skip(
+            router_gen,
+            dict_global_gen,
+            shader_perm,
+            prepared_material_signature,
+        ) {
             return;
         }
         let ctx = MaterialResolveCtx {
@@ -331,7 +360,12 @@ impl FrameMaterialBatchCache {
         }
         {
             profiling::scope!("mesh::material_batch_cache::prepared_record_snapshot");
-            self.record_refresh_snapshot(router_gen, dict_global_gen, shader_perm);
+            self.record_refresh_snapshot(
+                router_gen,
+                dict_global_gen,
+                shader_perm,
+                Some(prepared_material_signature),
+            );
         }
     }
 
@@ -593,6 +627,25 @@ mod tests {
             cache.entries.get(&(1, None)).unwrap().shader_perm,
             ShaderPermutation(1)
         );
+    }
+
+    #[test]
+    fn prepared_fast_path_requires_matching_live_set_signature() {
+        let (store, router, _reg) = make_test_deps();
+        let dict = MaterialDictionary::new(&store);
+        let mut cache = FrameMaterialBatchCache::new();
+        let router_gen = router.generation();
+        let dict_gen = dict.global_generation();
+        let shader_perm = ShaderPermutation(0);
+
+        cache.record_refresh_snapshot(router_gen, dict_gen, shader_perm, Some(11));
+
+        assert!(cache.try_prepared_fast_path_skip(router_gen, dict_gen, shader_perm, 11));
+        assert!(!cache.try_prepared_fast_path_skip(router_gen, dict_gen, shader_perm, 12));
+
+        cache.record_refresh_snapshot(router_gen, dict_gen, shader_perm, None);
+
+        assert!(!cache.try_prepared_fast_path_skip(router_gen, dict_gen, shader_perm, 11));
     }
 
     #[test]
