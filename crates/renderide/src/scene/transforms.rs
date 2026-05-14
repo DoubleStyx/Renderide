@@ -55,12 +55,40 @@ struct NodeDirtyMask {
 
 impl NodeDirtyMask {
     /// Allocates an empty mask with enough dedup capacity for `node_count` nodes.
+    #[cfg(test)]
     fn new(node_count: usize) -> Self {
         Self {
             flags: Vec::new(),
             indices: Vec::with_capacity(node_count.min(64)),
             any: false,
         }
+    }
+
+    /// Takes the reusable scratch vectors from `cache` and resets the marks from the previous
+    /// transform update.
+    fn take_from_cache(cache: &mut WorldTransformCache, node_count: usize) -> Self {
+        let mut flags = std::mem::take(&mut cache.transform_dirty_flags);
+        let mut indices = std::mem::take(&mut cache.transform_dirty_indices);
+        for &index in &indices {
+            if let Some(flag) = flags.get_mut(index) {
+                *flag = false;
+            }
+        }
+        indices.clear();
+        if flags.len() < node_count {
+            flags.resize(node_count, false);
+        }
+        Self {
+            flags,
+            indices,
+            any: false,
+        }
+    }
+
+    /// Restores the scratch vectors to `cache` for reuse by the next transform update.
+    fn restore_into(self, cache: &mut WorldTransformCache) {
+        cache.transform_dirty_flags = self.flags;
+        cache.transform_dirty_indices = self.indices;
     }
 
     /// Sets the dirty flag for `index`, growing the mask if a host row referenced an index past
@@ -278,7 +306,7 @@ pub fn apply_transforms_update_extracted(
         full_invalidate_world = true;
     }
 
-    let mut changed = NodeDirtyMask::new(space.nodes.len());
+    let mut changed = NodeDirtyMask::take_from_cache(cache, space.nodes.len());
 
     removals::apply_transform_parent_updates_extracted(
         space,
@@ -314,6 +342,7 @@ pub fn apply_transforms_update_extracted(
             changed.indices(),
         );
     }
+    changed.restore_into(cache);
     invalidate_world
 }
 

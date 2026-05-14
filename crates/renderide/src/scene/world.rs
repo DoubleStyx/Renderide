@@ -84,6 +84,10 @@ pub struct WorldTransformCache {
     pub(super) bfs_writes: Vec<(Mat4, bool)>,
     /// Bulk-rebuild scratch: per-worker chunk outputs used to give Tracy one span per Rayon task.
     pub(super) bfs_parallel_writes: Vec<Vec<(Mat4, bool)>>,
+    /// Transform-apply scratch: per-node dirty flags reused across dense transform updates.
+    pub(super) transform_dirty_flags: Vec<bool>,
+    /// Transform-apply scratch: dense list of nodes marked in [`Self::transform_dirty_flags`].
+    pub(super) transform_dirty_indices: Vec<usize>,
 }
 
 impl Default for WorldTransformCache {
@@ -103,6 +107,8 @@ impl Default for WorldTransformCache {
             bfs_cycle_nodes: Vec::new(),
             bfs_writes: Vec::new(),
             bfs_parallel_writes: Vec::new(),
+            transform_dirty_flags: Vec::new(),
+            transform_dirty_indices: Vec::new(),
         }
     }
 }

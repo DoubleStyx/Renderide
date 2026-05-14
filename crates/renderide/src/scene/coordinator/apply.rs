@@ -212,38 +212,51 @@ pub(in crate::scene::coordinator) fn apply_extracted_render_space_update(
         removal_events.clear();
     }
     let transform_removals: &[TransformRemovalEvent] = removal_events;
+    let has_transform_removals = !transform_removals.is_empty();
 
     // Roll pre-existing cameras' transform ids forward through this frame's swap-removes before
     // applying the extracted camera update (whose addition indices are post-swap from the host).
-    fixup_cameras_for_transform_removals(space, transform_removals);
+    if has_transform_removals {
+        fixup_cameras_for_transform_removals(space, transform_removals);
+    }
     if let Some(ref cu) = extracted.cameras {
         super::super::camera::apply_camera_renderables_update_extracted(space, cu);
     }
-    fixup_reflection_probes_for_transform_removals(space, transform_removals);
+    if has_transform_removals {
+        fixup_reflection_probes_for_transform_removals(space, transform_removals);
+    }
     if let Some(ref rpu) = extracted.reflection_probes {
         apply_reflection_probe_renderables_update_extracted(space, rpu);
     } else {
         space.pending_reflection_probe_render_changes.clear();
     }
 
-    fixup_static_meshes_for_transform_removals(space, transform_removals);
+    if has_transform_removals {
+        fixup_static_meshes_for_transform_removals(space, transform_removals);
+    }
     if let Some(ref mu) = extracted.meshes {
         apply_mesh_renderables_update_extracted(space, mu, scene_id);
     }
     if let Some(ref su) = extracted.skinned_meshes {
         apply_skinned_mesh_renderables_update_extracted(space, su, transform_removals, scene_id);
     }
-    {
+    let mesh_membership_or_nodes_changed =
+        extracted.meshes.is_some() || extracted.skinned_meshes.is_some();
+    let layer_inputs_changed =
+        has_transform_removals || extracted.layers.is_some() || space.hierarchy_dirty;
+    if layer_inputs_changed || mesh_membership_or_nodes_changed || space.layer_index_dirty {
         profiling::scope!("scene::layers");
-        super::super::layer::fixup_layer_assignments_for_transform_removals(
-            space,
-            transform_removals,
-        );
+        if has_transform_removals {
+            super::super::layer::fixup_layer_assignments_for_transform_removals(
+                space,
+                transform_removals,
+            );
+        }
         if let Some(ref lu) = extracted.layers {
             apply_layer_update_extracted(space, lu);
         }
         super::super::layer::resolve_mesh_layers_from_assignments(space);
-    };
+    }
     if let Some(ref rtu) = extracted.transform_overrides {
         apply_render_transform_overrides_update_extracted(space, rtu, transform_removals);
     }
