@@ -387,6 +387,9 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
     for required in [
         "_GlossMapScale: f32",
         "_OcclusionStrength: f32",
+        "return pbs_kw(PBSMETALLIC_KW_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A);",
+        "let base_alpha = unity_standard_alpha(albedo_sample.a);",
+        "let clip_alpha = unity_standard_clip_alpha(uv_main);",
         "smoothness = mg.a * mat._GlossMapScale;",
         "smoothness = albedo_sample.a * mat._GlossMapScale;",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
@@ -397,14 +400,22 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
             "pbsmetallic.wgsl must contain `{required}`"
         );
     }
+    assert!(
+        !metallic.contains("mat._SmoothnessTextureChannel > 0.5"),
+        "pbsmetallic.wgsl must follow the Unity Standard keyword path for albedo-alpha smoothness"
+    );
 
     let specular = material_source("pbsspecular.wgsl")?;
-    assert!(
-        specular.contains(
-            "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g"
-        ),
-        "pbsspecular.wgsl must sample Unity Standard occlusion from the green channel"
-    );
+    for required in [
+        "let base_alpha = unity_standard_alpha(albedo_sample.a);",
+        "let clip_alpha = unity_standard_clip_alpha(uv_main);",
+        "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
+    ] {
+        assert!(
+            specular.contains(required),
+            "pbsspecular.wgsl must contain `{required}`"
+        );
+    }
 
     Ok(())
 }
