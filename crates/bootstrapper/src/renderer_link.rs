@@ -2,8 +2,29 @@
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::path::Path;
 
 use crate::config::ResoBootConfig;
+
+/// Returns `true` when `link` is a symlink that resolves to `target`.
+#[cfg(target_os = "linux")]
+fn symlink_points_to_target(link: &Path, target: &Path) -> bool {
+    let Ok(destination) = fs::read_link(link) else {
+        return false;
+    };
+    let destination = if destination.is_absolute() {
+        destination
+    } else if let Some(parent) = link.parent() {
+        parent.join(destination)
+    } else {
+        destination
+    };
+    match (fs::canonicalize(destination), fs::canonicalize(target)) {
+        (Ok(destination), Ok(target)) => destination == target,
+        _ => false,
+    }
+}
 
 /// Returns `true` when `lhs` and `rhs` refer to the same inode (e.g. a hard link to the renderer binary).
 #[cfg(target_os = "macos")]
@@ -26,7 +47,7 @@ pub fn ensure_link(config: &ResoBootConfig) {
         let needs_renderer_stub = target.exists() && {
             #[cfg(target_os = "linux")]
             {
-                !symlink.exists() || fs::read_link(symlink).is_err()
+                !symlink_points_to_target(symlink, &target)
             }
             #[cfg(target_os = "macos")]
             {
@@ -95,6 +116,23 @@ mod tests {
         fs::write(&target, b"").unwrap();
         let link = tmp.join("Renderite.Renderer");
         std::os::unix::fs::symlink(tmp.join("wrong"), &link).unwrap();
+        let c = cfg_with_dirs(&tmp, &link);
+        ensure_link(&c);
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_link_refreshes_stale_launcher_symlink() {
+        let tmp = std::env::temp_dir().join(format!("bootstrapper_stub4_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let stale_launcher = tmp.join("renderide");
+        fs::write(&stale_launcher, b"launcher").unwrap();
+        let target = tmp.join("renderide-renderer");
+        fs::write(&target, b"renderer").unwrap();
+        let link = tmp.join("Renderite.Renderer");
+        std::os::unix::fs::symlink(&stale_launcher, &link).unwrap();
         let c = cfg_with_dirs(&tmp, &link);
         ensure_link(&c);
         assert_eq!(fs::read_link(&link).unwrap(), target);
