@@ -181,26 +181,6 @@ impl RendererRuntime {
             );
             self.diagnostics.logged_first_frame_submit = true;
         }
-        let previous_spaces = self.diagnostics.last_scene_render_space_count;
-        let previous_meshes = self.diagnostics.last_scene_mesh_renderable_count;
-        let topology_changed =
-            previous_spaces != render_spaces || previous_meshes != mesh_renderables;
-        if topology_changed
-            && (report.changed_spaces.len() + report.removed_spaces.len() > 0
-                || previous_spaces.abs_diff(render_spaces) >= 2
-                || previous_meshes.abs_diff(mesh_renderables) >= 64)
-        {
-            logger::debug!(
-                "scene topology changed: frame_index={} render_spaces {}->{} mesh_renderables {}->{} changed_spaces={} removed_spaces={}",
-                data.frame_index,
-                previous_spaces,
-                render_spaces,
-                previous_meshes,
-                mesh_renderables,
-                report.changed_spaces.len(),
-                report.removed_spaces.len(),
-            );
-        }
         self.diagnostics.last_scene_render_space_count = render_spaces;
         self.diagnostics.last_scene_mesh_renderable_count = mesh_renderables;
     }

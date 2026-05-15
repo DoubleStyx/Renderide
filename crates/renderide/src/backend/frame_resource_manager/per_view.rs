@@ -259,9 +259,7 @@ impl FrameResourceManager {
 
     /// Frees the per-draw slab for a view that is no longer active.
     pub fn retire_per_view_per_draw(&mut self, view_id: ViewId) {
-        if self.per_view_draw.retire(view_id) {
-            logger::debug!("per-draw slab: retired slab for view {view_id:?}");
-        }
+        self.per_view_draw.retire(view_id);
     }
 
     /// Returns the per-view scratch slot used for per-draw uniform packing, creating it on first use.
@@ -271,10 +269,7 @@ impl FrameResourceManager {
     ) -> &Mutex<PerViewPerDrawScratch> {
         profiling::scope!("render::ensure_per_view_per_draw_scratch");
         self.per_view_per_draw_scratch
-            .get_or_insert_with(view_id, || {
-                logger::debug!("per-draw scratch: allocating for view {view_id:?}");
-                Mutex::new(PerViewPerDrawScratch::default())
-            })
+            .get_or_insert_with(view_id, || Mutex::new(PerViewPerDrawScratch::default()))
     }
 
     /// Returns the per-view scratch slot, or `None` if it has not been created yet.

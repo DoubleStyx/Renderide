@@ -111,7 +111,6 @@ pub fn on_set_texture_2d_data(
     _shm: Option<&mut SharedMemoryAccessor>,
     _ipc: Option<&mut DualQueueIpc>,
 ) {
-    log_texture_upload_mip_coverage(queue, &d);
     let Some(d) = admit_texture_upload_data(TextureUploadAdmission {
         asset_id: d.asset_id,
         payload_len: d.data.length,
@@ -182,25 +181,6 @@ fn enqueue_texture_upload_task(queue: &mut AssetTransferQueue, d: SetTexture2DDa
     let task = AssetTask::Texture(TextureUploadTask::new(d, fmt, wgpu_fmt));
     queue.integrator_mut().enqueue(task, high);
     true
-}
-
-fn log_texture_upload_mip_coverage(queue: &AssetTransferQueue, data: &SetTexture2DData) {
-    let Some(format) = queue.catalogs.texture_formats.get(&data.asset_id) else {
-        return;
-    };
-    if data.hint.has_region != 0 || data.mip_map_sizes.is_empty() {
-        return;
-    }
-    let host_mips = data.mip_map_sizes.len() as i32;
-    let texture_mips = format.mipmap_count.max(1);
-    if host_mips < texture_mips {
-        logger::debug!(
-            "texture {}: data upload carries {host_mips}/{texture_mips} host mips (start_mip={} payload_bytes={}); tail mips will be uploaded or synthesized before sampling can use them",
-            data.asset_id,
-            data.start_mip_level,
-            data.data.length.max(0)
-        );
-    }
 }
 
 fn replay_pending_texture_uploads_for_asset(queue: &mut AssetTransferQueue, asset_id: i32) {

@@ -112,11 +112,6 @@ impl PerDrawResources {
             self.bind_group_layout.as_ref(),
             &per_draw_storage,
         ));
-        logger::debug!(
-            "per-draw slab: grew {old} -> {next} slots ({size} bytes)",
-            old = self.slot_count,
-            size = size_u64,
-        );
         self.per_draw_storage = per_draw_storage;
         self.bind_group = bind_group;
         self.slot_count = next;
