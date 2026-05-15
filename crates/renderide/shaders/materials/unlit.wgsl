@@ -18,7 +18,6 @@
 
 #import renderide::core::texture_sampling as ts
 #import renderide::frame::globals as rg
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::alpha as ma
 #import renderide::material::variant_bits as vb
 #import renderide::material::vertex_color as vc
@@ -199,6 +198,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     var color: vec4<f32>;
+    var main_texture_alpha = 1.0;
     if (use_texture) {
         var tex_color: vec4<f32>;
         if (use_polar_uv) {
@@ -206,6 +206,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         } else {
             tex_color = ts::sample_tex_2d(_Tex, _Tex_sampler, uv_main, mat._Tex_LodBias);
         }
+        main_texture_alpha = tex_color.a;
         if (kw_TEXTURE_NORMALMAP()) {
             tex_color = vec4<f32>(nd::decode_ts_normal_with_placeholder_sample(tex_color, 1.0) * 0.5 + vec3<f32>(0.5), 1.0);
         }
@@ -225,30 +226,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let mul_rgb_by_alpha = kw_MUL_RGB_BY_ALPHA();
 
     let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
+    var mask_lum_for_clip = 1.0;
 
     if (mask_mul || mask_clip) {
         let mask_sample = ts::sample_tex_2d(_MaskTex, _MaskTex_sampler, uv_mask, mat._MaskTex_LodBias);
         let mask_lum = ma::mask_luminance(mask_sample);
-        let mask_clip_alpha = acs::mask_luminance_mul_base_mip(_MaskTex, _MaskTex_sampler, uv_mask);
+        mask_lum_for_clip = mask_lum;
 
         if (mask_mul) {
             color.a = color.a * mask_lum;
         }
-        if (mask_clip && mask_clip_alpha <= mat._Cutoff) {
+        if (mask_clip && mask_lum <= mat._Cutoff) {
             discard;
         }
     }
 
     if (alpha_test && !mask_clip) {
         var clip_alpha = color.a;
-        if (use_texture) {
-            clip_alpha = acs::texture_alpha_base_mip(_Tex, _Tex_sampler, uv_main);
+        if (use_texture && kw_TEXTURE_NORMALMAP()) {
+            clip_alpha = main_texture_alpha;
             if (use_color) {
                 clip_alpha = clip_alpha * mat._Color.a;
             }
-        }
-        if (mask_mul) {
-            clip_alpha = clip_alpha * acs::mask_luminance_mul_base_mip(_MaskTex, _MaskTex_sampler, uv_mask);
+            if (mask_mul) {
+                clip_alpha = clip_alpha * mask_lum_for_clip;
+            }
         }
         if (clip_alpha <= mat._Cutoff) {
             discard;

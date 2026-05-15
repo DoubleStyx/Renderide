@@ -14,7 +14,6 @@
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb
 #import renderide::material::vertex_color as vc
 #import renderide::mesh::billboard as mb
@@ -231,9 +230,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var col: vec4<f32>;
     var clip_alpha: f32;
     if (use_texture) {
-        let uv_main = texture_uv(in.uv, in.view_layer);
         let tex = sample_main_texture(in.uv, in.view_layer);
-        clip_alpha = acs::texture_alpha_base_mip(_Tex, _Tex_sampler, uv_main);
+        clip_alpha = tex.a;
         if (use_color) {
             col = tex * mat._Color;
             clip_alpha = clip_alpha * mat._Color.a;

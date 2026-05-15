@@ -6,6 +6,7 @@ mod offset_and_packing_tests {
     use super::super::skybox_specular::SkyboxSpecularUniformParams;
     use super::super::uniforms::{
         FRAME_PROJECTION_FLAG_ORTHOGRAPHIC, FRAME_TAIL_AMBIENT_SH_VALID, FrameGpuUniforms,
+        frame_tail_sample_count, pack_frame_tail_flags,
     };
     use crate::shared::RenderSH2;
     use glam::Mat4;
@@ -99,6 +100,7 @@ mod offset_and_packing_tests {
             frame_index: 7,
             projection_flags_left: FRAME_PROJECTION_FLAG_ORTHOGRAPHIC,
             projection_flags_right: 0,
+            sample_count: 4,
             ambient_sh_valid: true,
             skybox_specular: SkyboxSpecularUniformParams::from_cubemap_resident_mips(6),
             ambient_sh: [[0.0; 4]; 9],
@@ -124,7 +126,7 @@ mod offset_and_packing_tests {
                 7,
                 FRAME_PROJECTION_FLAG_ORTHOGRAPHIC,
                 0,
-                FRAME_TAIL_AMBIENT_SH_VALID
+                pack_frame_tail_flags(true, 4)
             ]
         );
         assert_eq!(u.skybox_specular, [5.0, 1.0, 1.0, 0.0]);
@@ -152,6 +154,7 @@ mod offset_and_packing_tests {
             frame_index: 0,
             projection_flags_left: 0,
             projection_flags_right: 0,
+            sample_count: 1,
             ambient_sh_valid: false,
             skybox_specular: SkyboxSpecularUniformParams::disabled(),
             ambient_sh: [[0.0; 4]; 9],
@@ -160,6 +163,27 @@ mod offset_and_packing_tests {
 
         assert_eq!(u.camera_world_pos, u.camera_world_pos_right);
         assert_eq!(u.frame_tail, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn frame_tail_sample_count_round_trips_supported_msaa_counts() {
+        for sample_count in [1, 2, 4, 8] {
+            let flags = pack_frame_tail_flags(false, sample_count);
+            assert_eq!(frame_tail_sample_count(flags), sample_count);
+            assert_eq!(flags & FRAME_TAIL_AMBIENT_SH_VALID, 0);
+        }
+
+        let flags = pack_frame_tail_flags(true, 4);
+        assert_eq!(frame_tail_sample_count(flags), 4);
+        assert_ne!(flags & FRAME_TAIL_AMBIENT_SH_VALID, 0);
+    }
+
+    #[test]
+    fn frame_tail_sample_count_defaults_unsupported_counts_to_single_sample() {
+        for sample_count in [0, 3, 16] {
+            let flags = pack_frame_tail_flags(false, sample_count);
+            assert_eq!(frame_tail_sample_count(flags), 1);
+        }
     }
 
     #[test]

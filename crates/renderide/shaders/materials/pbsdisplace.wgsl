@@ -28,7 +28,6 @@
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb
 #import renderide::core::uv as uvu
 
@@ -198,11 +197,7 @@ fn shade(
     if (kw_ALBEDOTEX()) {
         c = c * textureSample(_MainTex, _MainTex_sampler, uv_main);
     }
-    var clip_alpha = mat._Color.a;
-    if (kw_ALBEDOTEX()) {
-        clip_alpha = clip_alpha * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_main);
-    }
-    if (kw_ALPHACLIP() && clip_alpha <= mat._AlphaClip) {
+    if (kw_ALPHACLIP() && c.a <= mat._AlphaClip) {
         discard;
     }
 

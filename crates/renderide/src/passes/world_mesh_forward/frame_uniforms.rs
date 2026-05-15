@@ -29,6 +29,7 @@ pub(super) fn write_per_view_frame_uniforms(
             .shared
             .frame_resources
             .frame_light_count_u32(frame.view.view_id),
+        frame.view.sample_count,
         use_multiview,
         frame
             .shared
@@ -48,6 +49,7 @@ fn build_frame_gpu_uniforms(
     scene: &SceneCoordinator,
     viewport_px: (u32, u32),
     light_count: u32,
+    sample_count: u32,
     use_multiview: bool,
     skybox_specular: crate::gpu::frame_globals::SkyboxSpecularUniformParams,
 ) -> FrameGpuUniforms {
@@ -67,6 +69,7 @@ fn build_frame_gpu_uniforms(
             right_z_coeffs: right.view_space_z_coeffs(),
             right_proj_params: right.proj_params(),
             right_projection_flags: right.projection_flags,
+            sample_count,
             frame_index: frame_idx,
             ambient_sh_valid,
             skybox_specular,
@@ -83,6 +86,7 @@ fn build_frame_gpu_uniforms(
             right_z_coeffs: z,
             right_proj_params: p,
             right_projection_flags: mono.projection_flags,
+            sample_count,
             frame_index: frame_idx,
             ambient_sh_valid,
             skybox_specular,

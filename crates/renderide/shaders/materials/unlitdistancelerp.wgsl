@@ -10,7 +10,6 @@
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu
@@ -119,10 +118,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let c = mix(near, far, l);
 
     if (kw_ALPHATEST()) {
-        let near_alpha = acs::texture_alpha_base_mip(_NearTex, _NearTex_sampler, near_uv) * mat._NearColor.a;
-        let far_alpha = acs::texture_alpha_base_mip(_FarTex, _FarTex_sampler, far_uv) * mat._FarColor.a;
-        let clip_a = mix(near_alpha, far_alpha, l);
-        if (clip_a <= mat._Cutoff) {
+        if (c.a <= mat._Cutoff) {
             discard;
         }
     }

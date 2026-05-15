@@ -49,6 +49,12 @@ impl VramAccounting {
         self.total_resident_bytes
     }
 
+    /// Resident bytes for meshes only.
+    #[cfg(test)]
+    pub fn mesh_resident_bytes(&self) -> u64 {
+        self.mesh_resident_bytes
+    }
+
     /// Resident bytes for textures only.
     pub fn texture_resident_bytes(&self) -> u64 {
         self.texture_resident_bytes

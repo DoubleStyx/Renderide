@@ -25,7 +25,6 @@
 #import renderide::pbs::parallax as ppar
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::surface as psurf
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
 #import renderide::core::texture_sampling as ts
@@ -134,13 +133,6 @@ fn unity_standard_alpha(texture_alpha: f32) -> f32 {
     return mat._Color.a * texture_alpha;
 }
 
-fn unity_standard_clip_alpha(uv: vec2<f32>) -> f32 {
-    if (smoothness_from_albedo_alpha()) {
-        return mat._Color.a;
-    }
-    return mat._Color.a * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv);
-}
-
 fn uv_with_parallax(uv: vec2<f32>, world_pos: vec3<f32>, world_n: vec3<f32>, world_t: vec4<f32>, view_layer: u32) -> vec2<f32> {
     if (!pbs_kw(PBSSPECULAR_KW_PARALLAXMAP)) {
         return uv;
@@ -189,8 +181,7 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
 
     let albedo_sample = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     let base_alpha = unity_standard_alpha(albedo_sample.a);
-    let clip_alpha = unity_standard_clip_alpha(uv_main);
-    if (alpha_test_enabled() && clip_alpha <= mat._Cutoff) {
+    if (alpha_test_enabled() && base_alpha <= mat._Cutoff) {
         discard;
     }
 

@@ -132,6 +132,35 @@ fn material_roots_do_not_redeclare_shared_helpers() -> io::Result<()> {
 }
 
 #[test]
+fn alpha_clip_paths_do_not_force_base_mip_sampling() -> io::Result<()> {
+    let mut offenders = Vec::new();
+    for path in wgsl_files_recursive("shaders")? {
+        let src = source_file(&path)?;
+        for forbidden in [
+            "renderide::material::alpha_clip_sample",
+            "texture_alpha_base_mip",
+            "texture_rgba_base_mip",
+            "mask_luminance_mul_base_mip",
+            "sample_rgba_lod0",
+        ] {
+            if src.contains(forbidden) {
+                offenders.push(format!(
+                    "{} still contains `{forbidden}`",
+                    file_label(&path)
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "alpha clipping must use the same filtered texture samples as visible color:\n  {}",
+        offenders.join("\n  ")
+    );
+    Ok(())
+}
+
+#[test]
 fn grab_filter_roots_use_shared_filter_common_helpers() -> io::Result<()> {
     for material in [
         "blur.wgsl",

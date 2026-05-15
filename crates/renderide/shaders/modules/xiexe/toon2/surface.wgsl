@@ -16,7 +16,6 @@
 #import renderide::pbs::normal as pnorm
 #import renderide::core::normal_decode as nd
 #import renderide::core::uv as uvu
-#import renderide::material::alpha_clip_sample as acs
 
 /// Forward-pass vertex transform. Builds the world-space TBN, applies the per-eye VP,
 /// and forwards UVs / vertex color unchanged. Outline extrusion lives in
@@ -164,7 +163,7 @@ fn sample_surface_for_layout(
     let uv_reflectivity = uvu::apply_st(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetReflectivity), xb::mat._ReflectivityMask_ST);
 
     var albedo = textureSample(xb::_MainTex, xb::_MainTex_sampler, uv_albedo) * xb::mat._Color;
-    let clip_alpha = xb::mat._Color.a * acs::texture_alpha_base_mip(xb::_MainTex, xb::_MainTex_sampler, uv_albedo);
+    let clip_alpha = albedo.a;
     if (xvb::vertex_color_albedo_enabled_for_layout(keyword_layout)) {
         albedo = vec4<f32>(albedo.rgb * color.rgb, albedo.a);
     }

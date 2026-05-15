@@ -15,7 +15,6 @@
 //#texture_default _OcclusionMap white
 //#texture_default _SpecularMap white
 
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight
@@ -129,15 +128,7 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, vertex
     if (kw_VCOLOR_ALBEDO()) {
         albedo = albedo * vertex_color;
     }
-    let vertex_alpha = select(1.0, vertex_color.a, kw_VCOLOR_ALBEDO());
-    let clip_alpha = select(
-        albedo.a,
-        mat._Color.a
-            * vertex_alpha
-            * acs::texture_alpha_base_mip(_MainTex, _MainTex_sampler, uv_main),
-        kw_ALBEDOTEX(),
-    );
-    if (kw_ALPHACLIP() && clip_alpha <= mat._AlphaClip) {
+    if (kw_ALPHACLIP() && albedo.a <= mat._AlphaClip) {
         discard;
     }
 

@@ -10,7 +10,6 @@
 //#texture_default _FrontTex white
 
 #import renderide::frame::globals as rg
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::material::variant_bits as vb
 #import renderide::material::vertex_color as vc
 #import renderide::mesh::vertex as mv
@@ -113,24 +112,6 @@ fn sample_layer(
     return textureSample(tex, samp, uvu::apply_st(uv, st)) * tint;
 }
 
-/// Same UV as [`sample_layer`], base mip -- for `_Cutoff` vs composited alpha only.
-fn sample_layer_lod0(
-    tex: texture_2d<f32>,
-    samp: sampler,
-    tint: vec4<f32>,
-    uv: vec2<f32>,
-    st: vec4<f32>,
-) -> vec4<f32> {
-    if (!kw_TEXTURE()) {
-        return tint;
-    }
-    var sample_uv = uvu::apply_st(uv, st);
-    if (kw_POLARUV()) {
-        sample_uv = uvu::polar_mapping(uv, st, mat._PolarPow).uv;
-    }
-    return acs::texture_rgba_base_mip(tex, samp, sample_uv) * tint;
-}
-
 fn apply_vertex_color(color_in: vec4<f32>, vertex_color: vec4<f32>) -> vec4<f32> {
     if (!kw_VERTEXCOLORS()) {
         return color_in;
@@ -144,8 +125,8 @@ fn apply_vertex_color(color_in: vec4<f32>, vertex_color: vec4<f32>) -> vec4<f32>
     return color_in * vc_linear;
 }
 
-fn finalize_layer_color(color_in: vec4<f32>, clip_color: vec4<f32>, vertex_color: vec4<f32>) -> vec4<f32> {
-    if (kw_ALPHATEST() && clip_color.a <= mat._Cutoff) {
+fn finalize_layer_color(color_in: vec4<f32>, vertex_color: vec4<f32>) -> vec4<f32> {
+    if (kw_ALPHATEST() && color_in.a <= mat._Cutoff) {
         discard;
     }
 
@@ -172,14 +153,7 @@ fn fs_behind(in: mv::UvColorVertexOutput) -> @location(0) vec4<f32> {
         in.uv,
         mat._BehindTex_ST,
     );
-    let clip_color = sample_layer_lod0(
-        _BehindTex,
-        _BehindTex_sampler,
-        mat._BehindColor,
-        in.uv,
-        mat._BehindTex_ST,
-    );
-    return finalize_layer_color(color, clip_color, in.color);
+    return finalize_layer_color(color, in.color);
 }
 
 //#pass overlay_front
@@ -192,12 +166,5 @@ fn fs_front(in: mv::UvColorVertexOutput) -> @location(0) vec4<f32> {
         in.uv,
         mat._FrontTex_ST,
     );
-    let clip_color = sample_layer_lod0(
-        _FrontTex,
-        _FrontTex_sampler,
-        mat._FrontColor,
-        in.uv,
-        mat._FrontTex_ST,
-    );
-    return finalize_layer_color(color, clip_color, in.color);
+    return finalize_layer_color(color, in.color);
 }

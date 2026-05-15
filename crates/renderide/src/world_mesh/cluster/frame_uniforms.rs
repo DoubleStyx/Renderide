@@ -27,6 +27,8 @@ pub struct FrameGpuUniformBuildParams {
     pub right_proj_params: [f32; 4],
     /// Right-eye projection flags, or the mono flags for non-stereo frames.
     pub right_projection_flags: u32,
+    /// Raster sample count for the current frame target.
+    pub sample_count: u32,
     /// Monotonic host frame index used by temporal effects.
     pub frame_index: u32,
     /// Whether `ambient_sh` contains host-authored lighting data.
@@ -64,6 +66,7 @@ pub(super) fn build_frame_gpu_uniforms(
         frame_index: params.frame_index,
         projection_flags_left: cfp.projection_flags,
         projection_flags_right: params.right_projection_flags,
+        sample_count: params.sample_count,
         ambient_sh_valid: params.ambient_sh_valid,
         skybox_specular: params.skybox_specular,
         ambient_sh: params.ambient_sh,
