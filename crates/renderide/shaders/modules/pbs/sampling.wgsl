@@ -74,6 +74,11 @@ fn sample_optional_two_sided_world_normal(
     return normalize(tbn * ts_n);
 }
 
+fn two_sided_geometric_normal(world_n: vec3<f32>, front_facing: bool) -> vec3<f32> {
+    let n = normalize(world_n);
+    return select(-n, n, front_facing);
+}
+
 fn blend_detail_tangent_normal(base: vec3<f32>, detail: vec3<f32>, detail_mask: f32) -> vec3<f32> {
     return normalize(vec3<f32>(base.xy + detail.xy * detail_mask, base.z));
 }

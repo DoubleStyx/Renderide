@@ -194,7 +194,16 @@ fn fs_main(
     }
     let edge_emission = mix(emission, mat._EdgeEmissionColor.rgb, edge_lerp);
 
-    let surface = psurf::metallic(c.rgb, c.a, metallic, roughness, occlusion, n, edge_emission);
+    let surface = psurf::metallic_with_geometric_normal(
+        c.rgb,
+        c.a,
+        metallic,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        edge_emission,
+    );
     return plight::shade_metallic_transparent_clustered(
         frag_pos.xy,
         world_pos,

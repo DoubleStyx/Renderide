@@ -75,13 +75,14 @@ fn direct_metallic_clustered(
                 s.normal,
                 view_dir,
                 aa_roughness,
+                s.roughness,
                 s.metallic,
                 s.base_color,
                 specular_color,
                 energy_compensation,
             );
         } else {
-            lo = lo + brdf::diffuse_only_metallic(light, world_pos, s.normal, s.base_color, s.metallic);
+            lo = lo + brdf::diffuse_only_metallic(light, world_pos, s.normal, view_dir, s.roughness, s.base_color, s.metallic);
         }
     }
     return lo;
@@ -120,6 +121,7 @@ fn direct_specular_clustered(
                 s.normal,
                 view_dir,
                 aa_roughness,
+                s.roughness,
                 s.base_color,
                 s.specular_color,
                 s.one_minus_reflectivity,
@@ -130,6 +132,8 @@ fn direct_specular_clustered(
                 light,
                 world_pos,
                 s.normal,
+                view_dir,
+                s.roughness,
                 s.base_color,
                 s.one_minus_reflectivity,
             );
@@ -179,6 +183,7 @@ fn shade_metallic_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
         s.roughness,
         specular_energy * specular_visibility,
@@ -199,6 +204,7 @@ fn premultiplied_metallic_surface(s: surface::MetallicSurface) -> surface::Metal
         s.roughness,
         s.occlusion,
         s.normal,
+        s.geometric_normal,
         s.emission,
     );
 }
@@ -245,6 +251,7 @@ fn shade_metallic_transparent_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
         s.roughness,
         specular_energy * specular_visibility,
@@ -299,6 +306,7 @@ fn shade_specular_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
         s.roughness,
         specular_energy * specular_visibility,
@@ -320,6 +328,7 @@ fn premultiplied_specular_surface(s: surface::SpecularSurface) -> surface::Specu
         s.one_minus_reflectivity,
         s.occlusion,
         s.normal,
+        s.geometric_normal,
         s.emission,
     );
 }
@@ -364,6 +373,7 @@ fn shade_specular_transparent_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
         s.roughness,
         specular_energy * specular_visibility,

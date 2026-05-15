@@ -245,13 +245,14 @@ fn fs_forward_base(
     @location(5) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, uv1, world_pos, world_n, world_t, view_layer);
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         s.base_color,
         s.alpha,
         s.metallic,
         s.roughness,
         s.occlusion,
         s.normal,
+        world_n,
         s.emission,
     );
     let options = plight::ClusterLightingOptions(

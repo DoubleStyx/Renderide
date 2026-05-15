@@ -195,7 +195,16 @@ fn shade(
 
     let emission_tex = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     let emission = mat._EmissionColor.rgb * emission_tex + point_emission;
-    let surface = psurf::specular(base_color, alpha, f0, roughness, occlusion, n, emission);
+    let surface = psurf::specular_with_geometric_normal(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission,
+    );
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
     return plight::shade_specular_transparent_clustered(frag_xy, world_pos, view_layer, surface, options);
 }

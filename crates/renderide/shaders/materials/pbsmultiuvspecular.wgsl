@@ -21,6 +21,7 @@
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::normal as pnorm
 #import renderide::pbs::lighting as plight
+#import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
@@ -243,13 +244,14 @@ fn fs_forward_base(
     @location(7) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, uv1, uv2, uv3, world_n, world_t, front_facing);
-    let surface = psurf::specular(
+    let surface = psurf::specular_with_geometric_normal(
         s.base_color,
         s.alpha,
         s.f0,
         s.roughness,
         s.occlusion,
         s.normal,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
         s.emission,
     );
     return vec4<f32>(

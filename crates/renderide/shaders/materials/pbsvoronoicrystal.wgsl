@@ -130,13 +130,14 @@ fn shade(
     let cell_emission = textureSample(_EmissionGradient, _EmissionGradient_sampler, cell_offset).rgb * mat._EmissionColor.rgb;
     let emission = mix(mat._EdgeEmission.rgb, cell_emission, border_lerp);
 
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         base_color,
         1.0,
         metallic,
         roughness,
         1.0,
         n,
+        world_n,
         emission,
     );
     return vec4<f32>(

@@ -84,13 +84,14 @@ fn vs_main(
 //#pass forward
 @fragment
 fn fs_forward_base(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         vec3<f32>(0.0),
         1.0,
         0.0,
         1.0,
         1.0,
         normalize(in.world_n),
+        in.world_n,
         vec3<f32>(0.0),
     );
     let shaded = plight::shade_metallic_clustered(

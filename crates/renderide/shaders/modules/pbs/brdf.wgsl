@@ -5,9 +5,10 @@
 //! - V: height-correlated Smith-GGX visibility (`v_smith_ggx_correlated`); already folds in the
 //!   `1/(4*NoL*NoV)` denominator, so the assembled specular is `D * V * F` (no extra divide).
 //! - F: Schlick with `f90 = saturate(50*dot(f0, 1/3))`.
-//! - Diffuse: Lambert (`1/PI`); diffuse reflectance is pre-multiplied by `(1 - metallic)` (or by
-//!   `one_minus_reflectivity` in the specular workflow) and the direct lobe is scaled by normalized
-//!   Fresnel transmission so diffuse falls away as specular reflection rises at grazing angles.
+//! - Diffuse: Disney/Burley rough diffuse; diffuse reflectance is pre-multiplied by
+//!   `(1 - metallic)` (or by `one_minus_reflectivity` in the specular workflow) and the direct lobe
+//!   is scaled by normalized Fresnel transmission so diffuse falls away as specular reflection rises
+//!   at grazing angles.
 //!
 //! Public entry contract: callers pass **perceptual roughness** (`= 1 - smoothness`, clamped to
 //! `[0.0, 1.0]`). Direct GGX paths apply Unity BiRP's linear-roughness floor only when evaluating
@@ -114,6 +115,11 @@ fn v_smith_ggx_correlated(n_dot_v: f32, n_dot_l: f32, roughness: f32) -> f32 {
 /// reflectance reaches approximately 1 at grazing.
 fn f_schlick(f0: vec3<f32>, f90: f32, v_dot_h: f32) -> vec3<f32> {
     return f0 + (vec3<f32>(f90) - f0) * pow5(1.0 - v_dot_h);
+}
+
+/// Scalar Schlick approximation used by Disney/Burley rough diffuse.
+fn f_schlick_scalar(f0: f32, f90: f32, cos_theta: f32) -> f32 {
+    return f0 + (f90 - f0) * pow5(1.0 - clamp(cos_theta, 0.0, 1.0));
 }
 
 /// Derives `f90` from `f0`. `50*(1/3) ~= 16.67`; saturated so very dark dielectrics don't go to white.
@@ -298,6 +304,16 @@ fn fd_lambert() -> f32 {
     return 1.0 / 3.14159265;
 }
 
+/// Disney/Burley rough diffuse normalization with grazing retro-reflection.
+fn fd_burley(n_dot_v: f32, n_dot_l: f32, l_dot_h: f32, perceptual_roughness: f32) -> f32 {
+    let roughness = clamp(perceptual_roughness, 0.0, 1.0);
+    let loh = clamp(l_dot_h, 0.0, 1.0);
+    let fd90 = 0.5 + 2.0 * roughness * loh * loh;
+    let light_scatter = f_schlick_scalar(1.0, fd90, n_dot_l);
+    let view_scatter = f_schlick_scalar(1.0, fd90, n_dot_v);
+    return light_scatter * view_scatter * (1.0 / PI);
+}
+
 /// Unity BiRP-style distance attenuation for punctual lights.
 ///
 /// Preserved as the `renderide::pbs::brdf` entry point for material shaders that already call it.
@@ -345,15 +361,17 @@ fn signed_light_radiance(light: ft::GpuLight, attenuation: f32, n_dot_l: f32) ->
 
 /// Direct radiance for the metallic workflow.
 ///
-/// `roughness` is perceptual (caller passes `1 - smoothness`, clamped to `[0.0, 1.0]`). `f0` is
-/// the dielectric-<->-metal blend (`mix(0.04, base_color, metallic)`). Diffuse is pre-discounted by
-/// `(1 - metallic)` and then scaled by normalized Fresnel transmission for the analytic direct lobe.
+/// `specular_roughness` and `diffuse_roughness` are perceptual. The split keeps geometric specular
+/// AA from widening the rough diffuse response. `f0` is the dielectric-<->-metal blend
+/// (`mix(0.04, base_color, metallic)`). Diffuse is pre-discounted by `(1 - metallic)` and then
+/// scaled by normalized Fresnel transmission for the analytic direct lobe.
 fn direct_radiance_metallic(
     light: ft::GpuLight,
     world_pos: vec3<f32>,
     n: vec3<f32>,
     v: vec3<f32>,
-    roughness: f32,
+    specular_roughness: f32,
+    diffuse_roughness: f32,
     metallic: f32,
     base_color: vec3<f32>,
     f0: vec3<f32>,
@@ -368,8 +386,9 @@ fn direct_radiance_metallic(
     let n_dot_v = max(dot(n, v), 1e-4);
     let n_dot_h = clamp(dot(n, h), 0.0, 1.0);
     let v_dot_h = clamp(dot(v, h), 0.0, 1.0);
+    let l_dot_h = clamp(dot(ls.l, h), 0.0, 1.0);
 
-    let alpha = direct_alpha_from_perceptual_roughness(roughness);
+    let alpha = direct_alpha_from_perceptual_roughness(specular_roughness);
     let f90 = f90_from_f0(f0);
     let f = f_schlick(f0, f90, v_dot_h);
     let d = d_ggx(n_dot_h, alpha);
@@ -377,7 +396,7 @@ fn direct_radiance_metallic(
     let fr = (d * vis) * f * energy_compensation;
 
     let diffuse_color = base_color * (1.0 - metallic);
-    let fd = diffuse_color * direct_diffuse_fresnel_transmission(f, f0) * fd_lambert();
+    let fd = diffuse_color * direct_diffuse_fresnel_transmission(f, f0) * fd_burley(n_dot_v, n_dot_l, l_dot_h, diffuse_roughness);
 
     let radiance = signed_light_radiance(light, ls.attenuation, n_dot_l);
     return (fd + fr) * radiance;
@@ -385,16 +404,19 @@ fn direct_radiance_metallic(
 
 /// Direct radiance for the specular (Unity Standard SpecularSetup) workflow.
 ///
-/// `roughness` is perceptual. `f0` is the tinted specular color from the host (already encodes the
-/// dielectric/metal split chosen by the artist). `one_minus_reflectivity` is the diffuse-energy
-/// discount derived from `f0`'s peak channel (Unity `EnergyConservationBetweenDiffuseAndSpecular`).
-/// The direct diffuse lobe is scaled by normalized Fresnel transmission after that F0 split.
+/// `specular_roughness` and `diffuse_roughness` are perceptual. The split keeps geometric specular
+/// AA from widening the rough diffuse response. `f0` is the tinted specular color from the host
+/// (already encodes the dielectric/metal split chosen by the artist). `one_minus_reflectivity` is
+/// the diffuse-energy discount derived from `f0`'s peak channel (Unity
+/// `EnergyConservationBetweenDiffuseAndSpecular`). The direct diffuse lobe is scaled by normalized
+/// Fresnel transmission after that F0 split.
 fn direct_radiance_specular(
     light: ft::GpuLight,
     world_pos: vec3<f32>,
     n: vec3<f32>,
     v: vec3<f32>,
-    roughness: f32,
+    specular_roughness: f32,
+    diffuse_roughness: f32,
     base_color: vec3<f32>,
     f0: vec3<f32>,
     one_minus_reflectivity: f32,
@@ -409,8 +431,9 @@ fn direct_radiance_specular(
     let n_dot_v = max(dot(n, v), 1e-4);
     let n_dot_h = clamp(dot(n, h), 0.0, 1.0);
     let v_dot_h = clamp(dot(v, h), 0.0, 1.0);
+    let l_dot_h = clamp(dot(ls.l, h), 0.0, 1.0);
 
-    let alpha = direct_alpha_from_perceptual_roughness(roughness);
+    let alpha = direct_alpha_from_perceptual_roughness(specular_roughness);
     let f90 = f90_from_f0(f0);
     let f = f_schlick(f0, f90, v_dot_h);
     let d = d_ggx(n_dot_h, alpha);
@@ -418,37 +441,53 @@ fn direct_radiance_specular(
     let fr = (d * vis) * f * energy_compensation;
 
     let diffuse_color = base_color * one_minus_reflectivity;
-    let fd = diffuse_color * direct_diffuse_fresnel_transmission(f, f0) * fd_lambert();
+    let fd = diffuse_color * direct_diffuse_fresnel_transmission(f, f0) * fd_burley(n_dot_v, n_dot_l, l_dot_h, diffuse_roughness);
 
     let radiance = signed_light_radiance(light, ls.attenuation, n_dot_l);
     return (fd + fr) * radiance;
 }
 
-/// Lambertian direct radiance only (specular highlights disabled), metallic path. Diffuse is
+/// Rough diffuse direct radiance only (specular highlights disabled), metallic path. Diffuse is
 /// pre-discounted by `(1 - metallic)` so disabling specular on a metal still produces a near-black
 /// surface (correct: a perfect metal has no diffuse channel).
 fn diffuse_only_metallic(
     light: ft::GpuLight,
     world_pos: vec3<f32>,
     n: vec3<f32>,
+    v: vec3<f32>,
+    roughness: f32,
     base_color: vec3<f32>,
     metallic: f32,
 ) -> vec3<f32> {
     let ls = eval_light(light, world_pos);
     let n_dot_l = max(dot(n, ls.l), 0.0);
+    if n_dot_l <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let h = normalize(v + ls.l);
+    let n_dot_v = max(dot(n, v), 1e-4);
+    let l_dot_h = clamp(dot(ls.l, h), 0.0, 1.0);
     let diffuse_color = base_color * (1.0 - metallic);
-    return diffuse_color * fd_lambert() * signed_light_radiance(light, ls.attenuation, n_dot_l);
+    return diffuse_color * fd_burley(n_dot_v, n_dot_l, l_dot_h, roughness) * signed_light_radiance(light, ls.attenuation, n_dot_l);
 }
 
-/// Lambertian direct radiance only, specular workflow (diffuse pre-discounted by `one_minus_reflectivity`).
+/// Rough diffuse direct radiance only, specular workflow.
 fn diffuse_only_specular(
     light: ft::GpuLight,
     world_pos: vec3<f32>,
     n: vec3<f32>,
+    v: vec3<f32>,
+    roughness: f32,
     base_color: vec3<f32>,
     one_minus_reflectivity: f32,
 ) -> vec3<f32> {
     let ls = eval_light(light, world_pos);
     let n_dot_l = max(dot(n, ls.l), 0.0);
-    return base_color * one_minus_reflectivity * fd_lambert() * signed_light_radiance(light, ls.attenuation, n_dot_l);
+    if n_dot_l <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let h = normalize(v + ls.l);
+    let n_dot_v = max(dot(n, v), 1e-4);
+    let l_dot_h = clamp(dot(ls.l, h), 0.0, 1.0);
+    return base_color * one_minus_reflectivity * fd_burley(n_dot_v, n_dot_l, l_dot_h, roughness) * signed_light_radiance(light, ls.attenuation, n_dot_l);
 }

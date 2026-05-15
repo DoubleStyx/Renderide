@@ -232,7 +232,16 @@ fn shade(
 
     let n = sample_normal_world(uv_main, world_n, world_t, front_facing);
     let base_color = c.rgb;
-    let surface = psurf::metallic(base_color, c.a, metallic, roughness, occlusion, n, emission);
+    let surface = psurf::metallic_with_geometric_normal(
+        base_color,
+        c.a,
+        metallic,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission,
+    );
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
     return plight::shade_metallic_transparent_clustered(frag_xy, world_pos, view_layer, surface, options);
 }

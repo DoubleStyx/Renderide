@@ -210,7 +210,16 @@ fn shade(
 
     let emission_tex = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     let emission = mat._EmissionColor.rgb * emission_tex + point_emission;
-    let surface = psurf::metallic(base_color, alpha, metallic, roughness, occlusion, n, emission);
+    let surface = psurf::metallic_with_geometric_normal(
+        base_color,
+        alpha,
+        metallic,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission,
+    );
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
     let color = plight::shade_metallic_clustered(frag_xy, world_pos, view_layer, surface, options);
     return vec4<f32>(color, alpha);

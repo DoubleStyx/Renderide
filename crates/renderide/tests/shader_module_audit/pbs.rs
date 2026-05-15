@@ -448,6 +448,8 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
         "smoothness = albedo_sample.a * mat._GlossMapScale;",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
         "mix(1.0, occlusion_sample, clamp(mat._OcclusionStrength, 0.0, 1.0))",
+        "psurf::metallic_with_geometric_normal(",
+        "world_n,",
     ] {
         assert!(
             metallic.contains(required),
@@ -465,6 +467,8 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
         "let base_alpha = unity_standard_alpha(albedo_sample.a);",
         "if (alpha_test_enabled() && base_alpha <= mat._Cutoff) {",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
+        "psurf::specular_with_geometric_normal(",
+        "world_n,",
     ] {
         assert!(
             specular.contains(required),
@@ -563,7 +567,7 @@ fn pbs_direct_diffuse_uses_fresnel_transmission() -> io::Result<()> {
         "fn max_component(v: vec3<f32>) -> f32",
         "fn direct_diffuse_fresnel_transmission(f: vec3<f32>, f0: vec3<f32>) -> f32",
         "return clamp((1.0 - f_peak) / max(1.0 - f0_peak, 1e-4), 0.0, 1.0);",
-        "let fd = diffuse_color * direct_diffuse_fresnel_transmission(f, f0) * fd_lambert();",
+        "let fd = diffuse_color * direct_diffuse_fresnel_transmission(f, f0) * fd_burley(n_dot_v, n_dot_l, l_dot_h, diffuse_roughness);",
     ] {
         assert!(
             brdf_src.contains(required),
@@ -574,6 +578,72 @@ fn pbs_direct_diffuse_uses_fresnel_transmission() -> io::Result<()> {
     assert!(
         !brdf_src.contains("let fd = diffuse_color * fd_lambert();"),
         "PBS direct lighting must not bypass Fresnel diffuse transmission"
+    );
+    Ok(())
+}
+
+#[test]
+fn pbs_direct_diffuse_uses_burley_rough_diffuse() -> io::Result<()> {
+    let brdf_src = module_source("pbs/brdf.wgsl")?;
+    for required in [
+        "fn fd_burley(n_dot_v: f32, n_dot_l: f32, l_dot_h: f32, perceptual_roughness: f32) -> f32",
+        "let fd90 = 0.5 + 2.0 * roughness * loh * loh;",
+        "let light_scatter = f_schlick_scalar(1.0, fd90, n_dot_l);",
+        "let view_scatter = f_schlick_scalar(1.0, fd90, n_dot_v);",
+        "return light_scatter * view_scatter * (1.0 / PI);",
+        "specular_roughness: f32,\n    diffuse_roughness: f32,",
+        "let alpha = direct_alpha_from_perceptual_roughness(specular_roughness);",
+        "fd_burley(n_dot_v, n_dot_l, l_dot_h, diffuse_roughness)",
+    ] {
+        assert!(
+            brdf_src.contains(required),
+            "pbs/brdf.wgsl must contain rough-diffuse term `{required}`"
+        );
+    }
+
+    let lighting_src = module_source("pbs/lighting.wgsl")?;
+    for required in [
+        "aa_roughness,\n                s.roughness,\n                s.metallic,",
+        "aa_roughness,\n                s.roughness,\n                s.base_color,",
+        "brdf::diffuse_only_metallic(light, world_pos, s.normal, view_dir, s.roughness, s.base_color, s.metallic)",
+        "brdf::diffuse_only_specular(\n                light,\n                world_pos,\n                s.normal,\n                view_dir,\n                s.roughness,",
+    ] {
+        assert!(
+            lighting_src.contains(required),
+            "pbs/lighting.wgsl must keep direct specular AA roughness separate from diffuse roughness; missing `{required}`"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn shared_pbs_surface_roots_pass_geometric_normals() -> io::Result<()> {
+    let sampling = module_source("pbs/sampling.wgsl")?;
+    assert!(
+        sampling.contains(
+            "fn two_sided_geometric_normal(world_n: vec3<f32>, front_facing: bool) -> vec3<f32>"
+        ),
+        "pbs/sampling.wgsl must expose a two-sided geometric normal helper for horizon occlusion"
+    );
+
+    let mut offenders = Vec::new();
+    for root in ["shaders/materials", "shaders/modules/fur"] {
+        for path in wgsl_files_recursive(root)? {
+            let src = source_file(&path)?;
+            if !src.contains("renderide::pbs::surface as psurf") {
+                continue;
+            }
+            if src.contains("psurf::metallic(") || src.contains("psurf::specular(") {
+                offenders.push(file_label(&path));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "shared PBS surface roots must pass a separate geometric normal for reflection-probe horizon occlusion:\n  {}",
+        offenders.join("\n  ")
     );
     Ok(())
 }

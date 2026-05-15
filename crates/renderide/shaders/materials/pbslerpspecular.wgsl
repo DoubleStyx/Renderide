@@ -207,7 +207,16 @@ fn fs_main(
 
     let n = sample_normal_world(uv_main0, uv_main1, world_n, world_t, front_facing, l);
 
-    let surface = psurf::specular(base_color, alpha, f0, roughness, occlusion, n, emission);
+    let surface = psurf::specular_with_geometric_normal(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission,
+    );
     let color = plight::shade_specular_clustered(
         frag_pos.xy,
         world_pos,

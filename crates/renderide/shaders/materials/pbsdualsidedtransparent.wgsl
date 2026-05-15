@@ -174,13 +174,14 @@ fn shade(
     front_facing: bool,
 ) -> vec4<f32> {
     let s = sample_surface(uv0, world_n, world_t, front_facing, vertex_color);
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         s.base_color,
         s.alpha,
         s.metallic,
         s.roughness,
         s.occlusion,
         s.normal,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
         s.emission,
     );
     return plight::shade_metallic_transparent_clustered(
