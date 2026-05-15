@@ -2,7 +2,6 @@
 
 #define_import_path renderide::material::sample
 
-#import renderide::material::alpha_clip_sample as acs
 #import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 
@@ -21,15 +20,4 @@ fn sample_rgba(
     polar_enabled: bool,
 ) -> vec4<f32> {
     return ts::sample_tex_2d(tex, samp, sample_uv(raw_uv, st, polar_power, polar_enabled), lod_bias);
-}
-
-fn sample_rgba_lod0(
-    tex: texture_2d<f32>,
-    samp: sampler,
-    raw_uv: vec2<f32>,
-    st: vec4<f32>,
-    polar_power: f32,
-    polar_enabled: bool,
-) -> vec4<f32> {
-    return acs::texture_rgba_base_mip(tex, samp, sample_uv(raw_uv, st, polar_power, polar_enabled));
 }

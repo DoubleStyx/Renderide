@@ -393,3 +393,37 @@ fn xiexe_static_stems_use_static_vertexlight_keyword_layout() -> io::Result<()> 
 
     Ok(())
 }
+
+#[test]
+fn xiexe_a2c_has_single_sample_dither_fallback() -> io::Result<()> {
+    let alpha_src = source_file(manifest_dir().join("shaders/modules/xiexe/toon2/alpha.wgsl"))?;
+    for required in [
+        "rg::frame_sample_count() <= 1u",
+        "if (coverage <= d)",
+        "if (coverage <= xb::bayer_threshold(frag_xy))",
+        "textureSample(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r",
+    ] {
+        assert!(
+            alpha_src.contains(required),
+            "Xiexe A2C single-sample fallback must contain `{required}`"
+        );
+    }
+    assert!(
+        !alpha_src.contains("textureSampleLevel(xb::_CutoutMask"),
+        "Xiexe cutout masks must not force base-mip sampling"
+    );
+
+    let globals_src = source_file(manifest_dir().join("shaders/modules/frame/globals.wgsl"))?;
+    for required in [
+        "fn frame_sample_count() -> u32",
+        "ft::FRAME_TAIL_SAMPLE_COUNT_MASK",
+        "return 1u;",
+    ] {
+        assert!(
+            globals_src.contains(required),
+            "frame globals must expose sample count decoding through `{required}`"
+        );
+    }
+
+    Ok(())
+}

@@ -7,7 +7,13 @@ use glam::Mat4;
 use crate::shared::RenderSH2;
 
 /// Frame tail bit that indicates frame ambient SH2 contains host-authored data.
-pub const FRAME_TAIL_AMBIENT_SH_VALID: u32 = 1;
+pub const FRAME_TAIL_AMBIENT_SH_VALID: u32 = 1 << 0;
+
+/// Bit offset for the encoded raster sample count in `FrameGpuUniforms::frame_tail.w`.
+pub const FRAME_TAIL_SAMPLE_COUNT_SHIFT: u32 = 1;
+
+/// Bit mask for the encoded raster sample count in `FrameGpuUniforms::frame_tail.w`.
+pub const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 0xF << FRAME_TAIL_SAMPLE_COUNT_SHIFT;
 
 /// Frame projection flag indicating that the corresponding view uses orthographic projection.
 pub const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1;
@@ -58,8 +64,8 @@ pub struct FrameGpuUniforms {
     pub proj_params_right: [f32; 4],
     /// Packed trailing `vec4<u32>` slot: `.x` is the monotonic frame index (wraps
     /// `host_camera.frame_index`; used for temporal / jittered screen-space effects), `.y` holds
-    /// left/mono projection flags, `.z` holds right-eye projection flags, and `.w` is
-    /// [`FRAME_TAIL_AMBIENT_SH_VALID`] when ambient SH2 is host-authored.
+    /// left/mono projection flags, `.z` holds right-eye projection flags, and `.w` packs
+    /// frame-wide flags through [`pack_frame_tail_flags`].
     pub frame_tail: [u32; 4],
     /// Reserved direct skybox specular parameters: `.x` max resident LOD, `.y` enabled flag,
     /// `.z` [`super::skybox_specular::SkyboxSpecularSourceKind`] tag, `.w` reserved.
@@ -104,6 +110,39 @@ impl FrameGpuUniforms {
     /// Returns true when the host SH2 payload contains nonzero lighting data.
     pub fn ambient_sh_is_valid(sh: &RenderSH2) -> bool {
         render_sh2_is_nonzero(sh)
+    }
+}
+
+/// Packs frame-wide flags into `FrameGpuUniforms::frame_tail.w`.
+pub fn pack_frame_tail_flags(ambient_sh_valid: bool, sample_count: u32) -> u32 {
+    let ambient_flag = if ambient_sh_valid {
+        FRAME_TAIL_AMBIENT_SH_VALID
+    } else {
+        0
+    };
+    ambient_flag
+        | ((encoded_frame_sample_count(sample_count) << FRAME_TAIL_SAMPLE_COUNT_SHIFT)
+            & FRAME_TAIL_SAMPLE_COUNT_MASK)
+}
+
+/// Decodes the raster sample count from `FrameGpuUniforms::frame_tail.w`.
+#[cfg(test)]
+pub(super) fn frame_tail_sample_count(flags: u32) -> u32 {
+    match (flags & FRAME_TAIL_SAMPLE_COUNT_MASK) >> FRAME_TAIL_SAMPLE_COUNT_SHIFT {
+        2 => 2,
+        4 => 4,
+        8 => 8,
+        _ => 1,
+    }
+}
+
+/// Returns the encoded frame sample count payload stored in `frame_tail.w`.
+fn encoded_frame_sample_count(sample_count: u32) -> u32 {
+    match sample_count {
+        2 => 2,
+        4 => 4,
+        8 => 8,
+        _ => 0,
     }
 }
 

@@ -3,20 +3,17 @@
 //! Each `XIEE_ALPHA_MODE` constant declared by a dispatcher selects one of seven
 //! branches: opaque (no-op), hard cutout, alpha-to-coverage, mask-modulated A2C,
 //! Bayer-dithered cutout (with optional `_FadeDither` distance falloff), and the two
-//! straight blend modes (`fade` / `transparent`). A2C returns coverage alpha for the
-//! pipeline's hardware alpha-to-coverage state; only the cutout and dithered branches
-//! discard.
+//! straight blend modes (`fade` / `transparent`). A2C returns coverage alpha when the
+//! target is multisampled and falls back to a Bayer discard when it is not.
 
 #define_import_path renderide::xiexe::toon2::alpha
 
 #import renderide::xiexe::toon2::base as xb
 #import renderide::frame::globals as rg
-#import renderide::material::alpha_clip_sample as acs
 
 /// Dispatches alpha handling for the seven `XIEE_ALPHA_MODE` variants. Returns the
-/// fragment alpha channel to write (or discards). `clip_alpha` is the stable
-/// base-mip-sampled alpha used for cutout decisions; `alpha` is the live albedo alpha
-/// to write on the blended paths.
+/// fragment alpha channel to write (or discards). `clip_alpha` is sampled through the
+/// same filtered path as the visible albedo.
 fn apply_alpha(
     alpha_mode: u32,
     frag_xy: vec2<f32>,
@@ -35,20 +32,33 @@ fn apply_alpha(
 
     if (alpha_mode == xb::ALPHA_A2C) {
         let d = xb::bayer_threshold(frag_xy);
-        return xb::saturate(alpha - (d * (1.0 - alpha) * 0.15));
+        let coverage = xb::saturate(alpha - (d * (1.0 - alpha) * 0.15));
+        if (rg::frame_sample_count() <= 1u) {
+            if (coverage <= d) {
+                discard;
+            }
+            return 1.0;
+        }
+        return coverage;
     }
 
     if (alpha_mode == xb::ALPHA_A2C_MASKED) {
-        let mask = acs::texture_rgba_base_mip(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r;
+        let mask = textureSample(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r;
         var coverage = xb::saturate(mask + xb::mat._Cutoff);
         coverage = mix(1.0 - coverage, coverage, xb::saturate(alpha));
+        if (rg::frame_sample_count() <= 1u) {
+            if (coverage <= xb::bayer_threshold(frag_xy)) {
+                discard;
+            }
+            return 1.0;
+        }
         return coverage;
     }
 
     if (alpha_mode == xb::ALPHA_DITHERED) {
         let dither = xb::bayer_threshold(frag_xy);
         if (xb::prop_flag(xb::mat._FadeDither)) {
-            let mask = acs::texture_rgba_base_mip(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r;
+            let mask = textureSample(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r;
             let dist = distance(rg::camera_world_pos_for_view(view_layer), world_pos);
             let d = smoothstep(xb::mat._FadeDitherDistance, xb::mat._FadeDitherDistance + 0.02, dist);
             if (((1.0 - mask) + d) <= dither) {

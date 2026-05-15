@@ -3,6 +3,9 @@
 #define_import_path renderide::frame::types
 
 const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1u;
+const FRAME_TAIL_AMBIENT_SH_VALID: u32 = 1u;
+const FRAME_TAIL_SAMPLE_COUNT_SHIFT: u32 = 1u;
+const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 30u;
 
 struct GpuLight {
     position: vec3<f32>,
@@ -61,7 +64,7 @@ struct FrameGlobals {
     proj_params_left: vec4<f32>,
     /// Right-eye projection coefficients (equals left in mono mode).
     proj_params_right: vec4<f32>,
-    /// Packed frame metadata and projection flags.
+    /// Packed frame metadata, projection flags, ambient-light flags, and raster sample count.
     frame_tail: vec4<u32>,
     /// Reserved. Skybox specular lighting is supplied by reflection probes.
     skybox_specular: vec4<f32>,

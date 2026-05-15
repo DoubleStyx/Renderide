@@ -443,7 +443,7 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
         "_OcclusionStrength: f32",
         "return pbs_kw(PBSMETALLIC_KW_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A);",
         "let base_alpha = unity_standard_alpha(albedo_sample.a);",
-        "let clip_alpha = unity_standard_clip_alpha(uv_main);",
+        "if (alpha_test_enabled() && base_alpha <= mat._Cutoff) {",
         "smoothness = mg.a * mat._GlossMapScale;",
         "smoothness = albedo_sample.a * mat._GlossMapScale;",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
@@ -455,14 +455,15 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
         );
     }
     assert!(
-        !metallic.contains("mat._SmoothnessTextureChannel > 0.5"),
+        !metallic.contains("mat._SmoothnessTextureChannel > 0.5")
+            && !metallic.contains("unity_standard_clip_alpha"),
         "pbsmetallic.wgsl must follow the Unity Standard keyword path for albedo-alpha smoothness"
     );
 
     let specular = material_source("pbsspecular.wgsl")?;
     for required in [
         "let base_alpha = unity_standard_alpha(albedo_sample.a);",
-        "let clip_alpha = unity_standard_clip_alpha(uv_main);",
+        "if (alpha_test_enabled() && base_alpha <= mat._Cutoff) {",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
     ] {
         assert!(
@@ -470,6 +471,10 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
             "pbsspecular.wgsl must contain `{required}`"
         );
     }
+    assert!(
+        !specular.contains("unity_standard_clip_alpha"),
+        "pbsspecular.wgsl must clip against the visible filtered albedo alpha"
+    );
 
     Ok(())
 }

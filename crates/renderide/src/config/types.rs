@@ -102,7 +102,7 @@ mod tests {
             RendererSettings::CURRENT_CONFIG_VERSION
         );
         assert_eq!(settings.display.focused_fps_cap, 75);
-        assert!(settings.experimental.reflection_probe_sh2_enabled);
+        assert!(!settings.experimental.reflection_probe_sh2_enabled);
     }
 
     #[test]

@@ -76,6 +76,15 @@ fn projection_flags_for_view(view_layer: u32) -> u32 {
     return frame.frame_tail.y;
 }
 
+/// Raster sample count for the current frame target.
+fn frame_sample_count() -> u32 {
+    let sample_count = (frame.frame_tail.w & ft::FRAME_TAIL_SAMPLE_COUNT_MASK) >> ft::FRAME_TAIL_SAMPLE_COUNT_SHIFT;
+    if (sample_count == 2u || sample_count == 4u || sample_count == 8u) {
+        return sample_count;
+    }
+    return 1u;
+}
+
 /// Returns true when the current view layer is orthographic.
 fn view_is_orthographic(view_layer: u32) -> bool {
     return (projection_flags_for_view(view_layer) & ft::FRAME_PROJECTION_FLAG_ORTHOGRAPHIC) != 0u;
