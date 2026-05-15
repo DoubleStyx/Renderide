@@ -223,15 +223,21 @@ fn sample_equirect(view_dir: vec3<f32>, view_layer: u32) -> vec4<f32> {
 
 fn sample_cubemap(view_dir: vec3<f32>) -> vec4<f32> {
     let dir = normalize(-view_dir);
-    var lod = 0.0;
-    if (kw_CUBEMAP_LOD()) {
-        lod = mat._CubeLOD;
-    }
     let main_dir = cubemap_storage::sample_dir(dir, mat._MainCube_StorageVInverted);
-    var c = textureSampleLevel(_MainCube, _MainCube_sampler, main_dir, lod);
+    var c: vec4<f32>;
+    if (kw_CUBEMAP_LOD()) {
+        c = textureSampleLevel(_MainCube, _MainCube_sampler, main_dir, mat._CubeLOD);
+    } else {
+        c = textureSample(_MainCube, _MainCube_sampler, main_dir);
+    }
     if (kw_SECOND_TEXTURE()) {
         let second_dir = cubemap_storage::sample_dir(dir, mat._SecondCube_StorageVInverted);
-        let sc = textureSampleLevel(_SecondCube, _SecondCube_sampler, second_dir, lod);
+        var sc: vec4<f32>;
+        if (kw_CUBEMAP_LOD()) {
+            sc = textureSampleLevel(_SecondCube, _SecondCube_sampler, second_dir, mat._CubeLOD);
+        } else {
+            sc = textureSample(_SecondCube, _SecondCube_sampler, second_dir);
+        }
         c = mix(c, sc, mat._TextureLerp);
     }
     return c;
