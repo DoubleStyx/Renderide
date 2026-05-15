@@ -43,7 +43,7 @@ struct PbsLerpMaterial {
     _Glossiness1: f32,
     _Metallic: f32,
     _Metallic1: f32,
-    _AlphaClip: f32,
+    _Cutoff: f32,
     _RenderideVariantBits: u32,
 }
 
@@ -170,7 +170,7 @@ fn fs_main(
     }
 
     let c = mix(c0, c1, l);
-    if (pbs_kw(PBSLERP_KW_ALPHACLIP) && c.a <= mat._AlphaClip) {
+    if (pbs_kw(PBSLERP_KW_ALPHACLIP) && c.a <= mat._Cutoff) {
         discard;
     }
 

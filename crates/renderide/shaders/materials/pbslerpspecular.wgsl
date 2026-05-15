@@ -38,7 +38,7 @@ struct PbsLerpSpecularMaterial {
     _Lerp: f32,
     _NormalScale: f32,
     _NormalScale1: f32,
-    _AlphaClip: f32,
+    _Cutoff: f32,
     _RenderideVariantBits: u32,
 }
 
@@ -165,7 +165,7 @@ fn fs_main(
     }
 
     let c = mix(c0, c1, l);
-    if (pbs_kw(PBSLERPSPECULAR_KW_ALPHACLIP) && c.a <= mat._AlphaClip) {
+    if (pbs_kw(PBSLERPSPECULAR_KW_ALPHACLIP) && c.a <= mat._Cutoff) {
         discard;
     }
 
