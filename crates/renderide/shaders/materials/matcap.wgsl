@@ -17,7 +17,7 @@
 struct MatcapMaterial {
     _RenderideVariantBits: u32,
     _pad0: u32,
-    _NormalMap_ST: vec4<f32>,
+    _NormalMap_ST: vec4<f32>, // Not provided by FrooxEngine
 }
 
 const MATCAP_KW_NORMALMAP: u32 = 1u << 0u;
@@ -71,7 +71,8 @@ fn vs_main(
 
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
-    out.uv_normal = uvu::apply_st(uv0, mat._NormalMap_ST);
+    // out.uv_normal = uvu::apply_st(uv0, mat._NormalMap_ST);
+    out.uv_normal = uv0;
     out.world_n = world_n;
     out.world_t = tbn[0];
     out.world_b = tbn[1];
