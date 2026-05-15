@@ -444,10 +444,12 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
         "return pbs_kw(PBSMETALLIC_KW_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A);",
         "let base_alpha = unity_standard_alpha(albedo_sample.a);",
         "if (alpha_test_enabled() && base_alpha <= mat._Cutoff) {",
-        "smoothness = mg.a * mat._GlossMapScale;",
-        "smoothness = albedo_sample.a * mat._GlossMapScale;",
+        "let smoothness_scale = mat._GlossMapScale;",
+        "smoothness = mg.a * smoothness_scale;",
+        "smoothness = albedo_sample.a * smoothness_scale;",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
-        "mix(1.0, occlusion_sample, clamp(mat._OcclusionStrength, 0.0, 1.0))",
+        "let occlusion_strength = mat._OcclusionStrength;",
+        "mix(1.0, occlusion_sample, clamp(occlusion_strength, 0.0, 1.0))",
         "psurf::metallic_with_geometric_normal(",
         "world_n,",
     ] {
@@ -480,6 +482,23 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
         "pbsspecular.wgsl must clip against the visible filtered albedo alpha"
     );
 
+    Ok(())
+}
+
+#[test]
+fn standard_pbs_roots_enforce_unity_default_for_unsent_parameters() -> io::Result<()> {
+    let metallic = material_source("pbsmetallic.wgsl")?;
+    for required in [
+        "// let smoothness_scale = mat._GlossMapScale;",
+        "let smoothness_scale = 1.0;",
+        "// let occlusion_strength = mat._OcclusionStrength;",
+        "let occlusion_strength = 1.0;",
+    ] {
+        assert!(
+            metallic.contains(required),
+            "pbsmetallic.wgsl must contain `{required}`"
+        );
+    }
     Ok(())
 }
 

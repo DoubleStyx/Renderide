@@ -37,13 +37,13 @@ struct PbsSpecularMaterial {
     _DetailAlbedoMap_ST: vec4<f32>,
     _Cutoff: f32,
     _Glossiness: f32,
-    _GlossMapScale: f32,
-    _SmoothnessTextureChannel: f32,
+    _GlossMapScale: f32, //#mat_default float 1.0
+    _SmoothnessTextureChannel: f32, //#mat_default float 0.0
     _BumpScale: f32,
     _Parallax: f32,
-    _OcclusionStrength: f32,
+    _OcclusionStrength: f32, //#mat_default float 1.0
     _DetailNormalMapScale: f32,
-    _UVSec: f32,
+    _UVSec: f32, //#mat_default float 0.0
     _RenderideVariantBits: u32,
     _MainTex_LodBias: f32,
     _SpecGlossMap_LodBias: f32,
@@ -190,17 +190,21 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
     let spec_gloss = ts::sample_tex_2d(_SpecGlossMap, _SpecGlossMap_sampler, uv_main, mat._SpecGlossMap_LodBias);
     var specular_color = mat._SpecColor.rgb;
     var smoothness = mat._Glossiness;
+    // let smoothness_scale = mat._GlossMapScale; // Defaults to 1 in Unity reference shader
+    let smoothness_scale = 1.0;
     if (spec_gloss_map_enabled()) {
         specular_color = spec_gloss.rgb;
-        smoothness = spec_gloss.a * mat._GlossMapScale;
+        smoothness = spec_gloss.a * smoothness_scale;
     }
     if (smoothness_from_albedo_alpha()) {
-        smoothness = albedo_sample.a * mat._GlossMapScale;
+        smoothness = albedo_sample.a * smoothness_scale;
     }
     let roughness = clamp(1.0 - clamp(smoothness, 0.0, 1.0), 0.0, 1.0);
 
     let occlusion_sample = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g;
-    let occlusion = mix(1.0, occlusion_sample, clamp(mat._OcclusionStrength, 0.0, 1.0));
+    // let occlusion_strength = mat._OcclusionStrength; // Defaults to 1 in Unity reference shader
+    let occlusion_strength = 1.0;
+    let occlusion = mix(1.0, occlusion_sample, clamp(occlusion_strength, 0.0, 1.0));
 
     var detail_mask = 0.0;
     if (pbs_kw(PBSSPECULAR_KW_DETAIL_MULX2)) {
