@@ -6,10 +6,9 @@
 //!   Schlick Fresnel with `brdf::metallic_f0(diffuse_color, metallic)` (the same F0 PBSMetallic
 //!   uses), DFG LUT energy compensation for the direct lobe, and multi-bounce specular AO for the
 //!   probe radiance.
-//! - Direct diffuse: Lambert (`brdf::fd_lambert`) with the toon shadow
-//!   ramp as a 3-channel multiplicative tint replacing `NdotL * att`, then normalized Fresnel
-//!   transmission as an energy envelope. A white ramp recovers PBSMetallic exactly; colored / banded
-//!   ramps drive the toon stylization.
+//! - Direct diffuse: Disney/Burley rough diffuse with the toon shadow ramp as a 3-channel
+//!   multiplicative tint replacing `NdotL * att`, then normalized Fresnel transmission as an energy
+//!   envelope. Colored / banded ramps drive the toon stylization.
 //! - Indirect diffuse / specular: PBSMetallic's `(1 - indirect_specular_energy)` split so the
 //!   indirect-light budget is shared between the SH probe and the spec lobe. Colored
 //!   `_OcclusionColor` modulates indirect diffuse only and is lifted through the PBS multi-bounce
@@ -20,9 +19,7 @@
 //!   the `col += max(directSpec_sum, rim)` composition step.
 //!
 //! `_SpecularIntensity` and `_SpecularAlbedoTint` are artist controls layered on
-//! top of the PBS direct-spec lobe; at `_SpecularIntensity = 1`,
-//! `_SpecularAlbedoTint = 0`, and a white ramp, the result is energy-identical to
-//! a matched PBSMetallic ball.
+//! top of the PBS direct-spec lobe.
 
 #define_import_path renderide::xiexe::toon2::lighting
 
@@ -64,7 +61,7 @@ fn environment_tint(s: xb::SurfaceData, view_dir: vec3<f32>, world_pos: vec3<f32
     if (!rprobe::has_indirect_specular(view_layer, true)) {
         return vec3<f32>(1.0);
     }
-    return rprobe::raw_indirect_specular(world_pos, s.normal, view_dir, s.roughness, true, view_layer);
+    return rprobe::raw_indirect_specular_with_horizon(world_pos, s.normal, s.raw_normal, view_dir, s.roughness, true, view_layer);
 }
 
 /// `UNITY_SPECCUBE_LOD_STEPS` on PC/console.
@@ -212,6 +209,22 @@ fn direct_diffuse_fresnel_transmission(
     return brdf::direct_diffuse_fresnel_transmission(f, specular_reflectance);
 }
 
+/// Rough diffuse BRDF scalar for XSToon's ramped direct diffuse term.
+fn direct_diffuse_brdf(
+    normal: vec3<f32>,
+    light_direction: vec3<f32>,
+    view_dir: vec3<f32>,
+    perceptual_roughness: f32,
+) -> f32 {
+    let h = xb::safe_normalize(light_direction + view_dir, normal);
+    return brdf::fd_burley(
+        xb::saturate(dot(normal, view_dir)),
+        xb::saturate(dot(normal, light_direction)),
+        xb::saturate(dot(light_direction, h)),
+        perceptual_roughness,
+    );
+}
+
 /// Rim contribution from the dominant light plus ambient probe lighting.
 fn rim_light(
     s: xb::SurfaceData,
@@ -353,6 +366,7 @@ fn indirect_reflection_branch_for_layout(
     let spec = rprobe::indirect_specular_with_energy(
         world_pos,
         normal,
+        s.raw_normal,
         view_dir,
         roughness,
         specular_energy * specular_visibility,
@@ -539,12 +553,9 @@ fn clustered_toon_lighting_for_layout(
         let ndl = dot(s.normal, light.direction);
         let ramp = ramp_for_ndl(ndl, light.attenuation, s.ramp_mask);
         let light_col_atten = light.color * light.attenuation;
-        // Lambert (`1/pi`) times the boosted `light.attenuation` times the toon ramp, wrapped by
-        // the PBS direct diffuse Fresnel-transmission envelope.
-        // `bl::direct_light_intensity` and `bl::punctual_attenuation` both bake
-        // `INTENSITY_BOOST = pi` into `light.attenuation`, which cancels
-        // `fd_lambert()`'s `1/pi` so the white-ramp energy magnitude matches PBSMetallic.
-        // The toon ramp is the 3-channel stylized replacement for `NdL` and bakes
+        // Rough diffuse times the boosted `light.attenuation` times the toon ramp, wrapped by the
+        // PBS direct diffuse Fresnel-transmission envelope. The toon ramp is the 3-channel
+        // stylized replacement for `NdL` and bakes
         // attenuation into its `U` axis to compress the curve for distant punctual lights.
         // `s.albedo` is already metallic-discounted in `surface::sample_surface`.
         let diffuse_transmission = direct_diffuse_fresnel_transmission(
@@ -553,8 +564,9 @@ fn clustered_toon_lighting_for_layout(
             view_dir,
             primary_specular_terms.specular_reflectance,
         );
+        let diffuse_brdf = direct_diffuse_brdf(s.normal, light.direction, view_dir, s.roughness);
         direct_diffuse = direct_diffuse
-            + s.albedo.rgb * diffuse_transmission * brdf::fd_lambert() * light.color * light.attenuation * ramp;
+            + s.albedo.rgb * diffuse_transmission * diffuse_brdf * light.color * light.attenuation * ramp;
         direct_spec = direct_spec + direct_specular(s, light, view_dir, primary_specular_terms);
         sss = sss + subsurface(s, light, view_dir, ambient);
 

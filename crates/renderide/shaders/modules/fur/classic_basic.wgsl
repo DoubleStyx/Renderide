@@ -65,12 +65,13 @@ fn shaded_color(
     alpha: f32,
     direct_visibility: f32,
 ) -> vec4<f32> {
-    let surface = psurf::specular(
+    let surface = psurf::specular_with_geometric_normal(
         base_color,
         alpha,
         mat._SpecColor.rgb,
         furc::shininess_to_perceptual_roughness(mat._Shininess),
         1.0,
+        input.world_n,
         input.world_n,
         vec3<f32>(0.0),
     );

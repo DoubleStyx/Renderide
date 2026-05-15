@@ -75,6 +75,7 @@ fn direct_specular_clustered(
                 s.normal,
                 view_dir,
                 aa_roughness,
+                s.roughness,
                 s.base_color,
                 s.specular_color,
                 s.one_minus_reflectivity,
@@ -85,6 +86,8 @@ fn direct_specular_clustered(
                 light,
                 world_pos,
                 s.normal,
+                view_dir,
+                s.roughness,
                 s.base_color,
                 s.one_minus_reflectivity,
             ) * visibility;
@@ -119,6 +122,7 @@ fn shade_specular_clustered(
             one_minus_reflectivity,
             s.occlusion,
             s.normal,
+            s.geometric_normal,
             s.emission,
         ),
         view_dir,
@@ -144,6 +148,7 @@ fn shade_specular_clustered(
     let indirect_specular = rprobe::indirect_specular_with_energy(
         world_pos,
         s.normal,
+        s.geometric_normal,
         view_dir,
         s.roughness,
         specular_energy * specular_visibility,

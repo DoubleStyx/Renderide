@@ -101,13 +101,14 @@ fn shaded_color(
     emission: vec3<f32>,
     specular_scale: f32,
 ) -> vec4<f32> {
-    let surface = psurf::specular(
+    let surface = psurf::specular_with_geometric_normal(
         base_color,
         alpha,
         specular_color(specular_scale),
         furc::shininess_to_perceptual_roughness(mat._Shininess),
         1.0,
         normal,
+        input.world_n,
         emission,
     );
     let color = furl::shade_specular_clustered(

@@ -104,13 +104,14 @@ fn shade(
     let smoothness = clamp(mat._Glossiness, 0.0, 1.0);
     let roughness = psamp::roughness_from_smoothness(smoothness);
     let n = normalize(world_n);
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         base_color,
         strength,
         metallic,
         roughness,
         1.0,
         n,
+        world_n,
         vec3<f32>(0.0),
     );
     return vec4<f32>(

@@ -214,13 +214,14 @@ fn fs_forward_base(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let s = sample_surface(uv0, world_n, world_t);
-    let surface = psurf::specular(
+    let surface = psurf::specular_with_geometric_normal(
         s.base_color,
         s.alpha,
         s.f0,
         s.roughness,
         s.occlusion,
         s.normal,
+        world_n,
         s.emission,
     );
     return vec4<f32>(

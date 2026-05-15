@@ -199,6 +199,43 @@ fn reflection_probe_specular_samples_unity_oriented_atlas() -> io::Result<()> {
 }
 
 #[test]
+fn reflection_probe_specular_applies_horizon_occlusion() -> io::Result<()> {
+    let probe_src = module_source("lighting/reflection_probes.wgsl")?;
+    for required in [
+        "fn horizon_specular_occlusion(",
+        "let dir = dominant_reflection_dir(n, v, perceptual_roughness);",
+        "let base_n = horizon_normal(n, geometric_n);",
+        "let horizon = clamp(1.0 + dot(dir, base_n), 0.0, 1.0);",
+        "return horizon * horizon;",
+        "let horizon_occlusion = horizon_specular_occlusion(n, geometric_n, v, perceptual_roughness);",
+        "return radiance * specular_energy * clamp(specular_occlusion, 0.0, 1.0) * horizon_occlusion;",
+    ] {
+        assert!(
+            probe_src.contains(required),
+            "reflection probes must apply horizon specular occlusion; missing `{required}`"
+        );
+    }
+
+    let pbs_lighting = module_source("pbs/lighting.wgsl")?;
+    assert!(
+        pbs_lighting.contains("s.normal,\n        s.geometric_normal,\n        view_dir,"),
+        "PBS indirect specular must pass the base normal into reflection-probe horizon occlusion"
+    );
+
+    let xiexe_lighting = module_source("xiexe/toon2/lighting.wgsl")?;
+    assert!(
+        xiexe_lighting.contains("normal,\n        s.raw_normal,\n        view_dir,"),
+        "Xiexe indirect specular must pass the raw surface normal into reflection-probe horizon occlusion"
+    );
+    assert!(
+        xiexe_lighting.contains("rprobe::raw_indirect_specular_with_horizon(world_pos, s.normal, s.raw_normal, view_dir, s.roughness, true, view_layer)"),
+        "Xiexe environment tint must also use horizon-occluded raw probe radiance"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn xiexe_indirect_diffuse_uses_pbs_energy_split() -> io::Result<()> {
     let lighting_src =
         source_file(manifest_dir().join("shaders/modules/xiexe/toon2/lighting.wgsl"))?;
@@ -228,19 +265,22 @@ fn xiexe_indirect_diffuse_uses_pbs_energy_split() -> io::Result<()> {
 }
 
 #[test]
-fn xiexe_direct_diffuse_uses_lambert_with_ramp_tint() -> io::Result<()> {
+fn xiexe_direct_diffuse_uses_burley_with_ramp_tint() -> io::Result<()> {
     let lighting_src =
         source_file(manifest_dir().join("shaders/modules/xiexe/toon2/lighting.wgsl"))?;
     for required in [
         "fn direct_diffuse_fresnel_transmission(",
         "let f = brdf::f_schlick(",
         "return brdf::direct_diffuse_fresnel_transmission(f, specular_reflectance);",
+        "fn direct_diffuse_brdf(",
+        "return brdf::fd_burley(",
         "let diffuse_transmission = direct_diffuse_fresnel_transmission(",
-        "s.albedo.rgb * diffuse_transmission * brdf::fd_lambert() * light.color * light.attenuation * ramp",
+        "let diffuse_brdf = direct_diffuse_brdf(s.normal, light.direction, view_dir, s.roughness);",
+        "s.albedo.rgb * diffuse_transmission * diffuse_brdf * light.color * light.attenuation * ramp",
     ] {
         assert!(
             lighting_src.contains(required),
-            "Per-light direct diffuse must preserve Lambert/ramp styling inside PBS Fresnel transmission; missing `{required}`"
+            "Per-light direct diffuse must preserve ramp styling inside PBS Fresnel transmission and Burley diffuse; missing `{required}`"
         );
     }
     assert!(
@@ -251,12 +291,12 @@ fn xiexe_direct_diffuse_uses_lambert_with_ramp_tint() -> io::Result<()> {
     // PBSMetallic and washes out the toon shadow ramp.
     assert!(
         !lighting_src.contains("s.albedo.rgb * brdf::fd_lambert() * light.color * ramp"),
-        "Direct diffuse must include `light.attenuation` so Renderide's `INTENSITY_BOOST = π` cancels `fd_lambert()`'s `1/π`"
+        "Direct diffuse must include `light.attenuation` and must not use Lambert directly"
     );
     assert!(
         !lighting_src
             .contains("s.albedo.rgb * brdf::fd_lambert() * light.color * light.attenuation * ramp"),
-        "Direct diffuse must not bypass the PBS Fresnel transmission envelope"
+        "Direct diffuse must not bypass the PBS Fresnel transmission envelope or Burley diffuse"
     );
     Ok(())
 }

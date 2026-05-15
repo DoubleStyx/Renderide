@@ -204,7 +204,16 @@ fn fs_main(
     }
     let edge_emission = mix(emission, mat._EdgeEmissionColor.rgb, edge_lerp);
 
-    let surface = psurf::specular(base_color, alpha, f0, roughness, occlusion, n, edge_emission);
+    let surface = psurf::specular_with_geometric_normal(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        edge_emission,
+    );
     let color = plight::shade_specular_clustered(
         frag_pos.xy,
         world_pos,

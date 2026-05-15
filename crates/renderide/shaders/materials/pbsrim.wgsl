@@ -142,13 +142,14 @@ fn fs_main(
     let rim = mf::rim_factor(n, view_dir, mat._RimPower);
     let rim_emission = mat._RimColor.rgb * rim;
 
-    let surface = psurf::metallic(
+    let surface = psurf::metallic_with_geometric_normal(
         base_color,
         alpha,
         metallic,
         roughness,
         occlusion,
         n,
+        world_n,
         emission + rim_emission,
     );
     let color = plight::shade_metallic_clustered(

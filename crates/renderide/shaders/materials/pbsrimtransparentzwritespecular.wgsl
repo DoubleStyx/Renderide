@@ -148,7 +148,16 @@ fn fs_main(
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let rim = mf::rim_factor(n, view_dir, mat._RimPower);
     let rim_emission = mat._RimColor.rgb * rim;
-    let surface = psurf::specular(base_color, alpha, f0, roughness, occlusion, n, emission + rim_emission);
+    let surface = psurf::specular_with_geometric_normal(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission + rim_emission,
+    );
     return plight::shade_specular_transparent_clustered(
         frag_pos.xy,
         world_pos,

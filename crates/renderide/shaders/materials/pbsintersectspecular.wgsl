@@ -145,7 +145,16 @@ fn fs_main(
     }
     emission = emission + mat._IntersectEmissionColor.rgb * intersect_lerp;
 
-    let surface = psurf::specular(base_color, alpha, f0, roughness, occlusion, n, emission);
+    let surface = psurf::specular_with_geometric_normal(
+        base_color,
+        alpha,
+        f0,
+        roughness,
+        occlusion,
+        n,
+        psamp::two_sided_geometric_normal(world_n, front_facing),
+        emission,
+    );
     return plight::shade_specular_transparent_clustered(
         frag_pos.xy,
         world_pos,

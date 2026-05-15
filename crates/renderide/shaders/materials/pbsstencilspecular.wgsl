@@ -117,7 +117,7 @@ fn shade(
 
     let n = sample_normal_world(uv_main, world_n, world_t);
     let base_color = c.rgb;
-    let surface = psurf::specular(base_color, c.a, f0, roughness, occlusion, n, emission);
+    let surface = psurf::specular_with_geometric_normal(base_color, c.a, f0, roughness, occlusion, n, world_n, emission);
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
     return vec4<f32>(
         plight::shade_specular_clustered(frag_xy, world_pos, view_layer, surface, options),

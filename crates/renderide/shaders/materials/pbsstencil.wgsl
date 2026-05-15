@@ -145,7 +145,7 @@ fn shade(
 
     let base_color = c.rgb;
     let n = sample_normal_world(uv_main, world_n, world_t);
-    let surface = psurf::metallic(base_color, c.a, metallic, roughness, occlusion, n, emission);
+    let surface = psurf::metallic_with_geometric_normal(base_color, c.a, metallic, roughness, occlusion, n, world_n, emission);
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
     return vec4<f32>(
         plight::shade_metallic_clustered(frag_xy, world_pos, view_layer, surface, options),
