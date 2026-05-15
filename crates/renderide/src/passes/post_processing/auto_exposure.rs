@@ -415,7 +415,7 @@ mod tests {
     fn effect_id_and_enable_gate_match_settings() {
         let effect = AutoExposureEffect::default();
         assert_eq!(effect.id(), PostProcessEffectId::AutoExposure);
-        assert!(!effect.is_enabled(&PostProcessingSettings::default()));
+        assert!(effect.is_enabled(&PostProcessingSettings::default()));
 
         let enabled = PostProcessingSettings {
             auto_exposure: crate::config::AutoExposureSettings {
