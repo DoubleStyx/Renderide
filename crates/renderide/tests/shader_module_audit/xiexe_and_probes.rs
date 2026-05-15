@@ -331,7 +331,6 @@ fn xiexe_generic_stems_resolve_alpha_mode_from_variant_bits() -> io::Result<()> 
         ("XTOON_KW_RAMPMASK_OUTLINEMASK_THICKNESS", 6),
         ("XTOON_KW_TRANSPARENT", 7),
         ("XTOON_KW_VERTEX_COLOR_ALBEDO", 8),
-        ("XTOON_KW_VERTEXLIGHT_ON", 9),
     ] {
         assert!(
             variant_bits_src.contains(&format!("const {constant}: u32 = 1u << {bit}u;")),
@@ -341,16 +340,15 @@ fn xiexe_generic_stems_resolve_alpha_mode_from_variant_bits() -> io::Result<()> 
     for required in [
         "const XTOON_KEYWORD_LAYOUT_GENERIC: u32 = 0u;",
         "const XTOON_KEYWORD_LAYOUT_STATIC_VERTEXLIGHT: u32 = 1u;",
-        "const XTOON_STATIC_KW_VERTEXLIGHT_ON: u32 = 1u << 0u;",
-        "fn kw_VERTEXLIGHT_ON_for_layout(keyword_layout: u32) -> bool",
-        "return xtoon_static_kw(XTOON_STATIC_KW_VERTEXLIGHT_ON);",
+        "fn static_vertexlight_layout(keyword_layout: u32) -> bool",
+        "return keyword_layout == XTOON_KEYWORD_LAYOUT_STATIC_VERTEXLIGHT;",
         "fn resolved_alpha_mode_from_bits_for_layout(static_alpha_mode: u32, keyword_layout: u32) -> u32",
         "fn resolved_alpha_mode_from_bits(static_alpha_mode: u32) -> u32",
-        "kw_Cutout()",
+        "kw_Cutout_for_layout(keyword_layout)",
         "return xb::ALPHA_CUTOUT;",
-        "kw_Transparent()",
+        "kw_Transparent_for_layout(keyword_layout)",
         "return xb::ALPHA_TRANSPARENT;",
-        "kw_AlphaBlend()",
+        "kw_AlphaBlend_for_layout(keyword_layout)",
         "return xb::ALPHA_FADE;",
     ] {
         assert!(

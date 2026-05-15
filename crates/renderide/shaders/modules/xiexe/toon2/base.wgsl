@@ -8,12 +8,9 @@
 
 #define_import_path renderide::xiexe::toon2::base
 
-#import renderide::frame::globals as rg
 #import renderide::core::math as rmath
 #import renderide::mesh::vertex as mv
-#import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
-#import renderide::pbs::normal as pnorm
 
 /// Alpha-handling mode tag passed by each dispatcher. Selects one of the seven branches
 /// implemented in `xiexe_toon2_alpha::apply_alpha`.
@@ -253,8 +250,8 @@ struct VertexOutput {
     @location(8) @interpolate(flat) view_layer: u32,
 }
 
-/// Surface attributes resolved by `surface::sample_surface`. Consumed by the lighting and
-/// outline modules.
+/// Surface attributes resolved by `surface::sample_surface_for_layout`. Consumed by the lighting
+/// and outline modules.
 struct SurfaceData {
     /// Albedo with alpha; alpha is the source for blend / cutout.
     albedo: vec4<f32>,
@@ -314,17 +311,6 @@ fn prop_flag(v: f32) -> bool {
 /// intrinsic that WGSL doesn't expose.
 fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
-}
-
-/// Component-wise `clamp([0, 1])` for a `vec3`.
-fn saturate_vec(v: vec3<f32>) -> vec3<f32> {
-    return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
-/// `(1 - x)^5` -- shared by Fresnel helpers in the stylised specular and reflection paths.
-fn pow5(x: f32) -> f32 {
-    let x2 = x * x;
-    return x2 * x2 * x;
 }
 
 /// Delegates safe vector normalization to the shared math module for sibling Xiexe modules.

@@ -48,11 +48,3 @@ fn orthonormal_tbn_fallback(n: vec3<f32>) -> mat3x3<f32> {
     let bitan = vec3<f32>(b, sign + n.y * n.y * a, -n.y);
     return mat3x3<f32>(normalize(t), normalize(bitan), n);
 }
-
-/// Builds a TBN oriented toward the fragment's visible side. This makes back-facing fragments of
-/// dual-sided materials shade like duplicated opaque geometry with reversed normals.
-fn visible_side_tbn(world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> mat3x3<f32> {
-    let tbn = orthonormal_tbn(world_n, world_t);
-    let side = select(-1.0, 1.0, front_facing);
-    return mat3x3<f32>(tbn[0] * side, tbn[1] * side, tbn[2] * side);
-}

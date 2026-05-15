@@ -196,15 +196,6 @@ fn hsv_to_rgb(hsv: vec3<f32>) -> vec3<f32> {
     return rgb;
 }
 
-fn luma_bt601(rgb: vec3<f32>) -> f32 {
-    return dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
-}
-
-fn circular_blur_offset(sample_index: u32, sample_count: u32, spread: vec2<f32>) -> vec2<f32> {
-    let angle = (f32(sample_index) / max(f32(sample_count), 1.0)) * TAU;
-    return vec2<f32>(-cos(angle), sin(angle)) * spread;
-}
-
 fn poisson_blur_offset(sample_index: u32, spread: vec2<f32>) -> vec2<f32> {
     let idx = min(sample_index, POISSON_2D_SAMPLE_COUNT - 1u);
     return (POISSON_2D_SAMPLES[idx] * 2.0 - vec2<f32>(1.0)) * spread;

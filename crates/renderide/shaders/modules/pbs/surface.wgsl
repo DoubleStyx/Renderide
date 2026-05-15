@@ -68,27 +68,6 @@ fn metallic_with_geometric_normal(
     );
 }
 
-fn specular(
-    base_color: vec3<f32>,
-    alpha: f32,
-    specular_color: vec3<f32>,
-    roughness: f32,
-    occlusion: f32,
-    normal: vec3<f32>,
-    emission: vec3<f32>,
-) -> SpecularSurface {
-    return specular_with_geometric_normal(
-        base_color,
-        alpha,
-        specular_color,
-        roughness,
-        occlusion,
-        normal,
-        normal,
-        emission,
-    );
-}
-
 fn specular_with_geometric_normal(
     base_color: vec3<f32>,
     alpha: f32,

@@ -26,11 +26,6 @@ fn median3(r: f32, g: f32, b: f32) -> f32 {
     return max(min(r, g), min(max(r, g), b));
 }
 
-/// Decodes `_TextMode` to `0` = MSDF, `1` = RASTER, `2` = SDF (clamped).
-fn text_mode_clamped(tm: f32) -> i32 {
-    return clamp(i32(round(tm)), 0, 2);
-}
-
 /// Derives the text mode int (`0`=MSDF, `1`=RASTER, `2`=SDF) from decoded variant bits.
 ///
 /// Defaults to MSDF when neither RASTER nor SDF is set, matching the material keyword default

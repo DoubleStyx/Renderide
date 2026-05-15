@@ -3,7 +3,6 @@
 #define_import_path renderide::frame::types
 
 const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1u;
-const FRAME_TAIL_AMBIENT_SH_VALID: u32 = 1u;
 const FRAME_TAIL_SAMPLE_COUNT_SHIFT: u32 = 1u;
 const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 30u;
 

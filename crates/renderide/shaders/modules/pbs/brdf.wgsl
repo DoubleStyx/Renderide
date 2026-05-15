@@ -182,17 +182,6 @@ fn indirect_specular_energy_from_dfg(dfg: vec2<f32>, f0: vec3<f32>, enabled: boo
     return specular_energy_from_dfg(dfg, f0);
 }
 
-/// Split-sum specular energy for the frame-global DFG LUT.
-fn indirect_specular_energy(
-    perceptual_roughness: f32,
-    n_dot_v: f32,
-    f0: vec3<f32>,
-    enabled: bool,
-) -> vec3<f32> {
-    let dfg = sample_ibl_dfg_lut(perceptual_roughness, n_dot_v);
-    return indirect_specular_energy_from_dfg(dfg, f0, enabled);
-}
-
 /// Simple material-AO to specular-AO remap for indirect reflections.
 fn specular_ao_lagarde(n_dot_v: f32, visibility: f32, perceptual_roughness: f32) -> f32 {
     let no_v = clamp(n_dot_v, 0.0, 1.0);
@@ -292,16 +281,6 @@ fn specular_f0(specular_color: vec3<f32>) -> vec3<f32> {
 /// Unity's diffuse-energy discount for SpecularSetup materials.
 fn specular_one_minus_reflectivity(f0: vec3<f32>) -> f32 {
     return 1.0 - max(max(f0.r, f0.g), f0.b);
-}
-
-/// Converts Unity smoothness to perceptual roughness used by this PBS module.
-fn perceptual_roughness_from_smoothness(smoothness: f32) -> f32 {
-    return clamp(1.0 - smoothness, 0.0, 1.0);
-}
-
-/// Lambertian diffuse normalization (`1/PI`).
-fn fd_lambert() -> f32 {
-    return 1.0 / 3.14159265;
 }
 
 /// Disney/Burley rough diffuse normalization with grazing retro-reflection.

@@ -2,7 +2,7 @@
 //!
 //! All behaviour lives in the sibling submodules:
 //! - `xiexe_toon2_base`     -- material struct, `@group(1)` bindings, shared types and helpers.
-//! - `xiexe_toon2_surface`  -- vertex transform and `sample_surface` (forward + outline normal paths).
+//! - `xiexe_toon2_surface`  -- vertex transform and surface sampling by keyword layout.
 //! - `xiexe_toon2_alpha`    -- seven-mode alpha dispatch.
 //! - `xiexe_toon2_lighting` -- clustered toon BRDF (forward + outline shading walks).
 //! - `xiexe_toon2_outline`  -- outline vertex extrusion and per-fragment shading.
@@ -103,7 +103,7 @@ fn fragment_forward_for_layout(
     return rg::retain_globals_additive(vec4<f32>(rgb, alpha));
 }
 
-/// Outline fragment entry. Thin wrapper around `outline::fragment_outline`.
+/// Outline fragment entry. Thin wrapper around `fragment_outline_for_layout`.
 fn fragment_outline(
     frag_pos: vec4<f32>,
     front_facing: bool,

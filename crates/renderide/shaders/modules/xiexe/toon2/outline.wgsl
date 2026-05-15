@@ -28,7 +28,6 @@
 #import renderide::xiexe::toon2::variant_bits as xvb
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
-#import renderide::core::uv as uvu
 
 /// Outline vertex transform. Samples `_OutlineMask` at UV0, extrudes
 /// the vertex along its object-space normal by `_OutlineWidth * 0.01 * mask * dist_scale`,
@@ -57,39 +56,6 @@ fn vertex_outline(
     var out = xsurf::vertex_main(instance_index, view_idx, outline_pos, n, uv_primary, color, tangent, uv_secondary);
     out.color = vec4<f32>(xb::mat._OutlineColor.rgb, 1.0);
     return out;
-}
-
-/// Outline fragment shader. Selects between Emissive (flat `_OutlineColor`) and Lit
-/// (cluster-walk-modulated) per the three Unity-aliased outline-lighting flags. Surface
-/// sampling skips the back-face normal flip so cluster NdotL uses the outward-pointing
-/// shell normals.
-fn fragment_outline(
-    frag_pos: vec4<f32>,
-    front_facing: bool,
-    world_pos: vec3<f32>,
-    world_n: vec3<f32>,
-    world_t: vec3<f32>,
-    world_b: vec3<f32>,
-    uv_primary: vec2<f32>,
-    uv_secondary: vec2<f32>,
-    color: vec4<f32>,
-    view_layer: u32,
-    alpha_mode: u32,
-) -> vec4<f32> {
-    return fragment_outline_for_layout(
-        frag_pos,
-        front_facing,
-        world_pos,
-        world_n,
-        world_t,
-        world_b,
-        uv_primary,
-        uv_secondary,
-        color,
-        view_layer,
-        alpha_mode,
-        xvb::XTOON_KEYWORD_LAYOUT_GENERIC,
-    );
 }
 
 /// Outline fragment shader for a selected XSToon keyword layout.

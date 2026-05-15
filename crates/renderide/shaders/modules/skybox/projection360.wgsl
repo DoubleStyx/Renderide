@@ -50,14 +50,6 @@ fn is_outside_uv(uv: vec2<f32>) -> bool {
     return uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0;
 }
 
-fn main_tex_uv(uv: vec2<f32>, st: vec4<f32>, storage_v_inverted: bool) -> vec2<f32> {
-    let uv_st = uv * st.xy + st.zw;
-    if (storage_v_inverted) {
-        return uv_st;
-    }
-    return vec2<f32>(uv_st.x, 1.0 - uv_st.y);
-}
-
 fn apply_exposure(
     color: vec4<f32>,
     gamma: f32,

@@ -268,7 +268,7 @@ fn shadow_rim(
 /// early-out, distortion-by-normal half-vector, `VdotH^_SSPower` intensity, and `_SSColor *
 /// (VdotH + indirectDiffuse) * attenuation * _SSScale * thickness * lightCol * albedo`
 /// final tint. When the `THICKNESS_MAP` keyword is off, `s.thickness` defaults to `1.0`
-/// in `sample_surface` so the math is identical to the gated material path.
+/// in `surface::sample_surface_for_layout` so the math is identical to the gated material path.
 fn subsurface(
     s: xb::SurfaceData,
     light: xb::LightSample,
@@ -299,39 +299,6 @@ fn matcap_uv(view_dir: vec3<f32>, n: vec3<f32>) -> vec2<f32> {
     let view_up = xb::safe_normalize(up - view_dir * dot(view_dir, up), vec3<f32>(0.0, 1.0, 0.0));
     let view_right = xb::safe_normalize(cross(view_dir, view_up), vec3<f32>(1.0, 0.0, 0.0));
     return vec2<f32>(dot(view_right, n), dot(view_up, n)) * 0.5 + vec2<f32>(0.5);
-}
-
-/// Samples the indirect-reflection contribution.
-///
-/// Two branches are selected by the material keyword layout:
-/// * `MATCAP` keyword on -> sample `_Matcap` at LOD `(1 - smoothness) * SPECCUBE_LOD_STEPS`
-///   and modulate by `(ambient + dominantLight * 0.5)`. No ramp blend.
-/// * Default (PBR) -> route through the renderer reflection-probe radiance with DFG energy
-///   compensation and multi-bounce specular AO. The caller applies the ramp-shadow blend
-///   `lerp(spec, spec*ramp, roughness)` outside this branch.
-fn indirect_reflection_branch(
-    s: xb::SurfaceData,
-    normal: vec3<f32>,
-    view_dir: vec3<f32>,
-    world_pos: vec3<f32>,
-    view_layer: u32,
-    perceptual_roughness: f32,
-    specular_reflectance: vec3<f32>,
-    ambient: vec3<f32>,
-    dominant_light_col_atten: vec3<f32>,
-) -> vec3<f32> {
-    return indirect_reflection_branch_for_layout(
-        s,
-        normal,
-        view_dir,
-        world_pos,
-        view_layer,
-        perceptual_roughness,
-        specular_reflectance,
-        ambient,
-        dominant_light_col_atten,
-        xvb::XTOON_KEYWORD_LAYOUT_GENERIC,
-    );
 }
 
 /// Samples the indirect-reflection contribution for a selected XSToon keyword layout.
@@ -377,30 +344,6 @@ fn indirect_reflection_branch_for_layout(
     return spec;
 }
 
-/// Indirect-specular contribution: samples the PBR or matcap branch, and for the PBR branch
-/// applies the dominant-light ramp shadow blend `lerp(spec, spec*ramp, roughness)`. The matcap
-/// branch is exempt from the ramp blend.
-fn indirect_specular(
-    s: xb::SurfaceData,
-    view_dir: vec3<f32>,
-    world_pos: vec3<f32>,
-    view_layer: u32,
-    ambient: vec3<f32>,
-    dominant_light_col_atten: vec3<f32>,
-    dominant_ramp: vec3<f32>,
-) -> vec3<f32> {
-    return indirect_specular_for_layout(
-        s,
-        view_dir,
-        world_pos,
-        view_layer,
-        ambient,
-        dominant_light_col_atten,
-        dominant_ramp,
-        xvb::XTOON_KEYWORD_LAYOUT_GENERIC,
-    );
-}
-
 /// Indirect-specular contribution for a selected XSToon keyword layout.
 fn indirect_specular_for_layout(
     s: xb::SurfaceData,
@@ -435,51 +378,12 @@ fn indirect_specular_for_layout(
     return spec;
 }
 
-/// Base-pass emission contribution. The active 2.0 path returns
-/// `_EmissionMap.rgb * _EmissionColor.rgb` in the base pass; `_EmissionToDiffuse` and
-/// `_ScaleWithLight*` are intentionally inactive for this shader.
-fn emission_color(s: xb::SurfaceData, base_pass: bool) -> vec3<f32> {
-    return emission_color_for_layout(s, base_pass, xvb::XTOON_KEYWORD_LAYOUT_GENERIC);
-}
-
 /// Base-pass emission contribution for a selected XSToon keyword layout.
 fn emission_color_for_layout(s: xb::SurfaceData, base_pass: bool, keyword_layout: u32) -> vec3<f32> {
     if (!base_pass || !xvb::emission_map_enabled_for_layout(keyword_layout)) {
         return vec3<f32>(0.0);
     }
     return s.emission * xb::mat._EmissionColor.rgb;
-}
-
-/// Forward-pass clustered light walk.
-///
-/// Composition follows the 2.0 toon lighting contract for the clustered single-pass
-/// renderer (the per-pass light sum replaces Unity's ForwardBase + ForwardAdd split):
-///   `diffuse  = sum_lights(albedo * ramp_i * lightCol_i * att_i) + albedo * ambient`
-///   `diffuse *= occlusionColor`
-///   `col      = diffuse * shadowRim`
-///   `col     += indirectSpec * reflectivityMask.r`
-///   `col     += max(sum_lights(directSpec_i), rim)`
-///   `col     += sum_lights(subsurface_i)`
-///   `col     += emission` (base pass only)
-fn clustered_toon_lighting(
-    frag_xy: vec2<f32>,
-    s: xb::SurfaceData,
-    world_pos: vec3<f32>,
-    view_layer: u32,
-    include_directional: bool,
-    include_local: bool,
-    base_pass: bool,
-) -> vec3<f32> {
-    return clustered_toon_lighting_for_layout(
-        frag_xy,
-        s,
-        world_pos,
-        view_layer,
-        include_directional,
-        include_local,
-        base_pass,
-        xvb::XTOON_KEYWORD_LAYOUT_GENERIC,
-    );
 }
 
 /// Forward-pass clustered light walk for a selected XSToon keyword layout.
@@ -557,7 +461,7 @@ fn clustered_toon_lighting_for_layout(
         // PBS direct diffuse Fresnel-transmission envelope. The toon ramp is the 3-channel
         // stylized replacement for `NdL` and bakes
         // attenuation into its `U` axis to compress the curve for distant punctual lights.
-        // `s.albedo` is already metallic-discounted in `surface::sample_surface`.
+        // `s.albedo` is already metallic-discounted in `surface::sample_surface_for_layout`.
         let diffuse_transmission = direct_diffuse_fresnel_transmission(
             s.normal,
             light.direction,

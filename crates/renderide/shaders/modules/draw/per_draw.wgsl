@@ -15,11 +15,6 @@ fn get_draw(instance_idx: u32) -> dt::PerDrawUniforms {
     return instances[instance_idx];
 }
 
-/// `true` when the bound position stream has already been transformed into world space.
-fn position_stream_is_world_space(draw: dt::PerDrawUniforms) -> bool {
-    return dt::position_stream_is_world_space(draw);
-}
-
 fn reflection_probe_indices(draw: dt::PerDrawUniforms) -> vec2<u32> {
     return dt::reflection_probe_indices(draw);
 }

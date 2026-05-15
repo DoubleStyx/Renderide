@@ -1,4 +1,4 @@
-//! Unity `_ST` tiling/offset, polar UV helpers, and keyword-float checks.
+//! Unity `_ST` tiling/offset and polar UV helpers.
 //!
 //! Import with `#import renderide::core::uv as uvu` (do **not** use alias `uv` -- naga-oil rejects it).
 //!
@@ -10,10 +10,6 @@
 
 fn apply_st(uv_in: vec2<f32>, st: vec4<f32>) -> vec2<f32> {
     return uv_in * st.xy + st.zw;
-}
-
-fn kw_enabled(v: f32) -> bool {
-    return v > 0.5;
 }
 
 fn polar_uv(raw_uv: vec2<f32>, radius_pow: f32) -> vec2<f32> {
