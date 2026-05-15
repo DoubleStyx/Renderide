@@ -29,8 +29,9 @@
 //!   graph-facing frame resources, and world-mesh draw packets are prepared once across all views
 //!   so the per-view record path no longer pays lazy `&mut` allocation costs (also a structural
 //!   prerequisite for the parallel record path; see [`record_parallel`]).
-//! - **[`GraphCache`]** memoizes a compiled graph by [`GraphCacheKey`] (surface extent, MSAA,
-//!   multiview, surface format, scene HDR format) so the backend rebuilds only when one of those inputs changes.
+//! - **[`GraphCache`]** memoizes compiled graph variants by [`GraphCacheKey`] (surface extent,
+//!   MSAA, multiview, surface format, scene HDR format) so the backend rebuilds only when an
+//!   uncached variant is requested.
 //!
 //! [`CompileStats`] field `topo_levels` counts Kahn-style **parallel waves** in the DAG at compile
 //! time; the executor still walks passes in a **single flat order** (waves are not a separate
@@ -78,7 +79,7 @@ mod schedule;
 mod swapchain_scope;
 pub(crate) mod upload_arena;
 
-pub(crate) use compiled::cache::{GraphCache, GraphCacheKey};
+pub(crate) use compiled::cache::{GraphCache, GraphCacheEnsureResult, GraphCacheKey};
 pub(crate) use compiled::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewResourceHints,
     FrameViewTarget, OffscreenSampleCountPolicy, ViewPostProcessing,
