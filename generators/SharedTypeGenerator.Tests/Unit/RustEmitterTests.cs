@@ -63,6 +63,34 @@ public sealed class RustEmitterTests
         Assert.DoesNotContain("format!(\"Unknown type: {}\", type_name)", text, StringComparison.Ordinal);
     }
 
+    /// <summary>Generated files import <c>Cow</c> only when a field uses borrowed-or-owned string storage.</summary>
+    [Fact]
+    public void Header_emits_cow_import_for_cow_fields()
+    {
+        string text = Emit([
+            new TypeDescriptor
+            {
+                CSharpName = "RendererInitResult",
+                RustName = "RendererInitResult",
+                Shape = TypeShape.PackableStruct,
+                Fields =
+                [
+                    new FieldDescriptor
+                    {
+                        CSharpName = "rendererIdentifier",
+                        RustName = "renderer_identifier",
+                        RustType = "Option<Cow<'static, str>>",
+                        Kind = FieldKind.String,
+                    },
+                ],
+                PackSteps = [new WriteField("renderer_identifier", FieldKind.String)],
+            },
+        ]);
+
+        Assert.Contains("use std::borrow::Cow;", text, StringComparison.Ordinal);
+        Assert.Contains("pub renderer_identifier: Option<Cow<'static, str>>,", text, StringComparison.Ordinal);
+    }
+
     private static string Emit(List<TypeDescriptor> types)
     {
         using var sw = new StringWriter(CultureInfo.InvariantCulture);

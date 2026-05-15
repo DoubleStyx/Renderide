@@ -1,6 +1,6 @@
 //! Pure IPC command routing by [`crate::frontend::InitState`].
 
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use crate::frontend::InitState;
 use crate::shared::{
@@ -34,7 +34,7 @@ static RENDERER_IDENTIFIER: LazyLock<String> = LazyLock::new(|| {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RendererInitCapabilities {
     /// Human-readable stereo mode reported to the host.
-    pub stereo_rendering_mode: String,
+    pub stereo_rendering_mode: Cow<'static, str>,
     /// Maximum host texture dimension accepted by the renderer.
     pub max_texture_size: i32,
     /// Host texture formats accepted by the renderer.
@@ -110,7 +110,7 @@ pub(crate) fn build_renderer_init_result(
 ) -> RendererInitResult {
     RendererInitResult {
         actual_output_device: output_device,
-        renderer_identifier: Some(RENDERER_IDENTIFIER.clone()),
+        renderer_identifier: Some(Cow::Borrowed(RENDERER_IDENTIFIER.as_str())),
         main_window_handle_ptr: 0,
         stereo_rendering_mode: Some(capabilities.stereo_rendering_mode),
         max_texture_size: capabilities.max_texture_size,
@@ -148,6 +148,8 @@ pub(crate) fn dispatch_ipc_command(
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::{
         InitDispatchDecision, IpcDispatchEffect, RendererInitCapabilities,
         build_renderer_init_result, dispatch_ipc_command, init_dispatch_decision,
@@ -165,13 +167,16 @@ mod tests {
         let result = build_renderer_init_result(
             Default::default(),
             RendererInitCapabilities {
-                stereo_rendering_mode: "None".to_string(),
+                stereo_rendering_mode: "None".into(),
                 max_texture_size: 4096,
                 supported_texture_formats: vec![TextureFormat::RGBA32],
             },
         );
 
-        assert!(result.renderer_identifier.is_some());
+        assert!(matches!(
+            result.renderer_identifier,
+            Some(Cow::Borrowed(identifier)) if identifier.starts_with("Renderide ")
+        ));
         assert!(!result.supported_texture_formats.is_empty());
         assert_eq!(result.max_texture_size, 4096);
     }

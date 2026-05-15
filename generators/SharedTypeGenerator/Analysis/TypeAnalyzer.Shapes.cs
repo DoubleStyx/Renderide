@@ -69,6 +69,7 @@ public partial class TypeAnalyzer
         foreach (FieldInfo field in fields)
         {
             string rustType = MapRustTypeWithQueue(field.FieldType);
+            rustType = RustFieldTypeOverrides.Apply(type.Name, field.Name, rustType);
             FieldKind kind = _classifier.ClassifyByType(field.FieldType);
 
             fieldDescriptors.Add(new FieldDescriptor
@@ -103,6 +104,7 @@ public partial class TypeAnalyzer
         foreach (FieldInfo field in fields)
         {
             string rustType = MapRustTypeWithQueue(field.FieldType);
+            rustType = RustFieldTypeOverrides.Apply(type.Name, field.Name, rustType);
             fieldDescriptors.Add(new FieldDescriptor
             {
                 CSharpName = field.Name,

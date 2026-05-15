@@ -143,7 +143,7 @@ public static partial class PackEmitter
         {
             FieldKind.Pod => $"self.{name} = unpacker.read()?;",
             FieldKind.Bool => $"self.{name} = unpacker.read_bool()?;",
-            FieldKind.String => $"self.{name} = unpacker.read_str()?;",
+            FieldKind.String => StringUnpackLine(name, fields),
             FieldKind.Enum => $"unpacker.read_object_required(&mut self.{name})?;",
             FieldKind.FlagsEnum => $"unpacker.read_object_required(&mut self.{name})?;",
             FieldKind.Nullable => $"self.{name} = unpacker.read_option()?;",
@@ -157,6 +157,15 @@ public static partial class PackEmitter
             FieldKind.NestedValueList => $"self.{name} = unpacker.read_nested_value_list()?;",
             _ => UnknownFieldKindUnpackLine(logger, csharpTypeName, name, kind),
         };
+
+    private static string StringUnpackLine(string name, List<FieldDescriptor> fields)
+    {
+        FieldDescriptor? field = fields.FirstOrDefault(f => f.RustName == name);
+        if (field != null && RustFieldTypeOverrides.IsStaticStringCowOption(field.RustType))
+            return $"self.{name} = unpacker.read_str()?.map(<_>::into);";
+
+        return $"self.{name} = unpacker.read_str()?;";
+    }
 
     private static string UnknownFieldKindUnpackLine(Logger logger, string csharpTypeName, string name, FieldKind kind)
     {

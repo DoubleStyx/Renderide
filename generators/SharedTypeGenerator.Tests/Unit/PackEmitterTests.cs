@@ -165,6 +165,20 @@ public sealed class PackEmitterTests
         Assert.Contains("read_object::<FooBar>()", line, StringComparison.Ordinal);
     }
 
+    /// <summary>String unpack converts owned decoded strings into <c>Cow&lt;'static, str&gt;</c> when the generated field uses Cow storage.</summary>
+    [Fact]
+    public void UnpackLine_converts_string_to_cow_for_static_string_fields()
+    {
+        Logger logger = CreateLogger();
+        var fields = new List<FieldDescriptor>
+        {
+            Ir.PodField("renderer_identifier", "Option<Cow<'static, str>>", FieldKind.String),
+        };
+
+        string line = InvokeUnpackLine(logger, "RendererInitResult", "renderer_identifier", FieldKind.String, fields);
+        Assert.Equal("self.renderer_identifier = unpacker.read_str()?.map(<_>::into);", line);
+    }
+
     /// <summary>Polymorphic list unpack strips <c>Vec&lt;...&gt;</c> to the element decode name.</summary>
     [Fact]
     public void UnpackPolymorphicListLine_strips_vec_wrapper()

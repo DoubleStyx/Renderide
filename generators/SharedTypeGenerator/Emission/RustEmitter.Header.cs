@@ -31,6 +31,8 @@ public partial class RustEmitter
         _w.Line("    reason = \"generated code: lints enforced on hand-written code do not apply here\"");
         _w.Line(")]");
         _w.BlankLine();
+        if (NeedsCowImport(types))
+            _w.Line("use std::borrow::Cow;");
         string glamList = FormatGlamUseList(types);
         if (!string.IsNullOrEmpty(glamList))
             _w.Line($"use glam::{{{glamList}}};");
@@ -47,6 +49,10 @@ public partial class RustEmitter
         _w.Line("use logger::trace;");
         _w.BlankLine();
     }
+
+    /// <summary>Returns true when any generated field stores a borrowed-or-owned static string.</summary>
+    private static bool NeedsCowImport(List<TypeDescriptor> types) =>
+        types.Any(t => t.Fields.Any(f => RustFieldTypeOverrides.IsStaticStringCowOption(f.RustType)));
 
     /// <summary>Comma-separated <c>glam</c> identifiers for <c>use glam::{{ ... }};</c>, stable order.</summary>
     private static string FormatGlamUseList(List<TypeDescriptor> types)

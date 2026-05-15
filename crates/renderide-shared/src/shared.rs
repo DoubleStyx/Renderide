@@ -17,6 +17,8 @@
     reason = "generated code: lints enforced on hand-written code do not apply here"
 )]
 
+use std::borrow::Cow;
+
 use super::buffer::SharedMemoryBufferDescriptor;
 use super::packing::enum_repr::EnumRepr;
 use super::packing::memory_packable::MemoryPackable;
@@ -915,9 +917,9 @@ impl MemoryPackable for RendererInitData {
 #[derive(Debug, Default, Clone)]
 pub struct RendererInitResult {
     pub actual_output_device: HeadOutputDevice,
-    pub renderer_identifier: Option<String>,
+    pub renderer_identifier: Option<Cow<'static, str>>,
     pub main_window_handle_ptr: i64,
-    pub stereo_rendering_mode: Option<String>,
+    pub stereo_rendering_mode: Option<Cow<'static, str>>,
     pub max_texture_size: i32,
     pub is_gpu_texture_pot_byte_aligned: bool,
     pub supported_texture_formats: Vec<TextureFormat>,
@@ -938,9 +940,9 @@ impl MemoryPackable for RendererInitResult {
         unpacker: &mut MemoryUnpacker<'_, '_, P>,
     ) -> Result<(), WireDecodeError> {
         unpacker.read_object_required(&mut self.actual_output_device)?;
-        self.renderer_identifier = unpacker.read_str()?;
+        self.renderer_identifier = unpacker.read_str()?.map(<_>::into);
         self.main_window_handle_ptr = unpacker.read()?;
-        self.stereo_rendering_mode = unpacker.read_str()?;
+        self.stereo_rendering_mode = unpacker.read_str()?.map(<_>::into);
         self.max_texture_size = unpacker.read()?;
         self.is_gpu_texture_pot_byte_aligned = unpacker.read_bool()?;
         self.supported_texture_formats = unpacker.read_enum_value_list()?;

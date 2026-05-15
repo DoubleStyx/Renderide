@@ -73,7 +73,7 @@ fn renderer_init_capabilities(
         "None"
     };
     RendererInitCapabilities {
-        stereo_rendering_mode: stereo_rendering_mode.to_string(),
+        stereo_rendering_mode: stereo_rendering_mode.into(),
         max_texture_size: crate::gpu::RENDERER_MAX_TEXTURE_DIMENSION_2D as i32,
         supported_texture_formats: crate::assets::texture::supported_host_formats_for_init(),
     }
