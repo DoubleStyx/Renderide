@@ -251,41 +251,20 @@ impl EmbeddedMaterialBindResources {
             return;
         }
         profiling::scope!("materials::embedded_purge_material_assets");
-        let bind_groups = self.bind_cache.clear();
-        let debug_entries = self.texture_debug_cache.lock().len();
+        self.bind_cache.clear();
         self.texture_debug_cache.lock().clear();
-        let uniform_slots: usize = self
-            .uniform_arena_shards
-            .iter()
-            .map(|shard| {
-                shard
-                    .lock()
-                    .purge_material_assets(material_ids, property_block_ids)
-            })
-            .sum();
-        logger::debug!(
-            "embedded material cache purge: materials={} property_blocks={} bind_groups={} texture_debug_entries={} uniform_slots={}",
-            material_ids.len(),
-            property_block_ids.len(),
-            bind_groups,
-            debug_entries,
-            uniform_slots
-        );
+        for shard in &self.uniform_arena_shards {
+            shard
+                .lock()
+                .purge_material_assets(material_ids, property_block_ids);
+        }
     }
 
     /// Purges bind groups that may retain texture views after texture assets unload.
     pub(crate) fn purge_texture_reference_caches(&self) {
         profiling::scope!("materials::embedded_purge_texture_reference_caches");
-        let bind_groups = self.bind_cache.clear();
-        let debug_entries = self.texture_debug_cache.lock().len();
+        self.bind_cache.clear();
         self.texture_debug_cache.lock().clear();
-        if bind_groups > 0 || debug_entries > 0 {
-            logger::debug!(
-                "embedded material texture-reference cache purge: bind_groups={} texture_debug_entries={}",
-                bind_groups,
-                debug_entries
-            );
-        }
     }
 
     /// Returns or builds a `@group(1)` bind group for the composed embedded `stem`. Callers

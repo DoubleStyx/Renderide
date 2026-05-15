@@ -8,7 +8,6 @@
 use rayon::prelude::*;
 
 use crate::backend::{ExtractedFrameShared, RenderBackend, WorldMeshDrawPlanSlot};
-use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::GpuContext;
 use crate::mesh_deform::SkinCacheKey;
 use crate::occlusion::HiZCullData;
@@ -21,9 +20,6 @@ use crate::world_mesh::{
 };
 
 use super::view_plan::FrameViewPlan;
-
-/// Throttle for view-level diagnostics where culling removes every prepared draw.
-static ZERO_DRAW_AFTER_CULL_LOG: LogThrottle = LogThrottle::new();
 
 /// Immutable runtime-owned extraction packet built before per-view draw collection starts.
 ///
@@ -315,10 +311,6 @@ fn collect_view_draws(
 }
 
 fn trace_view_draw_plans(prepared: &[FrameViewPlan<'_>], draw_plans: &[WorldMeshDrawPlan]) {
-    for (prep, draw_plan) in prepared.iter().zip(draw_plans.iter()) {
-        log_zero_draw_after_culling(prep, draw_plan);
-    }
-
     if !logger::enabled(logger::LogLevel::Trace) {
         return;
     }
@@ -348,38 +340,6 @@ fn trace_view_draw_plans(prepared: &[FrameViewPlan<'_>], draw_plans: &[WorldMesh
             helper_needs.color_snapshot,
         );
     }
-}
-
-/// Emits a throttled debug diagnostic when culling removes every candidate draw in a view.
-fn log_zero_draw_after_culling(prep: &FrameViewPlan<'_>, draw_plan: &WorldMeshDrawPlan) {
-    let Some(collection) = draw_plan.as_prefetched() else {
-        return;
-    };
-    if !should_log_zero_draw_after_culling(collection.draws_pre_cull, collection.items.len()) {
-        return;
-    }
-    if !logger::enabled(logger::LogLevel::Debug) {
-        return;
-    }
-    let Some(occurrence) = ZERO_DRAW_AFTER_CULL_LOG.should_log(8, 120) else {
-        return;
-    };
-    logger::debug!(
-        "render view draws empty after culling: view_id={:?} extent={}x{} shader_perm={:?} pre_cull={} frustum_culled={} hi_z_culled={} occurrence={}",
-        prep.view_id,
-        prep.viewport_px.0,
-        prep.viewport_px.1,
-        prep.shader_permutation(),
-        collection.draws_pre_cull,
-        collection.draws_culled,
-        collection.draws_hi_z_culled,
-        occurrence,
-    );
-}
-
-/// Returns whether a view had candidates before culling but no visible draws afterward.
-fn should_log_zero_draw_after_culling(draws_pre_cull: usize, visible_draws: usize) -> bool {
-    draws_pre_cull > 0 && visible_draws == 0
 }
 
 /// Selects the per-view inner-walk parallelism tier for a tick based on how many views will
@@ -542,13 +502,6 @@ mod tests {
             ),
             WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
         );
-    }
-
-    #[test]
-    fn zero_draw_after_culling_requires_pre_cull_candidates() {
-        assert!(!should_log_zero_draw_after_culling(0, 0));
-        assert!(!should_log_zero_draw_after_culling(1, 1));
-        assert!(should_log_zero_draw_after_culling(1, 0));
     }
 
     #[test]

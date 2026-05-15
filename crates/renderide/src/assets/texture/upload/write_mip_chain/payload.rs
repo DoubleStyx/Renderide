@@ -210,14 +210,6 @@ pub(super) fn validate_and_resolve_next_mip_slice<'a>(
     }
 
     let (gw, gh) = mip_dimensions_at_level(tex_extent.width, tex_extent.height, mip_level);
-    if w != gw || h != gh {
-        logger::debug!(
-            "texture {} mip {mip_level}: mip_map_sizes {w}x{h} != GPU {gw}x{gh} (using GPU dimensions; base {}x{})",
-            upload.asset_id,
-            tex_extent.width,
-            tex_extent.height
-        );
-    }
 
     match resolve_mip_host_payload_slice(
         chain,

@@ -431,10 +431,6 @@ impl RenderBackend {
         if retired.is_empty() {
             return;
         }
-        logger::debug!(
-            "retiring {} one-shot view-scoped resource sets",
-            retired.len()
-        );
         self.graph_state.release_view_resources(retired);
         self.world_mesh_frame_planner
             .release_view_resources(retired);

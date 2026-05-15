@@ -451,15 +451,7 @@ impl TextureMipChainUploader {
             });
         };
 
-        if !self.generating_tail {
-            logger::warn!(
-                "texture {}: uploaded {}/{} host mips; synthesizing missing RGBA8 tail mips",
-                upload.asset_id,
-                self.uploaded_mips,
-                self.mipmap_count.saturating_sub(self.start_base)
-            );
-            self.generating_tail = true;
-        }
+        self.generating_tail = true;
 
         let (w, h) =
             mip_dimensions_at_level(self.tex_extent.width, self.tex_extent.height, mip_level);
