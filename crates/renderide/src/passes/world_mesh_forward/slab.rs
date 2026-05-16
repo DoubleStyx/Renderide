@@ -142,7 +142,7 @@ fn pack_per_draw_vp_uniforms(
             .with_reflection_probe_selection(
                 item.reflection_probes.first_atlas_index,
                 item.reflection_probes.second_atlas_index,
-                item.reflection_probes.second_weight,
+                item.reflection_probes.fallback_atlas_index,
                 item.reflection_probes.hit_count,
             );
     };

@@ -15,12 +15,8 @@ fn get_draw(instance_idx: u32) -> dt::PerDrawUniforms {
     return instances[instance_idx];
 }
 
-fn reflection_probe_indices(draw: dt::PerDrawUniforms) -> vec2<u32> {
+fn reflection_probe_indices(draw: dt::PerDrawUniforms) -> vec3<u32> {
     return dt::reflection_probe_indices(draw);
-}
-
-fn reflection_probe_second_weight(draw: dt::PerDrawUniforms) -> f32 {
-    return dt::reflection_probe_second_weight(draw);
 }
 
 fn reflection_probe_hit_count(draw: dt::PerDrawUniforms) -> u32 {

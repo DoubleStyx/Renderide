@@ -139,24 +139,28 @@ fn blend_local_probe_with_fallback_radiance(
 fn blend_two_local_probe_radiance(
     first_index: u32,
     second_index: u32,
+    fallback_index: u32,
     world_pos: vec3<f32>,
     dir: vec3<f32>,
-    perceptual_roughness: f32,
-    second_weight: f32,
+    perceptual_roughness: f32
 ) -> vec3<f32> {
     let first_probe = rg::reflection_probes[first_index];
     let second_probe = rg::reflection_probes[second_index];
-    let first_base = 1.0 - second_weight;
-    let second_base = second_weight;
-    let first_weight = first_base * probe_edge_weight(first_probe, world_pos);
-    let second_weighted = second_base * probe_edge_weight(second_probe, world_pos);
-    let total_weight = first_weight + second_weighted;
+    let first_weight = probe_edge_weight(first_probe, world_pos);
+    let second_weight = probe_edge_weight(second_probe, world_pos);
+    let total_weight = first_weight + second_weight;
     if (total_weight <= MIN_PROBE_BLEND_WEIGHT) {
-        return vec3<f32>(0.0);
+        return sample_probe_radiance(fallback_index, world_pos, dir, perceptual_roughness);
     }
     let first = sample_probe_radiance(first_index, world_pos, dir, perceptual_roughness);
     let second = sample_probe_radiance(second_index, world_pos, dir, perceptual_roughness);
-    return (first * first_weight + second * second_weighted) / total_weight;
+    var total = first * first_weight + second * second_weight;
+    if (total_weight >= 1) {
+        total = total / total_weight;
+    } else {
+        total = total + (1 - total_weight) * sample_probe_radiance(fallback_index, world_pos, dir, perceptual_roughness);
+    }
+    return total;
 }
 
 fn indirect_radiance(
@@ -178,15 +182,15 @@ fn indirect_radiance(
         return vec3<f32>(0.0);
     }
     if (count < 2u || indices.y == 0u) {
-        return blend_local_probe_with_fallback_radiance(indices.x, indices.y, world_pos, dir, perceptual_roughness);
+        return blend_local_probe_with_fallback_radiance(indices.x, indices.z, world_pos, dir, perceptual_roughness);
     }
     return blend_two_local_probe_radiance(
         indices.x,
         indices.y,
+        indices.z,
         world_pos,
         dir,
         perceptual_roughness,
-        pd::reflection_probe_second_weight(draw),
     );
 }
 
@@ -257,21 +261,24 @@ fn blend_two_local_probe_sh2(
     second_index: u32,
     world_pos: vec3<f32>,
     normal_ws: vec3<f32>,
-    second_weight: f32,
 ) -> vec3<f32> {
     let first_probe = rg::reflection_probes[first_index];
     let second_probe = rg::reflection_probes[second_index];
-    let first_base = 1.0 - second_weight;
-    let second_base = second_weight;
-    let first_weight = first_base * probe_edge_weight(first_probe, world_pos);
-    let second_weighted = second_base * probe_edge_weight(second_probe, world_pos);
-    let total_weight = first_weight + second_weighted;
+    let first_weight = probe_edge_weight(first_probe, world_pos);
+    let second_weight = probe_edge_weight(second_probe, world_pos);
+    let total_weight = first_weight + second_weight;
     if (total_weight <= MIN_PROBE_BLEND_WEIGHT) {
         return ambient_probe_or_zero(normal_ws);
     }
     let first = sample_probe_sh2_or_ambient(first_index, normal_ws);
     let second = sample_probe_sh2_or_ambient(second_index, normal_ws);
-    return (first * first_weight + second * second_weighted) / total_weight;
+    var total = first * first_weight + second * second_weight;
+    if (total_weight >= 1) {
+        total = total / total_weight;
+    } else {
+        total = total + (1 - total_weight) * ambient_probe_or_zero(normal_ws);
+    }
+    return total;
 }
 
 fn indirect_diffuse(world_pos: vec3<f32>, normal_ws: vec3<f32>, view_layer: u32, enabled: bool) -> vec3<f32> {
@@ -290,13 +297,9 @@ fn indirect_diffuse(world_pos: vec3<f32>, normal_ws: vec3<f32>, view_layer: u32,
             indices.y,
             world_pos,
             normal_ws,
-            pd::reflection_probe_second_weight(draw),
         );
     }
-    if (shamb::ambient_probe_is_valid()) {
-        return shamb::ambient_probe(normal_ws);
-    }
-    return vec3<f32>(0.0);
+    return ambient_probe_or_zero(normal_ws);
 }
 
 fn raw_indirect_specular_with_horizon(

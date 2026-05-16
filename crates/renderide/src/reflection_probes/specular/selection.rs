@@ -17,8 +17,8 @@ pub struct ReflectionProbeDrawSelection {
     pub first_atlas_index: u16,
     /// Second selected reflection-probe atlas index.
     pub second_atlas_index: u16,
-    /// Blend weight for [`Self::second_atlas_index`].
-    pub second_weight: f32,
+    /// Fallback selected reflectiop-probe atlas index.
+    pub fallback_atlas_index: u16,
     /// Number of selected reflection probes, clamped to two.
     pub hit_count: u8,
 }
@@ -26,22 +26,22 @@ pub struct ReflectionProbeDrawSelection {
 impl ReflectionProbeDrawSelection {
     /// Builds a single-probe selection.
     #[must_use]
-    pub fn one(first_atlas_index: u16) -> Self {
+    pub fn one(first_atlas_index: u16, fallback_atlas_index: u16) -> Self {
         Self {
             first_atlas_index,
             second_atlas_index: 0,
-            second_weight: 0.0,
+            fallback_atlas_index,
             hit_count: 1,
         }
     }
 
     /// Builds a two-probe selection.
     #[must_use]
-    pub fn two(first_atlas_index: u16, second_atlas_index: u16, second_weight: f32) -> Self {
+    pub fn two(first_atlas_index: u16, second_atlas_index: u16, fallback_atlas_index: u16) -> Self {
         Self {
             first_atlas_index,
             second_atlas_index,
-            second_weight: second_weight.clamp(0.0, 1.0),
+            fallback_atlas_index,
             hit_count: 2,
         }
     }
@@ -100,6 +100,7 @@ pub(super) struct SpatialProbe {
     pub(super) center: Vec3A,
     pub(super) volume: f32,
     pub(super) blend_distance: f32,
+    pub(super) skybox: bool,
 }
 
 /// A BVH over reflection-probe AABBs for one render space.
@@ -138,8 +139,8 @@ impl ReflectionProbeSpatialIndex {
         }
         let object_center = object_center(object_min, object_max);
         let object_volume = aabb_volume_vec3a(object_min, object_max);
-        let mut best_importance = i32::MIN;
         let mut top: [Option<ProbeScore>; 2] = [None, None];
+        let mut fallback: Option<ProbeScore> = None;
         let mut stack = Vec::with_capacity(64);
         stack.push(self.root.unwrap_or(0));
         while let Some(node_index) = stack.pop() {
@@ -150,6 +151,9 @@ impl ReflectionProbeSpatialIndex {
             if node.count > 0 {
                 for &probe_index in &self.order[node.start..node.start + node.count] {
                     let probe = &self.probes[probe_index];
+                    if probe.renderable_index < 0 {
+                        continue;
+                    }
                     let influence_intersection = intersection_volume_vec3a(
                         probe.influence_aabb_min,
                         probe.influence_aabb_max,
@@ -165,34 +169,45 @@ impl ReflectionProbeSpatialIndex {
                         object_min,
                         object_max,
                     );
-                    if probe.importance > best_importance {
-                        best_importance = probe.importance;
-                        top = [None, None];
-                    }
-                    if probe.importance != best_importance {
+                    let worst_importance = top
+                        .iter()
+                        .filter_map(|p| p.as_ref())
+                        .map(|p| p.importance)
+                        .min()
+                        .unwrap_or(i32::MIN);
+                    if probe.importance < worst_importance {
                         continue;
                     }
-                    insert_probe_score(
-                        &mut top,
-                        ProbeScore {
-                            atlas_index: probe.atlas_index,
-                            influence_intersection,
-                            original_intersection,
-                            probe_volume: probe.volume,
-                            center_distance_sq: (probe.center - object_center).length_squared(),
-                            renderable_index: probe.renderable_index,
-                            aabb_min: probe.aabb_min,
-                            aabb_max: probe.aabb_max,
-                            blend_distance: probe.blend_distance,
-                        },
-                    );
+                    let score = ProbeScore {
+                        atlas_index: probe.atlas_index,
+                        importance: probe.importance,
+                        influence_intersection,
+                        original_intersection,
+                        probe_volume: probe.volume,
+                        center_distance_sq: (probe.center - object_center).length_squared(),
+                        renderable_index: probe.renderable_index,
+                        aabb_min: probe.aabb_min,
+                        aabb_max: probe.aabb_max,
+                        blend_distance: probe.blend_distance,
+                        skybox: probe.skybox,
+                    };
+                    insert_probe_score(&mut top, score);
+                    if probe.skybox {
+                        if let Some(best) = fallback {
+                            if score_better(score, best) {
+                                fallback = Some(score);
+                            }
+                        } else {
+                            fallback = Some(score);
+                        }
+                    }
                 }
             } else {
                 stack.push(node.left);
                 stack.push(node.right);
             }
         }
-        selection_from_scores(top, object_volume, object_center)
+        selection_from_scores(top, fallback, object_volume, object_center)
     }
 
     fn build_node(&mut self, order: &mut [usize], start: usize, end: usize) -> usize {
@@ -243,6 +258,7 @@ struct BvhNode {
 #[derive(Clone, Copy, Debug)]
 struct ProbeScore {
     atlas_index: u16,
+    importance: i32,
     influence_intersection: f32,
     original_intersection: f32,
     probe_volume: f32,
@@ -251,6 +267,7 @@ struct ProbeScore {
     aabb_min: Vec3A,
     aabb_max: Vec3A,
     blend_distance: f32,
+    skybox: bool,
 }
 
 fn insert_probe_score(top: &mut [Option<ProbeScore>; 2], score: ProbeScore) {
@@ -262,44 +279,58 @@ fn insert_probe_score(top: &mut [Option<ProbeScore>; 2], score: ProbeScore) {
     }
 }
 
+/// Order of preference:
+/// 1. Largest importance set by creator
+/// 2. Non-skybox preferred over skybox
+/// 3. Largest influence intersection
+/// 4. Smallest probe volume
+/// 5. Closest to the center
+/// 6. Highest renderable index (ie most recently activated)
 fn score_better(a: ProbeScore, b: ProbeScore) -> bool {
-    a.influence_intersection
-        .total_cmp(&b.influence_intersection)
+    a.importance
+        .cmp(&b.importance)
         .reverse()
+        .then_with(|| a.skybox.cmp(&b.skybox))
+        .then_with(|| {
+            a.influence_intersection
+                .total_cmp(&b.influence_intersection)
+                .reverse()
+        })
         .then_with(|| a.probe_volume.total_cmp(&b.probe_volume))
         .then_with(|| a.center_distance_sq.total_cmp(&b.center_distance_sq))
-        .then_with(|| a.renderable_index.cmp(&b.renderable_index))
+        .then_with(|| a.renderable_index.cmp(&b.renderable_index).reverse())
         .is_lt()
 }
 
 fn selection_from_scores(
     top: [Option<ProbeScore>; 2],
+    fallback: Option<ProbeScore>,
     object_volume: f32,
     object_center: Vec3A,
 ) -> ReflectionProbeDrawSelection {
     let Some(first) = top[0] else {
         return ReflectionProbeDrawSelection::default();
     };
+    let fallback_index = fallback.map(|p| p.atlas_index).unwrap_or(0);
     let Some(second) = top[1] else {
-        return ReflectionProbeDrawSelection::one(first.atlas_index);
+        return ReflectionProbeDrawSelection::one(first.atlas_index, fallback_index);
     };
-    if let Some(selection) = contained_selection(first, second, object_volume, object_center) {
+    if let Some(selection) =
+        contained_selection(first, second, fallback_index, object_volume, object_center)
+    {
         return selection;
     }
     let denom = first.influence_intersection + second.influence_intersection;
     if denom <= MIN_OBJECT_VOLUME {
-        return ReflectionProbeDrawSelection::one(first.atlas_index);
+        return ReflectionProbeDrawSelection::one(first.atlas_index, fallback_index);
     }
-    ReflectionProbeDrawSelection::two(
-        first.atlas_index,
-        second.atlas_index,
-        second.influence_intersection / denom,
-    )
+    ReflectionProbeDrawSelection::two(first.atlas_index, second.atlas_index, fallback_index)
 }
 
 fn contained_selection(
     first: ProbeScore,
     second: ProbeScore,
+    fallback_index: u16,
     object_volume: f32,
     object_center: Vec3A,
 ) -> Option<ReflectionProbeDrawSelection> {
@@ -307,6 +338,7 @@ fn contained_selection(
         return Some(inner_outer_selection(
             second,
             first,
+            fallback_index,
             object_volume,
             object_center,
         ));
@@ -315,6 +347,7 @@ fn contained_selection(
         return Some(inner_outer_selection(
             first,
             second,
+            fallback_index,
             object_volume,
             object_center,
         ));
@@ -335,17 +368,18 @@ fn larger_probe_contains(outer: ProbeScore, inner: ProbeScore) -> bool {
 fn inner_outer_selection(
     inner: ProbeScore,
     outer: ProbeScore,
+    fallback_index: u16,
     object_volume: f32,
     object_center: Vec3A,
 ) -> ReflectionProbeDrawSelection {
     if object_volume <= MIN_OBJECT_VOLUME {
-        return ReflectionProbeDrawSelection::one(inner.atlas_index);
+        return ReflectionProbeDrawSelection::one(inner.atlas_index, fallback_index);
     }
     let inner_weight = contained_inner_weight(inner, object_volume, object_center);
     if inner_weight >= 1.0 - CONTAINMENT_EPSILON {
-        return ReflectionProbeDrawSelection::one(inner.atlas_index);
+        return ReflectionProbeDrawSelection::one(inner.atlas_index, fallback_index);
     }
-    ReflectionProbeDrawSelection::two(inner.atlas_index, outer.atlas_index, 1.0 - inner_weight)
+    ReflectionProbeDrawSelection::two(inner.atlas_index, outer.atlas_index, fallback_index)
 }
 
 fn contained_inner_weight(inner: ProbeScore, object_volume: f32, object_center: Vec3A) -> f32 {
@@ -475,6 +509,22 @@ mod tests {
         max: Vec3,
         blend_distance: f32,
     ) -> SpatialProbe {
+        full_probe(index, atlas, importance, min, max, blend_distance, false)
+    }
+
+    fn skybox_probe(index: i32, atlas: u16, importance: i32, min: Vec3, max: Vec3) -> SpatialProbe {
+        full_probe(index, atlas, importance, min, max, 0.0, true)
+    }
+
+    fn full_probe(
+        index: i32,
+        atlas: u16,
+        importance: i32,
+        min: Vec3,
+        max: Vec3,
+        blend_distance: f32,
+        skybox: bool,
+    ) -> SpatialProbe {
         let blend_distance = sanitized_blend_distance(blend_distance);
         let (influence_aabb_min, influence_aabb_max) = expanded_aabb(min, max, blend_distance);
         SpatialProbe {
@@ -488,6 +538,7 @@ mod tests {
             center: Vec3A::from((min + max) * 0.5),
             volume: aabb_volume(min, max),
             blend_distance,
+            skybox,
         }
     }
 
@@ -500,7 +551,7 @@ mod tests {
 
         let selection = index.select((Vec3::splat(-0.25), Vec3::splat(0.25)));
 
-        assert_eq!(selection, ReflectionProbeDrawSelection::one(2));
+        assert_eq!(selection, ReflectionProbeDrawSelection::one(2, 0));
     }
 
     #[test]
@@ -530,7 +581,7 @@ mod tests {
             ReflectionProbeDrawSelection {
                 first_atlas_index: 3,
                 second_atlas_index: 0,
-                second_weight: 0.0,
+                fallback_atlas_index: 0,
                 hit_count: 1,
             }
         );
@@ -549,7 +600,7 @@ mod tests {
 
         let selection = index.select((Vec3::new(1.25, -0.25, -0.25), Vec3::new(1.5, 0.25, 0.25)));
 
-        assert_eq!(selection, ReflectionProbeDrawSelection::one(1));
+        assert_eq!(selection, ReflectionProbeDrawSelection::one(1, 0));
     }
 
     #[test]
@@ -578,7 +629,7 @@ mod tests {
 
         let selection = index.select((Vec3::new(1.2, -0.1, -0.1), Vec3::new(1.4, 0.1, 0.1)));
 
-        assert_eq!(selection, ReflectionProbeDrawSelection::one(2));
+        assert_eq!(selection, ReflectionProbeDrawSelection::two(2, 1, 0));
     }
 
     #[test]
@@ -610,9 +661,8 @@ mod tests {
         let selection = index.select((Vec3::new(-0.5, -0.5, -0.5), Vec3::new(1.5, 0.5, 0.5)));
 
         assert_eq!(selection.hit_count, 2);
-        assert_eq!(selection.first_atlas_index, 1);
-        assert_eq!(selection.second_atlas_index, 2);
-        assert!((selection.second_weight - 0.5).abs() < 1e-6);
+        assert_eq!(selection.first_atlas_index, 2);
+        assert_eq!(selection.second_atlas_index, 1);
     }
 
     #[test]
@@ -624,7 +674,7 @@ mod tests {
 
         let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
 
-        assert_eq!(selection, ReflectionProbeDrawSelection::one(2));
+        assert_eq!(selection, ReflectionProbeDrawSelection::one(2, 0));
     }
 
     #[test]
@@ -639,7 +689,6 @@ mod tests {
         assert_eq!(selection.hit_count, 2);
         assert_eq!(selection.first_atlas_index, 2);
         assert_eq!(selection.second_atlas_index, 1);
-        assert!((selection.second_weight - 0.25).abs() < 1e-6);
     }
 
     #[test]
@@ -652,9 +701,25 @@ mod tests {
         let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
 
         assert_eq!(selection.hit_count, 2);
-        assert_eq!(selection.first_atlas_index, 1);
-        assert_eq!(selection.second_atlas_index, 2);
-        assert!((selection.second_weight - 0.5).abs() < 1e-6);
+        assert_eq!(selection.first_atlas_index, 2);
+        assert_eq!(selection.second_atlas_index, 1);
+    }
+
+    #[test]
+    fn skybox_probe_terrible_candidate_but_used_as_fallback() {
+        let index = ReflectionProbeSpatialIndex::build(vec![
+            probe(0, 1, 0, Vec3::splat(-1.0), Vec3::splat(1.0)),
+            probe(1, 2, 0, Vec3::splat(-1.0), Vec3::splat(1.0)),
+            skybox_probe(2, 3, 0, Vec3::splat(-1000.0), Vec3::splat(1000.0)),
+            skybox_probe(3, 4, 0, Vec3::splat(-10_000.0), Vec3::splat(10_000.0)),
+        ]);
+
+        let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
+
+        assert_eq!(selection.hit_count, 2);
+        assert_eq!(selection.first_atlas_index, 2);
+        assert_eq!(selection.second_atlas_index, 1);
+        assert_eq!(selection.fallback_atlas_index, 3);
     }
 
     #[test]
