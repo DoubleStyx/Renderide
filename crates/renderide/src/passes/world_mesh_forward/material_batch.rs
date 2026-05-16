@@ -318,7 +318,8 @@ impl<'a> MaterialDrawResolver<'a> {
         item: &WorldMeshDrawItem,
         pipeline_key: PipelineVariantKey,
     ) -> Option<(MaterialPipelineResolution, MaterialGroup1Binding)> {
-        let resolution = self.resolve_pipeline_resolution(pipeline_key)?;
+        let resolution =
+            self.resolve_pipeline_resolution(&item.batch_key.pipeline, pipeline_key)?;
         match &resolution.kind {
             RasterPipelineKind::Null => Some((resolution, MaterialGroup1Binding::Empty)),
             RasterPipelineKind::EmbeddedStem(stem) => {
@@ -344,13 +345,15 @@ impl<'a> MaterialDrawResolver<'a> {
     /// Resolves the material pipeline set and concrete raster kind for one batch.
     fn resolve_pipeline_resolution(
         &self,
+        pipeline_kind: &RasterPipelineKind,
         pipeline_key: PipelineVariantKey,
     ) -> Option<MaterialPipelineResolution> {
         let registry = self.registry?;
 
         let pass_desc = pipeline_key.pass_desc();
-        let resolution = registry.resolve_pipeline_for_shader_asset(
+        let resolution = registry.pipeline_for_resolved_kind(
             pipeline_key.shader_asset_id,
+            pipeline_kind,
             &pass_desc,
             pipeline_key.variant_spec(),
         );
@@ -359,16 +362,18 @@ impl<'a> MaterialDrawResolver<'a> {
             Some(resolution) if !resolution.pipelines.is_empty() => Some(resolution),
             Some(resolution) => {
                 logger::trace!(
-                    "WorldMeshForward: empty pipeline for shader {:?}, kind {:?}, skipping batch",
+                    "WorldMeshForward: empty pipeline for shader {:?} requested_kind {:?} resolved_kind {:?}, skipping batch",
                     pipeline_key.shader_asset_id,
+                    pipeline_kind,
                     resolution.kind
                 );
                 None
             }
             None => {
                 logger::trace!(
-                    "WorldMeshForward: no pipeline for shader {:?}, skipping batch",
-                    pipeline_key.shader_asset_id
+                    "WorldMeshForward: no pipeline for shader {:?} kind {:?}, skipping batch",
+                    pipeline_key.shader_asset_id,
+                    pipeline_kind
                 );
                 None
             }
@@ -532,6 +537,11 @@ mod tests {
         })
     }
 
+    /// Builds an embedded pipeline kind for packet-selection tests.
+    fn embedded_pipeline(stem: &'static str) -> RasterPipelineKind {
+        RasterPipelineKind::EmbeddedStem(Arc::from(stem))
+    }
+
     #[test]
     fn pipeline_key_preserves_regular_sample_count() {
         let key = key_for();
@@ -577,6 +587,7 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    /// Null pipelines require the shared empty material bind group.
     #[test]
     fn null_pipeline_requires_empty_group1_binding() {
         assert_eq!(
@@ -589,9 +600,10 @@ mod tests {
         ));
     }
 
+    /// Embedded pipelines require the reflected embedded material bind group.
     #[test]
     fn embedded_pipeline_requires_embedded_group1_binding() {
-        let kind = RasterPipelineKind::EmbeddedStem(Arc::from("xstoon2.0_default"));
+        let kind = embedded_pipeline("xstoon2.0_default");
         assert_eq!(
             required_group1_binding_kind(&kind),
             MaterialGroup1BindingKind::Embedded
@@ -602,12 +614,26 @@ mod tests {
         ));
     }
 
+    /// The empty material bind group is never layout-compatible with embedded pipelines.
     #[test]
     fn empty_group1_binding_does_not_match_embedded_pipeline() {
-        let kind = RasterPipelineKind::EmbeddedStem(Arc::from("xstoon2.0_default"));
+        let kind = embedded_pipeline("xstoon2.0_default");
         assert!(!material_group1_binding_matches_pipeline(
             MaterialGroup1BindingKind::Empty,
             &kind
         ));
+    }
+
+    /// A draw batch snapshot that stayed Null still requires empty group 1 even if routing changes.
+    #[test]
+    fn stale_draw_batch_pipeline_requires_empty_group1_even_if_current_route_is_embedded() {
+        let current_router_route = embedded_pipeline("xstoon2.0_default");
+        let stale_draw_batch_pipeline = RasterPipelineKind::Null;
+
+        assert_eq!(
+            required_group1_binding_kind(&stale_draw_batch_pipeline),
+            MaterialGroup1BindingKind::Empty
+        );
+        assert_ne!(stale_draw_batch_pipeline, current_router_route);
     }
 }
