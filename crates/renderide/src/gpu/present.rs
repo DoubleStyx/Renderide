@@ -7,9 +7,9 @@ use crate::gpu::GpuContext;
 
 /// Clear color used for the skeleton swapchain clear.
 pub const SWAPCHAIN_CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 0.01,
-    g: 0.01,
-    b: 0.01,
+    r: 0.1,
+    g: 0.1,
+    b: 0.1,
     a: 1.0,
 };
 
