@@ -1,6 +1,6 @@
 ---
 name: Unity parity request
-about: Report missing or mismatched behavior compared with the Unity renderer.
+about: Report missing behavior compared with the Unity renderer.
 title: ""
 labels: parity
 assignees: ""
