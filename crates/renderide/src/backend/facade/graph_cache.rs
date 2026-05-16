@@ -3,8 +3,8 @@
 use crate::backend::graph::build_main_graph_with_resources;
 use crate::config::PostProcessingSettings;
 use crate::passes::post_processing::gpu_supports_gtao;
-use crate::render_graph::GraphCacheKey;
 use crate::render_graph::post_process_chain::PostProcessChainSignature;
+use crate::render_graph::{GraphCacheEnsureResult, GraphCacheKey};
 
 use super::RenderBackend;
 
@@ -80,10 +80,10 @@ impl RenderBackend {
         }
     }
 
-    /// Ensures the compiled main frame graph matches the supplied graph-shaping settings.
+    /// Ensures the compiled main frame graph has a cached variant for the supplied shape.
     ///
-    /// Graph-build failures are logged and leave the cache empty so the runtime can surface a
-    /// recoverable [`crate::render_graph::GraphExecuteError::NoFrameGraph`] path.
+    /// Graph-build failures are logged and clear only the active graph selection so the runtime
+    /// can surface a recoverable [`crate::render_graph::GraphExecuteError::NoFrameGraph`] path.
     pub(super) fn sync_frame_graph_cache(
         &mut self,
         post_processing: &PostProcessingSettings,
@@ -91,10 +91,11 @@ impl RenderBackend {
     ) {
         let key = shape.into_cache_key();
         let previous_key = self.graph_state.frame_graph_cache.last_key();
-        let key_changed = previous_key.is_some_and(|previous| previous != key);
-        if let Some(previous_key) = previous_key.filter(|previous| *previous != key) {
+        let key_cached = self.graph_state.frame_graph_cache.contains_key(key);
+        if let Some(previous_key) = previous_key.filter(|previous| *previous != key && !key_cached)
+        {
             logger::info!(
-                "graph inputs changed (post-processing {:?} -> {:?}, msaa {}x -> {}x, multiview {} -> {}, surface {:?} -> {:?}, scene color {:?} -> {:?}); rebuilding render graph",
+                "graph inputs changed (post-processing {:?} -> {:?}, msaa {}x -> {}x, multiview {} -> {}, surface {:?} -> {:?}, scene color {:?} -> {:?}); building render graph variant",
                 previous_key.post_processing,
                 key.post_processing,
                 previous_key.msaa_sample_count,
@@ -106,34 +107,38 @@ impl RenderBackend {
                 previous_key.scene_color_format,
                 key.scene_color_format,
             );
+        } else if previous_key.is_some_and(|previous| previous != key) {
+            logger::debug!(
+                "render graph cache switched active variant: previous={previous_key:?} key={key:?}"
+            );
         }
-        if key_changed {
-            self.graph_state.reset_upload_arena();
-        }
-        let needed_rebuild = self.graph_state.frame_graph_cache.last_key() != Some(key)
-            || self.graph_state.frame_graph_cache.pass_count() == 0;
         let post_processing_resources = self.graph_state.post_processing_resources().clone();
-        if let Err(error) = self.graph_state.frame_graph_cache.ensure(key, || {
+        match self.graph_state.frame_graph_cache.ensure(key, || {
             build_main_graph_with_resources(key, post_processing, &post_processing_resources)
         }) {
-            self.graph_state.reset_upload_arena();
-            logger::warn!("render graph build failed: {error}");
-        } else if needed_rebuild
-            && let Some(stats) = self.graph_state.frame_graph_cache.compile_stats()
-        {
-            logger::info!(
-                "render graph ready: passes={} topo_levels={} culled={} transient_textures={} texture_slots={} transient_buffers={} buffer_slots={} imported_textures={} imported_buffers={} key={:?}",
-                stats.pass_count,
-                stats.topo_levels,
-                stats.culled_count,
-                stats.transient_texture_count,
-                stats.transient_texture_slots,
-                stats.transient_buffer_count,
-                stats.transient_buffer_slots,
-                stats.imported_texture_count,
-                stats.imported_buffer_count,
-                key,
-            );
+            Ok(GraphCacheEnsureResult::Hit) => {}
+            Ok(GraphCacheEnsureResult::Built) => {
+                self.graph_state.reset_upload_arena();
+                if let Some(stats) = self.graph_state.frame_graph_cache.compile_stats() {
+                    logger::info!(
+                        "render graph ready: passes={} topo_levels={} culled={} transient_textures={} texture_slots={} transient_buffers={} buffer_slots={} imported_textures={} imported_buffers={} key={:?}",
+                        stats.pass_count,
+                        stats.topo_levels,
+                        stats.culled_count,
+                        stats.transient_texture_count,
+                        stats.transient_texture_slots,
+                        stats.transient_buffer_count,
+                        stats.transient_buffer_slots,
+                        stats.imported_texture_count,
+                        stats.imported_buffer_count,
+                        key,
+                    );
+                }
+            }
+            Err(error) => {
+                self.graph_state.reset_upload_arena();
+                logger::warn!("render graph build failed: {error}");
+            }
         }
     }
 

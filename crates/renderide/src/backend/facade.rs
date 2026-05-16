@@ -357,6 +357,12 @@ impl RenderBackend {
         self.graph_state.frame_graph_cache.topo_levels()
     }
 
+    /// Upload arena generation used by graph-cache reset-policy unit tests.
+    #[cfg(test)]
+    pub(crate) fn upload_arena_generation_for_tests(&self) -> u64 {
+        self.graph_state.upload_arena_generation_for_tests()
+    }
+
     /// Plain-data backend snapshot consumed by the diagnostics HUD.
     ///
     /// Returns a [`crate::diagnostics::BackendDiagSnapshot`] capturing the fields

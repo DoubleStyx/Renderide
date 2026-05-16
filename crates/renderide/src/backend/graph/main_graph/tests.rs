@@ -6,9 +6,10 @@ use super::*;
 use crate::config::{
     BloomSettings, GtaoSettings, PostProcessingSettings, TonemapMode, TonemapSettings,
 };
-use crate::render_graph::GraphCache;
+use crate::render_graph::error::GraphBuildError;
 use crate::render_graph::post_process_chain::PostProcessChainSignature;
 use crate::render_graph::resources::TransientArrayLayers;
+use crate::render_graph::{GraphCache, GraphCacheEnsureResult};
 
 fn smoke_key() -> GraphCacheKey {
     GraphCacheKey {
@@ -346,19 +347,130 @@ fn graph_cache_reuses_when_key_unchanged() {
     let key = smoke_key();
     let post = no_post();
     let mut cache = GraphCache::default();
-    cache
-        .ensure(key, || build_main_graph(key, &post))
-        .expect("first build");
+    assert_eq!(
+        cache
+            .ensure(key, || build_main_graph(key, &post))
+            .expect("first build"),
+        GraphCacheEnsureResult::Built
+    );
     let n = cache.pass_count();
     let mut build_called = false;
-    cache
-        .ensure(key, || {
-            build_called = true;
-            build_main_graph(key, &post)
-        })
-        .expect("second ensure");
+    assert_eq!(
+        cache
+            .ensure(key, || {
+                build_called = true;
+                build_main_graph(key, &post)
+            })
+            .expect("second ensure"),
+        GraphCacheEnsureResult::Hit
+    );
     assert!(!build_called);
     assert_eq!(cache.pass_count(), n);
+}
+
+/// Reuses the cached mono graph after switching to and from a stereo graph variant.
+#[test]
+fn graph_cache_reuses_previous_variant_after_multiview_switch() {
+    let mono_key = smoke_key();
+    let mut stereo_key = smoke_key();
+    stereo_key.multiview_stereo = true;
+    let post = no_post();
+    let mut cache = GraphCache::default();
+
+    assert_eq!(
+        cache
+            .ensure(mono_key, || build_main_graph(mono_key, &post))
+            .expect("mono build"),
+        GraphCacheEnsureResult::Built
+    );
+    let mono_pass_count = cache.pass_count();
+    assert_eq!(
+        cache
+            .ensure(stereo_key, || build_main_graph(stereo_key, &post))
+            .expect("stereo build"),
+        GraphCacheEnsureResult::Built
+    );
+    let mut build_called = false;
+    assert_eq!(
+        cache
+            .ensure(mono_key, || {
+                build_called = true;
+                build_main_graph(mono_key, &post)
+            })
+            .expect("mono cache hit after stereo"),
+        GraphCacheEnsureResult::Hit
+    );
+
+    assert!(!build_called);
+    assert_eq!(cache.last_key(), Some(mono_key));
+    assert_eq!(cache.pass_count(), mono_pass_count);
+    assert_eq!(cache.variant_count_for_tests(), 2);
+}
+
+/// Keeps previously built variants available when building a new graph variant fails.
+#[test]
+fn graph_cache_build_failure_preserves_cached_variants() {
+    let cached_key = smoke_key();
+    let mut failing_key = smoke_key();
+    failing_key.scene_color_format = TextureFormat::Rg11b10Ufloat;
+    let post = no_post();
+    let mut cache = GraphCache::default();
+
+    assert_eq!(
+        cache
+            .ensure(cached_key, || build_main_graph(cached_key, &post))
+            .expect("cached build"),
+        GraphCacheEnsureResult::Built
+    );
+    let cached_pass_count = cache.pass_count();
+    assert!(matches!(
+        cache.ensure(failing_key, || Err(GraphBuildError::CycleDetected)),
+        Err(GraphBuildError::CycleDetected)
+    ));
+    assert_eq!(cache.last_key(), None);
+    assert_eq!(cache.pass_count(), 0);
+
+    let mut build_called = false;
+    assert_eq!(
+        cache
+            .ensure(cached_key, || {
+                build_called = true;
+                build_main_graph(cached_key, &post)
+            })
+            .expect("cached key after failed build"),
+        GraphCacheEnsureResult::Hit
+    );
+
+    assert!(!build_called);
+    assert_eq!(cache.pass_count(), cached_pass_count);
+}
+
+/// Evicts the least-recently-used inactive variant while preserving the active graph.
+#[test]
+fn graph_cache_evicts_lru_without_dropping_active_variant() {
+    let post = no_post();
+    let mut cache = GraphCache::default();
+    let keys: [GraphCacheKey; 5] = std::array::from_fn(|index| {
+        let mut key = smoke_key();
+        key.surface_extent = (1280 + index as u32, 720);
+        key
+    });
+
+    for key in keys {
+        assert_eq!(
+            cache
+                .ensure(key, || build_main_graph(key, &post))
+                .expect("variant build"),
+            GraphCacheEnsureResult::Built
+        );
+        assert_eq!(cache.last_key(), Some(key));
+        assert!(cache.contains_key(key));
+    }
+
+    assert_eq!(cache.variant_count_for_tests(), 4);
+    assert_eq!(cache.last_key(), Some(keys[4]));
+    assert!(cache.contains_key(keys[4]));
+    assert!(!cache.contains_key(keys[0]));
 }
 
 #[test]
@@ -373,12 +485,15 @@ fn graph_cache_rebuilds_when_scene_color_format_changes() {
         .ensure(a, || build_main_graph(a, &post))
         .expect("first build");
     let mut build_called = false;
-    cache
-        .ensure(b, || {
-            build_called = true;
-            build_main_graph(b, &post)
-        })
-        .expect("second ensure");
+    assert_eq!(
+        cache
+            .ensure(b, || {
+                build_called = true;
+                build_main_graph(b, &post)
+            })
+            .expect("second ensure"),
+        GraphCacheEnsureResult::Built
+    );
     assert!(build_called);
 }
 

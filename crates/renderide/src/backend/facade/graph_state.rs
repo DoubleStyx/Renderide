@@ -80,6 +80,12 @@ impl RenderGraphState {
         self.upload_arena.reset();
     }
 
+    /// Returns the upload arena generation for graph-cache reset-policy unit tests.
+    #[cfg(test)]
+    pub(super) fn upload_arena_generation_for_tests(&self) -> u64 {
+        self.upload_arena.next_generation_for_tests()
+    }
+
     /// Synchronizes active view ownership and releases graph-owned view resources immediately.
     pub(super) fn sync_active_views<I>(&mut self, active_views: I) -> Vec<ViewId>
     where

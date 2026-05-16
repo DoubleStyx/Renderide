@@ -144,6 +144,12 @@ impl PersistentUploadArena {
         pressure
     }
 
+    /// Returns the next slot generation for reset-policy unit tests.
+    #[cfg(test)]
+    pub(crate) fn next_generation_for_tests(&self) -> u64 {
+        self.next_generation
+    }
+
     fn prepare_persistent_slot(
         &mut self,
         device: &wgpu::Device,

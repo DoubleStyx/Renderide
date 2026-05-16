@@ -151,6 +151,38 @@ fn multiview_change_updates_graph_key() {
     assert_ne!(mono_key, stereo_key);
 }
 
+/// Keeps upload arena slots alive when toggling back to a cached graph variant.
+#[test]
+fn cached_multiview_variant_switch_does_not_reset_upload_arena() {
+    let mut backend = RenderBackend::new();
+    backend.renderer_settings = Some(settings_handle(PostProcessingSettings::default()));
+
+    let initial_generation = backend.upload_arena_generation_for_tests();
+    backend.ensure_frame_graph_in_sync(false);
+    let after_mono_build = backend.upload_arena_generation_for_tests();
+    backend.ensure_frame_graph_in_sync(true);
+    let after_stereo_build = backend.upload_arena_generation_for_tests();
+    backend.ensure_frame_graph_in_sync(false);
+    let after_mono_cache_hit = backend.upload_arena_generation_for_tests();
+
+    assert!(
+        after_mono_build > initial_generation,
+        "building the first graph variant should reset stale persistent upload slots"
+    );
+    assert!(
+        after_stereo_build > after_mono_build,
+        "building the stereo variant should reset stale persistent upload slots"
+    );
+    assert_eq!(
+        after_mono_cache_hit, after_stereo_build,
+        "switching to a cached mono variant must not reset upload staging"
+    );
+    assert!(
+        !cached_graph_key(&backend).multiview_stereo,
+        "final active graph should be the cached mono variant"
+    );
+}
+
 #[test]
 fn headless_backend_forces_empty_post_processing_signature() {
     let mut backend = RenderBackend::new();
