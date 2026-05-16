@@ -256,11 +256,6 @@ impl RendererRuntime {
             .pending_camera_render_tasks
             .extend(tasks.iter().cloned());
         self.set_pending_camera_readbacks(self.tick_state.pending_camera_render_tasks.len());
-        logger::debug!(
-            "queued {} CameraRenderTask readback(s); pending={}",
-            tasks.len(),
-            self.tick_state.pending_camera_render_tasks.len()
-        );
     }
 
     /// Drains queued camera readback tasks before the next host begin-frame is sent.
@@ -321,11 +316,6 @@ impl RendererRuntime {
         }
         diagnostics.set_pending_camera_readbacks(0);
         diagnostics.note_camera_readback_results(stats.completed, stats.failed);
-        logger::debug!(
-            "drained CameraRenderTask readbacks: completed={} failed={}",
-            stats.completed,
-            stats.failed
-        );
     }
 }
 
