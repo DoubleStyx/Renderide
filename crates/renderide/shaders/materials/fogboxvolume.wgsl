@@ -4,8 +4,9 @@
 //#mat_default _AccumulationColorBottom vec4 0.1 0.1 0.0 0.1
 //#mat_default _AccumulationColorTop vec4 0.1 0.1 0.1 0.1
 //#mat_default _AccumulationRate float 0.1
-//#mat_default _FogEnd float 1e+07
 //#mat_default _GammaCurve float 2.2
+//#mat_default _FogEnd float 1e+07
+//#mat_default _FogDensity float 0.1
 
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
