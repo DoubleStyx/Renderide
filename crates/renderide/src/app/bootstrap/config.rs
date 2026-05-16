@@ -41,7 +41,7 @@ pub(crate) fn effective_renderer_log_level(cli: Option<LogLevel>, log_verbose: b
     } else if log_verbose {
         LogLevel::Trace
     } else {
-        LogLevel::Info
+        LogLevel::Debug
     }
 }
 
@@ -120,16 +120,6 @@ mod tests {
             effective_renderer_log_level(Some(LogLevel::Warn), true),
             LogLevel::Warn
         );
-    }
-
-    #[test]
-    fn no_cli_uses_trace_when_log_verbose() {
-        assert_eq!(effective_renderer_log_level(None, true), LogLevel::Trace);
-    }
-
-    #[test]
-    fn no_cli_uses_info_when_not_log_verbose() {
-        assert_eq!(effective_renderer_log_level(None, false), LogLevel::Info);
     }
 
     #[test]

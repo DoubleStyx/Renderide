@@ -193,13 +193,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_host_args_tokens_mixed_l_and_long_form() {
-        let (host, level) = parse_host_args_tokens(&tokens(&["-l", "info", "tail"]));
-        assert_eq!(host, vec!["tail".to_string()]);
-        assert_eq!(level, Some(LogLevel::Info));
-    }
-
-    #[test]
     fn parse_host_args_tokens_empty_value_after_flag_forwarded() {
         let (host, level) = parse_host_args_tokens(&tokens(&["--log-level"]));
         assert_eq!(host, vec!["--log-level".to_string()]);

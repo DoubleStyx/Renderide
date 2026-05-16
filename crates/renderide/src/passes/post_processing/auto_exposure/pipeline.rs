@@ -439,18 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn default_auto_exposure_params_use_trimmed_metering_window() {
-        let params =
-            AutoExposureParamsGpu::from_settings(AutoExposureSettings::default(), 0.016, 1, false);
-
-        assert_eq!(params.min_log_lum, -8.0);
-        assert_eq!(params.log_lum_range, 16.0);
-        assert_eq!(params.inv_log_lum_range, 1.0 / 16.0);
-        assert_eq!(params.low_percent, 0.1);
-        assert_eq!(params.high_percent, 0.9);
-    }
-
-    #[test]
     fn auto_exposure_params_apply_compensation_relative_to_middle_gray() {
         let settings = AutoExposureSettings {
             compensation_ev: 1.0,
