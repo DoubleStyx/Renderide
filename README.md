@@ -45,7 +45,7 @@ The launcher will start the Resonite host and connect Renderide automatically.
 
 - Enable validation layers in the config hud to get more detailed error messages for GPU crashes. Requires a restart.
 
-- Renderer logs are timestamped files under `<logs-root>/renderer/`; local checkout runs normally use this repository's `logs/renderer/` folder. Release binaries use the current user's platform log directory (`$XDG_STATE_HOME/renderide/logs` or `~/.local/state/renderide/logs` on Linux, `~/Library/Logs/Renderide` on macOS, `%LOCALAPPDATA%\Renderide\logs` on Windows). Set `RENDERIDE_LOGS_ROOT` to override the root for all component logs. The Renderer config HUD also shows the selected log folder and includes an "Open log folder" button.
+- Logs are timestamped files under a selected logs root. Source builds normally resolve the active repository and write renderer logs to `logs/renderer/`. Installed release binaries fall back to the current user's platform log root: `$XDG_STATE_HOME/renderide/logs` or `~/.local/state/renderide/logs` on Linux, `~/Library/Logs/Renderide` on macOS, and `%LOCALAPPDATA%\Renderide\logs` on Windows. Set `RENDERIDE_LOGS_ROOT` to choose the root explicitly; component logs then live under `renderer/`, `bootstrapper/`, `host/`, `renderer-test/`, and `SharedTypeGenerator/`. The Renderer config HUD also shows the selected log folder and includes an "Open log folder" button.
 
 - You can add Steam-style launch arguments after the launcher to enable mods: `<path-to-renderide> -LoadAssembly Libraries/ResoniteModLoader.dll`
 
