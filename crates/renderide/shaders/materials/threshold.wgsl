@@ -6,6 +6,9 @@
 //! fragments outside the object-space rectangle.
 
 
+//#mat_default _Threshold float 0.5
+//#mat_default _Transition float 0.01
+
 #import renderide::post::filter_common as fc
 #import renderide::mesh::vertex as mv
 #import renderide::draw::per_draw as pd

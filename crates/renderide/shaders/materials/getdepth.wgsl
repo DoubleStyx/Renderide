@@ -8,6 +8,9 @@
 //! shader-specific keyword bits locally (Unity `CLIP` selects clip-range rescaling,
 //! `RECTCLIP` discards fragments outside `_Rect` in object XY).
 
+//#mat_default _ClipMax float 1.0
+//#mat_default _Multiply float 1.0
+
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc
 #import renderide::frame::scene_depth_sample as sds

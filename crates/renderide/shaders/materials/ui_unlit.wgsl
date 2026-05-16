@@ -16,6 +16,9 @@
 
 //#texture_default _MainTex white
 //#texture_default _MaskTex white
+//#mat_default _OverlayTint vec4 1.0 1.0 1.0 0.5
+//#mat_default _Rect vec4 0.0 0.0 1.0 1.0
+//#mat_default _Tint vec4 1.0 1.0 1.0 1.0
 
 #import renderide::core::texture_sampling as ts
 #import renderide::frame::globals as rg

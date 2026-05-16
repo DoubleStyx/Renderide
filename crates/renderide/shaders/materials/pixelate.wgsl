@@ -7,6 +7,7 @@
 
 
 //#texture_default _ResolutionTex white
+//#mat_default _Resolution vec4 100.0 100.0 0.0 0.0
 
 #import renderide::post::filter_math as fm
 #import renderide::post::filter_vertex as fv

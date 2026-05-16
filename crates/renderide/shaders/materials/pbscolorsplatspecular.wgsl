@@ -23,6 +23,18 @@
 //#texture_default _SpecularMap1 white
 //#texture_default _SpecularMap2 white
 //#texture_default _SpecularMap3 white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color1 vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color2 vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color3 vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale0 float 1.0
+//#mat_default _NormalScale1 float 1.0
+//#mat_default _NormalScale2 float 1.0
+//#mat_default _NormalScale3 float 1.0
+//#mat_default _SpecularColor vec4 0.5 0.5 0.5 0.5
+//#mat_default _SpecularColor1 vec4 0.5 0.5 0.5 0.5
+//#mat_default _SpecularColor2 vec4 0.5 0.5 0.5 0.5
+//#mat_default _SpecularColor3 vec4 0.5 0.5 0.5 0.5
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv

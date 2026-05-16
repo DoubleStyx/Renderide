@@ -8,6 +8,9 @@
 
 //#texture_default _BehindTex white
 //#texture_default _FrontTex white
+//#mat_default _BehindColor vec4 0.5 0.5 0.5 0.5
+//#mat_default _FrontColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _PolarPow float 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::material::variant_bits as vb

@@ -11,6 +11,9 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _SpecularMap white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
 
 #import renderide::mesh::vertex as mv
 #import renderide::material::variant_bits as vb

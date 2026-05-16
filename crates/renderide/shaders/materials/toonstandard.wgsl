@@ -12,6 +12,10 @@
 //#texture_default _EmissionMap white
 //#mat_default _SpecularHighlights float 1.0
 //#mat_default _GlossyReflections float 1.0
+//#mat_default _BumpScale float 1.0
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Fresnel float 1.0
+//#mat_default _FresnelTint vec4 1.0 1.0 1.0 1.0
 
 #import renderide::lighting::birp as bl
 #import renderide::frame::globals as rg

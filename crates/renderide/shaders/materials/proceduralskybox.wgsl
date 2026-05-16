@@ -10,6 +10,11 @@
 //! table but never consulted because the renderer is linear-only. The sun-disk group has
 //! no `_` placeholder, so the high-quality keyword is the zero-bit default.
 
+//#mat_default _GroundColor vec4 0.369 0.349 0.341 1.0
+//#mat_default _SkyTint vec4 0.5 0.5 0.5 1.0
+//#mat_default _SunColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _SunDirection vec4 0.577 0.577 0.577 0.0
+
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::skybox::procedural as ps

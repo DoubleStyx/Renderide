@@ -15,6 +15,9 @@
 //#texture_default _Tex white
 //#texture_default _OffsetTex black
 //#texture_default _MaskTex white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _OffsetMagnitude vec4 0.1 0.1 0.0 0.0
+//#mat_default _PolarPow float 1.0
 
 #import renderide::core::texture_sampling as ts
 #import renderide::frame::globals as rg

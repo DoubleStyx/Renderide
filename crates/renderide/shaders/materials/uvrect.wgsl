@@ -3,6 +3,11 @@
 //! Froox variant bits populate `_RenderideVariantBits`; the `RECTCLIP` keyword (host driver
 //! at `UV_RectMaterial.UpdateKeywords`) gates the clip-rect discard.
 
+//#mat_default _ClipRect vec4 0.0 0.0 1.0 1.0
+//#mat_default _InnerColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _OuterColor vec4 0.0 0.0 0.0 1.0
+//#mat_default _Rect vec4 0.25 0.25 0.75 0.75
+
 #import renderide::frame::globals as rg
 #import renderide::core::math as rmath
 #import renderide::material::variant_bits as vb

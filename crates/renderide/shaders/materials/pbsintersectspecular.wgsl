@@ -10,6 +10,13 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _SpecularMap white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _EndTransitionEnd float 0.1
+//#mat_default _EndTransitionStart float 0.1
+//#mat_default _IntersectColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _IntersectEmissionColor vec4 1.0 0.0 0.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
 
 #import renderide::core::math as rmath
 #import renderide::material::variant_bits as vb

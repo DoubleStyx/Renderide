@@ -5,6 +5,7 @@
 
 
 //#texture_default _MainTex white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
 
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv

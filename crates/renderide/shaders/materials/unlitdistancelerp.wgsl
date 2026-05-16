@@ -7,6 +7,10 @@
 
 //#texture_default _NearTex white
 //#texture_default _FarTex white
+//#mat_default _Distance float 1.0
+//#mat_default _FarColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _NearColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _Transition float 0.1
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd

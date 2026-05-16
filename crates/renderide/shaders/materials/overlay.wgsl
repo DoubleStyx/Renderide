@@ -3,6 +3,7 @@
 
 
 //#texture_default _MainTexture white
+//#mat_default _Blend vec4 1.0 1.0 1.0 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv

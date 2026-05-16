@@ -14,6 +14,12 @@
 //#texture_default _ReflectivityMask white
 //#mat_default _RimCubemapTint float 0.0
 //#mat_default _SpecularAlbedoTint float 1.0
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Cutoff float 0.5
+//#mat_default _MatcapTint vec4 1.0 1.0 1.0 1.0
+//#mat_default _OutlineColor vec4 0.0 0.0 0.0 1.0
+//#mat_default _RimColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _ShadowRim vec4 1.0 1.0 1.0 1.0
 
 #import renderide::xiexe::toon2 as xs
 #import renderide::xiexe::toon2::base as xb

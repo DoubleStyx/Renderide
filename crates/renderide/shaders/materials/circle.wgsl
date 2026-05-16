@@ -1,6 +1,8 @@
 //! Unity unlit `Shader "Unlit/Circle"`: SDF circle (Manhattan distance) with smoothstep edge fade.
 
 
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
 

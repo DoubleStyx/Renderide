@@ -4,6 +4,8 @@
 //! shader-specific keyword bits locally.
 
 //#texture_default _NormalMap bump
+//#mat_default _DepthBias float 0.01
+//#mat_default _RefractionStrength float 0.01
 
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc

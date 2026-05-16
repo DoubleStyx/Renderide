@@ -16,6 +16,11 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _MetallicMap black
+//#mat_default _Color vec4 1.0 0.0 0.0 1.0
+//#mat_default _Color1 vec4 0.0 1.0 0.0 1.0
+//#mat_default _Color2 vec4 0.0 0.0 1.0 1.0
+//#mat_default _Color3 vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
 
 #import renderide::material::variant_bits as vb
 #import renderide::material::color as mcolor

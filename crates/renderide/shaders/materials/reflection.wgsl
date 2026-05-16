@@ -10,6 +10,7 @@
 
 //#texture_default _ReflectionTex white
 //#texture_default _NormalMap bump
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd

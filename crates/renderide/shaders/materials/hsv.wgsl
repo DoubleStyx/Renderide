@@ -1,6 +1,9 @@
 //! Grab-pass HSV offset/multiply filter (`Shader "Filters/HSV"`).
 
 
+//#mat_default _HSVMul vec4 1.0 1.0 1.0 1.0
+//#mat_default _HSVOffset vec4 0.2 0.2 0.2 0.0
+
 #import renderide::post::filter_math as fm
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc

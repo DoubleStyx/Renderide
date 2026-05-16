@@ -9,6 +9,8 @@
 
 //#texture_default _MainTex white
 //#texture_default _VertexOffsetMap black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _VertexOffsetMagnitude float 0.1
 
 #import renderide::draw::per_draw as pd
 #import renderide::frame::globals as rg

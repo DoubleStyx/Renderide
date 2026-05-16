@@ -7,6 +7,12 @@
 //#texture_default _NearTex white
 //#texture_default _NormalMap bump
 //#texture_default _MaskTex white
+//#mat_default _Exp float 1.0
+//#mat_default _FarColor vec4 0.0 0.0 0.0 1.0
+//#mat_default _GammaCurve float 1.0
+//#mat_default _NearColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _PolarPow float 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::pbs::normal as pnorm

@@ -23,6 +23,13 @@
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white
 //#texture_default _MetallicMap black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _DisplaceDistanceFrom float 1.0
+//#mat_default _DisplaceMagnitudeTo float 0.1
+//#mat_default _DisplacementDirection vec4 0.0 1.0 0.0 0.0
+//#mat_default _EmissionColorTo vec4 1.5 1.5 1.5 0.0
+//#mat_default _EmissionDistanceFrom float 1.0
+//#mat_default _NormalScale float 1.0
 
 #import renderide::mesh::vertex as mv
 #import renderide::draw::per_draw as pd

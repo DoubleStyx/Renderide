@@ -234,6 +234,8 @@ fn count_font_atlas_lod_bias_samples(src: &str) -> usize {
 
 #[path = "shader_module_audit/hygiene.rs"]
 mod hygiene;
+#[path = "shader_module_audit/material_defaults.rs"]
+mod material_defaults;
 #[path = "shader_module_audit/pbs.rs"]
 mod pbs;
 #[path = "shader_module_audit/tangent_basis.rs"]

@@ -24,6 +24,14 @@
 //#texture_default _PackedEmissionMap white
 //#texture_default _MetallicGloss01 black
 //#texture_default _MetallicGloss23 black
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color1 vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color2 vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color3 vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _NormalScale1 float 1.0
+//#mat_default _NormalScale2 float 1.0
+//#mat_default _NormalScale3 float 1.0
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv

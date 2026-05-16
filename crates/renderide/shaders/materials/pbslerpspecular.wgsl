@@ -15,6 +15,12 @@
 //#texture_default _Occlusion1 white
 //#texture_default _SpecularMap white
 //#texture_default _SpecularMap1 white
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Color1 vec4 1.0 1.0 1.0 1.0
+//#mat_default _NormalScale float 1.0
+//#mat_default _NormalScale1 float 1.0
+//#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
+//#mat_default _SpecularColor1 vec4 1.0 1.0 1.0 0.5
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv

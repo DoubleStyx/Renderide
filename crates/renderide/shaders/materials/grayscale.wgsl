@@ -4,6 +4,10 @@
 //! shader-specific keyword bits locally.
 
 //#texture_default _Gradient black
+//#mat_default _Lerp float 1.0
+//#mat_default _RatioB float 0.11
+//#mat_default _RatioG float 0.59
+//#mat_default _RatioR float 0.3
 
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc

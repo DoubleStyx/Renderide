@@ -15,6 +15,11 @@
 
 
 //#texture_default _FontAtlas white
+//#mat_default _OutlineColor vec4 1.0 1.0 1.0 0.0
+//#mat_default _OverlayTint vec4 1.0 1.0 1.0 0.5
+//#mat_default _Range vec4 0.001 0.001 0.0 0.0
+//#mat_default _Rect vec4 0.0 0.0 1.0 1.0
+//#mat_default _TintColor vec4 1.0 1.0 1.0 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd

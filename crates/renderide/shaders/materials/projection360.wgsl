@@ -13,6 +13,15 @@
 //#texture_default _OffsetMask white
 //#texture_default _MainCube black
 //#texture_default _SecondCube black
+//#mat_default _Exposure float 1.0
+//#mat_default _FOV vec4 6.283185 3.141593 0.0 0.0
+//#mat_default _Gamma float 1.0
+//#mat_default _MaxIntensity float 4.0
+//#mat_default _OffsetMagnitude vec4 0.1 0.1 0.0 0.0
+//#mat_default _PerspectiveFOV vec4 0.785398 0.785398 0.0 0.0
+//#mat_default _Tint vec4 1.0 1.0 1.0 1.0
+//#mat_default _Tint0 vec4 1.0 0.0 0.0 1.0
+//#mat_default _Tint1 vec4 0.0 1.0 0.0 1.0
 
 #import renderide::skybox::cubemap_storage as cubemap_storage
 #import renderide::frame::globals as rg

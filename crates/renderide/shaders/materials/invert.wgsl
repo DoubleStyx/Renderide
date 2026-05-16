@@ -1,6 +1,8 @@
 //! Grab-pass color inversion filter (`Shader "Filters/Invert"`).
 
 
+//#mat_default _Lerp float 1.0
+
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc
 #import renderide::material::variant_bits as vb

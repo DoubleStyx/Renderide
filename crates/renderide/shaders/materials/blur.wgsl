@@ -7,6 +7,10 @@
 
 //#texture_default _SpreadTex white
 //#texture_default _NormalMap bump
+//#mat_default _DepthDivisor float 1.0
+//#mat_default _Iterations float 4.0
+//#mat_default _RefractionStrength float 0.01
+//#mat_default _Spread vec4 0.1 0.1 0.0 0.0
 
 #import renderide::post::filter_math as fm
 #import renderide::post::filter_vertex as fv

@@ -1,6 +1,12 @@
 //! Volume unlit raymarch material (`Shader "Volume/Unlit"`).
 
 //#texture_default _Volume empty
+//#mat_default _AccumulationCutoff float 100.0
+//#mat_default _Exp float 1.0
+//#mat_default _Gain float 0.1
+//#mat_default _HighClip float 1.0
+//#mat_default _HitThreshold float 0.5
+//#mat_default _StepSize float 0.1
 
 #import renderide::core::texture_sampling as ts
 #import renderide::draw::per_draw as pd

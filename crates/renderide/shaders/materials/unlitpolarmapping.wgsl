@@ -4,6 +4,7 @@
 
 
 //#texture_default _MainTex white
+//#mat_default _Pow float 1.0
 
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv

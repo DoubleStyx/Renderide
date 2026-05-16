@@ -5,6 +5,10 @@
 //! the `xstoon2.0-outlined.wgsl` pass structure (`PassKind::Outline` + `PassKind::ForwardBase`).
 
 
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _OutlineColor vec4 0.0 0.0 0.0 1.0
+//#mat_default _OutlineWidth float 0.1
+
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt

@@ -18,6 +18,12 @@
 //#texture_default _MetallicMap black
 //#texture_default _DetailAlbedoMap gray
 //#texture_default _DetailNormalMap bump
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _DetailNormalMapScale float 1.0
+//#mat_default _EdgeColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _EdgeEmissionColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _EdgeTransitionEnd float 0.1
+//#mat_default _NormalScale float 1.0
 
 #import renderide::mesh::vertex as mv
 #import renderide::material::variant_bits as vb
