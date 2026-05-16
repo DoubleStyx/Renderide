@@ -184,6 +184,59 @@ fn transparent_sort_remains_back_to_front() {
 }
 
 #[test]
+fn stacked_transparent_ui_slots_preserve_collection_order_at_same_depth() {
+    let mut first = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+        material_asset_id: 20,
+        property_block: None,
+        skinned: false,
+        sorting_order: 0,
+        mesh_asset_id: 1,
+        node_id: 1,
+        slot_index: 0,
+        collect_order: 0,
+        alpha_blended: true,
+    });
+    set_camera_distance(&mut first, 4.0);
+    set_render_queue(&mut first, UNITY_RENDER_QUEUE_TRANSPARENT);
+
+    let mut second = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+        material_asset_id: 21,
+        property_block: None,
+        skinned: false,
+        sorting_order: 0,
+        mesh_asset_id: 1,
+        node_id: 1,
+        slot_index: 1,
+        collect_order: 1,
+        alpha_blended: true,
+    });
+    set_camera_distance(&mut second, 4.0);
+    set_render_queue(&mut second, UNITY_RENDER_QUEUE_TRANSPARENT);
+
+    let mut third = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+        material_asset_id: 22,
+        property_block: None,
+        skinned: false,
+        sorting_order: 0,
+        mesh_asset_id: 1,
+        node_id: 1,
+        slot_index: 2,
+        collect_order: 2,
+        alpha_blended: true,
+    });
+    set_camera_distance(&mut third, 4.0);
+    set_render_queue(&mut third, UNITY_RENDER_QUEUE_TRANSPARENT);
+
+    let mut items = vec![third, first, second];
+    sort_draws_serial(&mut items);
+
+    let collect_order: Vec<_> = items.iter().map(|item| item.collect_order).collect();
+    let slot_order: Vec<_> = items.iter().map(|item| item.slot_index).collect();
+    assert_eq!(collect_order, vec![0, 1, 2]);
+    assert_eq!(slot_order, vec![0, 1, 2]);
+}
+
+#[test]
 fn render_queue_orders_before_transparent_distance() {
     let mut near_early_queue = dummy_world_mesh_draw_item(DummyDrawItemSpec {
         material_asset_id: 1,

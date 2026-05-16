@@ -228,6 +228,81 @@ fn volume_stems_use_volume_front_pass() {
     }
 }
 
+/// Asserts that a UI unlit stem uses material-controlled filter pass state.
+fn assert_ui_unlit_filter_pass(stem: &str) {
+    let passes = crate::embedded_shaders::embedded_target_passes(stem);
+    assert_eq!(passes.len(), 1, "{stem}");
+    assert_eq!(passes[0].name, "forward_filter", "{stem}");
+    assert_eq!(
+        passes[0].material_state,
+        MaterialPassState::Filter,
+        "{stem}"
+    );
+    assert_eq!(
+        passes[0].depth_compare_domain,
+        MaterialDepthCompareDomain::FrooxZTest,
+        "{stem}"
+    );
+
+    let materialized = materialized_embedded_pass_for_blend_mode(
+        stem,
+        &passes[0],
+        MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
+    );
+    let blend = materialized.blend.expect(stem);
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One, "{stem}");
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero, "{stem}");
+    assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One, "{stem}");
+    assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One, "{stem}");
+    assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max, "{stem}");
+
+    let zwrite_off = MaterialRenderState {
+        depth_write: Some(false),
+        ..MaterialRenderState::default()
+    };
+    assert!(!materialized.resolved_depth_write(zwrite_off), "{stem}");
+
+    let less_or_equal_ztest = MaterialRenderState {
+        depth_compare: Some(2),
+        ..MaterialRenderState::default()
+    };
+    assert_eq!(
+        materialized.resolved_depth_compare(less_or_equal_ztest),
+        wgpu::CompareFunction::GreaterEqual,
+        "{stem}"
+    );
+
+    let always_ztest = MaterialRenderState {
+        depth_compare: Some(ZTEST_ALWAYS),
+        ..MaterialRenderState::default()
+    };
+    assert_eq!(
+        materialized.resolved_depth_compare(always_ztest),
+        wgpu::CompareFunction::Always,
+        "{stem}"
+    );
+
+    let depth_offset = MaterialRenderState {
+        depth_offset: MaterialDepthOffsetState::new(1.0, 100),
+        ..MaterialRenderState::default()
+    };
+    let bias = materialized.resolved_depth_bias(depth_offset);
+    assert_eq!(bias.constant, -100, "{stem}");
+    assert_eq!(bias.slope_scale, -1.0, "{stem}");
+}
+
+/// Verifies UI unlit stems keep Unity-style filter render state.
+#[test]
+fn ui_unlit_stems_use_filter_pass_material_state() {
+    for stem in [
+        "ui_unlit_default",
+        "ui_textunlit_default",
+        "ui_circlesegment_default",
+    ] {
+        assert_ui_unlit_filter_pass(stem);
+    }
+}
+
 /// Verifies PBSRim transparent zwrite variants preserve their depth-only stem before transparent color.
 #[test]
 fn pbsrim_zwrite_stems_keep_depth_prepass_before_transparent_forward() {
