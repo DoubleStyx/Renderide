@@ -4,24 +4,13 @@ use glam::{Vec3, Vec4};
 
 /// Converts one sRGB channel to linear-light space.
 ///
-/// All positive values within [0, 1] are converted using the sRGB curve.
-/// Negative channels are converted by absolute value and sign is restored.
-/// Values greater than 1 are converted using a gamma 2.2 curve (to match the Unity renderer's behavior).
-pub(crate) fn srgb_channel_to_linear(mut value: f32) -> f32 {
-    let sign = if value < 0.0 {
-        value = -value;
-        -1.0
-    } else {
-        1.0
-    };
-    let linear = if value >= 1.0 {
-        value.powf(2.2)
-    } else if value <= 0.04045 {
+/// The transfer function is applied directly to the input value without clamping.
+pub(crate) fn srgb_channel_to_linear(value: f32) -> f32 {
+    if value <= 0.04045 {
         value / 12.92
     } else {
         ((value + 0.055) / 1.055).powf(2.4)
-    };
-    linear * sign
+    }
 }
 
 /// Converts sRGB RGB channels to linear RGB.
@@ -58,11 +47,11 @@ mod tests {
     const EPS: f32 = 0.000_001;
 
     #[test]
-    fn srgb_channel_conversion_matches_elements_material_profile_rules() {
+    fn srgb_channel_conversion_matches_standard_curve() {
         assert!((srgb_channel_to_linear(0.5) - 0.214_041_14).abs() < EPS);
         assert!((srgb_channel_to_linear(0.04045) - (0.04045 / 12.92)).abs() < EPS);
-        assert!((srgb_channel_to_linear(1.25) - 1.633_811_8).abs() < EPS);
-        assert!((srgb_channel_to_linear(-0.5) - -0.214_041_14).abs() < EPS);
+        assert!((srgb_channel_to_linear(1.25) - 1.665_939_9).abs() < EPS);
+        assert!((srgb_channel_to_linear(-0.5) - (-0.5 / 12.92)).abs() < EPS);
     }
 
     #[test]
@@ -71,7 +60,7 @@ mod tests {
 
         assert!((linear.x - 0.214_041_14).abs() < EPS);
         assert!((linear.y - (0.04045 / 12.92)).abs() < EPS);
-        assert!((linear.z - 1.633_811_8).abs() < EPS);
+        assert!((linear.z - 1.665_939_9).abs() < EPS);
         assert_eq!(linear.w, 0.33);
     }
 
@@ -79,9 +68,9 @@ mod tests {
     fn srgb_f32x4_conversion_preserves_alpha() {
         let linear = srgb_f32x4_rgb_to_linear([-0.5, 0.04045, 1.25, 0.33]);
 
-        assert!((linear[0] - -0.214_041_14).abs() < EPS);
+        assert!((linear[0] - (-0.5 / 12.92)).abs() < EPS);
         assert!((linear[1] - (0.04045 / 12.92)).abs() < EPS);
-        assert!((linear[2] - 1.633_811_8).abs() < EPS);
+        assert!((linear[2] - 1.665_939_9).abs() < EPS);
         assert_eq!(linear[3], 0.33);
     }
 }

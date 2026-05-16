@@ -192,7 +192,7 @@ mod tests {
         let color = space.blit_to_displays[0].state.background_color;
         assert!((color.x - 0.214_041_14).abs() < 0.000_001);
         assert!((color.y - (0.04045 / 12.92)).abs() < 0.000_001);
-        assert!((color.z - 1.633_811_8).abs() < 0.000_001);
+        assert!((color.z - 1.665_939_9).abs() < 0.000_001);
         assert_eq!(color.w, 0.33);
     }
 }

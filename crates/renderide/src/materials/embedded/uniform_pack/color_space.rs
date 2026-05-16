@@ -166,12 +166,12 @@ mod tests {
     }
 
     #[test]
-    fn srgb_conversion_matches_elements_material_profile_rules() {
+    fn srgb_conversion_matches_standard_curve() {
         let linear = crate::color_space::srgb_f32x4_rgb_to_linear([-0.5, 0.04045, 1.25, 0.33]);
 
-        assert!((linear[0] - -0.214_041_14).abs() < 0.000_001);
+        assert!((linear[0] - (-0.5 / 12.92)).abs() < 0.000_001);
         assert!((linear[1] - (0.04045 / 12.92)).abs() < 0.000_001);
-        assert!((linear[2] - 1.633_811_8).abs() < 0.000_001);
+        assert!((linear[2] - 1.665_939_9).abs() < 0.000_001);
         assert_eq!(linear[3], 0.33);
     }
 

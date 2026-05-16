@@ -9,7 +9,7 @@ use super::LightCache;
 const EPS: f32 = 0.000_001;
 const SRGB_HALF_LINEAR: f32 = 0.214_041_14;
 const SRGB_THRESHOLD_LINEAR: f32 = 0.04045 / 12.92;
-const SRGB_ONE_AND_A_QUARTER_LINEAR: f32 = 1.633_811_8;
+const SRGB_ONE_AND_A_QUARTER_LINEAR: f32 = 1.665_939_9;
 
 fn assert_close(actual: f32, expected: f32) {
     assert!(
