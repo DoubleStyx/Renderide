@@ -90,7 +90,7 @@ fn vs_main(
 #endif
 }
 
-//#pass forward_transparent
+//#pass forward_transparent_cull_back
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,

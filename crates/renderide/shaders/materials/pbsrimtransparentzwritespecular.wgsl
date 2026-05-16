@@ -110,7 +110,7 @@ fn fs_depth_only(
     return rg::retain_globals_additive(vec4<f32>(touch, touch, touch, 0.0));
 }
 
-//#pass forward_transparent
+//#pass forward_transparent_cull_back
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
