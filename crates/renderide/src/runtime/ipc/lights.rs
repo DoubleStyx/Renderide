@@ -42,8 +42,7 @@ fn apply_lights_buffer_submission(
         Some(&ctx),
     ) {
         Ok(v) => v,
-        Err(e) => {
-            logger::warn!("lights_buffer_renderer_submission id={buffer_id}: SHM failed: {e}");
+        Err(_e) => {
             return;
         }
     };
