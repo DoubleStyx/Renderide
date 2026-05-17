@@ -45,6 +45,17 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
+/// Prepares the final log-directory footer for crash-handler output.
+///
+/// The native crash callback may run in a signal or structured-exception context, so the footer is
+/// allocated before the handler is attached and then reused as immutable bytes.
+#[cfg(any(unix, windows))]
+pub(super) fn log_directory_footer_bytes() -> Box<[u8]> {
+    logger::log_directory_footer(logger::logs_root())
+        .into_bytes()
+        .into_boxed_slice()
+}
+
 /// Installs the crash handler after logging and stdio forwarding are initialized.
 ///
 /// Failures are logged and ignored so startup continues without fatal-crash logging.
@@ -60,5 +71,19 @@ pub(crate) fn install(log_path: &Path) {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = log_path;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn log_directory_footer_bytes_are_single_line() {
+        let footer = super::log_directory_footer_bytes();
+        let text = std::str::from_utf8(&footer).expect("utf8 footer");
+
+        assert!(text.starts_with(logger::LOG_DIRECTORY_FOOTER_PREFIX));
+        assert!(text.ends_with('\n'));
+        assert_eq!(text.lines().count(), 1);
     }
 }

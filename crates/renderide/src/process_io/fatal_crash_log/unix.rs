@@ -13,8 +13,12 @@ use super::stack_trace::write_stack_trace;
 
 /// Global state for raw [`libc::write`] targets (log file + optional terminal duplicate).
 struct UnixCrashFds {
+    /// Dedicated append fd for the renderer log file.
     log_fd: std::os::unix::io::RawFd,
+    /// Optional duplicate of the launching terminal stderr, used for tee output.
     term_fd: Option<std::os::unix::io::RawFd>,
+    /// Preformatted final line pointing at the shared logs root.
+    log_directory_footer: Box<[u8]>,
 }
 
 static UNIX_CRASH_FDS: OnceLock<UnixCrashFds> = OnceLock::new();
@@ -50,9 +54,14 @@ pub(super) fn install_impl(log_path: &Path) -> Result<(), String> {
     let log_fd = log_f.into_raw_fd();
     let term_fd =
         crate::native_stdio::duplicate_preserved_stderr_raw_fd().map(IntoRawFd::into_raw_fd);
+    let log_directory_footer = super::log_directory_footer_bytes();
 
     UNIX_CRASH_FDS
-        .set(UnixCrashFds { log_fd, term_fd })
+        .set(UnixCrashFds {
+            log_fd,
+            term_fd,
+            log_directory_footer,
+        })
         .map_err(|_e| "fatal crash log fds already installed".to_string())?;
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -85,6 +94,7 @@ pub(super) fn install_impl(log_path: &Path) -> Result<(), String> {
                     let signal = ctx.siginfo.ssi_signo as i32;
                     write_stack_trace(signal, |chunk| fds.write_all(chunk));
                 }
+                fds.write_all(&fds.log_directory_footer);
             }
             CrashEventResult::from(false)
         }))
