@@ -53,8 +53,9 @@ fn fur_vertex_main(
     let draw = pd::get_draw(instance_index);
     let world_n = mv::world_normal(draw, n);
     let world_t = mv::world_tangent(draw, t);
-    let shell_offset = n * fur_length * fur_multiplier * hair_hardness;
-    let world_base = mv::world_position(draw, pos + shell_offset).xyz;
+    let shell_offset = n.xyz * fur_length * fur_multiplier * hair_hardness;
+    let shell_pos = vec4<f32>(pos.xyz + shell_offset, pos.w);
+    let world_base = mv::world_position(draw, shell_pos).xyz;
     let global_force = clamp(force_global.xyz, vec3<f32>(-1.0), vec3<f32>(1.0));
     let local_force = mv::model_vector(draw, clamp(force_local.xyz, vec3<f32>(-1.0), vec3<f32>(1.0)));
     let force_offset = (global_force + local_force) * fur_multiplier * fur_multiplier * fur_length;
@@ -68,7 +69,8 @@ fn fur_vertex_main(
     out.world_t = world_t;
     out.main_uv = uvu::apply_st(uv0, main_st);
     out.noise_uv = uvu::apply_st(uv0, noise_st);
-    out.shell_noise_uv = uvu::apply_st(uv0 + world_n.xy * 0.0011 * fur_multiplier, noise_st);
+    let shell_noise_offset = vec2<f32>(1.0 - dot(n.xyz, vec3<f32>(0.0, 0.0, 1.0))) * 0.0011 * fur_multiplier;
+    out.shell_noise_uv = uvu::apply_st(uv0 + shell_noise_offset, noise_st);
     out.fur_multiplier = fur_multiplier;
     out.view_layer = mv::packed_view_layer(instance_index, view_idx);
     out.raw_uv = uv0;

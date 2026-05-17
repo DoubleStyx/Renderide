@@ -1,6 +1,6 @@
 // Linear blend skinning (compute). Bind buffers expected to match layout produced by mesh preprocess.
 // Bone palette entries are world_bone * unity_bindpose (inverse bind matrix per bone), built on CPU each frame.
-// Positions use M; normals use transpose(inverse(mat3(M))) per bone (inverse-transpose / cotangent rule).
+// Positions, normals, and tangents use the upper linear part of M to match Unity's skinned mesh data.
 //
 // Source and destination buffers may be subranges of large arenas; [`SkinDispatchParams`] supplies element bases.
 
@@ -34,44 +34,6 @@ const SKIN_TANGENTS: u32 = 1u;
 
 fn mat3_linear(m: mat4x4<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(m[0].xyz, m[1].xyz, m[2].xyz);
-}
-
-/// Upper-3x3 inverse-transpose (cotangent rule for normals) of `m`.
-///
-/// For columns `c0, c1, c2`, the rows of `adj(m)` are `c1xc2`, `c2xc0`, `c0xc1`. `m^-1 = adj(m)/det`
-/// stores those vectors as **rows**, so `m^-T` stores them as **columns** -- which is what
-/// `mat3x3<f32>(...)` produces directly. Returns identity for singular linear parts to avoid NaNs
-/// in the linear-blend skinning sum.
-///
-/// Replaces a previous `mat3_inverse` + outer `transpose` pair that ended up returning `m^-1`
-/// instead of `m^-T`: the inner function constructed the adjugate rows as columns of the result,
-/// so the outer `transpose` cancelled the wrong side. For pure-rotation bones that delivered
-/// `R^T` to bind-pose normals where it should have been `R`, lighting the side facing **away**
-/// from the light on every rotated skinned vertex.
-fn inverse_transpose_3x3(m: mat3x3<f32>) -> mat3x3<f32> {
-    let c0 = m[0];
-    let c1 = m[1];
-    let c2 = m[2];
-    let det = dot(c0, cross(c1, c2));
-    let abs_det = abs(det);
-    if (!(abs_det >= 1e-12) || abs_det > 3.402823e38) {
-        return mat3x3<f32>(
-            vec3<f32>(1.0, 0.0, 0.0),
-            vec3<f32>(0.0, 1.0, 0.0),
-            vec3<f32>(0.0, 0.0, 1.0),
-        );
-    }
-    let inv_det = 1.0 / det;
-    return mat3x3<f32>(
-        cross(c1, c2) * inv_det,
-        cross(c2, c0) * inv_det,
-        cross(c0, c1) * inv_det,
-    );
-}
-
-/// Upper 3x3 inverse-transpose of a 4x4 (cotangent rule for normals; handles non-uniform scale).
-fn normal_matrix(m: mat4x4<f32>) -> mat3x3<f32> {
-    return inverse_transpose_3x3(mat3_linear(m));
 }
 
 fn safe_normalize(v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
@@ -131,20 +93,12 @@ fn skin_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let nb = src_n[src_ni];
     let n_bind = vec3<f32>(nb.xyz);
-    // This approach preserves perpendicular normals:
-    // var acc_n = vec3<f32>(0.0);
-    // acc_n += w.x * (normal_matrix(bone_matrices[bx]) * n_bind);
-    // acc_n += w.y * (normal_matrix(bone_matrices[by]) * n_bind);
-    // acc_n += w.z * (normal_matrix(bone_matrices[bz]) * n_bind);
-    // acc_n += w.w * (normal_matrix(bone_matrices[bw]) * n_bind);
-
-    // To preserve Unity behavior, we need to do this instead:
     var acc_n = vec4<f32>(0.0);
     acc_n += w.x * (bone_matrices[bx] * nb);
     acc_n += w.y * (bone_matrices[by] * nb);
     acc_n += w.z * (bone_matrices[bz] * nb);
     acc_n += w.w * (bone_matrices[bw] * nb);
-    
+
     let tangent_enabled = (skin_dispatch.flags & SKIN_TANGENTS) != 0u;
     var tb = vec4<f32>(0.0);
     var t_bind = vec3<f32>(0.0);
@@ -168,17 +122,14 @@ fn skin_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     if (ws > 1e-6) {
         dst_pos[dst_pi] = vec4<f32>((acc / ws).xyz, p.w);
-        // let n_fallback = safe_normalize(n_bind, vec3<f32>(0.0, 0.0, 1.0));
-        // let nn = safe_normalize(acc_n / ws, n_fallback);
-        // dst_n[dst_ni] = vec4<f32>(nn, nb.w);
-
-        // Don't normalize, this is important for some materials.
-        let norm = acc_n / ws;
-        dst_n[dst_ni] = norm;
+        let skinned_n = acc_n / ws;
+        dst_n[dst_ni] = skinned_n;
         if (tangent_enabled) {
-            let tt = orthogonal_tangent(acc_t / ws, norm.xyz, t_bind);
+            let n_fallback = safe_normalize(n_bind, vec3<f32>(0.0, 0.0, 1.0));
+            let nn = safe_normalize(skinned_n.xyz, n_fallback);
+            let tt = orthogonal_tangent(acc_t / ws, nn, t_bind);
             let bb = safe_normalize(acc_b / ws, b_bind);
-            let sign = select(1.0, -1.0, dot(cross(norm.xyz, tt), bb) < 0.0);
+            let sign = select(1.0, -1.0, dot(cross(nn, tt), bb) < 0.0);
             dst_t[dst_ti] = vec4<f32>(tt, sign);
         }
     } else {
