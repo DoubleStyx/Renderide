@@ -37,31 +37,18 @@ impl WgslMat3x3 {
         }
     }
 
-    /// Cofactor normal matrix for the upper 3x3 of `model`, packed for WGSL `normal_matrix`.
+    /// `transpose(inverse(M))` for the upper 3x3 of `model`, packed for WGSL `normal_matrix`.
     ///
-    /// The shader normalizes the transformed normal after multiplication, so the determinant scale
-    /// from a full inverse-transpose normal transform is unnecessary. For non-singular mirrored
-    /// transforms, the determinant sign is still applied so normalized directions match the
-    /// inverse-transpose result. Keeping the cofactor form also preserves finite singular
-    /// transforms instead of replacing zero-scale axes with a fake inverse.
+    /// For singular or near-singular linear parts, returns identity to avoid NaNs in the shader.
     #[must_use]
     pub(super) fn from_model_upper_3x3(model: Mat4) -> Self {
         let m3 = Mat3::from_mat4(model);
-        let cofactor = Mat3::from_cols(
-            m3.y_axis.cross(m3.z_axis),
-            m3.z_axis.cross(m3.x_axis),
-            m3.x_axis.cross(m3.y_axis),
-        );
-        let determinant = m3.determinant();
-        let normal_matrix = if determinant.is_finite() && determinant < 0.0 {
-            -cofactor
-        } else {
-            cofactor
-        };
-        if !normal_matrix.is_finite() {
+        let det = m3.determinant();
+        if !det.is_finite() || det.abs() < 1e-20 {
             return Self::IDENTITY;
         }
-        Self::from_mat3(normal_matrix)
+        let nm = m3.inverse().transpose();
+        Self::from_mat3(nm)
     }
 }
 
@@ -70,84 +57,13 @@ mod tests {
     use super::*;
     use glam::Vec3;
 
-    /// Returns a packed matrix column as a `Vec3`.
-    fn packed_column(matrix: WgslMat3x3, index: usize) -> Vec3 {
-        let column = match index {
-            0 => matrix.col0,
-            1 => matrix.col1,
-            2 => matrix.col2,
-            _ => unreachable!("test only requests existing columns"),
-        };
-        Vec3::new(column[0], column[1], column[2])
-    }
-
-    /// Verifies cofactor packing for a simple uniform scale.
     #[test]
-    fn normal_matrix_uniform_scale_uses_cofactor_matrix() {
+    fn normal_matrix_uniform_scale_matches_model_linear() {
         let m = Mat4::from_scale(Vec3::splat(2.0));
         let nm = WgslMat3x3::from_model_upper_3x3(m);
-
-        assert_eq!(packed_column(nm, 0), Vec3::new(4.0, 0.0, 0.0));
-        assert_eq!(packed_column(nm, 1), Vec3::new(0.0, 4.0, 0.0));
-        assert_eq!(packed_column(nm, 2), Vec3::new(0.0, 0.0, 4.0));
-    }
-
-    /// Mirrored non-singular transforms keep inverse-transpose direction parity after shader normalization.
-    #[test]
-    fn normal_matrix_negative_scale_matches_inverse_transpose_direction() {
-        let m = Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
-        let nm = WgslMat3x3::from_model_upper_3x3(m);
-
-        assert_eq!(packed_column(nm, 0), Vec3::new(-1.0, 0.0, 0.0));
-        assert_eq!(packed_column(nm, 1), Vec3::new(0.0, 1.0, 0.0));
-        assert_eq!(packed_column(nm, 2), Vec3::new(0.0, 0.0, 1.0));
-    }
-
-    /// Keeps one usable normal axis for a transform flattened onto the YZ plane.
-    #[test]
-    fn normal_matrix_single_zero_scale_axis_remains_finite() {
-        let m = Mat4::from_scale(Vec3::new(0.0, 1.0, 1.0));
-        let nm = WgslMat3x3::from_model_upper_3x3(m);
-
-        assert_eq!(packed_column(nm, 0), Vec3::new(1.0, 0.0, 0.0));
-        assert_eq!(packed_column(nm, 1), Vec3::ZERO);
-        assert_eq!(packed_column(nm, 2), Vec3::ZERO);
-    }
-
-    /// Fully collapsed normal planes stay finite and rely on shader fallback normalization.
-    #[test]
-    fn normal_matrix_two_zero_scale_axes_remains_finite_zero() {
-        let m = Mat4::from_scale(Vec3::new(0.0, 0.0, 1.0));
-        let nm = WgslMat3x3::from_model_upper_3x3(m);
-
-        assert_eq!(packed_column(nm, 0), Vec3::ZERO);
-        assert_eq!(packed_column(nm, 1), Vec3::ZERO);
-        assert_eq!(packed_column(nm, 2), Vec3::ZERO);
-    }
-
-    /// Falls back only when the incoming matrix cannot produce finite cofactors.
-    #[test]
-    fn normal_matrix_non_finite_model_uses_identity() {
-        let m = Mat4::from_cols_array(&[
-            f32::NAN,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-        ]);
-        let nm = WgslMat3x3::from_model_upper_3x3(m);
-
-        assert_eq!(nm, WgslMat3x3::IDENTITY);
+        let m3 = Mat3::from_mat4(m);
+        let expected = m3.inverse().transpose();
+        let c0 = Vec3::new(nm.col0[0], nm.col0[1], nm.col0[2]);
+        assert!((c0 - expected.x_axis).length() < 1e-4);
     }
 }

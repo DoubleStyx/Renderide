@@ -719,35 +719,22 @@ fn full_pipeline_overlay_vertex_projects_to_screen_ndc() {
     );
 }
 
-/// Cached single-axis zero-scale state leaves the selected node renderable for draw collection.
+/// Cached zero-scale state reports the selected node as non-renderable for draw collection.
 #[test]
-fn transform_has_degenerate_scale_allows_single_zero_scale_axis() {
-    let mut scene = SceneCoordinator::new();
-    let id = RenderSpaceId(11);
-    let mut flat = identity_transform();
-    flat.scale = Vec3::new(0.0, 1.0, 1.0);
-    scene.test_seed_space_identity_worlds(id, vec![flat], vec![-1]);
-
-    assert!(!scene.transform_has_degenerate_scale(id, 0));
-    assert!(!scene.transform_has_degenerate_scale_for_context(id, 0, RenderingContext::UserView));
-}
-
-/// Cached all-axis zero-scale state reports the selected node as non-renderable for draw collection.
-#[test]
-fn transform_has_degenerate_scale_reads_all_zero_cached_world_state() {
+fn transform_has_degenerate_scale_reads_cached_world_state() {
     let mut scene = SceneCoordinator::new();
     let id = RenderSpaceId(11);
     let mut collapsed = identity_transform();
-    collapsed.scale = Vec3::ZERO;
+    collapsed.scale = Vec3::new(0.0, 1.0, 1.0);
     scene.test_seed_space_identity_worlds(id, vec![collapsed], vec![-1]);
 
     assert!(scene.transform_has_degenerate_scale(id, 0));
     assert!(scene.transform_has_degenerate_scale_for_context(id, 0, RenderingContext::UserView));
 }
 
-/// An all-zero scale render-context override hides only the context that owns the override.
+/// A zero-scale render-context override hides only the context that owns the override.
 #[test]
-fn transform_override_all_zero_scale_is_context_local_degenerate_state() {
+fn transform_override_zero_scale_is_context_local_degenerate_state() {
     let mut scene = SceneCoordinator::new();
     let id = RenderSpaceId(12);
     scene.test_seed_space_identity_worlds(id, vec![identity_transform()], vec![-1]);
@@ -764,32 +751,6 @@ fn transform_override_all_zero_scale_is_context_local_degenerate_state() {
         });
 
     assert!(scene.transform_has_degenerate_scale_for_context(id, 0, RenderingContext::UserView));
-    assert!(!scene.transform_has_degenerate_scale_for_context(
-        id,
-        0,
-        RenderingContext::ExternalView
-    ));
-}
-
-/// A single-zero-axis render-context override remains renderable in its target context.
-#[test]
-fn transform_override_single_zero_scale_axis_is_context_local_renderable_state() {
-    let mut scene = SceneCoordinator::new();
-    let id = RenderSpaceId(12);
-    scene.test_seed_space_identity_worlds(id, vec![identity_transform()], vec![-1]);
-    scene
-        .spaces
-        .get_mut(&id)
-        .expect("space")
-        .render_transform_overrides
-        .push(RenderTransformOverrideEntry {
-            node_id: 0,
-            context: RenderingContext::UserView,
-            scale_override: Some(Vec3::new(0.0, 1.0, 1.0)),
-            ..Default::default()
-        });
-
-    assert!(!scene.transform_has_degenerate_scale_for_context(id, 0, RenderingContext::UserView));
     assert!(!scene.transform_has_degenerate_scale_for_context(
         id,
         0,

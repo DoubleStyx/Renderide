@@ -26,15 +26,6 @@ fn empty_extracted_render_space_update() -> ExtractedRenderSpaceUpdate {
     }
 }
 
-/// Builds an identity transform without relying on the wire default's zero scale.
-fn identity_transform() -> RenderTransform {
-    RenderTransform {
-        position: Vec3::ZERO,
-        scale: Vec3::ONE,
-        rotation: Quat::IDENTITY,
-    }
-}
-
 #[test]
 fn render_world_header_dirty_ignores_view_only_header_changes() {
     let space = RenderSpaceState {
@@ -130,7 +121,7 @@ fn parallel_apply_extracted_commits_pose_writes_and_marks_dirty() {
     let mut space = RenderSpaceState {
         id: RenderSpaceId(7),
         is_active: true,
-        nodes: vec![identity_transform(); 3],
+        nodes: vec![RenderTransform::default(); 3],
         node_parents: vec![-1, 0, 1],
         ..Default::default()
     };
@@ -156,7 +147,7 @@ fn parallel_apply_extracted_commits_pose_writes_and_marks_dirty() {
                 },
                 TransformPoseUpdate {
                     transform_id: -1,
-                    pose: identity_transform(),
+                    pose: RenderTransform::default(),
                 },
             ],
             target_transform_count: 3,

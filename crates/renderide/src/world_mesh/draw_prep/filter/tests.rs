@@ -1,19 +1,8 @@
 use hashbrown::HashSet;
 
-use glam::{Quat, Vec3};
-
 use super::CameraTransformDrawFilter;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::RenderTransform;
-
-/// Builds an identity transform without relying on the wire default's zero scale.
-fn identity_transform() -> RenderTransform {
-    RenderTransform {
-        position: Vec3::ZERO,
-        scale: Vec3::ONE,
-        rotation: Quat::IDENTITY,
-    }
-}
 
 fn seeded_scene() -> (SceneCoordinator, RenderSpaceId) {
     let mut scene = SceneCoordinator::new();
@@ -21,9 +10,9 @@ fn seeded_scene() -> (SceneCoordinator, RenderSpaceId) {
     scene.test_seed_space_identity_worlds(
         id,
         vec![
-            identity_transform(),
-            identity_transform(),
-            identity_transform(),
+            RenderTransform::default(),
+            RenderTransform::default(),
+            RenderTransform::default(),
         ],
         vec![-1, 0, 1],
     );
@@ -143,7 +132,7 @@ fn ancestor_membership_handles_self_parent_without_looping() {
     let id = RenderSpaceId(23);
     scene.test_seed_space_identity_worlds(
         id,
-        vec![identity_transform(), identity_transform()],
+        vec![RenderTransform::default(), RenderTransform::default()],
         vec![0, 0],
     );
     let filter = CameraTransformDrawFilter {
@@ -164,7 +153,7 @@ fn exclude_mask_treats_out_of_range_parent_as_terminal() {
     let id = RenderSpaceId(24);
     scene.test_seed_space_identity_worlds(
         id,
-        vec![identity_transform(), identity_transform()],
+        vec![RenderTransform::default(), RenderTransform::default()],
         vec![-1, 99],
     );
     let filter = CameraTransformDrawFilter {

@@ -165,7 +165,7 @@ fn vs_main(
     let uv = displaced_uv.uv;
 
     let world_p = d.model * vec4<f32>(displaced, 1.0);
-    let wn = mv::world_normal(d, n);
+    let wn = normalize(d.normal_matrix * n.xyz);
     let wt = mv::world_tangent(d, t);
 #ifdef MULTIVIEW
     let vp = mv::select_view_proj(d, view_idx);

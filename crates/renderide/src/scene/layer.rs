@@ -295,24 +295,13 @@ pub(crate) fn fixup_layer_assignments_for_transform_removals(
 
 #[cfg(test)]
 mod tests {
-    use glam::{Quat, Vec3};
-
     use crate::scene::StaticMeshRenderer;
     use crate::scene::render_space::{LayerAssignmentEntry, RenderSpaceState};
-    use crate::shared::{LayerType, RenderTransform};
+    use crate::shared::LayerType;
 
     use super::{
         ExtractedLayerUpdate, apply_layer_update_extracted, resolve_mesh_layers_from_assignments,
     };
-
-    /// Builds an identity transform without relying on the wire default's zero scale.
-    fn identity_transform() -> RenderTransform {
-        RenderTransform {
-            position: Vec3::ZERO,
-            scale: Vec3::ONE,
-            rotation: Quat::IDENTITY,
-        }
-    }
 
     #[test]
     fn resolves_layer_from_nearest_ancestor_assignment() {
@@ -391,13 +380,13 @@ mod tests {
             id,
             vec![
                 // 0: root (no layer)
-                identity_transform(),
+                crate::shared::RenderTransform::default(),
                 // 1: Render slot (Hidden layer assignment)
-                identity_transform(),
+                crate::shared::RenderTransform::default(),
                 // 2: inner UI canvas (descendant of Render -> resolves to Hidden)
-                identity_transform(),
+                crate::shared::RenderTransform::default(),
                 // 3: regular world mesh slot (no layer ancestor)
-                identity_transform(),
+                crate::shared::RenderTransform::default(),
             ],
             vec![-1, 0, 1, 0],
         );

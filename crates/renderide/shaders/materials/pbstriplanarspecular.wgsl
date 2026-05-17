@@ -164,7 +164,7 @@ fn sample_surface(
     if (object_space) {
         if (normal_map) {
             let d = pd::get_draw(view_layer >> 1u);
-            n_world = mv::world_direction(d, n_world, n_world);
+            n_world = normalize(mv::model_vector(d, n_world));
         } else {
             n_world = normalize(world_n);
         }

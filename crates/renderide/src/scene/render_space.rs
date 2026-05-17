@@ -12,7 +12,6 @@ use hashbrown::HashMap;
 use super::camera::CameraRenderableEntry;
 use super::ids::RenderSpaceId;
 use super::meshes::types::{MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer};
-use super::pose::render_transform_identity;
 use super::reflection_probe::ReflectionProbeEntry;
 
 /// One host layer component / assignment anchored to a transform node.
@@ -256,8 +255,8 @@ impl Default for RenderSpaceState {
             view_position_is_external: false,
             skybox_material_asset_id: -1,
             ambient_light: RenderSH2::default(),
-            root_transform: render_transform_identity(),
-            view_transform: render_transform_identity(),
+            root_transform: RenderTransform::default(),
+            view_transform: RenderTransform::default(),
             nodes: Vec::new(),
             node_parents: Vec::new(),
             static_mesh_renderers: Vec::new(),
@@ -362,18 +361,6 @@ mod tests {
 
         assert_eq!(state.skybox_material_asset_id, 42);
         assert_eq!(state.ambient_light.sh0, ambient.sh0);
-    }
-
-    #[test]
-    fn default_render_space_uses_identity_root_and_view_transforms() {
-        let state = RenderSpaceState::default();
-
-        assert_eq!(state.root_transform.position, Vec3::ZERO);
-        assert_eq!(state.root_transform.scale, Vec3::ONE);
-        assert_eq!(state.root_transform.rotation, Quat::IDENTITY);
-        assert_eq!(state.view_transform.position, Vec3::ZERO);
-        assert_eq!(state.view_transform.scale, Vec3::ONE);
-        assert_eq!(state.view_transform.rotation, Quat::IDENTITY);
     }
 
     #[test]

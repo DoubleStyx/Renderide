@@ -750,39 +750,11 @@ mod tests {
         assert!(child_world.abs_diff_eq(expected, 1e-5));
     }
 
-    /// A single collapsed object scale axis on a parent remains renderable for every child.
+    /// Degenerate object scale on a parent marks every child in that transform chain.
     #[test]
-    fn compute_world_matrices_for_space_keeps_single_zero_scale_axis_renderable() {
-        let mut flat_parent = identity_xform();
-        flat_parent.scale = Vec3::new(0.0, 1.0, 1.0);
-        let nodes = vec![flat_parent, identity_xform()];
-        let parents = vec![-1, 0];
-        let mut cache = WorldTransformCache::default();
-
-        compute_world_matrices_for_space(0, &nodes, &parents, &mut cache).expect("ok");
-
-        assert_eq!(cache.degenerate_scales, vec![false, false]);
-    }
-
-    /// Two collapsed object scale axes on a parent remain renderable for every child.
-    #[test]
-    fn compute_world_matrices_for_space_keeps_two_zero_scale_axes_renderable() {
-        let mut line_parent = identity_xform();
-        line_parent.scale = Vec3::new(0.0, 0.0, 1.0);
-        let nodes = vec![line_parent, identity_xform()];
-        let parents = vec![-1, 0];
-        let mut cache = WorldTransformCache::default();
-
-        compute_world_matrices_for_space(0, &nodes, &parents, &mut cache).expect("ok");
-
-        assert_eq!(cache.degenerate_scales, vec![false, false]);
-    }
-
-    /// All object scale axes collapsed on a parent mark every child in that transform chain.
-    #[test]
-    fn compute_world_matrices_for_space_propagates_all_zero_scale_to_children() {
+    fn compute_world_matrices_for_space_propagates_degenerate_scale_to_children() {
         let mut collapsed_parent = identity_xform();
-        collapsed_parent.scale = Vec3::ZERO;
+        collapsed_parent.scale = Vec3::new(0.0, 1.0, 1.0);
         let nodes = vec![collapsed_parent, identity_xform()];
         let parents = vec![-1, 0];
         let mut cache = WorldTransformCache::default();
