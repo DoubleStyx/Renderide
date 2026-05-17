@@ -61,6 +61,15 @@ fn importance_sample_ggx(xi: vec2<f32>, r: f32, n: vec3<f32>) -> vec3<f32> {
     return tangent_to_world(h, n);
 }
 
+/// Cosine-weighted hemisphere sample around normal `n`.
+fn cosine_sample_hemisphere(xi: vec2<f32>, n: vec3<f32>) -> vec3<f32> {
+    let phi = 2.0 * PI * xi.x;
+    let cos_theta = sqrt(max(1.0 - xi.y, 0.0));
+    let sin_theta = sqrt(max(xi.y, 0.0));
+    let local = vec3<f32>(cos(phi) * sin_theta, sin(phi) * sin_theta, cos_theta);
+    return tangent_to_world(local, n);
+}
+
 /// GGX/Trowbridge-Reitz NDF for `n_dot_h` and perceptual roughness `r`.
 fn d_ggx(n_dot_h: f32, r: f32) -> f32 {
     let alpha = max(r * r, 0.0001);

@@ -278,7 +278,7 @@ impl ReflectionProbeSpecularSystem {
         let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("reflection_probe_specular_atlas_view"),
             format: Some(REFLECTION_PROBE_ATLAS_FORMAT),
-            dimension: Some(wgpu::TextureViewDimension::CubeArray),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
             usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
             aspect: wgpu::TextureAspect::All,
             base_mip_level: 0,
@@ -314,7 +314,7 @@ impl ReflectionProbeSpecularSystem {
         );
         self.version = self.version.wrapping_add(1).max(1);
         self.resources = Some(ReflectionProbeSpecularResources {
-            cube_array_view: view,
+            array_view: view,
             sampler,
             metadata_buffer,
             version: self.version,
@@ -431,6 +431,7 @@ mod tests {
                 renderable_index: 0,
                 generation: 1,
                 mip_levels: 1,
+                storage_v_inverted: true,
                 face_size: 128,
             },
             &spaces,

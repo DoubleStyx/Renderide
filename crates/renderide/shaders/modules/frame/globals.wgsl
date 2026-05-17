@@ -22,7 +22,7 @@
 @group(0) @binding(6) var scene_color: texture_2d<f32>;
 @group(0) @binding(7) var scene_color_array: texture_2d_array<f32>;
 @group(0) @binding(8) var scene_color_sampler: sampler;
-@group(0) @binding(9) var reflection_probe_specular: texture_cube_array<f32>;
+@group(0) @binding(9) var reflection_probe_specular: texture_2d_array<f32>;
 @group(0) @binding(10) var reflection_probe_specular_sampler: sampler;
 @group(0) @binding(11) var ibl_dfg_lut: texture_2d<f32>;
 @group(0) @binding(12) var<storage, read> reflection_probes: array<ft::GpuReflectionProbe>;

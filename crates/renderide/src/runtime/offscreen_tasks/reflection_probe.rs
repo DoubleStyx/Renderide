@@ -306,6 +306,20 @@ impl ProbeTaskTargets {
             array_layer_count: Some(CUBEMAP_ARRAY_LAYERS),
         }))
     }
+
+    fn array_sample_view(&self) -> Arc<wgpu::TextureView> {
+        Arc::new(self.cube_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("renderide-reflection-probe-onchanges-array-view"),
+            format: Some(PROBE_TASK_COLOR_FORMAT),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: Some(self.extent.mip_levels),
+            base_array_layer: 0,
+            array_layer_count: Some(CUBEMAP_ARRAY_LAYERS),
+        }))
+    }
 }
 
 struct PlannedReflectionProbeTask {

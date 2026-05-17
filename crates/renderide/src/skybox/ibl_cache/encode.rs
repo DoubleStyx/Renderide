@@ -3,6 +3,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::profiling::GpuProfilerHandle;
+use crate::profiling::compute_pass_timestamp_writes;
 use crate::skybox::params::SkyboxEvaluatorParams;
 use crate::skybox::specular::{CubemapIblSource, RuntimeCubemapIblSource};
 
@@ -10,8 +11,8 @@ use super::bind_groups::{
     build_input_output_bind_group, build_sampled_bind_group, build_storage_bind_group,
     make_uniform_buffer,
 };
-use super::key::convolve_sample_count;
-use super::mip_loop::{MipChainConfig, PerMipBindings, dispatch_mip0_pass, run_mip_chain};
+use super::key::{convolve_sample_count, dispatch_groups, mip_extent};
+use super::mip_loop::dispatch_mip0_pass;
 use super::pipeline::ComputePipeline;
 use super::resources::{
     PendingBakeResources, create_mip_array_sample_view, create_mip_storage_view,
@@ -49,6 +50,16 @@ struct DownsampleParams {
     src_size: u32,
     _pad0: u32,
     _pad1: u32,
+}
+
+/// Uniform payload for one seam-stitch dispatch.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct StitchParams {
+    dst_size: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 /// Inputs for [`encode_analytic_mip0`].
@@ -123,7 +134,7 @@ pub(super) fn encode_cube_mip0(ctx: CubeEncodeContext<'_>, resources: &mut Pendi
         &ctx.pipeline.layout,
         "skybox_ibl cube mip0 bind group",
         &params_buffer,
-        ctx.src.view.as_ref(),
+        ctx.src.array_view.as_ref(),
         ctx.sampler,
         &mip0_storage,
     );
@@ -140,6 +151,7 @@ pub(super) fn encode_cube_mip0(ctx: CubeEncodeContext<'_>, resources: &mut Pendi
     resources.buffers.push(params_buffer);
     resources.bind_groups.push(bind_group);
     resources.texture_views.push(mip0_storage);
+    resources.source_views.push(ctx.src.array_view);
     resources.source_views.push(ctx.src.view);
 }
 
@@ -164,7 +176,7 @@ pub(super) fn encode_runtime_cube_mip0(
     let params = Mip0CubeParams {
         dst_size: ctx.face_size,
         src_face_size: ctx.src.face_size,
-        storage_v_inverted: 0,
+        storage_v_inverted: u32::from(ctx.src.storage_v_inverted),
         _pad0: 0,
     };
     let params_buffer =
@@ -176,7 +188,7 @@ pub(super) fn encode_runtime_cube_mip0(
         &ctx.pipeline.layout,
         "skybox_ibl runtime cube mip0 bind group",
         &params_buffer,
-        ctx.src.view.as_ref(),
+        ctx.src.array_view.as_ref(),
         ctx.sampler,
         &mip0_storage,
     );
@@ -194,6 +206,7 @@ pub(super) fn encode_runtime_cube_mip0(
     resources.bind_groups.push(bind_group);
     resources.texture_views.push(mip0_storage);
     resources.textures.push(ctx.src.texture);
+    resources.source_views.push(ctx.src.array_view);
     resources.source_views.push(ctx.src.view);
 }
 
@@ -202,7 +215,9 @@ pub(super) struct DownsampleEncodeContext<'a> {
     pub(super) device: &'a wgpu::Device,
     pub(super) encoder: &'a mut wgpu::CommandEncoder,
     pub(super) pipeline: &'a ComputePipeline,
+    pub(super) stitch_pipeline: &'a ComputePipeline,
     pub(super) texture: &'a wgpu::Texture,
+    pub(super) scratch_texture: &'a wgpu::Texture,
     pub(super) face_size: u32,
     pub(super) mip_levels: u32,
     pub(super) profiler: Option<&'a GpuProfilerHandle>,
@@ -218,51 +233,67 @@ pub(super) fn encode_downsample_mips(
         device,
         encoder,
         pipeline,
+        stitch_pipeline,
         texture,
+        scratch_texture,
         face_size,
         mip_levels,
         profiler,
     } = ctx;
-    run_mip_chain(
-        MipChainConfig {
+    if mip_levels <= 1 {
+        return;
+    }
+    for mip in 1..mip_levels {
+        let dst_size = mip_extent(face_size, mip);
+        let src_size = mip_extent(face_size, mip - 1);
+        let params = DownsampleParams {
+            dst_size,
+            src_size,
+            _pad0: 0,
+            _pad1: 0,
+        };
+        let params_buffer = make_uniform_buffer(device, "skybox_ibl downsample params", &params);
+        crate::profiling::note_resource_churn!(Buffer, "skybox::ibl_downsample_params_buffer");
+        let src_view = create_mip_array_sample_view(texture, mip - 1);
+        let scratch_view = create_mip_storage_view(scratch_texture, mip);
+        let bind_group = build_input_output_bind_group(
+            device,
+            &pipeline.layout,
+            "skybox_ibl downsample bind group",
+            &params_buffer,
+            &src_view,
+            &scratch_view,
+        );
+        crate::profiling::note_resource_churn!(BindGroup, "skybox::ibl_downsample_bind_group");
+        dispatch_compute_mip(
             encoder,
             pipeline,
-            face_size,
-            mip_levels,
+            &bind_group,
+            dst_size,
             profiler,
-            resources,
-            pass_label: "skybox_ibl downsample mip",
-            profiler_label_prefix: "skybox_ibl::downsample_mip",
-        },
-        |mip, dst_size, src_size| {
-            let params = DownsampleParams {
-                dst_size,
-                src_size,
-                _pad0: 0,
-                _pad1: 0,
-            };
-            let params_buffer =
-                make_uniform_buffer(device, "skybox_ibl downsample params", &params);
-            crate::profiling::note_resource_churn!(Buffer, "skybox::ibl_downsample_params_buffer");
-            let src_view = create_mip_array_sample_view(texture, mip - 1);
-            let dst_view = create_mip_storage_view(texture, mip);
-            let bind_group = build_input_output_bind_group(
+            "skybox_ibl downsample mip",
+            format!("skybox_ibl::downsample_mip{mip}"),
+        );
+        resources.buffers.push(params_buffer);
+        resources.bind_groups.push(bind_group);
+        resources.texture_views.push(src_view);
+        resources.texture_views.push(scratch_view);
+        encode_stitch_mip(
+            StitchEncodeContext {
                 device,
-                &pipeline.layout,
-                "skybox_ibl downsample bind group",
-                &params_buffer,
-                &src_view,
-                &dst_view,
-            );
-            crate::profiling::note_resource_churn!(BindGroup, "skybox::ibl_downsample_bind_group");
-            PerMipBindings {
-                params: params_buffer,
-                bind_group,
-                src_view: Some(src_view),
-                dst_view,
-            }
-        },
-    );
+                encoder,
+                pipeline: stitch_pipeline,
+                src_texture: scratch_texture,
+                dst_texture: texture,
+                mip,
+                dst_size,
+                profiler,
+                label: "skybox_ibl stitch source mip",
+                profiler_label: format!("skybox_ibl::stitch_source_mip{mip}"),
+            },
+            resources,
+        );
+    }
 }
 
 /// Inputs for [`encode_convolve_mips`].
@@ -270,7 +301,9 @@ pub(super) struct ConvolveEncodeContext<'a> {
     pub(super) device: &'a wgpu::Device,
     pub(super) encoder: &'a mut wgpu::CommandEncoder,
     pub(super) pipeline: &'a ComputePipeline,
+    pub(super) stitch_pipeline: &'a ComputePipeline,
     pub(super) texture: &'a wgpu::Texture,
+    pub(super) scratch_texture: &'a wgpu::Texture,
     pub(super) src_view: &'a wgpu::TextureView,
     pub(super) sampler: &'a wgpu::Sampler,
     pub(super) face_size: u32,
@@ -289,7 +322,9 @@ pub(super) fn encode_convolve_mips(
         device,
         encoder,
         pipeline,
+        stitch_pipeline,
         texture,
+        scratch_texture,
         src_view,
         sampler,
         face_size,
@@ -297,47 +332,138 @@ pub(super) fn encode_convolve_mips(
         src_max_lod,
         profiler,
     } = ctx;
-    run_mip_chain(
-        MipChainConfig {
+    if mip_levels <= 1 {
+        return;
+    }
+    for mip in 1..mip_levels {
+        let dst_size = mip_extent(face_size, mip);
+        let params = ConvolveParams {
+            dst_size,
+            mip_index: mip,
+            mip_count: mip_levels,
+            sample_count: convolve_sample_count(mip),
+            src_face_size: face_size,
+            src_max_lod,
+            _pad0: 0,
+            _pad1: 0,
+        };
+        let params_buffer = make_uniform_buffer(device, "skybox_ibl convolve params", &params);
+        crate::profiling::note_resource_churn!(Buffer, "skybox::ibl_convolve_params_buffer");
+        let scratch_view = create_mip_storage_view(scratch_texture, mip);
+        let bind_group = build_sampled_bind_group(
+            device,
+            &pipeline.layout,
+            "skybox_ibl convolve bind group",
+            &params_buffer,
+            src_view,
+            sampler,
+            &scratch_view,
+        );
+        crate::profiling::note_resource_churn!(BindGroup, "skybox::ibl_convolve_bind_group");
+        dispatch_compute_mip(
             encoder,
             pipeline,
-            face_size,
-            mip_levels,
+            &bind_group,
+            dst_size,
             profiler,
-            resources,
-            pass_label: "skybox_ibl convolve mip",
-            profiler_label_prefix: "skybox_ibl::convolve_mip",
-        },
-        |mip, dst_size, _src_size| {
-            let params = ConvolveParams {
-                dst_size,
-                mip_index: mip,
-                mip_count: mip_levels,
-                sample_count: convolve_sample_count(mip),
-                src_face_size: face_size,
-                src_max_lod,
-                _pad0: 0,
-                _pad1: 0,
-            };
-            let params_buffer = make_uniform_buffer(device, "skybox_ibl convolve params", &params);
-            crate::profiling::note_resource_churn!(Buffer, "skybox::ibl_convolve_params_buffer");
-            let dst_view = create_mip_storage_view(texture, mip);
-            let bind_group = build_sampled_bind_group(
+            "skybox_ibl convolve mip",
+            format!("skybox_ibl::convolve_mip{mip}"),
+        );
+        resources.buffers.push(params_buffer);
+        resources.bind_groups.push(bind_group);
+        resources.texture_views.push(scratch_view);
+        encode_stitch_mip(
+            StitchEncodeContext {
                 device,
-                &pipeline.layout,
-                "skybox_ibl convolve bind group",
-                &params_buffer,
-                src_view,
-                sampler,
-                &dst_view,
-            );
-            crate::profiling::note_resource_churn!(BindGroup, "skybox::ibl_convolve_bind_group");
-            PerMipBindings {
-                params: params_buffer,
-                bind_group,
-                src_view: None,
-                dst_view,
-            }
-        },
+                encoder,
+                pipeline: stitch_pipeline,
+                src_texture: scratch_texture,
+                dst_texture: texture,
+                mip,
+                dst_size,
+                profiler,
+                label: "skybox_ibl stitch filtered mip",
+                profiler_label: format!("skybox_ibl::stitch_filtered_mip{mip}"),
+            },
+            resources,
+        );
+    }
+}
+
+/// Inputs for [`encode_stitch_mip`].
+pub(super) struct StitchEncodeContext<'a> {
+    pub(super) device: &'a wgpu::Device,
+    pub(super) encoder: &'a mut wgpu::CommandEncoder,
+    pub(super) pipeline: &'a ComputePipeline,
+    pub(super) src_texture: &'a wgpu::Texture,
+    pub(super) dst_texture: &'a wgpu::Texture,
+    pub(super) mip: u32,
+    pub(super) dst_size: u32,
+    pub(super) profiler: Option<&'a GpuProfilerHandle>,
+    pub(super) label: &'static str,
+    pub(super) profiler_label: String,
+}
+
+/// Encodes one seam stitch pass from a scratch mip into a final mip.
+pub(super) fn encode_stitch_mip(
+    ctx: StitchEncodeContext<'_>,
+    resources: &mut PendingBakeResources,
+) {
+    profiling::scope!("skybox_ibl::encode_stitch_mip");
+    let params = StitchParams {
+        dst_size: ctx.dst_size,
+        _pad0: 0,
+        _pad1: 0,
+        _pad2: 0,
+    };
+    let params_buffer = make_uniform_buffer(ctx.device, "skybox_ibl stitch params", &params);
+    crate::profiling::note_resource_churn!(Buffer, "skybox::ibl_stitch_params_buffer");
+    let src_view = create_mip_array_sample_view(ctx.src_texture, ctx.mip);
+    let dst_view = create_mip_storage_view(ctx.dst_texture, ctx.mip);
+    let bind_group = build_input_output_bind_group(
+        ctx.device,
+        &ctx.pipeline.layout,
+        "skybox_ibl stitch bind group",
+        &params_buffer,
+        &src_view,
+        &dst_view,
     );
+    crate::profiling::note_resource_churn!(BindGroup, "skybox::ibl_stitch_bind_group");
+    dispatch_compute_mip(
+        ctx.encoder,
+        ctx.pipeline,
+        &bind_group,
+        ctx.dst_size,
+        ctx.profiler,
+        ctx.label,
+        ctx.profiler_label,
+    );
+    resources.buffers.push(params_buffer);
+    resources.bind_groups.push(bind_group);
+    resources.texture_views.push(src_view);
+    resources.texture_views.push(dst_view);
+}
+
+fn dispatch_compute_mip(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &ComputePipeline,
+    bind_group: &wgpu::BindGroup,
+    dst_size: u32,
+    profiler: Option<&GpuProfilerHandle>,
+    pass_label: &'static str,
+    profiler_label: String,
+) {
+    let pass_query = profiler.map(|p| p.begin_pass_query(profiler_label, encoder));
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some(pass_label),
+            timestamp_writes: compute_pass_timestamp_writes(pass_query.as_ref()),
+        });
+        pass.set_pipeline(&pipeline.pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.dispatch_workgroups(dispatch_groups(dst_size), dispatch_groups(dst_size), 6);
+    }
+    if let (Some(profiler), Some(query)) = (profiler, pass_query) {
+        profiler.end_query(encoder, query);
+    }
 }

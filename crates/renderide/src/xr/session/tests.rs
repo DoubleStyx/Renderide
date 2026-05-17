@@ -27,6 +27,15 @@ fn pose_identity() -> xr::Posef {
     }
 }
 
+/// Builds an identity transform without relying on the wire default's zero scale.
+fn identity_transform() -> RenderTransform {
+    RenderTransform {
+        position: Vec3::ZERO,
+        scale: Vec3::ONE,
+        rotation: Quat::IDENTITY,
+    }
+}
+
 #[test]
 fn identity_pose_maps_to_identity_ref_from_view() {
     let m = ref_from_view_matrix(&pose_identity());
@@ -159,7 +168,7 @@ fn eye_world_position_applies_root_tracking_alignment() {
         scale: Vec3::ONE,
     };
     let world_from_tracking =
-        tracking_space_to_world_matrix(&root, &RenderTransform::default(), false, None);
+        tracking_space_to_world_matrix(&root, &identity_transform(), false, None);
 
     let eye_world = eye_world_position_from_xr_view_aligned(&view, world_from_tracking);
 

@@ -364,6 +364,7 @@ impl ActiveOnChangesReflectionProbeCapture {
             mip_levels: self.extent.mip_levels,
             texture: Arc::clone(&self.targets.cube_texture),
             view: self.targets.cube_sample_view(),
+            array_view: self.targets.array_sample_view(),
         }
     }
 }

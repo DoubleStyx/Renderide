@@ -29,7 +29,7 @@ pub(super) fn build_per_space_filter_masks(
 
 #[cfg(test)]
 mod tests {
-    use glam::{Mat4, Vec3};
+    use glam::{Mat4, Quat, Vec3};
     use hashbrown::HashSet;
 
     use super::*;
@@ -41,6 +41,15 @@ mod tests {
     use crate::scene::SceneCoordinator;
     use crate::shared::{RenderTransform, RenderingContext};
     use crate::world_mesh::draw_prep::filter::CameraTransformDrawFilter;
+
+    /// Builds an identity transform without relying on the wire default's zero scale.
+    fn identity_transform() -> RenderTransform {
+        RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        }
+    }
 
     fn with_draw_context(
         scene: &SceneCoordinator,
@@ -74,7 +83,7 @@ mod tests {
     }
 
     fn seed_space(scene: &mut SceneCoordinator, id: RenderSpaceId, parents: Vec<i32>) {
-        let transforms = vec![RenderTransform::default(); parents.len()];
+        let transforms = vec![identity_transform(); parents.len()];
         scene.test_seed_space_identity_worlds(id, transforms, parents);
     }
 

@@ -61,8 +61,10 @@ fn resolve_runtime_capture_source(
         generation: capture.generation,
         face_size: capture.face_size,
         mip_levels: capture.mip_levels,
+        storage_v_inverted: true,
         texture: capture.texture.clone(),
         view: capture.view.clone(),
+        array_view: capture.array_view.clone(),
     }))
 }
 
@@ -88,6 +90,7 @@ pub(super) fn resolve_baked_probe_source(
         content_generation: cubemap.content_generation,
         storage_v_inverted: cubemap.storage_v_inverted,
         view: cubemap.view.clone(),
+        array_view: cubemap.array_view.clone(),
     }))
 }
 

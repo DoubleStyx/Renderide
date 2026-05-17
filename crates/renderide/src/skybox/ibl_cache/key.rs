@@ -60,6 +60,8 @@ pub(crate) enum SkyboxIblKey {
         generation: u64,
         /// Source mip count resident on the captured cubemap.
         mip_levels: u32,
+        /// Storage V-flip flag for the captured source cube.
+        storage_v_inverted: bool,
         /// Destination cube face edge.
         face_size: u32,
     },
@@ -100,6 +102,7 @@ pub(crate) fn build_key(source: &SkyboxIblSource, face_size: u32) -> SkyboxIblKe
             renderable_index: src.renderable_index,
             generation: src.generation,
             mip_levels: src.mip_levels,
+            storage_v_inverted: src.storage_v_inverted,
             face_size,
         },
     }
@@ -187,6 +190,15 @@ mod tests {
         assert_eq!(convolve_sample_count(8), 1024);
     }
 
+    /// Runtime-capture storage orientation is part of the bake identity.
+    #[test]
+    fn runtime_cubemap_key_invalidates_on_storage_orientation() {
+        let base = runtime_cubemap_key(false);
+        let flipped = runtime_cubemap_key(true);
+
+        assert_ne!(base, flipped);
+    }
+
     /// Cubemap key invariants: residency growth and face size resize both invalidate.
     #[test]
     fn cubemap_key_invalidates_on_residency_or_face_change() {
@@ -227,6 +239,17 @@ mod tests {
             content_generation,
             storage_v_inverted: false,
             face_size,
+        }
+    }
+
+    fn runtime_cubemap_key(storage_v_inverted: bool) -> SkyboxIblKey {
+        SkyboxIblKey::RuntimeCubemap {
+            render_space_id: 7,
+            renderable_index: 2,
+            generation: 5,
+            mip_levels: 1,
+            storage_v_inverted,
+            face_size: 128,
         }
     }
 }

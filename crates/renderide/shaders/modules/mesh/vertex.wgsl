@@ -2,6 +2,7 @@
 
 #define_import_path renderide::mesh::vertex
 
+#import renderide::core::math as rmath
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
 
@@ -80,11 +81,19 @@ fn world_position(draw: dt::PerDrawUniforms, pos: vec4<f32>) -> vec4<f32> {
 }
 
 fn world_normal(draw: dt::PerDrawUniforms, n: vec4<f32>) -> vec3<f32> {
-    return normalize(draw.normal_matrix * n.xyz);
+    let local_fallback = rmath::safe_normalize(n.xyz, vec3<f32>(0.0, 1.0, 0.0));
+    return rmath::safe_normalize(draw.normal_matrix * n.xyz, local_fallback);
 }
 
 fn model_vector(draw: dt::PerDrawUniforms, v: vec3<f32>) -> vec3<f32> {
     return (draw.model * vec4<f32>(v, 0.0)).xyz;
+}
+
+fn world_direction(draw: dt::PerDrawUniforms, v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    return rmath::safe_normalize(
+        model_vector(draw, v),
+        rmath::safe_normalize(fallback, vec3<f32>(1.0, 0.0, 0.0)),
+    );
 }
 
 fn model_handedness(draw: dt::PerDrawUniforms) -> f32 {
@@ -101,7 +110,7 @@ fn model_handedness(draw: dt::PerDrawUniforms) -> f32 {
 /// `w` carries Unity's bitangent sign, adjusted by model transform parity.
 fn world_tangent(draw: dt::PerDrawUniforms, t: vec4<f32>) -> vec4<f32> {
     let tangent_sign = select(1.0, -1.0, t.w < 0.0);
-    return vec4<f32>(normalize(model_vector(draw, t.xyz)), tangent_sign * model_handedness(draw));
+    return vec4<f32>(world_direction(draw, t.xyz, t.xyz), tangent_sign * model_handedness(draw));
 }
 
 fn packed_view_layer(instance_index: u32, view_idx: u32) -> u32 {

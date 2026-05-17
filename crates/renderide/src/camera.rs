@@ -46,7 +46,7 @@ pub use view_id::ViewId;
 
 #[cfg(test)]
 mod tests {
-    use glam::{Mat4, Vec3};
+    use glam::{Mat4, Quat, Vec3};
     use openxr::Fovf;
 
     use crate::scene::render_transform_to_matrix;
@@ -121,7 +121,11 @@ mod tests {
 
     #[test]
     fn view_handedness_applies_z_flip() {
-        let tr = RenderTransform::default();
+        let tr = RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        };
         let v = view_matrix_from_render_transform(&tr);
         let z_flip = Mat4::from_scale(Vec3::new(1.0, 1.0, -1.0));
         let unflipped = render_transform_to_matrix(&tr).inverse();

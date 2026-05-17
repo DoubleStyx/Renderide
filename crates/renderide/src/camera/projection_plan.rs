@@ -69,12 +69,21 @@ impl WorldProjectionSet {
 
 #[cfg(test)]
 mod tests {
-    use glam::{Mat4, Vec3};
+    use glam::{Mat4, Quat, Vec3};
 
     use super::WorldProjectionSet;
     use crate::camera::{CameraClipPlanes, EyeView, HostCameraFrame};
     use crate::scene::{RenderSpaceId, SceneCoordinator};
     use crate::shared::{HeadOutputDevice, RenderTransform};
+
+    /// Builds an identity transform without relying on the wire default's zero scale.
+    fn identity_transform() -> RenderTransform {
+        RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        }
+    }
 
     #[test]
     fn explicit_secondary_projection_replaces_world_and_overlay_projection() {
@@ -126,7 +135,7 @@ mod tests {
         let mut scene = SceneCoordinator::new();
         scene.test_seed_space_identity_worlds(
             RenderSpaceId(1),
-            vec![RenderTransform::default()],
+            vec![identity_transform()],
             vec![-1],
         );
         scene.test_set_space_root_transform(

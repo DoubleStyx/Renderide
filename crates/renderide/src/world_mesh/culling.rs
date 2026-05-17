@@ -127,7 +127,7 @@ pub fn build_world_mesh_cull_proj_params(
 mod tests {
     //! Unit tests for [`capture_hi_z_temporal`] and [`build_world_mesh_cull_proj_params`].
 
-    use glam::Mat4;
+    use glam::{Mat4, Quat, Vec3};
 
     use crate::scene::{RenderSpaceId, SceneCoordinator};
     use crate::shared::RenderTransform;
@@ -139,17 +139,26 @@ mod tests {
     use crate::camera::view_matrix_from_render_transform;
     use crate::occlusion::hi_z_pyramid_dimensions;
 
+    /// Builds an identity transform without relying on the wire default's zero scale.
+    fn identity_transform() -> RenderTransform {
+        RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        }
+    }
+
     #[test]
     fn capture_hi_z_temporal_secondary_override_fills_all_spaces() {
         let mut scene = SceneCoordinator::new();
         scene.test_seed_space_identity_worlds(
             RenderSpaceId(1),
-            vec![RenderTransform::default()],
+            vec![identity_transform()],
             vec![-1],
         );
         scene.test_seed_space_identity_worlds(
             RenderSpaceId(2),
-            vec![RenderTransform::default()],
+            vec![identity_transform()],
             vec![-1],
         );
         let prev = WorldMeshCullProjParams {
@@ -157,7 +166,7 @@ mod tests {
             overlay_proj: Mat4::IDENTITY,
             vr_stereo: None,
         };
-        let m = Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0));
+        let m = Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0));
         let t = capture_hi_z_temporal(&scene, &prev, (1920, 1080), Some(m));
         assert_eq!(t.prev_view_by_space.len(), 2);
         for id in scene.render_space_ids() {
@@ -171,7 +180,7 @@ mod tests {
         let mut scene = SceneCoordinator::new();
         scene.test_seed_space_identity_worlds(
             RenderSpaceId(5),
-            vec![RenderTransform::default()],
+            vec![identity_transform()],
             vec![-1],
         );
         let space = scene.space(RenderSpaceId(5)).expect("space");
@@ -192,12 +201,7 @@ mod tests {
     fn build_world_mesh_cull_proj_params_sets_vr_stereo_only_when_active_and_pair_present() {
         use crate::camera::{EyeView, StereoViewMatrices};
         let scene = SceneCoordinator::new();
-        let eye = EyeView::new(
-            Mat4::IDENTITY,
-            Mat4::IDENTITY,
-            Mat4::IDENTITY,
-            glam::Vec3::ZERO,
-        );
+        let eye = EyeView::new(Mat4::IDENTITY, Mat4::IDENTITY, Mat4::IDENTITY, Vec3::ZERO);
         let stereo = Some(StereoViewMatrices::new(eye, eye));
         let hc = HostCameraFrame {
             vr_active: true,

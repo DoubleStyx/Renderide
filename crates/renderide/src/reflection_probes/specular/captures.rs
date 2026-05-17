@@ -29,6 +29,8 @@ pub(crate) struct RuntimeReflectionProbeCapture {
     pub(crate) texture: Arc<wgpu::Texture>,
     /// Cube-dimension view over the captured texture.
     pub(crate) view: Arc<wgpu::TextureView>,
+    /// 2D-array view over the captured texture.
+    pub(crate) array_view: Arc<wgpu::TextureView>,
 }
 
 /// Latest captured source for one runtime OnChanges reflection probe.
@@ -46,6 +48,8 @@ pub(crate) struct RuntimeReflectionProbeCaptureSource {
     pub(crate) texture: Arc<wgpu::Texture>,
     /// Cube-dimension view over the captured texture.
     pub(crate) view: Arc<wgpu::TextureView>,
+    /// 2D-array view over the captured texture.
+    pub(crate) array_view: Arc<wgpu::TextureView>,
 }
 
 /// Latest runtime cubemap captures keyed by host probe identity.
@@ -66,6 +70,7 @@ impl RuntimeReflectionProbeCaptureStore {
                 mip_levels: capture.mip_levels,
                 texture: capture.texture,
                 view: capture.view,
+                array_view: capture.array_view,
             },
         );
     }

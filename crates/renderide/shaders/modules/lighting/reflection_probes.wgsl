@@ -2,19 +2,20 @@
 
 #define_import_path renderide::lighting::reflection_probes
 
-#import renderide::skybox::cubemap_storage as cubemap_storage
 #import renderide::frame::globals as rg
 #import renderide::frame::types as ft
+#import renderide::ibl::cubemap_filter as cube_filter
 #import renderide::pbs::brdf as brdf
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
 #import renderide::ibl::sh2_ambient as shamb
 
 const PROBE_FLAG_BOX_PROJECTION: f32 = 1.0;
-const REFLECTION_PROBE_ATLAS_STORAGE_V_INVERTED: f32 = 1.0;
 const PROBE_SH2_SOURCE_NONE: f32 = 0.0;
 const MIN_PROBE_BLEND_DISTANCE: f32 = 1e-6;
 const MIN_PROBE_BLEND_WEIGHT: f32 = 1e-5;
+const BOX_PROJECTION_FULL_ROUGHNESS: f32 = 0.55;
+const BOX_PROJECTION_OFF_ROUGHNESS: f32 = 0.90;
 
 fn selected_draw(view_layer: u32) -> dt::PerDrawUniforms {
     return pd::get_draw(rg::draw_index_from_layer(view_layer));
@@ -27,7 +28,8 @@ fn has_indirect_specular(view_layer: u32, enabled: bool) -> bool {
 
 fn dominant_reflection_dir(n: vec3<f32>, v: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     let r = reflect(-v, n);
-    let blend = perceptual_roughness * perceptual_roughness;
+    let roughness = clamp(perceptual_roughness, 0.0, 1.0);
+    let blend = roughness * roughness;
     return normalize(mix(r, n, blend));
 }
 
@@ -73,8 +75,21 @@ fn probe_edge_weight(probe: ft::GpuReflectionProbe, world_pos: vec3<f32>) -> f32
     return clamp(1.0 - outside_distance / blend_distance, 0.0, 1.0);
 }
 
-fn box_project_dir(probe: ft::GpuReflectionProbe, world_pos: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
+fn box_project_dir(
+    probe: ft::GpuReflectionProbe,
+    world_pos: vec3<f32>,
+    dir: vec3<f32>,
+    perceptual_roughness: f32,
+) -> vec3<f32> {
     if (probe.params.z < PROBE_FLAG_BOX_PROJECTION) {
+        return dir;
+    }
+    let projection_weight = 1.0 - smoothstep(
+        BOX_PROJECTION_FULL_ROUGHNESS,
+        BOX_PROJECTION_OFF_ROUGHNESS,
+        clamp(perceptual_roughness, 0.0, 1.0),
+    );
+    if (projection_weight <= 0.0) {
         return dir;
     }
     let blend_distance = probe_blend_distance(probe);
@@ -87,7 +102,8 @@ fn box_project_dir(probe: ft::GpuReflectionProbe, world_pos: vec3<f32>, dir: vec
     if (distance <= 0.0) {
         return dir;
     }
-    return normalize(world_pos + safe_dir * distance - probe.position.xyz);
+    let projected = normalize(world_pos + safe_dir * distance - probe.position.xyz);
+    return normalize(mix(dir, projected, projection_weight));
 }
 
 fn sample_probe_radiance(
@@ -104,19 +120,16 @@ fn sample_probe_radiance(
     if (intensity <= 0.0) {
         return vec3<f32>(0.0);
     }
-    let sample_dir = box_project_dir(probe, world_pos, dir);
-    let atlas_sample_dir = cubemap_storage::sample_dir(
-        sample_dir,
-        REFLECTION_PROBE_ATLAS_STORAGE_V_INVERTED,
-    );
+    let sample_dir = box_project_dir(probe, world_pos, dir, perceptual_roughness);
     let lod = roughness_lod(perceptual_roughness, max(probe.params.y, 0.0));
-    return textureSampleLevel(
+    return cube_filter::sample_trilinear_base(
         rg::reflection_probe_specular,
-        rg::reflection_probe_specular_sampler,
-        atlas_sample_dir,
-        i32(atlas_index),
+        sample_dir,
         lod,
-    ).rgb * intensity;
+        textureDimensions(rg::reflection_probe_specular, 0).x,
+        max(probe.params.y, 0.0),
+        atlas_index * 6u,
+    ) * intensity;
 }
 
 struct ProbeBlendGroup {
