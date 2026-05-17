@@ -54,7 +54,7 @@ fn transition_axis(p_in: f32, values: vec2<f32>) -> vec2<f32> {
     );
 }
 
-//#pass type=forward offset=material(2,2)
+//#pass type=forward offset=2,2
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let checker = fract(in.checker);

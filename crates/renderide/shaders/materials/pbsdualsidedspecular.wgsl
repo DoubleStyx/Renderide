@@ -167,7 +167,7 @@ fn vs_main(
 #endif
 }
 
-//#pass type=forward name=forward_two_sided cull=off
+//#pass type=forward name=forward_two_sided cull=material(off)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

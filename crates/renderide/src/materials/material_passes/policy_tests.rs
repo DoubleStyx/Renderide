@@ -303,19 +303,19 @@ fn ui_unlit_stems_use_filter_pass_material_state() {
     }
 }
 
-/// Verifies opaque PBS DualSided stems preserve authored Cull Off regardless of host `_Cull`.
+/// Verifies opaque PBS DualSided stems use their source-authored material cull fallback.
 #[test]
-fn pbs_dualsided_opaque_stems_preserve_authored_cull_off() {
+fn pbs_dualsided_opaque_stems_apply_material_cull_overrides() {
     for stem in ["pbsdualsided_default", "pbsdualsidedspecular_default"] {
         let passes = crate::embedded_shaders::embedded_target_passes(stem);
         assert_eq!(passes.len(), 1, "{stem} should declare one forward pass");
         assert_eq!(passes[0].name, "forward_two_sided", "{stem}");
         assert_eq!(passes[0].cull_mode, None, "{stem}");
 
-        for cull_override in [
-            MaterialCullOverride::Front,
-            MaterialCullOverride::Back,
-            MaterialCullOverride::Off,
+        for (cull_override, expected_cull) in [
+            (MaterialCullOverride::Front, Some(wgpu::Face::Front)),
+            (MaterialCullOverride::Back, Some(wgpu::Face::Back)),
+            (MaterialCullOverride::Off, None),
         ] {
             let state = MaterialRenderState {
                 cull_override,
@@ -323,8 +323,8 @@ fn pbs_dualsided_opaque_stems_preserve_authored_cull_off() {
             };
             assert_eq!(
                 passes[0].resolved_cull_mode(state),
-                None,
-                "{stem} must keep authored Cull Off when host sends {cull_override:?}"
+                expected_cull,
+                "{stem} must apply host {cull_override:?} over authored Cull Off"
             );
         }
     }
