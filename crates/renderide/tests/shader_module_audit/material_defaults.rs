@@ -1,7 +1,5 @@
 //! Audits for source-declared material and texture defaults.
 
-use super::*;
-
 const XSTOON2_DEFAULT_DIRECTIVES: &[&str] = &[
     "//#mat_default _RimCubemapTint float 0.0",
     "//#mat_default _SpecularAlbedoTint float 1.0",
@@ -936,3 +934,17 @@ const EXPECTED_SHADER_DEFAULT_DIRECTIVES: &[(&str, &[&str])] = &[
     ("xstoon2.0.wgsl", XSTOON2_DEFAULT_DIRECTIVES),
     ("xstoon2.0_outlined.wgsl", XSTOON2_DEFAULT_DIRECTIVES),
 ];
+
+#[test]
+fn materials_declare_expected_default_directives() -> std::io::Result<()> {
+    for (file_name, expected_directives) in EXPECTED_SHADER_DEFAULT_DIRECTIVES {
+        let src = super::material_source(file_name)?;
+        for directive in *expected_directives {
+            assert!(
+                src.contains(directive),
+                "{file_name} must declare expected material default directive `{directive}`"
+            );
+        }
+    }
+    Ok(())
+}

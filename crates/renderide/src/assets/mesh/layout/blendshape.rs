@@ -1,5 +1,6 @@
 //! Blendshape frame selection and sparse GPU delta packing.
 
+use glam::Vec3;
 use hashbrown::{HashMap, HashSet};
 
 use crate::shared::BlendshapeBufferDescriptor;
@@ -102,9 +103,9 @@ struct PendingBlendshapeFrame {
 /// One sparse vertex delta row before deterministic sorting and byte packing.
 #[derive(Clone, Copy, Debug, Default)]
 struct PendingBlendshapeDelta {
-    position: [f32; 3],
-    normal: [f32; 3],
-    tangent: [f32; 3],
+    position: Vec3,
+    normal: Vec3,
+    tangent: Vec3,
 }
 
 impl PendingBlendshapeDelta {
@@ -132,7 +133,7 @@ impl BlendshapeDeltaChannel {
         }
     }
 
-    fn set_delta(self, row: &mut PendingBlendshapeDelta, delta: [f32; 3]) {
+    fn set_delta(self, row: &mut PendingBlendshapeDelta, delta: Vec3) {
         match self {
             Self::Position => row.position = delta,
             Self::Normal => row.normal = delta,
@@ -293,10 +294,8 @@ fn blendshape_slot_count(blendshape_buffers: &[BlendshapeBufferDescriptor]) -> O
 }
 
 /// Returns whether a vector delta is large enough to influence a sparse row.
-fn vector_has_nonzero_delta(delta: [f32; 3]) -> bool {
-    let [x, y, z] = delta;
-    let mag_sq = z.mul_add(z, x.mul_add(x, y * y));
-    mag_sq > BLENDSHAPE_DELTA_EPSILON_SQ
+fn vector_has_nonzero_delta(delta: Vec3) -> bool {
+    delta.length_squared() > BLENDSHAPE_DELTA_EPSILON_SQ
 }
 
 /// Reads one descriptor channel into sparse pending entries.
@@ -305,7 +304,7 @@ fn read_pending_channel_entries(
     byte_offset: usize,
     vertex_count: usize,
     duplicate_frame: bool,
-) -> Option<Vec<(u32, [f32; 3])>> {
+) -> Option<Vec<(u32, Vec3)>> {
     const VECTOR3_BYTES: usize = 12;
     let chunk_len = VECTOR3_BYTES * vertex_count;
     if byte_offset + chunk_len > raw.len() {
@@ -317,7 +316,7 @@ fn read_pending_channel_entries(
         let x = f32::from_le_bytes(raw[src_offset..src_offset + 4].try_into().ok()?);
         let y = f32::from_le_bytes(raw[src_offset + 4..src_offset + 8].try_into().ok()?);
         let z = f32::from_le_bytes(raw[src_offset + 8..src_offset + 12].try_into().ok()?);
-        let delta = [x, y, z];
+        let delta = Vec3::new(x, y, z);
         if !duplicate_frame && vector_has_nonzero_delta(delta) {
             entries.push((v as u32, delta));
         }
@@ -355,7 +354,7 @@ fn pending_frame_for_descriptor<'a>(
 fn merge_pending_channel_entries(
     frame: &mut PendingBlendshapeFrame,
     channel: BlendshapeDeltaChannel,
-    entries: Vec<(u32, [f32; 3])>,
+    entries: Vec<(u32, Vec3)>,
 ) {
     for (vertex_index, delta) in entries {
         channel.set_delta(frame.entries.entry(vertex_index).or_default(), delta);
@@ -539,9 +538,9 @@ fn sparse_word_len(sparse_deltas: &[u8]) -> u32 {
     (sparse_deltas.len() / size_of::<u32>()) as u32
 }
 
-fn append_position_sparse_entry(sparse_deltas: &mut Vec<u8>, vertex_index: u32, delta: [f32; 3]) {
+fn append_position_sparse_entry(sparse_deltas: &mut Vec<u8>, vertex_index: u32, delta: Vec3) {
     sparse_deltas.extend_from_slice(&vertex_index.to_le_bytes());
-    for component in delta {
+    for component in delta.to_array() {
         sparse_deltas.extend_from_slice(&component.to_le_bytes());
     }
 }
@@ -549,11 +548,11 @@ fn append_position_sparse_entry(sparse_deltas: &mut Vec<u8>, vertex_index: u32, 
 fn append_packed_vector_sparse_entry(
     sparse_deltas: &mut Vec<u8>,
     vertex_index: u32,
-    delta: [f32; 3],
+    delta: Vec3,
 ) -> bool {
-    let (x, x_clamped) = pack_snorm16_delta_component(delta[0]);
-    let (y, y_clamped) = pack_snorm16_delta_component(delta[1]);
-    let (z, z_clamped) = pack_snorm16_delta_component(delta[2]);
+    let (x, x_clamped) = pack_snorm16_delta_component(delta.x);
+    let (y, y_clamped) = pack_snorm16_delta_component(delta.y);
+    let (z, z_clamped) = pack_snorm16_delta_component(delta.z);
     let xy = u32::from(x) | (u32::from(y) << 16);
     let z_word = u32::from(z);
     sparse_deltas.extend_from_slice(&vertex_index.to_le_bytes());

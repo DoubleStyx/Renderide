@@ -35,11 +35,8 @@ pub(crate) fn srgb_vec4_rgb_to_linear(color: Vec4) -> Vec4 {
 }
 
 /// Converts an sRGB `float4` color to linear RGB while preserving alpha.
-pub(crate) fn srgb_f32x4_rgb_to_linear(mut color: [f32; 4]) -> [f32; 4] {
-    color[0] = srgb_channel_to_linear(color[0]);
-    color[1] = srgb_channel_to_linear(color[1]);
-    color[2] = srgb_channel_to_linear(color[2]);
-    color
+pub(crate) fn srgb_f32x4_rgb_to_linear(color: [f32; 4]) -> [f32; 4] {
+    srgb_vec4_rgb_to_linear(Vec4::from_array(color)).to_array()
 }
 
 #[cfg(test)]

@@ -128,7 +128,6 @@ wgpu = { version = "29.0", features = ["static-dxc"] }
 jobserver = "0.1"
 logger = { path = "../logger" }
 naga_oil = { version = "0.22", default-features = false }
-nalgebra = { version = "0.34", features = ["convert-bytemuck"] }
 tempfile = "3.27"
 
 [target.'cfg(unix)'.dependencies]

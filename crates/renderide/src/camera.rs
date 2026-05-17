@@ -47,7 +47,6 @@ pub use view_id::ViewId;
 #[cfg(test)]
 mod tests {
     use glam::{Mat4, Vec3};
-    use nalgebra::Matrix4;
     use openxr::Fovf;
 
     use crate::scene::render_transform_to_matrix;
@@ -60,56 +59,36 @@ mod tests {
     };
     use super::view::view_matrix_from_render_transform;
 
-    fn legacy_nalgebra_reverse_z_projection(
+    fn expected_reverse_z_perspective_cols(
         aspect: f32,
         vertical_fov: f32,
         near: f32,
         far: f32,
-    ) -> Matrix4<f32> {
-        let vertical_half = vertical_fov / 2.0;
-        let tan_vertical_half = vertical_half.tan();
-        let horizontal_fov = (tan_vertical_half * aspect)
-            .atan()
-            .clamp(0.1_f32, std::f32::consts::FRAC_PI_2 - 0.1_f32)
-            * 2.0;
-        let tan_horizontal_half = (horizontal_fov / 2.0).tan();
-        let f_x = 1.0 / tan_horizontal_half;
+    ) -> [f32; 16] {
+        let tan_vertical_half = (vertical_fov * 0.5).tan();
         let f_y = 1.0 / tan_vertical_half;
-        Matrix4::new(
-            f_x,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            f_y,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            near / (far - near),
-            (far * near) / (far - near),
-            0.0,
-            0.0,
-            -1.0,
-            0.0,
-        )
+        let f_x = f_y / aspect.max(f32::MIN_POSITIVE);
+        let z2 = near / (far - near);
+        let z3 = (far * near) / (far - near);
+        [
+            f_x, 0.0, 0.0, 0.0, 0.0, f_y, 0.0, 0.0, 0.0, 0.0, z2, -1.0, 0.0, 0.0, z3, 0.0,
+        ]
     }
 
     #[test]
-    fn reverse_z_perspective_matches_legacy_nalgebra_coeffs() {
+    fn reverse_z_perspective_matches_expected_coeffs() {
         let aspect = 16.0 / 9.0;
         let vertical_fov = 55f32.to_radians();
         let near = 0.1_f32;
         let far = 2000.0_f32;
         let glam_m = reverse_z_perspective(aspect, vertical_fov, near, far);
-        let na_m = legacy_nalgebra_reverse_z_projection(aspect, vertical_fov, near, far);
+        let expected_cols = expected_reverse_z_perspective_cols(aspect, vertical_fov, near, far);
         let glam_cols = glam_m.to_cols_array();
-        let na_slice = na_m.as_slice();
-        assert_eq!(glam_cols.len(), na_slice.len());
-        for (i, (&g, &n)) in glam_cols.iter().zip(na_slice.iter()).enumerate() {
+        assert_eq!(glam_cols.len(), expected_cols.len());
+        for (i, (&g, &expected)) in glam_cols.iter().zip(expected_cols.iter()).enumerate() {
             assert!(
-                (g - n).abs() < 1e-5,
-                "coeff mismatch at {i}: glam={g} nalgebra={n}"
+                (g - expected).abs() < 1e-5,
+                "coeff mismatch at {i}: glam={g} expected={expected}"
             );
         }
     }

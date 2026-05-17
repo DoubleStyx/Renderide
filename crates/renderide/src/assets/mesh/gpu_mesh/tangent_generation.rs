@@ -1,6 +1,7 @@
 //! CPU-side tangent stream extraction and MikkTSpace fallback generation.
 
 use bevy_mikktspace::{Geometry, TangentSpace, generate_tangents};
+use glam::{Vec2, Vec3, Vec4};
 use rayon::prelude::*;
 
 use crate::shared::{
@@ -18,6 +19,7 @@ const _: () = assert!(
 );
 
 const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+const DEFAULT_TANGENT_VEC: Vec4 = Vec4::new(1.0, 0.0, 0.0, 1.0);
 const DEFAULT_RAW_TANGENT_PAYLOAD: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const TANGENT_EPSILON_SQUARED: f32 = 1.0e-20;
 /// Vertex count above which vertex-stream extraction and tangent encoding fan out across rayon.
@@ -126,8 +128,8 @@ fn host_tangent_stream_bytes(
     let mut out = default_tangent_stream_bytes(vertex_count);
     let copy_one = |dst: &mut [u8], vertex: usize| {
         if let Some(tangent) = reader.read_vec4(vertex, DEFAULT_TANGENT) {
-            let sanitized = sanitize_tangent(tangent);
-            dst.copy_from_slice(bytemuck::cast_slice(&sanitized));
+            let sanitized = sanitize_tangent(Vec4::from_array(tangent));
+            dst.copy_from_slice(bytemuck::bytes_of(&sanitized));
         }
     };
     if vertex_count >= VERTEX_STREAM_PARALLEL_MIN {
@@ -156,7 +158,7 @@ fn normal_based_tangent_stream_bytes(
         VertexAttributeType::Normal,
         VertexDecodeKind::Direction,
     )?;
-    let tangents: Vec<[f32; 4]> = normals
+    let tangents: Vec<Vec4> = normals
         .iter()
         .map(|normal| tangent_from_normal(*normal))
         .collect();
@@ -204,7 +206,7 @@ fn generate_mikktspace_tangent_stream_bytes(
         normals,
         tex_coords,
         faces,
-        tangents: vec![DEFAULT_TANGENT; vertex_count],
+        tangents: vec![DEFAULT_TANGENT_VEC; vertex_count],
     };
     if generate_tangents(&mut geometry).is_err() {
         return None;
@@ -219,11 +221,16 @@ fn read_vertex_stream3(
     attrs: &[VertexAttributeDescriptor],
     target: VertexAttributeType,
     kind: VertexDecodeKind,
-) -> Option<Vec<[f32; 3]>> {
+) -> Option<Vec<Vec3>> {
     let reader =
         AttributeReader::from_attrs(vertex_data, vertex_count, stride, attrs, target, kind, 3)?;
-    let read_one = |vertex: usize| -> [f32; 3] { reader.read_vec3(vertex).unwrap_or([0.0; 3]) };
-    let out: Vec<[f32; 3]> = if vertex_count >= VERTEX_STREAM_PARALLEL_MIN {
+    let read_one = |vertex: usize| -> Vec3 {
+        reader
+            .read_vec3(vertex)
+            .map(Vec3::from_array)
+            .unwrap_or(Vec3::ZERO)
+    };
+    let out: Vec<Vec3> = if vertex_count >= VERTEX_STREAM_PARALLEL_MIN {
         (0..vertex_count).into_par_iter().map(read_one).collect()
     } else {
         (0..vertex_count).map(read_one).collect()
@@ -238,11 +245,16 @@ fn read_vertex_stream2(
     attrs: &[VertexAttributeDescriptor],
     target: VertexAttributeType,
     kind: VertexDecodeKind,
-) -> Option<Vec<[f32; 2]>> {
+) -> Option<Vec<Vec2>> {
     let reader =
         AttributeReader::from_attrs(vertex_data, vertex_count, stride, attrs, target, kind, 2)?;
-    let read_one = |vertex: usize| -> [f32; 2] { reader.read_vec2(vertex).unwrap_or([0.0; 2]) };
-    let out: Vec<[f32; 2]> = if vertex_count >= VERTEX_STREAM_PARALLEL_MIN {
+    let read_one = |vertex: usize| -> Vec2 {
+        reader
+            .read_vec2(vertex)
+            .map(Vec2::from_array)
+            .unwrap_or(Vec2::ZERO)
+    };
+    let out: Vec<Vec2> = if vertex_count >= VERTEX_STREAM_PARALLEL_MIN {
         (0..vertex_count).into_par_iter().map(read_one).collect()
     } else {
         (0..vertex_count).map(read_one).collect()
@@ -317,11 +329,11 @@ fn collect_triangle_faces(
     (!faces.is_empty()).then_some(faces)
 }
 
-fn encode_tangents(tangents: &[[f32; 4]]) -> Vec<u8> {
+fn encode_tangents(tangents: &[Vec4]) -> Vec<u8> {
     let mut out = vec![0u8; tangents.len() * 16];
-    let write_one = |slot: &mut [u8], tangent: &[f32; 4]| {
+    let write_one = |slot: &mut [u8], tangent: &Vec4| {
         let sanitized = sanitize_tangent(*tangent);
-        slot.copy_from_slice(bytemuck::cast_slice(&sanitized));
+        slot.copy_from_slice(bytemuck::bytes_of(&sanitized));
     };
     if tangents.len() >= VERTEX_STREAM_PARALLEL_MIN {
         out.par_chunks_exact_mut(16)
@@ -336,58 +348,58 @@ fn encode_tangents(tangents: &[[f32; 4]]) -> Vec<u8> {
 }
 
 fn default_tangent_stream_bytes(vertex_count: usize) -> Vec<u8> {
-    encode_tangents(&vec![DEFAULT_TANGENT; vertex_count])
+    encode_tangents(&vec![DEFAULT_TANGENT_VEC; vertex_count])
 }
 
-fn sanitize_tangent(tangent: [f32; 4]) -> [f32; 4] {
-    if !tangent.iter().all(|component| component.is_finite()) {
-        return DEFAULT_TANGENT;
+fn sanitize_tangent(tangent: Vec4) -> Vec4 {
+    if !tangent.is_finite() {
+        return DEFAULT_TANGENT_VEC;
     }
-    let len_squared = tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2];
+    let xyz = tangent.truncate();
+    let len_squared = xyz.length_squared();
     if len_squared <= TANGENT_EPSILON_SQUARED {
-        return DEFAULT_TANGENT;
+        return DEFAULT_TANGENT_VEC;
     }
-    let inv_len = len_squared.sqrt().recip();
-    [
-        tangent[0] * inv_len,
-        tangent[1] * inv_len,
-        tangent[2] * inv_len,
+    let unit = xyz * len_squared.sqrt().recip();
+    Vec4::new(
+        unit.x,
+        unit.y,
+        unit.z,
         if tangent[3] < 0.0 { -1.0 } else { 1.0 },
-    ]
+    )
 }
 
-fn tangent_from_normal(normal: [f32; 3]) -> [f32; 4] {
+fn tangent_from_normal(normal: Vec3) -> Vec4 {
     let Some(n) = normalize3(normal) else {
-        return DEFAULT_TANGENT;
+        return DEFAULT_TANGENT_VEC;
     };
-    let sign = if n[2] >= 0.0 { 1.0 } else { -1.0 };
-    let a = -1.0 / (sign + n[2]);
-    let b = n[0] * n[1] * a;
-    let tangent = [1.0 + sign * n[0] * n[0] * a, sign * b, -sign * n[0]];
+    let sign = if n.z >= 0.0 { 1.0 } else { -1.0 };
+    let a = -1.0 / (sign + n.z);
+    let b = n.x * n.y * a;
+    let tangent = Vec3::new(1.0 + sign * n.x * n.x * a, sign * b, -sign * n.x);
     let Some(t) = normalize3(tangent) else {
-        return DEFAULT_TANGENT;
+        return DEFAULT_TANGENT_VEC;
     };
-    [t[0], t[1], t[2], 1.0]
+    t.extend(1.0)
 }
 
-fn normalize3(v: [f32; 3]) -> Option<[f32; 3]> {
-    if !v.iter().all(|component| component.is_finite()) {
+fn normalize3(v: Vec3) -> Option<Vec3> {
+    if !v.is_finite() {
         return None;
     }
-    let len_squared = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+    let len_squared = v.length_squared();
     if len_squared <= TANGENT_EPSILON_SQUARED {
         return None;
     }
-    let inv_len = len_squared.sqrt().recip();
-    Some([v[0] * inv_len, v[1] * inv_len, v[2] * inv_len])
+    Some(v * len_squared.sqrt().recip())
 }
 
 struct MikkGeometry {
-    positions: Vec<[f32; 3]>,
-    normals: Vec<[f32; 3]>,
-    tex_coords: Vec<[f32; 2]>,
+    positions: Vec<Vec3>,
+    normals: Vec<Vec3>,
+    tex_coords: Vec<Vec2>,
     faces: Vec<[usize; 3]>,
-    tangents: Vec<[f32; 4]>,
+    tangents: Vec<Vec4>,
 }
 
 impl Geometry for MikkGeometry {
@@ -400,15 +412,15 @@ impl Geometry for MikkGeometry {
     }
 
     fn position(&self, face: usize, vert: usize) -> [f32; 3] {
-        self.positions[self.faces[face][vert]]
+        self.positions[self.faces[face][vert]].to_array()
     }
 
     fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
-        self.normals[self.faces[face][vert]]
+        self.normals[self.faces[face][vert]].to_array()
     }
 
     fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
-        self.tex_coords[self.faces[face][vert]]
+        self.tex_coords[self.faces[face][vert]].to_array()
     }
 
     fn set_tangent(&mut self, tangent_space: Option<TangentSpace>, face: usize, vert: usize) {
@@ -422,7 +434,7 @@ impl Geometry for MikkGeometry {
             return;
         };
         if let Some(slot) = self.tangents.get_mut(vertex_index) {
-            *slot = sanitize_tangent(tangent_space.tangent_encoded());
+            *slot = sanitize_tangent(Vec4::from_array(tangent_space.tangent_encoded()));
         }
     }
 }
@@ -692,8 +704,8 @@ mod tests {
         for v in 0..vertex_count {
             let base = v * stride + tangent_offset;
             let tangent = bytemuck::pod_read_unaligned::<[f32; 4]>(&vertices[base..base + 16]);
-            let tangent = sanitize_tangent(tangent);
-            serial_out[v * 16..v * 16 + 16].copy_from_slice(bytemuck::cast_slice(&tangent));
+            let tangent = sanitize_tangent(Vec4::from_array(tangent));
+            serial_out[v * 16..v * 16 + 16].copy_from_slice(bytemuck::bytes_of(&tangent));
         }
         assert_eq!(parallel_out, serial_out);
     }
