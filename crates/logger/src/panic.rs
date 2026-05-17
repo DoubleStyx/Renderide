@@ -9,6 +9,10 @@ use std::path::Path;
 
 use crate::level::LogLevel;
 use crate::output;
+use crate::paths;
+
+/// Prefix for the final panic/crash report line that points users to the collected logs.
+pub const LOG_DIRECTORY_FOOTER_PREFIX: &str = "Log directory: ";
 
 /// Logs a panic payload from `catch_unwind`. Extracts [`String`] or `&'static str` if possible.
 ///
@@ -38,6 +42,32 @@ pub fn panic_report(info: &dyn std::fmt::Display) -> String {
     )
 }
 
+/// Formats the final single-line log-directory footer for panic and crash reports.
+///
+/// Newlines in the displayed path are replaced with spaces so the footer is always one physical
+/// line and can safely be appended after backtraces, crash context, or native crash reports.
+pub fn log_directory_footer(logs_root: impl AsRef<Path>) -> String {
+    let logs_root = sanitize_footer_path(logs_root.as_ref());
+    format!("{LOG_DIRECTORY_FOOTER_PREFIX}{logs_root}\n")
+}
+
+/// Appends the final log-directory footer to an existing panic or crash report.
+pub fn append_log_directory_footer(report: &mut String, logs_root: impl AsRef<Path>) {
+    report.push_str(&log_directory_footer(logs_root));
+}
+
+/// Converts a displayed path into one physical line for panic/crash footers.
+fn sanitize_footer_path(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .chars()
+        .map(|c| match c {
+            '\r' | '\n' => ' ',
+            _ => c,
+        })
+        .collect()
+}
+
 /// Appends a pre-formatted panic report to the log file without acquiring the global logger mutex.
 ///
 /// Safe to call from a panic hook alongside [`panic_report`].
@@ -50,12 +80,14 @@ pub fn append_panic_report_to_file(path: impl AsRef<Path>, report: &str) {
     }
 }
 
-/// Writes panic info and backtrace to the given log file. Flushes immediately so the panic
-/// is visible on disk. Does not acquire the logger mutex (safe from a panic handler).
+/// Writes panic info, backtrace, and final log-directory footer to the given log file. Flushes
+/// immediately so the panic is visible on disk. Does not acquire the logger mutex (safe from a
+/// panic handler).
 ///
 /// Uses [`panic_report`] internally.
 pub fn log_panic(path: impl AsRef<Path>, info: &dyn std::fmt::Display) {
-    let report = panic_report(info);
+    let mut report = panic_report(info);
+    append_log_directory_footer(&mut report, paths::logs_root());
     append_panic_report_to_file(path, &report);
 }
 
@@ -91,6 +123,34 @@ mod tests {
     }
 
     #[test]
+    fn log_directory_footer_formats_single_final_line() {
+        let s = log_directory_footer(Path::new("/tmp/renderide/logs"));
+
+        assert_eq!(s, "Log directory: /tmp/renderide/logs\n");
+        assert_eq!(s.lines().count(), 1);
+    }
+
+    #[test]
+    fn log_directory_footer_replaces_embedded_newlines() {
+        let s = log_directory_footer(Path::new("/tmp/renderide\nlogs\rroot"));
+
+        assert_eq!(s, "Log directory: /tmp/renderide logs root\n");
+        assert_eq!(s.lines().count(), 1);
+    }
+
+    #[test]
+    fn append_log_directory_footer_makes_footer_last_line() {
+        let mut report = "PANIC: test\nBacktrace:\nframe\n".to_string();
+
+        append_log_directory_footer(&mut report, Path::new("/tmp/renderide/logs"));
+
+        assert_eq!(
+            report.lines().last(),
+            Some("Log directory: /tmp/renderide/logs")
+        );
+    }
+
+    #[test]
     fn append_panic_report_to_file_appends_bytes() {
         let path = std::env::temp_dir().join(format!("logger_panic_append_{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -108,6 +168,12 @@ mod tests {
         let got = std::fs::read_to_string(&path).expect("read");
         assert!(got.starts_with("PANIC: "));
         assert!(got.contains("Backtrace:"));
+        assert!(
+            got.lines()
+                .last()
+                .is_some_and(|line| line.starts_with(LOG_DIRECTORY_FOOTER_PREFIX)),
+            "footer should be final line: {got:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -124,6 +190,7 @@ mod tests {
         let got = std::fs::read_to_string(&path).expect("read");
         assert_eq!(got.matches("PANIC: test panic display").count(), 2);
         assert_eq!(got.matches("\nBacktrace:\n").count(), 2);
+        assert_eq!(got.matches(LOG_DIRECTORY_FOOTER_PREFIX).count(), 2);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -176,6 +243,12 @@ mod tests {
             "expected payload in report: {got:?}"
         );
         assert!(got.contains("Backtrace:"), "got {got:?}");
+        assert!(
+            got.lines()
+                .last()
+                .is_some_and(|line| line.starts_with(LOG_DIRECTORY_FOOTER_PREFIX)),
+            "footer should be final line: {got:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

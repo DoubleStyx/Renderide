@@ -48,7 +48,10 @@ pub use output::{
     enabled, flush, init, init_with_mirror, is_initialized, log, log_with_target, set_max_level,
     set_mirror_writer, try_log,
 };
-pub use panic::{append_panic_report_to_file, log_panic, log_panic_payload, panic_report};
+pub use panic::{
+    LOG_DIRECTORY_FOOTER_PREFIX, append_log_directory_footer, append_panic_report_to_file,
+    log_directory_footer, log_panic, log_panic_payload, panic_report,
+};
 pub use paths::{
     LogComponent, LogsRootError, ensure_log_dir, init_for, log_dir_for, log_file_path, logs_root,
     logs_root_with,

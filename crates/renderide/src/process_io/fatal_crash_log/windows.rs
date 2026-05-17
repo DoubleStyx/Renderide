@@ -19,6 +19,8 @@ struct WindowsCrashFds {
     log: Mutex<std::fs::File>,
     /// Optional duplicate of the launching terminal stderr, used for the dual-output tee.
     term: Option<Mutex<std::fs::File>>,
+    /// Preformatted final line pointing at the shared logs root.
+    log_directory_footer: Box<[u8]>,
 }
 
 static WINDOWS_CRASH_FDS: OnceLock<WindowsCrashFds> = OnceLock::new();
@@ -39,6 +41,7 @@ pub(super) fn install_impl(log_path: &Path) -> Result<(), String> {
         .set(WindowsCrashFds {
             log: Mutex::new(log),
             term: term.map(Mutex::new),
+            log_directory_footer: super::log_directory_footer_bytes(),
         })
         .map_err(|_e| "fatal crash log fds already installed".to_string())?;
 
@@ -58,6 +61,7 @@ pub(super) fn install_impl(log_path: &Path) -> Result<(), String> {
                 fds.write_all(&context_buf[..context_n]);
                 const NO_POSIX_SIGNAL: i32 = 0;
                 write_stack_trace(NO_POSIX_SIGNAL, |chunk| fds.write_all(chunk));
+                fds.write_all(&fds.log_directory_footer);
             }
             CrashEventResult::from(false)
         }))

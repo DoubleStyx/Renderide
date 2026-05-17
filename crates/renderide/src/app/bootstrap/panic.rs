@@ -12,6 +12,7 @@ pub(super) fn install_panic_hook(log_path: &Path) {
         let mut report = logger::panic_report(info);
         report.push('\n');
         report.push_str(&crash_context::format_snapshot());
+        logger::append_log_directory_footer(&mut report, logger::logs_root());
         logger::append_panic_report_to_file(&log_path_hook, &report);
         crate::native_stdio::try_write_preserved_stderr(report.as_bytes());
     }));
