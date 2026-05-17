@@ -4,8 +4,10 @@ mod cache;
 mod key;
 mod keys;
 mod resolve;
+mod transparent;
 
 pub use cache::FrameMaterialBatchCache;
 pub use key::{MaterialDrawBatchKey, compute_batch_key_hash};
+pub use transparent::TransparentMaterialClass;
 
 pub(crate) use resolve::{MaterialResolveCtx, batch_key_for_slot_cached};

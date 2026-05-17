@@ -43,7 +43,7 @@ pub(in crate::world_mesh::draw_prep) fn prepared_draws_share_renderer(
 struct PreparedRunViewState {
     /// Rigid model matrix reused by all emitted slot draws.
     rigid_world_matrix: Option<Mat4>,
-    /// World-space object AABB reused by all emitted slot draws for reflection-probe selection.
+    /// World-space object AABB reused by all emitted slot draws for transparent sorting and probes.
     world_aabb: Option<(Vec3, Vec3)>,
     /// Raster front-face winding selected from [`Self::rigid_world_matrix`].
     front_face: RasterFrontFace,

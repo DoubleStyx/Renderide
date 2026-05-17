@@ -4,6 +4,7 @@ use crate::materials::{
     UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_OVERLAY, UNITY_RENDER_QUEUE_TRANSPARENT,
     render_queue_is_transparent,
 };
+use crate::world_mesh::TransparentMaterialClass;
 use crate::world_mesh::draw_prep::item::WorldMeshDrawItem;
 use crate::world_mesh::materials::compute_batch_key_hash;
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -86,6 +87,18 @@ fn set_camera_distance(item: &mut WorldMeshDrawItem, distance_sq: f32) {
 
 fn set_render_queue(item: &mut WorldMeshDrawItem, render_queue: i32) {
     item.batch_key.render_queue = render_queue;
+    item.batch_key_hash = compute_batch_key_hash(&item.batch_key);
+    item.sort_prefix = pack_sort_prefix(
+        item.is_overlay,
+        item.batch_key.render_queue,
+        item._opaque_depth_bucket,
+        item.batch_key_hash,
+    );
+}
+
+/// Sets the transparent class and refreshes sort keys that depend on the batch key.
+fn set_transparent_class(item: &mut WorldMeshDrawItem, class: TransparentMaterialClass) {
+    item.batch_key.transparent_class = class;
     item.batch_key_hash = compute_batch_key_hash(&item.batch_key);
     item.sort_prefix = pack_sort_prefix(
         item.is_overlay,
@@ -181,6 +194,43 @@ fn transparent_sort_remains_back_to_front() {
     set_camera_distance(&mut far, 4096.0);
 
     assert_eq!(cmp_world_mesh_draw_items(&far, &near), Ordering::Less);
+}
+
+#[test]
+fn commutative_transparent_sort_groups_batch_keys_within_sorting_order() {
+    let mut items: Vec<_> = [(1, 4.0), (2, 16.0), (1, 1.0), (2, 9.0)]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (material, distance))| {
+            let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: material,
+                property_block: None,
+                skinned: false,
+                sorting_order: 0,
+                mesh_asset_id: 1,
+                node_id: index as i32,
+                slot_index: 0,
+                collect_order: index,
+                alpha_blended: true,
+            });
+            item.batch_key.blend_mode =
+                crate::materials::MaterialBlendMode::UnityBlend { src: 1, dst: 1 };
+            set_camera_distance(&mut item, distance);
+            set_transparent_class(&mut item, TransparentMaterialClass::CommutativeBlend);
+            item
+        })
+        .collect();
+
+    sort_draws_serial(&mut items);
+
+    let materials: Vec<_> = items
+        .iter()
+        .map(|item| item.batch_key.material_asset_id)
+        .collect();
+    assert!(
+        materials == vec![1, 1, 2, 2] || materials == vec![2, 2, 1, 1],
+        "commutative transparent batches should stay adjacent, got {materials:?}"
+    );
 }
 
 #[test]

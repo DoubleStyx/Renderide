@@ -16,7 +16,7 @@ use super::super::super::state::HudUiState;
 use super::super::super::view::TabView;
 use super::super::labels::{
     blend_mode_label, color_mask_label, draw_state_has_override, draw_state_is_uiish, offset_label,
-    pipeline_label, stencil_label, ztest_label,
+    pipeline_label, stencil_label, transparent_class_label, ztest_label,
 };
 use super::super::table_helpers::scrolling_table_flags;
 
@@ -161,7 +161,10 @@ fn draw_pipeline_cell(ui: &imgui::Ui, row: &WorldMeshDrawStateRow) {
 
 fn draw_blend_cell(ui: &imgui::Ui, row: &WorldMeshDrawStateRow) {
     let blend = blend_mode_label(row.blend_mode);
-    if blend == "opaque" || blend == "stem" {
+    let transparent_class = transparent_class_label(row.transparent_class);
+    if transparent_class != "opaque" {
+        ui.text_colored(TAG_BLEND, format!("{blend} [{transparent_class}]"));
+    } else if blend == "opaque" || blend == "stem" {
         ui.text(&blend);
     } else {
         ui.text_colored(TAG_BLEND, &blend);

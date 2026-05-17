@@ -2,9 +2,43 @@
 
 use super::draw_prep::WorldMeshDrawItem;
 use super::instances::{DrawGroup, build_plan, depth_prepass_group_eligible};
-use super::materials::MaterialDrawBatchKey;
+use super::materials::{MaterialDrawBatchKey, TransparentMaterialClass};
 use crate::materials::ShaderPermutation;
 use crate::materials::{MaterialBlendMode, RasterPipelineKind, embedded_stem_pipeline_pass_count};
+
+/// Per-class transparent draw counts for diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldMeshTransparentClassStats {
+    /// Normal order-dependent alpha-blended draws.
+    pub ordered_alpha_draws: usize,
+    /// Transparent draws whose effective pass writes depth.
+    pub depth_writing_draws: usize,
+    /// Grab-pass or scene-color filter draws.
+    pub grab_pass_filter_draws: usize,
+    /// Additive or multiplicative draws that can relax batching inside their bucket.
+    pub commutative_blend_draws: usize,
+    /// Known two-sided transparent draws with authored front/back pass order.
+    pub known_two_sided_draws: usize,
+    /// Transparent draws kept on conservative compatibility ordering.
+    pub compatibility_fallback_draws: usize,
+}
+
+impl WorldMeshTransparentClassStats {
+    /// Adds one draw from `class` to the matching counter.
+    fn add(&mut self, class: TransparentMaterialClass) {
+        match class {
+            TransparentMaterialClass::Opaque => {}
+            TransparentMaterialClass::OrderedAlpha => self.ordered_alpha_draws += 1,
+            TransparentMaterialClass::DepthWritingTransparent => self.depth_writing_draws += 1,
+            TransparentMaterialClass::GrabPassFilter => self.grab_pass_filter_draws += 1,
+            TransparentMaterialClass::CommutativeBlend => self.commutative_blend_draws += 1,
+            TransparentMaterialClass::KnownTwoSidedTransparent => self.known_two_sided_draws += 1,
+            TransparentMaterialClass::CompatibilityFallback => {
+                self.compatibility_fallback_draws += 1;
+            }
+        }
+    }
+}
 
 /// Draw and batch counts for the debug HUD (aligned with sorted [`WorldMeshDrawItem`] order).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,6 +80,8 @@ pub struct WorldMeshDrawStats {
     /// Subset of [`Self::instance_batch_total`] in the grab-pass transparent subpass
     /// (materials whose embedded shader samples the scene-color snapshot).
     pub transparent_pass_batches: usize,
+    /// Transparent draw counts by renderer-local material behavior class.
+    pub transparent_class_stats: WorldMeshTransparentClassStats,
     /// Opaque indexed batches mirrored by the generic depth prepass.
     pub depth_prepass_batches: usize,
     /// Opaque GPU instances mirrored by the generic depth prepass.
@@ -96,6 +132,8 @@ pub struct WorldMeshDrawStateRow {
     pub skinned: bool,
     /// Whether this draw is alpha sorted.
     pub alpha_blended: bool,
+    /// Renderer-local transparent behavior class.
+    pub transparent_class: TransparentMaterialClass,
     /// Whether this draw is emitted through the intersection depth-snapshot subpass.
     pub requires_intersection_pass: bool,
     /// Unity `_ZWrite` / `ZWrite` override. `None` means the shader pass default is used.
@@ -135,6 +173,7 @@ pub fn stats_from_sorted(
     let draws_overlay = draws_total - draws_main;
     let rigid_draws = draws.iter().filter(|d| !d.skinned).count();
     let skinned_draws = draws_total - rigid_draws;
+    let transparent_class_stats = transparent_class_stats_from_sorted(draws);
 
     let mut batch_total = 0usize;
     let mut batch_main = 0usize;
@@ -211,11 +250,23 @@ pub fn stats_from_sorted(
         instance_batch_total,
         intersect_pass_batches,
         transparent_pass_batches,
+        transparent_class_stats,
         depth_prepass_batches,
         depth_prepass_instances,
         gpu_instances_emitted,
         submitted_pipeline_pass_total,
     }
+}
+
+/// Counts transparent draw classes in sorted draw order.
+fn transparent_class_stats_from_sorted(
+    draws: &[WorldMeshDrawItem],
+) -> WorldMeshTransparentClassStats {
+    let mut stats = WorldMeshTransparentClassStats::default();
+    for draw in draws {
+        stats.add(draw.batch_key.transparent_class);
+    }
+    stats
 }
 
 fn depth_prepass_counts(
@@ -259,6 +310,7 @@ pub fn state_rows_from_sorted(draws: &[WorldMeshDrawItem]) -> Vec<WorldMeshDrawS
                 collect_order: item.collect_order,
                 skinned: item.skinned,
                 alpha_blended: item.batch_key.alpha_blended,
+                transparent_class: item.batch_key.transparent_class,
                 requires_intersection_pass: item.batch_key.embedded_requires_intersection_pass,
                 depth_write: state.depth_write,
                 depth_compare: state.depth_compare,
@@ -281,6 +333,7 @@ pub fn state_rows_from_sorted(draws: &[WorldMeshDrawItem]) -> Vec<WorldMeshDrawS
 mod tests {
     use super::*;
     use crate::materials::{MaterialBlendMode, MaterialDepthOffsetState};
+    use crate::world_mesh::TransparentMaterialClass;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
     #[test]
@@ -291,6 +344,7 @@ mod tests {
         assert_eq!(s.instance_batch_total, 0);
         assert_eq!(s.intersect_pass_batches, 0);
         assert_eq!(s.transparent_pass_batches, 0);
+        assert_eq!(s.transparent_class_stats, Default::default());
         assert_eq!(s.depth_prepass_batches, 0);
         assert_eq!(s.depth_prepass_instances, 0);
         assert_eq!(s.gpu_instances_emitted, 0);
@@ -349,10 +403,12 @@ mod tests {
             alpha_blended: false,
         });
         draw.batch_key.embedded_uses_scene_color_snapshot = true;
+        draw.batch_key.transparent_class = TransparentMaterialClass::GrabPassFilter;
         let s = stats_from_sorted(&[draw], None, true, ShaderPermutation(0));
         assert_eq!(s.instance_batch_total, 1);
         assert_eq!(s.intersect_pass_batches, 0);
         assert_eq!(s.transparent_pass_batches, 1);
+        assert_eq!(s.transparent_class_stats.grab_pass_filter_draws, 1);
         assert_eq!(s.depth_prepass_batches, 0);
         assert_eq!(s.depth_prepass_instances, 0);
         assert_eq!(s.gpu_instances_emitted, 1);
@@ -396,6 +452,10 @@ mod tests {
         assert_eq!(
             row.blend_mode,
             MaterialBlendMode::UnityBlend { src: 1, dst: 10 }
+        );
+        assert_eq!(
+            row.transparent_class,
+            TransparentMaterialClass::OrderedAlpha
         );
     }
 }

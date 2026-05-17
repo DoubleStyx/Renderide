@@ -88,7 +88,7 @@ pub struct InstancePlan {
 /// the resulting slab ranges in sorted-window order. Singleton-per-draw groups are produced when:
 /// - `supports_base_instance` is false (downlevel devices set `instance_count == 1`), or
 /// - the run is `skinned` (vertex deform path differs per draw), or
-/// - the run is `alpha_blended` (back-to-front order is load-bearing -- must not collapse).
+/// - the run is order-dependent transparency whose back-to-front order is load-bearing.
 ///
 /// Group emit order matches the order of each group's first member in `draws`, so the
 /// view's high-level sort intent (state-change minimisation, transparent depth) is

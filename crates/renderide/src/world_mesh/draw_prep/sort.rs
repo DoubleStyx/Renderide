@@ -48,8 +48,7 @@ pub(super) fn opaque_depth_bucket(distance_sq: f32) -> u16 {
 ///
 /// Transparent-queue draws zero the depth-bucket and hash bits so every transparent draw inside
 /// the same `(overlay, render_queue)` bucket compares equal; [`sort_draws`] resorts each such
-/// run afterwards using the structural comparator on `(sorting_order, camera_distance_sq,
-/// collect_order)`.
+/// run afterwards using the class-aware structural comparator.
 #[inline]
 pub fn pack_sort_prefix(
     is_overlay: bool,
@@ -77,15 +76,33 @@ pub fn pack_sort_prefix(
         | (hash_bits << SORT_PREFIX_BATCH_HASH_SHIFT)
 }
 
-/// Tiebreaker for transparent draws sharing the same `(overlay, render_queue)` bucket: stable
-/// `sorting_order`, then back-to-front `camera_distance_sq` (using `total_cmp` to handle NaN
-/// safely), then `collect_order`.
+/// Tiebreaker for transparent draws sharing the same `(overlay, render_queue)` bucket.
+///
+/// Order-dependent classes keep `sorting_order`, back-to-front distance, then collection order.
+/// Commutative additive/multiply classes may sort by batch key inside the same sorting-order
+/// bucket because their color composition is order independent.
 #[inline]
 fn cmp_transparent_intra_run(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
     a.sorting_order
         .cmp(&b.sorting_order)
-        .then_with(|| b.camera_distance_sq.total_cmp(&a.camera_distance_sq))
+        .then_with(|| cmp_transparent_class_tie(a, b))
         .then(a.collect_order.cmp(&b.collect_order))
+}
+
+/// Orders transparent draws after `sorting_order` has already matched.
+#[inline]
+fn cmp_transparent_class_tie(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
+    if a.batch_key.transparent_class.allows_relaxed_batching()
+        && b.batch_key.transparent_class.allows_relaxed_batching()
+    {
+        return a
+            .batch_key_hash
+            .cmp(&b.batch_key_hash)
+            .then_with(|| a.batch_key.cmp(&b.batch_key))
+            .then_with(|| b.camera_distance_sq.total_cmp(&a.camera_distance_sq));
+    }
+
+    b.camera_distance_sq.total_cmp(&a.camera_distance_sq)
 }
 
 /// Tiebreaker for opaque draws sharing the same packed prefix.
@@ -118,8 +135,8 @@ fn cmp_opaque_intra_prefix(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Orde
 ///   ordering. Common when many draws share a batch key.
 /// * Transparent draws inside the same `(overlay, render_queue)` bucket. [`pack_sort_prefix`]
 ///   zeros the depth-bucket and hash bits for transparent items so they all collide on the
-///   primary key; the transparent comparator then sorts by `sorting_order`, back-to-front
-///   `camera_distance_sq`, then `collect_order`.
+///   primary key; the transparent comparator then sorts by `sorting_order`, an appropriate class
+///   tie-breaker, then `collect_order`.
 fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem], allow_parallel: bool) {
     profiling::scope!("mesh::sort_intra_prefix_runs");
     let mut start = 0;
@@ -162,7 +179,7 @@ fn sort_intra_prefix_run(
     }
 }
 
-/// Sorts opaque draws for batching and alpha UI/text draws in stable canvas order.
+/// Sorts opaque draws for batching and transparent draws by compatibility class.
 ///
 /// Primary pass: parallel `sort_unstable_by_key` over [`WorldMeshDrawItem::sort_prefix`] —
 /// replaces the prior multi-field `cmp_world_mesh_draw_items` chain with a single `u64::cmp`

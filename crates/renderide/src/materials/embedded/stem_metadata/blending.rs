@@ -9,6 +9,22 @@ pub fn embedded_stem_uses_alpha_blending(base_stem: &str) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, ShaderPermutation(0)).uses_alpha_blending()
 }
 
+/// `true` when the embedded material stem declares a blended pass that writes depth by default.
+pub fn embedded_stem_uses_blended_depth_write(
+    base_stem: &str,
+    permutation: ShaderPermutation,
+) -> bool {
+    EmbeddedStemQuery::for_stem(base_stem, permutation).uses_blended_depth_write()
+}
+
+/// `true` when the embedded material stem declares blended front/back cull passes.
+pub fn embedded_stem_uses_two_sided_transparency(
+    base_stem: &str,
+    permutation: ShaderPermutation,
+) -> bool {
+    EmbeddedStemQuery::for_stem(base_stem, permutation).uses_two_sided_transparency()
+}
+
 /// `true` when the composed embedded target declares a scene-depth snapshot binding.
 pub fn embedded_stem_uses_scene_depth_snapshot(
     base_stem: &str,
@@ -35,8 +51,9 @@ mod tests {
     use crate::materials::ShaderPermutation;
 
     use super::{
-        embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
-        embedded_stem_uses_scene_depth_snapshot,
+        embedded_stem_uses_alpha_blending, embedded_stem_uses_blended_depth_write,
+        embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
+        embedded_stem_uses_two_sided_transparency,
     };
     use crate::materials::embedded::stem_metadata::{
         embedded_composed_stem_for_permutation, embedded_stem_requires_intersection_pass,
@@ -162,5 +179,28 @@ mod tests {
                 "{stem}"
             );
         }
+    }
+
+    #[test]
+    fn transparent_depth_write_and_two_sided_metadata_are_exposed() {
+        let mono = ShaderPermutation(0);
+
+        assert!(embedded_stem_uses_blended_depth_write(
+            "furfx-basic-10layer_default",
+            mono
+        ));
+        assert!(!embedded_stem_uses_two_sided_transparency(
+            "furfx-basic-10layer_default",
+            mono
+        ));
+
+        assert!(embedded_stem_uses_two_sided_transparency(
+            "pbsdualsidedtransparent_default",
+            mono
+        ));
+        assert!(!embedded_stem_uses_blended_depth_write(
+            "pbsdualsidedtransparent_default",
+            mono
+        ));
     }
 }

@@ -12,8 +12,9 @@ mod tangent_fallback;
 mod vertex_streams;
 
 pub use blending::{
-    embedded_stem_uses_alpha_blending, embedded_stem_uses_scene_color_snapshot,
-    embedded_stem_uses_scene_depth_snapshot,
+    embedded_stem_uses_alpha_blending, embedded_stem_uses_blended_depth_write,
+    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
+    embedded_stem_uses_two_sided_transparency,
 };
 pub use passes::{
     embedded_stem_depth_prepass_pass, embedded_stem_pipeline_pass_count,
@@ -84,6 +85,10 @@ struct EmbeddedStemMetadata {
     pass_count: usize,
     /// Whether any declared pass has a blend state.
     uses_alpha_blending: bool,
+    /// Whether any declared blended pass writes depth by default.
+    uses_blended_depth_write: bool,
+    /// Whether declared blended passes include authored front/back cull ordering.
+    uses_two_sided_transparency: bool,
     /// Single forward pass that is safe to mirror with the generic depth prepass, if any.
     depth_prepass_pass: Option<MaterialPassDesc>,
 }
@@ -184,6 +189,16 @@ impl EmbeddedStemQuery {
         self.metadata.uses_alpha_blending
     }
 
+    /// `true` when any declared blended pass writes depth by default.
+    pub fn uses_blended_depth_write(&self) -> bool {
+        self.metadata.uses_blended_depth_write
+    }
+
+    /// `true` when declared blended passes include authored front/back cull ordering.
+    pub fn uses_two_sided_transparency(&self) -> bool {
+        self.metadata.uses_two_sided_transparency
+    }
+
     /// Unified scene-snapshot requirement flags, or [`SnapshotRequirements::default`] when the
     /// stem failed to reflect.
     pub fn snapshot_requirements(&self) -> SnapshotRequirements {
@@ -241,10 +256,23 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
         tangent_fallback_mode: tangent_fallback_mode_for_stem(base_stem),
         pass_count: passes.len().max(1),
         uses_alpha_blending: passes.iter().any(|p| p.blend.is_some()),
+        uses_blended_depth_write: passes.iter().any(|p| p.blend.is_some() && p.depth_write),
+        uses_two_sided_transparency: passes_use_two_sided_transparency(passes),
         depth_prepass_pass,
     };
     guard.insert(key, metadata.clone());
     metadata
+}
+
+/// Returns whether a target declares blended front- and back-culled passes.
+fn passes_use_two_sided_transparency(passes: &[MaterialPassDesc]) -> bool {
+    let has_front = passes
+        .iter()
+        .any(|pass| pass.blend.is_some() && pass.cull_mode == Some(wgpu::Face::Front));
+    let has_back = passes
+        .iter()
+        .any(|pass| pass.blend.is_some() && pass.cull_mode == Some(wgpu::Face::Back));
+    has_front && has_back
 }
 
 fn depth_prepass_pass_for_target(
@@ -378,6 +406,8 @@ mod tests {
                 tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
                 pass_count: 1,
                 uses_alpha_blending: false,
+                uses_blended_depth_write: false,
+                uses_two_sided_transparency: false,
                 depth_prepass_pass: None,
             },
         }

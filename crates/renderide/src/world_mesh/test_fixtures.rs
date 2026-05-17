@@ -8,7 +8,9 @@ use crate::materials::{
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
-use crate::world_mesh::{MaterialDrawBatchKey, WorldMeshDrawItem, compute_batch_key_hash};
+use crate::world_mesh::{
+    MaterialDrawBatchKey, TransparentMaterialClass, WorldMeshDrawItem, compute_batch_key_hash,
+};
 
 /// Named parameters for [`dummy_world_mesh_draw_item`].
 ///
@@ -84,6 +86,11 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         render_state: Default::default(),
         blend_mode: Default::default(),
         alpha_blended,
+        transparent_class: if alpha_blended {
+            TransparentMaterialClass::OrderedAlpha
+        } else {
+            TransparentMaterialClass::Opaque
+        },
     };
     let batch_key_hash = compute_batch_key_hash(&batch_key);
     let sort_prefix = crate::world_mesh::draw_prep::pack_sort_prefix(

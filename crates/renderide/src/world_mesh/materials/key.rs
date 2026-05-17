@@ -5,6 +5,8 @@ use crate::materials::{
     RasterPipelineKind, RasterPrimitiveTopology,
 };
 
+use super::transparent::TransparentMaterialClass;
+
 /// Groups draws that can share the same raster pipeline, material bind data, and Unity render-queue
 /// ordering bucket (Unity material +
 /// [`MaterialPropertyBlock`](https://docs.unity3d.com/ScriptReference/MaterialPropertyBlock.html)-style slot0).
@@ -63,6 +65,8 @@ pub struct MaterialDrawBatchKey {
     pub blend_mode: MaterialBlendMode,
     /// Transparent alpha-blended UI/text stems should preserve stable canvas order.
     pub alpha_blended: bool,
+    /// Renderer-local transparent behavior class inferred from existing material and shader state.
+    pub transparent_class: TransparentMaterialClass,
 }
 
 /// Computes a 64-bit content hash for `key` used by the draw-sort comparator's primary tiebreaker.

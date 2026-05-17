@@ -74,7 +74,10 @@ pub struct WorldMeshDrawItem {
     pub blendshape_deformed: bool,
     /// Stable insertion order before sorting; used for transparent UI/text.
     pub collect_order: usize,
-    /// Approximate camera distance used for transparent back-to-front sorting.
+    /// Approximate camera distance metric used for transparent back-to-front sorting.
+    ///
+    /// Transparent draws prefer world bounds when available and fall back to transform-origin
+    /// distance when the host has not provided usable mesh bounds for the draw.
     pub camera_distance_sq: f32,
     /// Merge key for host material + property block lookups (e.g. [`crate::materials::host_data::MaterialDictionary::get_merged`]).
     pub lookup_ids: MaterialPropertyLookupIds,
@@ -101,8 +104,8 @@ pub struct WorldMeshDrawItem {
     /// Layout (highest bit first): `[overlay:1][render_queue:18][transparent:1]
     /// [opaque_depth_bucket:8][batch_key_hash_hi:32][reserved:4]`. Transparent draws zero the
     /// depth-bucket and hash bits so they share a key within their `(overlay, render_queue)`
-    /// bucket; [`super::sort::sort_draws`] then resorts each transparent run with the
-    /// structural comparator on `(sorting_order, camera_distance_sq, collect_order)`.
+    /// bucket; [`super::sort::sort_draws`] then resorts each transparent run with a
+    /// class-aware structural comparator.
     pub sort_prefix: u64,
     /// Rigid-body world matrix for non-skinned draws, filled during draw collection to avoid
     /// recomputing [`crate::scene::SceneCoordinator::world_matrix_for_render_context`] in the forward pass.

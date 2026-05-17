@@ -2,7 +2,7 @@ use super::item::resolved_material_slots;
 use super::sort::sort_draws;
 use crate::materials::{RasterFrontFace, RasterPipelineKind, UNITY_RENDER_QUEUE_GEOMETRY};
 use crate::scene::{MeshMaterialSlot, StaticMeshRenderer};
-use crate::world_mesh::materials::MaterialDrawBatchKey;
+use crate::world_mesh::materials::{MaterialDrawBatchKey, TransparentMaterialClass};
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
 #[test]
@@ -153,6 +153,7 @@ fn property_block_splits_batch_keys() {
         render_state: Default::default(),
         blend_mode: Default::default(),
         alpha_blended: false,
+        transparent_class: TransparentMaterialClass::Opaque,
     };
     let b = MaterialDrawBatchKey {
         pipeline: RasterPipelineKind::Null,
@@ -180,6 +181,7 @@ fn property_block_splits_batch_keys() {
         render_state: Default::default(),
         blend_mode: Default::default(),
         alpha_blended: false,
+        transparent_class: TransparentMaterialClass::Opaque,
     };
     assert_ne!(a, b);
     assert!(a < b || b < a);

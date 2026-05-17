@@ -3,6 +3,7 @@ use crate::materials::{
     MaterialBlendMode, MaterialDepthOffsetState, RasterFrontFace, RasterPipelineKind,
     UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
 };
+use crate::world_mesh::TransparentMaterialClass;
 use crate::world_mesh::draw_prep::{pack_sort_prefix, sort_draws};
 use crate::world_mesh::materials::compute_batch_key_hash;
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -179,6 +180,37 @@ fn alpha_blended_regular_window_emits_post_skybox_singletons() {
     for group in &plan.post_skybox_groups {
         assert_eq!(group.instance_range.end - group.instance_range.start, 1);
     }
+    assert!(plan.intersect_groups.is_empty());
+    assert!(plan.transparent_groups.is_empty());
+}
+
+#[test]
+fn commutative_transparent_regular_window_groups_by_mesh() {
+    let mut draws: Vec<_> = (0..3)
+        .map(|n| {
+            let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 1,
+                property_block: None,
+                skinned: false,
+                sorting_order: 0,
+                mesh_asset_id: 7,
+                node_id: n,
+                slot_index: 0,
+                collect_order: n as usize,
+                alpha_blended: true,
+            });
+            item.batch_key.blend_mode = MaterialBlendMode::UnityBlend { src: 1, dst: 1 };
+            item.batch_key.transparent_class = TransparentMaterialClass::CommutativeBlend;
+            refresh_sort_keys(&mut item);
+            item
+        })
+        .collect();
+    sort_draws(&mut draws);
+
+    let plan = build_plan(&draws, true);
+    assert!(plan.regular_groups.is_empty());
+    assert_eq!(plan.post_skybox_groups.len(), 1);
+    assert_eq!(plan.post_skybox_groups[0].instance_range, 0..3);
     assert!(plan.intersect_groups.is_empty());
     assert!(plan.transparent_groups.is_empty());
 }

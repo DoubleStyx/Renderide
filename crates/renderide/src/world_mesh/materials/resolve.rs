@@ -10,9 +10,10 @@ use crate::materials::{
     embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
     embedded_stem_needs_uv3_stream, embedded_stem_needs_wide_uv_stream,
     embedded_stem_requires_intersection_pass, embedded_stem_tangent_fallback_mode,
-    embedded_stem_uses_alpha_blending, embedded_stem_uses_raw_normal_payload,
-    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_scene_color_snapshot,
-    embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_ui_transparent_fallback,
+    embedded_stem_uses_alpha_blending, embedded_stem_uses_blended_depth_write,
+    embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
+    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
+    embedded_stem_uses_two_sided_transparency, embedded_stem_uses_ui_transparent_fallback,
     fallback_render_queue_for_material, first_float_from_maps, first_vec4_from_maps,
     material_blend_mode_from_maps, material_render_queue_from_maps,
     material_render_state_from_maps, resolve_raster_pipeline,
@@ -20,6 +21,9 @@ use crate::materials::{
 
 use super::FrameMaterialBatchCache;
 use super::key::MaterialDrawBatchKey;
+use super::transparent::{
+    TransparentMaterialClass, TransparentMaterialClassInput, transparent_class_for_material,
+};
 
 /// Read-only material-resolution context threaded through the cache refresh walker and the cached
 /// batch-key lookup.
@@ -70,6 +74,8 @@ pub(crate) struct ResolvedMaterialBatch {
     pub embedded_uses_scene_depth_snapshot: bool,
     /// Whether the active shader permutation declares a scene-color snapshot binding.
     pub embedded_uses_scene_color_snapshot: bool,
+    /// Renderer-local transparent behavior class inferred from resolved material state.
+    pub transparent_class: TransparentMaterialClass,
     /// Resolved material blend mode.
     pub blend_mode: MaterialBlendMode,
     /// Effective Unity render queue for draw ordering.
@@ -131,6 +137,8 @@ struct EmbeddedMaterialFeatures {
     uses_scene_color_snapshot: bool,
     uses_alpha_blending: bool,
     uses_ui_transparent_fallback: bool,
+    uses_blended_depth_write: bool,
+    uses_two_sided_transparency: bool,
 }
 
 fn embedded_material_features(
@@ -161,6 +169,8 @@ fn embedded_material_features(
         uses_scene_color_snapshot: embedded_stem_uses_scene_color_snapshot(stem, shader_perm),
         uses_alpha_blending: embedded_stem_uses_alpha_blending(stem),
         uses_ui_transparent_fallback: embedded_stem_uses_ui_transparent_fallback(stem),
+        uses_blended_depth_write: embedded_stem_uses_blended_depth_write(stem, shader_perm),
+        uses_two_sided_transparency: embedded_stem_uses_two_sided_transparency(stem, shader_perm),
     }
 }
 
@@ -268,6 +278,15 @@ pub(crate) fn resolve_material_batch(
         pipeline_property_ids,
         fallback_render_queue_for_material(alpha_blended),
     );
+    let transparent_class = transparent_class_for_material(TransparentMaterialClassInput {
+        render_queue,
+        render_state,
+        blend_mode,
+        alpha_blended,
+        uses_scene_color_snapshot: embedded.uses_scene_color_snapshot,
+        uses_blended_depth_write: embedded.uses_blended_depth_write,
+        uses_two_sided_transparency: embedded.uses_two_sided_transparency,
+    });
     let ui_rect_clip_local = ui_rect_clip_local_from_maps(mat_map, pb_map, pipeline_property_ids);
     ResolvedMaterialBatch {
         shader_asset_id,
@@ -286,6 +305,7 @@ pub(crate) fn resolve_material_batch(
         embedded_requires_intersection_pass: embedded.requires_intersection_pass,
         embedded_uses_scene_depth_snapshot: embedded.uses_scene_depth_snapshot,
         embedded_uses_scene_color_snapshot: embedded.uses_scene_color_snapshot,
+        transparent_class,
         blend_mode,
         render_queue,
         render_state,
@@ -330,6 +350,7 @@ fn batch_key_from_resolved(
         render_state: r.render_state,
         blend_mode: r.blend_mode,
         alpha_blended: r.alpha_blended,
+        transparent_class: r.transparent_class,
     }
 }
 

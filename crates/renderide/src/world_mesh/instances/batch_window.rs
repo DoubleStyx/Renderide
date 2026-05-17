@@ -2,7 +2,7 @@
 //!
 //! A "batch window" is a maximal run of consecutive draws sharing a `MaterialDrawBatchKey`. Within
 //! a window the grouping policy is determined by material properties (intersection-pass, grab-pass,
-//! transparency, alpha-blend) plus device capability (`supports_base_instance`).
+//! transparency class) plus device capability (`supports_base_instance`).
 
 use std::ops::Range;
 
@@ -42,6 +42,7 @@ pub(super) fn next_batch_window(
     let intersect = key.embedded_requires_intersection_pass;
     let grab_pass = key.embedded_uses_scene_color_snapshot;
     let post_skybox = !intersect && !grab_pass && regular_window_records_after_skybox(key);
+    let order_dependent = !key.transparent_class.allows_relaxed_batching();
     debug_assert!(
         !(intersect && grab_pass),
         "intersection and grab-pass subpasses are mutually exclusive"
@@ -54,8 +55,8 @@ pub(super) fn next_batch_window(
         grab_pass,
         singleton: !supports_base_instance
             || draws[start].skinned
-            || post_skybox
-            || key.alpha_blended
+            || (post_skybox && order_dependent)
+            || (key.alpha_blended && order_dependent)
             || grab_pass,
     }
 }

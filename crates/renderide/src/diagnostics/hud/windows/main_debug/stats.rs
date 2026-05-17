@@ -329,8 +329,21 @@ impl StatsSection for DrawStatsSection {
                 ui,
                 "GPU instance batches",
                 &format!(
-                    "{} indexed  ({} intersect)",
-                    m.instance_batch_total, m.intersect_pass_batches
+                    "{} indexed  ({} intersect / {} grab)",
+                    m.instance_batch_total, m.intersect_pass_batches, m.transparent_pass_batches
+                ),
+            );
+            kv(
+                ui,
+                "Transparent classes",
+                &format!(
+                    "ordered={}  zwrite={}  grab={}  comm={}  two-sided={}  fallback={}",
+                    m.transparent_class_stats.ordered_alpha_draws,
+                    m.transparent_class_stats.depth_writing_draws,
+                    m.transparent_class_stats.grab_pass_filter_draws,
+                    m.transparent_class_stats.commutative_blend_draws,
+                    m.transparent_class_stats.known_two_sided_draws,
+                    m.transparent_class_stats.compatibility_fallback_draws
                 ),
             );
             kv(

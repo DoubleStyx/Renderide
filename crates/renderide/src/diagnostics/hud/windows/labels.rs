@@ -1,7 +1,7 @@
 //! Label strings and draw-row predicates for debug HUD tables.
 
 use crate::materials::{MaterialBlendMode, RasterPipelineKind};
-use crate::world_mesh::WorldMeshDrawStateRow;
+use crate::world_mesh::{TransparentMaterialClass, WorldMeshDrawStateRow};
 
 pub(super) fn device_type_label(kind: wgpu::DeviceType) -> &'static str {
     match kind {
@@ -23,6 +23,7 @@ pub(super) fn pipeline_label(pipeline: &RasterPipelineKind) -> String {
 pub(super) fn draw_state_is_uiish(row: &WorldMeshDrawStateRow) -> bool {
     row.is_overlay
         || row.alpha_blended
+        || row.transparent_class.is_transparent()
         || matches!(
             &row.pipeline,
             RasterPipelineKind::EmbeddedStem(stem)
@@ -46,6 +47,11 @@ pub(super) fn blend_mode_label(mode: MaterialBlendMode) -> String {
         MaterialBlendMode::Opaque => "opaque".to_string(),
         MaterialBlendMode::UnityBlend { src, dst } => format!("unity {src}/{dst}"),
     }
+}
+
+/// Returns the compact HUD label for a transparent material class.
+pub(super) fn transparent_class_label(class: TransparentMaterialClass) -> &'static str {
+    class.label()
 }
 
 pub(super) fn color_mask_label(mask: Option<u8>) -> String {

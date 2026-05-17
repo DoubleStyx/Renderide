@@ -50,7 +50,7 @@ pub(super) struct DrawCandidate {
     pub(super) material_asset_id: i32,
     /// Property block associated with material slot zero.
     pub(super) property_block_id: Option<i32>,
-    /// World-space object AABB used for CPU reflection-probe selection.
+    /// World-space object AABB used for transparent sorting and CPU reflection-probe selection.
     pub(super) world_aabb: Option<(Vec3, Vec3)>,
 }
 
@@ -102,7 +102,11 @@ pub(super) fn evaluate_draw_candidate(
     let blendshape_deformed = candidate.blendshape_deformed
         || (candidate.tangent_blendshape_deform_active && batch_key.embedded_needs_tangent);
     let camera_distance_sq = if render_queue_is_transparent(batch_key.render_queue) {
-        alpha_distance_sq
+        transparent_sort_distance_sq(
+            ctx.view_origin_world,
+            candidate.world_aabb,
+            alpha_distance_sq,
+        )
     } else {
         0.0
     };
@@ -110,8 +114,9 @@ pub(super) fn evaluate_draw_candidate(
     // Precompute the opaque depth bucket here so the sort comparator does not redo `sqrt + log2`
     // on every pairwise compare. The argument matches the previous comparator-side computation
     // (`opaque_depth_bucket(item.camera_distance_sq)`) so the resulting order is stable:
-    // transparent-queue draws use `alpha_distance_sq` (preserved on `camera_distance_sq` above)
-    // while opaque-queue draws feed `0.0` and bucket to `0`, leaving batch-key tiebreaking intact.
+    // transparent-queue draws use the class-compatible sort metric preserved on
+    // `camera_distance_sq`, while opaque-queue draws feed `0.0` and bucket to `0`,
+    // leaving batch-key tiebreaking intact.
     let opaque_depth_bucket =
         crate::world_mesh::draw_prep::sort::opaque_depth_bucket(camera_distance_sq);
     let sort_prefix = crate::world_mesh::draw_prep::sort::pack_sort_prefix(
@@ -149,6 +154,38 @@ pub(super) fn evaluate_draw_candidate(
         reflection_probes,
         ui_rect_clip_local,
     })
+}
+
+/// Returns the transparent back-to-front sort metric for a draw candidate.
+fn transparent_sort_distance_sq(
+    view_origin_world: Vec3,
+    world_aabb: Option<(Vec3, Vec3)>,
+    fallback_distance_sq: f32,
+) -> f32 {
+    let fallback = finite_nonnegative_distance_sq(fallback_distance_sq).unwrap_or(0.0);
+    let Some((min, max)) = world_aabb else {
+        return fallback;
+    };
+    if !view_origin_world.is_finite() || !min.is_finite() || !max.is_finite() {
+        return fallback;
+    }
+    let lo = min.min(max);
+    let hi = min.max(max);
+    let dx = (lo.x - view_origin_world.x)
+        .abs()
+        .max((hi.x - view_origin_world.x).abs());
+    let dy = (lo.y - view_origin_world.y)
+        .abs()
+        .max((hi.y - view_origin_world.y).abs());
+    let dz = (lo.z - view_origin_world.z)
+        .abs()
+        .max((hi.z - view_origin_world.z).abs());
+    finite_nonnegative_distance_sq(dx.mul_add(dx, dy.mul_add(dy, dz * dz))).unwrap_or(fallback)
+}
+
+/// Returns finite non-negative distance values unchanged.
+fn finite_nonnegative_distance_sq(value: f32) -> Option<f32> {
+    (value.is_finite() && value >= 0.0).then_some(value)
 }
 
 /// Overlay-layer meshes are drawn through a separate camera stack after the world.
@@ -309,6 +346,30 @@ mod tests {
         assert_eq!(
             item.batch_key.render_state.depth_compare,
             Some(ZTEST_ALWAYS)
+        );
+    }
+
+    #[test]
+    fn transparent_sort_distance_uses_bounds_farthest_corner() {
+        let distance = transparent_sort_distance_sq(
+            Vec3::ZERO,
+            Some((Vec3::new(9.0, -2.0, 0.0), Vec3::new(11.0, 2.0, 0.0))),
+            100.0,
+        );
+
+        assert_eq!(distance, 125.0);
+    }
+
+    #[test]
+    fn transparent_sort_distance_falls_back_without_valid_bounds() {
+        assert_eq!(transparent_sort_distance_sq(Vec3::ZERO, None, 16.0), 16.0);
+        assert_eq!(
+            transparent_sort_distance_sq(Vec3::ZERO, Some((Vec3::NAN, Vec3::ONE)), 16.0),
+            16.0
+        );
+        assert_eq!(
+            transparent_sort_distance_sq(Vec3::ZERO, None, f32::NAN),
+            0.0
         );
     }
 
