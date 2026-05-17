@@ -23,11 +23,9 @@
 #import renderide::draw::per_draw as pd
 #import renderide::pbs::families::distance_lerp as pdist
 #import renderide::pbs::lighting as plight
-#import renderide::pbs::normal as pnorm
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::material::variant_bits as vb
-#import renderide::core::normal_decode as nd
 #import renderide::core::uv as uvu
 
 struct PbsDistanceLerpSpecularTransparentMaterial {
@@ -91,23 +89,17 @@ fn kw_LOCAL_SPACE() -> bool { return pbsdlspect_kw(PBSDLSPECT_KW_LOCAL_SPACE); }
 fn kw_OVERRIDE_DISPLACE_DIRECTION() -> bool { return pbsdlspect_kw(PBSDLSPECT_KW_OVERRIDE_DISPLACE_DIRECTION); }
 
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
-    if (!kw_NORMALMAP()) {
-        var n = normalize(world_n);
-        if (!front_facing) {
-            n = -n;
-        }
-        return n;
-    }
-
-    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
-    var ts_n = nd::decode_ts_normal_with_placeholder_sample(
-        textureSample(_NormalMap, _NormalMap_sampler, uv_main),
+    return psamp::sample_optional_two_sided_world_normal(
+        kw_NORMALMAP(),
+        _NormalMap,
+        _NormalMap_sampler,
+        uv_main,
+        0.0,
         mat._NormalScale,
+        world_n,
+        world_t,
+        front_facing,
     );
-    if (!front_facing) {
-        ts_n.z = -ts_n.z;
-    }
-    return normalize(tbn * ts_n);
 }
 
 @vertex

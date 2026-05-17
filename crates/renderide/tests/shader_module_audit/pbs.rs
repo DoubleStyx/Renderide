@@ -242,6 +242,28 @@ fn pbs_material_roots_use_shared_sampling_and_mask_helpers() -> io::Result<()> {
         }
     }
 
+    for material in [
+        "pbsdistancelerp.wgsl",
+        "pbsdistancelerpspecular.wgsl",
+        "pbsdistancelerptransparent.wgsl",
+        "pbsdistancelerpspeculartransparent.wgsl",
+    ] {
+        let src = material_source(material)?;
+        assert!(
+            src.contains("psamp::sample_optional_two_sided_world_normal("),
+            "{material} must use the shared two-sided normal sampling helper"
+        );
+        for forbidden in [
+            "nd::decode_ts_normal_with_placeholder_sample",
+            "pnorm::orthonormal_tbn",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{material} must delegate `{forbidden}` through pbs::sampling"
+            );
+        }
+    }
+
     let splat = module_source("pbs/splat.wgsl")?;
     assert!(
         splat.contains("fn color_mask_weights(mask: vec4<f32>) -> vec4<f32>")
@@ -450,19 +472,35 @@ fn spot_lights_do_not_use_arbitrary_smoothstep_cone_fade() -> io::Result<()> {
 
 #[test]
 fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
+    let standard = module_source("pbs/standard.wgsl")?;
+    for required in [
+        "fn standard_alpha(",
+        "return color_alpha;",
+        "return color_alpha * texture_alpha;",
+        "fn clip_standard_alpha(",
+        "if (enabled && alpha <= cutoff) {",
+        "fn occlusion_from_sample(sample: f32, strength: f32) -> f32",
+        "return mix(1.0, sample, clamp(strength, 0.0, 1.0));",
+    ] {
+        assert!(
+            standard.contains(required),
+            "pbs/standard.wgsl must contain `{required}`"
+        );
+    }
+
     let metallic = material_source("pbsmetallic.wgsl")?;
     for required in [
         "_GlossMapScale: f32",
         "_OcclusionStrength: f32",
+        "#import renderide::pbs::standard as pstd",
         "return pbs_kw(PBSMETALLIC_KW_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A);",
-        "let base_alpha = unity_standard_alpha(albedo_sample.a);",
-        "if (alpha_test_enabled() && base_alpha <= mat._Cutoff) {",
+        "let base_alpha = pstd::standard_alpha(mat._Color.a, albedo_sample.a, smoothness_from_albedo_alpha());",
+        "pstd::clip_standard_alpha(base_alpha, mat._Cutoff, alpha_test_enabled());",
         "let smoothness_scale = mat._GlossMapScale;",
         "smoothness = mg.a * smoothness_scale;",
         "smoothness = albedo_sample.a * smoothness_scale;",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
-        "let occlusion_strength = mat._OcclusionStrength;",
-        "mix(1.0, occlusion_sample, clamp(occlusion_strength, 0.0, 1.0))",
+        "pstd::occlusion_from_sample(occlusion_sample, mat._OcclusionStrength);",
         "psurf::metallic_with_geometric_normal(",
         "world_n,",
     ] {
@@ -479,9 +517,11 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
 
     let specular = material_source("pbsspecular.wgsl")?;
     for required in [
-        "let base_alpha = unity_standard_alpha(albedo_sample.a);",
-        "if (alpha_test_enabled() && base_alpha <= mat._Cutoff) {",
+        "#import renderide::pbs::standard as pstd",
+        "let base_alpha = pstd::standard_alpha(mat._Color.a, albedo_sample.a, smoothness_from_albedo_alpha());",
+        "pstd::clip_standard_alpha(base_alpha, mat._Cutoff, alpha_test_enabled());",
         "ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g",
+        "pstd::occlusion_from_sample(occlusion_sample, mat._OcclusionStrength);",
         "psurf::specular_with_geometric_normal(",
         "world_n,",
     ] {
@@ -506,7 +546,7 @@ fn standard_pbs_roots_enforce_unity_default_for_unsent_parameters() -> io::Resul
             "//#mat_default _GlossMapScale float 1.0",
             "//#mat_default _OcclusionStrength float 1.0",
             "let smoothness_scale = mat._GlossMapScale;",
-            "let occlusion_strength = mat._OcclusionStrength;",
+            "pstd::occlusion_from_sample(occlusion_sample, mat._OcclusionStrength);",
         ] {
             assert!(
                 src.contains(required),
@@ -1006,32 +1046,30 @@ fn pbs_standard_parallax_uses_tangent_space_view_dir() -> io::Result<()> {
         );
     }
 
+    let standard_src = module_source("pbs/standard.wgsl")?;
+    for required in [
+        "#import renderide::pbs::parallax as ppar",
+        "ts::sample_tex_2d(parallax_map, parallax_sampler, uv, parallax_lod_bias).g",
+        "ppar::unity_parallax_offset(h, parallax, world_pos, world_n, world_t, view_layer)",
+    ] {
+        assert!(
+            standard_src.contains(required),
+            "pbs/standard.wgsl should contain `{required}`"
+        );
+    }
+
     for file_name in ["pbsmetallic.wgsl", "pbsspecular.wgsl"] {
         let src = material_source(file_name)?;
         assert!(
-            src.contains("#import renderide::pbs::parallax as ppar"),
-            "{file_name} should use the shared parallax helper"
-        );
-        assert!(
-            src.contains(
-                "ts::sample_tex_2d(_ParallaxMap, _ParallaxMap_sampler, uv, mat._ParallaxMap_LodBias).g"
-            ),
-            "{file_name} should sample Unity Standard parallax height from the green channel"
-        );
-        assert!(
-            src.contains(
-                "ppar::unity_parallax_offset(h, mat._Parallax, world_pos, world_n, world_t, view_layer)"
-            ),
-            "{file_name} should offset parallax UVs from tangent-space view direction"
-        );
-        assert!(
-            src.contains("uv_with_parallax(uv_base, world_pos, world_n, world_t, view_layer)"),
-            "{file_name} should pass the surface frame into parallax sampling"
+            src.contains("#import renderide::pbs::standard as pstd")
+                && src.contains("pstd::apply_parallax("),
+            "{file_name} should route Standard parallax through the shared standard module"
         );
 
         for forbidden in [
             "view_dir.xy / max(abs(view_dir.z), 0.25)",
             "rg::view_dir_for_world_pos(world_pos, view_layer)",
+            "fn uv_with_parallax(",
         ] {
             assert!(
                 !src.contains(forbidden),

@@ -8,6 +8,52 @@ use super::*;
 
 #[test]
 fn projection360_reconstructs_implicit_first_keyword_defaults() -> io::Result<()> {
+    let module_src = module_source("skybox/projection360_material.wgsl")?;
+    for group_const in [
+        "P360_GROUP_VIEW",
+        "P360_GROUP_OUTSIDE",
+        "P360_GROUP_TINT_TEX",
+        "P360_GROUP_TEXTURE_MODE",
+    ] {
+        assert!(
+            module_src.contains(group_const),
+            "skybox/projection360_material.wgsl must declare {group_const} -- the \
+             alphabetically-first keyword in each no-`_` multi_compile group is Unity's \
+             implicit default and Froox does not ship that bit when the material picks nothing.",
+        );
+    }
+    assert!(
+        module_src.contains("fn proj360_group_default("),
+        "skybox/projection360_material.wgsl must declare proj360_group_default to \
+         reconstruct Unity's implicit-first-keyword default for each group.",
+    );
+    for (helper, group, bit) in [
+        ("kw_VIEW", "P360_GROUP_VIEW", "P360_KW_VIEW"),
+        (
+            "kw_OUTSIDE_CLIP",
+            "P360_GROUP_OUTSIDE",
+            "P360_KW_OUTSIDE_CLIP",
+        ),
+        (
+            "kw_TINT_TEX_NONE",
+            "P360_GROUP_TINT_TEX",
+            "P360_KW_TINT_TEX_NONE",
+        ),
+        (
+            "kw_EQUIRECTANGULAR",
+            "P360_GROUP_TEXTURE_MODE",
+            "P360_KW_EQUIRECTANGULAR",
+        ),
+    ] {
+        let expected = format!("proj360_group_default(bits, {group}, {bit})");
+        assert!(
+            module_src.contains(&format!("fn {helper}(bits: u32)"))
+                && module_src.contains(&expected),
+            "skybox/projection360_material.wgsl must route {helper}() through {expected} \
+             so a material in the default state lights up the first keyword.",
+        );
+    }
+
     for (path_label, src) in [
         (
             "materials/projection360.wgsl",
@@ -18,47 +64,19 @@ fn projection360_reconstructs_implicit_first_keyword_defaults() -> io::Result<()
             source_file(manifest_dir().join("shaders/passes/backend/skybox_projection360.wgsl"))?,
         ),
     ] {
-        for group_const in [
-            "P360_GROUP_VIEW",
-            "P360_GROUP_OUTSIDE",
-            "P360_GROUP_TINT_TEX",
-            "P360_GROUP_TEXTURE_MODE",
-        ] {
-            assert!(
-                src.contains(group_const),
-                "{path_label} must declare {group_const} -- the alphabetically-first \
-                 keyword in each no-`_` multi_compile group is Unity's implicit default \
-                 and Froox does not ship that bit when the material picks nothing.",
-            );
-        }
         assert!(
-            src.contains("fn proj360_group_default("),
-            "{path_label} must declare proj360_group_default to reconstruct \
-             Unity's implicit-first-keyword default for each group.",
+            src.contains("renderide::skybox::projection360_material as p360m"),
+            "{path_label} must import the shared Projection360 material module",
         );
-        for (helper, group, bit) in [
-            ("kw_VIEW", "P360_GROUP_VIEW", "P360_KW_VIEW"),
-            (
-                "kw_OUTSIDE_CLIP",
-                "P360_GROUP_OUTSIDE",
-                "P360_KW_OUTSIDE_CLIP",
-            ),
-            (
-                "kw_TINT_TEX_NONE",
-                "P360_GROUP_TINT_TEX",
-                "P360_KW_TINT_TEX_NONE",
-            ),
-            (
-                "kw_EQUIRECTANGULAR",
-                "P360_GROUP_TEXTURE_MODE",
-                "P360_KW_EQUIRECTANGULAR",
-            ),
+        for forbidden in [
+            "fn proj360_group_default(",
+            "fn sample_cubemap(",
+            "fn sample_equirect(",
+            "fn apply_offset(",
         ] {
-            let expected = format!("proj360_group_default({group}, {bit})");
             assert!(
-                src.contains(&format!("fn {helper}()")) && src.contains(&expected),
-                "{path_label} must route {helper}() through {expected} so a material in \
-                 the default state (no group bit set) lights up the first keyword.",
+                !src.contains(forbidden),
+                "{path_label} must delegate `{forbidden}` through the shared module",
             );
         }
     }
@@ -67,6 +85,19 @@ fn projection360_reconstructs_implicit_first_keyword_defaults() -> io::Result<()
 
 #[test]
 fn proceduralskybox_defaults_sun_disk_to_high_quality() -> io::Result<()> {
+    let module_src = module_source("skybox/procedural_material.wgsl")?;
+    assert!(
+        module_src.contains("PROCSKY_GROUP_SUNDISK"),
+        "skybox/procedural_material.wgsl must declare PROCSKY_GROUP_SUNDISK \
+         (no-`_` multi_compile group)",
+    );
+    assert!(
+        module_src.contains("(mat._RenderideVariantBits & PROCSKY_GROUP_SUNDISK) == 0u")
+            && module_src.contains("procsky_kw(PROCSKY_KW_SUNDISK_HIGH_QUALITY)"),
+        "skybox/procedural_material.wgsl must default kw_SUNDISK_HIGH_QUALITY() to true \
+         when no _SUNDISK_* bit is set.",
+    );
+
     for (path_label, src) in [
         (
             "materials/proceduralskybox.wgsl",
@@ -80,15 +111,20 @@ fn proceduralskybox_defaults_sun_disk_to_high_quality() -> io::Result<()> {
         ),
     ] {
         assert!(
-            src.contains("PROCSKY_GROUP_SUNDISK"),
-            "{path_label} must declare PROCSKY_GROUP_SUNDISK (no-`_` multi_compile group)",
+            src.contains("renderide::skybox::procedural_material as psmat"),
+            "{path_label} must import the shared ProceduralSkybox material module",
         );
-        assert!(
-            src.contains("(mat._RenderideVariantBits & PROCSKY_GROUP_SUNDISK) == 0u")
-                && src.contains("procsky_kw(PROCSKY_KW_SUNDISK_HIGH_QUALITY)"),
-            "{path_label} must default kw_SUNDISK_HIGH_QUALITY() to true when no \
-             _SUNDISK_* bit is set.",
-        );
+        for forbidden in [
+            "struct ProceduralSkyboxMaterial",
+            "fn procedural_sky_params(",
+            "fn procedural_sun_disk_mode(",
+            "PROCSKY_GROUP_SUNDISK",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{path_label} must delegate `{forbidden}` through the shared module",
+            );
+        }
     }
     Ok(())
 }

@@ -238,6 +238,8 @@ mod hygiene;
 mod material_defaults;
 #[path = "shader_module_audit/pbs.rs"]
 mod pbs;
+#[path = "shader_module_audit/skybox_implicit_defaults.rs"]
+mod skybox_implicit_defaults;
 #[path = "shader_module_audit/tangent_basis.rs"]
 mod tangent_basis;
 #[path = "shader_module_audit/text.rs"]

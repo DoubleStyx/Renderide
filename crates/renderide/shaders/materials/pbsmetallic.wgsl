@@ -28,12 +28,10 @@
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
-#import renderide::pbs::normal as pnorm
-#import renderide::pbs::parallax as ppar
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::surface as psurf
+#import renderide::pbs::standard as pstd
 #import renderide::core::uv as uvu
-#import renderide::core::normal_decode as nd
 #import renderide::core::texture_sampling as ts
 
 struct PbsMetallicMaterial {
@@ -132,59 +130,25 @@ fn smoothness_from_albedo_alpha() -> bool {
     return pbs_kw(PBSMETALLIC_KW_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A);
 }
 
-fn unity_standard_alpha(texture_alpha: f32) -> f32 {
-    if (smoothness_from_albedo_alpha()) {
-        return mat._Color.a;
-    }
-    return mat._Color.a * texture_alpha;
-}
-
-fn uv_with_parallax(uv: vec2<f32>, world_pos: vec3<f32>, world_n: vec3<f32>, world_t: vec4<f32>, view_layer: u32) -> vec2<f32> {
-    if (!pbs_kw(PBSMETALLIC_KW_PARALLAXMAP)) {
-        return uv;
-    }
-    let h = ts::sample_tex_2d(_ParallaxMap, _ParallaxMap_sampler, uv, mat._ParallaxMap_LodBias).g;
-    return uv + ppar::unity_parallax_offset(h, mat._Parallax, world_pos, world_n, world_t, view_layer);
-}
-
-fn sample_normal_world(
-    uv_main: vec2<f32>,
-    uv_detail: vec2<f32>,
-    world_n: vec3<f32>,
-    world_t: vec4<f32>,
-    detail_mask: f32,
-) -> vec3<f32> {
-    if (!pbs_kw(PBSMETALLIC_KW_NORMALMAP)) {
-        return normalize(world_n);
-    }
-
-    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
-    var ts_n = nd::decode_ts_normal_with_placeholder_sample(
-        ts::sample_tex_2d(_BumpMap, _BumpMap_sampler, uv_main, mat._BumpMap_LodBias),
-        mat._BumpScale,
-    );
-
-    if (pbs_kw(PBSMETALLIC_KW_DETAIL_MULX2) && detail_mask > 0.001) {
-        let ts_detail = nd::decode_ts_normal_with_placeholder_sample(
-            ts::sample_tex_2d(_DetailNormalMap, _DetailNormalMap_sampler, uv_detail, mat._DetailNormalMap_LodBias),
-            mat._DetailNormalMapScale,
-        );
-        ts_n = normalize(vec3<f32>(ts_n.xy + ts_detail.xy * detail_mask, ts_n.z));
-    }
-
-    return normalize(tbn * ts_n);
-}
-
 fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n: vec3<f32>, world_t: vec4<f32>, view_layer: u32) -> SurfaceData {
     let uv_base = uvu::apply_st(uv0, mat._MainTex_ST);
-    let uv_main = uv_with_parallax(uv_base, world_pos, world_n, world_t, view_layer);
-    let uv_detail = uvu::apply_st(uv0, mat._DetailAlbedoMap_ST);
+    let uv_main = pstd::apply_parallax(
+        uv_base,
+        pbs_kw(PBSMETALLIC_KW_PARALLAXMAP),
+        mat._Parallax,
+        world_pos,
+        world_n,
+        world_t,
+        view_layer,
+        _ParallaxMap,
+        _ParallaxMap_sampler,
+        mat._ParallaxMap_LodBias,
+    );
+    let uv_detail = pstd::detail_uv(uv0, uv1, 0.0, mat._DetailAlbedoMap_ST);
 
     let albedo_sample = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
-    let base_alpha = unity_standard_alpha(albedo_sample.a);
-    if (alpha_test_enabled() && base_alpha <= mat._Cutoff) {
-        discard;
-    }
+    let base_alpha = pstd::standard_alpha(mat._Color.a, albedo_sample.a, smoothness_from_albedo_alpha());
+    pstd::clip_standard_alpha(base_alpha, mat._Cutoff, alpha_test_enabled());
 
     var base_color = mat._Color.rgb * albedo_sample.rgb;
 
@@ -200,26 +164,56 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
         smoothness = albedo_sample.a * smoothness_scale;
     }
     metallic = clamp(metallic, 0.0, 1.0);
-    let roughness = clamp(1.0 - clamp(smoothness, 0.0, 1.0), 0.0, 1.0);
+    let roughness = pstd::roughness_from_smoothness(smoothness);
 
     let occlusion_sample = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).g;
-    let occlusion_strength = mat._OcclusionStrength;
-    let occlusion = mix(1.0, occlusion_sample, clamp(occlusion_strength, 0.0, 1.0));
+    let occlusion = pstd::occlusion_from_sample(occlusion_sample, mat._OcclusionStrength);
 
-    var detail_mask = 0.0;
-    if (pbs_kw(PBSMETALLIC_KW_DETAIL_MULX2)) {
-        detail_mask = ts::sample_tex_2d(_DetailMask, _DetailMask_sampler, uv_main, mat._DetailMask_LodBias).a;
-        let detail = ts::sample_tex_2d(_DetailAlbedoMap, _DetailAlbedoMap_sampler, uv_detail, mat._DetailAlbedoMap_LodBias).rgb;
-        base_color = base_color * mix(vec3<f32>(1.0), detail * 2.0, detail_mask);
-    }
+    let detail_enabled = pbs_kw(PBSMETALLIC_KW_DETAIL_MULX2);
+    let detail_mask = pstd::sample_detail_mask(
+        detail_enabled,
+        _DetailMask,
+        _DetailMask_sampler,
+        uv_main,
+        mat._DetailMask_LodBias,
+    );
+    base_color = pstd::apply_detail_albedo(
+        base_color,
+        detail_enabled,
+        detail_mask,
+        _DetailAlbedoMap,
+        _DetailAlbedoMap_sampler,
+        uv_detail,
+        mat._DetailAlbedoMap_LodBias,
+    );
 
-    let n = sample_normal_world(uv_main, uv_detail, world_n, world_t, detail_mask);
+    let n = pstd::sample_world_normal(
+        pbs_kw(PBSMETALLIC_KW_NORMALMAP),
+        detail_enabled,
+        detail_mask,
+        _BumpMap,
+        _BumpMap_sampler,
+        uv_main,
+        mat._BumpMap_LodBias,
+        mat._BumpScale,
+        _DetailNormalMap,
+        _DetailNormalMap_sampler,
+        uv_detail,
+        mat._DetailNormalMap_LodBias,
+        mat._DetailNormalMapScale,
+        world_n,
+        world_t,
+        normalize(world_n),
+    );
 
-    var emission = vec3<f32>(0.0);
-    if (pbs_kw(PBSMETALLIC_KW_EMISSION)) {
-        emission = ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb
-            * mat._EmissionColor.rgb;
-    }
+    let emission = pstd::sample_emission(
+        pbs_kw(PBSMETALLIC_KW_EMISSION),
+        mat._EmissionColor.rgb,
+        _EmissionMap,
+        _EmissionMap_sampler,
+        uv_main,
+        mat._EmissionMap_LodBias,
+    );
 
     return SurfaceData(base_color, base_alpha, metallic, roughness, occlusion, n, emission);
 }

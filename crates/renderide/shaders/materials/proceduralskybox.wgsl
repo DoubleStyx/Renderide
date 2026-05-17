@@ -5,9 +5,9 @@
 //! the linear branch only; the gamma-space branch and
 //! `SKYBOX_COLOR_IN_TARGET_COLOR_SPACE` short-circuit are intentionally omitted.
 //!
-//! Froox variant bits populate `_RenderideVariantBits`; this shader decodes ProceduralSky's
-//! shader-specific keyword bits locally. `UNITY_COLORSPACE_GAMMA` is reserved in the bit
-//! table but never consulted because the renderer is linear-only. The sun-disk group has
+//! Froox variant bits populate `_RenderideVariantBits`; the shared ProceduralSkybox material
+//! module decodes shader-specific keyword bits. `UNITY_COLORSPACE_GAMMA` is reserved in the
+//! bit table but never consulted because the renderer is linear-only. The sun-disk group has
 //! no `_` placeholder, so the high-quality keyword is the zero-bit default.
 
 //#mat_default _GroundColor vec4 0.369 0.349 0.341 1.0
@@ -18,41 +18,8 @@
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::skybox::procedural as ps
+#import renderide::skybox::procedural_material as psmat
 #import renderide::mesh::vertex as mv
-#import renderide::material::variant_bits as vb
-
-struct ProceduralSkyboxMaterial {
-    _SkyTint: vec4<f32>,
-    _GroundColor: vec4<f32>,
-    _SunColor: vec4<f32>,
-    _SunDirection: vec4<f32>,
-    _Exposure: f32,
-    _SunSize: f32,
-    _AtmosphereThickness: f32,
-    _RenderideVariantBits: u32,
-}
-
-const PROCSKY_KW_SUNDISK_HIGH_QUALITY: u32 = 1u << 0u;
-const PROCSKY_KW_SUNDISK_NONE: u32 = 1u << 1u;
-const PROCSKY_KW_SUNDISK_SIMPLE: u32 = 1u << 2u;
-const PROCSKY_KW_UNITY_COLORSPACE_GAMMA: u32 = 1u << 3u;
-const PROCSKY_GROUP_SUNDISK: u32 =
-    PROCSKY_KW_SUNDISK_HIGH_QUALITY | PROCSKY_KW_SUNDISK_NONE | PROCSKY_KW_SUNDISK_SIMPLE;
-
-@group(1) @binding(0) var<uniform> mat: ProceduralSkyboxMaterial;
-
-fn procsky_kw(mask: u32) -> bool {
-    return vb::enabled(mat._RenderideVariantBits, mask);
-}
-
-fn kw_SUNDISK_NONE() -> bool {
-    return procsky_kw(PROCSKY_KW_SUNDISK_NONE);
-}
-
-fn kw_SUNDISK_HIGH_QUALITY() -> bool {
-    return (mat._RenderideVariantBits & PROCSKY_GROUP_SUNDISK) == 0u
-        || procsky_kw(PROCSKY_KW_SUNDISK_HIGH_QUALITY);
-}
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
@@ -81,7 +48,7 @@ fn vs_main(
 
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
-    let terms = ps::visible_vertex_terms(procedural_sky_params(), mv::model_vector(d, pos.xyz));
+    let terms = ps::visible_vertex_terms(psmat::params(), mv::model_vector(d, pos.xyz));
     out.ground_color = terms.ground_color;
     out.sky_color = terms.sky_color;
     out.sun_color = terms.sun_color;
@@ -101,30 +68,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         in.sky_ground_factor,
     );
     return rg::retain_globals_additive(vec4<f32>(
-        ps::visible_fragment_color(procedural_sky_params(), terms),
+        ps::visible_fragment_color(psmat::params(), terms),
         1.0,
     ));
-}
-
-fn procedural_sky_params() -> ps::ProceduralSkyParams {
-    return ps::ProceduralSkyParams(
-        mat._SkyTint.rgb,
-        mat._GroundColor.rgb,
-        mat._SunColor.rgb,
-        mat._SunDirection.xyz,
-        mat._Exposure,
-        mat._SunSize,
-        mat._AtmosphereThickness,
-        procedural_sun_disk_mode(),
-    );
-}
-
-fn procedural_sun_disk_mode() -> f32 {
-    if (kw_SUNDISK_NONE()) {
-        return 0.0;
-    }
-    if (kw_SUNDISK_HIGH_QUALITY()) {
-        return 2.0;
-    }
-    return 1.0;
 }
