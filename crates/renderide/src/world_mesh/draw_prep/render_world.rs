@@ -234,6 +234,16 @@ mod tests {
     use super::*;
     use crate::scene::SceneCacheFlushReport;
     use crate::shared::RenderTransform;
+    use glam::{Quat, Vec3};
+
+    /// Builds an identity transform without relying on the wire default's zero scale.
+    fn identity_transform() -> RenderTransform {
+        RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        }
+    }
 
     #[test]
     fn apply_report_marks_changed_spaces_dirty() {
@@ -307,7 +317,7 @@ mod tests {
     fn mark_all_scene_spaces_dirty_retain_only_existing_scene_spaces() {
         let mut scene = SceneCoordinator::new();
         let keep = RenderSpaceId(10);
-        scene.test_seed_space_identity_worlds(keep, vec![RenderTransform::default()], vec![-1]);
+        scene.test_seed_space_identity_worlds(keep, vec![identity_transform()], vec![-1]);
         let mut world = RenderWorld::default();
         world.spaces.insert(keep, RenderWorldSpace::default());
         world
@@ -326,8 +336,8 @@ mod tests {
         let mut scene = SceneCoordinator::new();
         let active = RenderSpaceId(20);
         let inactive = RenderSpaceId(21);
-        scene.test_seed_space_identity_worlds(active, vec![RenderTransform::default()], vec![-1]);
-        scene.test_seed_space_identity_worlds(inactive, vec![RenderTransform::default()], vec![-1]);
+        scene.test_seed_space_identity_worlds(active, vec![identity_transform()], vec![-1]);
+        scene.test_seed_space_identity_worlds(inactive, vec![identity_transform()], vec![-1]);
         let mut world = RenderWorld::default();
         world.spaces.insert(
             active,

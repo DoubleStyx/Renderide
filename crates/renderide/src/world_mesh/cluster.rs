@@ -287,7 +287,16 @@ mod tests {
     use super::*;
     use crate::camera::EyeView;
     use crate::scene::RenderSpaceId;
-    use glam::Vec3;
+    use glam::{Quat, Vec3};
+
+    /// Builds an identity transform without relying on the wire default's zero scale.
+    fn identity_transform() -> crate::shared::RenderTransform {
+        crate::shared::RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        }
+    }
 
     /// Builds a minimal `ClusterFrameParams` with the supplied world-to-view; other fields are
     /// don't-cares for `world_to_view_scale_max`.
@@ -448,11 +457,7 @@ mod tests {
     fn main_cluster_params_scale_near_but_not_far_by_root_scale() {
         let mut scene = SceneCoordinator::new();
         let space_id = RenderSpaceId(1);
-        scene.test_seed_space_identity_worlds(
-            space_id,
-            vec![crate::shared::RenderTransform::default()],
-            vec![-1],
-        );
+        scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
         scene.test_set_space_root_transform(
             space_id,
             crate::shared::RenderTransform {

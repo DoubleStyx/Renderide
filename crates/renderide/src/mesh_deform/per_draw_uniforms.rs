@@ -23,7 +23,7 @@ const PER_DRAW_REFLECTION_PROBE_SECOND_WEIGHT_PAD_SLOT: usize = 2;
 /// Reflection-probe hit-count offset inside [`PaddedPerDrawUniforms::_pad`].
 const PER_DRAW_REFLECTION_PROBE_HIT_COUNT_PAD_SLOT: usize = 3;
 
-/// GPU layout: left/right view-projection, `model`, inverse-transpose normal matrix, padding to 256 bytes.
+/// GPU layout: left/right view-projection, `model`, cofactor normal matrix, padding to 256 bytes.
 ///
 /// Matches composed `shaders/target/null_*.wgsl` (`PerDrawUniforms` at `@group(2)`).
 ///
@@ -49,7 +49,7 @@ pub struct PaddedPerDrawUniforms {
     /// This is identity for most skinned meshes with world-space positions, except the null fallback
     /// keeps the real model matrix and compensates in [`Self::view_proj_left`] / [`Self::view_proj_right`].
     pub model: [f32; 16],
-    /// Inverse transpose of the upper 3x3 of [`Self::model`] for normal transforms.
+    /// Cofactor matrix of the upper 3x3 of [`Self::model`] for normal transforms.
     pub(super) normal_matrix: WgslMat3x3,
     /// Metadata plus padding to [`PER_DRAW_UNIFORM_STRIDE`] bytes.
     ///

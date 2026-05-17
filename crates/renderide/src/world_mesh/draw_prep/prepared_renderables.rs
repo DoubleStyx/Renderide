@@ -414,6 +414,16 @@ mod tests {
     use crate::gpu_pools::MeshPool;
     use crate::scene::{RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer};
     use crate::shared::{RenderTransform, ShadowCastMode};
+    use glam::{Quat, Vec3};
+
+    /// Builds an identity transform without relying on the wire default's zero scale.
+    fn identity_transform() -> RenderTransform {
+        RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        }
+    }
 
     fn empty_scene() -> SceneCoordinator {
         SceneCoordinator::new()
@@ -464,7 +474,7 @@ mod tests {
         let mut scene = empty_scene();
         scene.test_seed_space_identity_worlds(
             RenderSpaceId(1),
-            vec![RenderTransform::default()],
+            vec![identity_transform()],
             vec![-1],
         );
         let mesh_pool = MeshPool::default_pool();

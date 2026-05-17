@@ -6,7 +6,7 @@ struct PerDrawUniforms {
     view_proj_left: mat4x4<f32>,
     view_proj_right: mat4x4<f32>,
     model: mat4x4<f32>,
-    /// Inverse transpose of the upper 3x3 of `model` (correct normals under non-uniform scale).
+    /// Cofactor matrix of the upper 3x3 of `model` for singular-safe normal transforms.
     normal_matrix: mat3x3<f32>,
     /// Metadata. `x` marks world-space position streams; `yzw` pack reflection-probe selection.
     _pad: vec4<f32>,

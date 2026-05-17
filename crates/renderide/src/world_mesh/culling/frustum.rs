@@ -448,6 +448,30 @@ mod tests {
         assert!(!mesh_bounds_degenerate_for_cull(&b));
     }
 
+    #[test]
+    fn world_aabb_from_local_bounds_preserves_flat_zero_scale_axis() {
+        let bounds = RenderBoundingBox {
+            extents: Vec3::ONE,
+            ..Default::default()
+        };
+        let model = Mat4::from_scale(Vec3::new(0.0, 1.0, 1.0));
+        let (mn, mx) = world_aabb_from_local_bounds(&bounds, model).expect("world aabb");
+
+        assert_eq!(mn, Vec3::new(0.0, -1.0, -1.0));
+        assert_eq!(mx, Vec3::new(0.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn homogeneous_clip_keeps_zero_thickness_box_inside_frustum() {
+        let proj = crate::camera::reverse_z_perspective(1.0, 60f32.to_radians(), 0.1, 100.0);
+        let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
+        let view_proj = proj * view;
+        let mn = Vec3::new(0.0, -0.5, -0.5);
+        let mx = Vec3::new(0.0, 0.5, 0.5);
+
+        assert!(world_aabb_visible_in_homogeneous_clip(view_proj, mn, mx));
+    }
+
     /// Deterministic LCG for the property test; avoids pulling `rand` into the dep tree just for
     /// this one test and keeps failures bit-reproducible across machines.
     fn lcg_next(state: &mut u64) -> u64 {
