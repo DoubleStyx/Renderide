@@ -32,6 +32,10 @@ fn modules_dir() -> PathBuf {
     Path::new(manifest).join("shaders/modules")
 }
 
+fn texture_sampling_module() -> PathBuf {
+    modules_dir().join("core").join("texture_sampling.wgsl")
+}
+
 fn wgsl_files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(dir)? {
@@ -42,6 +46,31 @@ fn wgsl_files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         }
     }
     Ok(files)
+}
+
+#[test]
+fn texture3d_sampling_helpers_preserve_direct_coordinates() -> Result<(), Box<dyn std::error::Error>>
+{
+    let src = std::fs::read_to_string(texture_sampling_module())?;
+
+    assert!(
+        src.contains("textureSampleBias(tex, samp, uvw, lod_bias)"),
+        "sample_tex_3d must pass Texture3D coordinates through unchanged"
+    );
+    assert!(
+        src.contains("textureSampleLevel(tex, samp, uvw, level)"),
+        "sample_tex_3d_level must pass Texture3D coordinates through unchanged"
+    );
+    assert!(
+        !src.contains("1.0 - uvw.y"),
+        "Texture3D sampling must not flip the V axis"
+    );
+    assert!(
+        !src.contains("uvw_flipped"),
+        "Texture3D sampling must not use a rewritten coordinate vector"
+    );
+
+    Ok(())
 }
 
 fn declared_storage_inverted_fields(src: &str) -> Vec<String> {

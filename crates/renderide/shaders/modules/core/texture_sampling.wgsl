@@ -22,17 +22,13 @@ fn sample_cube(tex: texture_cube<f32>, samp: sampler, dir: vec3<f32>, lod_bias: 
 
 /// Samples a 3D texture with the host-configured LOD bias applied through `textureSampleBias`.
 ///
-/// Volume textures arrive in FrooxEngine's bottom-up V convention (mirroring `Bitmap2D`'s default;
-/// `Bitmap3D` has no per-asset `FlipY`). The renderer stores them as-uploaded, so this helper
-/// applies the same `1.0 - v` shader-side flip that 2D sampling uses through `apply_st` /
-/// `flip_v`. W (depth) and U pass through unchanged.
+/// Texture3D coordinates follow the as-uploaded 3D asset convention used by the material source:
+/// U, V, and W pass through unchanged.
 fn sample_tex_3d(tex: texture_3d<f32>, samp: sampler, uvw: vec3<f32>, lod_bias: f32) -> vec4<f32> {
-    let uvw_flipped = vec3<f32>(uvw.x, 1.0 - uvw.y, uvw.z);
-    return textureSampleBias(tex, samp, uvw_flipped, lod_bias);
+    return textureSampleBias(tex, samp, uvw, lod_bias);
 }
 
-/// Samples a 3D texture at an explicit LOD while preserving the renderer's Texture3D V convention.
+/// Samples a 3D texture at an explicit LOD while preserving direct Texture3D coordinates.
 fn sample_tex_3d_level(tex: texture_3d<f32>, samp: sampler, uvw: vec3<f32>, level: f32) -> vec4<f32> {
-    let uvw_flipped = vec3<f32>(uvw.x, 1.0 - uvw.y, uvw.z);
-    return textureSampleLevel(tex, samp, uvw_flipped, level);
+    return textureSampleLevel(tex, samp, uvw, level);
 }
