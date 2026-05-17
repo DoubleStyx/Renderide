@@ -142,7 +142,6 @@ pub(super) fn spatial_probe_for_state(
         influence_aabb_max,
         center: Vec3A::from(world.transform_point3(Vec3::ZERO)),
         volume: aabb_volume(min, max),
-        blend_distance,
         skybox: reflection_probe_skybox_only(probe.state.flags),
     })
 }
@@ -211,7 +210,6 @@ mod tests {
             influence_aabb_max,
             center: Vec3A::from((min + max) * 0.5),
             volume: aabb_volume(min, max),
-            blend_distance: 0.0,
             skybox: false,
         }
     }

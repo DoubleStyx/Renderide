@@ -18,8 +18,6 @@ pub const PER_DRAW_POSITION_STREAM_WORLD_SPACE_FLAG: f32 = 1.0;
 const PER_DRAW_POSITION_STREAM_WORLD_SPACE_PAD_SLOT: usize = 0;
 /// Packed reflection-probe atlas indices offset inside [`PaddedPerDrawUniforms::_pad`].
 const PER_DRAW_REFLECTION_PROBE_INDICES_PAD_SLOT: usize = 1;
-/// Reflection-probe fallback and hit count offset inside [`PaddedPerDrawUniforms::_pad`].
-const PER_DRAW_REFLECTION_PROBE_FALLBACK_HIT_COUNT_PAD_SLOT: usize = 2;
 
 /// GPU layout: left/right view-projection, `model`, inverse-transpose normal matrix, padding to 256 bytes.
 ///
@@ -52,9 +50,13 @@ pub struct PaddedPerDrawUniforms {
     /// Metadata plus padding to [`PER_DRAW_UNIFORM_STRIDE`] bytes.
     ///
     /// Slot 0 is [`PER_DRAW_POSITION_STREAM_WORLD_SPACE_FLAG`] when the vertex position stream is
-    /// already world-space. Slot 1 stores two `u16` reflection-probe atlas indices via
-    /// [`f32::from_bits`]. Slot 2 stores the fallback reflection-probe atlas index as a `u16`
-    /// as well as the hit count as a `u8` between `0` and `2`.
+    /// already world-space. Slots 1 stores a bit mask indicating if each local reflection-probe
+    /// is of a lower importance as its predecessor, as well as the atlas index of
+    /// the global fallback reflection probe.
+    /// Slots 2 and 3 store the 4 local reflection-probe atlas indices.
+    /// If we need to save on performance, or provide under 4 bytes of additional data
+    /// in the per-draw uniforms, we can lower the system down to 2 local reflection probes
+    /// and reuse Slot 3 for other purposes.
     pub _pad: [f32; 4],
 }
 
@@ -107,15 +109,15 @@ impl PaddedPerDrawUniforms {
     #[must_use]
     pub fn with_reflection_probe_selection(
         mut self,
-        first_atlas_index: u16,
-        second_atlas_index: u16,
-        fallback_atlas_index: u16,
-        hit_count: u8,
+        atlas_indices: [u16; 5],
+        importance_mask: u8,
     ) -> Self {
-        let packed = u32::from(first_atlas_index) | (u32::from(second_atlas_index) << 16);
+        let packed = u32::from(importance_mask) | (u32::from(atlas_indices[0]) << 16);
         self._pad[PER_DRAW_REFLECTION_PROBE_INDICES_PAD_SLOT] = f32::from_bits(packed);
-        let packed = u32::from(fallback_atlas_index) | (u32::from(hit_count.min(2)) << 16);
-        self._pad[PER_DRAW_REFLECTION_PROBE_FALLBACK_HIT_COUNT_PAD_SLOT] = f32::from_bits(packed);
+        let packed = u32::from(atlas_indices[1]) | (u32::from(atlas_indices[2]) << 16);
+        self._pad[PER_DRAW_REFLECTION_PROBE_INDICES_PAD_SLOT + 1] = f32::from_bits(packed);
+        let packed = u32::from(atlas_indices[3]) | (u32::from(atlas_indices[4]) << 16);
+        self._pad[PER_DRAW_REFLECTION_PROBE_INDICES_PAD_SLOT + 2] = f32::from_bits(packed);
         self
     }
 
@@ -123,14 +125,18 @@ impl PaddedPerDrawUniforms {
     #[cfg(test)]
     #[inline]
     #[must_use]
-    pub fn reflection_probe_selection(&self) -> (u16, u16, u16, u8) {
+    pub fn reflection_probe_selection(&self) -> ([u16; 5], u8) {
+        let mut atlas_indices = [0; 5];
         let packed = self._pad[PER_DRAW_REFLECTION_PROBE_INDICES_PAD_SLOT].to_bits();
-        let first = (packed & 0xFFFF) as u16;
-        let second = (packed >> 16) as u16;
-        let packed = self._pad[PER_DRAW_REFLECTION_PROBE_FALLBACK_HIT_COUNT_PAD_SLOT].to_bits();
-        let fallback = (packed & 0xFFFF) as u16;
-        let hit_count = (packed >> 16) as u8;
-        (first, second, fallback, hit_count)
+        let importance_mask = (packed & 0xFFFF) as u8;
+        atlas_indices[0] = (packed >> 16) as u16;
+        let packed = self._pad[PER_DRAW_REFLECTION_PROBE_INDICES_PAD_SLOT + 1].to_bits();
+        atlas_indices[1] = (packed & 0xFFFF) as u16;
+        atlas_indices[2] = (packed >> 16) as u16;
+        let packed = self._pad[PER_DRAW_REFLECTION_PROBE_INDICES_PAD_SLOT + 2].to_bits();
+        atlas_indices[3] = (packed & 0xFFFF) as u16;
+        atlas_indices[4] = (packed >> 16) as u16;
+        (atlas_indices, importance_mask)
     }
 
     /// Whether the metadata says the bound vertex position stream is already in world space.
@@ -254,10 +260,13 @@ mod tests {
     fn reflection_probe_selection_packs_into_reserved_slots() {
         let slot = PaddedPerDrawUniforms::new_single(Mat4::IDENTITY, Mat4::IDENTITY)
             .with_position_stream_world_space(true)
-            .with_reflection_probe_selection(17, 23, 11, 2);
+            .with_reflection_probe_selection([17, 23, 0, 0, 11], 0b0011);
 
         assert!(slot.position_stream_world_space());
-        assert_eq!(slot.reflection_probe_selection(), (17, 23, 11, 2));
+        assert_eq!(
+            slot.reflection_probe_selection(),
+            ([17, 23, 0, 0, 11], 0b0011)
+        );
         assert_eq!(size_of::<PaddedPerDrawUniforms>(), PER_DRAW_UNIFORM_STRIDE);
     }
 

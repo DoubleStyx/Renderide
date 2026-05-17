@@ -15,10 +15,14 @@ fn get_draw(instance_idx: u32) -> dt::PerDrawUniforms {
     return instances[instance_idx];
 }
 
-fn reflection_probe_indices(draw: dt::PerDrawUniforms) -> vec3<u32> {
-    return dt::reflection_probe_indices(draw);
+fn local_reflection_probe_indices(draw: dt::PerDrawUniforms) -> vec4<u32> {
+    return dt::local_reflection_probe_indices(draw);
 }
 
-fn reflection_probe_hit_count(draw: dt::PerDrawUniforms) -> u32 {
-    return dt::reflection_probe_hit_count(draw);
+fn fallback_reflection_probe_index(draw: dt::PerDrawUniforms) -> u32 {
+    return dt::fallback_reflection_probe_index(draw);
+}
+
+fn reflection_probe_importance_mask(draw: dt::PerDrawUniforms) -> u32 {
+    return dt::reflection_probe_importance_mask(draw);
 }
