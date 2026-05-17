@@ -2,6 +2,7 @@
 
 use crossbeam_channel::{Receiver, TryRecvError, bounded};
 
+use crate::assets::shader::shader_variant_bits_log;
 use crate::assets::{ResolvedShaderUpload, resolve_shader_upload};
 use crate::backend::RenderBackend;
 use crate::frontend::RendererFrontend;
@@ -84,10 +85,10 @@ pub(in crate::runtime) fn drain_pending_shader_resolutions(
             }
         }
         logger::info!(
-            "shader_upload: asset_id={} shader_asset_name={:?} shader_variant_bits={:?} raster_pipeline={:?}",
+            "shader_upload: asset_id={} shader_asset_name={:?} shader_variant_bits={} raster_pipeline={:?}",
             asset_id,
             resolved.shader_asset_name.as_deref(),
-            resolved.shader_variant_bits,
+            shader_variant_bits_log(resolved.shader_variant_bits),
             resolved.pipeline,
         );
         let shader_asset_name = resolved.shader_asset_name.clone();

@@ -88,9 +88,9 @@ pub(crate) fn try_resolve_shader_asset_name_from_path(
     };
     if let Some(parsed) = &resolved {
         logger::info!(
-            "shader_unity_asset: resolved shader_asset_name={:?} shader_variant_bits={:?} from path {}",
+            "shader_unity_asset: resolved shader_asset_name={:?} shader_variant_bits={} from path {}",
             parsed.shader_asset_name,
-            parsed.shader_variant_bits,
+            super::shader_variant_bits_log(parsed.shader_variant_bits),
             path.display()
         );
     }
@@ -197,13 +197,13 @@ fn log_internal_name_resolution(
     name: &InternalShaderName,
 ) {
     logger::info!(
-        "shader_unity_asset: Shader path_id={} class_id={} source={} full_name={:?} stem={:?} variant_bits={:?}",
+        "shader_unity_asset: Shader path_id={} class_id={} source={} full_name={:?} stem={:?} variant_bits={}",
         path_id,
         class_id,
         source.as_str(),
         name.full_name,
         name.shader_asset_name,
-        name.shader_variant_bits
+        super::shader_variant_bits_log(name.shader_variant_bits)
     );
 }
 
@@ -473,7 +473,7 @@ fn log_shader_candidate_selection(
                     )
                 });
         logger::debug!(
-            "shader_unity_asset: skipped Shader path_id={} class_id={} reason={} route={:?} container_name={:?} source={} full_name={:?} variant_bits={:?}",
+            "shader_unity_asset: skipped Shader path_id={} class_id={} reason={} route={:?} container_name={:?} source={} full_name={:?} variant_bits={}",
             candidate.path_id,
             candidate.class_id,
             shader_candidate_skip_reason(candidate),
@@ -481,7 +481,7 @@ fn log_shader_candidate_selection(
             candidate.container_name,
             source.map_or("none", InternalShaderNameSource::as_str),
             full_name,
-            variant_bits
+            super::shader_variant_bits_log(variant_bits)
         );
     }
 }
