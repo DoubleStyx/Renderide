@@ -13,7 +13,7 @@ use crate::frontend::input::{
 };
 use crate::present::present_clear_frame;
 use crate::render_graph::GraphExecuteError;
-use crate::xr::OpenxrFrameTick;
+use crate::xr::{HmdSubmitOutcome, OpenxrFrameTick};
 
 use super::super::exit::ExitReason;
 use super::AppDriver;
@@ -36,6 +36,8 @@ enum FrameTickOutcome {
 pub(super) enum FrameRenderMode {
     /// HMD multiview path had a projection layer.
     HmdMultiview,
+    /// HMD graph work was queued, but no projection layer was queued.
+    VrRenderedWithoutProjection,
     /// VR frame without an HMD projection layer; render secondary cameras only.
     VrSecondaryOnly,
     /// Ordinary desktop world render.
@@ -299,9 +301,15 @@ impl AppDriver {
             self.runtime.drain_hi_z_readback(target.gpu_mut());
         }
 
-        let hmd_projection_ended = self.try_hmd_multiview_submit(xr_tick);
+        let hmd_submit_outcome = self.try_hmd_multiview_submit(xr_tick);
+        let hmd_projection_ended = hmd_submit_outcome.projection_queued();
         let mode = if hmd_projection_ended {
             FrameRenderMode::HmdMultiview
+        } else if matches!(
+            hmd_submit_outcome,
+            HmdSubmitOutcome::RenderedWithoutProjection
+        ) {
+            FrameRenderMode::VrRenderedWithoutProjection
         } else if self.runtime.vr_active() {
             FrameRenderMode::VrSecondaryOnly
         } else {
@@ -309,18 +317,19 @@ impl AppDriver {
         };
         crash_context::set_render_mode(match mode {
             FrameRenderMode::HmdMultiview => RenderMode::HmdMultiview,
+            FrameRenderMode::VrRenderedWithoutProjection => RenderMode::HmdMultiview,
             FrameRenderMode::VrSecondaryOnly => RenderMode::VrSecondariesOnly,
             FrameRenderMode::Desktop => RenderMode::IpcDesktop,
         });
-        log_frame_render_mode_transition(mode, hmd_projection_ended, self.runtime.vr_active());
+        log_frame_render_mode_transition(mode, hmd_submit_outcome, self.runtime.vr_active());
         logger::trace!(
-            "frame render mode: {:?} hmd_projection_ended={} vr_active={}",
+            "frame render mode: {:?} hmd_submit_outcome={:?} vr_active={}",
             mode,
-            hmd_projection_ended,
+            hmd_submit_outcome,
             self.runtime.vr_active(),
         );
 
-        if !hmd_projection_ended {
+        if hmd_submit_outcome.should_render_non_hmd_views() {
             self.render_non_hmd_views(mode)?;
         }
 
@@ -345,6 +354,7 @@ impl AppDriver {
                 .is_some();
         let result = match mode {
             FrameRenderMode::HmdMultiview => Ok(()),
+            FrameRenderMode::VrRenderedWithoutProjection => Ok(()),
             FrameRenderMode::VrSecondaryOnly => {
                 self.runtime.submit_secondary_only(target.gpu_mut())
             }
@@ -431,7 +441,7 @@ impl AppDriver {
 /// Logs first-observed and changed render modes without emitting per-frame debug noise.
 fn log_frame_render_mode_transition(
     mode: FrameRenderMode,
-    hmd_projection_ended: bool,
+    hmd_submit_outcome: HmdSubmitOutcome,
     vr_active: bool,
 ) {
     let code = frame_render_mode_code(mode);
@@ -440,10 +450,10 @@ fn log_frame_render_mode_transition(
         return;
     }
     logger::debug!(
-        "frame render mode selected: {} previous={} hmd_projection_ended={} vr_active={}",
+        "frame render mode selected: {} previous={} hmd_submit_outcome={:?} vr_active={}",
         frame_render_mode_label(mode),
         frame_render_mode_code_label(previous),
-        hmd_projection_ended,
+        hmd_submit_outcome,
         vr_active,
     );
 }
@@ -452,8 +462,9 @@ fn log_frame_render_mode_transition(
 fn frame_render_mode_code(mode: FrameRenderMode) -> u8 {
     match mode {
         FrameRenderMode::HmdMultiview => 0,
-        FrameRenderMode::VrSecondaryOnly => 1,
-        FrameRenderMode::Desktop => 2,
+        FrameRenderMode::VrRenderedWithoutProjection => 1,
+        FrameRenderMode::VrSecondaryOnly => 2,
+        FrameRenderMode::Desktop => 3,
     }
 }
 
@@ -461,6 +472,7 @@ fn frame_render_mode_code(mode: FrameRenderMode) -> u8 {
 fn frame_render_mode_label(mode: FrameRenderMode) -> &'static str {
     match mode {
         FrameRenderMode::HmdMultiview => "hmd-multiview",
+        FrameRenderMode::VrRenderedWithoutProjection => "vr-rendered-without-projection",
         FrameRenderMode::VrSecondaryOnly => "vr-secondaries-only",
         FrameRenderMode::Desktop => "desktop",
     }
@@ -470,8 +482,9 @@ fn frame_render_mode_label(mode: FrameRenderMode) -> &'static str {
 fn frame_render_mode_code_label(code: u8) -> &'static str {
     match code {
         0 => "hmd-multiview",
-        1 => "vr-secondaries-only",
-        2 => "desktop",
+        1 => "vr-rendered-without-projection",
+        2 => "vr-secondaries-only",
+        3 => "desktop",
         UNSEEN_FRAME_RENDER_MODE => "unseen",
         _ => "unknown",
     }
@@ -484,6 +497,7 @@ mod tests {
         frame_render_mode_label, runtime_exit_reason,
     };
     use crate::app::exit::ExitReason;
+    use crate::xr::HmdSubmitOutcome;
 
     #[test]
     fn render_views_outcome_records_hmd_projection() {
@@ -517,9 +531,27 @@ mod tests {
     fn frame_render_mode_codes_have_stable_labels() {
         assert_eq!(frame_render_mode_code(FrameRenderMode::HmdMultiview), 0);
         assert_eq!(
+            frame_render_mode_code(FrameRenderMode::VrRenderedWithoutProjection),
+            1
+        );
+        assert_eq!(
             frame_render_mode_label(FrameRenderMode::VrSecondaryOnly),
             "vr-secondaries-only"
         );
-        assert_eq!(frame_render_mode_code_label(2), "desktop");
+        assert_eq!(frame_render_mode_code_label(3), "desktop");
+    }
+
+    #[test]
+    fn hmd_submit_outcome_controls_non_hmd_rerendering() {
+        assert!(HmdSubmitOutcome::SkippedBeforeRender.should_render_non_hmd_views());
+        assert!(!HmdSubmitOutcome::RenderedWithoutProjection.should_render_non_hmd_views());
+        assert!(!HmdSubmitOutcome::ProjectionQueued.should_render_non_hmd_views());
+    }
+
+    #[test]
+    fn hmd_submit_outcome_identifies_projection_finalize() {
+        assert!(HmdSubmitOutcome::ProjectionQueued.projection_queued());
+        assert!(!HmdSubmitOutcome::SkippedBeforeRender.projection_queued());
+        assert!(!HmdSubmitOutcome::RenderedWithoutProjection.projection_queued());
     }
 }

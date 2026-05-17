@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-/// `(0)` filterable 2D, `(1)` filtering sampler. Used by the VR-mirror eye-to-staging blit.
+/// `(0)` filterable 2D, `(1)` filtering sampler. Used by single-layer blit passes.
 pub(crate) fn sampled_2d_filtered_layout(device: &wgpu::Device) -> &'static wgpu::BindGroupLayout {
     static LAYOUT: OnceLock<wgpu::BindGroupLayout> = OnceLock::new();
     LAYOUT.get_or_init(|| {
@@ -18,6 +18,36 @@ pub(crate) fn sampled_2d_filtered_layout(device: &wgpu::Device) -> &'static wgpu
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        })
+    })
+}
+
+/// `(0)` filterable 2D array, `(1)` filtering sampler. Used by stereo multiview blit passes.
+pub(crate) fn sampled_2d_array_filtered_layout(
+    device: &wgpu::Device,
+) -> &'static wgpu::BindGroupLayout {
+    static LAYOUT: OnceLock<wgpu::BindGroupLayout> = OnceLock::new();
+    LAYOUT.get_or_init(|| {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("blit_kit::sampled_2d_array_filtered"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,

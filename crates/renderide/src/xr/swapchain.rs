@@ -1,12 +1,9 @@
 //! OpenXR stereo swapchain images imported into wgpu for the acquired frame.
 //!
 //! These images are always created with `sample_count = 1` and act as the **resolve** target for
-//! the stereo forward pass when [`crate::gpu::GpuContext::swapchain_msaa_effective_stereo`] > 1.
-//! The multisampled 2-layer `D2Array` color and depth targets live as graph-owned transient
-//! textures (`scene_color_hdr_msaa` / `forward_msaa_depth`) and resolve into this swapchain each
-//! frame so the compositor and VR mirror always see a single-sample image. Each acquired
-//! OpenXR-owned `VkImage` is wrapped in wgpu only for the current acquire/release interval so
-//! wgpu's Vulkan layout tracker cannot carry stale state across compositor ownership handoffs.
+//! the final renderer-owned HMD color copy. Each acquired OpenXR-owned `VkImage` is wrapped in
+//! wgpu only for the current acquire/release interval so wgpu's Vulkan layout tracker cannot carry
+//! stale state across compositor ownership handoffs.
 
 use std::sync::Arc;
 
@@ -76,27 +73,9 @@ pub struct XrAcquiredSwapchainImage {
 }
 
 impl XrAcquiredSwapchainImage {
-    /// Two-layer color target view used by the HMD multiview render graph.
+    /// Two-layer color target view used by the final owned-HMD-color to OpenXR copy.
     pub fn array_view(&self) -> &wgpu::TextureView {
         &self.array_view
-    }
-
-    /// Single-eye [`wgpu::TextureView`] (`D2`) for sampling one layer of the acquired image.
-    ///
-    /// `layer` must be `<` [`XR_VIEW_COUNT`] (0 = left, 1 = right).
-    pub fn color_layer_view(&self, layer: u32) -> Option<wgpu::TextureView> {
-        if layer >= XR_VIEW_COUNT {
-            return None;
-        }
-        let view = self.texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("xr_swapchain_layer"),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            base_array_layer: layer,
-            array_layer_count: Some(1),
-            ..Default::default()
-        });
-        crate::profiling::note_resource_churn!(TextureView, "xr::swapchain_layer_view");
-        Some(view)
     }
 
     /// Consumes the acquired-image wrapper, leaving the imported wgpu texture alive.
@@ -237,7 +216,7 @@ fn import_openxr_swapchain_image(
 }
 
 fn xr_swapchain_usage_flags() -> xr::SwapchainUsageFlags {
-    xr::SwapchainUsageFlags::COLOR_ATTACHMENT | xr::SwapchainUsageFlags::SAMPLED
+    xr::SwapchainUsageFlags::COLOR_ATTACHMENT
 }
 
 fn u32_saturating_from_usize(value: usize) -> u32 {
@@ -260,7 +239,7 @@ fn xr_swapchain_hal_descriptor(resolution: (u32, u32)) -> hal::TextureDescriptor
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: XR_COLOR_FORMAT,
-        usage: TextureUses::COLOR_TARGET | TextureUses::RESOURCE,
+        usage: TextureUses::COLOR_TARGET,
         memory_flags: MemoryFlags::empty(),
         view_formats: Vec::new(),
     }
@@ -276,7 +255,7 @@ fn xr_swapchain_wgpu_descriptor(
         sample_count: hal_desc.sample_count,
         dimension: hal_desc.dimension,
         format: XR_COLOR_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     }
 }
@@ -339,23 +318,20 @@ mod tests {
     #[test]
     fn swapchain_create_usage_matches_import_descriptors() {
         let xr_usage = xr_swapchain_usage_flags();
-        assert_eq!(
-            xr_usage,
-            xr::SwapchainUsageFlags::COLOR_ATTACHMENT | xr::SwapchainUsageFlags::SAMPLED
-        );
+        assert_eq!(xr_usage, xr::SwapchainUsageFlags::COLOR_ATTACHMENT);
 
         let hal_desc = xr_swapchain_hal_descriptor((2496, 2688));
-        assert_eq!(
-            hal_desc.usage,
-            TextureUses::COLOR_TARGET | TextureUses::RESOURCE
-        );
+        assert_eq!(hal_desc.usage, TextureUses::COLOR_TARGET);
+        assert!(!hal_desc.usage.contains(TextureUses::RESOURCE));
         assert!(!hal_desc.usage.contains(TextureUses::COPY_SRC));
         assert!(!hal_desc.usage.contains(TextureUses::COPY_DST));
 
         let wgpu_desc = xr_swapchain_wgpu_descriptor(&hal_desc);
-        assert_eq!(
-            wgpu_desc.usage,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+        assert_eq!(wgpu_desc.usage, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        assert!(
+            !wgpu_desc
+                .usage
+                .contains(wgpu::TextureUsages::TEXTURE_BINDING)
         );
         assert!(!wgpu_desc.usage.contains(wgpu::TextureUsages::COPY_SRC));
         assert!(!wgpu_desc.usage.contains(wgpu::TextureUsages::COPY_DST));

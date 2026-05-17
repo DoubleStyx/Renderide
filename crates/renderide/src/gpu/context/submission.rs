@@ -11,14 +11,6 @@ use std::sync::atomic::Ordering;
 use super::GpuContext;
 
 impl GpuContext {
-    /// Submits a single command buffer for this frame through the driver thread, tracked for
-    /// the debug HUD frame timing HUD. No surface is presented on this path; the older callers
-    /// (VR mirror eye-to-staging blit) will migrate to [`Self::submit_frame_batch`] in a
-    /// follow-up.
-    pub fn submit_tracked_frame_commands(&self, cmd: wgpu::CommandBuffer) {
-        self.submit_frame_batch_inner(vec![cmd], None, None, Vec::new());
-    }
-
     /// Hands a finished frame off to the driver thread for submit + present.
     ///
     /// The surface texture is optional: pass `Some` for the main swapchain frame (the

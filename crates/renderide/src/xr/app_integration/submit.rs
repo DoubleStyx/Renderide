@@ -8,15 +8,15 @@ use crate::diagnostics::gpu_flight_recorder::{
     GpuFlightCallResult, GpuFlightEventKind, GpuFlightOpenXrCall,
 };
 use crate::diagnostics::log_throttle::LogThrottle;
+use crate::gpu::GpuContext;
 use crate::gpu::driver_thread::BlockingCallWatchdog as EndFrameWatchdog;
-use crate::gpu::{GpuContext, VR_MIRROR_EYE_LAYER};
 use crate::render_graph::ExternalFrameTargets;
 use crate::xr::{XR_COLOR_FORMAT, XrFrameRenderer};
 use openxr as xr;
 use parking_lot::Mutex;
 
 use super::super::swapchain::{XrAcquiredSwapchainImage, XrStereoSwapchain};
-use super::resources::{ensure_stereo_depth_texture, ensure_stereo_swapchain};
+use super::resources::{ensure_owned_hmd_targets, ensure_stereo_swapchain};
 use super::types::{OpenxrFrameTick, XrSessionBundle};
 
 /// Deadline for a single `xrWaitSwapchainImage` call before the watchdog logs a compositor stall.
@@ -52,8 +52,8 @@ enum HmdSubmitSkipReason {
     StereoSwapchainUnavailable,
     /// Swapchain creation reported success but no swapchain was stored.
     StereoSwapchainMissingAfterEnsure,
-    /// The stereo depth target could not be created or refreshed.
-    StereoDepthUnavailable,
+    /// The renderer-owned HMD color/depth targets could not be created or refreshed.
+    OwnedHmdTargetsUnavailable,
     /// The stereo swapchain disappeared before image acquisition.
     StereoSwapchainMissingBeforeAcquire,
     /// `xrAcquireSwapchainImage` failed.
@@ -62,8 +62,8 @@ enum HmdSubmitSkipReason {
     SwapchainWaitFailed,
     /// The acquired OpenXR image could not be imported into wgpu.
     SwapchainImageImportFailed,
-    /// The stereo depth target disappeared after swapchain resize handling.
-    StereoDepthMissingAfterResize,
+    /// The renderer-owned HMD targets disappeared after resize handling.
+    OwnedHmdTargetsMissingAfterResize,
     /// The renderer failed while submitting the HMD graph.
     SubmitHmdViewFailed,
 }
@@ -83,21 +83,46 @@ impl fmt::Display for HmdSubmitSkipReason {
             Self::StereoSwapchainMissingAfterEnsure => {
                 f.write_str("stereo_swapchain_missing_after_ensure")
             }
-            Self::StereoDepthUnavailable => f.write_str("stereo_depth_unavailable"),
+            Self::OwnedHmdTargetsUnavailable => f.write_str("owned_hmd_targets_unavailable"),
             Self::StereoSwapchainMissingBeforeAcquire => {
                 f.write_str("stereo_swapchain_missing_before_acquire")
             }
             Self::SwapchainAcquireFailed => f.write_str("swapchain_acquire_failed"),
             Self::SwapchainWaitFailed => f.write_str("swapchain_wait_failed"),
             Self::SwapchainImageImportFailed => f.write_str("swapchain_image_import_failed"),
-            Self::StereoDepthMissingAfterResize => f.write_str("stereo_depth_missing_after_resize"),
+            Self::OwnedHmdTargetsMissingAfterResize => {
+                f.write_str("owned_hmd_targets_missing_after_resize")
+            }
             Self::SubmitHmdViewFailed => f.write_str("submit_hmd_view_failed"),
         }
     }
 }
 
-/// Renders to the OpenXR stereo swapchain and queues `xrReleaseSwapchainImage` + `xrEndFrame`
-/// onto the driver thread.
+/// Result of attempting to render and submit the OpenXR HMD projection for one tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HmdSubmitOutcome {
+    /// HMD rendering did not start; callers should still render secondary cameras.
+    SkippedBeforeRender,
+    /// HMD rendering was queued, but no OpenXR projection layer was queued.
+    RenderedWithoutProjection,
+    /// HMD rendering, final OpenXR copy, and projection finalize were queued.
+    ProjectionQueued,
+}
+
+impl HmdSubmitOutcome {
+    /// Returns `true` when an OpenXR projection layer finalize was queued.
+    pub const fn projection_queued(self) -> bool {
+        matches!(self, Self::ProjectionQueued)
+    }
+
+    /// Returns `true` when HMD/secondary graph work was not queued by the HMD submit path.
+    pub const fn should_render_non_hmd_views(self) -> bool {
+        matches!(self, Self::SkippedBeforeRender)
+    }
+}
+
+/// Renders to renderer-owned stereo targets, copies them to OpenXR, and queues
+/// `xrReleaseSwapchainImage` + `xrEndFrame` onto the driver thread.
 ///
 /// Uses the same [`xr::FrameState`] as [`crate::xr::openxr_begin_frame_tick`] -- no second
 /// `wait_frame`. After this returns successfully the next tick's `wait_frame` blocks on the
@@ -108,27 +133,24 @@ pub fn try_openxr_hmd_multiview_submit(
     bundle: &mut XrSessionBundle,
     runtime: &mut impl XrFrameRenderer,
     tick: &OpenxrFrameTick,
-) -> bool {
+) -> HmdSubmitOutcome {
     let Some(extent) = ensure_hmd_submit_resources(gpu, bundle, runtime, tick) else {
-        return false;
+        return HmdSubmitOutcome::SkippedBeforeRender;
     };
     let Some(sc) = bundle.stereo_swapchain.as_ref() else {
         log_hmd_submit_failure(HmdSubmitSkipReason::StereoSwapchainMissingBeforeAcquire);
-        return false;
+        return HmdSubmitOutcome::SkippedBeforeRender;
     };
-    let Some(acquired_image) = acquire_imported_hmd_image(gpu, sc) else {
-        return false;
-    };
-    let Some(stereo_depth) = bundle.stereo_depth.as_ref() else {
-        logger::debug!("OpenXR stereo depth texture missing after resize");
-        let _ = release_swapchain_image(gpu, &sc.handle);
-        log_hmd_submit_failure(HmdSubmitSkipReason::StereoDepthMissingAfterResize);
-        return false;
+    let swapchain_handle = Arc::clone(&sc.handle);
+    let Some(hmd_targets) = bundle.hmd_targets.as_ref() else {
+        logger::debug!("OpenXR owned HMD targets missing after resize");
+        log_hmd_submit_failure(HmdSubmitSkipReason::OwnedHmdTargetsMissingAfterResize);
+        return HmdSubmitOutcome::SkippedBeforeRender;
     };
     let ext = ExternalFrameTargets {
-        color_view: acquired_image.array_view(),
-        depth_texture: &stereo_depth.0,
-        depth_view: &stereo_depth.1,
+        color_view: hmd_targets.color_array_view(),
+        depth_texture: hmd_targets.depth_texture(),
+        depth_view: hmd_targets.depth_view(),
         extent_px: extent,
         surface_format: XR_COLOR_FORMAT,
     };
@@ -139,56 +161,53 @@ pub fn try_openxr_hmd_multiview_submit(
             height: extent.1 as i32,
         },
     };
-    let handles = &mut bundle.handles;
     // Unified submit: HMD stereo + every active secondary RT in one `execute_multi_view_frame`
     // call. The HMD view replaces the main camera for this tick.
     {
         profiling::scope!("xr::submit_hmd_view");
         if let Err(error) = runtime.submit_hmd_view(gpu, ext) {
-            // Synchronous release is correct here: no finalize work was queued for the
-            // driver thread, so `xrReleaseSwapchainImage` cannot be deferred.
-            let _ = release_swapchain_image(gpu, &sc.handle);
             log_hmd_submit_failure_with_display_error(
                 HmdSubmitSkipReason::SubmitHmdViewFailed,
                 &error,
             );
-            return false;
+            return HmdSubmitOutcome::SkippedBeforeRender;
         }
     }
     let Some(projection_views) = stereo_views(&tick.views) else {
-        // Locate-views returned <2 views; fall back to an empty end-frame on the driver.
-        let (finalize, rx) = handles
-            .xr_session
-            .build_empty_finalize(tick.predicted_display_time);
-        gpu.submit_finalize_only(finalize);
-        handles.xr_session.set_pending_finalize(rx);
-        return true;
+        return HmdSubmitOutcome::RenderedWithoutProjection;
     };
-    let mirror_layer_view = acquired_image.color_layer_view(VR_MIRROR_EYE_LAYER);
+    let Some(acquired_image) = acquire_imported_hmd_image(gpu, sc) else {
+        return HmdSubmitOutcome::RenderedWithoutProjection;
+    };
+    let final_copy_cmd = {
+        let Some(targets) = bundle.hmd_targets.as_ref() else {
+            logger::debug!("OpenXR owned HMD targets missing before final copy");
+            log_hmd_submit_failure(HmdSubmitSkipReason::OwnedHmdTargetsMissingAfterResize);
+            return HmdSubmitOutcome::RenderedWithoutProjection;
+        };
+        profiling::scope!("xr::hmd_final_copy_encode");
+        bundle.mirror_blit.encode_owned_hmd_to_openxr_and_staging(
+            gpu,
+            extent,
+            targets.color_array_view(),
+            targets.mirror_eye_view(),
+            acquired_image.array_view(),
+        )
+    };
+    let handles = &mut bundle.handles;
     let (finalize, rx) = handles.xr_session.build_projection_finalize(
-        Arc::clone(&sc.handle),
+        swapchain_handle,
         acquired_image.into_texture(),
         tick.predicted_display_time,
         projection_views,
         rect,
     );
-    if let Some(layer_view) = mirror_layer_view {
-        // Attach finalize to the mirror staging blit so the driver runs both submits and
-        // then `xrReleaseSwapchainImage` + `xrEndFrame` in FIFO order with no main-thread
-        // wait between them.
-        profiling::scope!("xr::mirror_staging_submit");
-        bundle
-            .mirror_blit
-            .submit_eye_to_staging_with_finalize(gpu, extent, &layer_view, finalize);
-    } else {
-        // No mirror layer this frame; push the finalize on its own batch.
-        gpu.submit_finalize_only(finalize);
-    }
+    gpu.submit_frame_batch_with_xr_finalize(vec![final_copy_cmd], finalize);
     handles.xr_session.set_pending_finalize(rx);
-    true
+    HmdSubmitOutcome::ProjectionQueued
 }
 
-/// Ensures the OpenXR frame, stereo swapchain, and stereo depth resources can submit HMD work.
+/// Ensures the OpenXR frame, stereo swapchain, and owned HMD targets can submit HMD work.
 fn ensure_hmd_submit_resources(
     gpu: &GpuContext,
     bundle: &mut XrSessionBundle,
@@ -209,8 +228,8 @@ fn ensure_hmd_submit_resources(
         log_hmd_submit_failure(HmdSubmitSkipReason::StereoSwapchainMissingAfterEnsure);
         return None;
     };
-    if !ensure_stereo_depth_texture(gpu, bundle, extent) {
-        log_hmd_submit_failure(HmdSubmitSkipReason::StereoDepthUnavailable);
+    if !ensure_owned_hmd_targets(gpu, bundle, extent) {
+        log_hmd_submit_failure(HmdSubmitSkipReason::OwnedHmdTargetsUnavailable);
         return None;
     }
     Some(extent)

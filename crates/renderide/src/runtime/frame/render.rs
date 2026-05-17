@@ -20,7 +20,7 @@ pub(crate) enum FrameRenderMode<'a> {
     DesktopPlusSecondaries,
     /// VR path with a successfully acquired HMD swapchain; stereo multiview view plus secondaries.
     VrWithHmd(ExternalFrameTargets<'a>),
-    /// VR path when the HMD swapchain acquire failed this tick; secondaries still render, the
+    /// VR path when HMD rendering did not start this tick; secondaries still render, the
     /// desktop mirror stays on its last frame.
     VrSecondariesOnly,
 }

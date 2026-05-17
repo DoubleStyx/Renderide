@@ -131,17 +131,19 @@ impl AppDriver {
         );
     }
 
-    /// Renders the HMD stereo view through the OpenXR projection layer when an OpenXR tick is
-    /// active; returns `true` only when an OpenXR projection layer was actually submitted.
-    pub(super) fn try_hmd_multiview_submit(&mut self, xr_tick: Option<&OpenxrFrameTick>) -> bool {
+    /// Renders the HMD stereo view when an OpenXR tick is active.
+    pub(super) fn try_hmd_multiview_submit(
+        &mut self,
+        xr_tick: Option<&OpenxrFrameTick>,
+    ) -> crate::xr::HmdSubmitOutcome {
         let Some(tick) = xr_tick else {
-            return false;
+            return crate::xr::HmdSubmitOutcome::SkippedBeforeRender;
         };
         let Some(target) = self.target.as_mut() else {
-            return false;
+            return crate::xr::HmdSubmitOutcome::SkippedBeforeRender;
         };
         let Some((gpu, session)) = target.openxr_parts_mut() else {
-            return false;
+            return crate::xr::HmdSubmitOutcome::SkippedBeforeRender;
         };
         profiling::scope!("xr::hmd_multiview_submit");
         crate::xr::try_openxr_hmd_multiview_submit(gpu, session, &mut self.runtime, tick)

@@ -1,8 +1,8 @@
 //! Staging->surface blit for the VR desktop mirror.
 //!
-//! Per-frame effect: blits the persistent staging texture (filled by
-//! [`super::resources::VrMirrorBlitResources::submit_eye_to_staging_with_finalize`]) into the swapchain
-//! using **cover** UV mapping (fills the window, crops staging center). Optionally
+//! Per-frame effect: blits the persistent staging texture filled by
+//! [`super::resources::VrMirrorBlitResources::encode_owned_hmd_to_openxr_and_staging`] into the
+//! swapchain using **cover** UV mapping (fills the window, crops staging center). Optionally
 //! composites an overlay (e.g. Dear ImGui) on the same encoder.
 
 use crate::gpu::GpuContext;

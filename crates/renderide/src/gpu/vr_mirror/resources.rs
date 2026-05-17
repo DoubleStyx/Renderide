@@ -1,7 +1,7 @@
 //! Persistent VR mirror state: lazy staging texture, shared 16-byte UV uniform, and
 //! per-format surface-pipeline cache.
 //!
-//! Per-frame blit logic for eye->staging and staging->surface lives in the sibling
+//! Per-frame blit logic for HMD final-copy and staging->surface lives in the sibling
 //! [`super::eye_blit`] / [`super::surface_blit`] modules.
 
 use crate::gpu::blit_kit::pipeline::{ColorBlitPipelineSlot, UvUniformBuffer};
@@ -13,7 +13,7 @@ use super::pipelines::surface_pipeline;
 pub struct VrMirrorBlitResources {
     staging_texture: Option<wgpu::Texture>,
     staging_extent: (u32, u32),
-    /// `true` after a successful eye->staging copy this session.
+    /// `true` after a successful owned-eye to staging copy this session.
     staging_valid: bool,
     surface_uniform: UvUniformBuffer,
     surface_pipeline: ColorBlitPipelineSlot,
@@ -37,8 +37,8 @@ impl VrMirrorBlitResources {
         }
     }
 
-    /// `true` after [`Self::submit_eye_to_staging_with_finalize`] has copied at least one HMD
-    /// eye image into the staging texture this session.
+    /// `true` after [`Self::encode_owned_hmd_to_openxr_and_staging`] has copied at least one HMD
+    /// eye into the staging texture this session.
     pub fn staging_valid(&self) -> bool {
         self.staging_valid
     }
