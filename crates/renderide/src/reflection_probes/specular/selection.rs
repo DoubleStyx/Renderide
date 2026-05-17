@@ -24,7 +24,7 @@ pub struct ReflectionProbeFrameSelection {
 }
 
 impl ReflectionProbeFrameSelection {
-    /// Selects up to two probes for one object AABB.
+    /// Selects a global fallback probe and up to 4 local probes for one object AABB.
     #[must_use]
     pub fn select(
         &self,
@@ -98,7 +98,7 @@ impl ReflectionProbeSpatialIndex {
         out
     }
 
-    /// Selects up to two probes for one object AABB.
+    /// Selects a global fallback probe and up to 4 local probes for one object AABB.
     #[must_use]
     pub fn select(&self, object_aabb: (Vec3, Vec3)) -> ReflectionProbeDrawSelection {
         let object_min = Vec3A::from(object_aabb.0);

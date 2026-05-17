@@ -82,7 +82,7 @@ pub struct DrawCollectionContext<'a> {
     /// hand the same borrow to every per-view context. When `None`, a fresh cache is built
     /// internally for this call (backwards-compatible single-view path).
     pub material_cache: Option<&'a FrameMaterialBatchCache>,
-    /// Optional frame reflection-probe selector used to choose up to two specular IBL probes per draw.
+    /// Optional frame reflection-probe selector used to choose the set of specular IBL probes to use per draw.
     pub reflection_probes: Option<&'a ReflectionProbeFrameSelection>,
     /// Optional pre-expanded dense draw list shared across multiple views in the same frame.
     ///

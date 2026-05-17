@@ -146,16 +146,15 @@ fn indirect_radiance(
         if (index == 0u) {
             break;
         }
-        if (((importance_mask >> i) & 1u) > 0u) {
-            if (importance_weight > 0.0) {
-                let remaining_importance_weight = min(importance_weight, 1.0 - total_weight);
-                total_result = total_result + (importance_result * (remaining_importance_weight / importance_weight));
-                total_weight = total_weight + remaining_importance_weight;
-                importance_result = vec3<f32>(0.0);
-                importance_weight = 0.0;
-                if (1.0 - total_weight <= MIN_PROBE_BLEND_WEIGHT) {
-                    break;
-                }
+        let importance_changed = ((importance_mask >> i) & 1u) > 0u;
+        if (importance_changed && (importance_weight > 0.0)) {
+            let remaining_importance_weight = min(importance_weight, 1.0 - total_weight);
+            total_result = total_result + (importance_result * (remaining_importance_weight / importance_weight));
+            total_weight = total_weight + remaining_importance_weight;
+            importance_result = vec3<f32>(0.0);
+            importance_weight = 0.0;
+            if (1.0 - total_weight <= MIN_PROBE_BLEND_WEIGHT) {
+                break;
             }
         }
         let probe = rg::reflection_probes[index];
@@ -243,16 +242,15 @@ fn indirect_diffuse(world_pos: vec3<f32>, normal_ws: vec3<f32>, view_layer: u32,
         if (index == 0u) {
             break;
         }
-        if (((importance_mask >> i) & 1u) > 0u) {
-            if (importance_weight > 0.0) {
-                let remaining_importance_weight = min(importance_weight, 1.0 - total_weight);
-                total_result = total_result + (importance_result * (remaining_importance_weight / importance_weight));
-                total_weight = total_weight + remaining_importance_weight;
-                importance_result = vec3<f32>(0.0);
-                importance_weight = 0.0;
-                if (1.0 - total_weight <= MIN_PROBE_BLEND_WEIGHT) {
-                    break;
-                }
+        let importance_changed = ((importance_mask >> i) & 1u) > 0u;
+        if (importance_changed && (importance_weight > 0.0)) {
+            let remaining_importance_weight = min(importance_weight, 1.0 - total_weight);
+            total_result = total_result + (importance_result * (remaining_importance_weight / importance_weight));
+            total_weight = total_weight + remaining_importance_weight;
+            importance_result = vec3<f32>(0.0);
+            importance_weight = 0.0;
+            if (1.0 - total_weight <= MIN_PROBE_BLEND_WEIGHT) {
+                break;
             }
         }
         let probe = rg::reflection_probes[index];

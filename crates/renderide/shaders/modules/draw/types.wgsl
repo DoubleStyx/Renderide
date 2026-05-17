@@ -28,11 +28,11 @@ fn position_stream_is_world_space(draw: PerDrawUniforms) -> bool {
     return draw._pad.x > 0.5 * POSITION_STREAM_WORLD_SPACE_FLAG;
 }
 
-/// Reflection probe atlas indices packed into the per-draw metadata.
-fn local_reflection_probe_indices(draw: PerDrawUniforms) -> vec4<u32> {
-    let packed_z = bitcast<u32>(draw._pad.z);
-    let packed_w = bitcast<u32>(draw._pad.w);
-    return vec4<u32>(packed_z & 0xFFFFu, packed_z >> 16u, packed_w & 0xFFFFu, packed_w >> 16u);
+/// Bit mask indicating, for each local probe,
+/// if it is of lower importance than its predecessor
+fn reflection_probe_importance_mask(draw: PerDrawUniforms) -> u32 {
+    let packed = bitcast<u32>(draw._pad.y);
+    return packed & 0xFFFFu;
 }
 
 /// Fallback reflection probe atlas index packed into the per-draw metadata.
@@ -41,9 +41,9 @@ fn fallback_reflection_probe_index(draw: PerDrawUniforms) -> u32 {
     return packed >> 16u;
 }
 
-/// Bit mask indicating, for each local probe,
-/// if it is of lower importance than its predecessor
-fn reflection_probe_importance_mask(draw: PerDrawUniforms) -> u32 {
-    let packed = bitcast<u32>(draw._pad.y);
-    return packed & 0xFFFFu;
+/// Reflection probe atlas indices packed into the per-draw metadata.
+fn local_reflection_probe_indices(draw: PerDrawUniforms) -> vec4<u32> {
+    let packed_z = bitcast<u32>(draw._pad.z);
+    let packed_w = bitcast<u32>(draw._pad.w);
+    return vec4<u32>(packed_z & 0xFFFFu, packed_z >> 16u, packed_w & 0xFFFFu, packed_w >> 16u);
 }
