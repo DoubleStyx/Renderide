@@ -53,8 +53,8 @@ pub struct PaddedPerDrawUniforms {
     ///
     /// Slot 0 is [`PER_DRAW_POSITION_STREAM_WORLD_SPACE_FLAG`] when the vertex position stream is
     /// already world-space. Slot 1 stores two `u16` reflection-probe atlas indices via
-    /// [`f32::from_bits`]. Slot 2 stores the second probe's blend weight, and slot 3 stores the hit
-    /// count as `0.0`, `1.0`, or `2.0`.
+    /// [`f32::from_bits`]. Slot 2 stores the fallback reflection-probe atlas index as a `u16`
+    /// as well as the hit count as `0.0`, `1.0`, or `2.0`.
     pub _pad: [f32; 4],
 }
 

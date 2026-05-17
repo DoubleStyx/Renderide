@@ -6,7 +6,8 @@ use crate::backend::frame_gpu::{
     REFLECTION_PROBE_METADATA_SH2_SOURCE_LOCAL,
 };
 use crate::scene::{
-    ReflectionProbeEntry, RenderSpaceId, SceneCoordinator, reflection_probe_use_box_projection,
+    ReflectionProbeEntry, RenderSpaceId, SceneCoordinator, reflection_probe_skybox_only,
+    reflection_probe_use_box_projection,
 };
 use crate::shared::{ReflectionProbeClear, ReflectionProbeState, ReflectionProbeType, RenderSH2};
 use crate::skybox::specular::{
@@ -142,7 +143,7 @@ pub(super) fn spatial_probe_for_state(
         center: Vec3A::from(world.transform_point3(Vec3::ZERO)),
         volume: aabb_volume(min, max),
         blend_distance,
-        skybox: probe.state.clear_flags == ReflectionProbeClear::Skybox,
+        skybox: reflection_probe_skybox_only(probe.state.flags),
     })
 }
 
