@@ -3,17 +3,20 @@
 //#texture_default _MainTex white
 //#texture_default _NoiseTex white
 //#texture_default _Cube empty
-//#mat_default _EdgeFade float 0.15
-//#mat_default _SkinAlpha float 0.5
-//#mat_default _Reflection float 0.0
-//#mat_default _ShadowStrength float 1.0
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _SpecColor vec4 1.0 1.0 1.0 1.0
-//#mat_default _HairColoring float 0.1
+//#mat_default _Shininess float 8.0
+//#mat_default _FurLength float 0.05
+//#mat_default _Cutoff float 0.0001
+//#mat_default _EdgeFade float 0.15
 //#mat_default _HairHardness float 1.0
-//#mat_default _HairShading float 0.25
 //#mat_default _HairThinness float 2.0
+//#mat_default _HairShading float 0.25
+//#mat_default _HairColoring float 0.1
+//#mat_default _SkinAlpha float 0.5
 //#mat_default _RimPower float 4.0
+//#mat_default _Reflection float 0.0
+//#mat_default _ShadowStrength float 1.0
 
 #import renderide::fur::classic_selfshadow as fur
 #import renderide::fur::common as furc
