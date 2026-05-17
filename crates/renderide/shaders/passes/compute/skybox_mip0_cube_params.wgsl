@@ -4,8 +4,9 @@
 //! canonical orientation; the optional `storage_v_inverted` flag is applied to the input sampling
 //! direction for sources that need storage-layout compensation.
 
-#import renderide::skybox::cubemap_storage as cubemap_storage
+#import renderide::ibl::cubemap_filter as cube_filter
 #import renderide::ibl::ggx_prefilter as ggx
+#import renderide::skybox::cubemap_storage as cubemap_storage
 
 struct Mip0CubeParams {
     /// Destination cube face edge in texels.
@@ -19,7 +20,7 @@ struct Mip0CubeParams {
 }
 
 @group(0) @binding(0) var<uniform> params: Mip0CubeParams;
-@group(0) @binding(1) var src_cube: texture_cube<f32>;
+@group(0) @binding(1) var src_cube: texture_2d_array<f32>;
 @group(0) @binding(2) var src_sampler: sampler;
 @group(0) @binding(3) var dst_mip: texture_storage_2d_array<rgba16float, write>;
 
@@ -33,7 +34,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ggx::cube_dir(gid.z, gid.x, gid.y, dst_size),
         f32(params.storage_v_inverted),
     );
-    let rgb = textureSampleLevel(src_cube, src_sampler, dir, 0.0).rgb;
+    let rgb = cube_filter::sample_bilinear_lod(src_cube, dir, max(params.src_face_size, 1u), 0u);
     textureStore(
         dst_mip,
         vec2i(i32(gid.x), i32(gid.y)),

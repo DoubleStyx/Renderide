@@ -18,6 +18,8 @@ pub(super) enum PipelineSlot {
     Cube,
     /// Source-pyramid downsample pass.
     Downsample,
+    /// Seam stitch pass applied after each generated mip.
+    Stitch,
     /// GGX convolve pass.
     Convolve,
 }
@@ -29,6 +31,7 @@ impl PipelineSlot {
             Self::Analytic => "skybox_bake_params",
             Self::Cube => "skybox_mip0_cube_params",
             Self::Downsample => "skybox_ibl_downsample",
+            Self::Stitch => "skybox_ibl_stitch",
             Self::Convolve => "skybox_ibl_convolve_params",
         }
     }
@@ -40,6 +43,7 @@ pub(super) struct PipelineStore {
     analytic: Option<ComputePipeline>,
     cube: Option<ComputePipeline>,
     downsample: Option<ComputePipeline>,
+    stitch: Option<ComputePipeline>,
     convolve: Option<ComputePipeline>,
     sampler: Option<Arc<wgpu::Sampler>>,
 }
@@ -60,7 +64,7 @@ impl PipelineStore {
                 &mut self.cube,
                 device,
                 stem,
-                &mip0_input_layout_entries(wgpu::TextureViewDimension::Cube),
+                &mip0_input_layout_entries(wgpu::TextureViewDimension::D2Array),
             ),
             PipelineSlot::Downsample => ensure_pipeline(
                 &mut self.downsample,
@@ -68,11 +72,14 @@ impl PipelineStore {
                 stem,
                 &downsample_layout_entries(),
             ),
+            PipelineSlot::Stitch => {
+                ensure_pipeline(&mut self.stitch, device, stem, &downsample_layout_entries())
+            }
             PipelineSlot::Convolve => ensure_pipeline(
                 &mut self.convolve,
                 device,
                 stem,
-                &mip0_input_layout_entries(wgpu::TextureViewDimension::Cube),
+                &mip0_input_layout_entries(wgpu::TextureViewDimension::D2Array),
             ),
         }
     }
@@ -84,6 +91,7 @@ impl PipelineStore {
             PipelineSlot::Analytic,
             PipelineSlot::Cube,
             PipelineSlot::Downsample,
+            PipelineSlot::Stitch,
             PipelineSlot::Convolve,
         ] {
             let _ = self.ensure(slot, device)?;
@@ -98,6 +106,7 @@ impl PipelineStore {
             PipelineSlot::Analytic => self.analytic.as_ref(),
             PipelineSlot::Cube => self.cube.as_ref(),
             PipelineSlot::Downsample => self.downsample.as_ref(),
+            PipelineSlot::Stitch => self.stitch.as_ref(),
             PipelineSlot::Convolve => self.convolve.as_ref(),
         };
         slot_ref.ok_or(SkyboxIblBakeError::MissingShader(stem))

@@ -494,8 +494,8 @@ impl CompiledRenderGraph {
         // matches `pass` exactly; this also keeps the inner record_* dispatches as pointer-cheap
         // direct calls.
         let pass = &self.passes[pass_idx];
-        let pass_label = pass.profiling_label();
-        profiling::scope!("graph::execute_pass_node", pass_label.as_ref());
+        let _pass_label = pass.profiling_label();
+        profiling::scope!("graph::execute_pass_node", _pass_label.as_ref());
         match pass.kind() {
             PassKind::Raster => {
                 profiling::scope!("graph::record_raster");

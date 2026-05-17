@@ -86,7 +86,7 @@ pub(super) fn validate_frame_group0(
                 validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
             }
             (9, AddressSpace::Handle) => {
-                validate_frame_reflection_probe_cube_array_binding(module, data_ty, rb.binding)?;
+                validate_frame_reflection_probe_array_binding(module, data_ty, rb.binding)?;
             }
             (10, AddressSpace::Handle) => {
                 validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
@@ -135,14 +135,14 @@ pub(super) fn validate_frame_group0(
     }
 }
 
-fn validate_frame_reflection_probe_cube_array_binding(
+fn validate_frame_reflection_probe_array_binding(
     module: &Module,
     data_ty: naga::Handle<naga::Type>,
     binding: u32,
 ) -> Result<(), ReflectError> {
     match &module.types[data_ty].inner {
         TypeInner::Image {
-            dim: ImageDimension::Cube,
+            dim: ImageDimension::D2,
             arrayed: true,
             class:
                 ImageClass::Sampled {
@@ -153,12 +153,12 @@ fn validate_frame_reflection_probe_cube_array_binding(
         TypeInner::Image { .. } => Err(ReflectError::UnsupportedBinding {
             group: 0,
             binding,
-            reason: "expected texture_cube_array<f32>".into(),
+            reason: "expected texture_2d_array<f32>".into(),
         }),
         _ => Err(ReflectError::UnsupportedBinding {
             group: 0,
             binding,
-            reason: "expected sampled cube texture handle".into(),
+            reason: "expected sampled 2D-array texture handle".into(),
         }),
     }
 }

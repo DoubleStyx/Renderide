@@ -688,7 +688,8 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
     for required in [
         "let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);",
         "let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
-        "let indirect_dfg = brdf::sample_ibl_dfg_lut(s.roughness, n_dot_v);",
+        "let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);",
+        "let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);",
     ] {
         assert!(
             lighting_src.contains(required),
@@ -804,8 +805,9 @@ fn fur_lighting_uses_full_pbs_brdf_stack() -> io::Result<()> {
         "let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
         "let energy_compensation = brdf::energy_compensation_from_dfg(direct_dfg, f0);",
         "rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled)",
+        "let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);",
         "brdf::indirect_specular_energy_from_dfg(indirect_dfg, f0, indirect_specular_enabled)",
-        "brdf::indirect_specular_visibility(n_dot_v, s.occlusion, s.roughness, f0)",
+        "brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, f0)",
         "let ambient = brdf::indirect_diffuse_specular(",
         "let indirect_specular = rprobe::indirect_specular_with_energy(",
         "specular_energy * specular_visibility",
@@ -915,8 +917,8 @@ fn pbs_indirect_ao_uses_multibounce_visibility() -> io::Result<()> {
 
     let lighting_src = module_source("pbs/lighting.wgsl")?;
     for required in [
-        "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, s.roughness, specular_color);",
-        "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, s.roughness, s.specular_color);",
+        "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, specular_color);",
+        "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, s.specular_color);",
         "specular_energy * specular_visibility",
     ] {
         assert!(

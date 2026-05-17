@@ -32,6 +32,8 @@ pub struct GpuCubemap {
     pub texture: Arc<wgpu::Texture>,
     /// Default full-mip cube view for binding.
     pub view: Arc<wgpu::TextureView>,
+    /// Full-mip 2D-array view for manual cross-face filtering.
+    pub array_view: Arc<wgpu::TextureView>,
     /// Resolved wgpu format for `texture`.
     pub wgpu_format: wgpu::TextureFormat,
     /// Face size in texels (mip0).
@@ -121,6 +123,18 @@ impl GpuCubemap {
                 },
             },
         );
+        let array_view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&format!("Cubemap {} array view", fmt.asset_id)),
+            format: Some(wgpu_format),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: Some(mips),
+            base_array_layer: 0,
+            array_layer_count: Some(6),
+        }));
+        crate::profiling::note_resource_churn!(TextureView, "cubemap::array_view");
         let resident_bytes = estimate_gpu_cubemap_bytes(wgpu_format, s, mips);
         let sampler = SamplerState::from_cubemap_props(props);
         let residency = props
@@ -130,6 +144,7 @@ impl GpuCubemap {
             asset_id: fmt.asset_id,
             texture,
             view,
+            array_view,
             wgpu_format,
             size: s,
             mip_levels_total: mips,

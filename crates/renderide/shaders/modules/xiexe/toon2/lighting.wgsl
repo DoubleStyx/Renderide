@@ -61,7 +61,8 @@ fn environment_tint(s: xb::SurfaceData, view_dir: vec3<f32>, world_pos: vec3<f32
     if (!rprobe::has_indirect_specular(view_layer, true)) {
         return vec3<f32>(1.0);
     }
-    return rprobe::raw_indirect_specular_with_horizon(world_pos, s.normal, s.raw_normal, view_dir, s.roughness, true, view_layer);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    return rprobe::raw_indirect_specular_with_horizon(world_pos, s.normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer);
 }
 
 /// `UNITY_SPECCUBE_LOD_STEPS` on PC/console.
@@ -328,7 +329,7 @@ fn indirect_reflection_branch_for_layout(
         return spec;
     }
 
-    let roughness = clamp(perceptual_roughness, 0.0, 1.0);
+    let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal);
     let n_dot_v = clamp(dot(normal, view_dir), 0.0, 1.0);
     let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));
     let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);
@@ -413,7 +414,8 @@ fn clustered_toon_lighting_for_layout(
     let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
     let indirect_specular_enabled =
         rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));
-    let indirect_dfg = brdf::sample_ibl_dfg_lut(s.roughness, n_dot_v);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
     let indirect_specular_energy = brdf::indirect_specular_energy_from_dfg(
         indirect_dfg,
         indirect_specular_reflectance,

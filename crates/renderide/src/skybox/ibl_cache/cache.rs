@@ -11,15 +11,15 @@ use crate::skybox::specular::{SkyboxIblSource, solid_color_params};
 
 use super::encode::{
     AnalyticEncodeContext, ConvolveEncodeContext, CubeEncodeContext, DownsampleEncodeContext,
-    RuntimeCubeEncodeContext, encode_analytic_mip0, encode_convolve_mips, encode_cube_mip0,
-    encode_downsample_mips, encode_runtime_cube_mip0,
+    RuntimeCubeEncodeContext, StitchEncodeContext, encode_analytic_mip0, encode_convolve_mips,
+    encode_cube_mip0, encode_downsample_mips, encode_runtime_cube_mip0, encode_stitch_mip,
 };
 use super::errors::SkyboxIblBakeError;
 use super::key::{SkyboxIblKey, mip_levels_for_edge, source_max_lod};
 use super::pipeline_store::{PipelineSlot, PipelineStore};
 use super::resources::{
     PendingBake, PendingBakeResources, PrefilteredCube, copy_cube_mip0,
-    create_full_cube_sample_view, create_ibl_cube,
+    create_full_array_sample_view, create_ibl_cube,
 };
 
 /// Maximum concurrent in-flight bakes; matches the analytic-only ceiling we used previously.
@@ -35,6 +35,64 @@ struct SourceMip0EncodeContext<'a> {
     face_size: u32,
     sampler: &'a wgpu::Sampler,
     profiler: Option<&'a GpuProfilerHandle>,
+}
+
+/// Texture set used by one asynchronous IBL bake.
+struct BakeTextures {
+    /// Stitched source radiance mip pyramid.
+    source_cube: super::resources::IblCubeTexture,
+    /// Scratch target for source mip generation before stitching.
+    source_scratch_cube: super::resources::IblCubeTexture,
+    /// Final prefiltered specular cubemap.
+    filtered_cube: super::resources::IblCubeTexture,
+    /// Scratch target for filtered mip generation before stitching.
+    filtered_scratch_cube: super::resources::IblCubeTexture,
+    /// Full-mip 2D-array view of [`Self::source_cube`].
+    source_sample_view: Arc<wgpu::TextureView>,
+}
+
+impl BakeTextures {
+    /// Allocates the textures and source sample view needed by one bake.
+    fn create(device: &wgpu::Device, face_size: u32, mip_levels: u32) -> Self {
+        let source_cube = create_ibl_cube(device, "skybox_ibl_source_cube", face_size, mip_levels);
+        let source_scratch_cube = create_ibl_cube(
+            device,
+            "skybox_ibl_source_scratch_cube",
+            face_size,
+            mip_levels,
+        );
+        let filtered_cube =
+            create_ibl_cube(device, "skybox_ibl_filtered_cube", face_size, mip_levels);
+        let filtered_scratch_cube = create_ibl_cube(
+            device,
+            "skybox_ibl_filtered_scratch_cube",
+            face_size,
+            mip_levels,
+        );
+        let source_sample_view = Arc::new(create_full_array_sample_view(
+            &source_cube.texture,
+            mip_levels,
+        ));
+        Self {
+            source_cube,
+            source_scratch_cube,
+            filtered_cube,
+            filtered_scratch_cube,
+            source_sample_view,
+        }
+    }
+
+    /// Retains transient textures and views until the submitted bake completes.
+    fn retain_transient(&self, resources: &mut PendingBakeResources) {
+        resources.textures.push(self.source_cube.texture.clone());
+        resources
+            .textures
+            .push(self.source_scratch_cube.texture.clone());
+        resources
+            .textures
+            .push(self.filtered_scratch_cube.texture.clone());
+        resources.source_sample_view = Some(self.source_sample_view.clone());
+    }
 }
 
 /// Owns IBL bakes for prefiltered specular reflection cubemaps.
@@ -154,25 +212,9 @@ impl SkyboxIblCache {
         let input_sampler = self.pipelines.ensure_sampler(gpu.device());
         let face_size = key.face_size();
         let mip_levels = mip_levels_for_edge(face_size);
-        let source_cube = create_ibl_cube(
-            gpu.device(),
-            "skybox_ibl_source_cube",
-            face_size,
-            mip_levels,
-        );
-        let filtered_cube = create_ibl_cube(
-            gpu.device(),
-            "skybox_ibl_filtered_cube",
-            face_size,
-            mip_levels,
-        );
+        let textures = BakeTextures::create(gpu.device(), face_size, mip_levels);
         let mut resources = PendingBakeResources::default();
-        let source_sample_view = Arc::new(create_full_cube_sample_view(
-            &source_cube.texture,
-            mip_levels,
-        ));
-        resources.textures.push(source_cube.texture.clone());
-        resources.source_sample_view = Some(source_sample_view.clone());
+        textures.retain_transient(&mut resources);
         let mut encoder = gpu
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -182,7 +224,7 @@ impl SkyboxIblCache {
             SourceMip0EncodeContext {
                 gpu,
                 encoder: &mut encoder,
-                texture: source_cube.texture.as_ref(),
+                texture: textures.source_scratch_cube.texture.as_ref(),
                 face_size,
                 sampler: input_sampler.as_ref(),
                 profiler: profiler.as_deref(),
@@ -191,11 +233,27 @@ impl SkyboxIblCache {
             &mut resources,
         )?;
         let downsample_pipeline = self.pipelines.get(PipelineSlot::Downsample)?;
+        let stitch_pipeline = self.pipelines.get(PipelineSlot::Stitch)?;
         let convolve_pipeline = self.pipelines.get(PipelineSlot::Convolve)?;
+        encode_stitch_mip(
+            StitchEncodeContext {
+                device: gpu.device(),
+                encoder: &mut encoder,
+                pipeline: stitch_pipeline,
+                src_texture: textures.source_scratch_cube.texture.as_ref(),
+                dst_texture: textures.source_cube.texture.as_ref(),
+                mip: 0,
+                dst_size: face_size,
+                profiler: profiler.as_deref(),
+                label: "skybox_ibl stitch source mip0",
+                profiler_label: "skybox_ibl::stitch_source_mip0".to_string(),
+            },
+            &mut resources,
+        );
         copy_cube_mip0(
             &mut encoder,
-            source_cube.texture.as_ref(),
-            filtered_cube.texture.as_ref(),
+            textures.source_cube.texture.as_ref(),
+            textures.filtered_cube.texture.as_ref(),
             face_size,
             profiler.as_deref(),
         );
@@ -204,7 +262,9 @@ impl SkyboxIblCache {
                 device: gpu.device(),
                 encoder: &mut encoder,
                 pipeline: downsample_pipeline,
-                texture: source_cube.texture.as_ref(),
+                stitch_pipeline,
+                texture: textures.source_cube.texture.as_ref(),
+                scratch_texture: textures.source_scratch_cube.texture.as_ref(),
                 face_size,
                 mip_levels,
                 profiler: profiler.as_deref(),
@@ -216,8 +276,10 @@ impl SkyboxIblCache {
                 device: gpu.device(),
                 encoder: &mut encoder,
                 pipeline: convolve_pipeline,
-                texture: filtered_cube.texture.as_ref(),
-                src_view: source_sample_view.as_ref(),
+                stitch_pipeline,
+                texture: textures.filtered_cube.texture.as_ref(),
+                scratch_texture: textures.filtered_scratch_cube.texture.as_ref(),
+                src_view: textures.source_sample_view.as_ref(),
                 sampler: input_sampler.as_ref(),
                 face_size,
                 mip_levels,
@@ -232,7 +294,7 @@ impl SkyboxIblCache {
         }
         let pending = PendingBake {
             cube: PrefilteredCube {
-                texture: filtered_cube.texture,
+                texture: textures.filtered_cube.texture.clone(),
                 mip_levels,
             },
             _resources: resources,

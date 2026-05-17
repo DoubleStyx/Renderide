@@ -136,7 +136,7 @@ fn append_ibl_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::CubeArray,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
             count: None,

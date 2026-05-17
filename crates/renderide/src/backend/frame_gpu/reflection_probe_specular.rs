@@ -7,9 +7,9 @@ use crate::gpu::{GpuReflectionProbeMetadata, REFLECTION_PROBE_ATLAS_FORMAT};
 /// Resources bound to frame-global reflection-probe slots.
 #[derive(Clone)]
 pub struct ReflectionProbeSpecularResources {
-    /// Cube-array texture view sampled by PBS materials.
-    pub cube_array_view: Arc<wgpu::TextureView>,
-    /// Sampler paired with [`Self::cube_array_view`].
+    /// 2D-array atlas view sampled by PBS materials.
+    pub array_view: Arc<wgpu::TextureView>,
+    /// Sampler paired with [`Self::array_view`].
     pub sampler: Arc<wgpu::Sampler>,
     /// Storage buffer of [`GpuReflectionProbeMetadata`] rows.
     pub metadata_buffer: Arc<wgpu::Buffer>,
@@ -20,8 +20,8 @@ pub struct ReflectionProbeSpecularResources {
 /// Borrowed view used while creating frame-global bind groups.
 #[derive(Clone, Copy)]
 pub(super) struct ReflectionProbeSpecularBindGroupResources<'a> {
-    /// Cube-array texture view bound at `@group(0) @binding(9)`.
-    pub cube_array_view: &'a wgpu::TextureView,
+    /// 2D-array atlas view bound at `@group(0) @binding(9)`.
+    pub array_view: &'a wgpu::TextureView,
     /// Sampler bound at `@group(0) @binding(10)`.
     pub sampler: &'a wgpu::Sampler,
     /// Metadata buffer bound at `@group(0) @binding(12)`.
@@ -38,7 +38,7 @@ pub(super) fn create_reflection_probe_specular_fallback(
     Arc<wgpu::Buffer>,
 ) {
     let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("frame_reflection_probe_black_cube_array"),
+        label: Some("frame_reflection_probe_black_array"),
         size: wgpu::Extent3d {
             width: 1,
             height: 1,
@@ -52,9 +52,9 @@ pub(super) fn create_reflection_probe_specular_fallback(
         view_formats: &[],
     }));
     let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
-        label: Some("frame_reflection_probe_black_cube_array_view"),
+        label: Some("frame_reflection_probe_black_array_view"),
         format: Some(REFLECTION_PROBE_ATLAS_FORMAT),
-        dimension: Some(wgpu::TextureViewDimension::CubeArray),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
         usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
         aspect: wgpu::TextureAspect::All,
         base_mip_level: 0,
@@ -64,7 +64,7 @@ pub(super) fn create_reflection_probe_specular_fallback(
     }));
     crate::profiling::note_resource_churn!(
         TextureView,
-        "backend::frame_reflection_probe_black_cube_array_view"
+        "backend::frame_reflection_probe_black_array_view"
     );
     let sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("frame_reflection_probe_sampler"),

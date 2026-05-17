@@ -67,7 +67,7 @@ pub(super) struct PendingBakeResources {
     pub(super) texture_views: Vec<wgpu::TextureView>,
     /// Source asset views/textures retained for the duration of the bake.
     pub(super) source_views: Vec<Arc<wgpu::TextureView>>,
-    /// Cube sampling view of the source pyramid retained for the convolve passes.
+    /// 2D-array sampling view of the source pyramid retained for the convolve passes.
     pub(super) source_sample_view: Option<Arc<wgpu::TextureView>>,
 }
 
@@ -77,7 +77,7 @@ pub(super) struct IblCubeTexture {
     pub(super) texture: Arc<wgpu::Texture>,
 }
 
-/// Allocates one Rgba16Float IBL cube and its full sampling view.
+/// Allocates one Rgba16Float IBL cube.
 pub(super) fn create_ibl_cube(
     device: &wgpu::Device,
     label: &'static str,
@@ -104,15 +104,15 @@ pub(super) fn create_ibl_cube(
     IblCubeTexture { texture }
 }
 
-/// Creates a cube-dimension sampling view of every mip in the source pyramid.
-pub(super) fn create_full_cube_sample_view(
+/// Creates a 2D-array sampling view of every mip in the source pyramid.
+pub(super) fn create_full_array_sample_view(
     texture: &wgpu::Texture,
     mip_levels: u32,
 ) -> wgpu::TextureView {
     let view = texture.create_view(&wgpu::TextureViewDescriptor {
-        label: Some("skybox_ibl_cube_full_sample_view"),
+        label: Some("skybox_ibl_array_full_sample_view"),
         format: Some(IBL_CUBE_FORMAT),
-        dimension: Some(wgpu::TextureViewDimension::Cube),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
         usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
         aspect: wgpu::TextureAspect::All,
         base_mip_level: 0,
@@ -120,7 +120,7 @@ pub(super) fn create_full_cube_sample_view(
         base_array_layer: 0,
         array_layer_count: Some(6),
     });
-    crate::profiling::note_resource_churn!(TextureView, "skybox::ibl_full_sample_view");
+    crate::profiling::note_resource_churn!(TextureView, "skybox::ibl_full_array_sample_view");
     view
 }
 

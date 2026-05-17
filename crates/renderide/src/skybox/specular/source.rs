@@ -32,8 +32,10 @@ pub(crate) struct CubemapIblSource {
     pub content_generation: u64,
     /// Whether sampling needs V-axis storage compensation.
     pub storage_v_inverted: bool,
-    /// Cube-dimension texture view used as the bake input.
+    /// Cube-dimension texture view used by cube-sampling systems such as SH projection.
     pub view: Arc<wgpu::TextureView>,
+    /// 2D-array texture view used by manual seam-aware specular IBL filtering.
+    pub array_view: Arc<wgpu::TextureView>,
 }
 
 /// Constant-color source identity and color.
@@ -58,6 +60,8 @@ pub(crate) struct RuntimeCubemapIblSource {
     pub mip_levels: u32,
     /// Captured texture retained with the source view.
     pub texture: Arc<wgpu::Texture>,
-    /// Cube-dimension texture view used as the bake input.
+    /// Cube-dimension texture view used by cube-sampling systems such as SH projection.
     pub view: Arc<wgpu::TextureView>,
+    /// 2D-array texture view used by manual seam-aware specular IBL filtering.
+    pub array_view: Arc<wgpu::TextureView>,
 }

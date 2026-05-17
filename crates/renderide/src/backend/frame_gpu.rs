@@ -62,11 +62,11 @@ pub struct FrameGpuResources {
     /// Actual render views use per-view snapshots owned by
     /// [`crate::backend::frame_resource_manager::PerViewFrameState`].
     scene_snapshots: SceneSnapshotSet,
-    /// Black cube-array kept alive for frames without resident reflection probes.
+    /// Black atlas array kept alive for frames without resident reflection probes.
     _reflection_probe_fallback_texture: Arc<wgpu::Texture>,
-    /// Current cube-array view bound for reflection-probe specular IBL.
-    reflection_probe_cube_array_view: Arc<wgpu::TextureView>,
-    /// Current sampler paired with [`Self::reflection_probe_cube_array_view`].
+    /// Current 2D-array atlas view bound for reflection-probe specular IBL.
+    reflection_probe_array_view: Arc<wgpu::TextureView>,
+    /// Current sampler paired with [`Self::reflection_probe_array_view`].
     reflection_probe_sampler: Arc<wgpu::Sampler>,
     /// Current metadata buffer for reflection-probe specular IBL.
     reflection_probe_metadata_buffer: Arc<wgpu::Buffer>,
@@ -248,7 +248,7 @@ impl FrameGpuResources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 9,
-                    resource: wgpu::BindingResource::TextureView(reflection_probes.cube_array_view),
+                    resource: wgpu::BindingResource::TextureView(reflection_probes.array_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 10,
@@ -286,7 +286,7 @@ impl FrameGpuResources {
         &self,
     ) -> ReflectionProbeSpecularBindGroupResources<'_> {
         ReflectionProbeSpecularBindGroupResources {
-            cube_array_view: self.reflection_probe_cube_array_view.as_ref(),
+            array_view: self.reflection_probe_array_view.as_ref(),
             sampler: self.reflection_probe_sampler.as_ref(),
             metadata_buffer: self.reflection_probe_metadata_buffer.as_ref(),
         }
@@ -345,7 +345,7 @@ impl FrameGpuResources {
             SceneSnapshotSet::new(device, scene_depth_format, DEFAULT_SCENE_COLOR_FORMAT);
         let (
             reflection_probe_fallback_texture,
-            reflection_probe_cube_array_view,
+            reflection_probe_array_view,
             reflection_probe_sampler,
             reflection_probe_metadata_buffer,
         ) = create_reflection_probe_specular_fallback(device);
@@ -357,7 +357,7 @@ impl FrameGpuResources {
             refs,
             scene_snapshots.views(),
             ReflectionProbeSpecularBindGroupResources {
-                cube_array_view: reflection_probe_cube_array_view.as_ref(),
+                array_view: reflection_probe_array_view.as_ref(),
                 sampler: reflection_probe_sampler.as_ref(),
                 metadata_buffer: reflection_probe_metadata_buffer.as_ref(),
             },
@@ -369,7 +369,7 @@ impl FrameGpuResources {
             cluster_cache,
             scene_snapshots,
             _reflection_probe_fallback_texture: reflection_probe_fallback_texture,
-            reflection_probe_cube_array_view,
+            reflection_probe_array_view,
             reflection_probe_sampler,
             reflection_probe_metadata_buffer,
             reflection_probe_version: 0,
@@ -462,7 +462,7 @@ impl FrameGpuResources {
         if resources.version == self.reflection_probe_version {
             return false;
         }
-        self.reflection_probe_cube_array_view = resources.cube_array_view;
+        self.reflection_probe_array_view = resources.array_view;
         self.reflection_probe_sampler = resources.sampler;
         self.reflection_probe_metadata_buffer = resources.metadata_buffer;
         self.reflection_probe_version = resources.version;
