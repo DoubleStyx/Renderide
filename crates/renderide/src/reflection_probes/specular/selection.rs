@@ -244,7 +244,7 @@ fn score_better(a: ProbeScore, b: ProbeScore) -> bool {
         })
         .then_with(|| a.probe_volume.total_cmp(&b.probe_volume))
         .then_with(|| a.center_distance_sq.total_cmp(&b.center_distance_sq))
-        .then_with(|| a.renderable_index.cmp(&b.renderable_index).reverse())
+        .then_with(|| a.renderable_index.cmp(&b.renderable_index))
         .is_lt()
 }
 
