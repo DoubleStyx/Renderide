@@ -74,21 +74,31 @@ fn log_renderer_startup_context(log_path: &Path, initial_log_level: LogLevel) {
 
 fn sanitized_cli_mode() -> String {
     let args: Vec<String> = env::args().collect();
+    sanitized_cli_mode_for_args(&args)
+}
+
+/// Returns a redacted command-line mode summary for startup logging.
+fn sanitized_cli_mode_for_args(args: &[impl AsRef<str>]) -> String {
     let has_queue = args
         .iter()
-        .any(|arg| arg.to_ascii_lowercase().ends_with("queuename"));
+        .any(|arg| arg_has_ascii_suffix(arg.as_ref(), "queuename"));
     let has_queue_capacity = args
         .iter()
-        .any(|arg| arg.to_ascii_lowercase().ends_with("queuecapacity"));
+        .any(|arg| arg_has_ascii_suffix(arg.as_ref(), "queuecapacity"));
     let has_log_level = args
         .iter()
-        .any(|arg| arg.eq_ignore_ascii_case("-LogLevel") || arg.ends_with("LogLevel"));
-    let headless = args
-        .iter()
-        .any(|arg| arg.eq_ignore_ascii_case("--headless") || arg.eq_ignore_ascii_case("-headless"));
+        .any(|arg| arg_has_ascii_suffix(arg.as_ref(), "loglevel"));
+    let headless = args.iter().any(|arg| {
+        let arg = arg.as_ref();
+        arg.eq_ignore_ascii_case("--headless") || arg.eq_ignore_ascii_case("-headless")
+    });
     let ignore_config = args.iter().any(|arg| {
+        let arg = arg.as_ref();
         arg.eq_ignore_ascii_case("--ignore-config") || arg.eq_ignore_ascii_case("-ignore-config")
     });
+    let attach_renderer = args
+        .iter()
+        .any(|arg| arg_has_ascii_suffix(arg.as_ref(), "attachrenderer"));
 
     let mut parts = Vec::new();
     if has_queue {
@@ -96,6 +106,9 @@ fn sanitized_cli_mode() -> String {
     }
     if has_queue_capacity {
         parts.push("queue-capacity");
+    }
+    if attach_renderer {
+        parts.push("attach-renderer");
     }
     if headless {
         parts.push("headless");
@@ -113,11 +126,49 @@ fn sanitized_cli_mode() -> String {
     }
 }
 
+/// Returns true when `arg` ends with `suffix`, ignoring ASCII case.
+fn arg_has_ascii_suffix(arg: &str, suffix: &str) -> bool {
+    let arg = arg.as_bytes();
+    let suffix = suffix.as_bytes();
+    arg.len() >= suffix.len() && arg[arg.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
     fn sanitized_cli_mode_empty_defaults_to_standalone_shape() {
         let mode = super::sanitized_cli_mode();
         assert!(!mode.contains("QueueName"));
+    }
+
+    #[test]
+    fn sanitized_cli_mode_reports_attach_renderer() {
+        assert_eq!(
+            super::sanitized_cli_mode_for_args(&["renderide", "-AttachRenderer"]),
+            "attach-renderer"
+        );
+        assert_eq!(
+            super::sanitized_cli_mode_for_args(&["renderide", "--renderide-attachrenderer"]),
+            "attach-renderer"
+        );
+    }
+
+    #[test]
+    fn sanitized_cli_mode_keeps_stable_redacted_order() {
+        assert_eq!(
+            super::sanitized_cli_mode_for_args(&[
+                "renderide",
+                "-QueueName",
+                "secret",
+                "-QueueCapacity",
+                "8388608",
+                "-AttachRenderer",
+                "--headless",
+                "-ignore-config",
+                "-LogLevel",
+                "debug",
+            ]),
+            "ipc-queue+queue-capacity+attach-renderer+headless+ignore-config+log-level"
+        );
     }
 }
