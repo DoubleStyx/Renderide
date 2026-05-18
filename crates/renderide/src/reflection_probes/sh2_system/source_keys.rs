@@ -53,7 +53,7 @@ pub(in crate::reflection_probes) enum Sh2SourceKey {
         /// Projection sample grid edge per cube face.
         sample_size: u32,
     },
-    /// Renderer-captured OnChanges cubemap source.
+    /// Renderer-captured dynamic cubemap source.
     RuntimeCubemap {
         /// Render space that owns the probe.
         render_space_id: i32,

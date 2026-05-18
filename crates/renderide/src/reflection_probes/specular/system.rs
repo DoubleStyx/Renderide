@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 
 use crate::backend::AssetTransferQueue;
 use crate::backend::frame_gpu::{
@@ -8,6 +8,7 @@ use crate::backend::frame_gpu::{
 };
 use crate::gpu::GpuContext;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::shared::{ReflectionProbeClear, ReflectionProbeType, RenderSH2};
 use crate::skybox::ibl_cache::{
     SkyboxIblCache, SkyboxIblKey, build_key, clamp_face_size, mip_extent, mip_levels_for_edge,
 };
@@ -49,6 +50,8 @@ pub struct ReflectionProbeSpecularSystem {
     resources: Option<ReflectionProbeSpecularResources>,
     selection: ReflectionProbeFrameSelection,
     captures: RuntimeReflectionProbeCaptureStore,
+    /// Last source that finished IBL and optional SH2 work for each probe.
+    last_ready: HashMap<ProbeIdentity, LastReadyProbe>,
     version: u64,
 }
 
@@ -68,16 +71,17 @@ impl ReflectionProbeSpecularSystem {
             resources: None,
             selection: ReflectionProbeFrameSelection::default(),
             captures: RuntimeReflectionProbeCaptureStore::default(),
+            last_ready: HashMap::new(),
             version: 1,
         }
     }
 
-    /// Registers a completed runtime cubemap capture for an OnChanges reflection probe.
+    /// Registers a completed runtime cubemap capture for a dynamic reflection probe.
     pub(crate) fn register_runtime_capture(&mut self, capture: RuntimeReflectionProbeCapture) {
         self.captures.insert(capture);
     }
 
-    /// Runtime OnChanges capture store used by SH2 task resolution.
+    /// Runtime dynamic capture store used by SH2 task resolution.
     #[must_use]
     pub(crate) fn capture_store(&self) -> &RuntimeReflectionProbeCaptureStore {
         &self.captures
@@ -93,10 +97,14 @@ impl ReflectionProbeSpecularSystem {
         }
         profiling::scope!("reflection_probes::specular::purge_render_space_resources");
         let captures = self.captures.purge_spaces(spaces);
+        let last_ready_before = self.last_ready.len();
+        self.last_ready
+            .retain(|identity, _probe| !spaces.contains(&identity.space_id));
+        let last_ready = last_ready_before.saturating_sub(self.last_ready.len());
         let ibl = self
             .ibl_cache
             .purge_where(|key| specular_ibl_key_matches_closed_spaces(key, spaces));
-        let removed = captures.saturating_add(ibl);
+        let removed = captures.saturating_add(ibl).saturating_add(last_ready);
         if removed > 0 {
             self.version = self.version.wrapping_add(1);
         }
@@ -112,6 +120,8 @@ impl ReflectionProbeSpecularSystem {
 
         self.collect_probe_resources(&mut params, face_size, &mut collected);
         self.captures.retain_active(&collected.active_capture_keys);
+        self.last_ready
+            .retain(|identity, _probe| collected.active_identities.contains(identity));
         self.ibl_cache
             .prune_completed_except(&collected.active_keys);
         collected.ready.sort_unstable_by_key(|probe| {
@@ -138,7 +148,11 @@ impl ReflectionProbeSpecularSystem {
                     space_id,
                     renderable_index: probe.renderable_index,
                 };
-                if probe.state.r#type == crate::shared::ReflectionProbeType::OnChanges {
+                if matches!(
+                    probe.state.r#type,
+                    ReflectionProbeType::OnChanges | ReflectionProbeType::Realtime
+                ) && probe.state.clear_flags != ReflectionProbeClear::Color
+                {
                     collected
                         .active_capture_keys
                         .insert(RuntimeReflectionProbeCaptureKey {
@@ -151,6 +165,7 @@ impl ReflectionProbeSpecularSystem {
                 else {
                     continue;
                 };
+                collected.active_identities.insert(identity);
                 let key = build_key(&source, face_size);
                 collected.active_keys.insert(key.clone());
                 let sh2 = params
@@ -159,12 +174,6 @@ impl ReflectionProbeSpecularSystem {
                     .flatten();
                 self.ibl_cache
                     .ensure_source(params.gpu, key.clone(), source);
-                let Some(cube) = self.ibl_cache.completed_cube(&key) else {
-                    continue;
-                };
-                if params.reflection_probe_sh2_enabled && sh2.is_none() {
-                    continue;
-                }
                 let Some(spatial) = spatial_probe_for_state(
                     params.scene,
                     space_id,
@@ -174,16 +183,50 @@ impl ReflectionProbeSpecularSystem {
                 ) else {
                     continue;
                 };
-                let mut metadata = metadata_for_spatial(&spatial, probe.state, sh2.as_ref());
-                metadata.params[1] = cube.mip_levels.saturating_sub(1) as f32;
-                collected.ready.push(ReadyProbe {
-                    identity,
-                    key,
-                    texture: cube.texture.clone(),
-                    mip_levels: cube.mip_levels,
-                    metadata,
-                    spatial,
-                });
+                let current_ready = self
+                    .ibl_cache
+                    .completed_cube(&key)
+                    .filter(|_cube| !params.reflection_probe_sh2_enabled || sh2.is_some())
+                    .map(|cube| (cube.texture.clone(), cube.mip_levels));
+                if let Some((texture, mip_levels)) = current_ready {
+                    let mut metadata = metadata_for_spatial(&spatial, probe.state, sh2.as_ref());
+                    metadata.params[1] = mip_levels.saturating_sub(1) as f32;
+                    self.last_ready.insert(
+                        identity,
+                        LastReadyProbe {
+                            key: key.clone(),
+                            texture: texture.clone(),
+                            mip_levels,
+                            sh2,
+                        },
+                    );
+                    collected.ready.push(ReadyProbe {
+                        identity,
+                        key,
+                        texture,
+                        mip_levels,
+                        metadata,
+                        spatial,
+                    });
+                    continue;
+                }
+                if let Some(fallback) = self.last_ready.get(&identity).cloned() {
+                    if params.reflection_probe_sh2_enabled && fallback.sh2.is_none() {
+                        continue;
+                    }
+                    collected.active_keys.insert(fallback.key.clone());
+                    let mut metadata =
+                        metadata_for_spatial(&spatial, probe.state, fallback.sh2.as_ref());
+                    metadata.params[1] = fallback.mip_levels.saturating_sub(1) as f32;
+                    collected.ready.push(ReadyProbe {
+                        identity,
+                        key: fallback.key,
+                        texture: fallback.texture,
+                        mip_levels: fallback.mip_levels,
+                        metadata,
+                        spatial,
+                    });
+                }
             }
         }
     }
@@ -462,8 +505,23 @@ mod tests {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 struct ProbeIdentity {
+    /// Render space that owns the probe.
     space_id: RenderSpaceId,
+    /// Dense reflection-probe renderable index.
     renderable_index: i32,
+}
+
+/// Last known source that can be sampled immediately for one probe.
+#[derive(Clone)]
+struct LastReadyProbe {
+    /// IBL cache key for the filtered source.
+    key: SkyboxIblKey,
+    /// Filtered source texture.
+    texture: Arc<wgpu::Texture>,
+    /// Number of resident mip levels in the filtered source.
+    mip_levels: u32,
+    /// Optional SH2 projection paired with this source.
+    sh2: Option<RenderSH2>,
 }
 
 struct ReadyProbe {
@@ -479,5 +537,6 @@ struct ReadyProbe {
 struct CollectedProbeResources {
     active_keys: HashSet<SkyboxIblKey>,
     active_capture_keys: HashSet<RuntimeReflectionProbeCaptureKey>,
+    active_identities: HashSet<ProbeIdentity>,
     ready: Vec<ReadyProbe>,
 }

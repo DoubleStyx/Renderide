@@ -1,4 +1,4 @@
-//! Runtime reflection-probe cubemaps captured for OnChanges probes.
+//! Runtime reflection-probe cubemaps captured for OnChanges and realtime probes.
 
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ pub(crate) struct RuntimeReflectionProbeCaptureKey {
     pub(crate) renderable_index: i32,
 }
 
-/// Newly captured runtime cubemap for an OnChanges reflection probe.
+/// Newly captured runtime cubemap for a dynamic reflection probe.
 pub(crate) struct RuntimeReflectionProbeCapture {
     /// Capture slot identity.
     pub(crate) key: RuntimeReflectionProbeCaptureKey,
@@ -33,7 +33,7 @@ pub(crate) struct RuntimeReflectionProbeCapture {
     pub(crate) array_view: Arc<wgpu::TextureView>,
 }
 
-/// Latest captured source for one runtime OnChanges reflection probe.
+/// Latest captured source for one dynamic reflection probe.
 #[derive(Clone)]
 pub(crate) struct RuntimeReflectionProbeCaptureSource {
     /// Capture slot identity.

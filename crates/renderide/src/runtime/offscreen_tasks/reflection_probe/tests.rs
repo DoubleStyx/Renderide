@@ -7,7 +7,7 @@ use crate::camera::HostCameraFrame;
 use crate::render_graph::FrameViewClear;
 use crate::shared::{
     ReflectionProbeClear, ReflectionProbeRenderTask, ReflectionProbeState,
-    ReflectionProbeTimeSlicingMode,
+    ReflectionProbeTimeSlicingMode, ReflectionProbeType,
 };
 
 use super::face::{finite_positive_or, host_camera_frame_for_probe_face, reflection_probe_clip};
@@ -91,6 +91,64 @@ fn onchanges_faces_returns_empty_when_all_faces_are_complete() {
     );
 
     assert!(faces.is_empty());
+}
+
+#[test]
+fn runtime_capture_no_time_slicing_completes_in_one_tick() {
+    assert_eq!(
+        onchanges::runtime_capture_ticks_to_complete(ReflectionProbeTimeSlicingMode::NoTimeSlicing),
+        1
+    );
+}
+
+#[test]
+fn runtime_capture_all_faces_time_slicing_completes_in_nine_ticks() {
+    assert_eq!(
+        onchanges::runtime_capture_ticks_to_complete(
+            ReflectionProbeTimeSlicingMode::AllFacesAtOnce
+        ),
+        9
+    );
+}
+
+#[test]
+fn runtime_capture_individual_faces_time_slicing_completes_in_fourteen_ticks() {
+    assert_eq!(
+        onchanges::runtime_capture_ticks_to_complete(
+            ReflectionProbeTimeSlicingMode::IndividualFaces
+        ),
+        14
+    );
+}
+
+#[test]
+fn realtime_capture_scheduler_ignores_non_realtime_and_solid_color_states() {
+    assert!(!onchanges::realtime_probe_state_needs_capture(
+        ReflectionProbeState {
+            r#type: ReflectionProbeType::Baked,
+            ..Default::default()
+        }
+    ));
+    assert!(!onchanges::realtime_probe_state_needs_capture(
+        ReflectionProbeState {
+            r#type: ReflectionProbeType::OnChanges,
+            ..Default::default()
+        }
+    ));
+    assert!(!onchanges::realtime_probe_state_needs_capture(
+        ReflectionProbeState {
+            r#type: ReflectionProbeType::Realtime,
+            clear_flags: ReflectionProbeClear::Color,
+            ..Default::default()
+        }
+    ));
+    assert!(onchanges::realtime_probe_state_needs_capture(
+        ReflectionProbeState {
+            r#type: ReflectionProbeType::Realtime,
+            clear_flags: ReflectionProbeClear::Skybox,
+            ..Default::default()
+        }
+    ));
 }
 
 #[test]

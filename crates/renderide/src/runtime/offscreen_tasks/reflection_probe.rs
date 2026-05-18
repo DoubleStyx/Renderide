@@ -24,8 +24,10 @@ mod readback;
 #[cfg(test)]
 mod tests;
 
-pub(in crate::runtime) use onchanges::ActiveOnChangesReflectionProbeCapture;
 use onchanges::same_onchanges_probe;
+pub(in crate::runtime) use onchanges::{
+    ActiveOnChangesReflectionProbeCapture, ActiveRealtimeReflectionProbeCapture,
+};
 use readback::{
     compute_probe_readback_layout, readback_reflection_probe_cube, write_probe_task_result,
     zero_probe_task_result,
@@ -398,6 +400,7 @@ impl RendererRuntime {
             }
         }
         self.drain_onchanges_reflection_probe_captures(gpu);
+        self.drain_realtime_reflection_probe_captures(gpu);
     }
 }
 
