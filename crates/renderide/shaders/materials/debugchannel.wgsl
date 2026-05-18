@@ -20,13 +20,16 @@ const DEBUGCHANNEL_KW_A: u32 = 1u << 0u;
 const DEBUGCHANNEL_KW_B: u32 = 1u << 1u;
 const DEBUGCHANNEL_KW_G: u32 = 1u << 2u;
 const DEBUGCHANNEL_KW_R: u32 = 1u << 3u;
+const DEBUGCHANNEL_SELECTOR_GROUP: u32 =
+    DEBUGCHANNEL_KW_A | DEBUGCHANNEL_KW_B | DEBUGCHANNEL_KW_G | DEBUGCHANNEL_KW_R;
 
 @group(1) @binding(0) var<uniform> mat: DebugChannelMaterial;
 @group(1) @binding(1) var _MainTex: texture_2d<f32>;
 @group(1) @binding(2) var _MainTex_sampler: sampler;
 
 fn debugchannel_kw(mask: u32) -> bool {
-    return vb::enabled(mat._RenderideVariantBits, mask);
+    let bits = mat._RenderideVariantBits & DEBUGCHANNEL_SELECTOR_GROUP;
+    return vb::enabled(bits, mask) || (bits == 0u && mask == DEBUGCHANNEL_KW_R);
 }
 
 @vertex

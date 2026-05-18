@@ -31,6 +31,18 @@ const DEBUG_KW_UV0: u32 = 1u << 8u;
 const DEBUG_KW_UV1: u32 = 1u << 9u;
 const DEBUG_KW_UV2: u32 = 1u << 10u;
 const DEBUG_KW_UV3: u32 = 1u << 11u;
+const DEBUG_SELECTOR_BEFORE_BITANGENT: u32 =
+    DEBUG_KW_COLOR |
+    DEBUG_KW_COLOR_ALPHA |
+    DEBUG_KW_NORMAL |
+    DEBUG_KW_POSITION |
+    DEBUG_KW_TANGENT |
+    DEBUG_KW_TANGENT4 |
+    DEBUG_KW_UV0 |
+    DEBUG_KW_UV1 |
+    DEBUG_KW_UV2 |
+    DEBUG_KW_UV3;
+const DEBUG_SELECTOR_GROUP: u32 = DEBUG_SELECTOR_BEFORE_BITANGENT | DEBUG_KW_BITANGENT;
 
 @group(1) @binding(0) var<uniform> mat: DebugMaterial;
 
@@ -45,6 +57,20 @@ fn debug_kw(mask: u32) -> bool {
     return vb::enabled(mat._RenderideVariantBits, mask);
 }
 
+fn debug_selector_bits() -> u32 {
+    return mat._RenderideVariantBits & DEBUG_SELECTOR_GROUP;
+}
+
+fn debug_selector_kw(mask: u32) -> bool {
+    let bits = debug_selector_bits();
+    return vb::enabled(bits, mask) || (bits == 0u && mask == DEBUG_KW_POSITION);
+}
+
+fn debug_bitangent_selected() -> bool {
+    let bits = debug_selector_bits();
+    return vb::enabled(bits, DEBUG_KW_BITANGENT) && (bits & DEBUG_SELECTOR_BEFORE_BITANGENT) == 0u;
+}
+
 fn selected_mesh_data(
     pos: vec4<f32>,
     n: vec4<f32>,
@@ -55,34 +81,34 @@ fn selected_mesh_data(
     uv2: vec4<f32>,
     uv3: vec4<f32>,
 ) -> vec3<f32> {
-    if (debug_kw(DEBUG_KW_POSITION)) {
+    if (debug_selector_kw(DEBUG_KW_POSITION)) {
         return pos.xyz;
     }
-    if (debug_kw(DEBUG_KW_COLOR)) {
+    if (debug_selector_kw(DEBUG_KW_COLOR)) {
         return color.rgb;
     }
-    if (debug_kw(DEBUG_KW_COLOR_ALPHA)) {
+    if (debug_selector_kw(DEBUG_KW_COLOR_ALPHA)) {
         return color.aaa;
     }
-    if (debug_kw(DEBUG_KW_NORMAL)) {
+    if (debug_selector_kw(DEBUG_KW_NORMAL)) {
         return n.xyz;
     }
-    if (debug_kw(DEBUG_KW_TANGENT)) {
+    if (debug_selector_kw(DEBUG_KW_TANGENT)) {
         return t.xyz;
     }
-    if (debug_kw(DEBUG_KW_TANGENT4)) {
+    if (debug_selector_kw(DEBUG_KW_TANGENT4)) {
         return vec3<f32>(t.w);
     }
-    if (debug_kw(DEBUG_KW_UV0)) {
+    if (debug_selector_kw(DEBUG_KW_UV0)) {
         return uv0.xyz;
     }
-    if (debug_kw(DEBUG_KW_UV1)) {
+    if (debug_selector_kw(DEBUG_KW_UV1)) {
         return uv1.xyz;
     }
-    if (debug_kw(DEBUG_KW_UV2)) {
+    if (debug_selector_kw(DEBUG_KW_UV2)) {
         return uv2.xyz;
     }
-    if (debug_kw(DEBUG_KW_UV3)) {
+    if (debug_selector_kw(DEBUG_KW_UV3)) {
         return uv3.xyz;
     }
     return vec3<f32>(0.0);
@@ -123,7 +149,7 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var data = in.data;
-    if (debug_kw(DEBUG_KW_BITANGENT)) {
+    if (debug_bitangent_selected()) {
         data = cross(in.normal, in.tangent.xyz) * in.tangent.w;
     }
     if (debug_kw(DEBUG_KW_NORMALIZE)) {
