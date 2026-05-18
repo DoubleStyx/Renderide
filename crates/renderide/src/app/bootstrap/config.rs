@@ -78,7 +78,7 @@ fn log_startup_config_summary(
 ) {
     let settings = &load.settings;
     logger::info!(
-        "Renderer config summary: source={:?} loaded_path={} save_path={} suppress_disk_writes={} log_verbose={} cli_log_level_present={} vsync={:?} graphics_api={} gpu_validation={} power_preference={} msaa={} scene_color={:?} post_processing_enabled={} gtao={} bloom={} auto_exposure={} tonemap={} watchdog_enabled={}",
+        "Renderer config summary: source={:?} loaded_path={} save_path={} suppress_disk_writes={} log_verbose={} cli_log_level_present={} vsync={:?} graphics_api={} gpu_validation={} power_preference={} msaa={} scene_color={:?} post_processing_enabled={} gtao={} bloom={} motion_blur={} auto_exposure={} tonemap={} watchdog_enabled={}",
         load.resolve.source,
         load.resolve
             .loaded_path
@@ -98,6 +98,7 @@ fn log_startup_config_summary(
         settings.post_processing.enabled,
         settings.post_processing.gtao.enabled,
         settings.post_processing.bloom.enabled,
+        settings.post_processing.motion_blur.enabled,
         settings.post_processing.auto_exposure.enabled,
         settings.post_processing.tonemap.mode.persist_str(),
         settings.watchdog.enabled,

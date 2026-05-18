@@ -14,6 +14,7 @@ use crate::render_graph::resources::{
 pub(crate) struct MainGraphPostProcessingResources {
     auto_exposure_state_cache:
         std::sync::Arc<crate::passes::post_processing::AutoExposureStateCache>,
+    motion_blur_state_cache: std::sync::Arc<crate::passes::post_processing::MotionBlurStateCache>,
 }
 
 impl MainGraphPostProcessingResources {
@@ -24,9 +25,17 @@ impl MainGraphPostProcessingResources {
         std::sync::Arc::clone(&self.auto_exposure_state_cache)
     }
 
+    /// Shared motion-blur state cache used by graph instances built for the same backend.
+    pub(crate) fn motion_blur_state_cache(
+        &self,
+    ) -> std::sync::Arc<crate::passes::post_processing::MotionBlurStateCache> {
+        std::sync::Arc::clone(&self.motion_blur_state_cache)
+    }
+
     /// Releases view-scoped post-processing resources for views that are no longer active.
     pub(crate) fn retire_views(&self, retired_views: &[crate::camera::ViewId]) {
         self.auto_exposure_state_cache.retire_views(retired_views);
+        self.motion_blur_state_cache.retire_views(retired_views);
     }
 }
 

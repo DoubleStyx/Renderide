@@ -145,6 +145,8 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(super) live_gtao_settings: crate::config::GtaoSettings,
     /// Bloom settings snapshot selected before graph execution borrows backend fields.
     pub(super) live_bloom_settings: crate::config::BloomSettings,
+    /// Motion-blur settings snapshot selected before graph execution borrows backend fields.
+    pub(super) live_motion_blur_settings: crate::config::MotionBlurSettings,
     /// Auto-exposure settings snapshot selected before graph execution borrows backend fields.
     pub(super) live_auto_exposure_settings: crate::config::AutoExposureSettings,
     /// Wall-frame delta snapshot in milliseconds.
@@ -195,6 +197,11 @@ impl<'a> BackendGraphAccess<'a> {
     /// Live bloom settings snapshot for this graph frame.
     pub(crate) fn live_bloom_settings(&self) -> crate::config::BloomSettings {
         self.live_bloom_settings
+    }
+
+    /// Live motion-blur settings snapshot for this graph frame.
+    pub(crate) fn live_motion_blur_settings(&self) -> crate::config::MotionBlurSettings {
+        self.live_motion_blur_settings
     }
 
     /// Live auto-exposure settings snapshot for this graph frame.
@@ -444,6 +451,10 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
 
     fn live_bloom_settings(&self) -> crate::config::BloomSettings {
         BackendGraphAccess::live_bloom_settings(self)
+    }
+
+    fn live_motion_blur_settings(&self) -> crate::config::MotionBlurSettings {
+        BackendGraphAccess::live_motion_blur_settings(self)
     }
 
     fn live_auto_exposure_settings(&self) -> crate::config::AutoExposureSettings {

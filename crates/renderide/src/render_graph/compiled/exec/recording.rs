@@ -26,7 +26,7 @@ use crate::diagnostics::PerViewHudOutputsSlot;
 use crate::render_graph::GraphExecutionBackend;
 use crate::render_graph::post_process_settings::{
     AutoExposureSettingsSlot, AutoExposureSettingsValue, BloomSettingsSlot, BloomSettingsValue,
-    GtaoSettingsSlot, GtaoSettingsValue,
+    GtaoSettingsSlot, GtaoSettingsValue, MotionBlurSettingsSlot, MotionBlurSettingsValue,
 };
 
 impl CompiledRenderGraph {
@@ -227,6 +227,9 @@ impl CompiledRenderGraph {
         // params UBO and the upsamples use it to compute per-mip blend constants + pick
         // EnergyConserving vs Additive pipeline variants, so slider edits propagate next frame.
         blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(shared.live_bloom_settings));
+        blackboard.insert::<MotionBlurSettingsSlot>(MotionBlurSettingsValue(
+            shared.live_motion_blur_settings,
+        ));
         blackboard.insert::<AutoExposureSettingsSlot>(AutoExposureSettingsValue::for_view(
             shared.live_auto_exposure_settings,
             shared.wall_frame_delta_seconds,

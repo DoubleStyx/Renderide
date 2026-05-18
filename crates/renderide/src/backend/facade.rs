@@ -199,6 +199,19 @@ impl RenderBackend {
             .unwrap_or_default()
     }
 
+    /// Snapshot of the live motion-blur settings for the current frame.
+    ///
+    /// Seeded into each view's blackboard as
+    /// [`crate::render_graph::post_process_settings::MotionBlurSettingsSlot`] so blur samples,
+    /// shutter scale, and clamp edits take effect without rebuilding the compiled graph.
+    pub(crate) fn live_motion_blur_settings(&self) -> crate::config::MotionBlurSettings {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok())
+            .map(|s| s.post_processing.motion_blur)
+            .unwrap_or_default()
+    }
+
     /// Snapshot of the live auto-exposure settings for the current frame.
     ///
     /// Seeded into each view's blackboard as
@@ -454,6 +467,7 @@ impl RenderBackend {
         let msaa_depth_resolve = self.frame_services.msaa_depth_resolve();
         let live_gtao_settings = self.live_gtao_settings();
         let live_bloom_settings = self.live_bloom_settings();
+        let live_motion_blur_settings = self.live_motion_blur_settings();
         let live_auto_exposure_settings = self.live_auto_exposure_settings();
         let wall_frame_time_ms = self.debug_frame_time_ms();
         let (transient_pool, history_registry, upload_arena) =
@@ -478,6 +492,7 @@ impl RenderBackend {
             msaa_depth_resolve,
             live_gtao_settings,
             live_bloom_settings,
+            live_motion_blur_settings,
             live_auto_exposure_settings,
             wall_frame_time_ms,
         }

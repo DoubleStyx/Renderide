@@ -79,6 +79,7 @@ fn first_sync_builds_graph_and_records_signature() {
             bloom_max_mip_dimension: 512,
             gtao: true,
             gtao_denoise_passes: GtaoSettings::default().denoise_passes.min(3),
+            motion_blur: true,
         }
     );
 }
@@ -149,6 +150,23 @@ fn multiview_change_updates_graph_key() {
     assert!(!mono_key.multiview_stereo);
     assert!(stereo_key.multiview_stereo);
     assert_ne!(mono_key, stereo_key);
+    assert!(mono_key.post_processing.motion_blur);
+    assert!(
+        !stereo_key.post_processing.motion_blur,
+        "default VR/multiview graph should omit motion blur unless explicitly allowed"
+    );
+}
+
+#[test]
+fn multiview_motion_blur_is_opt_in() {
+    let mut backend = RenderBackend::new();
+    let mut settings = PostProcessingSettings::default();
+    settings.motion_blur.allow_vr = true;
+    backend.renderer_settings = Some(settings_handle(settings));
+
+    backend.ensure_frame_graph_in_sync(true);
+
+    assert!(cached_graph_key(&backend).post_processing.motion_blur);
 }
 
 /// Keeps upload arena slots alive when toggling back to a cached graph variant.

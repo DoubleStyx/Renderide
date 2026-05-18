@@ -4,7 +4,8 @@ use wgpu::TextureFormat;
 
 use super::*;
 use crate::config::{
-    BloomSettings, GtaoSettings, PostProcessingSettings, TonemapMode, TonemapSettings,
+    BloomSettings, GtaoSettings, MotionBlurSettings, PostProcessingSettings, TonemapMode,
+    TonemapSettings,
 };
 use crate::render_graph::error::GraphBuildError;
 use crate::render_graph::post_process_chain::PostProcessChainSignature;
@@ -40,6 +41,10 @@ fn aces_enabled_post() -> PostProcessingSettings {
             enabled: false,
             ..Default::default()
         },
+        motion_blur: MotionBlurSettings {
+            enabled: false,
+            ..Default::default()
+        },
         auto_exposure: crate::config::AutoExposureSettings {
             enabled: false,
             ..Default::default()
@@ -61,6 +66,10 @@ fn agx_enabled_post() -> PostProcessingSettings {
             enabled: false,
             ..Default::default()
         },
+        motion_blur: MotionBlurSettings {
+            enabled: false,
+            ..Default::default()
+        },
         auto_exposure: crate::config::AutoExposureSettings {
             enabled: false,
             ..Default::default()
@@ -79,6 +88,10 @@ fn gtao_enabled_post() -> PostProcessingSettings {
             ..Default::default()
         },
         bloom: BloomSettings {
+            enabled: false,
+            ..Default::default()
+        },
+        motion_blur: MotionBlurSettings {
             enabled: false,
             ..Default::default()
         },
@@ -255,6 +268,14 @@ fn full_post_processing_orders_exposure_before_bloom_and_tonemap_last() {
         .iter()
         .position(|name| *name == "BloomComposite")
         .expect("bloom composite pass");
+    let motion_vectors_pos = pass_names
+        .iter()
+        .position(|name| *name == "MotionVectors")
+        .expect("motion vectors pass");
+    let motion_blur_pos = pass_names
+        .iter()
+        .position(|name| *name == "MotionBlur")
+        .expect("motion blur pass");
     let agx_tonemap_pos = pass_names
         .iter()
         .position(|name| *name == "AgxTonemap")
@@ -263,7 +284,9 @@ fn full_post_processing_orders_exposure_before_bloom_and_tonemap_last() {
     assert!(auto_compute_pos < auto_apply_pos);
     assert!(auto_apply_pos < bloom_downsample_pos);
     assert!(bloom_downsample_pos < bloom_composite_pos);
-    assert!(bloom_composite_pos < agx_tonemap_pos);
+    assert!(bloom_composite_pos < motion_vectors_pos);
+    assert!(motion_vectors_pos < motion_blur_pos);
+    assert!(motion_blur_pos < agx_tonemap_pos);
 }
 
 #[test]
@@ -288,13 +311,18 @@ fn agx_post_processing_orders_exposure_before_bloom_and_tonemap_last() {
         .iter()
         .position(|name| *name == "BloomComposite")
         .expect("bloom composite pass");
+    let motion_blur_pos = pass_names
+        .iter()
+        .position(|name| *name == "MotionBlur")
+        .expect("motion blur pass");
     let agx_tonemap_pos = pass_names
         .iter()
         .position(|name| *name == "AgxTonemap")
         .expect("AgX tonemap pass");
 
     assert!(auto_apply_pos < bloom_composite_pos);
-    assert!(bloom_composite_pos < agx_tonemap_pos);
+    assert!(bloom_composite_pos < motion_blur_pos);
+    assert!(motion_blur_pos < agx_tonemap_pos);
     assert!(!pass_names.contains(&"AcesTonemap"));
 }
 

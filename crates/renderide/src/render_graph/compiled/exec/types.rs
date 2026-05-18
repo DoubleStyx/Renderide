@@ -169,6 +169,8 @@ pub(super) struct PerViewRecordShared<'a> {
     /// Live bloom settings snapshot for the frame, seeded into each view's blackboard so the
     /// bloom passes' UBO / blend constants / pipeline variants reflect current slider values.
     pub(super) live_bloom_settings: crate::config::BloomSettings,
+    /// Live motion-blur settings snapshot for the frame, seeded into each view's blackboard.
+    pub(super) live_motion_blur_settings: crate::config::MotionBlurSettings,
     /// Live auto-exposure settings snapshot for the frame, seeded into each view's blackboard.
     pub(super) live_auto_exposure_settings: crate::config::AutoExposureSettings,
     /// Wall-frame delta used by temporal post-processing effects.
