@@ -40,7 +40,9 @@ pub(super) fn resolve_probe_source(
     if state.r#type == ReflectionProbeType::Baked {
         return resolve_baked_probe_source(state, assets);
     }
-    if state.r#type == ReflectionProbeType::OnChanges {
+    if state.r#type == ReflectionProbeType::OnChanges
+        || state.r#type == ReflectionProbeType::Realtime
+    {
         return resolve_runtime_capture_source(space_id, probe, captures);
     }
     None
@@ -241,6 +243,25 @@ mod tests {
                 intensity: 1.0,
                 flags: 0b001,
                 r#type: ReflectionProbeType::OnChanges,
+                ..ReflectionProbeState::default()
+            },
+        };
+
+        let source = resolve_probe_source(RenderSpaceId(7), &probe, &assets, &captures);
+
+        assert!(source.is_none());
+    }
+
+    #[test]
+    fn missing_realtime_capture_is_not_a_specular_source() {
+        let assets = AssetTransferQueue::new();
+        let captures = RuntimeReflectionProbeCaptureStore::default();
+        let probe = ReflectionProbeEntry {
+            renderable_index: 8,
+            transform_id: 1,
+            state: ReflectionProbeState {
+                intensity: 1.0,
+                r#type: ReflectionProbeType::Realtime,
                 ..ReflectionProbeState::default()
             },
         };

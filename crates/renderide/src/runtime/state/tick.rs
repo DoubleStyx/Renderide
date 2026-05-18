@@ -3,7 +3,9 @@
 use crate::scene::{ReflectionProbeOnChangesRenderRequest, RenderSpaceId};
 use crate::shared::{CameraRenderTask, ReflectionProbeRenderResult, ReflectionProbeRenderTask};
 
-use crate::runtime::offscreen_tasks::reflection_probe::ActiveOnChangesReflectionProbeCapture;
+use crate::runtime::offscreen_tasks::reflection_probe::{
+    ActiveOnChangesReflectionProbeCapture, ActiveRealtimeReflectionProbeCapture,
+};
 
 /// Reflection-probe bake task plus the render space that carried it.
 #[derive(Clone, Debug)]
@@ -36,6 +38,11 @@ pub(in crate::runtime) struct RuntimeTickState {
         Vec<ActiveOnChangesReflectionProbeCapture>,
     /// Next renderer-side OnChanges cubemap capture generation.
     pub(in crate::runtime) next_onchanges_reflection_probe_generation: u64,
+    /// Realtime reflection-probe captures that may span multiple ticks.
+    pub(in crate::runtime) active_realtime_reflection_probe_captures:
+        Vec<ActiveRealtimeReflectionProbeCapture>,
+    /// Next renderer-side realtime cubemap capture generation.
+    pub(in crate::runtime) next_realtime_reflection_probe_generation: u64,
 }
 
 impl RuntimeTickState {
@@ -50,6 +57,8 @@ impl RuntimeTickState {
             pending_onchanges_reflection_probe_requests: Vec::new(),
             active_onchanges_reflection_probe_captures: Vec::new(),
             next_onchanges_reflection_probe_generation: 1,
+            active_realtime_reflection_probe_captures: Vec::new(),
+            next_realtime_reflection_probe_generation: 1,
         }
     }
 
