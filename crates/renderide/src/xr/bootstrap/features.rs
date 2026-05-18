@@ -56,6 +56,9 @@ const OPTIONAL_WGPU_FEATURES: &[OptionalWgpuFeature] = &[
     OptionalWgpuFeature {
         wgt: wgt::Features::MULTISAMPLE_ARRAY,
     },
+    OptionalWgpuFeature {
+        wgt: wgt::Features::SHADER_BARYCENTRICS,
+    },
 ];
 
 /// Returns the negotiated wgpu feature set: mandatory [`wgt::Features::MULTIVIEW`] plus every
@@ -140,7 +143,8 @@ mod tests {
             | wgt::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | wgt::Features::MULTISAMPLE_ARRAY
             | wgt::Features::TIMESTAMP_QUERY
-            | wgt::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+            | wgt::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+            | wgt::Features::SHADER_BARYCENTRICS;
         let result = negotiate_wgpu_features(wgt::Features::all());
         assert_eq!(result, wgt::Features::MULTIVIEW | legacy);
     }

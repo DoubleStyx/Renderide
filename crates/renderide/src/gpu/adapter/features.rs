@@ -13,6 +13,13 @@
 /// callback-latency reporting and [`crate::profiling::GpuProfilerHandle::try_new`] returns
 /// [`None`].
 pub(crate) fn adapter_render_features_intersection(adapter: &wgpu::Adapter) -> wgpu::Features {
+    let optional = optional_render_feature_mask();
+    let timestamp = crate::profiling::timestamp_query_features_if_supported(adapter);
+    adapter.features() & optional | timestamp
+}
+
+/// Optional adapter features requested for the normal wgpu-owned device path.
+fn optional_render_feature_mask() -> wgpu::Features {
     let compression = wgpu::Features::TEXTURE_COMPRESSION_BC
         | wgpu::Features::TEXTURE_COMPRESSION_ETC2
         | wgpu::Features::TEXTURE_COMPRESSION_ASTC;
@@ -21,13 +28,22 @@ pub(crate) fn adapter_render_features_intersection(adapter: &wgpu::Adapter) -> w
     let adapter_format_features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
     let optional_depth32_stencil8 = wgpu::Features::DEPTH32FLOAT_STENCIL8;
     let multisample_array = wgpu::Features::MULTISAMPLE_ARRAY;
-    let timestamp = crate::profiling::timestamp_query_features_if_supported(adapter);
-    adapter.features()
-        & (compression
-            | optional_float32_filterable
-            | optional_rg11b10_renderable
-            | adapter_format_features
-            | optional_depth32_stencil8
-            | multisample_array)
-        | timestamp
+    let shader_barycentrics = wgpu::Features::SHADER_BARYCENTRICS;
+    compression
+        | optional_float32_filterable
+        | optional_rg11b10_renderable
+        | adapter_format_features
+        | optional_depth32_stencil8
+        | multisample_array
+        | shader_barycentrics
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optional_render_features_include_shader_barycentrics() {
+        assert!(optional_render_feature_mask().contains(wgpu::Features::SHADER_BARYCENTRICS));
+    }
 }

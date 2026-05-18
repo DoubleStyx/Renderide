@@ -26,6 +26,20 @@ pub(crate) const PASS_BLEND_SRC_ALPHA_ONE_MINUS_SRC_ALPHA: wgpu::BlendState = wg
     },
 };
 
+/// Unity `Blend One One`.
+pub(crate) const PASS_BLEND_ONE_ONE: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 /// Unity `Blend One OneMinusSrcAlpha`.
 pub(crate) const PASS_BLEND_ONE_ONE_MINUS_SRC_ALPHA: wgpu::BlendState = wgpu::BlendState {
     color: wgpu::BlendComponent {

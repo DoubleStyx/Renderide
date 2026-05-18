@@ -31,8 +31,9 @@ pub(crate) use blend_mode::material_blend_mode_for_lookup;
 pub use blend_mode::{MaterialBlendMode, material_blend_mode_from_maps};
 pub(crate) use pass_kind::materialized_embedded_pass_for_blend_mode;
 pub(crate) use pass_kind::{
-    COLOR_WRITES_NONE, MaterialRenderStatePolicy, PASS_BLEND_ONE_ONE_MINUS_SRC_ALPHA,
-    PASS_BLEND_OVERLAY_NOOP_COLOR_MAX_ALPHA, PASS_BLEND_SRC_ALPHA_ONE_MINUS_SRC_ALPHA,
+    COLOR_WRITES_NONE, MaterialRenderStatePolicy, PASS_BLEND_ONE_ONE,
+    PASS_BLEND_ONE_ONE_MINUS_SRC_ALPHA, PASS_BLEND_OVERLAY_NOOP_COLOR_MAX_ALPHA,
+    PASS_BLEND_SRC_ALPHA_ONE_MINUS_SRC_ALPHA,
 };
 pub use pass_kind::{
     DefaultPassParams, MaterialPassDesc, MaterialPassState, PassType, default_pass,

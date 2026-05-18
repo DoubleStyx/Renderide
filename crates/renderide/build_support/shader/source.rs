@@ -4,8 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::directives::{
-    MaterialDefaultDirective, TextureDefaultDirective, parse_material_default_directives,
-    parse_source_alias, parse_texture_default_directives,
+    MaterialDefaultDirective, TextureDefaultDirective, WgpuFeatureDirective,
+    parse_material_default_directives, parse_source_alias, parse_texture_default_directives,
+    parse_wgpu_feature_directives,
 };
 use super::error::BuildError;
 use super::model::{ShaderJob, ShaderSourceClass};
@@ -20,6 +21,8 @@ pub(super) struct ShaderCompileSource {
     pub texture_defaults: Vec<TextureDefaultDirective>,
     /// Material uniform defaults parsed from the source or merged from alias + wrapper directives.
     pub material_defaults: Vec<MaterialDefaultDirective>,
+    /// Required wgpu features parsed from the source or merged from alias + wrapper directives.
+    pub wgpu_features: Vec<WgpuFeatureDirective>,
 }
 
 /// Lists every `.wgsl` file directly under `dir`, sorted lexicographically.
@@ -89,6 +92,22 @@ fn merge_material_defaults(
     base
 }
 
+/// Merges required feature directives, preserving first-seen order.
+fn merge_wgpu_features(
+    mut base: Vec<WgpuFeatureDirective>,
+    overrides: Vec<WgpuFeatureDirective>,
+) -> Vec<WgpuFeatureDirective> {
+    for required in overrides {
+        if !base
+            .iter()
+            .any(|existing| existing.feature == required.feature)
+        {
+            base.push(required);
+        }
+    }
+    base
+}
+
 /// Loads the WGSL source used for composition, following `//#source_alias` when present.
 pub(super) fn shader_source_for_compile(
     source_path: &Path,
@@ -104,12 +123,14 @@ pub(super) fn shader_source_for_compile(
     let wrapper_defaults = parse_texture_default_directives(&wrapper_source, wrapper_file_path)?;
     let wrapper_material_defaults =
         parse_material_default_directives(&wrapper_source, wrapper_file_path)?;
+    let wrapper_wgpu_features = parse_wgpu_feature_directives(&wrapper_source, wrapper_file_path)?;
     let Some(alias) = parse_source_alias(&wrapper_source, wrapper_file_path)? else {
         return Ok(ShaderCompileSource {
             source: wrapper_source,
             file_path: wrapper_file_path.to_string(),
             texture_defaults: wrapper_defaults,
             material_defaults: wrapper_material_defaults,
+            wgpu_features: wrapper_wgpu_features,
         });
     };
     let alias_path = source_path.with_file_name(format!("{alias}.wgsl"));
@@ -129,6 +150,7 @@ pub(super) fn shader_source_for_compile(
     let alias_defaults = parse_texture_default_directives(&alias_source, alias_file_path)?;
     let alias_material_defaults =
         parse_material_default_directives(&alias_source, alias_file_path)?;
+    let alias_wgpu_features = parse_wgpu_feature_directives(&alias_source, alias_file_path)?;
     Ok(ShaderCompileSource {
         source: alias_source,
         file_path: alias_file_path.to_string(),
@@ -137,6 +159,7 @@ pub(super) fn shader_source_for_compile(
             alias_material_defaults,
             wrapper_material_defaults,
         ),
+        wgpu_features: merge_wgpu_features(alias_wgpu_features, wrapper_wgpu_features),
     })
 }
 
@@ -276,6 +299,30 @@ mod tests {
                     super::super::directives::MaterialDefaultValue::float_bits(1.0f32.to_bits()),
                 ),
             ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_alias_inherits_required_wgpu_features() -> Result<(), BuildError> {
+        let root = tempfile::tempdir()?;
+        let alias_path = root.path().join("base.wgsl");
+        let wrapper_path = root.path().join("wrapper.wgsl");
+        fs::write(&alias_path, "//#wgpu_feature shader_barycentrics\n")?;
+        fs::write(
+            &wrapper_path,
+            r#"
+//#source_alias base
+//#wgpu_feature shader_barycentrics
+"#,
+        )?;
+
+        let source = shader_source_for_compile(&wrapper_path)?;
+
+        assert_eq!(source.wgpu_features.len(), 1);
+        assert_eq!(
+            source.wgpu_features[0].feature,
+            super::super::directives::BuildWgpuFeature::ShaderBarycentrics
         );
         Ok(())
     }

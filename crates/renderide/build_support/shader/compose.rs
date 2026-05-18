@@ -272,6 +272,7 @@ pub(super) fn compile_shader_job(
         pass_directives,
         texture_defaults: compile_source.texture_defaults,
         material_defaults: compile_source.material_defaults,
+        wgpu_features: compile_source.wgpu_features,
         targets,
     })
 }

@@ -1,0 +1,89 @@
+//! Xiexe Toon 2.0 wireframe override (`Shader "Xiexe/Toon2.0/XSToon2.0_WireframeOverride"`).
+
+//#wgpu_feature shader_barycentrics
+//#texture_default _MainTex white
+//#texture_default _BumpMap bump
+//#texture_default _MetallicGlossMap white
+//#texture_default _EmissionMap white
+//#texture_default _RampSelectionMask black
+//#texture_default _Ramp white
+//#texture_default _OcclusionMap white
+//#texture_default _ThicknessMap white
+//#texture_default _CutoutMask white
+//#texture_default _Matcap black
+//#texture_default _ReflectivityMask white
+//#mat_default _RimCubemapTint float 0.0
+//#mat_default _SpecularAlbedoTint float 1.0
+//#mat_default _Color vec4 1.0 1.0 1.0 1.0
+//#mat_default _Cutoff float 0.5
+//#mat_default _MatcapTint vec4 1.0 1.0 1.0 1.0
+//#mat_default _OutlineColor vec4 0.0 0.0 0.0 1.0
+//#mat_default _RimColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _ShadowRim vec4 1.0 1.0 1.0 1.0
+//#mat_default _Saturation float 1.0
+//#mat_default _BumpScale float 1.0
+//#mat_default _Reflectivity float 1.0
+//#mat_default _RimAttenEffect float 1.0
+//#mat_default _RimRange float 0.7
+//#mat_default _RimThreshold float 0.1
+//#mat_default _RimSharpness float 0.1
+//#mat_default _SpecularArea float 0.5
+//#mat_default _ShadowSharpness float 0.5
+//#mat_default _ShadowRimRange float 0.7
+//#mat_default _ShadowRimThreshold float 0.1
+//#mat_default _ShadowRimSharpness float 0.3
+//#mat_default _OutlineWidth float 1.0
+//#mat_default _SSDistortion float 1.0
+//#mat_default _SSPower float 1.0
+//#mat_default _SSScale float 1.0
+
+#import renderide::mesh::wireframe as wf
+#import renderide::xiexe::toon2 as xs
+#import renderide::xiexe::toon2::base as xb
+#import renderide::xiexe::toon2::variant_bits as xvb
+
+const XIEE_ALPHA_MODE: u32 = 0u;
+
+@vertex
+fn vs_main(
+    @builtin(instance_index) instance_index: u32,
+#ifdef MULTIVIEW
+    @builtin(view_index) view_idx: u32,
+#endif
+    @location(0) pos: vec4<f32>,
+    @location(1) n: vec4<f32>,
+    @location(2) uv0: vec2<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) tangent: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
+) -> xb::VertexOutput {
+#ifdef MULTIVIEW
+    return xs::vertex_main(instance_index, view_idx, pos, n, uv0, color, tangent, uv1);
+#else
+    return xs::vertex_main(instance_index, 0u, pos, n, uv0, color, tangent, uv1);
+#endif
+}
+
+//#pass type=forward
+@fragment
+fn fs_forward_base(
+    @builtin(position) frag_pos: vec4<f32>,
+    @builtin(front_facing) front_facing: bool,
+    @builtin(barycentric) barycentric: vec3<f32>,
+    @location(0) world_pos: vec3<f32>,
+    @location(1) world_n: vec3<f32>,
+    @location(2) world_t: vec3<f32>,
+    @location(3) world_b: vec3<f32>,
+    @location(4) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
+    @location(6) color: vec4<f32>,
+    @location(8) @interpolate(flat) view_layer: u32,
+) -> @location(0) vec4<f32> {
+    let edge = wf::thin_edge_mask(barycentric, 1.0);
+    if (edge <= 0.5) {
+        discard;
+    }
+    return xs::fragment_forward(
+        frag_pos, front_facing, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, xvb::resolved_alpha_mode_from_bits(XIEE_ALPHA_MODE)
+    );
+}

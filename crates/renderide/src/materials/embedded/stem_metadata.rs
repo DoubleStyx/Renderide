@@ -323,6 +323,15 @@ pub(in crate::materials) fn build_embedded_wgsl(
     Ok(wgsl.to_string())
 }
 
+/// Returns device features required by the composed embedded target for `stem` and `permutation`.
+pub(in crate::materials) fn embedded_required_features_for_permutation(
+    stem: &Arc<str>,
+    permutation: ShaderPermutation,
+) -> wgpu::Features {
+    let composed = embedded_composed_stem_for_permutation(stem.as_ref(), permutation);
+    embedded_shaders::embedded_target_required_features(&composed)
+}
+
 pub(in crate::materials) fn create_embedded_render_pipelines(
     source: EmbeddedRasterPipelineSource,
     refs: ShaderModuleBuildRefs<'_>,

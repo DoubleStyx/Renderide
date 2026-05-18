@@ -229,6 +229,22 @@ fn resolves_unlit_distance_lerp_from_asset_name() {
 }
 
 #[test]
+fn resolves_wireframe_assets_from_filenames() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("Wireframe").as_deref(),
+        Some("wireframe_default")
+    );
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("WireframeDoubleSided").as_deref(),
+        Some("wireframedoublesided_default")
+    );
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("WireframeUnlitTransition").as_deref(),
+        Some("wireframeunlittransition_default")
+    );
+}
+
+#[test]
 fn resolves_xiexe_toon2_cutout_from_filename() {
     assert_eq!(
         embedded_default_stem_for_shader_asset_name("XSToon2.0 Cutout").as_deref(),
@@ -256,6 +272,18 @@ fn resolves_xiexe_outlined_from_underscore_filename() {
     assert_eq!(
         embedded_default_stem_for_shader_asset_name("XSToon2.0 Outlined").as_deref(),
         Some("xstoon2.0-outlined_default")
+    );
+}
+
+#[test]
+fn resolves_xiexe_wireframe_override_from_underscore_filename() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("XSToon2.0_WireframeOverride").as_deref(),
+        Some("xstoon2.0_wireframeoverride_default")
+    );
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("XSToon2.0_WireframeOverride_A2C").as_deref(),
+        Some("xstoon2.0_wireframeoverride_a2c_default")
     );
 }
 

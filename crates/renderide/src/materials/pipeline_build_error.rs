@@ -13,6 +13,14 @@ pub enum PipelineBuildError {
     /// No embedded `shaders/target/{stem}.wgsl` string in the build output for `stem`.
     #[error("embedded WGSL missing for composed stem `{0}` (run build with shaders/)")]
     MissingEmbeddedShader(String),
+    /// The active device does not expose all features required by the embedded WGSL target.
+    #[error("embedded WGSL `{stem}` requires unavailable device features {missing:?}")]
+    MissingDeviceFeatures {
+        /// Composed material target stem that declared the feature requirement.
+        stem: String,
+        /// Required feature bits absent from the active device.
+        missing: wgpu::Features,
+    },
     /// Reflective pipeline build was invoked with no pass descriptors (invalid stem or build output).
     #[error("reflective raster pipeline requires at least one pass (stem `{label}`)")]
     EmptyPasses {

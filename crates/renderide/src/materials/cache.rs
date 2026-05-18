@@ -19,6 +19,7 @@ use crate::gpu_resource::AtomicCacheCounters;
 use crate::materials::ShaderPermutation;
 use crate::materials::embedded::stem_metadata::{
     EmbeddedRasterPipelineSource, build_embedded_wgsl, create_embedded_render_pipelines,
+    embedded_required_features_for_permutation,
 };
 use crate::materials::null_pipeline::{build_null_wgsl, create_null_render_pipeline};
 use crate::materials::raster_pipeline::ShaderModuleBuildRefs;
@@ -318,7 +319,10 @@ impl MaterialPipelineCache {
             primitive_topology,
         } = variant;
         let wgsl = match kind {
-            RasterPipelineKind::EmbeddedStem(stem) => build_embedded_wgsl(stem, permutation)?,
+            RasterPipelineKind::EmbeddedStem(stem) => {
+                validate_embedded_required_features(&device, stem, permutation)?;
+                build_embedded_wgsl(stem, permutation)?
+            }
             RasterPipelineKind::Null => build_null_wgsl(permutation)?,
         };
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -384,6 +388,23 @@ impl MaterialPipelineCache {
             );
         }
     }
+}
+
+/// Ensures the active device can compile an embedded material target before module creation.
+fn validate_embedded_required_features(
+    device: &wgpu::Device,
+    stem: &Arc<str>,
+    permutation: ShaderPermutation,
+) -> Result<(), PipelineBuildError> {
+    let required = embedded_required_features_for_permutation(stem, permutation);
+    let missing = required - device.features();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(PipelineBuildError::MissingDeviceFeatures {
+        stem: stem.to_string(),
+        missing,
+    })
 }
 
 fn spawn_pipeline_build(request: PipelineBuildRequest) -> Result<(), String> {

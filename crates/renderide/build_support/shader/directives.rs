@@ -2,6 +2,39 @@
 
 use super::error::BuildError;
 
+/// Build-side `wgpu::Features` selector declared by `//#wgpu_feature`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BuildWgpuFeature {
+    /// Fragment shader barycentric coordinates.
+    ShaderBarycentrics,
+}
+
+impl BuildWgpuFeature {
+    /// Parses a `//#wgpu_feature` token.
+    fn parse(value: &str, file: &str, line: usize) -> Result<Self, BuildError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "shader_barycentrics" | "shader-barycentrics" => Ok(Self::ShaderBarycentrics),
+            _ => Err(BuildError::Message(format!(
+                "{file}:{line}: unknown `//#wgpu_feature` token `{value}` (allowed: shader_barycentrics)"
+            ))),
+        }
+    }
+
+    /// Rust expression used in generated embedded metadata.
+    const fn rust_literal(self) -> &'static str {
+        match self {
+            Self::ShaderBarycentrics => "wgpu::Features::SHADER_BARYCENTRICS",
+        }
+    }
+}
+
+/// One required wgpu feature directive attached to a WGSL source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct WgpuFeatureDirective {
+    /// Required feature bit for the composed target.
+    pub feature: BuildWgpuFeature,
+}
+
 /// Texture fallback token declared by `//#texture_default`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TextureDefaultKind {
@@ -283,6 +316,8 @@ pub(super) enum BuildBlend {
     Off,
     /// Unity straight-alpha blending.
     Alpha,
+    /// Unity additive blending.
+    Additive,
     /// Unity premultiplied-alpha blending.
     Premultiplied,
     /// Unity overlay color/no-op plus max-alpha blending.
@@ -295,6 +330,7 @@ impl BuildBlend {
         match self {
             Self::Off => "None",
             Self::Alpha => "Some(crate::materials::PASS_BLEND_SRC_ALPHA_ONE_MINUS_SRC_ALPHA)",
+            Self::Additive => "Some(crate::materials::PASS_BLEND_ONE_ONE)",
             Self::Premultiplied => "Some(crate::materials::PASS_BLEND_ONE_ONE_MINUS_SRC_ALPHA)",
             Self::Overlay => "Some(crate::materials::PASS_BLEND_OVERLAY_NOOP_COLOR_MAX_ALPHA)",
         }
@@ -682,6 +718,11 @@ fn parse_blend_value(
             draft.write_mask = BuildColorWrites::Rgba;
             draft.material_state = BuildMaterialPassState::Static;
         }
+        "additive" | "one_one" | "oneone" => {
+            draft.blend = BuildBlend::Additive;
+            draft.write_mask = BuildColorWrites::Rgba;
+            draft.material_state = BuildMaterialPassState::Static;
+        }
         "premul" | "premultiplied" | "premultiplied_alpha" => {
             draft.blend = BuildBlend::Premultiplied;
             draft.write_mask = BuildColorWrites::Rgba;
@@ -708,7 +749,7 @@ fn parse_blend_value(
         }
         _ => {
             return Err(BuildError::Message(format!(
-                "{file}:{line}: `//#pass` blend expects off, alpha, premul, material, material_filter, material_overlay, or transparent_material, got `{value}`"
+                "{file}:{line}: `//#pass` blend expects off, alpha, additive, premul, material, material_filter, material_overlay, or transparent_material, got `{value}`"
             )));
         }
     }
@@ -929,6 +970,42 @@ pub(super) fn parse_texture_default_directives(
         });
     }
     Ok(defaults)
+}
+
+/// Parses required wgpu feature directives from WGSL source.
+pub(super) fn parse_wgpu_feature_directives(
+    source: &str,
+    file: &str,
+) -> Result<Vec<WgpuFeatureDirective>, BuildError> {
+    let mut features = Vec::new();
+    for (line_idx, line) in source.lines().enumerate() {
+        let line_no = line_idx + 1;
+        let Some(rest) = line.trim_start().strip_prefix("//#wgpu_feature") else {
+            continue;
+        };
+        let mut tokens = rest.split_whitespace();
+        let Some(feature_token) = tokens.next() else {
+            return Err(BuildError::Message(format!(
+                "{file}:{line_no}: `//#wgpu_feature` requires a feature token"
+            )));
+        };
+        if tokens.next().is_some() {
+            return Err(BuildError::Message(format!(
+                "{file}:{line_no}: `//#wgpu_feature` accepts exactly one argument"
+            )));
+        }
+        let feature = BuildWgpuFeature::parse(feature_token, file, line_no)?;
+        if features
+            .iter()
+            .any(|d: &WgpuFeatureDirective| d.feature == feature)
+        {
+            return Err(BuildError::Message(format!(
+                "{file}:{line_no}: duplicate `//#wgpu_feature` for `{feature_token}`"
+            )));
+        }
+        features.push(WgpuFeatureDirective { feature });
+    }
+    Ok(features)
 }
 
 /// Parses material uniform fallback directives from WGSL source.
@@ -1154,6 +1231,18 @@ pub(super) fn material_default_literal(default: &MaterialDefaultDirective) -> St
     )
 }
 
+/// Renders a generated Rust expression for required wgpu features.
+pub(super) fn wgpu_features_literal(features: &[WgpuFeatureDirective]) -> String {
+    if features.is_empty() {
+        return "wgpu::Features::empty()".to_string();
+    }
+    features
+        .iter()
+        .map(|feature| feature.feature.rust_literal())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1317,6 +1406,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn wgpu_feature_directives_parse_barycentrics() -> Result<(), BuildError> {
+        let features =
+            parse_wgpu_feature_directives("//#wgpu_feature shader_barycentrics\n", "test.wgsl")?;
+
+        assert_eq!(
+            features,
+            [WgpuFeatureDirective {
+                feature: BuildWgpuFeature::ShaderBarycentrics,
+            }]
+        );
+        assert_eq!(
+            wgpu_features_literal(&features),
+            "wgpu::Features::SHADER_BARYCENTRICS"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wgpu_feature_directives_reject_duplicates() {
+        let err = parse_wgpu_feature_directives(
+            "//#wgpu_feature shader_barycentrics\n//#wgpu_feature shader_barycentrics\n",
+            "test.wgsl",
+        )
+        .expect_err("duplicate feature directives must fail");
+
+        assert!(err.to_string().contains("duplicate"));
+    }
+
     /// Pass directives bind explicit metadata to the following fragment entry point.
     #[test]
     fn pass_directive_extracts_fragment_entry_and_state() -> Result<(), BuildError> {
@@ -1424,6 +1542,25 @@ fn fs_volume() -> @location(0) vec4<f32> {
         assert_eq!(passes[1].material_state, BuildMaterialPassState::Overlay);
         assert_eq!(passes[1].depth_compare, BuildDepthCompare::Always);
         assert!(!passes[1].render_state_policy.depth_compare);
+        Ok(())
+    }
+
+    #[test]
+    fn pass_directive_parses_static_additive_blend() -> Result<(), BuildError> {
+        let passes = parse_pass_directives(
+            r#"
+//#pass type=forward blend=additive
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+"#,
+            "additive.wgsl",
+        )?;
+
+        assert_eq!(passes[0].blend, BuildBlend::Additive);
+        assert_eq!(passes[0].write_mask, BuildColorWrites::Rgba);
+        assert!(pass_literal(&passes[0]).contains("PASS_BLEND_ONE_ONE"));
         Ok(())
     }
 

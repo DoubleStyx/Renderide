@@ -363,6 +363,56 @@ fn pbsrim_zwrite_stems_keep_depth_prepass_before_transparent_forward() {
     }
 }
 
+/// Verifies barycentric wireframe stems keep their source-authored pass state.
+#[test]
+fn wireframe_stems_use_barycentric_material_passes() {
+    for stem in [
+        "wireframe_default",
+        "wireframedoublesided_default",
+        "wireframeunlittransition_default",
+        "xstoon2.0_wireframeoverride_default",
+        "xstoon2.0_wireframeoverride_a2c_default",
+    ] {
+        let features = crate::embedded_shaders::embedded_target_required_features(stem);
+        assert!(
+            features.contains(wgpu::Features::SHADER_BARYCENTRICS),
+            "{stem}"
+        );
+    }
+
+    let wireframe = crate::embedded_shaders::embedded_target_passes("wireframe_default");
+    assert_eq!(wireframe.len(), 1);
+    assert_eq!(wireframe[0].cull_mode, Some(wgpu::Face::Back));
+    assert!(!wireframe[0].depth_write);
+    let blend = wireframe[0].blend.expect("wireframe blend");
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::SrcAlpha);
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+
+    let double_sided =
+        crate::embedded_shaders::embedded_target_passes("wireframedoublesided_default");
+    assert_eq!(double_sided.len(), 2);
+    assert_eq!(double_sided[0].name, "inner");
+    assert_eq!(double_sided[0].cull_mode, Some(wgpu::Face::Front));
+    assert_eq!(double_sided[1].name, "outer");
+    assert_eq!(double_sided[1].cull_mode, Some(wgpu::Face::Back));
+
+    let transition =
+        crate::embedded_shaders::embedded_target_passes("wireframeunlittransition_default");
+    assert_eq!(transition.len(), 3);
+    assert_eq!(transition[0].name, "depth");
+    assert_eq!(transition[0].write_mask, COLOR_WRITES_NONE);
+    assert_eq!(transition[1].name, "fill");
+    assert_eq!(transition[2].name, "wire");
+    let additive = transition[2].blend.expect("transition wire blend");
+    assert_eq!(additive.color.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(additive.color.dst_factor, wgpu::BlendFactor::One);
+
+    let xstoon_a2c =
+        crate::embedded_shaders::embedded_target_passes("xstoon2.0_wireframeoverride_a2c_default");
+    assert_eq!(xstoon_a2c.len(), 1);
+    assert!(xstoon_a2c[0].alpha_to_coverage);
+}
+
 /// Asserts that a shader stem declares one premultiplied transparent pass.
 fn assert_one_transparent_forward_pass(stem: &str) {
     let passes = crate::embedded_shaders::embedded_target_passes(stem);

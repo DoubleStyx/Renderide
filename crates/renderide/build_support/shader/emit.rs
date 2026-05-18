@@ -4,8 +4,8 @@ use std::fs;
 use std::path::Path;
 
 use super::directives::{
-    BuildPassDirective, MaterialDefaultDirective, TextureDefaultDirective,
-    material_default_literal, pass_literal, texture_default_literal,
+    BuildPassDirective, MaterialDefaultDirective, TextureDefaultDirective, WgpuFeatureDirective,
+    material_default_literal, pass_literal, texture_default_literal, wgpu_features_literal,
 };
 use super::error::BuildError;
 use super::model::{CompiledShader, ShaderSourceClass};
@@ -26,6 +26,7 @@ pub(super) struct ComposedShaders {
     embedded_arms: String,
     embedded_macro_arms: String,
     embedded_pass_arms: String,
+    embedded_required_features_arms: String,
     embedded_texture_default_arms: String,
     embedded_material_default_arms: String,
 }
@@ -42,6 +43,7 @@ impl ComposedShaders {
             embedded_arms: String::new(),
             embedded_macro_arms: String::new(),
             embedded_pass_arms: String::new(),
+            embedded_required_features_arms: String::new(),
             embedded_texture_default_arms: String::new(),
             embedded_material_default_arms: String::new(),
         }
@@ -54,6 +56,7 @@ impl ComposedShaders {
                 &target.target_stem,
                 &target.wgsl,
                 &target.pass_directives,
+                &compiled.wgpu_features,
                 &compiled.texture_defaults,
                 &compiled.material_defaults,
             );
@@ -78,6 +81,7 @@ impl ComposedShaders {
         target_stem: &str,
         wgsl: &str,
         pass_directives: &[BuildPassDirective],
+        wgpu_features: &[WgpuFeatureDirective],
         texture_defaults: &[TextureDefaultDirective],
         material_defaults: &[MaterialDefaultDirective],
     ) {
@@ -101,6 +105,13 @@ impl ComposedShaders {
             let _ = writeln!(
                 self.embedded_pass_arms,
                 "        \"{target_stem}\" => const {{ &[\n            {pass_literals},\n        ] }},"
+            );
+        }
+        if !wgpu_features.is_empty() {
+            let features = wgpu_features_literal(wgpu_features);
+            let _ = writeln!(
+                self.embedded_required_features_arms,
+                "        \"{target_stem}\" => {features},"
             );
         }
         if !texture_defaults.is_empty() {
@@ -289,6 +300,13 @@ pub fn embedded_target_passes(stem: &str) -> &'static [crate::materials::Materia
     }}
 }}
 
+/// Required device features for `stem`, parsed from `//#wgpu_feature` directives in the source WGSL.
+pub fn embedded_target_required_features(stem: &str) -> wgpu::Features {{
+    match stem {{
+{embedded_required_features_arms}        _ => wgpu::Features::empty(),
+    }}
+}}
+
 /// Declared texture fallbacks for `stem`, parsed from `//#texture_default` directives in the source WGSL.
 #[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
 pub fn embedded_target_texture_defaults(stem: &str) -> &'static [EmbeddedTextureDefault] {{
@@ -314,6 +332,7 @@ pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
         embedded_arms = c.embedded_arms,
         embedded_macro_arms = c.embedded_macro_arms,
         embedded_pass_arms = c.embedded_pass_arms,
+        embedded_required_features_arms = c.embedded_required_features_arms,
         embedded_texture_default_arms = c.embedded_texture_default_arms,
         embedded_material_default_arms = c.embedded_material_default_arms,
         material_default_type_defs = embedded_material_default_type_defs(),
@@ -327,7 +346,7 @@ mod tests {
         BuildBlend, BuildColorWrites, BuildCullMode, BuildDepthCompare, BuildDepthCompareDomain,
         BuildMaterialPassState, BuildPassDirective, BuildPassType, BuildRenderStatePolicy,
         MaterialDefaultDirective, MaterialDefaultValue, TextureDefaultDirective,
-        TextureDefaultKind,
+        TextureDefaultKind, WgpuFeatureDirective,
     };
     use crate::shader::model::{CompiledShader, CompiledShaderTarget, ShaderSourceClass};
 
@@ -345,6 +364,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         let dual = fake_compiled_shader(
             1,
@@ -353,6 +373,7 @@ mod tests {
                 ("dual_default", "default wgsl"),
                 ("dual_multiview", "multiview wgsl"),
             ],
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -435,6 +456,9 @@ mod tests {
                 property: "_GlossMapScale".to_string(),
                 value: MaterialDefaultValue::float_bits(1.0f32.to_bits()),
             }],
+            vec![WgpuFeatureDirective {
+                feature: crate::shader::directives::BuildWgpuFeature::ShaderBarycentrics,
+            }],
         );
 
         emit_compiled_shader(&compiled, target_dir.path(), &mut composed)?;
@@ -455,6 +479,8 @@ mod tests {
         ));
         assert!(embedded.contains("embedded_target_texture_defaults"));
         assert!(embedded.contains("embedded_target_material_defaults"));
+        assert!(embedded.contains("embedded_target_required_features"));
+        assert!(embedded.contains("wgpu::Features::SHADER_BARYCENTRICS"));
         assert!(embedded.contains("macro_rules! embedded_wgsl"));
         assert!(embedded.contains("\"outline_default\" => \"wgsl body\","));
         assert!(!embedded.contains("pub const OUTLINE_DEFAULT_WGSL"));
@@ -482,6 +508,7 @@ mod tests {
         pass_directives: Vec<BuildPassDirective>,
         texture_defaults: Vec<TextureDefaultDirective>,
         material_defaults: Vec<MaterialDefaultDirective>,
+        wgpu_features: Vec<WgpuFeatureDirective>,
     ) -> CompiledShader {
         let target_pass_directives = pass_directives.clone();
         CompiledShader {
@@ -490,6 +517,7 @@ mod tests {
             pass_directives,
             texture_defaults,
             material_defaults,
+            wgpu_features,
             targets: targets
                 .iter()
                 .map(|(target_stem, wgsl)| CompiledShaderTarget {
