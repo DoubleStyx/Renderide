@@ -14,7 +14,8 @@ use crate::materials::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewClear,
-    FrameViewResourceHints, FrameViewTarget, OffscreenSampleCountPolicy, ViewPostProcessing,
+    FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, OffscreenSampleCountPolicy,
+    ViewPostProcessing,
 };
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
@@ -25,6 +26,8 @@ use crate::world_mesh::CameraTransformDrawFilter;
 /// Clones are cheap (`wgpu::Texture` and `wgpu::TextureView` are internally `Arc`-backed) and
 /// let swapchain-target plans be substituted without holding a long-lived `&mut GpuContext`.
 pub(in crate::runtime) struct HeadlessOffscreenSnapshot {
+    /// Color texture backing `color_view`.
+    color_texture: wgpu::Texture,
     /// Color attachment view for the substituted offscreen target.
     color_view: wgpu::TextureView,
     /// Backing depth texture for the substituted offscreen target.
@@ -43,6 +46,7 @@ impl HeadlessOffscreenSnapshot {
     pub(in crate::runtime) fn from_gpu(gpu: &mut GpuContext) -> Option<Self> {
         let targets = gpu.primary_offscreen_targets()?;
         Some(Self {
+            color_texture: targets.color_texture.clone(),
             color_view: targets.color_view.clone(),
             depth_texture: targets.depth_texture.clone(),
             depth_view: targets.depth_view.clone(),
@@ -61,16 +65,28 @@ impl HeadlessOffscreenSnapshot {
             if matches!(view.target, FrameViewTarget::Swapchain) {
                 view.target = FrameViewTarget::OffscreenRt(ExternalOffscreenTargets {
                     render_texture_asset_id: -1,
+                    color_texture: &self.color_texture,
                     color_view: &self.color_view,
                     depth_texture: &self.depth_texture,
                     depth_view: &self.depth_view,
                     extent_px: self.extent_px,
                     color_format: self.color_format,
                     sample_count_policy: OffscreenSampleCountPolicy::SingleSample,
+                    copy_to_color: None,
                 });
             }
         }
     }
+}
+
+/// Final color-copy destination for a partial secondary render-texture camera viewport.
+pub(in crate::runtime) struct OffscreenRtColorCopy {
+    /// Host render texture that receives the resolved partial viewport.
+    pub(in crate::runtime) destination_texture: Arc<wgpu::Texture>,
+    /// Destination origin in render-texture storage coordinates.
+    pub(in crate::runtime) destination_origin_px: (u32, u32),
+    /// Copy extent in pixels.
+    pub(in crate::runtime) extent_px: (u32, u32),
 }
 
 /// Render-texture attachment handles owned by one planned secondary view so the underlying
@@ -78,6 +94,8 @@ impl HeadlessOffscreenSnapshot {
 pub(in crate::runtime) struct OffscreenRtHandles {
     /// Host render texture asset id writing this pass, or -1 when no host asset is written.
     pub(in crate::runtime) rt_id: i32,
+    /// Color texture backing `color_view`.
+    pub(in crate::runtime) color_texture: Arc<wgpu::Texture>,
     /// Color attachment view for this render texture.
     pub(in crate::runtime) color_view: Arc<wgpu::TextureView>,
     /// Depth attachment backing texture.
@@ -88,6 +106,8 @@ pub(in crate::runtime) struct OffscreenRtHandles {
     pub(in crate::runtime) color_format: wgpu::TextureFormat,
     /// MSAA policy for transient forward attachments that resolve into this target.
     pub(in crate::runtime) sample_count_policy: OffscreenSampleCountPolicy,
+    /// Optional copy from this view's color texture into a host render texture.
+    pub(in crate::runtime) copy_to_color: Option<OffscreenRtColorCopy>,
 }
 
 /// Target-specific payload for a [`FrameViewPlan`].
@@ -142,12 +162,20 @@ impl FrameViewPlan<'_> {
             FrameViewPlanTarget::SecondaryRt(handles) => {
                 FrameViewTarget::OffscreenRt(ExternalOffscreenTargets {
                     render_texture_asset_id: handles.rt_id,
+                    color_texture: handles.color_texture.as_ref(),
                     color_view: handles.color_view.as_ref(),
                     depth_texture: handles.depth_texture.as_ref(),
                     depth_view: handles.depth_view.as_ref(),
                     extent_px: self.viewport_px,
                     color_format: handles.color_format,
                     sample_count_policy: handles.sample_count_policy,
+                    copy_to_color: handles.copy_to_color.as_ref().map(|copy| {
+                        OffscreenColorCopyTarget {
+                            destination_texture: copy.destination_texture.as_ref(),
+                            destination_origin_px: copy.destination_origin_px,
+                            extent_px: copy.extent_px,
+                        }
+                    }),
                 })
             }
             FrameViewPlanTarget::MainSwapchain => FrameViewTarget::Swapchain,

@@ -166,7 +166,7 @@ impl RendererRuntime {
             crate::render_graph::ViewPostProcessing::primary_view()
         };
         let prepared: Vec<FrameViewPlan<'a>> =
-            self.collect_prepared_views(mode, swapchain_extent_px, main_post_processing);
+            self.collect_prepared_views(gpu, mode, swapchain_extent_px, main_post_processing);
         trace_prepared_views(&prepared);
         let headless_snapshot = {
             profiling::scope!("render::headless_snapshot");

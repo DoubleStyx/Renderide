@@ -19,7 +19,7 @@ use super::super::super::resources::{
 };
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, FrameViewTarget, ResolvedView, ViewPostProcessing};
-use super::{OwnedResolvedView, TransientTextureResolveSurfaceParams};
+use super::{OwnedResolvedView, ResolvedOffscreenColorCopy, TransientTextureResolveSurfaceParams};
 use crate::camera::ViewId;
 
 fn subresource_view_dimension(
@@ -430,6 +430,17 @@ impl CompiledRenderGraph {
             gpu,
             backbuffer_view_holder,
         )?;
+        let offscreen_color_copy = match target {
+            FrameViewTarget::OffscreenRt(ext) => {
+                ext.copy_to_color.map(|copy| ResolvedOffscreenColorCopy {
+                    source_texture: (*ext.color_texture).clone(),
+                    destination_texture: (*copy.destination_texture).clone(),
+                    destination_origin_px: copy.destination_origin_px,
+                    extent_px: copy.extent_px,
+                })
+            }
+            FrameViewTarget::Swapchain | FrameViewTarget::ExternalMultiview(_) => None,
+        };
         Ok(OwnedResolvedView {
             depth_texture: resolved.depth_texture.clone(),
             depth_view: resolved.depth_view.clone(),
@@ -442,6 +453,7 @@ impl CompiledRenderGraph {
             view_id: resolved.view_id,
             sample_count: resolved.sample_count,
             post_processing: resolved.post_processing,
+            offscreen_color_copy,
         })
     }
 }

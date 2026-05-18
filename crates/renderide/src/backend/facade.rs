@@ -33,6 +33,7 @@ use crate::materials::host_data::MaterialPropertyStore;
 use crate::render_graph::TransientPool;
 
 use super::FrameResourceManager;
+use super::secondary_rt_scratch::{SecondaryRtScratchCache, SecondaryRtScratchTargets};
 use crate::materials::MaterialSystem;
 use crate::occlusion::OcclusionSystem;
 use diagnostics::BackendDiagnostics;
@@ -95,6 +96,8 @@ pub struct RenderBackend {
     diagnostics: BackendDiagnostics,
     /// Nonblocking reflection-probe projection, bake, cache, and selection services.
     reflection_probes: ReflectionProbeServices,
+    /// Reusable color/depth targets for partial secondary render-texture camera viewports.
+    secondary_rt_scratch: SecondaryRtScratchCache,
     /// Render-graph cache, transient pool, history registry, and view-scoped graph resource ownership.
     graph_state: RenderGraphState,
     /// Hierarchical depth pyramid, CPU readback, and temporal cull state for occlusion culling.
@@ -124,6 +127,7 @@ impl RenderBackend {
             world_mesh_frame_planner: super::BackendWorldMeshFramePlanner::new(),
             diagnostics: BackendDiagnostics::new(),
             reflection_probes: ReflectionProbeServices::new(),
+            secondary_rt_scratch: SecondaryRtScratchCache::new(),
             graph_state: RenderGraphState::new(),
             occlusion: OcclusionSystem::new(),
             surface_format: None,
@@ -285,6 +289,18 @@ impl RenderBackend {
     /// Host render texture targets (secondary cameras, material sampling).
     pub fn render_texture_pool(&self) -> &RenderTexturePool {
         self.asset_transfers.render_texture_pool()
+    }
+
+    /// Returns a reusable scratch target for a partial secondary camera viewport.
+    pub(crate) fn secondary_render_rect_scratch(
+        &mut self,
+        device: &wgpu::Device,
+        extent_px: (u32, u32),
+        color_format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+    ) -> Option<SecondaryRtScratchTargets> {
+        self.secondary_rt_scratch
+            .get_or_create(device, extent_px, color_format, depth_format)
     }
 
     /// Answers host SH2 task rows for the latest frame submit without blocking GPU readback.

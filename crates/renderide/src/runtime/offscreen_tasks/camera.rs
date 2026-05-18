@@ -239,11 +239,13 @@ impl CameraTaskTargets {
     fn to_offscreen_handles(&self) -> OffscreenRtHandles {
         OffscreenRtHandles {
             rt_id: -1,
+            color_texture: Arc::clone(&self.color_texture),
             color_view: Arc::clone(&self.color_view),
             depth_texture: Arc::clone(&self.depth_texture),
             depth_view: Arc::clone(&self.depth_view),
             color_format: self.color_format,
             sample_count_policy: CAMERA_TASK_SAMPLE_COUNT_POLICY,
+            copy_to_color: None,
         }
     }
 }
