@@ -9,7 +9,7 @@ use super::compiled::FrameView;
 use super::frame_params::{GraphPassFrame, PerViewFramePlan, PreRecordViewResourceLayout};
 use super::{HistoryRegistry, TransientPool};
 use crate::camera::ViewId;
-use crate::config::{AutoExposureSettings, BloomSettings, GtaoSettings};
+use crate::config::{AutoExposureSettings, BloomSettings, GtaoSettings, MotionBlurSettings};
 use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
 use crate::gpu::{GpuLight, GpuLimits, MsaaDepthResolveResources};
@@ -231,6 +231,8 @@ pub trait GraphExecutionBackend {
     fn live_gtao_settings(&self) -> GtaoSettings;
     /// Live bloom settings.
     fn live_bloom_settings(&self) -> BloomSettings;
+    /// Live motion-blur settings.
+    fn live_motion_blur_settings(&self) -> MotionBlurSettings;
     /// Live auto-exposure settings.
     fn live_auto_exposure_settings(&self) -> AutoExposureSettings;
     /// Wall-frame delta in seconds.

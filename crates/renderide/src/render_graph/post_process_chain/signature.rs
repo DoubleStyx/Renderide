@@ -8,7 +8,8 @@ use crate::config::{PostProcessingSettings, TonemapMode};
 /// threshold, composite mode, etc.) flow to the passes via per-view blackboard slots
 /// ([`crate::render_graph::post_process_settings::BloomSettingsSlot`],
 /// [`crate::render_graph::post_process_settings::GtaoSettingsSlot`],
-/// [`crate::render_graph::post_process_settings::AutoExposureSettingsSlot`]) and therefore do
+/// [`crate::render_graph::post_process_settings::AutoExposureSettingsSlot`], and
+/// [`crate::render_graph::post_process_settings::MotionBlurSettingsSlot`]) and therefore do
 /// **not** need to be tracked here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PostProcessChainSignature {
@@ -21,6 +22,8 @@ pub struct PostProcessChainSignature {
     pub gtao_denoise_passes: u32,
     /// Dual-filter bloom pass active.
     pub bloom: bool,
+    /// Screen-space motion blur pass active.
+    pub motion_blur: bool,
     /// Histogram-based auto-exposure pass active.
     pub auto_exposure: bool,
     /// Stephen Hill ACES Fitted tonemap pass active.
@@ -40,6 +43,7 @@ impl PostProcessChainSignature {
         let master = settings.enabled;
         let gtao = master && settings.gtao.enabled;
         let bloom = master && settings.bloom.enabled && settings.bloom.intensity > 0.0;
+        let motion_blur = master && settings.motion_blur.is_effectively_enabled();
         let auto_exposure = master && settings.auto_exposure.enabled;
         Self {
             gtao,
@@ -49,6 +53,7 @@ impl PostProcessChainSignature {
                 0
             },
             bloom,
+            motion_blur,
             auto_exposure,
             aces_tonemap: master && matches!(settings.tonemap.mode, TonemapMode::AcesFitted),
             agx_tonemap: master && matches!(settings.tonemap.mode, TonemapMode::AgX),
@@ -63,13 +68,19 @@ impl PostProcessChainSignature {
     /// Returns `true` when no effects are active and the chain should be skipped entirely.
     #[cfg(test)]
     pub fn is_empty(self) -> bool {
-        !self.gtao && !self.bloom && !self.auto_exposure && !self.aces_tonemap && !self.agx_tonemap
+        !self.gtao
+            && !self.bloom
+            && !self.motion_blur
+            && !self.auto_exposure
+            && !self.aces_tonemap
+            && !self.agx_tonemap
     }
 
     /// Number of active effects.
     pub fn active_count(self) -> usize {
         usize::from(self.gtao)
             + usize::from(self.bloom)
+            + usize::from(self.motion_blur)
             + usize::from(self.auto_exposure)
             + usize::from(self.aces_tonemap)
             + usize::from(self.agx_tonemap)
@@ -99,14 +110,15 @@ mod tests {
         assert!(!sig.agx_tonemap);
         assert!(sig.gtao);
         assert!(sig.bloom);
+        assert!(sig.motion_blur);
         assert!(sig.auto_exposure);
-        assert_eq!(sig.active_count(), 4);
+        assert_eq!(sig.active_count(), 5);
 
         s.tonemap.mode = TonemapMode::AgX;
         let sig = PostProcessChainSignature::from_settings(&s);
         assert!(!sig.aces_tonemap);
         assert!(sig.agx_tonemap);
-        assert_eq!(sig.active_count(), 4);
+        assert_eq!(sig.active_count(), 5);
 
         s.tonemap.mode = TonemapMode::None;
         assert!(PostProcessChainSignature::from_settings(&s).gtao);
@@ -114,6 +126,7 @@ mod tests {
         assert!(PostProcessChainSignature::from_settings(&s).auto_exposure);
         s.gtao.enabled = false;
         s.bloom.enabled = false;
+        s.motion_blur.enabled = false;
         s.auto_exposure.enabled = false;
         assert!(PostProcessChainSignature::from_settings(&s).is_empty());
     }
@@ -128,6 +141,7 @@ mod tests {
             ..Default::default()
         };
         s.bloom.enabled = false;
+        s.motion_blur.enabled = false;
         s.auto_exposure.enabled = false;
         let sig = PostProcessChainSignature::from_settings(&s);
         assert!(sig.gtao);
@@ -152,6 +166,10 @@ mod tests {
                 ..Default::default()
             },
             bloom: crate::config::BloomSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            motion_blur: crate::config::MotionBlurSettings {
                 enabled: false,
                 ..Default::default()
             },
@@ -181,6 +199,7 @@ mod tests {
             ..Default::default()
         };
         s.bloom.enabled = false;
+        s.motion_blur.enabled = false;
         s.gtao.denoise_passes = 99;
 
         let sig = PostProcessChainSignature::from_settings(&s);
@@ -200,6 +219,7 @@ mod tests {
         };
         s.gtao.enabled = false;
         s.auto_exposure.enabled = false;
+        s.motion_blur.enabled = false;
         s.bloom.enabled = false;
         assert!(PostProcessChainSignature::from_settings(&s).is_empty());
 
@@ -227,6 +247,7 @@ mod tests {
         };
         s.gtao.enabled = false;
         s.auto_exposure.enabled = false;
+        s.motion_blur.enabled = false;
         s.bloom.max_mip_dimension = 511;
 
         let sig = PostProcessChainSignature::from_settings(&s);
@@ -246,6 +267,7 @@ mod tests {
         };
         s.gtao.enabled = false;
         s.bloom.enabled = false;
+        s.motion_blur.enabled = false;
         s.auto_exposure.enabled = true;
 
         let sig = PostProcessChainSignature::from_settings(&s);
@@ -254,6 +276,40 @@ mod tests {
         assert_eq!(sig.active_count(), 1);
 
         s.auto_exposure.enabled = false;
+        assert!(PostProcessChainSignature::from_settings(&s).is_empty());
+    }
+
+    #[test]
+    fn signature_tracks_motion_blur_effective_gate() {
+        let mut s = PostProcessingSettings {
+            enabled: true,
+            gtao: crate::config::GtaoSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            bloom: crate::config::BloomSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            auto_exposure: crate::config::AutoExposureSettings {
+                enabled: false,
+                ..Default::default()
+            },
+            tonemap: TonemapSettings {
+                mode: TonemapMode::None,
+            },
+            ..Default::default()
+        };
+
+        let sig = PostProcessChainSignature::from_settings(&s);
+        assert!(sig.motion_blur);
+        assert_eq!(sig.active_count(), 1);
+
+        s.motion_blur.sample_count = 0;
+        assert!(PostProcessChainSignature::from_settings(&s).is_empty());
+
+        s.motion_blur.sample_count = 8;
+        s.motion_blur.shutter_angle = 0.0;
         assert!(PostProcessChainSignature::from_settings(&s).is_empty());
     }
 }

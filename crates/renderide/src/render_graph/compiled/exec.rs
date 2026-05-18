@@ -46,8 +46,8 @@ use submit::release_transients_and_gc;
 use types::{
     DrainedUploadCommand, GraphResolveKey, OwnedResolvedView, PerViewEncodeOutput,
     PerViewRecordInputs, PerViewRecordOutput, PerViewRecordShared, PerViewWorkItem,
-    RecordedPerViewBatch, SubmitFrameBatchStats, SubmitFrameInputs, TimedCommandBuffer,
-    TransientTextureResolveSurfaceParams,
+    RecordedPerViewBatch, ResolvedOffscreenColorCopy, SubmitFrameBatchStats, SubmitFrameInputs,
+    TimedCommandBuffer, TransientTextureResolveSurfaceParams,
 };
 
 impl CompiledRenderGraph {
@@ -354,6 +354,7 @@ impl CompiledRenderGraph {
             msaa_depth_resolve: mv_ctx.backend.msaa_depth_resolve(),
             live_gtao_settings: mv_ctx.backend.live_gtao_settings(),
             live_bloom_settings: mv_ctx.backend.live_bloom_settings(),
+            live_motion_blur_settings: mv_ctx.backend.live_motion_blur_settings(),
             live_auto_exposure_settings: mv_ctx.backend.live_auto_exposure_settings(),
             wall_frame_delta_seconds: mv_ctx.backend.wall_frame_delta_seconds(),
         };

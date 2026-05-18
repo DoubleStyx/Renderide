@@ -12,9 +12,9 @@ use imgui::{Drag, TabItem, TabItemFlags};
 
 use crate::config::{
     AutoExposureSettings, BloomCompositeMode, DebugHudRendererConfigTab, DebugHudSettings,
-    GraphicsApiSetting, GtaoSettings, MsaaSampleCount, PowerPreferenceSetting, RendererSettings,
-    RendererSettingsHandle, SceneColorFormat, TonemapMode, VsyncMode, WatchdogAction,
-    save_renderer_settings, save_renderer_settings_pruned,
+    GraphicsApiSetting, GtaoSettings, MotionBlurSettings, MsaaSampleCount, PowerPreferenceSetting,
+    RendererSettings, RendererSettingsHandle, SceneColorFormat, TonemapMode, VsyncMode,
+    WatchdogAction, save_renderer_settings, save_renderer_settings_pruned,
 };
 
 use super::super::layout::{self, Viewport, WindowSlot};
@@ -563,6 +563,8 @@ fn post_processing_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut
     ui.separator();
     post_processing_bloom(ui, g, dirty);
     ui.separator();
+    post_processing_motion_blur(ui, g, dirty);
+    ui.separator();
     post_processing_auto_exposure(ui, g, dirty);
     ui.separator();
     post_processing_tonemap(ui, g, dirty);
@@ -792,6 +794,47 @@ fn post_processing_bloom(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut b
         ui.text_disabled(format!(
             "Effective max mip dimension: {effective_max_mip_dimension} px (rounded down to power of two)."
         ));
+    }
+}
+
+fn post_processing_motion_blur(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
+    let _id = ui.push_id("motion_blur");
+    ui.text_disabled(
+        "Motion blur: derives screen-space velocity only while enabled, then blurs HDR scene \
+         color after bloom and before tonemapping. VR views are opt-in.",
+    );
+    if ui.checkbox(
+        "Enable motion blur",
+        &mut g.post_processing.motion_blur.enabled,
+    ) {
+        *dirty = true;
+    }
+    if ui.checkbox("Allow in VR", &mut g.post_processing.motion_blur.allow_vr) {
+        *dirty = true;
+    }
+    let motion_blur = &mut g.post_processing.motion_blur;
+    if ui
+        .slider_config("Shutter angle", 0.0_f32, 1.0_f32)
+        .display_format("%.2f")
+        .build(&mut motion_blur.shutter_angle)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Samples", 0_u32, MotionBlurSettings::MAX_SAMPLE_COUNT)
+        .build(&mut motion_blur.sample_count)
+    {
+        *dirty = true;
+    }
+    if ui
+        .slider_config("Max velocity (px)", 0.0_f32, 512.0_f32)
+        .display_format("%.0f")
+        .build(&mut motion_blur.max_velocity_pixels)
+    {
+        *dirty = true;
+    }
+    if !motion_blur.is_effectively_enabled() {
+        ui.text_disabled("Effective state: disabled by zero samples, shutter, or velocity clamp.");
     }
 }
 

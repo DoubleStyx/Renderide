@@ -5,11 +5,13 @@ use serde::{Deserialize, Serialize};
 mod auto_exposure;
 mod bloom;
 mod gtao;
+mod motion_blur;
 mod tonemap;
 
 pub use auto_exposure::AutoExposureSettings;
 pub use bloom::{BloomCompositeMode, BloomSettings};
 pub use gtao::GtaoSettings;
+pub use motion_blur::MotionBlurSettings;
 pub use tonemap::{TonemapMode, TonemapSettings};
 
 /// Post-processing stack configuration. Persisted as `[post_processing]` (with sub-tables per effect).
@@ -28,6 +30,8 @@ pub struct PostProcessingSettings {
     pub gtao: GtaoSettings,
     /// Dual-filter physically-based bloom (post-exposure, pre-tonemap HDR). See [`BloomSettings`].
     pub bloom: BloomSettings,
+    /// Screen-space motion blur (post-bloom, pre-tonemap HDR). See [`MotionBlurSettings`].
+    pub motion_blur: MotionBlurSettings,
     /// Histogram-based adaptive exposure (pre-bloom HDR). See [`AutoExposureSettings`].
     pub auto_exposure: AutoExposureSettings,
     /// Tonemapping (HDR -> display-referred 0..1 linear). See [`TonemapSettings`].
@@ -40,6 +44,7 @@ impl Default for PostProcessingSettings {
             enabled: true,
             gtao: GtaoSettings::default(),
             bloom: BloomSettings::default(),
+            motion_blur: MotionBlurSettings::default(),
             auto_exposure: AutoExposureSettings::default(),
             tonemap: TonemapSettings::default(),
         }
@@ -48,7 +53,7 @@ impl Default for PostProcessingSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::{AutoExposureSettings, PostProcessingSettings, TonemapMode};
+    use super::{AutoExposureSettings, MotionBlurSettings, PostProcessingSettings, TonemapMode};
     use crate::config::types::RendererSettings;
 
     #[test]
@@ -83,6 +88,10 @@ mod tests {
             "expected `[post_processing.auto_exposure]` sub-table, got:\n{toml}"
         );
         assert!(
+            toml.contains("[post_processing.motion_blur]"),
+            "expected `[post_processing.motion_blur]` sub-table, got:\n{toml}"
+        );
+        assert!(
             toml.contains("mode = \"aces_fitted\""),
             "expected snake_case mode value, got:\n{toml}"
         );
@@ -91,6 +100,10 @@ mod tests {
         assert_eq!(
             back.post_processing.auto_exposure,
             AutoExposureSettings::default()
+        );
+        assert_eq!(
+            back.post_processing.motion_blur,
+            MotionBlurSettings::default()
         );
         assert_eq!(back.post_processing.tonemap.mode, TonemapMode::AcesFitted);
     }
@@ -122,5 +135,14 @@ mod tests {
         let toml = "\n[display]\nfocused_fps = 60\nunfocused_fps = 30\n";
         let s: RendererSettings = toml::from_str(toml).expect("deserialize");
         assert_eq!(s.post_processing, PostProcessingSettings::default());
+    }
+
+    #[test]
+    fn motion_blur_defaults_to_desktop_enabled_vr_opt_in() {
+        let motion_blur = MotionBlurSettings::default();
+
+        assert!(motion_blur.enabled);
+        assert!(!motion_blur.allow_vr);
+        assert!(motion_blur.is_effectively_enabled());
     }
 }

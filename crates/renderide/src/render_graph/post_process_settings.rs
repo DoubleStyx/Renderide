@@ -37,6 +37,21 @@ impl BlackboardSlot for BloomSettingsSlot {
 #[derive(Clone, Copy, Debug)]
 pub struct BloomSettingsValue(pub crate::config::BloomSettings);
 
+/// Blackboard slot for the live [`crate::config::MotionBlurSettings`] snapshot.
+///
+/// Seeded each frame from [`crate::config::RendererSettings`] before per-view recording so
+/// motion blur sample counts, shutter scale, and pixel clamp updates take effect without
+/// rebuilding the compiled render graph. Topology fields still rebuild the graph when they
+/// add or remove the velocity and resolve passes.
+pub struct MotionBlurSettingsSlot;
+impl BlackboardSlot for MotionBlurSettingsSlot {
+    type Value = MotionBlurSettingsValue;
+}
+
+/// Live [`crate::config::MotionBlurSettings`] carried on the per-view blackboard.
+#[derive(Clone, Copy, Debug)]
+pub struct MotionBlurSettingsValue(pub crate::config::MotionBlurSettings);
+
 /// Blackboard slot for the live [`crate::config::AutoExposureSettings`] snapshot.
 ///
 /// Seeded each frame from [`crate::config::RendererSettings`] before per-view recording so the

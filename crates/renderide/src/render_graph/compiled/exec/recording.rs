@@ -19,14 +19,15 @@ use super::super::super::pass::PassKind;
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext, ResolvedView};
 use super::{
-    GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem, TimedCommandBuffer,
-    TransientTextureResolveSurfaceParams, elapsed_ms,
+    GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem,
+    ResolvedOffscreenColorCopy, TimedCommandBuffer, TransientTextureResolveSurfaceParams,
+    elapsed_ms,
 };
 use crate::diagnostics::PerViewHudOutputsSlot;
 use crate::render_graph::GraphExecutionBackend;
 use crate::render_graph::post_process_settings::{
     AutoExposureSettingsSlot, AutoExposureSettingsValue, BloomSettingsSlot, BloomSettingsValue,
-    GtaoSettingsSlot, GtaoSettingsValue,
+    GtaoSettingsSlot, GtaoSettingsValue, MotionBlurSettingsSlot, MotionBlurSettingsValue,
 };
 
 impl CompiledRenderGraph {
@@ -61,30 +62,14 @@ impl CompiledRenderGraph {
         };
         let gpu_query = profiler.map(|p| p.begin_query("graph::per_view", &mut encoder));
 
-        let resolved = resolved.as_resolved();
-        let resolved_resources = {
-            profiling::scope!("graph::per_view::resolve_transients");
-            let key = GraphResolveKey::from_resolved(&resolved);
-            // Transients were pre-resolved in `pre_resolve_transients_for_views` before the
-            // per-view loop began, so a missing entry here is a bug.
-            let mut resolved_resources = transient_by_key.get(&key).cloned().ok_or_else(|| {
-                logger::warn!("pre-resolve: missing transient resources for view key {key:?}");
-                GraphExecuteError::MissingTransientResources
-            })?;
-            self.resolve_imported_textures(&resolved, shared.history, &mut resolved_resources)?;
-            self.resolve_imported_buffers(
-                shared.frame_resources,
-                shared.history,
-                &resolved,
-                &mut resolved_resources,
-            )?;
-            resolved_resources
-        };
+        let resolved_view = resolved.as_resolved();
+        let resolved_resources =
+            self.resolve_per_view_graph_resources(shared, &resolved_view, transient_by_key)?;
         let graph_resources: &GraphResolvedResources = &resolved_resources;
 
         let mut frame_params = Self::build_per_view_frame_params(
             shared,
-            &resolved,
+            &resolved_view,
             &host_camera,
             render_context,
             clear,
@@ -106,7 +91,7 @@ impl CompiledRenderGraph {
                 self.execute_pass_node(
                     pass_idx,
                     FrameUploadScope::per_view(view_idx, pass_idx),
-                    &resolved,
+                    &resolved_view,
                     graph_resources,
                     &mut frame_params,
                     &mut view_blackboard,
@@ -118,6 +103,11 @@ impl CompiledRenderGraph {
                 )?;
             }
         }
+        Self::record_offscreen_color_copy(
+            &mut encoder,
+            resolved.offscreen_color_copy.as_ref(),
+            profiler,
+        );
         if let Some(query) = gpu_query
             && let Some(prof) = profiler
         {
@@ -143,6 +133,74 @@ impl CompiledRenderGraph {
             finish_ms,
             command_stats,
         })
+    }
+
+    /// Resolves this view's transient/imported graph resources from pre-record shared state.
+    fn resolve_per_view_graph_resources(
+        &self,
+        shared: &PerViewRecordShared<'_>,
+        resolved: &ResolvedView<'_>,
+        transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
+    ) -> Result<GraphResolvedResources, GraphExecuteError> {
+        profiling::scope!("graph::per_view::resolve_transients");
+        let key = GraphResolveKey::from_resolved(resolved);
+        let mut resolved_resources = transient_by_key.get(&key).cloned().ok_or_else(|| {
+            logger::warn!("pre-resolve: missing transient resources for view key {key:?}");
+            GraphExecuteError::MissingTransientResources
+        })?;
+        self.resolve_imported_textures(resolved, shared.history, &mut resolved_resources)?;
+        self.resolve_imported_buffers(
+            shared.frame_resources,
+            shared.history,
+            resolved,
+            &mut resolved_resources,
+        )?;
+        Ok(resolved_resources)
+    }
+
+    /// Records the final scratch-to-render-texture copy for a partial offscreen viewport.
+    fn record_offscreen_color_copy(
+        encoder: &mut wgpu::CommandEncoder,
+        copy: Option<&ResolvedOffscreenColorCopy>,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
+    ) {
+        let Some(copy) = copy else {
+            return;
+        };
+        if copy.extent_px.0 == 0 || copy.extent_px.1 == 0 {
+            return;
+        }
+        profiling::scope!("graph::per_view::offscreen_color_copy");
+        let copy_query =
+            profiler.map(|p| p.begin_query("graph::per_view::offscreen_color_copy", encoder));
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &copy.source_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &copy.destination_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: copy.destination_origin_px.0,
+                    y: copy.destination_origin_px.1,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: copy.extent_px.0,
+                height: copy.extent_px.1,
+                depth_or_array_layers: 1,
+            },
+        );
+        if let Some(query) = copy_query
+            && let Some(profiler) = profiler
+        {
+            profiler.end_query(encoder, query);
+        }
     }
 
     /// Builds [`GraphPassFrame`](crate::render_graph::frame_params::GraphPassFrame) for one per-view pass batch.
@@ -227,6 +285,9 @@ impl CompiledRenderGraph {
         // params UBO and the upsamples use it to compute per-mip blend constants + pick
         // EnergyConserving vs Additive pipeline variants, so slider edits propagate next frame.
         blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(shared.live_bloom_settings));
+        blackboard.insert::<MotionBlurSettingsSlot>(MotionBlurSettingsValue(
+            shared.live_motion_blur_settings,
+        ));
         blackboard.insert::<AutoExposureSettingsSlot>(AutoExposureSettingsValue::for_view(
             shared.live_auto_exposure_settings,
             shared.wall_frame_delta_seconds,

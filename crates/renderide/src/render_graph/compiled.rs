@@ -22,7 +22,7 @@ mod dot;
 
 pub(crate) use frame_view::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewResourceHints,
-    FrameViewTarget, OffscreenSampleCountPolicy, ViewPostProcessing,
+    FrameViewTarget, OffscreenColorCopyTarget, OffscreenSampleCountPolicy, ViewPostProcessing,
 };
 pub(super) use resource::{
     CompileStats, CompiledBufferResource, CompiledPassInfo, CompiledTextureResource,

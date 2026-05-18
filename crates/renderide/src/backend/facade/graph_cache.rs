@@ -61,6 +61,19 @@ impl RenderBackend {
         effective
     }
 
+    /// Applies view-shape-specific post-processing fallbacks before deriving graph topology.
+    pub(super) fn post_processing_settings_for_graph_shape(
+        &self,
+        settings: &PostProcessingSettings,
+        multiview_stereo: bool,
+    ) -> PostProcessingSettings {
+        let mut effective = settings.clone();
+        if multiview_stereo && !effective.motion_blur.allow_vr {
+            effective.motion_blur.enabled = false;
+        }
+        effective
+    }
+
     /// Builds the current main-graph shape from live settings and the execution mode for this
     /// frame.
     pub(super) fn frame_graph_shape_for(
@@ -155,6 +168,8 @@ impl RenderBackend {
             Err(_) => return,
         };
         let graph_settings = self.effective_post_processing_settings_for_graph(&live_settings);
+        let graph_settings =
+            self.post_processing_settings_for_graph_shape(&graph_settings, multiview_stereo);
         let shape = self.frame_graph_shape_for(&graph_settings, live_msaa, multiview_stereo);
         self.sync_frame_graph_cache(&graph_settings, shape);
     }

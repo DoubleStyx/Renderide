@@ -126,6 +126,8 @@ impl RenderBackend {
             .unwrap_or_else(|| (PostProcessingSettings::default(), 1));
         let graph_post_processing =
             self.effective_post_processing_settings_for_graph(&post_processing_settings);
+        let graph_post_processing =
+            self.post_processing_settings_for_graph_shape(&graph_post_processing, false);
         let shape = self.frame_graph_shape_for(&graph_post_processing, msaa_sample_count, false);
         self.sync_frame_graph_cache(&graph_post_processing, shape);
         logger::info!(

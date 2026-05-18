@@ -21,8 +21,8 @@ pub use experimental::ExperimentalSettings;
 #[cfg(test)]
 pub(crate) use post_processing::TonemapSettings;
 pub use post_processing::{
-    AutoExposureSettings, BloomCompositeMode, BloomSettings, GtaoSettings, PostProcessingSettings,
-    TonemapMode,
+    AutoExposureSettings, BloomCompositeMode, BloomSettings, GtaoSettings, MotionBlurSettings,
+    PostProcessingSettings, TonemapMode,
 };
 pub use rendering::{
     GraphicsApiSetting, MsaaSampleCount, RenderingSettings, SceneColorFormat, VsyncMode,

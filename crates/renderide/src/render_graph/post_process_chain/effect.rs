@@ -20,6 +20,8 @@ pub enum PostProcessEffectId {
     Bloom,
     /// Histogram-based exposure adaptation, pre-tonemap HDR scale.
     AutoExposure,
+    /// Screen-space motion blur, post-bloom and pre-tonemap.
+    MotionBlur,
     /// Stephen Hill ACES Fitted tonemap (HDR linear -> display-referred 0..1 linear).
     AcesTonemap,
     /// Analytic AgX tonemap (HDR linear -> display-referred 0..1 linear).
@@ -33,6 +35,7 @@ impl PostProcessEffectId {
             Self::Gtao => "GTAO",
             Self::Bloom => "Bloom",
             Self::AutoExposure => "Auto Exposure",
+            Self::MotionBlur => "Motion Blur",
             Self::AcesTonemap => "ACES Tonemap",
             Self::AgxTonemap => "AgX Tonemap",
         }

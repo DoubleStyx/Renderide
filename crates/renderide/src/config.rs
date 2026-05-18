@@ -64,9 +64,9 @@ pub(crate) use persist::{ConfigResolveOutcome, ConfigSource};
 pub use types::{
     AutoExposureSettings, BloomCompositeMode, BloomSettings, DebugHudMainTab,
     DebugHudMainTabVisibility, DebugHudRendererConfigTab, DebugHudRendererConfigTabVisibility,
-    DebugHudSettings, ExperimentalSettings, GraphicsApiSetting, GtaoSettings, MsaaSampleCount,
-    PostProcessingSettings, PowerPreferenceSetting, RendererSettings, SceneColorFormat,
-    TonemapMode, VsyncMode, WatchdogAction, WatchdogSettings,
+    DebugHudSettings, ExperimentalSettings, GraphicsApiSetting, GtaoSettings, MotionBlurSettings,
+    MsaaSampleCount, PostProcessingSettings, PowerPreferenceSetting, RendererSettings,
+    SceneColorFormat, TonemapMode, VsyncMode, WatchdogAction, WatchdogSettings,
 };
 #[cfg(test)]
 pub(crate) use types::{DebugSettings, TonemapSettings};
