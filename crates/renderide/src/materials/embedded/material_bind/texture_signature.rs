@@ -18,6 +18,7 @@ use super::super::texture_pools::EmbeddedTexturePools;
 use super::super::texture_resolve::{
     ResolvedTextureBinding, resolved_texture_binding_for_host, texture_property_ids_for_binding,
 };
+use super::super::wrap_mode_bits::sampler_wrap_mode_bits;
 
 /// Hashes texture-pool metadata read by the reflected material uniform block.
 pub(super) fn compute_uniform_texture_state_signature(
@@ -47,10 +48,12 @@ pub(super) fn compute_uniform_texture_state_signature(
             lookup,
         );
         entry.binding.hash(&mut h);
-        let (bias, storage_v_inverted, color_profile) = texture_uniform_state(binding, pools);
+        let (bias, storage_v_inverted, color_profile, wrap_mode_bits) =
+            texture_uniform_state(binding, pools);
         bias.to_bits().hash(&mut h);
         storage_v_inverted.hash(&mut h);
         color_profile.hash(&mut h);
+        wrap_mode_bits.hash(&mut h);
     }
     h.finish()
 }
@@ -58,29 +61,53 @@ pub(super) fn compute_uniform_texture_state_signature(
 fn texture_uniform_state(
     binding: ResolvedTextureBinding,
     pools: &EmbeddedTexturePools<'_>,
-) -> (f32, bool, i32) {
+) -> (f32, bool, i32, u32) {
     match binding {
         ResolvedTextureBinding::Texture2D { asset_id } => {
-            pools.texture.get(asset_id).map_or((0.0, false, -1), |t| {
-                (
-                    t.sampler.mipmap_bias,
-                    t.storage_v_inverted,
-                    color_profile_signature_value(Some(t.color_profile)),
-                )
-            })
+            pools
+                .texture
+                .get(asset_id)
+                .map_or((0.0, false, -1, 0), |t| {
+                    (
+                        t.sampler.mipmap_bias,
+                        t.storage_v_inverted,
+                        color_profile_signature_value(Some(t.color_profile)),
+                        sampler_wrap_mode_bits(&t.sampler),
+                    )
+                })
         }
-        ResolvedTextureBinding::Texture3D { asset_id } => pools
-            .texture3d
+        ResolvedTextureBinding::Texture3D { asset_id } => {
+            pools
+                .texture3d
+                .get(asset_id)
+                .map_or((0.0, false, -1, 0), |t| {
+                    (
+                        t.sampler.mipmap_bias,
+                        false,
+                        -1,
+                        sampler_wrap_mode_bits(&t.sampler),
+                    )
+                })
+        }
+        ResolvedTextureBinding::Cubemap { asset_id } => pools
+            .cubemap
             .get(asset_id)
-            .map_or((0.0, false, -1), |t| (t.sampler.mipmap_bias, false, -1)),
-        ResolvedTextureBinding::Cubemap { asset_id } => {
-            pools.cubemap.get(asset_id).map_or((0.0, false, -1), |t| {
-                (t.sampler.mipmap_bias, t.storage_v_inverted, -1)
-            })
-        }
-        ResolvedTextureBinding::RenderTexture { .. } => (0.0, true, -1),
-        ResolvedTextureBinding::VideoTexture { .. } => (0.0, false, -1),
-        ResolvedTextureBinding::None => (0.0, false, -1),
+            .map_or((0.0, false, -1, 0), |t| {
+                (t.sampler.mipmap_bias, t.storage_v_inverted, -1, 0)
+            }),
+        ResolvedTextureBinding::RenderTexture { asset_id } => pools
+            .render_texture
+            .get(asset_id)
+            .map_or((0.0, true, -1, 0), |t| {
+                (0.0, true, -1, sampler_wrap_mode_bits(&t.sampler))
+            }),
+        ResolvedTextureBinding::VideoTexture { asset_id } => pools
+            .video_texture
+            .get(asset_id)
+            .map_or((0.0, false, -1, 0), |t| {
+                (0.0, false, -1, sampler_wrap_mode_bits(&t.sampler))
+            }),
+        ResolvedTextureBinding::None => (0.0, false, -1, 0),
     }
 }
 

@@ -124,6 +124,9 @@ pub(crate) fn default_embedded_sampler(device: &wgpu::Device) -> wgpu::Sampler {
 }
 
 /// Converts a host wrap mode to a wgpu address mode.
+///
+/// `MirrorOnce` uses clamp-to-edge here because WebGPU does not expose mirror-clamp addressing;
+/// material WGSL receives wrap bits and mirrors coordinates before clamping.
 pub(crate) fn wrap_to_address(w: TextureWrapMode) -> wgpu::AddressMode {
     match w {
         TextureWrapMode::Repeat => wgpu::AddressMode::Repeat,
@@ -278,5 +281,52 @@ mod tests {
         assert_eq!(cubemap_desc.address_mode_w, wgpu::AddressMode::Repeat);
         assert_eq!(cubemap_desc.anisotropy_clamp, 4);
         assert_eq!(cubemap_desc.lod_max_clamp, 0.0);
+    }
+
+    #[test]
+    fn sampler_descriptors_clamp_mirror_once_for_shader_emulation() {
+        let texture2d = SamplerState {
+            filter_mode: TextureFilterMode::Bilinear,
+            aniso_level: 1,
+            wrap_u: TextureWrapMode::MirrorOnce,
+            wrap_v: TextureWrapMode::MirrorOnce,
+            wrap_w: TextureWrapMode::default(),
+            mipmap_bias: 0.0,
+        };
+        let texture2d_desc = sampler_descriptor(&texture2d, TextureBindKind::Tex2D, 1);
+        assert_eq!(
+            texture2d_desc.address_mode_u,
+            wgpu::AddressMode::ClampToEdge
+        );
+        assert_eq!(
+            texture2d_desc.address_mode_v,
+            wgpu::AddressMode::ClampToEdge
+        );
+        assert_eq!(
+            texture2d_desc.address_mode_w,
+            wgpu::AddressMode::ClampToEdge
+        );
+
+        let texture3d = SamplerState {
+            filter_mode: TextureFilterMode::Bilinear,
+            aniso_level: 1,
+            wrap_u: TextureWrapMode::MirrorOnce,
+            wrap_v: TextureWrapMode::MirrorOnce,
+            wrap_w: TextureWrapMode::MirrorOnce,
+            mipmap_bias: 0.0,
+        };
+        let texture3d_desc = sampler_descriptor(&texture3d, TextureBindKind::Tex3D, 1);
+        assert_eq!(
+            texture3d_desc.address_mode_u,
+            wgpu::AddressMode::ClampToEdge
+        );
+        assert_eq!(
+            texture3d_desc.address_mode_v,
+            wgpu::AddressMode::ClampToEdge
+        );
+        assert_eq!(
+            texture3d_desc.address_mode_w,
+            wgpu::AddressMode::ClampToEdge
+        );
     }
 }

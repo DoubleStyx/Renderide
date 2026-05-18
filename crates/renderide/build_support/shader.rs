@@ -14,6 +14,8 @@ mod directives;
 mod emit;
 #[path = "shader/error.rs"]
 mod error;
+#[path = "shader/mirror_once.rs"]
+mod mirror_once;
 #[path = "shader/model.rs"]
 mod model;
 #[path = "shader/modules.rs"]

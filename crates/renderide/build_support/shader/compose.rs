@@ -6,7 +6,10 @@ use naga_oil::compose::{Composer, NagaModuleDescriptor, ShaderType};
 
 use super::directives::{BuildPassDirective, parse_pass_directives};
 use super::error::BuildError;
-use super::model::{CompiledShader, CompiledShaderTarget, ShaderJob, ShaderVariant};
+use super::mirror_once::rewrite_material_mirror_once_wgsl;
+use super::model::{
+    CompiledShader, CompiledShaderTarget, ShaderJob, ShaderSourceClass, ShaderVariant,
+};
 use super::modules::{ShaderModuleSources, register_composable_modules};
 use super::source::shader_source_for_compile;
 use super::validation::{
@@ -63,8 +66,12 @@ fn remapped_pass_directives_for_output(
     if pass_directives.is_empty() {
         return Ok(Vec::new());
     }
-    let output_module = naga::front::wgsl::parse_str(output_wgsl)
-        .map_err(|e| BuildError::Message(format!("parse flattened WGSL {label}: {e}")))?;
+    let output_module = naga::front::wgsl::parse_str(output_wgsl).map_err(|e| {
+        BuildError::Message(format!(
+            "parse flattened WGSL {label}: {}",
+            e.emit_to_string(output_wgsl)
+        ))
+    })?;
     let vertex_names =
         entry_point_name_pairs(source_module, &output_module, ShaderStage::Vertex, label)?;
     let fragment_names =
@@ -84,6 +91,59 @@ fn remapped_pass_directives_for_output(
             Ok(remapped)
         })
         .collect()
+}
+
+/// Converts a composed module to WGSL and applies material-only post-processing.
+fn flattened_wgsl_for_job(
+    module: &naga::Module,
+    stem: &str,
+    variant: ShaderVariant,
+    source_class: ShaderSourceClass,
+) -> Result<String, BuildError> {
+    let label = format!("{stem} ({})", variant.label());
+    let wgsl = module_to_wgsl(module, &label)?;
+    if source_class == ShaderSourceClass::Material {
+        rewrite_material_mirror_once_wgsl(&wgsl, &label)
+    } else {
+        Ok(wgsl)
+    }
+}
+
+/// Runs source-level validation on both composed shader variants.
+fn validate_composed_variants(
+    stem: &str,
+    pass_directives: &[BuildPassDirective],
+    default_module: &naga::Module,
+    multiview_module: &naga::Module,
+) -> Result<(), BuildError> {
+    validate_entry_points(
+        default_module,
+        &format!("{stem} ({})", ShaderVariant::Default.label()),
+        pass_directives,
+    )?;
+    validate_pass_interfaces(
+        default_module,
+        &format!("{stem} ({})", ShaderVariant::Default.label()),
+        pass_directives,
+    )?;
+    validate_entry_points(
+        multiview_module,
+        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
+        pass_directives,
+    )?;
+    validate_pass_interfaces(
+        multiview_module,
+        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
+        pass_directives,
+    )?;
+    validate_no_pipeline_state_uniform_fields(
+        default_module,
+        &format!("{stem} ({})", ShaderVariant::Default.label()),
+    )?;
+    validate_no_pipeline_state_uniform_fields(
+        multiview_module,
+        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
+    )
 }
 
 fn entry_point_name_pairs(
@@ -153,42 +213,19 @@ pub(super) fn compile_shader_job(
         compose_source_variant(modules, &source, &file_path, ShaderVariant::Default)?;
     let multiview_module =
         compose_source_variant(modules, &source, &file_path, ShaderVariant::Multiview)?;
-    validate_entry_points(
-        &default_module,
-        &format!("{stem} ({})", ShaderVariant::Default.label()),
-        &pass_directives,
-    )?;
-    validate_pass_interfaces(
-        &default_module,
-        &format!("{stem} ({})", ShaderVariant::Default.label()),
-        &pass_directives,
-    )?;
-    validate_entry_points(
-        &multiview_module,
-        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
-        &pass_directives,
-    )?;
-    validate_pass_interfaces(
-        &multiview_module,
-        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
-        &pass_directives,
-    )?;
-    validate_no_pipeline_state_uniform_fields(
-        &default_module,
-        &format!("{stem} ({})", ShaderVariant::Default.label()),
-    )?;
-    validate_no_pipeline_state_uniform_fields(
-        &multiview_module,
-        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
-    )?;
+    validate_composed_variants(stem, &pass_directives, &default_module, &multiview_module)?;
 
-    let default_wgsl = module_to_wgsl(
+    let default_wgsl = flattened_wgsl_for_job(
         &default_module,
-        &format!("{stem} ({})", ShaderVariant::Default.label()),
+        stem,
+        ShaderVariant::Default,
+        job.source_class,
     )?;
-    let multiview_wgsl = module_to_wgsl(
+    let multiview_wgsl = flattened_wgsl_for_job(
         &multiview_module,
-        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
+        stem,
+        ShaderVariant::Multiview,
+        job.source_class,
     )?;
 
     let targets = if default_wgsl == multiview_wgsl {

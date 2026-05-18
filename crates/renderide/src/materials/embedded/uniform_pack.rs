@@ -13,6 +13,7 @@ use super::texture_pools::EmbeddedTexturePools;
 use super::texture_resolve::{
     ResolvedTextureBinding, resolved_texture_binding_for_host, texture_property_ids_for_binding,
 };
+use super::wrap_mode_bits::{WRAP_MODE_BITS_SUFFIX, sampler_wrap_mode_bits};
 
 mod color_space;
 mod helpers;
@@ -159,7 +160,8 @@ pub(crate) struct UniformPackTextureContext<'a> {
 /// flags for fields following the [`STORAGE_V_INVERTED_SUFFIX`] convention, host-sourced sampler
 /// state for fields following the [`LOD_BIAS_SUFFIX`] convention (`_<Tex>_LodBias`), the host's
 /// property store (for host-declared properties), source-declared material defaults, Unity's
-/// identity texture transform for missing `*_ST` vec4 fields, or the renderer-reserved
+/// identity texture transform for missing `*_ST` vec4 fields, texture wrap bits for fields
+/// following the [`WRAP_MODE_BITS_SUFFIX`] convention, or the renderer-reserved
 /// `_RenderideVariantBits` variant bitfield. Other missing fields fall through to zero.
 #[cfg(test)]
 pub(crate) fn build_embedded_uniform_bytes(
@@ -252,14 +254,20 @@ pub(crate) fn build_embedded_uniform_bytes_with_material_defaults(
                 write_f32_at(&mut buf, field, v);
             }
             ReflectedUniformScalarKind::U32 => {
-                let v = inferred_shader_variant_bits_u32(
-                    shader_writer_unescaped_field_name(field_name),
-                    shader_variant_bits,
-                    store,
-                    lookup,
-                    ids,
-                )
-                .unwrap_or(0);
+                let v = if let Some(wrap_mode_bits) =
+                    wrap_mode_bits_for_field(field_name, reflected, ids, store, lookup, tex_ctx)
+                {
+                    wrap_mode_bits
+                } else {
+                    inferred_shader_variant_bits_u32(
+                        shader_writer_unescaped_field_name(field_name),
+                        shader_variant_bits,
+                        store,
+                        lookup,
+                        ids,
+                    )
+                    .unwrap_or(0)
+                };
                 write_u32_at(&mut buf, field, v);
             }
             ReflectedUniformScalarKind::Unsupported => {
@@ -401,6 +409,91 @@ fn storage_v_inverted_for_field(
     Some(storage_v_inverted_flag_value(binding_storage_v_inverted(
         resolved, tex_ctx,
     )))
+}
+
+/// Returns texture wrap bits for texture kinds whose sampler state exposes wrap modes.
+fn binding_wrap_mode_bits_from_metadata(
+    resolved: ResolvedTextureBinding,
+    texture2d_wrap_mode_bits: Option<u32>,
+    texture3d_wrap_mode_bits: Option<u32>,
+    render_texture_wrap_mode_bits: Option<u32>,
+    video_texture_wrap_mode_bits: Option<u32>,
+) -> u32 {
+    match resolved {
+        ResolvedTextureBinding::Texture2D { .. } => texture2d_wrap_mode_bits.unwrap_or(0),
+        ResolvedTextureBinding::Texture3D { .. } => texture3d_wrap_mode_bits.unwrap_or(0),
+        ResolvedTextureBinding::RenderTexture { .. } => render_texture_wrap_mode_bits.unwrap_or(0),
+        ResolvedTextureBinding::VideoTexture { .. } => video_texture_wrap_mode_bits.unwrap_or(0),
+        ResolvedTextureBinding::None | ResolvedTextureBinding::Cubemap { .. } => 0,
+    }
+}
+
+/// Returns texture wrap bits for a resolved binding from the resident texture pools.
+fn binding_wrap_mode_bits(
+    resolved: ResolvedTextureBinding,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> u32 {
+    let texture2d_wrap_mode_bits = match resolved {
+        ResolvedTextureBinding::Texture2D { asset_id } => tex_ctx
+            .pools
+            .texture
+            .get(asset_id)
+            .map(|t| sampler_wrap_mode_bits(&t.sampler)),
+        _ => None,
+    };
+    let texture3d_wrap_mode_bits = match resolved {
+        ResolvedTextureBinding::Texture3D { asset_id } => tex_ctx
+            .pools
+            .texture3d
+            .get(asset_id)
+            .map(|t| sampler_wrap_mode_bits(&t.sampler)),
+        _ => None,
+    };
+    let render_texture_wrap_mode_bits = match resolved {
+        ResolvedTextureBinding::RenderTexture { asset_id } => tex_ctx
+            .pools
+            .render_texture
+            .get(asset_id)
+            .map(|t| sampler_wrap_mode_bits(&t.sampler)),
+        _ => None,
+    };
+    let video_texture_wrap_mode_bits = match resolved {
+        ResolvedTextureBinding::VideoTexture { asset_id } => tex_ctx
+            .pools
+            .video_texture
+            .get(asset_id)
+            .map(|t| sampler_wrap_mode_bits(&t.sampler)),
+        _ => None,
+    };
+    binding_wrap_mode_bits_from_metadata(
+        resolved,
+        texture2d_wrap_mode_bits,
+        texture3d_wrap_mode_bits,
+        render_texture_wrap_mode_bits,
+        video_texture_wrap_mode_bits,
+    )
+}
+
+/// Host wrap bits for `_<Tex>_WrapModeBits` fields, or [`None`] if `field_name` is not a
+/// wrap-bit field.
+fn wrap_mode_bits_for_field(
+    field_name: &str,
+    reflected: &ReflectedRasterLayout,
+    ids: &StemEmbeddedPropertyIds,
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+    tex_ctx: &UniformPackTextureContext<'_>,
+) -> Option<u32> {
+    let resolved = resolved_texture_binding_for_field_suffix(
+        field_name,
+        WRAP_MODE_BITS_SUFFIX,
+        reflected,
+        ids,
+        store,
+        lookup,
+        tex_ctx,
+    )?;
+    Some(binding_wrap_mode_bits(resolved, tex_ctx))
 }
 
 /// Returns the shader LOD bias for texture kinds whose wire properties expose mip bias.

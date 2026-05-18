@@ -10,6 +10,7 @@ pub(in crate::materials) mod stem_metadata;
 mod texture_pools;
 pub(crate) mod texture_resolve;
 mod uniform_pack;
+mod wrap_mode_bits;
 
 pub use default_stem::embedded_default_stem_for_shader_asset_name;
 pub use embedded_material_bind_error::EmbeddedMaterialBindError;
