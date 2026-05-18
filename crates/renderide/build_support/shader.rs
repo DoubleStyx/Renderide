@@ -14,6 +14,8 @@ mod directives;
 mod emit;
 #[path = "shader/error.rs"]
 mod error;
+#[path = "shader/mirror_once.rs"]
+mod mirror_once;
 #[path = "shader/model.rs"]
 mod model;
 #[path = "shader/modules.rs"]
@@ -24,8 +26,6 @@ mod parallel;
 mod source;
 #[path = "shader/validation.rs"]
 mod validation;
-#[path = "shader/wrap_once.rs"]
-mod wrap_once;
 
 use std::fs;
 use std::path::Path;

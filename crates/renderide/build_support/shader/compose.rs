@@ -6,6 +6,7 @@ use naga_oil::compose::{Composer, NagaModuleDescriptor, ShaderType};
 
 use super::directives::{BuildPassDirective, parse_pass_directives};
 use super::error::BuildError;
+use super::mirror_once::rewrite_material_mirror_once_wgsl;
 use super::model::{
     CompiledShader, CompiledShaderTarget, ShaderJob, ShaderSourceClass, ShaderVariant,
 };
@@ -15,7 +16,6 @@ use super::validation::{
     module_to_wgsl, validate_entry_points, validate_no_pipeline_state_uniform_fields,
     validate_pass_interfaces,
 };
-use super::wrap_once::rewrite_material_wrap_once_wgsl;
 
 /// Composes one source variant through naga-oil.
 fn compose_source_variant(
@@ -103,7 +103,7 @@ fn flattened_wgsl_for_job(
     let label = format!("{stem} ({})", variant.label());
     let wgsl = module_to_wgsl(module, &label)?;
     if source_class == ShaderSourceClass::Material {
-        rewrite_material_wrap_once_wgsl(&wgsl, &label)
+        rewrite_material_mirror_once_wgsl(&wgsl, &label)
     } else {
         Ok(wgsl)
     }

@@ -202,7 +202,7 @@ fn lod_bias_metadata_uses_only_wire_supported_texture_kinds() {
 }
 
 #[test]
-fn wrap_mode_bits_encode_only_wrap_once_axes() {
+fn wrap_mode_bits_encode_only_mirror_once_axes() {
     let native_sampler = sampler_state_with_wrap(
         TextureWrapMode::Repeat,
         TextureWrapMode::Clamp,
@@ -210,19 +210,19 @@ fn wrap_mode_bits_encode_only_wrap_once_axes() {
     );
     assert_eq!(sampler_wrap_mode_bits(&native_sampler), 0);
 
-    let wrap_once_u_w = sampler_state_with_wrap(
+    let mirror_once_u_w = sampler_state_with_wrap(
         TextureWrapMode::MirrorOnce,
         TextureWrapMode::Repeat,
         TextureWrapMode::MirrorOnce,
     );
-    assert_eq!(sampler_wrap_mode_bits(&wrap_once_u_w), 5);
+    assert_eq!(sampler_wrap_mode_bits(&mirror_once_u_w), 5);
 
-    let wrap_once_all = sampler_state_with_wrap(
+    let mirror_once_all = sampler_state_with_wrap(
         TextureWrapMode::MirrorOnce,
         TextureWrapMode::MirrorOnce,
         TextureWrapMode::MirrorOnce,
     );
-    assert_eq!(sampler_wrap_mode_bits(&wrap_once_all), 7);
+    assert_eq!(sampler_wrap_mode_bits(&mirror_once_all), 7);
 }
 
 #[test]

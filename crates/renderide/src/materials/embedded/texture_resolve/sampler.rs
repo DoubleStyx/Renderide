@@ -125,8 +125,8 @@ pub(crate) fn default_embedded_sampler(device: &wgpu::Device) -> wgpu::Sampler {
 
 /// Converts a host wrap mode to a wgpu address mode.
 ///
-/// `MirrorOnce` is the shared wire value for WrapOnce and uses clamp-to-edge here because WebGPU
-/// does not expose wrap-once addressing; material WGSL receives wrap bits and adjusts coordinates.
+/// `MirrorOnce` uses clamp-to-edge here because WebGPU does not expose mirror-clamp addressing;
+/// material WGSL receives wrap bits and mirrors coordinates before clamping.
 pub(crate) fn wrap_to_address(w: TextureWrapMode) -> wgpu::AddressMode {
     match w {
         TextureWrapMode::Repeat => wgpu::AddressMode::Repeat,
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn sampler_descriptors_clamp_wrap_once_for_shader_emulation() {
+    fn sampler_descriptors_clamp_mirror_once_for_shader_emulation() {
         let texture2d = SamplerState {
             filter_mode: TextureFilterMode::Bilinear,
             aniso_level: 1,

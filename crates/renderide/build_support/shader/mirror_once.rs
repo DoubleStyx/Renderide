@@ -1,9 +1,9 @@
-//! Build-time WGSL rewrite that emulates `WrapOnce` material texture addressing.
+//! Build-time WGSL rewrite that emulates `MirrorOnce` material texture addressing.
 //!
 //! WebGPU exposes repeat, mirror-repeat, and clamp-to-edge sampler address modes, but not
-//! wrap-once addressing. Material shaders therefore receive per-texture wrap bits in their
-//! reflected group-1 uniform block, and this pass rewrites host texture sampling to wrap one
-//! adjacent tile on either side of the base `0..1` range before clamping to the edge.
+//! mirror-clamp addressing. Material shaders therefore receive per-texture wrap bits in their
+//! reflected group-1 uniform block, and this pass rewrites host texture sampling to mirror the
+//! adjacent negative tile before clamping to the edge.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -11,11 +11,11 @@ use super::error::BuildError;
 
 /// Suffix used by the runtime uniform packer for per-texture wrap bits.
 const WRAP_MODE_BITS_SUFFIX: &str = "_WrapModeBits";
-/// Helper WGSL appended to material targets that sample wrap-aware textures.
-const WRAP_ONCE_HELPERS: &str = r#"
-const RENDERIDE_WRAP_MODE_WRAP_ONCE_U: u32 = 1u;
-const RENDERIDE_WRAP_MODE_WRAP_ONCE_V: u32 = 2u;
-const RENDERIDE_WRAP_MODE_WRAP_ONCE_W: u32 = 4u;
+/// Helper WGSL appended to material targets that sample mirror-once textures.
+const MIRROR_ONCE_HELPERS: &str = r#"
+const RENDERIDE_WRAP_MODE_MIRROR_ONCE_U: u32 = 1u;
+const RENDERIDE_WRAP_MODE_MIRROR_ONCE_V: u32 = 2u;
+const RENDERIDE_WRAP_MODE_MIRROR_ONCE_W: u32 = 4u;
 
 struct RenderideWrappedGrad2D {
     uv: vec2<f32>,
@@ -23,106 +23,97 @@ struct RenderideWrappedGrad2D {
     ddy_uv: vec2<f32>,
 }
 
-fn renderide_wrap_once_coord(coord: f32) -> f32 {
-    if (coord < -1.0) {
+fn renderide_mirror_once_coord(coord: f32) -> f32 {
+    return clamp(abs(coord), 0.0, 1.0);
+}
+
+fn renderide_mirror_once_grad_scale(coord: f32) -> f32 {
+    if (coord < -1.0 || coord > 1.0) {
         return 0.0;
     }
     if (coord < 0.0) {
-        return coord + 1.0;
-    }
-    if (coord < 1.0) {
-        return coord;
-    }
-    if (coord < 2.0) {
-        return coord - 1.0;
+        return -1.0;
     }
     return 1.0;
 }
 
-fn renderide_wrap_once_grad_scale(coord: f32) -> f32 {
-    if (coord < -1.0 || coord >= 2.0) {
-        return 0.0;
-    }
-    return 1.0;
-}
-
-fn renderide_wrap_once_2d(uv: vec2<f32>, wrap_mode_bits: u32) -> vec2<f32> {
+fn renderide_mirror_once_2d(uv: vec2<f32>, wrap_mode_bits: u32) -> vec2<f32> {
     var wrapped = uv;
-    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_WRAP_ONCE_U) != 0u) {
-        wrapped.x = renderide_wrap_once_coord(wrapped.x);
+    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_MIRROR_ONCE_U) != 0u) {
+        wrapped.x = renderide_mirror_once_coord(wrapped.x);
     }
-    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_WRAP_ONCE_V) != 0u) {
-        wrapped.y = renderide_wrap_once_coord(wrapped.y);
+    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_MIRROR_ONCE_V) != 0u) {
+        wrapped.y = renderide_mirror_once_coord(wrapped.y);
     }
     return wrapped;
 }
 
-fn renderide_wrap_once_3d(uvw: vec3<f32>, wrap_mode_bits: u32) -> vec3<f32> {
+fn renderide_mirror_once_3d(uvw: vec3<f32>, wrap_mode_bits: u32) -> vec3<f32> {
     var wrapped = uvw;
-    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_WRAP_ONCE_U) != 0u) {
-        wrapped.x = renderide_wrap_once_coord(wrapped.x);
+    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_MIRROR_ONCE_U) != 0u) {
+        wrapped.x = renderide_mirror_once_coord(wrapped.x);
     }
-    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_WRAP_ONCE_V) != 0u) {
-        wrapped.y = renderide_wrap_once_coord(wrapped.y);
+    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_MIRROR_ONCE_V) != 0u) {
+        wrapped.y = renderide_mirror_once_coord(wrapped.y);
     }
-    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_WRAP_ONCE_W) != 0u) {
-        wrapped.z = renderide_wrap_once_coord(wrapped.z);
+    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_MIRROR_ONCE_W) != 0u) {
+        wrapped.z = renderide_mirror_once_coord(wrapped.z);
     }
     return wrapped;
 }
 
-fn renderide_wrap_once_grad_2d(
+fn renderide_mirror_once_grad_2d(
     uv: vec2<f32>,
     ddx_uv: vec2<f32>,
     ddy_uv: vec2<f32>,
     wrap_mode_bits: u32,
 ) -> RenderideWrappedGrad2D {
     var wrapped = RenderideWrappedGrad2D(uv, ddx_uv, ddy_uv);
-    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_WRAP_ONCE_U) != 0u) {
-        let scale_x = renderide_wrap_once_grad_scale(uv.x);
-        wrapped.uv.x = renderide_wrap_once_coord(uv.x);
+    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_MIRROR_ONCE_U) != 0u) {
+        let scale_x = renderide_mirror_once_grad_scale(uv.x);
+        wrapped.uv.x = renderide_mirror_once_coord(uv.x);
         wrapped.ddx_uv.x = ddx_uv.x * scale_x;
         wrapped.ddy_uv.x = ddy_uv.x * scale_x;
     }
-    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_WRAP_ONCE_V) != 0u) {
-        let scale_y = renderide_wrap_once_grad_scale(uv.y);
-        wrapped.uv.y = renderide_wrap_once_coord(uv.y);
+    if ((wrap_mode_bits & RENDERIDE_WRAP_MODE_MIRROR_ONCE_V) != 0u) {
+        let scale_y = renderide_mirror_once_grad_scale(uv.y);
+        wrapped.uv.y = renderide_mirror_once_coord(uv.y);
         wrapped.ddx_uv.y = ddx_uv.y * scale_y;
         wrapped.ddy_uv.y = ddy_uv.y * scale_y;
     }
     return wrapped;
 }
 
-fn renderide_wraponce_sample_2d(
+fn renderide_mirroronce_sample_2d(
     tex: texture_2d<f32>,
     samp: sampler,
     uv: vec2<f32>,
     wrap_mode_bits: u32,
 ) -> vec4<f32> {
-    return textureSample(tex, samp, renderide_wrap_once_2d(uv, wrap_mode_bits));
+    return textureSample(tex, samp, renderide_mirror_once_2d(uv, wrap_mode_bits));
 }
 
-fn renderide_wraponce_sample_bias_2d(
+fn renderide_mirroronce_sample_bias_2d(
     tex: texture_2d<f32>,
     samp: sampler,
     uv: vec2<f32>,
     bias: f32,
     wrap_mode_bits: u32,
 ) -> vec4<f32> {
-    return textureSampleBias(tex, samp, renderide_wrap_once_2d(uv, wrap_mode_bits), bias);
+    return textureSampleBias(tex, samp, renderide_mirror_once_2d(uv, wrap_mode_bits), bias);
 }
 
-fn renderide_wraponce_sample_level_2d(
+fn renderide_mirroronce_sample_level_2d(
     tex: texture_2d<f32>,
     samp: sampler,
     uv: vec2<f32>,
     level: f32,
     wrap_mode_bits: u32,
 ) -> vec4<f32> {
-    return textureSampleLevel(tex, samp, renderide_wrap_once_2d(uv, wrap_mode_bits), level);
+    return textureSampleLevel(tex, samp, renderide_mirror_once_2d(uv, wrap_mode_bits), level);
 }
 
-fn renderide_wraponce_sample_grad_2d(
+fn renderide_mirroronce_sample_grad_2d(
     tex: texture_2d<f32>,
     samp: sampler,
     uv: vec2<f32>,
@@ -130,41 +121,41 @@ fn renderide_wraponce_sample_grad_2d(
     ddy_uv: vec2<f32>,
     wrap_mode_bits: u32,
 ) -> vec4<f32> {
-    let wrapped = renderide_wrap_once_grad_2d(uv, ddx_uv, ddy_uv, wrap_mode_bits);
+    let wrapped = renderide_mirror_once_grad_2d(uv, ddx_uv, ddy_uv, wrap_mode_bits);
     return textureSampleGrad(tex, samp, wrapped.uv, wrapped.ddx_uv, wrapped.ddy_uv);
 }
 
-fn renderide_wraponce_sample_3d(
+fn renderide_mirroronce_sample_3d(
     tex: texture_3d<f32>,
     samp: sampler,
     uvw: vec3<f32>,
     wrap_mode_bits: u32,
 ) -> vec4<f32> {
-    return textureSample(tex, samp, renderide_wrap_once_3d(uvw, wrap_mode_bits));
+    return textureSample(tex, samp, renderide_mirror_once_3d(uvw, wrap_mode_bits));
 }
 
-fn renderide_wraponce_sample_bias_3d(
+fn renderide_mirroronce_sample_bias_3d(
     tex: texture_3d<f32>,
     samp: sampler,
     uvw: vec3<f32>,
     bias: f32,
     wrap_mode_bits: u32,
 ) -> vec4<f32> {
-    return textureSampleBias(tex, samp, renderide_wrap_once_3d(uvw, wrap_mode_bits), bias);
+    return textureSampleBias(tex, samp, renderide_mirror_once_3d(uvw, wrap_mode_bits), bias);
 }
 
-fn renderide_wraponce_sample_level_3d(
+fn renderide_mirroronce_sample_level_3d(
     tex: texture_3d<f32>,
     samp: sampler,
     uvw: vec3<f32>,
     level: f32,
     wrap_mode_bits: u32,
 ) -> vec4<f32> {
-    return textureSampleLevel(tex, samp, renderide_wrap_once_3d(uvw, wrap_mode_bits), level);
+    return textureSampleLevel(tex, samp, renderide_mirror_once_3d(uvw, wrap_mode_bits), level);
 }
 "#;
 
-/// Texture dimensionality relevant to wrap-once coordinate rewriting.
+/// Texture dimensionality relevant to mirror-once coordinate rewriting.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WrapTextureDimension {
     /// `texture_2d<f32>`.
@@ -246,8 +237,8 @@ struct RewriteContext<'a> {
     texture_params: BTreeMap<String, TextureParam>,
 }
 
-/// Adds `WrapOnce` emulation to a flattened material WGSL target.
-pub(super) fn rewrite_material_wrap_once_wgsl(
+/// Adds `MirrorOnce` emulation to a flattened material WGSL target.
+pub(super) fn rewrite_material_mirror_once_wgsl(
     wgsl: &str,
     label: &str,
 ) -> Result<String, BuildError> {
@@ -269,7 +260,7 @@ pub(super) fn rewrite_material_wrap_once_wgsl(
         &globals,
         &uniform_var,
     );
-    with_fields.push_str(WRAP_ONCE_HELPERS);
+    with_fields.push_str(MIRROR_ONCE_HELPERS);
     Ok(with_fields)
 }
 
@@ -618,28 +609,32 @@ fn rewrite_texture_builtin_call(
     bits: &str,
 ) -> Option<String> {
     let helper = match (kind, dimension, args.len()) {
-        (TextureBuiltinKind::Sample, WrapTextureDimension::D2, 3) => "renderide_wraponce_sample_2d",
+        (TextureBuiltinKind::Sample, WrapTextureDimension::D2, 3) => {
+            "renderide_mirroronce_sample_2d"
+        }
         (TextureBuiltinKind::Sample, WrapTextureDimension::D2, 4) => {
             return Some(format!(
-                "textureSample({}, {}, renderide_wrap_once_2d({}, {}), {})",
+                "textureSample({}, {}, renderide_mirror_once_2d({}, {}), {})",
                 args[0], args[1], args[2], bits, args[3]
             ));
         }
-        (TextureBuiltinKind::Sample, WrapTextureDimension::D3, 3) => "renderide_wraponce_sample_3d",
+        (TextureBuiltinKind::Sample, WrapTextureDimension::D3, 3) => {
+            "renderide_mirroronce_sample_3d"
+        }
         (TextureBuiltinKind::Bias, WrapTextureDimension::D2, 4) => {
-            "renderide_wraponce_sample_bias_2d"
+            "renderide_mirroronce_sample_bias_2d"
         }
         (TextureBuiltinKind::Bias, WrapTextureDimension::D3, 4) => {
-            "renderide_wraponce_sample_bias_3d"
+            "renderide_mirroronce_sample_bias_3d"
         }
         (TextureBuiltinKind::Level, WrapTextureDimension::D2, 4) => {
-            "renderide_wraponce_sample_level_2d"
+            "renderide_mirroronce_sample_level_2d"
         }
         (TextureBuiltinKind::Level, WrapTextureDimension::D3, 4) => {
-            "renderide_wraponce_sample_level_3d"
+            "renderide_mirroronce_sample_level_3d"
         }
         (TextureBuiltinKind::Grad, WrapTextureDimension::D2, 5) => {
-            "renderide_wraponce_sample_grad_2d"
+            "renderide_mirroronce_sample_grad_2d"
         }
         _ => return None,
     };
@@ -833,33 +828,33 @@ fn fragment_main(uv: vec2<f32>) -> vec4<f32> {{
         )
     }
 
-    /// Verifies that texture samples gain WrapOnce metadata and no mirror-once math remains.
+    /// Verifies that texture samples gain MirrorOnce metadata and mirror-clamp math.
     #[test]
-    fn rewrite_injects_wrap_once_coordinate_emulation() {
+    fn rewrite_injects_mirror_once_coordinate_emulation() {
         let source = material_shader_source("textureSample(_MainTex, _MainTex_sampler, uv)");
-        let rewritten = rewrite_material_wrap_once_wgsl(&source, "test").unwrap();
+        let rewritten = rewrite_material_mirror_once_wgsl(&source, "test").unwrap();
 
         assert!(rewritten.contains("_MainTex_WrapModeBits: u32"));
         assert!(rewritten.contains(
-            "renderide_wraponce_sample_2d(_MainTex, _MainTex_sampler, uv, material._MainTex_WrapModeBits)"
+            "renderide_mirroronce_sample_2d(_MainTex, _MainTex_sampler, uv, material._MainTex_WrapModeBits)"
         ));
-        assert!(rewritten.contains("fn renderide_wrap_once_coord(coord: f32) -> f32"));
-        assert!(rewritten.contains("return coord + 1.0;"));
-        assert!(rewritten.contains("return coord - 1.0;"));
-        assert!(!rewritten.contains("abs(coord)"));
-        assert!(!rewritten.contains("renderide_mirror_once"));
+        assert!(rewritten.contains("fn renderide_mirror_once_coord(coord: f32) -> f32"));
+        assert!(rewritten.contains("return clamp(abs(coord), 0.0, 1.0);"));
+        assert!(rewritten.contains("return -1.0;"));
+        assert!(!rewritten.contains("return coord + 1.0;"));
+        assert!(!rewritten.contains("return coord - 1.0;"));
     }
 
-    /// Verifies that offset samples still wrap coordinates before using the builtin overload.
+    /// Verifies that offset samples still mirror coordinates before using the builtin overload.
     #[test]
-    fn rewrite_offset_sample_uses_wrap_once_coordinate_emulation() {
+    fn rewrite_offset_sample_uses_mirror_once_coordinate_emulation() {
         let source = material_shader_source(
             "textureSample(_MainTex, _MainTex_sampler, uv, vec2<i32>(1, -1))",
         );
-        let rewritten = rewrite_material_wrap_once_wgsl(&source, "test").unwrap();
+        let rewritten = rewrite_material_mirror_once_wgsl(&source, "test").unwrap();
 
         assert!(rewritten.contains(
-            "textureSample(_MainTex, _MainTex_sampler, renderide_wrap_once_2d(uv, material._MainTex_WrapModeBits), vec2<i32>(1, -1))"
+            "textureSample(_MainTex, _MainTex_sampler, renderide_mirror_once_2d(uv, material._MainTex_WrapModeBits), vec2<i32>(1, -1))"
         ));
     }
 }
