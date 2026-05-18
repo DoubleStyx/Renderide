@@ -22,6 +22,57 @@ pub(crate) fn unity_compare_function(value: u8) -> wgpu::CompareFunction {
     }
 }
 
+/// Helper enum for converting the FrooxEngine forward-Z ZTest enum into the WGPU equivalent.
+#[derive(num_enum::TryFromPrimitive)]
+#[repr(u8)]
+enum FrooxEngineZTest {
+    Less,
+    Greater,
+    LessOrEqual,
+    GreaterOrEqual,
+    Equal,
+    NotEqual,
+    Always,
+    /// Does not exist on FrooxEngine side, needed for wgpu parity.
+    Never = 255,
+}
+
+impl FrooxEngineZTest {
+    /// Replicates Resonite bug behavior:
+    /// https://github.com/Yellow-Dog-Man/Resonite-Issues/issues/1618
+    /// TODO: Fix this in FrooxEngine
+    pub fn map_1618(self) -> Self {
+        use FrooxEngineZTest::*;
+        match self {
+            Less => Always,
+            Equal => LessOrEqual,
+            LessOrEqual => Less,
+            Greater => Never,
+            NotEqual => Greater,
+            GreaterOrEqual => Equal,
+            Always => NotEqual,
+            Never => Never,
+        }
+    }
+}
+
+impl Into<wgpu::CompareFunction> for FrooxEngineZTest {
+    /// Converts from the forward-Z ZTest type of FrooxEngine into
+    /// the revers-Z [`wgpu::CompareFunction`].
+    fn into(self) -> wgpu::CompareFunction {
+        match self {
+            Self::Less => wgpu::CompareFunction::Greater,
+            Self::Greater => wgpu::CompareFunction::Less,
+            Self::LessOrEqual => wgpu::CompareFunction::GreaterEqual,
+            Self::GreaterOrEqual => wgpu::CompareFunction::LessEqual,
+            Self::Equal => wgpu::CompareFunction::Equal,
+            Self::NotEqual => wgpu::CompareFunction::NotEqual,
+            Self::Always => wgpu::CompareFunction::Always,
+            Self::Never => wgpu::CompareFunction::Never,
+        }
+    }
+}
+
 /// Maps a FrooxEngine `ZTest` enum value carried on the host `_ZTest` property to the reverse-Z
 /// equivalent `wgpu::CompareFunction`.
 ///
@@ -33,16 +84,9 @@ pub(crate) fn unity_compare_function(value: u8) -> wgpu::CompareFunction {
 /// Depth-test comparisons invert under reverse-Z (near fragments have greater depth), so e.g.
 /// `ZTest.LessOrEqual` -- the usual opaque-pass default -- becomes `wgpu::CompareFunction::GreaterEqual`.
 pub(crate) fn froox_ztest_depth_compare_function(value: u8) -> Option<wgpu::CompareFunction> {
-    match value {
-        0 => Some(wgpu::CompareFunction::Greater),
-        1 => Some(wgpu::CompareFunction::Less),
-        2 => Some(wgpu::CompareFunction::GreaterEqual),
-        3 => Some(wgpu::CompareFunction::LessEqual),
-        4 => Some(wgpu::CompareFunction::Equal),
-        5 => Some(wgpu::CompareFunction::NotEqual),
-        ZTEST_ALWAYS => Some(wgpu::CompareFunction::Always),
-        _ => None,
-    }
+    FrooxEngineZTest::try_from(value)
+        .ok()
+        .map(|fe_ztest| fe_ztest.map_1618().into())
 }
 
 /// Maps a Unity `CompareFunction` `_ZTest` value to the reverse-Z equivalent

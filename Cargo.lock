@@ -2682,6 +2682,7 @@ dependencies = [
  "naga_oil",
  "notify",
  "notify-debouncer-mini",
+ "num_enum",
  "openxr",
  "parking_lot",
  "pollster",
