@@ -121,6 +121,22 @@ fn resolves_uvrect_from_asset_style_name() {
 }
 
 #[test]
+fn resolves_debug_from_asset_filename() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("Debug").as_deref(),
+        Some("debug_default")
+    );
+}
+
+#[test]
+fn resolves_debugchannel_from_asset_filename() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("DebugChannel").as_deref(),
+        Some("debugchannel_default")
+    );
+}
+
+#[test]
 fn resolves_pbsrim_from_asset_name() {
     assert_eq!(
         embedded_default_stem_for_shader_asset_name("PBSRim").as_deref(),
