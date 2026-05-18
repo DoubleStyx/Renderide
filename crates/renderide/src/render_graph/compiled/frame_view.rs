@@ -34,6 +34,8 @@ impl OffscreenSampleCountPolicy {
 pub struct ExternalOffscreenTargets<'a> {
     /// Host render-texture asset id for `color_view` (used to suppress self-sampling during this pass).
     pub render_texture_asset_id: i32,
+    /// Color texture backing `color_view`.
+    pub color_texture: &'a wgpu::Texture,
     /// Color attachment (`Rgba16Float` for Unity `ARGBHalf` parity).
     pub color_view: &'a wgpu::TextureView,
     /// Depth texture backing `depth_view`.
@@ -46,6 +48,19 @@ pub struct ExternalOffscreenTargets<'a> {
     pub color_format: wgpu::TextureFormat,
     /// MSAA policy for the transient forward attachments that resolve into this target.
     pub sample_count_policy: OffscreenSampleCountPolicy,
+    /// Optional color copy into the host render texture after this view has finished rendering.
+    pub copy_to_color: Option<OffscreenColorCopyTarget<'a>>,
+}
+
+/// Destination for copying a partial offscreen camera render into its host render texture.
+#[derive(Clone, Copy)]
+pub struct OffscreenColorCopyTarget<'a> {
+    /// Destination texture receiving the rendered partial viewport.
+    pub destination_texture: &'a wgpu::Texture,
+    /// Destination origin in render-texture storage coordinates.
+    pub destination_origin_px: (u32, u32),
+    /// Copy extent in pixels.
+    pub extent_px: (u32, u32),
 }
 
 /// Pre-acquired 2-layer color + depth targets for OpenXR multiview (no window swapchain acquire).

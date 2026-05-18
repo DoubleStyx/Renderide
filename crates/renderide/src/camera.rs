@@ -12,6 +12,7 @@ mod geometry;
 mod host_camera_frame;
 mod projection;
 mod projection_plan;
+mod render_rect;
 mod render_task;
 mod secondary;
 mod stereo;
@@ -29,6 +30,7 @@ pub use projection::{
     reverse_z_perspective_openxr_fov,
 };
 pub use projection_plan::WorldProjectionSet;
+pub use render_rect::CameraRenderRect;
 pub(crate) use render_task::camera_render_task_clip;
 pub use render_task::{camera_render_task_world_matrix, host_camera_frame_for_render_task};
 pub use secondary::{

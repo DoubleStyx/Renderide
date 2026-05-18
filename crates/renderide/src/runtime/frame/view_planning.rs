@@ -6,10 +6,13 @@
 //! sits between the render entry point in [`super::render`] and the per-view extraction
 //! pipeline in [`super::extract`].
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
-use crate::camera::{ViewId, camera_state_enabled, host_camera_frame_for_render_texture};
+use crate::camera::{
+    CameraRenderRect, ViewId, camera_state_enabled, host_camera_frame_for_render_texture,
+};
 use crate::diagnostics::log_once::KeyedLogOnce;
+use crate::gpu::GpuContext;
 use crate::render_graph::{FrameViewClear, OffscreenSampleCountPolicy, ViewPostProcessing};
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
@@ -17,7 +20,9 @@ use crate::world_mesh::draw_filter_from_camera_entry;
 
 use super::super::RendererRuntime;
 use super::render::FrameRenderMode;
-use super::view_plan::{FrameViewPlan, FrameViewPlanTarget, OffscreenRtHandles};
+use super::view_plan::{
+    FrameViewPlan, FrameViewPlanTarget, OffscreenRtColorCopy, OffscreenRtHandles,
+};
 
 /// MSAA policy used for persistent host RenderTexture camera outputs.
 ///
@@ -81,7 +86,98 @@ fn log_secondary_rt_missing_depth_view(rt_id: i32, sid: RenderSpaceId, cam_idx: 
     }
 }
 
+/// Resident host render texture handles needed to plan one secondary camera view.
+struct ResidentSecondaryRenderTexture {
+    /// Host render texture color storage.
+    color_texture: Arc<wgpu::Texture>,
+    /// Full host render texture color view.
+    color_view: Arc<wgpu::TextureView>,
+    /// Full host render texture depth storage.
+    depth_texture: Arc<wgpu::Texture>,
+    /// Full host render texture depth view.
+    depth_view: Arc<wgpu::TextureView>,
+    /// Full host render texture extent in pixels.
+    extent_px: (u32, u32),
+    /// Host render texture color format.
+    color_format: wgpu::TextureFormat,
+    /// Host render texture depth format.
+    depth_format: wgpu::TextureFormat,
+}
+
+/// Builds graph target handles for a resolved camera render rect.
+fn secondary_rt_handles_for_rect(
+    backend: &mut crate::backend::RenderBackend,
+    gpu: &GpuContext,
+    rt_id: i32,
+    rt: ResidentSecondaryRenderTexture,
+    render_rect: CameraRenderRect,
+) -> Option<OffscreenRtHandles> {
+    if render_rect.is_full_target(rt.extent_px) {
+        return Some(OffscreenRtHandles {
+            rt_id,
+            color_texture: rt.color_texture,
+            color_view: rt.color_view,
+            depth_texture: rt.depth_texture,
+            depth_view: rt.depth_view,
+            color_format: rt.color_format,
+            sample_count_policy: SECONDARY_CAMERA_SAMPLE_COUNT_POLICY,
+            copy_to_color: None,
+        });
+    }
+
+    let scratch = backend.secondary_render_rect_scratch(
+        gpu.device().as_ref(),
+        render_rect.extent_px,
+        rt.color_format,
+        rt.depth_format,
+    )?;
+    Some(OffscreenRtHandles {
+        rt_id,
+        color_texture: scratch.color_texture,
+        color_view: scratch.color_view,
+        depth_texture: scratch.depth_texture,
+        depth_view: scratch.depth_view,
+        color_format: rt.color_format,
+        sample_count_policy: SECONDARY_CAMERA_SAMPLE_COUNT_POLICY,
+        copy_to_color: Some(OffscreenRtColorCopy {
+            destination_texture: rt.color_texture,
+            destination_origin_px: render_rect.origin_px,
+            extent_px: render_rect.extent_px,
+        }),
+    })
+}
+
 impl RendererRuntime {
+    /// Snapshots the GPU handles for a resident secondary render texture.
+    fn resident_secondary_render_texture(
+        &self,
+        rt_id: i32,
+        sid: RenderSpaceId,
+        cam_idx: usize,
+    ) -> Option<ResidentSecondaryRenderTexture> {
+        let Some(rt) = self.backend.render_texture_pool().get(rt_id) else {
+            logger::trace!("secondary camera: render texture asset {rt_id} not resident; skipping");
+            return None;
+        };
+        let Some(depth_texture) = rt.depth_texture.clone() else {
+            log_secondary_rt_missing_depth(rt_id, sid, cam_idx);
+            return None;
+        };
+        let Some(depth_view) = rt.depth_view.clone() else {
+            log_secondary_rt_missing_depth_view(rt_id, sid, cam_idx);
+            return None;
+        };
+        Some(ResidentSecondaryRenderTexture {
+            color_texture: rt.color_texture.clone(),
+            color_view: rt.color_view.clone(),
+            depth_format: depth_texture.format(),
+            depth_texture,
+            depth_view,
+            extent_px: (rt.width, rt.height),
+            color_format: rt.wgpu_color_format,
+        })
+    }
+
     /// Collects every active view for this tick into a single ordered list.
     ///
     /// Ordering -- preserved so the mesh-deform skip flag on
@@ -91,9 +187,38 @@ impl RendererRuntime {
     /// 3. Main desktop swapchain (when `mode = DesktopPlusSecondaries`).
     pub(in crate::runtime) fn collect_prepared_views<'a>(
         &mut self,
+        gpu: &GpuContext,
         mode: FrameRenderMode<'a>,
         swapchain_extent_px: (u32, u32),
         main_post_processing: ViewPostProcessing,
+    ) -> Vec<FrameViewPlan<'a>> {
+        let secondary_views = self.collect_secondary_rt_views(gpu);
+        self.assemble_prepared_views(
+            mode,
+            swapchain_extent_px,
+            main_post_processing,
+            secondary_views,
+        )
+    }
+
+    /// Collects active views without GPU-backed secondary render targets for CPU-only tests.
+    #[cfg(test)]
+    pub(in crate::runtime) fn collect_prepared_views_without_secondaries<'a>(
+        &self,
+        mode: FrameRenderMode<'a>,
+        swapchain_extent_px: (u32, u32),
+        main_post_processing: ViewPostProcessing,
+    ) -> Vec<FrameViewPlan<'a>> {
+        self.assemble_prepared_views(mode, swapchain_extent_px, main_post_processing, Vec::new())
+    }
+
+    /// Appends HMD, pre-collected secondary, and main swapchain views in submission order.
+    fn assemble_prepared_views<'a>(
+        &self,
+        mode: FrameRenderMode<'a>,
+        swapchain_extent_px: (u32, u32),
+        main_post_processing: ViewPostProcessing,
+        mut secondary_views: Vec<FrameViewPlan<'a>>,
     ) -> Vec<FrameViewPlan<'a>> {
         let (includes_main, hmd_target) = match mode {
             FrameRenderMode::DesktopPlusSecondaries => (true, None),
@@ -101,7 +226,6 @@ impl RendererRuntime {
             FrameRenderMode::VrSecondariesOnly => (false, None),
         };
 
-        let mut secondary_views = self.collect_secondary_rt_views();
         let est_capacity =
             usize::from(hmd_target.is_some()) + secondary_views.len() + usize::from(includes_main);
         let mut views: Vec<FrameViewPlan<'a>> = Vec::with_capacity(est_capacity);
@@ -139,10 +263,10 @@ impl RendererRuntime {
     ///
     /// Reuses [`RendererRuntime::secondary_view_tasks_scratch`] for the depth-sort scratch buffer
     /// so a frame with secondary cameras does not allocate a fresh `Vec` for the sort each tick.
-    fn collect_secondary_rt_views<'a>(&mut self) -> Vec<FrameViewPlan<'a>> {
+    fn collect_secondary_rt_views<'a>(&mut self, gpu: &GpuContext) -> Vec<FrameViewPlan<'a>> {
         let mut tasks = std::mem::take(&mut self.tick_state.secondary_view_tasks_scratch);
         tasks.clear();
-        let result = self.collect_secondary_rt_views_using(&mut tasks);
+        let result = self.collect_secondary_rt_views_using(gpu, &mut tasks);
         self.tick_state.secondary_view_tasks_scratch = tasks;
         result
     }
@@ -150,7 +274,8 @@ impl RendererRuntime {
     /// Inner helper that consumes the supplied scratch `tasks` buffer; split out so the outer
     /// caller can keep the scratch field reachable across the immutable borrow taken here.
     fn collect_secondary_rt_views_using<'a>(
-        &self,
+        &mut self,
+        gpu: &GpuContext,
         tasks: &mut Vec<(RenderSpaceId, f32, usize)>,
     ) -> Vec<FrameViewPlan<'a>> {
         for sid in self.scene.render_space_ids() {
@@ -184,28 +309,26 @@ impl RendererRuntime {
                 continue;
             }
             let rt_id = entry.state.render_texture_asset_id;
-            let (color_view, depth_texture, depth_view, viewport, color_format) = {
-                let Some(rt) = self.backend.render_texture_pool().get(rt_id) else {
-                    logger::trace!(
-                        "secondary camera: render texture asset {rt_id} not resident; skipping"
-                    );
-                    continue;
-                };
-                let Some(dt) = rt.depth_texture.clone() else {
-                    log_secondary_rt_missing_depth(rt_id, sid, cam_idx);
-                    continue;
-                };
-                let Some(dv) = rt.depth_view.clone() else {
-                    log_secondary_rt_missing_depth_view(rt_id, sid, cam_idx);
-                    continue;
-                };
-                (
-                    rt.color_view.clone(),
-                    dt,
-                    dv,
-                    (rt.width, rt.height),
-                    rt.wgpu_color_format,
-                )
+            let Some(rt) = self.resident_secondary_render_texture(rt_id, sid, cam_idx) else {
+                continue;
+            };
+            let Some(render_rect) = CameraRenderRect::resolve(entry.state.viewport, rt.extent_px)
+            else {
+                logger::trace!(
+                    "secondary camera: render texture asset {rt_id} viewport {:?} resolved empty; skipping",
+                    entry.state.viewport
+                );
+                continue;
+            };
+            let viewport_px = render_rect.extent_px;
+            let Some(rt_handles) =
+                secondary_rt_handles_for_rect(&mut self.backend, gpu, rt_id, rt, render_rect)
+            else {
+                logger::trace!(
+                    "secondary camera: render texture asset {rt_id} viewport {:?} scratch unavailable; skipping",
+                    entry.state.viewport
+                );
+                continue;
             };
             // Use the render-context world matrix (not the bare hierarchy matrix). For overlay
             // render spaces (userspace world: dash camera, interactive-camera mirrors, avatar
@@ -225,7 +348,7 @@ impl RendererRuntime {
             let mut hc = host_camera_frame_for_render_texture(
                 &self.host_camera,
                 &entry.state,
-                viewport,
+                viewport_px,
                 world_m,
             );
             let filter = draw_filter_from_camera_entry(entry);
@@ -247,17 +370,10 @@ impl RendererRuntime {
                 draw_filter: Some(filter),
                 render_space_filter: Some(sid),
                 view_id: secondary_camera_view_id(sid, entry.renderable_index, cam_idx),
-                viewport_px: viewport,
+                viewport_px,
                 clear: FrameViewClear::from_camera_state(&entry.state),
                 post_processing,
-                target: FrameViewPlanTarget::SecondaryRt(OffscreenRtHandles {
-                    rt_id,
-                    color_view,
-                    depth_texture,
-                    depth_view,
-                    color_format,
-                    sample_count_policy: SECONDARY_CAMERA_SAMPLE_COUNT_POLICY,
-                }),
+                target: FrameViewPlanTarget::SecondaryRt(rt_handles),
             });
         }
         views
@@ -327,8 +443,8 @@ mod tests {
 
     const TEST_EXTENT: (u32, u32) = (1920, 1080);
 
-    fn collect_default_desktop_views(runtime: &mut RendererRuntime) -> Vec<FrameViewPlan<'_>> {
-        runtime.collect_prepared_views(
+    fn collect_default_desktop_views(runtime: &RendererRuntime) -> Vec<FrameViewPlan<'_>> {
+        runtime.collect_prepared_views_without_secondaries(
             FrameRenderMode::DesktopPlusSecondaries,
             TEST_EXTENT,
             ViewPostProcessing::primary_view(),
@@ -350,8 +466,8 @@ mod tests {
 
     #[test]
     fn empty_scene_desktop_mode_yields_only_main_view() {
-        let mut runtime = build_runtime();
-        let views = collect_default_desktop_views(&mut runtime);
+        let runtime = build_runtime();
+        let views = collect_default_desktop_views(&runtime);
         assert_eq!(views.len(), 1);
         assert!(matches!(
             views[0].target,
@@ -363,8 +479,8 @@ mod tests {
 
     #[test]
     fn empty_scene_vr_secondaries_only_yields_empty_vec() {
-        let mut runtime = build_runtime();
-        let views = runtime.collect_prepared_views(
+        let runtime = build_runtime();
+        let views = runtime.collect_prepared_views_without_secondaries(
             FrameRenderMode::VrSecondariesOnly,
             TEST_EXTENT,
             ViewPostProcessing::primary_view(),
@@ -380,7 +496,7 @@ mod tests {
         let mut runtime = build_runtime();
         runtime.host_camera.frame_index = 42;
         runtime.host_camera.desktop_fov_degrees = 75.0;
-        let views = collect_default_desktop_views(&mut runtime);
+        let views = collect_default_desktop_views(&runtime);
         let main = &views[0];
         assert_eq!(main.host_camera.frame_index, 42);
         assert_eq!(main.host_camera.desktop_fov_degrees, 75.0);
@@ -392,8 +508,8 @@ mod tests {
     /// scene-object culling.
     #[test]
     fn main_view_viewport_matches_supplied_swapchain_extent() {
-        let mut runtime = build_runtime();
-        let views = runtime.collect_prepared_views(
+        let runtime = build_runtime();
+        let views = runtime.collect_prepared_views_without_secondaries(
             FrameRenderMode::DesktopPlusSecondaries,
             (1280, 720),
             ViewPostProcessing::primary_view(),

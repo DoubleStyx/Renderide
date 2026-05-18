@@ -57,6 +57,19 @@ pub(super) struct PerViewRecordOutput {
     pub(super) command_stats: GraphCommandStats,
 }
 
+/// Copy metadata for a partial offscreen camera viewport.
+#[derive(Clone)]
+pub(super) struct ResolvedOffscreenColorCopy {
+    /// Source texture rendered by this view.
+    pub(super) source_texture: wgpu::Texture,
+    /// Destination host render texture receiving the partial viewport.
+    pub(super) destination_texture: wgpu::Texture,
+    /// Destination origin in render-texture storage coordinates.
+    pub(super) destination_origin_px: (u32, u32),
+    /// Copy extent in pixels.
+    pub(super) extent_px: (u32, u32),
+}
+
 /// Command buffer plus CPU timings for one encoder.
 pub(super) struct TimedCommandBuffer {
     /// Encoded GPU work.
@@ -90,6 +103,8 @@ pub(super) struct OwnedResolvedView {
     pub(super) sample_count: u32,
     /// Post-processing permissions requested by this view.
     pub(super) post_processing: ViewPostProcessing,
+    /// Optional color copy into a host render texture after this view's graph passes.
+    pub(super) offscreen_color_copy: Option<ResolvedOffscreenColorCopy>,
 }
 
 impl OwnedResolvedView {

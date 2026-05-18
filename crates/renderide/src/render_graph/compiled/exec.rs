@@ -46,8 +46,8 @@ use submit::release_transients_and_gc;
 use types::{
     DrainedUploadCommand, GraphResolveKey, OwnedResolvedView, PerViewEncodeOutput,
     PerViewRecordInputs, PerViewRecordOutput, PerViewRecordShared, PerViewWorkItem,
-    RecordedPerViewBatch, SubmitFrameBatchStats, SubmitFrameInputs, TimedCommandBuffer,
-    TransientTextureResolveSurfaceParams,
+    RecordedPerViewBatch, ResolvedOffscreenColorCopy, SubmitFrameBatchStats, SubmitFrameInputs,
+    TimedCommandBuffer, TransientTextureResolveSurfaceParams,
 };
 
 impl CompiledRenderGraph {

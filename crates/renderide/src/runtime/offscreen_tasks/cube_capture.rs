@@ -368,11 +368,13 @@ impl CubeCaptureTargets {
     ) -> OffscreenRtHandles {
         OffscreenRtHandles {
             rt_id: -1,
+            color_texture: Arc::clone(&self.cube_texture),
             color_view: Arc::clone(&self.face_color_views[face.index()]),
             depth_texture: Arc::clone(&self.face_depth_textures[face.index()]),
             depth_view: Arc::clone(&self.face_depth_views[face.index()]),
             color_format: self.color_format,
             sample_count_policy,
+            copy_to_color: None,
         }
     }
 
